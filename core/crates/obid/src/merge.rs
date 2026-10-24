@@ -97,16 +97,90 @@ fn name(repo: &str) -> &str {
     repo.split_once('/').map_or(repo, |(_, name)| name)
 }
 
+/// Oby's reviewer accounts (X1) as a merge sees them: the one signed in now, and every one Oby
+/// has used, so a reviewer account's approval never passes for a teammate's or a person's, signed
+/// in or not ([`reviewers`]).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Reviewers {
+    /// The reviewer account signed in now (`github_login::reviewer`), or none.
+    pub current: Option<String>,
+    /// Every reviewer login Oby has used, `current` among them.
+    pub used: Vec<String>,
+}
+
+impl Reviewers {
+    fn any(&self, login: &str) -> bool {
+        self.used
+            .iter()
+            .chain(&self.current)
+            .any(|used| used.eq_ignore_ascii_case(login))
+    }
+}
+
+/// Where the reviewer logins Oby has used are kept: `home/github/reviewers.json`, 0600.
+fn reviewers_file(home: &Path) -> std::path::PathBuf {
+    home.join("github").join("reviewers.json")
+}
+
+/// Keeps `login` among the reviewer logins Oby has used, for good: call it whenever a reviewer
+/// account signs in (`github_login::keep_reviewer`). [`reviewers`] does too, for the one signed
+/// in now.
+pub fn note_reviewer(home: &Path, login: &str) -> Result<(), String> {
+    static WRITING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _writing = WRITING.lock().unwrap_or_else(|e| e.into_inner());
+    if login.is_empty()
+        || login.len() > 39
+        || !login
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+    {
+        return Err("That isn't a GitHub login.".into());
+    }
+    let mut used = read_reviewers(home)?;
+    if used.iter().any(|u| u.eq_ignore_ascii_case(login)) {
+        return Ok(());
+    }
+    used.push(login.to_owned());
+    let file = reviewers_file(home);
+    crate::store::make_private_dir(file.parent().unwrap_or(home))
+        .and_then(|()| {
+            crate::store::write_private(&file, &serde_json::to_vec(&used).unwrap_or_default())
+        })
+        .map_err(|e| format!("the reviewers Oby used couldn't be kept: {e}"))
+}
+
+fn read_reviewers(home: &Path) -> Result<Vec<String>, String> {
+    match std::fs::read(reviewers_file(home)) {
+        Ok(bytes) => serde_json::from_slice(&bytes)
+            .map_err(|e| format!("the reviewers Oby used can't be read: {e}")),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(vec![]),
+        Err(e) => Err(format!("the reviewers Oby used can't be read: {e}")),
+    }
+}
+
+/// Oby's reviewer accounts: `current`, the one signed in now (kept among those used first), and
+/// every one used. An error when they can't be read: then nothing merges ([`ready`] with none).
+pub fn reviewers(home: &Path, current: Option<&str>) -> Result<Reviewers, String> {
+    if let Some(login) = current {
+        note_reviewer(home, login)?;
+    }
+    Ok(Reviewers {
+        current: current.map(str::to_owned),
+        used: read_reviewers(home)?,
+    })
+}
+
 /// Whether the job's pull request, as GitHub has it (`pr` and `merging`: `github::view_merging`),
-/// may merge by `workflow` now, or why not (module docs). `reviewer`: the login of Oby's reviewer
-/// account (`github_login::reviewer`), or none when it isn't signed in. The fixed rules come
-/// first, so a pull request Oby may never merge says so whatever else holds.
+/// may merge by `workflow` now, or why not (module docs). `reviewers`: Oby's reviewer accounts
+/// ([`reviewers`]), or none when they couldn't be read, and then nothing merges: whose approval
+/// counts can't be told. The fixed rules come first, so a pull request Oby may never merge says
+/// so whatever else holds.
 pub fn ready(
     job: &Job,
     workflow: Option<&Workflow>,
     pr: &PullRequest,
     merging: &Merging,
-    reviewer: Option<&str>,
+    reviewers: Option<&Reviewers>,
 ) -> Result<(), Blocked> {
     let (workflow, head) = owned(job, workflow, pr)?;
     let base = pr.base.as_str();
@@ -116,7 +190,12 @@ pub fn ready(
     if asked_for_changes(pr, merging) {
         return Err(wait("Not merged yet: a review asks for changes."));
     }
-    if workflow.review == Approval::Reviewer && reviewer.is_none() {
+    let Some(reviewers) = reviewers else {
+        return Err(wait(
+            "Not merged yet: Oby couldn't tell who its reviewer accounts are.",
+        ));
+    };
+    if workflow.review == Approval::Reviewer && reviewers.current.is_none() {
         return Err(needs_you(format!(
             "Not merged: {} merges once Oby's reviewer account approves, and it isn't signed in.",
             name(&job.repo)
@@ -126,7 +205,7 @@ pub fn ready(
     if !merging
         .reviews
         .iter()
-        .any(|r| counts(r, head, author, by, reviewer))
+        .any(|r| counts(r, head, author, by, reviewers))
     {
         return Err(wait(match by {
             Approval::Reviewer => {
@@ -204,7 +283,7 @@ pub fn wanted_approval(
     workflow: Option<&Workflow>,
     pr: &PullRequest,
     merging: &Merging,
-    reviewer: Option<&str>,
+    reviewers: &Reviewers,
 ) -> Option<Approval> {
     let (workflow, head) = owned(job, workflow, pr).ok()?;
     let author = merging.author.as_deref()?;
@@ -212,15 +291,15 @@ pub fn wanted_approval(
     let approved = merging
         .reviews
         .iter()
-        .any(|r| counts(r, head, author, by, reviewer));
+        .any(|r| counts(r, head, author, by, reviewers));
     (!asked_for_changes(pr, merging) && !approved).then_some(by)
 }
 
 /// Whether `review` approves `head` the way the workflow's `review` (`by`) says: from someone with
 /// write access to the repository (`OWNER`, `MEMBER` or `COLLABORATOR`), never a bot, never the
-/// pull request's `author`; for `reviewer`, Oby's reviewer account (`reviewer`) itself, and for
-/// `teammate` and `person`, anyone but it.
-fn counts(review: &Review, head: &str, author: &str, by: Approval, reviewer: Option<&str>) -> bool {
+/// pull request's `author`; for `reviewer`, Oby's reviewer account signed in now, and for
+/// `teammate` and `person`, anyone but every reviewer account Oby has used.
+fn counts(review: &Review, head: &str, author: &str, by: Approval, reviewers: &Reviewers) -> bool {
     let is = |login: &str| review.login.eq_ignore_ascii_case(login);
     review.state == "APPROVED"
         && review.commit.as_deref() == Some(head)
@@ -232,8 +311,8 @@ fn counts(review: &Review, head: &str, author: &str, by: Approval, reviewer: Opt
         )
         && !is(author)
         && match by {
-            Approval::Reviewer => reviewer.is_some_and(is),
-            Approval::Teammate | Approval::Person => !reviewer.is_some_and(is),
+            Approval::Reviewer => reviewers.current.as_deref().is_some_and(is),
+            Approval::Teammate | Approval::Person => !reviewers.any(&review.login),
         }
 }
 
@@ -330,7 +409,8 @@ fn owned<'a>(
 /// checks everything [`ready`] does and that it's still the pull request it read, writes Oby's
 /// own commit title and message and scans them, then `PUT …/pulls/{n}/merge` at the head it
 /// checked, and deletes the job's own branch. Its files go in `home/tmp/merge-<job id>`, removed
-/// after; `reviewer` as for [`ready`].
+/// after. `reviewer`: the reviewer account signed in now (`github_login::reviewer`), read with
+/// every one used ([`reviewers`]); when those can't be read, nothing merges.
 pub async fn merge(
     gh: &Path,
     home: &Path,
@@ -341,8 +421,12 @@ pub async fn merge(
     if job.id.is_empty() || !job.id.bytes().all(|b| b.is_ascii_alphanumeric()) {
         return Err(needs_you("Not merged: that isn't one of Oby's jobs."));
     }
+    let reviewers = reviewers(home, reviewer).map_err(|why| {
+        tracing::warn!("merge: {why}");
+        wait("Not merged yet: Oby couldn't tell who its reviewer accounts are.")
+    })?;
     let scratch = home.join("tmp").join(format!("merge-{}", job.id));
-    let merged = merging(gh, job, workflow, reviewer, &scratch).await;
+    let merged = merging(gh, job, workflow, &reviewers, &scratch).await;
     let _ = std::fs::remove_dir_all(&scratch);
     merged
 }
@@ -351,7 +435,7 @@ async fn merging(
     gh: &Path,
     job: &Job,
     workflow: &Workflow,
-    reviewer: Option<&str>,
+    reviewers: &Reviewers,
     scratch: &Path,
 ) -> Result<Merged, Blocked> {
     let repo = job.repo.as_str();
@@ -359,10 +443,10 @@ async fn merging(
     let number = github::pull_request_number(url, repo)
         .ok_or_else(|| needs_you("Not merged: the job has no pull request of its own."))?;
     let unread = |_| wait("Not merged yet: GitHub couldn't be read. Oby tries again shortly.");
-    let (pr, merging) = github::view_merging(gh, repo, number, obi_protocol::time::now())
+    let (pr, mut merging) = github::view_merging(gh, repo, number, obi_protocol::time::now())
         .await
         .map_err(unread)?;
-    ready(job, Some(workflow), &pr, &merging, reviewer)?;
+    ready(job, Some(workflow), &pr, &merging, Some(reviewers))?;
     let head = pr.head.as_deref().unwrap_or_default();
     let pull_path = format!("repos/{repo}/pulls/{number}");
     let read = |text: &str| {
@@ -407,11 +491,23 @@ async fn merging(
         }
     }
     let mut body = json!({"merge_method": workflow.method.as_str(), "sha": head});
-    let commits = github::run(gh, &["api", &format!("{pull_path}/commits?per_page=100")])
-        .await
-        .map_err(unread)?;
-    let (title, message) = squash(&pull.title, &commits, number)
-        .ok_or_else(|| wait("Not merged yet: GitHub said something else about its commits."))?;
+    let commits = github::run_bounded(
+        gh,
+        &[
+            "api",
+            "--paginate",
+            "--slurp",
+            &format!("{pull_path}/commits?per_page=100"),
+        ],
+        16 * 1024 * 1024,
+        std::time::Duration::from_secs(60),
+    )
+    .await
+    .map_err(unread)?;
+    let commits: Vec<Value> = serde_json::from_str::<Vec<Vec<Value>>>(&commits)
+        .map(|pages| pages.into_iter().flatten().collect())
+        .map_err(|_| wait("Not merged yet: GitHub said something else about its commits."))?;
+    let (title, message) = squash(&pull.title, &commits, number);
     // A merge or a rebase lands each commit as it is: one saying it closes an issue would.
     if workflow.method != Method::Squash && closes(&commits) {
         return Err(needs_you(format!(
@@ -431,6 +527,9 @@ async fn merging(
         body["commit_title"] = json!(title);
         body["commit_message"] = json!(message);
     }
+    // A change request made while Oby wrote and scanned its words stops it too.
+    merging.reviews = github::reviews(gh, repo, number).await.map_err(unread)?;
+    ready(job, Some(workflow), &pr, &merging, Some(reviewers))?;
     // What GitHub is sent goes in a 0600 file, never in an argument.
     let input = scratch.join("merge.json");
     crate::store::make_private_dir(scratch)
@@ -570,11 +669,9 @@ impl Pull {
 /// The commit's title and message, as GitHub writes a squash's by default: the pull request's
 /// title and ` (#n)`, then what its commits say (`GET …/pulls/{n}/commits`): one commit's body,
 /// or each commit's message as a bullet. Oby writes them itself, so nothing from the description
-/// lands in the base, and every closing keyword reads "Part of" (#167). None when GitHub said
-/// something else.
-pub fn squash(title: &str, commits: &str, number: u64) -> Option<(String, String)> {
-    let list: Vec<Value> = serde_json::from_str(commits).ok()?;
-    let messages: Vec<String> = list
+/// lands in the base, and every closing keyword reads "Part of" (#167).
+pub fn squash(title: &str, commits: &[Value], number: u64) -> (String, String) {
+    let messages: Vec<String> = commits
         .iter()
         .filter_map(|c| c["commit"]["message"].as_str())
         .map(unclosing)
@@ -591,13 +688,12 @@ pub fn squash(title: &str, commits: &str, number: u64) -> Option<(String, String
             .collect::<Vec<_>>()
             .join("\n\n"),
     };
-    Some((format!("{} (#{number})", unclosing(title)), message))
+    (format!("{} (#{number})", unclosing(title)), message)
 }
 
 /// Whether any of the commits (`GET …/pulls/{n}/commits`) says it closes an issue.
-fn closes(commits: &str) -> bool {
-    serde_json::from_str::<Vec<Value>>(commits)
-        .unwrap_or_default()
+fn closes(commits: &[Value]) -> bool {
+    commits
         .iter()
         .filter_map(|c| c["commit"]["message"].as_str())
         .any(|m| unclosing(m) != m)
@@ -739,7 +835,23 @@ mod tests {
 
     fn check(job: &Job, workflow: Option<&Workflow>, text: &str) -> Result<(), Blocked> {
         let (pr, merging) = read(text, &approved());
-        ready(job, workflow, &pr, &merging, Some(REVIEWER))
+        ready(job, workflow, &pr, &merging, Some(&signed_in()))
+    }
+
+    /// The reviewer account signed in, and used before.
+    fn signed_in() -> Reviewers {
+        Reviewers {
+            current: Some(REVIEWER.into()),
+            used: vec![REVIEWER.into()],
+        }
+    }
+
+    /// The reviewer account Oby used, signed out since.
+    fn signed_out() -> Reviewers {
+        Reviewers {
+            current: None,
+            used: vec![REVIEWER.into()],
+        }
     }
 
     #[test]
@@ -764,18 +876,17 @@ mod tests {
     fn the_squash_message_is_githubs_default() {
         let one = json!([{"commit": {"message": "Fix the thing\n\nIt broke.\nCloses #12"}}]);
         assert_eq!(
-            squash("Fix the thing, closes #12", &one.to_string(), 7),
-            Some((
+            squash("Fix the thing, closes #12", one.as_array().unwrap(), 7),
+            (
                 "Fix the thing, Part of #12 (#7)".into(),
                 "It broke.\nPart of #12".into()
-            ))
+            )
         );
         let two = json!([{"commit": {"message": "One\n\nBody"}}, {"commit": {"message": "Two fixes #3\n"}}]);
         assert_eq!(
-            squash("Both", &two.to_string(), 8).unwrap().1,
+            squash("Both", two.as_array().unwrap(), 8).1,
             "* One\n\nBody\n\n* Two Part of #3"
         );
-        assert_eq!(squash("x", "not json", 1), None);
     }
 
     /// The fixed rules, whatever else holds: main, master and trunk never; no workflow, another
@@ -886,14 +997,17 @@ mod tests {
         let job = job();
         let head = head();
         let older = "c".repeat(40);
-        let with =
-            |workflow: &Workflow, text: &str, reviews: Vec<Value>, reviewer: Option<&str>| {
-                let (pr, merging) = read(text, &pages(reviews));
-                ready(&job, Some(workflow), &pr, &merging, reviewer)
-            };
+        let with = |workflow: &Workflow,
+                    text: &str,
+                    reviews: Vec<Value>,
+                    reviewers: Option<&Reviewers>| {
+            let (pr, merging) = read(text, &pages(reviews));
+            ready(&job, Some(workflow), &pr, &merging, reviewers)
+        };
+        let (signed_in, signed_out) = (signed_in(), signed_out());
         let obis = obis();
         let waits = |reviews: Vec<Value>| {
-            let blocked = with(&obis, &view(|_| {}), reviews, Some(REVIEWER)).unwrap_err();
+            let blocked = with(&obis, &view(|_| {}), reviews, Some(&signed_in)).unwrap_err();
             assert!(!blocked.needs_you, "{}", blocked.why);
             blocked.why
         };
@@ -954,7 +1068,7 @@ mod tests {
                     &obis,
                     &text,
                     vec![reviewer("APPROVED", &head)],
-                    Some(REVIEWER)
+                    Some(&signed_in)
                 )
                 .unwrap_err()
                 .needs_you
@@ -967,7 +1081,7 @@ mod tests {
                 &obis,
                 &anonymous,
                 vec![reviewer("APPROVED", &head)],
-                Some(REVIEWER)
+                Some(&signed_in)
             ),
             Err(wait("Not merged yet: GitHub didn't say who opened it."))
         );
@@ -975,24 +1089,27 @@ mod tests {
         // login's case.
         let undecided = view(|v| v["reviewDecision"] = json!(""));
         let upper = rest(1, "Oby-Reviewer", "User", "APPROVED", &head, "MEMBER");
-        assert_eq!(with(&obis, &undecided, vec![upper], Some(REVIEWER)), Ok(()));
+        assert_eq!(
+            with(&obis, &undecided, vec![upper], Some(&signed_in)),
+            Ok(())
+        );
         // `reviewer`: only the reviewer account's approval, and none while it's signed out.
         let ana = rest(2, "ana", "User", "APPROVED", &head, "MEMBER");
         assert!(
-            !with(&obis, &view(|_| {}), vec![ana.clone()], Some(REVIEWER))
+            !with(&obis, &view(|_| {}), vec![ana.clone()], Some(&signed_in))
                 .unwrap_err()
                 .needs_you
         );
-        let signed_out = with(
+        let out = with(
             &obis,
             &view(|_| {}),
             vec![reviewer("APPROVED", &head)],
-            None,
+            Some(&signed_out),
         )
         .unwrap_err();
-        assert!(signed_out.needs_you);
+        assert!(out.needs_you);
         assert_eq!(
-            signed_out.why,
+            out.why,
             "Not merged: oby merges once Oby's reviewer account approves, and it isn't signed in."
         );
         // `teammate` (Tetrix): someone else's, never the owner's own reviewer account.
@@ -1003,15 +1120,31 @@ mod tests {
                 &tetrix,
                 &view(|_| {}),
                 vec![reviewer("APPROVED", &head)],
-                Some(REVIEWER)
+                Some(&signed_in)
             ),
             Err(wait("Not merged yet: no teammate has approved its head."))
         );
         assert_eq!(
-            with(&tetrix, &view(|_| {}), vec![ana.clone()], Some(REVIEWER)),
+            with(&tetrix, &view(|_| {}), vec![ana.clone()], Some(&signed_in)),
             Ok(())
         );
-        assert_eq!(with(&tetrix, &view(|_| {}), vec![ana], None), Ok(()));
+        // Signed out since, the reviewer account it used still never passes for a teammate.
+        let x1 = vec![reviewer("APPROVED", &head)];
+        assert_eq!(
+            with(&tetrix, &view(|_| {}), x1.clone(), Some(&signed_out)),
+            Err(wait("Not merged yet: no teammate has approved its head."))
+        );
+        assert_eq!(
+            with(&tetrix, &view(|_| {}), vec![ana.clone()], Some(&signed_out)),
+            Ok(())
+        );
+        // Reviewers Oby can't read: nothing merges, whoever approved it.
+        let unread = Err(wait(
+            "Not merged yet: Oby couldn't tell who its reviewer accounts are.",
+        ));
+        assert_eq!(with(&tetrix, &view(|_| {}), x1.clone(), None), unread);
+        assert_eq!(with(&tetrix, &view(|_| {}), vec![ana], None), unread);
+        assert_eq!(with(&obis, &view(|_| {}), x1, None), unread);
     }
 
     /// Who to ask, while only an approval is missing: the workflow's `review`, never for a pull
@@ -1021,7 +1154,7 @@ mod tests {
         let job = job();
         let wanted = |workflow: Option<&Workflow>, text: &str, reviews: &str| {
             let (pr, merging) = read(text, reviews);
-            wanted_approval(&job, workflow, &pr, &merging, Some(REVIEWER))
+            wanted_approval(&job, workflow, &pr, &merging, &signed_in())
         };
         let none = pages(vec![]);
         assert_eq!(
@@ -1205,9 +1338,10 @@ mod tests {
     }
 
     /// A stand-in `gh` in a folder of its own, recording every call: `pr view` answers
-    /// `view.json`, `api` the pull request (`pull.json`), its commits and its comparison with its
-    /// base, and the merge (`merge-fails` makes it fail, and `pull-after.json` is what GitHub says
-    /// after).
+    /// `view.json`, `api` the reviews (`reviews.json`, then `reviews-after.json` from the second
+    /// read when there is one), the pull request (`pull.json`), its commits and its comparison
+    /// with its base, and the merge (`merge-fails` makes it fail, and `pull-after.json` is what
+    /// GitHub says after).
     struct Gh {
         dir: std::path::PathBuf,
     }
@@ -1230,8 +1364,9 @@ case "$*" in
     [ -f "$dir/merge-fails" ] && {{ [ -f "$dir/pull-after.json" ] && cp "$dir/pull-after.json" "$dir/pull.json"; echo 'gh: Pull Request is not mergeable (HTTP 405)' >&2; exit 1; }}
     echo '{{"sha": "dddddddddddddddddddddddddddddddddddddddd", "merged": true, "message": "Pull Request successfully merged"}}' ;;
   "api -X DELETE "*) exit 0 ;;
-  "api --paginate --slurp repos/"*"/reviews?per_page=100") cat "$dir/reviews.json" ;;
-  "api repos/"*"/commits?per_page=100") cat "$dir/commits.json" ;;
+  "api --paginate --slurp repos/"*"/reviews?per_page=100")
+    if [ -f "$dir/reviews-after.json" ] && [ -f "$dir/reviews-read" ]; then cat "$dir/reviews-after.json"; else touch "$dir/reviews-read"; cat "$dir/reviews.json"; fi ;;
+  "api --paginate --slurp repos/"*"/commits?per_page=100") cat "$dir/commits.json" ;;
   "api repos/"*"/compare/"*) cat "$dir/compare.json" ;;
   "api repos/"*) cat "$dir/pull.json" ;;
   *) echo "gh: not in this test" >&2; exit 1 ;;
@@ -1248,7 +1383,7 @@ esac
             gh.write("pull.json", &pull(|_| {}).to_string());
             gh.write(
                 "commits.json",
-                &json!([{"commit": {"message": "Fix the thing\n\nIt broke. Closes #12"}}])
+                &json!([[{"commit": {"message": "Fix the thing\n\nIt broke. Closes #12"}}]])
                     .to_string(),
             );
             gh.write("compare.json", r#"{"behind_by": 0, "ahead_by": 1}"#);
@@ -1343,7 +1478,7 @@ esac
         );
         // A repository that merges by rebasing gets no commit words of Oby's, and one that
         // merges with a merge commit gets them on that commit.
-        let clean = json!([{"commit": {"message": "Fix the thing\n\nIt broke."}}]).to_string();
+        let clean = json!([[{"commit": {"message": "Fix the thing\n\nIt broke."}}]]).to_string();
         let gh = Gh::new("rebase");
         gh.write("commits.json", &clean);
         let mut rebase = obis();
@@ -1384,6 +1519,57 @@ esac
             );
             assert!(!gh.calls().contains("-X PUT"));
         }
+    }
+
+    /// A change request made while Oby wrote and scanned its words stops it before the merge.
+    #[tokio::test]
+    async fn a_change_request_during_the_merge_stops_it() {
+        let gh = Gh::new("late-changes");
+        gh.write(
+            "reviews-after.json",
+            &pages(vec![
+                rest(1, REVIEWER, "User", "APPROVED", &head(), "COLLABORATOR"),
+                rest(2, "ana", "User", "CHANGES_REQUESTED", &head(), "MEMBER"),
+            ]),
+        );
+        assert_eq!(
+            gh.merge(&job(), &obis()).await.unwrap_err(),
+            wait("Not merged yet: a review asks for changes.")
+        );
+        assert_eq!(gh.calls().matches("/reviews?").count(), 2);
+        assert!(!gh.calls().contains("-X PUT"));
+    }
+
+    /// Every reviewer login Oby used is kept for good, whatever its case; one it can't read, and
+    /// nothing merges.
+    #[tokio::test]
+    async fn the_reviewer_accounts_oby_used_are_kept() {
+        let gh = Gh::new("reviewers");
+        let home = gh.dir.as_path();
+        assert_eq!(reviewers(home, None), Ok(Reviewers::default()));
+        note_reviewer(home, "old-reviewer").unwrap();
+        assert!(note_reviewer(home, "../x").is_err());
+        let now = reviewers(home, Some("Oby-Reviewer")).unwrap();
+        assert_eq!(now.current.as_deref(), Some("Oby-Reviewer"));
+        assert_eq!(now.used, ["old-reviewer", "Oby-Reviewer"]);
+        // Signed out, both are still known.
+        let later = reviewers(home, None).unwrap();
+        assert_eq!(later.used, ["old-reviewer", "Oby-Reviewer"]);
+        assert!(later.any("oby-reviewer") && later.any("OLD-REVIEWER") && !later.any("ana"));
+        let file = home.join("github/reviewers.json");
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            std::fs::metadata(&file).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        // A record it can't read: no merge at all, and no PUT.
+        std::fs::write(&file, "not json").unwrap();
+        assert!(reviewers(home, None).is_err());
+        assert_eq!(
+            gh.merge(&job(), &obis()).await.unwrap_err(),
+            wait("Not merged yet: Oby couldn't tell who its reviewer accounts are.")
+        );
+        assert_eq!(gh.calls(), "");
     }
 
     /// Only one of Oby's jobs has a folder of its own, under obid's home.
@@ -1481,7 +1667,8 @@ esac
         let token = format!("ghp_{}", "Zq9Xw2Lm7Rt4".repeat(3));
         gh.write(
             "commits.json",
-            &json!([{"commit": {"message": format!("Fix the thing\n\nUse {token}.")}}]).to_string(),
+            &json!([[{"commit": {"message": format!("Fix the thing\n\nUse {token}.")}}]])
+                .to_string(),
         );
         let blocked = gh.merge(&job(), &obis()).await.unwrap_err();
         assert!(blocked.needs_you);
