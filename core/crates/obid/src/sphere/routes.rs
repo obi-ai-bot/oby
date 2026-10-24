@@ -109,6 +109,18 @@ pub async fn decisions(State(shared): State<Arc<Shared>>) -> Response {
     json(StatusCode::OK, shared.link.decisions_json())
 }
 
+/// `POST /v1/obid/decisions`: a standing permission to approve on GitHub, waiting for the owner's
+/// Confirm.
+pub async fn propose_decision(
+    State(shared): State<Arc<Shared>>,
+    body: Bytes,
+) -> Result<Response, ApiError> {
+    Ok(json(
+        StatusCode::ACCEPTED,
+        shared.link.propose_approval(&body)?,
+    ))
+}
+
 /// `DELETE /v1/obid/decisions/{id}`.
 pub async fn forget(
     State(shared): State<Arc<Shared>>,

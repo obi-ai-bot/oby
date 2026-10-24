@@ -309,6 +309,286 @@ async fn a_request_waits_for_the_owner_and_the_remembered_decision_answers_the_n
     assert!(!obid.log().contains(CANARY));
 }
 
+/// The inbox item, once there, whose id is `id`.
+fn wait_for(obid: &Obid, id: &str) -> Value {
+    within(20, id, || {
+        get(obid, "/v1/inbox")
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|i| i["id"] == id)
+            .cloned()
+    })
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_approved_review_is_approved_on_github_only_as_the_owner_allows() {
+    let folder = Folder::new("host-approval");
+    let (_sphere, obid, ernesto) = setup(&folder, &stub_agent(), None).await;
+    // The fake gh (tests/agents/gh): the pull request's head, and every approval obid posts.
+    let github = folder.0.join("env-home/github");
+    std::fs::create_dir_all(&github).unwrap();
+    let head = brief()["head_sha"].as_str().unwrap().to_owned();
+    let pr_at = |sha: &str, base: &str| {
+        let view = json!({"state": "OPEN", "headRefOid": sha, "baseRefName": base,
+                          "url": "https://github.com/obi-e2e/fixture-app/pull/12"});
+        std::fs::write(github.join("view.json"), view.to_string()).unwrap();
+    };
+    pr_at(&head, "main");
+    let approvals = || std::fs::read_to_string(github.join("approvals")).unwrap_or_default();
+    let mut asking = brief();
+    asking["pr"] = json!(12);
+    asking["approve_on_host"] = json!(true);
+    let with_host = |host: &str| {
+        let mut result = expected_result();
+        result["host_review"] = json!(host);
+        result
+    };
+
+    // No standing permission: the review goes as always, and obid asks its owner before it
+    // approves anything on GitHub.
+    let first = ernesto.request("obi-wellington", "review_request", asking.clone(), 3600);
+    let cid = first["id"].as_str().unwrap().to_owned();
+    ernesto.send(&first).await;
+    let item = tokio::task::block_in_place(|| wait_item(&obid));
+    tokio::task::block_in_place(|| answer(&obid, &item, ACCEPT_REMEMBER));
+    let replies = ernesto.receive(2, 90).await;
+    assert_eq!(replies[1]["body"], with_host("asked"));
+    assert_eq!(approvals(), "", "nothing approved before the owner says so");
+    let ask = tokio::task::block_in_place(|| wait_for(&obid, &format!("obi-approve-{cid}")));
+    assert_eq!(ask["kind"], "obiRequest");
+    assert_eq!(ask["title"], "Approve ernesto's pull request on GitHub?");
+    assert_eq!(
+        ask["text"],
+        "Your Oby's review of obi-e2e/fixture-app pull request #12 at 6d20146 passed. ernesto's Obi (obi-ernesto) asks you to approve it on GitHub, as you, so it can merge."
+    );
+    assert_eq!(
+        ask["options"],
+        json!(["Accept", ACCEPT_REMEMBER, "Decline"])
+    );
+    assert_eq!(ask["obi"]["type"], "host_approval");
+    assert_eq!(ask["obi"]["pr"], 12);
+    assert_eq!(ask["obi"]["baseBranch"], "main");
+    assert_eq!(ask["obi"]["expiresAt"], first["expires_at"]);
+
+    // Yes, and from now on: approved now, exactly that commit, in obid's own words; the
+    // permission waits for the owner's own tap.
+    let answered = tokio::task::block_in_place(|| answer(&obid, &ask, ACCEPT_REMEMBER));
+    assert_eq!(answered["state"], "done");
+    let posted = approvals();
+    assert_eq!(posted.lines().count(), 1, "{posted}");
+    assert!(posted.starts_with("api -X POST repos/obi-e2e/fixture-app/pulls/12/reviews "));
+    assert!(posted.contains(&format!("commit_id={head}")));
+    assert!(posted.contains("event=APPROVE"));
+    assert!(posted.ends_with("| Approved by Oby: its review of 6d20146f366b passed.\n"));
+    assert!(
+        !posted.contains(CANARY),
+        "no word of the request goes to GitHub"
+    );
+    let j1 = tokio::task::block_in_place(|| exchange(&obid, &cid))["job"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let job = tokio::task::block_in_place(|| get(&obid, &format!("/v1/jobs/{j1}")));
+    assert_eq!(job["outgoing"][0]["action"], "pullRequestApproval");
+    assert_eq!(job["outgoing"][0]["repo"], "obi-e2e/fixture-app");
+    let decisions = tokio::task::block_in_place(|| get(&obid, "/v1/obid/decisions"));
+    assert_eq!(decisions.as_array().unwrap().len(), 1, "only the review's");
+    let keep = tokio::task::block_in_place(|| {
+        get(&obid, "/v1/inbox")
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|i| i["confirm"]["action"] == "remember_approval")
+            .cloned()
+            .unwrap()
+    });
+    assert_eq!(
+        keep["title"],
+        "From now on, approve on GitHub the pull requests ernesto's Oby asks you to on obi-e2e/fixture-app, when your Oby's review passes"
+    );
+    let kept = tokio::task::block_in_place(|| confirm(&obid, keep["id"].as_str().unwrap()));
+    assert_eq!(kept.status, 200, "{}", kept.text);
+    let decisions = tokio::task::block_in_place(|| get(&obid, "/v1/obid/decisions"));
+    let permission = decisions
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|d| d["type"] == "host_approval")
+        .cloned()
+        .unwrap();
+    assert_eq!(permission["fromOwner"], "ernesto");
+    assert_eq!(permission["repo"], "obi-e2e/fixture-app");
+    assert_eq!(permission["decision"], "accept");
+    assert_eq!(permission["source"]["inboxItem"], ask["id"]);
+
+    // With both remembered, nobody is asked: reviewed and approved on GitHub by itself.
+    let second = ernesto.request("obi-wellington", "review_request", asking.clone(), 3600);
+    let cid2 = second["id"].as_str().unwrap().to_owned();
+    ernesto.send(&second).await;
+    let replies = ernesto.receive(2, 90).await;
+    let mut approved = with_host("approved");
+    approved["by_rule"] = replies[0]["body"]["by_rule"].clone();
+    assert_eq!(replies[1]["body"], approved);
+    assert_eq!(approvals().lines().count(), 2);
+    tokio::task::block_in_place(|| {
+        let open = get(&obid, "/v1/inbox");
+        assert!(
+            !open
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|i| i["obi"]["correlationId"] == cid2),
+            "nothing asked: {open}"
+        );
+        let decisions = get(&obid, "/v1/obid/decisions");
+        let permission = decisions
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|d| d["type"] == "host_approval")
+            .unwrap();
+        assert_eq!(permission["uses"], 1);
+    });
+
+    // The pull request moved on since the commit reviewed, goes into another branch than the one
+    // the review compared it with, or the owner's login can't push there: nothing is approved.
+    for (sha, base, push) in [
+        ("1".repeat(40), "main", true),
+        (head.clone(), "release", true),
+        (head.clone(), "main", false),
+    ] {
+        pr_at(&sha, base);
+        if !push {
+            std::fs::write(github.join("no-push"), "").unwrap();
+        }
+        let again = ernesto.request("obi-wellington", "review_request", asking.clone(), 3600);
+        ernesto.send(&again).await;
+        let replies = ernesto.receive(2, 90).await;
+        assert_eq!(
+            replies[1]["body"]["host_review"], "unable",
+            "{sha} {base} {push}"
+        );
+        assert_eq!(approvals().lines().count(), 2);
+    }
+
+    // A request that doesn't ask gets no host_review, and nothing is approved.
+    let plain = ernesto.request("obi-wellington", "review_request", brief(), 3600);
+    ernesto.send(&plain).await;
+    let replies = ernesto.receive(2, 90).await;
+    assert_eq!(replies[1]["body"]["host_review"], Value::Null);
+    assert_eq!(approvals().lines().count(), 2);
+
+    // The permission is asked for through the API too, and kept only on the owner's tap; it's
+    // forgotten like any decision.
+    let proposed = tokio::task::block_in_place(|| {
+        call(
+            &obid,
+            "POST",
+            "/v1/obid/decisions",
+            Some(&json!({"type": "host_approval", "fromOwner": "zoe", "repo": "*"})),
+        )
+    });
+    assert_eq!(proposed.status, 202, "{}", proposed.text);
+    assert_eq!(proposed.body["kind"], "confirm");
+    assert_eq!(
+        proposed.body["title"],
+        "From now on, approve on GitHub the pull requests zoe's Oby asks you to on any repository, when your Oby's review passes"
+    );
+    for refused in [
+        json!({"type": "review_request", "fromOwner": "zoe", "repo": "*"}),
+        json!({"type": "host_approval", "fromOwner": "Zoe Smith", "repo": "*"}),
+        json!({"type": "host_approval", "fromOwner": "zoe", "repo": "not a repo"}),
+    ] {
+        let answer = tokio::task::block_in_place(|| {
+            call(&obid, "POST", "/v1/obid/decisions", Some(&refused))
+        });
+        assert_eq!(answer.status, 422, "{refused}: {}", answer.text);
+    }
+    let unanswered = tokio::task::block_in_place(|| {
+        call(
+            &obid,
+            "POST",
+            &format!("/v1/inbox/{}/answer", proposed.body["id"].as_str().unwrap()),
+            Some(&json!({"answer": "Confirm"})),
+        )
+    });
+    assert_eq!(unanswered.status, 403, "no tap, no permission");
+    let id = permission["id"].as_str().unwrap().to_owned();
+    let forgot = tokio::task::block_in_place(|| {
+        call(&obid, "DELETE", &format!("/v1/obid/decisions/{id}"), None)
+    });
+    assert_eq!(forgot.status, 204);
+    assert!(!obid.log().contains(CANARY));
+}
+
+/// What the request lists never lowers this Obi's own bar for approving on GitHub: its own check
+/// must pass and its review must find no blocker. Here the check fails and the request names only
+/// `no_blocker_findings`: the review comes out approved by the request's conditions, and still
+/// nothing is approved or asked, though a standing permission covers it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_approval_needs_the_receivers_own_passing_check_whatever_the_request_lists() {
+    let folder = Folder::new("host-bar");
+    let sphere = FakeSphere::start().await;
+    let remote = fixture(&folder.0.join("fixture"));
+    let mut config = config(&folder.0, &remote, &stub_agent());
+    config["repos"][0]["check"] = json!("false");
+    let obid = start(&folder.0, &config, None);
+    let wellington = Owner::new("wellington");
+    let joined = tokio::task::block_in_place(|| join_a(&obid, &sphere, &wellington));
+    assert_eq!(joined["state"], "joined");
+    let ernesto = TestObi::join(&sphere, "obi-ernesto", "ernesto").await;
+    let github = folder.0.join("env-home/github");
+    std::fs::create_dir_all(&github).unwrap();
+    let head = brief()["head_sha"].as_str().unwrap().to_owned();
+    let view = json!({"state": "OPEN", "headRefOid": head, "baseRefName": "main",
+                      "url": "https://github.com/obi-e2e/fixture-app/pull/12"});
+    std::fs::write(github.join("view.json"), view.to_string()).unwrap();
+    // The standing permission, kept on the owner's tap.
+    let proposed = tokio::task::block_in_place(|| {
+        call(
+            &obid,
+            "POST",
+            "/v1/obid/decisions",
+            Some(
+                &json!({"type": "host_approval", "fromOwner": "ernesto", "repo": "obi-e2e/fixture-app"}),
+            ),
+        )
+    });
+    assert_eq!(proposed.status, 202, "{}", proposed.text);
+    let kept =
+        tokio::task::block_in_place(|| confirm(&obid, proposed.body["id"].as_str().unwrap()));
+    assert_eq!(kept.status, 200, "{}", kept.text);
+
+    let mut asking = brief();
+    asking["pr"] = json!(12);
+    asking["approve_on_host"] = json!(true);
+    asking["acceptance"] = json!([{"kind": "no_blocker_findings"}]);
+    let request = ernesto.request("obi-wellington", "review_request", asking, 3600);
+    ernesto.send(&request).await;
+    let item = tokio::task::block_in_place(|| wait_item(&obid));
+    tokio::task::block_in_place(|| answer(&obid, &item, "Accept"));
+    let replies = ernesto.receive(2, 90).await;
+    assert_eq!(replies[1]["body"]["outcome"], "approved", "{}", replies[1]);
+    assert_eq!(
+        replies[1]["body"]["host_review"], "unable",
+        "{}",
+        replies[1]
+    );
+    assert!(!github.join("approvals").exists(), "nothing approved");
+    tokio::task::block_in_place(|| {
+        let open = get(&obid, "/v1/inbox");
+        assert!(
+            !open
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|i| i["obi"]["type"] == "host_approval"),
+            "nothing asked: {open}"
+        );
+    });
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_publish_gate_sends_no_text_when_the_result_holds_a_secret() {
     the_gate_stops_a_leak("leak", "leaky-reviewer").await;

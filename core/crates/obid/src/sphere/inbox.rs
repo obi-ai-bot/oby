@@ -73,6 +73,10 @@ pub mod action {
     /// Save a standing rule the conversation proposed (crate::rules, #1314): `target` the
     /// conversation, `payload` `{"rule": <the rule, as GET /v1/obid/decisions keeps it>}`.
     pub const REMEMBER_RULE: &str = "remember_rule";
+    /// Keeps the owner's standing permission to approve a teammate's pull requests on a repository
+    /// on GitHub when Oby's review passes (crate::sphere::approval): `target` the item it was
+    /// asked from, `payload` `{"fromOwner", "repo"}` (`repo` may be `*`).
+    pub const REMEMBER_APPROVAL: &str = "remember_approval";
     /// Add a review request's repository and start Oby's review of it (#1118): `target` its
     /// `github` offer's id, `payload` `{"repo", "number"}`.
     pub const ADD_REPOSITORY: &str = "add_repository";

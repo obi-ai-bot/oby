@@ -808,6 +808,15 @@ impl Jobs {
         });
     }
 
+    /// The approval obid posted on GitHub after review job `id` (crate::sphere::approval): its
+    /// URL, in the job's outgoing actions.
+    pub fn approved_on_github(&self, id: &str, repo: &str, url: &str) {
+        self.update(id, |job| {
+            let sent = crate::publish::Outgoing::new("pullRequestApproval", repo, url, None);
+            job.outgoing.push(sent);
+        });
+    }
+
     /// The session job `id`'s agent saved in Tetrix, in its outgoing actions.
     pub fn sent_to_tetrix(&self, id: &str, session: &str) {
         self.update(id, |job| {
@@ -5423,11 +5432,20 @@ impl Jobs {
             "+refs/heads/{0}:refs/remotes/origin/{0}",
             request.base_branch
         );
+        // A request to approve the change on GitHub is reviewed only against its base as fetched:
+        // without it, the review would miss what the change brings into the branch it approves.
+        let approving = request.approve_on_host == Some(true);
         if let Err(e) = git::fetch(&clone, &repo.remote, &[base_ref]).await {
             tracing::info!(
                 "job {id}: the base {} didn't fetch: {e}",
                 request.base_branch
             );
+            if approving {
+                return Err(format!(
+                    "Couldn't fetch the base branch {} from {}, so obid didn't review a change it was asked to approve: {e}",
+                    request.base_branch, repo.repo
+                ));
+            }
         }
         if !git::has_commit(&clone, &request.head_sha).await {
             let _ = git::fetch(
@@ -5486,6 +5504,11 @@ impl Jobs {
         let base = format!("refs/remotes/origin/{}", request.base_branch);
         let mut change = match git::change(&clone, &base, &request.head_sha).await {
             Ok(diff) => diff,
+            Err(e) if approving => {
+                return Err(format!(
+                    "obid couldn't compare the head with the base branch, so it didn't review a change it was asked to approve: {e}"
+                ));
+            }
             Err(e) => {
                 tracing::info!("job {id}: no diff against the base: {e}");
                 b"obid couldn't compare the head with the base branch (it didn't fetch, or they share no history). Review the files as they are in this worktree.\n".to_vec()
@@ -5495,6 +5518,16 @@ impl Jobs {
             change.truncate(review::DIFF_MAX);
             change.extend_from_slice(b"\n[obid cut the diff here: it is longer than 8 MiB]\n");
         }
+        // The repository's rules as the base has them, never as the change writes them.
+        let mut rules = Vec::new();
+        for name in ["AGENTS.md", "CLAUDE.md"] {
+            let blob = format!("{base}:{name}");
+            rules.push((
+                name,
+                git::git(&clone, &["cat-file", "blob", &blob]).await.ok(),
+            ));
+        }
+        let rules = review::base_rules(&request.base_branch, &rules);
         drop(prepared);
 
         // 3. The request, as data, in the worktree.
@@ -5515,6 +5548,12 @@ impl Jobs {
             .expect("the diff file has a name");
         crate::obi_dir::write_new(&inputs, file, &crate::vault::for_agent_bytes(&change)?)
             .map_err(|e| format!("obid can't write the diff: {e}"))?;
+        crate::obi_dir::write_new(
+            &inputs,
+            review::RULES_FILE,
+            &crate::vault::for_agent_bytes(rules.as_bytes())?,
+        )
+        .map_err(|e| format!("obid can't quote the base's rules: {e}"))?;
 
         // 4. The agent, with a fixed prompt, in the sandbox.
         let (admin, common) = self.own_git_dirs(id).await?;
@@ -5559,6 +5598,9 @@ impl Jobs {
             "--setting-sources",
             "",
             "--strict-mcp-config",
+            // No CLAUDE.md is loaded as instructions: the change's own is data (`--setting-sources
+            // ""` keeps settings out, not instructions), and the base's rules are quoted.
+            "--restricted",
             "--json-schema",
             review::OUTPUT_SCHEMA,
         ]
@@ -5655,8 +5697,10 @@ impl Jobs {
         let body = review::result(&request, &output, tests_pass);
         let findings = body["findings"].as_array().map_or(0, Vec::len);
         let outcome = body["outcome"].as_str().unwrap_or("").replace('_', " ");
+        let approvable = tests_pass && !review::any_blocker(&output);
         self.update(id, |job| {
             job.review_result = Some(body.clone());
+            job.approvable = approvable;
             job.step = "Scanning the result for secrets and sending it".into();
         });
         self.review_ended(id, true).await;

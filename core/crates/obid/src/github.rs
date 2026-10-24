@@ -303,17 +303,12 @@ pub(crate) const NO_BUS: &str = "unix:path=/dev/null/no-keyring";
 /// Whether the account signed in to the settings folder `reviewer` can push to `repo`
 /// (`permissions.push`): a review from an account without write access doesn't count toward
 /// GitHub's required approvals.
-pub async fn can_push(gh: &Path, reviewer: &Path, repo: &str) -> Result<bool, String> {
+pub async fn can_push(gh: &Path, who: Option<&Path>, repo: &str) -> Result<bool, String> {
     if !is_repo(repo) {
         return Err(format!("{repo} isn't a repository name"));
     }
     let path = format!("repos/{repo}");
-    let said = run_as(
-        gh,
-        Some(reviewer),
-        &["api", &path, "--jq", ".permissions.push"],
-    )
-    .await?;
+    let said = run_as(gh, who, &["api", &path, "--jq", ".permissions.push"]).await?;
     Ok(said == "true")
 }
 
