@@ -747,7 +747,7 @@ async fn restore_default(shared: Arc<Shared>, tool: Tool) -> Result<Response, Ap
         }
         // Removed here, or found on this Mac at start and not listed (Live::available).
         let removed = saved.removed.contains(&own.id);
-        if !removed && !(found && addable(&seed, agents, tool)) {
+        if !(removed || (found && addable(&seed, agents, tool))) {
             return Err(ApiError::new(
                 StatusCode::CONFLICT,
                 format!(
