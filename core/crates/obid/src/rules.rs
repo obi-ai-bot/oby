@@ -2,10 +2,11 @@
 //! owner confirmed once ("look into every critical alert Sentry sends about api, in obi") starts an
 //! investigate job with no tap, as an ordinary job with every gate it always has, and Oby says so
 //! in the rule's conversation. Only typed fields decide (the source, the kind, the project, the
-//! repository, the severity or environment), never what the source wrote. A rule's job publishes
-//! only when the owner does, one job per rule runs at a time, and a rule starts at most [`DAILY`]
-//! a day. Rules are remembered decisions (crate::sphere::decisions), saved only on the owner's own
-//! signed Confirm (#776), listed and forgotten with the rest.
+//! repository, the severity or environment), never what the source wrote. A rule's job never runs
+//! in Bypass and publishes by itself as any job does (the owner's decision of 2026-10-24), one job
+//! per rule runs at a time, and a rule starts at most [`DAILY`] a day. Rules are remembered
+//! decisions (crate::sphere::decisions), saved only on the owner's own signed Confirm (#776),
+//! listed and forgotten with the rest.
 
 use std::sync::Arc;
 
@@ -71,7 +72,7 @@ pub fn offer(shared: &Arc<Shared>, mut item: Item) {
             details.insert(
                 1,
                 format!(
-                    "Looks into this one, and asks you to confirm a standing rule: from now on Oby looks into {from}'s {} on {project} by itself, publishing only when you do.",
+                    "Looks into this one, and asks you to confirm a standing rule: from now on Oby looks into {from}'s {} on {project} by itself, publishing once its checks pass and the secret scan is clean.",
                     what(&kind)
                 ),
             );

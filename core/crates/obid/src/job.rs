@@ -373,12 +373,14 @@ pub struct Job {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub routine: Option<RoutineMark>,
     /// The standing rule that started it with no tap (crate::rules, #1314), or none. Such a job
-    /// publishes only when the owner publishes it by hand.
+    /// runs in Sandbox mode at most, and publishes by itself as any job does (the owner's
+    /// decision of 2026-10-24).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rule: Option<RuleMark>,
     /// The conversation that started it had read something it didn't write (a file, a command's
-    /// output, the web, an attachment): it runs in Sandbox mode at most and publishes only when
-    /// the owner does, as a standing rule's job (the owner's decision of 2026-10-23).
+    /// output, the web, an attachment): it runs in Sandbox mode at most, as a standing rule's
+    /// job, and publishes by itself as any job does (the owner's decision of 2026-10-24,
+    /// replacing 2026-10-23's by hand).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub untrusted: bool,
 }

@@ -1047,19 +1047,10 @@ fn the_plan_loop_answers_when_the_session_cant_run() {
 }
 
 /// The one job `answer` started, after its turn read something untrusted: it runs in Sandbox mode
-/// at most and publishes only when the owner does (the owner's decision of 2026-10-23); no Start
-/// item waits in the inbox.
+/// at most (the owner's decision of 2026-10-23); no Start item waits in the inbox.
 fn started_untrusted(obid: &Obid, answer: &Answer) -> Value {
     let cards = answer.body["jobs"].as_array().unwrap();
     assert_eq!(cards.len(), 1, "{}", answer.text);
-    assert!(
-        answer.body["text"]
-            .as_str()
-            .unwrap()
-            .contains("I read something I didn't write first, so it publishes only when you do."),
-        "{}",
-        answer.text
-    );
     assert!(
         !inbox(obid).iter().any(|i| i["kind"] == "start"),
         "{:?}",
@@ -1073,11 +1064,11 @@ fn started_untrusted(obid: &Obid, answer: &Answer) -> Value {
 }
 
 /// A turn that read something untrusted (the web, repos/, a search of the whole room) starts the
-/// work it plans at once, in Sandbox mode at most, and only the owner publishes it (the owner's
-/// decision of 2026-10-23, replacing #374's Start item); a Bypass job too runs in Sandbox mode.
-/// One that used only the owner's words starts trusted.
+/// work it plans at once, in Sandbox mode at most (the owner's decision of 2026-10-23, replacing
+/// #374's Start item); a Bypass job too runs in Sandbox mode. It publishes by itself, as every job
+/// does (the owner's decision of 2026-10-24). One that used only the owner's words starts trusted.
 #[test]
-fn work_planned_after_reading_starts_but_only_the_owner_publishes() {
+fn work_planned_after_reading_starts_in_sandbox_and_publishes_by_itself() {
     let (_folder, obid) = obid("harness-web", true);
     let dispatch = r#"OBY oby_dispatch {"repo": "obi-e2e/fixture-app", "task": "Add a greeting", "kind": "build"}"#;
     // The web, a read of repos/, and a search with no path (the whole room, repos/ in it: R1).
@@ -1097,7 +1088,8 @@ fn work_planned_after_reading_starts_but_only_the_owner_publishes() {
     let job = call(&obid, "GET", &format!("/v1/jobs/{id}"), None).body;
     assert_eq!(job["untrusted"], Value::Null, "{job}");
 
-    // What it committed waits for the owner's Publish, as a standing rule's job's does.
+    // What it committed goes out by itself after its check and the secret scan: pushed, then the
+    // pull request asked of GitHub (the stand-in gh here opens none).
     let commits = r#"WEB OBY oby_dispatch {"repo": "obi-e2e/fixture-app", "task": "JOB-COMMITS: a.txt", "kind": "build"}"#;
     let answer = said(&obid, json!({"said": commits, "new": true}));
     let id = started_untrusted(&obid, &answer)["id"]
@@ -1107,21 +1099,21 @@ fn work_planned_after_reading_starts_but_only_the_owner_publishes() {
     let job = ended(&obid, &id);
     assert_eq!(job["status"], "done", "{job}");
     assert_eq!(job["commits"], 1, "{job}");
-    assert_eq!(job["published"], Value::Null, "{job}");
-    assert_eq!(job["outgoing"], json!([]), "{job}");
-    assert_eq!(
-        job["reason"],
-        "Oby read something it didn't write before it started this job, so it publishes only when you do: Publish opens its pull request."
+    assert_eq!(job["pushed"], 1, "{job}");
+    assert_eq!(job["outgoing"][0]["action"], "push", "{job}");
+    assert!(
+        job["publishError"]
+            .as_str()
+            .is_some_and(|e| e.starts_with("Pushed, but ")),
+        "{job}"
     );
-    let offered = call(&obid, "GET", &format!("/v1/jobs/{id}/publish"), None);
-    assert_eq!(offered.status, 200, "{}", offered.text);
 }
 
 /// What a job hears is the owner's own words this turn; the agent's go along quoted, as data. Told
 /// something after it ended, a job gets a follow-up (Sangam's design, the owner's decision of
 /// 2026-10-18) whose request is the owner's words alone and whose card goes on the turn; after a
-/// turn that used the web the follow-up starts too, and only the owner publishes it (the owner's
-/// decision of 2026-10-23).
+/// turn that used the web the follow-up starts too, marked untrusted, so never in Bypass (the
+/// owner's decision of 2026-10-23).
 #[test]
 fn a_job_hears_the_owners_words_and_the_agents_only_quoted() {
     let (_folder, obid) = obid("harness-tell", true);
@@ -1583,8 +1575,8 @@ fn attachments_reach_the_session_in_its_room() {
     assert!(!copied.join("leak.bin").exists());
 }
 
-/// An attachment is untrusted input (P2): the work a turn that gets one dispatches publishes only
-/// when the owner does.
+/// An attachment is untrusted input (P2): the work a turn that gets one dispatches is marked
+/// untrusted, so it never runs in Bypass.
 #[test]
 fn an_attachment_makes_the_turns_work_wait() {
     let (_folder, obid) = obid("harness-attach-taint", true);
@@ -2319,7 +2311,7 @@ fn a_moved_job_continues_in_a_new_session() {
 }
 
 /// A task list written after the web carries that taint: fed to a later turn, even a new clean
-/// session's, it taints that turn, so the work it starts publishes only when the owner does.
+/// session's, it taints that turn, so the work it starts is marked untrusted (never Bypass).
 #[test]
 fn a_task_list_written_after_the_web_taints_the_turns_it_reaches() {
     let (_folder, obid) = obid("harness-tasks-taint", true);

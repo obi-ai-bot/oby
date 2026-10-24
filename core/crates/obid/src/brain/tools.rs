@@ -101,9 +101,9 @@ fn list() -> Value {
              "schedule": {"type": "object", "description": "One of {\"every\": \"weekdays\", \"at\": \"09:00\"} (Monday to Friday), {\"every\": \"daily\", \"at\": \"08:30\"} or {\"every\": \"weekly\", \"days\": [\"mon\", \"thu\"], \"at\": \"09:00\"}; at is 24-hour HH:MM in zone. Never hourly."},
              "zone": {"type": "string", "description": "The owner's IANA time zone, like America/Sao_Paulo; left out, the Mac's."},
              "off": {"type": "boolean", "description": "true turns check-ins off."}}}},
-        {"name": "oby_rules", "description": "Lists the owner's standing rules for alerts and failed deploys (each looks into a source's events on one project with no tap, a job each time, publishing only when the owner does): id, what it covers, how often it started.",
+        {"name": "oby_rules", "description": "Lists the owner's standing rules for alerts and failed deploys (each looks into a source's events on one project with no tap, a job each time, publishing by itself after its checks and the secret scan): id, what it covers, how often it started.",
          "inputSchema": {"type": "object", "properties": {}}},
-        {"name": "oby_rule", "description": "Proposes a standing rule: from now on, Oby looks into a source's alerts (or failed deploys) on one project with no tap, an investigate job each time that publishes only when the owner does. Nothing is saved until the owner confirms it in their inbox. Never for warnings or tickets.",
+        {"name": "oby_rule", "description": "Proposes a standing rule: from now on, Oby looks into a source's alerts (or failed deploys) on one project with no tap, an investigate job each time that publishes by itself after its checks and the secret scan. Nothing is saved until the owner confirms it in their inbox. Never for warnings or tickets.",
          "inputSchema": {"type": "object", "properties": {
              "kind": {"type": "string", "enum": ["alert", "deploy"]},
              "source": {"type": "string", "description": "Where they come from: sentry, alertmanager (Prometheus), grafana, pagerduty, datadog, or a plug-in's id."},
@@ -222,7 +222,8 @@ fn answered(called: Result<String, String>) -> Value {
 }
 
 /// Why a supervisor turn (super::supervisor) starts no job past its own bounds: after something
-/// untrusted, a watched turn's jobs start and publish only by hand, but nobody watches this one.
+/// untrusted, a watched turn's jobs start with the owner there to see them, but nobody watches
+/// this one.
 const UNWATCHED_START: &str = "A turn nobody watches starts no other work: say what should happen, and the owner can start it.";
 
 /// The tool's answer, or why it refused.
@@ -864,7 +865,7 @@ fn propose_rule(shared: &Shared, session: &Session, args: Value) -> Result<Strin
         "",
         format!("From now on, {words}"),
         format!(
-            "Oby's brain planned a standing rule: from now on, {words}, with no tap: an investigate job each time, which publishes only when you do, one at a time and at most {} a day. It's saved only if you confirm.",
+            "Oby's brain planned a standing rule: from now on, {words}, with no tap: an investigate job each time, which publishes by itself once its checks pass and the secret scan is clean, one at a time and at most {} a day. It's saved only if you confirm.",
             crate::rules::DAILY
         ),
         crate::sphere::inbox::Confirmed {
@@ -1424,8 +1425,9 @@ fn told(owner: &str, agent: &str, nonce: &str) -> String {
 }
 
 /// oby_tell_job: message_job with the owner's words and the agent's quoted. A job that ended gets
-/// a follow-up whose request is the owner's words alone; after something untrusted was read it
-/// publishes only when the owner does (the owner's decision of 2026-10-23).
+/// a follow-up whose request is the owner's words alone; after something untrusted was read it is
+/// marked untrusted, so it never runs in Bypass, and publishes by itself as any job does (the
+/// owner's decision of 2026-10-24).
 async fn tell(
     shared: &Arc<Shared>,
     session: &Session,
@@ -1515,7 +1517,7 @@ async fn tell(
     {
         new.title = Some(title);
     }
-    // After something untrusted was read, it publishes only when the owner does.
+    // After something untrusted was read, it never runs in Bypass.
     new.untrusted = source(session) == crate::jobs::Source::Untrusted;
     new.turn = actions::started_by(&job, &session.conversation, &session.control.turn);
     outcome_answer(session, actions::follow_up(shared, &job, new))

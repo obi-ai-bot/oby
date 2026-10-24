@@ -304,7 +304,7 @@ fn a_command_ends_a_codex_turn() {
     let jobs = call(&obid, "GET", "/v1/jobs", None);
     assert_eq!(jobs.body.as_array().map_or(0, Vec::len), 0, "{}", jobs.text);
     // Its thread is never picked up again, but the taint stays (finding 5): work the next turn
-    // plans publishes only when the owner does.
+    // plans is marked untrusted.
     let kept: Value = serde_json::from_slice(
         &std::fs::read(
             obid.home
@@ -325,7 +325,8 @@ fn a_command_ends_a_codex_turn() {
 }
 
 /// The one job `answer` started after its turn read something untrusted: started at once, and
-/// marked so it publishes only when the owner does (the owner's decision of 2026-10-23).
+/// marked so it never runs in Bypass (the owner's decision of 2026-10-23); it publishes by itself
+/// as every job does (the owner's decision of 2026-10-24).
 fn assert_untrusted(obid: &Obid, answer: &Answer) {
     let cards = answer.body["jobs"].as_array().unwrap();
     assert_eq!(cards.len(), 1, "{}", answer.text);
@@ -455,10 +456,9 @@ fn codex_login_copies_have_no_refresh_token() {
     assert_eq!(turns(&obid).len(), 1);
 }
 
-/// Work planned after Codex searched the web starts, and publishes only when the owner does, as
-/// on Claude Code.
+/// Work planned after Codex searched the web starts at once, marked untrusted, as on Claude Code.
 #[test]
-fn work_codex_plans_after_the_web_publishes_only_by_hand() {
+fn work_codex_plans_after_the_web_starts_marked_untrusted() {
     let (_folder, obid) = obid("codex-conv-web", true);
     let answer = said(
         &obid,
