@@ -372,13 +372,14 @@ nonisolated struct MacCheck: Codable, Equatable, Sendable {
     }
 
     /// Creates the single follow-up issue for all review findings, after the PR is merged. A
-    /// stable marker in the body lets a retry find a creation that succeeded before a crash.
+    /// stable marker in the body lets a retry find a creation that succeeded before a crash. Signed
+    /// `by Oby:`: the findings are agents' words under the owner's login (docs/runner-api.md, "Whose words").
     static func fileReviewFollowUps(_ job: Job, findings: [String]) async throws -> String {
         guard let pr = job.pr, !findings.isEmpty else { throw Shell.Failure(message: "No merged pull request has review follow-ups.") }
         let marker = "oby-review-follow-ups-pr-\(pr)"
         let title = "Follow up review findings from #\(pr)"
         let body = """
-            Oby's reviews of [pull request #\(pr)](https://github.com/\(job.repo)/pull/\(pr)) found these items worth doing later:
+            by Oby: Oby's reviews of [pull request #\(pr)](https://github.com/\(job.repo)/pull/\(pr)) found these items worth doing later:
 
             \(findings.map { "- \($0)" }.joined(separator: "\n"))
 

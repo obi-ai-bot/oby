@@ -14,6 +14,9 @@
 #               lacks read:project
 #   slow        when it exists, `gh issue view` and `gh pr view` take a second
 #   view.json   what `gh issue view` and `gh pr view` answer
+#   who.json    what `gh api graphql` answers for who wrote, edited and renamed an issue
+#   user, orgs  what `gh api user` and `gh api user/orgs` answer (after gh's --jq); without
+#               them, both fail
 #   repo.json   what `gh repo view` answers
 #   calls       one line per call: its first two arguments
 work="$HOME/github"
@@ -22,6 +25,7 @@ if [ -d "$work" ]; then
   case "$1 $2" in
     "api graphql")
       if [ -f "$work/fail" ]; then cat "$work/fail" >&2; exit 1; fi
+      case "$4" in *RenamedTitleEvent*) cat "$work/who.json"; exit $? ;; esac
       case "$4" in *projectItems*) if [ -f "$work/no-board" ]; then
         echo '{"errors":[{"type":"INSUFFICIENT_SCOPES","message":"Your token has not been granted the required scopes to execute this query. The '"'projectItems'"' field requires one of the following scopes: ['"'read:project'"']."}]}'
         echo "GraphQL: Your token has not been granted the required scopes to execute this query. The 'projectItems' field requires one of the following scopes: ['read:project']." >&2; exit 1
@@ -33,6 +37,8 @@ if [ -d "$work" ]; then
       if [ -f "$work/slow" ]; then sleep 1; fi
       cat "$work/view.json"; exit 0 ;;
     "repo view") cat "$work/repo.json"; exit 0 ;;
+    "api user") cat "$work/user"; exit $? ;;
+    "api user/orgs") cat "$work/orgs"; exit $? ;;
   esac
 fi
 board="$HOME/board"

@@ -34,6 +34,11 @@ nonisolated struct ProposedIssue: Codable, Equatable, Sendable {
     var labels: [String]
     var filed: String?
     var filedAt: Date?
+
+    /// The body filed on GitHub: the research agent's words, signed `by Oby:` so obid never takes
+    /// them for the owner's own, though they go out under the owner's login (docs/runner-api.md,
+    /// "Whose words").
+    var filedBody: String { body + "\n\nby Oby: a research job proposed this issue, and it was filed from Oby." }
 }
 
 nonisolated struct ResearchReport: Codable, Equatable, Sendable {

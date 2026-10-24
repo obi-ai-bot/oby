@@ -314,14 +314,14 @@ final class API {
         guard report.proposals[position].filed == nil else { throw APIError(.conflict, "This issue was already filed.") }
         let proposal = report.proposals[position]
         do {
-            let findings = try await Publish.scan(texts: [("issue title", proposal.title), ("issue body", proposal.body)])
+            let findings = try await Publish.scan(texts: [("issue title", proposal.title), ("issue body", proposal.filedBody)])
             guard findings.isEmpty else { throw APIError(.unprocessableContent, "The proposed issue didn't pass Oby's secret scan.") }
         } catch let error as APIError { throw error }
         catch { throw APIError(.unprocessableContent, "Oby's secret scanner couldn't run; nothing was filed.") }
         let created: String
         do {
             let output = try await Shell.run(["gh", "issue", "create", "-R", proposal.repo, "--title", proposal.title, "--body-file", "-"],
-                                             input: Data(proposal.body.utf8), as: .app)
+                                             input: Data(proposal.filedBody.utf8), as: .app)
             guard output.status == 0 else { throw Shell.Failure(message: output.err.isEmpty ? "gh issue create exited \(output.status)." : output.err) }
             created = output.text
         } catch { throw APIError(.unprocessableContent, "GitHub couldn't create the proposed issue: \(error.localizedDescription)") }

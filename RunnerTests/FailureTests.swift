@@ -399,6 +399,8 @@ struct FailureTests {
         #expect(records.dropFirst().allSatisfy { $0.issue == nil })
         let body = try #require(test.github.issues.first?.body)
         #expect(body.contains("oby-failure-signature: simulator-hung-before-connecting") && body.contains("Reset the simulator"))
+        // Signed: a model's words under the owner's login, never the owner's own to obid (github_work.rs, OBY_SIGNS).
+        #expect(body.contains("\nby Oby: Oby's post-mortem of a failure"))
         #expect(test.github.created.first?.contains(Failures.label) == true)
         // Filed with no assignee: assigning emails the owner (#162).
         #expect(test.github.created.allSatisfy { !$0.contains { $0.contains("assignee") } && !$0.contains("-a") })

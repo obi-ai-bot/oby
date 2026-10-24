@@ -802,7 +802,8 @@ pub fn github_item(work: &crate::github_work::Item, known: bool, now: i64) -> It
         start: None,
         github: Some(Box::new(json!({
             "id": work.id, "list": work.list, "repo": work.repo, "number": work.number,
-            "author": work.author, "url": work.url, "known": known, "head": work.head,
+            "author": work.author, "association": work.association, "trusted": work.trusted,
+            "url": work.url, "known": known, "head": work.head,
             "quoted": {"title": work.title},
         }))),
         watch: None,

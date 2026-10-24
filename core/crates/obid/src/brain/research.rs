@@ -50,6 +50,10 @@ pub struct Found {
     pub status: Status,
     pub title: String,
     pub text: String,
+    /// Whether what it read is the owner's own words: an issue written, edited and renamed only
+    /// by the owner and their organizations' members (crate::github_work::issue_trusted), its
+    /// labels left out. Anything else, a pull request, the web and code too, isn't.
+    pub trusted: bool,
 }
 
 impl Found {
@@ -58,6 +62,7 @@ impl Found {
             status,
             title: title.into(),
             text: text.into(),
+            trusted: false,
         }
     }
 }
@@ -385,8 +390,10 @@ async fn git_owned(clone: &str, args: &[String], ok: &[i32]) -> Result<Ran, Stri
 }
 
 /// An issue or a pull request, with obid's own `gh` login: its title, state, body, labels,
-/// files and the first comments, each capped.
+/// files and the first comments, each capped. The whole lookup, the check of whose words it read
+/// too, takes at most [`TIMEOUT`].
 async fn github(repo: &str, lookup: &Lookup) -> Result<Found, String> {
+    let deadline = tokio::time::Instant::now() + TIMEOUT;
     let number = lookup.number.unwrap_or(0);
     let (kind, fields) = if lookup.tool == LookupTool::ViewIssue {
         ("issue", "title,body,state,labels,url,author,comments")
@@ -397,7 +404,7 @@ async fn github(repo: &str, lookup: &Lookup) -> Result<Found, String> {
         )
     };
     let gh = crate::process::resolve_bin("gh").ok_or("gh isn't available")?;
-    let mut command = tokio::process::Command::new(gh);
+    let mut command = tokio::process::Command::new(&gh);
     command
         .args([
             kind,
@@ -412,7 +419,7 @@ async fn github(repo: &str, lookup: &Lookup) -> Result<Found, String> {
         .env("GH_PROMPT_DISABLED", "1")
         .stdin(std::process::Stdio::null())
         .kill_on_drop(true);
-    let output = tokio::time::timeout(TIMEOUT, command.output())
+    let output = tokio::time::timeout_at(deadline, command.output())
         .await
         .map_err(|_| "lookup timed out after 10 seconds".to_owned())?
         .map_err(|e| format!("gh couldn't run: {e}"))?;
@@ -425,6 +432,19 @@ async fn github(repo: &str, lookup: &Lookup) -> Result<Found, String> {
     }
     let object: Value =
         serde_json::from_slice(&output.stdout).map_err(|_| "GitHub returned unreadable JSON")?;
+    // The owner's own words (the owner's decision of 2026-10-24), an issue only: whoever pushes
+    // to a pull request's branch writes its files, branch and commits under its author's name. A
+    // check the deadline cuts short is untrusted, its gh stopped (`kill_on_drop`).
+    let trusted = kind == "issue"
+        && match u64::try_from(number) {
+            Ok(n) => tokio::time::timeout_at(
+                deadline,
+                crate::github_work::issue_trusted(&gh, repo, n, &object),
+            )
+            .await
+            .unwrap_or(false),
+            Err(_) => false,
+        };
     let path = if kind == "issue" { "issues" } else { "pull" };
     let mut lines = vec![
         format!("https://github.com/{repo}/{path}/{number}"),
@@ -436,7 +456,8 @@ async fn github(repo: &str, lookup: &Lookup) -> Result<Found, String> {
         String::new(),
         clamp(object["body"].as_str().unwrap_or(""), 6 * 1024),
     ];
-    if let Some(labels) = object["labels"].as_array() {
+    // Whoever triages it sets its labels: they're never part of what counts as the owner's words.
+    if let Some(labels) = object["labels"].as_array().filter(|_| !trusted) {
         let names: Vec<&str> = labels.iter().filter_map(|l| l["name"].as_str()).collect();
         lines.extend([String::new(), format!("Labels: {}", names.join(", "))]);
     }
@@ -470,11 +491,10 @@ async fn github(repo: &str, lookup: &Lookup) -> Result<Found, String> {
         }
     }
     let title = format!("{} {repo} #{number}", lookup.tool.as_str());
-    Ok(Found::new(
-        Status::Ok,
-        title,
-        clamp(&lines.join("\n"), 16 * 1024),
-    ))
+    Ok(Found {
+        trusted,
+        ..Found::new(Status::Ok, title, clamp(&lines.join("\n"), 16 * 1024))
+    })
 }
 
 /// A URL's host, when it's `https`, has no user or password, and names a public-looking host.
@@ -782,6 +802,17 @@ impl Log {
             && lookups
                 .iter()
                 .all(|l| self.entries.iter().any(|(k, ..)| *k == key(l)))
+    }
+
+    /// Whether the turn read what isn't the owner's own words ([`Found::trusted`]): any entry
+    /// work.md quotes, this turn's or carried from the last, or one of `lookups` that didn't run
+    /// (fail closed; a refused one is an untrusted entry).
+    pub fn untrusted(&self, lookups: &[Lookup]) -> bool {
+        self.entries.iter().any(|(.., found)| !found.trusted)
+            || lookups.iter().any(|l| {
+                let key = key(l);
+                !self.entries.iter().any(|(k, ..)| *k == key)
+            })
     }
 
     /// Runs the lookups not run yet this turn, side by side, up to [`MOST`] in the turn. A web
@@ -1136,6 +1167,42 @@ mod tests {
             number: None,
             url: Some(url.into()),
         }
+    }
+
+    /// Only lookups that read the owner's own words leave the turn trusted: one of an outsider's,
+    /// the web's, or one that never ran, taints it, and so does anything work.md quotes, carried
+    /// from the last turn for a "continue" too, whatever this plan looks up.
+    #[test]
+    fn a_turn_is_untrusted_unless_every_lookup_read_the_owners_words() {
+        let issue = |number| Lookup {
+            tool: LookupTool::ViewIssue,
+            repo: Some("obi-ai-bot/oby".into()),
+            number: Some(number),
+            url: None,
+            ..web("")
+        };
+        let found = |trusted| Found {
+            trusted,
+            ..Found::new(Status::Ok, "view_issue", "text")
+        };
+        let mut log = Log::carry(vec![(key(&issue(1)), issue(1), found(true))]);
+        assert!(!log.untrusted(&[]));
+        assert!(!log.untrusted(&[issue(1)]), "the owner's own words");
+        assert!(log.untrusted(&[issue(3)]), "never ran");
+        log.entries.push((key(&issue(2)), issue(2), found(false)));
+        assert!(log.untrusted(&[issue(1), issue(2)]), "an outsider's");
+        // A "continue" turn's work.md quotes the last turn's web page: looking up only the
+        // owner's issue doesn't make the turn the owner's.
+        let carried = Log::carry(vec![
+            (
+                key(&web("https://example.com")),
+                web("https://example.com"),
+                found(false),
+            ),
+            (key(&issue(1)), issue(1), found(true)),
+        ]);
+        assert!(carried.untrusted(&[issue(1)]), "a carried web page");
+        assert!(carried.untrusted(&[]), "carried, with no lookup this plan");
     }
 
     /// Tools with no clones, whose web answers `body` and notes every address asked.

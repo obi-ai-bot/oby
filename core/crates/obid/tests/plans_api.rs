@@ -2988,6 +2988,88 @@ fn research_then_dispatch_starts_marked_untrusted() {
     assert_eq!(answer["jobs"][0]["id"], jobs[0]["id"]);
 }
 
+/// Looking up an issue written, edited and renamed only by the owner's organization's members
+/// leaves the turn the owner's own (the owner's decision of 2026-10-24), its labels left out of
+/// what the brain reads; one a collaborator edited, or any pull request (its author's name is on
+/// whatever anyone pushed), even the owner's own, still makes the work it starts untrusted.
+#[test]
+fn only_an_issue_written_and_edited_by_the_owners_people_keeps_the_turn_trusted() {
+    let folder = Folder::new("brain-research-whose");
+    let obid = started(&folder);
+    let gh = folder.0.join("env-home/github");
+    std::fs::create_dir_all(&gh).unwrap();
+    std::fs::write(gh.join("user"), "wellington\n").unwrap();
+    std::fs::write(gh.join("orgs"), "obi-e2e\n").unwrap();
+    std::fs::write(
+        gh.join("view.json"),
+        json!({"title": "Greeting is wrong", "body": "Say hello.", "state": "OPEN",
+               "author": {"login": "sangam"}, "labels": [{"name": "run-in-bypass"}],
+               "headRefName": "feature", "baseRefName": "main",
+               "comments": [{"id": "IC_1", "author": {"login": "wellington"}, "body": "Yes"}]})
+        .to_string(),
+    )
+    .unwrap();
+    let edits = |by: &[&str]| {
+        json!({"pageInfo": {"hasNextPage": false},
+               "nodes": by.iter().map(|l| json!({"editor": {"login": l}})).collect::<Vec<_>>()})
+    };
+    let who = |body_edits: &[&str]| {
+        json!({"data": {"viewer": {"login": "wellington"}, "repository": {"issue": {
+            "author": {"login": "sangam"}, "authorAssociation": "MEMBER",
+            "userContentEdits": edits(body_edits),
+            "timelineItems": {"pageInfo": {"hasNextPage": false}, "nodes": []},
+            "comments": {"nodes": [{"id": "IC_1", "author": {"login": "wellington"},
+                                    "authorAssociation": "OWNER", "userContentEdits": edits(&[])}]}}}}})
+        .to_string()
+    };
+    let turn = |tool: &str, number: u64, title: &str| {
+        queue(
+            &obid,
+            &[
+                research(vec![lookup(
+                    tool,
+                    json!({"repo": "obi-e2e/fixture-app", "number": number}),
+                )]),
+                json!({"action": "dispatch", "reply": "", "question": null, "jobs": [], "dispatches": [
+                    {"agent": "auto", "account": "auto", "repo": "obi-e2e/fixture-app", "kind": "fix",
+                     "title": title, "task": format!("Fix it: {title}"), "rounds": 1}]})
+                .to_string(),
+            ],
+        );
+        let answer = said(&obid, "Look at it, then fix it");
+        let id = answer["jobs"][0]["id"].as_str().unwrap().to_owned();
+        let job = call(&obid, "GET", &format!("/v1/jobs/{id}"), None).body;
+        // The dispatch's call, the turn's last, has what the lookup read.
+        let found = read(calls(&obid).last().unwrap().join("work.md"));
+        (job["untrusted"] == true, found)
+    };
+
+    // Written and edited only by members: the owner's own words, labels left out.
+    std::fs::write(gh.join("who.json"), who(&["sangam"])).unwrap();
+    let (untrusted, found) = turn("view_issue", 7, "Members' issue");
+    assert!(!untrusted, "the owner's people's issue");
+    assert!(
+        found.contains("Say hello.") && !found.contains("run-in-bypass"),
+        "{found}"
+    );
+
+    // A collaborator edited the member's description: untrusted, labels shown as data.
+    std::fs::write(gh.join("who.json"), who(&["sangam", "outsider"])).unwrap();
+    let (untrusted, found) = turn("view_issue", 8, "Edited issue");
+    assert!(untrusted, "an outsider's edit");
+    assert!(found.contains("Labels: run-in-bypass"), "{found}");
+
+    // A pull request, even one the owner opened and nobody signed: `view_pr` is never trusted.
+    let mut pr: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(gh.join("view.json")).unwrap()).unwrap();
+    pr["author"] = json!({"login": "wellington"});
+    std::fs::write(gh.join("view.json"), pr.to_string()).unwrap();
+    std::fs::write(gh.join("who.json"), who(&[])).unwrap();
+    let (untrusted, found) = turn("view_pr", 9, "Owner's pull request");
+    assert!(untrusted, "a pull request");
+    assert!(found.contains("Branches: feature → main"), "{found}");
+}
+
 /// A dispatch after research, with what the turn found (#540).
 fn briefed(path: &str) -> String {
     json!({"action": "dispatch", "reply": "", "question": null, "jobs": [], "dispatches": [
@@ -4451,6 +4533,35 @@ fn continue_picks_up_the_last_turns_research() {
     let next = read(calls[4].join("work.md"));
     assert_eq!(next.matches("## Lookup ").count(), 1, "{next}");
     assert!(read(calls[4].join("input")).contains("already in work.md"));
+}
+
+/// A "continue" turn's work.md quotes what the last turn looked up: the work it starts is
+/// untrusted when that was, though the turn looks nothing up itself.
+#[test]
+fn continue_after_research_starts_marked_untrusted() {
+    let folder = Folder::new("brain-continue-untrusted");
+    let obid = started(&folder);
+    queue(
+        &obid,
+        &[search("Hello"), "EXIT 15".into(), "EXIT 15".into()],
+    );
+    said(&obid, "where does the app say hello?");
+    queue(
+        &obid,
+        &[
+            json!({"action": "dispatch", "reply": "", "question": null, "jobs": [], "dispatches": [
+            {"agent": "auto", "account": "auto", "repo": "obi-e2e/fixture-app", "kind": "fix",
+             "title": "Greeting fix", "task": "Fix the greeting", "rounds": 1}]})
+            .to_string(),
+        ],
+    );
+    let answer = said(&obid, "continue");
+    let calls = calls(&obid);
+    assert_eq!(calls.len(), 4, "{answer}");
+    assert!(read(calls[3].join("work.md")).contains("## Lookup 1: search_code"));
+    let id = answer["jobs"][0]["id"].as_str().unwrap();
+    let job = call(&obid, "GET", &format!("/v1/jobs/{id}"), None).body;
+    assert_eq!(job["untrusted"], true, "{job}");
 }
 
 /// #632: a phrase no line has falls back to its words, the most specific first.
