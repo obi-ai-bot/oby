@@ -531,20 +531,14 @@ fn a_build_job_commits_and_ends_done() {
         ]
     );
     assert_eq!(stages[3], ("publish".into(), "done".into()));
-    // Published by itself, Oby reviews it: its review is the newest job (#525). Once that ended,
-    // the list and the job by id are the same, but for each round's diff stat, only there (#736).
-    let mut by_id = until(&obid, &id, |job| {
-        job["reviewing"].is_null() && (job["review"].is_object() || job["reviewError"].is_string())
-    });
+    // Published by itself, Oby's review of it is due: here no account is signed in to run it on,
+    // so it says it waits (#525). The list and the job by id are the same, but for each round's
+    // diff stat, only there (#736).
+    let mut by_id = until(&obid, &id, |job| job["noReviewer"].is_string());
+    assert!(by_id["reviewing"].is_null(), "{by_id}");
     let list = request(&obid, "GET", "/v1/jobs?limit=5", None).body;
-    assert_eq!(list[0]["reviewOf"], id.as_str());
-    let listed = list
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|j| j["id"] == id.as_str())
-        .cloned()
-        .unwrap();
+    assert_eq!(list[0]["id"], id.as_str());
+    let listed = list[0].clone();
     assert_eq!(by_id["diff"]["rounds"].as_array().map(Vec::len), Some(1));
     by_id["diff"].as_object_mut().unwrap().remove("rounds");
     assert_eq!(by_id, listed);

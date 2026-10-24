@@ -243,6 +243,10 @@ pub struct Job {
     /// On Oby's review job: the job whose published work it reviews.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub review_of: Option<String>,
+    /// Why Oby's review of its published work waits: no account fits to run it on (none signed in
+    /// with room, never Cursor). It starts once one does.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub no_reviewer: Option<String>,
     pub summaries: Option<Vec<String>>,
     pub issue: Option<u64>,
     pub rounds: Option<u32>,
@@ -545,6 +549,7 @@ impl Job {
             reviewing: None,
             review: None,
             review_of: None,
+            no_reviewer: None,
             summaries: None,
             issue: None,
             rounds: None,
@@ -929,6 +934,9 @@ impl Job {
         if self.untrusted {
             value["untrusted"] = json!(true);
         }
+        if let Some(why) = &self.no_reviewer {
+            value["noReviewer"] = json!(why);
+        }
         value["teammates"] = json!(self.teammates);
         if let Some(context) = &self.context {
             value["context"] = json!(context);
@@ -1268,8 +1276,11 @@ impl Job {
                             );
                         }
                         (None, None, None) => {
-                            let detail = crate::publish::YOUR_REVIEW;
-                            set(&mut stages, "review", "current", Some(detail), None);
+                            let detail = match &self.no_reviewer {
+                                Some(why) => format!("Waiting for review · {why}"),
+                                None => crate::publish::YOUR_REVIEW.into(),
+                            };
+                            set(&mut stages, "review", "current", Some(&detail), None);
                         }
                     },
                 },
@@ -1752,6 +1763,14 @@ mod tests {
             review(&job)["detail"],
             "Pull request open · waiting for your review on GitHub"
         );
+        // No account fits to run it on: it says why it waits.
+        job.no_reviewer = Some("Oby's review waits for an account with room: Work is full.".into());
+        assert_eq!(
+            review(&job)["detail"],
+            "Waiting for review · Oby's review waits for an account with room: Work is full."
+        );
+        assert!(job.to_json()["noReviewer"].is_string() && !job.needs_you());
+        job.no_reviewer = None;
         job.review = Some(verdict("approved", "def"));
         assert_eq!(job.review_due(), None);
         assert!(!job.needs_you());

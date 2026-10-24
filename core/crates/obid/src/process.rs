@@ -90,10 +90,17 @@ pub fn sandbox_env(
     for (name, value) in extra {
         env.push(((*name).into(), value.clone()));
     }
-    // obid's own CLAUDE_CODE_TMPDIR (a Claude Code run's, below) is the one CLAUDE_CODE_* let in.
-    env.retain(|(name, _)| name == CLAUDE_TMPDIR || !is_forbidden(&name.to_string_lossy()));
+    // obid's own CLAUDE_CODE_TMPDIR (a Claude Code run's, below) and NO_CLAUDE_MDS are the only
+    // CLAUDE_CODE_* let in.
+    env.retain(|(name, _)| {
+        name == CLAUDE_TMPDIR || name == NO_CLAUDE_MDS || !is_forbidden(&name.to_string_lossy())
+    });
     env
 }
+
+/// What Oby's review of published work adds to a Claude Code run's `extra`: no CLAUDE.md of the
+/// change it reads is loaded as instructions (crate::review quotes the base's rules instead).
+pub const NO_CLAUDE_MDS: &str = "CLAUDE_CODE_DISABLE_CLAUDE_MDS";
 
 /// What a Claude Code launch adds to [`sandbox_env`]'s `extra`: Claude Code makes its Bash folder in
 /// /tmp/claude-<uid> unless told, which the sandbox doesn't let a job write (a field test,
