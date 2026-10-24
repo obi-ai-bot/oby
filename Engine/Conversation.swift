@@ -122,8 +122,11 @@ nonisolated struct Briefing: Equatable, Sendable {
 
     /// The ids the brain may stop: every job that's queued or running.
     var stoppable: [String] { jobs.filter { $0.job.isActive }.map(\.job.id) }
-    /// The ids whose permission prompt waits for the user: the ones the brain may answer.
-    var permissions: [String] { jobs.filter { $0.job.waitsForPermission || ($0.job.waitsForAnswer && $0.job.question?.plan != nil) }.map(\.job.id) }
+    /// The ids whose permission prompt waits for the user: the ones the brain may answer. Never a
+    /// runner's agent's question (#858): the user's alone.
+    var permissions: [String] {
+        jobs.filter { ($0.job.waitsForPermission && $0.job.permission?.isQuestion != true) || ($0.job.waitsForAnswer && $0.job.question?.plan != nil) }.map(\.job.id)
+    }
 
     /// Agents working now, everywhere: the same count the notch and the window's header show
     /// (this Mac's working jobs plus the runner's), from the same jobs, not capped like `jobs`.
@@ -213,7 +216,7 @@ nonisolated struct Briefing: Equatable, Sendable {
         for (place, item) in waiting {
             let what = switch item.kind {
             // What the agent asked, and its options, are its own words: in the quoted file.
-            case .question: "the question and its options are quoted in \(ClaudeBrain.quotedFile)"
+            case .question, .agentQuestion: "the question and its options are quoted in \(ClaudeBrain.quotedFile)"
             case .review, .merge, .audit, .start: "\(Self.line(item.text, cap: 160)) Options: \(item.options.joined(separator: " | "))."
             // What it asks to run or edit is the agent's own: in the quoted file.
             case .permission: "what it asks to do is quoted in \(ClaudeBrain.quotedFile). Options: \(item.options.joined(separator: " | "))."
@@ -388,7 +391,7 @@ nonisolated struct Briefing: Equatable, Sendable {
 
     private static func kind(_ kind: InboxItem.Kind) -> String {
         switch kind {
-        case .question: "Question"
+        case .question, .agentQuestion: "Question"
         case .review: "Out of reviews"
         case .failed: "Failed"
         case .limit: "Out of usage"

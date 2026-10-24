@@ -121,6 +121,11 @@ pub fn waits_for_permission(job: &Job) -> bool {
     job.permission.is_some() && job.dismissed.is_none() && job.status != Status::Stopped
 }
 
+/// Whether its agent's question (`AskUserQuestion`, #858) waits for the user's own answer.
+fn waits_for_answer(job: &Job) -> bool {
+    waits_for_permission(job) && job.permission.as_ref().is_some_and(|p| p.is_question())
+}
+
 /// Running, needing the user, or finished in the last two days.
 fn tells(job: &Job, now: i64) -> bool {
     job.status.is_active()
@@ -150,11 +155,12 @@ impl Briefing {
             .collect()
     }
 
-    /// The ids whose permission prompt waits for the user.
+    /// The ids whose permission prompt waits for the user: never an agent's question, the user's
+    /// own to answer (#858).
     pub fn permissions(&self) -> Vec<String> {
         self.jobs()
             .into_iter()
-            .filter(|j| waits_for_permission(j))
+            .filter(|j| waits_for_permission(j) && !waits_for_answer(j))
             .map(|j| j.id.clone())
             .collect()
     }
@@ -245,6 +251,10 @@ impl Briefing {
                     "the plan is quoted in {FILE}. Options: {}.",
                     item.options.join(" | ")
                 ),
+                // The agent's question and its options are its own words: none of them here.
+                crate::sphere::inbox::QUESTION_KIND => {
+                    "the job's agent asks the user a question; only the user answers it.".into()
+                }
                 // What a start item would run is the agent's (or the owner's) own words: only
                 // obid's first paragraph is here, the rest in the quoted file.
                 "start" => format!(
@@ -446,7 +456,9 @@ impl Briefing {
                     .map_or(String::new(), |m| format!(" ({m})")),
         );
         let state = if job.status.is_active() {
-            if waits_for_permission(job) {
+            if waits_for_answer(job) {
+                "waiting for the user's own answer to its agent's question".to_owned()
+            } else if waits_for_permission(job) {
                 "waiting for the user's OK on a permission".to_owned()
             } else if let Some(waiting) = job
                 .waiting
@@ -764,6 +776,9 @@ fn kind(kind: &str) -> &str {
     match kind {
         "permission" => "Permission",
         "plan" => "A job's plan, waiting for the user's own approval (Oby can't answer it)",
+        crate::sphere::inbox::QUESTION_KIND => {
+            "A job's question, waiting for the user's own answer (Oby can't answer it)"
+        }
         "obiRequest" => "Request from another Obi",
         "pluginEvent" => "Plug-in event",
         "confirm" => "Waiting for the user's own Confirm (Oby can't answer it)",
