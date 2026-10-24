@@ -588,7 +588,6 @@ mod tests {
             jobs: Mutex::new(vec![]),
             nonce: "n".into(),
             web: AtomicBool::new(true),
-            tainted_by: Mutex::default(),
             dispatched: AtomicUsize::new(0),
             told: AtomicUsize::new(0),
             kept: "/nowhere/session.json".into(),

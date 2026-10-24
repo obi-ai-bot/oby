@@ -50,9 +50,9 @@ pub struct Found {
     pub status: Status,
     pub title: String,
     pub text: String,
-    /// Whether what it read is the owner's own words: an issue or a pull request whose author
-    /// and every comment's are the owner or a member of their organizations
-    /// (crate::github_work::all_trusted). Anything else, the web and code too, isn't.
+    /// Whether what it read is the owner's own words: an issue written, edited and renamed only
+    /// by the owner and their organizations' members (crate::github_work::issue_trusted), its
+    /// labels left out. Anything else, a pull request, the web and code too, isn't.
     pub trusted: bool,
 }
 
@@ -430,6 +430,13 @@ async fn github(repo: &str, lookup: &Lookup) -> Result<Found, String> {
     }
     let object: Value =
         serde_json::from_slice(&output.stdout).map_err(|_| "GitHub returned unreadable JSON")?;
+    // The owner's own words (the owner's decision of 2026-10-24), an issue only: whoever pushes
+    // to a pull request's branch writes its files, branch and commits under its author's name.
+    let trusted = kind == "issue"
+        && match u64::try_from(number) {
+            Ok(n) => crate::github_work::issue_trusted(&gh, repo, n, &object).await,
+            Err(_) => false,
+        };
     let path = if kind == "issue" { "issues" } else { "pull" };
     let mut lines = vec![
         format!("https://github.com/{repo}/{path}/{number}"),
@@ -441,7 +448,8 @@ async fn github(repo: &str, lookup: &Lookup) -> Result<Found, String> {
         String::new(),
         clamp(object["body"].as_str().unwrap_or(""), 6 * 1024),
     ];
-    if let Some(labels) = object["labels"].as_array() {
+    // Whoever triages it sets its labels: they're never part of what counts as the owner's words.
+    if let Some(labels) = object["labels"].as_array().filter(|_| !trusted) {
         let names: Vec<&str> = labels.iter().filter_map(|l| l["name"].as_str()).collect();
         lines.extend([String::new(), format!("Labels: {}", names.join(", "))]);
     }
@@ -475,17 +483,8 @@ async fn github(repo: &str, lookup: &Lookup) -> Result<Found, String> {
         }
     }
     let title = format!("{} {repo} #{number}", lookup.tool.as_str());
-    // Whose words they are: gh's comments carry their association, the item's is GitHub's REST
-    // answer's. Either unread, or the owner's organizations, and it's untrusted.
-    let mut object = object;
-    if let Ok(n) = u64::try_from(number)
-        && let Some(association) = crate::github_work::association(&gh, repo, n).await
-    {
-        object["authorAssociation"] = Value::String(association);
-    }
-    let owner = crate::github_work::owner().await;
     Ok(Found {
-        trusted: crate::github_work::all_trusted(owner.as_ref(), repo, &object),
+        trusted,
         ..Found::new(Status::Ok, title, clamp(&lines.join("\n"), 16 * 1024))
     })
 }

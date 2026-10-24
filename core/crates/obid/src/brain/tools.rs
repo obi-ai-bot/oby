@@ -245,7 +245,7 @@ async fn call(
         "oby_job" => {
             let One { id } = parse(args)?;
             let job = shared.jobs.get(&id).ok_or("There's no job with that id.")?;
-            session.taint("oby_job");
+            session.taint();
             Ok(quoted(
                 session,
                 "the job's agent",
@@ -313,7 +313,7 @@ async fn call(
                 None,
                 super::find::CONVERSATIONS,
             );
-            session.taint("oby_conversations");
+            session.taint();
             if found.is_empty() {
                 return Ok(format!(
                     "No other conversation says “{}”.",
@@ -376,7 +376,7 @@ async fn call(
             .map_err(|why| quoted(session, "Oby's refusal", &why))?;
             // Read from the repositories (or a folder holding them): other people's words.
             if taints {
-                session.taint(name);
+                session.taint();
             }
             Ok(quoted(session, "the files you read", &text))
         }
@@ -757,7 +757,7 @@ fn tasks(shared: &Shared, session: &Session, args: Value) -> Result<String, Stri
     if !tainted {
         return Ok(listed);
     }
-    session.taint("oby_tasks");
+    session.taint();
     Ok(quoted(
         session,
         "your task list, written after reading text Oby didn't write",
@@ -1704,7 +1704,7 @@ fn inbox(shared: &Shared, session: &Session) -> String {
     // An item's text can be an agent's or a person's: it taints the turn, but a GitHub offer for
     // work by the owner or a member of their organization (the owner's decision of 2026-10-24).
     if !waiting.iter().all(owners_words) {
-        session.taint("oby_inbox");
+        session.taint();
     }
     let items: Vec<Value> = waiting
         .into_iter()
