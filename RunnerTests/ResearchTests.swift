@@ -330,12 +330,16 @@ struct ResearchTests {
         desk.store.save(ResearchReport(job: research.id, commit: "abc123", markdown: "# Answer", created: .now, proposals: [clean, second]))
         let api = API(desk: desk, devices: Devices(file: folder.appending(path: "devices.json")))
         let app = Application(router: api.router(owner: "well@example.com"))
-        actor Calls { var gh = 0; func sawGH() { gh += 1 }; func count() -> Int { gh } }
+        actor Calls {
+            var gh = 0, bodies: [String] = []
+            func sawGH(_ body: String) { gh += 1; bodies.append(body) }
+            func count() -> Int { gh }
+        }
         let calls = Calls()
         try await Shell.$stand.withValue(Shell.Stand(run: { args, _ in
             if args.first == "gitleaks" { return Shell.Output(status: 0, out: Data(), err: "") }
             if args.prefix(3).elementsEqual(["gh", "issue", "create"]) {
-                await calls.sawGH()
+                await calls.sawGH(String(decoding: Shell.call?.input ?? Data(), as: UTF8.self))
                 let n = await calls.count()
                 return Shell.Output(status: 0, out: Data("https://github.com/deskree-inc/oby/issues/\(998 + n)".utf8), err: "")
             }
@@ -362,6 +366,8 @@ struct ResearchTests {
             }
         }
         #expect(await calls.count() == 2)
+        // Signed: an agent's words under the owner's login, never the owner's own to obid (github_work.rs, OBY_SIGNS).
+        #expect(await calls.bodies.first == "## What\nDocument the design.\n\nby Oby: a research job proposed this issue, and it was filed from Oby.")
         #expect(desk.store.report(research.id)?.proposals.first?.filed == "https://github.com/deskree-inc/oby/issues/999")
         #expect(desk.job(research.id)?.outgoing?.contains(where: { $0.action == .issue }) == true)
         let started = desk.jobs.first { $0.kind == .build && $0.issue == 1000 }

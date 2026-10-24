@@ -1266,11 +1266,13 @@ final class Failures {
         return try await gh(args + ["--body-file", file.path])
     }
 
-    /// The issue: the post-mortem, the record, the evidence (fenced, so nothing in it takes effect on GitHub).
+    /// The issue: the post-mortem, the record, the evidence (fenced, so nothing in it takes effect on
+    /// GitHub). Signed `by Oby:`: a model's and agents' words under the owner's login, which obid
+    /// never takes for the owner's own (docs/runner-api.md, "Whose words").
     nonisolated static func issueBody(_ record: FailureRecord, _ postMortem: PostMortem, signature: String, seen: Int, marker: String) -> String {
         var lines = [
             "<!-- \(marker) -->",
-            "Oby's post-mortem of a failure, filed by the runner.",
+            "by Oby: Oby's post-mortem of a failure, filed by the runner.",
             "",
             "- Cause: \(postMortem.cause.rawValue)",
             "- Could Oby have handled it alone: \(postMortem.obyCouldHandle ? "yes" : "no")",

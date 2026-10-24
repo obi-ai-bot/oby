@@ -809,8 +809,9 @@ async fn run_with(
     }
     let mut request = told.clone();
     let tools = research::Tools::new(shared.jobs.clone());
-    // Work the brain wants after looking things up waits for the user's Start.
-    let mut researched = false;
+    // Whether the turn read what isn't the owner's own words, so the work it starts is untrusted:
+    // a "continue" starts with the last turn's lookups, quoted in every step's work.md.
+    let mut researched = research.untrusted(&[]);
     // The own instructions of the repositories the turn names, read once from their clones (#543).
     let own = super::own(shared, said, given, &nonce).await;
     let mut step = 0;
@@ -1064,9 +1065,9 @@ async fn run_with(
                         look(&mut looked, speaks, research::looked(lookup));
                     }
                 }
-                // What it read taints the turn, but an issue or a pull request written only by
-                // the owner and their organizations' members (the owner's decision of
-                // 2026-10-24); one that didn't run counts as untrusted.
+                // Everything work.md quotes taints the turn, carried or this turn's, but an issue
+                // written only by the owner and their organizations' members (the owner's
+                // decision of 2026-10-24); a lookup that didn't run counts as untrusted.
                 researched |= research.untrusted(&lookups);
                 let cut = if control.cancelled() {
                     Some(End::Cancelled)

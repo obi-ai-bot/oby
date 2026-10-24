@@ -132,11 +132,11 @@ struct TaskActions {
         guard saved.proposals[position].filed == nil else { throw Shell.Failure(message: "This issue was already filed.") }
         let proposal = saved.proposals[position]
         do {
-            let findings = try await Publish.scan(texts: [("issue title", proposal.title), ("issue body", proposal.body)])
+            let findings = try await Publish.scan(texts: [("issue title", proposal.title), ("issue body", proposal.filedBody)])
             guard findings.isEmpty else { throw Shell.Failure(message: "The proposed issue didn't pass Oby's secret scan.") }
         } catch { throw Shell.Failure(message: "Oby's secret scanner couldn't run or found a secret; nothing was filed.") }
         let result = try await Shell.run(["gh", "issue", "create", "-R", proposal.repo, "--title", proposal.title, "--body-file", "-"],
-                                         input: Data(proposal.body.utf8), as: .app)
+                                         input: Data(proposal.filedBody.utf8), as: .app)
         guard result.status == 0, let url = URL(string: result.text), url.scheme == "https", url.host == "github.com" else {
             throw Shell.Failure(message: result.err.isEmpty ? "GitHub couldn't create the proposed issue." : result.err)
         }

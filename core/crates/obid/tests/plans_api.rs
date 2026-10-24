@@ -3059,11 +3059,10 @@ fn only_an_issue_written_and_edited_by_the_owners_people_keeps_the_turn_trusted(
     assert!(untrusted, "an outsider's edit");
     assert!(found.contains("Labels: run-in-bypass"), "{found}");
 
-    // A pull request, even one the owner opened (an Oby's under the owner's login, say).
+    // A pull request, even one the owner opened and nobody signed: `view_pr` is never trusted.
     let mut pr: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(gh.join("view.json")).unwrap()).unwrap();
     pr["author"] = json!({"login": "wellington"});
-    pr["body"] = json!("Say hello.\n\nby Oby: Oby opened this pull request.");
     std::fs::write(gh.join("view.json"), pr.to_string()).unwrap();
     std::fs::write(gh.join("who.json"), who(&[])).unwrap();
     let (untrusted, found) = turn("view_pr", 9, "Owner's pull request");
@@ -4534,6 +4533,35 @@ fn continue_picks_up_the_last_turns_research() {
     let next = read(calls[4].join("work.md"));
     assert_eq!(next.matches("## Lookup ").count(), 1, "{next}");
     assert!(read(calls[4].join("input")).contains("already in work.md"));
+}
+
+/// A "continue" turn's work.md quotes what the last turn looked up: the work it starts is
+/// untrusted when that was, though the turn looks nothing up itself.
+#[test]
+fn continue_after_research_starts_marked_untrusted() {
+    let folder = Folder::new("brain-continue-untrusted");
+    let obid = started(&folder);
+    queue(
+        &obid,
+        &[search("Hello"), "EXIT 15".into(), "EXIT 15".into()],
+    );
+    said(&obid, "where does the app say hello?");
+    queue(
+        &obid,
+        &[
+            json!({"action": "dispatch", "reply": "", "question": null, "jobs": [], "dispatches": [
+            {"agent": "auto", "account": "auto", "repo": "obi-e2e/fixture-app", "kind": "fix",
+             "title": "Greeting fix", "task": "Fix the greeting", "rounds": 1}]})
+            .to_string(),
+        ],
+    );
+    let answer = said(&obid, "continue");
+    let calls = calls(&obid);
+    assert_eq!(calls.len(), 4, "{answer}");
+    assert!(read(calls[3].join("work.md")).contains("## Lookup 1: search_code"));
+    let id = answer["jobs"][0]["id"].as_str().unwrap();
+    let job = call(&obid, "GET", &format!("/v1/jobs/{id}"), None).body;
+    assert_eq!(job["untrusted"], true, "{job}");
 }
 
 /// #632: a phrase no line has falls back to its words, the most specific first.
