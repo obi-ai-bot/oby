@@ -1259,9 +1259,7 @@ where
 }
 
 /// [`post_review`] with obid's own `gh`: `gh pr view` for the head, `gh pr review` with Oby's
-/// verdict to post (`--approve`, `--request-changes` or `--comment`). GitHub lets nobody approve or
-/// request changes on their own pull request: there it goes as a comment, its first line saying
-/// the verdict.
+/// verdict to post (`--approve`, `--request-changes` or `--comment`), as [`post_with`] says.
 pub async fn post_review_with_gh(home: &Path, item: &Item) -> Result<(), String> {
     post_review(
         home,
@@ -1269,40 +1267,81 @@ pub async fn post_review_with_gh(home: &Path, item: &Item) -> Result<(), String>
         |repo, number| async move { pr_head(&repo, number).await },
         |repo, number, file, flag| async move {
             let gh = crate::github::gh().ok_or("gh isn't installed")?;
-            let number = number.to_string();
-            let file = file.to_string_lossy().into_owned();
-            let review = |flag: &'static str| {
-                let (gh, number, repo, file) =
-                    (gh.clone(), number.clone(), repo.clone(), file.clone());
-                async move {
-                    crate::github::output(
-                        &gh,
-                        &[
-                            "pr",
-                            "review",
-                            &number,
-                            "-R",
-                            &repo,
-                            flag,
-                            "--body-file",
-                            &file,
-                        ],
-                    )
-                    .await
-                    .map(|_| ())
-                    .map_err(|(_, said)| said)
-                }
-            };
-            match review(flag).await {
-                Err(said) if flag != "--comment" && said.contains("your own pull request") => {
-                    review("--comment").await
-                }
-                done => done,
-            }
-            .map_err(|said| format!("GitHub didn't take it: {said}"))
+            post_with(&gh, home, &repo, number, &file, flag).await
         },
     )
     .await
+}
+
+/// Posts the review in `file` on pull request `number` of `repo` with `flag`, as the owner. GitHub
+/// lets nobody approve or request changes on their own pull request: on the owner's own (its
+/// author is the owner's gh login), an approval or a change request goes as the reviewer
+/// (crate::github_login) when one is signed in, once it's checked that it can push to `repo` (an
+/// approval from an account without write access doesn't count, so then nothing is posted and the
+/// error says so); with no reviewer, it goes as the owner's comment, its first line still saying
+/// the verdict.
+pub(crate) async fn post_with(
+    gh: &Path,
+    home: &Path,
+    repo: &str,
+    number: u64,
+    file: &Path,
+    flag: &'static str,
+) -> Result<(), String> {
+    let number = number.to_string();
+    let file = file.to_string_lossy();
+    let review = |reviewer: Option<PathBuf>, flag: &'static str| {
+        let (number, file) = (number.clone(), file.clone());
+        async move {
+            let args = [
+                "pr",
+                "review",
+                &number,
+                "-R",
+                repo,
+                flag,
+                "--body-file",
+                &file,
+            ];
+            crate::github::output_as(gh, reviewer.as_deref(), &args)
+                .await
+                .map(|_| ())
+                .map_err(|(_, said)| format!("GitHub didn't take it: {said}"))
+        }
+    };
+    if flag == "--comment" {
+        return review(None, flag).await;
+    }
+    let owner = crate::github_login::read_status(gh).await.user;
+    let author = crate::github::run(gh, &["pr", "view", &number, "-R", repo, "--json", "author"])
+        .await
+        .ok()
+        .and_then(|said| serde_json::from_str::<Value>(&said).ok())
+        .and_then(|answer| author_of(&answer));
+    if let (Some(owner), Some(author)) = (&owner, &author)
+        && author.login.eq_ignore_ascii_case(owner)
+    {
+        return match crate::github_login::reviewer(gh, home, owner).await? {
+            Some((folder, user)) => {
+                if !crate::github::can_push(gh, &folder, repo)
+                    .await
+                    .map_err(|said| {
+                        format!("obid couldn't check what {user} can do in {repo}: {said}")
+                    })?
+                {
+                    return Err(format!(
+                        "the reviewer, {user}, can't push to {repo}, so its approval wouldn't count: give it write access there, or sign the reviewer out to post Oby's review as your comment"
+                    ));
+                }
+                review(Some(folder), flag).await
+            }
+            None => review(None, "--comment").await,
+        };
+    }
+    match review(None, flag).await {
+        Err(said) if said.contains("your own pull request") => review(None, "--comment").await,
+        done => done,
+    }
 }
 
 /// An open pull request's head commit, with obid's `gh`.
@@ -3219,5 +3258,123 @@ mod tests {
         assert_eq!(decided("No verdict here.").0, "comment");
         assert_eq!(verdict_flag("approve"), "--approve");
         assert_eq!(verdict_flag("anything"), "--comment");
+    }
+
+    /// A stand-in gh in `home`, writing who each call went as (`reviewer` with the reviewer's
+    /// settings folder, else `owner`) and its arguments to `home/calls`. The owner is `octo-cat`;
+    /// the reviewer is the login in `home/reviewer-login`; the pull request's author is the one in
+    /// `home/author`; the reviewer's `permissions.push` is `home/push`.
+    fn stand_in_gh(home: &Path) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let reviewer = crate::github_login::reviewer_folder(home);
+        let script = format!(
+            r#"#!/bin/sh
+who=owner
+[ "$GH_CONFIG_DIR" = "{reviewer}" ] && who=reviewer
+echo "$who $*" >> "{home}/calls"
+case "$who $1 $2" in
+  "owner auth status") echo '{{"hosts":{{"github.com":[{{"state":"success","active":true,"login":"octo-cat"}}]}}}}' ;;
+  "reviewer auth status") echo "{{\"hosts\":{{\"github.com\":[{{\"state\":\"success\",\"active\":true,\"login\":\"$(cat "{home}/reviewer-login")\"}}]}}}}" ;;
+  "owner pr view") echo "{{\"author\":{{\"login\":\"$(cat "{home}/author")\"}}}}" ;;
+  "reviewer api "*) cat "{home}/push" ;;
+  *" pr review") ;;
+  *) exit 1 ;;
+esac
+"#,
+            reviewer = reviewer.display(),
+            home = home.display()
+        );
+        let gh = home.join("gh");
+        std::fs::write(&gh, script).unwrap();
+        std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755)).unwrap();
+        gh
+    }
+
+    /// Oby's approval of the owner's own pull request goes as the reviewer, once it's checked that
+    /// the reviewer can push there; without write access nothing is posted and the error says why;
+    /// with no reviewer it's the owner's comment; anyone else's pull request is approved as the
+    /// owner; a reviewer signed in as the owner's own account is never used.
+    #[tokio::test]
+    async fn the_owners_own_pull_request_is_approved_as_the_reviewer() {
+        let home = scratch("listen-post-reviewer");
+        let gh = stand_in_gh(&home);
+        let file = home.join("review.md");
+        std::fs::write(&file, "Oby's verdict: approved.").unwrap();
+        let calls = || {
+            let calls = std::fs::read_to_string(home.join("calls")).unwrap_or_default();
+            let _ = std::fs::remove_file(home.join("calls"));
+            calls
+        };
+        let reviews = |calls: &str| -> Vec<String> {
+            calls
+                .lines()
+                .filter(|l| l.contains(" pr review "))
+                .map(|l| l.replace(&*file.to_string_lossy(), "FILE"))
+                .collect()
+        };
+        let post = |flag| post_with(&gh, &home, "acme/app", 7, &file, flag);
+
+        // Someone else's pull request: the owner's approval.
+        std::fs::write(home.join("author"), "someone").unwrap();
+        post("--approve").await.unwrap();
+        assert_eq!(
+            reviews(&calls()),
+            ["owner pr review 7 -R acme/app --approve --body-file FILE"]
+        );
+
+        // The owner's own, no reviewer signed in: the owner's comment.
+        std::fs::write(home.join("author"), "Octo-Cat").unwrap();
+        post("--approve").await.unwrap();
+        assert_eq!(
+            reviews(&calls()),
+            ["owner pr review 7 -R acme/app --comment --body-file FILE"]
+        );
+
+        // The owner's own, a reviewer who can push: its approval.
+        let folder = crate::github_login::reviewer_folder(&home);
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(
+            folder.join("hosts.yml"),
+            "github.com:\n    oauth_token: gho_LISTENTESTREVIEWER\n    user: oby-reviewer\n",
+        )
+        .unwrap();
+        std::fs::write(home.join("reviewer-login"), "oby-reviewer").unwrap();
+        std::fs::write(home.join("push"), "true").unwrap();
+        post("--approve").await.unwrap();
+        let said = calls();
+        assert!(
+            said.contains("reviewer api repos/acme/app --jq .permissions.push"),
+            "{said}"
+        );
+        assert_eq!(
+            reviews(&said),
+            ["reviewer pr review 7 -R acme/app --approve --body-file FILE"]
+        );
+        assert!(
+            crate::secrets::known()
+                .redact("gho_LISTENTESTREVIEWER")
+                .contains("github reviewer")
+        );
+
+        // A reviewer that can't push: nothing posted, and why.
+        std::fs::write(home.join("push"), "false").unwrap();
+        let refused = post("--request-changes").await.unwrap_err();
+        assert!(refused.contains("can't push to acme/app"), "{refused}");
+        assert!(refused.contains("wouldn't count"), "{refused}");
+        assert!(reviews(&calls()).is_empty());
+
+        // A reviewer signed in as the owner's own account: never used.
+        std::fs::write(home.join("reviewer-login"), "octo-cat").unwrap();
+        let refused = post("--approve").await.unwrap_err();
+        assert!(refused.contains("your own account"), "{refused}");
+        assert!(reviews(&calls()).is_empty());
+
+        // A comment is always the owner's.
+        post("--comment").await.unwrap();
+        assert_eq!(
+            reviews(&calls()),
+            ["owner pr review 7 -R acme/app --comment --body-file FILE"]
+        );
+        let _ = std::fs::remove_dir_all(&home);
     }
 }

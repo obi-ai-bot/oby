@@ -65,7 +65,7 @@ enum Tool {
 /// socket that isn't the resolver's can't be connected to (syslog's: connected, nothing sent); and
 /// the pasteboard server can't be reached (`pbpaste` of the ruler pasteboard, its output
 /// discarded).
-fn inside_a_job_sandbox() -> bool {
+pub(crate) fn inside_a_job_sandbox() -> bool {
     let denied = |e: std::io::Error| e.kind() == std::io::ErrorKind::PermissionDenied;
     let Ok(Some(user)) = nix::unistd::User::from_uid(nix::unistd::getuid()) else {
         return false;

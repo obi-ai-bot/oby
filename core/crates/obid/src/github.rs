@@ -2,9 +2,12 @@
 //! `PATH`): opening the pull request of a published job or bringing its description up to date,
 //! reading an issue's shape, and following a published pull request (docs/runner-api.md, "Job
 //! pipeline and pull request following"). obid has no GitHub app, so every call goes as the owner
-//! (`GET /v1/status` says `"github": "owner"`).
+//! (`GET /v1/status` says `"github": "owner"`), but one: Oby's review of the owner's own pull
+//! request, which GitHub lets nobody approve, goes as the reviewer, a second account signed in to a
+//! settings folder of obid's own (crate::github_login, [`output_as`]).
 //!
-//! `gh` signs in with its own login: obid never reads, holds or passes a token. Its environment is
+//! `gh` signs in with its own login: obid never passes a token, and reads none but the reviewer's,
+//! only to take it out of what it writes (crate::github_login::learn_reviewer). Its environment is
 //! obid's without `GH_TOKEN`, `GITHUB_TOKEN` or the agents' variables, with prompts, colour and
 //! update checks off; nothing it is given is a secret (titles and
 //! descriptions went through the secret scan first). What `gh` prints is never logged whole and
@@ -126,10 +129,32 @@ pub(crate) async fn run(gh: &Path, args: &[&str]) -> Result<String, String> {
     output(gh, args).await.map_err(|(_, said)| said)
 }
 
+/// [`run`] as the reviewer whose settings folder is `reviewer` ([`output_as`]), or as the owner.
+pub(crate) async fn run_as(
+    gh: &Path,
+    reviewer: Option<&Path>,
+    args: &[&str],
+) -> Result<String, String> {
+    output_as(gh, reviewer, args)
+        .await
+        .map_err(|(_, said)| said)
+}
+
 /// [`run`], keeping what `gh` printed on stdout when it fails too (trimmed; empty when it never
 /// ran): `gh api graphql` exits non-zero on an answer with `errors` even when it has `data`.
 pub(crate) async fn output(gh: &Path, args: &[&str]) -> Result<String, (String, String)> {
-    let child = command(gh, args)
+    output_as(gh, None, args).await
+}
+
+/// [`output`] as the owner (`None`: gh's own settings), or as the reviewer whose settings folder is
+/// `reviewer` (`GH_CONFIG_DIR`), gh kept away from the Keychain ([`keyless`]).
+pub(crate) async fn output_as(
+    gh: &Path,
+    reviewer: Option<&Path>,
+    args: &[&str],
+) -> Result<String, (String, String)> {
+    let child = command(gh, reviewer, args)
+        .map_err(|why| (String::new(), why))?
         .spawn()
         .map_err(|e| (String::new(), format!("gh couldn't start: {e}")))?;
     let output = tokio::time::timeout(GH_TIMEOUT, child.wait_with_output())
@@ -157,7 +182,7 @@ pub(crate) async fn run_bounded(
     within: Duration,
 ) -> Result<String, String> {
     use tokio::io::AsyncReadExt;
-    let mut command = command(gh, args);
+    let mut command = command(gh, None, args)?;
     command.stderr(std::process::Stdio::null());
     let mut child = command
         .spawn()
@@ -185,9 +210,21 @@ pub(crate) async fn run_bounded(
         .map_err(|_| format!("gh took more than {} seconds", within.as_secs()))?
 }
 
-/// `gh` with `args`, its environment cleaned, stdout and stderr piped.
-fn command(gh: &Path, args: &[&str]) -> tokio::process::Command {
-    let mut command = tokio::process::Command::new(gh);
+/// `gh` with `args`, its environment cleaned, stdout and stderr piped: as the owner, or as the
+/// reviewer whose settings folder is `reviewer`.
+fn command(
+    gh: &Path,
+    reviewer: Option<&Path>,
+    args: &[&str],
+) -> Result<tokio::process::Command, String> {
+    let mut command = match reviewer {
+        None => tokio::process::Command::new(gh),
+        Some(folder) => {
+            let mut command = keyless(gh)?;
+            command.env("GH_CONFIG_DIR", folder);
+            command
+        }
+    };
     // gh signs in with its own login only: a token that found its way into obid's environment
     // (`GH_TOKEN`, `GITHUB_TOKEN`, the agents' variables) never reaches it.
     for (name, _) in std::env::vars_os() {
@@ -207,7 +244,77 @@ fn command(gh: &Path, args: &[&str]) -> tokio::process::Command {
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .kill_on_drop(true);
-    command
+    Ok(command)
+}
+
+/// The Seatbelt profile the reviewer's gh runs under on macOS: everything as usual but the
+/// Keychain's tool, which is how gh reaches the Keychain (zalando/go-keyring runs
+/// `/usr/bin/security`).
+const NO_KEYCHAIN: &str =
+    "(version 1)(allow default)(deny process-exec (literal \"/usr/bin/security\"))";
+
+/// `gh`, kept away from the person's keyring, for the reviewer's login. gh keeps one login's token
+/// per host in the keyring's shared slot (`gh:github.com`, no account), whatever its settings
+/// folder: every sign-in clears that slot (the owner's), and a reviewer's call whose own file had
+/// no token would fall back to it and go as the owner. With the keyring out of reach gh keeps the
+/// reviewer's token in its settings folder only, and never touches the owner's. On macOS under
+/// [`NO_KEYCHAIN`] (inside a job sandbox, which denies the Keychain already and can't nest
+/// another, as it is); elsewhere with no D-Bus session to reach a keyring through. Refused when
+/// neither holds: the reviewer's gh never runs with the keyring in reach.
+pub(crate) fn keyless(gh: &Path) -> Result<tokio::process::Command, String> {
+    static BOXED: std::sync::OnceLock<Result<bool, String>> = std::sync::OnceLock::new();
+    let boxed = BOXED.get_or_init(|| {
+        if !cfg!(target_os = "macos") {
+            return Ok(false);
+        }
+        let tried = std::process::Command::new("/usr/bin/sandbox-exec")
+            .args(["-p", NO_KEYCHAIN, "/usr/bin/true"])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped())
+            .output()
+            .map_err(|e| format!("sandbox-exec can't run: {e}"))?;
+        if tried.status.success() {
+            Ok(true)
+        } else if String::from_utf8_lossy(&tried.stderr).contains("sandbox_apply")
+            && crate::sandbox::inside_a_job_sandbox()
+        {
+            Ok(false)
+        } else {
+            Err("sandbox-exec can't keep the reviewer's gh away from the Keychain".into())
+        }
+    });
+    let mut command = match boxed.clone()? {
+        true => {
+            let mut command = tokio::process::Command::new("/usr/bin/sandbox-exec");
+            command.args(["-p", NO_KEYCHAIN]).arg(gh);
+            command
+        }
+        false => tokio::process::Command::new(gh),
+    };
+    command.env("DBUS_SESSION_BUS_ADDRESS", NO_BUS);
+    Ok(command)
+}
+
+/// The reviewer's gh's D-Bus session: one that isn't there, since go-keyring finds the Secret
+/// Service only through it.
+pub(crate) const NO_BUS: &str = "unix:path=/dev/null/no-keyring";
+
+/// Whether the account signed in to the settings folder `reviewer` can push to `repo`
+/// (`permissions.push`): a review from an account without write access doesn't count toward
+/// GitHub's required approvals.
+pub async fn can_push(gh: &Path, reviewer: &Path, repo: &str) -> Result<bool, String> {
+    if !is_repo(repo) {
+        return Err(format!("{repo} isn't a repository name"));
+    }
+    let path = format!("repos/{repo}");
+    let said = run_as(
+        gh,
+        Some(reviewer),
+        &["api", &path, "--jq", ".permissions.push"],
+    )
+    .await?;
+    Ok(said == "true")
 }
 
 /// The last thing a tool said on stderr, skipping git's hints, with the secrets obid holds taken

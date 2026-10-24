@@ -155,6 +155,11 @@ pub fn router(shared: Arc<Shared>) -> Router {
             post(crate::github_login::sign_in).delete(crate::github_login::end_sign_in),
         )
         .route(
+            "/v1/github/reviewer/sign-in",
+            post(crate::github_login::reviewer_sign_in)
+                .delete(crate::github_login::reviewer_sign_out),
+        )
+        .route(
             "/v1/accounts/{id}/sign-in",
             get(crate::accounts::sign_in)
                 .post(crate::accounts::sign_in_code)

@@ -6,6 +6,15 @@
 //! the account's name and whether it's signed in (`gh auth status --json hosts`, never
 //! `--show-token`), and, while signing in, the one-time code and the page gh prints. None of this
 //! is on the gateway's allowlist: a paired phone never signs the Mac in to someone's GitHub.
+//!
+//! The reviewer is a second GitHub account (the owner's decision of 2026-10-24: Oby gets the
+//! owner's own pull requests approved, and a pull request's author can't approve it), signed in
+//! through the same device page to a settings folder of obid's own, `home/github/reviewer`
+//! (`GH_CONFIG_DIR`, 0700, hidden from every job's box), never the person's. Its token is obid's:
+//! gh keeps it in that folder's `hosts.yml` (0600), kept away from the Keychain
+//! ([`crate::github::keyless`]); obid learns it as a secret, so it's taken out of every answer,
+//! log line and push, and it never reaches a job, whose gh has an empty settings folder. Only
+//! Oby's review of the owner's own pull request goes as the reviewer (crate::listen).
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -29,12 +38,34 @@ const SCRATCH_PREFIX: &str = "github-sign-in-";
 /// The only page a code is typed on.
 const DEVICE_PAGE: &str = "https://github.com/login/device";
 
-/// The GitHub login as obid last read it, and the sign-in under way.
+/// The owner's GitHub login and the reviewer's, each as obid last read it, with its sign-in under
+/// way.
 #[derive(Default)]
 pub struct GitHubLogin {
+    owner: Login,
+    reviewer: Login,
+}
+
+/// One GitHub login: its status as last read, and its sign-in under way.
+#[derive(Default)]
+struct Login {
     status: Mutex<Option<(Instant, Status)>>,
     /// Never held across an await: GET and obid's stop read it while gh starts.
     sign_in: Mutex<Slot>,
+    /// Why the last sign-in kept no login (the reviewer's: the owner's own account), until the next.
+    refused: Mutex<Option<String>>,
+}
+
+/// Whose login: the owner's (gh's own settings) or the reviewer's.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Who {
+    Owner,
+    Reviewer,
+}
+
+/// The reviewer's gh settings folder: `home/github/reviewer`.
+pub fn reviewer_folder(home: &Path) -> PathBuf {
+    home.join("github/reviewer")
 }
 
 /// The sign-in slot: none, one starting (gh hasn't printed its code yet), or one under way, until
@@ -71,16 +102,27 @@ impl SignIn {
 }
 
 impl GitHubLogin {
-    /// Kills the sign-in under way's whole process group (obid is stopping). Only one still under
+    /// Kills the sign-ins under way's whole process groups (obid is stopping). Only one still under
     /// way: an ended one cleared the slot, and its group id may belong to someone else by now.
     pub fn kill(&self) {
-        if let Some(running) = self.running()
-            && let Some(group) = running.group
-        {
-            crate::process::signal_group(group, nix::sys::signal::Signal::SIGKILL);
+        for login in [&self.owner, &self.reviewer] {
+            if let Some(running) = login.running()
+                && let Some(group) = running.group
+            {
+                crate::process::signal_group(group, nix::sys::signal::Signal::SIGKILL);
+            }
         }
     }
 
+    fn of(&self, who: Who) -> &Login {
+        match who {
+            Who::Owner => &self.owner,
+            Who::Reviewer => &self.reviewer,
+        }
+    }
+}
+
+impl Login {
     fn slot(&self) -> std::sync::MutexGuard<'_, Slot> {
         self.sign_in.lock().unwrap_or_else(|e| e.into_inner())
     }
@@ -97,18 +139,21 @@ impl GitHubLogin {
         *self.status.lock().unwrap_or_else(|e| e.into_inner()) = None;
     }
 
-    async fn status(&self, gh: Option<&Path>) -> Status {
+    fn refused(&self) -> std::sync::MutexGuard<'_, Option<String>> {
+        self.refused.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// The status, read again when older than [`STATUS_KEPT`]: as the reviewer from `reviewer`, its
+    /// settings folder, or as the owner.
+    async fn status(&self, gh: Option<&Path>, reviewer: Option<&Path>) -> Status {
         if let Some((at, status)) = &*self.status.lock().unwrap_or_else(|e| e.into_inner())
             && at.elapsed() < STATUS_KEPT
         {
             return status.clone();
         }
         let status = match gh {
-            Some(gh) => read_status(gh).await,
-            None => Status {
-                signed_in: false,
-                user: None,
-            },
+            Some(gh) => read_status_of(gh, reviewer).await,
+            None => Status::signed_out(),
         };
         *self.status.lock().unwrap_or_else(|e| e.into_inner()) =
             Some((Instant::now(), status.clone()));
@@ -116,10 +161,33 @@ impl GitHubLogin {
     }
 }
 
+impl Status {
+    fn signed_out() -> Status {
+        Status {
+            signed_in: false,
+            user: None,
+        }
+    }
+}
+
 /// `gh auth status` for github.com, as `{signed_in, user}`; signed out when gh says nothing usable.
 pub(crate) async fn read_status(gh: &Path) -> Status {
-    let said = crate::github::run(
+    read_status_of(gh, None).await
+}
+
+/// [`read_status`] as the reviewer whose settings folder is `reviewer`, or as the owner. A folder
+/// with no `hosts.yml` (no login) is signed out without asking gh, and every token in it is learned
+/// as a secret again (gh may have refreshed it).
+async fn read_status_of(gh: &Path, reviewer: Option<&Path>) -> Status {
+    if let Some(folder) = reviewer {
+        if !folder.join("hosts.yml").is_file() {
+            return Status::signed_out();
+        }
+        learn_reviewer(folder);
+    }
+    let said = crate::github::run_as(
         gh,
+        reviewer,
         &[
             "auth",
             "status",
@@ -133,6 +201,48 @@ pub(crate) async fn read_status(gh: &Path) -> Status {
     .await
     .unwrap_or_default();
     decode_status(&said)
+}
+
+/// The reviewer as obid can use it now: its settings folder and its login, signed in as an account
+/// that isn't the owner's (`owner`); none when no reviewer is signed in.
+pub(crate) async fn reviewer(
+    gh: &Path,
+    home: &Path,
+    owner: &str,
+) -> Result<Option<(PathBuf, String)>, String> {
+    let folder = reviewer_folder(home);
+    let Some(user) = read_status_of(gh, Some(&folder)).await.user else {
+        return Ok(None);
+    };
+    if user.eq_ignore_ascii_case(owner) {
+        return Err(format!(
+            "the reviewer is signed in as {user}, your own account: sign it in with a second one"
+        ));
+    }
+    Ok(Some((folder, user)))
+}
+
+/// Learns every token gh keeps in the reviewer's settings folder `folder` (`hosts.yml`'s
+/// `oauth_token`, and a refreshable login's `access_token` and `refresh_token`) as the secret
+/// `github reviewer`, so obid takes them out of every answer, log line and push.
+pub fn learn_reviewer(folder: &Path) {
+    let Ok(hosts) = std::fs::read_to_string(folder.join("hosts.yml")) else {
+        return;
+    };
+    let tokens: Vec<&str> = hosts
+        .lines()
+        .filter_map(|line| {
+            let (key, value) = line.trim().split_once(':')?;
+            ["oauth_token", "access_token", "refresh_token"]
+                .contains(&key.trim())
+                .then(|| value.trim().trim_matches(['"', '\'']))
+        })
+        .filter(|token| !token.is_empty())
+        .collect();
+    if !tokens.is_empty() {
+        let forms: Vec<&[u8]> = tokens.iter().map(|t| t.as_bytes()).collect();
+        crate::secrets::known().learn_forms("github reviewer", &forms);
+    }
 }
 
 /// The active github.com account in `gh auth status --json hosts`, when its state is `success`.
@@ -160,19 +270,25 @@ pub fn decode_status(said: &str) -> Status {
 }
 
 /// `GET /v1/github`: whether obid has a gh, whether it's signed in and as whom, and the sign-in
-/// under way.
+/// under way; the same for the reviewer, with why its last sign-in kept no login.
 pub async fn get(State(shared): State<Arc<Shared>>) -> Result<Response, ApiError> {
     let gh = crate::github::gh();
-    let status = shared.github.status(gh.as_deref()).await;
+    let status = shared.github.owner.status(gh.as_deref(), None).await;
     // GitHub's repositories stay only the signed-in account's (crate::repos): another one's are
     // read now.
     if shared.config.repos.follow(status.user.as_deref()) && status.signed_in {
         shared.config.repos.nudge();
     }
-    let sign_in = shared.github.running().map(|s| s.to_json());
+    let sign_in = shared.github.owner.running().map(|s| s.to_json());
+    let reviewer = &shared.github.reviewer;
+    let folder = reviewer_folder(&shared.config.home);
+    let reviewing = reviewer.status(gh.as_deref(), Some(&folder)).await;
+    let reviewer = json!({"signedIn": reviewing.signed_in, "user": reviewing.user,
+                          "signIn": reviewer.running().map(|s| s.to_json()),
+                          "error": reviewer.refused().clone()});
     Ok(
         axum::Json(json!({"gh": gh.is_some(), "signedIn": status.signed_in,
-                         "user": status.user, "signIn": sign_in}))
+                         "user": status.user, "signIn": sign_in, "reviewer": reviewer}))
         .into_response(),
     )
 }
@@ -180,8 +296,51 @@ pub async fn get(State(shared): State<Arc<Shared>>) -> Result<Response, ApiError
 /// `POST /v1/github/sign-in`: gh's own sign-in, or the one under way: `{url, userCode, expiresAt}`.
 /// The app opens `url`; the person types `userCode` there (gh also puts it on the clipboard).
 pub async fn sign_in(State(shared): State<Arc<Shared>>) -> Result<Response, ApiError> {
+    sign_in_as(&shared, Who::Owner).await
+}
+
+/// `POST /v1/github/reviewer/sign-in`: the reviewer's sign-in, as [`sign_in`]'s, into its own
+/// settings folder. Only once the owner's gh is signed in: the reviewer must be another account,
+/// which obid checks when the sign-in ends, keeping no login of the owner's own account.
+pub async fn reviewer_sign_in(State(shared): State<Arc<Shared>>) -> Result<Response, ApiError> {
+    // Read now, not kept: the owner may have just signed in.
+    if shared.github.reviewer.running().is_none()
+        && let Some(gh) = crate::github::gh()
+        && !read_status(&gh).await.signed_in
     {
-        let mut slot = shared.github.slot();
+        return Err(ApiError::new(
+            StatusCode::CONFLICT,
+            "Sign in to GitHub first: the reviewer is a second account, besides yours.",
+        ));
+    }
+    sign_in_as(&shared, Who::Reviewer).await
+}
+
+/// `DELETE /v1/github/reviewer/sign-in`: ends the reviewer's sign-in under way, if any, and signs
+/// the reviewer out: its settings folder is removed, token and all (never `gh auth logout`, which
+/// clears the keyring's shared slot, the owner's). GitHub keeps the token valid until it's revoked
+/// in the account's settings, as after `gh auth logout`.
+pub async fn reviewer_sign_out(State(shared): State<Arc<Shared>>) -> Result<Response, ApiError> {
+    end(&shared.github.reviewer).await;
+    let folder = reviewer_folder(&shared.config.home);
+    if let Err(e) = std::fs::remove_dir_all(&folder)
+        && e.kind() != std::io::ErrorKind::NotFound
+    {
+        return Err(ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("obid couldn't remove the reviewer's login: {e}"),
+        ));
+    }
+    shared.github.reviewer.forget_status();
+    *shared.github.reviewer.refused() = None;
+    tracing::info!("GitHub reviewer signed out");
+    Ok(StatusCode::NO_CONTENT.into_response())
+}
+
+async fn sign_in_as(shared: &Arc<Shared>, who: Who) -> Result<Response, ApiError> {
+    let login = shared.github.of(who);
+    {
+        let mut slot = login.slot();
         match &*slot {
             Slot::Running(running) if !*running.ended.borrow() => {
                 return Ok(axum::Json(running.to_json()).into_response());
@@ -196,7 +355,7 @@ pub async fn sign_in(State(shared): State<Arc<Shared>>) -> Result<Response, ApiE
         }
     }
     // Back to idle unless the sign-in below takes the slot.
-    let mut starting = Starting(&shared.github, true);
+    let mut starting = Starting(login, true);
     let gh = crate::github::gh()
         .filter(|gh| gh.is_absolute())
         .ok_or_else(|| {
@@ -205,12 +364,12 @@ pub async fn sign_in(State(shared): State<Arc<Shared>>) -> Result<Response, ApiE
                 "obid has no GitHub CLI (gh) to sign in with.",
             )
         })?;
-    let started = start(&shared, &gh)
+    let started = start(shared, &gh, who)
         .await
         .map_err(|why| ApiError::new(StatusCode::BAD_GATEWAY, why))?;
     let answer = started.to_json();
     {
-        let mut slot = shared.github.slot();
+        let mut slot = login.slot();
         // A sign-in that ended while being registered leaves the slot idle.
         *slot = if *started.ended.borrow() {
             Slot::Idle
@@ -224,7 +383,7 @@ pub async fn sign_in(State(shared): State<Arc<Shared>>) -> Result<Response, ApiE
 
 /// The slot marked starting: put back to idle when dropped armed (gh didn't start, or the request
 /// ended first).
-struct Starting<'a>(&'a GitHubLogin, bool);
+struct Starting<'a>(&'a Login, bool);
 
 impl Drop for Starting<'_> {
     fn drop(&mut self) {
@@ -239,18 +398,32 @@ impl Drop for Starting<'_> {
 
 /// `DELETE /v1/github/sign-in`: ends the sign-in under way, if any.
 pub async fn end_sign_in(State(shared): State<Arc<Shared>>) -> Result<Response, ApiError> {
-    if let Some(running) = shared.github.running() {
+    end(&shared.github.owner).await;
+    Ok(StatusCode::NO_CONTENT.into_response())
+}
+
+/// Ends `login`'s sign-in under way, if any, waiting up to 5 seconds for it.
+async fn end(login: &Login) {
+    if let Some(running) = login.running() {
         running.cancel.notify_one();
         let mut ended = running.ended.clone();
         let _ = tokio::time::timeout(Duration::from_secs(5), ended.wait_for(|e| *e)).await;
     }
-    Ok(StatusCode::NO_CONTENT.into_response())
 }
 
-/// Starts `gh auth login` and waits for its code.
-async fn start(shared: &Arc<Shared>, gh: &Path) -> Result<Arc<SignIn>, String> {
+/// Starts `gh auth login` and waits for its code. The reviewer's signs in to a settings folder in
+/// the sign-in's own folder, kept as the reviewer's only once it ends signed in as another account
+/// than the owner's ([`keep_reviewer`]).
+async fn start(shared: &Arc<Shared>, gh: &Path, who: Who) -> Result<Arc<SignIn>, String> {
     let scratch = scratch_folder(&shared.config.home)?;
-    let mut child = match command(gh, &scratch).and_then(|mut c| {
+    let staging = (who == Who::Reviewer).then(|| scratch.join("gh"));
+    if let Some(staging) = &staging
+        && let Err(e) = crate::store::make_private_dir(staging)
+    {
+        let _ = std::fs::remove_dir_all(&scratch);
+        return Err(format!("obid can't make a folder for the sign-in: {e}"));
+    }
+    let mut child = match command(gh, &scratch, staging.as_deref()).and_then(|mut c| {
         c.spawn()
             .map_err(|e| format!("obid couldn't start gh's sign-in: {e}"))
     }) {
@@ -316,8 +489,9 @@ async fn start(shared: &Arc<Shared>, gh: &Path) -> Result<Arc<SignIn>, String> {
         ended,
         cancel: tokio::sync::Notify::new(),
     });
-    tracing::info!("GitHub sign-in started");
-    let (shared, watched) = (shared.clone(), sign_in.clone());
+    tracing::info!("GitHub sign-in started ({who:?})");
+    *shared.github.of(who).refused() = None;
+    let (shared, watched, gh) = (shared.clone(), sign_in.clone(), gh.to_path_buf());
     // From here the sign-in's own task ends it.
     pending.armed = false;
     tokio::spawn(async move {
@@ -331,25 +505,33 @@ async fn start(shared: &Arc<Shared>, gh: &Path) -> Result<Arc<SignIn>, String> {
             kill();
             let _ = child.wait().await;
         }
+        let mut signed = exited.is_some_and(|s| s.success());
+        if signed && let Some(staging) = &staging {
+            let login = &shared.github.reviewer;
+            if let Err(why) = keep_reviewer(&shared, &gh, staging).await {
+                signed = false;
+                *login.refused() = Some(why);
+            }
+        }
         // Its folder goes first, then it's ended at once: obid's stop (kill) never signals the
         // group id, which may be someone else's by now, and a sign-in started after this one ended
         // never finds its folder being removed.
         let _ = std::fs::remove_dir_all(&scratch);
         let _ = ended_tx.send(true);
-        shared.github.forget_status();
+        let login = shared.github.of(who);
+        login.forget_status();
         {
-            let mut slot = shared.github.slot();
+            let mut slot = login.slot();
             if matches!(&*slot, Slot::Running(s) if Arc::ptr_eq(s, &watched)) {
                 *slot = Slot::Idle;
             }
         }
-        let signed = exited.is_some_and(|s| s.success());
-        if signed {
+        if signed && who == Who::Owner {
             // What the new login can push to, now rather than within the hour.
             shared.config.repos.nudge();
         }
         tracing::info!(
-            "GitHub sign-in ended {}",
+            "GitHub sign-in ({who:?}) ended {}",
             if signed {
                 "signed in"
             } else {
@@ -358,6 +540,33 @@ async fn start(shared: &Arc<Shared>, gh: &Path) -> Result<Arc<SignIn>, String> {
         );
     });
     Ok(sign_in)
+}
+
+/// Keeps the reviewer's login gh just made in `staging` as the reviewer's (`home/github/reviewer`,
+/// in place of the one before), once gh says it's signed in there as an account that isn't the
+/// owner's; or why not, and nothing is kept.
+async fn keep_reviewer(shared: &Shared, gh: &Path, staging: &Path) -> Result<(), String> {
+    let Some(user) = read_status_of(gh, Some(staging)).await.user else {
+        return Err("gh's sign-in ended without a login for the reviewer.".into());
+    };
+    let Some(owner) = read_status(gh).await.user else {
+        return Err(
+            "Sign in to GitHub first: the reviewer is a second account, besides yours.".into(),
+        );
+    };
+    if owner.eq_ignore_ascii_case(&user) {
+        return Err(format!(
+            "{user} is your own GitHub account: sign the reviewer in with a second one, since nobody can approve their own pull request."
+        ));
+    }
+    let folder = reviewer_folder(&shared.config.home);
+    let _ = std::fs::remove_dir_all(&folder);
+    crate::store::make_private_dir(&shared.config.home.join("github"))
+        .and_then(|()| std::fs::rename(staging, &folder))
+        .map_err(|e| format!("obid couldn't keep the reviewer's login: {e}"))?;
+    learn_reviewer(&folder);
+    tracing::info!("GitHub reviewer signed in");
+    Ok(())
 }
 
 /// Removes the folders sign-ins left in `home/tmp` when obid stopped before they ended.
@@ -419,22 +628,33 @@ fn scratch_folder(home: &Path) -> Result<PathBuf, String> {
 /// and Keychain item where it always does), nothing opened on this machine (the app opens the
 /// page), and git's global settings pointed at a file of the sign-in's own, so gh never changes
 /// the person's own (`gh auth setup-git` isn't needed: obid gives git gh's login itself). In a
-/// process group of its own.
-fn command(gh: &Path, scratch: &Path) -> Result<tokio::process::Command, String> {
+/// process group of its own. The reviewer's (`reviewer`, its settings folder) keeps its token in
+/// that folder (`--insecure-storage`, gh kept away from the keyring: [`crate::github::keyless`]).
+fn command(
+    gh: &Path,
+    scratch: &Path,
+    reviewer: Option<&Path>,
+) -> Result<tokio::process::Command, String> {
     let home =
         crate::jobs::login_home().ok_or("obid can't find the person's home for gh's sign-in.")?;
-    let mut command = tokio::process::Command::new(gh);
+    let mut command = match reviewer {
+        None => tokio::process::Command::new(gh),
+        Some(_) => crate::github::keyless(gh)?,
+    };
+    command.args([
+        "auth",
+        "login",
+        "--hostname",
+        "github.com",
+        "--git-protocol",
+        "https",
+        "--web",
+        "--skip-ssh-key",
+    ]);
+    if reviewer.is_some() {
+        command.arg("--insecure-storage");
+    }
     command
-        .args([
-            "auth",
-            "login",
-            "--hostname",
-            "github.com",
-            "--git-protocol",
-            "https",
-            "--web",
-            "--skip-ssh-key",
-        ])
         .env_clear()
         .envs(crate::process::kept(|name| std::env::var_os(name)))
         .env("HOME", home)
@@ -446,6 +666,15 @@ fn command(gh: &Path, scratch: &Path) -> Result<tokio::process::Command, String>
         .env("GH_NO_UPDATE_NOTIFIER", "1")
         .env("NO_COLOR", "1")
         .env("GIT_CONFIG_GLOBAL", scratch.join("gitconfig"))
+        .envs(reviewer.into_iter().flat_map(|folder| {
+            [
+                ("GH_CONFIG_DIR", folder.as_os_str()),
+                (
+                    "DBUS_SESSION_BUS_ADDRESS",
+                    std::ffi::OsStr::new(crate::github::NO_BUS),
+                ),
+            ]
+        }))
         .current_dir(scratch)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
@@ -494,7 +723,7 @@ mod tests {
     /// id may belong to another process by then.
     #[test]
     fn an_ended_sign_in_is_never_the_one_under_way() {
-        let login = GitHubLogin::default();
+        let login = Login::default();
         let (ended_tx, ended) = tokio::sync::watch::channel(false);
         let sign_in = Arc::new(SignIn {
             user_code: "AB12-CD34".into(),
