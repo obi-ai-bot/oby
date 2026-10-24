@@ -455,6 +455,23 @@ pub struct Job {
     /// Who had obid merge its pull request, and when; none until obid merged it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub merged_by: Option<MergedBy>,
+    /// What obid is sending for its merge (crate::merge), saved before it's sent and cleared once
+    /// obid knows how it went: a restart in between reads GitHub to settle it. Never in the API's
+    /// job.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sending: Option<Sending>,
+}
+
+/// Something obid sends for a job's merge, kept until it knows how it went (`Job::sending`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Sending {
+    /// `pullRequestApproval` or `merge`.
+    pub action: String,
+    /// The head it's about.
+    pub head: String,
+    /// For a merge: who had it merged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub by: Option<MergedBy>,
 }
 
 /// Who had obid merge a job's pull request (crate::merge): the owner, with a tap, or the
@@ -656,6 +673,7 @@ impl Job {
             merge_error: None,
             merge_needs_you: false,
             merged_by: None,
+            sending: None,
         }
     }
 
@@ -852,14 +870,16 @@ impl Job {
     }
 
     /// Waiting for Publish (its own publish failed), with commits its pull request won't take,
-    /// failed or interrupted, or Oby's review left for the owner, and not dismissed.
+    /// failed or interrupted, Oby's review left for the owner, or its merge stopped where only
+    /// the owner takes it on (crate::merge), and not dismissed.
     pub fn needs_you(&self) -> bool {
         self.dismissed.is_none()
             && (self.can_publish()
                 || self.stranded()
                 || self.status == Status::Failed
                 || self.status == Status::Interrupted
-                || self.review_needs_you())
+                || self.review_needs_you()
+                || self.merge_needs_you)
     }
 
     /// The job as the runner API shows it.

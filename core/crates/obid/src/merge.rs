@@ -110,7 +110,8 @@ pub struct Reviewers {
 }
 
 impl Reviewers {
-    fn any(&self, login: &str) -> bool {
+    /// Whether `login` is one of them.
+    pub(crate) fn any(&self, login: &str) -> bool {
         self.used
             .iter()
             .chain(&self.current)
@@ -411,13 +412,16 @@ fn owned<'a>(
 /// own commit title and message and scans them, then `PUT …/pulls/{n}/merge` at the head it
 /// checked, and deletes the job's own branch. Its files go in `home/tmp/merge-<job id>`, removed
 /// after. `reviewer`: the reviewer account signed in now (`github_login::reviewer`), read with
-/// every one used ([`reviewers`]); when those can't be read, nothing merges.
+/// every one used ([`reviewers`]); when those can't be read, nothing merges. `go` is asked right
+/// before the merge is sent: whether the job is still as it was, its answer saved (the caller
+/// keeps `Job::sending` there), and nothing is sent on a no.
 pub async fn merge(
     gh: &Path,
     home: &Path,
     job: &Job,
     workflow: &Workflow,
     reviewer: Option<&str>,
+    go: &(dyn Fn() -> bool + Sync),
 ) -> Result<Merged, Blocked> {
     if job.id.is_empty() || !job.id.bytes().all(|b| b.is_ascii_alphanumeric()) {
         return Err(needs_you("Not merged: that isn't one of Oby's jobs."));
@@ -434,7 +438,7 @@ pub async fn merge(
     if !busy().insert(scratch.clone()) {
         return Err(wait("Not merged yet: Oby is merging it already."));
     }
-    let merged = merging(gh, job, workflow, &reviewers, &scratch).await;
+    let merged = merging(gh, job, workflow, &reviewers, &scratch, go).await;
     let _ = std::fs::remove_dir_all(&scratch);
     busy().remove(&scratch);
     merged
@@ -446,6 +450,7 @@ async fn merging(
     workflow: &Workflow,
     reviewers: &Reviewers,
     scratch: &Path,
+    go: &(dyn Fn() -> bool + Sync),
 ) -> Result<Merged, Blocked> {
     let repo = job.repo.as_str();
     let url = job.published.as_deref().unwrap_or_default();
@@ -547,6 +552,11 @@ async fn merging(
     // A change request made while Oby wrote and scanned its words stops it too.
     merging.reviews = github::reviews(gh, repo, number).await.map_err(unread)?;
     ready(job, Some(workflow), &pr, &merging, Some(reviewers))?;
+    if !go() {
+        return Err(wait(
+            "Not merged yet: the job changed while Oby got it ready to merge.",
+        ));
+    }
     // What GitHub is sent goes in a 0600 file, never in an argument.
     let input = scratch.join("merge.json");
     crate::store::make_private_dir(scratch)
@@ -616,6 +626,7 @@ async fn merging(
 /// What a merge came to, kept on the job: what went out and who had it merged; or, when it
 /// didn't merge, `mergeError` and `mergeNeedsYou` only where the owner takes it from here.
 pub fn note(job: &mut Job, outcome: &Result<Merged, Blocked>, by: MergedBy) {
+    job.sending = None;
     match outcome {
         Ok(merged) => {
             job.outgoing.extend(merged.outgoing.iter().cloned());
@@ -640,6 +651,8 @@ pub const MERGE_AND_REMEMBER: &str = "Merge, and remember";
 pub const LEAVE_OPEN: &str = "Leave it open";
 /// Why Oby's approval wasn't posted: no reviewer account is signed in.
 pub const SIGN_IN_REVIEWER: &str = "Sign in Oby's reviewer account to let it approve.";
+/// Why it isn't posted again: someone dismissed it on that commit.
+pub const DISMISSED_APPROVAL: &str = "Someone dismissed Oby's approval of this commit on GitHub, so Oby won't approve it again: approve it there yourself, or ask Oby for another round.";
 /// The words of Oby's approval on GitHub: obid's own, never a model's.
 pub const APPROVAL: &str =
     "Oby reviewed this commit and approves it. Its review is in Oby, on the job that opened this.";
@@ -673,9 +686,63 @@ pub fn proposed(pr: &PullRequest, merging: &Merging, reviewers: &Reviewers) -> O
     workflow.problem().is_none().then_some(workflow)
 }
 
-/// The id of the job's merge item about `head`: one per head, so a new head brings a new card.
-pub fn item_id(job: &str, head: &str) -> String {
-    format!("merge-{job}-{head}")
+/// Whether someone other than Oby's reviewer accounts (and the author) approved the pull
+/// request's head, the way a `person` workflow counts it: then the reviewer account's approval
+/// isn't what an unlearned repository's merge waits on.
+pub fn approved_by_another(pr: &PullRequest, merging: &Merging, reviewers: &Reviewers) -> bool {
+    let (Some(head), Some(author)) = (pr.head.as_deref(), merging.author.as_deref()) else {
+        return false;
+    };
+    merging
+        .reviews
+        .iter()
+        .any(|r| counts(r, head, author, Approval::Person, reviewers))
+}
+
+/// The job's pull request was merged or closed (`pr`): nothing waits on the owner about merging it
+/// any more. A merge obid sent before a restart is listed and keeps who had it merged; one merged
+/// any other way is `mergedBy` `github`.
+pub fn closed(job: &mut Job, pr: &PullRequest) {
+    let sending = job.sending.take();
+    job.merge_needs_you = false;
+    job.merge_error = None;
+    if pr.state != "MERGED" || job.merged_by.is_some() {
+        return;
+    }
+    let at = pr.merged_at.unwrap_or_else(obi_protocol::time::now);
+    let ours = sending.filter(|s| s.action == "merge" && pr.head.as_deref() == Some(&s.head));
+    job.merged_by = Some(match ours.and_then(|s| s.by) {
+        Some(by) => {
+            job.outgoing.push(Outgoing::new(
+                "merge",
+                &job.repo,
+                job.published.as_deref().unwrap_or_default(),
+                Some(&pr.base),
+            ));
+            MergedBy { at, ..by }
+        }
+        None => MergedBy {
+            by: "github".into(),
+            memory: None,
+            at,
+        },
+    });
+}
+
+/// The id of the job's "Ready to merge?" card about `head`: one per head, so a new head brings a
+/// new card.
+pub fn ready_id(job: &str, head: &str) -> String {
+    format!("merge-ready-{job}-{head}")
+}
+
+/// The id of a card saying why the merge needs the owner: one per reason and head, so a new reason
+/// brings a new card, and the job's other cards are settled.
+pub fn why_id(job: &str, head: &str, why: &str) -> String {
+    // FNV-1a: the same id for the same words, from one obid to the next.
+    let hash = why.bytes().fold(0xcbf2_9ce4_8422_2325_u64, |h, b| {
+        (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3)
+    });
+    format!("merge-why{hash:016x}-{job}-{head}")
 }
 
 /// The head a merge item is about.
@@ -689,7 +756,7 @@ pub fn ready_card(job: &Job, number: u64, head: &str, workflow: &Workflow) -> It
     let name = name(&job.repo);
     card(
         job,
-        head,
+        ready_id(&job.id, head),
         format!("Ready to merge: {}", job.short_title()),
         format!(
             "{name}#{number} is approved and its checks passed. I don't know how {name} merges yet, so I left it open. main is untouched."
@@ -721,16 +788,16 @@ pub fn ready_card(job: &Job, number: u64, head: &str, workflow: &Workflow) -> It
 pub fn stopped_card(job: &Job, head: &str, why: &str) -> Item {
     card(
         job,
-        head,
+        why_id(&job.id, head, why),
         format!("Not merged: {}", job.short_title()),
         why.to_owned(),
         vec![(DISMISS, "Leaves it open. Nothing is sent.".into())],
     )
 }
 
-fn card(job: &Job, head: &str, title: String, text: String, options: Vec<(&str, String)>) -> Item {
+fn card(job: &Job, id: String, title: String, text: String, options: Vec<(&str, String)>) -> Item {
     Item {
-        id: item_id(&job.id, head),
+        id,
         kind: "merge".into(),
         job: job.id.clone(),
         title,
@@ -759,6 +826,9 @@ pub enum Approved {
     Posted(Outgoing),
     /// The reviewer account approved that head already.
     Already,
+    /// Someone dismissed the reviewer account's approval of that head: Oby doesn't approve it
+    /// again.
+    Dismissed,
     /// Only the owner can let it be posted: why.
     NeedsYou(String),
     /// Nothing to post now: Oby's review didn't approve that head, or something didn't read.
@@ -771,7 +841,9 @@ pub enum Approved {
 /// (`reviewer`: its settings folder and login, [`crate::github_login::reviewer`]) can push to the
 /// repository. Its words are obid's own ([`APPROVAL`]) and scanned first, and the review is
 /// pinned to `head` (`commit_id`). Nothing else is ever posted: changes Oby asks for stay in Oby
-/// and drive the author's rounds.
+/// and drive the author's rounds. Once someone dismissed its approval of that head, it isn't
+/// posted again. `go` is asked right before it's sent, as [`merge`]'s.
+#[allow(clippy::too_many_arguments)]
 pub async fn approve(
     gh: &Path,
     home: &Path,
@@ -780,6 +852,7 @@ pub async fn approve(
     head: &str,
     owner: &str,
     reviewer: Option<&(std::path::PathBuf, String)>,
+    go: &(dyn Fn() -> bool + Sync),
 ) -> Approved {
     let approved = job
         .current_review()
@@ -801,12 +874,14 @@ pub async fn approve(
     if note_reviewer(home, login).is_err() {
         return Approved::NotNow;
     }
-    if merging.reviews.iter().any(|r| {
-        r.login.eq_ignore_ascii_case(login)
-            && r.state == "APPROVED"
-            && r.commit.as_deref() == Some(head)
-    }) {
-        return Approved::Already;
+    let latest = merging
+        .reviews
+        .iter()
+        .find(|r| r.login.eq_ignore_ascii_case(login) && r.commit.as_deref() == Some(head));
+    match latest.map(|r| r.state.as_str()) {
+        Some("APPROVED") => return Approved::Already,
+        Some("DISMISSED") => return Approved::Dismissed,
+        _ => {}
     }
     match github::can_push(gh, folder, &job.repo).await {
         Ok(true) => {}
@@ -830,7 +905,11 @@ pub async fn approve(
             scan::scan(&[("review.md".into(), APPROVAL.into())], &scratch).await,
             Verdict::Clean
         );
-    let posted = if clean {
+    let posted = if !clean {
+        Err((false, "the scan of its words didn't come back clean".into()))
+    } else if !go() {
+        Err((false, "the job changed before it went out".into()))
+    } else {
         crate::listen::create_review(
             gh,
             Some(folder.as_path()),
@@ -841,8 +920,6 @@ pub async fn approve(
             head,
         )
         .await
-    } else {
-        Err((false, "the scan of its words didn't come back clean".into()))
     };
     let _ = std::fs::remove_dir_all(&scratch);
     match posted {
@@ -1661,6 +1738,7 @@ esac
                 job,
                 workflow,
                 Some(REVIEWER),
+                &|| true,
             )
             .await
         }
@@ -1889,6 +1967,7 @@ esac
                         &head(),
                         "wellprado",
                         reviewer.as_ref(),
+                        &|| true,
                     )
                     .await
                 }
@@ -1973,6 +2052,81 @@ esac
         assert!(!gh.calls().contains("REQUEST_CHANGES"));
     }
 
+    /// An approval someone dismissed isn't posted again on that head, and nothing goes out when
+    /// the job changed right before it would: neither the approval nor the merge.
+    #[tokio::test]
+    async fn a_dismissed_approval_or_a_changed_job_sends_nothing() {
+        let gh = Gh::new("dismissed");
+        let reviewer = (gh.dir.join("github/reviewer"), REVIEWER.to_owned());
+        let dismissed = pages(vec![
+            rest(1, REVIEWER, "User", "APPROVED", &head(), "COLLABORATOR"),
+            rest(2, REVIEWER, "User", "DISMISSED", &head(), "COLLABORATOR"),
+        ]);
+        let (_, merging) = read(&view(|_| {}), &dismissed);
+        let job = reviewed("approved", &head());
+        let ghp = gh.dir.join("gh");
+        let go = || true;
+        let stop = || false;
+        assert_eq!(
+            approve(
+                &ghp,
+                &gh.dir,
+                &job,
+                &merging,
+                &head(),
+                "wellprado",
+                Some(&reviewer),
+                &go
+            )
+            .await,
+            Approved::Dismissed
+        );
+        let (_, nobody) = read(&view(|_| {}), &pages(vec![]));
+        assert_eq!(
+            approve(
+                &ghp,
+                &gh.dir,
+                &job,
+                &nobody,
+                &head(),
+                "wellprado",
+                Some(&reviewer),
+                &stop
+            )
+            .await,
+            Approved::NotNow
+        );
+        assert!(!gh.calls().contains("-X POST"));
+        let blocked = merge(&ghp, &gh.dir, &job, &obis(), Some(REVIEWER), &stop)
+            .await
+            .unwrap_err();
+        assert!(!blocked.needs_you, "{}", blocked.why);
+        assert!(!gh.calls().contains("-X PUT"));
+    }
+
+    /// Each reason a merge needs the owner has a card of its own, and "Ready to merge?" another:
+    /// a new reason replaces the card before, and a card left open isn't asked again.
+    #[test]
+    fn each_reason_has_its_own_card() {
+        let signin = stopped_card(&job(), &head(), SIGN_IN_REVIEWER);
+        let blocked = stopped_card(
+            &job(),
+            &head(),
+            "Not merged: GitHub's rules for dev still block it.",
+        );
+        let ready = ready_card(&job(), 7, &head(), &obis());
+        assert_ne!(signin.id, blocked.id);
+        assert_ne!(signin.id, ready.id);
+        assert_eq!(
+            signin.id,
+            stopped_card(&job(), &head(), SIGN_IN_REVIEWER).id
+        );
+        for card in [&signin, &blocked, &ready] {
+            assert!(card.id.starts_with("merge-"), "{}", card.id);
+            assert_eq!(item_head(&card.id), Some(head().as_str()));
+        }
+    }
+
     /// For a repository Oby hasn't learned, the card proposes the way the pull request was
     /// approved and checked, squashed into its base; never into main.
     #[test]
@@ -2000,7 +2154,7 @@ esac
         // Its card, one per head.
         theirs.checks = Checks::Github;
         let card = ready_card(&job(), 7, &head(), &theirs);
-        assert_eq!(card.id, format!("merge-j1-{}", head()));
+        assert_eq!(card.id, format!("merge-ready-j1-{}", head()));
         assert_eq!(item_head(&card.id), Some(head().as_str()));
         assert_eq!(card.kind, "merge");
         assert_eq!(card.options, [MERGE, MERGE_AND_REMEMBER, LEAVE_OPEN]);

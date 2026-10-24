@@ -1021,7 +1021,8 @@ impl Link {
                 .unwrap_or_default()
                 .to_owned();
             let remember = answer.as_deref() == Some(crate::merge::MERGE_AND_REMEMBER);
-            if let Err(why) = self.jobs.merge_by_owner(&item.job, &head, remember).await {
+            let merged = self.jobs.merge_by_owner(&item.job, &head, remember).await;
+            if let Err(why) = &merged {
                 // Open again, unless it was settled meanwhile.
                 let open = {
                     let mut state = self.lock();
@@ -1038,6 +1039,16 @@ impl Link {
                     self.save_item(&item);
                 }
                 return Err(api(StatusCode::CONFLICT, format!("Not merged: {why}")));
+            }
+            // Merged: done, whatever came after it (a workflow it couldn't remember is `note`).
+            if let Ok(Some(note)) = merged {
+                item.done = Some(time::now());
+                item.answer = answer;
+                self.lock().inbox.insert(item.id.clone(), item.clone());
+                self.save_item(&item);
+                let mut shown = item.to_json();
+                shown["note"] = serde_json::json!(note);
+                return Ok(shown);
             }
         }
         item.done = Some(time::now());

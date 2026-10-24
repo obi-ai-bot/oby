@@ -7589,7 +7589,7 @@ impl Jobs {
             }
             let woken = self.follow.notified();
             tokio::select! {
-                _ = tokio::time::sleep(FOLLOW_TICK) => {}
+                _ = tokio::time::sleep(follow_tick()) => {}
                 _ = woken => {}
             }
         }
@@ -7611,7 +7611,7 @@ impl Jobs {
                     if job.pull_request.as_ref().is_some_and(|pr| !pr.is_open()) {
                         return false;
                     }
-                    let fresh = |at: i64| now - at < FOLLOW_INTERVAL;
+                    let fresh = |at: i64| now - at < follow_interval();
                     let tried = state
                         .followed
                         .get(&job.id)
@@ -7645,12 +7645,18 @@ impl Jobs {
                 ),
             };
             let mut carried = None;
+            let mut closed = false;
             self.update(&job.id, |job| {
                 if job.published.as_deref() != Some(url.as_str()) {
                     return;
                 }
                 match read {
                     Ok((pull_request, merging)) => {
+                        // Merged or closed: nothing waits on the owner about merging it any more.
+                        closed = !pull_request.is_open();
+                        if closed {
+                            crate::merge::closed(job, &pull_request);
+                        }
                         job.pull_request = Some(pull_request.clone());
                         job.pull_request_error = None;
                         // What a merge needs, when it read: else nothing carries on this time.
@@ -7659,7 +7665,11 @@ impl Jobs {
                     Err(why) => job.pull_request_error = Some(why),
                 }
             });
-            if let (Some(gh), Some((pull_request, merging))) = (&gh, carried) {
+            if closed {
+                if let Some(link) = self.link.get().and_then(std::sync::Weak::upgrade) {
+                    link.merge_items(&job.id, None);
+                }
+            } else if let (Some(gh), Some((pull_request, merging))) = (&gh, carried) {
                 self.carry(&job.id, gh, &pull_request, merging).await;
             }
         }
@@ -7691,13 +7701,13 @@ impl Jobs {
         let (Some(number), Some(head)) = (number, pr.head.clone()) else {
             return cards(None);
         };
-        if !pr.is_open()
-            || job.status != Status::Done
-            || job.dismissed.is_some()
-            || job.obi.is_some()
-            || job.kind == "review"
-            || job.kind == "research"
-        {
+        // Not one to carry on now (it runs again, was let go, isn't the owner's own): nothing
+        // waits on the owner about merging it.
+        if !carries(&job) || !pr.is_open() {
+            self.update(id, |job| {
+                job.merge_needs_you = false;
+                job.merge_error = None;
+            });
             return cards(None);
         }
         let home = self.config.home.clone();
@@ -7706,36 +7716,72 @@ impl Jobs {
         };
         let reviewer = crate::github_login::reviewer(gh, &home, &owner).await;
         let current = reviewer.as_ref().ok().and_then(|r| r.as_ref());
-        match crate::merge::approve(gh, &home, &job, &merging, &head, &owner, current).await {
-            crate::merge::Approved::Posted(sent) => {
-                tracing::info!("job {id}: sent {} {} {}", sent.action, sent.repo, sent.id);
-                self.update(id, |job| job.outgoing.push(sent));
-                if let Ok(reviews) = crate::github::reviews(gh, &job.repo, number).await {
-                    merging.reviews = reviews;
-                }
-            }
-            crate::merge::Approved::NeedsYou(why) => {
-                self.update(id, |job| {
-                    job.merge_error = Some(why.clone());
-                    job.merge_needs_you = true;
-                });
-                return cards(Some(crate::merge::stopped_card(&job, &head, &why)));
-            }
-            crate::merge::Approved::Already | crate::merge::Approved::NotNow => {}
-        }
         // Whose approval counts: every reviewer account Oby used, or none when that can't be
         // read, and then nothing merges.
         let reviewers = reviewer
             .as_ref()
             .ok()
             .and_then(|r| crate::merge::reviewers(&home, r.as_ref().map(|(_, l)| l.as_str())).ok());
-        let Some(job) = self.get(id) else { return };
+        self.settle_sending(id, &head, &merging, reviewers.as_ref());
         let learned = crate::memory::workflow(&home, &job.repo);
+        let workflow = learned.as_ref().and_then(|m| m.workflow.clone());
+        // The reviewer account's approval is what the merge waits on for a `reviewer` workflow,
+        // and for a repository Oby hasn't learned unless another approval counts already. For a
+        // `teammate` or `person` one it's posted, and never counts.
+        let wanted = match &workflow {
+            Some(workflow) => workflow.review == crate::memory::Approval::Reviewer,
+            None => !reviewers
+                .as_ref()
+                .is_some_and(|r| crate::merge::approved_by_another(pr, &merging, r)),
+        };
+        let go = || self.about_to_send(id, &head, "pullRequestApproval", None);
+        let approved =
+            crate::merge::approve(gh, &home, &job, &merging, &head, &owner, current, &go).await;
+        let stop = match approved {
+            crate::merge::Approved::Posted(sent) => {
+                tracing::info!("job {id}: sent {} {} {}", sent.action, sent.repo, sent.id);
+                self.update(id, |job| {
+                    job.sending = None;
+                    job.outgoing.push(sent);
+                });
+                if let Ok(reviews) = crate::github::reviews(gh, &job.repo, number).await {
+                    merging.reviews = reviews;
+                }
+                None
+            }
+            crate::merge::Approved::NeedsYou(why) if wanted => Some(why),
+            crate::merge::Approved::Dismissed if wanted => {
+                Some(crate::merge::DISMISSED_APPROVAL.to_owned())
+            }
+            _ => None,
+        };
+        self.update(id, |job| {
+            if job
+                .sending
+                .as_ref()
+                .is_some_and(|s| s.action == "pullRequestApproval")
+            {
+                job.sending = None;
+            }
+        });
+        if let Some(why) = stop {
+            self.update(id, |job| {
+                job.merge_error = Some(why.clone());
+                job.merge_needs_you = true;
+            });
+            return cards(Some(crate::merge::stopped_card(&job, &head, &why)));
+        }
+        let Some(job) = self.get(id) else { return };
         let card = match learned
             .as_ref()
             .and_then(|m| m.workflow.as_ref().map(|w| (m, w)))
         {
             Some((memory, workflow)) => {
+                let by = crate::job::MergedBy {
+                    by: "memory".into(),
+                    memory: Some(memory.id.clone()),
+                    at: obi_protocol::time::now(),
+                };
                 let outcome = match crate::merge::ready(
                     &job,
                     Some(workflow),
@@ -7744,21 +7790,18 @@ impl Jobs {
                     reviewers.as_ref(),
                 ) {
                     Ok(()) => {
+                        let go = || self.about_to_send(id, &head, "merge", Some(by.clone()));
                         crate::merge::merge(
                             gh,
                             &home,
                             &job,
                             workflow,
                             current.map(|(_, l)| l.as_str()),
+                            &go,
                         )
                         .await
                     }
                     Err(blocked) => Err(blocked),
-                };
-                let by = crate::job::MergedBy {
-                    by: "memory".into(),
-                    memory: Some(memory.id.clone()),
-                    at: obi_protocol::time::now(),
                 };
                 if let Ok(merged) = &outcome {
                     for sent in &merged.outgoing {
@@ -7798,12 +7841,75 @@ impl Jobs {
         cards(card);
     }
 
+    /// Right before obid sends `action` for the job `id` about `head` (crate::merge): whether the
+    /// job is still one to carry on at that head, and if so its mark (`Job::sending`), saved
+    /// before it's sent.
+    fn about_to_send(
+        &self,
+        id: &str,
+        head: &str,
+        action: &str,
+        by: Option<crate::job::MergedBy>,
+    ) -> bool {
+        let mut going = false;
+        self.update(id, |job| {
+            if carries(job) && job.pushed_head() == Some(head) {
+                job.sending = Some(crate::job::Sending {
+                    action: action.into(),
+                    head: head.into(),
+                    by,
+                });
+                going = true;
+            }
+        });
+        going
+    }
+
+    /// What obid was sending for the job `id` when it last stopped, settled from what GitHub
+    /// says now (the pull request is open, at `head`): an approval of a reviewer account's it
+    /// finds there is listed; a merge didn't land, and is tried again as anything is.
+    fn settle_sending(
+        &self,
+        id: &str,
+        head: &str,
+        merging: &crate::github::Merging,
+        reviewers: Option<&crate::merge::Reviewers>,
+    ) {
+        self.update(id, |job| {
+            let Some(sending) = job.sending.take() else {
+                return;
+            };
+            let posted = sending.action == "pullRequestApproval"
+                && sending.head == head
+                && reviewers.is_some_and(|r| {
+                    merging.reviews.iter().any(|v| {
+                        r.any(&v.login)
+                            && v.state == "APPROVED"
+                            && v.commit.as_deref() == Some(head)
+                    })
+                });
+            if posted && let Some(url) = job.published.clone() {
+                job.outgoing.push(crate::publish::Outgoing::new(
+                    "pullRequestApproval",
+                    &job.repo,
+                    &url,
+                    None,
+                ));
+            }
+        });
+    }
+
     /// The owner's Merge, or Merge and remember, on the job `id`'s "Ready to merge?" card about
     /// `head` (crate::sphere::link): GitHub is read again, the pull request must still be at that
     /// head and hold by the workflow the card proposes (or the one the owner taught Oby since),
     /// then it merges, `mergedBy` the owner. `remember` then keeps that workflow, the owner's yes
     /// to the card's "Can I remember that?". Why not, otherwise: nothing was sent.
-    pub async fn merge_by_owner(&self, id: &str, head: &str, remember: bool) -> Result<(), String> {
+    pub async fn merge_by_owner(
+        &self,
+        id: &str,
+        head: &str,
+        remember: bool,
+    ) -> Result<Option<String>, String> {
         let job = self.get(id).ok_or("There's no such job.")?;
         let gh = crate::github::gh().ok_or("GitHub's CLI (gh) isn't installed.")?;
         let number = job
@@ -7832,12 +7938,13 @@ impl Jobs {
             .ok_or("It isn't one Oby may merge.")?;
         crate::merge::ready(&job, Some(&workflow), &pr, &merging, Some(&reviewers))
             .map_err(|b| b.why)?;
-        let outcome = crate::merge::merge(&gh, &home, &job, &workflow, login).await;
         let by = crate::job::MergedBy {
             by: "owner".into(),
             memory: None,
             at: obi_protocol::time::now(),
         };
+        let go = || self.about_to_send(id, head, "merge", Some(by.clone()));
+        let outcome = crate::merge::merge(&gh, &home, &job, &workflow, login, &go).await;
         self.update(id, |job| crate::merge::note(job, &outcome, by));
         let merged = outcome.map_err(|b| b.why)?;
         for sent in &merged.outgoing {
@@ -7857,13 +7964,24 @@ impl Jobs {
                 crate::memory::remember_workflow(&home, &job.repo, workflow, &from, &repos).await
             {
                 tracing::warn!("job {id}: merged, but its workflow wasn't remembered: {why:?}");
-                return Err(
+                return Ok(Some(
                     "Merged, but Oby couldn't remember how: it asks again next time.".into(),
-                );
+                ));
             }
         }
-        Ok(())
+        Ok(None)
     }
+}
+
+/// Whether the follower carries `job`'s pull request on (crate::merge): done, published, the
+/// owner's own (never another Obi's), not let go, and not a review or research job.
+fn carries(job: &Job) -> bool {
+    job.status == Status::Done
+        && job.published.is_some()
+        && job.dismissed.is_none()
+        && job.obi.is_none()
+        && job.kind != "review"
+        && job.kind != "research"
 }
 
 /// What publishing `job` by hand would do: obid's own sentence and the base, or why there's
@@ -7889,10 +8007,20 @@ fn publish_action_of(job: &Job) -> Result<(String, String), String> {
     }
 }
 
-/// How often the pull request follower looks for one that's due.
-const FOLLOW_TICK: Duration = Duration::from_secs(30);
-/// How long a read of a pull request (or a try) stands before it's read again: three minutes.
-const FOLLOW_INTERVAL: i64 = 180;
+/// How often the pull request follower looks for one that's due: every 30 seconds, or as often as
+/// reads may come when they come sooner.
+fn follow_tick() -> Duration {
+    Duration::from_secs(follow_interval().clamp(1, 30).unsigned_abs())
+}
+
+/// How long a read of a pull request (or a try) stands before it's read again: three minutes, or
+/// `OBID_FOLLOW_SECONDS` (obid's tests set less).
+fn follow_interval() -> i64 {
+    std::env::var("OBID_FOLLOW_SECONDS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(180)
+}
 
 /// What publishing tells a job as it goes (crate::publish::Hooks).
 struct PublishHooks {
