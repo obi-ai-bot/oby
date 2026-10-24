@@ -224,6 +224,22 @@ struct WindowScreens {
         try await shoot("mac-sidebar-name-hover", model: busy(open: true), state: ChatState(defaults: .scratch), hover: CGPoint(x: 88, y: 342))
     }
 
+    /// Home with what waits on the owner (the owner's decision of 2026-10-24): a job's permission and
+    /// a Confirm, each with its answers right there; Oby steps back a little over them.
+    @Test func homeNeedsYou() async throws {
+        let model = model()
+        let permission = RunnerPermission(id: "p1", tool: "Bash", title: "Run swift test", detail: "swift test --package-path ../tetrix-ee",
+                                          rule: "Bash(swift test:*)", always: "Yes, and don't ask again for swift test in deskree-inc/oby")
+        model.feed.stage(tetrix: nil, extras: ["i1": RunnerJobExtras(id: "i1", permission: permission)])
+        model.feed.apply(InboxItem(id: "i1-permission-p1", kind: .permission, job: "i1", title: "Search ignores accents",
+                                   text: "Claude wants to run swift test in another package, outside this task's folder.",
+                                   options: ["Allow", "Always allow", "Deny"], created: now - 240), words: nil)
+        model.feed.apply(InboxItem(id: "confirm-1", kind: .start, job: "", title: "Put Dark mode flashes on launch in Bypass mode",
+                                   text: "It stops asking before each command until it's done.", options: ["Confirm", "Cancel"], created: now - 60),
+                         words: InboxWords(confirm: RunnerConfirm(action: "set_mode", target: "t1")))
+        try await shoot("mac-home-needs", model: model, state: ChatState(defaults: .scratch), sidebar: false)
+    }
+
     /// Home with the owner's work, the side panel open: the ways to the page.
     @Test func homeBusy() async throws {
         try await shoot("mac-home-busy", model: busy(open: true), state: ChatState(defaults: .scratch))

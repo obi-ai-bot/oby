@@ -196,7 +196,8 @@ final class RunnerFeed {
     }
     /// Merge checks this Mac runs for the runner (Settings › Runner, off by default).
     let checks = MacChecks()
-    /// This Mac's Touch ID key, registered on every connection: with it, the runner's jobs publish from here.
+    /// This Mac's approval key, registered on every connection: with it, the owner's click here publishes,
+    /// confirms and disconnects on the runner.
     let device = MacDevice()
     /// The runner's conversation, read in pages and followed over `turn` events, for the window's
     /// thread (apps/shared/ConversationModel.swift): one thread for every device (#11).
@@ -752,13 +753,13 @@ final class RunnerFeed {
         await (given ?? runner)?.cancelPlan(conversations.shown)
     }
 
-    /// The runner's exact sentence for publishing a job: Publish shows it, and Touch ID approves it.
+    /// The runner's exact sentence for publishing a job: Publish shows it, and this Mac's key signs it.
     func publishAction(_ id: String) async throws -> String {
         let runner = try acting("Set the runner's URL in Settings to publish it.")
         return try await runner.publishAction(id)
     }
 
-    /// Publishes a runner's job with that sentence, after Touch ID; the runner pushes and opens the pull request.
+    /// Publishes a runner's job with that sentence; the runner pushes and opens the pull request.
     @discardableResult
     func publish(_ id: String, action: String) async throws -> URL {
         let runner = try acting("Set the runner's URL in Settings to publish it.")
@@ -781,15 +782,11 @@ final class RunnerFeed {
     /// Settles one of the runner's inbox items: an answer goes to its job, `done` lets it go, `later` puts it off.
     func settle(_ id: String, answer: String? = nil, done: Bool? = nil, later: Date? = nil) async throws {
         let runner = try acting("Set the runner's URL in Settings to answer it.")
-        // Only the owner's tap confirms (#776): a Confirm on a confirm item is signed with Touch ID,
-        // its title the reason. A cancelled Touch ID sends nothing and the card stays.
-        // On the Mac a confirm item reads as Engine's `start`; its words say it's a confirm.
-        if answer == "Confirm", inboxWords[id]?.confirm != nil, let item = inbox.first(where: { $0.id == id }) {
-            do {
-                apply(try await device.confirm(id, title: item.title, with: runner))
-            } catch is ConfirmCancelled {
-                return
-            }
+        // Only the owner's tap confirms (#776): a Confirm on a confirm item is signed with this
+        // Mac's key, its title word for word. On the Mac a confirm item reads as Engine's `start`;
+        // its words say it's a confirm.
+        if answer == RunnerConfirm.confirm, inboxWords[id]?.confirm != nil, let item = inbox.first(where: { $0.id == id }) {
+            apply(try await device.confirm(id, title: item.title, with: runner))
             return
         }
         apply(try await runner.settle(id, answer: answer, done: done, later: later))
@@ -1140,7 +1137,7 @@ final class RunnerFeed {
     /// so a newer notice replaces the older one.
     static let jobKey = "job"
 
-    /// The "ready" alert's Publish: the window opens on the job, shows the runner's sentence, and asks for Touch ID.
+    /// The "ready" alert's Publish: the window opens on the job and shows the runner's sentence.
     static let publishButton = "publish"
     /// The "permission" alert's answers, and the key holding the ask it answers.
     static let allowButton = "allow"
@@ -1157,8 +1154,8 @@ final class RunnerFeed {
         UNUserNotificationCenter.current().setNotificationCategories(Set(categories.values))
     }
 
-    /// macOS's category for `category`: its buttons, Reply before Open. Only Open and Publish (which
-    /// asks for Touch ID in the window) bring the window up; every answer needs the Mac unlocked.
+    /// macOS's category for `category`: its buttons, Reply before Open. Only Open and Publish (whose
+    /// sentence shows in the window) bring the window up; every answer needs the Mac unlocked.
     static func notificationCategory(_ category: Alert.Category) -> UNNotificationCategory {
         var actions = category.buttons.map { button -> UNNotificationAction in
             var options: UNNotificationActionOptions = button.opens ? [.foreground] : [.authenticationRequired]
@@ -1312,7 +1309,7 @@ final class RunnerFeed {
             let place = Alerts.place(of: item, conversation: conversation)
             guard !windowShows(place) else { continue }
             told.insert(item.id)
-            show(Alerts.alert(for: item, kind: kind, conversation: conversation))
+            show(Alerts.alert(for: item, kind: kind, conversation: conversation, quotes: inboxWords[item.id]?.confirm?.words != nil))
             // One thing, one alert: Oby's words beside the ask ("It waits for your Start") give way to it.
             let about: String? = switch place {
             case .conversation(let id): id

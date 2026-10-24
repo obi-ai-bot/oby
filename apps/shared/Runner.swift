@@ -1460,7 +1460,7 @@ nonisolated struct Runner: Sendable {
         return answer.action
     }
 
-    // Approvals come from the iPhone's Face ID key or the Mac's Touch ID key (apps/shared/DeviceKey.swift).
+    // Approvals come from the iPhone's or the Mac's approval key (apps/shared/DeviceKey.swift): the owner's click.
     #if os(iOS) || os(macOS)
     /// The owner's Confirm of a confirm item, with the device's signature over its title (#776).
     func settle(_ id: String, answer: String, approval: Approval) async throws -> InboxItem {
@@ -1492,7 +1492,7 @@ nonisolated struct Runner: Sendable {
 
     #if os(iOS)
 
-    /// Pairs a watch's key, approved with Face ID, and hands the runner the Access service token
+    /// Pairs a watch's key, approved with this phone's key, and hands the runner the Access service token
     /// for its vault. Answers the watch's id and the Watch API's address.
     func pairWatch(name: String, publicKey: Data, clientID: String, clientSecret: String, approval: PairingApproval) async throws -> (id: String, url: URL) {
         struct Body: Encodable { var name: String; var publicKey: String; var accessClientId: String; var accessClientSecret: String; var approval: PairingApproval }

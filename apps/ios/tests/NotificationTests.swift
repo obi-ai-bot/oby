@@ -88,10 +88,13 @@ struct NotificationTests {
         #expect(throws: (any Error).self) { try PushRelay.pushKey("c2hvcnQ") }
     }
 
+    /// The owner's decision of 2026-10-24: a button answers, no Face ID, so nothing brings Oby
+    /// forward to ask for it; Allow and Always allow still need the phone unlocked.
     @Test func allowAndAlwaysAllowNeedAnUnlockedPhone() throws {
         let actions = try #require(Notifications.categories.first { $0.identifier == "permissionRule" }).actions
         #expect(actions.map(\.title) == ["Allow", "Always allow", "Deny", "Open"])
         #expect(actions.filter { $0.options.contains(.authenticationRequired) }.map(\.identifier) == ["Allow", "Always allow"])
+        #expect(actions.filter { $0.options.contains(.foreground) }.map(\.identifier) == ["open"])
         // Deny lets nothing run: from the Lock Screen, in the background.
         #expect(actions.first { $0.identifier == "Deny" }?.options == [.destructive])
     }
@@ -103,7 +106,7 @@ struct NotificationTests {
         let plan = try #require(Notifications.categories.first { $0.identifier == "plan" }).actions
         #expect(plan.map(\.title) == ["Approve", "Keep planning", "Open"])
         #expect(plan.filter { $0.options.contains(.authenticationRequired) }.map(\.identifier) == ["Approve"])
-        #expect(plan.filter { Notifications.refusals.contains($0.identifier) }.map(\.identifier) == ["Keep planning"])
+        #expect(plan.first { $0.identifier == "Keep planning" }?.options == [])
     }
 
     @Test func anAnswerNamesThePermissionTheAlertShowed() {

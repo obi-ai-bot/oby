@@ -163,8 +163,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     /// A click on an alert opens the window on its job (the runner's, or one of this Mac's) or its
     /// conversation; an alert about nothing in particular opens the window. Its buttons and its Reply
     /// answer right there (#863), with the alert's own ids (`Alerts.answer`): the very ask it showed,
-    /// never a newer one. Publish and a Confirm open the window, where Touch ID signs them. An answer
-    /// that doesn't go through (asked elsewhere meanwhile, obid unreachable) opens the window on it.
+    /// never a newer one. A Confirm is signed with this Mac's key, the click its approval; Publish
+    /// opens the window on its sentence. An answer that doesn't go through (asked elsewhere
+    /// meanwhile, obid unreachable) opens the window on it.
     func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse) async {
         let info = response.notification.request.content.userInfo
         let typed = (response as? UNTextInputNotificationResponse)?.userText

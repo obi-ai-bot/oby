@@ -5,7 +5,7 @@ import WatchConnectivity
 
 /// Pairs this phone's Apple Watch with the runner, so the watch reaches it through the Cloudflare
 /// Tunnel when this phone is out of reach (docs/runner-api.md, `POST /v1/watches`). The watch
-/// makes its key in its Secure Enclave and hands over the public half; Face ID here approves it;
+/// makes its key in its Secure Enclave and hands over the public half; the owner's tap here approves it;
 /// the runner keeps the key and the Access service token (in its vault); and the watch gets its
 /// id, the Watch API's address and the token. The phone keeps the token too, in its keychain,
 /// to pair the next watch.
@@ -33,14 +33,14 @@ final class WatchPairing {
     func pair(_ phone: Phone) async throws {
         busy = true
         defer { busy = false }
-        guard DeviceKey.isAvailable else { throw RunnerError(message: "Pairing needs Face ID on your iPhone.") }
+        guard DeviceKey.isAvailable else { throw RunnerError(message: Phone.noKey) }
         let clientID = clientID.trimmingCharacters(in: .whitespacesAndNewlines)
         let clientSecret = clientSecret.trimmingCharacters(in: .whitespacesAndNewlines)
         let key = try await ask([WatchWire.kind: WatchWire.Kind.pairKey.rawValue])
         guard let publicKey = key[WatchWire.publicKey] as? Data else { throw RunnerError(message: "Your watch sent no key.") }
         let name = key[WatchWire.name] as? String ?? "Apple Watch"
         let device = try await phone.registerDevice()
-        let approval = try await Task.detached { try DeviceKey.approvePairing(publicKey: publicKey.base64EncodedString(), device: device) }.value
+        let approval = try DeviceKey.approvePairing(publicKey: publicKey.base64EncodedString(), device: device)
         let paired = try await phone.runner.pairWatch(name: name, publicKey: publicKey, clientID: clientID, clientSecret: clientSecret, approval: approval)
         Self.save(clientID: clientID, clientSecret: clientSecret)
         _ = try await ask([WatchWire.kind: WatchWire.Kind.paired.rawValue, WatchWire.watch: paired.id, WatchWire.url: paired.url.absoluteString,

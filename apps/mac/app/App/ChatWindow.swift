@@ -388,7 +388,8 @@ struct ChatView: View {
 }
 
 /// Home (Sangam's Home.tsx): the title bar and its trail, Oby's stage with what's running and the
-/// chips under it, the message box at the foot, and the pages that open over it.
+/// chips under it, what waits on you (the owner's decision of 2026-10-24), the message box at the
+/// foot, and the pages that open over it.
 private struct HomeView: View {
     let model: IslandModel
     let state: ChatState
@@ -410,6 +411,11 @@ private struct HomeView: View {
                 VStack(spacing: 0) {
                     stage
                         .opacity(away ? 0 : 1).scaleEffect(away && !reduceMotion ? 0.98 : 1)
+                    if !away {
+                        HomeDecisions(model: model, height: height, onOpen: { state.trail.start(.job(id: $0, local: $1)) })
+                            .frame(maxWidth: Tokens.homeBox - 2 * Tokens.gutter)
+                            .padding(.horizontal, Tokens.gutter).padding(.bottom, 12)
+                    }
                     if model.listening && !away {
                         ListeningLine(voice: model.voice).frame(maxWidth: Tokens.homeBox - 2 * Tokens.gutter)
                             .padding(.horizontal, Tokens.gutter).padding(.bottom, 8)
@@ -445,7 +451,7 @@ private struct HomeView: View {
         let running = work.count { $0.status == .running }, needs = work.count { $0.status == .needs }
         return EyeLevel {
             VStack(spacing: 16) {
-                OnStage(character: character).frame(width: 280, height: 220)
+                StagedOby(model: model, character: character)
                     .padding(.bottom, -8)
                 Text(HomeLine.attention(running: running, needs: needs))
                     .font(Tokens.font(Tokens.textBase))
@@ -523,6 +529,77 @@ private struct HomeView: View {
         case .settings(let page):
             SettingsPane(model: model, page: page)
         }
+    }
+}
+
+/// Everything waiting on the owner, in one place on Home (the owner's decision of 2026-10-24): each
+/// permission, Confirm, question and Start as the conversation's own card (Sangam's AskBlock), the
+/// oldest first, answered right here (Allow, Always allow, Deny, Confirm…) without opening its task.
+/// It hugs its cards, scrolling past what fits between Oby and the message box.
+private struct HomeDecisions: View {
+    let model: IslandModel
+    /// Home's height: the cards get what Oby's stage and the box leave.
+    let height: CGFloat
+    let onOpen: (_ job: String, _ local: Bool) -> Void
+    @State private var content: CGFloat = 0
+
+    /// What the title bar, Oby's stage (smaller while something waits) and the message box need,
+    /// measured on macOS 27.
+    // ponytail: a measured reserve; measure the stage and the box if either changes size.
+    private static let reserve: CGFloat = 400
+    /// At least one card's head and buttons, however small the window.
+    private static let least: CGFloat = 140
+
+    /// The inbox's decisions that wait now, here and on the runner, the oldest first.
+    static func entries(_ model: IslandModel, now: Date) -> [IslandInbox.Entry] {
+        IslandInbox.entries(desk: model.desk, feed: model.feed, now: now).filter(\.item.isDecision)
+    }
+
+    /// A runner's permission it only names in its job (an older runner's, #134).
+    static func permissions(_ model: IslandModel, now: Date) -> [RunnerFeed.PermissionRecord] {
+        model.feed.chatPermissions.filter { $0.waits(at: now) }
+    }
+
+    /// Whether anything waits on the owner now.
+    static func waits(_ model: IslandModel, now: Date) -> Bool {
+        !entries(model, now: now).isEmpty || !permissions(model, now: now).isEmpty
+    }
+
+    var body: some View {
+        // Every half minute: what was put off comes back.
+        TimelineView(.periodic(from: .now, by: 30)) { context in
+            let entries = Self.entries(model, now: context.date)
+            let permissions = Self.permissions(model, now: context.date)
+            if !entries.isEmpty || !permissions.isEmpty {
+                ScrollView {
+                    VStack(spacing: 12) {
+                        ForEach(entries) { entry in
+                            InlineDecision(entry: entry, desk: model.desk, feed: model.feed, onOpen: onOpen)
+                        }
+                        ForEach(permissions) { record in
+                            InlinePermission(record: record, feed: model.feed)
+                        }
+                    }
+                    .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { content = $0 }
+                }
+                .scrollIndicators(.automatic)
+                .frame(height: min(content, max(Self.least, height - Self.reserve)))
+                .accessibilityElement(children: .contain)
+                .accessibilityLabel("Needs you")
+            }
+        }
+    }
+}
+
+/// Oby on Home's stage, a little smaller while something waits on you, so its cards fit under it.
+/// A view of its own: only it and the cards follow the inbox, never Home and the pages over it.
+private struct StagedOby: View {
+    let model: IslandModel
+    let character: ObyCharacter?
+
+    var body: some View {
+        let waits = HomeDecisions.waits(model, now: .now)
+        OnStage(character: character).frame(width: waits ? 200 : 280, height: waits ? 150 : 220)
     }
 }
 

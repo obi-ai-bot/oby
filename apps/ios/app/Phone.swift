@@ -1008,19 +1008,14 @@ final class Phone {
 
     /// Settles an inbox item: an answer goes to its job, `done` lets it go, `later` puts it off.
     func settle(_ id: String, answer: String? = nil, done: Bool? = nil, later: Date? = nil) async throws {
-        // Only the owner's tap confirms (#776): Face ID signs the item's title. A Confirm is never
-        // queued offline (its signature is stale after two minutes); Cancel and Later still are.
+        // Only the owner's tap confirms (#776): this iPhone's key signs the item's title, the tap
+        // its approval. A Confirm is never queued offline (its signature is stale after two
+        // minutes); Cancel and Later still are.
         if answer == "Confirm", let item = inbox.first(where: { $0.id == id && $0.kind == "confirm" }) {
             guard connection == .live else { throw RunnerError(message: Self.confirmNeedsTheMac) }
-            guard DeviceKey.isAvailable else { throw RunnerError(message: "Confirming needs Face ID on your iPhone.") }
+            guard DeviceKey.isAvailable else { throw RunnerError(message: Self.noKey) }
             let device = try await registerDevice()
-            let title = item.title
-            let approval: Approval
-            do {
-                approval = try await Task.detached { try DeviceKey.approveConfirm(item: id, title: title, device: device) }.value
-            } catch {
-                throw RunnerError(message: "Nothing was confirmed: Face ID didn't approve it.")
-            }
+            let approval = try DeviceKey.approveConfirm(item: id, title: item.title, device: device)
             apply(.inbox(try await runner.settle(id, answer: "Confirm", approval: approval)))
             return
         }
@@ -1076,11 +1071,12 @@ final class Phone {
         try await runner.publishAction(id)
     }
 
-    /// Face ID signs the action; the runner checks the signature, then pushes and opens a draft PR.
+    /// This iPhone's key signs the action, the tap its approval; the runner checks the signature,
+    /// then pushes and opens the pull request.
     func publish(_ id: String, action: String) async throws -> URL {
-        guard DeviceKey.isAvailable else { throw RunnerError(message: "Publishing needs Face ID on your iPhone.") }
+        guard DeviceKey.isAvailable else { throw RunnerError(message: Self.noKey) }
         let device = try await registerDevice()
-        let approval = try await Task.detached { try DeviceKey.approve(job: id, action: action, device: device) }.value
+        let approval = try DeviceKey.approve(job: id, action: action, device: device)
         let url = try await runner.publish(id, approval: approval)
         if var job = jobs.first(where: { $0.id == id }) {
             job.published = url.absoluteString
@@ -1125,15 +1121,21 @@ final class Phone {
     /// What a Confirm says without a connection to the Mac: it isn't queued (#776).
     nonisolated static let confirmNeedsTheMac = "Confirm needs a connection to your Mac."
 
-    /// By the linked Mac (its identity: the hostname, the same at home and away, or its relay and key), or by the runner's.
-    private var deviceKey: String { "device.\(link?.identity ?? runnerURL?.host() ?? runnerURL?.absoluteString ?? "")" }
+    /// What approving says on an iPhone with no Secure Enclave (a simulator).
+    nonisolated static let noKey = "Approving needs a real iPhone."
+
+    /// By the linked Mac (its identity: the hostname, the same at home and away, or its relay and
+    /// key), or by the runner's. The Face ID key's, kept as `device.<…>` until 2026-10-24, doesn't
+    /// sign any more: this one's key signs without asking (apps/shared/DeviceKey.swift), so the
+    /// phone registers it once.
+    private var deviceKey: String { "device.approval.\(link?.identity ?? runnerURL?.host() ?? runnerURL?.absoluteString ?? "")" }
     var deviceID: String? { UserDefaults.standard.string(forKey: deviceKey) }
 
-    /// Registers the phone's Face ID key with the runner and returns its id. On every connection it
+    /// Registers the phone's approval key with the runner and returns its id. On every connection it
     /// registers `again`: the runner keeps a known key's id, and a reinstalled runner learns it anew.
     func registerDevice(again: Bool = false) async throws -> String {
         if !again, let deviceID { return deviceID }
-        guard DeviceKey.isAvailable else { throw RunnerError(message: "Publishing needs Face ID on your iPhone.") }
+        guard DeviceKey.isAvailable else { throw RunnerError(message: Self.noKey) }
         let id = try await runner.register(name: "iPhone", publicKey: try DeviceKey.publicKey())
         UserDefaults.standard.set(id, forKey: deviceKey)
         return id

@@ -67,7 +67,7 @@ nonisolated struct RelayedPlan: Codable, Equatable, Sendable {
 /// - `planned`: `request` and `said`, with `plan` (a RelayedPlan) or `error`.
 /// - `step`: `request` and `step` (a TurnStep as JSON): one step of Oby's turn for the plan the watch
 ///   awaits (#304). Ephemeral, like `transcript`: never queued, and absent from runners without steps.
-/// - `published`: `job` (its id), with `url`, `pending` (Face ID waits on the phone) or `error`.
+/// - `published`: `job` (its id), with `url`, `pending` (the phone hasn't signed it yet; no phone sends it since 2026-10-24) or `error`.
 ///
 /// From the phone, answered in the reply (apps/ios/app/WatchPairing.swift):
 /// - `pairKey`: nothing; answered with `publicKey` (the watch's Secure Enclave key, X9.63) and `name`.

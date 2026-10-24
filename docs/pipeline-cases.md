@@ -541,7 +541,7 @@ Things that hold at every step, and matter more now that nobody confirms a PR or
 
 ### X.3 When Oby may interrupt you
 - **What happens:** only for a decision only you can make, a hard stop (a secret, or the same failure after every round), or done. Everything else waits for the report.
-- **Oby today:** Broken. Every plan needs a Dispatch tap, and every Publish needs Touch ID.
+- **Oby today:** Broken. Every plan needs a Dispatch tap, and publishing by hand needs a click (no Touch ID since 2026-10-24).
 - **Claude Code:** Projects shows "Waiting on you" and can be told to post only when finished or blocked. Auto mode pauses after repeated blocks.
 - **Cursor:** a push when an agent finishes, needs input or is ready for review.
 - **Codex:** Allow/Deny cards in Slack.

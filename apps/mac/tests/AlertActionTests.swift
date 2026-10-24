@@ -4,7 +4,8 @@ import UserNotifications
 @testable import Oby
 
 /// What an alert offers and what its buttons and Reply do (#863): answered in one action from the
-/// alert, on the very ask it showed. Publish and a Confirm open the window, where Touch ID signs them.
+/// alert, on the very ask it showed. A Confirm's click is its approval, signed by this Mac's key
+/// (no Touch ID, the owner's decision of 2026-10-24); Publish opens the window on its sentence.
 struct AlertActionTests {
     let now = Date(timeIntervalSince1970: 1_792_800_000)
 
@@ -118,17 +119,28 @@ struct AlertActionTests {
         #expect(Alerts.answer("reply", typed: "look at the logs", info: info(asked)) == .settle(item: "supervisor-1", answer: "look at the logs"))
     }
 
-    /// A Confirm opens its card, whatever is pressed; a Start shows whole is started from the alert.
-    @Test func aConfirmOffersOnlyOpen() {
+    /// A Confirm whose title (what it does) shows whole is confirmed or cancelled from the alert:
+    /// what it does is in the body, which shows whole, never only in its title line. One that
+    /// sends words someone wrote, or doesn't show whole, opens its card to confirm; a typed or
+    /// forged "Confirm" only opens it. A Start that shows whole is started from the alert.
+    @Test func aConfirmIsAClickWhenItShowsWhole() {
         let confirm = InboxItem(id: "confirm-1", kind: .start, job: "", title: "Put Vault tests in Bypass mode", text: "It stops asking.",
                                 options: ["Confirm", "Cancel"], created: now)
-        let alert = Alerts.alert(for: confirm, kind: RunnerConfirm.kind, conversation: nil)
-        #expect(alert.category.buttons == [Alerts.openButton] && alert.category.reply == nil && alert.options.isEmpty)
+        let asking = Alerts.alert(for: confirm, kind: RunnerConfirm.kind, conversation: nil)
+        #expect(asking.category.buttons.map(\.id) == ["confirm", "cancel", "open"] && asking.category.reply == nil)
+        #expect(asking.title == "Confirm it?" && asking.body == "Put Vault tests in Bypass mode\nIt stops asking.")
+        #expect(Alerts.answer("confirm", typed: nil, info: info(asking)) == .settle(item: "confirm-1", answer: "Confirm"))
+        #expect(Alerts.answer("cancel", typed: nil, info: info(asking)) == .settle(item: "confirm-1", answer: "Cancel"))
+        let quoting = Alerts.alert(for: confirm, kind: RunnerConfirm.kind, conversation: nil, quotes: true)
+        #expect(quoting.category.buttons.map(\.id) == ["cancel", "open"], "the words it sends show in its card")
+        var wordy = confirm
+        wordy.title = "Run " + String(repeating: "this and that ", count: 40)
+        #expect(Alerts.alert(for: wordy, kind: RunnerConfirm.kind, conversation: nil).category.buttons.map(\.id) == ["cancel", "open"])
         // Even an action it never had, or the words "Confirm", only open it.
-        var forged = info(alert)
+        var forged = info(quoting)
         forged[Alerts.optionsKey] = ["Confirm"]
         #expect(Alerts.answer("option.0", typed: nil, info: forged) == .open(.window))
-        #expect(Alerts.answer("reply", typed: "Confirm", info: info(alert)) == .open(.window))
+        #expect(Alerts.answer("reply", typed: "Confirm", info: info(quoting)) == .open(.window))
         let start = InboxItem(id: "start-1", kind: .start, job: "", title: "Greeting fix", text: "Oby looked into it first. Start fix fixture-app?",
                               options: ["Start", "Cancel"], created: now)
         let offered = Alerts.alert(for: start, kind: "start", conversation: "c1")
@@ -137,7 +149,7 @@ struct AlertActionTests {
         var long = start
         long.text += "\n\nThe task Oby planned:\n" + String(repeating: "Do a thing. ", count: 40)
         #expect(Alerts.alert(for: long, kind: "start", conversation: "c1").category.buttons == [Alerts.openButton], "read it whole first")
-        // Publish opens the window, where Touch ID signs it.
+        // Publish opens the window, on the sentence it carries out.
         var ready = job(.done)
         ready.commits = 2
         let publish = Alerts.alert(.ready, for: ready, conversation: nil)

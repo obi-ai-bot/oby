@@ -28,11 +28,13 @@ struct ConversationAlertTests {
         #expect(Alerts.place(of: ask, conversation: nil) == .conversation("5b0e2c4d-1111-2222-3333-444455556666"))
     }
 
-    /// A Confirm and a Start alert with their own titles; a teammate's request reading as a Start doesn't.
+    /// A Confirm alerts as "Confirm it?" with what it does in its body (a title line can be cut
+    /// short), a Start with its own title; a teammate's request reading as a Start doesn't.
     @Test func aConfirmAndAStartAlert() {
         let confirm = item("confirm-1", .start, title: "Remember: you like squash merges", text: "Oby will remember it.", options: ["Confirm", "Cancel"])
         #expect(Alerts.alerts(confirm, kind: RunnerConfirm.kind, jobAlerts: false, told: [], now: now))
-        #expect(Alerts.alert(for: confirm, kind: RunnerConfirm.kind, conversation: nil).title == "Remember: you like squash merges")
+        let confirmed = Alerts.alert(for: confirm, kind: RunnerConfirm.kind, conversation: nil)
+        #expect(confirmed.title == "Confirm it?" && confirmed.body == "Remember: you like squash merges\nOby will remember it.")
         let start = item("start-1", .start, title: "Greeting fix", text: "Oby looked into it first. Start it?", options: ["Start", "Cancel"])
         #expect(Alerts.alerts(start, kind: "start", jobAlerts: false, told: [], now: now))
         #expect(Alerts.alert(for: start, kind: "start", conversation: "c1").title == "Greeting fix")
@@ -77,11 +79,12 @@ struct ConversationAlertTests {
         let key = "sk-ant-api03-" + String(repeating: "Q", count: 40)
         let json = #"{"id":"confirm-9","kind":"confirm","job":"","title":"Send an answer: Question from Bob","text":"Oby would answer Bob's question.","options":["Confirm","Cancel"],"created":"2026-10-23T10:00:00Z","done":null,"later":null,"confirm":{"action":"answer_obi","target":"q1","payload":{"words":"hi"}},"obi":{"quoted":{"text":"\#(key)"}},"plugin":{"quoted":{"text":"\#(key)"}},"watch":{"quoted":{"text":"\#(key)"}}}"#
         let parsed = try #require(InboxItem.runner(Data(json.utf8)))
-        let alert = Alerts.alert(for: parsed, kind: RunnerConfirm.kind, conversation: nil)
+        // It sends Bob words someone wrote (`confirm.payload.words`), as RunnerFeed tells the alert.
+        let alert = Alerts.alert(for: parsed, kind: RunnerConfirm.kind, conversation: nil, quotes: true)
         for shown in [alert.title, alert.subtitle, alert.body] + alert.info.values + alert.options {
             #expect(!shown.contains(key))
         }
-        #expect(alert.category.buttons == [Alerts.openButton], "a Confirm only opens its card")
+        #expect(alert.category.buttons.map(\.id) == ["cancel", "open"], "a Confirm that sends quoted words is confirmed on its card")
     }
 
     /// Oby's answer in a conversation the window doesn't show alerts once, with its first lines.

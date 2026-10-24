@@ -1,7 +1,6 @@
 import Observation
 import OSLog
 import UIKit
-import UserNotifications
 import WatchConnectivity
 
 /// The watch can't reach the tailnet, so this phone stands between it and the runner
@@ -10,7 +9,7 @@ import WatchConnectivity
 /// (plan, dispatch, publish, a message to a job) as the app itself does. iOS wakes Oby in the
 /// background for a message from the watch, so this works with the phone in a pocket.
 ///
-/// Publish needs this phone's Face ID key: the watch asks, the phone signs. Spoken requests come
+/// Publish needs this phone's approval key: the watch asks, the phone signs. Spoken requests come
 /// as audio and are written down here, on device (watchOS has no SpeechAnalyzer).
 final class WatchRelay: NSObject {
     static let shared = WatchRelay()
@@ -288,40 +287,18 @@ final class WatchRelay: NSObject {
         } catch {}
     }
 
-    /// Signs the publish with this phone's Face ID key, as the app does, and tells the watch how
-    /// it went. Face ID can't come up while Oby is in the background, so then a notification on
-    /// the phone finishes it: its Publish is the app's own (apps/ios/app/Notifications.swift).
+    /// Signs the publish with this phone's key, as the app does (the watch's turn of the crown is
+    /// the approval), and tells the watch how it went.
     private func publish(_ id: String, action: String) async {
         guard let phone else { return }
         var message: [String: Any] = [WatchWire.kind: WatchWire.Kind.published.rawValue, WatchWire.job: id]
         do {
-            if UIApplication.shared.applicationState == .active {
-                message[WatchWire.url] = try await phone.publish(id, action: action).absoluteString
-            } else {
-                try await askOnPhone(id, action: action)
-                message[WatchWire.pending] = "Face ID is on your iPhone: open Oby's notification there."
-            }
+            message[WatchWire.url] = try await phone.publish(id, action: action).absoluteString
         } catch {
             message[WatchWire.error] = error.localizedDescription
         }
         send(message)
         _ = await refresh()
-    }
-
-    /// The "approve" category is registered at launch with the others (apps/ios/app/Notifications.swift),
-    /// so the button is there however long the notification waits.
-    private func askOnPhone(_ id: String, action: String) async throws {
-        let center = UNUserNotificationCenter.current()
-        guard await center.notificationSettings().authorizationStatus == .authorized else {
-            throw RunnerError(message: "Open Oby on your iPhone to publish with Face ID.")
-        }
-        let content = UNMutableNotificationContent()
-        content.title = "Publish from your watch"
-        content.body = action
-        content.categoryIdentifier = Notifications.approve
-        content.userInfo = ["job": id]
-        content.sound = .default
-        try await center.add(UNNotificationRequest(identifier: "\(Notifications.approve)-\(id)", content: content, trigger: nil))
     }
 
     /// iOS wakes Oby in the background for the watch and suspends it again soon after the reply:

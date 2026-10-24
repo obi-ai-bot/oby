@@ -35,7 +35,7 @@ nonisolated struct Connector: Identifiable, Equatable, Sendable {
         case enablePlugin(id: String, needsURL: Bool)
         /// `PUT /v1/obid/plugins/{id}` off.
         case disablePlugin(String)
-        /// `DELETE /v1/connections/{name}`, approved with Touch ID.
+        /// `DELETE /v1/connections/{name}`, signed by this Mac's key: the click is the approval.
         case disconnect(String)
         /// gh's own sign-in on the runner (`POST /v1/github/sign-in`): GitHub's page and its code.
         case signInGitHub

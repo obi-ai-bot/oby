@@ -362,7 +362,7 @@ struct TaskPage: View {
     }
 
     /// Publish by hand when Oby's own didn't go: the exact action shows first, and exactly that
-    /// goes out once Face ID signs it.
+    /// goes out on the tap.
     @ViewBuilder private func publish(_ job: Job) -> some View {
         if let reason = job.publishError { Text(reason).font(Tokens.font(Tokens.textSm)).foregroundStyle(Tokens.needsInk).padding(.bottom, 8) }
         if let action {
@@ -370,7 +370,7 @@ struct TaskPage: View {
                 Text(action).font(Tokens.font(Tokens.textBase, .medium)).foregroundStyle(Tokens.ink).fixedSize(horizontal: false, vertical: true)
                 if let problem { Text(problem).font(Tokens.font(Tokens.textSm)).foregroundStyle(Tokens.danger) }
                 HStack(spacing: 8) {
-                    PillButton(title: busy ? "Publishing…" : "Publish with Face ID", primary: true) {
+                    PillButton(title: busy ? "Publishing…" : "Publish", primary: true) {
                         Task {
                             await run {
                                 let url = try await phone.publish(job.id, action: action)
@@ -466,7 +466,7 @@ struct TaskPage: View {
 
     private var publishAsked: Bool { phone.publishing == id && phone.loaded && scenePhase == .active }
 
-    /// The notification's Publish: the action shows, and Face ID asks for it now.
+    /// The notification's Publish: the action shows, and it goes now (the tap is the approval).
     private func publishFromNotification() {
         guard publishAsked else { return }
         phone.publishing = nil

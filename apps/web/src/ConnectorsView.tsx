@@ -49,7 +49,7 @@ export default function Connectors() {
     {lists?.problems.map((p) => <p key={p} className="set-foot set-problem rise" style={rise(2 + shown.length)} role="alert">{p}</p>)}
     <p className="set-foot rise" style={rise(2 + shown.length)}>
       {lists ? 'This page shows what obid serves, and changes none of it. ' : 'Reading obid’s plug-ins and connections… '}
-      Each one says where it changes: plug-ins and connections in Oby on your Mac, where Touch ID approves a change to a connection.
+      Each one says where it changes: plug-ins and connections in Oby on your Mac, where your click approves a change to a connection.
     </p>
   </>;
 }

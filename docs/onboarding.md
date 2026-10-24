@@ -88,7 +88,6 @@ A window of its own over the main one (760 × 520, the Safari-style toolbar wind
 | Microphone and speech (iPhone) | The first tap on the mic | "Oby listens until you tap Stop, up to a minute, and your words stay a draft until you send them." | iOS's prompts, microphone then speech. |
 | Screen Recording | The first "Show Oby your screen" | "To see your screen, macOS needs to let Oby record it. It looks only when you ask." | macOS's prompt; the copy in FirstLaunch that says it isn't asked goes. |
 | Notifications (Mac) | The first task you start | "Oby tells you when a task needs you or ends badly. Nothing else." | macOS's prompt. |
-| Face ID or Touch ID | The first time you publish by hand | (the action itself is the reason: "Publish 2 commits to obi") | the system's prompt. |
 | Keep the Mac available | Pairing an iPhone, on a desktop Mac or a laptop on power | none: on by default, shown in Settings › iPhone | — |
 | "Can I remember that?" | The first time you say or do something that sounds like a rule (section 5) | the question itself | your yes, or not. |
 

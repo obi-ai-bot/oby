@@ -496,7 +496,7 @@ struct ConnectorsTests {
     }
 
     /// Disconnecting a runner's connection signs the runner's own sentence, under the connection
-    /// prefix, after Touch ID: a publish's signature can't pass for it, nor it for a publish's.
+    /// prefix, on the owner's click: a publish's signature can't pass for it, nor it for a publish's.
     @Test func disconnectSignsTheRunnersSentence() async throws {
         let stub = RunnerStub { request in
             switch (request.method, request.path) {
@@ -525,7 +525,7 @@ struct ConnectorsTests {
 
     /// The same prefix approves adding a connection, so this Mac signs only "Disconnect <name>.":
     /// a runner asking for anything else (here, a connection carrying a secret to another host)
-    /// gets no signature, and a cancelled Touch ID sends none either.
+    /// gets no signature, and a key that can't sign sends none either.
     @Test func disconnectSignsNothingElse() async throws {
         let other = "Connect mail: agents' read-only calls to the MCP server https://elsewhere.example/mcp carry the vault secret github-token as Authorization: Bearer."
         let asking = RunnerStub { request in
@@ -549,7 +549,7 @@ struct ConnectorsTests {
             default: (404, #"{"error": "No."}"#)
             }
         }
-        let refusing = MacDevice(key: FakeKey(cancels: true), name: "Mac", defaults: fair.defaults)
+        let refusing = MacDevice(key: FakeKey(fails: true), name: "Mac", defaults: fair.defaults)
         await #expect(throws: RunnerError.self) { try await refusing.disconnect("mail", with: fair.runner) }
         let asked = fair.requests.filter { $0.method == "DELETE" }
         #expect(asked.count == 1 && asked.first?.body.isEmpty == true)

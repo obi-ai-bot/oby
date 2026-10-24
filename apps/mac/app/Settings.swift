@@ -206,7 +206,7 @@ struct RunnerSettingsView: View {
             }
         }
         if everything {
-            SetGroup("Apple Watch without iPhone", footer: "Away from your iPhone, a paired watch reaches the runner through your Cloudflare Tunnel. Pair one in Oby’s Settings on your iPhone, with Oby open on the watch: pairing asks for Face ID.",
+            SetGroup("Apple Watch without iPhone", footer: "Away from your iPhone, a paired watch reaches the runner through your Cloudflare Tunnel. Pair one in Oby’s Settings on your iPhone, with Oby open on the watch.",
                      problem: watchProblem) {
                 if watches.isEmpty {
                     SetRow("None yet", quiet: true)
@@ -219,7 +219,7 @@ struct RunnerSettingsView: View {
                 }
             }
         }
-        SetGroup("Publishing", footer: "Oby opens a pull request by itself once a job’s check passes and the secret scan is clean. When that failed, publish by hand here or on your iPhone: this Mac’s key, like the iPhone’s, signs only after Touch ID. Oby merges only into dev, once its review approves and your Mac’s checks pass.") {
+        SetGroup("Publishing", footer: "Oby opens a pull request by itself once a job’s check passes and the secret scan is clean. When that failed, publish by hand here or on your iPhone: your click is the approval, signed by this Mac’s key, as the iPhone’s. Oby merges only into dev, once its review approves and your Mac’s checks pass.") {
             SetRow("Publishing key") { SetValue(feed.runner == nil ? "Off" : feed.device.status) }
             // The runner's own line (pairing is closed: how to open it), then Try again.
             if feed.runner != nil, let problem = feed.device.problem {
@@ -1359,7 +1359,7 @@ struct ConnectorsSettingsView: View {
         case .disablePlugin:
             return "\(feed.name) stops it and everything it started, and agents no longer get its tools."
         case .disconnect:
-            return "After Touch ID, \(feed.name) forgets it and its agents can't reach it any more. Its secret stays in the runner's vault."
+            return "\(feed.name) forgets it and its agents can't reach it any more. Its secret stays in the runner's vault."
         case .disconnectTetrix:
             return "\(feed.local ? "obid" : feed.name) forgets its Tetrix login, and agents on every account stop getting Tetrix's tools."
         case .disconnectSlack:

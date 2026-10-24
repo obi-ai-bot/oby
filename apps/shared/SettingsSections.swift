@@ -252,7 +252,7 @@ struct NotificationsSection: View {
     @Environment(\.openURL) private var openURL
     @Environment(\.settingsCards) private var cards
 
-    private static let footer = "Oby alerts you when a job needs you: ready to publish, failed or interrupted, a question for you, out of reviews or not merged. An alert opens its job."
+    private static let footer = "Oby alerts you when something needs you: a permission or a Confirm, answered right in the alert with a click, a question for you, a task that couldn't publish, failed or interrupted, out of reviews or not merged. An alert opens its task."
 
     var body: some View {
         if cards {
