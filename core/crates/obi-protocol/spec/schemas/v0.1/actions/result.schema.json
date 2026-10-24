@@ -17,10 +17,12 @@
         "findings": { "$ref": "../common.schema.json#/$defs/findings" },
         "acceptance": { "$ref": "../common.schema.json#/$defs/acceptance_results" },
         "by_rule": { "$ref": "../common.schema.json#/$defs/rule_id" },
-        "summary": { "$ref": "../common.schema.json#/$defs/block_text", "x-obi-text": "data", "minLength": 1, "maxLength": 4000 }
+        "summary": { "$ref": "../common.schema.json#/$defs/block_text", "x-obi-text": "data", "minLength": 1, "maxLength": 4000 },
+        "host_review": { "enum": ["approved", "asked", "unable"], "description": "Only in answer to a request with approve_on_host, and only when outcome is approved: approved, the receiver posted an approving review of head_sha on the code host as its owner; asked, its owner gave no standing permission, so it asked them; unable, it couldn't (no code-host login or permission to approve there, or the pull request moved on from head_sha)." }
       },
       "if": { "required": ["outcome"], "properties": { "outcome": { "enum": ["approved", "changes_requested"] } } },
-      "then": { "required": ["acceptance"] }
+      "then": { "required": ["acceptance"] },
+      "allOf": [{ "if": { "required": ["host_review"] }, "then": { "properties": { "outcome": { "const": "approved" } } } }]
     },
     {
       "title": "result of a handoff",

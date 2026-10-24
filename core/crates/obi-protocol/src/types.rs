@@ -90,6 +90,10 @@ pub struct ReviewRequest {
     /// Data text.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub summary: Option<String>,
+    /// `true` asks the receiver to approve `pr` on the code host when its review approves
+    /// (protocol.md section 11, "Approving on the code host"); only ever `true` or absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approve_on_host: Option<bool>,
 }
 
 /// One finding (common.schema.json `finding`).
@@ -136,6 +140,9 @@ pub struct ReviewResult {
     /// Data text.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub summary: Option<String>,
+    /// `approved`, `asked` or `unable`: what the receiver did about a request's `approve_on_host`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host_review: Option<String>,
 }
 
 #[cfg(test)]
@@ -156,6 +163,12 @@ mod tests {
         assert_eq!(request.acceptance[1].kind(), "no_blocker_findings");
         assert_eq!(serde_json::to_value(&request).unwrap(), brief);
         assert!(crate::schema::is_valid("actions/review_request", &brief));
+        let mut asking = brief.clone();
+        asking["pr"] = json!(12);
+        asking["approve_on_host"] = json!(true);
+        let request: ReviewRequest = serde_json::from_value(asking.clone()).unwrap();
+        assert_eq!(serde_json::to_value(&request).unwrap(), asking);
+        assert!(crate::schema::is_valid("actions/review_request", &asking));
         let mut extra = brief.clone();
         extra["prompt"] = json!("do something else");
         assert!(serde_json::from_value::<ReviewRequest>(extra).is_err());

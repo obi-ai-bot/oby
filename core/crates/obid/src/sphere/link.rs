@@ -24,6 +24,7 @@ use serde_json::{Map, Value, json};
 use tokio::sync::{Notify, watch};
 
 use super::answering;
+use super::approval;
 use super::channel;
 use super::decisions::{self, Decision, Decisions};
 use super::exchange::{Exchange, Exchanges, Message};
@@ -2948,14 +2949,20 @@ impl Link {
 
     /// The review job of an exchange ended (before the job says so): `done` with its result body,
     /// or not. The publish gate scans every text of the result; clean, it goes; a finding, or a
-    /// scanner that can't run, sends a failed result with no text. Waits for the first try to send.
+    /// scanner that can't run, sends a failed result with no text. An approved review the request
+    /// asks to approve on GitHub is approved there first, or asked about ([`Link::approve_on_host`]).
+    /// Waits for the first try to send.
     pub async fn review_ended(&self, job: Job, done: bool) {
         let Some(obi) = job.obi.clone() else { return };
         let cid = obi.correlation_id;
-        let rule = {
+        let (rule, request, from_owner) = {
             let state = self.lock();
             match state.exchanges.get(&cid) {
-                Some(e) if e.direction == "incoming" && !e.ended() => e.rule.clone(),
+                Some(e) if e.direction == "incoming" && !e.ended() => (
+                    e.rule.clone(),
+                    e.request["body"].clone(),
+                    e.peer_owner.clone().unwrap_or_default(),
+                ),
                 _ => return,
             }
         };
@@ -2993,6 +3000,12 @@ impl Link {
             tracing::warn!("sphere: exchange {cid}: {why}");
             self.reply_failed(&cid, Some((scan_json, why))).await;
             return;
+        }
+        if body["outcome"] == "approved" && approval::asked(&request) {
+            let host = self
+                .approve_on_host(&cid, &job.id, &obi.from, &from_owner, &request)
+                .await;
+            body["host_review"] = json!(host);
         }
         if let Some(rule) = rule {
             body["by_rule"] = json!(rule);
@@ -3203,6 +3216,165 @@ impl Link {
         };
         self.save_exchange(&queued);
         self.send_now(&cid).await;
+    }
+
+    /// A review whose request asks to approve it on GitHub (`approve_on_host`) came out approved:
+    /// under the owner's standing permission for the sender's owner and the repository (a
+    /// remembered [`approval::HOST_APPROVAL`] decision, never anything received) obid approves it
+    /// there now; without one it asks the owner in the inbox. What the result's `host_review` says:
+    /// `approved`, `unable` or `asked`.
+    async fn approve_on_host(
+        &self,
+        cid: &str,
+        job: &str,
+        from: &str,
+        from_owner: &str,
+        request: &Value,
+    ) -> &'static str {
+        let repo = request["repo"].as_str().unwrap_or("");
+        let (Some(pr), Some(sha)) = (request["pr"].as_u64(), request["head_sha"].as_str()) else {
+            return "unable";
+        };
+        let now = time::now();
+        let (decisions, asking) = {
+            let mut state = self.lock();
+            // Revoked meanwhile (the exchange settled here): nothing more is done for its peer.
+            let open = state
+                .exchanges
+                .get(cid)
+                .is_some_and(|e| e.state == "accepted");
+            if !open
+                || state
+                    .membership
+                    .as_ref()
+                    .is_none_or(|m| m.state != "joined")
+            {
+                return "unable";
+            }
+            let allowed = decisions::covering(
+                &state.decisions,
+                approval::HOST_APPROVAL,
+                from_owner,
+                Some(repo),
+            )
+            .filter(|d| d.decision == "accept")
+            .map(|d| d.id.clone());
+            match allowed {
+                Some(id) => {
+                    if let Some(d) = state.decisions.iter_mut().find(|d| d.id == id) {
+                        d.uses += 1;
+                        d.last_used = Some(now);
+                    }
+                    (Some(state.decisions.clone()), None)
+                }
+                None => {
+                    let mut item = approval::item(cid, from, from_owner, repo, pr, sha, now);
+                    if let Some(obi) = item.obi.as_mut() {
+                        obi["job"] = json!(job);
+                    }
+                    state.inbox.insert(item.id.clone(), item.clone());
+                    (None, Some(item))
+                }
+            }
+        };
+        if let Some(item) = asking {
+            self.save_item(&item);
+            return "asked";
+        }
+        if let Some(decisions) = decisions {
+            self.save_decisions(&decisions);
+        }
+        match self.post_approval(repo, pr, sha).await {
+            Ok(url) => {
+                self.jobs.approved_on_github(job, repo, &url);
+                "approved"
+            }
+            Err(why) => {
+                tracing::warn!("sphere: exchange {cid}: obid didn't approve {repo}#{pr}: {why}");
+                "unable"
+            }
+        }
+    }
+
+    /// Approves `sha` on pull request `pr` of `repo` on GitHub with the owner's own `gh`
+    /// ([`approval::post`]): its URL.
+    async fn post_approval(&self, repo: &str, pr: u64, sha: &str) -> Result<String, String> {
+        let gh = crate::github::gh().ok_or("gh isn't installed")?;
+        let scratch = self
+            .config
+            .home
+            .join("tmp")
+            .join(format!("approve-{}", uuid::Uuid::new_v4().simple()));
+        let posted = approval::post(&gh, &scratch, repo, pr, sha, |repo, number| async move {
+            crate::listen::pr_head(&repo, number).await
+        })
+        .await;
+        let _ = std::fs::remove_dir_all(&scratch);
+        posted
+    }
+
+    /// `POST /v1/inbox/{id}/answer` on an item asking whether to approve a teammate's pull request
+    /// on GitHub ([`approval::item`]): `Accept` approves it now (claimed by `answer` under the
+    /// lock), `Accept, and remember for this repo` also asks for a Confirm to keep the standing
+    /// permission (#776: an API token alone never keeps one); `Decline` or done approve nothing.
+    /// An approval that fails closes the item with why.
+    async fn answer_host_approval(
+        &self,
+        mut item: Item,
+        answer: Option<String>,
+        later: Option<i64>,
+    ) -> Result<Value, ApiError> {
+        let now = time::now();
+        let obi = item.obi.clone().unwrap_or_default();
+        let text = |key: &str| obi[key].as_str().unwrap_or("").to_owned();
+        let approving = matches!(
+            answer.as_deref(),
+            Some(inbox::ACCEPT | inbox::ACCEPT_REMEMBER)
+        );
+        if let Some(at) = later {
+            item.later = Some(at);
+        } else if answer
+            .as_deref()
+            .is_some_and(|a| !approving && a != inbox::DECLINE)
+        {
+            return Err(api(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                format!("The answer is one of: {}.", item.options.join("; ")),
+            ));
+        } else if approving {
+            let (repo, sha) = (text("repo"), text("headSha"));
+            let pr = obi["pr"].as_u64().unwrap_or(0);
+            item.done = Some(now);
+            item.answer = answer.clone();
+            match self.post_approval(&repo, pr, &sha).await {
+                Ok(url) => {
+                    self.jobs.approved_on_github(&text("job"), &repo, &url);
+                    if answer.as_deref() == Some(inbox::ACCEPT_REMEMBER) {
+                        self.add_confirm(approval::remember_item(
+                            &text("fromOwner"),
+                            &repo,
+                            Some(&item.id),
+                            now,
+                        ));
+                    }
+                }
+                Err(why) => {
+                    item.text = format!("{} It wasn't approved: {why}.", item.text);
+                    self.lock().inbox.insert(item.id.clone(), item.clone());
+                    self.save_item(&item);
+                    return Err(api(
+                        StatusCode::BAD_GATEWAY,
+                        format!("Nothing was approved: {why}."),
+                    ));
+                }
+            }
+        } else {
+            item.done = Some(now);
+            item.answer = answer;
+        }
+        self.lock().inbox.insert(item.id.clone(), item.clone());
+        self.save_item(&item);
+        Ok(item.to_json())
     }
 
     /// Sends a failed result with no text (and `by_rule` when a decision accepted it): the work, or
@@ -3416,6 +3588,107 @@ impl Link {
         }
     }
 
+    /// The owner's published pull request waits for an approving review from another person that
+    /// Oby's own reviewer can't give (the merge step decides that, crate::merge): asks a
+    /// teammate's Obi over the Sphere to review exactly `change.head` and, when its review passes,
+    /// approve it on GitHub as that teammate (spec `protocol.md` section 11, "Approving on the code
+    /// host"). Call it again whenever the merge step looks: one teammate at a time, the next when
+    /// one can't, and never another after a review that asked for changes. A new head asks again.
+    /// The merge itself stays the merge step's, once GitHub shows the approval of that head.
+    pub async fn ask_teammate(&self, change: &approval::Change<'_>) -> approval::Teammate {
+        use approval::{Asked, Teammate};
+        // The directory as the Sphere has it now; the one read last when it can't be reached.
+        if let Err(e) = self.read_directory().await {
+            self.note_error(&e);
+        }
+        let now = time::now();
+        let next = {
+            let state = self.lock();
+            let Some(me) = state
+                .membership
+                .as_ref()
+                .filter(|m| m.state == "joined")
+                .map(|m| m.obi_id.clone())
+            else {
+                return Teammate::NeedsYou(
+                    "Oby isn't in an Obysphere, so no teammate's Oby can approve it.".into(),
+                );
+            };
+            let mut asked = Vec::new();
+            for e in approval::requests(
+                state.exchanges.values(),
+                change.repo,
+                change.pr,
+                change.head,
+            ) {
+                let owner = e.peer_owner.as_deref().unwrap_or(&e.peer);
+                match approval::asked_state(e, now) {
+                    Asked::Waiting => {
+                        return Teammate::Waiting(format!(
+                            "Waiting for {owner}'s Oby to review it and approve it on GitHub."
+                        ));
+                    }
+                    Asked::ChangesRequested => {
+                        return Teammate::NeedsYou(format!(
+                            "{owner}'s Oby reviewed it and asked for changes."
+                        ));
+                    }
+                    Asked::Spent => asked.push(e.peer.clone()),
+                }
+            }
+            let members: Vec<(String, String)> = state
+                .directory
+                .members
+                .iter()
+                .filter(|(obi, m)| {
+                    m.active && **obi != me && m.accepts.iter().any(|a| a == "review_request")
+                })
+                .map(|(obi, m)| (obi.clone(), m.owner.clone()))
+                .collect();
+            let all: Vec<&Exchange> = state.exchanges.values().collect();
+            let next = approval::teammates(&members, change.repo, &all, &asked)
+                .into_iter()
+                .next();
+            match next {
+                Some(obi) => {
+                    let owner = members
+                        .iter()
+                        .find(|(o, _)| *o == obi)
+                        .map(|(_, owner)| owner.clone())
+                        .unwrap_or_default();
+                    (obi, owner)
+                }
+                None if asked.is_empty() => {
+                    return Teammate::NeedsYou(
+                        "No teammate's Oby in the Obysphere takes reviews.".into(),
+                    );
+                }
+                None => {
+                    return Teammate::NeedsYou(
+                        "No teammate's Oby could approve it on GitHub.".into(),
+                    );
+                }
+            }
+        };
+        let (to, owner) = next;
+        let ask = json!({"to": to, "type": "review_request", "expiresIn": approval::REQUEST_LIFETIME,
+                         "body": approval::request_body(change)});
+        match self.request(ask.to_string().as_bytes()).await {
+            Ok(_) => Teammate::Waiting(format!(
+                "Asked {owner}'s Oby to review it and approve it on GitHub."
+            )),
+            // The Sphere can't be reached now: asked again next time.
+            Err(e) if e.status.is_server_error() => Teammate::Waiting(format!(
+                "Oby couldn't reach the Obysphere to ask {owner}'s Oby: {}",
+                e.message
+            )),
+            Err(e) => Teammate::NeedsYou(format!(
+                "Oby couldn't ask {owner}'s Oby to approve it: {}",
+                e.message
+            )),
+        }
+    }
+
     /// `GET /v1/obid/sphere/exchanges?limit=50`, the latest first.
     pub fn exchanges_json(&self, limit: usize) -> Value {
         let state = self.lock();
@@ -3445,6 +3718,31 @@ impl Link {
                 .map(Decision::to_json)
                 .collect(),
         )
+    }
+
+    /// `POST /v1/obid/decisions` with `{"type": "host_approval", "fromOwner", "repo"}` (`repo` may
+    /// be `*`): the owner's standing permission to approve `fromOwner`'s pull requests there on
+    /// GitHub when Oby's review passes waits for their own Confirm in the inbox (#776), which keeps
+    /// it: an API token alone never does. The `confirm` item. Every other decision is made by an
+    /// answer in the inbox.
+    pub fn propose_approval(&self, body: &[u8]) -> Result<Value, ApiError> {
+        let map = object(body, &["type", "fromOwner", "repo"])?;
+        let invalid = |m: &str| api(StatusCode::UNPROCESSABLE_ENTITY, m);
+        if text_field(&map, "type")? != approval::HOST_APPROVAL {
+            return Err(invalid(
+                "type is host_approval: every other decision is made by an answer in the inbox.",
+            ));
+        }
+        let owner = text_field(&map, "fromOwner")?;
+        if !is_slug(owner) {
+            return Err(invalid("fromOwner is a Sphere owner's id."));
+        }
+        let repo = text_field(&map, "repo")?;
+        if repo != "*" && !crate::github::is_repo(repo) {
+            return Err(invalid("repo is owner/name, or * for every repository."));
+        }
+        let item = approval::remember_item(owner, repo, None, time::now());
+        Ok(self.add_confirm(item).to_json())
     }
 
     /// `DELETE /v1/obid/decisions/{id}`: `false` for one obid doesn't have.
@@ -3678,6 +3976,39 @@ impl Link {
                     crate::github_work::start_adding(&self.jobs, &self.config, repo, number)
                         .await?;
                 self.github_started(target, &job.id);
+                Ok(())
+            }
+            // The owner's standing permission to approve a teammate's pull requests on GitHub, kept
+            // only on their own tap (#776), in place of one for the same owner and repository.
+            inbox::action::REMEMBER_APPROVAL => {
+                let text = |key: &str| confirmed.payload[key].as_str().unwrap_or("").to_owned();
+                let (from_owner, repo) = (text("fromOwner"), text("repo"));
+                if !is_slug(&from_owner) || !(repo == "*" || crate::github::is_repo(&repo)) {
+                    return Err(api(
+                        StatusCode::CONFLICT,
+                        "That permission's plan was lost.",
+                    ));
+                }
+                let kept = {
+                    let mut state = self.lock();
+                    state.decisions.retain(|d| {
+                        !(d.kind == approval::HOST_APPROVAL
+                            && d.from_owner == from_owner
+                            && d.repo == repo)
+                    });
+                    state.decisions.push(Decision {
+                        id: decisions::new_id(),
+                        kind: approval::HOST_APPROVAL.into(),
+                        from_owner,
+                        repo,
+                        decision: "accept".into(),
+                        created: time::now(),
+                        inbox_item: target.to_owned(),
+                        ..Decision::default()
+                    });
+                    state.decisions.clone()
+                };
+                self.save_decisions(&kept);
                 Ok(())
             }
             inbox::action::REMEMBER_RULE => {
@@ -4364,6 +4695,35 @@ impl Link {
                 Given::Done => return self.answer_share_used(item, None),
                 Given::Later(_) => {}
             }
+        }
+        // Approving a teammate's pull request on GitHub: an approving answer claims the item under
+        // the lock (done), so a second one at the same moment approves nothing.
+        let host_approval = {
+            let mut state = self.lock();
+            let item = state
+                .inbox
+                .get(id)
+                .filter(|i| {
+                    i.done.is_none()
+                        && i.obi
+                            .as_ref()
+                            .is_some_and(|o| o["type"] == approval::HOST_APPROVAL)
+                })
+                .cloned();
+            if item.is_some()
+                && matches!(&given, Given::Answer(a) if a == inbox::ACCEPT || a == inbox::ACCEPT_REMEMBER)
+                && let Some(kept) = state.inbox.get_mut(id)
+            {
+                kept.done = Some(time::now());
+            }
+            item
+        };
+        if let Some(item) = host_approval {
+            return match given {
+                Given::Answer(answer) => self.answer_host_approval(item, Some(answer), None).await,
+                Given::Done => self.answer_host_approval(item, None, None).await,
+                Given::Later(at) => self.answer_host_approval(item, None, Some(at)).await,
+            };
         }
         if let Some(item) = github {
             return match given {
@@ -6006,6 +6366,101 @@ mod tests {
     /// A save keeps and tells what is in memory now, never an older copy its caller still holds:
     /// a request's arrival that saves after the owner already answered can't put the item back to
     /// open, nor its exchange back to waiting, on the stream or on disk.
+    #[tokio::test]
+    async fn a_teammate_is_asked_once_and_never_after_changes_were_asked_for() {
+        use approval::Teammate;
+        let home = std::env::temp_dir().join(format!("obid-link-teammate-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        let config = Config::parse(
+            &json!({"listen": "127.0.0.1:0", "home": home, "owner": "wellington"}).to_string(),
+        )
+        .unwrap();
+        let events = Events::new();
+        let jobs = Jobs::open(config.clone(), events.clone(), Err("no sandbox".into())).unwrap();
+        let (_stop, stopping) = watch::channel(false);
+        let link = Link::open(config, jobs, events, stopping).unwrap();
+        let head = "6d20146f366b9fac8907b5066c30ee39aaec09b3";
+        let change = approval::Change {
+            repo: "acme/app",
+            pr: 12,
+            base: "dev",
+            head_branch: "oby/fix-12",
+            head,
+            goal: "Fix the thing",
+        };
+        assert_eq!(
+            link.ask_teammate(&change).await,
+            Teammate::NeedsYou(
+                "Oby isn't in an Obysphere, so no teammate's Oby can approve it.".into()
+            )
+        );
+        let member = |owner: &str| Member {
+            owner: owner.into(),
+            active: true,
+            accepts: vec!["review_request".into()],
+            runner: None,
+        };
+        let asked = |state: &str, result: Option<Value>| {
+            let body = approval::request_body(&change);
+            let request = json!({"id": "c-zoe", "correlation_id": "c-zoe", "type": "review_request",
+                                 "expires_at": time::format(time::now() + 3600), "body": body});
+            let mut e = Exchange::new("outgoing", request, "obi-zoe".into(), Some("zoe".into()));
+            e.state = state.into();
+            e.result = result;
+            e
+        };
+        {
+            let mut state = link.lock();
+            state.membership = Some(Membership {
+                state: "joined".into(),
+                url: "http://127.0.0.1:1".into(),
+                sphere: "team".into(),
+                obi_id: "obi-wellington".into(),
+                card: json!({}),
+                joined_at: 0,
+            });
+            state
+                .directory
+                .members
+                .insert("obi-wellington".into(), member("wellington"));
+        }
+        assert_eq!(
+            link.ask_teammate(&change).await,
+            Teammate::NeedsYou("No teammate's Oby in the Obysphere takes reviews.".into()),
+            "never itself"
+        );
+        let set = |e: Exchange| {
+            let mut state = link.lock();
+            state
+                .directory
+                .members
+                .insert("obi-zoe".into(), member("zoe"));
+            state.exchanges.insert(e.correlation_id.clone(), e);
+        };
+        set(asked("accepted", None));
+        assert_eq!(
+            link.ask_teammate(&change).await,
+            Teammate::Waiting(
+                "Waiting for zoe's Oby to review it and approve it on GitHub.".into()
+            )
+        );
+        set(asked("done", Some(json!({"outcome": "changes_requested"}))));
+        assert_eq!(
+            link.ask_teammate(&change).await,
+            Teammate::NeedsYou("zoe's Oby reviewed it and asked for changes.".into())
+        );
+        set(asked(
+            "done",
+            Some(json!({"outcome": "approved", "host_review": "unable"})),
+        ));
+        assert_eq!(
+            link.ask_teammate(&change).await,
+            Teammate::NeedsYou("No teammate's Oby could approve it on GitHub.".into()),
+            "zoe couldn't, and nobody else can"
+        );
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
     #[tokio::test]
     async fn a_save_keeps_and_tells_what_is_there_now() {
         let home = std::env::temp_dir().join(format!("obid-link-save-{}", std::process::id()));

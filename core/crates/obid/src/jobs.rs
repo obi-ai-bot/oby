@@ -808,6 +808,15 @@ impl Jobs {
         });
     }
 
+    /// The approval obid posted on GitHub after review job `id` (crate::sphere::approval): its
+    /// URL, in the job's outgoing actions.
+    pub fn approved_on_github(&self, id: &str, repo: &str, url: &str) {
+        self.update(id, |job| {
+            let sent = crate::publish::Outgoing::new("pullRequestApproval", repo, url, None);
+            job.outgoing.push(sent);
+        });
+    }
+
     /// The session job `id`'s agent saved in Tetrix, in its outgoing actions.
     pub fn sent_to_tetrix(&self, id: &str, session: &str) {
         self.update(id, |job| {

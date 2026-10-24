@@ -319,7 +319,10 @@ pub fn router(shared: Arc<Shared>) -> Router {
         .route("/app/{*path}", get(crate::web::file))
         .route(crate::web::SIGN_IN, post(crate::web::sign_in))
         .route(crate::web::SIGN_OUT, post(crate::web::sign_out))
-        .route("/v1/obid/decisions", get(crate::sphere::routes::decisions))
+        .route(
+            "/v1/obid/decisions",
+            get(crate::sphere::routes::decisions).post(crate::sphere::routes::propose_decision),
+        )
         .route(
             "/v1/obid/decisions/{id}",
             axum::routing::delete(crate::sphere::routes::forget),
