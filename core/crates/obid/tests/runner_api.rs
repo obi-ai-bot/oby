@@ -45,6 +45,9 @@ fn ended(obid: &Obid, id: &str) -> Value {
 
 fn git(dir: &Path, args: &[&str]) {
     let output = std::process::Command::new("git")
+        // Not a committing job's objects, when this runs in its sandbox (sandbox::Spec::git_env).
+        .env_remove("GIT_OBJECT_DIRECTORY")
+        .env_remove("GIT_ALTERNATE_OBJECT_DIRECTORIES")
         .args(args)
         .current_dir(dir)
         .output()
@@ -1356,6 +1359,9 @@ fn a_follow_up_starts_from_the_first_jobs_unmerged_work() {
 
 fn git_out(dir: &std::path::Path, args: &[&str]) -> String {
     let output = std::process::Command::new("git")
+        // Not a committing job's objects, when this runs in its sandbox (sandbox::Spec::git_env).
+        .env_remove("GIT_OBJECT_DIRECTORY")
+        .env_remove("GIT_ALTERNATE_OBJECT_DIRECTORIES")
         .args(args)
         .current_dir(dir)
         .output()

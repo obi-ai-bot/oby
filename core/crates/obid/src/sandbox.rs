@@ -12,8 +12,10 @@
 //! - **Reads, from obid's home and the person's home**: the worktree, the clone's git common
 //!   directory (read-only), the job's own folders, and the tools it runs. Nothing else: not the
 //!   database, `keys/`, `api-token`, other clones or other worktrees.
-//! - **Network**: none for the check. An agent has its own network namespace, with slirp4netns so
-//!   it still reaches its model's API, and the host's abstract Unix sockets are not in it.
+//! - **Network**: none for the check, but, for the owner's own jobs, loopback ([`Spec::loopback`]):
+//!   the servers its tests start on 127.0.0.1. An agent has its own network namespace, with
+//!   slirp4netns so it still reaches its model's API, and the host's abstract Unix sockets are not
+//!   in it.
 //!
 //! - **No terminal, no one to ask**: the process leads a session of its own, so it has no
 //!   controlling terminal (none to push keystrokes into with `TIOCSTI` when obid was started from a
@@ -187,6 +189,11 @@ pub struct Spec {
     pub hidden: Vec<PathBuf>,
     /// Whether it may reach the network at all.
     pub network: bool,
+    /// With no `network`, still loopback (127.0.0.1, ::1) and Unix sockets in its own folders: the
+    /// servers a check's tests start. bubblewrap's network namespace has a loopback of its own, with
+    /// nothing of the host's on it, either way; Seatbelt can't make one, so on macOS this is the
+    /// host's, which the job's agent reaches anyway. Never the DNS resolver.
+    pub loopback: bool,
     /// Folders inside the worktree that stay read-only: a conversation's checkouts of the
     /// repositories in its room (`room/repos`). Each must exist before the process starts.
     pub frozen: Vec<PathBuf>,
@@ -443,6 +450,7 @@ impl Spec {
             read_only,
             hidden,
             network: self.network,
+            loopback: self.loopback,
             frozen: self.frozen.iter().map(real).collect(),
         }
     }
@@ -769,11 +777,13 @@ fn seatbelt_profile_reading(spec: &Spec, confined: bool, loopback: bool) -> Stri
     profile.push_str(")\n");
     // And whatever listens on a Unix socket: a terminal multiplexer's server, a login agent,
     // Docker's daemon, an editor's command socket. A socket is reached by connecting, not by
-    // reading, so the file rules above don't hold it back. None but the DNS resolver's (an agent
-    // names its model's API by host name) and the job's own, in its own folders.
+    // reading, so the file rules above don't hold it back. None but the job's own, in its own
+    // folders, and, with the network, the DNS resolver's (an agent names its model's API by host
+    // name). Never the resolver's without: Seatbelt keeps this allow over the `(deny network*)`
+    // below, and a lookup carries what it names out (it did until 2026-10-24).
     profile.push_str("(deny network-outbound (remote unix-socket))\n");
     profile.push_str("(allow network-outbound");
-    for socket in RESOLVER_SOCKETS {
+    for socket in RESOLVER_SOCKETS.iter().filter(|_| spec.network) {
         profile.push_str(&format!(
             " (remote unix-socket (path-literal {}))",
             sbpl_text(socket)
@@ -788,6 +798,16 @@ fn seatbelt_profile_reading(spec: &Spec, confined: bool, loopback: bool) -> Stri
     profile.push_str(")\n");
     if !spec.network {
         profile.push_str("(deny network*)\n");
+        if spec.loopback {
+            profile.push_str("(allow network-bind network-inbound (local ip \"localhost:*\"))\n(allow network-outbound (remote ip \"localhost:*\"))\n(allow network*");
+            for path in spec.writable() {
+                let path = sbpl_string(&path);
+                profile.push_str(&format!(
+                    " (local unix-socket (subpath {path})) (remote unix-socket (subpath {path}))"
+                ));
+            }
+            profile.push_str(")\n");
+        }
     } else if !loopback {
         profile.push_str("(deny network-outbound (remote ip \"localhost:*\"))\n");
     }
@@ -1144,6 +1164,28 @@ pub fn tool_roots(path: &std::ffi::OsStr, hidden: &[PathBuf], never: &[PathBuf])
     roots
 }
 
+/// Whether a box may read `dir` without seeing what it hides: `dir` is no hidden folder nor one
+/// that holds one, and nothing inside `never` (obid's home), each compared as named and resolved,
+/// as [`tool_roots`] keeps its folders.
+pub fn shows_nothing_hidden(dir: &Path, hidden: &[PathBuf], never: &[PathBuf]) -> bool {
+    let both = |p: &Path| {
+        [
+            p.to_path_buf(),
+            p.canonicalize().unwrap_or_else(|_| p.to_path_buf()),
+        ]
+    };
+    both(dir).iter().all(|dir| {
+        !hidden
+            .iter()
+            .flat_map(|h| both(h))
+            .any(|h| h.starts_with(dir))
+            && !never
+                .iter()
+                .flat_map(|n| both(n))
+                .any(|n| dir.starts_with(&n))
+    })
+}
+
 /// What a confined run ([`Sandbox::wrap_reading_only_its_own`]) reads of the software on `path`
 /// outside the hidden folders (`/opt/homebrew/bin`, `/usr/local/bin`): each folder, and the
 /// install prefix around a `bin` or `sbin` (its libraries, a symbolic link's target in it), never
@@ -1205,6 +1247,30 @@ pub fn install_root(bin: &Path, hidden: &[PathBuf], never: &[PathBuf]) -> Option
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A folder a box may read shows nothing hidden: not a hidden folder, nor one that holds one,
+    /// nor anything in obid's home.
+    #[test]
+    fn a_read_never_shows_what_is_hidden() {
+        let hidden = [PathBuf::from("/Users/w"), PathBuf::from("/h")];
+        let never = [PathBuf::from("/h")];
+        assert!(shows_nothing_hidden(
+            Path::new("/Users/w/.rustup"),
+            &hidden,
+            &never
+        ));
+        assert!(shows_nothing_hidden(
+            Path::new("/opt/rust"),
+            &hidden,
+            &never
+        ));
+        for dir in ["/Users/w", "/Users", "/", "/h/tools", "/h"] {
+            assert!(
+                !shows_nothing_hidden(Path::new(dir), &hidden, &never),
+                "{dir}"
+            );
+        }
+    }
 
     #[test]
     fn path_software_brings_a_tools_folders_not_the_whole_prefix() {
@@ -1447,11 +1513,22 @@ mod tests {
             "(global-name \"com.apple.securityd.xpc\")",
             "(global-name \"com.apple.security.agent\")",
             "(deny network-outbound (remote unix-socket))",
-            "(remote unix-socket (path-literal \"/private/var/run/mDNSResponder\"))",
             "(remote unix-socket (subpath \"/h/tmp/j1\"))",
         ] {
             assert!(profile.contains(rule), "{rule}\n{profile}");
         }
+        // The resolver's socket only with the network: Seatbelt keeps its allow over the
+        // `(deny network*)`, so without the network a lookup would still go out.
+        assert!(!profile.contains("mDNSResponder"), "{profile}");
+        let online = seatbelt_profile(&Spec {
+            network: true,
+            ..spec.clone()
+        });
+        assert!(
+            online
+                .contains("(remote unix-socket (path-literal \"/private/var/run/mDNSResponder\"))"),
+            "{online}"
+        );
         assert!(!profile.contains("/dev/tty"), "{profile}");
         for kept in KEYCHAIN_KEPT {
             assert!(!profile.contains(kept), "{kept}\n{profile}");

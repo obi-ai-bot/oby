@@ -452,6 +452,13 @@ pub struct JobArtifact {
 impl Job {
     /// Whether its pull request was merged, as the job's `pullRequest` says: it's finished for
     /// good. obid follows no pull request yet, so none reads merged until it does.
+    /// Whether its check keeps loopback (`sandbox::Spec::loopback`): only an owner's job whose
+    /// agent ran here, so its check runs nothing that agent couldn't reach. Never another Obi's
+    /// review, nor a job that ran on a teammate's Mac, whose commits came from there.
+    pub fn check_keeps_loopback(&self) -> bool {
+        self.obi.is_none() && self.runs_on.is_none()
+    }
+
     pub fn merged(&self) -> bool {
         self.to_json()["pullRequest"]["state"] == "MERGED"
     }
@@ -1253,6 +1260,28 @@ mod tests {
         job.pr = Some(33);
         job.created = obi_protocol::time::parse("2026-10-09T21:42:53Z").unwrap();
         job
+    }
+
+    /// Only an owner's job whose agent ran here keeps loopback in its check: not another Obi's
+    /// review, nor a job that ran on a teammate's Mac.
+    #[test]
+    fn only_an_owners_job_run_here_keeps_loopback_in_its_check() {
+        let mut job = job();
+        assert!(job.check_keeps_loopback());
+        job.runs_on = Some(RunsOn {
+            obi: "ernesto-mac".into(),
+            owner: "ernesto".into(),
+            grant: None,
+        });
+        assert!(!job.check_keeps_loopback());
+        let mut review = self::job();
+        review.obi = Some(ObiRef {
+            correlation_id: "c".into(),
+            from: "ernesto-mac".into(),
+            from_owner: "ernesto".into(),
+            request_id: "r".into(),
+        });
+        assert!(!review.check_keeps_loopback());
     }
 
     /// Ported from RunnerTests/RunnerTests.swift, `jobsHaveISODatesAndEveryKey`: every key the

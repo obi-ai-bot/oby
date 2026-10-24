@@ -87,6 +87,9 @@ pub fn sandbox_env(
     // macOS's /usr/bin/git is xcrun's shim: its cache goes here, not in /var/folders, which the
     // sandbox doesn't let a job write.
     env.push(("xcrun_db".into(), temp.join("xcrun_db").into_os_string()));
+    // Foundation's home is the password database's, whatever `HOME` says, so SwiftPM's caches and
+    // Xcode's DerivedData would go in the person's hidden `~/Library`: this makes it the job's.
+    env.push(("CFFIXED_USER_HOME".into(), temp.as_os_str().to_os_string()));
     for (name, value) in extra {
         env.push(((*name).into(), value.clone()));
     }
@@ -99,6 +102,89 @@ pub fn sandbox_env(
 /// /tmp/claude-<uid> unless told, which the sandbox doesn't let a job write (a field test,
 /// 2026-10-17: every Bash command failed with EPERM), so it's the run's own temporary folder.
 pub const CLAUDE_TMPDIR: &str = "CLAUDE_CODE_TMPDIR";
+
+/// The person's Rust toolchain as their shell finds it: rustup's home (`RUSTUP_HOME`, else
+/// `~/.rustup`) and cargo's own `bin` (`CARGO_HOME/bin`, else `~/.cargo/bin`), each when it's a
+/// folder. A box's `HOME` is the job's, so without them a rustup proxy finds no toolchain there,
+/// and cargo, which looks for `cargo-*` in its own `bin` before `PATH` when that `bin` isn't on
+/// `PATH` (cargo#11020), skipped the person's rustup clippy for Homebrew's older one on `PATH`,
+/// whose lints differ (2026-10-24).
+fn rust_homes() -> [Option<PathBuf>; 2] {
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    let named = |var: &str, default: &str| {
+        std::env::var_os(var)
+            .map(PathBuf::from)
+            .or_else(|| home.as_ref().map(|h| h.join(default)))
+            .filter(|p| p.is_absolute())
+    };
+    [
+        named("RUSTUP_HOME", ".rustup"),
+        named("CARGO_HOME", ".cargo").map(|c| c.join("bin")),
+    ]
+    .map(|dir| dir.filter(|d| d.is_dir()))
+}
+
+/// What a job's box reads of the person's Rust toolchain ([`rust_homes`]), read-only: rustup's
+/// toolchains and settings, and cargo's `bin`, never the rest of the cargo home (its
+/// `credentials.toml`, its registry), and neither when it would show what the box hides (a
+/// `RUSTUP_HOME` that is the person's home, say: [`crate::sandbox::shows_nothing_hidden`]).
+pub fn rust_reads(hidden: &[PathBuf], never: &[PathBuf]) -> Vec<PathBuf> {
+    rust_homes()
+        .into_iter()
+        .flatten()
+        .filter(|dir| crate::sandbox::shows_nothing_hidden(dir, hidden, never))
+        .collect()
+}
+
+/// Shows the person's Rust toolchain to a box whose `HOME` is `temp`: `RUSTUP_HOME` for its
+/// environment and, when the person's cargo `bin` isn't on `PATH` (so their cargo looks there
+/// first), its `cargo-*` subcommands in the job's own cargo home, where the box's cargo looks first
+/// ([`link_cargo_subcommands`]). When it is on `PATH`, the box's `PATH`, the person's, decides as
+/// theirs does.
+pub fn show_rust(temp: &Path) -> Vec<(&'static str, OsString)> {
+    let [rustup, cargo_bin] = rust_homes();
+    if let Some(from) = cargo_bin {
+        let on_path = std::env::split_paths(&tools_path()).any(|dir| dir == from);
+        link_cargo_subcommands(&from, temp, !on_path);
+    }
+    rustup
+        .map(|dir| ("RUSTUP_HOME", dir.into_os_string()))
+        .into_iter()
+        .collect()
+}
+
+/// A link to each `cargo-*` in `from` in `temp/.cargo/bin`, or, without `link`, none (one an
+/// earlier run made is taken out). `temp` is the job's, so nothing is written through a link the
+/// job left: `.cargo` and its `bin` must be real folders, and a link of the same name is replaced,
+/// not followed.
+fn link_cargo_subcommands(from: &Path, temp: &Path, link: bool) {
+    use std::os::unix::fs::DirBuilderExt;
+    let Ok(entries) = std::fs::read_dir(from) else {
+        return;
+    };
+    let bin = temp.join(".cargo/bin");
+    let real_dir =
+        |p: &Path| std::fs::symlink_metadata(p).is_ok_and(|m| m.is_dir() && !m.is_symlink());
+    for dir in [temp.join(".cargo"), bin.clone()] {
+        let _ = std::fs::DirBuilder::new().mode(0o700).create(&dir);
+        if !real_dir(&dir) {
+            return;
+        }
+    }
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        if !name.to_string_lossy().starts_with("cargo-") {
+            continue;
+        }
+        let at = bin.join(&name);
+        if std::fs::symlink_metadata(&at).is_ok_and(|m| m.is_symlink()) {
+            let _ = std::fs::remove_file(&at);
+        }
+        if link {
+            let _ = std::os::unix::fs::symlink(entry.path(), &at);
+        }
+    }
+}
 
 /// The `PATH` processes get: obid's own, then what the login shell adds (AGENTS.md, "PATH"), then
 /// where CLIs are installed that only an interactive shell (`.zshrc`) adds ([`usual_folders`]), so
@@ -345,6 +431,56 @@ mod claude_tmpdir_tests {
                 .all(|(k, _)| k != CLAUDE_TMPDIR)
         );
     }
+    /// A job's cargo home gets links to the person's `cargo-*` (only those), a link the job left
+    /// at one's name is replaced, they go when they no longer apply, and nothing is written
+    /// through a link the job put in place of `.cargo` or its `bin`.
+    #[test]
+    fn the_persons_cargo_subcommands_are_linked_never_through_a_link() {
+        let root = std::env::temp_dir().join(format!("obid-cargo-links-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let (from, temp, outside) = (root.join("from"), root.join("temp"), root.join("outside"));
+        for dir in [&from, &temp, &outside] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        for name in ["cargo-clippy", "cargo-fmt", "cargo", "rustc"] {
+            std::fs::write(from.join(name), "").unwrap();
+        }
+        std::fs::create_dir_all(temp.join(".cargo/bin")).unwrap();
+        std::os::unix::fs::symlink(&outside, temp.join(".cargo/bin/cargo-fmt")).unwrap();
+        link_cargo_subcommands(&from, &temp, true);
+        let bin = temp.join(".cargo/bin");
+        let mut names: Vec<String> = std::fs::read_dir(&bin)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        assert_eq!(names, ["cargo-clippy", "cargo-fmt"]);
+        for name in &names {
+            assert_eq!(std::fs::read_link(bin.join(name)).unwrap(), from.join(name));
+        }
+        // Once the person's cargo `bin` is on `PATH`, the links go.
+        link_cargo_subcommands(&from, &temp, false);
+        assert_eq!(std::fs::read_dir(&bin).unwrap().count(), 0);
+
+        // The job's `.cargo`, then its `bin`, a link out: nothing lands where they lead.
+        for planted in [temp.join(".cargo"), temp.join(".cargo/bin")] {
+            std::fs::remove_dir_all(temp.join(".cargo")).unwrap();
+            if planted.ends_with("bin") {
+                std::fs::create_dir(temp.join(".cargo")).unwrap();
+            }
+            std::os::unix::fs::symlink(&outside, &planted).unwrap();
+            link_cargo_subcommands(&from, &temp, true);
+            assert_eq!(
+                std::fs::read_dir(&outside).unwrap().count(),
+                0,
+                "{planted:?}"
+            );
+            let _ = std::fs::remove_file(&planted);
+            std::fs::create_dir_all(temp.join(".cargo")).unwrap();
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// macOS's /usr/bin/git is xcrun's shim, whose cache goes in the user's /var/folders, which the
     /// sandbox doesn't let a job write: every git call printed "couldn't create cache file". Its
     /// cache is in the job's temporary folder instead.

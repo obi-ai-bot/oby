@@ -549,6 +549,9 @@ fn rooms_never_wait_for_a_checkout_obid_could_keep_ready() {
     let clone = obid.home.join("clones/obi-e2e/fixture-app");
     let git = |args: &[&str]| {
         let out = std::process::Command::new("git")
+            // Not a committing job's objects, when this runs in its sandbox (sandbox::Spec::git_env).
+            .env_remove("GIT_OBJECT_DIRECTORY")
+            .env_remove("GIT_ALTERNATE_OBJECT_DIRECTORIES")
             .arg("-C")
             .arg(&clone)
             .args(args)
@@ -2093,6 +2096,9 @@ fn archive_is_at_once_and_delete_waits_for_confirm() {
     let clone = obid.home.join("clones/obi-e2e/fixture-app");
     let has_branch = |name: &str| {
         let out = std::process::Command::new("git")
+            // Not a committing job's objects, when this runs in its sandbox (sandbox::Spec::git_env).
+            .env_remove("GIT_OBJECT_DIRECTORY")
+            .env_remove("GIT_ALTERNATE_OBJECT_DIRECTORIES")
             .args(["-C"])
             .arg(&clone)
             .args(["branch", "--all", "--list", name])

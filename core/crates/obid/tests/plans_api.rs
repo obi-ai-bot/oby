@@ -3902,6 +3902,9 @@ fn commit_to_remote(folder: &Folder, files: &[(&str, &str)]) {
     let work = folder.0.join("fixture/rules");
     let git = |dir: &Path, args: &[&str]| {
         let out = std::process::Command::new("git")
+            // Not a committing job's objects, when this runs in its sandbox (sandbox::Spec::git_env).
+            .env_remove("GIT_OBJECT_DIRECTORY")
+            .env_remove("GIT_ALTERNATE_OBJECT_DIRECTORIES")
             .current_dir(dir)
             .args([
                 "-c",
@@ -3945,6 +3948,9 @@ fn clone_fixture(folder: &Folder, obid: &Obid) -> PathBuf {
     std::fs::create_dir_all(clone.parent().unwrap()).unwrap();
     let remote = folder.0.join("fixture/remote.git");
     let out = std::process::Command::new("git")
+        // Not a committing job's objects, when this runs in its sandbox (sandbox::Spec::git_env).
+        .env_remove("GIT_OBJECT_DIRECTORY")
+        .env_remove("GIT_ALTERNATE_OBJECT_DIRECTORIES")
         .args([
             "clone",
             "-q",
@@ -4070,6 +4076,9 @@ fn a_repository_without_a_clone_adds_nothing_and_starts_no_fetch() {
     commit_to_remote(&folder, &[("AGENTS.md", "Newer rules, not fetched yet.\n")]);
     let tip = || {
         let out = std::process::Command::new("git")
+            // Not a committing job's objects, when this runs in its sandbox (sandbox::Spec::git_env).
+            .env_remove("GIT_OBJECT_DIRECTORY")
+            .env_remove("GIT_ALTERNATE_OBJECT_DIRECTORIES")
             .current_dir(&clone)
             .args(["rev-parse", "refs/remotes/origin/main"])
             .output()

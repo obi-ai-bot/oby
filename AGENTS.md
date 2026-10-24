@@ -66,6 +66,7 @@ Oby launches lean, and where this differs from Sangam's design, this wins until 
 
 - Open `apps/Oby.xcodeproj` in Xcode 27 and run the `Oby` scheme on My Mac, or `xcodebuild -project apps/Oby.xcodeproj -scheme Oby build`.
 - Tests: `MacTests` (Swift Testing, hosted by the app). Run them with ⌘U or `xcodebuild -project apps/Oby.xcodeproj -scheme Oby -destination 'platform=macOS' test`. While tests run, a test-host Oby is alive, so a freshly launched Oby quits (one instance at a time): launch it again when they finish.
+- What changed, checked: `scripts/oby-check.sh` runs only the suites a change reaches (obid's touched lib modules and test binaries with fmt and clippy, the touched MacTests or iOSTests suites, `swift test`), then gitleaks; `OBY_CHECK_PLAN=1` prints what it would run. It's this repository's check in obid (`"check": "scripts/oby-check.sh"` on `obi-ai-bot/oby` in its `config.json`, docs/runner-api.md, `repos`), so Oby's jobs here run it in their sandbox.
 - Oby keeps its clones, job worktrees, `oby.sqlite` and `accounts.json` in `~/Library/Application Support/Oby`.
 - The character's source is `character/`. A build phase runs `character/package/build.sh` and bundles the clean copy (no playground) into the app.
 - The app isn't sandboxed (it runs the user's CLIs) and ships with Developer ID, not the App Store.
