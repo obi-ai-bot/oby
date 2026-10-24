@@ -2295,10 +2295,10 @@ fn telling_a_finished_job_something_starts_a_follow_up() {
 }
 
 /// A turn that looked something up (a lookup reads the web, GitHub or a repository: data, never
-/// the owner's words) starts the follow-up of a job that ended, marked so it publishes only when
-/// the owner does (the owner's decision of 2026-10-23, replacing #374's Start item).
+/// the owner's words) starts the follow-up of a job that ended, marked untrusted so it never runs
+/// in Bypass (the owner's decision of 2026-10-23, replacing #374's Start item).
 #[test]
-fn a_follow_up_after_research_publishes_only_by_hand() {
+fn a_follow_up_after_research_starts_marked_untrusted() {
     let folder = Folder::new("brain-follow-up-research");
     let obid = started(&folder);
     let job = job_that(&obid, "Vault secrets", "Nothing", None, "done");
@@ -2902,10 +2902,11 @@ fn where_is_answers_with_paths_and_no_job() {
 }
 
 /// ResearchToolsTests.researchThenDispatchWaitsForStart, as the owner decided on 2026-10-23: work
-/// the brain wants after looking things up starts at once, by these words, and publishes only when
-/// the owner does.
+/// the brain wants after looking things up starts at once, by these words, marked untrusted (never
+/// Bypass); it publishes by itself as every job does (the owner's decision of 2026-10-24), so the
+/// answer asks nothing of the owner.
 #[test]
-fn research_then_dispatch_starts_but_publishes_only_by_hand() {
+fn research_then_dispatch_starts_marked_untrusted() {
     let folder = Folder::new("brain-research-start");
     let obid = started(&folder);
     let dispatch = json!({"action": "dispatch", "reply": "", "question": null, "jobs": [], "dispatches": [
@@ -2922,11 +2923,9 @@ fn research_then_dispatch_starts_but_publishes_only_by_hand() {
         ],
     );
     let answer = said(&obid, "Compare the docs and code, then fix it");
+    let text = answer["text"].as_str().unwrap();
     assert!(
-        answer["text"]
-            .as_str()
-            .unwrap()
-            .ends_with(" I read something I didn't write first, so it publishes only when you do."),
+        text.starts_with("On it. ") && !text.contains("when you do"),
         "{answer}"
     );
     assert!(items_of(&obid, "start").is_empty());
@@ -2967,13 +2966,6 @@ fn a_brief_carries_what_the_turn_found_quoted() {
         ],
     );
     let answer = said(&obid, "look at greet, then check it");
-    assert!(
-        answer["text"]
-            .as_str()
-            .unwrap()
-            .ends_with("so it publishes only when you do."),
-        "{answer}"
-    );
     let calls = calls(&obid);
     assert_eq!(calls.len(), 3);
     assert!(

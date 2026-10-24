@@ -1074,7 +1074,7 @@ impl Link {
                 &item.job,
                 format!("From now on, {words}"),
                 format!(
-                    "You asked Oby to look into these from now on, with no tap: an investigate job each time, which publishes only when you do, one at a time and at most {} a day. It's saved only if you confirm.",
+                    "You asked Oby to look into these from now on, with no tap: an investigate job each time, which publishes by itself once its checks pass and the secret scan is clean, one at a time and at most {} a day. It's saved only if you confirm.",
                     crate::rules::DAILY
                 ),
                 inbox::Confirmed {

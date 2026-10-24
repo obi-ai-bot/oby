@@ -177,8 +177,9 @@ async fn dispatch(
             ..NewJob::default()
         };
         // Work planned after the turn read something untrusted starts now, in Sandbox mode at
-        // most, and publishes only when the owner does (the owner's decision of 2026-10-23,
-        // replacing #374's Start item), as a standing rule's job.
+        // most, as a standing rule's job (the owner's decision of 2026-10-23, replacing #374's
+        // Start item), and publishes by itself as any job does (the owner's decision of
+        // 2026-10-24).
         let new = NewJob {
             untrusted: researched,
             ..new
@@ -229,9 +230,6 @@ async fn dispatch(
         (false, true) => started_line(shared, &started),
         (false, false) => plan.reply.clone(),
     };
-    if researched && !started.is_empty() {
-        text = format!("{text} {UNTRUSTED_LINE}").trim_start().to_owned();
-    }
     if !waiting.is_empty() {
         let line = format!(
             "Starting {} in Bypass mode waits for your OK: confirm it in your inbox.",
@@ -411,10 +409,6 @@ fn place(shared: &Shared, job: &Job) -> String {
         account_name(shared, &job.account)
     )
 }
-
-/// What the turn says of the jobs it started after reading something untrusted.
-const UNTRUSTED_LINE: &str =
-    "I read something I didn't write first, so it publishes only when you do.";
 
 /// What a job hears when the user tries it again (`Inbox.tryAgainMessage`).
 pub const TRY_AGAIN: &str =
@@ -631,9 +625,9 @@ fn dismiss(shared: &Arc<Shared>, job: &Job, theirs: bool) -> (String, bool) {
 /// message_job (#542): the user's own words reach the job's agent, with the secrets obid knows
 /// taken out, never the brain's restatement of them. A running job hears them at its next turn;
 /// one that ended gets a follow-up that starts with them (Sangam's design, the owner's decision of
-/// 2026-10-18), and stays as it ended. After something untrusted was read the follow-up publishes
-/// only when the owner does (the owner's decision of 2026-10-23); an event turn's words never start
-/// one.
+/// 2026-10-18), and stays as it ended. After something untrusted was read the follow-up is marked
+/// untrusted, so it never runs in Bypass, and publishes by itself as any job does (the owner's
+/// decision of 2026-10-24); an event turn's words never start one.
 fn message_job(
     shared: &Arc<Shared>,
     plan: &Plan,

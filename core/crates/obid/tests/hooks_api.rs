@@ -794,7 +794,7 @@ fn from_now_on_saves_a_rule_that_starts_the_next_alert_itself() {
         .count();
     assert_eq!(ours, 1, "one job per rule at a time");
 
-    // Its follow-up is the rule's too: it publishes only by hand.
+    // Its follow-up is the rule's too: never in Bypass.
     let job_id = job["id"].as_str().unwrap();
     assert_eq!(
         call(&obid, "POST", &format!("/v1/jobs/{job_id}/stop"), None).status,

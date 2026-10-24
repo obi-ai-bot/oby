@@ -227,9 +227,6 @@ fn spell(time: Duration) -> String {
 /// What obid tells an agent that ended its turn to wait for something still running.
 const WAIT_HERE: &str = "Your turn ended while you wait for something still running, but in a job the end of your turn is the end of your work: nothing wakes you later, and what you left running is ended. Run it again in the foreground and wait for it (or poll it with a foreground command until it's done), then carry on and finish with a short summary.";
 
-/// Why a job whose conversation read something untrusted didn't publish by itself.
-pub const UNTRUSTED_PUBLISH: &str = "Oby read something it didn't write before it started this job, so it publishes only when you do: Publish opens its pull request.";
-
 /// What obid tells an agent that ended its work with changes it never committed.
 const COMMIT_HERE: &str = "Your turn ended with changes in this worktree that aren't committed, and obid publishes only commits: what isn't committed is left out. If they're the work, commit them now (unsigned, a Conventional Commits message); if they aren't, say why in your summary's first line. Then finish with a short summary.";
 
@@ -2245,9 +2242,8 @@ impl Jobs {
         job.follow_up_of = new.follow_up_of;
         job.runs_on = new.runs_on;
         job.routine = new.routine;
-        // A follow-up of a rule's job is the rule's too (#1314): it publishes only when the owner
-        // does. A Start item's job never carries `rule` (it's never from the API): found here. So
-        // is an untrusted one's.
+        // A follow-up of a rule's job is the rule's too (#1314): never Bypass. A Start item's job
+        // never carries `rule` (it's never from the API): found here. So is an untrusted one's.
         let of = job.follow_up_of.as_deref().and_then(|of| self.get(of));
         job.rule = new
             .rule
@@ -6102,21 +6098,16 @@ impl Jobs {
             // One whose own publish failed isn't tried again by itself, unless this run made new
             // commits; one a restart cut short (its publish never ran) carries on and publishes.
             let made_now = before_head.as_deref() != Some(head.as_str());
-            // A job a standing rule started with no tap publishes only by hand (#1314): what an
-            // alert's text led its agent to write is the owner's to send. So does one whose
-            // conversation read something untrusted (the owner's decision of 2026-10-23).
-            let by_hand = job.rule.is_some() || job.untrusted;
-            if !ended.can_publish() || (!made_now && job.publish_error.is_some()) || by_hand {
+            // A job a standing rule started (#1314), or one whose conversation read something
+            // untrusted, publishes by itself like any other, after its checks and the secret scan
+            // (the owner's decision of 2026-10-24, replacing 2026-10-23's by hand): what it read
+            // only keeps it out of Bypass, and merging still waits for a review.
+            if !ended.can_publish() || (!made_now && job.publish_error.is_some()) {
                 // Still waiting for Publish by hand: why its own publish failed still holds.
                 let waiting = ended.can_publish();
                 self.end_done(id, commits, pushed, |job| {
                     if !waiting {
                         job.publish_error = None;
-                    }
-                    if job.rule.is_some() && waiting {
-                        job.reason = Some("Your standing rule started this job, so it publishes only when you do: Publish opens its pull request.".into());
-                    } else if job.untrusted && waiting {
-                        job.reason = Some(UNTRUSTED_PUBLISH.into());
                     }
                 });
                 if job.kind == "review" {
