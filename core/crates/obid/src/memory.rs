@@ -132,11 +132,14 @@ impl Method {
     }
 }
 
-/// Who approves before the merge: Oby's reviewer account (a second GitHub account), a teammate's
-/// Oby over the Obysphere, or a person.
+/// Who approves before the merge: Oby's own review of the very commit (the owner's decision of
+/// 2026-10-24: it counts for the owner's own pull requests, which it merges with their own GitHub
+/// login, as Claude Code does), Oby's reviewer account (an optional second GitHub account), a
+/// teammate's Oby over the Obysphere, or a person.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Approval {
+    Oby,
     Reviewer,
     Teammate,
     Person,
@@ -176,6 +179,7 @@ impl Workflow {
             ""
         };
         let who = match self.review {
+            Approval::Oby => "Oby's own review",
             Approval::Reviewer => "Oby's reviewer account",
             Approval::Teammate => "a teammate's Oby",
             Approval::Person => "a person",
@@ -2283,7 +2287,12 @@ mod tests {
     fn a_workflows_words_widen_nothing() {
         for method in [Method::Squash, Method::Merge, Method::Rebase] {
             for rebase_first in [false, true] {
-                for review in [Approval::Reviewer, Approval::Teammate, Approval::Person] {
+                for review in [
+                    Approval::Oby,
+                    Approval::Reviewer,
+                    Approval::Teammate,
+                    Approval::Person,
+                ] {
                     for checks in [Checks::Mac, Checks::Github] {
                         let workflow = Workflow {
                             base: "dev".into(),

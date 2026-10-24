@@ -466,13 +466,14 @@ pub async fn view_merging(
     let output = pr_view(gh, repo, number).await?;
     let pr = decode(&output, now).ok_or_else(|| FAILED.to_owned())?;
     let merging = match decode_merging(&output) {
-        Some(mut merging) => reviews(gh, repo, number)
-            .await
-            .map(|reviews| {
+        Some(mut merging) => match reviews(gh, repo, number).await {
+            Ok(reviews) => {
                 merging.reviews = reviews;
-                merging
-            })
-            .map_err(|_| FAILED.to_owned()),
+                merging.required_approvals = required_approvals(gh, repo, &pr.base).await;
+                Ok(merging)
+            }
+            Err(_) => Err(FAILED.to_owned()),
+        },
         None => Err(FAILED.to_owned()),
     };
     Ok((pr, merging))
@@ -486,6 +487,53 @@ async fn pr_view(gh: &Path, repo: &str, number: u64) -> Result<String, String> {
     )
     .await
     .map_err(|_| FAILED.to_owned())
+}
+
+/// How many approving reviews GitHub requires before a pull request into `base` of `repo` merges:
+/// the most its rulesets (`GET repos/{repo}/rules/branches/{base}`, a `pull_request` rule's
+/// `required_approving_review_count`) and its classic protection (`…/branches/{base}/protection/
+/// required_pull_request_reviews`) ask for. None when the rulesets can't be read. Classic
+/// protection reads only for an admin: "Branch not protected" is 0, and any other refusal leaves
+/// it to GitHub's own `reviewDecision` (`REVIEW_REQUIRED`).
+pub async fn required_approvals(gh: &Path, repo: &str, base: &str) -> Option<u32> {
+    if !is_repo(repo) || !crate::git::is_branch_name(base) {
+        return None;
+    }
+    let rules = run(gh, &["api", &format!("repos/{repo}/rules/branches/{base}")])
+        .await
+        .ok()
+        .and_then(|text| decode_rules(&text))?;
+    let path = format!("repos/{repo}/branches/{base}/protection/required_pull_request_reviews");
+    let classic = run(gh, &["api", &path])
+        .await
+        .ok()
+        .and_then(|text| decode_protection(&text))
+        .unwrap_or(0);
+    Some(rules.max(classic))
+}
+
+/// The most approving reviews a branch's rules ask for (`GET …/rules/branches/{branch}`); none
+/// when it isn't that list.
+pub fn decode_rules(text: &str) -> Option<u32> {
+    let rules: Vec<Value> = serde_json::from_str(text).ok()?;
+    Some(
+        rules
+            .iter()
+            .filter(|r| r["type"] == "pull_request")
+            .filter_map(|r| r["parameters"]["required_approving_review_count"].as_u64())
+            .max()
+            .unwrap_or(0)
+            .min(u64::from(u32::MAX)) as u32,
+    )
+}
+
+/// The approving reviews a branch's classic protection asks for (`…/protection/
+/// required_pull_request_reviews`).
+pub fn decode_protection(text: &str) -> Option<u32> {
+    let value: Value = serde_json::from_str(text).ok()?;
+    value["required_approving_review_count"]
+        .as_u64()
+        .map(|n| n.min(u64::from(u32::MAX)) as u32)
 }
 
 /// Each reviewer's latest review of the pull request `number` that counts ([`decode_reviews`]),
@@ -568,6 +616,9 @@ pub struct Merging {
     pub author: Option<String>,
     /// Each reviewer's latest review that counts ([`reviews`]); empty until read.
     pub reviews: Vec<Review>,
+    /// The approving reviews GitHub requires on its base ([`required_approvals`]); none when that
+    /// couldn't be read.
+    pub required_approvals: Option<u32>,
 }
 
 /// [`Merging`] from `gh pr view --json` with [`FIELDS`], its reviews not yet read; none when it
@@ -604,6 +655,7 @@ pub fn decode_merging(text: &str) -> Option<Merging> {
             .filter(|a| !a.is_empty())
             .map(str::to_owned),
         reviews: vec![],
+        required_approvals: None,
     })
 }
 
@@ -915,6 +967,30 @@ mod tests {
             (None, None, None)
         );
         assert_eq!(decode_merging("not json"), None);
+    }
+
+    /// What a branch's rules and classic protection require, as GitHub answers them.
+    #[test]
+    fn the_approvals_github_requires() {
+        assert_eq!(decode_rules("[]"), Some(0));
+        let rules = json!([
+            {"type": "deletion", "ruleset_id": 1},
+            {"type": "pull_request", "ruleset_id": 2, "parameters": {"required_approving_review_count": 1,
+              "dismiss_stale_reviews_on_push": true, "require_code_owner_review": false}},
+            {"type": "pull_request", "ruleset_id": 3, "parameters": {"required_approving_review_count": 2}},
+        ]);
+        assert_eq!(decode_rules(&rules.to_string()), Some(2));
+        assert_eq!(decode_rules("not json"), None);
+        assert_eq!(
+            decode_protection(
+                r#"{"required_approving_review_count": 1, "dismiss_stale_reviews": false}"#
+            ),
+            Some(1)
+        );
+        assert_eq!(
+            decode_protection(r#"{"message": "Branch not protected"}"#),
+            None
+        );
     }
 
     /// One review as `GET repos/{o}/{r}/pulls/{n}/reviews` answers it (cli/cli#14805's, trimmed).
