@@ -21,6 +21,7 @@
 #   calls       one line per call: its first two arguments
 #   approvals   one line per `gh api --method POST …/reviews` (crate::sphere::approval): its
 #               arguments; it answers a review's html_url
+#   no-push     when it exists, `gh api repos/<repo> --jq .permissions.push` says false (else true)
 work="$HOME/github"
 if [ -d "$work" ]; then
   echo "$1 $2" >> "$work/calls"
@@ -41,6 +42,9 @@ if [ -d "$work" ]; then
     "repo view") cat "$work/repo.json"; exit 0 ;;
     "api user") cat "$work/user"; exit $? ;;
     "api user/orgs") cat "$work/orgs"; exit $? ;;
+    "api repos/"*)
+      if [ -f "$work/no-push" ]; then echo false; else echo true; fi
+      exit 0 ;;
     "api --method")
       echo "$*" >> "$work/approvals"
       echo '{"id":1,"state":"APPROVED","html_url":"https://github.com/'"$4"'#pullrequestreview-1"}'

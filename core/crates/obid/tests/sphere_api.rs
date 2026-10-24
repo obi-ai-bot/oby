@@ -329,11 +329,12 @@ async fn an_approved_review_is_approved_on_github_only_as_the_owner_allows() {
     let github = folder.0.join("env-home/github");
     std::fs::create_dir_all(&github).unwrap();
     let head = brief()["head_sha"].as_str().unwrap().to_owned();
-    let pr_at = |sha: &str| {
-        let view = json!({"state": "OPEN", "headRefOid": sha});
+    let pr_at = |sha: &str, base: &str| {
+        let view = json!({"state": "OPEN", "headRefOid": sha, "baseRefName": base,
+                          "url": "https://github.com/obi-e2e/fixture-app/pull/12"});
         std::fs::write(github.join("view.json"), view.to_string()).unwrap();
     };
-    pr_at(&head);
+    pr_at(&head, "main");
     let approvals = || std::fs::read_to_string(github.join("approvals")).unwrap_or_default();
     let mut asking = brief();
     asking["pr"] = json!(12);
@@ -367,6 +368,8 @@ async fn an_approved_review_is_approved_on_github_only_as_the_owner_allows() {
     );
     assert_eq!(ask["obi"]["type"], "host_approval");
     assert_eq!(ask["obi"]["pr"], 12);
+    assert_eq!(ask["obi"]["baseBranch"], "main");
+    assert_eq!(ask["obi"]["expiresAt"], first["expires_at"]);
 
     // Yes, and from now on: approved now, exactly that commit, in obid's own words; the
     // permission waits for the owner's own tap.
@@ -402,7 +405,7 @@ async fn an_approved_review_is_approved_on_github_only_as_the_owner_allows() {
     });
     assert_eq!(
         keep["title"],
-        "From now on, approve ernesto's pull requests on obi-e2e/fixture-app on GitHub when your Oby's review passes"
+        "From now on, approve on GitHub the pull requests ernesto's Oby asks you to on obi-e2e/fixture-app, when your Oby's review passes"
     );
     let kept = tokio::task::block_in_place(|| confirm(&obid, keep["id"].as_str().unwrap()));
     assert_eq!(kept.status, 200, "{}", kept.text);
@@ -448,13 +451,26 @@ async fn an_approved_review_is_approved_on_github_only_as_the_owner_allows() {
         assert_eq!(permission["uses"], 1);
     });
 
-    // The pull request moved on since the commit reviewed: nothing is approved.
-    pr_at(&"1".repeat(40));
-    let third = ernesto.request("obi-wellington", "review_request", asking.clone(), 3600);
-    ernesto.send(&third).await;
-    let replies = ernesto.receive(2, 90).await;
-    assert_eq!(replies[1]["body"]["host_review"], "unable");
-    assert_eq!(approvals().lines().count(), 2);
+    // The pull request moved on since the commit reviewed, goes into another branch than the one
+    // the review compared it with, or the owner's login can't push there: nothing is approved.
+    for (sha, base, push) in [
+        ("1".repeat(40), "main", true),
+        (head.clone(), "release", true),
+        (head.clone(), "main", false),
+    ] {
+        pr_at(&sha, base);
+        if !push {
+            std::fs::write(github.join("no-push"), "").unwrap();
+        }
+        let again = ernesto.request("obi-wellington", "review_request", asking.clone(), 3600);
+        ernesto.send(&again).await;
+        let replies = ernesto.receive(2, 90).await;
+        assert_eq!(
+            replies[1]["body"]["host_review"], "unable",
+            "{sha} {base} {push}"
+        );
+        assert_eq!(approvals().lines().count(), 2);
+    }
 
     // A request that doesn't ask gets no host_review, and nothing is approved.
     let plain = ernesto.request("obi-wellington", "review_request", brief(), 3600);
@@ -477,7 +493,7 @@ async fn an_approved_review_is_approved_on_github_only_as_the_owner_allows() {
     assert_eq!(proposed.body["kind"], "confirm");
     assert_eq!(
         proposed.body["title"],
-        "From now on, approve zoe's pull requests on any repository on GitHub when your Oby's review passes"
+        "From now on, approve on GitHub the pull requests zoe's Oby asks you to on any repository, when your Oby's review passes"
     );
     for refused in [
         json!({"type": "review_request", "fromOwner": "zoe", "repo": "*"}),

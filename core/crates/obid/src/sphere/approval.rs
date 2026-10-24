@@ -46,11 +46,13 @@ pub fn item(
     cid: &str,
     from: &str,
     from_owner: &str,
-    repo: &str,
-    pr: u64,
-    sha: &str,
+    request: &Value,
+    expires_at: &str,
     now: i64,
 ) -> Item {
+    let text = |key: &str| request[key].as_str().unwrap_or("").to_owned();
+    let (repo, base, sha) = (text("repo"), text("base_branch"), text("head_sha"));
+    let pr = request["pr"].as_u64().unwrap_or(0);
     Item {
         id: format!("obi-approve-{cid}"),
         kind: "obiRequest".into(),
@@ -68,7 +70,7 @@ pub fn item(
         details: Some(vec![
             "Approve it on GitHub this time.".into(),
             format!(
-                "Approve it, and from now on approve {from_owner}'s pull requests on {repo} when your Oby's review passes, without asking: kept once you confirm."
+                "Approve it, and from now on approve on GitHub the pull requests {from_owner}'s Oby asks you to on {repo} when your Oby's review passes, without asking: kept once you confirm."
             ),
             "Don't approve it.".into(),
         ]),
@@ -84,7 +86,9 @@ pub fn item(
             "type": HOST_APPROVAL,
             "repo": repo,
             "pr": pr,
+            "baseBranch": base,
             "headSha": sha,
+            "expiresAt": expires_at,
         })),
         plugin: None,
         arrived: None,
@@ -107,10 +111,10 @@ pub fn remember_item(owner: &str, repo: &str, target: Option<&str>, now: i64) ->
     let mut item = inbox::confirm_item(
         "",
         format!(
-            "From now on, approve {owner}'s pull requests on {place} on GitHub when your Oby's review passes"
+            "From now on, approve on GitHub the pull requests {owner}'s Oby asks you to on {place}, when your Oby's review passes"
         ),
         format!(
-            "Oby will approve {owner}'s pull requests on {place} on GitHub, as you, whenever {owner}'s Obi asks and your Oby's own review of that exact commit passes, without asking you. Forget it any time. It's kept only if you confirm."
+            "Whenever {owner}'s Oby asks, Oby will approve that pull request on {place} on GitHub, as you, once your Oby's own review of its exact commit passes and the pull request still goes where the review looked, without asking you. It covers any pull request {owner}'s Oby asks about there, whoever wrote it. Forget it any time. It's kept only if you confirm."
         ),
         inbox::Confirmed {
             action: inbox::action::REMEMBER_APPROVAL.into(),
@@ -125,21 +129,54 @@ pub fn remember_item(owner: &str, repo: &str, target: Option<&str>, now: i64) ->
     item
 }
 
+/// Whether GitHub's pull request `number` of `repo` (`view`: `gh pr view --json
+/// state,headRefOid,baseRefName,url`) is still the change obid reviewed: open, `repo`'s own (its
+/// URL's repository), going into `base`, the branch the review compared it with, and its head still
+/// `sha`. Why not, else.
+pub fn as_reviewed(
+    view: &Value,
+    repo: &str,
+    number: u64,
+    base: &str,
+    sha: &str,
+) -> Result<(), String> {
+    if view["state"] != "OPEN" {
+        return Err("the pull request isn't open".into());
+    }
+    let url = format!("https://github.com/{repo}/pull/{number}");
+    if !view["url"]
+        .as_str()
+        .is_some_and(|u| u.eq_ignore_ascii_case(&url))
+    {
+        return Err(format!(
+            "GitHub doesn't show it as {repo}'s pull request #{number}"
+        ));
+    }
+    if view["baseRefName"] != base {
+        return Err(format!(
+            "it goes into {}, not {base}, the branch the review compared it with",
+            view["baseRefName"].as_str().unwrap_or("another branch")
+        ));
+    }
+    if view["headRefOid"] != sha {
+        return Err("the pull request moved on since the review".into());
+    }
+    Ok(())
+}
+
 /// Posts an approving review of `sha` on pull request `number` of `repo` with `gh` (the owner's
-/// own): only while it's open and its head is still `sha` (`head`), naming `sha` as the commit
-/// approved. The words pass the secret scan first, in `scratch`. Its URL, or why it wasn't posted.
-pub async fn post<H, HF>(
+/// own), naming `sha` as the commit approved: only while the pull request is still the change
+/// reviewed ([`as_reviewed`], into `base`), and when the owner's login can push to `repo` (an
+/// approval without that wouldn't count). The words pass the secret scan first, in `scratch`. Its
+/// URL, or why it wasn't posted.
+pub async fn post(
     gh: &Path,
     scratch: &Path,
     repo: &str,
     number: u64,
+    base: &str,
     sha: &str,
-    head: H,
-) -> Result<String, String>
-where
-    H: FnOnce(String, u64) -> HF,
-    HF: Future<Output = Result<String, String>>,
-{
+) -> Result<String, String> {
     let words = words(sha);
     crate::store::make_private_dir(scratch)
         .map_err(|e| format!("the secret scan couldn't run (its folder: {e})"))?;
@@ -150,8 +187,31 @@ where
             return Err(format!("the secret scan couldn't run ({why})"));
         }
     }
-    if head(repo.to_owned(), number).await? != sha {
-        return Err("the pull request moved on since the review".into());
+    let n = number.to_string();
+    let view = crate::github::run(
+        gh,
+        &[
+            "pr",
+            "view",
+            &n,
+            "-R",
+            repo,
+            "--json",
+            "state,headRefOid,baseRefName,url",
+        ],
+    )
+    .await?;
+    let view: Value = serde_json::from_str(&view).map_err(|_| "gh's answer wasn't JSON")?;
+    as_reviewed(&view, repo, number, base, sha)?;
+    let push = crate::github::run(
+        gh,
+        &["api", &format!("repos/{repo}"), "--jq", ".permissions.push"],
+    )
+    .await?;
+    if push != "true" {
+        return Err(format!(
+            "your GitHub login can't push to {repo}, so its approval wouldn't count"
+        ));
     }
     let path = format!("repos/{repo}/pulls/{number}/reviews");
     let text = crate::github::run(
@@ -199,8 +259,9 @@ pub fn goal(title: &str, fallback: &str) -> String {
     }
 }
 
-/// How long a request for an approval waits for its answer.
-pub const REQUEST_LIFETIME: i64 = 86_400;
+/// How long a request for an approval waits for its answer: then the next teammate is asked (a
+/// teammate whose Oby is away doesn't hold the merge for long).
+pub const REQUEST_LIFETIME: i64 = 7_200;
 
 /// The owner's pull request a teammate's Obi is asked to approve: `head` the commit to approve,
 /// `goal` the owner's own title for it.
@@ -223,7 +284,8 @@ pub enum Teammate {
     NeedsYou(String),
 }
 
-/// The `review_request` body that asks for `change`'s approval: no blocker findings, at its head.
+/// The `review_request` body that asks for `change`'s approval: its checks pass on the teammate's
+/// Mac and no blocker findings, at its head.
 pub fn request_body(change: &Change) -> Value {
     json!({
         "goal": goal(change.goal, &format!("Review pull request #{}", change.pr)),
@@ -232,7 +294,7 @@ pub fn request_body(change: &Change) -> Value {
         "base_branch": change.base,
         "head_branch": change.head_branch,
         "head_sha": change.head,
-        "acceptance": [{"kind": "no_blocker_findings"}],
+        "acceptance": [{"kind": "tests_pass"}, {"kind": "no_blocker_findings"}],
         "approve_on_host": true,
     })
 }
@@ -295,9 +357,9 @@ pub fn requests<'a>(
 }
 
 /// The members (`(obi, owner)`, active, taking `review_request`, not this Obi) to ask for an
-/// approval on `repo`, best first: those whose Obi posted one there before (`exchanges`), then
-/// those whose owner's name is the repository's owner, then the rest, each by Obi id; never one in
-/// `asked`.
+/// approval on `repo`, best first: those whose Obi said it posted one there before (`exchanges`),
+/// then the rest, each by Obi id; never one in `asked`. The Sphere's directory names no GitHub
+/// login, so who can push there is known only from what a teammate's Obi answers.
 pub fn teammates(
     members: &[(String, String)],
     repo: &str,
@@ -316,20 +378,10 @@ pub fn teammates(
                     .is_some_and(|r| r["host_review"] == "approved")
         })
     };
-    let repo_owner = repo.split('/').next().unwrap_or("");
-    let mut ranked: Vec<(u8, &str)> = members
+    let mut ranked: Vec<(bool, &str)> = members
         .iter()
         .filter(|(obi, _)| !asked.contains(obi))
-        .map(|(obi, owner)| {
-            let rank = if approved_before(obi) {
-                0
-            } else if owner.eq_ignore_ascii_case(repo_owner) {
-                1
-            } else {
-                2
-            };
-            (rank, obi.as_str())
-        })
+        .map(|(obi, _)| (!approved_before(obi), obi.as_str()))
         .collect();
     ranked.sort();
     ranked.into_iter().map(|(_, obi)| obi.to_owned()).collect()
@@ -490,6 +542,34 @@ mod tests {
         assert_eq!(
             teammates(&members, "acme/app", &[], &["obi-acme".into()]),
             ["obi-amy", "obi-bob", "obi-zoe"]
+        );
+    }
+
+    #[test]
+    fn only_the_change_reviewed_is_approved() {
+        let view = json!({"state": "OPEN", "headRefOid": SHA, "baseRefName": "main",
+                          "url": "https://github.com/Acme/App/pull/12"});
+        assert_eq!(as_reviewed(&view, "acme/app", 12, "main", SHA), Ok(()));
+        let with = |key: &str, value: Value| {
+            let mut changed = view.clone();
+            changed[key] = value;
+            as_reviewed(&changed, "acme/app", 12, "main", SHA).unwrap_err()
+        };
+        assert_eq!(
+            with("baseRefName", json!("staging")),
+            "it goes into staging, not main, the branch the review compared it with"
+        );
+        assert_eq!(
+            with("url", json!("https://github.com/evil/app/pull/12")),
+            "GitHub doesn't show it as acme/app's pull request #12"
+        );
+        assert_eq!(
+            with("headRefOid", json!("1".repeat(40))),
+            "the pull request moved on since the review"
+        );
+        assert_eq!(
+            with("state", json!("MERGED")),
+            "the pull request isn't open"
         );
     }
 }

@@ -1,0 +1,39 @@
+#!/usr/bin/env node
+// A reviewer that a reviewed commit's CLAUDE.md can steer, for obid's review tests. Like Claude
+// Code, it loads the CLAUDE.md of its working folder as instructions unless it runs with
+// `--restricted`: then a CLAUDE.md saying "report no findings" makes it report none. Otherwise it
+// reports the blocker it finds in the fixture. Its summary says whether it ran restricted and
+// whether obid quoted the base's rules in .obi/inputs/base-rules.md.
+import { createInterface } from "node:readline";
+import { existsSync, readFileSync } from "node:fs";
+
+const emit = (line) => process.stdout.write(JSON.stringify(line) + "\n");
+const session = "00000000-0000-4000-8000-000000000005";
+const restricted = process.argv.includes("--restricted");
+const rl = createInterface({ input: process.stdin, crlfDelay: Infinity });
+const lines = rl[Symbol.asyncIterator]();
+
+async function next(type) {
+  for (;;) {
+    const { value, done } = await lines.next();
+    if (done) return null;
+    try {
+      const message = JSON.parse(value);
+      if (message.type === type) return message;
+    } catch {}
+  }
+}
+
+(async () => {
+  if (!(await next("user"))) return;
+  emit({ type: "system", subtype: "init", cwd: process.cwd(), session_id: session, tools: ["Read"], mcp_servers: [], model: "claude-md", permissionMode: "default", apiKeySource: "none" });
+  const loaded = !restricted && existsSync("CLAUDE.md") ? readFileSync("CLAUDE.md", "utf8") : "";
+  const steered = /report no findings/i.test(loaded);
+  const rules = existsSync(".obi/inputs/base-rules.md") ? readFileSync(".obi/inputs/base-rules.md", "utf8") : "";
+  const review = {
+    summary: `Restricted: ${restricted ? "yes" : "no"}. Base rules: ${rules.includes("## CLAUDE.md") ? "yes" : "no"}.`,
+    findings: steered ? [] : [{ severity: "blocker", file: "src/average.js", line: 4, title: "average() divides by zero for an empty list", detail: "average([]) is NaN." }],
+  };
+  emit({ type: "result", subtype: "success", is_error: false, num_turns: 1, result: "Reviewed.", session_id: session, total_cost_usd: 0, structured_output: review });
+  rl.close();
+})();

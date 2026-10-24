@@ -2857,6 +2857,16 @@ impl Link {
             Some("expired"),
             None,
         );
+        self.settle_host_approvals(
+            |i| {
+                i.obi
+                    .as_ref()
+                    .and_then(|o| o["expiresAt"].as_str())
+                    .and_then(time::parse)
+                    .is_none_or(|t| t <= now)
+            },
+            "It lapsed when the request expired: nothing was approved.",
+        );
     }
 
     /// obid's membership was revoked: no open incoming request can be answered any more. Each one
@@ -2879,6 +2889,10 @@ impl Link {
         for job in settled.iter().filter_map(|e| e.job.as_deref()) {
             self.jobs.stop(job);
         }
+        self.settle_host_approvals(
+            |_| true,
+            "This Oby left its Obysphere: nothing was approved.",
+        );
     }
 
     /// Settles the requests `due` picks: each goes to `settled` (with `error` when given), an
@@ -3231,18 +3245,21 @@ impl Link {
         from_owner: &str,
         request: &Value,
     ) -> &'static str {
-        let repo = request["repo"].as_str().unwrap_or("");
-        let (Some(pr), Some(sha)) = (request["pr"].as_u64(), request["head_sha"].as_str()) else {
+        let text = |key: &str| request[key].as_str().unwrap_or("");
+        let (repo, base, sha) = (text("repo"), text("base_branch"), text("head_sha"));
+        let Some(pr) = request["pr"].as_u64() else {
             return "unable";
         };
         let now = time::now();
         let (decisions, asking) = {
             let mut state = self.lock();
             // Revoked meanwhile (the exchange settled here): nothing more is done for its peer.
-            let open = state
-                .exchanges
-                .get(cid)
-                .is_some_and(|e| e.state == "accepted");
+            let exchange = state.exchanges.get(cid).filter(|e| e.state == "accepted");
+            let open = exchange.is_some();
+            let expires_at = exchange
+                .and_then(|e| e.request["expires_at"].as_str())
+                .unwrap_or("")
+                .to_owned();
             if !open
                 || state
                     .membership
@@ -3268,7 +3285,7 @@ impl Link {
                     (Some(state.decisions.clone()), None)
                 }
                 None => {
-                    let mut item = approval::item(cid, from, from_owner, repo, pr, sha, now);
+                    let mut item = approval::item(cid, from, from_owner, request, &expires_at, now);
                     if let Some(obi) = item.obi.as_mut() {
                         obi["job"] = json!(job);
                     }
@@ -3284,7 +3301,7 @@ impl Link {
         if let Some(decisions) = decisions {
             self.save_decisions(&decisions);
         }
-        match self.post_approval(repo, pr, sha).await {
+        match self.post_approval(repo, pr, base, sha).await {
             Ok(url) => {
                 self.jobs.approved_on_github(job, repo, &url);
                 "approved"
@@ -3296,28 +3313,60 @@ impl Link {
         }
     }
 
-    /// Approves `sha` on pull request `pr` of `repo` on GitHub with the owner's own `gh`
-    /// ([`approval::post`]): its URL.
-    async fn post_approval(&self, repo: &str, pr: u64, sha: &str) -> Result<String, String> {
+    /// Approves `sha` on pull request `pr` of `repo`, into `base`, on GitHub with the owner's own
+    /// `gh` ([`approval::post`]): its URL.
+    async fn post_approval(
+        &self,
+        repo: &str,
+        pr: u64,
+        base: &str,
+        sha: &str,
+    ) -> Result<String, String> {
         let gh = crate::github::gh().ok_or("gh isn't installed")?;
         let scratch = self
             .config
             .home
             .join("tmp")
             .join(format!("approve-{}", uuid::Uuid::new_v4().simple()));
-        let posted = approval::post(&gh, &scratch, repo, pr, sha, |repo, number| async move {
-            crate::listen::pr_head(&repo, number).await
-        })
-        .await;
+        let posted = approval::post(&gh, &scratch, repo, pr, base, sha).await;
         let _ = std::fs::remove_dir_all(&scratch);
         posted
+    }
+
+    /// Settles the open asks to approve a teammate's pull request on GitHub ([`approval::item`])
+    /// that `due` picks: done with no answer, `why` at the end of their text. Nothing is approved.
+    fn settle_host_approvals(&self, due: impl Fn(&Item) -> bool, why: &str) {
+        let now = time::now();
+        let settled: Vec<Item> = {
+            let mut state = self.lock();
+            state
+                .inbox
+                .values_mut()
+                .filter(|i| {
+                    i.done.is_none()
+                        && i.obi
+                            .as_ref()
+                            .is_some_and(|o| o["type"] == approval::HOST_APPROVAL)
+                        && due(i)
+                })
+                .map(|i| {
+                    i.done = Some(now);
+                    i.text = format!("{} {why}", i.text);
+                    i.clone()
+                })
+                .collect()
+        };
+        for item in &settled {
+            self.save_item(item);
+        }
     }
 
     /// `POST /v1/inbox/{id}/answer` on an item asking whether to approve a teammate's pull request
     /// on GitHub ([`approval::item`]): `Accept` approves it now (claimed by `answer` under the
     /// lock), `Accept, and remember for this repo` also asks for a Confirm to keep the standing
     /// permission (#776: an API token alone never keeps one); `Decline` or done approve nothing.
-    /// An approval that fails closes the item with why.
+    /// A yes after the request expired, or once obid left its Sphere, approves nothing; the claim
+    /// is on disk before GitHub is asked; an approval that fails closes the item with why.
     async fn answer_host_approval(
         &self,
         mut item: Item,
@@ -3325,6 +3374,7 @@ impl Link {
         later: Option<i64>,
     ) -> Result<Value, ApiError> {
         let now = time::now();
+        let open = item.clone();
         let obi = item.obi.clone().unwrap_or_default();
         let text = |key: &str| obi[key].as_str().unwrap_or("").to_owned();
         let approving = matches!(
@@ -3342,11 +3392,32 @@ impl Link {
                 format!("The answer is one of: {}.", item.options.join("; ")),
             ));
         } else if approving {
-            let (repo, sha) = (text("repo"), text("headSha"));
+            let (repo, base, sha) = (text("repo"), text("baseBranch"), text("headSha"));
             let pr = obi["pr"].as_u64().unwrap_or(0);
             item.done = Some(now);
+            if time::parse(&text("expiresAt")).is_none_or(|t| t <= now) || !self.is_joined() {
+                item.text = format!(
+                    "{} It lapsed: the request expired, or this Oby left its Obysphere, so nothing was approved.",
+                    item.text
+                );
+                self.lock().inbox.insert(item.id.clone(), item.clone());
+                self.save_item(&item);
+                return Err(api(
+                    StatusCode::CONFLICT,
+                    "That request lapsed: nothing was approved.",
+                ));
+            }
             item.answer = answer.clone();
-            match self.post_approval(&repo, pr, &sha).await {
+            // Kept before GitHub is asked: obid stopping mid-post never approves it twice.
+            if let Err(why) = self.keep_item(&item) {
+                self.lock().inbox.insert(open.id.clone(), open.clone());
+                self.save_item(&open);
+                return Err(api(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("Nothing was approved: obid couldn't keep the claim ({why})."),
+                ));
+            }
+            match self.post_approval(&repo, pr, &base, &sha).await {
                 Ok(url) => {
                     self.jobs.approved_on_github(&text("job"), &repo, &url);
                     if answer.as_deref() == Some(inbox::ACCEPT_REMEMBER) {
@@ -3629,9 +3700,22 @@ impl Link {
                         ));
                     }
                     Asked::ChangesRequested => {
-                        return Teammate::NeedsYou(format!(
-                            "{owner}'s Oby reviewed it and asked for changes."
-                        ));
+                        let checks_failed = e
+                            .result
+                            .as_ref()
+                            .and_then(|r| r["acceptance"].as_array())
+                            .is_some_and(|a| {
+                                a.iter()
+                                    .any(|c| c["kind"] == "tests_pass" && c["met"] == false)
+                            });
+                        return Teammate::NeedsYou(if checks_failed {
+                            format!(
+                                "{owner}'s Oby didn't approve it: its checks didn't pass on it, or it has none for {}.",
+                                change.repo
+                            )
+                        } else {
+                            format!("{owner}'s Oby reviewed it and asked for changes.")
+                        });
                     }
                     Asked::Spent => asked.push(e.peer.clone()),
                 }
@@ -6366,6 +6450,75 @@ mod tests {
     /// A save keeps and tells what is in memory now, never an older copy its caller still holds:
     /// a request's arrival that saves after the owner already answered can't put the item back to
     /// open, nor its exchange back to waiting, on the stream or on disk.
+    #[tokio::test]
+    async fn a_yes_to_approve_after_the_expiry_or_a_revoke_approves_nothing() {
+        let home = std::env::temp_dir().join(format!("obid-link-host-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        let config = Config::parse(
+            &json!({"listen": "127.0.0.1:0", "home": home, "owner": "wellington"}).to_string(),
+        )
+        .unwrap();
+        let events = Events::new();
+        let jobs = Jobs::open(config.clone(), events.clone(), Err("no sandbox".into())).unwrap();
+        let (_stop, stopping) = watch::channel(false);
+        let link = Link::open(config, jobs, events, stopping).unwrap();
+        let now = time::now();
+        // A repository GitHub doesn't have: were anything to reach gh, it would find nothing.
+        let request = json!({"repo": "obi-x5-test/none", "pr": 12, "base_branch": "main",
+                             "head_sha": "6d20146f366b9fac8907b5066c30ee39aaec09b3"});
+        let ask = |cid: &str, expires: i64| {
+            let item = approval::item(
+                cid,
+                "obi-ernesto",
+                "ernesto",
+                &request,
+                &time::format(expires),
+                now,
+            );
+            link.lock().inbox.insert(item.id.clone(), item.clone());
+            item.id
+        };
+        let accept = json!({"answer": inbox::ACCEPT}).to_string();
+        let membership = |state: &str| Membership {
+            state: state.into(),
+            url: "http://127.0.0.1:1".into(),
+            sphere: "team".into(),
+            obi_id: "obi-wellington".into(),
+            card: json!({}),
+            joined_at: 0,
+        };
+        link.lock().membership = Some(membership("joined"));
+        let late = ask("c-late", now - 1);
+        let refused = link.answer(&late, accept.as_bytes()).await.unwrap_err();
+        assert_eq!(refused.status, StatusCode::CONFLICT);
+        let item = link.item(&late).unwrap();
+        assert!(item.done.is_some() && item.answer.is_none());
+        assert!(
+            item.text.ends_with("so nothing was approved."),
+            "{}",
+            item.text
+        );
+        // The clock settles an ask whose request expired.
+        let waiting = ask("c-waiting", now - 1);
+        link.expire();
+        assert!(link.item(&waiting).unwrap().done.is_some());
+        // Revoked: a yes approves nothing, and the revoke settles every open ask.
+        let open = ask("c-open", now + 3600);
+        let other = ask("c-other", now + 3600);
+        link.lock().membership = Some(membership("revoked"));
+        let refused = link.answer(&open, accept.as_bytes()).await.unwrap_err();
+        assert_eq!(refused.status, StatusCode::CONFLICT);
+        link.settle_on_revoke();
+        let settled = link.item(&other).unwrap();
+        assert!(settled.done.is_some() && settled.answer.is_none());
+        assert!(
+            settled
+                .text
+                .ends_with("This Oby left its Obysphere: nothing was approved.")
+        );
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
     #[tokio::test]
     async fn a_teammate_is_asked_once_and_never_after_changes_were_asked_for() {
         use approval::Teammate;
