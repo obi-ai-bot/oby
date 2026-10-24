@@ -201,6 +201,15 @@ pub fn accounts(
     Some(reviewers)
 }
 
+/// Why nothing merges by Oby's own review when GitHub refused to show the base's rules in a way
+/// that won't pass by itself (`Merging::rules_refused`: an organization's SSO, a token without
+/// access): the owner's to fix.
+pub fn unreadable_rules(said: &str) -> Blocked {
+    needs_you(format!(
+        "Oby can't read this repository's merge rules (GitHub said: {said})."
+    ))
+}
+
 /// Why nothing merges when Oby's reviewer accounts couldn't be read.
 pub fn unread_reviewers() -> Blocked {
     wait("Not merged yet: Oby couldn't tell who its reviewer accounts are.")
@@ -250,9 +259,12 @@ pub fn ready(
         }
         match another_needed(pr, merging, head, author, reviewers) {
             None => {
-                return Err(wait(
-                    "Not merged yet: Oby couldn't read whether GitHub requires an approving review here.",
-                ));
+                return Err(match &merging.rules_refused {
+                    Some(said) => unreadable_rules(said),
+                    None => wait(
+                        "Not merged yet: Oby couldn't read whether GitHub requires an approving review here.",
+                    ),
+                });
             }
             Some(true) => return Err(wait(format!("Not merged yet: {REQUIRES_PERSON}"))),
             Some(false) => {}
@@ -1571,6 +1583,26 @@ mod tests {
         assert_eq!(
             ready_with(&approved, &decided, vec![ana], Some(1)),
             (requires.clone(), true, None)
+        );
+        // Rules it couldn't read wait; ones GitHub refused for good (SSO) are the owner's to fix.
+        assert_eq!(
+            ready_with(&approved, &view(|_| {}), vec![], None),
+            (
+                Err(wait(
+                    "Not merged yet: Oby couldn't read whether GitHub requires an approving review here."
+                )),
+                false,
+                None
+            )
+        );
+        let (pr, mut merging) = read(&view(|_| {}), &pages(vec![]));
+        merging.required_approvals = None;
+        merging.rules_refused = Some("Resource protected by organization SAML enforcement.".into());
+        assert_eq!(
+            ready(&approved, Some(&oby), &pr, &merging, Some(&nobody)),
+            Err(needs_you(
+                "Oby can't read this repository's merge rules (GitHub said: Resource protected by organization SAML enforcement.)."
+            ))
         );
         // An approval from one of Oby's reviewer accounts is never another person's.
         let x1 = rest(3, REVIEWER, "User", "APPROVED", &head(), "COLLABORATOR");
