@@ -93,11 +93,8 @@ impl Outgoing {
     }
 }
 
-/// What a published job's `reviewError` says until obid runs Oby's review of it (#525).
-pub const NOT_REVIEWED: &str =
-    "obid doesn't run Oby's review yet: a person reviews the pull request on GitHub.";
-
-/// The Review stage's line while that holds: what really happens next (AGENTS.md, "The launch build").
+/// The Review stage's line for work Oby doesn't review itself (published by hand): what really
+/// happens next (AGENTS.md, "The launch build").
 pub const YOUR_REVIEW: &str = "Pull request open · waiting for your review on GitHub";
 
 /// The Merged stage's line once GitHub approves: obid never merges, so the owner does, from the

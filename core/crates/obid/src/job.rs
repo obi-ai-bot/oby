@@ -42,6 +42,9 @@ pub const ONE_MORE_ROUND: &str = "One more round";
 /// A next step: the agent's session picked up again where it stopped.
 pub const TRY_AGAIN: &str = "Try again";
 
+/// The Review stage once Oby's review approved the pull request's head.
+pub const APPROVED_BY_OBY: &str = "Approved by Oby";
+
 /// The kinds of work.
 pub const KINDS: [&str; 6] = ["review", "fix", "build", "test", "investigate", "research"];
 
@@ -147,6 +150,43 @@ pub struct RunsOn {
     pub grant: Option<String>,
 }
 
+/// Oby's latest verdict on a job's published work (docs/runner-api.md, "Oby's review").
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Review {
+    /// `approved` or `changesRequested`.
+    pub verdict: String,
+    /// The review job.
+    pub job: String,
+    /// The reviewer's tool and account name.
+    pub agent: String,
+    pub account: String,
+    /// It ran on the author's own account: no other had room.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub same_account: bool,
+    /// Which of Oby's reviews of the job it is, from 1.
+    pub round: u32,
+    pub date: i64,
+    /// The head it read: the pull request's, as obid pushed it.
+    pub commit: String,
+}
+
+impl Review {
+    pub fn approved(&self) -> bool {
+        self.verdict == "approved"
+    }
+
+    fn to_json(&self) -> Value {
+        let mut value = json!({"verdict": self.verdict, "job": self.job, "agent": self.agent,
+                               "account": self.account, "round": self.round,
+                               "date": obi_protocol::time::format(self.date), "commit": self.commit});
+        if self.same_account {
+            value["sameAccount"] = json!(true);
+        }
+        value
+    }
+}
+
 /// A job as obid keeps it (`home/jobs/<id>.json`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -191,9 +231,22 @@ pub struct Job {
     /// Why the last read of it failed, or none.
     #[serde(default)]
     pub pull_request_error: Option<String>,
-    /// Why no review ran, or none.
+    /// Why no review ran or none gave a verdict, or none.
     #[serde(default)]
     pub review_error: Option<String>,
+    /// Oby's review job of its published work while it runs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reviewing: Option<String>,
+    /// Oby's latest verdict on its published work.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub review: Option<Review>,
+    /// On Oby's review job: the job whose published work it reviews.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub review_of: Option<String>,
+    /// Why Oby's review of its published work waits: no account fits to run it on (none signed in
+    /// with room, never Cursor). It starts once one does.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub no_reviewer: Option<String>,
     pub summaries: Option<Vec<String>>,
     pub issue: Option<u64>,
     pub rounds: Option<u32>,
@@ -500,6 +553,10 @@ impl Job {
             pull_request: None,
             pull_request_error: None,
             review_error: None,
+            reviewing: None,
+            review: None,
+            review_of: None,
+            no_reviewer: None,
             summaries: None,
             issue: None,
             rounds: None,
@@ -717,8 +774,8 @@ impl Job {
             .map(|o| o.id.as_str())
     }
 
-    /// It just published to `url`: an observation of another pull request no longer holds, and
-    /// nothing reviews it but a person until obid runs Oby's review.
+    /// It just published to `url`: an observation of another pull request no longer holds, nor why
+    /// an earlier head got no review.
     pub fn was_published(&mut self, url: String) {
         if self.published.as_deref() != Some(url.as_str()) {
             self.pull_request = None;
@@ -726,17 +783,51 @@ impl Job {
         self.pull_request_error = None;
         self.published = Some(url);
         self.publish_error = None;
-        self.review_error = Some(crate::publish::NOT_REVIEWED.into());
+        self.review_error = None;
+    }
+
+    /// The head Oby's review reads next, if one is due: done and published, its pull request
+    /// open, no review under way, and none read this head yet (one review per published head).
+    /// Never for a review.
+    pub fn review_due(&self) -> Option<&str> {
+        let head = self.pushed_head()?;
+        (self.status == Status::Done
+            && self.published.is_some()
+            && self.kind != "review"
+            && self.reviewing.is_none()
+            && self.pull_request_open()
+            && self.review.as_ref().is_none_or(|r| r.commit != head))
+        .then_some(head)
+    }
+
+    /// Oby's verdict on the head its pull request has now, if it has one: an approval here is
+    /// what posting it and merging go on from.
+    pub fn current_review(&self) -> Option<&Review> {
+        self.review
+            .as_ref()
+            .filter(|r| self.pushed_head() == Some(r.commit.as_str()))
+    }
+
+    /// Oby's review still asks for changes on the pull request's head, and nothing more happens by
+    /// itself: its reviews ran out ([`crate::review::REVIEWS`]), or the round they asked for left
+    /// the head as it was.
+    pub fn review_needs_you(&self) -> bool {
+        self.status == Status::Done
+            && self.dismissed.is_none()
+            && self.reviewing.is_none()
+            && self.pull_request_open()
+            && self.current_review().is_some_and(|r| !r.approved())
     }
 
     /// Waiting for Publish (its own publish failed), with commits its pull request won't take,
-    /// failed or interrupted, and not dismissed.
+    /// failed or interrupted, or Oby's review left for the owner, and not dismissed.
     pub fn needs_you(&self) -> bool {
         self.dismissed.is_none()
             && (self.can_publish()
                 || self.stranded()
                 || self.status == Status::Failed
-                || self.status == Status::Interrupted)
+                || self.status == Status::Interrupted
+                || self.review_needs_you())
     }
 
     /// The job as the runner API shows it.
@@ -788,10 +879,10 @@ impl Job {
             "pullRequest": self.pull_request.as_ref().map(crate::github::PullRequest::to_json),
             "pullRequestError": self.pull_request_error,
             "dismissed": date(self.dismissed),
-            "reviewing": null,
-            "review": null,
+            "reviewing": self.reviewing,
+            "review": self.review.as_ref().map(Review::to_json),
             "reviewError": self.review_error,
-            "reviewOf": null,
+            "reviewOf": self.review_of,
             "files": self.files,
             "lead": null,
             "claim": null,
@@ -826,7 +917,7 @@ impl Job {
             "pipeline": self.pipeline(),
             "title": self.short_title(),
             "mergeNeedsYou": false,
-            "reviewNeedsYou": false,
+            "reviewNeedsYou": self.review_needs_you(),
             "cloudNeedsYou": false,
             "report": false,
             "obi": self.obi,
@@ -849,6 +940,9 @@ impl Job {
         }
         if self.untrusted {
             value["untrusted"] = json!(true);
+        }
+        if let Some(why) = &self.no_reviewer {
+            value["noReviewer"] = json!(why);
         }
         value["teammates"] = json!(self.teammates);
         if let Some(context) = &self.context {
@@ -1111,11 +1205,14 @@ impl Job {
                 .pull_request
                 .as_ref()
                 .and_then(|pr| pr.review_decision.as_deref());
+            let oby = self.current_review();
             match self.pull_request.as_ref().map(|pr| pr.state.as_str()) {
                 Some("MERGED") => {
-                    let detail = match decision {
-                        Some("APPROVED") => "Approved",
-                        Some("CHANGES_REQUESTED") => "Review complete",
+                    let detail = match (decision, oby) {
+                        (Some("APPROVED"), _) => "Approved",
+                        (Some("CHANGES_REQUESTED"), _) => "Review complete",
+                        (_, Some(review)) if review.approved() => APPROVED_BY_OBY,
+                        (_, Some(_)) => "Oby requested changes",
                         _ => "Merged without review",
                     };
                     set(&mut stages, "review", "done", Some(detail), None);
@@ -1151,17 +1248,48 @@ impl Job {
                             Some("The reviewer requested changes."),
                         );
                     }
-                    _ => {
-                        let detail = match (&self.review_error, &self.pull_request) {
-                            (Some(error), _) if error == crate::publish::NOT_REVIEWED => {
-                                crate::publish::YOUR_REVIEW.into()
-                            }
-                            (Some(error), _) => format!("Waiting for review · {error}"),
-                            (None, None) => "Waiting for GitHub status".into(),
-                            (None, Some(_)) => "Waiting for review".into(),
-                        };
-                        set(&mut stages, "review", "current", Some(&detail), None);
-                    }
+                    // No decision on GitHub: Oby's own review, else the owner's on GitHub.
+                    _ => match (&self.reviewing, &self.review_error, oby) {
+                        (Some(_), _, _) => {
+                            set(
+                                &mut stages,
+                                "review",
+                                "current",
+                                Some("Oby is reviewing"),
+                                None,
+                            );
+                        }
+                        (None, Some(error), _) => {
+                            let detail = format!("Waiting for review · {error}");
+                            set(&mut stages, "review", "current", Some(&detail), None);
+                        }
+                        (None, None, Some(review)) if review.approved() => {
+                            set(&mut stages, "review", "done", Some(APPROVED_BY_OBY), None);
+                            set(
+                                &mut stages,
+                                "merged",
+                                "current",
+                                Some(crate::publish::MERGE_ON_GITHUB),
+                                None,
+                            );
+                        }
+                        (None, None, Some(_)) => {
+                            set(
+                                &mut stages,
+                                "review",
+                                "failed",
+                                Some("Changes requested"),
+                                Some("Oby requested changes."),
+                            );
+                        }
+                        (None, None, None) => {
+                            let detail = match &self.no_reviewer {
+                                Some(why) => format!("Waiting for review · {why}"),
+                                None => crate::publish::YOUR_REVIEW.into(),
+                            };
+                            set(&mut stages, "review", "current", Some(&detail), None);
+                        }
+                    },
                 },
             }
         }
@@ -1597,5 +1725,86 @@ mod tests {
             Some("oby/fix-42"),
         ));
         assert_eq!(job.pushed_head(), Some("def"));
+    }
+
+    /// Oby's review is due once per published head, and never while one runs (#525). Its verdict shows on the head it read, and changes it
+    /// still asks for there, with nothing more under way, need the owner.
+    #[test]
+    fn oby_reviews_each_published_head_once() {
+        let mut job = job();
+        job.kind = "fix".into();
+        job.pr = None;
+        job.base = Some("dev".into());
+        job.branch = "oby/fix-42".into();
+        job.status = Status::Done;
+        job.started = Some(job.created);
+        job.commits = Some(1);
+        job.pushed = Some(1);
+        assert_eq!(job.review_due(), None);
+        let review = |job: &Job| {
+            job.pipeline()["stages"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|s| s["id"] == "review")
+                .cloned()
+                .unwrap()
+        };
+        let push = |job: &mut Job, head: &str| {
+            job.outgoing.push(crate::publish::Outgoing::new(
+                "push",
+                &job.repo,
+                head,
+                Some("oby/fix-42"),
+            ));
+        };
+        push(&mut job, "abc");
+        job.was_published("https://github.com/deskree-inc/oby/pull/42".into());
+        assert_eq!(job.review_due(), Some("abc"));
+        job.reviewing = Some("r1".into());
+        assert_eq!(job.review_due(), None);
+        assert_eq!(review(&job)["detail"], "Oby is reviewing");
+        job.reviewing = None;
+        let created = job.created;
+        let verdict = |verdict: &str, commit: &str| Review {
+            verdict: verdict.into(),
+            job: "r1".into(),
+            agent: "codex".into(),
+            account: "Work".into(),
+            same_account: false,
+            round: 1,
+            date: created,
+            commit: commit.into(),
+        };
+        job.review = Some(verdict("changesRequested", "abc"));
+        assert_eq!(job.review_due(), None);
+        assert!(job.review_needs_you() && job.needs_you());
+        assert_eq!(job.to_json()["reviewNeedsYou"], true);
+        assert_eq!(review(&job)["state"], "failed");
+        // Working on it, it doesn't need the owner; its new head is due.
+        job.status = Status::Running;
+        assert!(!job.review_needs_you());
+        job.status = Status::Done;
+        push(&mut job, "def");
+        assert!(!job.review_needs_you());
+        assert_eq!(job.review_due(), Some("def"));
+        assert_eq!(
+            review(&job)["detail"],
+            "Pull request open · waiting for your review on GitHub"
+        );
+        // No account fits to run it on: it says why it waits.
+        job.no_reviewer = Some("Oby's review waits for an account with room: Work is full.".into());
+        assert_eq!(
+            review(&job)["detail"],
+            "Waiting for review · Oby's review waits for an account with room: Work is full."
+        );
+        assert!(job.to_json()["noReviewer"].is_string() && !job.needs_you());
+        job.no_reviewer = None;
+        job.review = Some(verdict("approved", "def"));
+        assert_eq!(job.review_due(), None);
+        assert!(!job.needs_you());
+        assert_eq!(review(&job)["detail"], APPROVED_BY_OBY);
+        assert_eq!(job.to_json()["review"]["date"], "2026-10-09T21:42:53Z");
+        assert!(job.to_json()["review"].get("sameAccount").is_none());
     }
 }

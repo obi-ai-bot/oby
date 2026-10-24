@@ -81,6 +81,7 @@ struct Snapshot {
     status: String,
     limit: Option<String>,
     review_error: Option<String>,
+    review_needs_you: bool,
 }
 
 impl Snapshot {
@@ -92,6 +93,7 @@ impl Snapshot {
             status: text("status").unwrap_or_default(),
             limit: text("limit"),
             review_error: text("reviewError"),
+            review_needs_you: job["reviewNeedsYou"] == true,
         }
     }
 }
@@ -124,9 +126,11 @@ impl Seen {
         let now = Snapshot::of(job);
         let before = self.jobs.insert(id.to_owned(), now.clone());
         // A stalled job a conversation started is that conversation's to supervise
-        // (super::supervisor), not an event of the orchestrator's.
+        // (super::supervisor), not an event of the orchestrator's. How Oby's review of published
+        // work ended is told on the job it reviewed.
         if !job["dismissed"].is_null()
             || (!job["stalled"].is_null() && !job["conversation"].is_null())
+            || !job["reviewOf"].is_null()
         {
             return vec![];
         }
@@ -161,20 +165,23 @@ impl Seen {
                 evidence: vec![format!("jobs/{}/report", id)],
             });
         }
-        // Every published job says obid doesn't run Oby's review yet (#525): that's no event (#710).
-        if let Some(error) = &now.review_error
-            && Some(error) != before.review_error.as_ref()
-            && error.trim() != crate::publish::NOT_REVIEWED
-        {
+        // Oby's review gave no verdict, or its changes and their rounds didn't settle it: once.
+        let why = match &now.review_error {
+            Some(error) if Some(error) != before.review_error.as_ref() => {
+                Some(super::briefing::line(error, 200))
+            }
+            _ => (now.review_needs_you && !before.review_needs_you).then(|| {
+                "Oby's review still asks for changes, and its rounds didn't settle it".to_owned()
+            }),
+        };
+        if let Some(why) = why {
             events.push(Event {
                 kind: "review_error".into(),
                 job: id.to_owned(),
                 item: None,
                 summary: format!(
                     "Review of {} ({}) needs attention: {}. Read the job before deciding.",
-                    heading,
-                    id,
-                    super::briefing::line(error, 200)
+                    heading, id, why
                 ),
                 evidence: vec![format!("jobs/{}/review", id), format!("jobs/{}/report", id)],
             });
@@ -948,18 +955,36 @@ mod tests {
         assert_eq!(again.job(&job).len(), 1);
     }
 
-    /// Every published job says obid doesn't run Oby's review yet (#525): that's no event, or
-    /// each pull request would ask the owner for a decision that isn't one (#710).
+    /// Oby's review is an event only when it can't settle the pull request itself: it gave no
+    /// verdict, or still asks for changes once its rounds are done (`reviewNeedsYou`), once each.
+    /// Reviewing, approving, and the review job's own end are none (#525).
     #[test]
-    fn the_review_obid_doesnt_run_yet_is_no_event() {
+    fn a_review_is_an_event_only_when_it_cant_settle_it() {
         let mut seen = Seen::default();
-        let job = |error: &str| serde_json::json!({"id": "j1", "status": "done", "title": "Fix", "limit": null, "reviewError": error, "dismissed": null});
-        assert!(seen.job(&job(crate::publish::NOT_REVIEWED)).is_empty());
+        let job = |error: Option<&str>, needs: bool| serde_json::json!({"id": "j1", "status": "done", "title": "Fix", "limit": null, "reviewError": error, "reviewNeedsYou": needs, "dismissed": null});
+        assert!(seen.job(&job(None, false)).is_empty());
+        let failed = seen.job(&job(
+            Some("Oby's review didn't finish: it gave no verdict"),
+            false,
+        ));
+        assert_eq!(failed.len(), 1);
         assert_eq!(
-            seen.job(&job("Oby's review couldn't run: the model failed"))
-                .len(),
-            1
+            failed[0].summary,
+            "Review of Fix (j1) needs attention: Oby's review didn't finish: it gave no verdict. Read the job before deciding."
         );
+        assert!(
+            seen.job(&job(
+                Some("Oby's review didn't finish: it gave no verdict"),
+                false
+            ))
+            .is_empty()
+        );
+        assert!(seen.job(&job(None, false)).is_empty());
+        assert_eq!(seen.job(&job(None, true)).len(), 1);
+        assert!(seen.job(&job(None, true)).is_empty());
+        // The review job itself: failed or interrupted, it's told on the job it reviewed.
+        let review = serde_json::json!({"id": "r1", "status": "failed", "title": "Oby review: Fix", "limit": null, "reviewError": null, "reviewOf": "j1", "dismissed": null});
+        assert!(Seen::default().job(&review).is_empty());
     }
 
     /// The events reach the brain inside the turn's fence.

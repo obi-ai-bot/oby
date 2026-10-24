@@ -679,6 +679,15 @@ impl Jobs {
             // Any other permission waited on an agent that is gone: the agent asks again.
             job.permission = None;
             job.question_call = None;
+            // ponytail: before #525 every published job said obid didn't review it; drop it once
+            // no saved job says so.
+            if job
+                .review_error
+                .as_deref()
+                .is_some_and(|e| e.starts_with("obid doesn't run Oby's review yet"))
+            {
+                job.review_error = None;
+            }
             if job.status == Status::Running {
                 job.status = Status::Queued;
                 job.step = "obid restarted while this ran: starting it again".into();
@@ -2490,13 +2499,17 @@ impl Jobs {
             job.waiting = None;
             job.finished = Some(obi_protocol::time::now());
         });
-        // A review that never started: its exchange still gets its answer. One that ran is
-        // answered by its worker as it ends.
+        // A review that never started: its exchange still gets its answer, and Oby's review of
+        // published work says so on the job it reviews. One that ran is answered by its worker as
+        // it ends.
         if !worked
             && let (Some(job), Some(hook)) = (stopped.clone(), self.review_hook.get())
             && job.obi.is_some()
         {
             tokio::spawn(hook(job, false));
+        }
+        if !worked {
+            self.reviewed(id);
         }
         stopped
     }
@@ -2743,25 +2756,11 @@ impl Jobs {
             }
             let job = state.jobs.get_mut(id)?;
             heard(job);
-            job.status = Status::Queued;
-            job.phase = Some(Phase::Work);
-            job.round = Some(job.current_round() + 1);
-            if let Some(rounds) = job.rounds.filter(|r| *r > 1) {
-                job.rounds = Some(rounds + 1);
-            }
-            job.finished = None;
-            job.dismissed = None;
-            job.archived = None;
             if past_safety(job) {
                 job.ran_secs = None;
                 job.budget_from = Some(spent(job));
             }
-            job.limit = None;
-            job.reason = None;
-            job.next_step = None;
-            job.resumes_at = None;
-            job.stalled = None;
-            job.waiting = None;
+            next_round(job);
             job.asked = true;
             job.clone()
         };
@@ -3550,6 +3549,9 @@ impl Jobs {
         self.events.send("job", dismissed.to_json());
         self.changed.notify_waiters();
         self.cleaning.notify_one();
+        // An Oby review let go (one waiting for its usage reset among them) leaves the job it
+        // reviewed saying so, never `reviewing` forever.
+        self.reviewed(id);
         Some(Ok(dismissed))
     }
 
@@ -4333,6 +4335,11 @@ impl Jobs {
                 }
             }
         }
+        // Oby's review of published work ended: its verdict goes to the job it read. A shutdown
+        // isn't an end: it runs again once obid starts.
+        if *signal.borrow() != Signal::Shutdown {
+            self.reviewed(id);
+        }
     }
 
     /// Everything a sandboxed process of this job may and may not touch.
@@ -4517,7 +4524,7 @@ impl Jobs {
                 extra.push((key, email.into()));
             }
         }
-        let argv = match tool {
+        let mut argv = match tool {
             Tool::Claude => {
                 let mut argv: Vec<OsString> = vec![bin.into_os_string()];
                 argv.extend(flags);
@@ -4530,6 +4537,9 @@ impl Jobs {
             ),
             Tool::Cursor => acp::cursor::argv(bin),
         };
+        if job.review_of.is_some() {
+            without_project_instructions(tool, &mut argv, &mut extra);
+        }
         Ok(Launch {
             argv: sandbox.wrap(&spec, &argv),
             env: {
@@ -5706,10 +5716,17 @@ impl Jobs {
             let clone = git::ensure_clone(&self.config.home, &repo.repo, &repo.remote, &refspecs)
                 .await
                 .map_err(|e| format!("Couldn't get {} ready: {e}", repo.repo))?;
-            let start = match (&job.start_from, job.pr) {
-                (Some(branch), _) => format!("refs/heads/{branch}"),
-                (None, Some(pr)) => format!("refs/remotes/origin/pr/{pr}"),
-                (None, None) => format!("refs/remotes/origin/{base}"),
+            // Oby's review of published work reads the very commit obid pushed, whatever its branch
+            // has since.
+            let pushed = job
+                .start_commit
+                .as_ref()
+                .filter(|_| job.review_of.is_some());
+            let start = match (pushed, &job.start_from, job.pr) {
+                (Some(sha), _, _) => sha.clone(),
+                (None, Some(branch), _) => format!("refs/heads/{branch}"),
+                (None, None, Some(pr)) => format!("refs/remotes/origin/pr/{pr}"),
+                (None, None, None) => format!("refs/remotes/origin/{base}"),
             };
             let start_commit = git::git(
                 &clone,
@@ -5821,6 +5838,29 @@ impl Jobs {
             self.update(id, |job| {
                 job.attachments = (!copied.is_empty()).then_some(copied)
             });
+        }
+        // Oby's review of published work reads what its author was asked and the repository's
+        // rules as the base has them, quoted (crate::review): never the rules the change itself
+        // writes, which its author could steer the review with.
+        if job.review_of.is_some() {
+            let mut files = Vec::new();
+            for name in ["AGENTS.md", "CLAUDE.md"] {
+                let blob = format!("refs/remotes/origin/{base}:{name}");
+                files.push((
+                    name,
+                    git::git(&clone, &["cat-file", "blob", &blob]).await.ok(),
+                ));
+            }
+            let inputs = crate::obi_dir::folder(&worktree, "inputs")
+                .map_err(|e| format!("obid can't make .obi/inputs: {e}"))?;
+            for (file, text) in [
+                (review::ASKED_FILE, review::asked(&job.task, &job.request)),
+                (review::RULES_FILE, review::base_rules(&base, &files)),
+            ] {
+                let text = crate::secrets::known().redact(&crate::vault::for_agent(&text)?);
+                crate::obi_dir::write_new(&inputs, file, text.as_bytes())
+                    .map_err(|e| format!("obid couldn't quote {file} for the review: {e}"))?;
+            }
         }
         let (admin, common) = self.own_git_dirs(id).await?;
         let temp = self.temp_path(id);
@@ -6562,6 +6602,8 @@ impl Jobs {
                         job.was_published(url);
                     });
                     self.follow.notify_one();
+                    // Published by itself, Oby reviews it; published by hand, the owner does.
+                    self.start_review(id);
                 }
                 // Pushed to a remote that has no pull requests: that's all of it.
                 Ok(None) => {
@@ -6914,7 +6956,12 @@ impl Jobs {
     /// offers only Dismiss, and nothing is posted. Another Oby's review is not this.
     async fn offer_owner_review(&self, id: &str) {
         let Some(job) = self.get(id) else { return };
-        if job.obi.is_some() || job.kind != "review" || job.status != Status::Done {
+        // Oby's review of its own published work is never posted ([`Jobs::reviewed`]).
+        if job.obi.is_some()
+            || job.review_of.is_some()
+            || job.kind != "review"
+            || job.status != Status::Done
+        {
             return;
         }
         let Some(number) = job.pr else { return };
@@ -6937,6 +6984,255 @@ impl Jobs {
         link.add_items(vec![owner_review_item(
             id, &job.repo, number, &sha, &summary, verdict, clean,
         )]);
+    }
+
+    /// Who reviews `author`'s published work (docs/runner-api.md, "Oby's review"): an account of
+    /// another tool first, then another of its own, else the author's own in a session of the
+    /// review's own; always one signed in, not being changed and with room, and never Cursor.
+    /// `Err` says why none fits: the review waits for one.
+    fn reviewer(&self, author: &Job) -> Result<(Tool, crate::config::Account), String> {
+        let home = login_home();
+        let now = obi_protocol::time::now();
+        let own = Tool::from_id(&author.agent);
+        let tools = Tool::ALL
+            .into_iter()
+            .filter(|t| Some(*t) != own)
+            .chain(own)
+            .filter(|t| *t != Tool::Cursor);
+        let mut theirs = None;
+        let mut held = Vec::new();
+        for tool in tools {
+            for account in self.accounts(tool) {
+                if self.being_changed(&account.id) || !signed_in(tool, &account, home.as_deref()) {
+                    continue;
+                }
+                if let Some(why) = self.usage.get(&account.id).held(now) {
+                    held.push(format!("{} {why}", account.name));
+                } else if Some(tool) == own && account.id == author.account {
+                    theirs = Some((tool, account));
+                } else {
+                    return Ok((tool, account));
+                }
+            }
+        }
+        theirs.ok_or_else(|| {
+            if held.is_empty() {
+                "Oby's review waits for a Claude Code or Codex account signed in to review it."
+                    .to_owned()
+            } else {
+                format!(
+                    "Oby's review waits for an account with room: {}.",
+                    held.join("; ")
+                )
+            }
+        })
+    }
+
+    /// Starts Oby's review of what job `id` published by itself, when one is due
+    /// ([`Job::review_due`]): a `review` job of its own on the [`Jobs::reviewer`]'s account, at
+    /// the very commit obid pushed, in Plan mode. It never publishes; the scheduler starts it once
+    /// a slot is free. With no account to run it on, the job says why (`noReviewer`), and
+    /// [`Jobs::settle_reviews`] starts it once one fits.
+    fn start_review(&self, id: &str) {
+        let Some((author, head)) = self.get(id).and_then(|job| {
+            let head = job.review_due()?.to_owned();
+            Some((job, head))
+        }) else {
+            return;
+        };
+        let (tool, account) = match self.reviewer(&author) {
+            Ok(found) => found,
+            Err(why) => {
+                if author.no_reviewer.as_ref() != Some(&why) {
+                    self.update(id, |job| job.no_reviewer = Some(why));
+                }
+                return;
+            }
+        };
+        let review_id = self.new_id();
+        let mut review = Job::new(
+            review_id.clone(),
+            author.repo.clone(),
+            "review".into(),
+            author.task.clone(),
+            tool.id().into(),
+            account.id,
+        );
+        review.request = author.request.clone();
+        review.title = Some(crate::brain::briefing::line(
+            &format!("Oby review: {}", author.short_title()),
+            60,
+        ));
+        review.branch = format!("oby/review-{review_id}");
+        review.base = author.base.clone();
+        review.start_commit = Some(head);
+        review.mode = Some(Mode::Plan.as_str().to_owned());
+        review.round = Some(1);
+        review.review_of = Some(id.to_owned());
+        review.phase = Some(Phase::Prepare);
+        review.step = format!("Getting {} ready", author.repo_name());
+        // The review first: cut off between the two, it still runs, and its verdict still lands.
+        self.insert(review);
+        self.update(id, |job| {
+            job.reviewing = Some(review_id.clone());
+            job.review_error = None;
+            job.no_reviewer = None;
+        });
+    }
+
+    /// Oby's reviews left hanging, settled on each pass of [`Jobs::follow_pull_requests`] (so
+    /// once obid starts too): a job whose `reviewing` names a review that's gone or ended without
+    /// its verdict landing (a restart, a crash) takes it now, or a new review when it's gone; one
+    /// waiting for an account (`noReviewer`) starts its review once one fits. Whether it settled
+    /// any: a review it started waits for the scheduler.
+    fn settle_reviews(&self) -> bool {
+        let (hanging, waiting): (Vec<(String, String)>, Vec<String>) = {
+            let state = self.lock();
+            let hanging = state
+                .jobs
+                .values()
+                .filter_map(|job| {
+                    let review = job.reviewing.as_ref()?;
+                    let alive = state.workers.contains_key(review)
+                        || state
+                            .jobs
+                            .get(review)
+                            .is_some_and(|r| r.status.is_active() || r.resumes_at.is_some());
+                    (!alive).then(|| (job.id.clone(), review.clone()))
+                })
+                .collect();
+            let waiting = state
+                .jobs
+                .values()
+                .filter(|job| job.no_reviewer.is_some())
+                .map(|job| job.id.clone())
+                .collect();
+            (hanging, waiting)
+        };
+        let settled = !hanging.is_empty() || !waiting.is_empty();
+        for (author, review) in hanging {
+            if self.get(&review).is_some() {
+                self.reviewed(&review);
+            } else {
+                self.update(&author, |job| job.reviewing = None);
+                self.start_review(&author);
+            }
+        }
+        for id in waiting {
+            self.start_review(&id);
+        }
+        settled
+    }
+
+    /// Oby's review job `id` ended (docs/runner-api.md, "Oby's review"): its verdict goes to the
+    /// job it read, once. Approved, that job is reviewed. Changes requested, it takes them as its
+    /// next round, the review quoted in its `.obi/inputs/review-<round>.md`, while it has reviews
+    /// left ([`review::REVIEWS`]); otherwise they wait for the owner (`reviewNeedsYou`). A review
+    /// that ended any other way says why in `reviewError`; one waiting for its usage reset comes
+    /// back by itself; one of a head the job has pushed past counts for nothing, and the new head
+    /// gets its own. Nothing goes to GitHub.
+    fn reviewed(&self, id: &str) {
+        let Some(review) = self.get(id) else { return };
+        let Some(of) = review.review_of.clone() else {
+            return;
+        };
+        let Some(author) = self.get(&of) else { return };
+        if author.reviewing.as_deref().is_some_and(|r| r != id)
+            || author.review.as_ref().is_some_and(|r| r.job == id)
+            || review.resumes_at.is_some()
+        {
+            return;
+        }
+        // It read a head the job has pushed past, however it ended: the newer one gets a review
+        // of its own, now unless the job's at work again (its publish starts one).
+        let head = author.pushed_head().map(str::to_owned);
+        if head.is_none() || review.start_commit != head {
+            self.update(&of, |job| job.reviewing = None);
+            self.start_review(&of);
+            return;
+        }
+        let verdict = review::verdict(&review.summary);
+        let why = match (review.status, &verdict) {
+            (Status::Done, _) if review.commits.unwrap_or(0) > 0 => {
+                Some("it made commits, so its verdict doesn't count".to_owned())
+            }
+            (Status::Done, None) => Some("it gave no verdict".to_owned()),
+            (Status::Done, Some(_)) => None,
+            (Status::Stopped, _) => Some("it was stopped".to_owned()),
+            (status, _) => Some(review.reason.unwrap_or_else(|| status.as_str().to_owned())),
+        };
+        let Some((approved, text)) = verdict.filter(|_| why.is_none()) else {
+            self.update(&of, |job| {
+                job.reviewing = None;
+                job.review_error = why.map(|why| format!("Oby's review didn't finish: {why}"));
+            });
+            return;
+        };
+        let round = author.review.as_ref().map_or(0, |r| r.round) + 1;
+        let tool = Tool::from_id(&review.agent);
+        let account = tool
+            .and_then(|tool| {
+                self.accounts(tool)
+                    .into_iter()
+                    .find(|a| a.id == review.account)
+            })
+            .map_or(review.account.clone(), |a| a.name);
+        let by = format!("{} · {account}", tool.map_or("Its agent", Tool::name));
+        let verdict = crate::job::Review {
+            verdict: if approved {
+                "approved"
+            } else {
+                "changesRequested"
+            }
+            .into(),
+            job: id.to_owned(),
+            agent: review.agent.clone(),
+            account,
+            same_account: review.agent == author.agent && review.account == author.account,
+            round,
+            date: obi_protocol::time::now(),
+            commit: head.unwrap_or_default(),
+        };
+        // Its next round only while it has reviews left and nothing else moves its branch: Try
+        // again's rules ([`Jobs::message`]).
+        let carried =
+            self.lock().jobs.values().any(|j| {
+                j.follow_up_of.as_deref() == Some(of.as_str()) && j.branch == author.branch
+            });
+        let quoted = (!approved
+            && round < review::REVIEWS
+            && author.status == Status::Done
+            && !carried
+            && !past_safety(&author))
+        .then(|| self.quote_review(&of, round, &by, &text));
+        self.update(&of, |job| {
+            job.reviewing = None;
+            job.review_error = match &quoted {
+                Some(Err(why)) => Some(format!(
+                    "Oby's review asks for changes, and obid couldn't hand them to the agent: {why}"
+                )),
+                _ => None,
+            };
+            job.review = Some(verdict);
+            if matches!(quoted, Some(Ok(()))) && job.status == Status::Done {
+                job.heard.push(review::round_prompt(round));
+                next_round(job);
+                job.step = "Working on Oby's review".into();
+            }
+        });
+    }
+
+    /// Quotes Oby's review `round` of job `id`'s pull request in its worktree's
+    /// `.obi/inputs/review-<round>.md`, as a check's output reaches agents: the vault's and obid's
+    /// secrets taken out, fenced, data never in a prompt.
+    fn quote_review(&self, id: &str, round: u32, by: &str, text: &str) -> Result<(), String> {
+        let text = crate::secrets::known().redact(&crate::vault::for_agent(text)?);
+        let quoted = review::quoted(round, by, &text, &crate::brain::briefing::nonce());
+        let inputs =
+            crate::obi_dir::folder(&self.worktree_path(id), "inputs").map_err(|e| e.to_string())?;
+        crate::obi_dir::write_new(&inputs, &review::round_file(round), quoted.as_bytes())
+            .map(|_| ())
+            .map_err(|e| e.to_string())
     }
 
     /// Ends the job `id` done with `commits` (and `pushed` of them on its pull request), then
@@ -7243,6 +7539,9 @@ impl Jobs {
                 return;
             }
             self.read_pull_requests().await;
+            if self.settle_reviews() {
+                self.schedule();
+            }
             let woken = self.follow.notified();
             tokio::select! {
                 _ = tokio::time::sleep(FOLLOW_TICK) => {}
@@ -8957,6 +9256,57 @@ fn kept_question(job: &Job) -> Option<&Permission> {
         .filter(|p| p.is_question() && job.question_call.is_some())
 }
 
+/// Codex's settings for a run of Oby's review of published work: no `AGENTS.md`, and no
+/// repository skill (`.agents/skills`, `.codex/skills`) in its instructions or found by search.
+/// Checked with `codex debug prompt-input` (codex-cli 0.162.1) in a repository holding both.
+const CODEX_NO_PROJECT: [&str; 6] = [
+    "-c",
+    "project_doc_max_bytes=0",
+    "-c",
+    "skills.include_instructions=false",
+    "-c",
+    "features.skill_search=false",
+];
+
+/// What a run of Oby's review of published work gets so it loads no project instructions from the
+/// change it reads (an `AGENTS.md`, a `CLAUDE.md` or a skill its author wrote): the base's rules
+/// are quoted to it instead (crate::review). Codex's settings go after its binary, before
+/// `app-server`; Claude Code's is a variable (it runs with `--setting-sources ""` too). Cursor
+/// never reviews.
+fn without_project_instructions(
+    tool: Tool,
+    argv: &mut Vec<OsString>,
+    extra: &mut Vec<(&str, OsString)>,
+) {
+    match tool {
+        Tool::Claude => extra.push((process::NO_CLAUDE_MDS, "1".into())),
+        Tool::Codex => {
+            argv.splice(1..1, CODEX_NO_PROJECT.map(OsString::from));
+        }
+        Tool::Cursor => {}
+    }
+}
+
+/// One more round of an ended job's session: queued for its work again, the round counted, and
+/// how it last ended gone (Try again, and Oby's review asking for changes).
+fn next_round(job: &mut Job) {
+    job.status = Status::Queued;
+    job.phase = Some(Phase::Work);
+    job.round = Some(job.current_round() + 1);
+    if let Some(rounds) = job.rounds.filter(|r| *r > 1) {
+        job.rounds = Some(rounds + 1);
+    }
+    job.finished = None;
+    job.dismissed = None;
+    job.archived = None;
+    job.limit = None;
+    job.reason = None;
+    job.next_step = None;
+    job.resumes_at = None;
+    job.stalled = None;
+    job.waiting = None;
+}
+
 /// `job` hears `text`: its notes, what it heard, and its step.
 fn hear(job: &mut Job, text: &str) {
     job.notes.get_or_insert_with(Vec::new).push(text.to_owned());
@@ -9156,6 +9506,13 @@ fn owner_prompt(job: &Job) -> String {
         .base
         .clone()
         .unwrap_or_else(|| "the default branch".into());
+    if job.review_of.is_some() {
+        return review::own_prompt(
+            &job.repo,
+            &base,
+            job.start_commit.as_deref().unwrap_or_default(),
+        );
+    }
     let mut lines = vec![match job.pr {
         _ if job.start_from.is_some() => format!(
             "You're working in {}, in a git worktree of its own at the head of the branch {}, started from the head of {}, the branch of the earlier job this follows up: its commits are there. Its HEAD is detached: commit as it is and don't switch branches; obid moves the branch to your commits after each turn.",
@@ -12080,5 +12437,46 @@ mod tests {
             "the planted line is inside the quote, the real one after it"
         );
         assert!(!after.contains("`true` succeeds"));
+    }
+
+    /// Oby's review of published work loads no project instructions from the change it reads
+    /// (#525): Codex gets its three settings right after its binary, before `app-server` and the
+    /// broker's, and Claude Code the variable the sandbox lets through.
+    #[test]
+    fn a_review_run_loads_no_project_instructions() {
+        let mut argv: Vec<OsString> = codex::argv("/bin/codex".into(), None, None);
+        let mut extra: Vec<(&str, OsString)> = Vec::new();
+        without_project_instructions(Tool::Codex, &mut argv, &mut extra);
+        let argv: Vec<String> = argv
+            .iter()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            argv,
+            [
+                "/bin/codex",
+                "-c",
+                "project_doc_max_bytes=0",
+                "-c",
+                "skills.include_instructions=false",
+                "-c",
+                "features.skill_search=false",
+                "app-server"
+            ]
+        );
+        assert!(extra.is_empty());
+        let mut claude: Vec<OsString> = vec!["/bin/claude".into()];
+        without_project_instructions(Tool::Claude, &mut claude, &mut extra);
+        assert_eq!(claude, [OsString::from("/bin/claude")]);
+        assert_eq!(extra, [(process::NO_CLAUDE_MDS, OsString::from("1"))]);
+        let env = process::sandbox_env(
+            std::ffi::OsStr::new("/usr/bin"),
+            Path::new("/tmp/x"),
+            &extra,
+        );
+        assert!(
+            env.iter()
+                .any(|(k, v)| k == "CLAUDE_CODE_DISABLE_CLAUDE_MDS" && v == "1")
+        );
     }
 }
