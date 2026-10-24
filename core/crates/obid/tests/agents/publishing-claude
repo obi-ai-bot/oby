@@ -24,6 +24,12 @@
 //                    names, and ends the turn with what it was told
 //   Try again …      (the retried round's words) does what .obi/again in the worktree says, if
 //                    the test left one
+//   Oby's review     (its prompt names .obi/inputs/asked.md) reads what the author was asked
+//                    there: with `WANTS: <file>` it requests changes ("FIX: <file>") until the
+//                    file is in its worktree, else it approves
+//   Oby's changes    (the round's words name .obi/inputs/review-<n>.md) commits the file that
+//                    review's FIX: names, or, STUBBORN, again-<n>.txt instead; the words are kept
+//                    in .obi/round-prompts
 //   anything else    ends the turn with "Nothing to do."
 
 import { execFileSync } from "node:child_process";
@@ -54,6 +60,24 @@ rl.on("line", (line) => {
   // Try again: the retried round does what the test left in .obi/again.
   if (prompt.startsWith("Try again") && existsSync(".obi/again")) prompt = readFileSync(".obi/again", "utf8");
   emit({ type: "system", subtype: "init", cwd: process.cwd(), session_id: session, tools: ["Bash", "Read", "Edit"], mcp_servers: [], model: "fake", permissionMode: "default", apiKeySource: "none" });
+  // Oby's review of published work, and the author's round its changes start.
+  if (prompt.includes(".obi/inputs/asked.md")) {
+    const wants = readFileSync(".obi/inputs/asked.md", "utf8").match(/WANTS: (\S+)/);
+    if (wants && !existsSync(wants[1])) result(`${wants[1]} is missing.\nFIX: ${wants[1]}\nVERDICT: REQUEST CHANGES`);
+    else result("Looks right.\nVERDICT: APPROVE");
+    return;
+  }
+  const round = prompt.match(/\.obi\/inputs\/review-(\d+)\.md/);
+  if (round) {
+    writeFileSync(".obi/round-prompts", prompt + "\n", { flag: "a" });
+    const named = readFileSync(`.obi/inputs/review-${round[1]}.md`, "utf8").match(/FIX: (\S+)/);
+    const file = existsSync(".obi/stubborn") || !named ? `again-${round[1]}.txt` : named[1];
+    writeFileSync(file, "fixed\n");
+    git("add", file);
+    git("commit", "-q", "-m", `Add ${file}`);
+    result(`Added ${file}.`);
+    return;
+  }
   const fix = prompt.match(/secret scan blocked publishing[\s\S]*— commit ([0-9a-f]{40})[\s\S]*--autosquash (origin\/\S+?)`/);
   const commit = prompt.match(/COMMIT: (\S+)/);
   const leak = prompt.match(/LEAK: (\S+)/);

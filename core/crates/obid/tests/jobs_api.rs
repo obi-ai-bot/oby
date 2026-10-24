@@ -531,14 +531,23 @@ fn a_build_job_commits_and_ends_done() {
         ]
     );
     assert_eq!(stages[3], ("publish".into(), "done".into()));
-    // The list, newest first, and the job by id, the same, but for each round's diff stat, only
-    // there (#736).
+    // Published by itself, Oby reviews it: its review is the newest job (#525). Once that ended,
+    // the list and the job by id are the same, but for each round's diff stat, only there (#736).
+    let mut by_id = until(&obid, &id, |job| {
+        job["reviewing"].is_null() && (job["review"].is_object() || job["reviewError"].is_string())
+    });
     let list = request(&obid, "GET", "/v1/jobs?limit=5", None).body;
-    assert_eq!(list[0]["id"], id.as_str());
-    let mut by_id = request(&obid, "GET", &format!("/v1/jobs/{id}"), None).body;
+    assert_eq!(list[0]["reviewOf"], id.as_str());
+    let listed = list
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|j| j["id"] == id.as_str())
+        .cloned()
+        .unwrap();
     assert_eq!(by_id["diff"]["rounds"].as_array().map(Vec::len), Some(1));
     by_id["diff"].as_object_mut().unwrap().remove("rounds");
-    assert_eq!(by_id, job);
+    assert_eq!(by_id, listed);
 }
 
 /// A fresh obid, no repository in its configuration: gh lists the GitHub repositories its login

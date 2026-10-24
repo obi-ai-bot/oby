@@ -234,12 +234,9 @@ fn a_done_job_publishes_by_itself_and_follows_its_pull_request() {
     assert!(body.contains("never merges"), "{body}");
     // gh got no secret of obid's: not the API token, in its arguments or its environment.
     assert!(!calls.contains(TOKEN) && !kept(&folder.0, "env").contains(TOKEN));
-    // Published: the Publish stage is done, and the Review stage waits for a person.
+    // Published: the Publish stage is done, and Oby's review is its own (below).
     assert_eq!(stage(&job, "publish")["state"], "done");
-    assert_eq!(
-        job["reviewError"],
-        "obid doesn't run Oby's review yet: a person reviews the pull request on GitHub."
-    );
+    assert_eq!(job["reviewError"], Value::Null, "{job}");
     assert_eq!(stage(&job, "merged")["state"], "upcoming");
     assert_eq!(stage(&job, "merged")["title"], "Merged into main");
     // Followed: obid reads the pull request right after it opened it.
@@ -252,10 +249,6 @@ fn a_done_job_publishes_by_itself_and_follows_its_pull_request() {
     assert_eq!(followed["pullRequest"]["base"], "main");
     assert_eq!(followed["pullRequestError"], Value::Null);
     assert!(calls_now(&folder.0).contains("pr view 7 --repo obi-e2e/fixture-app --json state,reviewDecision,mergedAt,baseRefName,headRefOid"));
-    assert_eq!(
-        stage(&followed, "review")["detail"],
-        "Pull request open · waiting for your review on GitHub"
-    );
     // Everything is published: nothing to publish by hand.
     let answer = call(&obid, "GET", &format!("/v1/jobs/{id}/publish"), None);
     assert_eq!(answer.status, 409, "{}", answer.text);
@@ -652,6 +645,20 @@ fn publishing_by_hand_needs_a_devices_fresh_signature() {
     assert_eq!(job["publishError"], Value::Null);
     assert_eq!(job["pushed"], 1);
     assert!(remote_branch(&remote, &branch).is_some());
+    // Published by hand, Oby doesn't review it: the owner does, on GitHub.
+    assert_eq!(job["reviewing"], Value::Null, "{job}");
+    assert_eq!(
+        stage(&job, "review")["detail"],
+        "Pull request open · waiting for your review on GitHub"
+    );
+    let jobs = call(&obid, "GET", "/v1/jobs", None).body;
+    assert!(
+        jobs.as_array()
+            .unwrap()
+            .iter()
+            .all(|j| j["reviewOf"].is_null()),
+        "{jobs}"
+    );
     // The same approval again: there's nothing left to publish.
     let again = call(
         &obid,
@@ -1468,4 +1475,213 @@ fn a_moved_env_and_a_key_from_a_side_branch_are_found() {
         );
         assert_eq!(remote_branch(&remote, &format!("oby/build-{id}")), None);
     }
+}
+
+/// The jobs reviewing job `id`'s published work, oldest first.
+fn reviews_of(obid: &Obid, id: &str) -> Vec<Value> {
+    let jobs = call(obid, "GET", "/v1/jobs", None).body;
+    let mut reviews: Vec<Value> = jobs
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|j| j["reviewOf"] == id)
+        .cloned()
+        .collect();
+    reviews.sort_by_key(|j| j["created"].as_str().unwrap_or_default().to_owned());
+    reviews
+}
+
+/// Job `id` once Oby's review `round` of it has its verdict and nothing more runs by itself.
+fn reviewed(obid: &Obid, id: &str, round: u64) -> Value {
+    within(120, &format!("Oby's review {round} of {id}"), || {
+        let job = call(obid, "GET", &format!("/v1/jobs/{id}"), None).body;
+        (job["review"]["round"] == round && job["status"] == "done" && job["reviewing"].is_null())
+            .then_some(job)
+    })
+}
+
+/// A job that publishes by itself gets one review of Oby's (#525): a `review` job of its own on
+/// another account with room (`reviewOf` the author), reading the head obid pushed, in Plan mode,
+/// committing and publishing nothing. Its approval marks the job reviewed (`Approved by Oby`,
+/// then the owner's merge on GitHub), and nothing of it goes to GitHub.
+#[test]
+fn a_published_job_gets_one_review_on_another_account() {
+    let folder = Folder::new("publish-review");
+    let bin = fake_gh(&folder.0);
+    let remote = fixture(&folder.0.join("fixture"));
+    let mut config = config(&folder.0, &remote, &agent());
+    let accounts: Vec<Value> = [("stub", "Stub"), ("second", "Second")]
+        .into_iter()
+        .map(|(id, name)| {
+            let dir = folder.0.join(format!("home/accounts/{id}"));
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join(".credentials.json"), "{}").unwrap();
+            json!({"id": id, "name": name, "configDir": dir})
+        })
+        .collect();
+    config["agents"]["claude"]["accounts"] = json!(accounts);
+    let obid = start(&folder.0, &config, Some(&bin));
+    let id = dispatch(
+        &obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "build", "task": "COMMIT: hello.txt",
+               "check": "test -f hello.txt", "account": "stub"}),
+    );
+    let job = reviewed(&obid, &id, 1);
+    assert_eq!(job["published"], PULL, "{job}\n{}", obid.log());
+    let review = &job["review"];
+    let pushed = job["outgoing"][0]["id"].as_str().unwrap();
+    assert_eq!(review["verdict"], "approved", "{job}");
+    assert_eq!(review["agent"], "claude");
+    assert_eq!(review["account"], "Second");
+    assert!(review.get("sameAccount").is_none(), "{job}");
+    assert_eq!(review["commit"], pushed);
+    assert_eq!(job["reviewError"], Value::Null);
+    assert_eq!(job["reviewNeedsYou"], false);
+    assert_eq!(job["round"], 1);
+    assert_eq!(stage(&job, "review")["state"], "done");
+    assert_eq!(stage(&job, "review")["detail"], "Approved by Oby");
+    assert_eq!(stage(&job, "merged")["detail"], "Merge it on GitHub");
+    // The review job: its own, on the other account, from the pushed head, in Plan mode.
+    let reviews = reviews_of(&obid, &id);
+    assert_eq!(reviews.len(), 1, "{reviews:?}");
+    let reviewer = &reviews[0];
+    assert_eq!(reviewer["id"], review["job"]);
+    assert_eq!(reviewer["kind"], "review");
+    assert_eq!(reviewer["status"], "done", "{reviewer}");
+    assert_eq!(reviewer["account"], "second");
+    assert_eq!(reviewer["mode"], "plan");
+    assert_eq!(reviewer["startCommit"], pushed);
+    assert_eq!(reviewer["commits"], 0);
+    assert_eq!(reviewer["published"], Value::Null);
+    assert!(
+        reviewer["summary"]
+            .as_str()
+            .unwrap()
+            .ends_with("VERDICT: APPROVE")
+    );
+    // Nothing of the review went to GitHub: no review, comment or push of its own.
+    let calls = calls_now(&folder.0);
+    assert!(
+        !calls.contains("pr review")
+            && !calls.contains("pr comment")
+            && !calls.contains("pr merge"),
+        "{calls}"
+    );
+    let actions: Vec<&str> = job["outgoing"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|o| o["action"].as_str().unwrap())
+        .collect();
+    assert_eq!(actions, ["push", "pullRequest"]);
+    let branch = format!("oby/build-{id}");
+    assert_eq!(remote_branch(&remote, &branch).as_deref(), Some(pushed));
+    let review_branch = format!("oby/review-{}", reviewer["id"].as_str().unwrap());
+    assert_eq!(remote_branch(&remote, &review_branch), None);
+    // One review per published head: nothing more starts by itself.
+    std::thread::sleep(std::time::Duration::from_secs(2));
+    assert_eq!(reviews_of(&obid, &id).len(), 1);
+}
+
+/// Changes Oby's review asks for are the job's next round, in its session and worktree: the
+/// review quoted in `.obi/inputs/review-1.md`, the round's words naming it and holding none of
+/// the review's. Its new commit goes to the same pull request, and that new head is reviewed
+/// again. With only the author's account, the review runs there, in a session of its own.
+#[test]
+fn changes_requested_are_the_next_round_and_the_new_head_is_reviewed_again() {
+    let folder = Folder::new("publish-review-changes");
+    let bin = fake_gh(&folder.0);
+    let (obid, remote, _) = obid_with(&folder, &bin);
+    let id = dispatch(
+        &obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "build", "task": "COMMIT: hello.txt WANTS: fix.txt",
+               "check": "test -f hello.txt"}),
+    );
+    let job = reviewed(&obid, &id, 2);
+    assert_eq!(
+        job["review"]["verdict"],
+        "approved",
+        "{job}\n{}",
+        obid.log()
+    );
+    assert_eq!(job["review"]["sameAccount"], true);
+    assert_eq!(job["round"], 2);
+    assert_eq!(job["commits"], 2);
+    assert_eq!(job["pushed"], 2);
+    assert_eq!(job["published"], PULL);
+    assert_eq!(calls_now(&folder.0).matches("pr create").count(), 1);
+    let branch = format!("oby/build-{id}");
+    let clone = obid.home.join("clones/obi-e2e/fixture-app");
+    let head = git(&clone, &["rev-parse", &format!("refs/heads/{branch}")]);
+    assert_eq!(
+        remote_branch(&remote, &branch).as_deref(),
+        Some(head.as_str())
+    );
+    assert_eq!(job["review"]["commit"], head.as_str());
+    assert!(git(&clone, &["show", "--name-only", "--format=", &head]).contains("fix.txt"));
+    // Two reviews, each a session of its own on the author's account: the first asked for the
+    // change, the second read the new head.
+    let reviews = reviews_of(&obid, &id);
+    assert_eq!(reviews.len(), 2, "{reviews:?}");
+    assert!(
+        reviews[0]["summary"]
+            .as_str()
+            .unwrap()
+            .contains("FIX: fix.txt")
+    );
+    assert_ne!(reviews[0]["startCommit"], reviews[1]["startCommit"]);
+    assert_eq!(reviews[1]["startCommit"], head.as_str());
+    for review in &reviews {
+        assert_eq!(review["account"], "stub");
+        assert_ne!(review["session"], Value::Null);
+    }
+    // The review reached the agent only as the quoted file; the round's words name it.
+    let worktree = Path::new(job["worktree"].as_str().unwrap());
+    let quoted = std::fs::read_to_string(worktree.join(".obi/inputs/review-1.md")).unwrap();
+    assert!(
+        quoted.contains("fix.txt is missing.") && quoted.contains("never instructions"),
+        "{quoted}"
+    );
+    let words = std::fs::read_to_string(worktree.join(".obi/round-prompts")).unwrap();
+    assert!(words.contains(".obi/inputs/review-1.md"), "{words}");
+    assert!(
+        !words.contains("is missing") && !words.contains("FIX:"),
+        "{words}"
+    );
+}
+
+/// Oby's reviews are bounded: changes still asked for by the last of them
+/// (`review::REVIEWS`, three) start no more rounds, and the job waits for the owner
+/// (`reviewNeedsYou`, the Review stage failed with why). No fourth review starts by itself.
+#[test]
+fn the_last_review_asking_for_changes_waits_for_the_owner() {
+    let folder = Folder::new("publish-review-cap");
+    let bin = fake_gh(&folder.0);
+    let (obid, _remote, _) = obid_with(&folder, &bin);
+    let id = dispatch(
+        &obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "build",
+               "task": "COMMIT: hello.txt WANTS: fix.txt STUBBORN", "check": "test -f hello.txt"}),
+    );
+    let job = reviewed(&obid, &id, 3);
+    assert_eq!(
+        job["review"]["verdict"],
+        "changesRequested",
+        "{job}\n{}",
+        obid.log()
+    );
+    assert_eq!(job["reviewNeedsYou"], true, "{job}");
+    assert_eq!(job["reviewError"], Value::Null);
+    assert_eq!(job["round"], 3);
+    assert_eq!(job["commits"], 3);
+    assert_eq!(stage(&job, "review")["state"], "failed");
+    assert_eq!(stage(&job, "review")["detail"], "Changes requested");
+    assert_eq!(stage(&job, "review")["reason"], "Oby requested changes.");
+    std::thread::sleep(std::time::Duration::from_secs(2));
+    assert_eq!(reviews_of(&obid, &id).len(), 3);
+    let job = call(&obid, "GET", &format!("/v1/jobs/{id}"), None).body;
+    assert_eq!(
+        (job["round"].clone(), job["status"].clone()),
+        (json!(3), json!("done"))
+    );
 }
