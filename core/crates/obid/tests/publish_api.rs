@@ -1820,9 +1820,9 @@ fn a_round_that_pushes_nothing_new_waits_for_the_owner() {
     assert_eq!(reviews_of(&obid, &id).len(), 1);
 }
 
-/// A review reads the very commit obid pushed. A head pushed while it ran makes its verdict count
-/// for nothing (not one of the job's reviews), and the new head gets a review of its own: one, at
-/// that commit.
+/// A review reads the very commit obid pushed. A head pushed while it ran makes it count for
+/// nothing, however it ended (here with no verdict): not one of the job's reviews, no error, and
+/// the new head gets a review of its own, one, at that commit.
 #[test]
 fn a_head_pushed_while_its_review_ran_gets_its_own() {
     let folder = Folder::new("publish-review-moved");
@@ -1871,6 +1871,11 @@ fn a_head_pushed_while_its_review_ran_gets_its_own() {
         let worktree = Path::new(review["worktree"].as_str().unwrap()).join(".obi");
         std::fs::write(worktree.join("release"), "").unwrap();
     };
+    std::fs::write(
+        Path::new(first["worktree"].as_str().unwrap()).join(".obi/mute"),
+        "",
+    )
+    .unwrap();
     release(&first);
     let second = review_of(&obid, &id, 1);
     assert_eq!(second["startCommit"], two.as_str());

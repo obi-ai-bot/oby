@@ -129,7 +129,9 @@ pub fn own_prompt(repo: &str, base: &str, head: &str) -> String {
 pub fn verdict(summary: &str) -> Option<(bool, String)> {
     let text = summary.trim_end();
     let (rest, last) = text.rsplit_once('\n').unwrap_or(("", text));
-    let approved = match last.trim().to_ascii_uppercase().as_str() {
+    // As the prompt shows it (`VERDICT: APPROVE`), or in bold: the marks around it don't count.
+    let last = last.trim().trim_matches(|c| c == '`' || c == '*').trim();
+    let approved = match last.to_ascii_uppercase().as_str() {
         "VERDICT: APPROVE" => true,
         "VERDICT: REQUEST CHANGES" => false,
         _ => return None,
@@ -541,6 +543,15 @@ mod tests {
         assert_eq!(verdict("Looks right. VERDICT: APPROVE"), None);
         assert_eq!(verdict(""), None);
         assert_eq!(verdict("VERDICT: APPROVE"), Some((true, String::new())));
+        assert_eq!(
+            verdict("Ok.\n`VERDICT: APPROVE`"),
+            Some((true, "Ok.".into()))
+        );
+        assert_eq!(
+            verdict("No.\n**VERDICT: REQUEST CHANGES**"),
+            Some((false, "No.".into()))
+        );
+        assert_eq!(verdict("`VERDICT: APPROVE` but"), None);
     }
 
     #[test]

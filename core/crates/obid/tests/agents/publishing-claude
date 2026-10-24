@@ -30,7 +30,8 @@
 //                    steer, it approves outright when its rules say PRE-APPROVED: the base's
 //                    quoted ones, or the worktree's AGENTS.md when project docs are loaded
 //                    (CLAUDE_CODE_DISABLE_CLAUDE_MDS unset). Its summary says which it read. With
-//                    MUTE REVIEW asked it gives no verdict, with LIMITED REVIEW it hits its usage
+//                    MUTE REVIEW asked (or .obi/mute in its worktree) it gives no verdict, with
+//                    LIMITED REVIEW it hits its usage
 //                    limit, and with HOLD REVIEW it answers once .obi/release is in its worktree
 //   STEER            with COMMIT: also commits an AGENTS.md saying the change is PRE-APPROVED
 //   USAGE: {…}       reports that rate_limit_info first
@@ -85,7 +86,7 @@ rl.on("line", (line) => {
     }
     const wants = asked.match(/WANTS: (\S+)/);
     const answer = () => {
-      if (asked.includes("MUTE REVIEW")) result(`${read}\nRead it.`);
+      if (asked.includes("MUTE REVIEW") || existsSync(".obi/mute")) result(`${read}\nRead it.`);
       else if (rules.includes("PRE-APPROVED") || own.includes("PRE-APPROVED")) result(`${read}\nPre-approved.\nVERDICT: APPROVE`);
       else if (wants && !existsSync(wants[1])) result(`${read}\n${wants[1]} is missing.\nFIX: ${wants[1]}\nVERDICT: REQUEST CHANGES`);
       else result(`${read}\nLooks right.\nVERDICT: APPROVE`);

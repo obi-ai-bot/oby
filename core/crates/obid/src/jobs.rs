@@ -4528,17 +4528,8 @@ impl Jobs {
             ),
             Tool::Cursor => acp::cursor::argv(bin),
         };
-        // Oby's review of published work loads no project instructions from the change it reads
-        // (an AGENTS.md or CLAUDE.md its author wrote): the base's rules are quoted to it instead
-        // (crate::review).
         if job.review_of.is_some() {
-            match tool {
-                Tool::Claude => extra.push((process::NO_CLAUDE_MDS, "1".into())),
-                Tool::Codex => {
-                    argv.splice(1..1, ["-c".into(), "project_doc_max_bytes=0".into()]);
-                }
-                Tool::Cursor => {}
-            }
+            without_project_instructions(tool, &mut argv, &mut extra);
         }
         Ok(Launch {
             argv: sandbox.wrap(&spec, &argv),
@@ -7112,6 +7103,14 @@ impl Jobs {
         {
             return;
         }
+        // It read a head the job has pushed past, however it ended: the newer one gets a review
+        // of its own, now unless the job's at work again (its publish starts one).
+        let head = author.pushed_head().map(str::to_owned);
+        if head.is_none() || review.start_commit != head {
+            self.update(&of, |job| job.reviewing = None);
+            self.start_review(&of);
+            return;
+        }
         let verdict = review::verdict(&review.summary);
         let why = match (review.status, &verdict) {
             (Status::Done, _) if review.commits.unwrap_or(0) > 0 => {
@@ -7129,14 +7128,6 @@ impl Jobs {
             });
             return;
         };
-        // It read a head the job has pushed past: the newer one gets a review of its own, now
-        // unless the job's at work again (its publish starts one).
-        let head = author.pushed_head().map(str::to_owned);
-        if head.is_none() || review.start_commit != head {
-            self.update(&of, |job| job.reviewing = None);
-            self.start_review(&of);
-            return;
-        }
         let round = author.review.as_ref().map_or(0, |r| r.round) + 1;
         let tool = Tool::from_id(&review.agent);
         let account = tool
@@ -9223,6 +9214,37 @@ fn kept_question(job: &Job) -> Option<&Permission> {
     job.permission
         .as_ref()
         .filter(|p| p.is_question() && job.question_call.is_some())
+}
+
+/// Codex's settings for a run of Oby's review of published work: no `AGENTS.md`, and no
+/// repository skill (`.agents/skills`, `.codex/skills`) in its instructions or found by search.
+/// Checked with `codex debug prompt-input` (codex-cli 0.162.1) in a repository holding both.
+const CODEX_NO_PROJECT: [&str; 6] = [
+    "-c",
+    "project_doc_max_bytes=0",
+    "-c",
+    "skills.include_instructions=false",
+    "-c",
+    "features.skill_search=false",
+];
+
+/// What a run of Oby's review of published work gets so it loads no project instructions from the
+/// change it reads (an `AGENTS.md`, a `CLAUDE.md` or a skill its author wrote): the base's rules
+/// are quoted to it instead (crate::review). Codex's settings go after its binary, before
+/// `app-server`; Claude Code's is a variable (it runs with `--setting-sources ""` too). Cursor
+/// never reviews.
+fn without_project_instructions(
+    tool: Tool,
+    argv: &mut Vec<OsString>,
+    extra: &mut Vec<(&str, OsString)>,
+) {
+    match tool {
+        Tool::Claude => extra.push((process::NO_CLAUDE_MDS, "1".into())),
+        Tool::Codex => {
+            argv.splice(1..1, CODEX_NO_PROJECT.map(OsString::from));
+        }
+        Tool::Cursor => {}
+    }
 }
 
 /// One more round of an ended job's session: queued for its work again, the round counted, and
@@ -12375,5 +12397,46 @@ mod tests {
             "the planted line is inside the quote, the real one after it"
         );
         assert!(!after.contains("`true` succeeds"));
+    }
+
+    /// Oby's review of published work loads no project instructions from the change it reads
+    /// (#525): Codex gets its three settings right after its binary, before `app-server` and the
+    /// broker's, and Claude Code the variable the sandbox lets through.
+    #[test]
+    fn a_review_run_loads_no_project_instructions() {
+        let mut argv: Vec<OsString> = codex::argv("/bin/codex".into(), None, None);
+        let mut extra: Vec<(&str, OsString)> = Vec::new();
+        without_project_instructions(Tool::Codex, &mut argv, &mut extra);
+        let argv: Vec<String> = argv
+            .iter()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            argv,
+            [
+                "/bin/codex",
+                "-c",
+                "project_doc_max_bytes=0",
+                "-c",
+                "skills.include_instructions=false",
+                "-c",
+                "features.skill_search=false",
+                "app-server"
+            ]
+        );
+        assert!(extra.is_empty());
+        let mut claude: Vec<OsString> = vec!["/bin/claude".into()];
+        without_project_instructions(Tool::Claude, &mut claude, &mut extra);
+        assert_eq!(claude, [OsString::from("/bin/claude")]);
+        assert_eq!(extra, [(process::NO_CLAUDE_MDS, OsString::from("1"))]);
+        let env = process::sandbox_env(
+            std::ffi::OsStr::new("/usr/bin"),
+            Path::new("/tmp/x"),
+            &extra,
+        );
+        assert!(
+            env.iter()
+                .any(|(k, v)| k == "CLAUDE_CODE_DISABLE_CLAUDE_MDS" && v == "1")
+        );
     }
 }
