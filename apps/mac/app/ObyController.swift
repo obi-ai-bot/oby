@@ -373,8 +373,11 @@ final class IslandController {
         // with it: Desk.ask sends nothing to the brain for it, so no reply shows and nothing
         // listens again. Nothing heard ends hands-free too.
         let cancels = Conversation.cancels(said)
+        // Stop all came while they were written down (the Control-Option of ⌃⌥⌘. sent them): they
+        // go nowhere, so no job starts after it.
+        let stopped = talkTurn.stoppedSinceSend
         let complain = talkTurn.heard(said, handsFree: handsFree, again: again, problem: model.voice.problem != nil)
-        if !said.isEmpty {
+        if !said.isEmpty, !stopped {
             feed.conversations.nextToLatest = Self.toLatest(said, showsConversation: windowShowsConversation())
             if !cancels { feed.talking(said) }
             outside.ask(said)
@@ -387,7 +390,7 @@ final class IslandController {
             setTurn(nil)
             // A press that only ends Oby's listening again says nothing.
             if complain { outside.post(problem ?? "Oby didn't catch that", "talk") }
-        } else if cancels {
+        } else if cancels || stopped {
             setTurn(nil)
         } else {
             watchThinking()

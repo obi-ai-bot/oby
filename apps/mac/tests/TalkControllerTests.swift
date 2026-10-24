@@ -122,20 +122,35 @@ struct TalkControllerTests {
     }
 
     /// Stop all while hands-free words are still being written down (the Control-Option of ⌃⌥⌘.
-    /// sent them, or the menu came within those seconds): their reply never reopens the microphone.
-    @Test func stopAllWhileTheWordsAreWrittenDownDoesntListenAgain() async throws {
+    /// sent them, or the menu came within those seconds): they're never asked, so no job starts
+    /// after it, and a reply still on its way never reopens the microphone.
+    @Test func stopAllWhileTheWordsAreWrittenDownAsksNothing() async throws {
         let sends: [() -> Void] = NSWorkspace.shared.isVoiceOverEnabled ? [tap] : [tap, controlOption]
         for send in sends {
-            let before = out.asked.count
-            startHandsFree("fix the vault tests")
+            startHandsFree("delete the staging branch, no wait")
             send()
             island.stopAll()
-            try await until { out.asked.count > before && island.model.voice.phase == .idle && !island.model.listening }
+            try await until { out.words.isEmpty && island.model.voice.phase == .idle && !island.model.listening }
+            #expect(out.asked.isEmpty && island.model.turn == nil)
             island.replied("On it.", spoken: true)
             #expect(island.model.turn == .replied && island.model.voice.phase == .idle && !island.talkKey.busy)
             tap()
             #expect(island.model.turn == nil)
         }
+    }
+
+    /// A press while hands-free words are written down only ends hands-free: the words are still
+    /// asked, and their reply shows without listening again.
+    @Test func aPressWhileTheWordsAreWrittenDownStillAsksThem() async throws {
+        startHandsFree("fix the vault tests")
+        tap()
+        tap()
+        try await until { out.asked == ["fix the vault tests"] && island.model.voice.phase == .idle && !island.model.listening }
+        #expect(island.model.turn == .thinking)
+        island.replied("On it.", spoken: true)
+        #expect(island.model.turn == .replied && island.model.voice.phase == .idle)
+        tap()
+        #expect(island.model.turn == nil)
     }
 
     /// Stop all during hands-free listening, from the menu or by its keys with ⌘ down first (so the

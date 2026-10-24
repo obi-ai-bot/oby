@@ -38,6 +38,9 @@ nonisolated struct TalkTurn: Equatable, Sendable {
     /// A press or Stop all came since the last send, while its words are written down: they don't
     /// keep hands-free.
     private(set) var endedSinceSend = false
+    /// Stop all came since the last send: the words being written down go nowhere, so nothing starts
+    /// after it.
+    private(set) var stoppedSinceSend = false
     /// Oby listens again by itself after its reply: a press with no words ends that quietly.
     private(set) var relistening = false
     /// VoiceOver was given the reply: the next press cuts it off.
@@ -84,6 +87,7 @@ nonisolated struct TalkTurn: Equatable, Sendable {
     /// Oby listening again by itself.
     mutating func closed() -> Bool {
         endedSinceSend = false
+        stoppedSinceSend = false
         defer { relistening = false }
         return relistening
     }
@@ -91,11 +95,12 @@ nonisolated struct TalkTurn: Equatable, Sendable {
     /// Escape: nothing is sent.
     mutating func cancelled() { relistening = false }
 
-    /// Stop all, by its keys or the menu: the words waiting, or still being written down, don't listen
-    /// again once their reply shows.
+    /// Stop all, by its keys or the menu: the words waiting don't listen again once their reply
+    /// shows, and words still being written down aren't asked.
     mutating func end() {
         handsFreeAsk = false
         endedSinceSend = true
+        stoppedSinceSend = true
     }
 
     /// The words were written down. Words asked decide whether their reply listens again; a bare
