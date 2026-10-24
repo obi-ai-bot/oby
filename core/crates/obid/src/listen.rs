@@ -1314,16 +1314,17 @@ pub(crate) async fn post_with(
         Err((true, _)) if reviewer.is_none() && event != "COMMENT" => {
             create_review(gh, None, repo, number, file, "COMMENT", sha)
                 .await
+                .map(|_| ())
                 .map_err(|(_, why)| why)
         }
-        done => done.map_err(|(_, why)| why),
+        done => done.map(|_| ()).map_err(|(_, why)| why),
     }
 }
 
 /// Posts the review in `file` on pull request `number` of `repo`, as the reviewer whose settings
-/// folder is `reviewer` or as the owner: `event` on the commit `sha`. Its error says too whether
-/// GitHub refused it as the poster's own pull request.
-async fn create_review(
+/// folder is `reviewer` or as the owner: `event` on the commit `sha`. What GitHub answered (the
+/// review, as JSON); its error says too whether GitHub refused it as the poster's own pull request.
+pub(crate) async fn create_review(
     gh: &Path,
     reviewer: Option<&Path>,
     repo: &str,
@@ -1331,7 +1332,7 @@ async fn create_review(
     file: &Path,
     event: &str,
     sha: &str,
-) -> Result<(), (bool, String)> {
+) -> Result<String, (bool, String)> {
     let path = format!("repos/{repo}/pulls/{number}/reviews");
     let commit = format!("commit_id={sha}");
     let event = format!("event={event}");
@@ -1341,7 +1342,6 @@ async fn create_review(
     ];
     crate::github::output_as(gh, reviewer, &args)
         .await
-        .map(|_| ())
         .map_err(|(out, said)| {
             let own = out.contains(OWN_PULL_REQUEST) || said.contains(OWN_PULL_REQUEST);
             (own, format!("GitHub didn't take it: {said}"))
@@ -1380,7 +1380,7 @@ async fn poster(
     let Some((folder, user)) = crate::github_login::reviewer(gh, home, &owner).await? else {
         return Ok((None, "COMMENT"));
     };
-    let pushes = crate::github::can_push(gh, &folder, repo)
+    let pushes = crate::github::can_push(gh, Some(&folder), repo)
         .await
         .map_err(|said| format!("obid couldn't check what {user} can do in {repo}: {said}"))?;
     if !pushes {

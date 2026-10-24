@@ -19,8 +19,8 @@
 #               them, both fail
 #   repo.json   what `gh repo view` answers
 #   calls       one line per call: its first two arguments
-#   approvals   one line per `gh api --method POST …/reviews` (crate::sphere::approval): its
-#               arguments; it answers a review's html_url
+#   approvals   one line per `gh api -X POST …/reviews` (crate::listen::create_review): its
+#               arguments and its body file's text; it answers a review's html_url
 #   no-push     when it exists, `gh api repos/<repo> --jq .permissions.push` says false (else true)
 work="$HOME/github"
 if [ -d "$work" ]; then
@@ -45,8 +45,10 @@ if [ -d "$work" ]; then
     "api repos/"*)
       if [ -f "$work/no-push" ]; then echo false; else echo true; fi
       exit 0 ;;
-    "api --method")
-      echo "$*" >> "$work/approvals"
+    "api -X")
+      body=""
+      for arg in "$@"; do case "$arg" in body=@*) body=$(cat "${arg#body=@}") ;; esac; done
+      echo "$* | $body" >> "$work/approvals"
       echo '{"id":1,"state":"APPROVED","html_url":"https://github.com/'"$4"'#pullrequestreview-1"}'
       exit 0 ;;
   esac

@@ -164,11 +164,11 @@ pub fn as_reviewed(
     Ok(())
 }
 
-/// Posts an approving review of `sha` on pull request `number` of `repo` with `gh` (the owner's
-/// own), naming `sha` as the commit approved: only while the pull request is still the change
-/// reviewed ([`as_reviewed`], into `base`), and when the owner's login can push to `repo` (an
-/// approval without that wouldn't count). The words pass the secret scan first, in `scratch`. Its
-/// URL, or why it wasn't posted.
+/// Posts an approving review of `sha` on pull request `number` of `repo` with `gh` as the owner
+/// (crate::listen::create_review, pinned to `sha` by `commit_id`): only while the pull request is
+/// still the change reviewed ([`as_reviewed`], into `base`), and when the owner's login can push to
+/// `repo` (an approval without that wouldn't count). The words pass the secret scan first and are
+/// written in `scratch`. Its URL, or why it wasn't posted.
 pub async fn post(
     gh: &Path,
     scratch: &Path,
@@ -203,34 +203,17 @@ pub async fn post(
     .await?;
     let view: Value = serde_json::from_str(&view).map_err(|_| "gh's answer wasn't JSON")?;
     as_reviewed(&view, repo, number, base, sha)?;
-    let push = crate::github::run(
-        gh,
-        &["api", &format!("repos/{repo}"), "--jq", ".permissions.push"],
-    )
-    .await?;
-    if push != "true" {
+    if !crate::github::can_push(gh, None, repo).await? {
         return Err(format!(
             "your GitHub login can't push to {repo}, so its approval wouldn't count"
         ));
     }
-    let path = format!("repos/{repo}/pulls/{number}/reviews");
-    let text = crate::github::run(
-        gh,
-        &[
-            "api",
-            "--method",
-            "POST",
-            &path,
-            "-f",
-            &format!("commit_id={sha}"),
-            "-f",
-            "event=APPROVE",
-            "-f",
-            &format!("body={words}"),
-        ],
-    )
-    .await
-    .map_err(|said| format!("GitHub didn't take it: {said}"))?;
+    let file = scratch.join("review.md");
+    crate::store::write_private(&file, words.as_bytes())
+        .map_err(|e| format!("obid couldn't write the review: {e}"))?;
+    let text = crate::listen::create_review(gh, None, repo, number, &file, "APPROVE", sha)
+        .await
+        .map_err(|(_, why)| why)?;
     let posted: Value = serde_json::from_str(&text).unwrap_or_default();
     Ok(posted["html_url"]
         .as_str()

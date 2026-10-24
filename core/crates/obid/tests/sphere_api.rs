@@ -377,10 +377,10 @@ async fn an_approved_review_is_approved_on_github_only_as_the_owner_allows() {
     assert_eq!(answered["state"], "done");
     let posted = approvals();
     assert_eq!(posted.lines().count(), 1, "{posted}");
-    assert!(posted.starts_with("api --method POST repos/obi-e2e/fixture-app/pulls/12/reviews "));
+    assert!(posted.starts_with("api -X POST repos/obi-e2e/fixture-app/pulls/12/reviews "));
     assert!(posted.contains(&format!("commit_id={head}")));
     assert!(posted.contains("event=APPROVE"));
-    assert!(posted.contains("body=Approved by Oby: its review of 6d20146f366b passed."));
+    assert!(posted.ends_with("| Approved by Oby: its review of 6d20146f366b passed.\n"));
     assert!(
         !posted.contains(CANARY),
         "no word of the request goes to GitHub"
