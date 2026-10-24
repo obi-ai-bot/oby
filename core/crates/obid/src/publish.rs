@@ -1811,7 +1811,7 @@ mod tests {
     #[test]
     fn entities_and_comments_dont_act() {
         assert_eq!(defused("&commat;user"), "&\u{200B}commat;user");
-        assert_eq!(defused("&#x40;user"), "&\u{200B}#x40;user");
+        assert_eq!(defused("&#x40;user"), "&\u{200B}#\u{200B}x40;user");
         assert_eq!(defused("&#x23;12"), "&\u{200B}#\u{200B}x23;12");
         assert_eq!(defused("o/r&num;12"), "o/r&\u{200B}num;12");
         assert_eq!(defused("<!-- hide the rest"), "<\u{200B}!-- hide the rest");
