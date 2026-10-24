@@ -9,11 +9,12 @@
 #                                  committed or not; with OBY_CHECK_PLAN=1, only says what it'd run
 #
 #   core/                 cargo fmt --check; clippy -D warnings on the touched crates; obid's lib
-#                         tests of each touched module (src/a/b.rs: `a::b::`, all of them for
-#                         lib.rs or main.rs), its touched test binaries, tests/<module>.rs or
-#                         tests/<module>_api.rs of a touched module, and the binaries that use a
-#                         touched tests/support or tests/agents file; every test of another
-#                         touched crate
+#                         tests of each touched module (src/a/b.rs: `a::b::`; all of them for
+#                         lib.rs, main.rs, build.rs, a file under src/ that isn't Rust, its
+#                         Cargo.toml, or the workspace's Cargo.toml or Cargo.lock), its touched
+#                         test binaries, tests/<module>.rs or tests/<module>_api.rs of a touched
+#                         module, and the binaries that name a touched folder under tests/
+#                         (support, agents, plugins); every test of another touched crate
 #   apps/mac/, apps/shared/, apps/Oby.xcodeproj, character/
 #                         the touched MacTests suites, else a build-for-testing of the Oby scheme
 #   apps/ios/, apps/watch/, apps/shared/, apps/Oby.xcodeproj
@@ -22,10 +23,17 @@
 #                         swift test (only the touched RunnerTests suites when only they changed)
 #
 # Inside a job's sandbox (where Seatbelt can't make another: a no-op sandbox-exec fails), the Apple
-# apps aren't built: SwiftPM evaluates every package manifest in a sandbox of its own, which can't
-# nest there, and xcodebuild has no switch for it. The Apple check builds and tests them on the Mac,
-# and the Mac check before merging (docs/runner-api.md, "Apple check", "Mac check").
+# apps aren't built and swift test doesn't run: SwiftPM evaluates every package manifest in a
+# sandbox of its own, which can't nest there, and xcodebuild has no switch for it, and a cold
+# SwiftPM build in the job's HOME doesn't fit the check's 20 minutes. The Mac check before merging
+# runs them (docs/runner-api.md, "Mac check"), and the Apple check builds the apps for an agent.
+# obid's tests that make a sandbox of their own (tests/sandbox.rs, the plug-in tests) fail there,
+# not verified: they're verified outside a job's sandbox only.
+#
+# Builds and tests use 4 cores and 4 test threads unless CARGO_BUILD_JOBS or RUST_TEST_THREADS
+# say otherwise: obid runs one check at a time, and a Mac has other work.
 set -eo pipefail
+export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-4}" RUST_TEST_THREADS="${RUST_TEST_THREADS:-4}"
 cd "$(dirname "$0")/.."
 
 base=$(git merge-base "${1:-origin/dev}" HEAD) || {
@@ -37,6 +45,9 @@ changed=$({ git diff --name-only "$base"; git ls-files --others --exclude-standa
 cache="${OBY_CHECK_CACHE:-$HOME/Library/Caches/oby-check}"
 
 failed=()
+# Inside a job's sandbox, where Seatbelt can't make another.
+nested=''
+/usr/bin/sandbox-exec -p '(version 1)(allow default)' /usr/bin/true 2>/dev/null || nested=1
 step() {
     echo "==> $*"
     [[ -n "${OBY_CHECK_PLAN:-}" ]] || "$@" || failed+=("$*")
@@ -60,6 +71,9 @@ while IFS= read -r file; do
         core/crates/obid/tests/agents/*)
             tests=$(add "$tests" "$(grep -l "tests/agents/${file##*/}" core/crates/obid/tests/*.rs)") ;;
         core/crates/obid/tests/*.rs) tests=$(add "$tests" "$file") ;;
+        core/crates/obid/tests/*/*)
+            folder=${file#core/crates/obid/tests/}
+            tests=$(add "$tests" "$(grep -l "tests/${folder%%/*}" core/crates/obid/tests/*.rs)") ;;
         core/crates/obid/src/lib.rs | core/crates/obid/src/main.rs) lib_all=1 ;;
         core/crates/obid/src/*.rs)
             module=${file#core/crates/obid/src/}
@@ -68,6 +82,9 @@ while IFS= read -r file; do
             lib=$(add "$lib" "${module//\//::}::")
             tests=$(add "$tests" "core/crates/obid/tests/${module%%/*}.rs")
             tests=$(add "$tests" "core/crates/obid/tests/${module%%/*}_api.rs") ;;
+        # What every module may read (a prompt, a schema), how obid builds, and its dependencies.
+        core/crates/obid/src/* | core/crates/obid/Cargo.toml | core/crates/obid/build.rs | core/Cargo.toml | core/Cargo.lock)
+            lib_all=1 ;;
         core/crates/*/*)
             crate=${file#core/crates/}
             crates=$(add "$crates" "${crate%%/*}") ;;
@@ -112,6 +129,9 @@ if [[ -n "$rust" ]]; then
         [[ ! -f "$test" ]] || binaries+=(--test "${name%.rs}")
     done < <(each "$tests")
     if [[ ${#binaries[@]} -gt 0 ]]; then
+        if [[ -n "$nested" && " ${binaries[*]} " =~ " "(sandbox|plugins_api)" " ]]; then
+            echo "oby-check: tests/sandbox.rs and the plug-in tests make a sandbox of their own, which can't nest in a job's: they fail here, not verified, and pass only outside one"
+        fi
         step "${cargo[@]}" test "${manifest[@]}" -p obid "${binaries[@]}"
     fi
     while IFS= read -r crate; do
@@ -134,22 +154,16 @@ apple() {
         step "${xcode[@]}" -scheme "$1" -destination "$2" build-for-testing
     fi
 }
-# SwiftPM runs git on its packages, not this repository, so never with a committing job's own
-# object folder; and in its own sandbox only where one can be made (inside a job's, it can't nest).
-swiftpm=(env -u GIT_OBJECT_DIRECTORY -u GIT_ALTERNATE_OBJECT_DIRECTORIES swift test --scratch-path "$cache/swiftpm")
-if /usr/bin/sandbox-exec -p '(version 1)(allow default)' /usr/bin/true 2>/dev/null; then
+if [[ -z "$nested" ]]; then
     if [[ -n "$mac" ]]; then apple Oby platform=macOS "$mac_suites"; fi
     if [[ -n "$ios" ]]; then apple ObyPhone "platform=iOS Simulator,name=iPhone 17,OS=latest" "$ios_suites"; fi
-else
-    swiftpm+=(--disable-sandbox)
-    if [[ -n "$mac$ios" ]]; then
-        echo "oby-check: the Apple apps aren't built in a job's sandbox (SwiftPM's can't nest in it): the Apple check and the Mac check build them"
+    if [[ -n "$swift" ]]; then
+        step swift test --scratch-path "$cache/swiftpm"
+    elif [[ -n "$swift_suites" ]]; then
+        step swift test --scratch-path "$cache/swiftpm" --filter "$(each "$swift_suites" | paste -sd '|' -)"
     fi
-fi
-if [[ -n "$swift" ]]; then
-    step "${swiftpm[@]}"
-elif [[ -n "$swift_suites" ]]; then
-    step "${swiftpm[@]}" --filter "$(each "$swift_suites" | paste -sd '|' -)"
+elif [[ -n "$mac$ios$swift$swift_suites" ]]; then
+    echo "oby-check: the Apple apps and swift test don't run in a job's sandbox (SwiftPM's own can't nest in it): the Mac check runs them before merging"
 fi
 
 # What changed, committed or not, scanned for secrets with this repository's rules.
@@ -168,8 +182,11 @@ else
     failed+=(gitleaks)
 fi
 
-if [[ ${#failed[@]} -gt 0 ]]; then
+if [[ -n "${OBY_CHECK_PLAN:-}" ]]; then
+    echo "oby-check: planned, nothing run"
+elif [[ ${#failed[@]} -gt 0 ]]; then
     printf 'oby-check: failed: %s\n' "${failed[@]}" >&2
     exit 1
+else
+    echo "oby-check: passed"
 fi
-echo "oby-check: passed"

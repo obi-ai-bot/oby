@@ -611,6 +611,8 @@ pub struct Jobs {
     max_running: std::sync::atomic::AtomicUsize,
     shutting_down: std::sync::atomic::AtomicBool,
     identity: (String, String),
+    /// One check at a time, whatever the job ([`Jobs::check`]).
+    checking: tokio::sync::Semaphore,
     /// One preparation at a time per repository (Engine/Desk.swift, `setups`): its clone is
     /// fetched and its worktrees added one after the other, never at once.
     preparing: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
@@ -719,6 +721,7 @@ impl Jobs {
             max_running: std::sync::atomic::AtomicUsize::new(max_running),
             shutting_down: std::sync::atomic::AtomicBool::new(false),
             identity,
+            checking: tokio::sync::Semaphore::new(1),
             preparing: Mutex::new(HashMap::new()),
             review_hook: std::sync::OnceLock::new(),
             permission_hook: std::sync::OnceLock::new(),
@@ -4350,7 +4353,10 @@ impl Jobs {
             &hidden,
             std::slice::from_ref(&self.config.home),
         );
-        read_only.extend(process::rust_reads());
+        read_only.extend(process::rust_reads(
+            &hidden,
+            std::slice::from_ref(&self.config.home),
+        ));
         if let Some(bin) = self.agent_bin(tool) {
             read_only.extend(sandbox::install_root(
                 &bin,
@@ -5256,7 +5262,8 @@ impl Jobs {
         Some(self.transcripts.read(id, after, limit))
     }
 
-    /// Runs the repository's check in the job sandbox, with no network at all.
+    /// Runs the repository's check in the job sandbox, with no network but, for an owner's job
+    /// run here, loopback; one at a time, its limit counted from when it starts.
     async fn check(
         &self,
         id: &str,
@@ -5270,10 +5277,33 @@ impl Jobs {
             .map_err(|why| format!("obid can't run the check: {why}"))?;
         let mut spec = spec.clone();
         spec.network = false;
-        // An owner's job's tests may serve on 127.0.0.1, which its agent reaches anyway; another
-        // Obi's branch, run without the owner looking, gets no network at all.
-        spec.loopback = self.get(id).is_some_and(|job| job.obi.is_none());
+        // An owner's job's tests may serve on 127.0.0.1, which its agent, run here, reaches
+        // anyway; another Obi's branch, or commits from a teammate's Mac, get no network at all.
+        spec.loopback = self.get(id).is_some_and(|job| job.check_keeps_loopback());
         spec.accounts.clear();
+        // One check at a time: two of this repository's, each building obid with every core,
+        // swapped a 16 GB Mac until both ran out of their 20 minutes (2026-10-24). The wait isn't
+        // part of the limit, and a stop ends it. ponytail: one for every machine; a setting when
+        // a bigger one wants more.
+        let waiting = self.checking.available_permits() == 0;
+        let step = self.get(id).map(|job| job.step).unwrap_or_default();
+        if waiting {
+            self.update(id, |job| {
+                job.step = "Waiting for another job's check to finish".into()
+            });
+        }
+        let mut stop = signal.clone();
+        let _turn = tokio::select! {
+            turn = self.checking.acquire() => {
+                turn.map_err(|e| format!("obid couldn't run the check: {e}"))?
+            }
+            _ = async { while *stop.borrow_and_update() == Signal::Run && stop.changed().await.is_ok() {} } => {
+                return Ok(CheckRun { passed: false, output: String::new() });
+            }
+        };
+        if waiting {
+            self.update(id, |job| job.step = step);
+        }
         // Each step between its top-level `&&`s timed, its tests counted, live (#734).
         let round = self.get(id).map_or(1, |job| job.current_round());
         let marker = format!("obid-step-{}", random_check_id()?);

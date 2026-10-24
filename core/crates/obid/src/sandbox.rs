@@ -1164,6 +1164,28 @@ pub fn tool_roots(path: &std::ffi::OsStr, hidden: &[PathBuf], never: &[PathBuf])
     roots
 }
 
+/// Whether a box may read `dir` without seeing what it hides: `dir` is no hidden folder nor one
+/// that holds one, and nothing inside `never` (obid's home), each compared as named and resolved,
+/// as [`tool_roots`] keeps its folders.
+pub fn shows_nothing_hidden(dir: &Path, hidden: &[PathBuf], never: &[PathBuf]) -> bool {
+    let both = |p: &Path| {
+        [
+            p.to_path_buf(),
+            p.canonicalize().unwrap_or_else(|_| p.to_path_buf()),
+        ]
+    };
+    both(dir).iter().all(|dir| {
+        !hidden
+            .iter()
+            .flat_map(|h| both(h))
+            .any(|h| h.starts_with(dir))
+            && !never
+                .iter()
+                .flat_map(|n| both(n))
+                .any(|n| dir.starts_with(&n))
+    })
+}
+
 /// What a confined run ([`Sandbox::wrap_reading_only_its_own`]) reads of the software on `path`
 /// outside the hidden folders (`/opt/homebrew/bin`, `/usr/local/bin`): each folder, and the
 /// install prefix around a `bin` or `sbin` (its libraries, a symbolic link's target in it), never
@@ -1225,6 +1247,30 @@ pub fn install_root(bin: &Path, hidden: &[PathBuf], never: &[PathBuf]) -> Option
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A folder a box may read shows nothing hidden: not a hidden folder, nor one that holds one,
+    /// nor anything in obid's home.
+    #[test]
+    fn a_read_never_shows_what_is_hidden() {
+        let hidden = [PathBuf::from("/Users/w"), PathBuf::from("/h")];
+        let never = [PathBuf::from("/h")];
+        assert!(shows_nothing_hidden(
+            Path::new("/Users/w/.rustup"),
+            &hidden,
+            &never
+        ));
+        assert!(shows_nothing_hidden(
+            Path::new("/opt/rust"),
+            &hidden,
+            &never
+        ));
+        for dir in ["/Users/w", "/Users", "/", "/h/tools", "/h"] {
+            assert!(
+                !shows_nothing_hidden(Path::new(dir), &hidden, &never),
+                "{dir}"
+            );
+        }
+    }
 
     #[test]
     fn path_software_brings_a_tools_folders_not_the_whole_prefix() {

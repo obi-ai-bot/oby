@@ -481,24 +481,22 @@ fn the_same_fences(ran: &Ran, world: &World, commits: bool) {
     );
 }
 
-/// Whether this runs inside a job's sandbox, where Seatbelt can't make another, so not the
-/// sandbox this test needs (docs/runner-api.md, "macOS: obid inside a job"): it says so and stops,
-/// and the Mac check runs it outside one.
-fn nested() -> bool {
+/// Fails inside a job's sandbox, where Seatbelt can't make another, so not the sandbox this test
+/// needs: there it would prove nothing, and a pass would read as one (docs/runner-api.md, "macOS:
+/// obid inside a job"). It runs outside a job's sandbox only.
+fn outside_a_job() {
     let nested = Sandbox::detect(Path::new(env!("CARGO_BIN_EXE_obid")))
         .is_ok_and(|sandbox| sandbox.encloses());
-    if nested {
-        eprintln!("inside a job's sandbox, where Seatbelt can't make this test's own: skipped");
-    }
-    nested
+    assert!(
+        !nested,
+        "not verified: inside a job's sandbox, where Seatbelt can't make this test's own; run it outside one"
+    );
 }
 
 /// The repository's check: no writes outside its folders, no reads of obid's home, no network.
 #[test]
 fn the_check_is_fenced_in_and_has_no_network() {
-    if nested() {
-        return;
-    }
+    outside_a_job();
     let world = world("check");
     let ran = run(&world, &spec(&world, false, false, false));
     the_same_fences(&ran, &world, false);
@@ -512,9 +510,7 @@ fn the_check_is_fenced_in_and_has_no_network() {
 /// reaches anything beyond loopback.
 #[test]
 fn an_owners_check_keeps_loopback_and_nothing_more() {
-    if nested() {
-        return;
-    }
+    outside_a_job();
     let world = world("loop");
     let sandbox = Sandbox::detect(Path::new(env!("CARGO_BIN_EXE_obid"))).unwrap();
     let probe = "const net = require('net');
@@ -564,9 +560,7 @@ setTimeout(() => process.exit(0), 3000);";
 /// API), so the test's listener is reached, which shows the probe would have seen it.
 #[test]
 fn an_agent_is_fenced_in_but_keeps_the_network() {
-    if nested() {
-        return;
-    }
+    outside_a_job();
     let world = world("agent");
     let ran = run(&world, &spec(&world, true, false, true));
     the_same_fences(&ran, &world, false);
@@ -583,9 +577,7 @@ fn an_agent_is_fenced_in_but_keeps_the_network() {
 /// commits into the clone itself, outside the sandbox (tests/jobs_api.rs).
 #[test]
 fn a_committing_job_commits_without_writing_the_clone() {
-    if nested() {
-        return;
-    }
+    outside_a_job();
     let world = world("commits");
     let refs = git(&world.common, &["for-each-ref"]);
     let objects = git(&world.common, &["count-objects", "-v"]);
@@ -663,9 +655,7 @@ fn through_a_terminal(world: &World, spec: &Spec, probe: &str) -> String {
 /// which would run them outside the sandbox.
 #[test]
 fn a_job_cannot_reach_the_terminal_obid_was_started_from() {
-    if nested() {
-        return;
-    }
+    outside_a_job();
     let world = world("tty");
     for network in [false, true] {
         let spec = spec(&world, network, false, !network);
@@ -693,9 +683,7 @@ fn a_job_cannot_reach_the_terminal_obid_was_started_from() {
 #[cfg(target_os = "macos")]
 #[test]
 fn a_job_cannot_have_another_process_run_or_write_for_it() {
-    if nested() {
-        return;
-    }
+    outside_a_job();
     let world = world("open");
     let sandbox = Sandbox::detect(Path::new(env!("CARGO_BIN_EXE_obid"))).unwrap();
     for network in [false, true] {
@@ -803,9 +791,7 @@ const MACH_KEPT: [&str; 2] = ["com.apple.SecurityServer", "com.apple.trustd.agen
 #[cfg(target_os = "macos")]
 #[test]
 fn a_job_reaches_no_preferences_pasteboard_or_keychain() {
-    if nested() {
-        return;
-    }
+    outside_a_job();
     let world = world("prefs");
     let sandbox = Sandbox::detect(Path::new(env!("CARGO_BIN_EXE_obid"))).unwrap();
     let nonce = format!(
@@ -992,9 +978,7 @@ fn a_job_reaches_no_preferences_pasteboard_or_keychain() {
 #[cfg(target_os = "macos")]
 #[test]
 fn a_setsid_process_ends_with_the_job() {
-    if nested() {
-        return;
-    }
+    outside_a_job();
     let world = world("setsid");
     let spec = spec(&world, true, false, false);
     let sandbox = Sandbox::detect(Path::new(env!("CARGO_BIN_EXE_obid"))).unwrap();
@@ -1186,9 +1170,7 @@ fn private_file(path: &Path, text: &str) {
 #[cfg(target_os = "macos")]
 #[test]
 fn a_sandboxed_job_reads_other_processes_but_finds_no_secret() {
-    if nested() {
-        return;
-    }
+    outside_a_job();
     let world = world("procargs");
     let nonce = format!(
         "{}{}",

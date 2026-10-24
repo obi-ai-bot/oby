@@ -1305,9 +1305,7 @@ fn beats_stop(obid: &Obid) {
 /// started running.
 #[test]
 fn a_plugin_process_gives_quoted_context_inbox_events_and_a_redacted_log() {
-    if nested() {
-        return;
-    }
+    outside_a_job();
     let folder = Folder::new("plugins-notes");
     let remote = fixture(&folder.0.join("fixture"));
     // The plug-ins this obid ships: notes, with lines it writes to stderr that hold the API
@@ -1534,25 +1532,23 @@ fn bundle_notes(folder: &Path) -> PathBuf {
     bundled
 }
 
-/// Whether this runs inside a job's sandbox, where Seatbelt can't make another, so not the
-/// sandbox this test needs (docs/runner-api.md, "macOS: obid inside a job"): it says so and stops,
-/// and the Mac check runs it outside one.
-fn nested() -> bool {
+/// Fails inside a job's sandbox, where Seatbelt can't make another, so not the sandbox this test
+/// needs: there it would prove nothing, and a pass would read as one (docs/runner-api.md, "macOS:
+/// obid inside a job"). It runs outside a job's sandbox only.
+fn outside_a_job() {
     let nested = obid::sandbox::Sandbox::detect(Path::new(env!("CARGO_BIN_EXE_obid")))
         .is_ok_and(|sandbox| sandbox.encloses());
-    if nested {
-        eprintln!("inside a job's sandbox, where Seatbelt can't make this test's own: skipped");
-    }
-    nested
+    assert!(
+        !nested,
+        "not verified: inside a job's sandbox, where Seatbelt can't make this test's own; run it outside one"
+    );
 }
 
 /// Past 100 open `pluginEvent` items of one plug-in, the oldest open ones are settled by
 /// themselves, in the order the events came: also when they all came in the same second.
 #[test]
 fn past_100_open_events_the_oldest_are_settled() {
-    if nested() {
-        return;
-    }
+    outside_a_job();
     let folder = Folder::new("plugins-burst");
     let remote = fixture(&folder.0.join("fixture"));
     let bundled = bundle_notes(&folder.0);
@@ -1655,9 +1651,7 @@ fn alerting(name: &str, text: &str) -> (Folder, Obid, Value, Value, Value) {
 /// event orchestrator acts on none of them (#1124).
 #[test]
 fn a_failed_deploy_on_a_known_repository_offers_look_into_it() {
-    if nested() {
-        return;
-    }
+    outside_a_job();
     let (_folder, mut obid, deploy, alert, ticket) = alerting("plugins-offers", "build log tail");
     assert_eq!(deploy["title"], "Deploy failed: web (production)");
     assert_eq!(
@@ -1718,9 +1712,7 @@ fn a_failed_deploy_on_a_known_repository_offers_look_into_it() {
 /// second answer is 409; and with the vault unreadable nothing starts and the offer stays open.
 #[test]
 fn look_into_it_starts_an_investigation_with_the_event_quoted() {
-    if nested() {
-        return;
-    }
+    outside_a_job();
     let secret = format!("deploy-{}-key", uuid::Uuid::new_v4().simple());
     let (_folder, mut obid, deploy, _alert, ticket) = alerting(
         "plugins-look-into-it",
@@ -1867,9 +1859,7 @@ fn tree(dir: &Path) -> Vec<(String, String)> {
 /// write through the link.
 #[test]
 fn a_committed_obi_link_never_lets_context_out_of_the_worktree() {
-    if nested() {
-        return;
-    }
+    outside_a_job();
     let folder = Folder::new("plugins-obi-link");
     let remote = fixture(&folder.0.join("fixture"));
     let victim = victim(&folder.0);

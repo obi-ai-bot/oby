@@ -126,9 +126,14 @@ fn rust_homes() -> [Option<PathBuf>; 2] {
 
 /// What a job's box reads of the person's Rust toolchain ([`rust_homes`]), read-only: rustup's
 /// toolchains and settings, and cargo's `bin`, never the rest of the cargo home (its
-/// `credentials.toml`, its registry).
-pub fn rust_reads() -> Vec<PathBuf> {
-    rust_homes().into_iter().flatten().collect()
+/// `credentials.toml`, its registry), and neither when it would show what the box hides (a
+/// `RUSTUP_HOME` that is the person's home, say: [`crate::sandbox::shows_nothing_hidden`]).
+pub fn rust_reads(hidden: &[PathBuf], never: &[PathBuf]) -> Vec<PathBuf> {
+    rust_homes()
+        .into_iter()
+        .flatten()
+        .filter(|dir| crate::sandbox::shows_nothing_hidden(dir, hidden, never))
+        .collect()
 }
 
 /// Shows the person's Rust toolchain to a box whose `HOME` is `temp`: `RUSTUP_HOME` for its

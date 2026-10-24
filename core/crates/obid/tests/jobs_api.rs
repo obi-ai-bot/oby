@@ -405,6 +405,52 @@ fn fake_gh(folder: &Path) -> PathBuf {
     bin
 }
 
+/// Two jobs' checks never run at once: each waits for the other's to end (a Mac runs one of this
+/// repository's checks at a time, `Jobs::check`), and both pass.
+#[test]
+fn checks_run_one_at_a_time() {
+    let folder = Folder::new("one-check");
+    let remote = fixture(&folder.0.join("fixture"));
+    let bin = fake_gh(&folder.0);
+    let obid = start_with(&folder.0, &config(&folder.0, &remote), Some(&bin));
+    let stamp =
+        |what: &str| format!("perl -MTime::HiRes=time -e 'printf \"{what} %.3f\\n\", time'");
+    let check = format!("{} && sleep 2 && {}", stamp("began"), stamp("ended"));
+    let ids: Vec<String> = ["a.txt", "b.txt"]
+        .iter()
+        .map(|file| {
+            post_job(
+                &obid,
+                json!({"repo": "obi-e2e/fixture-app", "kind": "build", "task": format!("COMMIT: {file}"), "check": check}),
+            )
+            .body["id"]
+                .as_str()
+                .unwrap()
+                .to_owned()
+        })
+        .collect();
+    let mut runs = Vec::new();
+    for id in &ids {
+        let job = wait(&obid, id);
+        assert_eq!(job["status"], "done", "{job}");
+        let log =
+            std::fs::read_to_string(obid.home.join("logs").join(id).join("check.log")).unwrap();
+        let at = |what: &str| -> f64 {
+            log.lines()
+                .find_map(|l| l.strip_prefix(&format!("{what} ")))
+                .unwrap_or_else(|| panic!("{what}: {log}"))
+                .parse()
+                .unwrap()
+        };
+        runs.push((at("began"), at("ended")));
+    }
+    let (first, second) = (runs[0], runs[1]);
+    assert!(
+        first.1 <= second.0 || second.1 <= first.0,
+        "the checks overlapped: {runs:?}"
+    );
+}
+
 /// A build job: its own branch from the base, the agent commits in the sandbox, the check passes,
 /// the job ends done with its commit counted, and publishes it: its branch pushed to the remote and
 /// its pull request opened with the owner's `gh` (a stand-in here), which gets no token from
@@ -834,7 +880,10 @@ mod inside_a_job {
             let path = obid::process::tools_path();
             let mut read_only =
                 sandbox::tool_roots(&path, &hidden, std::slice::from_ref(&self.home));
-            read_only.extend(obid::process::rust_reads());
+            read_only.extend(obid::process::rust_reads(
+                &hidden,
+                std::slice::from_ref(&self.home),
+            ));
             // The test binaries, wherever cargo built them.
             let this = std::env::current_exe().unwrap();
             read_only.extend(
@@ -971,7 +1020,7 @@ fn a_jobs_agent_and_its_check_run_obids_integration_tests() {
 #[cfg(target_os = "macos")]
 #[test]
 fn a_jobs_cargo_is_the_persons() {
-    if obid::process::rust_reads().is_empty() {
+    if obid::process::rust_reads(&[], &[]).is_empty() {
         eprintln!("no rustup or cargo home here: nothing to compare");
         return;
     }
