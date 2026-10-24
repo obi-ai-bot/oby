@@ -285,6 +285,11 @@ pub struct Job {
     /// (runner-api.md, "obid only: Obi-to-Obi review jobs", step 7). Never in the API's job.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub review_result: Option<Value>,
+    /// On an Obi-to-Obi review: whether this Obi's own bar for approving it on GitHub passed,
+    /// whatever conditions the request listed: its own check passed and its agent reported no
+    /// blocker, kept in the result or dropped (crate::sphere::approval). Never in the API's job.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub approvable: bool,
     /// On an Obi-to-Obi review: the request as quoted to the agent, `{from, from_owner, type,
     /// body}`, the body exactly as received. Data, never in a prompt. Never in the API's job.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -603,6 +608,7 @@ impl Job {
             conversation: None,
             turn: None,
             review_result: None,
+            approvable: false,
             obi_request: None,
             permission: None,
             question_call: None,

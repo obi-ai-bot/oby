@@ -168,7 +168,8 @@ pub fn as_reviewed(
 /// (crate::listen::create_review, pinned to `sha` by `commit_id`): only while the pull request is
 /// still the change reviewed ([`as_reviewed`], into `base`), and when the owner's login can push to
 /// `repo` (an approval without that wouldn't count). The words pass the secret scan first and are
-/// written in `scratch`. Its URL, or why it wasn't posted.
+/// written in `scratch`. `still` says, right before GitHub is asked, whether the approval may still
+/// go (obid in its Sphere, the request unexpired). Its URL, or why it wasn't posted.
 pub async fn post(
     gh: &Path,
     scratch: &Path,
@@ -176,6 +177,7 @@ pub async fn post(
     number: u64,
     base: &str,
     sha: &str,
+    still: impl Fn() -> bool,
 ) -> Result<String, String> {
     let words = words(sha);
     crate::store::make_private_dir(scratch)
@@ -211,6 +213,11 @@ pub async fn post(
     let file = scratch.join("review.md");
     crate::store::write_private(&file, words.as_bytes())
         .map_err(|e| format!("obid couldn't write the review: {e}"))?;
+    if !still() {
+        return Err(
+            "the request expired, or this Oby left its Obysphere, before GitHub was asked".into(),
+        );
+    }
     let text = crate::listen::create_review(gh, None, repo, number, &file, "APPROVE", sha)
         .await
         .map_err(|(_, why)| why)?;

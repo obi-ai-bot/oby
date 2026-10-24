@@ -375,6 +375,16 @@ pub fn result(request: &ReviewRequest, output: &Value, tests_pass: bool) -> Valu
     body
 }
 
+/// Whether the agent reported a blocker, whatever became of it in the result (kept, or dropped as
+/// not matching the spec's schema, or a duplicate).
+pub fn any_blocker(output: &Value) -> bool {
+    output["findings"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .any(|f| f["severity"] == "blocker")
+}
+
 /// The result of a review that failed: no findings, no text.
 pub fn failed_result(request: &ReviewRequest) -> Value {
     json!({"for": "review_request", "outcome": "failed", "repo": request.repo, "head_sha": request.head_sha, "findings": []})
@@ -498,6 +508,19 @@ mod tests {
                 .ends_with("\n\nobid dropped 3 finding(s) that didn't match the spec's schema.")
         );
         assert!(obi_protocol::schema::is_valid("actions/result", &body));
+    }
+
+    #[test]
+    fn a_blocker_counts_kept_or_dropped() {
+        assert!(!any_blocker(&agent_output()));
+        let mut output = agent_output();
+        output["findings"].as_array_mut().unwrap().push(
+            json!({"severity": "blocker", "file": "/etc/passwd", "line": 1, "title": "t", "detail": "d"}),
+        );
+        assert!(any_blocker(&output));
+        assert!(any_blocker(
+            &json!({"findings": [{"severity": "blocker", "file": "a.js", "line": 1, "title": "t", "detail": "d"}]})
+        ));
     }
 
     #[test]

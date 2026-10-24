@@ -3016,9 +3016,14 @@ impl Link {
             return;
         }
         if body["outcome"] == "approved" && approval::asked(&request) {
-            let host = self
-                .approve_on_host(&cid, &job.id, &obi.from, &from_owner, &request)
-                .await;
+            // This Obi's own bar, whatever conditions the request listed: its own check passed and
+            // its agent reported no blocker, kept or dropped. Below it, nothing is approved or asked.
+            let host = if job.approvable {
+                self.approve_on_host(&cid, &job.id, &obi.from, &from_owner, &request)
+                    .await
+            } else {
+                "unable"
+            };
             body["host_review"] = json!(host);
         }
         if let Some(rule) = rule {
@@ -3251,7 +3256,7 @@ impl Link {
             return "unable";
         };
         let now = time::now();
-        let (decisions, asking) = {
+        let (decisions, asking, until) = {
             let mut state = self.lock();
             // Revoked meanwhile (the exchange settled here): nothing more is done for its peer.
             let exchange = state.exchanges.get(cid).filter(|e| e.state == "accepted");
@@ -3260,6 +3265,7 @@ impl Link {
                 .and_then(|e| e.request["expires_at"].as_str())
                 .unwrap_or("")
                 .to_owned();
+            let until = time::parse(&expires_at).unwrap_or(0);
             if !open
                 || state
                     .membership
@@ -3282,7 +3288,7 @@ impl Link {
                         d.uses += 1;
                         d.last_used = Some(now);
                     }
-                    (Some(state.decisions.clone()), None)
+                    (Some(state.decisions.clone()), None, until)
                 }
                 None => {
                     let mut item = approval::item(cid, from, from_owner, request, &expires_at, now);
@@ -3290,7 +3296,7 @@ impl Link {
                         obi["job"] = json!(job);
                     }
                     state.inbox.insert(item.id.clone(), item.clone());
-                    (None, Some(item))
+                    (None, Some(item), until)
                 }
             }
         };
@@ -3301,7 +3307,7 @@ impl Link {
         if let Some(decisions) = decisions {
             self.save_decisions(&decisions);
         }
-        match self.post_approval(repo, pr, base, sha).await {
+        match self.post_approval(repo, pr, base, sha, until).await {
             Ok(url) => {
                 self.jobs.approved_on_github(job, repo, &url);
                 "approved"
@@ -3314,13 +3320,15 @@ impl Link {
     }
 
     /// Approves `sha` on pull request `pr` of `repo`, into `base`, on GitHub with the owner's own
-    /// `gh` ([`approval::post`]): its URL.
+    /// `gh` ([`approval::post`]), while obid is still in its Sphere and before `until`, the
+    /// request's expiry, checked again right before GitHub is asked: its URL.
     async fn post_approval(
         &self,
         repo: &str,
         pr: u64,
         base: &str,
         sha: &str,
+        until: i64,
     ) -> Result<String, String> {
         let gh = crate::github::gh().ok_or("gh isn't installed")?;
         let scratch = self
@@ -3328,7 +3336,8 @@ impl Link {
             .home
             .join("tmp")
             .join(format!("approve-{}", uuid::Uuid::new_v4().simple()));
-        let posted = approval::post(&gh, &scratch, repo, pr, base, sha).await;
+        let still = || self.is_joined() && time::now() < until;
+        let posted = approval::post(&gh, &scratch, repo, pr, base, sha, still).await;
         let _ = std::fs::remove_dir_all(&scratch);
         posted
     }
@@ -3417,7 +3426,8 @@ impl Link {
                     format!("Nothing was approved: obid couldn't keep the claim ({why})."),
                 ));
             }
-            match self.post_approval(&repo, pr, &base, &sha).await {
+            let until = time::parse(&text("expiresAt")).unwrap_or(0);
+            match self.post_approval(&repo, pr, &base, &sha, until).await {
                 Ok(url) => {
                     self.jobs.approved_on_github(&text("job"), &repo, &url);
                     if answer.as_deref() == Some(inbox::ACCEPT_REMEMBER) {

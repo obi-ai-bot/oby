@@ -5697,8 +5697,10 @@ impl Jobs {
         let body = review::result(&request, &output, tests_pass);
         let findings = body["findings"].as_array().map_or(0, Vec::len);
         let outcome = body["outcome"].as_str().unwrap_or("").replace('_', " ");
+        let approvable = tests_pass && !review::any_blocker(&output);
         self.update(id, |job| {
             job.review_result = Some(body.clone());
+            job.approvable = approvable;
             job.step = "Scanning the result for secrets and sending it".into();
         });
         self.review_ended(id, true).await;
