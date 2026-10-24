@@ -508,7 +508,14 @@ async fn merging(
         .map(|pages| pages.into_iter().flatten().collect())
         .map_err(|_| wait("Not merged yet: GitHub said something else about its commits."))?;
     let (title, message) = squash(&pull.title, &commits, number);
-    // A merge or a rebase lands each commit as it is: one saying it closes an issue would.
+    // A merge or a rebase lands each commit as it is: one saying it closes an issue would. GitHub
+    // lists at most 250 of them, so past that Oby can't tell.
+    if workflow.method != Method::Squash && commits.len() >= GITHUB_LISTS {
+        return Err(needs_you(format!(
+            "Not merged: it has more commits than GitHub lists ({GITHUB_LISTS}), so Oby can't check them all, and a {} would land each as it is.",
+            workflow.method.as_str()
+        )));
+    }
     if workflow.method != Method::Squash && closes(&commits) {
         return Err(needs_you(format!(
             "Not merged: a commit says it closes an issue, and a {} would land it as it is.",
@@ -690,6 +697,9 @@ pub fn squash(title: &str, commits: &[Value], number: u64) -> (String, String) {
     };
     (format!("{} (#{number})", unclosing(title)), message)
 }
+
+/// The most commits `GET …/pulls/{n}/commits` lists, whatever the pages.
+const GITHUB_LISTS: usize = 250;
 
 /// Whether any of the commits (`GET …/pulls/{n}/commits`) says it closes an issue.
 fn closes(commits: &[Value]) -> bool {
@@ -1570,6 +1580,33 @@ esac
             wait("Not merged yet: Oby couldn't tell who its reviewer accounts are.")
         );
         assert_eq!(gh.calls(), "");
+    }
+
+    /// Past the 250 commits GitHub lists, a merge or a rebase can't be checked for closing
+    /// keywords: only a squash goes ahead.
+    #[tokio::test]
+    async fn too_many_commits_to_check_land_only_squashed() {
+        let many: Vec<Value> = (0..250)
+            .map(|n| json!({"commit": {"message": format!("Step {n}")}}))
+            .collect();
+        let pages = json!([&many[..100], &many[100..200], &many[200..]]).to_string();
+        for method in [Method::Merge, Method::Rebase] {
+            let gh = Gh::new(&format!("many-{}", method.as_str()));
+            gh.write("commits.json", &pages);
+            let mut workflow = obis();
+            workflow.method = method;
+            let blocked = gh.merge(&job(), &workflow).await.unwrap_err();
+            assert!(blocked.needs_you, "{}", blocked.why);
+            assert!(
+                blocked.why.contains("more commits than GitHub lists (250)"),
+                "{}",
+                blocked.why
+            );
+            assert!(!gh.calls().contains("-X PUT"));
+        }
+        let gh = Gh::new("many-squash");
+        gh.write("commits.json", &pages);
+        assert!(gh.merge(&job(), &obis()).await.is_ok());
     }
 
     /// Only one of Oby's jobs has a folder of its own, under obid's home.

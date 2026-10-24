@@ -301,9 +301,21 @@ fn the_reviewer_signs_in_and_out() {
     assert!(!signed.text.contains("gho_"), "{}", signed.text);
     assert!(!obid.log().contains("gho_REVIEWER"));
 
+    // Its login is kept for good, signed in or out, so its approval never passes for a
+    // teammate's (crate::merge).
+    let used = folder.0.join("home/github/reviewers.json");
+    assert_eq!(
+        std::fs::read_to_string(&used).unwrap(),
+        r#"["oby-reviewer"]"#
+    );
+
     let out = call(&obid, "DELETE", "/v1/github/reviewer/sign-in", None);
     assert_eq!(out.status, 204, "{}", out.text);
     assert!(!kept.exists());
+    assert_eq!(
+        std::fs::read_to_string(&used).unwrap(),
+        r#"["oby-reviewer"]"#
+    );
     assert_eq!(
         call(&obid, "GET", "/v1/github", None).body["reviewer"],
         json!({"signedIn": false, "user": null, "signIn": null, "error": null})
@@ -342,5 +354,39 @@ fn the_reviewer_is_never_the_owners_own_account() {
     let now = call(&obid, "GET", "/v1/github", None);
     assert_eq!(now.body["reviewer"]["signedIn"], false);
     assert_eq!(now.body["reviewer"]["signIn"], json!(null));
+    assert!(!folder.0.join("home/github/reviewer").exists());
+}
+
+/// A reviewer whose login obid can't record for good isn't signed in: its approval could
+/// otherwise pass for a teammate's once it signed out.
+#[test]
+fn a_reviewer_obid_cant_record_isnt_kept() {
+    let folder = Folder::new("github-reviewer-unrecorded");
+    let remote = folder.0.join("remote.git");
+    let config = config(&folder.0, &remote, &stub_agent());
+    let bin = stand_in_gh(&folder.0);
+    let obid = start(&folder.0, &config, Some(&bin));
+    let home = folder.0.join("env-home");
+    std::fs::write(home.join("signed"), "").unwrap();
+    std::fs::write(home.join("reviewer-login"), "oby-reviewer").unwrap();
+    // A record it can't read.
+    std::fs::create_dir_all(folder.0.join("home/github")).unwrap();
+    std::fs::write(folder.0.join("home/github/reviewers.json"), "not json").unwrap();
+
+    let started = call(&obid, "POST", "/v1/github/reviewer/sign-in", None);
+    assert_eq!(started.status, 200, "{}", started.text);
+    std::fs::write(home.join("approve-reviewer"), "").unwrap();
+    let refused = within(20, "the reviewer's sign-in to end", || {
+        let now = call(&obid, "GET", "/v1/github", None);
+        now.body["reviewer"]["error"].as_str().map(str::to_owned)
+    });
+    assert!(
+        refused.contains("couldn't keep the reviewer's login"),
+        "{refused}"
+    );
+    assert_eq!(
+        call(&obid, "GET", "/v1/github", None).body["reviewer"]["signedIn"],
+        false
+    );
     assert!(!folder.0.join("home/github/reviewer").exists());
 }
