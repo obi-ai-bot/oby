@@ -56,6 +56,8 @@ const NEEDED_SCOPES: [&str; 2] = ["receive", "reply"];
 const ANSWER_RUNS: usize = 2;
 /// The most dropped message ids obid remembers, to acknowledge them again without a second look.
 const DROPPED_MAX: usize = 10_000;
+/// An open incoming request's `error` when obid's membership was revoked under it.
+const REVOKED: &str = "obid's membership was revoked: settled here, and its peer wasn't told.";
 
 /// One member of the directory, once its card passed the checks (identity.md 2.2).
 #[derive(Debug, Clone)]
@@ -275,6 +277,9 @@ pub struct Link {
     /// The chain as this Obi knows it for itself: no rollback, no fork (crate::sphere::link::ChainKept).
     chain: Mutex<ChainKept>,
     following: AtomicBool,
+    /// Whether the sender and the clock run: from obid's first membership on (the sender sends
+    /// only while it's `joined`).
+    sender_running: AtomicBool,
     stopping: watch::Receiver<bool>,
     /// Teammates' jobs on this Mac (crate::sphere::hosting).
     pub(super) hosting: super::hosting::Hosting,
@@ -508,6 +513,7 @@ impl Link {
             shares_sync: tokio::sync::Mutex::new(()),
             chain: Mutex::new(chain),
             following: AtomicBool::new(false),
+            sender_running: AtomicBool::new(false),
             stopping,
             hosting: super::hosting::Hosting::default(),
             setup: super::hosting::Setup::from(&setup_config),
@@ -546,27 +552,32 @@ impl Link {
         self.state.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// Starts following the Sphere when obid has joined one, and the sender and the clock.
+    /// Starts following the Sphere when obid is in one, and the clock (with the sender, which sends
+    /// only while joined) once it has a membership. A membership revoked before this start settles
+    /// what's still open, as at the revoke.
     pub fn start(self: &Arc<Self>) {
+        let membership = self.lock().membership.as_ref().map(|m| m.state.clone());
+        if membership.as_deref().is_some_and(|s| s != "joined") {
+            self.settle_on_revoke();
+        }
         self.reconcile();
-        let joined = self
-            .lock()
-            .membership
-            .as_ref()
-            .is_some_and(|m| m.state == "joined");
-        if joined {
+        if membership.as_deref() == Some("joined") {
             self.follow();
+        }
+        if membership.is_some() {
+            self.start_sender();
         }
         if self.mac().on {
             super::hosting::fetch_image_soon(self);
         }
-        let link = self.clone();
-        tokio::spawn(async move {
-            tokio::select! {
-                () = link.clone().run_sender() => {}
-                () = stopped(link.stopping.clone()) => {}
-            }
-        });
+    }
+
+    /// Whether obid is in a Sphere now.
+    fn is_joined(&self) -> bool {
+        self.lock()
+            .membership
+            .as_ref()
+            .is_some_and(|m| m.state == "joined")
     }
 
     /// After a restart: an accepted request whose job has ended without a reply gets its failed
@@ -1722,6 +1733,7 @@ impl Link {
         }
         let read = self.read_directory().await;
         self.follow();
+        self.start_sender();
         if let Err(e) = read {
             self.note_error(&e);
             return Err(from_client(&e));
@@ -1946,6 +1958,8 @@ impl Link {
         };
         if let Some(membership) = revoked {
             let _ = self.files.save_membership(&membership);
+            // Nothing goes to the Sphere any more: what's open is settled here, its peers not told.
+            self.settle_on_revoke();
             // The relay's socket stops serving phones now, not at its next check.
             if let Some(relay) = self.relay.get() {
                 relay.wake();
@@ -2201,6 +2215,18 @@ impl Link {
         if state.exchanges.contains_key(&id) {
             drop(state);
             self.drop_message(&id, "a request for an exchange obid has already");
+            return;
+        }
+        // Revoked, obid can't answer it: one delivered after the revoke (in the same poll, or a
+        // long poll alongside) never reaches the inbox or a rule. Under this lock, so the revoke's
+        // settle either sees it or it sees the revoke.
+        if state
+            .membership
+            .as_ref()
+            .is_none_or(|m| m.state != "joined")
+        {
+            drop(state);
+            self.drop_message(&id, "obid isn't in its Sphere any more");
             return;
         }
         // The sender's owner comes from the directory, never from the message; a removed member
@@ -2650,12 +2676,29 @@ impl Link {
     // -----------------------------------------------------------------------------------------
     // Sending replies, and the clock
 
+    /// Starts the sender and the clock, once, when obid has a membership: the clock runs whatever
+    /// its state, and the sender sends only while it's `joined`.
+    fn start_sender(self: &Arc<Self>) {
+        if self.sender_running.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let link = self.clone();
+        tokio::spawn(async move {
+            tokio::select! {
+                () = link.clone().run_sender() => {}
+                () = stopped(link.stopping.clone()) => {}
+            }
+        });
+    }
+
     async fn run_sender(self: Arc<Self>) {
         let mut backoff = Duration::from_secs(1);
         loop {
             self.expire();
-            let all_sent = self.send_waiting().await;
-            let wait = if all_sent {
+            // Revoked, nothing is sent: the clock alone goes on, once a minute.
+            let wait = if !self.is_joined() {
+                Duration::from_secs(60)
+            } else if self.send_waiting().await {
                 backoff = Duration::from_secs(1);
                 Duration::from_secs(2)
             } else {
@@ -2688,12 +2731,20 @@ impl Link {
         all
     }
 
-    /// Sends the exchange's waiting replies, in order: `true` once none is left to send.
+    /// Sends the exchange's waiting replies, in order: `true` once none is left to send. Nothing
+    /// leaves while obid isn't `joined` (revoked): what waits stays unsent.
     async fn flush(&self, cid: &str) -> bool {
         let _one = self.sending.lock().await;
         loop {
             let next = {
                 let state = self.lock();
+                if state
+                    .membership
+                    .as_ref()
+                    .is_none_or(|m| m.state != "joined")
+                {
+                    return false;
+                }
                 match state.exchanges.get(cid).and_then(|e| e.outbox.first()) {
                     Some(next) => next.clone(),
                     None => return true,
@@ -2773,8 +2824,57 @@ impl Link {
 
     /// Requests that expired: one waiting in the inbox (or a question the Obi is still answering by
     /// itself) is settled by itself, with no answer, and declined with reason `expired`; one this
-    /// Obi sent with no result or answer is `expired`.
+    /// Obi sent with no result or answer is `expired`. It runs whatever the membership: a revoked
+    /// obid's requests expire too (their declines never go: nothing leaves once revoked).
     fn expire(&self) {
+        let now = time::now();
+        self.settle_open(
+            |e| {
+                e.expires_at().is_some_and(|t| t <= now)
+                    && e.kind != "share_offer"
+                    && match e.direction.as_str() {
+                        "incoming" => e.state == "inbox" || e.state == "answering",
+                        _ => e.state == "sent" || e.state == "accepted",
+                    }
+            },
+            "expired",
+            Some("expired"),
+            None,
+        );
+    }
+
+    /// obid's membership was revoked: no open incoming request can be answered any more. Each one
+    /// in the inbox, being answered by itself, or accepted with its review job is settled here,
+    /// `declined` with `error` saying why and its inbox item done, its review job stopped; no reply
+    /// is built (nothing leaves once revoked) and its peer isn't told. What this Obi sent is left
+    /// to the clock.
+    fn settle_on_revoke(&self) {
+        let settled = self.settle_open(
+            |e| {
+                e.direction == "incoming"
+                    && (e.state == "inbox"
+                        || e.state == "answering"
+                        || (e.state == "accepted" && e.job.is_some()))
+            },
+            "declined",
+            None,
+            Some(REVOKED),
+        );
+        for job in settled.iter().filter_map(|e| e.job.as_deref()) {
+            self.jobs.stop(job);
+        }
+    }
+
+    /// Settles the requests `due` picks: each goes to `settled` (with `error` when given), an
+    /// incoming one with its inbox item done and a decline for `reason` queued when there is one.
+    /// Answers what it settled.
+    fn settle_open(
+        &self,
+        due: impl Fn(&Exchange) -> bool,
+        settled: &str,
+        reason: Option<&str>,
+        error: Option<&str>,
+    ) -> Vec<Exchange> {
         let now = time::now();
         let mut changed = Vec::new();
         let mut items = Vec::new();
@@ -2783,27 +2883,28 @@ impl Link {
             let due: Vec<String> = state
                 .exchanges
                 .values()
-                .filter(|e| e.expires_at().is_some_and(|t| t <= now) && e.kind != "share_offer")
-                .filter(|e| match e.direction.as_str() {
-                    "incoming" => e.state == "inbox" || e.state == "answering",
-                    _ => e.state == "sent" || e.state == "accepted",
-                })
+                .filter(|e| due(e))
                 .map(|e| e.correlation_id.clone())
                 .collect();
             for cid in due {
                 let Some(mut exchange) = state.exchanges.get(&cid).cloned() else {
                     continue;
                 };
-                exchange.state = "expired".into();
+                exchange.state = settled.into();
                 exchange.updated = now;
+                if let Some(error) = error {
+                    exchange.error = Some(error.into());
+                }
                 if exchange.direction == "incoming" {
-                    let decline = self.reply_locked(
-                        &state,
-                        &exchange,
-                        "decline",
-                        json!({"reason": "expired"}),
-                    );
-                    exchange.outbox.extend(decline);
+                    if let Some(reason) = reason {
+                        let decline = self.reply_locked(
+                            &state,
+                            &exchange,
+                            "decline",
+                            json!({"reason": reason}),
+                        );
+                        exchange.outbox.extend(decline);
+                    }
                     if let Some(item) = exchange
                         .inbox_item
                         .as_ref()
@@ -2824,6 +2925,7 @@ impl Link {
         for exchange in &changed {
             self.save_exchange(exchange);
         }
+        changed
     }
 
     // -----------------------------------------------------------------------------------------
@@ -2882,7 +2984,9 @@ impl Link {
         }
         let queued = {
             let mut state = self.lock();
-            let Some(mut exchange) = state.exchanges.get(&cid).cloned() else {
+            // Settled while the gate scanned (a revoke): nothing more for it.
+            let Some(mut exchange) = state.exchanges.get(&cid).filter(|e| !e.ended()).cloned()
+            else {
                 return;
             };
             let Some(result) = self.reply_locked(&state, &exchange, "result", body.clone()) else {
@@ -4350,8 +4454,8 @@ impl Link {
                 .cloned()
                 .filter(|e| e.state == "inbox")
                 .ok_or_else(|| api(StatusCode::CONFLICT, "That request was settled already."))?;
-            // After its expires_at nobody acts on a request (protocol.md section 3): the clock
-            // settles it, and the answer is refused.
+            // After its expires_at nobody acts on a request (protocol.md section 3): it's settled
+            // here, as the clock would at its next pass, and the answer is refused.
             if exchange.expires_at().is_some_and(|t| t <= now) {
                 drop(state);
                 self.expire();
@@ -5949,6 +6053,248 @@ mod tests {
         assert_eq!(kept[0].state, "declined");
         let _ = std::fs::remove_dir_all(&home);
     }
+
+    /// A link, its home under `name`: with a membership in `kept` (`joined`, `revoked`) when
+    /// given, as kept from before a restart.
+    fn sender_link(
+        name: &str,
+        kept: Option<&str>,
+    ) -> (Arc<Link>, std::path::PathBuf, watch::Sender<bool>) {
+        let home = std::env::temp_dir().join(format!("obid-link-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        if let Some(state) = kept {
+            Files::new(&home)
+                .save_membership(&membership(state))
+                .unwrap();
+        }
+        let config = Config::parse(
+            &json!({"listen": "127.0.0.1:0", "home": home, "owner": "wellington"}).to_string(),
+        )
+        .unwrap();
+        let events = Events::new();
+        let jobs = Jobs::open(config.clone(), events.clone(), Err("no sandbox".into())).unwrap();
+        let (stop, stopping) = watch::channel(false);
+        let link = Link::open(config, jobs, events, stopping).unwrap();
+        (link, home, stop)
+    }
+
+    fn membership(state: &str) -> Membership {
+        Membership {
+            state: state.into(),
+            url: "http://127.0.0.1:1".into(),
+            sphere: "s".into(),
+            obi_id: "obi-wellington".into(),
+            card: json!({}),
+            joined_at: time::now(),
+        }
+    }
+
+    /// Out of a Sphere, start() leaves the sender and the clock off; with a membership, joined or
+    /// revoked, start() starts them.
+    #[tokio::test]
+    async fn the_sender_starts_with_a_membership() {
+        for (name, kept, running) in [
+            ("sender-out", None, false),
+            ("sender-in", Some("joined"), true),
+            ("sender-revoked", Some("revoked"), true),
+        ] {
+            let (link, home, _stop) = sender_link(name, kept);
+            link.start();
+            assert_eq!(
+                link.sender_running.load(Ordering::SeqCst),
+                running,
+                "{name}"
+            );
+            let _ = std::fs::remove_dir_all(&home);
+        }
+    }
+
+    /// A review request from obi-ernesto, `cid` its id, expiring at `expires_at`.
+    fn review_request(cid: &str, expires_at: &str) -> Value {
+        json!({"id": cid, "correlation_id": cid, "type": "review_request", "from": "obi-ernesto",
+            "body": {"repo": "o/r"}, "expires_at": expires_at})
+    }
+
+    /// Puts in `link` what can be open at a revoke: a review request in the inbox (`c-open`, its
+    /// item's id answered), a question being answered by itself (`c-answering`), an accepted review
+    /// whose job runs (`c-accepted`), one whose result waits to be sent (`c-result`), and one this
+    /// Obi sent (`c-sent`, expiring at `sent_expires`).
+    fn open_exchanges(link: &Link, sent_expires: &str) -> String {
+        let later = "2099-01-01T09:00:00Z";
+        let item = inbox::review_request_item(
+            "c-open",
+            "obi-ernesto",
+            "ernesto",
+            &review_request("c-open", later)["body"],
+            later,
+            time::now(),
+        );
+        let exchange = |direction: &str, cid: &str, state: &str, expires: &str| {
+            let mut e = Exchange::new(
+                direction,
+                review_request(cid, expires),
+                "obi-ernesto".into(),
+                Some("ernesto".into()),
+            );
+            e.state = state.into();
+            e
+        };
+        let mut open = exchange("incoming", "c-open", "inbox", later);
+        open.inbox_item = Some(item.id.clone());
+        let answering = exchange("incoming", "c-answering", "answering", later);
+        let mut accepted = exchange("incoming", "c-accepted", "accepted", later);
+        accepted.job = Some("job-of-c-accepted".into());
+        let mut result = exchange("incoming", "c-result", "done", later);
+        result
+            .outbox
+            .push(json!({"id": "r-1", "type": "result", "expires_at": later}));
+        let sent = exchange("outgoing", "c-sent", "sent", sent_expires);
+        let mut state = link.lock();
+        state.inbox.insert(item.id.clone(), item.clone());
+        for e in [open, answering, accepted, result, sent] {
+            state.exchanges.insert(e.correlation_id.clone(), e);
+        }
+        item.id
+    }
+
+    /// Each open incoming request is settled as a revoke settles it: `declined`, ended, saying why,
+    /// with no reply built.
+    fn settled_at_revoke(link: &Link, item: &str) {
+        let state = link.lock();
+        for cid in ["c-open", "c-answering", "c-accepted"] {
+            let e = &state.exchanges[cid];
+            assert_eq!(e.state, "declined", "{cid}");
+            assert!(e.ended(), "{cid}");
+            assert_eq!(e.error.as_deref(), Some(REVOKED), "{cid}");
+            assert!(e.outbox.is_empty(), "no reply for {cid}");
+        }
+        assert!(state.inbox[item].done.is_some());
+    }
+
+    /// The directory says obid's membership was revoked: what's open incoming is settled with no
+    /// reply, what waited to be sent never goes, nothing more is built for the accepted review, a
+    /// request delivered after it never reaches the inbox, and what this Obi sent is left to the
+    /// clock.
+    #[tokio::test]
+    async fn after_a_revoke_nothing_comes_in_or_goes_out() {
+        let (link, home, _stop) = sender_link("revoke", Some("joined"));
+        // The membership's card accepts review requests: a late one would reach the inbox.
+        let owner = Keypair::from_seed_string("link test owner");
+        let obi = Keypair::from_seed_string("link test obi");
+        let (owner_key, key_id, public_key) = (owner.public_key(), obi.key_id(), obi.public_key());
+        let card = obi_protocol::card::sign(
+            &obi_protocol::identity::unsigned_card(&obi_protocol::identity::CardFields {
+                sphere_url: "http://127.0.0.1:1",
+                sphere: "s",
+                obi_id: "obi-wellington",
+                owner: "wellington",
+                owner_key: &owner_key,
+                name: "Wellington's Obi",
+                description: obi_protocol::identity::DEFAULT_DESCRIPTION,
+                version: "0.1.0",
+                key_id: &key_id,
+                public_key: &public_key,
+                accepts: &["review_request".to_owned()],
+                card_seq: 1,
+                issued_at: &time::format(time::now()),
+            }),
+            &owner,
+        )
+        .unwrap();
+        // A Sphere whose directory lists this Obi revoked, and that counts what's sent to it.
+        let me = json!({"obi": "obi-wellington", "owner": "wellington", "owner_key": owner_key,
+            "owner_key_id": obi_protocol::keys::key_id_of(&owner_key), "status": "revoked",
+            "joined_at": "2026-10-01T09:00:00Z", "revoked_at": "2026-10-24T09:00:00Z",
+            "card": card, "keys": [{"key_id": key_id, "public_key": public_key,
+                                    "valid_from_seq": 1, "valid_until_seq": null}]});
+        let sends = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = sends.clone();
+        let sphere = axum::Router::new()
+            .route(
+                "/v0.1/spheres/s/members",
+                axum::routing::get(move || {
+                    let members = json!({"sphere": "s", "members": [me.clone()]});
+                    async move { axum::Json(members) }
+                }),
+            )
+            .route(
+                "/v0.1/spheres/s/messages",
+                axum::routing::post(move || {
+                    counted.fetch_add(1, Ordering::SeqCst);
+                    async { StatusCode::SERVICE_UNAVAILABLE }
+                }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(listener, sphere).await.unwrap() });
+        {
+            let mut state = link.lock();
+            state.membership.as_mut().unwrap().card = card.clone();
+            state.client = Some(Client::new(&url, "s").unwrap());
+            state.token = Some(("token".into(), time::now() + 3600));
+        }
+        let item = open_exchanges(&link, "2099-01-01T09:00:00Z");
+
+        link.read_directory().await.unwrap();
+        assert_eq!(link.lock().membership.as_ref().unwrap().state, "revoked");
+        settled_at_revoke(&link, &item);
+        assert_eq!(link.lock().exchanges["c-sent"].state, "sent");
+
+        // The accepted review's result, built before the revoke, doesn't go; the stopped job's end
+        // builds nothing more.
+        assert!(!link.flush("c-result").await);
+        assert_eq!(link.lock().exchanges["c-result"].outbox.len(), 1);
+        link.reply_failed("c-accepted", None).await;
+        settled_at_revoke(&link, &item);
+        assert_eq!(
+            sends.load(Ordering::SeqCst),
+            0,
+            "nothing reached the Sphere"
+        );
+
+        // A request delivered after the revoke, from a member the directory shows active.
+        link.lock().directory.members.insert(
+            "obi-ernesto".into(),
+            Member {
+                owner: "ernesto".into(),
+                active: true,
+                accepts: vec!["review_request".into()],
+                runner: None,
+            },
+        );
+        let inbox_before = link.lock().inbox.len();
+        link.handle_request(Delivery {
+            delivery_id: "d-late".into(),
+            seq: 9,
+            relayed_at: time::format(time::now()),
+            envelope: review_request("c-late", "2099-01-01T09:00:00Z"),
+        });
+        let state = link.lock();
+        assert!(!state.exchanges.contains_key("c-late"));
+        assert_eq!(state.inbox.len(), inbox_before);
+        drop(state);
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// obid starts with its membership revoked: what was still open is settled as at the revoke,
+    /// and the clock still runs, so what this Obi sent expires.
+    #[tokio::test]
+    async fn a_start_revoked_settles_what_is_open_and_the_clock_runs() {
+        let (link, home, _stop) = sender_link("start-revoked", Some("revoked"));
+        let item = open_exchanges(&link, "2020-01-01T09:00:00Z");
+        link.start();
+        settled_at_revoke(&link, &item);
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while link.lock().exchanges["c-sent"].state != "expired" {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the clock expires what this Obi sent");
+        assert!(link.lock().exchanges["c-sent"].outbox.is_empty());
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
     /// The inbox lists what needs the owner first (with what waits for the model), then FYI, then
     /// ignore, each by arrival; a second item about the same thing is `ignore` while the one that
     /// stands for it is open, an offer standing before what only says something; and the model's
