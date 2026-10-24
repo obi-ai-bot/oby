@@ -2213,7 +2213,10 @@ mod tests {
         assert!(super::owners_words(&offer("sangam", "MEMBER", true)));
         let outsider = offer("outsider", "COLLABORATOR", false);
         assert!(!super::owners_words(&outsider));
-        assert_eq!(outsider.github.as_ref().unwrap()["association"], "COLLABORATOR");
+        assert_eq!(
+            outsider.github.as_ref().unwrap()["association"],
+            "COLLABORATOR"
+        );
         let mut question = offer("sangam", "MEMBER", true);
         question.kind = "question".into();
         assert!(!super::owners_words(&question));

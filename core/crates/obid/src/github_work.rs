@@ -248,7 +248,9 @@ pub fn all_trusted(owner: Option<&Owner>, repo: &str, value: &Value) -> bool {
         owner.trusts(
             repo,
             v["author"]["login"].as_str(),
-            v["authorAssociation"].as_str().filter(|a| is_association(a)),
+            v["authorAssociation"]
+                .as_str()
+                .filter(|a| is_association(a)),
         )
     };
     by(value)
@@ -556,7 +558,11 @@ pub fn mark(lists: &mut Lists, owner: Option<&Owner>) {
         .chain(&mut lists.mine)
     {
         item.trusted = owner.is_some_and(|o| {
-            o.trusts(&item.repo, item.author.as_deref(), item.association.as_deref())
+            o.trusts(
+                &item.repo,
+                item.author.as_deref(),
+                item.association.as_deref(),
+            )
         });
     }
 }
@@ -1233,7 +1239,9 @@ pub fn render(
     // `@login (MEMBER, the owner's own words)`: obid's words, the login and association checked.
     let login = |v: &Value| {
         let login = v["author"]["login"].as_str().filter(|l| is_login(l));
-        let association = v["authorAssociation"].as_str().filter(|a| is_association(a));
+        let association = v["authorAssociation"]
+            .as_str()
+            .filter(|a| is_association(a));
         let trusted = owner.is_some_and(|o| o.trusts(repo, login, association));
         format!(
             "@{} ({}, {})",
@@ -1843,7 +1851,11 @@ mod tests {
         assert!(trusts("obi-ai-bot/oby", "deskree", Some("OWNER")));
         // A collaborator from outside, a contributor, nobody: untrusted, even on the owner's own.
         assert!(!trusts("obi-ai-bot/oby", "outsider", Some("COLLABORATOR")));
-        assert!(!trusts("well-prado/notes", "outsider", Some("COLLABORATOR")));
+        assert!(!trusts(
+            "well-prado/notes",
+            "outsider",
+            Some("COLLABORATOR")
+        ));
         assert!(!trusts("obi-ai-bot/oby", "drive-by", Some("CONTRIBUTOR")));
         assert!(!trusts("obi-ai-bot/oby", "drive-by", Some("NONE")));
         // A member, or the owner, of an organization that isn't the owner's.
@@ -1914,13 +1926,19 @@ mod tests {
             .push(comment("outsider", "COLLABORATOR"));
         assert!(!all_trusted(Some(&owner), repo, &value));
         let text = render("reviews", repo, 9, &value, Some(&owner), "n0nce");
-        assert!(text.contains("### @outsider (COLLABORATOR, untrusted)"), "{text}");
+        assert!(
+            text.contains("### @outsider (COLLABORATOR, untrusted)"),
+            "{text}"
+        );
         // No association: untrusted.
         value["authorAssociation"] = Value::Null;
         value["comments"] = json!([]);
         assert!(!all_trusted(Some(&owner), repo, &value));
         let text = render("reviews", repo, 9, &value, Some(&owner), "n0nce");
-        assert!(text.contains("by @sangam (association unknown, untrusted)"), "{text}");
+        assert!(
+            text.contains("by @sangam (association unknown, untrusted)"),
+            "{text}"
+        );
     }
 
     #[test]

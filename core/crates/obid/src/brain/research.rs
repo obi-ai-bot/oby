@@ -1181,7 +1181,11 @@ mod tests {
         let log = Log::carry(vec![
             (key(&issue(1)), issue(1), found(true)),
             (key(&issue(2)), issue(2), found(false)),
-            (key(&web("https://example.com")), web("https://example.com"), found(false)),
+            (
+                key(&web("https://example.com")),
+                web("https://example.com"),
+                found(false),
+            ),
         ]);
         assert!(!log.untrusted(&[]));
         assert!(!log.untrusted(&[issue(1)]), "the owner's own words");
