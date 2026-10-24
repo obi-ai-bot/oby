@@ -117,6 +117,64 @@ struct MacPublishTests {
         #expect(stub.requests.last?.json?["device"] as? String == "n3w1" && device.id(on: stub.runner) == "n3w1")
     }
 
+    /// The runner on this Mac doesn't know this Mac's key: connecting adds nothing and names
+    /// nothing in its pairing. The owner's first Publish names the key in the runner's pairing for
+    /// that one registration, and signs with the id it gets.
+    @Test func firstPublishAddsTheKey() async throws {
+        let pairing = FileManager.default.temporaryDirectory.appending(path: "pairing-\(UUID().uuidString)")
+        let key = FakeKey()
+        let named = key.signing.publicKey.x963Representation.base64EncodedString()
+        let stub = RunnerStub { request in
+            switch (request.method, request.path) {
+            case ("POST", "/v1/devices"):
+                (try? String(contentsOf: pairing, encoding: .utf8)) == named ? (200, #"{"id": "d7c1"}"#) : (403, #"{"error": "To add this device, …"}"#)
+            case ("POST", "/v1/jobs/ab12cd34/publish"): (200, #"{"url": "https://github.com/deskree-inc/oby/pull/200"}"#)
+            default: (404, #"{"error": "No."}"#)
+            }
+        }
+        let device = MacDevice(key: key, name: "Mac", defaults: stub.defaults)
+        device.pairing = pairing
+        await #expect(throws: RunnerError.self) { try await device.register(with: stub.runner) }
+        #expect(device.state == .unregistered && device.problem == nil)
+        #expect(!FileManager.default.fileExists(atPath: pairing.path))
+
+        _ = try await device.publish("ab12cd34", action: sentence, with: stub.runner)
+        #expect(!FileManager.default.fileExists(atPath: pairing.path), "the pairing doesn't stay open")
+        #expect(stub.requests.map(\.path) == ["/v1/devices", "/v1/devices", "/v1/devices", "/v1/jobs/ab12cd34/publish"])
+        #expect(stub.requests.last?.json?["device"] as? String == "d7c1" && device.state == .registered)
+    }
+
+    /// A Mac moving from its Touch ID-only key (#1375, its id kept as `device.<host>`) to a runner
+    /// that doesn't know the new one: the new key goes in by the pairing, then revokes the old one.
+    @Test func newKeyRevokesTheOneItReplaced() async throws {
+        let pairing = FileManager.default.temporaryDirectory.appending(path: "pairing-\(UUID().uuidString)")
+        let key = FakeKey()
+        let named = key.signing.publicKey.x963Representation.base64EncodedString()
+        let stub = RunnerStub { request in
+            switch (request.method, request.path) {
+            case ("POST", "/v1/devices"):
+                return (try? String(contentsOf: pairing, encoding: .utf8)) == named ? (200, #"{"id": "n3w1"}"#) : (403, #"{"error": "No."}"#)
+            case ("DELETE", "/v1/devices/0ld1"):
+                guard let signed = request.json?["approval"] as? [String: String], signed["device"] == "n3w1",
+                      let der = signed["signature"].flatMap({ Data(base64Encoded: $0) }),
+                      let signature = try? P256.Signing.ECDSASignature(derRepresentation: der),
+                      key.signing.publicKey.isValidSignature(signature, for: Approval.revokeMessage(device: "0ld1", signedAt: signed["signedAt"] ?? ""))
+                else { return (403, #"{"error": "No."}"#) }
+                return (200, #"{"revoked": "0ld1"}"#)
+            case ("POST", "/v1/jobs/ab12cd34/publish"): return (200, #"{"url": "https://github.com/deskree-inc/oby/pull/200"}"#)
+            default: return (404, #"{"error": "No."}"#)
+            }
+        }
+        stub.defaults.set("0ld1", forKey: "device.\(stub.host)")
+        let device = MacDevice(key: key, name: "Mac", defaults: stub.defaults)
+        device.pairing = pairing
+        _ = try await device.publish("ab12cd34", action: sentence, with: stub.runner)
+        #expect(stub.requests.map { "\($0.method) \($0.path)" }
+                == ["POST /v1/devices", "POST /v1/devices", "DELETE /v1/devices/0ld1", "POST /v1/jobs/ab12cd34/publish"])
+        #expect(stub.requests.last?.json?["device"] as? String == "n3w1")
+        #expect(stub.defaults.string(forKey: "device.\(stub.host)") == nil)
+    }
+
     /// The owner's Confirm (#776): Touch ID or the password signs the item's own title, over its id, and that's
     /// what goes with the answer.
     @Test func confirmSignsTheItemsTitle() async throws {
@@ -214,6 +272,12 @@ nonisolated struct FakeKey: PublishingKey {
         let signedAt = ISO8601DateFormatter().string(from: .now)
         let signature = try signing.signature(for: Approval.confirmMessage(item: item, title: title, signedAt: signedAt))
         return Approval(device: device, action: title, signedAt: signedAt, signature: signature.derRepresentation.base64EncodedString())
+    }
+
+    func approveRevoke(device: String, signer: String) async throws -> Approval {
+        let signedAt = ISO8601DateFormatter().string(from: .now)
+        let signature = try signing.signature(for: Approval.revokeMessage(device: device, signedAt: signedAt))
+        return Approval(device: signer, action: device, signedAt: signedAt, signature: signature.derRepresentation.base64EncodedString())
     }
 }
 

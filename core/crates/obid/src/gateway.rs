@@ -536,8 +536,12 @@ pub async fn revoke(
     let relay = shared.gateway.relay_of(&id);
     match shared.gateway.revoke(&id) {
         Ok(true) => {
-            // A lost phone gets no more alerts: its push tokens go with it.
+            // A lost phone gets no more alerts: its push tokens go with it, and so does the
+            // publishing key it registered with this pairing (crate::devices).
             shared.push.forget(&id);
+            if let Err(e) = shared.devices.forget_paired(&id) {
+                tracing::error!("can't forget the publishing key of paired device {id}: {e}");
+            }
             // Its sealed session ends now, and its relay token opens nothing once the Sphere
             // forgets it (crate::relay).
             if let Some(relay) = relay {

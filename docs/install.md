@@ -140,7 +140,7 @@ obid's API token is `home/api-token` (0600, in a 0700 home). The installer makes
 | What | Where | Notes |
 | --- | --- | --- |
 | Secrets in the vault | Mac: the Keychain, service `com.deskree.oby.runner.vault`. Linux: `home/vault/secrets.json` | On a Mac the same items, when obid's home is the Mac app's `Runner` folder (what the installer uses). On Linux copy `vault/secrets.json` into the new home (folder 0700, file 0600), or add them again with `obid vault --config <path> add NAME`. |
-| Phones that may approve publishing | `home/devices.json` | Copy it into the new home. Without it each device registers again (open pairing: `touch home/pairing`). |
+| Phones that may approve publishing | `home/devices.json` | Copy it into the new home. Without it each device adds its key again, with the owner's presence (docs/runner-api.md, `POST /v1/devices`): the Mac on the owner's first Publish, Confirm or Disconnect, a paired iPhone with its pairing. |
 | When Clear done was last pressed | `home/cleared.json` | Copy it, or ignore it. |
 | Your logins | Claude Code, Codex, `gh`: each tool's own | Nothing to move; obid runs as the same user. |
 

@@ -619,21 +619,20 @@ final class RunnerFeed {
         return runner
     }
 
-    /// Registers this Mac's publishing key, as the iPhone does on each connection. A runner whose
-    /// pairing is closed answers 403: Settings › Runner shows its line, with Try again. The runner
-    /// on this Mac keeps its files under this user, so Oby opens its pairing itself first
-    /// (`touch $OBY_HOME/pairing`, Runner/Devices.swift).
+    /// Registers this Mac's publishing key, as the iPhone does on each connection: a key the runner
+    /// knows (`MacDevice.register`). A new key goes in only on the owner's click: the first Publish,
+    /// Confirm or Disconnect, or here on Settings' Try again (no `runner`: `MacDevice.id(enrolling:)`).
+    /// The runner on this Mac keeps its files under this user, so Oby can name the key in its
+    /// pairing then (`$OBY_HOME/pairing`); another runner's 403 line says how its owner does.
     func register(_ runner: Runner? = nil) {
-        guard let runner = runner ?? self.runner else { return }
-        if local {
-            let pairing = LocalRunner.home.appending(path: "pairing")
-            try? FileManager.default.createDirectory(at: LocalRunner.home, withIntermediateDirectories: true)
-            if !FileManager.default.createFile(atPath: pairing.path, contents: Data()) {
-                try? FileManager.default.setAttributes([.modificationDate: Date()], ofItemAtPath: pairing.path)
-            }
-        }
+        guard let given = runner ?? self.runner else { return }
+        device.pairing = local ? LocalRunner.home.appending(path: "pairing") : nil
         Task {
-            do { try await device.register(with: runner) } catch {
+            do {
+                do { try await device.register(with: given) } catch let unknown as RunnerError where unknown.status == 403 && runner == nil {
+                    _ = try await device.id(enrolling: given)
+                }
+            } catch {
                 Logger.feed.error("registering this Mac failed: \(error.localizedDescription, privacy: .public)")
             }
         }

@@ -1104,11 +1104,26 @@ Registers a device's publishing key, once per device: the iPhone's (named "iPhon
 {"name": "Wellington's MacBook Air", "publicKey": "BJ3x…"}
 ```
 
-`publicKey` is the P-256 public key, X9.63 (65 bytes, uncompressed), base64. It returns `{"id": "d7c1…"}`. Only the runner's owner can register (the tailnet header); the runner lists devices in its log.
+`publicKey` is the P-256 public key, X9.63 (65 bytes, uncompressed), base64. It returns `{"id": "d7c1…"}`. Only the runner's owner can register (the tailnet header, or the API token); the runner lists devices in its log.
 
-- A key the runner knows returns its id right away, so the app registers every time it connects.
-- A new key needs pairing open: the owner runs `touch $OBY_HOME/pairing` on the runner's machine, and the device registers within 10 minutes. That key uses it up, so the iPhone and the Mac each need it opened once. Otherwise `403` with that one line to show: the Mac shows it in Settings › Runner, with Try again.
-- Why: agents run on the runner's machine, so through its tailnet address they arrive with the owner's header. They can't touch `pairing`, because `OBY_HOME` is empty inside their bubblewrap.
+- A key the runner knows returns its id right away, so the apps register every time they connect. That adds nothing.
+- A new key goes in only with the owner's presence, in one of three ways (otherwise `403` with one line to show):
+  - **Vouched for** by a device already registered: `"endorsement": {"device": "<its id>", "signedAt": "…", "signature": "…"}`, ECDSA P-256 with SHA-256 (DER, base64) over `"oby-device\n<publicKey>\n<signedAt>"`, within 2 minutes, once (kept used in `devices.json`, as approvals are). The apps sign only on their owner's tap or click.
+  - **A paired phone's own key**: a request through the gateway (or the Obysphere relay) from a phone paired with a pairing invitation (`POST /v1/pairing`, whose one-time secret the owner scanned from the Mac's screen) registers one key, bound to that pairing. A second new key from the same pairing is refused (`This iPhone registered its publishing key already. To register another, pair it again from your Mac.`), and revoking the pairing (`DELETE /v1/pairing/devices/{id}`) forgets its key.
+  - **Named in `home/pairing`**: the file holds exactly this `publicKey` (whitespace around it is ignored) and was written in the last 2 minutes. The registration that it names uses it up at once; one older than 2 minutes is removed when it's looked at, and a file naming another key admits nothing. A request through the gateway never uses it. The Mac app writes it for the runner on the same Mac only on its owner's click (the first Publish, Confirm or Disconnect that runner doesn't know this Mac's key for, or Settings' Try again), and removes it right after, whatever happened; it never writes it when it merely connects. For a runner on another machine the `403` says the command for its owner to run there: ``To add this device, run `echo '<publicKey>' > <home>/pairing` on obid's machine, then try again within 2 minutes.`` An empty file (`touch`), as pairing was opened until 2026-10-24, admits nothing.
+- A Mac whose new key went in this way revokes the one it replaced (`DELETE /v1/devices/{id}`, signed by the new key).
+- Why: agents run on the runner's machine, so through its tailnet address they arrive with the owner's header, and a token can leak; with the API token alone, or a paired phone's token, nothing can add a key that signs a publish, a Confirm or a connection change. Agents can't write `pairing`, because `OBY_HOME` is hidden inside their sandbox. A program that can write obid's home can rewrite `devices.json` too: that is outside what this guards.
+
+### `DELETE /v1/devices/{id}`
+
+Forgets a device's publishing key, with a registered key's signature for it (its own, or another device's):
+
+```json
+{"approval": {"device": "d7c1…", "signedAt": "2026-10-24T12:00:00Z", "signature": "MEUC…"}}
+```
+
+- `signature`: ECDSA P-256 with SHA-256 (DER, base64) over `"oby-revoke-device\n<id>\n<signedAt>"`, within 2 minutes, once.
+- It returns `{"revoked": "<id>"}`; `404` for a device it doesn't know, `403` for an approval that isn't a registered key's for this device. Not on the gateway.
 
 ### `POST /v1/activities`
 

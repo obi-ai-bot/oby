@@ -1,11 +1,16 @@
 //! The devices that may approve publishing (docs/runner-api.md, `POST /v1/devices`), as
 //! Runner/Devices.swift keeps them: each by its P-256 key, in `home/devices.json`. A key obid knows
-//! gets its id back at once, so an app registers every time it connects. A new key needs pairing
-//! open: the owner touches `home/pairing` on obid's machine, and one device registers within 10
-//! minutes, which uses it up. The API token can't be the gate on its own: agents run on the same
-//! machine. They can't touch `pairing`: obid's home is hidden in their sandbox.
+//! gets its id back at once, so an app registers every time it connects. A new key needs the
+//! owner's presence, in one of three ways: a registered key's signature vouching for it (a device
+//! already paired, signing on its owner's tap), a paired phone's own first key (its pairing
+//! invitation's one-time secret, scanned from the Mac's screen), or `home/pairing` naming exactly
+//! that key, written in the last 2 minutes and used up at once (the Mac app writes it on the
+//! owner's click; the owner, on another runner's machine). The API token can't be the gate on its
+//! own: agents run on the same machine, and a token can leak. They can't write `pairing`: obid's
+//! home is hidden in their sandbox.
 
 use std::collections::HashMap;
+use std::io::Read as _;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{Duration, SystemTime};
@@ -13,8 +18,8 @@ use std::time::{Duration, SystemTime};
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 
-/// How long `pairing` stays open after the owner touched it.
-const PAIRING_OPEN: Duration = Duration::from_secs(600);
+/// How long `pairing` names a key after it was written.
+const PAIRING_OPEN: Duration = Duration::from_secs(120);
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -24,6 +29,10 @@ struct Device {
     /// P-256, X9.63 (65 bytes, uncompressed), base64.
     public_key: String,
     registered: String,
+    /// The paired phone (crate::gateway) that registered this key with its own pairing: one key
+    /// per pairing, and it goes when the pairing is revoked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    paired: Option<String>,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -36,13 +45,16 @@ struct Saved {
     used: HashMap<String, String>,
 }
 
-/// Why a device didn't register.
+/// Why a device didn't register, or wasn't revoked.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Refused {
     /// `422`: the key isn't a P-256 public key.
     Malformed(String),
-    /// `403`: a new key while pairing is closed; the line to show.
-    PairingClosed(String),
+    /// `403`: a new key without the owner's presence, or a revocation no device signed; the line
+    /// to show.
+    Unapproved(String),
+    /// `404`: no device of that id.
+    Unknown,
     /// `500`: obid couldn't keep it.
     Unkept(String),
 }
@@ -78,11 +90,6 @@ impl Devices {
         }
     }
 
-    /// Where the owner opens pairing.
-    pub fn pairing(&self) -> &Path {
-        &self.pairing
-    }
-
     /// The publishing key (X9.63, base64) of the registered device `id`, or none for a device obid
     /// doesn't know: what checks its approval to publish by hand (crate::approval).
     pub fn public_key(&self, id: &str) -> Option<String> {
@@ -94,12 +101,17 @@ impl Devices {
             .map(|d| d.public_key.clone())
     }
 
-    /// Registers a device's publishing key and answers its id: the one it has for a key it knows,
-    /// a new one for a new key while pairing is open (and pairing is closed again).
+    /// Registers a device's publishing key and answers its id: the one it has for a key it knows;
+    /// a new one only with the owner's presence. `endorsement` is a registered device's signature
+    /// over `"oby-device\n<publicKey>\n<signedAt>"`; `paired` is the paired phone the request came
+    /// through the gateway from, which may register one key of its own; otherwise `home/pairing`
+    /// must name this key, and is used up.
     pub fn register(
         &self,
         name: &str,
         public_key: &str,
+        endorsement: Option<&serde_json::Value>,
+        paired: Option<&str>,
         now: SystemTime,
     ) -> Result<String, Refused> {
         if !is_p256_public_key(public_key) {
@@ -107,107 +119,201 @@ impl Devices {
                 "publicKey isn't a P-256 public key (X9.63, base64).".into(),
             ));
         }
+        if let Some(id) = self.known(public_key) {
+            return Ok(id);
+        }
+        let bound = match (endorsement, paired) {
+            (Some(endorsement), _) => {
+                if self
+                    .signed(endorsement, |at| format!("oby-device\n{public_key}\n{at}"))
+                    .is_none()
+                {
+                    return Err(Refused::Unapproved(
+                        "That endorsement isn't a registered device's, signed for this key in the last two minutes. Approve it again.".into(),
+                    ));
+                }
+                None
+            }
+            (None, Some(paired)) => Some(paired),
+            (None, None) => {
+                if !self.names(public_key, now) {
+                    return Err(Refused::Unapproved(format!(
+                        "To add this device, run `echo '{public_key}' > {}` on obid's machine, then try again within 2 minutes.",
+                        self.pairing.display()
+                    )));
+                }
+                None
+            }
+        };
         let mut saved = self.saved.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(known) = saved.devices.iter().find(|d| d.public_key == public_key) {
             return Ok(known.id.clone());
         }
-        let open = std::fs::metadata(&self.pairing)
-            .and_then(|m| m.modified())
-            .is_ok_and(|opened| {
-                now.duration_since(opened)
-                    .map_or(true, |age| age < PAIRING_OPEN)
-            });
-        if !open {
-            return Err(Refused::PairingClosed(format!(
-                "To add this device, run `touch {}` on obid's machine, then try again within 10 minutes.",
-                self.pairing.display()
-            )));
+        if let Some(paired) = bound
+            && saved
+                .devices
+                .iter()
+                .any(|d| d.paired.as_deref() == Some(paired))
+        {
+            return Err(Refused::Unapproved(
+                "This iPhone registered its publishing key already. To register another, pair it again from your Mac.".into(),
+            ));
         }
         let seconds = now
             .duration_since(SystemTime::UNIX_EPOCH)
             .map_or(0, |d| d.as_secs() as i64);
         let device = Device {
             id: uuid::Uuid::new_v4().to_string(),
-            name: name.to_owned(),
+            name: name.chars().filter(|c| !c.is_control()).take(100).collect(),
             public_key: public_key.to_owned(),
             registered: obi_protocol::time::format(seconds),
+            paired: bound.map(str::to_owned),
         };
         saved.devices.push(device.clone());
-        let bytes = serde_json::to_vec_pretty(&*saved).map_err(|e| Refused::Unkept(e.to_string()));
-        if let Err(e) = bytes.and_then(|b| {
-            crate::store::write_private(&self.file, &b).map_err(|e| Refused::Unkept(e.to_string()))
-        }) {
+        if let Err(e) = self.keep(&saved) {
             saved.devices.pop();
-            return Err(e);
+            return Err(Refused::Unkept(e.to_string()));
         }
-        let _ = std::fs::remove_file(&self.pairing);
         tracing::info!("registered device {}: {}", device.id, device.name);
         Ok(device.id)
+    }
+
+    /// Forgets the device `id`, with a registered device's signature (its own, or another's) over
+    /// `"oby-revoke-device\n<id>\n<signedAt>"`, signed in the last two minutes, once.
+    pub fn revoke(&self, id: &str, approval: &serde_json::Value) -> Result<(), Refused> {
+        if self.public_key(id).is_none() {
+            return Err(Refused::Unknown);
+        }
+        if self
+            .signed(approval, |at| format!("oby-revoke-device\n{id}\n{at}"))
+            .is_none()
+        {
+            return Err(Refused::Unapproved(
+                "That revocation isn't a registered device's, signed for this device in the last two minutes. Approve it again.".into(),
+            ));
+        }
+        self.forget(|d| d.id == id)
+            .map_err(|e| Refused::Unkept(e.to_string()))
+    }
+
+    /// Forgets the key the paired phone `paired` registered with its pairing: the pairing was
+    /// revoked (crate::gateway).
+    pub fn forget_paired(&self, paired: &str) -> Result<(), std::io::Error> {
+        self.forget(|d| d.paired.as_deref() == Some(paired))
+    }
+
+    fn forget(&self, which: impl Fn(&Device) -> bool) -> Result<(), std::io::Error> {
+        let mut saved = self.saved.lock().unwrap_or_else(|e| e.into_inner());
+        let (gone, stay): (Vec<Device>, Vec<Device>) = saved.devices.iter().cloned().partition(which);
+        if gone.is_empty() {
+            return Ok(());
+        }
+        let kept = std::mem::replace(&mut saved.devices, stay);
+        if let Err(e) = self.keep(&saved) {
+            saved.devices = kept;
+            return Err(e);
+        }
+        for device in gone {
+            tracing::info!("revoked device {}: {}", device.id, device.name);
+        }
+        Ok(())
+    }
+
+    fn known(&self, public_key: &str) -> Option<String> {
+        let saved = self.saved.lock().unwrap_or_else(|e| e.into_inner());
+        saved
+            .devices
+            .iter()
+            .find(|d| d.public_key == public_key)
+            .map(|d| d.id.clone())
+    }
+
+    /// Whether `home/pairing` names `public_key`, written in the last two minutes: then it's used
+    /// up. A file that names another key stays for it; one older than two minutes goes.
+    fn names(&self, public_key: &str, now: SystemTime) -> bool {
+        let Ok(meta) = std::fs::symlink_metadata(&self.pairing) else {
+            return false;
+        };
+        let fresh = meta.is_file()
+            && meta
+                .modified()
+                .is_ok_and(|written| match now.duration_since(written) {
+                    Ok(age) => age < PAIRING_OPEN,
+                    Err(ahead) => ahead.duration() < PAIRING_OPEN,
+                });
+        if !fresh {
+            let _ = std::fs::remove_file(&self.pairing);
+            return false;
+        }
+        let mut named = String::new();
+        let read = std::fs::File::open(&self.pairing)
+            .and_then(|f| f.take(4096).read_to_string(&mut named));
+        if read.is_err() || named.trim() != public_key {
+            return false;
+        }
+        let _ = std::fs::remove_file(&self.pairing);
+        true
+    }
+
+    fn keep(&self, saved: &Saved) -> Result<(), std::io::Error> {
+        let bytes = serde_json::to_vec_pretty(saved).map_err(std::io::Error::other)?;
+        crate::store::write_private(&self.file, &bytes)
     }
 
     /// Checks the phone's signed approval sentence for a sensitive connection change. A
     /// signature is tied to the exact action and timestamp, expires after two minutes, and is
     /// accepted once and kept in `devices.json`, across restarts.
     pub fn approves_connection(&self, value: &serde_json::Value, action: &str) -> bool {
-        let Some(device) = value.get("device").and_then(serde_json::Value::as_str) else {
-            return false;
-        };
-        let Some(signed_at) = value.get("signedAt").and_then(serde_json::Value::as_str) else {
-            return false;
-        };
-        let Some(signature) = value.get("signature").and_then(serde_json::Value::as_str) else {
-            return false;
-        };
         if value.get("action").and_then(serde_json::Value::as_str) != Some(action) {
             return false;
         }
-        let Some(seconds) = obi_protocol::time::parse(signed_at) else {
-            return false;
-        };
-        if (obi_protocol::time::now() - seconds).abs() > 120 {
-            return false;
-        }
-        use base64::Engine as _;
+        self.signed(value, |at| format!("oby-connection\n{action}\n{at}"))
+            .is_some()
+    }
+
+    /// The registered device whose key signed `message(signedAt)` in `value` (`device`,
+    /// `signedAt`, `signature`: ECDSA P-256 with SHA-256, DER, base64), within two minutes of
+    /// now, never before: it's used up, and kept used in `devices.json`, across restarts.
+    fn signed(
+        &self,
+        value: &serde_json::Value,
+        message: impl FnOnce(&str) -> String,
+    ) -> Option<String> {
         use p256::ecdsa::signature::Verifier as _;
-        let Ok(signature_bytes) = base64::engine::general_purpose::STANDARD.decode(signature)
-        else {
-            return false;
-        };
-        let Ok(signature) = p256::ecdsa::Signature::from_der(&signature_bytes) else {
-            return false;
-        };
-        let Some(public_key) = self.public_key(device) else {
-            return false;
-        };
-        let Ok(key_bytes) = base64::engine::general_purpose::STANDARD.decode(public_key) else {
-            return false;
-        };
-        let Ok(key) = p256::ecdsa::VerifyingKey::from_sec1_bytes(&key_bytes) else {
-            return false;
-        };
-        let signed_message = format!("oby-connection\n{action}\n{signed_at}");
-        if key.verify(signed_message.as_bytes(), &signature).is_err() {
-            return false;
+        let device = value.get("device")?.as_str()?;
+        let signed_at = value.get("signedAt")?.as_str()?;
+        let signature = value.get("signature")?.as_str()?;
+        let seconds = obi_protocol::time::parse(signed_at)?;
+        if (obi_protocol::time::now() - seconds).abs() > 120 {
+            return None;
         }
-        let mut message = device.as_bytes().to_vec();
-        message.extend_from_slice(signed_message.as_bytes());
-        let hash = hex::encode(obi_protocol::keys::sha256(message));
+        let signature_bytes = base64::engine::general_purpose::STANDARD
+            .decode(signature)
+            .ok()?;
+        let signature = p256::ecdsa::Signature::from_der(&signature_bytes).ok()?;
+        let key_bytes = base64::engine::general_purpose::STANDARD
+            .decode(self.public_key(device)?)
+            .ok()?;
+        let key = p256::ecdsa::VerifyingKey::from_sec1_bytes(&key_bytes).ok()?;
+        let signed_message = message(signed_at);
+        key.verify(signed_message.as_bytes(), &signature).ok()?;
+        let mut used = device.as_bytes().to_vec();
+        used.extend_from_slice(signed_message.as_bytes());
+        let hash = hex::encode(obi_protocol::keys::sha256(used));
         let mut saved = self.saved.lock().unwrap_or_else(|e| e.into_inner());
         let now = obi_protocol::time::now();
         saved
             .used
             .retain(|_, at| obi_protocol::time::parse(at).is_some_and(|at| now - at < 600));
         if saved.used.contains_key(&hash) {
-            return false;
+            return None;
         }
         saved.used.insert(hash.clone(), signed_at.to_owned());
-        let kept = serde_json::to_vec_pretty(&*saved)
-            .ok()
-            .is_some_and(|bytes| crate::store::write_private(&self.file, &bytes).is_ok());
-        if !kept {
+        if self.keep(&saved).is_err() {
             saved.used.remove(&hash);
+            return None;
         }
-        kept
+        Some(device.to_owned())
     }
 }
 
@@ -259,12 +365,130 @@ mod tests {
     #[test]
     fn a_registered_key_survives_a_restart() {
         let home = folder("restart");
-        std::fs::write(home.join("pairing"), "").unwrap();
+        std::fs::write(home.join("pairing"), key(3)).unwrap();
         let id = Devices::open(&home)
-            .register("Mac", &key(3), SystemTime::now())
+            .register("Mac", &key(3), None, None, SystemTime::now())
             .unwrap();
         let again = Devices::open(&home);
-        assert_eq!(again.register("Mac", &key(3), SystemTime::now()), Ok(id));
+        assert_eq!(
+            again.register("Mac", &key(3), None, None, SystemTime::now()),
+            Ok(id)
+        );
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// A new key needs the owner's presence: `pairing` naming it, fresh, used up at once; a
+    /// registered key vouching for it, once; or a paired phone's own first key. Nothing else, an
+    /// open pairing for another key included, lets one in.
+    #[test]
+    fn a_new_key_needs_the_owners_presence() {
+        let home = folder("presence");
+        let devices = Devices::open(&home);
+        let now = SystemTime::now();
+        let pairing = home.join("pairing");
+        let refused = |key: &str, endorsement: Option<&serde_json::Value>| {
+            matches!(
+                devices.register("Mac", key, endorsement, None, now),
+                Err(Refused::Unapproved(_))
+            )
+        };
+
+        assert!(refused(&key(3), None), "nothing");
+        std::fs::write(&pairing, "").unwrap();
+        assert!(
+            refused(&key(3), None),
+            "pairing touched, as it opened before"
+        );
+        std::fs::write(&pairing, key(4)).unwrap();
+        assert!(refused(&key(3), None), "pairing naming another key");
+        assert!(pairing.exists(), "which it keeps for that key");
+        std::fs::write(&pairing, format!("{}\n", key(3))).unwrap();
+        let file = std::fs::File::options().write(true).open(&pairing).unwrap();
+        file.set_modified(now - Duration::from_secs(121)).unwrap();
+        drop(file);
+        assert!(refused(&key(3), None), "pairing written 121 seconds ago");
+        assert!(!pairing.exists(), "closed: it never stays open idle");
+        std::fs::write(&pairing, format!("{}\n", key(3))).unwrap();
+        let mac = devices.register("Mac", &key(3), None, None, now).unwrap();
+        assert!(!pairing.exists(), "used up");
+        assert!(refused(&key(5), None), "pairing closed again");
+
+        // The Mac's key vouches for its next one, once, for that key only.
+        let at = obi_protocol::time::format(obi_protocol::time::now());
+        let vouch = |scalar: u8, device: &str, new: &str| {
+            signed(scalar, device, "", &at, &format!("oby-device\n{new}\n{at}"))
+        };
+        assert!(
+            refused(&key(5), Some(&vouch(5, &mac, &key(5)))),
+            "a key vouching for itself"
+        );
+        assert!(
+            refused(&key(5), Some(&vouch(3, "nobody", &key(5)))),
+            "an unknown device"
+        );
+        assert!(
+            refused(&key(5), Some(&vouch(3, &mac, &key(6)))),
+            "vouching for another key"
+        );
+        let endorsement = vouch(3, &mac, &key(5));
+        let next = devices
+            .register("Mac", &key(5), Some(&endorsement), None, now)
+            .unwrap();
+        assert_ne!(next, mac);
+        assert!(refused(&key(6), Some(&endorsement)), "used once");
+
+        // A paired phone registers one key of its own; revoking its pairing forgets it.
+        let phone = devices
+            .register("iPhone", &key(7), None, Some("phone-1"), now)
+            .unwrap();
+        assert!(matches!(
+            devices.register("iPhone", &key(8), None, Some("phone-1"), now),
+            Err(Refused::Unapproved(_))
+        ));
+        assert_eq!(
+            devices.register("iPhone", &key(7), None, Some("phone-1"), now),
+            Ok(phone.clone()),
+            "its own key, again"
+        );
+        devices.forget_paired("phone-1").unwrap();
+        assert_eq!(devices.public_key(&phone), None);
+        assert!(Devices::open(&home).public_key(&phone).is_none());
+
+        // Revoking takes a registered device's signature for that device.
+        let revoke = |scalar: u8, device: &str, id: &str| {
+            signed(
+                scalar,
+                device,
+                "",
+                &at,
+                &format!("oby-revoke-device\n{id}\n{at}"),
+            )
+        };
+        assert_eq!(
+            devices.revoke("nobody", &revoke(3, &mac, "nobody")),
+            Err(Refused::Unknown)
+        );
+        assert!(matches!(
+            devices.revoke(&mac, &serde_json::json!({})),
+            Err(Refused::Unapproved(_))
+        ));
+        assert!(
+            matches!(
+                devices.revoke(&mac, &revoke(9, &mac, &mac)),
+                Err(Refused::Unapproved(_))
+            ),
+            "another key"
+        );
+        assert!(
+            matches!(
+                devices.revoke(&mac, &revoke(3, &mac, &next)),
+                Err(Refused::Unapproved(_))
+            ),
+            "signed for another device"
+        );
+        assert_eq!(devices.revoke(&mac, &revoke(5, &next, &mac)), Ok(()));
+        assert_eq!(Devices::open(&home).public_key(&mac), None);
+        assert!(Devices::open(&home).public_key(&next).is_some());
         let _ = std::fs::remove_dir_all(&home);
     }
 

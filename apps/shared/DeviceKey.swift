@@ -29,6 +29,12 @@ nonisolated struct Approval: Encodable, Equatable, Sendable {
     static func confirmMessage(item: String, title: String, signedAt: String) -> Data {
         Data("oby-confirm\n\(item)\n\(title)\n\(signedAt)".utf8)
     }
+
+    /// What a registered device signs to revoke device `device` (docs/runner-api.md,
+    /// "DELETE /v1/devices/{id}"): the Mac's new key, for the key it replaced.
+    static func revokeMessage(device: String, signedAt: String) -> Data {
+        Data("oby-revoke-device\n\(device)\n\(signedAt)".utf8)
+    }
 }
 
 /// The device's publishing key: the iPhone's behind Face ID, the Mac's behind Touch ID or the Mac's
@@ -80,6 +86,14 @@ nonisolated enum DeviceKey {
         let signedAt = ISO8601DateFormatter().string(from: .now)
         let signature = try sign(Approval.confirmMessage(item: item, title: title, signedAt: signedAt), context: context)
         return Approval(device: device, action: title, signedAt: signedAt, signature: signature)
+    }
+
+    /// Signs the revocation of device `device` with `context`, as `approve` signs a publish: this
+    /// key is the registered device `signer`.
+    static func approveRevoke(device: String, signer: String, context: LAContext) throws -> Approval {
+        let signedAt = ISO8601DateFormatter().string(from: .now)
+        let signature = try sign(Approval.revokeMessage(device: device, signedAt: signedAt), context: context)
+        return Approval(device: signer, action: device, signedAt: signedAt, signature: signature)
     }
 
     /// ECDSA P-256 with SHA-256, DER, base64: what the runner checks.
