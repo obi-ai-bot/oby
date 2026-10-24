@@ -549,6 +549,39 @@ pub fn ask_workflow(
     Ok(suggestion)
 }
 
+/// The owner's "Merge, and remember" on a merge card (crate::merge), their yes to the "Can I
+/// remember that?" the card asks: the question as [`ask_workflow`] makes it, then saved as
+/// Remember saves it ([`remembered`]), checked and scanned the same way.
+pub async fn remember_workflow(
+    home: &Path,
+    repo: &str,
+    workflow: Workflow,
+    from: &str,
+    repos: &[(String, String)],
+) -> Result<Memory, Refused> {
+    let asked = ask_workflow(home, repo, workflow, from)?;
+    remembered(home, &asked.id, repos)
+        .await?
+        .ok_or_else(|| Refused::Io("the question went away before it was answered".into()))
+}
+
+/// The memory `id` was followed once more: its `used` goes up by one.
+pub fn note_used(home: &Path, id: &str) {
+    if !is_id(id, 'm') {
+        return;
+    }
+    let _writing = writing();
+    for dir in folders(home) {
+        if let Some((path, mut memory)) = read_folder(&dir).into_iter().find(|(_, m)| m.id == id) {
+            memory.used += 1;
+            if let Err(e) = crate::store::write_private(&path, memory.to_file().as_bytes()) {
+                tracing::warn!("memory: {id}'s use wasn't counted: {e}");
+            }
+            return;
+        }
+    }
+}
+
 /// The workflow the owner taught Oby for `repo` (#854): its newest `workflow` memory, or none.
 pub fn workflow(home: &Path, repo: &str) -> Option<Memory> {
     if !crate::github::is_repo(repo) {

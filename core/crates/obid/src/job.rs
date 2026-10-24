@@ -455,6 +455,26 @@ pub struct Job {
     /// Who had obid merge its pull request, and when; none until obid merged it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub merged_by: Option<MergedBy>,
+    /// What obid is sending for its merge (crate::merge), one mark per kind (an approval, the
+    /// merge, the branch's deletion), saved before it's sent and cleared once obid knows how it
+    /// went: a restart in between reads GitHub to settle each. Never in the API's job.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sending: Vec<Sending>,
+}
+
+/// Something obid sends for a job's merge, kept until it knows how it went (`Job::sending`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Sending {
+    /// `pullRequestApproval`, `merge` or `branchDelete`.
+    pub action: String,
+    /// The head it's about.
+    pub head: String,
+    /// For a merge: who had it merged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub by: Option<MergedBy>,
+    /// For an approval: the reviewer account's login it goes as.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub login: Option<String>,
 }
 
 /// Who had obid merge a job's pull request (crate::merge): the owner, with a tap, or the
@@ -656,6 +676,7 @@ impl Job {
             merge_error: None,
             merge_needs_you: false,
             merged_by: None,
+            sending: Vec::new(),
         }
     }
 
@@ -852,14 +873,16 @@ impl Job {
     }
 
     /// Waiting for Publish (its own publish failed), with commits its pull request won't take,
-    /// failed or interrupted, or Oby's review left for the owner, and not dismissed.
+    /// failed or interrupted, Oby's review left for the owner, or its merge stopped where only
+    /// the owner takes it on (crate::merge), and not dismissed.
     pub fn needs_you(&self) -> bool {
         self.dismissed.is_none()
             && (self.can_publish()
                 || self.stranded()
                 || self.status == Status::Failed
                 || self.status == Status::Interrupted
-                || self.review_needs_you())
+                || self.review_needs_you()
+                || self.merge_needs_you)
     }
 
     /// The job as the runner API shows it.
@@ -1241,6 +1264,18 @@ impl Job {
                 .as_ref()
                 .and_then(|pr| pr.review_decision.as_deref());
             let oby = self.current_review();
+            // The Merged stage while it's open: why the merge waits for the owner, else GitHub.
+            let merge_line = self
+                .merge_error
+                .as_deref()
+                .filter(|_| self.merge_needs_you)
+                .unwrap_or(crate::publish::MERGE_ON_GITHUB);
+            // Merged by a workflow the owner taught Oby: it says so (#854).
+            let as_you_like = self
+                .merged_by
+                .as_ref()
+                .filter(|m| m.by == "memory")
+                .map(|_| format!("Merged into {merge_base}, as you like"));
             match self.pull_request.as_ref().map(|pr| pr.state.as_str()) {
                 Some("MERGED") => {
                     let detail = match (decision, oby) {
@@ -1251,7 +1286,7 @@ impl Job {
                         _ => "Merged without review",
                     };
                     set(&mut stages, "review", "done", Some(detail), None);
-                    set(&mut stages, "merged", "done", None, None);
+                    set(&mut stages, "merged", "done", as_you_like.as_deref(), None);
                 }
                 Some("CLOSED") => {
                     set(
@@ -1266,13 +1301,7 @@ impl Job {
                 _ => match decision {
                     Some("APPROVED") => {
                         set(&mut stages, "review", "done", Some("Approved"), None);
-                        set(
-                            &mut stages,
-                            "merged",
-                            "current",
-                            Some(crate::publish::MERGE_ON_GITHUB),
-                            None,
-                        );
+                        set(&mut stages, "merged", "current", Some(merge_line), None);
                     }
                     Some("CHANGES_REQUESTED") => {
                         set(
@@ -1300,13 +1329,7 @@ impl Job {
                         }
                         (None, None, Some(review)) if review.approved() => {
                             set(&mut stages, "review", "done", Some(APPROVED_BY_OBY), None);
-                            set(
-                                &mut stages,
-                                "merged",
-                                "current",
-                                Some(crate::publish::MERGE_ON_GITHUB),
-                                None,
-                            );
+                            set(&mut stages, "merged", "current", Some(merge_line), None);
                         }
                         (None, None, Some(_)) => {
                             set(

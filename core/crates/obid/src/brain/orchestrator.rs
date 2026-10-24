@@ -218,7 +218,7 @@ impl Seen {
             || item.done.is_some()
             || item.id.starts_with("orchestrator-")
             // Already the owner's to decide: escalating would only leave a second item for it.
-            || matches!(item.kind.as_str(), "confirm" | "start" | "permission" | "plan" | "question" | "github" | crate::sphere::inbox::QUESTION_KIND)
+            || matches!(item.kind.as_str(), "confirm" | "start" | "permission" | "plan" | "question" | "github" | "merge" | crate::sphere::inbox::QUESTION_KIND)
             // What someone said, told to the owner, and what a plug-in sent: never the brain's
             // to act on (#1124).
             || matches!(item.kind.as_str(), "watch" | "listen" | "pluginEvent")
@@ -864,6 +864,8 @@ mod tests {
         // An offer of GitHub work is the owner's to start (crate::github_work).
         assert!(seen.item(&item("github-1", "github")).is_empty());
         assert!(seen.item(&item("confirm-1", "confirm")).is_empty());
+        // A merge card is the owner's to answer (#853): no event, nothing for the brain.
+        assert!(seen.item(&item("merge-j1-abc", "merge")).is_empty());
         let new = seen.item(&item("i2", "failed"));
         assert_eq!(new.len(), 1);
         assert_eq!(new[0].item.as_deref(), Some("i2"));

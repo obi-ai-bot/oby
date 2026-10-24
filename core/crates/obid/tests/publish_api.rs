@@ -244,7 +244,10 @@ fn a_done_job_publishes_by_itself_and_follows_its_pull_request() {
         body.contains("- Check: ` test -f hello.txt ` passed.\n- Secret scan: clean."),
         "{body}"
     );
-    assert!(body.contains("never merges"), "{body}");
+    assert!(
+        body.contains("Oby merges it only when its owner says so."),
+        "{body}"
+    );
     // gh got no secret of obid's: not the API token, in its arguments or its environment.
     assert!(!calls.contains(TOKEN) && !kept(&folder.0, "env").contains(TOKEN));
     // Published: the Publish stage is done, and Oby's review is its own (below).

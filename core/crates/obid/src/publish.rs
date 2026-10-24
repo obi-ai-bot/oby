@@ -1,6 +1,6 @@
 //! Publishing the owner's work (docs/runner-api.md, "Job" and `GET`/`POST /v1/jobs/{id}/publish`),
 //! ported from Engine/Publish.swift: the publish gate, then one pinned commit pushed to the job's
-//! own `oby/` branch, then its pull request, ready for review. **obid never merges**, for anyone
+//! own `oby/` branch, then its pull request, ready for review. Publishing never merges: obid merges only by its own rules (crate::merge), for anyone
 //! (docs/ARCHITECTURE.md, "Trust boundaries").
 //!
 //! Nothing leaves before the gate passed over everything that goes out: every line every commit
@@ -97,8 +97,8 @@ impl Outgoing {
 /// happens next (AGENTS.md, "The launch build").
 pub const YOUR_REVIEW: &str = "Pull request open · waiting for your review on GitHub";
 
-/// The Merged stage's line once GitHub approves: obid never merges, so the owner does, from the
-/// pull request (the Mac and the iPhone open it from this line).
+/// The Merged stage's line once it's approved and obid doesn't merge it itself (crate::merge): the
+/// owner does, from the pull request (the Mac and the iPhone open it from this line).
 pub const MERGE_ON_GITHUB: &str = "Merge it on GitHub";
 
 /// Something the scan found in what would go out: where, which rule, and the commit whose patch or
@@ -572,7 +572,7 @@ pub fn body(job: &Job, closes: bool) -> String {
         .map(|line| format!("\n{line}"))
         .unwrap_or_default();
     format!(
-        "{}\n\nWhat the user asked for:\n\n{request}\n\n{check}\n- Secret scan: clean.{decided}{jobs}{issue}\n\nby Oby: Oby opened this pull request {after}. Oby never merges it: a person does.",
+        "{}\n\nWhat the user asked for:\n\n{request}\n\n{check}\n- Secret scan: clean.{decided}{jobs}{issue}\n\nby Oby: Oby opened this pull request {after}. Oby merges it only when its owner says so.",
         rounds.join("\n\n")
     )
 }
@@ -1710,7 +1710,7 @@ mod tests {
         assert!(text.contains("- Check: ` swift test ` passed."));
         assert!(text.contains("opened this pull request after the check passed and the secret"));
         assert!(text.contains("Closes #75"));
-        assert!(text.contains("never merges"));
+        assert!(text.contains("Oby merges it only when its owner says so."));
         assert!(body(&job, false).contains("Part of #75"));
         assert!(!text.contains("- Jobs:"));
         // A follow-up from its first job's work names both jobs (#770).
@@ -1776,7 +1776,7 @@ mod tests {
         assert!(quote.contains("> C\u{200B}loses #\u{200B}12"));
         // The footer is obid's, after the quote, said once.
         assert_eq!(text.matches("\n\nby Oby: ").count(), 1);
-        assert!(rest.ends_with("Oby never merges it: a person does."));
+        assert!(rest.ends_with("Oby merges it only when its owner says so."));
         // Words that only contain a keyword stay whole.
         assert_eq!(defused("prefix fixture closest"), "prefix fixture closest");
         // A keyword in emphasis is still a word.
@@ -1867,7 +1867,7 @@ mod tests {
         assert!(text.contains("- Check: none, the job had no check.\n- Secret scan: clean."));
         assert!(!text.contains("check passed"), "{text}");
         assert!(text.ends_with(
-            "by Oby: Oby opened this pull request after the secret scan was clean. Oby never merges it: a person does."
+            "by Oby: Oby opened this pull request after the secret scan was clean. Oby merges it only when its owner says so."
         ));
         job.check = Some("cargo test".into());
         assert!(body(&job, false).contains(
