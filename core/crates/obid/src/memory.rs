@@ -142,14 +142,13 @@ pub enum Approval {
     Person,
 }
 
-/// The checks that pass on the head before the merge: the owner's Mac's (`macCheck`), GitHub's,
-/// or none besides GitHub's own (which never may be failing or pending).
+/// The checks that pass on the head before the merge: the owner's Mac's (`macCheck`), or GitHub's.
+/// There's no "none": nothing merges without a check that passed on that very commit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Checks {
     Mac,
     Github,
-    None,
 }
 
 impl Workflow {
@@ -184,7 +183,6 @@ impl Workflow {
         let checks = match self.checks {
             Checks::Mac => " and your Mac's checks pass on the same commit",
             Checks::Github => " and GitHub's checks pass on the same commit",
-            Checks::None => "",
         };
         format!("{how}{first} after {who} approves{checks}.")
     }
@@ -2222,6 +2220,8 @@ mod tests {
             line.replace("squash", "fast-forward"),
             line.replace(r#""checks":"mac""#, r#""checks":"mac","auto":true"#),
             line.replace(r#","checks":"mac""#, ""),
+            // Nothing merges without a check that passed on its head.
+            line.replace(r#""checks":"mac""#, r#""checks":"none""#),
             line.replace(r#""dev""#, r#""main""#),
             line.replace(r#""dev""#, r#""../x""#),
         ] {
@@ -2251,7 +2251,7 @@ mod tests {
         for method in [Method::Squash, Method::Merge, Method::Rebase] {
             for rebase_first in [false, true] {
                 for review in [Approval::Reviewer, Approval::Teammate, Approval::Person] {
-                    for checks in [Checks::Mac, Checks::Github, Checks::None] {
+                    for checks in [Checks::Mac, Checks::Github] {
                         let workflow = Workflow {
                             base: "dev".into(),
                             method,

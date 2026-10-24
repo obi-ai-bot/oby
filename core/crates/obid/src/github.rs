@@ -445,32 +445,109 @@ pub async fn issue_body(gh: &Path, repo: &str, number: u64) -> Option<String> {
 }
 
 /// What the follower asks of a pull request: its status, and what a merge needs (crate::merge).
-const FIELDS: &str = "state,reviewDecision,mergedAt,baseRefName,headRefOid,statusCheckRollup,mergeable,mergeStateStatus,latestReviews,author";
+/// Its reviews aren't among them: `latestReviews` has no commit for an approval (cli/cli#14805),
+/// so [`reviews`] reads them from the REST API.
+const FIELDS: &str = "state,reviewDecision,mergedAt,baseRefName,headRefOid,statusCheckRollup,mergeable,mergeStateStatus,author";
 
-/// What GitHub says now about the pull request `number` of `repo`, read at `now`. The error is a
-/// fixed line: what `gh` printed could hold a credential or someone's words.
+/// Why a read of the pull request failed: a fixed line, since what `gh` printed could hold a
+/// credential or someone's words.
+const FAILED: &str = "Couldn't refresh the pull request. Will try again shortly.";
+
+/// What GitHub says now about the pull request `number` of `repo`, read at `now`.
 pub async fn view(gh: &Path, repo: &str, number: u64, now: i64) -> Result<PullRequest, String> {
-    view_merging(gh, repo, number, now).await.map(|(pr, _)| pr)
+    let output = pr_view(gh, repo, number).await?;
+    decode(&output, now).ok_or_else(|| FAILED.to_owned())
 }
 
-/// [`view`], with what a merge needs to know besides ([`Merging`]), from the same one read.
+/// [`view`], with what a merge needs to know besides ([`Merging`]): the same read, then its
+/// reviews ([`reviews`]).
 pub async fn view_merging(
     gh: &Path,
     repo: &str,
     number: u64,
     now: i64,
 ) -> Result<(PullRequest, Merging), String> {
-    const FAILED: &str = "Couldn't refresh the pull request. Will try again shortly.";
+    let output = pr_view(gh, repo, number).await?;
+    let pr = decode(&output, now).ok_or_else(|| FAILED.to_owned())?;
+    let mut merging = decode_merging(&output).ok_or_else(|| FAILED.to_owned())?;
+    merging.reviews = reviews(gh, repo, number)
+        .await
+        .map_err(|_| FAILED.to_owned())?;
+    Ok((pr, merging))
+}
+
+async fn pr_view(gh: &Path, repo: &str, number: u64) -> Result<String, String> {
     let number = number.to_string();
-    let output = run(
+    run(
         gh,
         &["pr", "view", &number, "--repo", repo, "--json", FIELDS],
     )
     .await
-    .map_err(|_| FAILED.to_owned())?;
-    let pr = decode(&output, now).ok_or_else(|| FAILED.to_owned())?;
-    let merging = decode_merging(&output, pr.head.as_deref()).ok_or_else(|| FAILED.to_owned())?;
-    Ok((pr, merging))
+    .map_err(|_| FAILED.to_owned())
+}
+
+/// Each reviewer's latest review of the pull request `number` that counts ([`decode_reviews`]),
+/// every page of `GET repos/{repo}/pulls/{n}/reviews`.
+pub async fn reviews(gh: &Path, repo: &str, number: u64) -> Result<Vec<Review>, String> {
+    let path = format!("repos/{repo}/pulls/{number}/reviews?per_page=100");
+    let text = run_bounded(
+        gh,
+        &["api", "--paginate", "--slurp", &path],
+        8 * 1024 * 1024,
+        Duration::from_secs(60),
+    )
+    .await?;
+    decode_reviews(&text).ok_or_else(|| "gh said something else about its reviews.".into())
+}
+
+/// One reviewer's latest review that counts, as GitHub's REST API has it: typed status only,
+/// never what they wrote.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Review {
+    /// Their login; empty for an account GitHub deleted.
+    pub login: String,
+    /// `APPROVED`, `CHANGES_REQUESTED` or `DISMISSED`.
+    pub state: String,
+    /// The commit it reviewed (`commit_id`).
+    pub commit: Option<String>,
+    /// Their `author_association` with the repository: `OWNER`, `MEMBER`, `COLLABORATOR`,
+    /// `CONTRIBUTOR`, `NONE`…
+    pub association: String,
+    /// Not a person's: `user.type` isn't `User` (a bot's, or an account GitHub deleted).
+    pub bot: bool,
+}
+
+/// Each reviewer's latest review that counts, from `gh api --paginate --slurp …/reviews` (pages
+/// of reviews): an approval, a change request or a dismissal. A comment or a pending review never
+/// replaces the one before it, so a later comment can't hide a change request. None when it isn't
+/// that.
+pub fn decode_reviews(text: &str) -> Option<Vec<Review>> {
+    let pages: Vec<Vec<Value>> = serde_json::from_str(text).ok()?;
+    let mut all: Vec<&Value> = pages.iter().flatten().collect();
+    all.sort_by_key(|r| r["id"].as_u64().unwrap_or(0));
+    let mut latest: Vec<Review> = vec![];
+    for review in all {
+        let state = review["state"].as_str().unwrap_or_default();
+        if !matches!(state, "APPROVED" | "CHANGES_REQUESTED" | "DISMISSED") {
+            continue;
+        }
+        let login = review["user"]["login"].as_str().unwrap_or_default();
+        latest.retain(|r| !r.login.eq_ignore_ascii_case(login));
+        latest.push(Review {
+            login: login.to_owned(),
+            state: state.to_owned(),
+            commit: review["commit_id"]
+                .as_str()
+                .filter(|c| crate::git::is_sha(c))
+                .map(str::to_owned),
+            association: review["author_association"]
+                .as_str()
+                .unwrap_or_default()
+                .to_owned(),
+            bot: review["user"]["type"] != "User",
+        });
+    }
+    Some(latest)
 }
 
 /// What a merge needs to know about a pull request besides [`PullRequest`], read with it
@@ -485,16 +562,15 @@ pub struct Merging {
     /// GitHub's `mergeStateStatus`: `CLEAN`, `HAS_HOOKS`, `BEHIND`, `BLOCKED`, `DIRTY`, `DRAFT`,
     /// `UNSTABLE` or `UNKNOWN`; none when GitHub didn't say.
     pub merge_state: Option<String>,
-    /// Who approved its head: the logins whose latest review approves the head commit itself,
-    /// never its author's.
-    pub approved_by: Vec<String>,
-    /// Someone's latest review asks for changes.
-    pub changes_requested: bool,
+    /// Who opened it (`author.login`); none when GitHub didn't say.
+    pub author: Option<String>,
+    /// Each reviewer's latest review that counts ([`reviews`]); empty until read.
+    pub reviews: Vec<Review>,
 }
 
-/// [`Merging`] from `gh pr view --json` with [`FIELDS`], for the pull request whose head is
-/// `head`; none when it isn't JSON.
-pub fn decode_merging(text: &str, head: Option<&str>) -> Option<Merging> {
+/// [`Merging`] from `gh pr view --json` with [`FIELDS`], its reviews not yet read; none when it
+/// isn't JSON.
+pub fn decode_merging(text: &str) -> Option<Merging> {
     let value: Value = serde_json::from_str(text).ok()?;
     let word = |key: &str, known: &[&str]| {
         value[key]
@@ -502,26 +578,6 @@ pub fn decode_merging(text: &str, head: Option<&str>) -> Option<Merging> {
             .filter(|v| known.contains(v))
             .map(str::to_owned)
     };
-    let author = value["author"]["login"].as_str();
-    let mut approved_by = vec![];
-    let mut changes_requested = false;
-    for review in value["latestReviews"].as_array().into_iter().flatten() {
-        let Some(login) = review["author"]["login"].as_str().filter(|l| is_login(l)) else {
-            continue;
-        };
-        match review["state"].as_str() {
-            Some("CHANGES_REQUESTED") => changes_requested = true,
-            // Only an approval of the head itself, by someone else than the author.
-            Some("APPROVED")
-                if Some(login) != author
-                    && head.is_some()
-                    && review["commit"]["oid"].as_str() == head =>
-            {
-                approved_by.push(login.to_owned());
-            }
-            _ => {}
-        }
-    }
     Some(Merging {
         checks: value["statusCheckRollup"]
             .as_array()
@@ -541,8 +597,11 @@ pub fn decode_merging(text: &str, head: Option<&str>) -> Option<Merging> {
                 "UNKNOWN",
             ],
         ),
-        approved_by,
-        changes_requested,
+        author: value["author"]["login"]
+            .as_str()
+            .filter(|a| !a.is_empty())
+            .map(str::to_owned),
+        reviews: vec![],
     })
 }
 
@@ -585,15 +644,6 @@ fn rollup(list: &[Value]) -> &'static str {
     } else {
         "PENDING"
     }
-}
-
-/// A GitHub login: letters, digits and single hyphens, never a bot's (`name[bot]`).
-fn is_login(login: &str) -> bool {
-    !login.is_empty()
-        && login.len() <= 39
-        && login
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'-')
 }
 
 /// `gh pr view --json` with [`FIELDS`] (or the first five of them), checked: a known state, a
@@ -800,12 +850,11 @@ mod tests {
         }
     }
 
-    /// What a merge needs, from the follower's one `gh pr view`: the head's checks summed up,
-    /// GitHub's words for whether it merges, and who approved that very head.
+    /// What a merge needs, from the follower's `gh pr view`: the head's checks summed up, GitHub's
+    /// words for whether it merges, and who opened it.
     #[test]
     fn what_a_merge_needs_to_know() {
-        let head = "a".repeat(40);
-        let read = |value: Value| decode_merging(&value.to_string(), Some(&head)).unwrap();
+        let read = |value: Value| decode_merging(&value.to_string()).unwrap();
         let checks = |list: Value| read(json!({"statusCheckRollup": list})).checks;
         let run = |status: &str, conclusion: &str| json!({"__typename": "CheckRun", "status": status, "conclusion": conclusion});
         let status = |state: &str| json!({"__typename": "StatusContext", "state": state});
@@ -848,35 +897,117 @@ mod tests {
                 "{pending}"
             );
         }
-        let review = |login: &str, state: &str, oid: &str| json!({"author": {"login": login}, "state": state, "commit": {"oid": oid}, "body": "LGTM"});
         let merging = read(json!({
             "author": {"login": "wellprado"},
             "mergeable": "MERGEABLE", "mergeStateStatus": "CLEAN",
-            "latestReviews": [
-                review("oby-reviewer", "APPROVED", &head),
-                review("wellprado", "APPROVED", &head),
-                review("ana", "APPROVED", &"b".repeat(40)),
-                review("bot[bot]", "APPROVED", &head),
-                review("joe", "COMMENTED", &head),
-            ],
         }));
-        assert_eq!(merging.approved_by, ["oby-reviewer"]);
-        assert!(!merging.changes_requested);
+        assert_eq!(merging.author.as_deref(), Some("wellprado"));
         assert_eq!(merging.mergeable.as_deref(), Some("MERGEABLE"));
         assert_eq!(merging.merge_state.as_deref(), Some("CLEAN"));
-        let asked = read(
-            json!({"latestReviews": [review("ana", "CHANGES_REQUESTED", "x")], "mergeable": "maybe", "mergeStateStatus": "FINE"}),
+        assert!(merging.reviews.is_empty());
+        let odd = read(
+            json!({"author": {"login": ""}, "mergeable": "maybe", "mergeStateStatus": "FINE"}),
         );
-        assert!(asked.changes_requested);
-        assert_eq!((asked.mergeable, asked.merge_state), (None, None));
-        // Without a head, nobody approved it.
-        let unknown = decode_merging(
-            &json!({"latestReviews": [review("oby-reviewer", "APPROVED", &head)]}).to_string(),
-            None,
-        )
-        .unwrap();
-        assert!(unknown.approved_by.is_empty());
-        assert_eq!(decode_merging("not json", Some(&head)), None);
+        assert_eq!(
+            (odd.author, odd.mergeable, odd.merge_state),
+            (None, None, None)
+        );
+        assert_eq!(decode_merging("not json"), None);
+    }
+
+    /// One review as `GET repos/{o}/{r}/pulls/{n}/reviews` answers it (cli/cli#14805's, trimmed).
+    fn rest_review(
+        id: u64,
+        login: &str,
+        kind: &str,
+        state: &str,
+        commit: &str,
+        association: &str,
+    ) -> Value {
+        json!({
+            "id": id,
+            "node_id": "PRR_kwDODKw3uc8AAAABT_Ie6w",
+            "user": {"login": login, "id": 75_402_236, "type": kind, "site_admin": false},
+            "body": "",
+            "state": state,
+            "html_url": format!("https://github.com/cli/cli/pull/14805#pullrequestreview-{id}"),
+            "author_association": association,
+            "submitted_at": "2026-10-23T19:55:21Z",
+            "commit_id": commit,
+        })
+    }
+
+    /// Each reviewer's latest review that counts, across pages: a comment or a pending review
+    /// never replaces a change request.
+    #[test]
+    fn each_reviewers_latest_review_counts() {
+        let head = "17ac598e6afc43bb6206f074b05de9d63563a42f";
+        let older = "b".repeat(40);
+        let pages = json!([
+            [
+                rest_review(
+                    1,
+                    "copilot-pull-request-reviewer[bot]",
+                    "Bot",
+                    "COMMENTED",
+                    head,
+                    "CONTRIBUTOR"
+                ),
+                rest_review(2, "ana", "User", "APPROVED", &older, "MEMBER"),
+                rest_review(
+                    3,
+                    "joe",
+                    "User",
+                    "CHANGES_REQUESTED",
+                    &older,
+                    "COLLABORATOR"
+                ),
+            ],
+            [
+                rest_review(4, "ana", "User", "APPROVED", head, "MEMBER"),
+                rest_review(5, "joe", "User", "COMMENTED", head, "COLLABORATOR"),
+                rest_review(6, "max", "User", "PENDING", head, "MEMBER"),
+                rest_review(7, "app[bot]", "Bot", "APPROVED", head, "NONE"),
+            ],
+        ]);
+        let latest = decode_reviews(&pages.to_string()).unwrap();
+        let read: Vec<_> = latest
+            .iter()
+            .map(|r| {
+                (
+                    r.login.as_str(),
+                    r.state.as_str(),
+                    r.commit.as_deref(),
+                    r.association.as_str(),
+                    r.bot,
+                )
+            })
+            .collect();
+        assert_eq!(
+            read,
+            [
+                (
+                    "joe",
+                    "CHANGES_REQUESTED",
+                    Some(older.as_str()),
+                    "COLLABORATOR",
+                    false
+                ),
+                ("ana", "APPROVED", Some(head), "MEMBER", false),
+                ("app[bot]", "APPROVED", Some(head), "NONE", true),
+            ]
+        );
+        // Dismissed, an approval no longer stands.
+        let dismissed = json!([[
+            rest_review(1, "ana", "User", "APPROVED", head, "MEMBER"),
+            rest_review(2, "ana", "User", "DISMISSED", head, "MEMBER"),
+        ]]);
+        assert_eq!(
+            decode_reviews(&dismissed.to_string()).unwrap()[0].state,
+            "DISMISSED"
+        );
+        assert_eq!(decode_reviews("[]"), Some(vec![]));
+        assert_eq!(decode_reviews("not json"), None);
     }
 
     #[test]
