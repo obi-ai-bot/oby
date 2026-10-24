@@ -7608,7 +7608,11 @@ impl Jobs {
                     let Some(url) = &job.published else {
                         return false;
                     };
-                    if job.pull_request.as_ref().is_some_and(|pr| !pr.is_open()) {
+                    // Merged or closed: not read again, unless something obid was sending for it is
+                    // still to be settled from GitHub (`sending`).
+                    if job.pull_request.as_ref().is_some_and(|pr| !pr.is_open())
+                        && job.sending.is_empty()
+                    {
                         return false;
                     }
                     let fresh = |at: i64| now - at < follow_interval();
@@ -7742,7 +7746,7 @@ impl Jobs {
         let workflow = learned.as_ref().and_then(|m| m.workflow.clone());
         // The reviewer account's approval is what the merge waits on for a `reviewer` workflow,
         // and for a repository Oby hasn't learned unless another approval counts already. For a
-        // `teammate` or `person` one it's posted, and never counts.
+        // `teammate` or `person` one it isn't posted at all.
         let wanted = match &workflow {
             Some(workflow) => workflow.review == crate::memory::Approval::Reviewer,
             None => !reviewers
@@ -7751,8 +7755,14 @@ impl Jobs {
         };
         let login = current.map(|(_, l)| l.clone());
         let go = || self.about_to_send(id, &head, "pullRequestApproval", None, login.clone());
-        let approved =
-            crate::merge::approve(gh, &home, &job, &merging, &head, &owner, current, &go).await;
+        // Posted only where it's what the merge waits on: on a `teammate` or `person` repository
+        // GitHub's branch rules would count it (the reviewer can push), and merge with no
+        // teammate's approval at all.
+        let approved = if wanted {
+            crate::merge::approve(gh, &home, &job, &merging, &head, &owner, current, &go).await
+        } else {
+            crate::merge::Approved::NotNow
+        };
         let stop = match approved {
             crate::merge::Approved::Posted(sent) => {
                 tracing::info!("job {id}: sent {} {} {}", sent.action, sent.repo, sent.id);

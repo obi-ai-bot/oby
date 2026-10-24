@@ -753,12 +753,14 @@ pub fn approved_by_another(pr: &PullRequest, merging: &Merging, reviewers: &Revi
 
 /// The job's pull request was merged or closed (`pr`): nothing waits on the owner about merging it
 /// any more. What obid was sending before a restart is settled: an approval it finds in `reviews`
-/// (when they read) is listed; a merge is listed and keeps who had it merged (one merged any
+/// is listed (when they didn't read, its mark stays, and the follower reads it again); a merge is listed and keeps who had it merged (one merged any
 /// other way is `mergedBy` `github`); the branch's deletion is left for the caller, who can try
 /// it again ([`delete_branch`]).
 pub fn closed(job: &mut Job, pr: &PullRequest, reviews: Option<&[Review]>) {
-    if let Some(approval) = unmark(job, "pullRequestApproval")
-        && reviews.is_some_and(|r| approval_seen(&approval, r))
+    // Settled only from reviews that read: otherwise the mark stays for the next read.
+    if let Some(reviews) = reviews
+        && let Some(approval) = unmark(job, "pullRequestApproval")
+        && approval_seen(&approval, reviews)
     {
         job.outgoing.push(Outgoing::new(
             "pullRequestApproval",
@@ -2243,6 +2245,40 @@ esac
             (stopped.options, stopped.text),
             (vec![DISMISS.to_owned()], SIGN_IN_REVIEWER.to_owned())
         );
+    }
+
+    /// A merged pull request settles an approval mark only from reviews that read: unread, the
+    /// mark stays for the next read, and nothing is dropped or listed twice.
+    #[test]
+    fn an_approval_mark_waits_for_reviews_that_read() {
+        let mut job = job();
+        mark(
+            &mut job,
+            crate::job::Sending {
+                action: "pullRequestApproval".into(),
+                head: head(),
+                by: None,
+                login: Some(REVIEWER.into()),
+            },
+        );
+        let (mut pr, merging) = read(&view(|_| {}), &approved());
+        pr.state = "MERGED".into();
+        pr.merged_at = Some(1);
+        closed(&mut job, &pr, None);
+        assert_eq!(job.sending.len(), 1);
+        assert!(
+            job.outgoing
+                .iter()
+                .all(|o| o.action != "pullRequestApproval")
+        );
+        closed(&mut job, &pr, Some(&merging.reviews));
+        assert!(job.sending.is_empty());
+        let approvals = job
+            .outgoing
+            .iter()
+            .filter(|o| o.action == "pullRequestApproval")
+            .count();
+        assert_eq!(approvals, 1);
     }
 
     /// Only one of Oby's jobs has a folder of its own, under obid's home.

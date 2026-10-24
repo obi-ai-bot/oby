@@ -666,7 +666,8 @@ const TEAMMATE: &str =
 
 /// A repository a teammate approves (Tetrix's): with no teammate's approval of the head, the
 /// follower asks a teammate's Oby over the Obysphere; one not in an Obysphere can't, and the owner
-/// hears why, once. Oby's own reviewer account's approval never stands in for it.
+/// hears why, once. Oby's own reviewer account posts nothing there: GitHub's branch rules would
+/// count its approval, and it never stands in for a teammate's.
 #[test]
 fn a_teammate_workflow_asks_a_teammates_oby() {
     let folder = Folder::new("merge-teammate");
@@ -678,9 +679,9 @@ fn a_teammate_workflow_asks_a_teammates_oby() {
     );
     let waiting = job(&obid);
     assert_eq!(waiting["mergeNeedsYou"], true);
-    // Its reviewer account approved (posted, harmless), and nothing merged.
+    // Its reviewer account (signed in, able to push) posted nothing, and nothing merged.
     let calls = calls(&folder.0);
-    assert_eq!(calls.matches("-X POST").count(), 1, "{calls}");
+    assert!(!calls.contains("-X POST"), "{calls}");
     assert!(!calls.contains("-X PUT"), "{calls}");
     // A teammate approved it on GitHub meanwhile: it merges, and nobody is asked.
     std::fs::write(folder.0.join("gh/person"), "").unwrap();
