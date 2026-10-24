@@ -35,8 +35,9 @@ nonisolated struct TalkTurn: Equatable, Sendable {
     /// Only words that were asked set it, their reply uses it up, and any press ends it: hands-free
     /// lasts until the next press (AGENTS.md).
     private(set) var handsFreeAsk = false
-    /// A key went down since the last send, while its words are written down: they end hands-free too.
-    private(set) var pressedSinceSend = false
+    /// A press or Stop all came since the last send, while its words are written down: they don't
+    /// keep hands-free.
+    private(set) var endedSinceSend = false
     /// Oby listens again by itself after its reply: a press with no words ends that quietly.
     private(set) var relistening = false
     /// VoiceOver was given the reply: the next press cuts it off.
@@ -71,7 +72,7 @@ nonisolated struct TalkTurn: Equatable, Sendable {
     /// A talk key went down: hands-free is over, and whether VoiceOver has to be cut off the reply.
     mutating func pressed() -> Bool {
         handsFreeAsk = false
-        pressedSinceSend = true
+        endedSinceSend = true
         defer { announced = false }
         return announced
     }
@@ -82,7 +83,7 @@ nonisolated struct TalkTurn: Equatable, Sendable {
     /// The microphone closed to send (after the press that ends hands-free, if any): whether it was
     /// Oby listening again by itself.
     mutating func closed() -> Bool {
-        pressedSinceSend = false
+        endedSinceSend = false
         defer { relistening = false }
         return relistening
     }
@@ -90,15 +91,19 @@ nonisolated struct TalkTurn: Equatable, Sendable {
     /// Escape: nothing is sent.
     mutating func cancelled() { relistening = false }
 
-    /// Stop all, by its keys or the menu: the words waiting don't listen again once their reply shows.
-    mutating func end() { handsFreeAsk = false }
+    /// Stop all, by its keys or the menu: the words waiting, or still being written down, don't listen
+    /// again once their reply shows.
+    mutating func end() {
+        handsFreeAsk = false
+        endedSinceSend = true
+    }
 
     /// The words were written down. Words asked decide whether their reply listens again; a bare
-    /// "stop" or "never mind", nothing heard, or a press while they were written down ends hands-free. True when nothing heard is worth
-    /// saying ("Oby didn't catch that"): not when the press only ended Oby's listening again by
-    /// itself, unless something went wrong (`problem`).
+    /// "stop" or "never mind", nothing heard, or a press or Stop all while they were written down
+    /// ends hands-free. True when nothing heard is worth saying ("Oby didn't catch that"): not when
+    /// the press only ended Oby's listening again by itself, unless something went wrong (`problem`).
     mutating func heard(_ said: String, handsFree: Bool, again: Bool, problem: Bool) -> Bool {
-        handsFreeAsk = handsFree && !pressedSinceSend && !said.isEmpty && !Conversation.cancels(said)
+        handsFreeAsk = handsFree && !endedSinceSend && !said.isEmpty && !Conversation.cancels(said)
         return said.isEmpty && (problem || !again)
     }
 }

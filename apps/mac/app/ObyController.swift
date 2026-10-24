@@ -254,9 +254,11 @@ final class IslandController {
     }
 
     /// Stop all (⌃⌥⌘. or the menu): every job on this Mac and on the runner stops now, and an alert
-    /// says how many. The words waiting for a reply don't listen again once it shows.
+    /// says how many. Hands-free ends: listening now stops without sending, and the words waiting
+    /// for a reply, or still being written down, don't listen again once it shows.
     func stopAll() {
         talkTurn.end()
+        talkKey.endHandsFree()
         let here = desk.stopAll()
         Task {
             var line: String
@@ -297,6 +299,7 @@ final class IslandController {
             voice.finish { [weak self] said in self?.heard(said, key: key, handsFree: handsFree, again: again) }
         case .cancel:
             talkTurn.cancelled()
+            voice.handsFree = false
             voice.cancel()
             stopListening()
         }

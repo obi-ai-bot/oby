@@ -44,18 +44,31 @@ struct TalkControllerTests {
         fn(down: false)
     }
 
-    private func until(_ done: () -> Bool) async throws {
+    /// Control-Option down and up: a press of the talk key, with VoiceOver off.
+    private func controlOption() {
+        _ = island.talkKey.handle(.flagsChanged, code: 59, flags: [.maskControl, .maskAlternate], repeating: false)
+        _ = island.talkKey.handle(.flagsChanged, code: 59, flags: [], repeating: false)
+    }
+
+    /// Waits for `done`, at most 3 seconds, and fails if it never comes.
+    private func until(_ done: () -> Bool, sourceLocation: SourceLocation = #_sourceLocation) async throws {
         for _ in 0..<150 where !done() { try await Task.sleep(for: .milliseconds(20)) }
+        #expect(done(), "timed out", sourceLocation: sourceLocation)
+    }
+
+    /// fn + Space: Oby listens hands-free, and will hear `words` (none: the listening is never sent).
+    private func startHandsFree(_ words: String?) {
+        if let words { out.words.append(words) }
+        fn(down: true)
+        _ = island.talkKey.handle(.keyDown, code: 49, flags: .maskSecondaryFn, repeating: false)
+        fn(down: false)
+        #expect(island.model.voice.phase == .listening && island.model.voice.handsFree && island.talkKey.busy)
     }
 
     /// fn + Space, `words`, and fn again to send: Oby thinks about them.
     private func askHandsFree(_ words: String) async throws {
         let before = out.asked.count
-        out.words.append(words)
-        fn(down: true)
-        _ = island.talkKey.handle(.keyDown, code: 49, flags: .maskSecondaryFn, repeating: false)
-        fn(down: false)
-        #expect(island.model.voice.phase == .listening && island.model.voice.handsFree)
+        startHandsFree(words)
         tap()
         try await until { out.asked.count > before && island.model.voice.phase == .idle && !island.model.listening }
         #expect(out.asked.last == words && island.model.turn == .thinking)
@@ -105,6 +118,52 @@ struct TalkControllerTests {
         island.replied("On it.", spoken: true)
         #expect(island.model.turn == .replied && island.model.voice.phase == .idle)
         tap()
+        #expect(island.model.turn == nil && !island.talkKey.busy)
+    }
+
+    /// Stop all while hands-free words are still being written down (the Control-Option of ⌃⌥⌘.
+    /// sent them, or the menu came within those seconds): their reply never reopens the microphone.
+    @Test func stopAllWhileTheWordsAreWrittenDownDoesntListenAgain() async throws {
+        let sends: [() -> Void] = NSWorkspace.shared.isVoiceOverEnabled ? [tap] : [tap, controlOption]
+        for send in sends {
+            let before = out.asked.count
+            startHandsFree("fix the vault tests")
+            send()
+            island.stopAll()
+            try await until { out.asked.count > before && island.model.voice.phase == .idle && !island.model.listening }
+            island.replied("On it.", spoken: true)
+            #expect(island.model.turn == .replied && island.model.voice.phase == .idle && !island.talkKey.busy)
+            tap()
+            #expect(island.model.turn == nil)
+        }
+    }
+
+    /// Stop all during hands-free listening, from the menu or by its keys with ⌘ down first (so the
+    /// talk key never sees Control-Option, as with VoiceOver on): the microphone closes, nothing is
+    /// sent, and the next press starts nothing. The same while Oby listens again after a reply.
+    @Test func stopAllEndsHandsFreeListening() async throws {
+        for commandFirst in [false, true] {
+            startHandsFree(nil)
+            if commandFirst {
+                _ = island.talkKey.handle(.flagsChanged, code: 55, flags: [.maskCommand], repeating: false)
+                _ = island.talkKey.handle(.flagsChanged, code: 59, flags: [.maskCommand, .maskControl, .maskAlternate], repeating: false)
+            }
+            island.stopAll()
+            if commandFirst { _ = island.talkKey.handle(.flagsChanged, code: 59, flags: [], repeating: false) }
+            #expect(island.model.voice.phase == .idle && !island.model.voice.handsFree && !island.model.listening)
+            #expect(!island.talkKey.busy && island.model.turn == nil, "⌘ first: \(commandFirst)")
+            tap()
+            #expect(!island.talkKey.busy && island.model.voice.phase == .idle)
+        }
+        try await askHandsFree("fix the vault tests")
+        island.replied("Which repository?", spoken: true)
+        #expect(island.model.voice.phase == .listening && island.talkKey.busy)
+        island.stopAll()
+        #expect(island.model.voice.phase == .idle && !island.model.voice.handsFree && !island.talkKey.busy)
+        tap()
+        #expect(island.model.turn == nil && island.model.voice.phase == .idle)
+        try await until { out.posted.filter { $0 == "Nothing is running." }.count == 3 }
+        #expect(out.asked == ["fix the vault tests"], "nothing else was sent")
     }
 
     /// Held-key words, then fn + Space with nothing said while they wait, and fn again: "Oby didn't

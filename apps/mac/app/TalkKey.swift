@@ -116,6 +116,12 @@ final class TalkKey {
         return true
     }
 
+    /// Stop all: hands-free listening (fn + Space, or Oby listening again) ends without sending, as
+    /// Escape ends it. A key held down is left alone: letting go sends it.
+    func endHandsFree() {
+        if handsFree { stop(.cancel) }
+    }
+
     private func press(_ key: Key) {
         // Control-Option is VoiceOver's while it runs, for every command: never a press of Oby's.
         if key == .controlOption, NSWorkspace.shared.isVoiceOverEnabled { return }
