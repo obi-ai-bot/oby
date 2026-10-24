@@ -24,25 +24,6 @@ pub const REQUEST_FILE: &str = ".obi/inputs/obi-request.json";
 /// Read (`crate::policy::REVIEW_TOOLS`), so it can't run git itself.
 pub const DIFF_FILE: &str = ".obi/inputs/change.diff";
 
-/// Where obid quotes the repository's rules as the base has them (its `AGENTS.md` and `CLAUDE.md`
-/// there), in the worktree: never the change's own, which its author wrote. Claude Code runs
-/// `--restricted`, so it loads no `CLAUDE.md` of the worktree as instructions either.
-pub const RULES_FILE: &str = "base-rules.md";
-
-/// The base's rule files (`name`, its text or none when the base has no such file), as quoted to
-/// the reviewer in [`RULES_FILE`].
-pub fn base_rules(base: &str, files: &[(&str, Option<String>)]) -> String {
-    let mut text =
-        format!("The repository's rules as they are on {base}, where the change goes:\n");
-    for (name, file) in files {
-        match file {
-            Some(file) => text.push_str(&format!("\n## {name}\n\n{file}\n")),
-            None => text.push_str(&format!("\n## {name}\n\n({base} has no {name}.)\n")),
-        }
-    }
-    text
-}
-
 /// The most of the diff obid writes; a longer one is cut there, saying so.
 pub const DIFF_MAX: usize = 8 * 1024 * 1024;
 
