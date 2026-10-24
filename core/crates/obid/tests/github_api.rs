@@ -1,7 +1,8 @@
 //! The GitHub login from the Mac (docs/runner-api.md, "obid only: GitHub's sign-in"), on the real
 //! obid binary with a stand-in gh: `GET /v1/github` says whether gh is signed in and as whom;
 //! `POST /v1/github/sign-in` runs gh's own device sign-in and passes on only its code and GitHub's
-//! device page; gh never gets to change the person's own git settings.
+//! device page; gh never gets to change the person's own git settings. The reviewer, a second
+//! account, signs in the same way to obid's own settings folder, never as the owner's account.
 
 mod support;
 
@@ -12,8 +13,34 @@ use support::*;
 
 /// A stand-in gh: signed in once `$HOME/signed` is there; its sign-in prints a code and waits for
 /// `$HOME/approve`, as the real one waits for the person on GitHub's page, and gives up once obid
-/// or the test's folder is gone, so a test that ends leaves none behind.
+/// or the test's folder is gone, so a test that ends leaves none behind. With `GH_CONFIG_DIR` (the
+/// reviewer's), its sign-in waits for `$HOME/approve-reviewer`, then signs in as the login in
+/// `$HOME/reviewer-login` with the token in that folder's `hosts.yml`, as `--insecure-storage` does.
 const GH: &str = r#"#!/bin/sh
+if [ -n "$GH_CONFIG_DIR" ]; then
+  case "$1 $2" in
+    "auth status")
+      if [ -f "$GH_CONFIG_DIR/hosts.yml" ]; then
+        login=$(sed -n 's/^ *user: //p' "$GH_CONFIG_DIR/hosts.yml")
+        echo "{\"hosts\":{\"github.com\":[{\"state\":\"success\",\"active\":true,\"host\":\"github.com\",\"login\":\"$login\"}]}}"
+      else
+        echo '{"hosts":{}}'
+      fi ;;
+    "auth login")
+      printf '%s\n' "$*" > "$HOME/reviewer-login-args"
+      printf '%s\n' "$GH_CONFIG_DIR" > "$HOME/reviewer-config-dir"
+      printf '%s\n' "$DBUS_SESSION_BUS_ADDRESS" > "$HOME/reviewer-bus"
+      echo '! One-time code (RV12-CD34) copied to clipboard' >&2
+      while [ ! -f "$HOME/approve-reviewer" ]; do
+        kill -0 "$PPID" 2>/dev/null && [ -d "$HOME" ] || exit 1
+        sleep 0.1
+      done
+      printf 'github.com:\n    oauth_token: gho_REVIEWER_NEVER_SHOWN\n    user: %s\n' "$(cat "$HOME/reviewer-login")" > "$GH_CONFIG_DIR/hosts.yml"
+      echo 'gho_REVIEWER_NEVER_SHOWN' >&2 ;;
+    *) exit 1 ;;
+  esac
+  exit 0
+fi
 case "$1 $2" in
   "auth status")
     if [ -f "$HOME/signed" ]; then
@@ -60,7 +87,8 @@ fn signs_in_with_ghs_own_device_sign_in() {
     assert_eq!(before.status, 200, "{}", before.text);
     assert_eq!(
         before.body,
-        json!({"gh": true, "signedIn": false, "user": null, "signIn": null})
+        json!({"gh": true, "signedIn": false, "user": null, "signIn": null,
+               "reviewer": {"signedIn": false, "user": null, "signIn": null, "error": null}})
     );
 
     let started = call(&obid, "POST", "/v1/github/sign-in", None);
@@ -97,7 +125,8 @@ fn signs_in_with_ghs_own_device_sign_in() {
     });
     assert_eq!(
         signed,
-        json!({"gh": true, "signedIn": true, "user": "octo-cat", "signIn": null})
+        json!({"gh": true, "signedIn": true, "user": "octo-cat", "signIn": null,
+               "reviewer": {"signedIn": false, "user": null, "signIn": null, "error": null}})
     );
     assert!(!obid.log().contains("gho_"));
 }
@@ -206,4 +235,112 @@ fn a_waiting_sign_in_ends_with_its_test() {
     assert!(alive());
     drop(obid);
     within(10, "the stand-in gh to end", || (!alive()).then_some(()));
+}
+
+/// The reviewer signs in through the same device page into obid's own settings folder
+/// (`home/github/reviewer`, 0700), with its token kept there and gh away from the keyring; its token
+/// is never answered or logged; and `DELETE` signs it out, removing the folder.
+#[test]
+fn the_reviewer_signs_in_and_out() {
+    use std::os::unix::fs::PermissionsExt;
+    let folder = Folder::new("github-reviewer");
+    let remote = folder.0.join("remote.git");
+    let config = config(&folder.0, &remote, &stub_agent());
+    let bin = stand_in_gh(&folder.0);
+    let obid = start(&folder.0, &config, Some(&bin));
+    let home = folder.0.join("env-home");
+    std::fs::write(home.join("signed"), "").unwrap();
+    std::fs::write(home.join("reviewer-login"), "oby-reviewer").unwrap();
+
+    let started = call(&obid, "POST", "/v1/github/reviewer/sign-in", None);
+    assert_eq!(started.status, 200, "{}", started.text);
+    assert_eq!(started.body["userCode"], "RV12-CD34");
+    assert_eq!(started.body["url"], "https://github.com/login/device");
+    let under_way = call(&obid, "GET", "/v1/github", None);
+    assert_eq!(
+        under_way.body["reviewer"]["signIn"]["userCode"],
+        "RV12-CD34"
+    );
+    assert_eq!(under_way.body["signIn"], json!(null));
+    let args = std::fs::read_to_string(home.join("reviewer-login-args")).unwrap();
+    assert_eq!(
+        args.trim(),
+        "auth login --hostname github.com --git-protocol https --web --skip-ssh-key --insecure-storage"
+    );
+    let staging = std::fs::read_to_string(home.join("reviewer-config-dir")).unwrap();
+    assert!(
+        staging
+            .trim()
+            .starts_with(&*folder.0.join("home/tmp").to_string_lossy()),
+        "{staging}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(home.join("reviewer-bus"))
+            .unwrap()
+            .trim(),
+        "unix:path=/dev/null/no-keyring"
+    );
+
+    std::fs::write(home.join("approve-reviewer"), "").unwrap();
+    let signed = within(20, "the reviewer to be signed in", || {
+        let now = call(&obid, "GET", "/v1/github", None);
+        (now.body["reviewer"]["signedIn"] == true).then_some(now)
+    });
+    assert_eq!(
+        signed.body["reviewer"],
+        json!({"signedIn": true, "user": "oby-reviewer", "signIn": null, "error": null})
+    );
+    assert_eq!(signed.body["user"], "octo-cat");
+    let kept = folder.0.join("home/github/reviewer");
+    assert!(kept.join("hosts.yml").is_file());
+    assert_eq!(
+        std::fs::metadata(&kept).unwrap().permissions().mode() & 0o777,
+        0o700
+    );
+    assert!(!std::path::Path::new(staging.trim()).exists(), "{staging}");
+    assert!(!signed.text.contains("gho_"), "{}", signed.text);
+    assert!(!obid.log().contains("gho_REVIEWER"));
+
+    let out = call(&obid, "DELETE", "/v1/github/reviewer/sign-in", None);
+    assert_eq!(out.status, 204, "{}", out.text);
+    assert!(!kept.exists());
+    assert_eq!(
+        call(&obid, "GET", "/v1/github", None).body["reviewer"],
+        json!({"signedIn": false, "user": null, "signIn": null, "error": null})
+    );
+}
+
+/// The reviewer must be another account: no sign-in before the owner's gh is signed in, and one
+/// that ends signed in as the owner's own account keeps nothing and says why.
+#[test]
+fn the_reviewer_is_never_the_owners_own_account() {
+    let folder = Folder::new("github-reviewer-same");
+    let remote = folder.0.join("remote.git");
+    let config = config(&folder.0, &remote, &stub_agent());
+    let bin = stand_in_gh(&folder.0);
+    let obid = start(&folder.0, &config, Some(&bin));
+    let home = folder.0.join("env-home");
+
+    let first = call(&obid, "POST", "/v1/github/reviewer/sign-in", None);
+    assert_eq!(first.status, 409, "{}", first.text);
+    assert!(
+        first.text.contains("Sign in to GitHub first"),
+        "{}",
+        first.text
+    );
+
+    std::fs::write(home.join("signed"), "").unwrap();
+    std::fs::write(home.join("reviewer-login"), "Octo-Cat").unwrap();
+    let started = call(&obid, "POST", "/v1/github/reviewer/sign-in", None);
+    assert_eq!(started.status, 200, "{}", started.text);
+    std::fs::write(home.join("approve-reviewer"), "").unwrap();
+    let refused = within(20, "the reviewer's sign-in to end", || {
+        let now = call(&obid, "GET", "/v1/github", None);
+        now.body["reviewer"]["error"].as_str().map(str::to_owned)
+    });
+    assert!(refused.contains("your own GitHub account"), "{refused}");
+    let now = call(&obid, "GET", "/v1/github", None);
+    assert_eq!(now.body["reviewer"]["signedIn"], false);
+    assert_eq!(now.body["reviewer"]["signIn"], json!(null));
+    assert!(!folder.0.join("home/github/reviewer").exists());
 }
