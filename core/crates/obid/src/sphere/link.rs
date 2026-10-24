@@ -4817,11 +4817,7 @@ impl Link {
         }
         let (item, sharing) = {
             let mut state = self.lock();
-            if state
-                .exchanges
-                .get(&cid)
-                .is_none_or(|e| e.state != "inbox")
-            {
+            if state.exchanges.get(&cid).is_none_or(|e| e.state != "inbox") {
                 return Err(api(
                     StatusCode::CONFLICT,
                     "That request was settled already.",
