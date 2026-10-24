@@ -39,6 +39,7 @@ pub mod limits;
 pub mod listen;
 pub mod logs;
 pub mod memory;
+pub mod merge;
 pub mod obi_dir;
 pub mod permissions;
 pub mod plugins;

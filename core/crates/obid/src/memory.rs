@@ -16,6 +16,10 @@
 //! the quick model, boxed with Read on the quoted file alone. obid keeps a suggestion only when it
 //! finds the quotes the brain gave, word for word, in at least two places (two conversations, two
 //! pull requests, or one of each). The brain doesn't read memory yet: that's the rest of #378.
+//!
+//! One kind is typed: a repository's `workflow` (#854), how its pull requests merge, which only
+//! the owner's Remember on its own "Can I remember that?" saves ([`ask_workflow`], [`workflow`]).
+//! It's the only memory a merge reads (crate::merge): free text never drives one.
 
 use std::collections::BTreeSet;
 use std::future::Future;
@@ -73,7 +77,7 @@ pub struct Memory {
     /// `user` (everywhere) or `project` (one repository).
     pub scope: String,
     pub repo: Option<String>,
-    /// `preference`, `instruction`, `fact` or `feedback` (#378).
+    /// `preference`, `instruction`, `fact` or `feedback` (#378), or `workflow` (#854).
     pub kind: String,
     /// `user`: the owner said it; `found`: a suggestion the owner said yes to.
     pub source: String,
@@ -84,9 +88,131 @@ pub struct Memory {
     pub created: String,
     pub updated: String,
     pub used: u32,
+    /// How the repository's pull requests merge, on a `workflow` memory only: what a merge
+    /// follows, never its text.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflow: Option<Workflow>,
 }
 
-const KINDS: [&str; 4] = ["preference", "instruction", "fact", "feedback"];
+const KINDS: [&str; 5] = ["preference", "instruction", "fact", "feedback", "workflow"];
+
+/// How a repository's pull requests merge, as the owner taught Oby (#854; AGENTS.md, "How work
+/// merges is learned, not fixed"). Kept as one line of JSON in its memory's frontmatter and read
+/// strictly: a key or a value obid doesn't know and the file isn't a memory.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Workflow {
+    /// The branch its pull requests merge into: never `main`, `master` or `trunk`.
+    pub base: String,
+    pub method: Method,
+    /// Rebased onto `base` before it merges.
+    pub rebase_first: bool,
+    /// Who approves it first.
+    pub review: Approval,
+    /// The checks that pass on its head first.
+    pub checks: Checks,
+}
+
+/// How GitHub merges it (`merge_method`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Method {
+    Squash,
+    Merge,
+    Rebase,
+}
+
+impl Method {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Method::Squash => "squash",
+            Method::Merge => "merge",
+            Method::Rebase => "rebase",
+        }
+    }
+}
+
+/// Who approves before the merge: Oby's reviewer account (a second GitHub account), a teammate's
+/// Oby over the Obysphere, or a person.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Approval {
+    Reviewer,
+    Teammate,
+    Person,
+}
+
+/// The checks that pass on the head before the merge: the owner's Mac's (`macCheck`), or GitHub's.
+/// There's no "none": nothing merges without a check that passed on that very commit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Checks {
+    Mac,
+    Github,
+}
+
+impl Workflow {
+    /// Why it can't be a workflow, or none.
+    pub fn problem(&self) -> Option<&'static str> {
+        if !crate::git::is_branch_name(&self.base) {
+            return Some("That isn't a branch.");
+        }
+        crate::merge::protected(&self.base).then_some(
+            "Oby never merges into main, master or trunk by itself: those stay yours, on GitHub.",
+        )
+    }
+
+    /// What it says, in obid's own words: a workflow memory's text, never a model's.
+    pub fn sentence(&self) -> String {
+        let base = &self.base;
+        let how = match self.method {
+            Method::Squash => format!("Squash-merge into {base}"),
+            Method::Merge => format!("Merge into {base} with a merge commit"),
+            Method::Rebase => format!("Merge into {base} by rebasing its commits"),
+        };
+        let first = if self.rebase_first {
+            ", rebased onto it first,"
+        } else {
+            ""
+        };
+        let who = match self.review {
+            Approval::Reviewer => "Oby's reviewer account",
+            Approval::Teammate => "a teammate's Oby",
+            Approval::Person => "a person",
+        };
+        let checks = match self.checks {
+            Checks::Mac => " and your Mac's checks pass on the same commit",
+            Checks::Github => " and GitHub's checks pass on the same commit",
+        };
+        format!("{how}{first} after {who} approves{checks}.")
+    }
+}
+
+/// A workflow memory's title: "How obi merges".
+fn workflow_title(repo: &str) -> String {
+    let name = repo.split_once('/').map_or(repo, |(_, name)| name);
+    let title = format!("How {name} merges");
+    if title.chars().count() > TITLE {
+        "How this repository merges".into()
+    } else {
+        title
+    }
+}
+
+/// Whether `memory`'s kind, scope and workflow go together: a `workflow` memory, and only one, has
+/// a workflow, of one repository.
+fn typed(memory: &Memory) -> bool {
+    let scoped = match memory.scope.as_str() {
+        "user" => memory.repo.is_none(),
+        "project" => memory.repo.as_deref().is_some_and(crate::github::is_repo),
+        _ => false,
+    };
+    let workflow = match &memory.workflow {
+        Some(w) => memory.kind == "workflow" && memory.scope == "project" && w.problem().is_none(),
+        None => memory.kind != "workflow",
+    };
+    scoped && workflow && KINDS.contains(&memory.kind.as_str())
+}
 
 impl Memory {
     /// The file: frontmatter of one-line values, then the text.
@@ -108,9 +234,14 @@ impl Memory {
             format!("created: {}", self.created),
             format!("updated: {}", self.updated),
             format!("used: {}", self.used),
-            "---".into(),
-            self.text.clone(),
         ]);
+        if let Some(workflow) = &self.workflow {
+            out.push(format!(
+                "workflow: {}",
+                serde_json::to_string(workflow).unwrap_or_default()
+            ));
+        }
+        out.extend(["---".into(), self.text.clone()]);
         out.join("\n") + "\n"
     }
 
@@ -131,6 +262,7 @@ impl Memory {
             created: String::new(),
             updated: String::new(),
             used: 0,
+            workflow: None,
         };
         for line in head.lines() {
             let Some((key, value)) = line.split_once(": ") else {
@@ -148,17 +280,12 @@ impl Memory {
                 "created" => memory.created = value,
                 "updated" => memory.updated = value,
                 "used" => memory.used = value.parse().ok()?,
+                "workflow" => memory.workflow = Some(serde_json::from_str(&value).ok()?),
                 _ => {}
             }
         }
-        let scoped = match memory.scope.as_str() {
-            "user" => memory.repo.is_none(),
-            "project" => memory.repo.as_deref().is_some_and(crate::github::is_repo),
-            _ => false,
-        };
         (is_id(&memory.id, 'm')
-            && scoped
-            && KINDS.contains(&memory.kind.as_str())
+            && typed(&memory)
             && !memory.title.is_empty()
             && !memory.text.is_empty())
         .then_some(memory)
@@ -288,14 +415,38 @@ impl From<Refused> for ApiError {
 
 /// Saves `memory`, checked again whatever made it: its lengths, its scope, the rules it can't
 /// widen, the cap, and the secret scan on its title and text (`scratch`: the scan's folder).
-/// `own`: the default branches it applies to ([`own_branches`]).
+/// `own`: the default branches it applies to ([`own_branches`]). Never a workflow: only the
+/// owner's Remember on its own question saves one ([`remembered`]).
 pub async fn save(
     home: &Path,
     memory: Memory,
     own: &[&str],
     scratch: &Path,
 ) -> Result<Memory, Refused> {
+    if memory.workflow.is_some() || memory.kind == "workflow" {
+        return Err(Refused::Invalid(
+            "Oby remembers how a repository merges only when you say yes to it.".into(),
+        ));
+    }
+    keep(home, memory, own, scratch).await
+}
+
+/// [`save`], a workflow included: its title and text are obid's own words for it, and it
+/// replaces the repository's workflow before it.
+async fn keep(
+    home: &Path,
+    mut memory: Memory,
+    own: &[&str],
+    scratch: &Path,
+) -> Result<Memory, Refused> {
     let invalid = |why: &str| Err(Refused::Invalid(why.to_owned()));
+    if let Some(workflow) = &memory.workflow {
+        if let Some(why) = workflow.problem() {
+            return invalid(why);
+        }
+        memory.title = workflow_title(memory.repo.as_deref().unwrap_or_default());
+        memory.text = workflow.sentence();
+    }
     if memory.title.trim().is_empty() || memory.title.chars().count() > TITLE {
         return invalid("A memory's title is 1 to 60 characters.");
     }
@@ -305,12 +456,7 @@ pub async fn save(
     if !is_id(&memory.id, 'm') || !KINDS.contains(&memory.kind.as_str()) {
         return invalid("That isn't a memory.");
     }
-    let scoped = match memory.scope.as_str() {
-        "user" => memory.repo.is_none(),
-        "project" => memory.repo.as_deref().is_some_and(crate::github::is_repo),
-        _ => false,
-    };
-    if !scoped {
+    if !typed(&memory) {
         return invalid("A memory is about you, or about one repository.");
     }
     if let Some(rule) = widens(&format!("{}. {}", memory.title, memory.text), own) {
@@ -337,14 +483,21 @@ pub async fn save(
     let _writing = writing();
     let dir = folder(home, memory.repo.as_deref());
     let kept = read_folder(&dir);
-    // Remember twice (two taps, two devices) keeps one.
-    if kept
+    // One workflow per repository: a new one replaces the one before.
+    let replaced: Vec<&PathBuf> = kept
         .iter()
-        .any(|(_, m)| plain(&m.text) == plain(&memory.text))
+        .filter(|(_, m)| memory.workflow.is_some() && m.workflow.is_some())
+        .map(|(path, _)| path)
+        .collect();
+    // Remember twice (two taps, two devices) keeps one.
+    if replaced.is_empty()
+        && kept
+            .iter()
+            .any(|(_, m)| plain(&m.text) == plain(&memory.text))
     {
         return invalid("Oby remembers that already.");
     }
-    if kept.len() >= PER_SCOPE {
+    if kept.len() - replaced.len() >= PER_SCOPE {
         return invalid("That scope has 100 memories already: delete one first.");
     }
     crate::store::make_private_dir(&dir).map_err(|e| Refused::Io(e.to_string()))?;
@@ -353,7 +506,59 @@ pub async fn save(
         memory.to_file().as_bytes(),
     )
     .map_err(|e| Refused::Io(e.to_string()))?;
+    for path in replaced {
+        if let Err(e) = std::fs::remove_file(path) {
+            tracing::warn!("memory: the workflow it replaced stays: {e}");
+        }
+    }
     Ok(memory)
+}
+
+/// Asks "Can I remember that?" about how `repo` merges (#854): a suggestion of `workflow`, in
+/// obid's own words, which only the owner's Remember saves ([`remembered`]). It replaces one
+/// waiting for the same repository. `from` says what the owner did, in obid's words: "You merged
+/// obi#671 this way".
+pub fn ask_workflow(
+    home: &Path,
+    repo: &str,
+    workflow: Workflow,
+    from: &str,
+) -> Result<Suggestion, Refused> {
+    if !crate::github::is_repo(repo) {
+        return Err(Refused::Invalid("That isn't a repository.".into()));
+    }
+    if let Some(why) = workflow.problem() {
+        return Err(Refused::Invalid(why.into()));
+    }
+    let suggestion = Suggestion {
+        id: new_id('s'),
+        scope: "project".into(),
+        repo: Some(repo.to_owned()),
+        kind: "workflow".into(),
+        title: workflow_title(repo),
+        text: workflow.sentence(),
+        from: from.replace(['\r', '\n'], " "),
+        sources: vec![],
+        workflow: Some(workflow),
+    };
+    let _writing = writing();
+    let mut list = suggestions(home);
+    list.retain(|s| !(s.workflow.is_some() && s.repo.as_deref() == Some(repo)));
+    list.push(suggestion.clone());
+    keep_suggestions(home, &list).map_err(|e| Refused::Io(e.to_string()))?;
+    Ok(suggestion)
+}
+
+/// The workflow the owner taught Oby for `repo` (#854): its newest `workflow` memory, or none.
+pub fn workflow(home: &Path, repo: &str) -> Option<Memory> {
+    if !crate::github::is_repo(repo) {
+        return None;
+    }
+    read_folder(&folder(home, Some(repo)))
+        .into_iter()
+        .map(|(_, m)| m)
+        .filter(|m| m.workflow.is_some() && m.repo.as_deref() == Some(repo))
+        .max_by(|a, b| a.created.cmp(&b.created))
 }
 
 /// One write to the memory folder at a time.
@@ -726,6 +931,9 @@ pub struct Suggestion {
     pub text: String,
     pub from: String,
     pub sources: Vec<Source>,
+    /// What Remember saves for a `workflow` suggestion ([`ask_workflow`]); none for the rest.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflow: Option<Workflow>,
 }
 
 fn suggestions_file(home: &Path) -> PathBuf {
@@ -1048,6 +1256,7 @@ pub fn verify(
             text,
             from: from(&places),
             sources,
+            workflow: None,
         });
         if out.len() == SUGGESTIONS {
             break;
@@ -1395,8 +1604,16 @@ pub async fn find(State(shared): State<Arc<Shared>>) -> Result<Response, ApiErro
         tracing::warn!("memory: finding failed: {why}");
         unavailable("Oby couldn't finish looking. Try again in a minute.".into())
     })?;
+    // A workflow's question waits for its own answer: finding doesn't replace it.
+    let mut found: Vec<Suggestion> = found;
     {
         let _writing = writing();
+        let mut asked: Vec<Suggestion> = suggestions(&home)
+            .into_iter()
+            .filter(|s| s.workflow.is_some())
+            .collect();
+        asked.append(&mut found);
+        found = asked;
         keep_suggestions(&home, &found).map_err(|e| {
             ApiError::new(
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -1421,32 +1638,51 @@ pub async fn remember(
     UrlPath(id): UrlPath<String>,
 ) -> Result<Response, ApiError> {
     let home = shared.config.home.clone();
-    let no_such = || ApiError::new(StatusCode::NOT_FOUND, "There's no such suggestion.");
-    let suggestion = suggestions(&home)
-        .into_iter()
-        .find(|s| s.id == id)
-        .ok_or_else(no_such)?;
+    match remembered(&home, &id, &repos(&shared)).await? {
+        Some(saved) => Ok(answer(StatusCode::CREATED, json!(saved))),
+        None => Err(ApiError::new(
+            StatusCode::NOT_FOUND,
+            "There's no such suggestion.",
+        )),
+    }
+}
+
+/// The owner said yes to the suggestion `id`: it's saved and taken out of the list. None when
+/// there's no such suggestion. The only way a workflow is saved.
+async fn remembered(
+    home: &Path,
+    id: &str,
+    repos: &[(String, String)],
+) -> Result<Option<Memory>, Refused> {
+    let Some(suggestion) = suggestions(home).into_iter().find(|s| s.id == id) else {
+        return Ok(None);
+    };
     let now = obi_protocol::time::format(obi_protocol::time::now());
     let memory = Memory {
         id: new_id('m'),
         scope: suggestion.scope.clone(),
         repo: suggestion.repo.clone(),
         kind: suggestion.kind.clone(),
-        source: "found".into(),
+        source: if suggestion.workflow.is_some() {
+            "user"
+        } else {
+            "found"
+        }
+        .into(),
         title: suggestion.title.clone(),
         text: suggestion.text.clone(),
         from: suggestion.from.clone(),
         created: now.clone(),
         updated: now,
         used: 0,
+        workflow: suggestion.workflow.clone(),
     };
-    let repos = repos(&shared);
-    let own = own_branches(&repos, memory.repo.as_deref());
-    let saved = save(&home, memory, &own, &scratch(&home)).await?;
-    if let Err(e) = take_suggestion(&home, &id) {
+    let own = own_branches(repos, memory.repo.as_deref());
+    let saved = keep(home, memory, &own, &scratch(home)).await?;
+    if let Err(e) = take_suggestion(home, id) {
         tracing::warn!("memory: the suggestion {id} stays listed: {e}");
     }
-    Ok(answer(StatusCode::CREATED, json!(saved)))
+    Ok(Some(saved))
 }
 
 /// `POST /v1/memory/suggestions/{id}/dismiss`: Not this.
@@ -1490,6 +1726,7 @@ mod tests {
             created: "2026-10-20T10:00:00Z".into(),
             updated: "2026-10-20T10:00:00Z".into(),
             used: 0,
+            workflow: None,
         }
     }
 
@@ -1945,5 +2182,147 @@ mod tests {
         })
         .await;
         assert_eq!(found, Ok(vec![]));
+    }
+
+    /// This repository's remembered workflow (AGENTS.md): squash-merge into dev after the review
+    /// approves and the Mac's checks pass on the same commit.
+    fn obis() -> Workflow {
+        Workflow {
+            base: "dev".into(),
+            method: Method::Squash,
+            rebase_first: false,
+            review: Approval::Reviewer,
+            checks: Checks::Mac,
+        }
+    }
+
+    #[test]
+    fn a_workflow_reads_back_as_written() {
+        let mut one = memory(Some("obi-ai-bot/oby"), &obis().sentence());
+        one.kind = "workflow".into();
+        one.source = "user".into();
+        one.title = workflow_title("obi-ai-bot/oby");
+        one.workflow = Some(obis());
+        let file = one.to_file();
+        assert!(
+            file.contains(r#"workflow: {"base":"dev","method":"squash","rebaseFirst":false,"review":"reviewer","checks":"mac"}"#),
+            "{file}"
+        );
+        assert_eq!(Memory::parse(&file), Some(one.clone()));
+        assert_eq!(
+            one.text,
+            "Squash-merge into dev after Oby's reviewer account approves and your Mac's checks pass on the same commit."
+        );
+        assert_eq!(one.title, "How oby merges");
+        // Read strictly: anything obid doesn't know, and it isn't a memory.
+        let line = r#"{"base":"dev","method":"squash","rebaseFirst":false,"review":"reviewer","checks":"mac"}"#;
+        for broken in [
+            line.replace("squash", "fast-forward"),
+            line.replace(r#""checks":"mac""#, r#""checks":"mac","auto":true"#),
+            line.replace(r#","checks":"mac""#, ""),
+            // Nothing merges without a check that passed on its head.
+            line.replace(r#""checks":"mac""#, r#""checks":"none""#),
+            line.replace(r#""dev""#, r#""main""#),
+            line.replace(r#""dev""#, r#""../x""#),
+        ] {
+            assert_eq!(
+                Memory::parse(&file.replace(line, &broken)),
+                None,
+                "{broken}"
+            );
+        }
+        // A workflow is a workflow memory's, of one repository, and a workflow memory has one.
+        assert_eq!(
+            Memory::parse(&file.replace("kind: workflow", "kind: preference")),
+            None
+        );
+        let mut bare = one.clone();
+        bare.workflow = None;
+        assert_eq!(Memory::parse(&bare.to_file()), None);
+        let mut everywhere = one.clone();
+        everywhere.scope = "user".into();
+        everywhere.repo = None;
+        assert_eq!(Memory::parse(&everywhere.to_file()), None);
+    }
+
+    /// Every workflow's words are obid's, and none of them widens a fixed rule.
+    #[test]
+    fn a_workflows_words_widen_nothing() {
+        for method in [Method::Squash, Method::Merge, Method::Rebase] {
+            for rebase_first in [false, true] {
+                for review in [Approval::Reviewer, Approval::Teammate, Approval::Person] {
+                    for checks in [Checks::Mac, Checks::Github] {
+                        let workflow = Workflow {
+                            base: "dev".into(),
+                            method,
+                            rebase_first,
+                            review,
+                            checks,
+                        };
+                        let said = format!(
+                            "{}. {}",
+                            workflow_title("obi-ai-bot/oby"),
+                            workflow.sentence()
+                        );
+                        assert_eq!(widens(&said, &["dev"]), None, "{said}");
+                    }
+                }
+            }
+        }
+    }
+
+    /// Only the owner's Remember on its own question saves a workflow; a new one replaces the one
+    /// before, and it's read back typed.
+    #[tokio::test]
+    async fn a_workflow_is_saved_only_on_the_owners_yes() {
+        let home = home();
+        let repo = "obi-ai-bot/oby";
+        let repos = vec![(repo.to_owned(), "dev".to_owned())];
+        // Never into main, master or trunk; never somewhere that isn't a repository.
+        for base in ["main", "MASTER", "trunk"] {
+            let mut main = obis();
+            main.base = base.into();
+            assert!(matches!(
+                ask_workflow(&home, repo, main, "You merged it"),
+                Err(Refused::Invalid(_))
+            ));
+        }
+        assert!(ask_workflow(&home, "../x", obis(), "You merged it").is_err());
+        let asked = ask_workflow(&home, repo, obis(), "You merged oby#671 this way").unwrap();
+        assert_eq!(asked.kind, "workflow");
+        assert_eq!(asked.text, obis().sentence());
+        assert_eq!(suggestions(&home), vec![asked.clone()]);
+        // Asked isn't saved, and nothing else saves one.
+        assert_eq!(workflow(&home, repo), None);
+        let mut by_hand = memory(Some(repo), &obis().sentence());
+        by_hand.kind = "workflow".into();
+        by_hand.workflow = Some(obis());
+        assert!(matches!(
+            save(&home, by_hand, &["dev"], &home.join("scan")).await,
+            Err(Refused::Invalid(_))
+        ));
+        assert_eq!(list(&home), vec![]);
+        // The owner's yes.
+        let saved = remembered(&home, &asked.id, &repos).await.unwrap().unwrap();
+        assert_eq!(saved.workflow, Some(obis()));
+        assert_eq!(saved.source, "user");
+        assert_eq!(saved.from, "You merged oby#671 this way");
+        assert_eq!(workflow(&home, repo), Some(saved.clone()));
+        assert_eq!(suggestions(&home), vec![]);
+        assert_eq!(remembered(&home, &asked.id, &repos).await.unwrap(), None);
+        // A second one replaces it.
+        let mut merge = obis();
+        merge.method = Method::Merge;
+        merge.checks = Checks::Github;
+        let again =
+            ask_workflow(&home, repo, merge.clone(), "You merged oby#672 this way").unwrap();
+        let replaced = remembered(&home, &again.id, &repos).await.unwrap().unwrap();
+        assert_eq!(workflow(&home, repo).and_then(|m| m.workflow), Some(merge));
+        assert_eq!(list(&home).len(), 1);
+        assert!(workflow(&home, "obi-ai-bot/other").is_none());
+        // Deleting it puts the repository back on the question.
+        assert!(delete(&home, &replaced.id).unwrap());
+        assert_eq!(workflow(&home, repo), None);
+        let _ = std::fs::remove_dir_all(&home);
     }
 }

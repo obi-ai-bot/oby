@@ -585,6 +585,10 @@ async fn keep_reviewer(
             "{user} is your own GitHub account: sign the reviewer in with a second one, since nobody can approve their own pull request."
         ));
     }
+    // Every reviewer login is kept for good before its login is, so its approval never passes
+    // for a teammate's once it's signed out (crate::merge). Not kept: no sign-in.
+    crate::merge::note_reviewer(&shared.config.home, &user)
+        .map_err(|e| format!("obid couldn't keep the reviewer's login: {e}"))?;
     let folder = reviewer_folder(&shared.config.home);
     {
         // Under the slot's lock, which a sign-out takes to end this sign-in: either the login is

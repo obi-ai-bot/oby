@@ -440,6 +440,29 @@ pub struct Job {
     /// replacing 2026-10-23's by hand).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub untrusted: bool,
+    /// Why obid didn't merge its pull request, when only the owner can take it on from here
+    /// (crate::merge); none otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub merge_error: Option<String>,
+    /// The merge stopped where the owner takes over: `merge_error` says why.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub merge_needs_you: bool,
+    /// Who had obid merge its pull request, and when; none until obid merged it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub merged_by: Option<MergedBy>,
+}
+
+/// Who had obid merge a job's pull request (crate::merge): the owner, with a tap, or the
+/// repository's workflow the owner taught it (a `workflow` memory, #854).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MergedBy {
+    /// `owner` or `memory`.
+    pub by: String,
+    /// The workflow memory it followed, for `memory`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory: Option<String>,
+    /// Seconds since the epoch.
+    pub at: i64,
 }
 
 /// Which standing rule started a job (#1314): the rule's id and type.
@@ -624,6 +647,9 @@ impl Job {
             untrusted: false,
             ran_secs: None,
             budget_from: None,
+            merge_error: None,
+            merge_needs_you: false,
+            merged_by: None,
         }
     }
 
@@ -897,8 +923,7 @@ impl Job {
             "startCommit": self.start_commit,
             "firstSwiftBuildSeconds": null,
             "macCheck": mac_check_json(self.mac_check.clone(), "merge"),
-            // obid never merges (runner-api.md, "obid only: what obid leaves out").
-            "mergeError": null,
+            "mergeError": self.merge_error,
             "appleCheck": mac_check_json(self.apple_check.clone(), "apple"),
             "appleRan": mac_check_json(self.apple_ran.clone(), "apple"),
             "tetrix": self.tetrix.as_ref().map(crate::tetrix::Use::to_json),
@@ -916,7 +941,7 @@ impl Job {
             "connectionUses": self.connection_uses,
             "pipeline": self.pipeline(),
             "title": self.short_title(),
-            "mergeNeedsYou": false,
+            "mergeNeedsYou": self.merge_needs_you,
             "reviewNeedsYou": self.review_needs_you(),
             "cloudNeedsYou": false,
             "report": false,
@@ -940,6 +965,10 @@ impl Job {
         }
         if self.untrusted {
             value["untrusted"] = json!(true);
+        }
+        if let Some(merged) = &self.merged_by {
+            value["mergedBy"] = json!({"by": merged.by, "memory": merged.memory,
+                                       "at": obi_protocol::time::format(merged.at)});
         }
         if let Some(why) = &self.no_reviewer {
             value["noReviewer"] = json!(why);
