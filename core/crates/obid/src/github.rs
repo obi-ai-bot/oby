@@ -444,30 +444,160 @@ pub async fn issue_body(gh: &Path, repo: &str, number: u64) -> Option<String> {
     .ok()
 }
 
+/// What the follower asks of a pull request: its status, and what a merge needs (crate::merge).
+const FIELDS: &str = "state,reviewDecision,mergedAt,baseRefName,headRefOid,statusCheckRollup,mergeable,mergeStateStatus,latestReviews,author";
+
 /// What GitHub says now about the pull request `number` of `repo`, read at `now`. The error is a
 /// fixed line: what `gh` printed could hold a credential or someone's words.
 pub async fn view(gh: &Path, repo: &str, number: u64, now: i64) -> Result<PullRequest, String> {
+    view_merging(gh, repo, number, now).await.map(|(pr, _)| pr)
+}
+
+/// [`view`], with what a merge needs to know besides ([`Merging`]), from the same one read.
+pub async fn view_merging(
+    gh: &Path,
+    repo: &str,
+    number: u64,
+    now: i64,
+) -> Result<(PullRequest, Merging), String> {
     const FAILED: &str = "Couldn't refresh the pull request. Will try again shortly.";
     let number = number.to_string();
     let output = run(
         gh,
-        &[
-            "pr",
-            "view",
-            &number,
-            "--repo",
-            repo,
-            "--json",
-            "state,reviewDecision,mergedAt,baseRefName,headRefOid",
-        ],
+        &["pr", "view", &number, "--repo", repo, "--json", FIELDS],
     )
     .await
     .map_err(|_| FAILED.to_owned())?;
-    decode(&output, now).ok_or_else(|| FAILED.to_owned())
+    let pr = decode(&output, now).ok_or_else(|| FAILED.to_owned())?;
+    let merging = decode_merging(&output, pr.head.as_deref()).ok_or_else(|| FAILED.to_owned())?;
+    Ok((pr, merging))
 }
 
-/// `gh pr view --json state,reviewDecision,mergedAt,baseRefName,headRefOid`, checked: a known
-/// state, a base, and a merge date exactly when merged.
+/// What a merge needs to know about a pull request besides [`PullRequest`], read with it
+/// (crate::merge): typed status and logins only, never what anyone wrote.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Merging {
+    /// Its head's checks on GitHub, summed up: `SUCCESS` (every one passed, was neutral or was
+    /// skipped), `PENDING`, `FAILURE`, or `NONE` (it has none); none when GitHub didn't say.
+    pub checks: Option<&'static str>,
+    /// `MERGEABLE`, `CONFLICTING` or `UNKNOWN`; none when GitHub didn't say.
+    pub mergeable: Option<String>,
+    /// GitHub's `mergeStateStatus`: `CLEAN`, `HAS_HOOKS`, `BEHIND`, `BLOCKED`, `DIRTY`, `DRAFT`,
+    /// `UNSTABLE` or `UNKNOWN`; none when GitHub didn't say.
+    pub merge_state: Option<String>,
+    /// Who approved its head: the logins whose latest review approves the head commit itself,
+    /// never its author's.
+    pub approved_by: Vec<String>,
+    /// Someone's latest review asks for changes.
+    pub changes_requested: bool,
+}
+
+/// [`Merging`] from `gh pr view --json` with [`FIELDS`], for the pull request whose head is
+/// `head`; none when it isn't JSON.
+pub fn decode_merging(text: &str, head: Option<&str>) -> Option<Merging> {
+    let value: Value = serde_json::from_str(text).ok()?;
+    let word = |key: &str, known: &[&str]| {
+        value[key]
+            .as_str()
+            .filter(|v| known.contains(v))
+            .map(str::to_owned)
+    };
+    let author = value["author"]["login"].as_str();
+    let mut approved_by = vec![];
+    let mut changes_requested = false;
+    for review in value["latestReviews"].as_array().into_iter().flatten() {
+        let Some(login) = review["author"]["login"].as_str().filter(|l| is_login(l)) else {
+            continue;
+        };
+        match review["state"].as_str() {
+            Some("CHANGES_REQUESTED") => changes_requested = true,
+            // Only an approval of the head itself, by someone else than the author.
+            Some("APPROVED")
+                if Some(login) != author
+                    && head.is_some()
+                    && review["commit"]["oid"].as_str() == head =>
+            {
+                approved_by.push(login.to_owned());
+            }
+            _ => {}
+        }
+    }
+    Some(Merging {
+        checks: value["statusCheckRollup"]
+            .as_array()
+            .map(Vec::as_slice)
+            .map(rollup),
+        mergeable: word("mergeable", &["MERGEABLE", "CONFLICTING", "UNKNOWN"]),
+        merge_state: word(
+            "mergeStateStatus",
+            &[
+                "CLEAN",
+                "HAS_HOOKS",
+                "BEHIND",
+                "BLOCKED",
+                "DIRTY",
+                "DRAFT",
+                "UNSTABLE",
+                "UNKNOWN",
+            ],
+        ),
+        approved_by,
+        changes_requested,
+    })
+}
+
+/// A head's check runs and statuses (`statusCheckRollup`), summed up: any failed is `FAILURE`,
+/// then any not finished (or that reads as nothing known) is `PENDING`, then `SUCCESS`; an empty
+/// list is `NONE`.
+fn rollup(list: &[Value]) -> &'static str {
+    const FAILED: [&str; 7] = [
+        "FAILURE",
+        "ERROR",
+        "TIMED_OUT",
+        "CANCELLED",
+        "ACTION_REQUIRED",
+        "STARTUP_FAILURE",
+        "STALE",
+    ];
+    const PASSED: [&str; 3] = ["SUCCESS", "NEUTRAL", "SKIPPED"];
+    if list.is_empty() {
+        return "NONE";
+    }
+    // A check run says `conclusion` once `status` is `COMPLETED`; a status says `state`.
+    fn outcome(check: &Value) -> Option<&str> {
+        let finished = check["status"].as_str().is_none_or(|s| s == "COMPLETED");
+        let said = check["conclusion"]
+            .as_str()
+            .filter(|c| !c.is_empty())
+            .or(check["state"].as_str());
+        if finished { said } else { None }
+    }
+    if list
+        .iter()
+        .any(|c| outcome(c).is_some_and(|o| FAILED.contains(&o)))
+    {
+        "FAILURE"
+    } else if list
+        .iter()
+        .all(|c| outcome(c).is_some_and(|o| PASSED.contains(&o)))
+    {
+        "SUCCESS"
+    } else {
+        "PENDING"
+    }
+}
+
+/// A GitHub login: letters, digits and single hyphens, never a bot's (`name[bot]`).
+fn is_login(login: &str) -> bool {
+    !login.is_empty()
+        && login.len() <= 39
+        && login
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+}
+
+/// `gh pr view --json` with [`FIELDS`] (or the first five of them), checked: a known state, a
+/// base, and a merge date exactly when merged.
 pub fn decode(text: &str, now: i64) -> Option<PullRequest> {
     let value: Value = serde_json::from_str(text).ok()?;
     let state = value["state"].as_str()?;
@@ -668,6 +798,85 @@ mod tests {
         ] {
             assert_eq!(decode(bad, now), None, "{bad}");
         }
+    }
+
+    /// What a merge needs, from the follower's one `gh pr view`: the head's checks summed up,
+    /// GitHub's words for whether it merges, and who approved that very head.
+    #[test]
+    fn what_a_merge_needs_to_know() {
+        let head = "a".repeat(40);
+        let read = |value: Value| decode_merging(&value.to_string(), Some(&head)).unwrap();
+        let checks = |list: Value| read(json!({"statusCheckRollup": list})).checks;
+        let run = |status: &str, conclusion: &str| json!({"__typename": "CheckRun", "status": status, "conclusion": conclusion});
+        let status = |state: &str| json!({"__typename": "StatusContext", "state": state});
+        assert_eq!(checks(json!([])), Some("NONE"));
+        assert_eq!(checks(json!(null)), None);
+        assert_eq!(
+            checks(json!([
+                run("COMPLETED", "SUCCESS"),
+                run("COMPLETED", "SKIPPED"),
+                run("COMPLETED", "NEUTRAL"),
+                status("SUCCESS")
+            ])),
+            Some("SUCCESS")
+        );
+        for red in [
+            run("COMPLETED", "FAILURE"),
+            run("COMPLETED", "TIMED_OUT"),
+            run("COMPLETED", "CANCELLED"),
+            run("COMPLETED", "ACTION_REQUIRED"),
+            status("ERROR"),
+            status("FAILURE"),
+        ] {
+            assert_eq!(
+                checks(json!([run("IN_PROGRESS", ""), red.clone()])),
+                Some("FAILURE"),
+                "{red}"
+            );
+        }
+        for pending in [
+            run("IN_PROGRESS", ""),
+            run("QUEUED", ""),
+            status("PENDING"),
+            status("EXPECTED"),
+            json!({"name": "odd"}),
+            run("COMPLETED", "SOMETHING_NEW"),
+        ] {
+            assert_eq!(
+                checks(json!([status("SUCCESS"), pending.clone()])),
+                Some("PENDING"),
+                "{pending}"
+            );
+        }
+        let review = |login: &str, state: &str, oid: &str| json!({"author": {"login": login}, "state": state, "commit": {"oid": oid}, "body": "LGTM"});
+        let merging = read(json!({
+            "author": {"login": "wellprado"},
+            "mergeable": "MERGEABLE", "mergeStateStatus": "CLEAN",
+            "latestReviews": [
+                review("oby-reviewer", "APPROVED", &head),
+                review("wellprado", "APPROVED", &head),
+                review("ana", "APPROVED", &"b".repeat(40)),
+                review("bot[bot]", "APPROVED", &head),
+                review("joe", "COMMENTED", &head),
+            ],
+        }));
+        assert_eq!(merging.approved_by, ["oby-reviewer"]);
+        assert!(!merging.changes_requested);
+        assert_eq!(merging.mergeable.as_deref(), Some("MERGEABLE"));
+        assert_eq!(merging.merge_state.as_deref(), Some("CLEAN"));
+        let asked = read(
+            json!({"latestReviews": [review("ana", "CHANGES_REQUESTED", "x")], "mergeable": "maybe", "mergeStateStatus": "FINE"}),
+        );
+        assert!(asked.changes_requested);
+        assert_eq!((asked.mergeable, asked.merge_state), (None, None));
+        // Without a head, nobody approved it.
+        let unknown = decode_merging(
+            &json!({"latestReviews": [review("oby-reviewer", "APPROVED", &head)]}).to_string(),
+            None,
+        )
+        .unwrap();
+        assert!(unknown.approved_by.is_empty());
+        assert_eq!(decode_merging("not json", Some(&head)), None);
     }
 
     #[test]

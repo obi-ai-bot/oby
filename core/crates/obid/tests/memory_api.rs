@@ -189,3 +189,65 @@ fn a_scan_that_cant_run_saves_nothing() {
     assert_eq!(listed.body["memories"], json!([]));
     assert_eq!(listed.body["suggestions"].as_array().unwrap().len(), 1);
 }
+
+/// How a repository merges (#854) is kept typed, only on the owner's Remember on its own
+/// question, never into main, and read back as written.
+#[test]
+fn a_workflow_memory_keeps_its_typed_merge_and_refuses_main() {
+    let folder = Folder::new("memory-api-workflow");
+    let remote = fixture(&folder.0.join("fixture"));
+    let config = config(&folder.0, &remote, &stub_agent());
+    let memory = folder.0.join("home/memory");
+    std::fs::create_dir_all(&memory).unwrap();
+    let workflow = |base: &str| json!({"base": base, "method": "squash", "rebaseFirst": false, "review": "reviewer", "checks": "mac"});
+    let asked = |id: &str, base: &str| {
+        json!({"id": id, "scope": "project", "repo": "obi-e2e/fixture-app", "kind": "workflow",
+               "title": "How fixture-app merges", "text": "Merge whenever.",
+               "from": "You merged fixture-app#7 this way", "sources": [], "workflow": workflow(base)})
+    };
+    std::fs::write(
+        memory.join("suggestions.json"),
+        json!([asked("s0000000a", "dev"), asked("s0000000b", "main")]).to_string(),
+    )
+    .unwrap();
+    let obid = start(&folder.0, &config, None);
+
+    let main = call(
+        &obid,
+        "POST",
+        "/v1/memory/suggestions/s0000000b/remember",
+        None,
+    );
+    assert_eq!(main.status, 422, "{}", main.text);
+    assert!(
+        main.text.contains("never merges into main"),
+        "{}",
+        main.text
+    );
+
+    let saved = call(
+        &obid,
+        "POST",
+        "/v1/memory/suggestions/s0000000a/remember",
+        None,
+    );
+    assert_eq!(saved.status, 201, "{}", saved.text);
+    assert_eq!(saved.body["kind"], "workflow");
+    assert_eq!(saved.body["source"], "user");
+    assert_eq!(saved.body["workflow"], workflow("dev"));
+    // Its words are obid's own, made from the workflow, never the suggestion's.
+    assert_eq!(
+        saved.body["text"],
+        "Squash-merge into dev after Oby's reviewer account approves and your Mac's checks pass on the same commit."
+    );
+    let id = saved.body["id"].as_str().unwrap();
+    let file =
+        std::fs::read_to_string(memory.join(format!("repos/obi-e2e/fixture-app/{id}.md"))).unwrap();
+    assert!(
+        file.contains(r#"workflow: {"base":"dev","method":"squash","rebaseFirst":false,"review":"reviewer","checks":"mac"}"#),
+        "{file}"
+    );
+    let listed = call(&obid, "GET", "/v1/memory", None);
+    assert_eq!(listed.body["memories"][0]["workflow"], workflow("dev"));
+    assert_eq!(listed.body["suggestions"][0]["id"], "s0000000b");
+}
