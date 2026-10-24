@@ -870,6 +870,8 @@ fn owners_call(item: &Item, words: &str, job: Option<&Job>) -> Owners {
         "watch" => Owners::Refuse("it's for you to read, in your inbox.".into()),
         // A review the listener started: Approve posts on GitHub, which only the owner does.
         "listen" => Owners::Refuse("only you can approve or dismiss it, in your inbox.".into()),
+        // A merge card: merging is the owner's tap, or the workflow they taught Oby (#853).
+        "merge" => Owners::Refuse("only you can merge it, in your inbox.".into()),
         // A job's plan is the owner's to approve or send back, either way (#609).
         "plan" => Owners::Refuse(
             "it's a job's plan: only you can approve it or send it back, in your inbox.".into(),
@@ -1373,6 +1375,23 @@ mod tests {
             owners_call(&confirm, "Confirm", None),
             Owners::Refuse("only you can confirm it, in your inbox.".into())
         );
+    }
+
+    #[test]
+    fn the_brain_cant_answer_a_merge_card() {
+        let card = item(
+            "merge",
+            "merge-j1-abc",
+            "Ready to merge: Fix the thing",
+            &["Merge", "Merge, and remember", "Leave it open"],
+        );
+        for words in ["Merge", "Merge, and remember", "Leave it open"] {
+            assert_eq!(
+                owners_call(&card, words, None),
+                Owners::Refuse("only you can merge it, in your inbox.".into()),
+                "{words}"
+            );
+        }
     }
 
     #[test]

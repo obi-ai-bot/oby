@@ -455,19 +455,26 @@ pub async fn view(gh: &Path, repo: &str, number: u64, now: i64) -> Result<PullRe
 }
 
 /// [`view`], with what a merge needs to know besides ([`Merging`]): the same read, then its
-/// reviews ([`reviews`]).
+/// reviews ([`reviews`]). Merging's own error when only that part couldn't be read: the pull
+/// request's status still is.
 pub async fn view_merging(
     gh: &Path,
     repo: &str,
     number: u64,
     now: i64,
-) -> Result<(PullRequest, Merging), String> {
+) -> Result<(PullRequest, Result<Merging, String>), String> {
     let output = pr_view(gh, repo, number).await?;
     let pr = decode(&output, now).ok_or_else(|| FAILED.to_owned())?;
-    let mut merging = decode_merging(&output).ok_or_else(|| FAILED.to_owned())?;
-    merging.reviews = reviews(gh, repo, number)
-        .await
-        .map_err(|_| FAILED.to_owned())?;
+    let merging = match decode_merging(&output) {
+        Some(mut merging) => reviews(gh, repo, number)
+            .await
+            .map(|reviews| {
+                merging.reviews = reviews;
+                merging
+            })
+            .map_err(|_| FAILED.to_owned()),
+        None => Err(FAILED.to_owned()),
+    };
     Ok((pr, merging))
 }
 
