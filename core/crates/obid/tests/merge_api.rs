@@ -79,6 +79,7 @@ printf '%s|%s\n' "$GH_CONFIG_DIR" "$*" >> "$dir/calls"
 case "$*" in
   "auth status --hostname github.com --active --json hosts")
     who=octo-cat; [ -n "$GH_CONFIG_DIR" ] && who=oby-reviewer
+    [ -n "$GH_CONFIG_DIR" ] && [ -f "$dir/reviewer-stale" ] && {{ echo '{{"hosts": {{"github.com": []}}}}'; exit 0; }}
     echo '{{"hosts": {{"github.com": [{{"active": true, "state": "success", "login": "'$who'"}}]}}}}' ;;
   "pr view 7 --repo {REPO} --json "*)
     if [ -f "$dir/merged-on-github" ]; then cat "$dir/view-merged.json";
@@ -94,7 +95,9 @@ case "$*" in
   "api repos/{REPO} --jq .permissions.push") echo true ;;
   "api repos/{REPO}/rules/branches/dev")
     if [ -f "$dir/requires-approval" ]; then echo '[{{"type": "pull_request", "parameters": {{"required_approving_review_count": 1}}}}]'; else echo '[]'; fi ;;
-  "api repos/{REPO}/branches/dev/protection/required_pull_request_reviews") echo 'gh: Branch not protected (HTTP 404)' >&2; exit 1 ;;
+  "api repos/{REPO}/branches/dev/protection/required_pull_request_reviews")
+    if [ -f "$dir/protection-403" ]; then echo '{{"message": "API rate limit exceeded for user ID 1.", "status": "403"}}'; echo 'gh: API rate limit exceeded (HTTP 403)' >&2; exit 1; fi
+    echo '{{"message": "Branch not protected", "status": "404"}}'; echo 'gh: Branch not protected (HTTP 404)' >&2; exit 1 ;;
   "api -X POST repos/{REPO}/pulls/7/reviews "*) touch "$dir/approved"; echo '{{"id": 1}}' ;;
   "api repos/{REPO}/pulls/7") cat "$dir/pull.json" ;;
   "api -X PUT repos/{REPO}/pulls/7/merge "*) touch "$dir/merged"; echo '{{"merged": true}}' ;;
@@ -730,4 +733,48 @@ fn a_teammate_workflow_asks_a_teammates_oby() {
         (job["mergedBy"]["by"] == "memory").then_some(job)
     });
     assert_eq!(merged["mergeNeedsYou"], false);
+}
+
+/// GitHub's protection that can't be read (a rate limit, a 5xx) is never taken for none: Oby's own
+/// review waits, and nobody is asked anything.
+#[test]
+fn unreadable_protection_merges_nothing() {
+    let folder = Folder::new("merge-protection-403");
+    let obid = started_with(&folder, false, Some(OBY), published(), &["protection-403"]);
+    within(30, "a few reads", || {
+        (calls(&folder.0).matches("pr view 7").count() >= 3).then_some(())
+    });
+    let waiting = job(&obid);
+    assert_eq!(waiting["mergeNeedsYou"], false);
+    assert!(waiting["mergedBy"].is_null());
+    assert!(!calls(&folder.0).contains("-X PUT"));
+    assert!(merge_cards(&obid).is_empty());
+}
+
+/// A repository Oby hasn't learned whose rules require an approving review asks its owner, and
+/// no teammate is asked to review it first.
+#[test]
+fn an_unlearned_repository_with_required_approvals_asks_only_the_owner() {
+    let folder = Folder::new("merge-required-unlearned");
+    let obid = started_with(&folder, false, None, published(), &["requires-approval"]);
+    let card = within(30, "the card", || merge_cards(&obid).into_iter().next());
+    // X5's ask would have said why no teammate could: only the owner's words here.
+    assert_eq!(
+        card["text"],
+        "GitHub requires another person's approval here."
+    );
+    assert_eq!(merge_cards(&obid).len(), 1);
+    assert!(!calls(&folder.0).contains("-X PUT"));
+}
+
+/// A reviewer account that signed in once and isn't signed in any more never stalls an `oby`
+/// merge: that account matters only to a `reviewer` workflow.
+#[test]
+fn a_stale_reviewer_login_doesnt_stall_an_oby_merge() {
+    let folder = Folder::new("merge-stale-reviewer");
+    let obid = started_with(&folder, true, Some(OBY), published(), &["reviewer-stale"]);
+    within(30, "the job to be merged", || {
+        (job(&obid)["mergedBy"]["by"] == "memory").then_some(())
+    });
+    assert!(!calls(&folder.0).contains("-X POST"));
 }

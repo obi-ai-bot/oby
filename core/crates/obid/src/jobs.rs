@@ -7735,15 +7735,10 @@ impl Jobs {
         };
         let reviewer = crate::github_login::reviewer(gh, &home, &owner).await;
         let current = reviewer.as_ref().ok().and_then(|r| r.as_ref());
-        // Whose approval counts: every reviewer account Oby used, or none when that can't be
-        // read, and then nothing merges.
-        let reviewers = reviewer
-            .as_ref()
-            .ok()
-            .and_then(|r| crate::merge::reviewers(&home, r.as_ref().map(|(_, l)| l.as_str())).ok());
-        self.settle_sending(id, &merging);
         let learned = crate::memory::workflow(&home, &job.repo);
         let workflow = learned.as_ref().and_then(|m| m.workflow.clone());
+        let reviewers = crate::merge::accounts(&home, &owner, &reviewer, workflow.as_ref());
+        self.settle_sending(id, &merging);
         // Oby's own review of the head is the review, and the owner's own login merges (the owner's
         // decision of 2026-10-24): no second account is needed. The reviewer account is an
         // optional extra, posting its approval only where a `reviewer` workflow names it and one
@@ -7806,6 +7801,14 @@ impl Jobs {
         };
         let card = if let Some(why) = stop {
             Some(crate::merge::stopped_card(&job, &head, &why))
+        } else if required && workflow.is_none() {
+            // A repository Oby hasn't learned asks its owner first: no teammate is asked to
+            // review it before the owner said how it merges.
+            Some(crate::merge::stopped_card(
+                &job,
+                &head,
+                crate::merge::REQUIRES_PERSON,
+            ))
         } else if by_teammate || required {
             let goal = job.short_title();
             let change = crate::sphere::approval::Change {
@@ -7854,15 +7857,12 @@ impl Jobs {
                             let go = |action: &str| {
                                 self.about_to_send(id, &head, action, Some(by.clone()), None)
                             };
-                            crate::merge::merge(
-                                gh,
-                                &home,
-                                &job,
-                                workflow,
-                                current.map(|(_, l)| l.as_str()),
-                                &go,
-                            )
-                            .await
+                            match reviewers.as_ref() {
+                                Some(r) => {
+                                    crate::merge::merge(gh, &home, &job, workflow, r, &go).await
+                                }
+                                None => Err(crate::merge::unread_reviewers()),
+                            }
                         }
                         Err(blocked) => Err(blocked),
                     };
@@ -7995,10 +7995,10 @@ impl Jobs {
             .await
             .user
             .ok_or("obid's gh isn't signed in to GitHub.")?;
-        let reviewer = crate::github_login::reviewer(&gh, &home, &owner).await?;
-        let login = reviewer.as_ref().map(|(_, l)| l.as_str());
-        let reviewers = crate::merge::reviewers(&home, login)?;
+        let reviewer = crate::github_login::reviewer(&gh, &home, &owner).await;
         let learned = crate::memory::workflow(&home, &job.repo).and_then(|m| m.workflow);
+        let reviewers = crate::merge::accounts(&home, &owner, &reviewer, learned.as_ref())
+            .ok_or("Oby couldn't tell who its reviewer accounts are.")?;
         let workflow = learned
             .clone()
             .or_else(|| crate::merge::proposed(&job, &pr, &merging, &reviewers))
@@ -8011,7 +8011,7 @@ impl Jobs {
             at: obi_protocol::time::now(),
         };
         let go = |action: &str| self.about_to_send(id, head, action, Some(by.clone()), None);
-        let outcome = crate::merge::merge(&gh, &home, &job, &workflow, login, &go).await;
+        let outcome = crate::merge::merge(&gh, &home, &job, &workflow, &reviewers, &go).await;
         self.update(id, |job| crate::merge::note(job, &outcome, by));
         let merged = outcome.map_err(|b| b.why)?;
         for sent in &merged.outgoing {
