@@ -20,7 +20,8 @@ fn head() -> String {
 /// A stand-in gh that records every call: the owner is `octo-cat`, the reviewer (with
 /// `GH_CONFIG_DIR`) `oby-reviewer`; the pull request is open, green and clean into dev at
 /// `head()` (merged on GitHub once `gh/merged-on-github` is there, still working out whether it
-/// merges while `gh/unknown` is); its reviews are the
+/// merges while `gh/unknown` is), into a dev whose rules ask for no approving review (one while
+/// `gh/requires-approval` is there); its reviews are the
 /// reviewer's approval once it posted one (`gh/approved`), someone's dismissal of it
 /// (`gh/dismissed`) and a person's approval (`gh/person`); the merge goes through.
 fn stand_in_gh(folder: &Path) -> PathBuf {
@@ -78,6 +79,7 @@ printf '%s|%s\n' "$GH_CONFIG_DIR" "$*" >> "$dir/calls"
 case "$*" in
   "auth status --hostname github.com --active --json hosts")
     who=octo-cat; [ -n "$GH_CONFIG_DIR" ] && who=oby-reviewer
+    [ -n "$GH_CONFIG_DIR" ] && [ -f "$dir/reviewer-stale" ] && {{ echo '{{"hosts": {{"github.com": []}}}}'; exit 0; }}
     echo '{{"hosts": {{"github.com": [{{"active": true, "state": "success", "login": "'$who'"}}]}}}}' ;;
   "pr view 7 --repo {REPO} --json "*)
     if [ -f "$dir/merged-on-github" ]; then cat "$dir/view-merged.json";
@@ -91,6 +93,11 @@ case "$*" in
     echo "[[${{r#,}}]]" ;;
   "api --paginate --slurp repos/{REPO}/pulls/7/commits?per_page=100") cat "$dir/commits.json" ;;
   "api repos/{REPO} --jq .permissions.push") echo true ;;
+  "api repos/{REPO}/rules/branches/dev")
+    if [ -f "$dir/requires-approval" ]; then echo '[{{"type": "pull_request", "parameters": {{"required_approving_review_count": 1}}}}]'; else echo '[]'; fi ;;
+  "api repos/{REPO}/branches/dev/protection/required_pull_request_reviews")
+    if [ -f "$dir/protection-403" ]; then echo '{{"message": "API rate limit exceeded for user ID 1.", "status": "403"}}'; echo 'gh: API rate limit exceeded (HTTP 403)' >&2; exit 1; fi
+    echo '{{"message": "Branch not protected", "status": "404"}}'; echo 'gh: Branch not protected (HTTP 404)' >&2; exit 1 ;;
   "api -X POST repos/{REPO}/pulls/7/reviews "*) touch "$dir/approved"; echo '{{"id": 1}}' ;;
   "api repos/{REPO}/pulls/7") cat "$dir/pull.json" ;;
   "api -X PUT repos/{REPO}/pulls/7/merge "*) touch "$dir/merged"; echo '{{"merged": true}}' ;;
@@ -203,17 +210,6 @@ fn started_with(
         Some(&bin),
         &[("OBID_FOLLOW_SECONDS", "1")],
     )
-}
-
-/// Signs Oby's reviewer account in, as a sign-in leaves it.
-fn sign_in_reviewer(folder: &Folder) {
-    let dir = folder.0.join("home/github/reviewer");
-    std::fs::create_dir_all(&dir).unwrap();
-    std::fs::write(
-        dir.join("hosts.yml"),
-        "github.com:\n    user: oby-reviewer\n",
-    )
-    .unwrap();
 }
 
 fn job(obid: &Obid) -> Value {
@@ -332,7 +328,7 @@ fn merge_and_remember_merges_and_keeps_the_workflow() {
     assert_eq!(memory["memories"][0]["kind"], "workflow");
     assert_eq!(
         memory["memories"][0]["workflow"],
-        json!({"base": "dev", "method": "squash", "rebaseFirst": false, "review": "reviewer", "checks": "github"})
+        json!({"base": "dev", "method": "squash", "rebaseFirst": false, "review": "oby", "checks": "github"})
     );
     assert_eq!(
         memory["memories"][0]["from"],
@@ -347,31 +343,82 @@ fn merge_and_remember_merges_and_keeps_the_workflow() {
     );
     assert_ne!(again.status, 200, "{}", again.text);
     assert_eq!(calls(&folder.0).matches("-X PUT").count(), 1);
+    // Nothing posted as a reviewer: Oby's own review was the review.
+    assert!(!calls(&folder.0).contains("-X POST"));
 }
 
-/// With no reviewer account signed in, Oby posts nothing and merges nothing: one card says what
-/// the owner can do.
+const OBY: &str =
+    r#"{"base":"dev","method":"squash","rebaseFirst":false,"review":"oby","checks":"github"}"#;
+
+/// Oby's own review of the exact head is the review for the owner's own pull request, and the
+/// owner's own login merges it (the owner's decision of 2026-10-24): no reviewer account, no
+/// card. A head its review didn't approve doesn't merge.
 #[test]
-fn no_reviewer_account_posts_nothing_and_asks_once() {
-    let folder = Folder::new("merge-no-reviewer");
+fn an_oby_workflow_merges_on_obys_own_review_of_the_head() {
+    let folder = Folder::new("merge-oby");
+    let obid = started(&folder, false, Some(OBY));
+    let merged = within(30, "the job to be merged", || {
+        let job = job(&obid);
+        (job["mergedBy"]["by"] == "memory").then_some(job)
+    });
+    assert_eq!(merged["mergeNeedsYou"], false);
+    let sent = calls(&folder.0);
+    assert!(!sent.contains("-X POST"), "{sent}");
+    assert!(
+        sent.contains(&format!("-X PUT repos/{REPO}/pulls/7/merge")),
+        "{sent}"
+    );
+    assert!(merge_cards(&obid).is_empty());
+    // The same with a reviewer workflow and no reviewer signed in: that account is an extra.
+    drop(obid);
+    let folder = Folder::new("merge-reviewer-optional");
     let obid = started(&folder, false, Some(OBIS));
+    within(30, "the job to be merged", || {
+        (job(&obid)["mergedBy"]["by"] == "memory").then_some(())
+    });
+    assert!(merge_cards(&obid).is_empty());
+    drop(obid);
+    // Its review approved an older commit: the head GitHub has waits for the next review.
+    let folder = Folder::new("merge-oby-moved");
+    let mut moved = published();
+    moved.review.as_mut().unwrap().commit = "c".repeat(40);
+    let obid = started_with(&folder, false, Some(OBY), moved, &[]);
+    within(30, "a few reads", || {
+        (calls(&folder.0).matches("pr view 7").count() >= 3).then_some(())
+    });
+    let waiting = job(&obid);
+    assert_eq!(waiting["mergeNeedsYou"], false);
+    assert!(waiting["mergedBy"].is_null());
+    assert!(!calls(&folder.0).contains("-X PUT"));
+    assert!(merge_cards(&obid).is_empty());
+}
+
+/// Where GitHub's rules require an approving review, the owner's own can't count: a teammate's
+/// Oby is asked, and when none can, the owner hears it once. Another person's approval merges it.
+#[test]
+fn a_required_approval_goes_to_a_teammate_or_the_owner() {
+    let folder = Folder::new("merge-required");
+    let obid = started_with(
+        &folder,
+        false,
+        Some(OBY),
+        published(),
+        &["requires-approval"],
+    );
     let card = within(30, "the card", || merge_cards(&obid).into_iter().next());
-    assert_eq!(card["title"], "Not merged: Fix the thing");
     assert_eq!(
         card["text"],
-        "Sign in Oby's reviewer account to let it approve."
+        "GitHub requires another person's approval here. Oby isn't in an Obysphere, so no teammate's Oby can approve it."
     );
-    assert_eq!(card["options"], json!(["Dismiss"]));
-    let waiting = job(&obid);
-    assert_eq!(waiting["mergeNeedsYou"], true);
-    assert_eq!(
-        waiting["mergeError"],
-        "Sign in Oby's reviewer account to let it approve."
-    );
-    let calls = calls(&folder.0);
-    assert!(!calls.contains("-X POST"), "{calls}");
-    assert!(!calls.contains("-X PUT"), "{calls}");
+    assert_eq!(job(&obid)["mergeNeedsYou"], true);
+    std::thread::sleep(std::time::Duration::from_secs(2));
     assert_eq!(merge_cards(&obid).len(), 1);
+    assert!(!calls(&folder.0).contains("-X PUT"));
+    std::fs::write(folder.0.join("gh/person"), "").unwrap();
+    within(30, "the job to be merged", || {
+        (job(&obid)["mergedBy"]["by"] == "memory").then_some(())
+    });
+    assert_eq!(job(&obid)["mergeNeedsYou"], false);
 }
 
 const PERSON: &str =
@@ -392,36 +439,26 @@ fn a_person_workflow_merges_without_a_reviewer_account() {
     assert!(merge_cards(&obid).is_empty());
 }
 
-/// "Sign in Oby's reviewer account" gives way to "Ready to merge?" once it's signed in: each its
-/// own card, the first settled.
+/// A repository Oby hasn't learned asks first, with no reviewer account at all: "Ready to merge?"
+/// proposes Oby's own review, and nothing is posted as a reviewer.
 #[test]
-fn signing_the_reviewer_in_turns_the_card_into_ready_to_merge() {
-    let folder = Folder::new("merge-card-switch");
+fn an_unlearned_repository_asks_first_with_no_reviewer() {
+    let folder = Folder::new("merge-ask-no-reviewer");
     let obid = started_with(&folder, false, None, published(), &[]);
-    let signin = within(30, "the sign-in card", || {
-        merge_cards(&obid)
-            .into_iter()
-            .find(|c| c["text"] == "Sign in Oby's reviewer account to let it approve.")
-    });
-    assert_eq!(job(&obid)["mergeNeedsYou"], true);
-    sign_in_reviewer(&folder);
     let ready = within(30, "the ready card", || {
         merge_cards(&obid)
             .into_iter()
             .find(|c| c["id"] == format!("merge-ready-{ID}-{}", head()) && c["done"].is_null())
     });
-    assert_eq!(ready["title"], "Ready to merge: Fix the thing");
-    // The inbox shows open items: the sign-in card is settled.
-    let open: Vec<Value> = merge_cards(&obid)
-        .into_iter()
-        .filter(|c| c["done"].is_null())
-        .collect();
-    assert_eq!(open.len(), 1, "{open:?}");
-    assert_ne!(open[0]["id"], signin["id"]);
-    let now = job(&obid);
-    assert_eq!(now["mergeNeedsYou"], true);
-    assert_eq!(now["mergeError"], ready["text"]);
-    assert_eq!(calls(&folder.0).matches("-X POST").count(), 1);
+    assert!(
+        ready["details"][1]
+            .as_str()
+            .unwrap()
+            .contains("after Oby's own review approves"),
+        "{ready}"
+    );
+    assert_eq!(job(&obid)["mergeError"], ready["text"]);
+    assert!(!calls(&folder.0).contains("-X POST"));
 }
 
 /// An approval someone dismissed on GitHub isn't posted again: the merge waits on the owner, with
@@ -608,8 +645,14 @@ fn a_ready_card_comes_back_when_the_pull_request_is_ready_again() {
 #[test]
 fn a_dismissed_reason_card_stays_dismissed() {
     let folder = Folder::new("merge-reason-dismissed");
-    let obid = started(&folder, false, Some(OBIS));
-    let card = within(30, "the sign-in card", || {
+    let obid = started_with(
+        &folder,
+        false,
+        Some(OBY),
+        published(),
+        &["requires-approval"],
+    );
+    let card = within(30, "the card saying why", || {
         merge_cards(&obid).into_iter().next()
     });
     let dismissed = call(
@@ -666,7 +709,8 @@ const TEAMMATE: &str =
 
 /// A repository a teammate approves (Tetrix's): with no teammate's approval of the head, the
 /// follower asks a teammate's Oby over the Obysphere; one not in an Obysphere can't, and the owner
-/// hears why, once. Oby's own reviewer account's approval never stands in for it.
+/// hears why, once. Oby's own reviewer account posts nothing there: GitHub's branch rules would
+/// count its approval, and it never stands in for a teammate's.
 #[test]
 fn a_teammate_workflow_asks_a_teammates_oby() {
     let folder = Folder::new("merge-teammate");
@@ -678,9 +722,9 @@ fn a_teammate_workflow_asks_a_teammates_oby() {
     );
     let waiting = job(&obid);
     assert_eq!(waiting["mergeNeedsYou"], true);
-    // Its reviewer account approved (posted, harmless), and nothing merged.
+    // Its reviewer account (signed in, able to push) posted nothing, and nothing merged.
     let calls = calls(&folder.0);
-    assert_eq!(calls.matches("-X POST").count(), 1, "{calls}");
+    assert!(!calls.contains("-X POST"), "{calls}");
     assert!(!calls.contains("-X PUT"), "{calls}");
     // A teammate approved it on GitHub meanwhile: it merges, and nobody is asked.
     std::fs::write(folder.0.join("gh/person"), "").unwrap();
@@ -689,4 +733,48 @@ fn a_teammate_workflow_asks_a_teammates_oby() {
         (job["mergedBy"]["by"] == "memory").then_some(job)
     });
     assert_eq!(merged["mergeNeedsYou"], false);
+}
+
+/// GitHub's protection that can't be read (a rate limit, a 5xx) is never taken for none: Oby's own
+/// review waits, and nobody is asked anything.
+#[test]
+fn unreadable_protection_merges_nothing() {
+    let folder = Folder::new("merge-protection-403");
+    let obid = started_with(&folder, false, Some(OBY), published(), &["protection-403"]);
+    within(30, "a few reads", || {
+        (calls(&folder.0).matches("pr view 7").count() >= 3).then_some(())
+    });
+    let waiting = job(&obid);
+    assert_eq!(waiting["mergeNeedsYou"], false);
+    assert!(waiting["mergedBy"].is_null());
+    assert!(!calls(&folder.0).contains("-X PUT"));
+    assert!(merge_cards(&obid).is_empty());
+}
+
+/// A repository Oby hasn't learned whose rules require an approving review asks its owner, and
+/// no teammate is asked to review it first.
+#[test]
+fn an_unlearned_repository_with_required_approvals_asks_only_the_owner() {
+    let folder = Folder::new("merge-required-unlearned");
+    let obid = started_with(&folder, false, None, published(), &["requires-approval"]);
+    let card = within(30, "the card", || merge_cards(&obid).into_iter().next());
+    // X5's ask would have said why no teammate could: only the owner's words here.
+    assert_eq!(
+        card["text"],
+        "GitHub requires another person's approval here."
+    );
+    assert_eq!(merge_cards(&obid).len(), 1);
+    assert!(!calls(&folder.0).contains("-X PUT"));
+}
+
+/// A reviewer account that signed in once and isn't signed in any more never stalls an `oby`
+/// merge: that account matters only to a `reviewer` workflow.
+#[test]
+fn a_stale_reviewer_login_doesnt_stall_an_oby_merge() {
+    let folder = Folder::new("merge-stale-reviewer");
+    let obid = started_with(&folder, true, Some(OBY), published(), &["reviewer-stale"]);
+    within(30, "the job to be merged", || {
+        (job(&obid)["mergedBy"]["by"] == "memory").then_some(())
+    });
+    assert!(!calls(&folder.0).contains("-X POST"));
 }

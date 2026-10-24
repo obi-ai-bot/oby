@@ -12,8 +12,12 @@
 //! - it's the job's own: its `oby/` branch in the repository itself, published by obid, its head
 //!   the commit obid pushed last, nothing unpublished, and the secret scan of that push clean; the
 //!   job is done, the owner's own (never another Obi's), and not dismissed;
-//! - the one the workflow's `review` names approved that very head (its latest review, from the
-//!   REST API): Oby's reviewer account for `reviewer`, anyone else for `teammate` and `person`;
+//! - the one the workflow's `review` names approved that very head: for `oby` (the default, and
+//!   `reviewer` with no reviewer account signed in), Oby's own review of exactly that head, as
+//!   obid pushed it, with another person's approval only where GitHub's rules require one (the
+//!   owner's decision of 2026-10-24: the owner's own login merges, as Claude Code does); else
+//!   its latest review, from the REST API: Oby's reviewer account for `reviewer`, anyone else for
+//!   `teammate` and `person`;
 //!   always someone with write access (`OWNER`, `MEMBER`, `COLLABORATOR`), never a bot, never its
 //!   author (and an author GitHub didn't name stops it); nobody's latest review asks for changes,
 //!   and GitHub doesn't wait for more reviews;
@@ -107,6 +111,9 @@ pub struct Reviewers {
     pub current: Option<String>,
     /// Every reviewer login Oby has used, `current` among them.
     pub used: Vec<String>,
+    /// The owner's own GitHub login (`gh auth status`): Oby's own review counts only for their
+    /// own pull requests. None when it wasn't read: then it counts for none.
+    pub owner: Option<String>,
 }
 
 impl Reviewers {
@@ -169,7 +176,34 @@ pub fn reviewers(home: &Path, current: Option<&str>) -> Result<Reviewers, String
     Ok(Reviewers {
         current: current.map(str::to_owned),
         used: read_reviewers(home)?,
+        owner: None,
     })
+}
+
+/// Oby's reviewer accounts and the owner's login as a merge reads them: the owner `owner` (their gh
+/// login), the reviewer account signed in now when `reviewer` (`github_login::reviewer`) read,
+/// and every one used. Where that account couldn't be read, it matters only to a `reviewer`
+/// workflow (none, and that waits): any other goes on with the logins Oby used. None when those
+/// can't be read either.
+pub fn accounts(
+    home: &Path,
+    owner: &str,
+    reviewer: &Result<Option<(std::path::PathBuf, String)>, String>,
+    workflow: Option<&Workflow>,
+) -> Option<Reviewers> {
+    let current = match reviewer {
+        Ok(signed) => signed.as_ref().map(|(_, login)| login.as_str()),
+        Err(_) if workflow.is_some_and(|w| w.review == Approval::Reviewer) => return None,
+        Err(_) => None,
+    };
+    let mut reviewers = reviewers(home, current).ok()?;
+    reviewers.owner = Some(owner.to_owned());
+    Some(reviewers)
+}
+
+/// Why nothing merges when Oby's reviewer accounts couldn't be read.
+pub fn unread_reviewers() -> Blocked {
+    wait("Not merged yet: Oby couldn't tell who its reviewer accounts are.")
 }
 
 /// Whether the job's pull request, as GitHub has it (`pr` and `merging`: `github::view_merging`),
@@ -193,32 +227,53 @@ pub fn ready(
         return Err(wait("Not merged yet: a review asks for changes."));
     }
     let Some(reviewers) = reviewers else {
-        return Err(wait(
-            "Not merged yet: Oby couldn't tell who its reviewer accounts are.",
-        ));
+        return Err(unread_reviewers());
     };
-    if workflow.review == Approval::Reviewer && reviewers.current.is_none() {
-        return Err(needs_you(format!(
-            "Not merged: {} merges once Oby's reviewer account approves, and it isn't signed in.",
-            name(&job.repo)
-        )));
-    }
     let by = workflow.review;
-    if !merging
-        .reviews
-        .iter()
-        .any(|r| counts(r, head, author, by, reviewers))
-    {
-        return Err(wait(match by {
-            Approval::Reviewer => {
-                "Not merged yet: Oby's reviewer account hasn't approved its head."
+    if by_own_review(by, reviewers) {
+        // Oby's own review of this very head is the review, for the owner's own pull request (the
+        // owner's decision of 2026-10-24), unless GitHub's rules ask for someone else's.
+        let Some(owner) = reviewers.owner.as_deref() else {
+            return Err(wait(
+                "Not merged yet: Oby couldn't tell whose GitHub login merges it.",
+            ));
+        };
+        if !author.eq_ignore_ascii_case(owner) {
+            return Err(needs_you(format!(
+                "Not merged: it's {author}'s pull request, not yours ({owner}), so Oby's own review doesn't count."
+            )));
+        }
+        if !oby_approved(job, head) {
+            return Err(wait(
+                "Not merged yet: Oby's review hasn't approved its head.",
+            ));
+        }
+        match another_needed(pr, merging, head, author, reviewers) {
+            None => {
+                return Err(wait(
+                    "Not merged yet: Oby couldn't read whether GitHub requires an approving review here.",
+                ));
             }
-            Approval::Teammate => "Not merged yet: no teammate has approved its head.",
-            Approval::Person => "Not merged yet: nobody has approved its head.",
-        }));
-    }
-    if pr.review_decision.as_deref() == Some("REVIEW_REQUIRED") {
-        return Err(wait("Not merged yet: GitHub waits for more reviews."));
+            Some(true) => return Err(wait(format!("Not merged yet: {REQUIRES_PERSON}"))),
+            Some(false) => {}
+        }
+    } else {
+        if !merging
+            .reviews
+            .iter()
+            .any(|r| counts(r, head, author, by, reviewers))
+        {
+            return Err(wait(match by {
+                Approval::Reviewer => {
+                    "Not merged yet: Oby's reviewer account hasn't approved its head."
+                }
+                Approval::Teammate => "Not merged yet: no teammate has approved its head.",
+                Approval::Oby | Approval::Person => "Not merged yet: nobody has approved its head.",
+            }));
+        }
+        if pr.review_decision.as_deref() == Some("REVIEW_REQUIRED") {
+            return Err(wait("Not merged yet: GitHub waits for more reviews."));
+        }
     }
     match merging.checks {
         None => {
@@ -290,11 +345,85 @@ pub fn wanted_approval(
     let (workflow, head) = owned(job, workflow, pr).ok()?;
     let author = merging.author.as_deref()?;
     let by = workflow.review;
+    // Oby's own review is Oby's to give: it waits on nobody else's, unless GitHub requires one.
+    if by_own_review(by, reviewers) {
+        return None;
+    }
     let approved = merging
         .reviews
         .iter()
         .any(|r| counts(r, head, author, by, reviewers));
     (!asked_for_changes(pr, merging) && !approved).then_some(by)
+}
+
+/// Why a merge by Oby's own review needs someone else: GitHub's rules for the base require an
+/// approving review, and the owner's own can't count on their pull request.
+pub const REQUIRES_PERSON: &str = "GitHub requires another person's approval here.";
+
+/// Whether Oby's own review is what approves it: an `oby` workflow, or a `reviewer` one with no
+/// reviewer account signed in (that account is an optional extra).
+fn by_own_review(by: Approval, reviewers: &Reviewers) -> bool {
+    by == Approval::Oby || (by == Approval::Reviewer && reviewers.current.is_none())
+}
+
+/// Oby's own review approved exactly `head`, as obid pushed it (`Job::current_review`).
+fn oby_approved(job: &Job, head: &str) -> bool {
+    job.current_review()
+        .is_some_and(|r| r.approved() && r.commit == head)
+}
+
+/// Whether GitHub's rules still need another person's approval of `head` for a merge by Oby's
+/// own review: its `reviewDecision` is `REVIEW_REQUIRED`, whatever approvals obid sees (GitHub
+/// knows who may approve, code owners included), or fewer approvals from other people than the
+/// base's rules require. None when the rules couldn't be read.
+fn another_needed(
+    pr: &PullRequest,
+    merging: &Merging,
+    head: &str,
+    author: &str,
+    reviewers: &Reviewers,
+) -> Option<bool> {
+    if pr.review_decision.as_deref() == Some("REVIEW_REQUIRED") {
+        return Some(true);
+    }
+    let required = merging.required_approvals?;
+    Some(writers_approving(head, author, merging, reviewers) < required)
+}
+
+/// How many approvals of `head` come from other people: with write access, not a bot, not the
+/// author, and never one of Oby's reviewer accounts.
+fn writers_approving(head: &str, author: &str, merging: &Merging, reviewers: &Reviewers) -> u32 {
+    merging
+        .reviews
+        .iter()
+        .filter(|r| counts(r, head, author, Approval::Person, reviewers))
+        .count() as u32
+}
+
+/// A merge by Oby's own review that waits only on another person's approval GitHub requires
+/// ([`REQUIRES_PERSON`]): Oby's review approved the head, and nothing else stops it before the
+/// review. The follower then asks a teammate's Oby, or the owner.
+pub fn needs_another_person(
+    job: &Job,
+    workflow: Option<&Workflow>,
+    pr: &PullRequest,
+    merging: &Merging,
+    reviewers: &Reviewers,
+) -> bool {
+    let Ok((workflow, head)) = owned(job, workflow, pr) else {
+        return false;
+    };
+    let Some(author) = merging.author.as_deref() else {
+        return false;
+    };
+    by_own_review(workflow.review, reviewers)
+        && reviewers
+            .owner
+            .as_deref()
+            .is_some_and(|owner| author.eq_ignore_ascii_case(owner))
+        && oby_approved(job, head)
+        && !asked_for_changes(pr, merging)
+        && another_needed(pr, merging, head, author, reviewers) == Some(true)
 }
 
 /// Whether `review` approves `head` the way the workflow's `review` (`by`) says: from someone with
@@ -313,6 +442,8 @@ fn counts(review: &Review, head: &str, author: &str, by: Approval, reviewers: &R
         )
         && !is(author)
         && match by {
+            // Oby's own review isn't one of GitHub's.
+            Approval::Oby => false,
             Approval::Reviewer => reviewers.current.as_deref().is_some_and(is),
             Approval::Teammate | Approval::Person => !reviewers.any(&review.login),
         }
@@ -411,8 +542,8 @@ fn owned<'a>(
 /// checks everything [`ready`] does and that it's still the pull request it read, writes Oby's
 /// own commit title and message and scans them, then `PUT …/pulls/{n}/merge` at the head it
 /// checked, and deletes the job's own branch. Its files go in `home/tmp/merge-<job id>`, removed
-/// after. `reviewer`: the reviewer account signed in now (`github_login::reviewer`), read with
-/// every one used ([`reviewers`]); when those can't be read, nothing merges. `go` is asked right
+/// after. `reviewers`: Oby's reviewer accounts and the owner's login, as [`ready`] takes them.
+/// `go` is asked right
 /// before the merge is sent (`merge`) and before its branch is deleted (`branchDelete`): whether
 /// the job is still as it was, its answer saved (the caller keeps a mark in `Job::sending`
 /// there), and nothing is sent on a no.
@@ -421,23 +552,19 @@ pub async fn merge(
     home: &Path,
     job: &Job,
     workflow: &Workflow,
-    reviewer: Option<&str>,
+    reviewers: &Reviewers,
     go: &(dyn Fn(&str) -> bool + Sync),
 ) -> Result<Merged, Blocked> {
     if job.id.is_empty() || !job.id.bytes().all(|b| b.is_ascii_alphanumeric()) {
         return Err(needs_you("Not merged: that isn't one of Oby's jobs."));
     }
-    let reviewers = reviewers(home, reviewer).map_err(|why| {
-        tracing::warn!("merge: {why}");
-        wait("Not merged yet: Oby couldn't tell who its reviewer accounts are.")
-    })?;
     // One merge of a job at a time: the follower's and the owner's tap never race.
     let busy = || MERGING.lock().unwrap_or_else(|e| e.into_inner());
     let scratch = home.join("tmp").join(format!("merge-{}", job.id));
     if !busy().insert(scratch.clone()) {
         return Err(wait("Not merged yet: Oby is merging it already."));
     }
-    let merged = merging(gh, job, workflow, &reviewers, &scratch, go).await;
+    let merged = merging(gh, job, workflow, reviewers, &scratch, go).await;
     let _ = std::fs::remove_dir_all(&scratch);
     busy().remove(&scratch);
     merged
@@ -701,8 +828,6 @@ pub fn note(job: &mut Job, outcome: &Result<Merged, Blocked>, by: MergedBy) {
 pub const MERGE: &str = "Merge";
 pub const MERGE_AND_REMEMBER: &str = "Merge, and remember";
 pub const LEAVE_OPEN: &str = "Leave it open";
-/// Why Oby's approval wasn't posted: no reviewer account is signed in.
-pub const SIGN_IN_REVIEWER: &str = "Sign in Oby's reviewer account to let it approve.";
 /// Why it isn't posted again: someone dismissed it on that commit.
 pub const DISMISSED_APPROVAL: &str = "Someone dismissed Oby's approval of this commit on GitHub, so Oby won't approve it again: approve it there yourself, or ask Oby for another round.";
 /// The words of Oby's approval on GitHub: obid's own, never a model's.
@@ -710,10 +835,16 @@ pub const APPROVAL: &str =
     "Oby reviewed this commit and approves it. Its review is in Oby, on the job that opened this.";
 
 /// The workflow a merge card proposes for a repository Oby hasn't learned yet: a squash into the
-/// pull request's base (never main, master or trunk), approved the way it was (the reviewer
-/// account's approval, else a person's) and checked the way it was (GitHub's checks, else the
-/// owner's Mac's). The card shows only when the merge would hold by it ([`ready`]).
-pub fn proposed(pr: &PullRequest, merging: &Merging, reviewers: &Reviewers) -> Option<Workflow> {
+/// pull request's base (never main, master or trunk), approved the way it was (Oby's own review
+/// of the head, else the reviewer account's approval, else a person's) and checked the way it
+/// was (GitHub's checks, else the owner's Mac's). The card shows only when the merge would hold
+/// by it ([`ready`]).
+pub fn proposed(
+    job: &Job,
+    pr: &PullRequest,
+    merging: &Merging,
+    reviewers: &Reviewers,
+) -> Option<Workflow> {
     let head = pr.head.as_deref()?;
     let author = merging.author.as_deref()?;
     let by_reviewer = merging
@@ -724,7 +855,10 @@ pub fn proposed(pr: &PullRequest, merging: &Merging, reviewers: &Reviewers) -> O
         base: pr.base.clone(),
         method: Method::Squash,
         rebase_first: false,
-        review: if by_reviewer {
+        // Oby's own review first: the default for the owner's own repositories.
+        review: if oby_approved(job, head) {
+            Approval::Oby
+        } else if by_reviewer {
             Approval::Reviewer
         } else {
             Approval::Person
@@ -738,27 +872,16 @@ pub fn proposed(pr: &PullRequest, merging: &Merging, reviewers: &Reviewers) -> O
     workflow.problem().is_none().then_some(workflow)
 }
 
-/// Whether someone other than Oby's reviewer accounts (and the author) approved the pull
-/// request's head, the way a `person` workflow counts it: then the reviewer account's approval
-/// isn't what an unlearned repository's merge waits on.
-pub fn approved_by_another(pr: &PullRequest, merging: &Merging, reviewers: &Reviewers) -> bool {
-    let (Some(head), Some(author)) = (pr.head.as_deref(), merging.author.as_deref()) else {
-        return false;
-    };
-    merging
-        .reviews
-        .iter()
-        .any(|r| counts(r, head, author, Approval::Person, reviewers))
-}
-
 /// The job's pull request was merged or closed (`pr`): nothing waits on the owner about merging it
 /// any more. What obid was sending before a restart is settled: an approval it finds in `reviews`
-/// (when they read) is listed; a merge is listed and keeps who had it merged (one merged any
+/// is listed (when they didn't read, its mark stays, and the follower reads it again); a merge is listed and keeps who had it merged (one merged any
 /// other way is `mergedBy` `github`); the branch's deletion is left for the caller, who can try
 /// it again ([`delete_branch`]).
 pub fn closed(job: &mut Job, pr: &PullRequest, reviews: Option<&[Review]>) {
-    if let Some(approval) = unmark(job, "pullRequestApproval")
-        && reviews.is_some_and(|r| approval_seen(&approval, r))
+    // Settled only from reviews that read: otherwise the mark stays for the next read.
+    if let Some(reviews) = reviews
+        && let Some(approval) = unmark(job, "pullRequestApproval")
+        && approval_seen(&approval, reviews)
     {
         job.outgoing.push(Outgoing::new(
             "pullRequestApproval",
@@ -934,7 +1057,7 @@ pub async fn approve(
         return Approved::NotNow;
     };
     let Some((folder, login)) = reviewer else {
-        return Approved::NeedsYou(SIGN_IN_REVIEWER.into());
+        return Approved::NotNow;
     };
     if note_reviewer(home, login).is_err() {
         return Approved::NotNow;
@@ -1225,6 +1348,8 @@ mod tests {
         let pr = github::decode(text, 0).unwrap();
         let mut merging = github::decode_merging(text).unwrap();
         merging.reviews = github::decode_reviews(reviews).unwrap();
+        // No rule of GitHub's asks for an approving review.
+        merging.required_approvals = Some(0);
         (pr, merging)
     }
 
@@ -1238,6 +1363,7 @@ mod tests {
         Reviewers {
             current: Some(REVIEWER.into()),
             used: vec![REVIEWER.into()],
+            owner: Some("wellprado".into()),
         }
     }
 
@@ -1246,6 +1372,7 @@ mod tests {
         Reviewers {
             current: None,
             used: vec![REVIEWER.into()],
+            owner: Some("wellprado".into()),
         }
     }
 
@@ -1385,6 +1512,108 @@ mod tests {
         );
     }
 
+    /// Oby's own review of the exact head is the review for the owner's own pull request (the
+    /// owner's decision of 2026-10-24): no reviewer account, no GitHub review. A head Oby didn't
+    /// approve doesn't merge, and where GitHub's rules require an approving review, another
+    /// person's is needed.
+    #[test]
+    fn obys_own_review_of_the_head_is_the_review() {
+        let mut oby = obis();
+        oby.review = Approval::Oby;
+        // No reviewer account at all: only the owner's login.
+        let nobody = Reviewers {
+            owner: Some("wellprado".into()),
+            ..Reviewers::default()
+        };
+        let ready_with = |job: &Job, text: &str, reviews: Vec<Value>, required: Option<u32>| {
+            let (pr, mut merging) = read(text, &pages(reviews));
+            merging.required_approvals = required;
+            (
+                ready(job, Some(&oby), &pr, &merging, Some(&nobody)),
+                needs_another_person(job, Some(&oby), &pr, &merging, &nobody),
+                wanted_approval(job, Some(&oby), &pr, &merging, &nobody),
+            )
+        };
+        let approved = reviewed("approved", &head());
+        assert_eq!(
+            ready_with(&approved, &view(|_| {}), vec![], Some(0)),
+            (Ok(()), false, None)
+        );
+        // A head Oby's review didn't approve, or one asking for changes: it waits for the next.
+        let older = reviewed("approved", &"c".repeat(40));
+        let changes = reviewed("changesRequested", &head());
+        for job in [older, changes, job()] {
+            assert_eq!(
+                ready_with(&job, &view(|_| {}), vec![], Some(0)).0,
+                Err(wait(
+                    "Not merged yet: Oby's review hasn't approved its head."
+                ))
+            );
+        }
+        // GitHub requires an approving review: the owner's own can't count, another person's does.
+        let requires = Err(wait(format!("Not merged yet: {REQUIRES_PERSON}")));
+        assert_eq!(
+            ready_with(&approved, &view(|_| {}), vec![], Some(1)),
+            (requires.clone(), true, None)
+        );
+        let decided = view(|v| v["reviewDecision"] = json!("REVIEW_REQUIRED"));
+        assert_eq!(
+            ready_with(&approved, &decided, vec![], Some(0)),
+            (requires.clone(), true, None)
+        );
+        let ana = rest(2, "ana", "User", "APPROVED", &head(), "MEMBER");
+        assert_eq!(
+            ready_with(&approved, &view(|_| {}), vec![ana.clone()], Some(1)),
+            (Ok(()), false, None)
+        );
+        // GitHub still says REVIEW_REQUIRED with an approval obid would count (a member without
+        // write access, someone who isn't a code owner): GitHub knows who may approve.
+        assert_eq!(
+            ready_with(&approved, &decided, vec![ana], Some(1)),
+            (requires.clone(), true, None)
+        );
+        // An approval from one of Oby's reviewer accounts is never another person's.
+        let x1 = rest(3, REVIEWER, "User", "APPROVED", &head(), "COLLABORATOR");
+        let used = Reviewers {
+            used: vec![REVIEWER.into()],
+            owner: Some("wellprado".into()),
+            ..Reviewers::default()
+        };
+        let (pr, mut merging) = read(&view(|_| {}), &pages(vec![x1]));
+        merging.required_approvals = Some(1);
+        assert_eq!(
+            ready(&approved, Some(&oby), &pr, &merging, Some(&used)),
+            requires
+        );
+        // A pull request that isn't the owner's own (gh signed in as someone else since): Oby's
+        // own review doesn't count, and the owner hears it.
+        let theirs = Reviewers {
+            owner: Some("someone-else".into()),
+            ..Reviewers::default()
+        };
+        let (pr, merging) = read(&view(|_| {}), &pages(vec![]));
+        let blocked = ready(&approved, Some(&oby), &pr, &merging, Some(&theirs)).unwrap_err();
+        assert!(blocked.needs_you, "{}", blocked.why);
+        assert!(
+            blocked
+                .why
+                .starts_with("Not merged: it's wellprado's pull request"),
+            "{}",
+            blocked.why
+        );
+        // Rules it couldn't read: it waits, and asks nobody.
+        assert_eq!(
+            ready_with(&approved, &view(|_| {}), vec![], None),
+            (
+                Err(wait(
+                    "Not merged yet: Oby couldn't read whether GitHub requires an approving review here."
+                )),
+                false,
+                None
+            )
+        );
+    }
+
     /// The approval the workflow names, of its head, from someone with write access who isn't a
     /// bot or its author; and none asking for changes.
     #[test]
@@ -1495,17 +1724,18 @@ mod tests {
                 .unwrap_err()
                 .needs_you
         );
+        // Signed out, the reviewer account is an optional extra: Oby's own review is the review.
         let out = with(
             &obis,
             &view(|_| {}),
             vec![reviewer("APPROVED", &head)],
             Some(&signed_out),
-        )
-        .unwrap_err();
-        assert!(out.needs_you);
+        );
         assert_eq!(
-            out.why,
-            "Not merged: oby merges once Oby's reviewer account approves, and it isn't signed in."
+            out,
+            Err(wait(
+                "Not merged yet: Oby's review hasn't approved its head."
+            ))
         );
         // `teammate` (Tetrix): someone else's, never the owner's own reviewer account.
         let mut tetrix = obis.clone();
@@ -1810,7 +2040,7 @@ esac
                 &self.dir,
                 job,
                 workflow,
-                Some(REVIEWER),
+                &signed_in(),
                 &|_| true,
             )
             .await
@@ -1964,14 +2194,31 @@ esac
             std::fs::metadata(&file).unwrap().permissions().mode() & 0o777,
             0o600
         );
-        // A record it can't read: no merge at all, and no PUT.
+        // The owner's login comes with them; a reviewer account that can't be read matters only
+        // to a `reviewer` workflow.
+        let stale: Result<Option<(std::path::PathBuf, String)>, String> = Err("signed out".into());
+        let mut oby = obis();
+        oby.review = Approval::Oby;
+        let read = accounts(home, "wellprado", &stale, Some(&oby)).unwrap();
+        assert_eq!(
+            (read.current, read.owner.as_deref()),
+            (None, Some("wellprado"))
+        );
+        assert_eq!(accounts(home, "wellprado", &stale, Some(&obis())), None);
+        // A record it can't read: no accounts, so nothing merges (ready() waits on none).
         std::fs::write(&file, "not json").unwrap();
         assert!(reviewers(home, None).is_err());
+        assert_eq!(accounts(home, "wellprado", &Ok(None), Some(&oby)), None);
+        let (pr, merging) = read_view();
         assert_eq!(
-            gh.merge(&job(), &obis()).await.unwrap_err(),
-            wait("Not merged yet: Oby couldn't tell who its reviewer accounts are.")
+            ready(&job(), Some(&oby), &pr, &merging, None),
+            Err(unread_reviewers())
         );
         assert_eq!(gh.calls(), "");
+    }
+
+    fn read_view() -> (PullRequest, Merging) {
+        read(&view(|_| {}), &approved())
     }
 
     /// Past the 250 commits GitHub lists, a merge or a rebase can't be checked for closing
@@ -2109,10 +2356,11 @@ esac
             );
         }
         assert_eq!(posts(), 1);
-        // No reviewer signed in, or one that can't push: only the owner can help.
+        // No reviewer signed in: nothing to post, and nobody waits on it (Oby's own review is the
+        // review). One that can't push: only the owner can help.
         assert_eq!(
             approve(reviewed("approved", &head()), nobody.clone(), None).await,
-            Approved::NeedsYou(SIGN_IN_REVIEWER.into())
+            Approved::NotNow
         );
         gh.write("no-push", "");
         let Approved::NeedsYou(why) =
@@ -2170,7 +2418,7 @@ esac
             Approved::NotNow
         );
         assert!(!gh.calls().contains("-X POST"));
-        let blocked = merge(&ghp, &gh.dir, &job, &obis(), Some(REVIEWER), &|_| false)
+        let blocked = merge(&ghp, &gh.dir, &job, &obis(), &signed_in(), &|_| false)
             .await
             .unwrap_err();
         assert!(!blocked.needs_you, "{}", blocked.why);
@@ -2181,7 +2429,7 @@ esac
     /// a new reason replaces the card before, and a card left open isn't asked again.
     #[test]
     fn each_reason_has_its_own_card() {
-        let signin = stopped_card(&job(), &head(), SIGN_IN_REVIEWER);
+        let signin = stopped_card(&job(), &head(), REQUIRES_PERSON);
         let blocked = stopped_card(
             &job(),
             &head(),
@@ -2190,10 +2438,7 @@ esac
         let ready = ready_card(&job(), 7, &head(), &obis());
         assert_ne!(signin.id, blocked.id);
         assert_ne!(signin.id, ready.id);
-        assert_eq!(
-            signin.id,
-            stopped_card(&job(), &head(), SIGN_IN_REVIEWER).id
-        );
+        assert_eq!(signin.id, stopped_card(&job(), &head(), REQUIRES_PERSON).id);
         for card in [&signin, &blocked, &ready] {
             assert!(card.id.starts_with("merge-"), "{}", card.id);
             assert_eq!(item_head(&card.id), Some(head().as_str()));
@@ -2206,7 +2451,7 @@ esac
     fn a_card_proposes_how_it_was_approved_and_checked() {
         let (pr, merging) = read(&view(|_| {}), &approved());
         assert_eq!(
-            proposed(&pr, &merging, &signed_in()),
+            proposed(&job(), &pr, &merging, &signed_in()),
             Some(Workflow {
                 base: "dev".into(),
                 method: Method::Squash,
@@ -2217,13 +2462,17 @@ esac
         );
         let person = pages(vec![rest(1, "ana", "User", "APPROVED", &head(), "MEMBER")]);
         let (pr, merging) = read(&view(|v| v["statusCheckRollup"] = json!([])), &person);
-        let mut theirs = proposed(&pr, &merging, &signed_in()).unwrap();
+        let mut theirs = proposed(&job(), &pr, &merging, &signed_in()).unwrap();
         assert_eq!(
             (theirs.review, theirs.checks),
             (Approval::Person, Checks::Mac)
         );
         let (main, merging) = read(&view(|v| v["baseRefName"] = json!("main")), &approved());
-        assert_eq!(proposed(&main, &merging, &signed_in()), None);
+        assert_eq!(proposed(&job(), &main, &merging, &signed_in()), None);
+        // Oby's own review of the head first: the default for the owner's own repositories.
+        let (pr, merging) = read(&view(|_| {}), &approved());
+        let oby = proposed(&reviewed("approved", &head()), &pr, &merging, &signed_in()).unwrap();
+        assert_eq!(oby.review, Approval::Oby);
         // Its card, one per head.
         theirs.checks = Checks::Github;
         let card = ready_card(&job(), 7, &head(), &theirs);
@@ -2238,11 +2487,45 @@ esac
             card.details.unwrap()[1]
                 .contains("Can I remember that? For oby: Squash-merge into dev")
         );
-        let stopped = stopped_card(&job(), &head(), SIGN_IN_REVIEWER);
+        let stopped = stopped_card(&job(), &head(), REQUIRES_PERSON);
         assert_eq!(
             (stopped.options, stopped.text),
-            (vec![DISMISS.to_owned()], SIGN_IN_REVIEWER.to_owned())
+            (vec![DISMISS.to_owned()], REQUIRES_PERSON.to_owned())
         );
+    }
+
+    /// A merged pull request settles an approval mark only from reviews that read: unread, the
+    /// mark stays for the next read, and nothing is dropped or listed twice.
+    #[test]
+    fn an_approval_mark_waits_for_reviews_that_read() {
+        let mut job = job();
+        mark(
+            &mut job,
+            crate::job::Sending {
+                action: "pullRequestApproval".into(),
+                head: head(),
+                by: None,
+                login: Some(REVIEWER.into()),
+            },
+        );
+        let (mut pr, merging) = read(&view(|_| {}), &approved());
+        pr.state = "MERGED".into();
+        pr.merged_at = Some(1);
+        closed(&mut job, &pr, None);
+        assert_eq!(job.sending.len(), 1);
+        assert!(
+            job.outgoing
+                .iter()
+                .all(|o| o.action != "pullRequestApproval")
+        );
+        closed(&mut job, &pr, Some(&merging.reviews));
+        assert!(job.sending.is_empty());
+        let approvals = job
+            .outgoing
+            .iter()
+            .filter(|o| o.action == "pullRequestApproval")
+            .count();
+        assert_eq!(approvals, 1);
     }
 
     /// Only one of Oby's jobs has a folder of its own, under obid's home.
