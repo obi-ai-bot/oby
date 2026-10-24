@@ -1041,7 +1041,6 @@ async fn run_with(
             }
             if plan.action == Action::Research {
                 let lookups = plan.lookups.clone().unwrap_or_default();
-                researched |= !lookups.is_empty();
                 let texts: Vec<String> = lookups.iter().map(research::step_text).collect();
                 let text = if texts.is_empty() {
                     "Looking up context".to_owned()
@@ -1065,6 +1064,10 @@ async fn run_with(
                         look(&mut looked, speaks, research::looked(lookup));
                     }
                 }
+                // What it read taints the turn, but an issue or a pull request written only by
+                // the owner and their organizations' members (the owner's decision of
+                // 2026-10-24); one that didn't run counts as untrusted.
+                researched |= research.untrusted(&lookups);
                 let cut = if control.cancelled() {
                     Some(End::Cancelled)
                 } else if control.stopped() {

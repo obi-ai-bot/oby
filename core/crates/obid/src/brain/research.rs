@@ -50,6 +50,10 @@ pub struct Found {
     pub status: Status,
     pub title: String,
     pub text: String,
+    /// Whether what it read is the owner's own words: an issue or a pull request whose author
+    /// and every comment's are the owner or a member of their organizations
+    /// (crate::github_work::all_trusted). Anything else, the web and code too, isn't.
+    pub trusted: bool,
 }
 
 impl Found {
@@ -58,6 +62,7 @@ impl Found {
             status,
             title: title.into(),
             text: text.into(),
+            trusted: false,
         }
     }
 }
@@ -397,7 +402,7 @@ async fn github(repo: &str, lookup: &Lookup) -> Result<Found, String> {
         )
     };
     let gh = crate::process::resolve_bin("gh").ok_or("gh isn't available")?;
-    let mut command = tokio::process::Command::new(gh);
+    let mut command = tokio::process::Command::new(&gh);
     command
         .args([
             kind,
@@ -470,11 +475,19 @@ async fn github(repo: &str, lookup: &Lookup) -> Result<Found, String> {
         }
     }
     let title = format!("{} {repo} #{number}", lookup.tool.as_str());
-    Ok(Found::new(
-        Status::Ok,
-        title,
-        clamp(&lines.join("\n"), 16 * 1024),
-    ))
+    // Whose words they are: gh's comments carry their association, the item's is GitHub's REST
+    // answer's. Either unread, or the owner's organizations, and it's untrusted.
+    let mut object = object;
+    if let Ok(n) = u64::try_from(number)
+        && let Some(association) = crate::github_work::association(&gh, repo, n).await
+    {
+        object["authorAssociation"] = Value::String(association);
+    }
+    let owner = crate::github_work::owner().await;
+    Ok(Found {
+        trusted: crate::github_work::all_trusted(owner.as_ref(), repo, &object),
+        ..Found::new(Status::Ok, title, clamp(&lines.join("\n"), 16 * 1024))
+    })
 }
 
 /// A URL's host, when it's `https`, has no user or password, and names a public-looking host.
@@ -782,6 +795,18 @@ impl Log {
             && lookups
                 .iter()
                 .all(|l| self.entries.iter().any(|(k, ..)| *k == key(l)))
+    }
+
+    /// Whether any of `lookups` read what isn't the owner's own words ([`Found::trusted`]): one
+    /// that didn't run, or was refused, counts as untrusted too (fail closed).
+    pub fn untrusted(&self, lookups: &[Lookup]) -> bool {
+        lookups.iter().any(|l| {
+            let key = key(l);
+            !self
+                .entries
+                .iter()
+                .any(|(k, _, found)| *k == key && found.trusted)
+        })
     }
 
     /// Runs the lookups not run yet this turn, side by side, up to [`MOST`] in the turn. A web
@@ -1136,6 +1161,33 @@ mod tests {
             number: None,
             url: Some(url.into()),
         }
+    }
+
+    /// Only lookups that read the owner's own words leave the turn trusted: one of an outsider's,
+    /// the web's, or one that never ran, taints it.
+    #[test]
+    fn a_turn_is_untrusted_unless_every_lookup_read_the_owners_words() {
+        let issue = |number| Lookup {
+            tool: LookupTool::ViewIssue,
+            repo: Some("obi-ai-bot/oby".into()),
+            number: Some(number),
+            url: None,
+            ..web("")
+        };
+        let found = |trusted| Found {
+            trusted,
+            ..Found::new(Status::Ok, "view_issue", "text")
+        };
+        let log = Log::carry(vec![
+            (key(&issue(1)), issue(1), found(true)),
+            (key(&issue(2)), issue(2), found(false)),
+            (key(&web("https://example.com")), web("https://example.com"), found(false)),
+        ]);
+        assert!(!log.untrusted(&[]));
+        assert!(!log.untrusted(&[issue(1)]), "the owner's own words");
+        assert!(log.untrusted(&[issue(1), issue(2)]), "an outsider's");
+        assert!(log.untrusted(&[web("https://example.com")]));
+        assert!(log.untrusted(&[issue(3)]), "never ran");
     }
 
     /// Tools with no clones, whose web answers `body` and notes every address asked.
