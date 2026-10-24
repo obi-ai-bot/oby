@@ -469,7 +469,10 @@ pub async fn view_merging(
         Some(mut merging) => match reviews(gh, repo, number).await {
             Ok(reviews) => {
                 merging.reviews = reviews;
-                merging.required_approvals = required_approvals(gh, repo, &pr.base).await;
+                match required_approvals(gh, repo, &pr.base).await {
+                    Ok(required) => merging.required_approvals = Some(required),
+                    Err(refused) => merging.rules_refused = refused,
+                }
                 Ok(merging)
             }
             Err(_) => Err(FAILED.to_owned()),
@@ -492,19 +495,48 @@ async fn pr_view(gh: &Path, repo: &str, number: u64) -> Result<String, String> {
 /// How many approving reviews GitHub requires before a pull request into `base` of `repo` merges:
 /// the most its rulesets (`GET repos/{repo}/rules/branches/{base}`, a `pull_request` rule's
 /// `required_approving_review_count`) and its classic protection (`…/branches/{base}/protection/
-/// required_pull_request_reviews`) ask for. None when either can't be read ([`classic_reviews`]),
-/// and then nothing merges by Oby's own review.
-pub async fn required_approvals(gh: &Path, repo: &str, base: &str) -> Option<u32> {
+/// required_pull_request_reviews`) ask for. An error when either can't be read
+/// ([`classic_reviews`]), and then nothing merges by Oby's own review: GitHub's words when it
+/// refused in a way that won't pass by itself ([`refused`]), none when it may (a rate limit, a 5xx,
+/// a timeout).
+pub async fn required_approvals(gh: &Path, repo: &str, base: &str) -> Result<u32, Option<String>> {
     if !is_repo(repo) || !crate::git::is_branch_name(base) {
-        return None;
+        return Err(None);
     }
-    let rules = run(gh, &["api", &format!("repos/{repo}/rules/branches/{base}")])
-        .await
-        .ok()
-        .and_then(|text| decode_rules(&text))?;
+    let rules = match output(gh, &["api", &format!("repos/{repo}/rules/branches/{base}")]).await {
+        Ok(text) => decode_rules(&text).ok_or(None)?,
+        Err((printed, said)) => return Err(refused(&printed, &said)),
+    };
     let path = format!("repos/{repo}/branches/{base}/protection/required_pull_request_reviews");
     let classic = classic_reviews(output(gh, &["api", &path]).await)?;
-    Some(rules.max(classic))
+    Ok(rules.max(classic))
+}
+
+/// GitHub's own words for a refusal that won't pass by itself: a 401, or a 403 that isn't a rate
+/// limit (an organization's SSO not authorized for this login, a token without access). None for
+/// anything that may (a rate limit, a 5xx, a timeout, an answer it can't read).
+pub fn refused(printed: &str, said: &str) -> Option<String> {
+    let value: Value = serde_json::from_str(printed).unwrap_or(Value::Null);
+    let message = value["message"].as_str().unwrap_or(said);
+    let status = value["status"].as_str().map(str::to_owned).or_else(|| {
+        ["401", "403"]
+            .into_iter()
+            .find(|code| said.contains(&format!("(HTTP {code})")))
+            .map(str::to_owned)
+    })?;
+    let limited = message.to_lowercase().contains("rate limit");
+    (matches!(status.as_str(), "401" | "403") && !limited && !message.is_empty())
+        .then(|| said_line(message))
+}
+
+/// At most 200 characters of what GitHub said, on one line.
+fn said_line(text: &str) -> String {
+    let line = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if line.chars().count() > 200 {
+        format!("{}…", line.chars().take(199).collect::<String>())
+    } else {
+        line
+    }
 }
 
 /// The approving reviews classic protection asks for, from `gh api …/protection/
@@ -513,19 +545,19 @@ pub async fn required_approvals(gh: &Path, repo: &str, base: &str) -> Option<u32
 /// 0 as well for "Not Found", what an owner without admin rights gets (GitHub's own
 /// `reviewDecision`, `REVIEW_REQUIRED`, still says when that protection asks for a review). Any
 /// other refusal (a rate limit, a 5xx, a timeout, an answer it can't read) is none: unknown.
-pub fn classic_reviews(answer: Result<String, (String, String)>) -> Option<u32> {
+pub fn classic_reviews(answer: Result<String, (String, String)>) -> Result<u32, Option<String>> {
     match answer {
-        Ok(text) => decode_protection(&text),
-        Err((printed, _)) => {
-            let value: Value = serde_json::from_str(&printed).ok()?;
-            match value["message"].as_str()? {
-                "Branch not protected" | "Required pull request reviews not enabled"
+        Ok(text) => decode_protection(&text).ok_or(None),
+        Err((printed, said)) => {
+            let value: Value = serde_json::from_str(&printed).unwrap_or(Value::Null);
+            match value["message"].as_str() {
+                Some("Branch not protected" | "Required pull request reviews not enabled")
                     if value["status"] == "404" =>
                 {
-                    Some(0)
+                    Ok(0)
                 }
-                "Not Found" if value["status"] == "404" => Some(0),
-                _ => None,
+                Some("Not Found") if value["status"] == "404" => Ok(0),
+                _ => Err(refused(&printed, &said)),
             }
         }
     }
@@ -638,6 +670,9 @@ pub struct Merging {
     /// The approving reviews GitHub requires on its base ([`required_approvals`]); none when that
     /// couldn't be read.
     pub required_approvals: Option<u32>,
+    /// Why GitHub refused to show those rules, in its words, when that won't pass by itself
+    /// (an organization's SSO not authorized, a token without access): the owner can act on it.
+    pub rules_refused: Option<String>,
 }
 
 /// [`Merging`] from `gh pr view --json` with [`FIELDS`], its reviews not yet read; none when it
@@ -675,6 +710,7 @@ pub fn decode_merging(text: &str) -> Option<Merging> {
             .map(str::to_owned),
         reviews: vec![],
         required_approvals: None,
+        rules_refused: None,
     })
 }
 
@@ -996,7 +1032,7 @@ mod tests {
         let doc = "https://docs.github.com/rest/branches/branch-protection#get-pull-request-review-protection";
         assert_eq!(
             classic_reviews(Ok(r#"{"required_approving_review_count": 2}"#.into())),
-            Some(2)
+            Ok(2)
         );
         for message in [
             "Branch not protected",
@@ -1007,40 +1043,57 @@ mod tests {
                 json!({"message": message, "documentation_url": doc, "status": "404"}).to_string();
             assert_eq!(
                 classic_reviews(failed(&body, &format!("gh: {message} (HTTP 404)"))),
-                Some(0),
+                Ok(0),
                 "{message}"
             );
         }
+        // May pass by itself: unknown, with nothing for the owner to do.
         let limited = json!({"message": "API rate limit exceeded for user ID 1.", "documentation_url": doc, "status": "403"});
         assert_eq!(
             classic_reviews(failed(
                 &limited.to_string(),
                 "gh: API rate limit exceeded (HTTP 403)"
             )),
-            None
+            Err(None)
+        );
+        assert_eq!(
+            classic_reviews(failed("", "gh: HTTP 502: Bad Gateway")),
+            Err(None)
+        );
+        assert_eq!(
+            classic_reviews(failed("<html>oops</html>", "gh: HTTP 500")),
+            Err(None)
+        );
+        assert_eq!(
+            classic_reviews(failed("", "gh took more than 120 seconds")),
+            Err(None)
+        );
+        assert_eq!(classic_reviews(Ok("not json".into())), Err(None));
+        // Won't pass by itself: GitHub's own words, for the owner.
+        let sso = "Resource protected by organization SAML enforcement. You must grant your Personal Access token access to this organization.";
+        let saml = json!({"message": sso, "documentation_url": doc, "status": "403"});
+        assert_eq!(
+            classic_reviews(failed(
+                &saml.to_string(),
+                "gh: Resource protected by organization SAML enforcement. (HTTP 403)"
+            )),
+            Err(Some(sso.into()))
         );
         let forbidden =
-            json!({"message": "Resource not accessible by integration", "status": "403"});
+            json!({"message": "Resource not accessible by personal access token", "status": "403"});
         assert_eq!(
             classic_reviews(failed(
                 &forbidden.to_string(),
                 "gh: Resource not accessible (HTTP 403)"
             )),
-            None
+            Err(Some(
+                "Resource not accessible by personal access token".into()
+            ))
         );
         assert_eq!(
-            classic_reviews(failed("", "gh: HTTP 502: Bad Gateway")),
-            None
+            refused("", "gh: Bad credentials (HTTP 401)"),
+            Some("gh: Bad credentials (HTTP 401)".into())
         );
-        assert_eq!(
-            classic_reviews(failed("<html>oops</html>", "gh: HTTP 500")),
-            None
-        );
-        assert_eq!(
-            classic_reviews(failed("", "gh took more than 120 seconds")),
-            None
-        );
-        assert_eq!(classic_reviews(Ok("not json".into())), None);
     }
 
     /// What a branch's rules and classic protection require, as GitHub answers them.

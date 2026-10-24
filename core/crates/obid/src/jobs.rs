@@ -7771,7 +7771,21 @@ impl Jobs {
             crate::merge::Approved::Dismissed if wanted => {
                 Some(crate::merge::DISMISSED_APPROVAL.to_owned())
             }
-            _ => None,
+            // A `reviewer` workflow whose reviewer login is stale, or is the owner's own, waits
+            // on that account for good: the owner's to sign in again, or out.
+            _ => match &reviewer {
+                Err(why)
+                    if workflow
+                        .as_ref()
+                        .is_some_and(|w| w.review == crate::memory::Approval::Reviewer) =>
+                {
+                    Some(format!(
+                        "Oby's reviewer account needs signing in again, or signing out ({}).",
+                        why.trim_end_matches(": sign it in again, or sign it out")
+                    ))
+                }
+                _ => None,
+            },
         };
         self.update(id, |job| {
             crate::merge::unmark(job, "pullRequestApproval");
@@ -7885,15 +7899,30 @@ impl Jobs {
                 }
                 None => {
                     // Not learned yet: the safe default asks before it merges, once everything else
-                    // holds by the workflow its card proposes.
+                    // holds by the workflow its card proposes. Merge rules GitHub won't show are
+                    // the owner's to fix even so.
+                    let refused = merging
+                        .rules_refused
+                        .as_deref()
+                        .map(crate::merge::unreadable_rules);
                     reviewers
                         .as_ref()
                         .and_then(|r| crate::merge::proposed(&job, pr, &merging, r))
-                        .filter(|w| {
-                            crate::merge::ready(&job, Some(w), pr, &merging, reviewers.as_ref())
-                                .is_ok()
+                        .and_then(|w| {
+                            match crate::merge::ready(
+                                &job,
+                                Some(&w),
+                                pr,
+                                &merging,
+                                reviewers.as_ref(),
+                            ) {
+                                Ok(()) => Some(crate::merge::ready_card(&job, number, &head, &w)),
+                                Err(blocked) if refused.as_ref() == Some(&blocked) => {
+                                    Some(crate::merge::stopped_card(&job, &head, &blocked.why))
+                                }
+                                Err(_) => None,
+                            }
                         })
-                        .map(|w| crate::merge::ready_card(&job, number, &head, &w))
                 }
             }
         };

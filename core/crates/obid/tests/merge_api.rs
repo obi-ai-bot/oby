@@ -21,7 +21,9 @@ fn head() -> String {
 /// `GH_CONFIG_DIR`) `oby-reviewer`; the pull request is open, green and clean into dev at
 /// `head()` (merged on GitHub once `gh/merged-on-github` is there, still working out whether it
 /// merges while `gh/unknown` is), into a dev whose rules ask for no approving review (one while
-/// `gh/requires-approval` is there); its reviews are the
+/// `gh/requires-approval` is there, and whose protection GitHub won't show while
+/// `gh/protection-403`, a rate limit, or `gh/protection-sso`, an organization's SSO, is); its
+/// reviews are the
 /// reviewer's approval once it posted one (`gh/approved`), someone's dismissal of it
 /// (`gh/dismissed`) and a person's approval (`gh/person`); the merge goes through.
 fn stand_in_gh(folder: &Path) -> PathBuf {
@@ -97,6 +99,7 @@ case "$*" in
     if [ -f "$dir/requires-approval" ]; then echo '[{{"type": "pull_request", "parameters": {{"required_approving_review_count": 1}}}}]'; else echo '[]'; fi ;;
   "api repos/{REPO}/branches/dev/protection/required_pull_request_reviews")
     if [ -f "$dir/protection-403" ]; then echo '{{"message": "API rate limit exceeded for user ID 1.", "status": "403"}}'; echo 'gh: API rate limit exceeded (HTTP 403)' >&2; exit 1; fi
+    if [ -f "$dir/protection-sso" ]; then echo '{{"message": "Resource protected by organization SAML enforcement. You must grant your Personal Access token access to this organization.", "status": "403"}}'; echo 'gh: Resource protected by organization SAML enforcement. (HTTP 403)' >&2; exit 1; fi
     echo '{{"message": "Branch not protected", "status": "404"}}'; echo 'gh: Branch not protected (HTTP 404)' >&2; exit 1 ;;
   "api -X POST repos/{REPO}/pulls/7/reviews "*) touch "$dir/approved"; echo '{{"id": 1}}' ;;
   "api repos/{REPO}/pulls/7") cat "$dir/pull.json" ;;
@@ -749,6 +752,69 @@ fn unreadable_protection_merges_nothing() {
     assert!(waiting["mergedBy"].is_null());
     assert!(!calls(&folder.0).contains("-X PUT"));
     assert!(merge_cards(&obid).is_empty());
+}
+
+/// Merge rules GitHub won't show in a way that won't pass by itself (an organization's SSO not
+/// authorized for the owner's login) ask the owner once for that head, in GitHub's words, and
+/// nothing merges; once GitHub shows them, the card settles and it merges.
+#[test]
+fn merge_rules_github_wont_show_ask_the_owner_once() {
+    let folder = Folder::new("merge-protection-sso");
+    let obid = started_with(&folder, false, Some(OBY), published(), &["protection-sso"]);
+    let card = within(30, "the card", || merge_cards(&obid).into_iter().next());
+    assert_eq!(
+        card["text"],
+        "Oby can't read this repository's merge rules (GitHub said: Resource protected by organization SAML enforcement. You must grant your Personal Access token access to this organization.)."
+    );
+    let read = calls(&folder.0).matches("pr view 7").count();
+    within(30, "a few more reads", || {
+        (calls(&folder.0).matches("pr view 7").count() >= read + 3).then_some(())
+    });
+    let cards = merge_cards(&obid);
+    assert_eq!(cards.len(), 1, "{cards:?}");
+    assert_eq!(cards[0]["id"], card["id"]);
+    assert_eq!(job(&obid)["mergeNeedsYou"], true);
+    assert!(!calls(&folder.0).contains("-X PUT"));
+    std::fs::remove_file(folder.0.join("gh/protection-sso")).unwrap();
+    within(30, "the job to be merged", || {
+        (job(&obid)["mergedBy"]["by"] == "memory").then_some(())
+    });
+    // The merge is saved, then the card settles.
+    within(30, "the card to settle", || {
+        merge_cards(&obid).is_empty().then_some(())
+    });
+}
+
+/// A `reviewer` workflow whose reviewer login isn't signed in any more waits on that account for
+/// good: the owner hears so once for that head, and nothing goes out; signed in again, the card
+/// settles, the reviewer approves and it merges.
+#[test]
+fn a_stale_reviewer_login_on_a_reviewer_workflow_asks_the_owner_once() {
+    let folder = Folder::new("merge-stale-reviewer-workflow");
+    let obid = started_with(&folder, true, Some(OBIS), published(), &["reviewer-stale"]);
+    let card = within(30, "the card", || merge_cards(&obid).into_iter().next());
+    assert_eq!(
+        card["text"],
+        "Oby's reviewer account needs signing in again, or signing out (the reviewer's GitHub login isn't signed in any more)."
+    );
+    let read = calls(&folder.0).matches("pr view 7").count();
+    within(30, "a few more reads", || {
+        (calls(&folder.0).matches("pr view 7").count() >= read + 3).then_some(())
+    });
+    let cards = merge_cards(&obid);
+    assert_eq!(cards.len(), 1, "{cards:?}");
+    assert_eq!(job(&obid)["mergeNeedsYou"], true);
+    let sent = calls(&folder.0);
+    assert!(!sent.contains("-X POST"), "{sent}");
+    assert!(!sent.contains("-X PUT"), "{sent}");
+    std::fs::remove_file(folder.0.join("gh/reviewer-stale")).unwrap();
+    within(30, "the job to be merged", || {
+        (job(&obid)["mergedBy"]["by"] == "memory").then_some(())
+    });
+    // The merge is saved, then the card settles.
+    within(30, "the card to settle", || {
+        merge_cards(&obid).is_empty().then_some(())
+    });
 }
 
 /// A repository Oby hasn't learned whose rules require an approving review asks its owner, and
