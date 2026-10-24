@@ -948,7 +948,7 @@ pub async fn approve(
         Some("DISMISSED") => return Approved::Dismissed,
         _ => {}
     }
-    match github::can_push(gh, folder, &job.repo).await {
+    match github::can_push(gh, Some(folder.as_path()), &job.repo).await {
         Ok(true) => {}
         Ok(false) => {
             return Approved::NeedsYou(format!(
@@ -988,12 +988,20 @@ pub async fn approve(
     };
     let _ = std::fs::remove_dir_all(&scratch);
     match posted {
-        Ok(()) => Approved::Posted(Outgoing::new(
-            "pullRequestApproval",
-            &job.repo,
-            job.published.as_deref().unwrap_or_default(),
-            None,
-        )),
+        // Its `id` is the review's URL, as GitHub answered it; the pull request's otherwise.
+        Ok(answer) => {
+            let review = serde_json::from_str::<Value>(&answer)
+                .ok()
+                .and_then(|v| v["html_url"].as_str().map(str::to_owned))
+                .filter(|url| url.starts_with("https://github.com/"));
+            let pull = job.published.clone().unwrap_or_default();
+            Approved::Posted(Outgoing::new(
+                "pullRequestApproval",
+                &job.repo,
+                review.as_deref().unwrap_or(&pull),
+                None,
+            ))
+        }
         Err((_, why)) => {
             tracing::warn!("merge: {}'s approval wasn't posted: {why}", job.id);
             Approved::NotNow
