@@ -185,34 +185,47 @@ async fn read_status_of(gh: &Path, reviewer: Option<&Path>) -> Status {
         }
         learn_reviewer(folder);
     }
-    let said = crate::github::run_as(
-        gh,
-        reviewer,
-        &[
-            "auth",
-            "status",
-            "--hostname",
-            "github.com",
-            "--active",
-            "--json",
-            "hosts",
-        ],
-    )
-    .await
-    .unwrap_or_default();
+    let said = crate::github::run_as(gh, reviewer, &STATUS)
+        .await
+        .unwrap_or_default();
     decode_status(&said)
 }
 
+/// `gh auth status` for github.com's active account, as JSON (never `--show-token`).
+const STATUS: [&str; 7] = [
+    "auth",
+    "status",
+    "--hostname",
+    "github.com",
+    "--active",
+    "--json",
+    "hosts",
+];
+
 /// The reviewer as obid can use it now: its settings folder and its login, signed in as an account
-/// that isn't the owner's (`owner`); none when no reviewer is signed in.
+/// that isn't the owner's (`owner`); none when no reviewer is signed in (no login in its folder).
+/// A login there that gh can't read now, or that isn't signed in any more, is an error, never "no
+/// reviewer": what would go as the reviewer is tried again later, not posted another way.
 pub(crate) async fn reviewer(
     gh: &Path,
     home: &Path,
     owner: &str,
 ) -> Result<Option<(PathBuf, String)>, String> {
     let folder = reviewer_folder(home);
-    let Some(user) = read_status_of(gh, Some(&folder)).await.user else {
+    if !folder.join("hosts.yml").is_file() {
         return Ok(None);
+    }
+    learn_reviewer(&folder);
+    let said = crate::github::run_as(gh, Some(&folder), &STATUS)
+        .await
+        .map_err(|said| {
+            format!("obid couldn't read the reviewer's GitHub login ({said}): sign it in again, or sign it out")
+        })?;
+    let Some(user) = decode_status(&said).user else {
+        return Err(
+            "the reviewer's GitHub login isn't signed in any more: sign it in again, or sign it out"
+                .into(),
+        );
     };
     if user.eq_ignore_ascii_case(owner) {
         return Err(format!(
@@ -322,6 +335,13 @@ pub async fn reviewer_sign_in(State(shared): State<Arc<Shared>>) -> Result<Respo
 /// in the account's settings, as after `gh auth logout`.
 pub async fn reviewer_sign_out(State(shared): State<Arc<Shared>>) -> Result<Response, ApiError> {
     end(&shared.github.reviewer).await;
+    // A sign-in still ending isn't the current one any more: it keeps nothing ([`keep_reviewer`]).
+    {
+        let mut slot = shared.github.reviewer.slot();
+        if matches!(*slot, Slot::Running(_)) {
+            *slot = Slot::Idle;
+        }
+    }
     let folder = reviewer_folder(&shared.config.home);
     if let Err(e) = std::fs::remove_dir_all(&folder)
         && e.kind() != std::io::ErrorKind::NotFound
@@ -508,7 +528,7 @@ async fn start(shared: &Arc<Shared>, gh: &Path, who: Who) -> Result<Arc<SignIn>,
         let mut signed = exited.is_some_and(|s| s.success());
         if signed && let Some(staging) = &staging {
             let login = &shared.github.reviewer;
-            if let Err(why) = keep_reviewer(&shared, &gh, staging).await {
+            if let Err(why) = keep_reviewer(&shared, &gh, staging, &watched).await {
                 signed = false;
                 *login.refused() = Some(why);
             }
@@ -544,8 +564,14 @@ async fn start(shared: &Arc<Shared>, gh: &Path, who: Who) -> Result<Arc<SignIn>,
 
 /// Keeps the reviewer's login gh just made in `staging` as the reviewer's (`home/github/reviewer`,
 /// in place of the one before), once gh says it's signed in there as an account that isn't the
-/// owner's; or why not, and nothing is kept.
-async fn keep_reviewer(shared: &Shared, gh: &Path, staging: &Path) -> Result<(), String> {
+/// owner's, and only while `sign_in` is still the reviewer's current sign-in (a sign-out meanwhile
+/// ended it); or why not, and nothing is kept.
+async fn keep_reviewer(
+    shared: &Shared,
+    gh: &Path,
+    staging: &Path,
+    sign_in: &Arc<SignIn>,
+) -> Result<(), String> {
     let Some(user) = read_status_of(gh, Some(staging)).await.user else {
         return Err("gh's sign-in ended without a login for the reviewer.".into());
     };
@@ -560,10 +586,24 @@ async fn keep_reviewer(shared: &Shared, gh: &Path, staging: &Path) -> Result<(),
         ));
     }
     let folder = reviewer_folder(&shared.config.home);
-    let _ = std::fs::remove_dir_all(&folder);
-    crate::store::make_private_dir(&shared.config.home.join("github"))
-        .and_then(|()| std::fs::rename(staging, &folder))
-        .map_err(|e| format!("obid couldn't keep the reviewer's login: {e}"))?;
+    {
+        // Under the slot's lock, which a sign-out takes to end this sign-in: either the login is
+        // in place before the sign-out removes it, or this sign-in is over and keeps nothing.
+        let slot = shared.github.reviewer.slot();
+        let current = match &*slot {
+            // This sign-in, not yet registered by the request that started it.
+            Slot::Starting => true,
+            Slot::Running(running) => Arc::ptr_eq(running, sign_in),
+            Slot::Idle => false,
+        };
+        if !current {
+            return Err("The reviewer was signed out before its sign-in ended.".into());
+        }
+        let _ = std::fs::remove_dir_all(&folder);
+        crate::store::make_private_dir(&shared.config.home.join("github"))
+            .and_then(|()| std::fs::rename(staging, &folder))
+            .map_err(|e| format!("obid couldn't keep the reviewer's login: {e}"))?;
+    }
     learn_reviewer(&folder);
     tracing::info!("GitHub reviewer signed in");
     Ok(())
