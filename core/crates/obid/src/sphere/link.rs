@@ -4817,10 +4817,10 @@ impl Link {
         }
         let (item, sharing) = {
             let mut state = self.lock();
-            if !state
+            if state
                 .exchanges
                 .get(&cid)
-                .is_some_and(|e| e.state == "inbox")
+                .is_none_or(|e| e.state != "inbox")
             {
                 return Err(api(
                     StatusCode::CONFLICT,

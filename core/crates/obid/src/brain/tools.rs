@@ -1631,7 +1631,7 @@ async fn dispatch(shared: &Arc<Shared>, session: &Session, args: Value) -> Resul
         return Err("The turn ended before the job started.".into());
     };
     // Only a trusted turn's Bypass job waits, for the owner's Confirm.
-    if jobs.is_empty() && !(bypass && !researched) {
+    if jobs.is_empty() && (!bypass || researched) {
         return Err(text);
     }
     let cards: Vec<Value> = jobs
