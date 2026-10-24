@@ -7779,6 +7779,36 @@ impl Jobs {
                 .as_ref()
                 .and_then(|m| m.workflow.as_ref().map(|w| (m, w)))
             {
+                // A teammate's or a person's approval it waits on: a teammate's Oby is asked over
+                // the Obysphere to review that head and approve it on GitHub (crate::sphere::
+                // approval), and the merge goes on once GitHub shows it. Only when that can't
+                // happen does the owner hear of it.
+                Some((_, workflow))
+                    if workflow.review != crate::memory::Approval::Reviewer
+                        && reviewers.as_ref().is_some_and(|r| {
+                            crate::merge::wanted_approval(&job, Some(workflow), pr, &merging, r)
+                                .is_some()
+                        }) =>
+                {
+                    let goal = job.short_title();
+                    let change = crate::sphere::approval::Change {
+                        repo: &job.repo,
+                        pr: number,
+                        base: &pr.base,
+                        head_branch: &job.branch,
+                        head: &head,
+                        goal: &goal,
+                    };
+                    match link.as_ref() {
+                        Some(link) => match link.ask_teammate(&change).await {
+                            crate::sphere::approval::Teammate::Waiting(_) => None,
+                            crate::sphere::approval::Teammate::NeedsYou(why) => {
+                                Some(crate::merge::stopped_card(&job, &head, &why))
+                            }
+                        },
+                        None => None,
+                    }
+                }
                 Some((memory, workflow)) => {
                     let by = crate::job::MergedBy {
                         by: "memory".into(),

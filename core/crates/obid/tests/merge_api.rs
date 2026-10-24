@@ -660,3 +660,33 @@ fn an_approval_sent_before_the_pull_request_merged_is_listed() {
     assert_eq!(actions, ["push", "pullRequestApproval"]);
     assert!(!calls(&folder.0).contains("-X POST"));
 }
+
+const TEAMMATE: &str =
+    r#"{"base":"dev","method":"squash","rebaseFirst":false,"review":"teammate","checks":"github"}"#;
+
+/// A repository a teammate approves (Tetrix's): with no teammate's approval of the head, the
+/// follower asks a teammate's Oby over the Obysphere; one not in an Obysphere can't, and the owner
+/// hears why, once. Oby's own reviewer account's approval never stands in for it.
+#[test]
+fn a_teammate_workflow_asks_a_teammates_oby() {
+    let folder = Folder::new("merge-teammate");
+    let obid = started_with(&folder, true, Some(TEAMMATE), published(), &[]);
+    let card = within(30, "the card", || merge_cards(&obid).into_iter().next());
+    assert_eq!(
+        card["text"],
+        "Oby isn't in an Obysphere, so no teammate's Oby can approve it."
+    );
+    let waiting = job(&obid);
+    assert_eq!(waiting["mergeNeedsYou"], true);
+    // Its reviewer account approved (posted, harmless), and nothing merged.
+    let calls = calls(&folder.0);
+    assert_eq!(calls.matches("-X POST").count(), 1, "{calls}");
+    assert!(!calls.contains("-X PUT"), "{calls}");
+    // A teammate approved it on GitHub meanwhile: it merges, and nobody is asked.
+    std::fs::write(folder.0.join("gh/person"), "").unwrap();
+    let merged = within(30, "the job to be merged", || {
+        let job = job(&obid);
+        (job["mergedBy"]["by"] == "memory").then_some(job)
+    });
+    assert_eq!(merged["mergeNeedsYou"], false);
+}
