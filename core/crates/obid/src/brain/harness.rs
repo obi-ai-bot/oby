@@ -78,6 +78,10 @@ pub struct Session {
     /// jobs its tools start, follow-ups too, run in Sandbox mode at most and publish only when the
     /// owner does (the owner's decision of 2026-10-23).
     pub web: AtomicBool,
+    /// Where what tainted it came from: the tool that read it (`Read`, `WebFetch`, `oby_inbox`,
+    /// `research`, …) or `attachment`, kept with the mark. A GitHub text whose authors are all the
+    /// owner's own words never taints (the owner's decision of 2026-10-24).
+    pub tainted_by: Mutex<Vec<String>>,
     /// How many times this turn's tools started a job, and told one something.
     pub dispatched: AtomicUsize,
     pub told: AtomicUsize,
@@ -105,12 +109,27 @@ impl Session {
             .insert(key.to_owned(), tail);
     }
 
-    /// Marks the turn as having read something untrusted, and writes the mark to `session.json`
-    /// at once, so a crash mid-turn doesn't lose it.
-    pub fn taint(&self) {
-        if !self.web.swap(true, Ordering::SeqCst) {
+    /// Marks the turn as having read something untrusted `from` where, and writes the mark to
+    /// `session.json` at once, so a crash mid-turn doesn't lose it.
+    pub fn taint(&self, from: &str) {
+        let new = {
+            let mut by = self.tainted_by.lock().unwrap_or_else(|e| e.into_inner());
+            let new = !by.iter().any(|b| b == from);
+            if new {
+                by.push(from.to_owned());
+            }
+            new
+        };
+        if !self.web.swap(true, Ordering::SeqCst) || new {
             self.keep(None);
         }
+    }
+
+    fn sources(&self) -> Vec<String> {
+        self.tainted_by
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     /// Writes the session's [`Kept`]: `id` when the run just named its session, else the one kept
@@ -125,6 +144,7 @@ impl Session {
             session,
             account: self.account.clone(),
             web: self.web.load(Ordering::SeqCst),
+            from: self.sources(),
         };
         let _ =
             crate::store::write_private(&self.kept, &serde_json::to_vec(&kept).unwrap_or_default());
@@ -928,15 +948,20 @@ struct Kept {
     /// even on a later resumed turn (#374, N1). A new session starts clean.
     #[serde(default)]
     web: bool,
+    /// Where what tainted it came from ([`Session::tainted_by`]); none in a mark kept before obid
+    /// recorded it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    from: Vec<String>,
 }
 
-/// Whether the conversation's session on `account` read something untrusted, even one that's
-/// never picked up again (ended for good: its id is gone, its taint isn't).
-fn kept_taint(place: &Place, account: &str) -> bool {
+/// Where what the conversation's session on `account` read untrusted came from, when it did, even
+/// one that's never picked up again (ended for good: its id is gone, its taint isn't).
+fn kept_taint(place: &Place, account: &str) -> Option<Vec<String>> {
     std::fs::read(&place.session)
         .ok()
         .and_then(|bytes| serde_json::from_slice::<Kept>(&bytes).ok())
-        .is_some_and(|kept| kept.account == account && kept.web)
+        .filter(|kept| kept.account == account && kept.web)
+        .map(|kept| kept.from)
 }
 
 fn kept(place: &Place, account: &str) -> Option<Kept> {
@@ -1012,6 +1037,7 @@ async fn session(
     // owner's history is in it (super::supervisor), and its id is kept apart.
     let unattended = supervising.is_some();
     let resumed = kept(&place, &account.id).filter(|_| !unattended);
+    let earlier = kept_taint(&place, &account.id);
     let session = Arc::new(Session {
         conversation: control.conversation.clone(),
         said: said.to_owned(),
@@ -1020,9 +1046,8 @@ async fn session(
         control: control.clone(),
         jobs: Mutex::new(vec![]),
         nonce: super::briefing::nonce(),
-        web: AtomicBool::new(
-            resumed.as_ref().is_some_and(|k| k.web) || kept_taint(&place, &account.id),
-        ),
+        web: AtomicBool::new(resumed.as_ref().is_some_and(|k| k.web) || earlier.is_some()),
+        tainted_by: Mutex::new(earlier.unwrap_or_default()),
         dispatched: AtomicUsize::new(0),
         told: AtomicUsize::new(0),
         kept: if unattended {
@@ -1039,7 +1064,7 @@ async fn session(
     // A supervisor turn is about what an agent wrote: nothing it does counts as the owner's own
     // words, except what super::supervisor lets it do by itself.
     if session.supervising.is_some() {
-        session.taint();
+        session.taint("supervisor");
     }
     // Its Claude Code still running from the turn before, on the same session and account.
     let warm = (shared.config.conversation.agent == Tool::Claude && !unattended)
@@ -1170,7 +1195,7 @@ async fn attempts(
     // The owner's attachments are untrusted input: a turn with any taints, so work it dispatches
     // waits for the owner (P2, #374).
     if !session.attachments.is_empty() {
-        session.taint();
+        session.taint("attachment");
     }
     // Its own task list while something on it is still to do, so a summarized session keeps it;
     // never a supervisor turn's, which knows only its stalled job (super::supervisor).
@@ -1185,7 +1210,7 @@ async fn attempts(
     let tasks = tasks_line(&listed, &session.nonce);
     // A list written after something untrusted was read carries that in: so does this turn.
     if tasks.is_some() && tainted {
-        session.taint();
+        session.taint("oby_tasks");
     }
     let with = |prompt: String| {
         let prompt = match &attached {
@@ -1310,10 +1335,13 @@ async fn attempts(
         // but what ran taints the conversation, and the mark is kept (finding 5).
         if let Some(why) = turn.fatal.clone() {
             session.web.store(true, Ordering::SeqCst);
+            let mut from = session.sources();
+            from.push("codex".into());
             let kept = Kept {
                 session: String::new(),
                 account: account.id.clone(),
                 web: true,
+                from,
             };
             let _ = crate::store::write_private(
                 &session.kept,
@@ -1326,6 +1354,7 @@ async fn attempts(
                 session: id.clone(),
                 account: account.id.clone(),
                 web: session.web.load(Ordering::SeqCst),
+                from: session.sources(),
             };
             let _ = crate::store::write_private(
                 &session.kept,
@@ -1644,7 +1673,7 @@ async fn one(
                 // Untrusted content read this turn (the web, repo code) taints it: work it
                 // dispatches then waits for the owner (N1).
                 if taints(&name, &input, &bounds, &place.repos) {
-                    session.taint();
+                    session.taint(&name);
                 }
                 let index = steps.len() + 1;
                 let line = (
@@ -1697,7 +1726,7 @@ async fn one(
             return Ruling::Now(Answer::Deny(UNATTENDED.into()));
         }
         Ruling::Now(rule(tool, input, &bounds, &place.repos, &|| {
-            session.taint()
+            session.taint(tool)
         }))
     };
     let ran = match (run, codex) {
@@ -2672,6 +2701,7 @@ mod tests {
             jobs: Mutex::new(vec![]),
             nonce: "n".into(),
             web: AtomicBool::new(false),
+            tainted_by: Mutex::default(),
             dispatched: AtomicUsize::new(0),
             told: AtomicUsize::new(0),
             kept: place.session.clone(),
@@ -2685,10 +2715,19 @@ mod tests {
         session.keep(Some("c0000000-0000-4000-8000-000000000001"));
         assert!(!kept(&place, "a").unwrap().web);
         // Something untrusted is read: the mark is on disk now, mid-run.
-        session.taint();
+        session.taint("Read");
         let got = kept(&place, "a").unwrap();
         assert!(got.web);
         assert_eq!(got.session, "c0000000-0000-4000-8000-000000000001");
+        // Where it came from is kept too, each once, and read back for a later turn.
+        session.taint("WebFetch");
+        session.taint("Read");
+        assert_eq!(kept(&place, "a").unwrap().from, ["Read", "WebFetch"]);
+        assert_eq!(
+            kept_taint(&place, "a").as_deref(),
+            Some(&["Read".to_owned(), "WebFetch".to_owned()][..])
+        );
+        assert_eq!(kept_taint(&place, "b"), None);
         let _ = std::fs::remove_dir_all(&home);
     }
 
@@ -2703,6 +2742,7 @@ mod tests {
                 session: session.into(),
                 account: "a".into(),
                 web,
+                from: vec![],
             };
             std::fs::write(&place.session, serde_json::to_vec(&kept).unwrap()).unwrap();
         };
@@ -2918,6 +2958,7 @@ mod tests {
             jobs: Mutex::new(vec![]),
             nonce: "n".into(),
             web: AtomicBool::new(false),
+            tainted_by: Mutex::default(),
             dispatched: AtomicUsize::new(0),
             told: AtomicUsize::new(0),
             kept: PathBuf::from("/nowhere/session.json"),

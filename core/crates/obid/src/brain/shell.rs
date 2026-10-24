@@ -825,7 +825,7 @@ async fn run(shared: &Arc<Shared>, session: &Session, args: Value) -> Result<Sho
             ));
         }
         // What it prints may be the repositories', an attachment's or the web's.
-        session.taint();
+        session.taint("oby_shell");
         let task = start(shared, &place, &folder, &id, &temp, &command, network)?;
         kept.tasks
             .entry(session.conversation.clone())
