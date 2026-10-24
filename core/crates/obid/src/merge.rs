@@ -46,6 +46,7 @@ use crate::job::{Job, MergedBy, Status};
 use crate::memory::{Approval, Checks, Method, Workflow};
 use crate::publish::Outgoing;
 use crate::scan::{self, Verdict};
+use crate::sphere::inbox::{DISMISS, Item};
 
 /// A branch Oby never merges into by itself, whatever a workflow says: those stay the owner's.
 pub fn protected(branch: &str) -> bool {
@@ -425,9 +426,17 @@ pub async fn merge(
         tracing::warn!("merge: {why}");
         wait("Not merged yet: Oby couldn't tell who its reviewer accounts are.")
     })?;
+    // One merge of a job at a time: the follower's and the owner's tap never race.
+    static MERGING: std::sync::Mutex<BTreeSet<std::path::PathBuf>> =
+        std::sync::Mutex::new(BTreeSet::new());
+    let busy = || MERGING.lock().unwrap_or_else(|e| e.into_inner());
     let scratch = home.join("tmp").join(format!("merge-{}", job.id));
+    if !busy().insert(scratch.clone()) {
+        return Err(wait("Not merged yet: Oby is merging it already."));
+    }
     let merged = merging(gh, job, workflow, &reviewers, &scratch).await;
     let _ = std::fs::remove_dir_all(&scratch);
+    busy().remove(&scratch);
     merged
 }
 
@@ -443,9 +452,10 @@ async fn merging(
     let number = github::pull_request_number(url, repo)
         .ok_or_else(|| needs_you("Not merged: the job has no pull request of its own."))?;
     let unread = |_| wait("Not merged yet: GitHub couldn't be read. Oby tries again shortly.");
-    let (pr, mut merging) = github::view_merging(gh, repo, number, obi_protocol::time::now())
+    let (pr, merging) = github::view_merging(gh, repo, number, obi_protocol::time::now())
         .await
         .map_err(unread)?;
+    let mut merging = merging.map_err(unread)?;
     ready(job, Some(workflow), &pr, &merging, Some(reviewers))?;
     let head = pr.head.as_deref().unwrap_or_default();
     let pull_path = format!("repos/{repo}/pulls/{number}");
@@ -620,6 +630,231 @@ pub fn note(job: &mut Job, outcome: &Result<Merged, Blocked>, by: MergedBy) {
         Err(blocked) => {
             job.merge_needs_you = blocked.needs_you;
             job.merge_error = blocked.needs_you.then(|| blocked.why.clone());
+        }
+    }
+}
+
+/// A merge card's options (#853, #854).
+pub const MERGE: &str = "Merge";
+pub const MERGE_AND_REMEMBER: &str = "Merge, and remember";
+pub const LEAVE_OPEN: &str = "Leave it open";
+/// Why Oby's approval wasn't posted: no reviewer account is signed in.
+pub const SIGN_IN_REVIEWER: &str = "Sign in Oby's reviewer account to let it approve.";
+/// The words of Oby's approval on GitHub: obid's own, never a model's.
+pub const APPROVAL: &str =
+    "Oby reviewed this commit and approves it. Its review is in Oby, on the job that opened this.";
+
+/// The workflow a merge card proposes for a repository Oby hasn't learned yet: a squash into the
+/// pull request's base (never main, master or trunk), approved the way it was (the reviewer
+/// account's approval, else a person's) and checked the way it was (GitHub's checks, else the
+/// owner's Mac's). The card shows only when the merge would hold by it ([`ready`]).
+pub fn proposed(pr: &PullRequest, merging: &Merging, reviewers: &Reviewers) -> Option<Workflow> {
+    let head = pr.head.as_deref()?;
+    let author = merging.author.as_deref()?;
+    let by_reviewer = merging
+        .reviews
+        .iter()
+        .any(|r| counts(r, head, author, Approval::Reviewer, reviewers));
+    let workflow = Workflow {
+        base: pr.base.clone(),
+        method: Method::Squash,
+        rebase_first: false,
+        review: if by_reviewer {
+            Approval::Reviewer
+        } else {
+            Approval::Person
+        },
+        checks: if merging.checks == Some("SUCCESS") {
+            Checks::Github
+        } else {
+            Checks::Mac
+        },
+    };
+    workflow.problem().is_none().then_some(workflow)
+}
+
+/// The id of the job's merge item about `head`: one per head, so a new head brings a new card.
+pub fn item_id(job: &str, head: &str) -> String {
+    format!("merge-{job}-{head}")
+}
+
+/// The head a merge item is about.
+pub fn item_head(id: &str) -> Option<&str> {
+    id.rsplit('-').next().filter(|h| crate::git::is_sha(h))
+}
+
+/// "Ready to merge?" (#853): the job's pull request holds by `workflow`, and Oby hasn't learned
+/// how its repository merges, so it asks first.
+pub fn ready_card(job: &Job, number: u64, head: &str, workflow: &Workflow) -> Item {
+    let name = name(&job.repo);
+    card(
+        job,
+        head,
+        format!("Ready to merge: {}", job.short_title()),
+        format!(
+            "{name}#{number} is approved and its checks passed. I don't know how {name} merges yet, so I left it open. main is untouched."
+        ),
+        vec![
+            (
+                MERGE,
+                format!(
+                    "Squash-merges it into {} and deletes its branch.",
+                    workflow.base
+                ),
+            ),
+            (
+                MERGE_AND_REMEMBER,
+                format!(
+                    "Merges it, and remembers. Can I remember that? For {name}: {} Next time I'll just do it, and say so.",
+                    workflow.sentence()
+                ),
+            ),
+            (
+                LEAVE_OPEN,
+                "Nothing is sent. I won't ask again for this commit.".into(),
+            ),
+        ],
+    )
+}
+
+/// "Not merged" (#853): why the merge stopped where only the owner takes it on.
+pub fn stopped_card(job: &Job, head: &str, why: &str) -> Item {
+    card(
+        job,
+        head,
+        format!("Not merged: {}", job.short_title()),
+        why.to_owned(),
+        vec![(DISMISS, "Leaves it open. Nothing is sent.".into())],
+    )
+}
+
+fn card(job: &Job, head: &str, title: String, text: String, options: Vec<(&str, String)>) -> Item {
+    Item {
+        id: item_id(&job.id, head),
+        kind: "merge".into(),
+        job: job.id.clone(),
+        title,
+        text,
+        options: options.iter().map(|(o, _)| (*o).to_owned()).collect(),
+        details: Some(options.into_iter().map(|(_, d)| d).collect()),
+        recommended: None,
+        created: obi_protocol::time::now(),
+        done: None,
+        later: None,
+        answer: None,
+        obi: None,
+        plugin: None,
+        arrived: Some(crate::sphere::inbox::arrival()),
+        confirm: None,
+        start: None,
+        github: None,
+        watch: None,
+    }
+}
+
+/// What posting Oby's approval came to.
+#[derive(Debug, PartialEq)]
+pub enum Approved {
+    /// Posted now, as the reviewer account: the job's `outgoing`.
+    Posted(Outgoing),
+    /// The reviewer account approved that head already.
+    Already,
+    /// Only the owner can let it be posted: why.
+    NeedsYou(String),
+    /// Nothing to post now: Oby's review didn't approve that head, or something didn't read.
+    NotNow,
+}
+
+/// Posts Oby's approval of `head` on the job's pull request as Oby's reviewer account (X1), so the
+/// repository's workflow can merge it: only when Oby's own review approved exactly that head, as
+/// obid pushed it (`Job::current_review`), on the owner's own pull request, and when the reviewer
+/// (`reviewer`: its settings folder and login, [`crate::github_login::reviewer`]) can push to the
+/// repository. Its words are obid's own ([`APPROVAL`]) and scanned first, and the review is
+/// pinned to `head` (`commit_id`). Nothing else is ever posted: changes Oby asks for stay in Oby
+/// and drive the author's rounds.
+pub async fn approve(
+    gh: &Path,
+    home: &Path,
+    job: &Job,
+    merging: &Merging,
+    head: &str,
+    owner: &str,
+    reviewer: Option<&(std::path::PathBuf, String)>,
+) -> Approved {
+    let approved = job
+        .current_review()
+        .is_some_and(|r| r.approved() && r.commit == head);
+    let number = job
+        .published
+        .as_deref()
+        .and_then(|url| github::pull_request_number(url, &job.repo));
+    let own = merging
+        .author
+        .as_deref()
+        .is_some_and(|a| a.eq_ignore_ascii_case(owner));
+    let (Some(number), true, true) = (number, approved, own) else {
+        return Approved::NotNow;
+    };
+    let Some((folder, login)) = reviewer else {
+        return Approved::NeedsYou(SIGN_IN_REVIEWER.into());
+    };
+    if note_reviewer(home, login).is_err() {
+        return Approved::NotNow;
+    }
+    if merging.reviews.iter().any(|r| {
+        r.login.eq_ignore_ascii_case(login)
+            && r.state == "APPROVED"
+            && r.commit.as_deref() == Some(head)
+    }) {
+        return Approved::Already;
+    }
+    match github::can_push(gh, folder, &job.repo).await {
+        Ok(true) => {}
+        Ok(false) => {
+            return Approved::NeedsYou(format!(
+                "Oby's reviewer account, {login}, can't push to {}, so its approval wouldn't count: give it write access there.",
+                job.repo
+            ));
+        }
+        Err(_) => return Approved::NotNow,
+    }
+    if !job.id.bytes().all(|b| b.is_ascii_alphanumeric()) {
+        return Approved::NotNow;
+    }
+    let scratch = home.join("tmp").join(format!("approve-{}", job.id));
+    let body = scratch.join("review.md");
+    let written = crate::store::make_private_dir(&scratch)
+        .and_then(|()| crate::store::write_private(&body, APPROVAL.as_bytes()));
+    let clean = written.is_ok()
+        && matches!(
+            scan::scan(&[("review.md".into(), APPROVAL.into())], &scratch).await,
+            Verdict::Clean
+        );
+    let posted = if clean {
+        crate::listen::create_review(
+            gh,
+            Some(folder.as_path()),
+            &job.repo,
+            number,
+            &body,
+            "APPROVE",
+            head,
+        )
+        .await
+    } else {
+        Err((false, "the scan of its words didn't come back clean".into()))
+    };
+    let _ = std::fs::remove_dir_all(&scratch);
+    match posted {
+        Ok(()) => Approved::Posted(Outgoing::new(
+            "pullRequestApproval",
+            &job.repo,
+            job.published.as_deref().unwrap_or_default(),
+            None,
+        )),
+        Err((_, why)) => {
+            tracing::warn!("merge: {}'s approval wasn't posted: {why}", job.id);
+            Approved::NotNow
         }
     }
 }
@@ -1374,6 +1609,12 @@ case "$*" in
     [ -f "$dir/merge-fails" ] && {{ [ -f "$dir/pull-after.json" ] && cp "$dir/pull-after.json" "$dir/pull.json"; echo 'gh: Pull Request is not mergeable (HTTP 405)' >&2; exit 1; }}
     echo '{{"sha": "dddddddddddddddddddddddddddddddddddddddd", "merged": true, "message": "Pull Request successfully merged"}}' ;;
   "api -X DELETE "*) exit 0 ;;
+  "api -X POST repos/"*"/reviews "*)
+    prev=
+    for a in "$@"; do case "$a" in body=@*) cp "${{a#body=@}}" "$dir/approval.md" ;; esac; prev="$a"; done
+    printf '%s\n' "$GH_CONFIG_DIR" > "$dir/poster"
+    echo '{{"id": 1, "state": "APPROVED"}}' ;;
+  "api repos/obi-ai-bot/oby --jq .permissions.push") [ -f "$dir/no-push" ] && echo false || echo true ;;
   "api --paginate --slurp repos/"*"/reviews?per_page=100")
     if [ -f "$dir/reviews-after.json" ] && [ -f "$dir/reviews-read" ]; then cat "$dir/reviews-after.json"; else touch "$dir/reviews-read"; cat "$dir/reviews.json"; fi ;;
   "api --paginate --slurp repos/"*"/commits?per_page=100") cat "$dir/commits.json" ;;
@@ -1607,6 +1848,174 @@ esac
         let gh = Gh::new("many-squash");
         gh.write("commits.json", &pages);
         assert!(gh.merge(&job(), &obis()).await.is_ok());
+    }
+
+    /// The job with Oby's own review's verdict on `commit`.
+    fn reviewed(verdict: &str, commit: &str) -> Job {
+        let mut job = job();
+        job.review = Some(crate::job::Review {
+            verdict: verdict.into(),
+            job: "r1".into(),
+            agent: "codex".into(),
+            account: "default".into(),
+            same_account: false,
+            round: 1,
+            date: 0,
+            commit: commit.into(),
+        });
+        job
+    }
+
+    /// Oby's approval goes on GitHub only as its reviewer account, only for the very head its own
+    /// review approved, only on the owner's own pull request, and only where the reviewer can
+    /// push; its words are obid's. Changes it asks for never go out.
+    #[tokio::test]
+    async fn oby_approves_as_its_reviewer_account_only_what_its_review_approved() {
+        let gh = Gh::new("approve");
+        let home = gh.dir.as_path();
+        let ghp = gh.dir.join("gh");
+        let folder = gh.dir.join("github/reviewer");
+        let reviewer = (folder.clone(), REVIEWER.to_owned());
+        let (_, nobody) = read(&view(|_| {}), &pages(vec![]));
+        let approve =
+            |job: Job, merging: Merging, reviewer: Option<(std::path::PathBuf, String)>| {
+                let ghp = ghp.clone();
+                async move {
+                    approve(
+                        &ghp,
+                        home,
+                        &job,
+                        &merging,
+                        &head(),
+                        "wellprado",
+                        reviewer.as_ref(),
+                    )
+                    .await
+                }
+            };
+        let posted = approve(
+            reviewed("approved", &head()),
+            nobody.clone(),
+            Some(reviewer.clone()),
+        )
+        .await;
+        assert_eq!(
+            posted,
+            Approved::Posted(Outgoing {
+                date: match &posted {
+                    Approved::Posted(o) => o.date,
+                    _ => 0,
+                },
+                ..Outgoing::new("pullRequestApproval", REPO, URL, None)
+            })
+        );
+        let calls = gh.calls();
+        assert!(
+            calls.contains(&format!(
+                "api -X POST repos/obi-ai-bot/oby/pulls/7/reviews -f commit_id={} -f event=APPROVE -F body=@",
+                head()
+            )),
+            "{calls}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(gh.dir.join("approval.md")).unwrap(),
+            APPROVAL
+        );
+        assert_eq!(
+            std::fs::read_to_string(gh.dir.join("poster"))
+                .unwrap()
+                .trim(),
+            folder.to_string_lossy()
+        );
+        assert!(!gh.dir.join("tmp/approve-j1").exists());
+        assert_eq!(reviewers(home, None).unwrap().used, [REVIEWER]);
+        let posts = || gh.calls().matches("-X POST").count();
+        // Approved already on GitHub: nothing more.
+        let (_, already) = read(&view(|_| {}), &approved());
+        assert_eq!(
+            approve(
+                reviewed("approved", &head()),
+                already,
+                Some(reviewer.clone())
+            )
+            .await,
+            Approved::Already
+        );
+        // Not its review's approval of that head, or not the owner's pull request: nothing.
+        let older = "c".repeat(40);
+        let mut theirs = nobody.clone();
+        theirs.author = Some("ana".into());
+        for (job, merging) in [
+            (reviewed("approved", &older), nobody.clone()),
+            (reviewed("changesRequested", &head()), nobody.clone()),
+            (job(), nobody.clone()),
+            (reviewed("approved", &head()), theirs),
+        ] {
+            assert_eq!(
+                approve(job, merging, Some(reviewer.clone())).await,
+                Approved::NotNow
+            );
+        }
+        assert_eq!(posts(), 1);
+        // No reviewer signed in, or one that can't push: only the owner can help.
+        assert_eq!(
+            approve(reviewed("approved", &head()), nobody.clone(), None).await,
+            Approved::NeedsYou(SIGN_IN_REVIEWER.into())
+        );
+        gh.write("no-push", "");
+        let Approved::NeedsYou(why) =
+            approve(reviewed("approved", &head()), nobody, Some(reviewer)).await
+        else {
+            panic!("a reviewer that can't push needs the owner");
+        };
+        assert!(why.contains("can't push to obi-ai-bot/oby"), "{why}");
+        assert_eq!(posts(), 1);
+        assert!(!gh.calls().contains("REQUEST_CHANGES"));
+    }
+
+    /// For a repository Oby hasn't learned, the card proposes the way the pull request was
+    /// approved and checked, squashed into its base; never into main.
+    #[test]
+    fn a_card_proposes_how_it_was_approved_and_checked() {
+        let (pr, merging) = read(&view(|_| {}), &approved());
+        assert_eq!(
+            proposed(&pr, &merging, &signed_in()),
+            Some(Workflow {
+                base: "dev".into(),
+                method: Method::Squash,
+                rebase_first: false,
+                review: Approval::Reviewer,
+                checks: Checks::Github,
+            })
+        );
+        let person = pages(vec![rest(1, "ana", "User", "APPROVED", &head(), "MEMBER")]);
+        let (pr, merging) = read(&view(|v| v["statusCheckRollup"] = json!([])), &person);
+        let mut theirs = proposed(&pr, &merging, &signed_in()).unwrap();
+        assert_eq!(
+            (theirs.review, theirs.checks),
+            (Approval::Person, Checks::Mac)
+        );
+        let (main, merging) = read(&view(|v| v["baseRefName"] = json!("main")), &approved());
+        assert_eq!(proposed(&main, &merging, &signed_in()), None);
+        // Its card, one per head.
+        theirs.checks = Checks::Github;
+        let card = ready_card(&job(), 7, &head(), &theirs);
+        assert_eq!(card.id, format!("merge-j1-{}", head()));
+        assert_eq!(item_head(&card.id), Some(head().as_str()));
+        assert_eq!(card.kind, "merge");
+        assert_eq!(card.options, [MERGE, MERGE_AND_REMEMBER, LEAVE_OPEN]);
+        assert!(card.text.starts_with(
+            "oby#7 is approved and its checks passed. I don't know how oby merges yet"
+        ));
+        assert!(
+            card.details.unwrap()[1]
+                .contains("Can I remember that? For oby: Squash-merge into dev")
+        );
+        let stopped = stopped_card(&job(), &head(), SIGN_IN_REVIEWER);
+        assert_eq!(
+            (stopped.options, stopped.text),
+            (vec![DISMISS.to_owned()], SIGN_IN_REVIEWER.to_owned())
+        );
     }
 
     /// Only one of Oby's jobs has a folder of its own, under obid's home.

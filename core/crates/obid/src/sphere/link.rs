@@ -959,6 +959,94 @@ impl Link {
         }
     }
 
+    /// The job `job`'s merge card now (crate::merge): `card`, added unless it was in the inbox
+    /// before (open, or answered: the owner isn't asked again about that head), and every other
+    /// open `merge` item of the job done, with no answer: what it asked about is gone.
+    pub fn merge_items(&self, job: &str, card: Option<Item>) {
+        let keep = card.as_ref().map(|c| c.id.clone());
+        let stale: Vec<String> = self
+            .lock()
+            .inbox
+            .values()
+            .filter(|i| {
+                i.kind == "merge"
+                    && i.job == job
+                    && i.done.is_none()
+                    && Some(&i.id) != keep.as_ref()
+            })
+            .map(|i| i.id.clone())
+            .collect();
+        for id in stale {
+            self.settle(&id);
+        }
+        if let Some(card) = card {
+            self.add_items(vec![card]);
+        }
+    }
+
+    /// `POST /v1/inbox/{id}/answer` on a `merge` card (crate::merge): Merge, or Merge and
+    /// remember, merges it (`Jobs::merge_by_owner`), the item claimed (done) first so a second tap
+    /// merges nothing, and open again when it didn't merge; Leave it open, Dismiss or done settle
+    /// it, and nothing is sent; later puts it off.
+    async fn answer_merge(
+        &self,
+        mut item: Item,
+        answer: Option<String>,
+        later: Option<i64>,
+    ) -> Result<Value, ApiError> {
+        if let Some(at) = later {
+            item.later = Some(at);
+            self.lock().inbox.insert(item.id.clone(), item.clone());
+            self.save_item(&item);
+            return Ok(item.to_json());
+        }
+        let merging = matches!(
+            answer.as_deref(),
+            Some(crate::merge::MERGE | crate::merge::MERGE_AND_REMEMBER)
+        );
+        if let Some(answer) = &answer
+            && !item.options.contains(answer)
+        {
+            // Unclaim: the answer isn't one of its options.
+            if merging {
+                self.lock().inbox.insert(item.id.clone(), item.clone());
+            }
+            return Err(api(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                format!("The answer is one of: {}.", item.options.join("; ")),
+            ));
+        }
+        if merging {
+            let head = crate::merge::item_head(&item.id)
+                .unwrap_or_default()
+                .to_owned();
+            let remember = answer.as_deref() == Some(crate::merge::MERGE_AND_REMEMBER);
+            if let Err(why) = self.jobs.merge_by_owner(&item.job, &head, remember).await {
+                // Open again, unless it was settled meanwhile.
+                let open = {
+                    let mut state = self.lock();
+                    let claimed = state
+                        .inbox
+                        .get(&item.id)
+                        .is_some_and(|i| i.done.is_some() && i.answer.is_none());
+                    if claimed {
+                        state.inbox.insert(item.id.clone(), item.clone());
+                    }
+                    claimed
+                };
+                if open {
+                    self.save_item(&item);
+                }
+                return Err(api(StatusCode::CONFLICT, format!("Not merged: {why}")));
+            }
+        }
+        item.done = Some(time::now());
+        item.answer = answer;
+        self.lock().inbox.insert(item.id.clone(), item.clone());
+        self.save_item(&item);
+        Ok(item.to_json())
+    }
+
     /// Work started from the feed (`POST /v1/github/work/{id}/start`): its open `github` item `id`
     /// is done, answered with its start option, `job` the job on it.
     pub fn github_started(&self, id: &str, job: &str) {
@@ -4703,6 +4791,31 @@ impl Link {
                         format!("Nothing was posted: {why}."),
                     ))
                 }
+            };
+        }
+        // A merge card (crate::merge): Merge, or Merge and remember, claims the item under the
+        // lock (done), then merges with no lock held, as Approve does above.
+        let merge = {
+            let mut state = self.lock();
+            let item = state
+                .inbox
+                .get(id)
+                .filter(|i| i.done.is_none() && i.kind == "merge")
+                .cloned();
+            if item.is_some()
+                && matches!(&given, Given::Answer(a)
+                    if a == crate::merge::MERGE || a == crate::merge::MERGE_AND_REMEMBER)
+                && let Some(kept) = state.inbox.get_mut(id)
+            {
+                kept.done = Some(time::now());
+            }
+            item
+        };
+        if let Some(item) = merge {
+            return match given {
+                Given::Answer(answer) => self.answer_merge(item, Some(answer), None).await,
+                Given::Done => self.answer_merge(item, None, None).await,
+                Given::Later(at) => self.answer_merge(item, None, Some(at)).await,
             };
         }
         // A review's author on Slack (crate::listen::tell_author): Send, or Send and Remember,

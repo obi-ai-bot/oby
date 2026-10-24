@@ -1401,6 +1401,12 @@ fn owners_only(kind: &str, answer: &str) -> Option<&'static str> {
             "Only the owner approves a job's plan or sends it back, in their inbox: Oby can't answer it.",
         );
     }
+    // A merge card is the owner's to answer, either way (#853).
+    if kind == "merge" {
+        return Some(
+            "Only the owner merges, or leaves it open, in their inbox: Oby can't answer it.",
+        );
+    }
     // A job's agent's question is the owner's to answer (#858).
     if kind == crate::sphere::inbox::QUESTION_KIND {
         return Some(
@@ -2566,6 +2572,10 @@ mod tests {
             assert!(owners_only("plan", any).is_some(), "{any}");
         }
         assert_eq!(owners_only("question", "Yes"), None);
+        // A merge card, either way (#853).
+        for any in ["Merge", "Merge, and remember", "Leave it open", "Dismiss"] {
+            assert!(owners_only("merge", any).is_some(), "{any}");
+        }
     }
 
     #[test]

@@ -1241,6 +1241,18 @@ impl Job {
                 .as_ref()
                 .and_then(|pr| pr.review_decision.as_deref());
             let oby = self.current_review();
+            // The Merged stage while it's open: why the merge waits for the owner, else GitHub.
+            let merge_line = self
+                .merge_error
+                .as_deref()
+                .filter(|_| self.merge_needs_you)
+                .unwrap_or(crate::publish::MERGE_ON_GITHUB);
+            // Merged by a workflow the owner taught Oby: it says so (#854).
+            let as_you_like = self
+                .merged_by
+                .as_ref()
+                .filter(|m| m.by == "memory")
+                .map(|_| format!("Merged into {merge_base}, as you like"));
             match self.pull_request.as_ref().map(|pr| pr.state.as_str()) {
                 Some("MERGED") => {
                     let detail = match (decision, oby) {
@@ -1251,7 +1263,7 @@ impl Job {
                         _ => "Merged without review",
                     };
                     set(&mut stages, "review", "done", Some(detail), None);
-                    set(&mut stages, "merged", "done", None, None);
+                    set(&mut stages, "merged", "done", as_you_like.as_deref(), None);
                 }
                 Some("CLOSED") => {
                     set(
@@ -1266,13 +1278,7 @@ impl Job {
                 _ => match decision {
                     Some("APPROVED") => {
                         set(&mut stages, "review", "done", Some("Approved"), None);
-                        set(
-                            &mut stages,
-                            "merged",
-                            "current",
-                            Some(crate::publish::MERGE_ON_GITHUB),
-                            None,
-                        );
+                        set(&mut stages, "merged", "current", Some(merge_line), None);
                     }
                     Some("CHANGES_REQUESTED") => {
                         set(
@@ -1300,13 +1306,7 @@ impl Job {
                         }
                         (None, None, Some(review)) if review.approved() => {
                             set(&mut stages, "review", "done", Some(APPROVED_BY_OBY), None);
-                            set(
-                                &mut stages,
-                                "merged",
-                                "current",
-                                Some(crate::publish::MERGE_ON_GITHUB),
-                                None,
-                            );
+                            set(&mut stages, "merged", "current", Some(merge_line), None);
                         }
                         (None, None, Some(_)) => {
                             set(
