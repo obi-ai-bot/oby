@@ -8,7 +8,10 @@
 //!
 //! Invitations are made, and paired devices listed and revoked, on the loopback API with the API
 //! token (`/v1/pairing/invite`, `/v1/pairing/devices`): a phone that reaches the gateway can
-//! redeem an invitation, never mint one.
+//! redeem an invitation, never mint one. Only an invitation the owner made on their own device
+//! (its `approval`, signed by a registered key on the owner's click) lets the phone it pairs add
+//! its own publishing key, in the minutes after it redeemed it (crate::devices): the API token
+//! alone pairs a phone that can't approve anything.
 //!
 //! A phone paired through obid's Obysphere (crate::relay) reaches the same router in process, its
 //! requests sealed end to end: such a device's token works only inside its sealed envelopes,
@@ -42,6 +45,9 @@ const INVITATION: Duration = Duration::from_secs(120);
 const ATTEMPTS: u32 = 5;
 /// How long a device token works (Devices.swift, `GatewayToken.lifetime`).
 const LIFETIME: Duration = Duration::from_secs(30 * 24 * 60 * 60);
+/// How long after redeeming an invitation the owner made a phone may add its publishing key: it
+/// registers on the connection right after pairing.
+const KEYABLE: Duration = Duration::from_secs(600);
 /// The largest request a phone may send through.
 const BODY: usize = 4 << 20;
 /// What stands for an account's home in an answer.
@@ -152,6 +158,8 @@ struct Pending {
     hostname: String,
     /// The SHA-256 of its relay token, when it pairs through the Obysphere.
     relay: Option<String>,
+    /// The owner made it on their own device (`approval`): the phone it pairs may add its key.
+    owned: bool,
 }
 
 /// A paired device, kept in `home/gateway-devices.json` under its token's digest.
@@ -166,6 +174,10 @@ struct Device {
     /// only in its sealed envelopes, on that relay token's socket (crate::relay).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     relay: Option<String>,
+    /// Until when it may add its own publishing key (seconds since the epoch): set only when it
+    /// redeemed an invitation the owner made on their own device. A pairing from before has none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    keyable_until: Option<i64>,
 }
 
 /// What `POST /v1/pairing/invite` answers: the QR code's parts and the six digits.
@@ -254,7 +266,8 @@ impl Gateway {
         }
     }
 
-    /// A new invitation, replacing the one before.
+    /// A new invitation, replacing the one before. `owned`: the owner made it on their own device,
+    /// so the phone it pairs may add its publishing key.
     pub fn invite(
         &self,
         url: &str,
@@ -262,6 +275,7 @@ impl Gateway {
         hostname: &str,
         now: SystemTime,
         relay: Option<RelayInvite>,
+        owned: bool,
     ) -> Invitation {
         let secret = random(32);
         let code = {
@@ -278,6 +292,7 @@ impl Gateway {
             name: name.to_owned(),
             hostname: hostname.to_owned(),
             relay: relay.as_ref().map(|r| digest(&r.token)),
+            owned,
         });
         let relay = relay
             .map(|r| json!({"sphere": r.sphere, "id": r.relay, "token": r.token, "key": r.key}));
@@ -339,6 +354,7 @@ impl Gateway {
             created: seconds(now),
             expires_at: seconds(now + LIFETIME),
             relay: via.map(str::to_owned),
+            keyable_until: open.owned.then(|| seconds(now + KEYABLE)),
         };
         let mut devices = self.devices.lock().unwrap_or_else(|e| e.into_inner());
         devices.insert(digest(&token), device.clone());
@@ -355,6 +371,17 @@ impl Gateway {
             device_id: device.id,
             expires_at: obi_protocol::time::format(device.expires_at),
             link: json!({"name": open.name, "hostname": open.hostname}),
+        })
+    }
+
+    /// Whether the paired device `id` may add its own publishing key now: it redeemed an invitation
+    /// the owner made on their own device, in the last 10 minutes, and its token still works.
+    pub fn may_add_key(&self, id: &str, now: SystemTime) -> bool {
+        let devices = self.devices.lock().unwrap_or_else(|e| e.into_inner());
+        devices.values().any(|d| {
+            d.id == id
+                && d.expires_at > seconds(now)
+                && d.keyable_until.is_some_and(|until| until > seconds(now))
         })
     }
 
@@ -474,16 +501,30 @@ pub struct InviteRequest {
     url: Option<String>,
     name: Option<String>,
     hostname: Option<String>,
+    /// The owner's device's signature over `"oby-pair-invite\n<signedAt>"` (crate::devices): the
+    /// phone it pairs may add its publishing key. Without one it pairs a phone that can't.
+    approval: Option<Value>,
 }
 
 /// `POST /v1/pairing/invite`. With an Obysphere the phone pairs through it, sealed (crate::relay),
 /// and only so: the invitation carries its relay token, registered with the Sphere first, and no
 /// route to the listener (a `url` given is left out). Without one, only a `url` the phone reaches
-/// the gateway by (Remote access, the tailnet) makes an invitation.
+/// the gateway by (Remote access, the tailnet) makes an invitation. An `approval` that doesn't
+/// hold is `403` with nothing made.
 pub async fn invite(
     State(shared): State<Arc<Shared>>,
     axum::Json(request): axum::Json<InviteRequest>,
 ) -> Response {
+    let owned = match &request.approval {
+        None => false,
+        Some(approval) if shared.devices.approves_invite(approval) => true,
+        Some(_) => {
+            return error(
+                StatusCode::FORBIDDEN,
+                "That approval isn't a registered device's, signed for an invitation in the last two minutes. Try again.",
+            );
+        }
+    };
     let authority = match request.url.as_deref().map(|url| url.split_once("://")) {
         None => None,
         Some(Some((scheme, rest)))
@@ -515,7 +556,7 @@ pub async fn invite(
     let through_relay = relay.is_some();
     let invitation = shared
         .gateway
-        .invite(&url, &name, &hostname, SystemTime::now(), relay);
+        .invite(&url, &name, &hostname, SystemTime::now(), relay, owned);
     shared.relay.wake();
     if through_relay {
         shared.relay.ready(Duration::from_secs(5)).await;
@@ -1020,7 +1061,14 @@ mod tests {
         let home = folder("once");
         let gateway = Gateway::open(&home);
         let now = SystemTime::now();
-        let invitation = gateway.invite("https://mac.example", "Mac", "mac.example", now, None);
+        let invitation = gateway.invite(
+            "https://mac.example",
+            "Mac",
+            "mac.example",
+            now,
+            None,
+            false,
+        );
         assert_eq!(invitation.code.len(), 6);
         assert!(invitation.secret.len() >= 32);
         let redeemed = gateway
@@ -1034,7 +1082,14 @@ mod tests {
                 .0,
             StatusCode::GONE
         );
-        let invitation = gateway.invite("https://mac.example", "Mac", "mac.example", now, None);
+        let invitation = gateway.invite(
+            "https://mac.example",
+            "Mac",
+            "mac.example",
+            now,
+            None,
+            false,
+        );
         let later = now + INVITATION + Duration::from_secs(1);
         assert_eq!(
             gateway
@@ -1051,13 +1106,50 @@ mod tests {
         let _ = std::fs::remove_dir_all(home);
     }
 
+    /// Only an invitation the owner made on their own device lets the phone it pairs add its
+    /// publishing key, for 10 minutes after redeeming it; one the API token made alone never does.
+    #[test]
+    fn only_an_owned_invitation_lets_its_phone_add_a_key_for_ten_minutes() {
+        let home = folder("keyable");
+        let gateway = Gateway::open(&home);
+        let now = SystemTime::now();
+        let token_only = gateway.invite(
+            "https://mac.example",
+            "Mac",
+            "mac.example",
+            now,
+            None,
+            false,
+        );
+        let plain = gateway
+            .redeem(&token_only.secret, "Phone", now, None)
+            .unwrap();
+        assert!(!gateway.may_add_key(&plain.device_id, now));
+        let owned = gateway.invite("https://mac.example", "Mac", "mac.example", now, None, true);
+        let phone = gateway.redeem(&owned.secret, "Phone", now, None).unwrap();
+        assert!(gateway.may_add_key(&phone.device_id, now));
+        assert!(gateway.may_add_key(&phone.device_id, now + KEYABLE - Duration::from_secs(1)));
+        assert!(!gateway.may_add_key(&phone.device_id, now + KEYABLE + Duration::from_secs(1)));
+        assert!(!gateway.may_add_key("someone-else", now));
+        // Kept with the pairing, across a restart.
+        assert!(Gateway::open(&home).may_add_key(&phone.device_id, now));
+        let _ = std::fs::remove_dir_all(home);
+    }
+
     /// Ports GatewayTests.wrongPairingCredentialsExhaustTheInvitation.
     #[test]
     fn five_wrong_credentials_use_the_invitation_up() {
         let home = folder("wrong");
         let gateway = Gateway::open(&home);
         let now = SystemTime::now();
-        let invitation = gateway.invite("https://mac.example", "Mac", "mac.example", now, None);
+        let invitation = gateway.invite(
+            "https://mac.example",
+            "Mac",
+            "mac.example",
+            now,
+            None,
+            false,
+        );
         for _ in 0..ATTEMPTS {
             assert_eq!(
                 gateway.redeem("not it", "Phone", now, None).unwrap_err().0,
@@ -1081,7 +1173,14 @@ mod tests {
         let now = SystemTime::now();
         let token = {
             let gateway = Gateway::open(&home);
-            let invitation = gateway.invite("https://mac.example", "Mac", "mac.example", now, None);
+            let invitation = gateway.invite(
+                "https://mac.example",
+                "Mac",
+                "mac.example",
+                now,
+                None,
+                false,
+            );
             gateway
                 .redeem(&invitation.code, "Alice's iPhone", now, None)
                 .unwrap()

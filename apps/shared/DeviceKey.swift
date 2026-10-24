@@ -34,12 +34,24 @@ nonisolated struct Approval: Encodable, Equatable, Sendable {
     static func revokeMessage(device: String, signedAt: String) -> Data {
         Data("oby-revoke-device\n\(device)\n\(signedAt)".utf8)
     }
+
+    /// What the Mac signs on the owner's Pair a device (docs/runner-api.md, "Invitations"): only the
+    /// phone such an invitation pairs may add its own key.
+    static func inviteMessage(signedAt: String) -> Data {
+        Data("oby-pair-invite\n\(signedAt)".utf8)
+    }
 }
 
-/// The device's approval key: it lives in the Secure Enclave, and only Oby on this device can
-/// use it, so the runner can tell an approval came from the owner's own app, not from a job, another
-/// Oby or anything it received. The owner's click is the approval (the owner's decision of
-/// 2026-10-24): signing asks for no Touch ID, Face ID or password.
+/// The device's approval key: it lives in the Secure Enclave, so it never leaves this device, and
+/// the runner can tell an approval came from the owner's own app, not from a job, another Oby or
+/// anything it received. The owner's click is the approval (the owner's decision of 2026-10-24):
+/// signing asks for no Touch ID, Face ID or password. What keeps other code on the device from
+/// signing is where its wrapped blob is kept: on the iPhone, Oby's own keychain, which no other app
+/// reads; on the Mac, a generic password in the login keychain, whose access list makes macOS ask
+/// the owner before any other app reads it, and which a boxed agent can't reach at all. A program
+/// that runs as the owner and that the owner lets read it could sign.
+// ponytail: the Mac's data-protection keychain, with an access group, would bind the blob to Oby
+// alone; it needs Developer ID's provisioning profile (F4, as Engine/Vault.swift's vault).
 nonisolated enum DeviceKey {
     static var isAvailable: Bool { SecureEnclave.isAvailable }
 
@@ -75,6 +87,12 @@ nonisolated enum DeviceKey {
         let signedAt = ISO8601DateFormatter().string(from: .now)
         return Approval(device: signer, action: device, signedAt: signedAt,
                         signature: try sign(Approval.revokeMessage(device: device, signedAt: signedAt)))
+    }
+
+    /// Signs a pairing invitation, made on the owner's click, as device `device`.
+    static func approveInvite(device: String) throws -> Approval {
+        let signedAt = ISO8601DateFormatter().string(from: .now)
+        return Approval(device: device, action: "", signedAt: signedAt, signature: try sign(Approval.inviteMessage(signedAt: signedAt)))
     }
 
     /// ECDSA P-256 with SHA-256, DER, base64: what the runner checks.

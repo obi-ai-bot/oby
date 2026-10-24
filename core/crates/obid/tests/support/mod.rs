@@ -396,6 +396,39 @@ pub fn confirm_approval(obid: &Obid, item: &str) -> Value {
 
 /// [`confirm_approval`] signed at `at` (seconds since the epoch): two taps a second apart.
 pub fn confirm_approval_at(obid: &Obid, item: &str, at: i64) -> Value {
+    let all = call(obid, "GET", "/v1/inbox", None).body;
+    let items = all.get("items").cloned().unwrap_or(all);
+    let title = items
+        .as_array()
+        .and_then(|a| a.iter().find(|i| i["id"] == item))
+        .and_then(|i| i["title"].as_str())
+        .unwrap_or_default()
+        .to_owned();
+    let signed_at = time::format(at);
+    let mut approval = owner_signs(
+        obid,
+        &format!("oby-confirm\n{item}\n{title}\n{signed_at}"),
+        &signed_at,
+    );
+    approval["action"] = json!(title);
+    approval
+}
+
+/// The owner's device making a pairing invitation on their click (`oby-pair-invite`, crate::gateway).
+pub fn invite_approval(obid: &Obid) -> Value {
+    invite_approval_at(obid, time::now())
+}
+
+/// [`invite_approval`] signed at `at`: two invitations in the same second sign the same sentence,
+/// and the second is refused as a replay.
+pub fn invite_approval_at(obid: &Obid, at: i64) -> Value {
+    let signed_at = time::format(at);
+    owner_signs(obid, &format!("oby-pair-invite\n{signed_at}"), &signed_at)
+}
+
+/// `message`, signed at `signed_at` by the test owner's device: a fixed key, registered once per
+/// obid as the Mac app adds its own (it names it in `home/pairing`, crate::devices).
+pub fn owner_signs(obid: &Obid, message: &str, signed_at: &str) -> Value {
     use base64::Engine as _;
     use p256::ecdsa::signature::Signer as _;
     use p256::elliptic_curve::sec1::ToEncodedPoint as _;
@@ -420,19 +453,9 @@ pub fn confirm_approval_at(obid: &Obid, item: &str, at: i64) -> Value {
             id
         }
     };
-    let all = call(obid, "GET", "/v1/inbox", None).body;
-    let items = all.get("items").cloned().unwrap_or(all);
-    let title = items
-        .as_array()
-        .and_then(|a| a.iter().find(|i| i["id"] == item))
-        .and_then(|i| i["title"].as_str())
-        .unwrap_or_default()
-        .to_owned();
-    let signed_at = time::format(at);
     let key = p256::ecdsa::SigningKey::from(secret);
-    let signature: p256::ecdsa::Signature =
-        key.sign(format!("oby-confirm\n{item}\n{title}\n{signed_at}").as_bytes());
-    json!({"device": device, "action": title, "signedAt": signed_at,
+    let signature: p256::ecdsa::Signature = key.sign(message.as_bytes());
+    json!({"device": device, "action": "", "signedAt": signed_at,
            "signature": base64::engine::general_purpose::STANDARD.encode(signature.to_der())})
 }
 

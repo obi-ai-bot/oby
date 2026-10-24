@@ -669,7 +669,8 @@ fn vouched(scalar: u8, device: &str, prefix: &str, subject: &str) -> Value {
     use p256::ecdsa::signature::Signer as _;
     let key = p256::ecdsa::SigningKey::from_slice(&[scalar; 32]).unwrap();
     let at = obi_protocol::time::format(obi_protocol::time::now());
-    let signature: p256::ecdsa::Signature = key.sign(format!("{prefix}\n{subject}\n{at}").as_bytes());
+    let signature: p256::ecdsa::Signature =
+        key.sign(format!("{prefix}\n{subject}\n{at}").as_bytes());
     json!({"device": device, "signedAt": at,
            "signature": base64::engine::general_purpose::STANDARD.encode(signature.to_der().as_bytes())})
 }
@@ -695,15 +696,17 @@ fn a_new_key_needs_the_owners_presence() {
             Some(&json!({"name": "Test Mac", "publicKey": key, "endorsement": endorsement})),
         )
     };
-    let revoke = |id: &str, body: Option<&Value>| {
-        call(&obid, "DELETE", &format!("/v1/devices/{id}"), body)
-    };
+    let revoke =
+        |id: &str, body: Option<&Value>| call(&obid, "DELETE", &format!("/v1/devices/{id}"), body);
 
     // The Mac's first key: `pairing` names it (the app writes it after Touch ID or the password).
     let closed = register(&obid, &mac);
     assert_eq!(closed.status, 403, "{}", closed.text);
     let line = closed.body["error"].as_str().unwrap();
-    assert!(line.contains(&format!("echo '{mac}' > {}", pairing.display())), "{line}");
+    assert!(
+        line.contains(&format!("echo '{mac}' > {}", pairing.display())),
+        "{line}"
+    );
     std::fs::write(&pairing, format!("{mac}\n")).unwrap();
     let registered = register(&obid, &mac);
     assert_eq!(registered.status, 200, "{}", registered.text);
@@ -711,7 +714,11 @@ fn a_new_key_needs_the_owners_presence() {
     assert!(!pairing.exists(), "the Mac used pairing up");
 
     // The attack: the API token, and every door it can try.
-    assert_eq!(register(&obid, &attacker).status, 403, "the API token alone");
+    assert_eq!(
+        register(&obid, &attacker).status,
+        403,
+        "the API token alone"
+    );
     std::fs::write(&pairing, "").unwrap();
     assert_eq!(
         register(&obid, &attacker).status,
@@ -726,16 +733,33 @@ fn a_new_key_needs_the_owners_presence() {
     );
     let _ = std::fs::remove_file(&pairing);
     for (endorsement, why) in [
-        (vouched(2, &mac_id, "oby-device", &attacker), "vouched for by itself"),
-        (vouched(1, &mac_id, "oby-device", &device_key(3)), "the Mac's vouching for another key"),
-        (vouched(1, &mac_id, "oby-connection", &attacker), "another kind of signature"),
+        (
+            vouched(2, &mac_id, "oby-device", &attacker),
+            "vouched for by itself",
+        ),
+        (
+            vouched(1, &mac_id, "oby-device", &device_key(3)),
+            "the Mac's vouching for another key",
+        ),
+        (
+            vouched(1, &mac_id, "oby-connection", &attacker),
+            "another kind of signature",
+        ),
         (json!({}), "no signature"),
     ] {
         assert_eq!(with(&attacker, endorsement).status, 403, "{why}");
     }
-    assert_eq!(revoke(&mac_id, None).status, 403, "revoking the Mac's key unsigned");
     assert_eq!(
-        revoke(&mac_id, Some(&json!({"approval": vouched(2, &mac_id, "oby-revoke-device", &mac_id)}))).status,
+        revoke(&mac_id, None).status,
+        403,
+        "revoking the Mac's key unsigned"
+    );
+    assert_eq!(
+        revoke(
+            &mac_id,
+            Some(&json!({"approval": vouched(2, &mac_id, "oby-revoke-device", &mac_id)}))
+        )
+        .status,
         403,
         "revoking it with the attacker's signature"
     );
@@ -751,7 +775,11 @@ fn a_new_key_needs_the_owners_presence() {
     let moved = with(&next, endorsement.clone());
     assert_eq!(moved.status, 200, "{}", moved.text);
     assert_ne!(moved.body["id"], json!(mac_id));
-    assert_eq!(with(&attacker, endorsement).status, 403, "an endorsement works once");
+    assert_eq!(
+        with(&attacker, endorsement).status,
+        403,
+        "an endorsement works once"
+    );
     let revoked = revoke(
         &mac_id,
         Some(&json!({"approval": vouched(1, &mac_id, "oby-revoke-device", &mac_id)})),

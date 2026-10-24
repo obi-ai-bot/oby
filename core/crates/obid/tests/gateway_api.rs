@@ -89,17 +89,25 @@ fn unchunk(mut body: &str) -> String {
     }
 }
 
-/// An invitation made on the loopback API, redeemed at the gateway: the device token.
+/// An invitation made on the loopback API with the API token alone, redeemed at the gateway: the
+/// device token, of a phone that can't add a publishing key.
 fn paired(obid: &Obid) -> String {
-    let invitation = call(
-        obid,
-        "POST",
-        "/v1/pairing/invite",
-        Some(
-            &json!({"url": "https://mac.tail0000.ts.net:8443", "name": "My Mac",
-                                       "hostname": "mac.tail0000.ts.net:8443"}),
-        ),
-    );
+    paired_with(obid, None)
+}
+
+/// [`paired`], the invitation made on the owner's own device (`approval`): its phone may add its
+/// publishing key for 10 minutes.
+fn owner_paired(obid: &Obid) -> String {
+    paired_with(obid, Some(invite_approval(obid)))
+}
+
+fn paired_with(obid: &Obid, approval: Option<Value>) -> String {
+    let mut invite = json!({"url": "https://mac.tail0000.ts.net:8443", "name": "My Mac",
+                            "hostname": "mac.tail0000.ts.net:8443"});
+    if let Some(approval) = approval {
+        invite["approval"] = approval;
+    }
+    let invitation = call(obid, "POST", "/v1/pairing/invite", Some(&invite));
     assert_eq!(invitation.status, 200, "{}", invitation.text);
     let redeemed = through(
         obid,
@@ -571,9 +579,12 @@ fn revoking_a_device_drops_its_push_token() {
     assert_eq!(kept, json!([]));
 }
 
-/// A paired phone's publishing key comes with its pairing (docs/runner-api.md, `POST /v1/devices`):
-/// one key per pairing, through the gateway; no other with the same token (a lost phone's token
-/// adds none, and the Mac's open pairing isn't the phone's); revoking the pairing forgets it.
+/// A paired phone's publishing key comes with its pairing (docs/runner-api.md, `POST /v1/devices`),
+/// only when the owner made the invitation on their own device: the API token alone invites,
+/// redeems and registers nothing that approves. One key per pairing, through the gateway; no other
+/// with the same token (a lost phone's token adds none, and the Mac's open pairing isn't the
+/// phone's); an invitation's approval that doesn't hold makes nothing; revoking the pairing
+/// forgets its key.
 #[test]
 fn a_paired_phone_registers_one_key_of_its_own() {
     use base64::Engine as _;
@@ -594,26 +605,62 @@ fn a_paired_phone_registers_one_key_of_its_own() {
             Some(&json!({"name": "iPhone", "publicKey": public})),
         )
     };
-    let phone = paired(&obid);
+    // The API token alone: an invitation, redeemed, and a key that doesn't go in.
+    let token_only = paired(&obid);
+    let refused = register(&token_only, &key(1));
+    assert_eq!(refused.status, 403, "{}", refused.text);
+    let forged = call(
+        &obid,
+        "POST",
+        "/v1/pairing/invite",
+        Some(&json!({"url": "https://mac.tail0000.ts.net:8443",
+                     "approval": {"device": "nobody", "signedAt": "2026-10-24T12:00:00Z", "signature": "MEUC"}})),
+    );
+    assert_eq!(forged.status, 403, "{}", forged.text);
+
+    let phone = owner_paired(&obid);
     let first = register(&phone, &key(1));
     assert_eq!(first.status, 200, "{}", first.text);
     let id = first.body["id"].clone();
-    assert_eq!(register(&phone, &key(1)).body, json!({"id": id}), "its own key, again");
+    assert_eq!(
+        register(&phone, &key(1)).body,
+        json!({"id": id}),
+        "its own key, again"
+    );
     let pairing = obid.home.join("pairing");
     std::fs::write(&pairing, key(2)).unwrap();
     let second = register(&phone, &key(2));
     assert_eq!(second.status, 403, "{}", second.text);
-    assert!(pairing.exists(), "a phone's request never uses the Mac's pairing");
+    assert!(
+        pairing.exists(),
+        "a phone's request never uses the Mac's pairing"
+    );
     std::fs::remove_file(&pairing).unwrap();
 
-    // Paired again, the phone registers the key of its new pairing.
-    let again = paired(&obid);
+    // Paired again (a second later: the same second's signature is the first's), the phone
+    // registers the key of its new pairing.
+    let again = paired_with(
+        &obid,
+        Some(invite_approval_at(&obid, obi_protocol::time::now() + 1)),
+    );
     assert_eq!(register(&again, &key(2)).status, 200);
-    let lost = call(&obid, "GET", "/v1/pairing/devices", None).body[0]["id"]
-        .as_str()
+    // The lost phone: the pairing its key was registered with.
+    let kept: Value =
+        serde_json::from_slice(&std::fs::read(obid.home.join("devices.json")).unwrap()).unwrap();
+    let lost = kept["devices"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|d| d["publicKey"] == key(1))
+        .and_then(|d| d["paired"].as_str())
         .unwrap()
         .to_owned();
-    let revoked = call(&obid, "DELETE", &format!("/v1/pairing/devices/{lost}"), None);
+    let revoked = call(
+        &obid,
+        "DELETE",
+        &format!("/v1/pairing/devices/{lost}"),
+        None,
+    );
     assert_eq!(revoked.status, 204, "{}", revoked.text);
     let kept = std::fs::read_to_string(obid.home.join("devices.json")).unwrap();
     assert!(!kept.contains(&key(1)) && kept.contains(&key(2)), "{kept}");

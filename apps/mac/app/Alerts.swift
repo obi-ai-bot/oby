@@ -157,9 +157,11 @@ enum Alerts {
     }
 
     /// The item's alert: its title, its text, and its answers. Allow, Start and Confirm only when the
-    /// text shows whole (`fits`). The shell's Always allow stays in the window: the item doesn't say
-    /// which rule it saves. A Confirm that would send words someone wrote (`quotes`) only opens its
-    /// card, where they show quoted apart, so the owner reads all of what it does before the click (#776).
+    /// text shows whole (`fits`); a Confirm only when its title and its text both do, the body holding
+    /// all of it. The shell's Always allow stays in the window: the item doesn't say which rule it
+    /// saves. A Confirm that quotes anyone (`quotes`: words it would send; a `>` line in its text) only
+    /// opens its card, where they show quoted apart, so the owner reads all of what it does before
+    /// the click (#776).
     static func alert(for item: InboxItem, kind: String, conversation: String?, quotes: Bool = false) -> Alert {
         let place = Self.place(of: item, conversation: conversation)
         let text = compact(item.text)
@@ -179,14 +181,15 @@ enum Alerts {
         case "start" where whole:
             alert.category = Alert.Category(id: "inbox.start", buttons: [Alert.Button(id: startButton, title: Inbox.start), openButton])
         case RunnerConfirm.kind:
-            // What Confirm does is the item's title: in the body, which shows whole (a title line
-            // can be cut short), with why it waits under it when both fit.
+            // What Confirm does is the item's title, and what it carries out can be in its text (a
+            // routine's task): both in the body, which shows whole (a title line can be cut short).
             let does = compact(item.title)
             let both = text.isEmpty ? does : "\(does)\n\(text)"
+            let quoted = quotes || text.split(separator: "\n").contains { $0.hasPrefix(">") }
             alert.title = AskKind.label(kind)
-            alert.body = fits(both) ? both : fits(does) ? does : lines(both)
+            alert.body = fits(both) ? both : lines(both)
             let cancel = Alert.Button(id: cancelButton, title: RunnerConfirm.cancel, destructive: true)
-            alert.category = !quotes && !does.isEmpty && fits(does)
+            alert.category = !quoted && !does.isEmpty && fits(both)
                 ? Alert.Category(id: "inbox.confirm", buttons: [Alert.Button(id: confirmButton, title: RunnerConfirm.confirm), cancel, openButton])
                 : Alert.Category(id: "inbox.cancel", buttons: [cancel, openButton])
         case "question":

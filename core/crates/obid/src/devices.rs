@@ -2,12 +2,13 @@
 //! Runner/Devices.swift keeps them: each by its P-256 key, in `home/devices.json`. A key obid knows
 //! gets its id back at once, so an app registers every time it connects. A new key needs the
 //! owner's presence, in one of three ways: a registered key's signature vouching for it (a device
-//! already paired, signing on its owner's tap), a paired phone's own first key (its pairing
-//! invitation's one-time secret, scanned from the Mac's screen), or `home/pairing` naming exactly
-//! that key, written in the last 2 minutes and used up at once (the Mac app writes it on the
-//! owner's click; the owner, on another runner's machine). The API token can't be the gate on its
-//! own: agents run on the same machine, and a token can leak. They can't write `pairing`: obid's
-//! home is hidden in their sandbox.
+//! already paired, signing on its owner's tap), a paired phone's own first key in the minutes
+//! after it redeemed an invitation the owner made on their own device (signed by a registered key
+//! on the owner's click, crate::gateway), or `home/pairing` naming exactly that key, written in
+//! the last 2 minutes and used up at once (the Mac app writes it on the owner's click; the owner,
+//! on another runner's machine). The API token can't be the gate on its own: agents run on the
+//! same machine, and a token can leak; an invitation it makes alone pairs a phone that can't add
+//! a key. Agents can't write `pairing`: obid's home is hidden in their sandbox.
 
 use std::collections::HashMap;
 use std::io::Read as _;
@@ -43,6 +44,15 @@ struct Saved {
     /// runner's `devices.json` so a phone approval can't be replayed after a restart.
     #[serde(default)]
     used: HashMap<String, String>,
+}
+
+/// Where a registration came from: obid's own API (the owner's apps on this machine), or a
+/// paired phone through the gateway (crate::gateway), which may add its own first key only while
+/// its pairing allows (`Gateway::may_add_key`).
+#[derive(Debug, Clone, Copy)]
+pub enum Origin<'a> {
+    Api,
+    Phone { pairing: &'a str, may_add_key: bool },
 }
 
 /// Why a device didn't register, or wasn't revoked.
@@ -103,15 +113,15 @@ impl Devices {
 
     /// Registers a device's publishing key and answers its id: the one it has for a key it knows;
     /// a new one only with the owner's presence. `endorsement` is a registered device's signature
-    /// over `"oby-device\n<publicKey>\n<signedAt>"`; `paired` is the paired phone the request came
-    /// through the gateway from, which may register one key of its own; otherwise `home/pairing`
-    /// must name this key, and is used up.
+    /// over `"oby-device\n<publicKey>\n<signedAt>"`; a paired phone (`origin`) may register one key
+    /// of its own while its pairing allows; otherwise, on obid's own API, `home/pairing` must name
+    /// this key, and is used up.
     pub fn register(
         &self,
         name: &str,
         public_key: &str,
         endorsement: Option<&serde_json::Value>,
-        paired: Option<&str>,
+        origin: Origin<'_>,
         now: SystemTime,
     ) -> Result<String, Refused> {
         if !is_p256_public_key(public_key) {
@@ -122,7 +132,7 @@ impl Devices {
         if let Some(id) = self.known(public_key) {
             return Ok(id);
         }
-        let bound = match (endorsement, paired) {
+        let bound = match (endorsement, origin) {
             (Some(endorsement), _) => {
                 if self
                     .signed(endorsement, |at| format!("oby-device\n{public_key}\n{at}"))
@@ -134,8 +144,19 @@ impl Devices {
                 }
                 None
             }
-            (None, Some(paired)) => Some(paired),
-            (None, None) => {
+            (
+                None,
+                Origin::Phone {
+                    pairing,
+                    may_add_key: true,
+                },
+            ) => Some(pairing),
+            (None, Origin::Phone { .. }) => {
+                return Err(Refused::Unapproved(
+                    "To add this iPhone's publishing key, pair it again from Oby on your Mac, then open Oby on the iPhone within 10 minutes.".into(),
+                ));
+            }
+            (None, Origin::Api) => {
                 if !self.names(public_key, now) {
                     return Err(Refused::Unapproved(format!(
                         "To add this device, run `echo '{public_key}' > {}` on obid's machine, then try again within 2 minutes.",
@@ -178,6 +199,13 @@ impl Devices {
         Ok(device.id)
     }
 
+    /// Whether `approval` is a registered device's signature over `"oby-pair-invite\n<signedAt>"`,
+    /// in the last two minutes, once: the owner made a pairing invitation on their own device.
+    pub fn approves_invite(&self, approval: &serde_json::Value) -> bool {
+        self.signed(approval, |at| format!("oby-pair-invite\n{at}"))
+            .is_some()
+    }
+
     /// Forgets the device `id`, with a registered device's signature (its own, or another's) over
     /// `"oby-revoke-device\n<id>\n<signedAt>"`, signed in the last two minutes, once.
     pub fn revoke(&self, id: &str, approval: &serde_json::Value) -> Result<(), Refused> {
@@ -204,7 +232,8 @@ impl Devices {
 
     fn forget(&self, which: impl Fn(&Device) -> bool) -> Result<(), std::io::Error> {
         let mut saved = self.saved.lock().unwrap_or_else(|e| e.into_inner());
-        let (gone, stay): (Vec<Device>, Vec<Device>) = saved.devices.iter().cloned().partition(which);
+        let (gone, stay): (Vec<Device>, Vec<Device>) =
+            saved.devices.iter().cloned().partition(which);
         if gone.is_empty() {
             return Ok(());
         }
@@ -367,11 +396,11 @@ mod tests {
         let home = folder("restart");
         std::fs::write(home.join("pairing"), key(3)).unwrap();
         let id = Devices::open(&home)
-            .register("Mac", &key(3), None, None, SystemTime::now())
+            .register("Mac", &key(3), None, Origin::Api, SystemTime::now())
             .unwrap();
         let again = Devices::open(&home);
         assert_eq!(
-            again.register("Mac", &key(3), None, None, SystemTime::now()),
+            again.register("Mac", &key(3), None, Origin::Api, SystemTime::now()),
             Ok(id)
         );
         let _ = std::fs::remove_dir_all(&home);
@@ -388,7 +417,7 @@ mod tests {
         let pairing = home.join("pairing");
         let refused = |key: &str, endorsement: Option<&serde_json::Value>| {
             matches!(
-                devices.register("Mac", key, endorsement, None, now),
+                devices.register("Mac", key, endorsement, Origin::Api, now),
                 Err(Refused::Unapproved(_))
             )
         };
@@ -409,7 +438,9 @@ mod tests {
         assert!(refused(&key(3), None), "pairing written 121 seconds ago");
         assert!(!pairing.exists(), "closed: it never stays open idle");
         std::fs::write(&pairing, format!("{}\n", key(3))).unwrap();
-        let mac = devices.register("Mac", &key(3), None, None, now).unwrap();
+        let mac = devices
+            .register("Mac", &key(3), None, Origin::Api, now)
+            .unwrap();
         assert!(!pairing.exists(), "used up");
         assert!(refused(&key(5), None), "pairing closed again");
 
@@ -432,23 +463,63 @@ mod tests {
         );
         let endorsement = vouch(3, &mac, &key(5));
         let next = devices
-            .register("Mac", &key(5), Some(&endorsement), None, now)
+            .register("Mac", &key(5), Some(&endorsement), Origin::Api, now)
             .unwrap();
         assert_ne!(next, mac);
         assert!(refused(&key(6), Some(&endorsement)), "used once");
 
-        // A paired phone registers one key of its own; revoking its pairing forgets it.
+        // A pairing invitation the owner made on their own device: a registered key's signature,
+        // once; a stranger's, or another sentence's, isn't one.
+        let invite = |scalar: u8, device: &str, sentence: &str| {
+            signed(scalar, device, "", &at, &format!("{sentence}\n{at}"))
+        };
+        assert!(
+            !devices.approves_invite(&invite(9, &mac, "oby-pair-invite")),
+            "not the Mac's key"
+        );
+        assert!(
+            !devices.approves_invite(&invite(3, &mac, "oby-device")),
+            "another sentence"
+        );
+        let made = invite(3, &mac, "oby-pair-invite");
+        assert!(devices.approves_invite(&made));
+        assert!(!devices.approves_invite(&made), "used once");
+
+        // A paired phone registers one key of its own while its pairing may add one (an
+        // invitation the owner made, redeemed in the last 10 minutes); revoking its pairing
+        // forgets it. A pairing the API token alone made, or an older one, adds none.
+        let phone_may = Origin::Phone {
+            pairing: "phone-1",
+            may_add_key: true,
+        };
+        let token_only = Origin::Phone {
+            pairing: "phone-2",
+            may_add_key: false,
+        };
+        assert!(matches!(
+            devices.register("iPhone", &key(9), None, token_only, now),
+            Err(Refused::Unapproved(_))
+        ));
+        std::fs::write(&pairing, key(9)).unwrap();
+        assert!(
+            matches!(
+                devices.register("iPhone", &key(9), None, token_only, now),
+                Err(Refused::Unapproved(_))
+            ),
+            "a phone's request never uses the pairing file"
+        );
+        std::fs::remove_file(&pairing).unwrap();
         let phone = devices
-            .register("iPhone", &key(7), None, Some("phone-1"), now)
+            .register("iPhone", &key(7), None, phone_may, now)
             .unwrap();
         assert!(matches!(
-            devices.register("iPhone", &key(8), None, Some("phone-1"), now),
+            devices.register("iPhone", &key(8), None, phone_may, now),
             Err(Refused::Unapproved(_))
         ));
         assert_eq!(
-            devices.register("iPhone", &key(7), None, Some("phone-1"), now),
+            devices.register("iPhone", &key(7), None, token_only, now),
             Ok(phone.clone()),
-            "its own key, again"
+            "its own key, again, once it's registered"
         );
         devices.forget_paired("phone-1").unwrap();
         assert_eq!(devices.public_key(&phone), None);

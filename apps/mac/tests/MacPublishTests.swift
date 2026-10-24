@@ -86,11 +86,15 @@ struct MacPublishTests {
 
     /// A Mac that registered a Touch ID-only key (its id kept as `device.<host>`) or a Touch ID or
     /// password key (`device.presence.<host>`) registers its new key, which signs without asking,
-    /// on its next publish, and signs with the new id: the old ones aren't sent.
+    /// on its next publish, signs with the new id, and revokes the old ones. An old id is forgotten
+    /// only once revoked (or unknown to the runner, 404): one whose revoke failed is tried again on
+    /// the next connection.
     @Test func olderKeysRegisterAgain() async throws {
+        let failing = Switch()
         let stub = RunnerStub { request in
             switch (request.method, request.path) {
             case ("POST", "/v1/devices"): (200, #"{"id": "n3w1"}"#)
+            case ("DELETE", "/v1/devices/0ld1"): failing.on.withLock { $0 } ? (500, #"{"error": "Not now."}"#) : (200, #"{"revoked": "0ld1"}"#)
             case ("POST", "/v1/jobs/ab12cd34/publish"): (200, #"{"url": "https://github.com/deskree-inc/oby/pull/200"}"#)
             default: (404, #"{"error": "No."}"#)
             }
@@ -99,8 +103,16 @@ struct MacPublishTests {
         stub.defaults.set("0ld2", forKey: "device.presence.\(stub.host)")
         let device = MacDevice(key: FakeKey(), name: "Mac", defaults: stub.defaults)
         _ = try await device.publish("ab12cd34", action: sentence, with: stub.runner)
-        #expect(stub.requests.map(\.path) == ["/v1/devices", "/v1/jobs/ab12cd34/publish"])
+        #expect(stub.requests.map { "\($0.method) \($0.path)" }
+                == ["POST /v1/devices", "DELETE /v1/devices/0ld1", "DELETE /v1/devices/0ld2", "POST /v1/jobs/ab12cd34/publish"])
         #expect(stub.requests.last?.json?["device"] as? String == "n3w1" && device.id(on: stub.runner) == "n3w1")
+        #expect(stub.defaults.string(forKey: "device.\(stub.host)") == "0ld1", "its revoke failed: kept to try again")
+        #expect(stub.defaults.string(forKey: "device.presence.\(stub.host)") == nil, "the runner doesn't know it")
+
+        failing.on.withLock { $0 = false }
+        try await device.register(with: stub.runner)
+        #expect(stub.requests.suffix(2).map { "\($0.method) \($0.path)" } == ["POST /v1/devices", "DELETE /v1/devices/0ld1"])
+        #expect(stub.defaults.string(forKey: "device.\(stub.host)") == nil)
     }
 
     /// The runner on this Mac doesn't know this Mac's key: connecting adds nothing and names
@@ -188,6 +200,20 @@ struct MacPublishTests {
         #expect(String(decoding: Approval.confirmMessage(item: "i9", title: "T", signedAt: "S"), as: UTF8.self) == "oby-confirm\ni9\nT\nS")
     }
 
+    /// Pair a device, the owner's click: this Mac's key signs the invitation (`oby-pair-invite`) as
+    /// its registered device, so only the phone it pairs may add its own key.
+    @Test func thePairingInvitationIsSignedByThisMac() async throws {
+        let stub = RunnerStub { _ in (200, #"{"id": "d7c1"}"#) }
+        let key = FakeKey()
+        let device = MacDevice(key: key, name: "Mac", defaults: stub.defaults)
+        let approval = try await device.approveInvite(with: stub.runner)
+        #expect(approval.device == "d7c1")
+        let der = try #require(Data(base64Encoded: approval.signature))
+        let signature = try P256.Signing.ECDSASignature(derRepresentation: der)
+        #expect(key.signing.publicKey.isValidSignature(signature, for: Approval.inviteMessage(signedAt: approval.signedAt)))
+        #expect(String(decoding: Approval.inviteMessage(signedAt: "S"), as: UTF8.self) == "oby-pair-invite\nS")
+    }
+
     /// A key that can't sign confirms nothing, so the card stays open with why.
     @Test func unsignedConfirmsNothing() async throws {
         let stub = RunnerStub { request in request.path == "/v1/devices" ? (200, #"{"id": "d7c1"}"#) : (500, #"{"error": "No."}"#) }
@@ -235,6 +261,11 @@ struct MacPublishTests {
     }
 }
 
+/// A stub's on or off, shared with its answers.
+nonisolated final class Switch: Sendable {
+    let on = Mutex(true)
+}
+
 /// Signs as the Mac's key does, with a software key, or fails as a key that can't sign.
 nonisolated struct FakeKey: PublishingKey {
     var isAvailable = true
@@ -263,6 +294,13 @@ nonisolated struct FakeKey: PublishingKey {
         let signedAt = ISO8601DateFormatter().string(from: .now)
         let signature = try signing.signature(for: Approval.confirmMessage(item: item, title: title, signedAt: signedAt))
         return Approval(device: device, action: title, signedAt: signedAt, signature: signature.derRepresentation.base64EncodedString())
+    }
+
+    func approveInvite(device: String) async throws -> Approval {
+        if fails { throw RunnerError(message: Self.failure) }
+        let signedAt = ISO8601DateFormatter().string(from: .now)
+        let signature = try signing.signature(for: Approval.inviteMessage(signedAt: signedAt))
+        return Approval(device: device, action: "", signedAt: signedAt, signature: signature.derRepresentation.base64EncodedString())
     }
 
     func approveRevoke(device: String, signer: String) async throws -> Approval {

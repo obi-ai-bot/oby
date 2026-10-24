@@ -514,7 +514,8 @@ struct NewDevice {
 }
 
 /// `POST /v1/devices`: a device's publishing key, `{"id"}` (crate::devices). A paired phone's
-/// request comes through the gateway, which says which phone it is.
+/// request comes through the gateway, which says which phone it is and whether its pairing may add
+/// a key now.
 pub async fn register_device(
     State(shared): State<Arc<Shared>>,
     paired: Option<axum::Extension<crate::gateway::PairedDevice>>,
@@ -528,12 +529,20 @@ pub async fn register_device(
             "A device is {\"name\", \"publicKey\"}, with an \"endorsement\" for a new key.",
         )
     })?;
+    let now = std::time::SystemTime::now();
+    let origin = match &paired {
+        Some(paired) => crate::devices::Origin::Phone {
+            pairing: &paired.0.0,
+            may_add_key: shared.gateway.may_add_key(&paired.0.0, now),
+        },
+        None => crate::devices::Origin::Api,
+    };
     let registered = shared.devices.register(
         &device.name,
         &device.public_key,
         device.endorsement.as_ref(),
-        paired.as_ref().map(|p| p.0 .0.as_str()),
-        std::time::SystemTime::now(),
+        origin,
+        now,
     );
     registered
         .map(|id| json(StatusCode::OK, json!({"id": id})))

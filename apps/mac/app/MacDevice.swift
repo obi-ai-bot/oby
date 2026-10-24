@@ -17,9 +17,12 @@ nonisolated protocol PublishingKey: Sendable {
     /// The same for revoking device `device`, the key this one replaced; this key is device `signer`
     /// (`Approval.revokeMessage`).
     func approveRevoke(device: String, signer: String) async throws -> Approval
+    /// The same for a pairing invitation made on the owner's click (`Approval.inviteMessage`).
+    func approveInvite(device: String) async throws -> Approval
 }
 
-/// The Mac's Secure Enclave key: only Oby on this Mac can use it, and it signs without asking.
+/// The Mac's Secure Enclave key, behind the login keychain's access list (apps/shared/DeviceKey.swift):
+/// it signs without asking.
 nonisolated struct EnclaveKey: PublishingKey {
     var isAvailable: Bool { DeviceKey.isAvailable }
 
@@ -39,6 +42,10 @@ nonisolated struct EnclaveKey: PublishingKey {
 
     func approveRevoke(device: String, signer: String) async throws -> Approval {
         try DeviceKey.approveRevoke(device: device, signer: signer)
+    }
+
+    func approveInvite(device: String) async throws -> Approval {
+        try DeviceKey.approveInvite(device: device)
     }
 }
 
@@ -128,6 +135,7 @@ final class MacDevice {
             let id = try await register()
             defaults.set(id, forKey: Self.idKey(runner))
             state = .registered
+            await revokeReplaced(on: runner, signer: id)
             return id
         } catch let error as RunnerError where error.status == 403 {
             defaults.removeObject(forKey: Self.idKey(runner))
@@ -142,7 +150,7 @@ final class MacDevice {
     /// Adds this Mac's key to a runner, after the owner's click. A key it knows, or one its owner
     /// named in its pairing by hand, registers as it is. Else, on the runner on this Mac, Oby names
     /// this key in its pairing, which the runner uses up at once (and Oby removes, whatever
-    /// happened); the keys it replaced (`replacedKeys`) are then revoked, signed by this one.
+    /// happened).
     private func enroll(with runner: Runner) async throws -> String {
         let publicKey = try key.publicKey()
         do {
@@ -151,15 +159,28 @@ final class MacDevice {
             guard let pairing else { throw refused }
             defer { try? FileManager.default.removeItem(at: pairing) }
             try RunnerLoginItem.writePrivately(Data(publicKey.base64EncodedString().utf8), to: pairing)
-            let id = try await runner.register(name: name, publicKey: publicKey)
-            for replaced in Self.replacedKeys(runner) {
-                guard let old = defaults.string(forKey: replaced), old != id else { continue }
+            return try await runner.register(name: name, publicKey: publicKey)
+        }
+    }
+
+    /// The keys this one replaced (`replacedKeys`), revoked once it's registered, signed by it. Each
+    /// is forgotten here only once the runner has revoked it, or doesn't know it (404): one that
+    /// didn't go is tried again on the next connection.
+    private func revokeReplaced(on runner: Runner, signer id: String) async {
+        for replaced in Self.replacedKeys(runner) {
+            guard let old = defaults.string(forKey: replaced) else { continue }
+            guard old != id else {
                 defaults.removeObject(forKey: replaced)
-                do { try await runner.revokeDevice(old, approval: try await key.approveRevoke(device: old, signer: id)) } catch {
-                    Logger.feed.error("revoking this Mac's old publishing key failed: \(error.localizedDescription, privacy: .public)")
-                }
+                continue
             }
-            return id
+            do {
+                try await runner.revokeDevice(old, approval: try await key.approveRevoke(device: old, signer: id))
+                defaults.removeObject(forKey: replaced)
+            } catch let error as RunnerError where error.status == 404 {
+                defaults.removeObject(forKey: replaced)
+            } catch {
+                Logger.feed.error("revoking this Mac's old publishing key failed: \(error.localizedDescription, privacy: .public)")
+            }
         }
     }
 
@@ -192,6 +213,13 @@ final class MacDevice {
         let device = try await id(enrolling: runner)
         let approval = try await key.approveConfirm(item: item, title: title, device: device)
         return try await runner.settle(item, answer: "Confirm", approval: approval)
+    }
+
+    /// The owner's click on Pair a device: this Mac's key signs the invitation, so the phone it
+    /// pairs may add its own key (docs/runner-api.md, "Invitations"). Without it a phone pairs but
+    /// approves nothing.
+    func approveInvite(with runner: Runner) async throws -> Approval {
+        try await key.approveInvite(device: try await id(enrolling: runner))
     }
 
     /// What a publish or a Confirm says on a Mac with no Secure Enclave to keep its key (#776):

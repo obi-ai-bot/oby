@@ -133,8 +133,10 @@ struct PairingView: View {
                 throw RunnerError(message: "\(everything ? "Turn on Remote access, or publish" : "Publish") the gateway on your tailnet before creating a pairing QR code.")
             }
             var request = try runnerRequest(path: "v1/pairing/invite", method: "POST")
+            // The owner's click, signed by this Mac's key: the phone it pairs may add its own key.
+            let approval = try await feed.device.approveInvite(with: try feed.acting())
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-            request.httpBody = try JSONEncoder().encode(Invite(name: name, hostname: route.hostname, url: "https://\(route.hostname)"))
+            request.httpBody = try JSONEncoder().encode(Invite(name: name, hostname: route.hostname, url: "https://\(route.hostname)", approval: approval))
             let (data, response) = try await URLSession.shared.data(for: request)
             guard let http = response as? HTTPURLResponse, http.statusCode == 200 else { throw RunnerError(message: "The runner refused to create a pairing invitation.") }
             invitation = try PairingPayloadDecoder.decodeInvitation(data)
@@ -190,7 +192,7 @@ struct PairingView: View {
         return image
     }
 
-    private struct Invite: Encodable { var name: String; var hostname: String; var url: String }
+    private struct Invite: Encodable { var name: String; var hostname: String; var url: String; var approval: Approval }
 }
 
 /// A way a phone reaches this Mac's gateway over HTTPS, as an invitation advertises it: its
