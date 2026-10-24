@@ -993,7 +993,7 @@ Settles an item, on the iPhone or the Mac. The body is exactly one of:
 - `done`: settled without an answer; the job is left as it is.
 - `later`: put off until that time (ISO 8601).
 
-**Confirm takes the owner's tap (obid only, #776).** `Confirm` on an open `confirm` item also carries `approval`, a registered device's signature, as publishing by hand does (`POST /v1/jobs/{id}/publish`): `{"answer": "Confirm", "approval": {"device", "action", "signedAt", "signature"}}`. `action` is the item's `title`, word for word, and the device signed `"oby-confirm\n<item id>\n<title>\n<signedAt>"` behind Touch ID or Face ID (P-256 ECDSA with SHA-256, DER, base64), within two minutes, used once, remembered across restarts. The `oby-confirm` prefix and the item's id mean no publish or connection signature passes for a Confirm, and one tap confirms one item. A Confirm without an approval, or with one that doesn't hold, is `403` with `{"error", "action"}` (`action` the title to sign) and the item stays open, unclaimed. `Cancel`, `done` and `later` need no approval; an `approval` with anything else is `422`. Inside obid nothing confirms either: the brain, oby-mcp, a conversation's tools and obid's own callers answer without a device and are refused. A browser has no device key: the web app's Confirm says to confirm on the Mac or iPhone.
+**Confirm takes the owner's tap (obid only, #776).** `Confirm` on an open `confirm` item also carries `approval`, a registered device's signature, as publishing by hand does (`POST /v1/jobs/{id}/publish`): `{"answer": "Confirm", "approval": {"device", "action", "signedAt", "signature"}}`. `action` is the item's `title`, word for word, and the device signed `"oby-confirm\n<item id>\n<title>\n<signedAt>"` on the owner's click (P-256 ECDSA with SHA-256, DER, base64), within two minutes, used once, remembered across restarts. The `oby-confirm` prefix and the item's id mean no publish or connection signature passes for a Confirm, and one tap confirms one item. A Confirm without an approval, or with one that doesn't hold, is `403` with `{"error", "action"}` (`action` the title to sign) and the item stays open, unclaimed. `Cancel`, `done` and `later` need no approval; an `approval` with anything else is `422`. Inside obid nothing confirms either: the brain, oby-mcp, a conversation's tools and obid's own callers answer without a device and are refused. A browser has no device key: the web app's Confirm says to confirm on the Mac or iPhone.
 
 Returns the item. `404` for an item the runner doesn't know, `409` when it's done already, `422` for a body that isn't exactly one of these, a `later` that isn't a date, an empty or too-long answer, or a job that can't take it (the same reasons as `POST /v1/jobs/{id}/messages`). Every app following events hears the item (`inbox`) and its job (`job`).
 
@@ -1035,7 +1035,7 @@ Fix it: starts the fix job (Failure record, above) and answers it, `201`, as `PO
 
 ### `GET /v1/jobs/{id}/publish`
 
-What publishing this job by hand would do, in one sentence: for a job whose own publish failed (`publishError`). The app shows exactly this before asking for Face ID (the iPhone) or Touch ID (the Mac).
+What publishing this job by hand would do, in one sentence: for a job whose own publish failed (`publishError`). A task's page shows exactly this under Publish before the owner's click publishes it. An alert's Publish (`ready`, on the Mac and the iPhone) is that click already: it opens the task's page, which shows the sentence as it publishes. Since every job publishes by itself (#1386), this is only for a job whose own publish failed.
 
 ```json
 {"action": "Push oby/fix-ab12cd to deskree-inc/oby and open a pull request into dev.", "base": "dev"}
@@ -1049,14 +1049,14 @@ How a push goes out, by itself or by hand: the runner reads the branch's head on
 
 ### `POST /v1/jobs/{id}/publish`
 
-Publishes by hand, for a job whose own publish failed, after the user approved on a registered device. The runner has no Touch ID of its own, so a registered device's stands in for it: the iPhone's Face ID, or the Mac's Touch ID (`Mac/MacDevice.swift`). Each has its own key (`Shared/DeviceKey.swift`); either one opens the same door.
+Publishes by hand, for a job whose own publish failed, after the user approved on a registered device: the owner's click in the iPhone app or the Mac app (`apps/mac/app/MacDevice.swift`). Each has its own key (`apps/shared/DeviceKey.swift`); either one opens the same door.
 
 ```json
 {"device": "d7c1…", "action": "Push oby/fix-ab12cd to deskree-inc/oby and open a pull request into dev.",
  "signedAt": "2026-10-09T22:01:07Z", "signature": "MEUCIQ…"}
 ```
 
-- `signature`: ECDSA P-256 with SHA-256 (DER, base64) over the UTF-8 bytes of `"oby-publish\n<job id>\n<action>\n<signedAt>"`, made with the device's Secure Enclave key. The key's access control requires biometry (`.biometryCurrentSet`), so signing is what asks for Face ID or Touch ID. A cancelled prompt signs nothing, so nothing is sent.
+- `signature`: ECDSA P-256 with SHA-256 (DER, base64) over the UTF-8 bytes of `"oby-publish\n<job id>\n<action>\n<signedAt>"`, made with the device's Secure Enclave key. The owner's click is the approval: the key has no presence check (`.privateKeyUsage` only), so signing asks for no Touch ID, Face ID or password (the owner's decision of 2026-10-24). The key never leaves the device's Secure Enclave, and its wrapped blob is kept where only Oby reads it without asking: the iPhone app's own keychain, and on the Mac the login keychain, whose access list makes macOS ask the owner before another app reads it (a boxed agent can't reach the Keychain at all). So an approval comes only from the owner's own app, never from a job, another Oby or the API token alone. A program running as the owner that the owner lets read the Mac's item could sign; the data-protection keychain, which binds it to Oby alone, waits for Developer ID's provisioning profile. Until 2026-10-24 the keys asked for Touch ID, Face ID or the Mac's password; each device makes its new key once (Keychain account `approval-key`, the old ones deleted) and registers it: the iPhone as its paired phone's key on its next connection, the Mac on the owner's first click (`POST /v1/devices`).
 - The runner checks:
   - the device is registered;
   - the signature;
@@ -1116,11 +1116,26 @@ Registers a device's publishing key, once per device: the iPhone's (named "iPhon
 {"name": "Wellington's MacBook Air", "publicKey": "BJ3x…"}
 ```
 
-`publicKey` is the P-256 public key, X9.63 (65 bytes, uncompressed), base64. It returns `{"id": "d7c1…"}`. Only the runner's owner can register (the tailnet header); the runner lists devices in its log.
+`publicKey` is the P-256 public key, X9.63 (65 bytes, uncompressed), base64. It returns `{"id": "d7c1…"}`. Only the runner's owner can register (the tailnet header, or the API token); the runner lists devices in its log.
 
-- A key the runner knows returns its id right away, so the app registers every time it connects.
-- A new key needs pairing open: the owner runs `touch $OBY_HOME/pairing` on the runner's machine, and the device registers within 10 minutes. That key uses it up, so the iPhone and the Mac each need it opened once. Otherwise `403` with that one line to show: the Mac shows it in Settings › Runner, with Try again.
-- Why: agents run on the runner's machine, so through its tailnet address they arrive with the owner's header. They can't touch `pairing`, because `OBY_HOME` is empty inside their bubblewrap.
+- A key the runner knows returns its id right away, so the apps register every time they connect. That adds nothing.
+- A new key goes in only with the owner's presence, in one of three ways (otherwise `403` with one line to show):
+  - **Vouched for** by a device already registered: `"endorsement": {"device": "<its id>", "signedAt": "…", "signature": "…"}`, ECDSA P-256 with SHA-256 (DER, base64) over `"oby-device\n<publicKey>\n<signedAt>"`, within 2 minutes, once (kept used in `devices.json`, as approvals are). The apps sign only on their owner's tap or click.
+  - **A paired phone's own key, from an invitation the owner made**: a request through the gateway (or the Obysphere relay) from a phone paired with an invitation the owner made on their own device (`POST /v1/pairing/invite` with its `approval`, below) registers one key, bound to that pairing, within 10 minutes of redeeming it. A pairing from an invitation the API token made alone, or one older than that, adds no key (`403`: `To add this iPhone's publishing key, pair it again from Oby on your Mac, then open Oby on the iPhone within 10 minutes.`), so the API token alone (an MCP client, a leaked token) can't invite, redeem and register a key that approves. A second new key from the same pairing is refused (`This iPhone registered its publishing key already. To register another, pair it again from your Mac.`), and revoking the pairing (`DELETE /v1/pairing/devices/{id}`) forgets its key.
+  - **Named in `home/pairing`**: the file holds exactly this `publicKey` (whitespace around it is ignored) and was written in the last 2 minutes. The registration that it names uses it up at once; one older than 2 minutes is removed when it's looked at, and a file naming another key admits nothing. A request through the gateway never uses it. The Mac app writes it for the runner on the same Mac only on its owner's click (the first Publish, Confirm or Disconnect that runner doesn't know this Mac's key for, or Settings' Try again), and removes it right after, whatever happened; it never writes it when it merely connects. For a runner on another machine the `403` says the command for its owner to run there: ``To add this device, run `echo '<publicKey>' > <home>/pairing` on obid's machine, then try again within 2 minutes.`` An empty file (`touch`), as pairing was opened until 2026-10-24, admits nothing.
+- A Mac whose new key went in this way revokes the ones it replaced (`DELETE /v1/devices/{id}`, signed by the new key): its Touch ID-only key (until 2026-10-23) and its Touch ID or password key (until 2026-10-24).
+- Why: agents run on the runner's machine, so through its tailnet address they arrive with the owner's header, and a token can leak; with the API token alone, or a paired phone's token, nothing can add a key that signs a publish, a Confirm or a connection change. Agents can't write `pairing`, because `OBY_HOME` is hidden inside their sandbox. A program that can write obid's home can rewrite `devices.json` too: that is outside what this guards.
+
+### `DELETE /v1/devices/{id}`
+
+Forgets a device's publishing key, with a registered key's signature for it (its own, or another device's):
+
+```json
+{"approval": {"device": "d7c1…", "signedAt": "2026-10-24T12:00:00Z", "signature": "MEUC…"}}
+```
+
+- `signature`: ECDSA P-256 with SHA-256 (DER, base64) over `"oby-revoke-device\n<id>\n<signedAt>"`, within 2 minutes, once.
+- It returns `{"revoked": "<id>"}`; `404` for a device it doesn't know, `403` for an approval that isn't a registered key's for this device. Not on the gateway.
 
 ### `POST /v1/activities`
 
@@ -1168,7 +1183,7 @@ Two seconds after a job changes, the runner sends an alert push (`apns-push-type
          "category": "ready", "sound": "default", "thread-id": "jobs"}, "job": "9f08fd10"}
 ```
 
-- `job` is the job's `id`: tapping the notification opens it. The `ready` category offers **Publish** (it unlocks the phone and brings the app forward, where Face ID signs the approval as in the app) and **Open**; `job` offers **Open**; `permission` is for **Allow**, **Always allow** and **Deny** (`POST /v1/jobs/{id}/permission` with the job's `permission.id`) and **Open**. On obid, the agent's question (#858) alerts as `job`: its options are its own, so it's answered in the app.
+- `job` is the job's `id`: tapping the notification opens it. The `ready` category offers **Publish** (it unlocks the phone and brings the app forward on the job, where it publishes) and **Open**; `job` offers **Open**; `permission` is for **Allow**, **Always allow** and **Deny** (`POST /v1/jobs/{id}/permission` with the job's `permission.id`) and **Open**. On obid, the agent's question (#858) alerts as `job`: its options are its own, so it's answered in the app.
 - `apns-collapse-id` is the job's `id`, so a newer state replaces the older notification.
 - When a job stops needing you (published, from the iPhone or the Mac, dismissed, or running again after a message), the runner sends a background push (`apns-push-type: background`, priority 5), `{"aps": {"content-available": 1}, "clear": "<job id>"}`, and the app removes that job's notification. The app also removes them whenever it opens and sees the job needs nothing.
 - The runner remembers what it last said for each job in `apns/notices.json`, so a restart doesn't say it again, and jobs a restart interrupted notify once it's back.
@@ -1321,7 +1336,7 @@ No GPU is needed. The sample timings above do not replace checks with real Watch
 
 The Apple Watches paired with the runner, for [the Watch API](#the-watch-api). On this API, so only the owner's iPhone over the tailnet reaches them.
 
-`POST /v1/watches` pairs one. The Watch makes its key in its Secure Enclave and hands the public half to the iPhone over WatchConnectivity; the iPhone signs the pairing with its Face ID key and sends it with the Cloudflare Access service token it gives the Watch:
+`POST /v1/watches` pairs one. The Watch makes its key in its Secure Enclave and hands the public half to the iPhone over WatchConnectivity; the iPhone signs the pairing with its approval key (the owner's tap) and sends it with the Cloudflare Access service token it gives the Watch:
 
 ```json
 {"name": "Wellington's Apple Watch", "publicKey": "BK9…",
@@ -1897,7 +1912,7 @@ The Slack channels the owner picks, heard live, sorted, and acted on only in way
 obid serves the LAN gateway's pairing and forwarding (LAN gateway (#284), above) as the Swift runner does, with these differences (`core/crates/obid/src/gateway.rs`, #446):
 
 - **Where it listens.** Only where the configuration's `gateway` says, an address on `127.0.0.1` like `127.0.0.1:8810`; with no `gateway` there's none. Any other address is refused when obid starts (`gateway is "0.0.0.0:8810": it must be an address on 127.0.0.1 with a port…`), and a busy one stops obid before it serves anything. Once it listens, obid prints a second line on stdout after its first, `obid gateway listening on http://127.0.0.1:8810`. It isn't advertised over Bonjour: phones reach it through the owner's tailnet, with `tailscale serve --bg --https=8443 http://127.0.0.1:8810` (never `tailscale funnel`, which would put it on the internet), and pair at `https://<the Mac's tailnet name>:8443`.
-- **Invitations** come from `POST /v1/pairing/invite` on obid's API with its API token, as above. `name` defaults to the machine's name and `hostname` to the `url`'s host and port. A Tailscale hostname is a link's `hostname` as it is, port included (`mac.tail0000.ts.net:8443`). While obid is a member of an Obysphere, every invitation is one through it too, and `url` is optional ([the phone relay](#obid-only-the-phone-relay), below); with no Obysphere, an invitation needs a `url`, and without one it's `409` (`Join or host an Obysphere first (Settings › Obysphere).`).
+- **Invitations** come from `POST /v1/pairing/invite` on obid's API with its API token, as above. The Mac app adds `"approval": {"device", "signedAt", "signature"}`, its registered key's signature (ECDSA P-256 with SHA-256, DER, base64) over `"oby-pair-invite\n<signedAt>"`, within 2 minutes, once, made on the owner's click: only the phone such an invitation pairs may add its publishing key (`POST /v1/devices`). One without an `approval` pairs a phone that can read and answer through the gateway but approves nothing; an `approval` that doesn't hold is `403` and makes nothing. `name` defaults to the machine's name and `hostname` to the `url`'s host and port. A Tailscale hostname is a link's `hostname` as it is, port included (`mac.tail0000.ts.net:8443`). While obid is a member of an Obysphere, every invitation is one through it too, and `url` is optional ([the phone relay](#obid-only-the-phone-relay), below); with no Obysphere, an invitation needs a `url`, and without one it's `409` (`Join or host an Obysphere first (Settings › Obysphere).`).
 - **Paired devices** are kept, by their token's SHA-256 digest only, in `home/gateway-devices.json` (0600), not in `devices.json`: a phone paired with the Swift runner pairs again with obid.
 - **Forwarding** happens inside obid: an allowed request with a paired device's token goes to obid's own API router with obid's API token and a loopback `Host`, carrying only its method, path, query, body (at most 4 MiB) and `Content-Type`. The answer has passed through the API's own layers, so the vault's secrets are already out; the gateway then nulls `session` and puts `[home]` for the accounts' `configDir` paths and for `home/logins` (where a job's copy of its login lives), as above, and sends only the status, `Content-Type`, `Cache-Control`, and an artifact's `Content-Security-Policy`, `X-Content-Type-Options` and `Referrer-Policy`. An answer that isn't text (not `text/…`, JSON or `…+json`: an artifact's image or PDF) goes byte for byte, as the API's own layer sends it. An answer of known length goes whole; any other (the event stream, `GET /v1/jobs/{id}/wait`) goes chunk by chunk as obid sends it, so a wait's first space reaches the phone at once. A stream ends at its first chunk after its device is revoked.
 - **Redeeming** takes only what a phone sends: a request with an `Origin` (a browser) is `403` and one that isn't `application/json` is `415`, before it counts as a try, so a web page can't use an invitation up. A device's name keeps no control characters.

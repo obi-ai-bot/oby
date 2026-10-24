@@ -510,11 +510,15 @@ pub async fn clear(State(shared): State<Arc<Shared>>) -> Result<Response, ApiErr
 struct NewDevice {
     name: String,
     public_key: String,
+    endorsement: Option<Value>,
 }
 
-/// `POST /v1/devices`: a device's publishing key, `{"id"}` (crate::devices).
+/// `POST /v1/devices`: a device's publishing key, `{"id"}` (crate::devices). A paired phone's
+/// request comes through the gateway, which says which phone it is and whether its pairing may add
+/// a key now.
 pub async fn register_device(
     State(shared): State<Arc<Shared>>,
+    paired: Option<axum::Extension<crate::gateway::PairedDevice>>,
     body: Bytes,
 ) -> Result<Response, ApiError> {
     let value: Value = serde_json::from_slice(&body)
@@ -522,24 +526,54 @@ pub async fn register_device(
     let device: NewDevice = serde_json::from_value(value).map_err(|_| {
         ApiError::new(
             StatusCode::UNPROCESSABLE_ENTITY,
-            "A device is {\"name\", \"publicKey\"}.",
+            "A device is {\"name\", \"publicKey\"}, with an \"endorsement\" for a new key.",
         )
     })?;
-    use crate::devices::Refused;
-    match shared.devices.register(
+    let now = std::time::SystemTime::now();
+    let origin = match &paired {
+        Some(paired) => crate::devices::Origin::Phone {
+            pairing: &paired.0.0,
+            may_add_key: shared.gateway.may_add_key(&paired.0.0, now),
+        },
+        None => crate::devices::Origin::Api,
+    };
+    let registered = shared.devices.register(
         &device.name,
         &device.public_key,
-        std::time::SystemTime::now(),
-    ) {
-        Ok(id) => Ok(json(StatusCode::OK, json!({"id": id}))),
-        Err(Refused::Malformed(why)) => Err(ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, why)),
-        Err(Refused::PairingClosed(why)) => Err(ApiError::new(StatusCode::FORBIDDEN, why)),
-        Err(Refused::Unkept(why)) => {
-            tracing::error!("can't keep a device: {why}");
-            Err(ApiError::new(
+        device.endorsement.as_ref(),
+        origin,
+        now,
+    );
+    registered
+        .map(|id| json(StatusCode::OK, json!({"id": id})))
+        .map_err(refused)
+}
+
+/// `DELETE /v1/devices/{id}` with `{"approval": {"device", "signedAt", "signature"}}`: a
+/// registered device's signature for forgetting this one (crate::devices).
+pub async fn revoke_device(
+    State(shared): State<Arc<Shared>>,
+    Path(id): Path<String>,
+    body: Bytes,
+) -> Result<Response, ApiError> {
+    let value: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
+    let approval = value.get("approval").cloned().unwrap_or(Value::Null);
+    shared.devices.revoke(&id, &approval).map_err(refused)?;
+    Ok(json(StatusCode::OK, json!({"revoked": id})))
+}
+
+fn refused(refused: crate::devices::Refused) -> ApiError {
+    use crate::devices::Refused;
+    match refused {
+        Refused::Malformed(why) => ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, why),
+        Refused::Unapproved(why) => ApiError::new(StatusCode::FORBIDDEN, why),
+        Refused::Unknown => ApiError::new(StatusCode::NOT_FOUND, "That device isn't registered."),
+        Refused::Unkept(why) => {
+            tracing::error!("can't keep the devices: {why}");
+            ApiError::new(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                "The device couldn't be kept.",
-            ))
+                "The devices couldn't be kept.",
+            )
         }
     }
 }

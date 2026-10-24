@@ -44,10 +44,10 @@ struct SettingsScreen: View {
                     SetRow("Mac") { SetValue(phone.host.isEmpty ? "Not reached yet" : phone.host) }
                 }
                 if everything { watch }
-                SetGroup("Publishing key", footer: "Oby opens a pull request by itself once a job's check passes and the secret scan is clean. Publishing by hand, when that failed, needs Face ID on this iPhone.",
+                SetGroup("Publishing key", footer: "Oby opens a pull request by itself once a job's check passes and the secret scan is clean. When that failed, publish by hand here: your tap is the approval, signed by this iPhone's key.",
                          problem: problem) {
                     SetRow("This iPhone's key") {
-                        SetValue(DeviceKey.isAvailable ? (phone.deviceID == nil ? "Not registered yet" : "Registered, Face ID") : "Needs a real iPhone")
+                        SetValue(DeviceKey.isAvailable ? (phone.deviceID == nil ? "Not registered yet" : "Registered") : "Needs a real iPhone")
                     }
                 }
             }
@@ -115,7 +115,7 @@ struct SettingsScreen: View {
     /// Apple Watches that reach the runner without this iPhone.
     private var watch: some View {
         SetGroup("Apple Watch without iPhone",
-                 footer: "Away from this iPhone, your watch reaches the runner through your Cloudflare Tunnel. Paste the Cloudflare Access service token; pairing asks for Face ID, with Oby open on the watch.",
+                 footer: "Away from this iPhone, your watch reaches the runner through your Cloudflare Tunnel. Paste the Cloudflare Access service token, then pair with Oby open on the watch.",
                  problem: watchProblem) {
             SetRow("Client ID") { SetField("Client ID", text: $watchPairing.clientID, prompt: "…access", width: 180).textInputAutocapitalization(.never) }
             SetRow("Client secret") { SetField("Client secret", text: $watchPairing.clientSecret, prompt: "Secret", secret: true, width: 180) }

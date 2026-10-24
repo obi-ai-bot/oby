@@ -1,5 +1,4 @@
 import Foundation
-import LocalAuthentication
 
 /// The phone's approval for pairing one Apple Watch's key with the runner (docs/runner-api.md,
 /// `POST /v1/watches`).
@@ -15,13 +14,11 @@ nonisolated struct PairingApproval: Encodable, Equatable, Sendable {
 
 /// What only the phone's key does (the key itself is apps/shared/DeviceKey.swift; two files named DeviceKey.swift can't share a target).
 extension DeviceKey {
-    /// Signs a Watch's pairing: Face ID, then the runner lets that watch's key in. `publicKey` is base64.
-    /// It blocks until the user answers, so call it off the main actor.
+    /// Signs a Watch's pairing, the owner's tap its approval: the runner lets that watch's key in.
+    /// `publicKey` is base64.
     nonisolated static func approvePairing(publicKey: String, device: String) throws -> PairingApproval {
-        let context = LAContext()
-        context.localizedReason = "Let your Apple Watch reach the runner without this iPhone"
         let signedAt = ISO8601DateFormatter().string(from: .now)
-        let signature = try sign(PairingApproval.message(publicKey: publicKey, signedAt: signedAt), context: context)
+        let signature = try sign(PairingApproval.message(publicKey: publicKey, signedAt: signedAt))
         return PairingApproval(device: device, signedAt: signedAt, signature: signature)
     }
 }

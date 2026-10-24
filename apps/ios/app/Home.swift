@@ -112,6 +112,10 @@ struct HomeView: View {
         return phone.active.contains(where: \.isWorking) ? "working" : "idle"
     }
 
+    /// The kinds that wait on the owner's own answer: a permission, a Confirm, a question (Oby's or
+    /// the agent's, #858), a plan, a Start.
+    private static let asks: Set<String> = ["permission", RunnerConfirm.kind, "question", "agentQuestion", "plan", "start"]
+
     /// Oby, the line under it, and the chips.
     private var stage: some View {
         let work = phone.work
@@ -146,13 +150,22 @@ struct HomeView: View {
         .frame(maxWidth: .infinity)
     }
 
-    /// Running and Recent (the iPhone's side panel, cut short).
+    /// What waits on you (the owner's decision of 2026-10-24: answered here with a tap, without
+    /// opening its task), then Running and Recent (the iPhone's side panel, cut short).
     @ViewBuilder private var lists: some View {
+        let asks = phone.answering.filter { Self.asks.contains($0.kind) }
         let rows = PhoneWork.running(phone.work)
         let recent = phone.conversations.map(PhoneWork.recent) ?? []
         VStack(alignment: .leading, spacing: 0) {
+            if !asks.isEmpty {
+                ListLabel(title: "Needs you", more: "Inbox") { phone.homePath.append(.inbox) }
+                ForEach(asks) { item in
+                    InboxDecision(item: item, openTask: true).padding(.horizontal, 10).padding(.bottom, 12)
+                }
+            }
             if !rows.isEmpty {
                 ListLabel(title: "Running", more: "See all") { phone.homePath.append(.all) }
+                    .padding(.top, asks.isEmpty ? 0 : 2)
                 ForEach(rows) { item in
                     Button { phone.homePath.append(.task(item.id)) } label: {
                         HomeTaskRow(item: item, step: PhoneWork.step(item, decision: phone.decision(for: item.job)))
@@ -162,7 +175,7 @@ struct HomeView: View {
             }
             if !recent.isEmpty {
                 ListLabel(title: "Recent", more: "All conversations") { phone.panel = .conversations }
-                    .padding(.top, rows.isEmpty ? 0 : 14)
+                    .padding(.top, rows.isEmpty && asks.isEmpty ? 0 : 14)
                 ForEach(recent) { conversation in
                     Button { phone.homePath.append(.conversation(conversation.id)) } label: {
                         HomeConversationRow(conversation: conversation, last: conversation.turn?.text ?? phone.previews[conversation.id])

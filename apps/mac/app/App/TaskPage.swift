@@ -16,7 +16,7 @@ struct TaskActions {
     var useAnyway: ((String) async throws -> Void)?
     /// Move to…; nil for Oby's own reviews, which pick their account themselves.
     var move: ((MoveTarget) async throws -> Void)?
-    /// Nil where this Mac can't publish (a runner's job, on a Mac without Touch ID).
+    /// Nil where this Mac can't publish (a runner's job, on a Mac without a Secure Enclave).
     var publishing: JobView.Publishing?
     var readReport: (() async throws -> ResearchDocument)?
     var fileProposal: ((Int, Bool) async throws -> FileProposalResult)?
@@ -61,7 +61,7 @@ struct TaskActions {
                 startNow: { try desk.startNow(job.id) }, useAnyway: { _ = desk.liftReserve($0, true) },
                 move: job.reviewOf == nil ? { target in _ = try desk.move(job.id, to: target) } : nil,
                 publishing: JobView.Publishing(action: { Publish.action(for: job, base: job.base ?? "") },
-                                               publish: { _ in _ = try await desk.publish(job.id, approve: Publish.touchID) }),
+                                               publish: { _ in _ = try await desk.publish(job.id, approve: { _ in }) }),
                 readReport: {
                     guard let saved = desk.store.report(job.id) else { throw Shell.Failure(message: "This job has no research report.") }
                     return ResearchDocument(job: saved.job, commit: saved.commit, markdown: saved.markdown,
@@ -425,7 +425,8 @@ struct TaskPage: View {
     let job: Job
     let actions: TaskActions
     let tray: Tray
-    /// The job's alert's Publish opened this page: the sentence shows, and Touch ID asks for it now.
+    /// The job's alert's Publish opened this page: the sentence shows, and it publishes now (the
+    /// alert's click is the approval).
     var publishNow = false
     /// Called as that starts, so it starts once.
     var onPublishNow: () -> Void = {}
@@ -453,7 +454,7 @@ struct TaskPage: View {
     @State private var note = ""
     @State private var typing = false
     @State private var height: CGFloat = 600
-    /// The exact sentence Publish would carry out, shown before Touch ID approves it.
+    /// The exact sentence Publish would carry out, shown before the click that publishes it.
     @State private var action: String?
     @State private var report: ResearchDocument?
     /// Why the words for the agent didn't go, over the box.
@@ -661,7 +662,7 @@ struct TaskPage: View {
     }
 
     /// Publish by hand when Oby's own didn't go: what it would do is shown first, in the runner's
-    /// own words for its jobs, and exactly that goes out after Touch ID or the Mac's password.
+    /// own words for its jobs, and exactly that goes out on the click.
     @ViewBuilder private var publish: some View {
         if let reason = job.publishError { Text(reason).font(Tokens.font(Tokens.textSm)).foregroundStyle(Tokens.needs).padding(.bottom, 8) }
         if actions.publishing == nil {
@@ -671,7 +672,7 @@ struct TaskPage: View {
                 Text(action).font(Tokens.font(Tokens.textBase, .medium)).foregroundStyle(Tokens.ink).fixedSize(horizontal: false, vertical: true)
                 if let problem { Text(problem).font(Tokens.font(Tokens.textSm)).foregroundStyle(Tokens.danger) }
                 HStack(spacing: 8) {
-                    PillButton(title: busy ? "Publishing…" : TouchIDKey.publish, primary: true) { publish(action) }.disabled(busy)
+                    PillButton(title: busy ? "Publishing…" : "Publish", primary: true) { publish(action) }.disabled(busy)
                     PillButton(title: "Not now", quiet: true) { self.action = nil; problem = nil }.disabled(busy)
                 }
             }
@@ -684,7 +685,7 @@ struct TaskPage: View {
         }
     }
 
-    /// The alert's Publish, as on the iPhone: the sentence shows, and Touch ID asks with it.
+    /// The alert's Publish, as on the iPhone: the sentence shows as it goes.
     private func publishFromAlert() {
         onPublishNow()
         guard let publishing = actions.publishing, job.canPublish, !busy else { return }

@@ -174,8 +174,8 @@ extension GitHubWork.Item {
         }
     }
 
-    /// Whether its tap asks you to confirm adding its repository first (Touch ID or Face ID, in the
-    /// inbox): a review in one obid doesn't work in.
+    /// Whether its tap asks you to confirm adding its repository first (a Confirm in the inbox): a
+    /// review in one obid doesn't work in.
     var addsRepository: Bool { list == .reviews && !known }
 
     /// The card's label over the headline: Sangam's "Start it?" when it can start, else where it is.

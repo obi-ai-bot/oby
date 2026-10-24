@@ -28,11 +28,13 @@ struct ConversationAlertTests {
         #expect(Alerts.place(of: ask, conversation: nil) == .conversation("5b0e2c4d-1111-2222-3333-444455556666"))
     }
 
-    /// A Confirm and a Start alert with their own titles; a teammate's request reading as a Start doesn't.
+    /// A Confirm alerts as "Confirm it?" with what it does in its body (a title line can be cut
+    /// short), a Start with its own title; a teammate's request reading as a Start doesn't.
     @Test func aConfirmAndAStartAlert() {
         let confirm = item("confirm-1", .start, title: "Remember: you like squash merges", text: "Oby will remember it.", options: ["Confirm", "Cancel"])
         #expect(Alerts.alerts(confirm, kind: RunnerConfirm.kind, jobAlerts: false, told: [], now: now))
-        #expect(Alerts.alert(for: confirm, kind: RunnerConfirm.kind, conversation: nil).title == "Remember: you like squash merges")
+        let confirmed = Alerts.alert(for: confirm, kind: RunnerConfirm.kind, conversation: nil)
+        #expect(confirmed.title == "Confirm it?" && confirmed.body == "Remember: you like squash merges\nOby will remember it.")
         let start = item("start-1", .start, title: "Greeting fix", text: "Oby looked into it first. Start it?", options: ["Start", "Cancel"])
         #expect(Alerts.alerts(start, kind: "start", jobAlerts: false, told: [], now: now))
         #expect(Alerts.alert(for: start, kind: "start", conversation: "c1").title == "Greeting fix")
@@ -77,11 +79,41 @@ struct ConversationAlertTests {
         let key = "sk-ant-api03-" + String(repeating: "Q", count: 40)
         let json = #"{"id":"confirm-9","kind":"confirm","job":"","title":"Send an answer: Question from Bob","text":"Oby would answer Bob's question.","options":["Confirm","Cancel"],"created":"2026-10-23T10:00:00Z","done":null,"later":null,"confirm":{"action":"answer_obi","target":"q1","payload":{"words":"hi"}},"obi":{"quoted":{"text":"\#(key)"}},"plugin":{"quoted":{"text":"\#(key)"}},"watch":{"quoted":{"text":"\#(key)"}}}"#
         let parsed = try #require(InboxItem.runner(Data(json.utf8)))
-        let alert = Alerts.alert(for: parsed, kind: RunnerConfirm.kind, conversation: nil)
+        // It sends Bob words someone wrote (`confirm.payload.words`), as RunnerFeed tells the alert.
+        let alert = Alerts.alert(for: parsed, kind: RunnerConfirm.kind, conversation: nil, quotes: true)
         for shown in [alert.title, alert.subtitle, alert.body] + alert.info.values + alert.options {
             #expect(!shown.contains(key))
         }
-        #expect(alert.category.buttons == [Alerts.openButton], "a Confirm only opens its card")
+        #expect(alert.category.buttons.map(\.id) == ["cancel", "open"], "a Confirm that sends quoted words is confirmed on its card")
+    }
+
+    /// A Confirm whose payload holds a field that isn't text (obid's `snapshot` on every job's, a
+    /// review's number) still says the words it would send: "Continue Vault tests in Bypass mode"
+    /// with an agent's words offers no Confirm in its alert, nor does a `>` line in its text.
+    @Test func aConfirmThatQuotesOffersNoConfirmWhateverItsPayloadHolds() throws {
+        let json = #"{"confirm": {"action": "continue_job", "target": "j1", "payload": {"words": "rm -rf the cache", "snapshot": {"round": 2, "mode": "default"}}}}"#
+        let words = try JSONDecoder().decode(InboxWords.self, from: Data(json.utf8))
+        #expect(words.confirm?.words == "rm -rf the cache")
+        let review = #"{"confirm": {"action": "add_repository", "target": "o1", "payload": {"repo": "deskree-inc/oby", "number": 42}}}"#
+        #expect(try JSONDecoder().decode(InboxWords.self, from: Data(review.utf8)).confirm?.payload == ["repo": "deskree-inc/oby"])
+        let continuing = item("confirm-2", .start, title: "Continue Vault tests in Bypass mode", text: "> rm -rf the cache",
+                              options: ["Confirm", "Cancel"])
+        let alert = Alerts.alert(for: continuing, kind: RunnerConfirm.kind, conversation: nil, quotes: words.confirm?.words != nil)
+        #expect(alert.category.buttons.map(\.id) == ["cancel", "open"])
+        #expect(Alerts.alert(for: continuing, kind: RunnerConfirm.kind, conversation: nil).category.buttons.map(\.id) == ["cancel", "open"],
+                "its text quoting is enough")
+    }
+
+    /// A routine's task is in its text, not its title: a Confirm whose text doesn't show whole offers
+    /// no Confirm, however short its title, and its body never drops the text for the title alone.
+    @Test func aConfirmWhoseTextDoesntShowWholeOffersNoConfirm() {
+        let task = "Read every open issue in deskree-inc/oby, close the ones that are done, and post a summary of the rest in Slack with who owns each one and what's left to do."
+        let routine = item("confirm-3", .start, title: "Make the routine every weekday at 9:00",
+                           text: "Oby's brain planned a routine: every weekday at 9:00. Each run starts a job, as one you ask for does.\n\n\(task)",
+                           options: ["Confirm", "Cancel"])
+        let alert = Alerts.alert(for: routine, kind: RunnerConfirm.kind, conversation: nil)
+        #expect(alert.category.buttons.map(\.id) == ["cancel", "open"])
+        #expect(alert.body.hasPrefix("Make the routine every weekday at 9:00\nOby's brain planned"))
     }
 
     /// Oby's answer in a conversation the window doesn't show alerts once, with its first lines.

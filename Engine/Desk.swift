@@ -1840,8 +1840,8 @@ final class Desk {
     }
 
     /// Publishing by hand, for a job whose own publish failed: pushes the job's branch and opens
-    /// its pull request once `approve` lets the action through: Touch ID on the Mac, a phone's
-    /// signature on the runner. Never a merge. Commits already on the base leave nothing to
+    /// its pull request once `approve` lets the action through: the owner's click on the Mac, a
+    /// device's signature on the runner. Never a merge. Commits already on the base leave nothing to
     /// publish, as when the job publishes by itself: it stops waiting for Publish, and the reason
     /// is thrown too.
     @discardableResult

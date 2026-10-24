@@ -88,7 +88,6 @@ A window of its own over the main one (760 × 520, the Safari-style toolbar wind
 | Microphone and speech (iPhone) | The first tap on the mic | "Oby listens until you tap Stop, up to a minute, and your words stay a draft until you send them." | iOS's prompts, microphone then speech. |
 | Screen Recording | The first "Show Oby your screen" | "To see your screen, macOS needs to let Oby record it. It looks only when you ask." | macOS's prompt; the copy in FirstLaunch that says it isn't asked goes. |
 | Notifications (Mac) | The first task you start | "Oby tells you when a task needs you or ends badly. Nothing else." | macOS's prompt. |
-| Face ID or Touch ID | The first time you publish by hand | (the action itself is the reason: "Publish 2 commits to obi") | the system's prompt. |
 | Keep the Mac available | Pairing an iPhone, on a desktop Mac or a laptop on power | none: on by default, shown in Settings › iPhone | — |
 | "Can I remember that?" | The first time you say or do something that sounds like a rule (section 5) | the question itself | your yes, or not. |
 
@@ -182,7 +181,7 @@ What exists today, what must be built, and where. Local work (obid, the Mac and 
 | iPhone 1: finding the Mac | The iPhone browses `_oby._tcp` (`apps/ios/app/ConnectScreen.swift:255-388`); the Swift runner's advertiser (`Runner/Bonjour.swift`) | obid's gateway reachable on the local network and advertised as `_oby._tcp` under the Mac's name: the Mac app forwards a LAN port to `127.0.0.1:8810` and advertises it, so obid stays on loopback | Mac | M |
 | iPhone 1: "Allow this iPhone?" on the Mac | — | A pairing request from a Bonjour-found iPhone shows on the Mac (Allow, Don't Allow) and pairs it as the code would | obid, Mac, iPhone | M |
 | iPhone 1: Connect as the first screen | ConnectScreen in Settings | Connect as the first run when unpaired; drop `Runner.defaultURL` and Settings › Runner's address field and Tailscale footer | iPhone | S |
-| iPhone 2: the publishing key with the pairing | `POST /v1/devices` behind `touch home/pairing` (`core/crates/obid/src/devices.rs:113-123`) | A paired device's token may register its own key once | obid | S |
+| iPhone 2: the publishing key with the pairing | Done (2026-10-24): a phone paired by an invitation the owner made on their Mac (signed by the Mac's key on Pair a device) registers one key of its own, bound to its pairing, within 10 minutes of pairing; a pairing the API token made alone adds none (docs/runner-api.md, `POST /v1/devices`) | — | obid | S |
 | Pairing that doesn't lapse | 30-day tokens (`core/crates/obid/src/gateway.rs:238-288`) | Renew on use; end only when revoked or unused for 30 days; the iPhone keeps `expiresAt` and tells a gateway 401 apart ("This iPhone was removed…") | obid, iPhone | S |
 | End-to-end encryption (#287) | — | Keys from pairing; sealed requests, answers and event frames through the gateway on every route; the device-key signature on each request | obid, Mac, iPhone | L |
 | iPhone 3: asking at the right time | `Notifications.ask()` on connection (`apps/ios/app/Phone.swift:427-428`) | The screen, and asking after the first task otherwise | iPhone | S |

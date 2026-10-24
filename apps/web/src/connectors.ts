@@ -178,7 +178,7 @@ function gitHub(github: string, checks: string | undefined, place: string): Conn
 
 // An app or API the runner's agents use through its broker, with the secret it sends, by name.
 // Without that secret in the runner's vault, every call fails: it needs attention. Disconnecting
-// one needs a device's signature (docs/runner-api.md, "Connection"): the Mac's, with Touch ID.
+// one needs a device's signature (docs/runner-api.md, "Connection"): the Mac's, on the owner's click.
 function connection(c: ConnectedApp, place: string): Connector {
   const url = c.mcp ?? c.api ?? '';
   let host = url;
@@ -190,7 +190,7 @@ function connection(c: ConnectedApp, place: string): Connector {
       ? `The vault secret ${c.secret}, ${header ? `in the header ${header}` : 'as Authorization: Bearer'}`
       : `Its vault secret ${c.secret} is missing, so agents’ calls fail: add it to the runner’s vault on ${place}`,
     state: c.secretSaved ? 'connected' : 'broken',
-    way: `To disconnect it, use Oby on your Mac, Settings › Connectors: it asks for Touch ID. A browser can’t approve it.`,
+    way: `To disconnect it, use Oby on your Mac, Settings › Connectors. A browser can’t approve it.`,
     mark: 'link',
   };
 }

@@ -35,7 +35,7 @@
 
 - Oby opens the pull request and leaves the merge to you. It never pushes to or force-pushes `main` or your default branch. Merging a repository's own way, once Oby has asked "Can I remember that?" and you said yes, comes later.
 - Nothing goes out until the job's check passes and the secret scan is clean. A review goes out as you only after your Approve.
-- Publishing by hand takes Touch ID on the Mac or Face ID on the iPhone. The Mac's password, for a Mac without Touch ID, is in progress.
+- Approvals (publishing by hand, a Confirm, a Disconnect) are a click in Oby on your Mac or iPhone, with no Touch ID, Face ID or password; whatever waits on you notifies on the Mac and shows on Home.
 - Every job has safety limits on time and tokens, and **⌃⌥⌘.** stops them all.
 - No usage data leaves your Mac unless you turn it on.
 

@@ -1,13 +1,10 @@
 import Foundation
-#if canImport(LocalAuthentication)
-import LocalAuthentication
-#endif
 
 /// Publishing a finished job as the user: push its branch and open a pull request, ready for
 /// review. Guards, then a secret scan, then the approval; nothing is sent before it (only the base is fetched).
 /// A job that ends done with commits publishes by itself (the approval lets everything through);
-/// a job whose publish failed is published by hand, with Touch ID on the Mac or a phone's
-/// signature on the runner. Oby never pushes to main for anyone, and force-pushes only a rebase of
+/// a job whose publish failed is published by hand, the owner's click its approval (a device's
+/// signature on the runner). Oby never pushes to main for anyone, and force-pushes only a rebase of
 /// its own oby/ branch, over the commit it pushed there last (`--force-with-lease`); it merges only
 /// into dev, after its review and the Mac check (Engine/Checks.swift).
 nonisolated enum Publish {
@@ -49,7 +46,7 @@ nonisolated enum Publish {
         var text: String
     }
 
-    /// The one sentence a publish carries out: shown in the notch, the Touch ID reason, and what a phone signs.
+    /// The one sentence a publish carries out: shown before it goes, and what a device signs.
     /// Once published, it pushes the new commits to the same branch, and `pullRequest` finds the open pull request.
     static func action(for job: Job, base: String) -> String {
         job.published == nil ? "Push \(job.branch) to \(job.repo) and open a pull request into \(base)."
@@ -638,17 +635,6 @@ nonisolated enum Publish {
     }
 
     // MARK: Approval, push and pull request
-
-    #if canImport(LocalAuthentication)
-    /// Touch ID, or the password on Macs without it, with the action as the reason.
-    static func touchID(_ action: String) async throws {
-        // macOS shows "Oby is trying to <reason>.", so the sentence goes in lowercase, without its period.
-        let reason = action.prefix(1).lowercased() + action.dropFirst().dropLast(action.hasSuffix(".") ? 1 : 0)
-        guard (try? await LAContext().evaluatePolicy(.deviceOwnerAuthentication, localizedReason: reason)) == true else {
-            throw Shell.Failure(message: "Not published: Touch ID didn't approve it.")
-        }
-    }
-    #endif
 
     /// The agent could have changed the clone's config, so git talks to GitHub with no hooks, and only gh signs in.
     private static let toGitHub = ["git", "-c", "core.hooksPath=/dev/null", "-c", "credential.helper=",

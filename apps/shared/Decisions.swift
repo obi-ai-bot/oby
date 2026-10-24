@@ -395,7 +395,15 @@ nonisolated struct RunnerConfirm: Codable, Equatable, Sendable {
         let keys = try decoder.container(keyedBy: CodingKeys.self)
         action = try keys.decode(String.self, forKey: .action)
         target = (try? keys.decodeIfPresent(String.self, forKey: .target)) ?? ""
-        payload = try? keys.decodeIfPresent([String: String].self, forKey: .payload)
+        // Its text fields, whatever else it holds (obid adds a `snapshot` object to a job's, a
+        // number to a review's): one field that isn't text never hides the words it would send.
+        payload = (try? keys.decodeIfPresent([String: Text].self, forKey: .payload))?.compactMapValues(\.text)
+    }
+
+    /// A payload field: its text, or nil for anything else (an object, a number).
+    nonisolated private struct Text: Decodable {
+        var text: String?
+        init(from decoder: any Decoder) throws { text = try? decoder.singleValueContainer().decode(String.self) }
     }
 
     /// The words it would send for the user: data someone wrote, which the card quotes apart

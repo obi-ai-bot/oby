@@ -49,8 +49,8 @@ nonisolated struct Alert: Equatable, Sendable {
         var id: String
         var title: String
         var destructive = false
-        /// Opens the window (Open, Publish with Touch ID); every other button answers from the alert,
-        /// and only on an unlocked Mac.
+        /// Opens the window (Open, Publish); every other button answers from the alert, and only on
+        /// an unlocked Mac.
         var opens = false
     }
 }
@@ -73,6 +73,9 @@ enum Alerts {
     static let replyButton = "reply"
     static let startButton = "start"
     static let alwaysButton = "always"
+    /// A Confirm item's answers (#776): the owner's click is the approval, signed by this Mac's key.
+    static let confirmButton = "confirm"
+    static let cancelButton = "cancel"
     /// "option.0": the alert's first option.
     static func optionButton(_ index: Int) -> String { "option.\(index)" }
 
@@ -121,7 +124,8 @@ enum Alerts {
     /// An inbox item alerts by itself: open, not put off, from the last hour (an older one is a
     /// replay), not told already, and a decision only the owner makes that no job's alert says: a
     /// Confirm, a Start (not a teammate's request, which reads as one), a question (the orchestrator's,
-    /// the supervisor's) unless its job alerts for it (`jobAlerts`), or a permission with no job (the
+    /// the supervisor's) unless its job alerts for it (`jobAlerts`), the agent's question (#858; its
+    /// job doesn't alert for it, `RunnerFeed.notice`), or a permission with no job (the
     /// conversation's shell). A job's own permission alerts as the job.
     static func alerts(_ item: InboxItem, kind: String, jobAlerts: Bool, told: Set<String>, now: Date) -> Bool {
         guard item.waiting(at: now), item.created > now.addingTimeInterval(-3600), !told.contains(item.id) else { return false }
@@ -129,6 +133,7 @@ enum Alerts {
         case RunnerConfirm.kind: return true
         case "start": return item.options.contains(Inbox.start)
         case "question": return !jobAlerts
+        case "agentQuestion": return true
         case "permission": return item.job.isEmpty
         default: return false
         }
@@ -153,11 +158,13 @@ enum Alerts {
         return (conversation ?? shellConversation(item.id)).map(AlertPlace.conversation) ?? .window
     }
 
-    /// The item's alert: its title, its text, and its answers. Allow and Start only when the text shows
-    /// whole (`fits`). The shell's Always allow stays in the window: the item doesn't say which rule it
-    /// saves. A Confirm only opens its card, so the owner reads all of what it does and confirms it with
-    /// Touch ID there (#776).
-    static func alert(for item: InboxItem, kind: String, conversation: String?) -> Alert {
+    /// The item's alert: its title, its text, and its answers. Allow, Start and Confirm only when the
+    /// text shows whole (`fits`); a Confirm only when its title and its text both do, the body holding
+    /// all of it. The shell's Always allow stays in the window: the item doesn't say which rule it
+    /// saves. A Confirm that quotes anyone (`quotes`: words it would send; a `>` line in its text) only
+    /// opens its card, where they show quoted apart, so the owner reads all of what it does before
+    /// the click (#776).
+    static func alert(for item: InboxItem, kind: String, conversation: String?, quotes: Bool = false) -> Alert {
         let place = Self.place(of: item, conversation: conversation)
         let text = compact(item.text)
         let whole = fits(text)
@@ -175,9 +182,25 @@ enum Alerts {
             alert.category = Alert.Category(id: "inbox.deny", buttons: [Alert.Button(id: RunnerFeed.denyButton, title: Inbox.deny, destructive: true), openButton])
         case "start" where whole:
             alert.category = Alert.Category(id: "inbox.start", buttons: [Alert.Button(id: startButton, title: Inbox.start), openButton])
+        case RunnerConfirm.kind:
+            // What Confirm does is the item's title, and what it carries out can be in its text (a
+            // routine's task): both in the body, which shows whole (a title line can be cut short).
+            let does = compact(item.title)
+            let both = text.isEmpty ? does : "\(does)\n\(text)"
+            let quoted = quotes || text.split(separator: "\n").contains { $0.hasPrefix(">") }
+            alert.title = AskKind.label(kind)
+            alert.body = fits(both) ? both : lines(both)
+            let cancel = Alert.Button(id: cancelButton, title: RunnerConfirm.cancel, destructive: true)
+            alert.category = !quoted && !does.isEmpty && fits(both)
+                ? Alert.Category(id: "inbox.confirm", buttons: [Alert.Button(id: confirmButton, title: RunnerConfirm.confirm), cancel, openButton])
+                : Alert.Category(id: "inbox.cancel", buttons: [cancel, openButton])
         case "question":
             alert.options = Array(item.options.prefix(Plan.Question.mostOptions))
             alert.category = options(alert.options, reply: "Reply to Oby…", prefix: "inbox.question")
+        case "agentQuestion":
+            // The agent's own options, as buttons; typed words are its answer (#858).
+            alert.options = Array(item.options.prefix(Plan.Question.mostOptions))
+            alert.category = options(alert.options, reply: "Your answer…", prefix: "inbox.agentQuestion")
         default: break
         }
         return alert
@@ -228,9 +251,9 @@ enum Alerts {
 
     /// A job's alert: the notice's words, and its answers. A permission offers Allow only when the
     /// whole ask shows (`fits`), Always allow only when a rule can be saved and the sentence saying
-    /// which shows with it, and neither for a plan (Plan mode's plan is read on its page). Ready keeps
-    /// Publish with Touch ID, in the window. Everything else takes a reply, for as long as the job
-    /// still needs what the alert said (`noticeKey`).
+    /// which shows with it, and neither for a plan (Plan mode's plan is read on its page). Ready's
+    /// Publish opens the window on the sentence it carries out. Everything else takes a reply, for as
+    /// long as the job still needs what the alert said (`noticeKey`).
     static func alert(_ notice: RunnerFeed.Notice, for job: Job, conversation: String?) -> Alert {
         let place = AlertPlace.job(job.id)
         let agent = Job.agentNames[job.agent] ?? job.agent
@@ -243,7 +266,7 @@ enum Alerts {
         switch notice {
         case .ready:
             alert.category = Alert.Category(id: "ready", buttons: [
-                Alert.Button(id: RunnerFeed.publishButton, title: TouchIDKey.publish, opens: true), openButton,
+                Alert.Button(id: RunnerFeed.publishButton, title: "Publish", opens: true), openButton,
             ])
         case .permission:
             guard let permission = job.permission else { break }
@@ -276,8 +299,8 @@ enum Alerts {
     }
 
     /// What a button or a typed reply does, from the alert's own ids: the ask it showed, the item it
-    /// was, its options. Anything it can't do from outside the window (Open, a click, a Confirm, a
-    /// button it doesn't know, no words, too many words) opens the window, the words kept as a draft.
+    /// was, its options. Anything it can't do from outside the window (Open, a click, a button it
+    /// doesn't know, no words, too many words) opens the window, the words kept as a draft.
     static func answer(_ action: String, typed: String?, info: [AnyHashable: Any]) -> AlertAnswer {
         let place = Self.place(info)
         let job = info[RunnerFeed.jobKey] as? String
@@ -296,6 +319,8 @@ enum Alerts {
             if let item, decision != .always { return .settle(item: item, answer: answer) }
         }
         if action == startButton, let item { return .settle(item: item, answer: Inbox.start) }
+        if action == confirmButton, let item { return .settle(item: item, answer: RunnerConfirm.confirm) }
+        if action == cancelButton, let item { return .settle(item: item, answer: RunnerConfirm.cancel) }
         if action.hasPrefix("option."), let index = Int(action.dropFirst(7)), options.indices.contains(index) {
             return words(options[index], item: item, question: question, conversation: conversation, place: place)
         }
@@ -311,7 +336,7 @@ enum Alerts {
     /// An option picked or words typed: the item's answer, Oby's question answered (planned again,
     /// as the window does), or words to Oby in the conversation.
     private static func words(_ words: String, item: String?, question: (String, String)?, conversation: String?, place: AlertPlace) -> AlertAnswer {
-        // Only the owner's tap in the window confirms (#776), whatever the words say.
+        // Only the owner's click on Confirm confirms (#776), whatever the words say.
         if words == RunnerConfirm.confirm { return .open(place) }
         if let item { return .settle(item: item, answer: words) }
         if let (said, question) = question { return .pick(conversation: conversation, said: said, question: question, option: words) }
@@ -350,7 +375,7 @@ enum Alerts {
 /// What an alert's button or reply does (#863), or the window it opens instead.
 nonisolated enum AlertAnswer: Equatable, Sendable {
     case open(AlertPlace, draft: String? = nil)
-    /// Publish with Touch ID: the window opens on the job and asks.
+    /// Publish: the window opens on the job, on the sentence it carries out.
     case publish(job: String)
     /// Allow, Always allow or Deny on the very ask the alert showed; words go with a deny.
     case permission(job: String, ask: String, RunnerPermission.Decision, message: String?)

@@ -1,5 +1,4 @@
 import CryptoKit
-import LocalAuthentication
 import OSLog
 import UIKit
 import UserNotifications
@@ -8,38 +7,32 @@ import UserNotifications
 /// through Deskree's relay, sealed (PushRelay below; the extension in apps/ios/push opens them):
 /// "Ready to publish" with Publish and Open, a failed or interrupted job with Open, a permission
 /// with Allow, Always allow (when a rule can be saved), Deny and Open (#865). Tapping one opens its
-/// job or conversation; Publish brings Oby forward, where Face ID signs it as it does in the app.
+/// job or conversation; Publish brings Oby forward on the job's sentence. A button is the owner's
+/// answer: no Face ID (the owner's decision of 2026-10-24).
 final class Notifications: NSObject, UIApplicationDelegate, UNUserNotificationCenterDelegate {
     let phone = Phone()
 
     static let publish = "publish"
     static let open = "open"
-    /// A publish the watch asked for while Oby was in the background (apps/ios/app/WatchRelay.swift):
-    /// Face ID can't come up then, so this notification's Publish does it.
-    static let approve = "approve"
 
     /// The runner's `category`: "ready" for a job waiting for Publish, "job" for the rest, a
     /// permission's "permission", or "permissionRule" when Always allow can save a rule, and "plan"
     /// for a plan to approve. Their actions are named for the inbox's answers (`answers`).
     nonisolated static let answers: Set<String> = ["Allow", "Always allow", "Deny", "Approve", "Keep planning"]
-    /// The answers that let nothing run: from the Lock Screen, with no unlock and no Face ID.
-    nonisolated static let refusals: Set<String> = ["Deny", "Keep planning"]
 
     static let categories: Set<UNNotificationCategory> = {
         let open = UNNotificationAction(identifier: Notifications.open, title: "Open", options: [.foreground])
         let publish = UNNotificationAction(identifier: Notifications.publish, title: "Publish", options: [.authenticationRequired, .foreground])
-        let approve = UNNotificationAction(identifier: Notifications.publish, title: "Publish with Face ID", options: [.authenticationRequired, .foreground])
-        // Allow, Always allow and Approve let the agent go on: unlocked, then Oby comes forward for
-        // Face ID (`answer` below), which can't come up in the background. Refusals go from the Lock Screen.
-        let allow = UNNotificationAction(identifier: "Allow", title: "Allow", options: [.authenticationRequired, .foreground])
-        let always = UNNotificationAction(identifier: "Always allow", title: "Always allow", options: [.authenticationRequired, .foreground])
+        // Allow, Always allow and Approve let the agent go on: only on an unlocked iPhone, answered
+        // right there (`answer` below). Refusals go from the Lock Screen.
+        let allow = UNNotificationAction(identifier: "Allow", title: "Allow", options: [.authenticationRequired])
+        let always = UNNotificationAction(identifier: "Always allow", title: "Always allow", options: [.authenticationRequired])
         let deny = UNNotificationAction(identifier: "Deny", title: "Deny", options: [.destructive])
-        let approvePlan = UNNotificationAction(identifier: "Approve", title: "Approve", options: [.authenticationRequired, .foreground])
+        let approvePlan = UNNotificationAction(identifier: "Approve", title: "Approve", options: [.authenticationRequired])
         let keepPlanning = UNNotificationAction(identifier: "Keep planning", title: "Keep planning", options: [])
         return [
             UNNotificationCategory(identifier: "ready", actions: [publish, open], intentIdentifiers: []),
             UNNotificationCategory(identifier: "job", actions: [open], intentIdentifiers: []),
-            UNNotificationCategory(identifier: Notifications.approve, actions: [approve], intentIdentifiers: []),
             UNNotificationCategory(identifier: "permission", actions: [allow, deny, open], intentIdentifiers: []),
             UNNotificationCategory(identifier: "permissionRule", actions: [allow, always, deny, open], intentIdentifiers: []),
             UNNotificationCategory(identifier: "plan", actions: [approvePlan, keepPlanning, open], intentIdentifiers: []),
@@ -135,33 +128,18 @@ final class Notifications: NSObject, UIApplicationDelegate, UNUserNotificationCe
     }
 
     /// Whatever the push said, only an item open in the Mac's inbox, with this answer among its
-    /// options, gets it. Allow, Always allow and Approve also open the job and ask for Face ID, with
-    /// the Mac's words for what it asks: unlocking the phone isn't enough, and anyone can seal to
-    /// this iPhone's public key. A failed answer lets nothing run and says to open Oby.
+    /// options, gets it: the alert's button is the owner's answer. A failed answer lets nothing run
+    /// and says to open Oby.
     private func answer(_ item: String, _ answer: String, _ info: [AnyHashable: Any]) async {
-        let refuses = Self.refusals.contains(answer)
         do {
-            if !refuses {
-                if let job = info["job"] as? String { phone.open(job, publish: false) }
-                else if let id = info["conversation"] as? String { phone.open(conversation: id) }
-            }
-            guard let waits = try await phone.runner.inbox().first(where: { $0.id == item && $0.isOpen && $0.options.contains(answer) }) else {
+            guard try await phone.runner.inbox().contains(where: { $0.id == item && $0.isOpen && $0.options.contains(answer) }) else {
                 throw RunnerError(message: "It asks something else now.", status: 409)
             }
-            if !refuses { guard await Self.ownerApproves(waits.title) else { return } }
             try await phone.answer(alert: item, answer)
         } catch {
             Logger.phone.error("answering inbox item \(item, privacy: .public) failed: \(error.localizedDescription, privacy: .public)")
             try? await UNUserNotificationCenter.current().add(Self.couldntAnswer(info))
         }
-    }
-
-    private static func ownerApproves(_ reason: String) async -> Bool {
-        // Face ID comes up only with Oby in front. It listens before it checks, so it can't miss
-        // Oby coming forward in between.
-        let activated = NotificationCenter.default.notifications(named: UIApplication.didBecomeActiveNotification).makeAsyncIterator()
-        if UIApplication.shared.applicationState != .active { _ = await activated.next() }
-        return (try? await LAContext().evaluatePolicy(.deviceOwnerAuthentication, localizedReason: reason)) ?? false
     }
 
     /// The alert a failed answer leaves (it was answered elsewhere, or the Mac is out of reach). It's

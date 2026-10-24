@@ -2,7 +2,7 @@ import SwiftUI
 
 /// One job, opened from the window's list: the same screen as the iPhone's (apps/ios/app/JobScreen.swift),
 /// in the window's own style. What its agent waits for (a decision card), its stages, the result
-/// (Publish after Touch ID, Dismiss for one that needs you), what you asked, its details, what you
+/// (Publish on a click, Dismiss for one that needs you), what you asked, its details, what you
 /// told the agent, Move to…, Stop, and a line to tell the agent more. A runner's job has a Mode menu too.
 struct JobView: View {
     let job: Job
@@ -11,7 +11,7 @@ struct JobView: View {
     /// The account's name, when this Mac knows it (its own accounts), else nil and the id shows.
     let account: String?
     let onStop: () -> Void
-    /// Nil where this Mac can't publish: a runner's job, on a Mac without Touch ID.
+    /// Nil where this Mac can't publish: a runner's job, on a Mac without a Secure Enclave.
     let publishing: Publishing?
     let onMessage: (String) async throws -> Void
     let onDismiss: () async throws -> Void
@@ -22,7 +22,7 @@ struct JobView: View {
     var onMode: ((RunnerMode) async throws -> Void)? = nil
     /// Allow, Always allow or Deny, with words for a deny.
     var onPermission: ((RunnerPermission.Decision, String?) async throws -> Void)? = nil
-    /// The job's alert's Publish opened this screen: it shows the sentence and asks for Touch ID now.
+    /// The job's alert's Publish opened this screen: it shows the sentence and publishes now.
     var publishNow = false
     /// Called as that starts, so it starts once.
     var onPublishNow: () -> Void = {}
@@ -40,7 +40,7 @@ struct JobView: View {
     @State private var busy = false
     @State private var moving = false
     @State private var problem: String?
-    /// The exact sentence Publish would carry out, shown before Touch ID approves it, or nil.
+    /// The exact sentence Publish would carry out, shown before the click that publishes it, or nil.
     @State private var action: String?
     @State private var note = ""
     @State private var telling = false
@@ -50,7 +50,7 @@ struct JobView: View {
     @State private var showingReport = false
 
     /// Publishing by hand: what it would do, in the words shown and approved (the runner's own,
-    /// for its jobs), and doing exactly that, after Touch ID.
+    /// for its jobs), and doing exactly that, on the click.
     struct Publishing {
         var action: () async throws -> String
         var publish: (String) async throws -> Void
@@ -292,7 +292,7 @@ struct JobView: View {
                 }
                 HStack(spacing: 8) {
                     Button { publish(action) } label: {
-                        Label(busy ? "Publishing…" : "Publish with Touch ID", systemImage: "touchid")
+                        Label(busy ? "Publishing…" : "Publish", systemImage: "arrow.up.circle")
                             .font(.system(size: 13, weight: .semibold)).foregroundStyle(.black)
                             .padding(.horizontal, 14).frame(height: 30)
                             .background(.white, in: Capsule())
@@ -378,7 +378,7 @@ struct JobView: View {
         Task { await run { action = try await publishing.action() } }
     }
 
-    /// Exactly the sentence shown goes to Touch ID and out; a cancel sends nothing.
+    /// Exactly the sentence shown goes out.
     private func publish(_ action: String) {
         guard let publishing else { return }
         Task {
@@ -389,7 +389,7 @@ struct JobView: View {
         }
     }
 
-    /// The alert's Publish, as on the iPhone: the sentence shows, and Touch ID asks with it.
+    /// The alert's Publish, as on the iPhone: the sentence shows as it goes.
     private func publishFromNotification() async {
         onPublishNow()
         guard let publishing, job.canPublish, !busy else { return }

@@ -445,12 +445,13 @@ struct RelayTests {
         let hadRelay = RelayStore.read()
         defer {
             UserDefaults.standard.set(savedLink, forKey: "mac.link")
-            UserDefaults.standard.removeObject(forKey: "device.\(mine.identity)")
+            UserDefaults.standard.removeObject(forKey: "device.approval.\(mine.identity)")
             if let hadToken { try? GatewayTokenStore.save(hadToken) } else { GatewayTokenStore.remove() }
             if let hadRelay { try? RelayStore.save(hadRelay) } else { RelayStore.remove() }
         }
         try GatewayTokenStore.save("tok-relay")
-        UserDefaults.standard.set("device-1", forKey: "device.\(mine.identity)")
+        // The approval key's id (apps/shared/DeviceKey.swift), kept by the Mac's identity.
+        UserDefaults.standard.set("device-1", forKey: "device.approval.\(mine.identity)")
         try RelayStore.save(first.link)
         UserDefaults.standard.set(try mine.encoded(), forKey: "mac.link")
         #expect(Phone().deviceID == "device-1")
