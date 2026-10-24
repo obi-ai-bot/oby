@@ -1064,7 +1064,16 @@ nonisolated struct Runner: Sendable {
     /// `request`'s answer, through the relay when there is one.
     private func fetch(_ request: URLRequest) async throws -> (Data, URLResponse) {
         if let relay { return try await relay.data(for: request) }
+        try Self.reachable(base)
         return try await URLSession.shared.data(for: request)
+    }
+
+    /// Addressed to a Mac's relay with no relay to send through (its keychain item gone, or not the
+    /// one the pairing pinned): nothing goes, and the iPhone says to pair again, as for a 401.
+    private static func reachable(_ base: URL) throws {
+        guard base != RemoteRoute.relayBase else {
+            throw RunnerError(message: "This iPhone can't reach your Mac through its Obysphere any more. Pair again with the code in Oby on your Mac.", status: 401)
+        }
     }
 
     /// `request` with the token, when there is one.
@@ -1677,6 +1686,7 @@ nonisolated struct Runner: Sendable {
                         stream.yield(.connected)
                         for try await chunk in body { chunk.forEach(feed) }
                     } else {
+                        try Self.reachable(base)
                         let (bytes, response) = try await URLSession.shared.bytes(for: signed(request))
                         try Self.check(response, nil, refused: refused)
                         // The runner answers once it follows this connection: from here, every change arrives.
