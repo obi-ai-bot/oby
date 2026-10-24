@@ -201,6 +201,10 @@ pub fn router(shared: Arc<Shared>) -> Router {
         .route("/v1/stop-all", post(crate::routes::stop_all))
         .route("/v1/clear", post(crate::routes::clear))
         .route("/v1/devices", post(crate::routes::register_device))
+        .route(
+            "/v1/devices/{id}",
+            axum::routing::delete(crate::routes::revoke_device),
+        )
         .route("/v1/notifications", post(crate::push::register))
         .merge(crate::connections::router())
         .merge(crate::tetrix::router())

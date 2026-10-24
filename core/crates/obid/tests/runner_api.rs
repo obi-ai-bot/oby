@@ -662,40 +662,104 @@ fn register(obid: &Obid, key: &str) -> Answer {
     )
 }
 
-/// Ports RunnerTests.newPhonesNeedPairing: a new key registers only while pairing is open (the
-/// owner touched `home/pairing` in the last 10 minutes), which it uses up; a known key gets its id
-/// back at once.
+/// What a registered device sends for a key or a device: `device`'s signature over
+/// `"<prefix>\n<subject>\n<signedAt>"`, signed now with `scalar`'s key.
+fn vouched(scalar: u8, device: &str, prefix: &str, subject: &str) -> Value {
+    use base64::Engine as _;
+    use p256::ecdsa::signature::Signer as _;
+    let key = p256::ecdsa::SigningKey::from_slice(&[scalar; 32]).unwrap();
+    let at = obi_protocol::time::format(obi_protocol::time::now());
+    let signature: p256::ecdsa::Signature = key.sign(format!("{prefix}\n{subject}\n{at}").as_bytes());
+    json!({"device": device, "signedAt": at,
+           "signature": base64::engine::general_purpose::STANDARD.encode(signature.to_der().as_bytes())})
+}
+
+/// A new publishing key needs the owner's presence (docs/runner-api.md, `POST /v1/devices`). The
+/// attack the 2026-10-24 review found, a process on obid's machine with the API token registering
+/// its own key while the Mac's is registered, fails every way it can try; the Mac's own first
+/// registration (`pairing` naming its key, used up) and its re-registration (its registered key
+/// vouching for the next one) go through; and a key is revoked only with a registered key's
+/// signature. Ports RunnerTests.newPhonesNeedPairing, which a touched `pairing` opened.
 #[test]
-fn new_phones_need_pairing() {
+fn a_new_key_needs_the_owners_presence() {
     let folder = Folder::new("pairing");
     let (obid, _) = obid(&folder);
-    let mine = device_key(1);
-    let other = device_key(2);
-    let closed = register(&obid, &mine);
-    assert_eq!(closed.status, 403, "{}", closed.text);
+    let mac = device_key(1);
+    let attacker = device_key(2);
     let pairing = obid.home.join("pairing");
-    assert!(
-        closed.body["error"]
-            .as_str()
-            .unwrap()
-            .contains(&format!("touch {}", pairing.display()))
-    );
-    // Opened 601 seconds ago: closed again.
-    let file = std::fs::File::create(&pairing).unwrap();
-    file.set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(601))
-        .unwrap();
-    drop(file);
-    assert_eq!(register(&obid, &mine).status, 403);
-    std::fs::File::create(&pairing)
-        .unwrap()
-        .set_modified(std::time::SystemTime::now())
-        .unwrap();
-    let registered = register(&obid, &mine);
+    let with = |key: &str, endorsement: Value| {
+        call(
+            &obid,
+            "POST",
+            "/v1/devices",
+            Some(&json!({"name": "Test Mac", "publicKey": key, "endorsement": endorsement})),
+        )
+    };
+    let revoke = |id: &str, body: Option<&Value>| {
+        call(&obid, "DELETE", &format!("/v1/devices/{id}"), body)
+    };
+
+    // The Mac's first key: `pairing` names it (the app writes it after Touch ID or the password).
+    let closed = register(&obid, &mac);
+    assert_eq!(closed.status, 403, "{}", closed.text);
+    let line = closed.body["error"].as_str().unwrap();
+    assert!(line.contains(&format!("echo '{mac}' > {}", pairing.display())), "{line}");
+    std::fs::write(&pairing, format!("{mac}\n")).unwrap();
+    let registered = register(&obid, &mac);
     assert_eq!(registered.status, 200, "{}", registered.text);
-    let id = registered.body["id"].as_str().unwrap().to_owned();
-    assert!(!pairing.exists(), "the device used pairing up");
-    assert_eq!(register(&obid, &other).status, 403);
-    assert_eq!(register(&obid, &mine).body, json!({"id": id}));
+    let mac_id = registered.body["id"].as_str().unwrap().to_owned();
+    assert!(!pairing.exists(), "the Mac used pairing up");
+
+    // The attack: the API token, and every door it can try.
+    assert_eq!(register(&obid, &attacker).status, 403, "the API token alone");
+    std::fs::write(&pairing, "").unwrap();
+    assert_eq!(
+        register(&obid, &attacker).status,
+        403,
+        "pairing touched, as the Mac opened it on every connection"
+    );
+    std::fs::write(&pairing, &mac).unwrap();
+    assert_eq!(
+        register(&obid, &attacker).status,
+        403,
+        "pairing open for the Mac's own key"
+    );
+    let _ = std::fs::remove_file(&pairing);
+    for (endorsement, why) in [
+        (vouched(2, &mac_id, "oby-device", &attacker), "vouched for by itself"),
+        (vouched(1, &mac_id, "oby-device", &device_key(3)), "the Mac's vouching for another key"),
+        (vouched(1, &mac_id, "oby-connection", &attacker), "another kind of signature"),
+        (json!({}), "no signature"),
+    ] {
+        assert_eq!(with(&attacker, endorsement).status, 403, "{why}");
+    }
+    assert_eq!(revoke(&mac_id, None).status, 403, "revoking the Mac's key unsigned");
+    assert_eq!(
+        revoke(&mac_id, Some(&json!({"approval": vouched(2, &mac_id, "oby-revoke-device", &mac_id)}))).status,
+        403,
+        "revoking it with the attacker's signature"
+    );
+    // A known key answers its id, and nothing else got in.
+    assert_eq!(register(&obid, &mac).body, json!({"id": mac_id}));
+    let kept = std::fs::read_to_string(obid.home.join("devices.json")).unwrap();
+    assert!(!kept.contains(&attacker), "{kept}");
+
+    // The Mac's re-registration (#1375's key): its registered key vouches for the next one, once,
+    // then revokes itself.
+    let next = device_key(3);
+    let endorsement = vouched(1, &mac_id, "oby-device", &next);
+    let moved = with(&next, endorsement.clone());
+    assert_eq!(moved.status, 200, "{}", moved.text);
+    assert_ne!(moved.body["id"], json!(mac_id));
+    assert_eq!(with(&attacker, endorsement).status, 403, "an endorsement works once");
+    let revoked = revoke(
+        &mac_id,
+        Some(&json!({"approval": vouched(1, &mac_id, "oby-revoke-device", &mac_id)})),
+    );
+    assert_eq!(revoked.status, 200, "{}", revoked.text);
+    assert_eq!(revoked.body, json!({"revoked": mac_id}));
+    assert_eq!(register(&obid, &mac).status, 403, "the old key is gone");
+    assert_eq!(revoke(&mac_id, None).status, 404);
 }
 
 /// Ports RunnerTests.malformedKeysDontRegister: what isn't a P-256 public key (X9.63, base64) is
@@ -705,7 +769,7 @@ fn malformed_keys_dont_register() {
     use base64::Engine as _;
     let folder = Folder::new("badkeys");
     let (obid, _) = obid(&folder);
-    std::fs::write(obid.home.join("pairing"), "").unwrap();
+    std::fs::write(obid.home.join("pairing"), device_key(1)).unwrap();
     let raw = base64::engine::general_purpose::STANDARD
         .decode(device_key(1))
         .unwrap();

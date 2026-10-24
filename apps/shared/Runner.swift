@@ -1503,12 +1503,24 @@ nonisolated struct Runner: Sendable {
     }
     #endif
 
+    /// Registers a device's publishing key (docs/runner-api.md, "POST /v1/devices"): a key the
+    /// runner doesn't know needs the owner's presence (a paired phone's own pairing, or the runner's
+    /// pairing naming it), else 403.
     func register(name: String, publicKey: Data) async throws -> String {
         struct Body: Encodable { var name: String; var publicKey: String }
         struct Answer: Decodable { var id: String }
         let answer: Answer = try await call("POST", "v1/devices", body: Body(name: name, publicKey: publicKey.base64EncodedString()))
         return answer.id
     }
+
+    #if os(iOS) || os(macOS)
+    /// Forgets device `id`'s publishing key, with a registered key's signature for it ("DELETE /v1/devices/{id}").
+    func revokeDevice(_ id: String, approval: Approval) async throws {
+        struct Body: Encodable { var approval: Approval }
+        struct Answer: Decodable { var revoked: String }
+        let _: Answer = try await call("DELETE", "v1/devices/\(id)", body: Body(approval: approval))
+    }
+    #endif
 
     #if os(macOS)
     /// The next check for this Mac to run, now this Mac's, or nil when none waits: merge checks,

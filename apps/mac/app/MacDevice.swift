@@ -15,6 +15,9 @@ nonisolated protocol PublishingKey: Sendable {
     func approveConnection(action: String, device: String) async throws -> Approval
     /// The same for the owner's Confirm of an inbox item, its title the reason (`Approval.confirmMessage`, #776).
     func approveConfirm(item: String, title: String, device: String) async throws -> Approval
+    /// The same for revoking device `device`, the key this one replaced; this key is device `signer`
+    /// (`Approval.revokeMessage`).
+    func approveRevoke(device: String, signer: String) async throws -> Approval
 }
 
 /// The Mac's Secure Enclave key, behind Touch ID or the Mac's password.
@@ -55,6 +58,12 @@ nonisolated struct TouchIDKey: PublishingKey {
         }
     }
 
+    func approveRevoke(device: String, signer: String) async throws -> Approval {
+        try await asked(MacDevice.revoking, refused: RunnerError(message: "This Mac's old publishing key wasn't removed: it wasn't approved on this Mac.")) {
+            try DeviceKey.approveRevoke(device: device, signer: signer, context: $0)
+        }
+    }
+
     /// Asks first, so a cancel throws `refused`; the key then signs with that same answer, without asking again.
     private func asked(_ action: String, refused: some Error,
                        sign: @escaping @Sendable (LAContext) throws -> Approval) async throws -> Approval {
@@ -76,9 +85,11 @@ nonisolated struct TouchIDKey: PublishingKey {
 }
 
 /// This Mac's publishing key with the runner (docs/runner-api.md, "POST /v1/devices"): a second key
-/// to the same door as the iPhone's. It registers on every connection; a new key needs pairing open
-/// on the runner, and until then Settings › Runner says the runner's one line, with Try again.
-/// With it, a runner's job publishes from here, after Touch ID or the Mac's password.
+/// to the same door as the iPhone's. It registers on every connection, which never adds a key the
+/// runner doesn't know. A new key goes in only on the owner's click (`id(enrolling:)`: the first
+/// Publish, Confirm or Disconnect, or Settings' Try again): on the runner on this Mac, Oby names it
+/// in the runner's pairing; another runner's 403 line says how its owner does, in Settings ›
+/// Runner, with Try again. With it, a runner's job publishes from here.
 @Observable
 final class MacDevice {
     nonisolated enum State: Equatable, Sendable {
@@ -124,26 +135,44 @@ final class MacDevice {
         }
     }
 
+    /// The runner's pairing file when the runner is on this Mac (`$OBY_HOME/pairing`, RunnerFeed
+    /// sets it): Oby names a new key there on the owner's click. Nil for another runner, whose
+    /// owner names it there by hand.
+    var pairing: URL?
+
     /// The id the runner gave this Mac's key, by the runner's address, as the iPhone keeps it.
     func id(on runner: Runner) -> String? { defaults.string(forKey: Self.idKey(runner)) }
 
     /// Another runner: what the last one said doesn't hold there.
     func reset() { state = .unregistered }
 
-    /// Registers the key and returns its id. On every connection it registers `again`: the runner
-    /// keeps a known key's id, and a reinstalled runner learns it anew. A 403 (pairing closed) is
-    /// kept for Settings to show, and thrown too.
+    /// Registers the key and returns its id, on every connection: the runner keeps a known key's
+    /// id, and a reinstalled runner learns it anew. A key the runner doesn't know (403) isn't added
+    /// here, where nobody clicked: the runner on this Mac waits for the first Publish, Confirm or
+    /// Disconnect (`id(enrolling:)`); another runner's line is kept for Settings to show. The 403
+    /// is thrown too.
     @discardableResult
-    func register(with runner: Runner, again: Bool = true) async throws -> String {
-        if !again, let id = id(on: runner) { return id }
+    func register(with runner: Runner) async throws -> String {
+        try await registering(on: runner) { try await runner.register(name: name, publicKey: try key.publicKey()) }
+    }
+
+    /// The id to sign with, on the owner's click: the one kept, else this Mac's key registered now,
+    /// and added to the runner when it doesn't know it (`enroll`). Settings' Try again too.
+    func id(enrolling runner: Runner) async throws -> String {
+        if let id = id(on: runner) { return id }
+        return try await registering(on: runner) { try await enroll(with: runner) }
+    }
+
+    private func registering(on runner: Runner, _ register: () async throws -> String) async throws -> String {
         guard key.isAvailable else { throw RunnerError(message: Self.noKey) }
         do {
-            let id = try await runner.register(name: name, publicKey: try key.publicKey())
+            let id = try await register()
             defaults.set(id, forKey: Self.idKey(runner))
             state = .registered
             return id
         } catch let error as RunnerError where error.status == 403 {
-            state = .needsPairing(error.message)
+            defaults.removeObject(forKey: Self.idKey(runner))
+            state = pairing == nil ? .needsPairing(error.message) : .unregistered
             throw error
         } catch {
             state = .failed(error.localizedDescription)
@@ -151,11 +180,37 @@ final class MacDevice {
         }
     }
 
+    /// Adds this Mac's key to a runner, after the owner's click. A key it knows, or one its owner
+    /// named in its pairing by hand, registers as it is. Else, on the runner on this Mac, Oby names
+    /// this key in its pairing, which the runner uses up at once (and Oby removes, whatever
+    /// happened); the key it replaced (`replacedKey`, #1375) is then revoked, signed by this one.
+    private func enroll(with runner: Runner) async throws -> String {
+        let publicKey = try key.publicKey()
+        do {
+            return try await runner.register(name: name, publicKey: publicKey)
+        } catch let refused as RunnerError where refused.status == 403 {
+            guard let pairing else { throw refused }
+            defer { try? FileManager.default.removeItem(at: pairing) }
+            try RunnerLoginItem.writePrivately(Data(publicKey.base64EncodedString().utf8), to: pairing)
+            let id = try await runner.register(name: name, publicKey: publicKey)
+            if let old = defaults.string(forKey: Self.replacedKey(runner)), old != id {
+                defaults.removeObject(forKey: Self.replacedKey(runner))
+                do { try await runner.revokeDevice(old, approval: try await key.approveRevoke(device: old, signer: id)) } catch {
+                    Logger.feed.error("revoking this Mac's old publishing key failed: \(error.localizedDescription, privacy: .public)")
+                }
+            }
+            return id
+        }
+    }
+
+    /// What the prompt says when this Mac's new key revokes the one it replaced.
+    nonisolated static let revoking = "Remove this Mac's old publishing key."
+
     /// Publishes a runner's job with exactly `action`, the runner's own sentence the user saw:
     /// Touch ID or the password signs it, then the runner checks the signature and pushes. A cancel
     /// throws before anything is sent.
     func publish(_ job: String, action: String, with runner: Runner) async throws -> URL {
-        let device = try await register(with: runner, again: false)
+        let device = try await id(enrolling: runner)
         let approval = try await key.approve(job: job, action: action, device: device)
         return try await runner.publish(job, approval: approval)
     }
@@ -165,7 +220,7 @@ final class MacDevice {
     /// The `oby-connection` signature also approves adding a connection, so this Mac signs only
     /// the sentence that removes this one (`removal`): anything else is refused, unsigned.
     func disconnect(_ name: String, with runner: Runner) async throws {
-        let device = try await register(with: runner, again: false)
+        let device = try await id(enrolling: runner)
         let action = try await runner.disconnectAction(name)
         guard action == Self.removal(name) else {
             throw RunnerError(message: "The runner asked this Mac to approve something other than disconnecting \(name), so nothing was signed.")
@@ -179,7 +234,7 @@ final class MacDevice {
     /// `ConfirmCancelled` before anything is sent; a Mac with no Secure Enclave can't confirm.
     func confirm(_ item: String, title: String, with runner: Runner) async throws -> InboxItem {
         guard key.isAvailable else { throw RunnerError(message: Self.noKey) }
-        let device = try await register(with: runner, again: false)
+        let device = try await id(enrolling: runner)
         let approval = try await key.approveConfirm(item: item, title: title, device: device)
         return try await runner.settle(item, answer: "Confirm", approval: approval)
     }
@@ -194,6 +249,8 @@ final class MacDevice {
     /// The id of the key that takes Touch ID or the password: a Touch ID-only key's, kept as
     /// `device.<host>` until 2026-10-23, doesn't sign any more, so that Mac registers its new key once.
     private static func idKey(_ runner: Runner) -> String { "device.presence.\(runner.base.host() ?? runner.base.absoluteString)" }
+    /// The id of the key `idKey`'s replaced, revoked once the new one is added (`enroll`).
+    private static func replacedKey(_ runner: Runner) -> String { "device.\(runner.base.host() ?? runner.base.absoluteString)" }
 }
 
 /// Touch ID or the password was cancelled on a Confirm: nothing was signed or sent, and the card stays as it was.

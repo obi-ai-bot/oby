@@ -76,6 +76,9 @@ do {
             say("checks-next \(await answered { _ = try await runner.nextCheck(mac: "Test Mac") })")
             // A P-256 key as DeviceKey.publicKey() gives it (X9.63), made here: no Secure Enclave.
             let deviceKey = P256.Signing.PrivateKey().publicKey.x963Representation
+            // MacDevice.enroll: a key obid doesn't know yet is named in its pairing file first,
+            // as the app names it on the owner's click.
+            try? Data(deviceKey.base64EncodedString().utf8).write(to: URL(filePath: environment["OBID_HOME"] ?? "").appending(path: "pairing"))
             say("devices \(await answered { _ = try await runner.register(name: "Test Mac", publicKey: deviceKey) })")
             // Clear done, from the window.
             let cleared = try await runner.clear()

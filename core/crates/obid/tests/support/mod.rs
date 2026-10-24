@@ -406,7 +406,8 @@ pub fn confirm_approval_at(obid: &Obid, item: &str, at: i64) -> Value {
         Err(_) => {
             let public = base64::engine::general_purpose::STANDARD
                 .encode(secret.public_key().to_encoded_point(false).as_bytes());
-            std::fs::write(obid.home.join("pairing"), "").unwrap();
+            // The owner's Mac app names its key in pairing (crate::devices).
+            std::fs::write(obid.home.join("pairing"), &public).unwrap();
             let registered = call(
                 obid,
                 "POST",

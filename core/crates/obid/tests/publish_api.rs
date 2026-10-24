@@ -580,8 +580,8 @@ fn publishing_by_hand_needs_a_devices_fresh_signature() {
     assert_eq!(answer.status, 200, "{}", answer.text);
     assert_eq!(answer.body, json!({"action": sentence, "base": "main"}));
 
-    std::fs::write(obid.home.join("pairing"), "").unwrap();
     let (key, public) = device(5);
+    std::fs::write(obid.home.join("pairing"), &public).unwrap();
     let (stranger, _) = device(6);
     let registered = call(
         &obid,
@@ -1162,8 +1162,8 @@ fn a_hand_publish_is_for_the_run_that_was_approved() {
     );
     assert!(ended(&obid, &ran)["publishError"].is_string());
     assert!(ended(&obid, &held)["publishError"].is_string());
-    std::fs::write(obid.home.join("pairing"), "").unwrap();
     let (key, public) = device(9);
+    std::fs::write(obid.home.join("pairing"), &public).unwrap();
     let device_id = call(
         &obid,
         "POST",

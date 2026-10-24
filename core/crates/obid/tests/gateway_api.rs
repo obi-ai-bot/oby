@@ -571,6 +571,54 @@ fn revoking_a_device_drops_its_push_token() {
     assert_eq!(kept, json!([]));
 }
 
+/// A paired phone's publishing key comes with its pairing (docs/runner-api.md, `POST /v1/devices`):
+/// one key per pairing, through the gateway; no other with the same token (a lost phone's token
+/// adds none, and the Mac's open pairing isn't the phone's); revoking the pairing forgets it.
+#[test]
+fn a_paired_phone_registers_one_key_of_its_own() {
+    use base64::Engine as _;
+    use p256::elliptic_curve::sec1::ToEncodedPoint;
+    let folder = Folder::new("gateway-phone-key");
+    let obid = started(&folder);
+    let key = |scalar: u8| {
+        let secret = p256::SecretKey::from_slice(&[scalar; 32]).unwrap();
+        base64::engine::general_purpose::STANDARD
+            .encode(secret.public_key().to_encoded_point(false).as_bytes())
+    };
+    let register = |token: &str, public: &str| {
+        through(
+            &obid,
+            Some(token),
+            "POST",
+            "/v1/devices",
+            Some(&json!({"name": "iPhone", "publicKey": public})),
+        )
+    };
+    let phone = paired(&obid);
+    let first = register(&phone, &key(1));
+    assert_eq!(first.status, 200, "{}", first.text);
+    let id = first.body["id"].clone();
+    assert_eq!(register(&phone, &key(1)).body, json!({"id": id}), "its own key, again");
+    let pairing = obid.home.join("pairing");
+    std::fs::write(&pairing, key(2)).unwrap();
+    let second = register(&phone, &key(2));
+    assert_eq!(second.status, 403, "{}", second.text);
+    assert!(pairing.exists(), "a phone's request never uses the Mac's pairing");
+    std::fs::remove_file(&pairing).unwrap();
+
+    // Paired again, the phone registers the key of its new pairing.
+    let again = paired(&obid);
+    assert_eq!(register(&again, &key(2)).status, 200);
+    let lost = call(&obid, "GET", "/v1/pairing/devices", None).body[0]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let revoked = call(&obid, "DELETE", &format!("/v1/pairing/devices/{lost}"), None);
+    assert_eq!(revoked.status, 204, "{}", revoked.text);
+    let kept = std::fs::read_to_string(obid.home.join("devices.json")).unwrap();
+    assert!(!kept.contains(&key(1)) && kept.contains(&key(2)), "{kept}");
+}
+
 /// An iPhone's registration with Deskree's push relay is kept with the paired device that handed
 /// it over, its push key out of obid's log, and goes when the device is revoked.
 #[test]

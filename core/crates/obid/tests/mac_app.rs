@@ -187,8 +187,6 @@ fn the_mac_app_follows_obid_and_lists_its_jobs() {
         std::thread::sleep(Duration::from_millis(20));
     }
 
-    // The owner opens pairing on obid's machine, so the Mac's key registers (POST /v1/devices).
-    std::fs::write(obid.home.join("pairing"), "").unwrap();
     let mut child = Command::new(&client)
         .env("OBID_URL", format!("http://127.0.0.1:{}", obid.port))
         .env("OBID_HOME", &obid.home)
@@ -220,8 +218,8 @@ fn the_mac_app_follows_obid_and_lists_its_jobs() {
         next(&lines, "job ", 30, &mut seen),
         format!("job {id} done heading=Job progress screen")
     );
-    // The Mac's merge checks (none waits on obid) and its publishing key, registered while
-    // pairing is open.
+    // The Mac's merge checks (none waits on obid) and its publishing key, registered with
+    // pairing naming it, as the app names it on the owner's click.
     assert_eq!(
         next(&lines, "checks-next ", 30, &mut seen),
         "checks-next 200"
