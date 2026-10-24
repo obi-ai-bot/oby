@@ -413,15 +413,16 @@ fn owned<'a>(
 /// checked, and deletes the job's own branch. Its files go in `home/tmp/merge-<job id>`, removed
 /// after. `reviewer`: the reviewer account signed in now (`github_login::reviewer`), read with
 /// every one used ([`reviewers`]); when those can't be read, nothing merges. `go` is asked right
-/// before the merge is sent: whether the job is still as it was, its answer saved (the caller
-/// keeps `Job::sending` there), and nothing is sent on a no.
+/// before the merge is sent (`merge`) and before its branch is deleted (`branchDelete`): whether
+/// the job is still as it was, its answer saved (the caller keeps a mark in `Job::sending`
+/// there), and nothing is sent on a no.
 pub async fn merge(
     gh: &Path,
     home: &Path,
     job: &Job,
     workflow: &Workflow,
     reviewer: Option<&str>,
-    go: &(dyn Fn() -> bool + Sync),
+    go: &(dyn Fn(&str) -> bool + Sync),
 ) -> Result<Merged, Blocked> {
     if job.id.is_empty() || !job.id.bytes().all(|b| b.is_ascii_alphanumeric()) {
         return Err(needs_you("Not merged: that isn't one of Oby's jobs."));
@@ -431,8 +432,6 @@ pub async fn merge(
         wait("Not merged yet: Oby couldn't tell who its reviewer accounts are.")
     })?;
     // One merge of a job at a time: the follower's and the owner's tap never race.
-    static MERGING: std::sync::Mutex<BTreeSet<std::path::PathBuf>> =
-        std::sync::Mutex::new(BTreeSet::new());
     let busy = || MERGING.lock().unwrap_or_else(|e| e.into_inner());
     let scratch = home.join("tmp").join(format!("merge-{}", job.id));
     if !busy().insert(scratch.clone()) {
@@ -444,13 +443,25 @@ pub async fn merge(
     merged
 }
 
+/// The jobs being merged now, by their folder (`home/tmp/merge-<job id>`).
+static MERGING: std::sync::Mutex<BTreeSet<std::path::PathBuf>> =
+    std::sync::Mutex::new(BTreeSet::new());
+
+/// Whether the job `id` of `home` is being merged now.
+pub fn merging_now(home: &Path, id: &str) -> bool {
+    MERGING
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .contains(&home.join("tmp").join(format!("merge-{id}")))
+}
+
 async fn merging(
     gh: &Path,
     job: &Job,
     workflow: &Workflow,
     reviewers: &Reviewers,
     scratch: &Path,
-    go: &(dyn Fn() -> bool + Sync),
+    go: &(dyn Fn(&str) -> bool + Sync),
 ) -> Result<Merged, Blocked> {
     let repo = job.repo.as_str();
     let url = job.published.as_deref().unwrap_or_default();
@@ -552,7 +563,7 @@ async fn merging(
     // A change request made while Oby wrote and scanned its words stops it too.
     merging.reviews = github::reviews(gh, repo, number).await.map_err(unread)?;
     ready(job, Some(workflow), &pr, &merging, Some(reviewers))?;
-    if !go() {
+    if !go("merge") {
         return Err(wait(
             "Not merged yet: the job changed while Oby got it ready to merge.",
         ));
@@ -607,15 +618,11 @@ async fn merging(
     }
     let mut outgoing = vec![Outgoing::new("merge", repo, url, Some(&pr.base))];
     // Merged already: a branch left over isn't a failed merge.
-    let branch = format!("repos/{repo}/git/refs/heads/{}", pull.head_ref);
-    match github::run(gh, &["api", "-X", "DELETE", &branch]).await {
-        Ok(_) => outgoing.push(Outgoing::new(
-            "branchDelete",
-            repo,
-            &pull.head_ref,
-            Some(&pull.head_ref),
-        )),
-        Err(e) => tracing::warn!("merge: {repo}#{number} merged, but its branch stays: {e}"),
+    if go("branchDelete") {
+        match delete_branch(gh, job).await {
+            Ok(sent) => outgoing.push(sent),
+            Err(e) => tracing::warn!("merge: {repo}#{number} merged, but its branch stays: {e}"),
+        }
     }
     Ok(Merged {
         method: workflow.method,
@@ -623,10 +630,55 @@ async fn merging(
     })
 }
 
+/// Deletes the job's own `oby/` branch, merged (`DELETE …/git/refs/heads/<branch>`), never
+/// another: what went out. One gone already counts as deleted.
+pub async fn delete_branch(gh: &Path, job: &Job) -> Result<Outgoing, String> {
+    if !own_branch(job, &job.branch) || !github::is_repo(&job.repo) {
+        return Err("it isn't the job's own branch".into());
+    }
+    let path = format!("repos/{}/git/refs/heads/{}", job.repo, job.branch);
+    match github::run(gh, &["api", "-X", "DELETE", &path]).await {
+        Ok(_) => {}
+        Err(said) if said.contains("Reference does not exist") => {}
+        Err(said) => return Err(said),
+    }
+    Ok(Outgoing::new(
+        "branchDelete",
+        &job.repo,
+        &job.branch,
+        Some(&job.branch),
+    ))
+}
+
+/// Keeps `mark` on the job (`Job::sending`): one per kind, a new one in place of the one before.
+pub fn mark(job: &mut Job, mark: crate::job::Sending) {
+    job.sending.retain(|s| s.action != mark.action);
+    job.sending.push(mark);
+}
+
+/// Takes the job's mark of `action` off, if it has one.
+pub fn unmark(job: &mut Job, action: &str) -> Option<crate::job::Sending> {
+    let at = job.sending.iter().position(|s| s.action == action)?;
+    Some(job.sending.remove(at))
+}
+
+/// Whether the approval `mark` went out: its reviewer account's latest review of its head, in
+/// `reviews`, approves it.
+pub fn approval_seen(mark: &crate::job::Sending, reviews: &[Review]) -> bool {
+    mark.login.as_deref().is_some_and(|login| {
+        reviews.iter().any(|r| {
+            r.login.eq_ignore_ascii_case(login)
+                && r.state == "APPROVED"
+                && r.commit.as_deref() == Some(mark.head.as_str())
+        })
+    })
+}
+
 /// What a merge came to, kept on the job: what went out and who had it merged; or, when it
 /// didn't merge, `mergeError` and `mergeNeedsYou` only where the owner takes it from here.
 pub fn note(job: &mut Job, outcome: &Result<Merged, Blocked>, by: MergedBy) {
-    job.sending = None;
+    unmark(job, "merge");
+    unmark(job, "branchDelete");
     match outcome {
         Ok(merged) => {
             job.outgoing.extend(merged.outgoing.iter().cloned());
@@ -700,17 +752,30 @@ pub fn approved_by_another(pr: &PullRequest, merging: &Merging, reviewers: &Revi
 }
 
 /// The job's pull request was merged or closed (`pr`): nothing waits on the owner about merging it
-/// any more. A merge obid sent before a restart is listed and keeps who had it merged; one merged
-/// any other way is `mergedBy` `github`.
-pub fn closed(job: &mut Job, pr: &PullRequest) {
-    let sending = job.sending.take();
+/// any more. What obid was sending before a restart is settled: an approval it finds in `reviews`
+/// (when they read) is listed; a merge is listed and keeps who had it merged (one merged any
+/// other way is `mergedBy` `github`); the branch's deletion is left for the caller, who can try
+/// it again ([`delete_branch`]).
+pub fn closed(job: &mut Job, pr: &PullRequest, reviews: Option<&[Review]>) {
+    if let Some(approval) = unmark(job, "pullRequestApproval")
+        && reviews.is_some_and(|r| approval_seen(&approval, r))
+    {
+        job.outgoing.push(Outgoing::new(
+            "pullRequestApproval",
+            &job.repo,
+            job.published.as_deref().unwrap_or_default(),
+            None,
+        ));
+    }
+    let sending = unmark(job, "merge");
     job.merge_needs_you = false;
     job.merge_error = None;
     if pr.state != "MERGED" || job.merged_by.is_some() {
+        unmark(job, "branchDelete");
         return;
     }
     let at = pr.merged_at.unwrap_or_else(obi_protocol::time::now);
-    let ours = sending.filter(|s| s.action == "merge" && pr.head.as_deref() == Some(&s.head));
+    let ours = sending.filter(|s| pr.head.as_deref() == Some(&s.head));
     job.merged_by = Some(match ours.and_then(|s| s.by) {
         Some(by) => {
             job.outgoing.push(Outgoing::new(
@@ -1738,7 +1803,7 @@ esac
                 job,
                 workflow,
                 Some(REVIEWER),
-                &|| true,
+                &|_| true,
             )
             .await
         }
@@ -2097,7 +2162,7 @@ esac
             Approved::NotNow
         );
         assert!(!gh.calls().contains("-X POST"));
-        let blocked = merge(&ghp, &gh.dir, &job, &obis(), Some(REVIEWER), &stop)
+        let blocked = merge(&ghp, &gh.dir, &job, &obis(), Some(REVIEWER), &|_| false)
             .await
             .unwrap_err();
         assert!(!blocked.needs_you, "{}", blocked.why);

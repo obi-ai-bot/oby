@@ -455,23 +455,26 @@ pub struct Job {
     /// Who had obid merge its pull request, and when; none until obid merged it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub merged_by: Option<MergedBy>,
-    /// What obid is sending for its merge (crate::merge), saved before it's sent and cleared once
-    /// obid knows how it went: a restart in between reads GitHub to settle it. Never in the API's
-    /// job.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub sending: Option<Sending>,
+    /// What obid is sending for its merge (crate::merge), one mark per kind (an approval, the
+    /// merge, the branch's deletion), saved before it's sent and cleared once obid knows how it
+    /// went: a restart in between reads GitHub to settle each. Never in the API's job.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sending: Vec<Sending>,
 }
 
 /// Something obid sends for a job's merge, kept until it knows how it went (`Job::sending`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Sending {
-    /// `pullRequestApproval` or `merge`.
+    /// `pullRequestApproval`, `merge` or `branchDelete`.
     pub action: String,
     /// The head it's about.
     pub head: String,
     /// For a merge: who had it merged.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub by: Option<MergedBy>,
+    /// For an approval: the reviewer account's login it goes as.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub login: Option<String>,
 }
 
 /// Who had obid merge a job's pull request (crate::merge): the owner, with a tap, or the
@@ -673,7 +676,7 @@ impl Job {
             merge_error: None,
             merge_needs_you: false,
             merged_by: None,
-            sending: None,
+            sending: Vec::new(),
         }
     }
 

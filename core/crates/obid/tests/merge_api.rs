@@ -19,7 +19,8 @@ fn head() -> String {
 
 /// A stand-in gh that records every call: the owner is `octo-cat`, the reviewer (with
 /// `GH_CONFIG_DIR`) `oby-reviewer`; the pull request is open, green and clean into dev at
-/// `head()` (merged on GitHub once `gh/merged-on-github` is there); its reviews are the
+/// `head()` (merged on GitHub once `gh/merged-on-github` is there, still working out whether it
+/// merges while `gh/unknown` is); its reviews are the
 /// reviewer's approval once it posted one (`gh/approved`), someone's dismissal of it
 /// (`gh/dismissed`) and a person's approval (`gh/person`); the merge goes through.
 fn stand_in_gh(folder: &Path) -> PathBuf {
@@ -35,6 +36,10 @@ fn stand_in_gh(folder: &Path) -> PathBuf {
         "statusCheckRollup": [{"__typename": "CheckRun", "name": "test", "status": "COMPLETED", "conclusion": "SUCCESS"}],
         "mergeable": "MERGEABLE", "mergeStateStatus": "CLEAN", "author": {"login": "octo-cat"},
     });
+    let mut unknown = view.clone();
+    unknown["mergeable"] = json!("UNKNOWN");
+    unknown["mergeStateStatus"] = json!("UNKNOWN");
+    std::fs::write(state.join("view-unknown.json"), unknown.to_string()).unwrap();
     let mut merged = view.clone();
     merged["state"] = json!("MERGED");
     merged["mergedAt"] = json!("2026-10-24T18:00:00Z");
@@ -75,7 +80,9 @@ case "$*" in
     who=octo-cat; [ -n "$GH_CONFIG_DIR" ] && who=oby-reviewer
     echo '{{"hosts": {{"github.com": [{{"active": true, "state": "success", "login": "'$who'"}}]}}}}' ;;
   "pr view 7 --repo {REPO} --json "*)
-    if [ -f "$dir/merged-on-github" ]; then cat "$dir/view-merged.json"; else cat "$dir/view.json"; fi ;;
+    if [ -f "$dir/merged-on-github" ]; then cat "$dir/view-merged.json";
+    elif [ -f "$dir/unknown" ]; then cat "$dir/view-unknown.json";
+    else cat "$dir/view.json"; fi ;;
   "api --paginate --slurp repos/{REPO}/pulls/7/reviews?per_page=100")
     r=
     [ -f "$dir/approved" ] && r="$(cat "$dir/approval.json")"
@@ -87,7 +94,7 @@ case "$*" in
   "api -X POST repos/{REPO}/pulls/7/reviews "*) touch "$dir/approved"; echo '{{"id": 1}}' ;;
   "api repos/{REPO}/pulls/7") cat "$dir/pull.json" ;;
   "api -X PUT repos/{REPO}/pulls/7/merge "*) touch "$dir/merged"; echo '{{"merged": true}}' ;;
-  "api -X DELETE repos/{REPO}/git/refs/heads/oby/fix-7") exit 0 ;;
+  "api -X DELETE repos/{REPO}/git/refs/heads/oby/fix-7") touch "$dir/deleted"; exit 0 ;;
   *) echo "gh: not in this test" >&2; exit 1 ;;
 esac
 "#,
@@ -483,15 +490,25 @@ fn a_pull_request_merged_on_github_needs_nobody() {
 fn a_restart_between_sending_and_saving_lists_what_went_out() {
     let folder = Folder::new("merge-restart-merge");
     let mut sending = published();
-    sending.sending = Some(obid::job::Sending {
-        action: "merge".into(),
-        head: head(),
-        by: Some(obid::job::MergedBy {
-            by: "memory".into(),
-            memory: Some("m1a2b3c4d".into()),
-            at: 0,
-        }),
-    });
+    sending.sending = vec![
+        obid::job::Sending {
+            action: "merge".into(),
+            head: head(),
+            by: Some(obid::job::MergedBy {
+                by: "memory".into(),
+                memory: Some("m1a2b3c4d".into()),
+                at: 0,
+            }),
+            login: None,
+        },
+        // Its branch was being deleted too: deleted again, listed once.
+        obid::job::Sending {
+            action: "branchDelete".into(),
+            head: head(),
+            by: None,
+            login: None,
+        },
+    ];
     let obid = started_with(
         &folder,
         true,
@@ -504,23 +521,29 @@ fn a_restart_between_sending_and_saving_lists_what_went_out() {
         (job["mergedBy"]["by"] == "memory").then_some(job)
     });
     assert_eq!(merged["mergedBy"]["at"], "2026-10-24T18:00:00Z");
-    let actions: Vec<&str> = merged["outgoing"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter_map(|o| o["action"].as_str())
-        .collect();
-    assert_eq!(actions, ["push", "merge"]);
+    let deleted = within(30, "the branch's deletion to be listed", || {
+        let job = job(&obid);
+        let actions: Vec<String> = job["outgoing"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|o| o["action"].as_str().map(str::to_owned))
+            .collect();
+        (actions.len() == 3).then_some(actions)
+    });
+    assert_eq!(deleted, ["push", "merge", "branchDelete"]);
+    assert!(folder.0.join("gh/deleted").exists());
     assert!(!calls(&folder.0).contains("-X PUT"));
     drop(obid);
 
     let folder = Folder::new("merge-restart-approval");
     let mut sending = published();
-    sending.sending = Some(obid::job::Sending {
+    sending.sending = vec![obid::job::Sending {
         action: "pullRequestApproval".into(),
         head: head(),
         by: None,
-    });
+        login: Some("oby-reviewer".into()),
+    }];
     let obid = started_with(&folder, true, None, sending, &["approved"]);
     let listed = within(30, "the approval to be listed", || {
         let job = job(&obid);
@@ -543,5 +566,97 @@ fn a_restart_between_sending_and_saving_lists_what_went_out() {
         [json!("push"), json!("pullRequestApproval")],
         "{listed}"
     );
+    assert!(!calls(&folder.0).contains("-X POST"));
+}
+
+/// A "Ready to merge?" card the follower settled by itself, while GitHub worked out whether it
+/// merges, is offered again once it does: only the owner's own answer leaves it.
+#[test]
+fn a_ready_card_comes_back_when_the_pull_request_is_ready_again() {
+    let folder = Folder::new("merge-card-back");
+    let obid = started_with(&folder, true, None, published(), &[]);
+    let open = |obid: &Obid| {
+        merge_cards(obid)
+            .into_iter()
+            .find(|c| c["id"] == format!("merge-ready-{ID}-{}", head()) && c["done"].is_null())
+    };
+    within(30, "the ready card", || open(&obid));
+    std::fs::write(folder.0.join("gh/unknown"), "").unwrap();
+    within(30, "the card to be settled", || {
+        (open(&obid).is_none() && job(&obid)["mergeNeedsYou"] == false).then_some(())
+    });
+    std::fs::remove_file(folder.0.join("gh/unknown")).unwrap();
+    let back = within(30, "the card to come back", || open(&obid));
+    assert_eq!(back["title"], "Ready to merge: Fix the thing");
+    assert_eq!(job(&obid)["mergeNeedsYou"], true);
+    // Left open by the owner: not offered again, and nothing waits on them.
+    let left = call(
+        &obid,
+        "POST",
+        &format!("/v1/inbox/{}/answer", back["id"].as_str().unwrap()),
+        Some(&json!({"answer": "Leave it open"})),
+    );
+    assert_eq!(left.status, 200, "{}", left.text);
+    std::thread::sleep(std::time::Duration::from_secs(3));
+    assert!(open(&obid).is_none());
+    assert_eq!(job(&obid)["mergeNeedsYou"], false);
+    assert!(!calls(&folder.0).contains("-X PUT"));
+}
+
+/// The owner's Dismiss of a card saying why holds for that reason and head: nothing waits on
+/// them, and the card isn't raised again.
+#[test]
+fn a_dismissed_reason_card_stays_dismissed() {
+    let folder = Folder::new("merge-reason-dismissed");
+    let obid = started(&folder, false, Some(OBIS));
+    let card = within(30, "the sign-in card", || {
+        merge_cards(&obid).into_iter().next()
+    });
+    let dismissed = call(
+        &obid,
+        "POST",
+        &format!("/v1/inbox/{}/answer", card["id"].as_str().unwrap()),
+        Some(&json!({"done": true})),
+    );
+    assert_eq!(dismissed.status, 200, "{}", dismissed.text);
+    assert_eq!(dismissed.body["answer"], "Dismiss");
+    within(30, "nothing to wait on the owner", || {
+        (job(&obid)["mergeNeedsYou"] == false).then_some(())
+    });
+    std::thread::sleep(std::time::Duration::from_secs(3));
+    assert!(merge_cards(&obid).iter().all(|c| !c["done"].is_null()));
+    assert_eq!(job(&obid)["mergeNeedsYou"], false);
+}
+
+/// An approval obid sent right before it stopped, on a pull request merged before it started
+/// again, is listed: the mark is settled from GitHub, not dropped.
+#[test]
+fn an_approval_sent_before_the_pull_request_merged_is_listed() {
+    let folder = Folder::new("merge-restart-merged-approval");
+    let mut sending = published();
+    sending.sending = vec![obid::job::Sending {
+        action: "pullRequestApproval".into(),
+        head: head(),
+        by: None,
+        login: Some("oby-reviewer".into()),
+    }];
+    let obid = started_with(
+        &folder,
+        true,
+        None,
+        sending,
+        &["approved", "merged-on-github"],
+    );
+    let merged = within(30, "the job to see it merged", || {
+        let job = job(&obid);
+        (job["mergedBy"]["by"] == "github").then_some(job)
+    });
+    let actions: Vec<&str> = merged["outgoing"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|o| o["action"].as_str())
+        .collect();
+    assert_eq!(actions, ["push", "pullRequestApproval"]);
     assert!(!calls(&folder.0).contains("-X POST"));
 }

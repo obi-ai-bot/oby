@@ -959,9 +959,10 @@ impl Link {
         }
     }
 
-    /// The job `job`'s merge card now (crate::merge): `card`, added unless it was in the inbox
-    /// before (open, or answered: the owner isn't asked again about that head), and every other
-    /// open `merge` item of the job done, with no answer: what it asked about is gone.
+    /// The job `job`'s merge card now (crate::merge): `card`, added unless the owner answered it
+    /// before (they aren't asked again about that head and reason); one the follower settled by
+    /// itself is offered again. Every other open `merge` item of the job is done, with no answer:
+    /// what it asked about is gone, for now.
     pub fn merge_items(&self, job: &str, card: Option<Item>) {
         let keep = card.as_ref().map(|c| c.id.clone());
         let stale: Vec<String> = self
@@ -980,7 +981,17 @@ impl Link {
             self.settle(&id);
         }
         if let Some(card) = card {
-            self.add_items(vec![card]);
+            let settled = self
+                .lock()
+                .inbox
+                .get(&card.id)
+                .is_some_and(|i| i.done.is_some() && i.answer.is_none());
+            if settled {
+                self.lock().inbox.insert(card.id.clone(), card.clone());
+                self.save_item(&card);
+            } else {
+                self.add_items(vec![card]);
+            }
         }
     }
 
@@ -1052,7 +1063,9 @@ impl Link {
             }
         }
         item.done = Some(time::now());
-        item.answer = answer;
+        // The owner's own done is the card's way of leaving it (Leave it open, Dismiss): an
+        // answered card isn't offered again, as one the follower settled is.
+        item.answer = answer.or_else(|| item.options.last().cloned());
         self.lock().inbox.insert(item.id.clone(), item.clone());
         self.save_item(&item);
         Ok(item.to_json())

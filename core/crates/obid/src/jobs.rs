@@ -7655,7 +7655,8 @@ impl Jobs {
                         // Merged or closed: nothing waits on the owner about merging it any more.
                         closed = !pull_request.is_open();
                         if closed {
-                            crate::merge::closed(job, &pull_request);
+                            let reviews = merging.as_ref().ok().map(|m| m.reviews.as_slice());
+                            crate::merge::closed(job, &pull_request, reviews);
                         }
                         job.pull_request = Some(pull_request.clone());
                         job.pull_request_error = None;
@@ -7668,6 +7669,20 @@ impl Jobs {
             if closed {
                 if let Some(link) = self.link.get().and_then(std::sync::Weak::upgrade) {
                     link.merge_items(&job.id, None);
+                }
+                // A branch obid was deleting when it stopped: deleted again (one gone counts).
+                let deleting = self
+                    .get(&job.id)
+                    .filter(|j| j.merged() && j.sending.iter().any(|s| s.action == "branchDelete"));
+                if let (Some(gh), Some(merged)) = (&gh, deleting) {
+                    let deleted = crate::merge::delete_branch(gh, &merged).await;
+                    self.update(&job.id, |job| {
+                        crate::merge::unmark(job, "branchDelete");
+                        match deleted {
+                            Ok(sent) => job.outgoing.push(sent),
+                            Err(e) => tracing::warn!("job {}: its branch stays: {e}", job.id),
+                        }
+                    });
                 }
             } else if let (Some(gh), Some((pull_request, merging))) = (&gh, carried) {
                 self.carry(&job.id, gh, &pull_request, merging).await;
@@ -7722,7 +7737,7 @@ impl Jobs {
             .as_ref()
             .ok()
             .and_then(|r| crate::merge::reviewers(&home, r.as_ref().map(|(_, l)| l.as_str())).ok());
-        self.settle_sending(id, &head, &merging, reviewers.as_ref());
+        self.settle_sending(id, &merging);
         let learned = crate::memory::workflow(&home, &job.repo);
         let workflow = learned.as_ref().and_then(|m| m.workflow.clone());
         // The reviewer account's approval is what the merge waits on for a `reviewer` workflow,
@@ -7734,16 +7749,14 @@ impl Jobs {
                 .as_ref()
                 .is_some_and(|r| crate::merge::approved_by_another(pr, &merging, r)),
         };
-        let go = || self.about_to_send(id, &head, "pullRequestApproval", None);
+        let login = current.map(|(_, l)| l.clone());
+        let go = || self.about_to_send(id, &head, "pullRequestApproval", None, login.clone());
         let approved =
             crate::merge::approve(gh, &home, &job, &merging, &head, &owner, current, &go).await;
         let stop = match approved {
             crate::merge::Approved::Posted(sent) => {
                 tracing::info!("job {id}: sent {} {} {}", sent.action, sent.repo, sent.id);
-                self.update(id, |job| {
-                    job.sending = None;
-                    job.outgoing.push(sent);
-                });
+                self.update(id, |job| job.outgoing.push(sent));
                 if let Ok(reviews) = crate::github::reviews(gh, &job.repo, number).await {
                     merging.reviews = reviews;
                 }
@@ -7756,88 +7769,88 @@ impl Jobs {
             _ => None,
         };
         self.update(id, |job| {
-            if job
-                .sending
-                .as_ref()
-                .is_some_and(|s| s.action == "pullRequestApproval")
-            {
-                job.sending = None;
-            }
+            crate::merge::unmark(job, "pullRequestApproval");
         });
-        if let Some(why) = stop {
-            self.update(id, |job| {
-                job.merge_error = Some(why.clone());
-                job.merge_needs_you = true;
-            });
-            return cards(Some(crate::merge::stopped_card(&job, &head, &why)));
-        }
         let Some(job) = self.get(id) else { return };
-        let card = match learned
-            .as_ref()
-            .and_then(|m| m.workflow.as_ref().map(|w| (m, w)))
-        {
-            Some((memory, workflow)) => {
-                let by = crate::job::MergedBy {
-                    by: "memory".into(),
-                    memory: Some(memory.id.clone()),
-                    at: obi_protocol::time::now(),
-                };
-                let outcome = match crate::merge::ready(
-                    &job,
-                    Some(workflow),
-                    pr,
-                    &merging,
-                    reviewers.as_ref(),
-                ) {
-                    Ok(()) => {
-                        let go = || self.about_to_send(id, &head, "merge", Some(by.clone()));
-                        crate::merge::merge(
-                            gh,
-                            &home,
-                            &job,
-                            workflow,
-                            current.map(|(_, l)| l.as_str()),
-                            &go,
-                        )
-                        .await
+        let card = if let Some(why) = stop {
+            Some(crate::merge::stopped_card(&job, &head, &why))
+        } else {
+            match learned
+                .as_ref()
+                .and_then(|m| m.workflow.as_ref().map(|w| (m, w)))
+            {
+                Some((memory, workflow)) => {
+                    let by = crate::job::MergedBy {
+                        by: "memory".into(),
+                        memory: Some(memory.id.clone()),
+                        at: obi_protocol::time::now(),
+                    };
+                    let outcome = match crate::merge::ready(
+                        &job,
+                        Some(workflow),
+                        pr,
+                        &merging,
+                        reviewers.as_ref(),
+                    ) {
+                        Ok(()) => {
+                            let go = |action: &str| {
+                                self.about_to_send(id, &head, action, Some(by.clone()), None)
+                            };
+                            crate::merge::merge(
+                                gh,
+                                &home,
+                                &job,
+                                workflow,
+                                current.map(|(_, l)| l.as_str()),
+                                &go,
+                            )
+                            .await
+                        }
+                        Err(blocked) => Err(blocked),
+                    };
+                    if let Ok(merged) = &outcome {
+                        for sent in &merged.outgoing {
+                            tracing::info!(
+                                "job {id}: sent {} {} {}",
+                                sent.action,
+                                sent.repo,
+                                sent.id
+                            );
+                        }
+                        crate::memory::note_used(&home, &memory.id);
                     }
-                    Err(blocked) => Err(blocked),
-                };
-                if let Ok(merged) = &outcome {
-                    for sent in &merged.outgoing {
-                        tracing::info!("job {id}: sent {} {} {}", sent.action, sent.repo, sent.id);
-                    }
-                    crate::memory::note_used(&home, &memory.id);
+                    self.update(id, |job| crate::merge::note(job, &outcome, by));
+                    outcome
+                        .err()
+                        .filter(|b| b.needs_you)
+                        .map(|b| crate::merge::stopped_card(&job, &head, &b.why))
                 }
-                self.update(id, |job| crate::merge::note(job, &outcome, by));
-                outcome
-                    .err()
-                    .filter(|b| b.needs_you)
-                    .map(|b| crate::merge::stopped_card(&job, &head, &b.why))
-            }
-            None => {
-                // Not learned yet: the safe default asks before it merges, once everything else
-                // holds by the workflow its card proposes.
-                let card = reviewers
-                    .as_ref()
-                    .and_then(|r| crate::merge::proposed(pr, &merging, r))
-                    .filter(|w| {
-                        crate::merge::ready(&job, Some(w), pr, &merging, reviewers.as_ref()).is_ok()
-                    })
-                    .map(|w| crate::merge::ready_card(&job, number, &head, &w));
-                // Left open by the owner: not asked again for this head.
-                let left = card.as_ref().is_some_and(|c| {
-                    link.as_ref()
-                        .and_then(|l| l.item(&c.id))
-                        .is_some_and(|i| i.done.is_some())
-                });
-                self.update(id, |job| {
-                    job.merge_needs_you = card.is_some() && !left;
-                    job.merge_error = card.as_ref().filter(|_| !left).map(|c| c.text.clone());
-                });
-                card
+                None => {
+                    // Not learned yet: the safe default asks before it merges, once everything else
+                    // holds by the workflow its card proposes.
+                    reviewers
+                        .as_ref()
+                        .and_then(|r| crate::merge::proposed(pr, &merging, r))
+                        .filter(|w| {
+                            crate::merge::ready(&job, Some(w), pr, &merging, reviewers.as_ref())
+                                .is_ok()
+                        })
+                        .map(|w| crate::merge::ready_card(&job, number, &head, &w))
+                }
             }
         };
+        // What waits on the owner now: the card, unless they answered it already (Leave it open,
+        // Dismiss): then not again for this head and reason. A card the follower settled by
+        // itself (the state went and came back) is offered again.
+        let answered = card.as_ref().is_some_and(|c| {
+            link.as_ref()
+                .and_then(|l| l.item(&c.id))
+                .is_some_and(|i| i.done.is_some() && i.answer.is_some())
+        });
+        self.update(id, |job| {
+            job.merge_needs_you = card.is_some() && !answered;
+            job.merge_error = card.as_ref().filter(|_| !answered).map(|c| c.text.clone());
+        });
         cards(card);
     }
 
@@ -7850,15 +7863,20 @@ impl Jobs {
         head: &str,
         action: &str,
         by: Option<crate::job::MergedBy>,
+        login: Option<String>,
     ) -> bool {
         let mut going = false;
         self.update(id, |job| {
             if carries(job) && job.pushed_head() == Some(head) {
-                job.sending = Some(crate::job::Sending {
-                    action: action.into(),
-                    head: head.into(),
-                    by,
-                });
+                crate::merge::mark(
+                    job,
+                    crate::job::Sending {
+                        action: action.into(),
+                        head: head.into(),
+                        by,
+                        login,
+                    },
+                );
                 going = true;
             }
         });
@@ -7866,35 +7884,26 @@ impl Jobs {
     }
 
     /// What obid was sending for the job `id` when it last stopped, settled from what GitHub
-    /// says now (the pull request is open, at `head`): an approval of a reviewer account's it
-    /// finds there is listed; a merge didn't land, and is tried again as anything is.
-    fn settle_sending(
-        &self,
-        id: &str,
-        head: &str,
-        merging: &crate::github::Merging,
-        reviewers: Option<&crate::merge::Reviewers>,
-    ) {
+    /// says now (the pull request is open): an approval it finds there is listed; a merge (and its
+    /// branch's deletion) didn't land, and is tried again as anything is, unless a merge is under
+    /// way right now (the owner's tap), whose marks stay.
+    fn settle_sending(&self, id: &str, merging: &crate::github::Merging) {
+        let busy = crate::merge::merging_now(&self.config.home, id);
         self.update(id, |job| {
-            let Some(sending) = job.sending.take() else {
-                return;
-            };
-            let posted = sending.action == "pullRequestApproval"
-                && sending.head == head
-                && reviewers.is_some_and(|r| {
-                    merging.reviews.iter().any(|v| {
-                        r.any(&v.login)
-                            && v.state == "APPROVED"
-                            && v.commit.as_deref() == Some(head)
-                    })
-                });
-            if posted && let Some(url) = job.published.clone() {
+            if let Some(approval) = crate::merge::unmark(job, "pullRequestApproval")
+                && crate::merge::approval_seen(&approval, &merging.reviews)
+                && let Some(url) = job.published.clone()
+            {
                 job.outgoing.push(crate::publish::Outgoing::new(
                     "pullRequestApproval",
                     &job.repo,
                     &url,
                     None,
                 ));
+            }
+            if !busy {
+                crate::merge::unmark(job, "merge");
+                crate::merge::unmark(job, "branchDelete");
             }
         });
     }
@@ -7943,7 +7952,7 @@ impl Jobs {
             memory: None,
             at: obi_protocol::time::now(),
         };
-        let go = || self.about_to_send(id, head, "merge", Some(by.clone()));
+        let go = |action: &str| self.about_to_send(id, head, action, Some(by.clone()), None);
         let outcome = crate::merge::merge(&gh, &home, &job, &workflow, login, &go).await;
         self.update(id, |job| crate::merge::note(job, &outcome, by));
         let merged = outcome.map_err(|b| b.why)?;
