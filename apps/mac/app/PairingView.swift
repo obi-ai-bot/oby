@@ -138,6 +138,8 @@ struct PairingView: View {
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
             request.httpBody = try JSONEncoder().encode(Invite(name: name, hostname: route.hostname, url: "https://\(route.hostname)", approval: approval))
             let (data, response) = try await URLSession.shared.data(for: request)
+            // obid's own line when it refuses (an approval that doesn't hold, no Obysphere yet).
+            try Runner.check(response, data)
             guard let http = response as? HTTPURLResponse, http.statusCode == 200 else { throw RunnerError(message: "The runner refused to create a pairing invitation.") }
             invitation = try PairingPayloadDecoder.decodeInvitation(data)
             invited = route
@@ -171,7 +173,8 @@ struct PairingView: View {
     private func revoke(_ device: PairedGatewayDevice) async {
         do {
             let request = try runnerRequest(path: "v1/pairing/devices/\(device.id)", method: "DELETE")
-            let (_, response) = try await URLSession.shared.data(for: request)
+            let (data, response) = try await URLSession.shared.data(for: request)
+            try Runner.check(response, data)
             guard let http = response as? HTTPURLResponse, http.statusCode == 204 else {
                 throw RunnerError(message: "The runner refused to revoke that device.")
             }

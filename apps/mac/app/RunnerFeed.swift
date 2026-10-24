@@ -1062,7 +1062,8 @@ final class RunnerFeed {
     /// Nothing for a job the user dismissed: its alert clears. Done only for a job the owner started:
     /// not Oby's own review, nor a routine's run (`routine`), whose failure still alerts.
     static func notice(for job: Job, routine: Bool = false) -> Notice? {
-        if job.waitsForPermission { return .permission }
+        // The agent's question (#858) alerts as its inbox item, with its options (`Alerts.alerts`).
+        if job.waitsForPermission, job.permission?.isQuestion != true { return .permission }
         if job.waitsForAnswer { return .question }
         guard job.needsYou else {
             return job.status == .done && job.dismissed == nil && job.reviewOf == nil && !routine ? .done : nil

@@ -65,6 +65,22 @@ struct AlertActionTests {
         #expect(Alerts.answer("always", typed: nil, info: info(alert)) == .open(.conversation("c1")))
     }
 
+    /// The agent's question (#858) alerts once, as its inbox item: its options as buttons, typed words
+    /// as its answer. Its job's permission doesn't alert for it too.
+    @Test func theAgentsQuestionAlertsWithItsOptions() {
+        let asked = InboxItem(id: "j-permission-p4", kind: .agentQuestion, job: "j", title: "Answer the agent's question", text: "Which store?",
+                              options: ["SQLite", "Postgres"], created: now)
+        #expect(Alerts.alerts(asked, kind: "agentQuestion", jobAlerts: false, told: [], now: now))
+        let alert = Alerts.alert(for: asked, kind: "agentQuestion", conversation: nil)
+        #expect(alert.category.buttons.map(\.id) == ["option.0", "option.1", "open"] && alert.category.reply == "Your answer…")
+        #expect(Alerts.answer("option.1", typed: nil, info: info(alert)) == .settle(item: "j-permission-p4", answer: "Postgres"))
+        #expect(Alerts.answer(Alerts.replyButton, typed: "DuckDB", info: info(alert)) == .settle(item: "j-permission-p4", answer: "DuckDB"))
+        let question = Permission(id: "p4", tool: "AskUserQuestion", title: "Answer the agent's question (1 of 1)", detail: "Which store?",
+                                  question: .init(question: "Which store?"))
+        #expect(RunnerFeed.notice(for: job(permission: question)) == nil)
+        #expect(RunnerFeed.notice(for: job(permission: Permission(id: "p5", tool: "Bash", title: "Run ls", detail: "ls"))) == .permission)
+    }
+
     /// Allow and Start only for what a collapsed alert shows whole, as plain text: nothing can hide the
     /// end of a command behind the alert's cut, a carriage return, another line break or a bidi override.
     @Test func onlyWhatShowsWholeCanBeAllowed() {

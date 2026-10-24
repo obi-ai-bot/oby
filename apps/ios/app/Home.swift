@@ -112,8 +112,9 @@ struct HomeView: View {
         return phone.active.contains(where: \.isWorking) ? "working" : "idle"
     }
 
-    /// The kinds that wait on the owner's own answer: a permission, a Confirm, a question, a plan, a Start.
-    private static let asks: Set<String> = ["permission", RunnerConfirm.kind, "question", "plan", "start"]
+    /// The kinds that wait on the owner's own answer: a permission, a Confirm, a question (Oby's or
+    /// the agent's, #858), a plan, a Start.
+    private static let asks: Set<String> = ["permission", RunnerConfirm.kind, "question", "agentQuestion", "plan", "start"]
 
     /// Oby, the line under it, and the chips.
     private var stage: some View {

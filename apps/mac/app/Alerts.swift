@@ -124,7 +124,8 @@ enum Alerts {
     /// An inbox item alerts by itself: open, not put off, from the last hour (an older one is a
     /// replay), not told already, and a decision only the owner makes that no job's alert says: a
     /// Confirm, a Start (not a teammate's request, which reads as one), a question (the orchestrator's,
-    /// the supervisor's) unless its job alerts for it (`jobAlerts`), or a permission with no job (the
+    /// the supervisor's) unless its job alerts for it (`jobAlerts`), the agent's question (#858; its
+    /// job doesn't alert for it, `RunnerFeed.notice`), or a permission with no job (the
     /// conversation's shell). A job's own permission alerts as the job.
     static func alerts(_ item: InboxItem, kind: String, jobAlerts: Bool, told: Set<String>, now: Date) -> Bool {
         guard item.waiting(at: now), item.created > now.addingTimeInterval(-3600), !told.contains(item.id) else { return false }
@@ -132,6 +133,7 @@ enum Alerts {
         case RunnerConfirm.kind: return true
         case "start": return item.options.contains(Inbox.start)
         case "question": return !jobAlerts
+        case "agentQuestion": return true
         case "permission": return item.job.isEmpty
         default: return false
         }
@@ -195,6 +197,10 @@ enum Alerts {
         case "question":
             alert.options = Array(item.options.prefix(Plan.Question.mostOptions))
             alert.category = options(alert.options, reply: "Reply to Oby…", prefix: "inbox.question")
+        case "agentQuestion":
+            // The agent's own options, as buttons; typed words are its answer (#858).
+            alert.options = Array(item.options.prefix(Plan.Question.mostOptions))
+            alert.category = options(alert.options, reply: "Your answer…", prefix: "inbox.agentQuestion")
         default: break
         }
         return alert
