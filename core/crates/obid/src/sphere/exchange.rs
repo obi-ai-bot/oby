@@ -94,13 +94,16 @@ impl Exchange {
     }
 
     /// Whether the exchange has ended: a `decline`, `result` or `answer` was sent or received, or
-    /// built and waiting to be sent.
+    /// built and waiting to be sent; or it's `declined` with none (settled here at a revoke, or a
+    /// decline the Sphere refused).
     pub fn ended(&self) -> bool {
-        self.messages
-            .iter()
-            .map(|m| &m.envelope)
-            .chain(self.outbox.iter())
-            .any(|e| obi_protocol::TERMINAL_TYPES.contains(&e["type"].as_str().unwrap_or("")))
+        self.state == "declined"
+            || self
+                .messages
+                .iter()
+                .map(|m| &m.envelope)
+                .chain(self.outbox.iter())
+                .any(|e| obi_protocol::TERMINAL_TYPES.contains(&e["type"].as_str().unwrap_or("")))
     }
 
     /// The envelope ids it holds.
