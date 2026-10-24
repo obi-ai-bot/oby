@@ -458,6 +458,99 @@ struct RelayTests {
         UserDefaults.standard.set(try theirs.encoded(), forKey: "mac.link")
         #expect(Phone().deviceID == nil)
     }
+
+    /// Another Mac with the same hostname (a pasted invitation's) takes nothing of the first: its
+    /// queued messages stay with it, and what this iPhone pushed with is forgotten. The same Mac
+    /// renamed (its relay and key unchanged) keeps both.
+    @Test func anotherRelayedMacTakesNothingOfTheFirst() throws {
+        let first = FakeMac(), other = FakeMac()
+        let mine = MacLink(name: "Studio", hostname: "oby-abcdefghijklmnop.tetrix.pro", relayed: first.link.pinned)
+        let theirs = MacLink(name: "Studio", hostname: mine.hostname, relayed: other.link.pinned)
+        let suite = "relay-tests-\(UUID().uuidString)"
+        let restore = Kept()
+        defer {
+            restore.put()
+            UserDefaults().removePersistentDomain(forName: suite)
+            SealedPush.forgetKey()
+        }
+        try GatewayTokenStore.save("tok-relay")
+        try RelayStore.save(first.link)
+        UserDefaults.standard.set(try mine.encoded(), forKey: "mac.link")
+        let queue = OfflineQueue(defaults: UserDefaults(suiteName: suite)!)
+        queue.queue(OfflineMessage(id: "m1", said: "ship it", question: nil, option: nil, voice: false, target: "mac:\(mine.identity)"))
+        let phone = Phone(offlineQueue: queue)
+        #expect(phone.echoes.map(\.id) == ["m1"])
+        let key = try SealedPush.publicKey()
+        // The same Mac, renamed: still its message, and the same push key.
+        var renamed = mine
+        renamed.name = "Studio 2"
+        phone.link = renamed
+        #expect(phone.echoes.map(\.id) == ["m1"])
+        #expect(try SealedPush.publicKey() == key)
+        // Another Mac under the same hostname: none of it, and the push key is gone.
+        phone.link = theirs
+        #expect(phone.echoes.isEmpty)
+        #expect(SealedPush.savedKey() == nil)
+        // The message still waits, for its own Mac.
+        #expect(queue.messages.map(\.id) == ["m1"])
+    }
+
+    /// The relay is read when it can be, not only at launch (a locked iPhone's background launch
+    /// can't), and only the one the link pinned.
+    @Test func onlyThePinnedRelayIsLoadedAndLate() throws {
+        let first = FakeMac(), other = FakeMac()
+        let mine = MacLink(name: "Studio", hostname: "studio", relayed: first.link.pinned)
+        let restore = Kept()
+        defer { restore.put() }
+        try GatewayTokenStore.save("tok-relay")
+        try RelayStore.save(other.link)
+        UserDefaults.standard.set(try mine.encoded(), forKey: "mac.link")
+        let phone = Phone()
+        #expect(phone.link == mine && phone.route == .relay)
+        _ = phone.runner
+        #expect(phone.relay == nil)
+        try RelayStore.save(first.link)
+        _ = phone.runner
+        #expect(phone.relay?.link == first.link)
+    }
+
+    /// A linked Mac with no route now reaches nothing, never another runner; and a request addressed
+    /// to the relay with no relay to send through goes nowhere and says to pair again.
+    @Test func aLinkedMacWithNoRouteReachesNothing() async {
+        let other = URL(string: "https://runner.example")!
+        #expect(Phone.address(route: nil, linked: true, runner: other) == Runner.nowhere)
+        #expect(Phone.address(route: nil, linked: false, runner: other) == other)
+        #expect(Phone.address(route: .relay, linked: true, runner: other) == RemoteRoute.relayBase)
+        #expect(Phone.address(route: nil, linked: false, runner: nil) == Runner.nowhere)
+        let relayless = Runner(base: RemoteRoute.relayBase, token: "t")
+        do {
+            _ = try await relayless.send("GET", "v1/status")
+            Issue.record("a request went to the relay's address with no relay")
+        } catch let error as RunnerError {
+            #expect(error.status == 401 && error.message.contains("Pair again"))
+        } catch { Issue.record("\(error)") }
+        do {
+            for try await _ in relayless.events() {}
+            Issue.record("the events went to the relay's address with no relay")
+        } catch let error as RunnerError {
+            #expect(error.status == 401)
+        } catch { Issue.record("\(error)") }
+    }
+}
+
+/// What a test that pairs changes, kept to put back: the link in the defaults, the device token
+/// and the relay in the keychain.
+@MainActor
+final class Kept {
+    let link = UserDefaults.standard.data(forKey: "mac.link")
+    let token = GatewayTokenStore.read()
+    let relay = RelayStore.read()
+
+    func put() {
+        UserDefaults.standard.set(link, forKey: "mac.link")
+        if let token { try? GatewayTokenStore.save(token) } else { GatewayTokenStore.remove() }
+        if let relay { try? RelayStore.save(relay) } else { RelayStore.remove() }
+    }
 }
 
 func hex(_ data: Data) -> String { data.map { String(format: "%02x", $0) }.joined() }

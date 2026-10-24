@@ -251,9 +251,12 @@ final class Phone {
         // `-ObySampleOffline YES`: no runner, the linked Mac's gateway either (the link stays).
         if Self.offline { return Runner.nowhere }
         #endif
-        // A linked Mac with no route now (its token unreadable while the iPhone is locked) is
-        // reached by nothing else: never another runner's address.
-        return route?.url ?? (link == nil ? runnerURL : nil) ?? Runner.nowhere
+        return Self.address(route: route, linked: link != nil, runner: runnerURL)
+    }
+    /// The linked Mac by its route, else the runner. A linked Mac with no route now (its token
+    /// unreadable while the iPhone is locked) is reached by nothing else: never another runner's address.
+    static func address(route: RemoteRoute?, linked: Bool, runner: URL?) -> URL {
+        route?.url ?? (linked ? nil : runner) ?? Runner.nowhere
     }
     /// A stable identity for the logical runner, unaffected by switching between its home and
     /// tunnel routes. Unpaired runners use their configured URL.
@@ -470,8 +473,9 @@ final class Phone {
     var runner: Runner {
         // Paired with a Mac, a 401 means the pairing ended: say which, never the Tailscale line.
         let refused = link.map { _ in (pairedUntil.map { $0 <= .now } ?? false) ? ReachNotice.expired : ReachNotice.removed }
+        let relay = loadRelay()
         return Runner(base: base, token: GatewayTokenStore.read(), refused: refused.map { "\($0.title). \($0.detail)" },
-                      relay: base == RemoteRoute.relayBase ? loadRelay() : nil)
+                      relay: base == RemoteRoute.relayBase ? relay : nil)
     }
 
     /// The relay of a Mac paired through its Obysphere: read from the keychain once it can be (not
@@ -1227,8 +1231,10 @@ enum GatewayTokenStore {
 }
 
 /// The Mac's Obysphere relay this iPhone paired through (RelayLink): beside the device token, in
-/// the keychain only and on this device only (no backup or iCloud copy carries it), so its token and
-/// the Mac's pinned key never reach the defaults. Pairing again replaces it; unpairing deletes it.
+/// the keychain only and on this device only (no backup or iCloud copy carries it), so its relay
+/// token never reaches the defaults. (The link there names the relay's id and the Mac's public key,
+/// `MacLink.relayed`, neither of them secret: which relay and key this item must be.) Pairing again
+/// replaces it; unpairing deletes it.
 enum RelayStore {
     static func read() -> RelayLink? {
         GatewayTokenStore.read(account: "relay").flatMap { try? JSONDecoder().decode(RelayLink.self, from: Data($0.utf8)) }
