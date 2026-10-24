@@ -42,6 +42,9 @@ impl Drop for Folder {
 
 fn git(dir: &Path, args: &[&str]) -> String {
     let output = Command::new("git")
+        // Not a committing job's objects, when this runs in its sandbox (sandbox::Spec::git_env).
+        .env_remove("GIT_OBJECT_DIRECTORY")
+        .env_remove("GIT_ALTERNATE_OBJECT_DIRECTORIES")
         .args([
             "-c",
             "core.hooksPath=/dev/null",
@@ -193,6 +196,7 @@ fn spec(world: &World, network: bool, commits: bool, account: bool) -> Spec {
         read_only: Vec::new(),
         hidden: vec![world.home.clone(), world.person.clone()],
         network,
+        loopback: false,
         frozen: Vec::new(),
     }
 }
@@ -477,19 +481,92 @@ fn the_same_fences(ran: &Ran, world: &World, commits: bool) {
     );
 }
 
+/// Whether this runs inside a job's sandbox, where Seatbelt can't make another, so not the
+/// sandbox this test needs (docs/runner-api.md, "macOS: obid inside a job"): it says so and stops,
+/// and the Mac check runs it outside one.
+fn nested() -> bool {
+    let nested = Sandbox::detect(Path::new(env!("CARGO_BIN_EXE_obid")))
+        .is_ok_and(|sandbox| sandbox.encloses());
+    if nested {
+        eprintln!("inside a job's sandbox, where Seatbelt can't make this test's own: skipped");
+    }
+    nested
+}
+
 /// The repository's check: no writes outside its folders, no reads of obid's home, no network.
 #[test]
 fn the_check_is_fenced_in_and_has_no_network() {
+    if nested() {
+        return;
+    }
     let world = world("check");
     let ran = run(&world, &spec(&world, false, false, false));
     the_same_fences(&ran, &world, false);
     assert!(!ran.connected, "the check reached 127.0.0.1\n{}", ran.raw);
 }
 
+/// An owner's job's check: the same fences, and loopback for the servers its tests start (on
+/// macOS the host's, which the job's agent reaches anyway; bubblewrap's namespace has its own, so
+/// the test's listener isn't reached there). Neither it nor a check without loopback resolves a
+/// host name (the resolver would carry what it names out: on macOS one did until 2026-10-24) or
+/// reaches anything beyond loopback.
+#[test]
+fn an_owners_check_keeps_loopback_and_nothing_more() {
+    if nested() {
+        return;
+    }
+    let world = world("loop");
+    let sandbox = Sandbox::detect(Path::new(env!("CARGO_BIN_EXE_obid"))).unwrap();
+    let probe = "const net = require('net');
+const own = net.createServer(c => c.end('own')).listen(0, '127.0.0.1', () => {
+  net.connect(own.address().port, '127.0.0.1').on('data', d => console.log('loopback ' + d));
+}).on('error', () => console.log('loopback no'));
+require('dns').lookup('example.com', e => console.log('dns ' + (e ? 'no' : 'ok')));
+net.connect(443, '1.1.1.1').on('connect', () => console.log('outside ok'))
+  .on('error', () => console.log('outside no'));
+setTimeout(() => process.exit(0), 3000);";
+    for loopback in [true, false] {
+        let spec = Spec {
+            loopback,
+            ..spec(&world, false, false, false)
+        };
+        if loopback {
+            let ran = run(&world, &spec);
+            the_same_fences(&ran, &world, false);
+            assert_eq!(ran.connected, cfg!(target_os = "macos"), "{}", ran.raw);
+        }
+        let argv: Vec<OsString> = vec!["node".into(), "-e".into(), probe.into()];
+        let argv = sandbox.wrap(&spec, &argv);
+        let env = obid::process::sandbox_env(&obid::process::tools_path(), &spec.temp, &[]);
+        let output = Command::new(&argv[0])
+            .args(&argv[1..])
+            .env_clear()
+            .envs(env)
+            .current_dir(&world.worktree)
+            .output()
+            .unwrap();
+        let said = String::from_utf8_lossy(&output.stdout);
+        let own = if loopback {
+            "loopback own"
+        } else {
+            "loopback no"
+        };
+        for line in [own, "dns no", "outside no"] {
+            assert!(
+                said.lines().any(|l| l == line),
+                "loopback {loopback}, {line}: {said}"
+            );
+        }
+    }
+}
+
 /// An agent: the same fences, plus its account folder; the network any agent has (its model's
 /// API), so the test's listener is reached, which shows the probe would have seen it.
 #[test]
 fn an_agent_is_fenced_in_but_keeps_the_network() {
+    if nested() {
+        return;
+    }
     let world = world("agent");
     let ran = run(&world, &spec(&world, true, false, true));
     the_same_fences(&ran, &world, false);
@@ -506,6 +583,9 @@ fn an_agent_is_fenced_in_but_keeps_the_network() {
 /// commits into the clone itself, outside the sandbox (tests/jobs_api.rs).
 #[test]
 fn a_committing_job_commits_without_writing_the_clone() {
+    if nested() {
+        return;
+    }
     let world = world("commits");
     let refs = git(&world.common, &["for-each-ref"]);
     let objects = git(&world.common, &["count-objects", "-v"]);
@@ -583,6 +663,9 @@ fn through_a_terminal(world: &World, spec: &Spec, probe: &str) -> String {
 /// which would run them outside the sandbox.
 #[test]
 fn a_job_cannot_reach_the_terminal_obid_was_started_from() {
+    if nested() {
+        return;
+    }
     let world = world("tty");
     for network in [false, true] {
         let spec = spec(&world, network, false, !network);
@@ -610,6 +693,9 @@ fn a_job_cannot_reach_the_terminal_obid_was_started_from() {
 #[cfg(target_os = "macos")]
 #[test]
 fn a_job_cannot_have_another_process_run_or_write_for_it() {
+    if nested() {
+        return;
+    }
     let world = world("open");
     let sandbox = Sandbox::detect(Path::new(env!("CARGO_BIN_EXE_obid"))).unwrap();
     for network in [false, true] {
@@ -717,6 +803,9 @@ const MACH_KEPT: [&str; 2] = ["com.apple.SecurityServer", "com.apple.trustd.agen
 #[cfg(target_os = "macos")]
 #[test]
 fn a_job_reaches_no_preferences_pasteboard_or_keychain() {
+    if nested() {
+        return;
+    }
     let world = world("prefs");
     let sandbox = Sandbox::detect(Path::new(env!("CARGO_BIN_EXE_obid"))).unwrap();
     let nonce = format!(
@@ -903,6 +992,9 @@ fn a_job_reaches_no_preferences_pasteboard_or_keychain() {
 #[cfg(target_os = "macos")]
 #[test]
 fn a_setsid_process_ends_with_the_job() {
+    if nested() {
+        return;
+    }
     let world = world("setsid");
     let spec = spec(&world, true, false, false);
     let sandbox = Sandbox::detect(Path::new(env!("CARGO_BIN_EXE_obid"))).unwrap();
@@ -1094,6 +1186,9 @@ fn private_file(path: &Path, text: &str) {
 #[cfg(target_os = "macos")]
 #[test]
 fn a_sandboxed_job_reads_other_processes_but_finds_no_secret() {
+    if nested() {
+        return;
+    }
     let world = world("procargs");
     let nonce = format!(
         "{}{}",

@@ -609,6 +609,9 @@ async fn with_sharing_off_or_the_mac_busy_a_job_is_declined_with_the_reason() {
         let work = gf.0.join("secret-work");
         let git = |args: &[&str]| {
             let out = std::process::Command::new("git")
+                // Not a committing job's objects, when this runs in its sandbox (sandbox::Spec::git_env).
+                .env_remove("GIT_OBJECT_DIRECTORY")
+                .env_remove("GIT_ALTERNATE_OBJECT_DIRECTORIES")
                 .args([
                     "-c",
                     "user.name=t",

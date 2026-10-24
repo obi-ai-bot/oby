@@ -317,6 +317,9 @@ fn gh_calls(folder: &Path) -> String {
 /// The commit `branch` is at on the remote, or none.
 fn remote_branch(remote: &Path, branch: &str) -> Option<String> {
     let output = Command::new("git")
+        // Not a committing job's objects, when this runs in its sandbox (sandbox::Spec::git_env).
+        .env_remove("GIT_OBJECT_DIRECTORY")
+        .env_remove("GIT_ALTERNATE_OBJECT_DIRECTORIES")
         .args([
             "for-each-ref",
             "--format=%(objectname)",

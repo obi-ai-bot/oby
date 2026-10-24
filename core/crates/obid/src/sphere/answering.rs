@@ -274,6 +274,7 @@ async fn run(
         hidden,
         // Its model's API.
         network: true,
+        loopback: false,
         frozen: Vec::new(),
     };
     let mut extra: Vec<(&str, OsString)> = Vec::new();

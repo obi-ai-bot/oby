@@ -764,6 +764,9 @@ fn a_change_against_an_earlier_decision_gets_one_round_and_never_blocks() {
     let work = folder.0.join("work");
     let git = |args: &[&str]| {
         let done = std::process::Command::new("git")
+            // Not a committing job's objects, when this runs in its sandbox (sandbox::Spec::git_env).
+            .env_remove("GIT_OBJECT_DIRECTORY")
+            .env_remove("GIT_ALTERNATE_OBJECT_DIRECTORIES")
             .args(args)
             .current_dir(&work)
             .output()

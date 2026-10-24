@@ -4350,6 +4350,7 @@ impl Jobs {
             &hidden,
             std::slice::from_ref(&self.config.home),
         );
+        read_only.extend(process::rust_reads());
         if let Some(bin) = self.agent_bin(tool) {
             read_only.extend(sandbox::install_root(
                 &bin,
@@ -4369,6 +4370,7 @@ impl Jobs {
             hidden,
             // An agent keeps the network any agent has (its model's API); the check gets none.
             network: true,
+            loopback: false,
             frozen: Vec::new(),
         }
     }
@@ -4409,6 +4411,7 @@ impl Jobs {
         })?;
         let mut spec = spec.clone();
         let mut extra: Vec<(&str, OsString)> = spec.git_env();
+        extra.extend(process::show_rust(&spec.temp));
         if let Some(token) = self.apple_check_token(&job.id) {
             extra.push((
                 "OBY_CHECK_URL",
@@ -4659,6 +4662,7 @@ impl Jobs {
             read_only,
             hidden,
             network,
+            loopback: false,
             frozen,
         };
         // No file it writes grows past 256 MB (bash's `ulimit -f` counts KB), then bash runs the
@@ -4739,6 +4743,7 @@ impl Jobs {
             read_only,
             hidden,
             network: true,
+            loopback: false,
             frozen,
         };
         let mut extra: Vec<(&str, OsString)> = Vec::new();
@@ -5265,6 +5270,9 @@ impl Jobs {
             .map_err(|why| format!("obid can't run the check: {why}"))?;
         let mut spec = spec.clone();
         spec.network = false;
+        // An owner's job's tests may serve on 127.0.0.1, which its agent reaches anyway; another
+        // Obi's branch, run without the owner looking, gets no network at all.
+        spec.loopback = self.get(id).is_some_and(|job| job.obi.is_none());
         spec.accounts.clear();
         // Each step between its top-level `&&`s timed, its tests counted, live (#734).
         let round = self.get(id).map_or(1, |job| job.current_round());
@@ -5300,7 +5308,9 @@ impl Jobs {
             .script();
         let argv: Vec<OsString> = vec!["/bin/sh".into(), "-c".into(), script.into()];
         let argv = sandbox.wrap(&spec, &argv);
-        let env = process::sandbox_env(&process::tools_path(), &spec.temp, &spec.git_env());
+        let mut extra = spec.git_env();
+        extra.extend(process::show_rust(&spec.temp));
+        let env = process::sandbox_env(&process::tools_path(), &spec.temp, &extra);
         let running = run_check(
             &argv,
             &env,

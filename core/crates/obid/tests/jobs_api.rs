@@ -298,6 +298,9 @@ fn stopped_beating(obid: &Obid, id: &str) -> bool {
 
 fn git(dir: &Path, args: &[&str]) -> String {
     let output = Command::new("git")
+        // Not a committing job's objects, when this runs in its sandbox (sandbox::Spec::git_env).
+        .env_remove("GIT_OBJECT_DIRECTORY")
+        .env_remove("GIT_ALTERNATE_OBJECT_DIRECTORIES")
         .args(args)
         .current_dir(dir)
         .output()
@@ -790,12 +793,13 @@ mod inside_a_job {
     use std::ffi::OsString;
 
     /// What the inner run is given: the outer obid's home (with a file in it), a folder outside
-    /// everything the job may write, and the job's temporary folder.
+    /// everything the job may write, the job's temporary folder and its own git folder.
     pub struct Job {
         _folder: Folder,
         pub home: PathBuf,
         pub outside: PathBuf,
         pub temp: PathBuf,
+        admin: PathBuf,
     }
 
     impl Job {
@@ -804,7 +808,8 @@ mod inside_a_job {
             let home = folder.0.join("obid-home");
             let outside = folder.0.join("outside");
             let temp = folder.0.join("job-tmp");
-            for dir in [&home, &outside, &temp] {
+            let admin = folder.0.join("git-admin");
+            for dir in [&home, &outside, &temp, &admin.join("objects")] {
                 std::fs::create_dir_all(dir).unwrap();
             }
             std::fs::write(home.join("api-token"), "outer obid's\n").unwrap();
@@ -813,11 +818,14 @@ mod inside_a_job {
                 home,
                 outside,
                 temp,
+                admin,
             }
         }
 
-        /// A sandbox made as a job's agent's (`Jobs::spec`): this repository is the worktree,
-        /// obid's home and, with `person`, the person's homes are hidden.
+        /// A sandbox made as a committing job's agent's (`Jobs::spec`): this repository is the
+        /// worktree, its git common folder read-only, new objects go to a folder of the job's own
+        /// (`Spec::git_env`), the person's Rust toolchain is read, obid's home and, with `person`,
+        /// the person's homes are hidden.
         pub fn spec(&self, person: bool) -> Spec {
             let mut hidden = vec![self.home.clone()];
             if person {
@@ -826,18 +834,35 @@ mod inside_a_job {
             let path = obid::process::tools_path();
             let mut read_only =
                 sandbox::tool_roots(&path, &hidden, std::slice::from_ref(&self.home));
+            read_only.extend(obid::process::rust_reads());
             // The test binaries, wherever cargo built them.
             let this = std::env::current_exe().unwrap();
             read_only.extend(
                 [this.parent().unwrap(), Path::new(OBID).parent().unwrap()].map(Path::to_path_buf),
             );
+            let common = git(
+                &obi(),
+                &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+            );
             Spec {
                 worktree: obi(),
+                git_admin: Some(self.admin.clone()),
+                git_common: Some(common.into()),
+                commits: true,
                 temp: self.temp.clone(),
                 read_only,
                 hidden,
                 network: true,
                 ..Spec::default()
+            }
+        }
+
+        /// The same job's check (`Jobs::check`): no network but loopback, as an owner's job's.
+        pub fn check_spec(&self) -> Spec {
+            Spec {
+                network: false,
+                loopback: true,
+                ..self.spec(true)
             }
         }
 
@@ -847,6 +872,13 @@ mod inside_a_job {
             Sandbox::detect(Path::new(OBID))
                 .unwrap()
                 .wrap(spec, &self.argv(test))
+        }
+
+        /// What `script` prints, run by `/bin/sh` in `spec`'s sandbox with a job's environment.
+        pub fn shell(&self, spec: &Spec, script: &str) -> String {
+            let argv: Vec<OsString> = vec!["/bin/sh".into(), "-c".into(), script.into()];
+            let argv = Sandbox::detect(Path::new(OBID)).unwrap().wrap(spec, &argv);
+            self.run(spec, &argv, &[]).1
         }
 
         pub fn argv(&self, test: &str) -> Vec<OsString> {
@@ -859,15 +891,23 @@ mod inside_a_job {
             ]
         }
 
-        /// Runs `argv` in this repository with a job's environment and `env`: what it printed,
-        /// and whether its one test passed.
-        pub fn run(&self, argv: &[OsString], env: &[(&str, OsString)]) -> (bool, String) {
+        /// Runs `argv` in this repository with the environment a job's `spec` gets and `env`: what
+        /// it printed, and whether its one test passed.
+        pub fn run(
+            &self,
+            spec: &Spec,
+            argv: &[OsString],
+            env: &[(&str, OsString)],
+        ) -> (bool, String) {
             let path = obid::process::tools_path();
+            let mut extra = spec.git_env();
+            extra.extend(obid::process::show_rust(&self.temp));
+            extra.extend(env.iter().cloned());
             let output = Command::new(&argv[0])
                 .args(&argv[1..])
                 .current_dir(obi())
                 .env_clear()
-                .envs(obid::process::sandbox_env(&path, &self.temp, env))
+                .envs(obid::process::sandbox_env(&path, &self.temp, &extra))
                 .stdin(Stdio::null())
                 .output()
                 .unwrap();
@@ -901,13 +941,70 @@ fn a_fake_agent_test_runs_inside_a_jobs_sandbox() {
         &job.spec(true),
         "nothing_committed_is_done_and_needs_nothing",
     );
-    let (passed, said) = job.run(&argv, &[("OBID_TEST_KEEP", "1".into())]);
+    let (passed, said) = job.run(&job.spec(true), &argv, &[("OBID_TEST_KEEP", "1".into())]);
     assert!(passed, "{said}");
     assert!(
         job.inner_logs()
             .contains("obid runs inside a job sandbox, which Seatbelt can't nest in"),
         "{said}"
     );
+}
+
+/// A job that changes obid runs its integration tests in its sandbox, as its agent and as its
+/// check: this one makes git fixtures and reads them with git (not through the job's own object
+/// folder, `Spec::git_env`), serves on 127.0.0.1 and runs its own job's check. Before 2026-10-24
+/// both failed (`fatal: bad object HEAD`; the check had no loopback).
+#[cfg(target_os = "macos")]
+#[test]
+fn a_jobs_agent_and_its_check_run_obids_integration_tests() {
+    let job = inside_a_job::Job::new("integration");
+    let test = "a_build_job_commits_and_ends_done";
+    for spec in [job.spec(true), job.check_spec()] {
+        let (passed, said) = job.run(&spec, &job.wrapped(&spec, test), &[]);
+        assert!(passed, "network {}: {said}", spec.network);
+    }
+}
+
+/// A job's cargo is the person's, as their shell finds it: rustup's toolchains, and `cargo clippy`
+/// and `cargo fmt` from cargo's own `bin` (the person's rustup ones, not an older clippy that is on
+/// `PATH`, 2026-10-24).
+#[cfg(target_os = "macos")]
+#[test]
+fn a_jobs_cargo_is_the_persons() {
+    if obid::process::rust_reads().is_empty() {
+        eprintln!("no rustup or cargo home here: nothing to compare");
+        return;
+    }
+    let job = inside_a_job::Job::new("rust");
+    let script = "cargo clippy -V; cargo fmt --version; rustc -V";
+    let shell = Command::new("/bin/sh")
+        .args(["-c", script])
+        .env("PATH", obid::process::tools_path())
+        .output()
+        .unwrap();
+    let shell = String::from_utf8_lossy(&shell.stdout).into_owned();
+    assert!(shell.contains("clippy"), "{shell}");
+    for spec in [job.spec(true), job.check_spec()] {
+        assert_eq!(job.shell(&spec, script), shell);
+    }
+}
+
+/// Runs `OBY_BOX` (a shell command line) in this repository in a job's sandbox as its agent and,
+/// with `OBY_BOX_CHECK=1`, then as its check, in the same `HOME` (what the agent fetched stays for
+/// the check), printing what each printed: how to see what a job's box lets a build or a test do
+/// (`OBY_BOX='…' cargo test -p obid --test jobs_api a_command_in_a_jobs_box -- --ignored
+/// --nocapture`).
+#[cfg(target_os = "macos")]
+#[test]
+#[ignore = "runs what OBY_BOX says"]
+fn a_command_in_a_jobs_box() {
+    let job = inside_a_job::Job::new("command");
+    let script = std::env::var("OBY_BOX").expect("OBY_BOX names the command");
+    let script = format!("{script}\necho \"box: exit $?\"");
+    println!("as the agent:\n{}", job.shell(&job.spec(true), &script));
+    if std::env::var_os("OBY_BOX_CHECK").is_some() {
+        println!("as the check:\n{}", job.shell(&job.check_spec(), &script));
+    }
 }
 
 /// The fake agent of a test run inside a job's sandbox still reads nothing of the person's home
@@ -932,7 +1029,7 @@ fn a_fake_agent_inside_a_jobs_sandbox_stays_in_it() {
         .collect::<Vec<_>>()
         .join(" ");
     let argv = job.wrapped(&job.spec(true), "reach_from_inside_a_job");
-    let (passed, said) = job.run(&argv, &[("OBID_REACH", reach.into())]);
+    let (passed, said) = job.run(&job.spec(true), &argv, &[("OBID_REACH", reach.into())]);
     assert!(passed, "{said}");
     // The homes are hidden; a folder elsewhere is read, as by any job, never written.
     for (dir, reached) in [
@@ -991,7 +1088,7 @@ fn inside_another_sandbox_a_fake_agent_test_runs_nothing() {
         vec!["/usr/bin/sandbox-exec".into(), "-p".into(), foreign.into()];
     sandbox_exec.extend(job.argv(test));
     for argv in [job.wrapped(&job.spec(false), test), sandbox_exec] {
-        let (passed, said) = job.run(&argv, &[]);
+        let (passed, said) = job.run(&job.spec(false), &argv, &[]);
         assert!(!passed, "{said}");
         assert!(said.contains("sandbox-exec can't make a sandbox"), "{said}");
     }
