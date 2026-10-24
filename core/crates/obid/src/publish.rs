@@ -436,72 +436,17 @@ const CLOSING: [&str; 9] = [
     "close", "closes", "closed", "fix", "fixes", "fixed", "resolve", "resolves", "resolved",
 ];
 
-/// The byte ranges of `line`'s inline code: from a run of backticks (one a backslash escapes
-/// starts a character later) to the next run of as many. A run with no match is only backticks.
-fn code_spans(line: &str) -> Vec<std::ops::Range<usize>> {
-    let bytes = line.as_bytes();
-    let mut runs: Vec<(usize, usize, bool)> = Vec::new();
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] != b'`' {
-            i += 1;
-            continue;
-        }
-        let start = i;
-        while i < bytes.len() && bytes[i] == b'`' {
-            i += 1;
-        }
-        let slashes = bytes[..start]
-            .iter()
-            .rev()
-            .take_while(|&&b| b == b'\\')
-            .count();
-        runs.push((start, i - start, slashes % 2 == 1));
-    }
-    let mut spans = Vec::new();
-    let mut r = 0;
-    while r < runs.len() {
-        let (start, len, escaped) = runs[r];
-        let (start, len) = if escaped {
-            (start + 1, len - 1)
-        } else {
-            (start, len)
-        };
-        match runs[r + 1..]
-            .iter()
-            .position(|&(_, l, _)| len > 0 && l == len)
-        {
-            Some(j) => {
-                let (end, l, _) = runs[r + 1 + j];
-                spans.push(start..end + l);
-                r += j + 2;
-            }
-            None => r += 1,
-        }
-    }
-    spans
-}
-
-/// A line that opens or closes a fenced code block: its fence character and length, and whether
-/// anything follows the fence. Only a fence at the line's start counts: one indented could sit in
-/// a list item, which a less indented line ends, and so the code with it.
-fn fence(line: &str) -> Option<(char, usize, bool)> {
-    let c = line.chars().next().filter(|&c| c == '`' || c == '~')?;
-    let len = line.chars().take_while(|&n| n == c).count();
-    let rest = &line[len..];
-    (len >= 3 && !(c == '`' && rest.contains('`'))).then(|| (c, len, !rest.trim().is_empty()))
-}
-
 /// One line of the agent's words, rendered as the Markdown it wrote but unable to act: an invisible
-/// break after every `<` (no HTML, so no `</blockquote>`), after a `#` that would start a heading or
-/// reference an issue, after an `@` that would mention someone, after every `[` and `]` (no link,
-/// image, footnote, task box or `[!NOTE]` alert), inside a closing keyword, and inside a line of
-/// `-`, `=`, `*` or `_` that would underline a heading. Inline code is left as it is: nothing acts
-/// in it, and it reads the same.
+/// break after every `<` (no HTML, so no `</blockquote>` or `<!--`), after every `&` (no entity, so
+/// no `&commat;` or `&#x23;` that reads as `@` or `#`), after every `@` (no mention), after every
+/// `[` and `]` (no link, image, footnote, task box or `[!NOTE]` alert), after a `#` before a letter
+/// or digit (no issue reference) or one that would start a heading, inside a closing keyword, and
+/// inside a line of `-`, `=`, `*` or `_` that would underline a heading. Code gets the same breaks:
+/// what Markdown takes for code (a fence indented up to three spaces, a span across lines) is too
+/// easy to get wrong, and a break it missed would leave the rest of the summary live.
 fn defused(line: &str) -> String {
     let word = |c: char| c.is_alphanumeric();
     let rule = !line.trim().is_empty() && line.chars().all(|c| "=-*_ \t".contains(c));
-    let code = code_spans(line);
     let mut out = String::with_capacity(line.len() + 8);
     let mut chars = line.char_indices().peekable();
     let mut prev: Option<char> = None;
@@ -510,10 +455,8 @@ fn defused(line: &str) -> String {
         out.push(c);
         let next = chars.peek().map(|&(_, n)| n);
         let split = match c {
-            _ if code.iter().any(|span| span.contains(&i)) => false,
-            '<' | '[' | ']' => true,
-            '@' => next.is_some_and(|n| n.is_ascii_alphanumeric()),
-            '#' => next.is_none_or(|n| n.is_ascii_digit() || n.is_whitespace() || n == '#'),
+            '<' | '&' | '@' | '[' | ']' => true,
+            '#' => next.is_none_or(|n| n.is_alphanumeric() || n.is_whitespace() || n == '#'),
             _ if rule => !c.is_whitespace() && !std::mem::replace(&mut ruled, true),
             _ if word(c) && !prev.is_some_and(word) => {
                 let whole: String = line[i..].chars().take_while(|&c| word(c)).collect();
@@ -530,26 +473,13 @@ fn defused(line: &str) -> String {
 }
 
 /// The agent's words as a Markdown blockquote: every line, whatever ends it (`\r` ends a line in
-/// Markdown too), starts with `>`, so none of it leaves the quote. A fenced code block's lines are
-/// left as they are: they are code, which the quote's end closes if the agent didn't.
+/// Markdown too), starts with `>`, so none of it leaves the quote, and every line is `defused`.
 fn quoted(text: &str) -> String {
-    let mut open: Option<(char, usize)> = None;
     text.replace("\r\n", "\n")
         .replace('\r', "\n")
         .split('\n')
         .map(|line| {
-            let line = match (open, fence(line)) {
-                (None, Some((c, len, _))) => {
-                    open = Some((c, len));
-                    line.to_owned()
-                }
-                (Some((c, len)), Some((n, l, false))) if n == c && l >= len => {
-                    open = None;
-                    line.to_owned()
-                }
-                (Some(_), _) => line.to_owned(),
-                (None, None) => defused(line),
-            };
+            let line = defused(line);
             if line.is_empty() {
                 ">".to_owned()
             } else {
@@ -1806,7 +1736,7 @@ mod tests {
         let text = body(&job, false);
         assert!(
             text.starts_with(
-                "The agent's summary:\n\n> Stopped **the leak**.\n>\n> - `a<b>` in `x.rs`\n> ```rust\n> #[test]\n> ```\n\nWhat the user asked for:"
+                "The agent's summary:\n\n> Stopped **the leak**.\n>\n> - `a<\u{200B}b>` in `x.rs`\n> ```rust\n> #[\u{200B}test]\u{200B}\n> ```\n\nWhat the user asked for:"
             ),
             "{text}"
         );
@@ -1876,30 +1806,37 @@ mod tests {
         }
     }
 
-    /// Inline code and fenced code blocks read exactly as the agent wrote them, while what's
-    /// around them is still broken.
+    /// Entities that read as `@` or `#`, and comments left open, don't act: every `&` and `<` is
+    /// broken.
     #[test]
-    fn code_gets_no_invisible_characters() {
+    fn entities_and_comments_dont_act() {
+        assert_eq!(defused("&commat;user"), "&\u{200B}commat;user");
+        assert_eq!(defused("&#x40;user"), "&\u{200B}#x40;user");
+        assert_eq!(defused("&#x23;12"), "&\u{200B}#\u{200B}x23;12");
+        assert_eq!(defused("o/r&num;12"), "o/r&\u{200B}num;12");
+        assert_eq!(defused("<!-- hide the rest"), "<\u{200B}!-- hide the rest");
+        assert_eq!(defused("#abc @"), "#\u{200B}abc @\u{200B}");
+        let text = quoted("<!--\n@someone");
+        assert_eq!(text, "> <\u{200B}!--\n> @\u{200B}someone");
+    }
+
+    /// Code is broken like the rest, so whatever Markdown takes for code, nothing after it acts.
+    #[test]
+    fn code_is_broken_too() {
         assert_eq!(
-            defused("run `a[0] <b> @x #1` then [x]"),
-            "run `a[0] <b> @x #1` then [\u{200B}x]\u{200B}"
+            defused("run `a[0] Vec<String> @x #1`"),
+            "run `a[\u{200B}0]\u{200B} Vec<\u{200B}String> @\u{200B}x #\u{200B}1`"
         );
+        // A fence's closer indented 1-3 spaces still closes it: what follows is broken.
         assert_eq!(
-            defused("``a ` [b]`` [c]"),
-            "``a ` [b]`` [\u{200B}c]\u{200B}"
+            quoted("```\nlet v: Vec<String>;\n   ```\n<b> @me"),
+            "> ```\n> let v: Vec<\u{200B}String>;\n>    ```\n> <\u{200B}b> @\u{200B}me"
         );
-        // A backtick without its match, or an escaped one, opens no code.
-        assert_eq!(defused("one ` [a]"), "one ` [\u{200B}a]\u{200B}");
-        assert_eq!(defused("\\`[a]`"), "\\`[\u{200B}a]\u{200B}`");
-        let text = quoted(
-            "Done:\n```rust\nlet v = [x[0], y];\n# fn f() {}\n~~~\n```\n@me [x]\n~~~~\n<b>\n~~~~",
-        );
+        // A span across lines is broken on both of them.
         assert_eq!(
-            text,
-            "> Done:\n> ```rust\n> let v = [x[0], y];\n> # fn f() {}\n> ~~~\n> ```\n> @\u{200B}me [\u{200B}x]\u{200B}\n> ~~~~\n> <b>\n> ~~~~"
+            quoted("see `a\n<b>` @me"),
+            "> see `a\n> <\u{200B}b>` @\u{200B}me"
         );
-        // An indented fence could be in a list item a later line ends: those lines are broken.
-        assert_eq!(quoted("- a\n  ```\n<b>"), "> - a\n>   ```\n> <\u{200B}b>");
     }
 
     /// The summaries are scanned as the agent wrote them: a vault secret holding `@x` or `#1`,
