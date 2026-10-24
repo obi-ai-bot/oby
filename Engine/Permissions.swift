@@ -86,6 +86,15 @@ nonisolated struct Permission: Codable, Equatable, Sendable {
     var rule: String?
     /// "Yes, and don't ask again for swift test in deskree-inc/oby", or nil without a rule.
     var always: String?
+    /// The question a runner's Claude Code agent asks the user in AskUserQuestion (obid, #858),
+    /// quoted data; nil for every other permission.
+    var question: Asked?
+
+    /// What obid's `permission.question` carries that Oby reads: the question itself.
+    struct Asked: Codable, Equatable, Sendable { var question: String }
+
+    /// The agent's question: only the user answers it, never the brain (#858).
+    var isQuestion: Bool { question != nil }
 }
 
 /// A rule the user saved for a repository ("always", or #67's learned rules), in `oby.sqlite`.
@@ -632,6 +641,11 @@ extension Desk {
         switch plan.action {
         case .answerPermission:
             guard let id = named.first, let decision = plan.decision else { return "Say which job to answer." }
+            // A runner's agent's question is the user's alone to answer (#858): obid would take
+            // a deny with words as its answer.
+            if let asking = job(id) ?? others[id], asking.permission?.isQuestion == true {
+                return "\(asking.heading) waits for you to answer its question: only you can, in your inbox."
+            }
             let message = plan.message.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.flatMap { $0.isEmpty ? nil : $0 }
             let said = { (job: Job) -> String in
                 switch decision {

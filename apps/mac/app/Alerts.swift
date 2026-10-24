@@ -251,7 +251,7 @@ enum Alerts {
             let shown = compact(permission.detail.isEmpty || permission.title.contains(permission.detail)
                                 ? permission.title : "\(permission.title)\n\(permission.detail)")
             // The agent's question (#858) takes no Allow: a typed reply is its answer.
-            let allows = !["ExitPlanMode", RunnerPermission.askUserQuestion].contains(permission.tool) && fits(shown)
+            let allows = permission.tool != "ExitPlanMode" && !permission.isQuestion && fits(shown)
             let saves = InboxWords.plain(permission.rule).map { permission.always ?? "Always allow \($0)" }
             let rule = allows ? saves.flatMap { fits(shown + "\n" + $0) ? $0 : nil } : nil
             alert.body = allows ? shown : lines(shown)

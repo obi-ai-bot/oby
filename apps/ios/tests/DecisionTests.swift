@@ -101,7 +101,10 @@ struct DecisionTests {
         #expect(CardOption.permission(RunnerPermission(id: "p2", title: "Edit", rule: "Edit(README.md)"))[1].detail == "Always allow Edit(README.md)")
         #expect(CardOption.permission(RunnerPermission(id: "p3", title: "Edit")).map(\.label) == ["Allow once", "Deny"])
         // The agent's question (#858): no Allow (obid refuses it); the user's words are its answer.
-        let asked = RunnerPermission(id: "p4", tool: "AskUserQuestion", title: "Answer the agent's question (1 of 1)", detail: "Which store?")
+        let asked = RunnerPermission(id: "p4", tool: "AskUserQuestion", title: "Answer the agent's question (1 of 1)", detail: "Which store?",
+                                     question: .init(question: "Which store?"))
+        // The tool's name alone doesn't make one: obid's `question` does.
+        #expect(!RunnerPermission(id: "p5", tool: "AskUserQuestion", title: "Answer").isQuestion && asked.isQuestion)
         #expect(CardOption.permission(asked).map(\.answer) == ["deny"])
         #expect(CardOption.wordsNote(asked) == CardOption.answerWords && CardOption.wordsNote(permission) == CardOption.denyWords)
     }

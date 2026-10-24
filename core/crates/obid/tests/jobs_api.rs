@@ -2131,6 +2131,122 @@ fn the_owner_answers_the_agents_question() {
     let said = answer(&id, json!({"id": permission["id"], "decision": "deny"}));
     assert_eq!(said.status, 200, "{}", said.text);
     assert_eq!(wait(&obid, &id)["summary"], "answer: deny");
+
+    // Through its inbox item: an option, or the owner's words, is its answer.
+    let (id, permission) = job();
+    let item = format!("{id}-permission-{}", permission["id"].as_str().unwrap());
+    let said = request(
+        &obid,
+        "POST",
+        &format!("/v1/inbox/{item}/answer"),
+        Some(&json!({"answer": "Postgres"}).to_string()),
+    );
+    assert_eq!(said.status, 200, "{}", said.text);
+    assert!(!said.body["done"].is_null(), "{}", said.text);
+    assert_eq!(
+        wait(&obid, &id)["summary"],
+        r#"answer: allow answers: {"Which store?":"Postgres"}"#
+    );
+}
+
+/// #858: a restart (SIGTERM, as obid's own update) keeps the agent's question: the job stays
+/// `running` with it and no agent, its inbox item stays open, and the answer already given is
+/// kept. Answering the rest through the inbox item picks the session up, its agent told what it
+/// asked and every answer.
+#[test]
+fn a_restart_keeps_the_agents_question() {
+    let folder = Folder::new("question-restart");
+    let remote = fixture(&folder.0.join("fixture"));
+    let config = config(&folder.0, &remote);
+    let mut obid = start(&folder.0, &config);
+    let ask = json!({"tool": "AskUserQuestion", "input": {"questions": [
+        {"question": "Which store?", "options": [{"label": "SQLite"}, {"label": "Postgres"}]},
+        {"question": "Which checks?", "multiSelect": true, "options": [{"label": "Unit"}, {"label": "Lint"}]}]}});
+    let id = post_job(
+        &obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "research", "task": format!("KEEP PROMPTS ASK: {ask}")}),
+    )
+    .body["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let first = until(&obid, &id, |j| j["permission"].is_object())["permission"].clone();
+    let said = request(
+        &obid,
+        "POST",
+        &format!("/v1/jobs/{id}/permission"),
+        Some(&json!({"id": first["id"], "answer": "sqlite"}).to_string()),
+    );
+    assert_eq!(said.status, 200, "{}", said.text);
+    let second = said.body["permission"].clone();
+    assert_eq!(second["question"]["index"], 1, "{}", said.text);
+
+    nix::sys::signal::kill(
+        nix::unistd::Pid::from_raw(obid.child.id() as i32),
+        nix::sys::signal::Signal::SIGTERM,
+    )
+    .unwrap();
+    let started = Instant::now();
+    while obid.child.try_wait().unwrap().is_none() {
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "obid didn't exit"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let folder_path = obid.folder.clone();
+    drop(obid);
+    let obid = start(&folder_path, &config);
+
+    let job = request(&obid, "GET", &format!("/v1/jobs/{id}"), None).body;
+    assert_eq!(job["status"], "running", "{job}");
+    assert_eq!(job["permission"], second, "{job}");
+    assert_eq!(job["step"], "Waiting for your answer", "{job}");
+    let item = format!("{id}-permission-{}", second["id"].as_str().unwrap());
+    let items = inbox(&obid);
+    let open = items
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["id"] == item.as_str())
+        .unwrap_or_else(|| panic!("no item {item}: {items}"));
+    assert_eq!(open["kind"], "agentQuestion", "{open}");
+    assert!(open["done"].is_null(), "{open}");
+    // An allow still doesn't answer it, and the brain's words wouldn't either.
+    let refused = request(
+        &obid,
+        "POST",
+        &format!("/v1/jobs/{id}/permission"),
+        Some(&json!({"id": second["id"], "decision": "allow"}).to_string()),
+    );
+    assert_eq!(refused.status, 422, "{}", refused.text);
+
+    // Answered through its inbox item: the session is picked up with every answer.
+    let answered = request(
+        &obid,
+        "POST",
+        &format!("/v1/inbox/{item}/answer"),
+        Some(&json!({"answer": "unit, lint"}).to_string()),
+    );
+    assert_eq!(answered.status, 200, "{}", answered.text);
+    let done = wait(&obid, &id);
+    assert_eq!(done["status"], "done", "{done}");
+    assert!(done["permission"].is_null(), "{done}");
+    let heard = prompts(&obid, &id);
+    let last = heard.last().unwrap();
+    assert!(
+        last.starts_with("obid restarted while your AskUserQuestion call waited for the owner")
+            && last.contains(r#"- "Which store?": the owner answered "SQLite""#)
+            && last.contains(r#"- "Which checks?": the owner answered "Unit, Lint""#),
+        "{heard:?}"
+    );
+    let items = inbox(&obid);
+    let settled = items
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["id"] == item.as_str());
+    assert!(settled.is_none_or(|i| !i["done"].is_null()), "{items}");
 }
 
 /// Only the owner makes what sticks: an "always" on a network card saves their rule, and the next

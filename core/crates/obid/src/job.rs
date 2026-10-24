@@ -240,6 +240,10 @@ pub struct Job {
     /// modes").
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub permission: Option<crate::permissions::Permission>,
+    /// The agent's question call `permission` asks from (#858), with the owner's answers so far:
+    /// what a restart keeps. Never in the API's job.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub question_call: Option<crate::permissions::QuestionCall>,
     /// The latest Mac checks, kept on the job and sent on its JSON/event (`runner-api.md`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mac_check: Option<Value>,
@@ -512,6 +516,7 @@ impl Job {
             review_result: None,
             obi_request: None,
             permission: None,
+            question_call: None,
             mac_check: None,
             apple_check: None,
             apple_ran: None,

@@ -122,8 +122,11 @@ nonisolated struct Briefing: Equatable, Sendable {
 
     /// The ids the brain may stop: every job that's queued or running.
     var stoppable: [String] { jobs.filter { $0.job.isActive }.map(\.job.id) }
-    /// The ids whose permission prompt waits for the user: the ones the brain may answer.
-    var permissions: [String] { jobs.filter { $0.job.waitsForPermission || ($0.job.waitsForAnswer && $0.job.question?.plan != nil) }.map(\.job.id) }
+    /// The ids whose permission prompt waits for the user: the ones the brain may answer. Never a
+    /// runner's agent's question (#858): the user's alone.
+    var permissions: [String] {
+        jobs.filter { ($0.job.waitsForPermission && $0.job.permission?.isQuestion != true) || ($0.job.waitsForAnswer && $0.job.question?.plan != nil) }.map(\.job.id)
+    }
 
     /// Agents working now, everywhere: the same count the notch and the window's header show
     /// (this Mac's working jobs plus the runner's), from the same jobs, not capped like `jobs`.

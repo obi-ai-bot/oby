@@ -1128,7 +1128,7 @@ mod tests {
             &json!({"questions": [{"question": "Which store?", "options": [
                 {"label": "SQLite", "description": "One file"}, {"label": "Postgres"}]}]}),
         );
-        let item = permission_item(&job, &question_card(&call, "p1", 0), 5);
+        let item = permission_item(&job, &question_card(&call.questions, "p1", 0), 5);
         assert_eq!(item.kind, QUESTION_KIND);
         assert_eq!(item.id, permission_item_id("j1", "p1"));
         assert_eq!(item.text, "Which store?");
@@ -1142,7 +1142,7 @@ mod tests {
             &json!({"questions": [{"question": "Go?", "options": [{"label": "Yes"}]}]}),
         );
         assert_eq!(
-            permission_item(&job, &question_card(&plain, "p2", 0), 5).details,
+            permission_item(&job, &question_card(&plain.questions, "p2", 0), 5).details,
             None
         );
     }

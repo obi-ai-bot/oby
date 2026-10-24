@@ -666,8 +666,15 @@ impl Jobs {
         let store = Store::open(&config.home)?;
         let mut jobs = HashMap::new();
         for mut job in store.load_all() {
-            // A permission waited on an agent that is gone: the agent asks again.
+            // The agent's question keeps waiting for the owner, `running` with no agent: its
+            // answer picks the session up (#858, [`Jobs::answer_kept_question`]).
+            if job.status == Status::Running && kept_question(&job).is_some() {
+                jobs.insert(job.id.clone(), job);
+                continue;
+            }
+            // Any other permission waited on an agent that is gone: the agent asks again.
             job.permission = None;
+            job.question_call = None;
             if job.status == Status::Running {
                 job.status = Status::Queued;
                 job.step = "obid restarted while this ran: starting it again".into();
@@ -2471,7 +2478,7 @@ impl Jobs {
             }
             None => false,
         };
-        self.drop_asks(id);
+        self.drop_asks(id, false);
         let stopped = self.update(id, |job| {
             job.status = Status::Stopped;
             job.step = String::new();
@@ -2579,9 +2586,12 @@ impl Jobs {
             if source != Source::Event
                 && let Some(next) = self.following(id)
             {
-                return Some(self.message(&next.id, text, source)?.map_err(|why| {
-                    Refused(format!("{} ({}): {}", next.short_title(), next.id, why.0))
-                }));
+                return Some(
+                    self.message_as(&next.id, text, source, &[], answers)?
+                        .map_err(|why| {
+                            Refused(format!("{} ({}): {}", next.short_title(), next.id, why.0))
+                        }),
+                );
             }
             return Some(match source {
                 // Past its safety limit, a follow-up would start its counters again.
@@ -2613,6 +2623,8 @@ impl Jobs {
             .asks
             .get(id)
             .and_then(|asks| asks.front().map(|a| a.permission.clone()));
+        // A question a restart kept waits with no agent (#858).
+        let waiting = waiting.or_else(|| self.kept_ask(id));
         // A plan goes back only on the owner's own words (#609).
         if waiting.as_ref().is_some_and(Permission::is_plan) && !source.owners() {
             return Some(Err(Refused(
@@ -3063,11 +3075,25 @@ impl Jobs {
     /// The job shows its first waiting permission, or, with none left, goes on, its step saying
     /// what happened. The inbox hears of it.
     fn show(&self, id: &str, step: Option<String>) {
-        let first = self
+        // A question's call goes with it, so a restart keeps it (#858).
+        let (first, call) = self
             .lock()
             .asks
             .get(id)
-            .and_then(|asks| asks.front().map(|a| a.permission.clone()));
+            .and_then(|asks| {
+                asks.front().map(|a| {
+                    let call = a
+                        .permission
+                        .is_question()
+                        .then(|| permissions::QuestionCall {
+                            questions: a.call.questions.clone(),
+                            answers: a.answers.clone(),
+                        });
+                    (a.permission.clone(), call)
+                })
+            })
+            .unzip();
+        let call = call.flatten();
         let shown = self.get(id).and_then(|j| j.permission);
         if first.as_ref().map(|p| &p.id) == shown.as_ref().map(|p| &p.id) {
             if let Some(step) = step {
@@ -3081,6 +3107,7 @@ impl Jobs {
         }
         self.update(id, |job| {
             job.permission = first.clone();
+            job.question_call = call;
             if first.as_ref().is_some_and(Permission::is_plan) {
                 job.step = "Waiting for your OK on the plan".into();
             } else if first.as_ref().is_some_and(Permission::is_question) {
@@ -3152,7 +3179,7 @@ impl Jobs {
     /// The owner answers the job's waiting permission: allow it once, always (a rule for the
     /// repository), or no, with their words for the agent.
     pub fn answer_permission(
-        &self,
+        self: &Arc<Self>,
         id: &str,
         permission: &str,
         decision: Decision,
@@ -3165,16 +3192,31 @@ impl Jobs {
                 "Tell the agent something of up to 2,000 characters.".into(),
             ));
         }
+        let asked = self.lock().asks.get(id).is_some_and(|asks| {
+            asks.front()
+                .is_some_and(|a| a.permission.id == permission && a.permission.is_question())
+        });
+        let kept = self.kept_ask(id).is_some_and(|p| p.id == permission);
         // A question's no with words of the owner's own (the Mac's and the Watch's typed reply)
         // is its answer, not a refusal (#858).
         if decision == Decision::Deny
             && let Some(words) = words
-            && self.lock().asks.get(id).is_some_and(|asks| {
-                asks.front()
-                    .is_some_and(|a| a.permission.id == permission && a.permission.is_question())
-            })
+            && (asked || kept)
         {
             return self.answer_question(id, permission, words);
+        }
+        // A question a restart kept: a no declines it; nothing else but an answer does.
+        if kept {
+            return match decision {
+                Decision::Deny => self
+                    .answer_kept_question(id, permission, None)
+                    .unwrap_or_else(|| {
+                        Err(PermissionRefused::NotWaiting(
+                            "That question isn't waiting any more.".into(),
+                        ))
+                    }),
+                _ => Err(PermissionRefused::Refused(QUESTION_NEEDS_AN_ANSWER.into())),
+            };
         }
         let ask = {
             let mut state = self.lock();
@@ -3267,7 +3309,7 @@ impl Jobs {
     /// call's questions left, the next takes its place on a card of its own; after the last, the
     /// agent hears every answer as the tool's (`updatedInput` with `answers`).
     pub fn answer_question(
-        &self,
+        self: &Arc<Self>,
         id: &str,
         permission: &str,
         answer: &str,
@@ -3280,6 +3322,9 @@ impl Jobs {
                 PermissionRefused::Refused(format!("Couldn't pass your answer on: {why}"))
             })?;
         let answer = answer.as_str();
+        if let Some(answered) = self.answer_kept_question(id, permission, Some(answer)) {
+            return answered;
+        }
         let (settled, done) = {
             let mut state = self.lock();
             let Some(ask) = state
@@ -3305,7 +3350,7 @@ impl Jobs {
             let settled = (ask.permission.id.clone(), said);
             if next < ask.call.questions.len() {
                 ask.permission =
-                    permissions::question_card(&ask.call, &permissions::new_id(), next);
+                    permissions::question_card(&ask.call.questions, &permissions::new_id(), next);
                 (settled, None)
             } else {
                 let ask = state
@@ -3335,6 +3380,95 @@ impl Jobs {
         Ok(self.get(id).unwrap_or(job))
     }
 
+    /// The question a restart kept on job `id` (#858): `running`, its card a question with its
+    /// call, and no agent of its waiting on it.
+    fn kept_ask(&self, id: &str) -> Option<Permission> {
+        let state = self.lock();
+        if state.workers.contains_key(id) || state.asks.get(id).is_some_and(|a| !a.is_empty()) {
+            return None;
+        }
+        let job = state.jobs.get(id).filter(|j| j.status == Status::Running)?;
+        kept_question(job).cloned()
+    }
+
+    /// The owner answers a question a restart kept (#858), or declines it (`answer` none): the
+    /// next of its call's questions waits in its place, or, after the last or a no, the job's
+    /// session is picked up as after any restart, its agent told what it asked and what the owner
+    /// said ([`permissions::answered_later`]). `None` when no kept question has that id.
+    fn answer_kept_question(
+        self: &Arc<Self>,
+        id: &str,
+        permission: &str,
+        answer: Option<&str>,
+    ) -> Option<Result<Job, PermissionRefused>> {
+        let (next, said, picked_up) = {
+            let mut state = self.lock();
+            if state.workers.contains_key(id) || state.asks.get(id).is_some_and(|a| !a.is_empty()) {
+                return None;
+            }
+            let job = state
+                .jobs
+                .get_mut(id)
+                .filter(|j| j.status == Status::Running)?;
+            let asking = kept_question(job)
+                .filter(|p| p.id == permission)?
+                .question
+                .clone()?;
+            let call = job.question_call.as_mut()?;
+            let mut next = None;
+            let said = match answer {
+                Some(answer) => {
+                    let Some(said) = permissions::question_answer(&asking.question, answer) else {
+                        return Some(Err(PermissionRefused::Refused(
+                            QUESTION_NEEDS_AN_ANSWER.into(),
+                        )));
+                    };
+                    call.answers.push(said.clone());
+                    next = (asking.index + 1 < call.questions.len()).then(|| {
+                        permissions::question_card(
+                            &call.questions,
+                            &permissions::new_id(),
+                            asking.index + 1,
+                        )
+                    });
+                    said
+                }
+                None => permissions::DENY.to_owned(),
+            };
+            let picked_up = next.is_none();
+            if picked_up {
+                job.heard
+                    .push(permissions::answered_later(call, answer.is_none()));
+                job.permission = None;
+                job.question_call = None;
+                job.status = Status::Queued;
+                job.phase = Some(Phase::Prepare);
+                job.step = if answer.is_some() {
+                    "You answered its question"
+                } else {
+                    "You didn't answer its question"
+                }
+                .into();
+            } else {
+                job.permission = next.clone();
+            }
+            (next, said, picked_up)
+        };
+        let job = self.update(id, |_| {})?;
+        self.note(PermissionNote::Settled {
+            job: id.to_owned(),
+            permission: permission.to_owned(),
+            answer: Some(said),
+        });
+        if let Some(next) = next {
+            self.note(PermissionNote::Waiting(Box::new(job.clone()), next));
+        }
+        if picked_up {
+            self.schedule();
+        }
+        Some(Ok(self.get(id).unwrap_or(job)))
+    }
+
     /// Changes how much the job asks, from now on: the prompts waiting now that the new mode
     /// allows are answered. A finished job keeps the mode for when it runs again. A review job stays
     /// in Plan.
@@ -3348,18 +3482,35 @@ impl Jobs {
         self.get(id)
     }
 
-    /// The job's waiting prompts go: nobody will answer them (it was stopped, or ended).
-    fn drop_asks(&self, id: &str) {
+    /// The job's waiting prompts go: nobody will answer them (it was stopped, or ended), a
+    /// question a restart kept among them. obid shutting down (`shutdown`) keeps the question the
+    /// job shows, and its inbox item, for the next start to keep waiting (#858).
+    fn drop_asks(&self, id: &str, shutdown: bool) {
         let dropped = self.lock().asks.remove(id).unwrap_or_default();
-        for ask in &dropped {
+        let shown = self.get(id).and_then(|j| j.permission);
+        let kept = shown.as_ref().filter(|p| shutdown && p.is_question());
+        let mut settled: Vec<&str> = dropped.iter().map(|a| a.permission.id.as_str()).collect();
+        // A question a restart kept has no ask of its own.
+        if let Some(p) = &shown
+            && !settled.contains(&p.id.as_str())
+        {
+            settled.push(&p.id);
+        }
+        for permission in settled {
+            if kept.is_some_and(|k| k.id == permission) {
+                continue;
+            }
             self.note(PermissionNote::Settled {
                 job: id.to_owned(),
-                permission: ask.permission.id.clone(),
+                permission: permission.to_owned(),
                 answer: None,
             });
         }
-        if self.get(id).is_some_and(|j| j.permission.is_some()) {
-            self.update(id, |job| job.permission = None);
+        if shown.is_some() && kept.is_none() {
+            self.update(id, |job| {
+                job.permission = None;
+                job.question_call = None;
+            });
         }
     }
 
@@ -4113,7 +4264,7 @@ impl Jobs {
             let _ = std::fs::remove_file(temp.join(MCP_CONFIG_FILE));
         }
         forget_login_secrets(&self.login_path(id));
-        self.drop_asks(id);
+        self.drop_asks(id, *signal.borrow() == Signal::Shutdown);
         let stopped = *signal.borrow() != Signal::Run;
         match outcome {
             // The owner stopped it: its exchange gets a failed result. A shutdown leaves it be.
@@ -8762,6 +8913,13 @@ async fn count_commits(worktree: &Path, start_commit: &str, head: &str) -> u64 {
     .unwrap_or(0)
 }
 
+/// The agent's question `job` shows, kept with its call (#858): what a restart keeps waiting.
+fn kept_question(job: &Job) -> Option<&Permission> {
+    job.permission
+        .as_ref()
+        .filter(|p| p.is_question() && job.question_call.is_some())
+}
+
 /// `job` hears `text`: its notes, what it heard, and its step.
 fn hear(job: &mut Job, text: &str) {
     job.notes.get_or_insert_with(Vec::new).push(text.to_owned());
@@ -11718,7 +11876,7 @@ mod tests {
         let Ruling::Ask(dropped) = ask() else {
             panic!("the question went through by itself");
         };
-        jobs.drop_asks("j");
+        jobs.drop_asks("j", false);
         assert!(dropped.await.is_err());
         assert!(jobs.get("j").unwrap().permission.is_none());
         // A call with no question to ask is refused at once.

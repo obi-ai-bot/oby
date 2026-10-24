@@ -453,12 +453,19 @@ impl Link {
             .load_all()
             .into_iter()
             .map(|mut i| {
+                // The agent's question its job still shows waits on, a restart kept it (#858).
+                let kept = i.kind == inbox::QUESTION_KIND
+                    && jobs
+                        .get(&i.job)
+                        .and_then(|j| j.permission)
+                        .is_some_and(|p| inbox::permission_item_id(&i.job, &p.id) == i.id);
                 // A permission waited on an agent that ended with obid: its job's agent asks again
                 // when it runs, so the old item is done by itself.
                 if matches!(
                     i.kind.as_str(),
                     "permission" | "plan" | inbox::QUESTION_KIND
                 ) && i.done.is_none()
+                    && !kept
                 {
                     i.done = Some(now);
                     if let Err(e) = inbox.save(&i) {

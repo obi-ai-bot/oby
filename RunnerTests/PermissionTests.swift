@@ -523,6 +523,18 @@ final class PermissionTests {
         desk.modeElsewhere = { job, mode in job.id == "away1" && mode == .plan ? nil : "wrong" }
         let away = await desk.card(for: Planner.Result(plan: plan(.setMode, jobs: ["away1"], mode: .plan), by: "claude"), said: "plan first for that job")
         #expect(away == .reply("Permission modes is in Plan mode now."))
+        // A runner's agent's question (#858) is the user's alone: the brain may not name it, and
+        // answering it is refused, words or not, before the runner hears anything.
+        var asking = fix("ask1", mode: .ask)
+        asking.status = .running
+        asking.permission = Permission(id: "p9", tool: "AskUserQuestion", title: "Answer the agent's question", detail: "Which store?",
+                                       question: .init(question: "Which store?"))
+        desk.elsewhere = { [Briefing.Place(name: "tetrix-lab", jobs: [asking], inbox: [])] }
+        var heard = false
+        desk.answerElsewhere = { _, _, _ in heard = true; return nil }
+        #expect(!desk.briefing(turns: []).permissions.contains("ask1"))
+        let words = await desk.card(for: Planner.Result(plan: plan(.answerPermission, jobs: ["ask1"], decision: .deny, message: "SQLite"), by: "claude"), said: "tell it SQLite")
+        #expect(words == .reply("Permission modes waits for you to answer its question: only you can, in your inbox.") && !heard)
     }
 
     @Test func dispatchedJobsTakeTheDefaultOrTheirOwnMode() async throws {

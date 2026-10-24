@@ -72,10 +72,15 @@ nonisolated struct RunnerPermission: Codable, Equatable, Sendable {
     /// Always allow, spelled out: "Yes, and don't ask again for swift test in deskree-inc/oby".
     var always: String?
 
-    /// Claude Code's tool for asking the user a question (#858).
-    static let askUserQuestion = "AskUserQuestion"
+    /// The question the agent asks the user in AskUserQuestion (obid's `permission.question`,
+    /// #858), quoted data; nil for every other permission.
+    var question: Asked?
+
+    /// What obid's `permission.question` carries that the apps read: the question itself.
+    struct Asked: Codable, Equatable, Sendable { var question: String }
+
     /// The agent's question: obid refuses Allow on it, and takes a Deny with words as its answer.
-    var isQuestion: Bool { tool == Self.askUserQuestion }
+    var isQuestion: Bool { question != nil }
 }
 
 /// A saved permission rule (`GET /v1/permissions/rules`).
