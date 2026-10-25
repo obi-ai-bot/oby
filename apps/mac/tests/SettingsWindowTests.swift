@@ -10,11 +10,11 @@ struct SettingsWindowTests {
         #expect(SettingsPage.allCases.map(\.label) == ["General", "Runner", "Sharing", "Remote access", "Accounts", "Models", "Connectors", "Memory", "Obysphere", "Vault", "About"])
     }
 
-    /// The launch build (AGENTS.md, 2026-10-23) hides Sharing, Remote access and every connector but
-    /// GitHub and Slack; `showEverything` brings them back, and a page whose switch is on stays, so
+    /// The launch build (AGENTS.md, 2026-10-23) hides Sharing, Remote access, Vault and every connector
+    /// but GitHub and Slack; `showEverything` brings them back, and a page whose switch is on stays, so
     /// the owner can turn it off.
     @Test func theLaunchBuildHidesSharingRemoteAndMostConnectors() {
-        #expect(SettingsPage.shown(everything: false).map(\.label) == ["General", "Runner", "Accounts", "Models", "Connectors", "Memory", "Obysphere", "Vault", "About"])
+        #expect(SettingsPage.shown(everything: false).map(\.label) == ["General", "Runner", "Accounts", "Models", "Connectors", "Memory", "Obysphere", "About"])
         #expect(SettingsPage.shown(everything: true) == SettingsPage.allCases)
         #expect(SettingsPage.shown(everything: false, remoteOn: true).contains(.remote))
         #expect(!SettingsPage.shown(everything: false, remoteOn: true).contains(.sharing))
