@@ -149,6 +149,10 @@ nonisolated struct Job: Codable, Identifiable, Equatable, Sendable {
         /// Waiting for room while only these accounts' weekly reserves stand in the way (#278), by
         /// id: "Use Personal anyway" shows on each. Newer runners only.
         var reserved: [String]?
+
+        /// obid holds it back until the Mac has room for it (docs/runner-api.md, admission by
+        /// memory): `cap`, with these words.
+        static let memory = Waiting(kind: "cap", text: "memory frees up")
     }
 
     /// Queued until what its `startWhen` names happens (#216: `waiting`'s kind `schedule` or
@@ -892,6 +896,10 @@ nonisolated struct TurnStep: Codable, Identifiable, Equatable, Sendable {
 }
 
 extension Job {
+    /// Queued until the Mac has room for it (obid's admission by memory, docs/runner-api.md):
+    /// `Waiting.memory`, the one constant both Jobs match.
+    nonisolated var waitsForMemory: Bool { status == .queued && waiting == .memory }
+
     #if os(iOS) || os(watchOS)
     nonisolated var pullRequestState: String? { pullRequest?.state }
     nonisolated var reviewDecision: String? { pullRequest?.reviewDecision }

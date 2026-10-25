@@ -181,6 +181,11 @@ const rank = (t: Task) => (t.fresh ? 0 : t.status === 'needs' ? 1 : t.job.status
 export const tasksWith = (status: Status) => onHome().filter((t) => t.status === status).sort((a, b) => rank(a) - rank(b));
 export const tasksOf = (type: string) =>
   onHome().filter((t) => t.type === type).sort((a, b) => rank(a) - rank(b));
+// queued until the Mac has room for it (obid's admission by memory): its step says so, and Home
+// counts it apart from what runs
+export const waitsForMemory = (t: Task) => t.job.status === 'queued' && t.job.step === 'Waiting for memory';
+export const memoryCount = () => onHome().filter(waitsForMemory).length;
+export const runningCount = () => onHome().filter((t) => t.status === 'running' && !waitsForMemory(t)).length;
 export const countOf = (status: Status, type?: string) =>
   onHome().filter((t) => t.status === status && (!type || t.type === type)).length;
 // a kind of work's count: its tasks not done yet, running or needing you

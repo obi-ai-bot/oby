@@ -19,17 +19,18 @@ import { askOby, chatOfTask, renameChat, tellAbout, useChats } from './chats';
 import { useConvos } from './peers';
 import { AvatarStack } from './ObyFace';
 import { convoTitle, hasAttachments, type Attachments } from './mock';
-import { TYPES, renameTask, tell, countOf, firstTab, hasFresh, useTasks, type Tab } from './tasks';
+import { TYPES, renameTask, tell, countOf, runningCount, memoryCount, firstTab, hasFresh, useTasks, type Tab } from './tasks';
 
 // the line over the chips: what's running and what needs you; with neither,
-// Oby asking for something to do
-function attention(running: number, needs: number) {
+// Oby asking for something to do. Between them, only while some do, the tasks
+// waiting for the Mac's memory, which aren't running
+function attention(running: number, needs: number, memory = 0) {
   const r = `${running} running task${running === 1 ? '' : 's'}`;
   const n = `${needs} need${needs === 1 ? 's' : ''} you`;
-  if (running && needs) return `${r} · ${n}`;
-  if (running) return `${r} · nothing needs you`;
-  if (needs) return n;
-  return 'All quiet. Give me something to work on';
+  const m = memory ? `${memory} waiting for memory` : undefined;
+  if (running) return [r, m, needs ? n : 'nothing needs you'].filter(Boolean).join(' · ');
+  if (needs) return [m, n].filter(Boolean).join(' · ');
+  return m ?? 'All quiet. Give me something to work on';
 }
 
 // side panel width limits, icons (48px) included
@@ -68,7 +69,7 @@ export default function Home() {
   const chats = useChats();
   const convos = useConvos();
   const spheres = useSpheres();
-  const running = countOf('running'), needsYou = countOf('needs');
+  const running = runningCount(), needsYou = countOf('needs'), memory = memoryCount();
 
   const [layers, setLayers] = useState<Layer[]>([]);
   const live = layers.filter((l) => !l.leaving);
@@ -346,7 +347,7 @@ export default function Home() {
         <Oby paused={away} glance={onChips && !away} />
         {TYPES.length > 0 && (
           <section className="attention" aria-label="Your tasks">
-            <span className={`attention-label${running || needsYou ? '' : ' is-idle'}`}>{attention(running, needsYou)}</span>
+            <span className={`attention-label${running || needsYou || memory ? '' : ' is-idle'}`}>{attention(running, needsYou, memory)}</span>
             {/* every kind of work, in its usual order, whatever's going on in it (a
                 kind with nothing open opens on its completed ones), so the kinds
                 show here even while the side panel groups by status */}

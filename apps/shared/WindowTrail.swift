@@ -117,15 +117,16 @@ nonisolated enum PanelWidth {
 }
 
 /// What Home says over its chips (Sangam's Home.tsx `attention`): what's running and what needs
-/// you; with neither, Oby asking for something to do.
+/// you; with neither, Oby asking for something to do. Between them, only while some do, the tasks
+/// waiting for the Mac's memory (obid's admission, docs/runner-api.md), which aren't running.
 nonisolated enum HomeLine {
-    static func attention(running: Int, needs: Int) -> String {
+    static func attention(running: Int, needs: Int, memory: Int = 0) -> String {
         let r = "\(running) running task\(running == 1 ? "" : "s")"
         let n = "\(needs) need\(needs == 1 ? "s" : "") you"
-        if running > 0 && needs > 0 { return "\(r) · \(n)" }
-        if running > 0 { return "\(r) · nothing needs you" }
-        if needs > 0 { return n }
-        return idle
+        let m = memory > 0 ? "\(memory) waiting for memory" : nil
+        if running > 0 { return [r, m, needs > 0 ? n : "nothing needs you"].compactMap(\.self).joined(separator: " · ") }
+        if needs > 0 { return [m, n].compactMap(\.self).joined(separator: " · ") }
+        return m ?? idle
     }
 
     static let idle = "All quiet. Give me something to work on"

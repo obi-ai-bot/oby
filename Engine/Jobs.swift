@@ -226,6 +226,9 @@ nonisolated struct Job: Codable, Identifiable, Equatable, Sendable {
         static let update = Waiting(kind: .update, text: "runner update")
         /// Every slot is taken (`Desk.maxRunning`, #237): it starts in its turn, oldest first.
         static let slot = Waiting(kind: .cap, text: "a slot opens")
+        /// obid holds it back until the Mac has room for it (docs/runner-api.md, admission by
+        /// memory): `cap`, with these words.
+        static let memory = Waiting(kind: .cap, text: "memory frees up")
     }
     /// What it waits for before it starts (#216, Engine/StartWhen.swift): it stays queued until every
     /// condition holds. Nil for a job that starts at once, and once it started.
