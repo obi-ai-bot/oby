@@ -108,8 +108,25 @@ pub fn tree_rss(table: &[Process], roots: &[u32]) -> u64 {
     total
 }
 
-/// The machine's memory now, or `None` when it can't be read.
+/// The machine's memory now, or `None` when it can't be read. `OBID_MEMORY_AVAILABLE` (bytes) says
+/// what's available instead, with no pressure: obid's tests can't fill a Mac's memory, and their
+/// jobs shouldn't wait on whatever else the Mac running them holds.
 pub fn machine() -> Option<Machine> {
+    let machine = read_machine()?;
+    let said = std::env::var("OBID_MEMORY_AVAILABLE")
+        .ok()
+        .and_then(|bytes| bytes.parse().ok());
+    Some(match said {
+        Some(available) => Machine {
+            available,
+            pressure: Pressure::Normal,
+            ..machine
+        },
+        None => machine,
+    })
+}
+
+fn read_machine() -> Option<Machine> {
     #[cfg(target_os = "macos")]
     {
         let sysctl = run("/usr/sbin/sysctl", &["-n", "hw.memsize", PRESSURE_LEVEL])?;

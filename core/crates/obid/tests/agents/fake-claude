@@ -10,6 +10,8 @@
 //   KEEP PROMPTS     from now on appends every prompt it gets to .obi/prompts.log, each ended by a
 //                    line "<<<end of prompt>>>"
 //   SLEEP            beats: writes a growing count to .obi/beat every 50 ms until it is ended
+//   HOG: <mb> <s>    holds <mb> MB of random bytes, as a build does, for <s> seconds, then
+//                    ends the turn with "Held." (scripts measuring memory admission)
 //   FAIL             ends the turn with an error result
 //   LIMITED: <s>     says the account is full (a rate_limit_event whose 5-hour window resets <s>
 //                    seconds from now), then ends the turn with Claude Code's usage-limit error
@@ -82,6 +84,7 @@
 // It fails the turn when its environment holds a Claude Code, Anthropic or GitHub variable.
 
 import { execFileSync } from "node:child_process";
+import { randomFillSync } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { createInterface } from "node:readline";
 
@@ -359,6 +362,12 @@ rl.on("line", (line) => {
     result("Made artifacts.");
   } else if (prompt.match(/PAUSE: (\d+)/)) {
     setTimeout(() => result("Paused."), Number(prompt.match(/PAUSE: (\d+)/)[1]));
+  } else if (prompt.match(/HOG: (\d+) (\d+)/)) {
+    const [, mb, seconds] = prompt.match(/HOG: (\d+) (\d+)/);
+    const held = [];
+    // Random bytes, which the system can't compress away, as a compiler's memory mostly is.
+    for (let i = 0; i < Number(mb); i++) held.push(randomFillSync(Buffer.allocUnsafe(1024 * 1024)));
+    setTimeout(() => result(`Held ${held.length} MB.`), Number(seconds) * 1000);
   } else if (prompt.includes("SLEEP")) {
     mkdirSync(".obi", { recursive: true });
     writeFileSync(".obi/apple-check-env.json", JSON.stringify({ url: process.env.OBY_CHECK_URL, token: process.env.OBY_CHECK_TOKEN }));

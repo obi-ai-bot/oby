@@ -653,18 +653,39 @@ pub struct Jobs {
     pub usage_changed: Notify,
     /// What the meter last read: the machine's memory, and each running job's ([`Jobs::meter`]).
     measured: Mutex<Measured>,
-    /// Wakes the meter: a job started.
+    /// Wakes the meter: a job started, or waits for memory.
     metering: Notify,
+    /// Told when a job starts waiting for memory: obid lets go of what it holds only to be quick
+    /// (a conversation's waiting Claude Code, crate::brain::harness).
+    short_of_memory: std::sync::OnceLock<Box<dyn Fn() + Send + Sync>>,
 }
 
-/// How often the meter reads while jobs run ([`Jobs::meter`]).
+/// How often the meter reads while jobs run or wait for memory ([`Jobs::meter`]).
 const METER_TICK: Duration = Duration::from_secs(5);
+/// What a job may hold at once until obid has measured 3 of its tool and repository: about one
+/// cold Rust build next to its agent.
+pub const DEFAULT_BUDGET: u64 = 1536 * 1024 * 1024;
+/// How many of the latest measured jobs of a tool and repository its budget is learned from.
+const BUDGET_FROM: usize = 10;
+/// The most a check waits for memory before it runs anyway, its build sized to what's there.
+const CHECK_MEMORY_WAIT: Duration = Duration::from_secs(10 * 60);
 
 /// What the meter last read ([`Jobs::meter`]).
 #[derive(Default)]
 struct Measured {
     machine: Option<(std::time::Instant, crate::meter::Machine)>,
     jobs: HashMap<String, JobMemory>,
+    /// The queued jobs waiting for memory: since when, and the budget they wait to fit.
+    waiting: HashMap<String, (i64, u64)>,
+}
+
+/// A queued job waiting for memory (`status.memory.waiting`): the room it waits for, in bytes,
+/// and since when.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct MemoryWait {
+    pub id: String,
+    pub budget: u64,
+    pub since: String,
 }
 
 /// A running job's processes' resident memory, in bytes (`status.memory.jobs`): now, and the most
@@ -781,7 +802,14 @@ impl Jobs {
             usage_changed: Notify::new(),
             measured: Mutex::new(Measured::default()),
             metering: Notify::new(),
+            short_of_memory: std::sync::OnceLock::new(),
         }))
+    }
+
+    /// What obid lets go of when a job starts waiting for memory (once; a second call changes
+    /// nothing).
+    pub fn on_short_of_memory(&self, hook: Box<dyn Fn() + Send + Sync>) {
+        let _ = self.short_of_memory.set(hook);
     }
 
     pub fn set_api_address(&self, address: std::net::SocketAddr) {
@@ -1356,16 +1384,20 @@ impl Jobs {
     }
 
     /// Reads the machine's memory and each running job's processes every [`METER_TICK`] while
-    /// any job runs, and nothing while none does (crate::meter).
+    /// any job runs or waits for memory, and nothing otherwise (crate::meter).
     pub async fn meter(self: Arc<Self>, mut stopping: watch::Receiver<bool>) {
         loop {
-            if self.running() == 0 {
+            if self.running() == 0 && self.measured().waiting.is_empty() {
                 tokio::select! {
                     () = self.metering.notified() => continue,
                     _ = stopping.changed() => return,
                 }
             }
             self.measure().await;
+            // Memory may have freed up: a job waiting for it starts once it fits.
+            if !self.measured().waiting.is_empty() {
+                self.schedule();
+            }
             tokio::select! {
                 () = tokio::time::sleep(METER_TICK) => {}
                 _ = stopping.changed() => return,
@@ -1449,7 +1481,7 @@ impl Jobs {
 
     /// The machine's memory, as the meter last read it or now when that's older than a tick
     /// (nothing runs, so the meter sleeps), and each running job's; `None` when it can't be read.
-    pub async fn memory(&self) -> Option<(crate::meter::Machine, Vec<JobMemory>)> {
+    pub async fn memory(&self) -> Option<(crate::meter::Machine, Vec<JobMemory>, Vec<MemoryWait>)> {
         let fresh = self
             .measured()
             .machine
@@ -1464,9 +1496,52 @@ impl Jobs {
                 machine
             }
         };
-        let mut jobs: Vec<JobMemory> = self.measured().jobs.values().cloned().collect();
+        let measured = self.measured();
+        let mut jobs: Vec<JobMemory> = measured.jobs.values().cloned().collect();
         jobs.sort_by(|a, b| a.id.cmp(&b.id));
-        Some((machine, jobs))
+        let mut waiting: Vec<MemoryWait> = measured
+            .waiting
+            .iter()
+            .map(|(id, (since, budget))| MemoryWait {
+                id: id.clone(),
+                budget: *budget,
+                since: obi_protocol::time::format(*since),
+            })
+            .collect();
+        waiting.sort_by(|a, b| (&a.since, &a.id).cmp(&(&b.since, &b.id)));
+        Some((machine, jobs, waiting))
+    }
+
+    /// The machine's memory to admit work by: the meter's reading while it's at most two ticks
+    /// old, else read now. ponytail: a few milliseconds of `sysctl` and `vm_stat` on the caller's
+    /// thread, only when the meter sleeps (nothing runs or waits).
+    fn reading(&self) -> Option<crate::meter::Machine> {
+        if let Some((at, machine)) = self.measured().machine
+            && at.elapsed() < 2 * METER_TICK
+        {
+            return Some(machine);
+        }
+        let machine = crate::meter::machine()?;
+        self.measured().machine = Some((std::time::Instant::now(), machine));
+        Some(machine)
+    }
+
+    /// Whether the check of job `id` may start now, as far as memory goes ([`admits`]): this
+    /// job's agent already holds part of its budget, and the room the others may still take
+    /// isn't held back from a check, which would wait on them while they wait on it.
+    fn check_fits(&self, id: &str) -> bool {
+        let machine = self.reading();
+        let (budget, others) = {
+            let state = self.lock();
+            let Some(job) = state.jobs.get(id) else {
+                return true;
+            };
+            let others = state.workers.keys().filter(|w| *w != id).count();
+            (budget(state.jobs.values(), job), others)
+        };
+        let held = self.measured().jobs.get(id).map_or(0, |m| m.rss);
+        let need = budget.saturating_sub(held);
+        admits(machine, others, machine.map_or(0, |m| spare(&m)), need)
     }
 
     /// Marks `account` as being signed in or removed, unless a job that hasn't ended (queued or
@@ -2561,7 +2636,8 @@ impl Jobs {
         Ok(job)
     }
 
-    /// Starts the queued jobs, oldest first, while slots are free; the others say they wait.
+    /// Starts the queued jobs, oldest first, while slots are free and memory has room for them
+    /// ([`admits`]); the others say they wait.
     fn schedule(self: &Arc<Self>) {
         if self
             .shutting_down
@@ -2569,10 +2645,34 @@ impl Jobs {
         {
             return;
         }
+        let queued = self
+            .lock()
+            .jobs
+            .values()
+            .any(|j| j.status == Status::Queued);
+        let machine = if queued { self.reading() } else { None };
+        // What the running jobs may still take: their budget, less what they hold now.
+        let held: HashMap<String, u64> = self
+            .measured()
+            .jobs
+            .iter()
+            .map(|(id, m)| (id.clone(), m.rss))
+            .collect();
         let mut start = Vec::new();
         let mut waiting = Vec::new();
+        let mut short = Vec::new();
         {
             let mut state = self.lock();
+            let reserved: u64 = state
+                .workers
+                .keys()
+                .filter_map(|id| state.jobs.get(id))
+                .map(|job| {
+                    let budget = budget(state.jobs.values(), job);
+                    budget.saturating_sub(held.get(&job.id).copied().unwrap_or(0))
+                })
+                .sum();
+            let mut room = machine.map_or(0, |m| spare(&m).saturating_sub(reserved));
             let mut queued: Vec<(i64, String)> = state
                 .jobs
                 .values()
@@ -2590,28 +2690,74 @@ impl Jobs {
                 {
                     continue;
                 }
-                if state.workers.len() < self.max_running() {
-                    let (sender, receiver) = watch::channel(Signal::Run);
-                    state.workers.insert(id.clone(), sender);
-                    start.push((id, receiver));
-                } else {
+                if state.workers.len() >= self.max_running() {
                     waiting.push(id);
+                    continue;
                 }
+                let Some(job) = state.jobs.get(&id) else {
+                    continue;
+                };
+                let budget = budget(state.jobs.values(), job);
+                // Oldest first: once one waits for memory, the younger ones wait behind it.
+                if !short.is_empty() || !admits(machine, state.workers.len(), room, budget) {
+                    short.push((id, budget));
+                    continue;
+                }
+                room = room.saturating_sub(budget);
+                let (sender, receiver) = watch::channel(Signal::Run);
+                state.workers.insert(id.clone(), sender);
+                start.push((id, receiver));
             }
         }
-        let running = self.running();
-        for id in waiting {
-            let max = self.max_running();
-            self.update(&id, |job| {
-                let wait = Waiting {
-                    kind: "cap".into(),
-                    text: "a slot opens".into(),
-                };
-                if job.waiting.as_ref() != Some(&wait) {
+        let now = obi_protocol::time::now();
+        let newly_short = {
+            let mut measured = self.measured();
+            let kept: HashMap<String, (i64, u64)> = short
+                .iter()
+                .map(|(id, budget)| {
+                    let since = measured.waiting.get(id).map_or(now, |(since, _)| *since);
+                    (id.clone(), (since, *budget))
+                })
+                .collect();
+            let grew = kept.keys().any(|id| !measured.waiting.contains_key(id));
+            measured.waiting = kept;
+            grew
+        };
+        if !short.is_empty() {
+            // The meter reads while they wait, and starts them once memory frees up.
+            self.metering.notify_one();
+        }
+        if newly_short && let Some(hook) = self.short_of_memory.get() {
+            hook();
+        }
+        // Each said once: the meter schedules every few seconds while a job waits for memory, and
+        // every update is a write and an event.
+        let wait_for = |id: &str, kind: &str, text: &str, step: String| {
+            let wait = Waiting {
+                kind: kind.into(),
+                text: text.into(),
+            };
+            let said = self
+                .lock()
+                .jobs
+                .get(id)
+                .is_none_or(|job| job.waiting.as_ref() == Some(&wait));
+            if !said {
+                self.update(id, |job| {
                     job.waiting = Some(wait);
-                    job.step = format!("Waiting for a free slot: {running} of {max} jobs running");
-                }
-            });
+                    job.step = step;
+                });
+            }
+        };
+        // `cap` as the apps know it (their job decodes no other kind), with what it waits for.
+        for (id, _) in &short {
+            wait_for(id, "cap", "memory frees up", "Waiting for memory".into());
+        }
+        let running = self.running();
+        let max = self.max_running();
+        for id in waiting {
+            let step = format!("Waiting for a free slot: {running} of {max} jobs running");
+            wait_for(&id, "cap", "a slot opens", step);
         }
         if !start.is_empty() {
             self.metering.notify_one();
@@ -5522,7 +5668,23 @@ impl Jobs {
                 return Ok(CheckRun { passed: false, output: String::new() });
             }
         };
-        if waiting {
+        // A check is new work too: it starts once memory has room for it, waiting
+        // CHECK_MEMORY_WAIT at most (then it runs as it is), and a stop ends the wait.
+        let give_up_at = tokio::time::Instant::now() + CHECK_MEMORY_WAIT;
+        let mut short = false;
+        while !self.check_fits(id) && tokio::time::Instant::now() < give_up_at {
+            if !short {
+                short = true;
+                self.update(id, |job| job.step = "Waiting for memory".into());
+            }
+            tokio::select! {
+                () = tokio::time::sleep(METER_TICK) => {}
+                _ = async { while *stop.borrow_and_update() == Signal::Run && stop.changed().await.is_ok() {} } => {
+                    return Ok(CheckRun { passed: false, output: String::new() });
+                }
+            }
+        }
+        if waiting || short {
             self.update(id, |job| job.step = step);
         }
         // Each step between its top-level `&&`s timed, its tests counted, live (#734).
@@ -10265,6 +10427,46 @@ fn pull_request_open(job: &Job) -> bool {
             .is_none_or(|pr| pr.state != "MERGED" && pr.state != "CLOSED")
 }
 
+/// What a job like `job` (its tool and repository, itself included when it ran before) may hold
+/// at once: the most the latest [`BUDGET_FROM`] measured ones held (`peakRss`), and at least
+/// [`DEFAULT_BUDGET`] until 3 of them were.
+fn budget<'a>(jobs: impl Iterator<Item = &'a Job>, job: &Job) -> u64 {
+    let mut peaks: Vec<(i64, u64)> = jobs
+        .filter(|j| j.agent == job.agent && j.repo == job.repo)
+        .filter_map(|j| Some((j.finished?, j.peak_rss?)))
+        .collect();
+    peaks.sort_unstable_by(|a, b| b.cmp(a));
+    peaks.truncate(BUDGET_FROM);
+    let most = peaks.iter().map(|(_, peak)| *peak).max().unwrap_or(0);
+    if peaks.len() < 3 {
+        most.max(DEFAULT_BUDGET)
+    } else {
+        most
+    }
+}
+
+/// What new work may take of `machine`'s available memory: all but a fifth of the machine, kept
+/// free for the person's own apps. macOS compresses and swaps well before what's available runs
+/// out: on a 16 GB Mac, 3 jobs of 2 GB that fit with a tenth kept free took it to 13.9 GB used and
+/// swapped 437 MB (2026-10-25). ponytail: one share for every Mac; learned from swapouts if a
+/// fifth proves wrong.
+fn spare(machine: &crate::meter::Machine) -> u64 {
+    machine.available.saturating_sub(machine.total / 5)
+}
+
+/// Whether new work of `budget` bytes may start, with `running` jobs at work and `room` bytes free
+/// once what they may still take is held back: when the machine isn't pressed and has the room.
+/// The first job of obid's always may, unless the machine is critical: nothing of obid's would
+/// free memory for it. Unreadable memory admits everything, as before obid measured it.
+fn admits(machine: Option<crate::meter::Machine>, running: usize, room: u64, budget: u64) -> bool {
+    use crate::meter::Pressure;
+    match machine {
+        None => true,
+        Some(machine) if running == 0 => machine.pressure != Pressure::Critical,
+        Some(machine) => machine.pressure == Pressure::Normal && room >= budget,
+    }
+}
+
 /// Whether `job` is settled, as far as obid's records tell (docs/runner-api.md, `cleanup`): it
 /// ended and needs nothing, no worker or publish holds it, its pull request isn't open, no
 /// follow-up still at work carries its branch on, and it was put away (dismissed, archived, or
@@ -12837,6 +13039,71 @@ mod tests {
         jobs.record(None, vec![("live".into(), 40)]);
         assert!(ids(&jobs).is_empty());
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A budget is learned per tool and repository: at least the default until 3 jobs like it
+    /// were measured, then the most the latest 10 held, whatever the default.
+    #[test]
+    fn a_budget_is_the_most_recent_jobs_like_it_held() {
+        let ran = |id: &str, agent: &str, repo: &str, finished: i64, peak: Option<u64>| {
+            let mut job = Job::new(
+                id.into(),
+                repo.into(),
+                "fix".into(),
+                "Fix it".into(),
+                agent.into(),
+                "a".into(),
+            );
+            job.finished = Some(finished);
+            job.peak_rss = peak;
+            job
+        };
+        let gib = 1024 * 1024 * 1024;
+        let new = ran("new", "claude", "o/r", 0, None);
+        let mut jobs = vec![
+            ran("a", "claude", "o/r", 10, Some(gib / 2)),
+            ran("b", "claude", "o/r", 11, Some(gib)),
+            // Another tool, another repository, one not measured: none counts.
+            ran("c", "codex", "o/r", 12, Some(8 * gib)),
+            ran("d", "claude", "o/other", 13, Some(8 * gib)),
+            ran("e", "claude", "o/r", 14, None),
+        ];
+        assert_eq!(budget(jobs.iter(), &new), DEFAULT_BUDGET);
+        jobs.push(ran("f", "claude", "o/r", 15, Some(gib / 4)));
+        assert_eq!(budget(jobs.iter(), &new), gib);
+        // The latest 10 only: a big one long ago is forgotten.
+        jobs.push(ran("old", "claude", "o/r", 1, Some(6 * gib)));
+        assert_eq!(budget(jobs.iter(), &new), 6 * gib);
+        for n in 0..10 {
+            jobs.push(ran(
+                &format!("n{n}"),
+                "claude",
+                "o/r",
+                100 + n,
+                Some(3 * gib),
+            ));
+        }
+        assert_eq!(budget(jobs.iter(), &new), 3 * gib);
+    }
+
+    /// New work starts only when the machine isn't pressed and has room; the first job of obid's
+    /// unless it's critical; anything when memory can't be read.
+    #[test]
+    fn work_starts_only_where_memory_has_room() {
+        use crate::meter::{Machine, Pressure};
+        let at = |pressure| {
+            Some(Machine {
+                total: 16,
+                available: 8,
+                pressure,
+            })
+        };
+        assert!(admits(at(Pressure::Normal), 2, 4, 4));
+        assert!(!admits(at(Pressure::Normal), 2, 3, 4));
+        assert!(!admits(at(Pressure::Warn), 2, 8, 4));
+        assert!(admits(at(Pressure::Warn), 0, 0, 4));
+        assert!(!admits(at(Pressure::Critical), 0, 8, 4));
+        assert!(admits(None, 5, 0, 4));
     }
 
     /// When git can't run in the job's sandbox, or can't answer, the worktree stays, said in
