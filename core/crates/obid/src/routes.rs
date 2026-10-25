@@ -482,6 +482,7 @@ fn new_job(job: &Map<String, Value>) -> Result<NewJob, String> {
         untrusted: false,
         split: false,
         adding: None,
+        heard: Vec::new(),
     })
 }
 
