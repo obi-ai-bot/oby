@@ -56,6 +56,8 @@ final class Tray {
         // ponytail: a job copies its attachments when its worktree is ready, so they're kept a day
         // rather than tracked (the clipboard can hold secrets); a plan dispatched later than that
         // goes without them.
+        // Where older builds kept them, which nothing reads any more (#891).
+        try? FileManager.default.removeItem(at: LocalRunner.appRoot.appending(path: "attachments", directoryHint: .isDirectory))
         let old = Date.now.addingTimeInterval(-24 * 3600)
         let files = (try? FileManager.default.contentsOfDirectory(at: Self.folder, includingPropertiesForKeys: [.contentModificationDateKey])) ?? []
         for file in files where ((try? file.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate ?? .now) < old {
