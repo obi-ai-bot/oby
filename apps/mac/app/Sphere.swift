@@ -404,7 +404,8 @@ final class HostOwn {
 
 /// This Mac's place in its Obysphere: what obid says of its membership, the Sphere's name and
 /// members as the owner reads them, the requests from other Obys waiting for the owner, and what
-/// the owner does there (create it, invite, join, ask for a review, answer).
+/// the owner does there (create it, invite, join, leave, answer). Oby asks a teammate's Oby for a
+/// review by itself (obid's merge follower), never from here (the owner's decision of 2026-10-25).
 @MainActor @Observable
 final class SphereModel {
     /// `GET /v1/obid/sphere`.
@@ -800,23 +801,6 @@ final class SphereModel {
             "delegation": try key.assertion(owner: membership.owner, sphere: sphere, scope: Self.sharingScopes, mayAct: obi),
         ])
         try await refresh()
-    }
-
-    /// Asks `member`'s Oby to review `job`'s pull request at the commit GitHub has as its head
-    /// (docs/runner-api.md, `POST /v1/obid/sphere/requests`; the spec's review_request).
-    func askForReview(_ member: Member, of job: Job) async throws {
-        guard let pr = PublishedLink.url(job.published).flatMap({ Int($0.lastPathComponent) }),
-              let head = job.pullRequest?.head, let base = job.pullRequest?.base else {
-            throw RunnerError(message: "That job's pull request isn't read from GitHub yet: try again in a moment.")
-        }
-        var body: [String: Any] = [
-            "goal": String((job.title ?? job.task).prefix(200)).replacingOccurrences(of: "\n", with: " "),
-            "repo": job.repo, "pr": pr, "base_branch": base, "head_branch": job.branch, "head_sha": head,
-            "acceptance": [["kind": "tests_pass"], ["kind": "no_blocker_findings"]],
-        ]
-        if !job.summary.isEmpty { body["summary"] = String(job.summary.prefix(2000)) }
-        _ = try await raw(try runner(), "POST", "v1/obid/sphere/requests",
-                          ["to": member.obi, "type": "review_request", "body": body, "expiresIn": 86_400])
     }
 
     /// Answers a request with one of its options (`POST /v1/inbox/{id}/answer`).

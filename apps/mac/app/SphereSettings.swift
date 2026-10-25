@@ -3,7 +3,8 @@ import SwiftUI
 
 /// Settings › Obysphere: this Mac's Oby in its Obysphere (onboarding.md section 4). The server it
 /// uses; join with an invite link ("Join Deskree"), or create one (the strip's +); once in, who else
-/// is in it, the team link (an admin's), asking another Oby for a review, and what other Obys asked.
+/// is in it, the team link (an admin's), and what other Obys asked. Oby asks a teammate's Oby for a
+/// review by itself, as the repository's workflow says (the owner's decision of 2026-10-25).
 // ponytail: one page until Sangam's Obysphere screens (Sidebar.tsx, SphereSettings.tsx) are ported.
 struct SphereSettingsView: View {
     @State private var sphere: SphereModel
@@ -16,11 +17,8 @@ struct SphereSettingsView: View {
     @State private var email: String?
     @State private var anyone = true
     @State private var copied = false
-    @State private var asked: SphereModel.Member.ID?
     /// The member whose key you're about to accept, once you've compared it with them.
     @State private var comparing: SphereModel.Member?
-    @State private var job: Job.ID?
-    @State private var sent: String?
     @State private var leaving = false
     /// Host your own: kept while Oby runs, so the token Deploy… made outlives this page.
     @State private var host = HostOwn.shared
@@ -263,7 +261,6 @@ struct SphereSettingsView: View {
             }
         }
         if sphere.admin { inviting(name) }
-        asking
         // Last, set apart (Sangam's design; an admin's Delete Obysphere waits for a server route).
         SetGroup {
             SetRow("Leave \(name)", about: "You’ll lose access until someone invites you back.") {
@@ -304,33 +301,6 @@ struct SphereSettingsView: View {
             }
         }
         .task { email = await CreateSphereSheet.ownEmail() }
-    }
-
-    /// Your jobs with an open pull request whose head GitHub has: what another Oby can review.
-    private var reviewable: [Job] {
-        feed.jobs.filter { PublishedLink.url($0.published) != nil && $0.pullRequest?.state == .open && $0.pullRequest?.head != nil }
-    }
-
-    private var asking: some View {
-        let members = sphere.members.filter { $0.active && $0.accepts.contains("review_request") }
-        return SetGroup("Ask for a review", footer: sent ?? "Their Oby asks them first, then reviews the pull request at its latest commit and answers here and on the job.") {
-            SetRow("Who") {
-                SetSelect("Who", selection: $asked, options: [(nil, "Choose")] + members.map { (Optional($0.id), $0.name) })
-            }
-            SetRow("Pull request") {
-                SetSelect("Pull request", selection: $job, options: [(nil, "Choose")] + reviewable.map { (Optional($0.id), $0.title ?? $0.task) })
-            }
-            SetRow("") {
-                Button("Ask for a review") {
-                    guard let member = members.first(where: { $0.id == asked }), let job = reviewable.first(where: { $0.id == job }) else { return }
-                    sphere.run {
-                        try await sphere.askForReview(member, of: job)
-                        sent = "Asked \(member.name) to review \(job.title ?? job.task)."
-                    }
-                }
-                .buttonStyle(.set).disabled(asked == nil || job == nil)
-            }
-        }
     }
 
     /// What another Oby asks: obid's words from typed fields, then the other Oby's own text,
