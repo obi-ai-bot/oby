@@ -277,7 +277,8 @@ struct SphereTests {
         #expect(sphere.teamLink?.id == "inv-2")
         try await sphere.cancelTeamLink()
         #expect(deletes().last == "/v0.1/spheres/\(id)/invitations/inv-2 Bearer admin-token")
-        #expect(sphere.teamLink == nil && (try SphereModel.teamLinks.value(id)) == nil)
+        #expect(sphere.teamLink == nil)
+        #expect(try SphereModel.teamLinks.value(id) == nil)
     }
 
     /// A Deploy… while the token is being used makes a new one: that one, and the clipboard holding
