@@ -959,6 +959,24 @@ impl Link {
         }
     }
 
+    /// The job `job`'s `limit` item now (#871): `item`, when there is one, added, and the job's other
+    /// open ones done, with no answer. None when it runs again.
+    pub fn limit_items(&self, job: &str, item: Option<Item>) {
+        let stale: Vec<String> = self
+            .lock()
+            .inbox
+            .values()
+            .filter(|i| i.kind == "limit" && i.job == job && i.done.is_none())
+            .map(|i| i.id.clone())
+            .collect();
+        for id in stale {
+            self.settle(&id);
+        }
+        if let Some(item) = item {
+            self.add_items(vec![item]);
+        }
+    }
+
     /// The job `job`'s merge card now (crate::merge): `card`, added unless the owner answered it
     /// before (they aren't asked again about that head and reason); one the follower settled by
     /// itself is offered again. Every other open `merge` item of the job is done, with no answer:
@@ -4999,6 +5017,47 @@ impl Link {
                     Given::Done => self.answer_start(item, None, None),
                     Given::Later(at) => self.answer_start(item, None, Some(at)),
                 };
+            }
+            // A `limit` item (#871): Try again carries its job on now, Dismiss lets the job go. The
+            // answer claims it under the lock, so a second tap carries nothing out.
+            if item.kind == "limit" {
+                let mut item = item;
+                match &given {
+                    Given::Later(at) => item.later = Some(*at),
+                    Given::Done => item.done = Some(now),
+                    Given::Answer(a) if a == crate::job::TRY_AGAIN || a == inbox::DISMISS => {
+                        item.answer = Some(a.clone());
+                        item.done = Some(now);
+                    }
+                    Given::Answer(_) => {
+                        return Err(api(
+                            StatusCode::UNPROCESSABLE_ENTITY,
+                            "The answer is Try again or Dismiss.",
+                        ));
+                    }
+                }
+                state.inbox.insert(item.id.clone(), item.clone());
+                drop(state);
+                self.save_item(&item);
+                let carried = match item.answer.as_deref() {
+                    Some(crate::job::TRY_AGAIN) => self.jobs.message(
+                        &item.job,
+                        crate::brain::actions::TRY_AGAIN,
+                        crate::jobs::Source::Owner,
+                    ),
+                    Some(_) => self.jobs.dismiss(&item.job),
+                    None => return Ok(item.to_json()),
+                };
+                let refused = match carried {
+                    Some(Ok(_)) => return Ok(item.to_json()),
+                    Some(Err(refused)) => refused.0,
+                    None => "That job is gone.".to_owned(),
+                };
+                item.answer = None;
+                item.done = None;
+                self.lock().inbox.insert(item.id.clone(), item.clone());
+                self.save_item(&item);
+                return Err(api(StatusCode::CONFLICT, refused));
             }
             // Oby's own question about a job event (the event orchestrator's escalation): the
             // owner's answer, or Done, settles it, and nothing else is carried out (#710). It isn't

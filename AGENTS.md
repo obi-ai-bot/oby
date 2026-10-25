@@ -32,6 +32,7 @@ Oby launches lean, and where this differs from Sangam's design, this wins until 
   - Settings › Vault and General › Permissions are hidden for launch: under obid they do nothing.
   - The launch download leaves out cloudflared and obi-vm (Remote access and Mac share are hidden), strips obid and drops the bundled web app; Deskree's Macs get them in their own builds or on demand.
   - Deskree's Obysphere relays phones for its members only; anyone else pairs through their own Sphere.
+- Account failover is on by default (the owner's decision of 2026-10-24, replacing #871's opt-in until the provider-terms review #29): when a job's account hits its usage limit, Oby moves the job to another signed-in account of the same tool with room, by itself, and a conversation's turn moves the same way. The owner turns it off in Settings (`accountFailover`); a job sent to an account by name stays on it.
 
 ## Rules Oby never breaks
 

@@ -419,7 +419,7 @@ async fn supervise(shared: &Arc<Shared>, job: &Job) -> bool {
         .config
         .conversation
         .harness
-        .then(|| shared.jobs.signed_in_account(tool))
+        .then(|| shared.jobs.thinking_accounts(tool).into_iter().next())
         .flatten();
     let Some(account) = account else {
         ask_owner(

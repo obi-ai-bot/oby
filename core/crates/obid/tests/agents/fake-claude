@@ -15,6 +15,9 @@
 //   FAIL             ends the turn with an error result
 //   LIMITED: <s>     says the account is full (a rate_limit_event whose 5-hour window resets <s>
 //                    seconds from now), then ends the turn with Claude Code's usage-limit error
+//   LIMITED ON: <w>  this turn and every later one: as LIMITED: 3600 on an account whose login's
+//                    access token holds <w>, else ends the turn with "went on: resume=<the session
+//                    it resumed, or none> told=<whether it heard that an account hit its limit>"
 //   USAGE: <json>    first sends a rate_limit_event whose rate_limit_info is the JSON
 //   TOKEN HOLDS: <w> ends the turn with "holds=<whether its login copy's access token holds <w>>",
 //                    and with REFRESH KEPT, " refresh=<kept|none>": whether the copy has a refresh token
@@ -206,6 +209,25 @@ rl.on("line", (line) => {
     writeFileSync(".obi/always-transient", "");
   }
   if (existsSync(".obi/always-transient")) return result('API Error: 529 {"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}', true);
+  // LIMITED ON: <word>, this turn and every later one of the job: limited on an account whose
+  // login copy's access token holds <word>, else goes on.
+  const limitedOn = prompt.match(/LIMITED ON: (\S+)/)?.[1] ?? (existsSync(".obi/limited-on") ? readFileSync(".obi/limited-on", "utf8") : null);
+  if (limitedOn) {
+    mkdirSync(".obi", { recursive: true });
+    writeFileSync(".obi/limited-on", limitedOn);
+    let token = "";
+    try {
+      token = JSON.parse(readFileSync(`${process.env.CLAUDE_CONFIG_DIR}/.credentials.json`, "utf8")).claudeAiOauth?.accessToken ?? "";
+    } catch {}
+    if (token.includes(limitedOn)) {
+      const resetsAt = Math.floor(Date.now() / 1000) + 3600;
+      emit({ type: "rate_limit_event", session_id: session, rate_limit_info: { status: "rejected", resetsAt,
+        unifiedWindows: { five_hour: { utilization: 1.0, resetsAt }, seven_day: { utilization: 0.5, resetsAt: resetsAt + 86400 } } } });
+      return result("Claude AI usage limit reached.", true);
+    }
+    const at = process.argv.indexOf("--resume");
+    return result(`went on: resume=${at >= 0 ? process.argv[at + 1] : "none"} told=${prompt.includes("hit its usage limit")}`);
+  }
   const holds = prompt.match(/TOKEN HOLDS: (\S+)/);
   if (holds) {
     let token = "";

@@ -335,6 +335,9 @@ enum End {
         /// When obid tries it again by itself: after its account's usage limit resets.
         resumes: Option<i64>,
     },
+    /// Its account hit its usage limit and another of the tool has room: the run starts again,
+    /// there ([`Jobs::move_on`]).
+    MovedOn,
 }
 
 impl From<String> for End {
@@ -2419,6 +2422,45 @@ impl Jobs {
         }
     }
 
+    /// The accounts of `tool` Oby thinks with (the brain, conversations and their supervisor), best
+    /// first (#874): signed in, not being signed in or removed, and not marked full; those with
+    /// room first, in the tool's order, then those held only by their weekly reserve (a turn is
+    /// small, like a review), then the rest, the least of their 5-hour window used first.
+    pub fn thinking_accounts(&self, tool: Tool) -> Vec<crate::config::Account> {
+        let home = login_home();
+        let now = obi_protocol::time::now();
+        let mut ranked: Vec<(u8, f64, usize, crate::config::Account)> = self
+            .accounts(tool)
+            .into_iter()
+            .enumerate()
+            .filter(|(_, a)| !self.being_changed(&a.id) && signed_in(tool, a, home.as_deref()))
+            .filter_map(|(at, account)| {
+                let usage = self.usage.get(&account.id);
+                usage.full_until_at(now).is_none().then_some(())?;
+                let five = usage.five_hour_at(now).unwrap_or(0.0);
+                let week = usage.seven_day_at(now).unwrap_or(0.0);
+                Some(match usage.held(now) {
+                    None => (0, 0.0, at, account),
+                    Some(_) if five.max(week) < crate::usage::NEARLY_FULL => (1, 0.0, at, account),
+                    Some(_) => (2, five, at, account),
+                })
+            })
+            .collect();
+        ranked.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.total_cmp(&b.1)).then(a.2.cmp(&b.2)));
+        ranked
+            .into_iter()
+            .map(|(_, _, _, account)| account)
+            .collect()
+    }
+
+    /// Whether `account` takes automatic work now ([`crate::usage::Usage::held`] says nothing).
+    pub fn has_room(&self, account: &str) -> bool {
+        self.usage
+            .get(account)
+            .held(obi_protocol::time::now())
+            .is_none()
+    }
+
     /// `tool`'s first account that is [`signed_in`], if any.
     pub fn signed_in_account(&self, tool: Tool) -> Option<crate::config::Account> {
         let home = login_home();
@@ -2535,6 +2577,164 @@ impl Jobs {
             ),
             (None, _) => "obid has no account to run the job on.".into(),
         }))
+    }
+
+    /// The first signed-in account of `tool` but `except` with room ([`crate::usage::Usage::held`]
+    /// says nothing) whose login can run now, as a run's start readies it
+    /// ([`Jobs::claude_login_ready`]; Codex's and Cursor's are [`signed_in`]'s), in the tool's
+    /// order: where a job whose account filled goes on (#871).
+    async fn room_for(&self, tool: Tool, except: &str) -> Option<crate::config::Account> {
+        let home = login_home();
+        let now = obi_protocol::time::now();
+        for account in self.accounts(tool) {
+            if account.id == except
+                || self.being_changed(&account.id)
+                || !signed_in(tool, &account, home.as_deref())
+                || self.usage.get(&account.id).held(now).is_some()
+            {
+                continue;
+            }
+            if tool == Tool::Claude && self.claude_login_ready(Some(&account)).await.is_err() {
+                continue;
+            }
+            return Some(account);
+        }
+        None
+    }
+
+    /// Whether obid moves work past an account's usage limit to another account with room by
+    /// itself (`accountFailover`, `PUT /v1/settings/jobs`; [`crate::settings::ACCOUNT_FAILOVER`]
+    /// when the owner didn't say).
+    pub fn account_failover(&self) -> bool {
+        crate::settings::load(&self.config.home).account_failover()
+    }
+
+    /// Whether `job` goes on on another account past its account's limit: failover is on, the
+    /// owner didn't name its account, and it's the owner's own, on this Mac.
+    fn moves_on(&self, job: &Job) -> bool {
+        self.account_failover() && !job.named && job.runs_on.is_none() && job.obi.is_none()
+    }
+
+    /// `account` hit its usage limit: it's marked full until `reset` (an hour, when its tool named
+    /// none), whatever the tool said, so routing passes it by until then. A reset already gone by
+    /// marks nothing (a stale one); a later mark already kept stays.
+    pub(crate) fn mark_full(&self, account: &str, reset: Option<i64>, now: i64) {
+        let until = match reset {
+            Some(at) if at <= now => return,
+            Some(at) => at,
+            None => now + crate::usage::UNKNOWN_RESET,
+        };
+        if self
+            .usage
+            .get(account)
+            .full_until_at(now)
+            .is_some_and(|at| at >= until)
+        {
+            return;
+        }
+        let full = crate::usage::Usage {
+            full_until: Some(until),
+            ..Default::default()
+        };
+        self.usage.record(account, &full);
+        self.usage_changed.notify_one();
+    }
+
+    /// The job's account `from` is marked full: the job moves to the first other signed-in account
+    /// of the tool with room, keeping its worktree, branch and round, and its next turn first hears
+    /// why (#871). Claude Code keeps its session, which is in the job's own folder whichever account
+    /// runs it; Codex and Cursor start a new one, told what the earlier rounds reported. The account
+    /// it moved to, or none when it stays.
+    async fn move_on(
+        &self,
+        id: &str,
+        tool: Tool,
+        from: &crate::config::Account,
+    ) -> Option<crate::config::Account> {
+        let now = obi_protocol::time::now();
+        let job = self.get(id)?;
+        if !self.moves_on(&job) {
+            return None;
+        }
+        let until = self.usage.get(&from.id).full_until_at(now)?;
+        let to = self.room_for(tool, &from.id).await?;
+        let login = self.login_path(id);
+        let keeps = tool == Tool::Claude && job.session.is_some();
+        if keeps {
+            // An account with a folder of its own keeps its sessions there; the tool's own login, in
+            // its `~/.claude`. Copied before the job says its new account, so a restart in between
+            // finds them where its account looks.
+            let sessions = |account: &crate::config::Account| match account.config_dir {
+                Some(_) => login.join("projects"),
+                None => login.join(".claude/projects"),
+            };
+            copy_tree(&sessions(from), &sessions(&to));
+        }
+        // What the account before left in the job's folder: its login's copy, who it is, and
+        // Cursor's settings, which hold its sign-in: the next start copies the new account's.
+        forget_login_secrets(&login);
+        remove_inside(&login, ".claude.json");
+        if tool == Tool::Cursor {
+            remove_inside(&login, "cli-config.json");
+        }
+        let was = format!("{} · {}", tool.name(), from.name);
+        let on = format!("{} · {}", tool.name(), to.name);
+        let why = format!(
+            "{} hit its usage limit until {}",
+            from.name,
+            obi_protocol::time::format(until)
+        );
+        let heard = if keeps {
+            format!(
+                "{was} hit its usage limit, so Oby moved this job to {on}, in the same session, worktree and branch. Carry on where you left off."
+            )
+        } else {
+            handoff(&job, &was)
+        };
+        self.update(id, |job| {
+            job.account = to.id.clone();
+            if !keeps {
+                job.session = None;
+            }
+            job.moves.push(crate::job::Move {
+                from: was.clone(),
+                to: on.clone(),
+                why: Some(why.clone()),
+                date: now,
+            });
+            job.changed(format!("Moved from {was} to {on} by Oby: {why}"));
+            job.heard.insert(0, heard);
+            job.step = format!("{} hit its limit; continuing on {on}", from.name);
+        });
+        tracing::info!("job {id}: {why}, so it goes on on {on}");
+        Some(to)
+    }
+
+    /// No account of `tool` has room for the job its limit stopped: the owner gets one `limit`
+    /// item about it, saying when the first of them has room again, which it answers.
+    /// A job that doesn't move (failover off, or its account named by the owner) waits for its own
+    /// account's reset instead, and the item says so.
+    fn all_full(&self, id: &str, tool: Tool, now: i64) -> Option<i64> {
+        let job = self.get(id)?;
+        let home = login_home();
+        let stays = !self.moves_on(&job);
+        let first = self
+            .accounts(tool)
+            .into_iter()
+            .filter(|a| !stays || a.id == job.account)
+            .filter(|a| signed_in(tool, a, home.as_deref()))
+            .filter_map(|a| Some((self.usage.get(&a.id).free_at(now)?, a.name)))
+            .min();
+        let at = first.as_ref().map(|(at, _)| *at);
+        if let Some(link) = self.link.get().and_then(std::sync::Weak::upgrade) {
+            link.limit_items(
+                id,
+                Some(crate::sphere::inbox::limit_item(
+                    &job, tool, first, stays, now,
+                )),
+            );
+        }
+        at
     }
 
     /// The tool and account a job was made for.
@@ -2674,7 +2874,16 @@ impl Jobs {
         job.rule = new
             .rule
             .or_else(|| of.as_ref().and_then(|of| of.rule.clone()));
-        job.untrusted = new.untrusted || of.is_some_and(|of| of.untrusted);
+        job.untrusted = new.untrusted || of.as_ref().is_some_and(|of| of.untrusted);
+        // An account the owner named keeps the job past its limit (#871); a follow-up's is its
+        // job's.
+        job.named = match &of {
+            Some(of) => of.named,
+            None => new
+                .account
+                .as_deref()
+                .is_some_and(|a| !a.trim().is_empty() && !a.eq_ignore_ascii_case("auto")),
+        };
         job.mode = Some(if job.read_only() {
             Mode::Plan.as_str().to_owned()
         } else {
@@ -4222,9 +4431,12 @@ impl Jobs {
         let from = place(&job.agent, &job.account);
         let to = format!("{} · {}", tool.name(), chosen.name);
         let tool_changed = tool.id() != job.agent;
+        let named =
+            account.is_some_and(|a| !a.trim().is_empty() && !a.eq_ignore_ascii_case("auto"));
         Some(Ok(self.update(id, |job| {
             job.agent = tool.id().to_owned();
             job.account = chosen.id.clone();
+            job.named = named;
             // A new session on the new choice; another tool runs its own model.
             job.session = None;
             if tool_changed {
@@ -4706,6 +4918,10 @@ impl Jobs {
         if job.status != Status::Queued {
             return;
         }
+        // Running again: the limit it waited on is no more the owner's to answer.
+        if let Some(link) = self.link.get().and_then(std::sync::Weak::upgrade) {
+            link.limit_items(id, None);
+        }
         // Queued while its worktree gets ready, as the Swift runner has it: running once its agent
         // starts.
         self.update(id, |job| {
@@ -4726,7 +4942,12 @@ impl Jobs {
                 self.run_obi_review(id, &signal).await.map_err(End::Failed)
             }
             Ok(()) => {
-                let outcome = self.run_owner_job(id, &signal).await;
+                let mut outcome = self.run_owner_job(id, &signal).await;
+                // Its account filled and another of the tool has room: it carries on there, in
+                // the same worktree and branch, without stopping (#871).
+                while matches!(outcome, Err(End::MovedOn)) && *signal.borrow() == Signal::Run {
+                    outcome = self.run_owner_job(id, &signal).await;
+                }
                 // A job that ends any other way than done (failed, stopped) shows what it made
                 // too; done published them before it ended. A shutdown isn't an end.
                 if *signal.borrow() != Signal::Shutdown {
@@ -4821,6 +5042,12 @@ impl Jobs {
                             next,
                             resumes,
                         } => (reason.clone(), *next, *resumes),
+                        // Only a stop or a shutdown ends a run that moved on: handled above.
+                        End::MovedOn => (
+                            "It stopped while moving to another account.".into(),
+                            Some(crate::job::TRY_AGAIN),
+                            None,
+                        ),
                     };
                     // Needing the owner, with a session to pick up: the agent's own summary stays
                     // (`summaries` has every round's), and why it stopped is said apart. A dead end,
@@ -5081,9 +5308,13 @@ impl Jobs {
         })
     }
 
-    /// The account the brain thinks with: the tool's first [`signed_in`] one, else its first.
+    /// The account the brain thinks with: the first of [`Jobs::thinking_accounts`], else the
+    /// tool's first [`signed_in`] one, else its first.
     fn brain_account(&self, tool: Tool) -> Option<crate::config::Account> {
-        self.signed_in_account(tool)
+        self.thinking_accounts(tool)
+            .into_iter()
+            .next()
+            .or_else(|| self.signed_in_account(tool))
             .or_else(|| self.accounts(tool).into_iter().next())
     }
 
@@ -6461,7 +6692,18 @@ impl Jobs {
         }
         let (admin, common) = self.own_git_dirs(id).await?;
         let temp = self.temp_path(id);
-        let (tool, account) = self.job_account(&job)?;
+        let (tool, mut account) = self.job_account(&job)?;
+        // Its account filled (in the run before, or since it was routed there): another of the
+        // tool with room takes it on (#871). As it was before, should that account's login not run.
+        let unmoved = job.clone();
+        let moved = match self.move_on(id, tool, &account).await {
+            Some(next) => {
+                account = next;
+                true
+            }
+            None => false,
+        };
+        let job = self.get(id).ok_or("the job is gone")?;
         let spec = self.spec(&worktree, &admin, &common, &temp, true, tool);
         // HEAD detached at the branch (a worktree from before may be on it), and the folder the
         // job's new objects go to (Spec::git_env).
@@ -6758,8 +7000,39 @@ impl Jobs {
                     }
                 }
                 // A job run on a teammate's Mac uses the company API key, not this account's login.
-                if tool == Tool::Claude && job.runs_on.is_none() {
-                    self.claude_login_ready(Some(&account)).await?;
+                if tool == Tool::Claude
+                    && job.runs_on.is_none()
+                    && let Err(why) = self.claude_login_ready(Some(&account)).await
+                {
+                    // Moved here past a limit: a login that can't run puts it back on its account
+                    // and waits for the first reset, as the limit would have.
+                    if !moved {
+                        return Err(why.into());
+                    }
+                    self.update(id, |job| {
+                        job.account = unmoved.account.clone();
+                        job.session = unmoved.session.clone();
+                        job.moves = unmoved.moves.clone();
+                        job.heard = unmoved.heard.clone();
+                        job.changed(format!(
+                            "Moved back by Oby: {}'s login couldn't run",
+                            account.name
+                        ));
+                    });
+                    let now = obi_protocol::time::now();
+                    let resumes = self
+                        .all_full(id, tool, now)
+                        .map(|at| at.saturating_add(RESET_SLACK))
+                        .filter(|at| *at > now);
+                    let mut reason = why;
+                    if resumes.is_some() {
+                        reason.push_str(" Oby tries again by itself after the reset.");
+                    }
+                    return Err(End::NeedsYou {
+                        reason,
+                        next: Some(crate::job::TRY_AGAIN),
+                        resumes,
+                    });
                 }
                 let left = self
                     .config
@@ -6865,11 +7138,11 @@ impl Jobs {
                     let first = said.lines().next().unwrap_or("").trim().to_owned();
                     // Claude Code and Codex retry these themselves first; one that still ends the
                     // turn gets the round again in its session, after a wait.
+                    // As its windows are now: one past its reset is empty again.
                     let usage = self.usage.get(&job.account);
-                    let full = usage
-                        .full_until
-                        .is_some_and(|t| t > obi_protocol::time::now())
-                        || [usage.five_hour, usage.seven_day]
+                    let at = obi_protocol::time::now();
+                    let full = usage.full_until_at(at).is_some()
+                        || [usage.five_hour_at(at), usage.seven_day_at(at)]
                             .into_iter()
                             .flatten()
                             .any(|share| share >= 1.0);
@@ -6912,7 +7185,8 @@ impl Jobs {
                     // nothing that could loop. Not a stall: #773's budget and ceiling still hold,
                     // since the Try-again words go through `Jobs::message` as the owner's would.
                     let now = obi_protocol::time::now();
-                    let resumes = turn
+                    let limited = turn.resets.is_some() || full || crate::limits::is_limit(&reason);
+                    let reset = turn
                         .resets
                         .or_else(|| {
                             crate::limits::is_limit(&reason)
@@ -6920,16 +7194,37 @@ impl Jobs {
                                 .flatten()
                         })
                         // Else when the account's own usage says it's full until (#745).
-                        .or_else(|| {
-                            (full || crate::limits::is_limit(&reason))
-                                .then_some(usage.full_until)
-                                .flatten()
-                        })
+                        .or_else(|| limited.then(|| usage.full_until_at(now)).flatten());
+                    // The account is full whatever the tool said, so nothing else is routed there
+                    // until it resets; and while another of the tool has room, the job goes on there.
+                    if limited {
+                        self.mark_full(&account.id, reset, now);
+                    }
+                    let room = if limited && job.runs_on.is_none() {
+                        self.room_for(tool, &account.id).await
+                    } else {
+                        None
+                    };
+                    if room.is_some()
+                        && self.moves_on(&job)
+                        && self.usage.get(&account.id).full_until_at(now).is_some()
+                    {
+                        return Err(End::MovedOn);
+                    }
+                    // With every account of the tool full, it's tried again once the first of
+                    // them has room, and goes on there.
+                    let first = (limited && job.runs_on.is_none() && room.is_none())
+                        .then(|| self.all_full(id, tool, now))
+                        .flatten();
+                    let resumes = reset
+                        .into_iter()
+                        .chain(first)
                         .map(|at| {
                             at.saturating_add(RESET_SLACK)
                                 .min(now.saturating_add(RESET_MOST))
                         })
-                        .filter(|at| *at > now);
+                        .filter(|at| *at > now)
+                        .min();
                     if resumes.is_some() {
                         reason.push_str(" Oby tries again by itself after the reset.");
                     }
@@ -10360,6 +10655,60 @@ pub(crate) fn forget_login_secrets(login: &Path) {
     }
 }
 
+/// Copies `from` over `to`: a job's Claude Code sessions, from one account's place in its folder
+/// to another's ([`Jobs::move_on`]), what `from` has replacing what `to` had (it's the session as
+/// it went on). Only folders and regular files: a link the job left is never followed, nor
+/// written through (one in `to`'s place is removed first), and nothing goes into a folder that
+/// is a link.
+fn copy_tree(from: &Path, to: &Path) {
+    let Ok(what) = std::fs::symlink_metadata(from) else {
+        return;
+    };
+    if from == to {
+        return;
+    }
+    if what.is_dir() {
+        if std::fs::symlink_metadata(to).is_ok_and(|m| !m.is_dir()) {
+            let _ = std::fs::remove_file(to);
+        }
+        let parent_real = to
+            .parent()
+            .is_some_and(|p| std::fs::symlink_metadata(p).is_ok_and(|m| m.is_dir()));
+        if !parent_real || store::make_private_dir(to).is_err() {
+            return;
+        }
+        for entry in std::fs::read_dir(from).into_iter().flatten().flatten() {
+            copy_tree(&entry.path(), &to.join(entry.file_name()));
+        }
+    } else if what.is_file() {
+        let _ = std::fs::remove_file(to);
+        if let Ok(bytes) = std::fs::read(from) {
+            let _ = write_login(to, &bytes);
+        }
+    }
+}
+
+/// What a new session hears first when it takes over a job from `was`, which hit its usage limit
+/// (#871): where the work is, and what the earlier rounds reported, quoted, with every secret obid
+/// knows taken out.
+fn handoff(job: &Job, was: &str) -> String {
+    let note = format!(
+        "{was} was working on this job and hit its account's usage limit. You're taking it over in the same worktree and branch: its commits are on the branch, and it may have left changes uncommitted. Check `git status` and `git log` before you go on."
+    );
+    match job.summaries.as_ref().filter(|s| !s.is_empty()) {
+        Some(summaries) => {
+            let nonce = crate::brain::briefing::nonce();
+            let said = crate::secrets::known().redact(&summaries.join("\n\n"));
+            format!(
+                "{note}\n\nWhat its earlier rounds reported, quoted:\n\n{}\n{}",
+                crate::brain::briefing::fence_rule(&nonce, "the agent before you"),
+                crate::brain::briefing::fence(&nonce, &said)
+            )
+        }
+        None => note,
+    }
+}
+
 /// Removes `login/<name>`, each folder on the way looked at without following a link: a link (or
 /// a file) a job left in place of one is removed itself, and nothing past it is touched.
 fn remove_inside(login: &Path, name: &str) {
@@ -13072,6 +13421,73 @@ mod tests {
         .unwrap();
         let jobs = Jobs::open(config, crate::events::Events::new(), sandbox).unwrap();
         (root, clone, base, jobs)
+    }
+
+    /// The accounts Oby thinks with, best first (#874): those with room, then those held only by
+    /// their weekly reserve, then the rest, the least of their 5-hour window first; never one
+    /// marked full or signed out. A job whose account filled goes on on the first with room whose
+    /// login can run now (#871): never one whose token has ended.
+    #[tokio::test]
+    async fn thinking_and_moving_on_take_the_accounts_with_room_first() {
+        let root = std::env::temp_dir().join(format!("obid-room-{}", uuid::Uuid::new_v4()));
+        let accounts = root.join("accounts");
+        let ids = ["full", "reserved", "busy", "ended", "room", "out"];
+        let listed: Vec<Value> = ids
+            .iter()
+            .map(|id| json!({"id": id, "name": id, "configDir": accounts.join(id)}))
+            .collect();
+        for id in &ids[..5] {
+            std::fs::create_dir_all(accounts.join(id)).unwrap();
+            std::fs::write(accounts.join(id).join(".credentials.json"), "{}").unwrap();
+        }
+        // Signed in, with room, but its token ended a minute ago.
+        let ended = json!({"claudeAiOauth": {"accessToken": "a", "expiresAt": (obi_protocol::time::now() - 60) * 1000}});
+        std::fs::write(accounts.join("ended/.credentials.json"), ended.to_string()).unwrap();
+        let config = crate::config::Config::parse(
+            &json!({"listen": "127.0.0.1:0", "home": root.join("home"), "owner": "o",
+                "repos": [{"repo": "o/r", "remote": "https://example.com/o/r.git"}],
+                "agents": {"claude": {"bin": "/usr/bin/true", "accounts": listed}}})
+            .to_string(),
+        )
+        .unwrap();
+        let jobs = Jobs::open(
+            config,
+            crate::events::Events::new(),
+            Err("no sandbox".into()),
+        )
+        .unwrap();
+        let now = obi_protocol::time::now();
+        let usage = |five: f64, week: f64| crate::usage::Usage {
+            five_hour: Some(five),
+            seven_day: Some(week),
+            five_hour_resets: Some(now + 3600),
+            seven_day_resets: Some(now + 86_400),
+            ..Default::default()
+        };
+        jobs.usage.record("reserved", &usage(0.1, 0.85));
+        jobs.usage.record("busy", &usage(0.97, 0.1));
+        jobs.usage.record("room", &usage(0.5, 0.5));
+        jobs.mark_full("full", None, now);
+        let order: Vec<String> = jobs
+            .thinking_accounts(Tool::Claude)
+            .into_iter()
+            .map(|a| a.id)
+            .collect();
+        assert_eq!(order, ["ended", "room", "reserved", "busy"]);
+        assert_eq!(
+            jobs.room_for(Tool::Claude, "full")
+                .await
+                .map(|a| a.id)
+                .as_deref(),
+            Some("room")
+        );
+        assert_eq!(jobs.room_for(Tool::Claude, "room").await, None);
+        // An hour when the tool named no reset; a later mark already kept stays.
+        let held = jobs.usage.get("full").full_until.unwrap();
+        assert!(held > now + 3500 && held <= now + 3600, "{held}");
+        jobs.mark_full("full", Some(now + 60), now);
+        assert_eq!(jobs.usage.get("full").full_until, Some(held));
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// No Codex job goes to a teammate's Mac, however it would: started with Codex named or as
