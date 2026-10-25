@@ -64,6 +64,8 @@ final class RunnerFeed {
     var briefingInbox: [InboxItem] { inbox.filter { !isConfirm($0) && $0.kind != .agentQuestion } }
     /// The runner's accounts and their usage, as it last said: the brain tells them too.
     private(set) var accounts: [AccountState] = []
+    /// The tools' own logins obid found on this Mac that aren't accounts yet, as its status last said.
+    private(set) var availableLogins: [RunnerStatus.AvailableLogin] = []
     /// obid's Tetrix, held once for every agent: read on connecting, then kept by its `tetrix`
     /// event and by Settings › Connectors' own reads; nil from a runner that doesn't hold one.
     var tetrix: TetrixStatus?
@@ -242,6 +244,14 @@ final class RunnerFeed {
     /// Settings › Runner's choice: true for the runner on this Mac (#283), false for a remote one at `runnerURL`.
     static let thisMacKey = "runnerOnThisMac"
 
+    /// This Mac is the runner unless a choice was made (#894): a new install starts on This Mac, and so
+    /// does one that never chose; one that never chose but follows a remote runner by its URL keeps it.
+    /// A choice already made is never changed. Once, at launch, before anything reads the key.
+    static func settleThisMac(_ defaults: UserDefaults = .standard) {
+        guard defaults.object(forKey: thisMacKey) == nil else { return }
+        defaults.set(defaults.string(forKey: "runnerURL")?.trimmingCharacters(in: .whitespaces).isEmpty ?? true, forKey: thisMacKey)
+    }
+
     /// A runner at `url`; one on this Mac (`local`) only with its `token`, which every request carries.
     static func runner(_ url: String, token: String? = nil, local: Bool = false) -> Runner? {
         if local, token == nil { return nil }
@@ -347,6 +357,7 @@ final class RunnerFeed {
         inboxWords = [:]
         notices = []
         accounts = []
+        availableLogins = []
         tetrix = nil
         slack = nil
         watch = nil
@@ -412,6 +423,7 @@ final class RunnerFeed {
                         version = status.runner.version
                         clearedAt = status.clearedAt
                         accounts = status.accounts
+                        availableLogins = status.availableLogins ?? []
                         models = status.models
                         cleanup = status.cleanup
                         github = status.github
@@ -441,7 +453,6 @@ final class RunnerFeed {
                         connection = .live
                         showingKept = false
                         wait = 1
-                        Self.ask()
                         checks.look(runner)
                         register(runner)
                         let conversationsData = try? await conversationsAnswer
@@ -1003,7 +1014,11 @@ final class RunnerFeed {
         }
         for (job, notice) in changes {
             let step = Self.step(notice, before: before[job.id], active: job.isActive, toldDone: doneTold.contains(job.id))
-            if notice == .done { tellDone([job.id]) }
+            if notice == .done {
+                tellDone([job.id])
+                // The first task that finishes asks whether Oby may notify (docs/onboarding.md, Mac 9).
+                Task { await Self.ask() }
+            }
             switch step {
             case .keep: continue
             // Published, from the iPhone or by the runner, dismissed, or running again: its alert goes.
@@ -1190,22 +1205,22 @@ final class RunnerFeed {
         content.userInfo = info
         let request = UNNotificationRequest(identifier: alert.id, content: content, trigger: nil)
         Task {
+            await ask()
             do { try await center.add(request) } catch {
                 Logger.feed.error("posting an alert failed: \(error.localizedDescription, privacy: .public)")
             }
         }
     }
 
-    /// The first connection to a runner asks whether Oby may notify; after that it doesn't ask again.
-    private static func ask() {
-        Task {
-            let center = UNUserNotificationCenter.current()
-            guard await center.notificationSettings().authorizationStatus == .notDetermined else { return }
-            do {
-                _ = try await center.requestAuthorization(options: [.alert, .sound])
-            } catch {
-                Logger.feed.error("asking to notify failed: \(error.localizedDescription, privacy: .public)")
-            }
+    /// The first time something would alert (the first task that finishes, or needs you), macOS asks
+    /// whether Oby may notify; after that it doesn't ask again.
+    private static func ask() async {
+        let center = UNUserNotificationCenter.current()
+        guard await center.notificationSettings().authorizationStatus == .notDetermined else { return }
+        do {
+            _ = try await center.requestAuthorization(options: [.alert, .sound])
+        } catch {
+            Logger.feed.error("asking to notify failed: \(error.localizedDescription, privacy: .public)")
         }
     }
 

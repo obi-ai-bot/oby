@@ -1,9 +1,10 @@
 import AppKit
 import SwiftUI
 
-/// Say hi in two minutes (F14): hello, hold fn, permissions, agents and accounts, then which
-/// models Oby thinks and works with. Every step can be skipped, closing the window skips the
-/// rest, and the menu shows it again.
+/// Say hi in two minutes (F14, docs/onboarding.md): hello, hold fn, your agents, GitHub, then Home
+/// with a first task in its box. Everything runs on obid, This Mac's engine: the accounts are its,
+/// signed in through each tool's own login, and the repositories are the ones its gh can push to.
+/// Every step can be skipped, closing the window skips the rest, and the menu shows it again.
 final class FirstLaunch: NSObject, NSWindowDelegate {
     static let doneKey = "firstLaunchDone"
     static var done: Bool { UserDefaults.standard.bool(forKey: doneKey) }
@@ -21,9 +22,7 @@ final class FirstLaunch: NSObject, NSWindowDelegate {
             window.makeKeyAndOrderFront(nil)
             return
         }
-        let view = FirstLaunchView(voice: island.model.voice, permissions: Permissions(),
-                                   tools: Tools(store: island.desk.accounts),
-                                   onDone: { [weak self] in self?.window?.close() })
+        let view = FirstLaunchView(voice: island.model.voice, feed: island.feed, onDone: { [weak self] in self?.window?.close() })
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 640, height: 580),
                               styleMask: [.titled, .closable, .fullSizeContentView], backing: .buffered, defer: false)
         window.titlebarAppearsTransparent = true
@@ -38,7 +37,7 @@ final class FirstLaunch: NSObject, NSWindowDelegate {
         self.window = window
     }
 
-    /// Finished, skipped or closed: it doesn't come back by itself, and Oby's window opens.
+    /// Finished, skipped or closed: it doesn't come back by itself, and Oby's window opens on Home.
     func windowWillClose(_ notification: Notification) {
         UserDefaults.standard.set(true, forKey: Self.doneKey)
         window = nil
@@ -46,24 +45,90 @@ final class FirstLaunch: NSObject, NSWindowDelegate {
     }
 }
 
-private struct FirstLaunchView: View {
-    enum Step: Int, CaseIterable { case hello, talk, permissions, agents, models }
+/// What First Launch decides, without a window (apps/mac/tests/FirstLaunchTests.swift).
+nonisolated enum FirstLaunchSteps {
+    /// A tool on the agents step.
+    enum Agent: Equatable {
+        /// Signed in on obid: its accounts' names.
+        case connected([String])
+        /// Not on this Mac.
+        case missing
+        /// Cursor's CLI without `acp`, which obid runs it with.
+        case outdated
+        /// obid hasn't answered yet.
+        case waiting
+        /// obid has an account for it, signed out: its own login signs it in.
+        case signIn(Account)
+        /// Installed, and obid has no account for it: one is added, then signed in.
+        case connect
+    }
+
+    static func agent(_ agent: String, installed: Bool, cursorHasACP: Bool = true, engine: Bool, accounts: [AccountState]) -> Agent {
+        let mine = accounts.filter { $0.account.agent == agent }
+        let signedIn = mine.filter(\.signedIn)
+        if engine, !signedIn.isEmpty { return .connected(signedIn.map(\.account.name)) }
+        if !installed { return .missing }
+        if agent == "cursor", !cursorHasACP { return .outdated }
+        if !engine { return .waiting }
+        if let out = mine.first { return .signIn(out.account) }
+        return .connect
+    }
+
+    /// The tools' own logins already on this Mac that obid offers (`availableLogins`) for tools it has
+    /// no account for: listed without a click. A tool with accounts keeps them as they are, so routing
+    /// never moves to a login the owner didn't pick.
+    static func adopt(_ available: [RunnerStatus.AvailableLogin], accounts: [AccountState]) -> [String] {
+        let have = Set(accounts.map(\.account.agent))
+        var agents: [String] = []
+        for login in available where !have.contains(login.agent) && !agents.contains(login.agent) { agents.append(login.agent) }
+        return agents
+    }
+
+    /// "12 repositories ready".
+    static func ready(_ repos: [RunnerRepo]) -> String {
+        repos.count == 1 ? "1 repository ready" : "\(repos.count) repositories ready"
+    }
+
+    /// The first task Home's box offers: one in the repository obid lists first (the listed ones, then
+    /// the one pushed to last), or nothing without one.
+    static func suggestion(_ repos: [RunnerRepo]) -> String? {
+        guard let repo = repos.first?.repo.split(separator: "/").last else { return nil }
+        return "Find a small bug in \(repo) and fix it"
+    }
+}
+
+struct FirstLaunchView: View {
+    enum Step: Int, CaseIterable { case hello, talk, agents, github }
 
     let voice: Voice
-    let permissions: Permissions
-    let tools: Tools
+    let feed: RunnerFeed
     let onDone: () -> Void
 
-    @State private var step = Step.hello
+    @State private var permissions = Permissions()
+    @State private var tools = Tools()
+    @State private var step: Step
     /// The last thing you said while trying fn.
     @State private var heard = ""
     @State private var problem: String?
-    /// "agent|model"
-    @State private var lead = ""
-    @State private var routine: [String: String] = [:]
-    @State private var complex: [String: String] = [:]
-    /// The Lead Oby proposed last: while it's unchanged, Oby may propose another.
-    @State private var proposedLead = ""
+    /// A tool's own login on obid, under way in its sheet.
+    @State private var signingIn: ShownAccountSignIn?
+    @State private var gitHub: GitHubLogin?
+    @State private var gitHubSignIn: GitHubSignIn?
+    @State private var repos: [RunnerRepo]?
+
+    /// `step`, `gitHub` and `repos`: where it starts, for its pictures (apps/mac/tests/WindowScreens.swift).
+    init(voice: Voice, feed: RunnerFeed, step: Step = .hello, gitHub: GitHubLogin? = nil, repos: [RunnerRepo]? = nil,
+         onDone: @escaping () -> Void) {
+        self.voice = voice
+        self.feed = feed
+        self.onDone = onDone
+        _step = State(initialValue: step)
+        _gitHub = State(initialValue: gitHub)
+        _repos = State(initialValue: repos)
+    }
+
+    /// obid on this Mac answers (live only once it has).
+    private var engine: Bool { feed.connection == .live }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -71,9 +136,8 @@ private struct FirstLaunchView: View {
                 switch step {
                 case .hello: hello
                 case .talk: talk
-                case .permissions: permissionsStep
                 case .agents: agents
-                case .models: models
+                case .github: github
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -86,20 +150,25 @@ private struct FirstLaunchView: View {
         // Accessibility has no callback: look again every couple of seconds while the window is up.
         .task {
             while !Task.isCancelled {
-                await permissions.refresh()
+                permissions.refresh()
                 try? await Task.sleep(for: .seconds(2))
             }
         }
         .task(id: step) {
-            if step == .agents || step == .models { await tools.refresh() }
-            if step == .models { propose() }
+            if step == .agents { await tools.refresh() }
+            if step == .github { await watchGitHub() }
         }
-        // Back from signing in, in Terminal.
+        // Once obid answers, the logins it found on this Mac become its accounts.
+        .task(id: engine) { await adopt() }
+        // Back from a tool's page or Terminal.
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             if step == .agents { Task { await tools.refresh() } }
         }
         .onChange(of: voice.words) { _, words in
             if !words.isEmpty { heard = words }
+        }
+        .sheet(item: $signingIn) { shown in
+            AccountSignInSheet(shown: shown, feed: feed) { signingIn = nil }
         }
     }
 
@@ -111,7 +180,7 @@ private struct FirstLaunchView: View {
                 .resizable().renderingMode(.template).frame(width: 72, height: 72)
                 .padding(.bottom, 8)
             title("Hi, I'm Oby.")
-            text("I live in your menu bar and hand your coding work to the tools you already use: Claude Code, Codex and Cursor. They work in their own copies of your repositories, and I tell you when they're done.")
+            text("I hand your coding work to the agents you already use: Claude Code, Codex and Cursor. They run on this Mac, with your own logins, in their own copies of your repositories, and I tell you when they're done.")
             text("Two minutes and we're set. You can skip any step.")
         }
     }
@@ -120,8 +189,10 @@ private struct FirstLaunchView: View {
         VStack(alignment: .leading, spacing: 16) {
             title("Hold fn to talk")
             text("Hold fn (or Control-Option), say hi, and let go. Oby listens only while you hold it. fn + Space keeps listening until you press fn again.")
-            if permissions.state(.accessibility) != .allowed {
-                permissionRow(.accessibility)
+            if !permissions.accessibility {
+                card(symbol: "keyboard", "Accessibility", lines: ["So Oby notices you holding fn (or Control-Option) in any app. It reads no other keys."]) {
+                    Button("Allow") { permissions.askAccessibility() }
+                }
             }
             HStack(spacing: 12) {
                 Image(systemName: voice.phase == .listening ? "waveform" : "mic")
@@ -138,72 +209,53 @@ private struct FirstLaunchView: View {
         }
     }
 
-    private var permissionsStep: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            title("Permissions")
-            text("Each one is asked only when you allow it here or need it, and each is separate: say no to any, and the rest keeps working.")
-            ForEach(Permissions.Kind.allCases, id: \.self) { permissionRow($0) }
-            caption("Screen Recording isn't asked: nothing in Oby uses it yet.")
-        }
-    }
-
     private var agents: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack {
-                title("Agents and accounts")
+                title("Your agents")
                 Spacer()
                 if tools.looking { ProgressView().controlSize(.small) }
             }
-            text("Oby found these on your Mac. Each signs in through its own login, in Terminal: Oby never sees your password.")
-            ScrollView {
-                VStack(spacing: 10) {
-                    ForEach(Tools.all, id: \.self) { toolRow($0) }
-                }
+            text(engine ? "Oby found these on your Mac. Each signs in with its own login, so Oby never sees your password."
+                        : "Waiting for Oby’s engine on this Mac…")
+            VStack(spacing: 10) {
+                ForEach(Tools.all, id: \.self) { toolRow($0) }
             }
+            caption("One is enough to start. A second login of the same tool, like a work account, goes in Settings › Accounts.")
             if let problem {
                 Text(problem).font(.caption).foregroundStyle(.red)
             }
         }
     }
 
-    private var models: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            title("Models")
-            if tools.connected.isEmpty {
-                text(tools.looking ? "Reading each tool's models…"
-                     : "Connect Claude Code, Codex or Cursor first. Until then Oby keeps its defaults, and you can show this again from the menu.")
+    private var github: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            title("Connect GitHub")
+            text("So Oby can list your repositories and open a pull request when an agent’s work passes its check. GitHub’s own sign-in does it; Oby never holds the key.")
+            if !engine {
+                text("Waiting for Oby’s engine on this Mac…")
+            } else if let gitHub, gitHub.signedIn {
+                card(symbol: "checkmark.circle", "GitHub", lines: [gitHub.user.map { "Signed in as \($0)" } ?? "Signed in",
+                                                                   repos.map(FirstLaunchSteps.ready) ?? "Reading your repositories…"]) {
+                    Label("Connected", systemImage: "checkmark.circle.fill").font(.system(size: 13)).foregroundStyle(.green)
+                }
+            } else if let gitHubSignIn {
+                card(symbol: "person.badge.key", "Type this code on GitHub’s page", lines: ["Copied. Paste it on the page that opens."]) {
+                    Button("Open the Page Again") { NSWorkspace.shared.open(GitHubSignIn.devicePage) }
+                }
+                Text(gitHubSignIn.userCode).font(.system(size: 30, weight: .semibold, design: .monospaced)).textSelection(.enabled)
+                    .accessibilityLabel("Code \(gitHubSignIn.userCode.map(String.init).joined(separator: " "))")
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text("Waiting for GitHub").font(.system(size: 13)).foregroundStyle(.secondary)
+                }
             } else {
-                Text(sentence).font(.system(size: 17, weight: .semibold)).fixedSize(horizontal: false, vertical: true)
-                if tools.connected == ["cursor"] {
-                    Label("With only Cursor, Oby may ask you more often: Cursor can't hold it to a typed plan.",
-                          systemImage: "exclamationmark.triangle")
-                        .font(.system(size: 12)).foregroundStyle(.orange)
+                card(symbol: "arrow.triangle.branch", "GitHub", lines: ["Not connected"]) {
+                    Button("Open GitHub", action: signInToGitHub)
                 }
-                Form {
-                    Section {
-                        Picker("Thinks with", selection: $lead) {
-                            ForEach(tools.connected, id: \.self) { agent in
-                                ForEach(tools.models[agent] ?? [], id: \.id) { model in
-                                    Text("\(model.name) · \(Usage.tool(agent))").tag("\(agent)|\(model.id)")
-                                }
-                            }
-                        }
-                    } header: {
-                        Text("The Lead")
-                    } footer: {
-                        Text("Plans your requests and reviews each job. Until the Lead arrives, Oby plans with Haiku.")
-                    }
-                    ForEach(tools.connected, id: \.self) { agent in
-                        Section(Usage.tool(agent)) {
-                            Picker("Routine jobs", selection: binding($routine, agent)) { choices(agent) }
-                            Picker("Complex jobs", selection: binding($complex, agent)) { choices(agent) }
-                        }
-                    }
-                }
-                .formStyle(.grouped)
-                .scrollContentBackground(.hidden)
-                .padding(.horizontal, -20)
-                caption("Fable and Astra only if you pick them: they're stronger, and use up a plan's limits fast. Complex jobs use their model only when you turn it on for that job; if it's the routine model, there's nothing to turn on.")
+            }
+            if let problem {
+                Text(problem).font(.caption).foregroundStyle(.red)
             }
         }
     }
@@ -221,17 +273,12 @@ private struct FirstLaunchView: View {
             if step != .hello {
                 Button("Back") { move(-1) }.buttonStyle(.borderless)
             }
-            Button(step == .models ? "Skip and finish" : "Skip") {
-                if step == .models { onDone() } else { move(1) }
+            Button(step == .github ? "Skip and finish" : "Skip") {
+                if step == .github { onDone() } else { move(1) }
             }
             .keyboardShortcut(.cancelAction)
             Button(primary) {
-                if step == .models {
-                    save()
-                    onDone()
-                } else {
-                    move(1)
-                }
+                if step == .github { onDone() } else { move(1) }
             }
             .buttonStyle(.borderedProminent)
             .keyboardShortcut(.defaultAction)
@@ -243,7 +290,7 @@ private struct FirstLaunchView: View {
     private var primary: String {
         switch step {
         case .hello: "Let's go"
-        case .models: tools.connected.isEmpty ? "Finish" : "Keep these"
+        case .github: "Finish"
         default: "Continue"
         }
     }
@@ -253,163 +300,122 @@ private struct FirstLaunchView: View {
         step = Step(rawValue: step.rawValue + by) ?? step
     }
 
-    private func permissionRow(_ kind: Permissions.Kind) -> some View {
-        let state = permissions.state(kind)
-        return HStack(alignment: .top, spacing: 12) {
-            Image(systemName: Permissions.symbol(kind)).font(.system(size: 18)).frame(width: 28).padding(.top, 2)
-            VStack(alignment: .leading, spacing: 3) {
-                Text(Permissions.title(kind)).font(.system(size: 14, weight: .semibold))
-                Text(Permissions.reason(kind)).font(.system(size: 12)).foregroundStyle(.secondary)
-                if state == .denied {
-                    Text(Permissions.without(kind)).font(.system(size: 12)).foregroundStyle(.orange)
-                }
-            }
-            .fixedSize(horizontal: false, vertical: true)
-            Spacer(minLength: 12)
-            switch state {
-            case .allowed:
-                Label("Allowed", systemImage: "checkmark.circle.fill").font(.system(size: 13)).foregroundStyle(.green)
-            case .notAsked:
-                Button("Allow") { Task { await permissions.ask(kind) } }
-            case .denied:
-                Button("Open Settings") { Permissions.openSettings(kind) }
-            }
-        }
-        .padding(14)
-        .background(.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 12))
-    }
-
-    private func toolRow(_ agent: String) -> some View {
+    private func card(symbol: String, _ name: String, lines: [String], @ViewBuilder buttons: () -> some View) -> some View {
         HStack(alignment: .top, spacing: 12) {
-            Image(systemName: Usage.symbol(agent)).font(.system(size: 18)).frame(width: 28).padding(.top, 2)
+            Image(systemName: symbol).font(.system(size: 18)).frame(width: 28).padding(.top, 2)
             VStack(alignment: .leading, spacing: 4) {
-                Text(Usage.tool(agent)).font(.system(size: 14, weight: .semibold))
-                ForEach(status(agent), id: \.self) { line in
+                Text(name).font(.system(size: 14, weight: .semibold))
+                ForEach(lines, id: \.self) { line in
                     Text(line).font(.system(size: 12)).foregroundStyle(.secondary)
                 }
             }
             .fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: 12)
-            toolButtons(agent)
+            buttons()
         }
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 12))
     }
 
-    /// What Oby knows about the tool, one line each.
-    private func status(_ agent: String) -> [String] {
-        let installed = tools.installed[agent] != nil
-        switch agent {
-        case "gemini":
-            return [installed ? "Found. Gemini isn't in Oby's first version." : "Not installed. Gemini isn't in Oby's first version."]
-        case "cursor":
-            guard installed else { return ["Install the Cursor CLI: `\(Tools.installCursor)`, and Oby finds it."] }
-            guard tools.cursorHasACP else { return ["Update the Cursor CLI: `\(Tools.updateCursor)`. Oby needs its `acp` command."] }
-            let accounts = tools.accounts("cursor")
-            if accounts.isEmpty { return ["Found. Connect an account so Oby can send it jobs."] }
-            return accounts.map { "\($0.account.name): \($0.label ?? "signed out")" }
-                + (CursorFacts.separateLogins ? [] : [CursorFacts.oneLogin + "."])
-        default:
-            guard installed else { return ["Not installed. Install \(Usage.tool(agent)), and Oby finds it."] }
-            let accounts = tools.accounts(agent)
-            if accounts.isEmpty { return ["Found. Connect an account so Oby can send it jobs."] }
-            return accounts.map { "\($0.account.name): \($0.label ?? "signed out")" }
+    private func toolRow(_ agent: String) -> some View {
+        let row = FirstLaunchSteps.agent(agent, installed: tools.installed.contains(agent), cursorHasACP: tools.cursorHasACP,
+                                         engine: engine, accounts: feed.accounts)
+        let tool = Job.agentNames[agent] ?? agent
+        let line: String = switch row {
+        case .connected(let names): names.joined(separator: ", ")
+        case .missing: agent == "cursor" ? "Install the Cursor CLI: `\(Tools.installCursor)`, and Oby finds it." : "Not installed. Install \(tool), and Oby finds it."
+        case .outdated: "Update the Cursor CLI: `\(Tools.updateCursor)`. Oby needs its `acp` command."
+        case .waiting: "Found on this Mac."
+        case .signIn(let account): "\(account.name): signed out"
+        case .connect: "Found. Connect an account so Oby can send it jobs."
         }
-    }
-
-    @ViewBuilder
-    private func toolButtons(_ agent: String) -> some View {
-        if tools.installed[agent] != nil {
-            switch agent {
-            case "claude", "codex", "cursor":
-                let signedOut = tools.accounts(agent).filter { !$0.signedIn }
-                if tools.accounts(agent).isEmpty {
-                    Button("Connect") { attempt { try tools.connect(agent) } }
-                } else if let account = signedOut.first?.account {
-                    Button("Sign In") { attempt { try tools.store.signIn(account) } }
-                } else {
-                    Label("Connected", systemImage: "checkmark.circle.fill").font(.system(size: 13)).foregroundStyle(.green)
+        return card(symbol: Usage.symbol(agent), tool, lines: [line]) {
+            switch row {
+            case .connected:
+                Label("Connected", systemImage: "checkmark.circle.fill").font(.system(size: 13)).foregroundStyle(.green)
+            case .missing, .outdated:
+                // Installing is never automatic: the command is for the user to run.
+                if agent == "cursor" {
+                    Button("Copy Command") {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(row == .missing ? Tools.installCursor : Tools.updateCursor, forType: .string)
+                    }
                 }
-            default:
-                EmptyView()
+            case .waiting:
+                Button("Connect") {}.disabled(true)
+            case .signIn(let account):
+                Button("Sign In") { signIn(account) }
+            case .connect:
+                Button("Connect") { connect(agent) }
             }
         }
-        // Installing is never automatic: the command is for the user to run.
-        if agent == "cursor", tools.installed[agent] == nil || !tools.cursorHasACP {
-            Button("Copy Command") {
+    }
+
+    // MARK: obid
+
+    /// A tool with no account on obid: a "Personal" one, then its own login.
+    private func connect(_ agent: String) {
+        Task {
+            do {
+                guard let runner = feed.runner else { throw RunnerError(message: "Oby isn't connected to its engine on this Mac yet.") }
+                let added = try await runner.addAccount(agent: agent, name: "Personal", payer: "")
+                signingIn = try await ShownAccountSignIn.start(added.account, on: feed)
+                problem = nil
+            } catch { problem = error.localizedDescription }
+        }
+    }
+
+    private func signIn(_ account: Account) {
+        Task {
+            do {
+                signingIn = try await ShownAccountSignIn.start(account, on: feed)
+                problem = nil
+            } catch { problem = error.localizedDescription }
+        }
+    }
+
+    private func adopt() async {
+        guard engine, let runner = feed.runner else { return }
+        for agent in FirstLaunchSteps.adopt(feed.availableLogins, accounts: feed.accounts) {
+            // obid's `accounts` event brings it to the row.
+            _ = try? await runner.restoreDefaultLogin(agent: agent)
+        }
+    }
+
+    /// gh's own sign-in on obid: GitHub's device page opens with its code on the clipboard.
+    private func signInToGitHub() {
+        Task {
+            do {
+                guard let runner = feed.runner else { throw RunnerError(message: "Oby isn't connected to its engine on this Mac yet.") }
+                let signIn = try await runner.startGitHubSignIn()
+                guard signIn.isGitHubs else {
+                    try? await runner.endGitHubSignIn()
+                    throw RunnerError(message: "Oby’s engine answered with something other than GitHub’s sign-in page and code, so Oby opened nothing.")
+                }
                 NSPasteboard.general.clearContents()
-                NSPasteboard.general.setString(tools.installed[agent] == nil ? Tools.installCursor : Tools.updateCursor, forType: .string)
+                NSPasteboard.general.setString(signIn.userCode, forType: .string)
+                gitHubSignIn = signIn
+                NSWorkspace.shared.open(GitHubSignIn.devicePage)
+                problem = nil
+            } catch { problem = error.localizedDescription }
+        }
+    }
+
+    /// While GitHub's step shows: whether gh is signed in, and once it is, the repositories it can push
+    /// to (obid reads GitHub's list again right after a sign-in). The first one's task waits in Home's box.
+    private func watchGitHub() async {
+        while !Task.isCancelled {
+            if engine, let runner = feed.runner, let login = try? await runner.gitHubLogin() {
+                if gitHubSignIn != nil, !login.signedIn, login.signIn == nil { problem = "GitHub’s sign-in ended without signing in." }
+                gitHub = login
+                if login.signedIn || login.signIn == nil { gitHubSignIn = nil }
+                if login.signedIn, let listed = try? await runner.jobRepos() {
+                    repos = listed
+                    if let task = FirstLaunchSteps.suggestion(listed), Drafts.text(Drafts.home).isEmpty { Drafts.keep(task, as: Drafts.home) }
+                }
             }
-        }
-    }
-
-    private func choices(_ agent: String) -> some View {
-        ForEach(tools.models[agent] ?? [], id: \.id) { Text($0.name).tag($0.id) }
-    }
-
-    private func binding(_ picks: Binding<[String: String]>, _ agent: String) -> Binding<String> {
-        Binding { picks.wrappedValue[agent] ?? "" } set: { picks.wrappedValue[agent] = $0 }
-    }
-
-    // MARK: Models
-
-    /// "Oby thinks with Sonnet 5.5 and works with Sonnet 5.5 and Opus 5.5." Only the tools Oby
-    /// can run jobs on work.
-    private var sentence: String {
-        let parts = lead.split(separator: "|", maxSplits: 1).map(String.init)
-        guard parts.count == 2 else { return "" }
-        let thinks = name(parts[1], parts[0])
-        let workers = tools.connected.filter { ModelPicks.workers.contains($0) }
-        if workers.count == 1, let agent = workers.first {
-            let jobs = Set([routine[agent], complex[agent]].compactMap { $0 })
-            let works = (tools.models[agent] ?? []).filter { jobs.contains($0.id) }.map(\.name)
-            let on = parts[0] == agent ? "" : " on \(Usage.tool(parts[0]))"
-            return "Oby thinks with \(thinks)\(on) and works with \(works.joined(separator: " and "))."
-        }
-        guard !workers.isEmpty else { return "Oby thinks with \(thinks) on \(Usage.tool(parts[0]))." }
-        let works = ListFormatter.localizedString(byJoining: workers.map(Usage.tool))
-        return "Oby thinks with \(Usage.tool(parts[0])) (\(thinks)) and works with \(works)."
-    }
-
-    private func name(_ model: String, _ agent: String) -> String {
-        tools.models[agent]?.first { $0.id == model }?.name ?? model
-    }
-
-    /// Each time Models opens, fills in the tools with no pick yet: what the user saved (in an
-    /// earlier first launch or in Settings) if it's still offered, else a proposal. The Lead is
-    /// proposed again while the user hasn't changed it, so a tool connected since can take it.
-    private func propose() {
-        var lists: [String: [String]] = [:]
-        for agent in tools.connected {
-            let ids = (tools.models[agent] ?? []).map(\.id)
-            lists[agent] = ids
-            let saved = { (key: String) in ModelPicks.saved(key).flatMap { ids.contains($0) ? $0 : nil } }
-            if routine[agent] == nil { routine[agent] = saved("\(agent).model") ?? ModelPicks.routine(ids) }
-            if complex[agent] == nil { complex[agent] = saved("\(agent).complexModel") ?? ModelPicks.complex(ids) }
-        }
-        guard lead.isEmpty || lead == proposedLead else { return }
-        if let agent = ModelPicks.saved("lead.agent"), let model = ModelPicks.saved("lead.model"), lists[agent]?.contains(model) == true {
-            lead = "\(agent)|\(model)"
-        } else if let pick = ModelPicks.lead(lists) {
-            lead = "\(pick.agent)|\(pick.model)"
-        }
-        proposedLead = lead
-    }
-
-    private func save() {
-        guard !tools.connected.isEmpty else { return }
-        let defaults = UserDefaults.standard
-        let parts = lead.split(separator: "|", maxSplits: 1).map(String.init)
-        if parts.count == 2 {
-            defaults.set(parts[0], forKey: "lead.agent")
-            defaults.set(parts[1], forKey: "lead.model")
-        }
-        for agent in tools.connected {
-            guard let model = routine[agent], !model.isEmpty else { continue }
-            defaults.set(model, forKey: "\(agent).model")
-            // What the screen shows, even when it's the routine model: then Oby offers nothing.
-            if let stronger = complex[agent], !stronger.isEmpty { defaults.set(stronger, forKey: "\(agent).complexModel") }
+            try? await Task.sleep(for: .seconds(2))
         }
     }
 
@@ -425,14 +431,5 @@ private struct FirstLaunchView: View {
 
     private func caption(_ words: String) -> some View {
         Text(words).font(.system(size: 12)).foregroundStyle(.tertiary).fixedSize(horizontal: false, vertical: true)
-    }
-
-    private func attempt(_ action: () throws -> Void) {
-        do {
-            try action()
-            problem = nil
-        } catch {
-            problem = error.localizedDescription
-        }
     }
 }

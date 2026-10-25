@@ -39,6 +39,10 @@
 - Every job has safety limits on time and tokens, and **⌃⌥⌘.** stops them all.
 - No usage data leaves your Mac unless you turn it on.
 
+## Install
+
+Download Oby, move it to Applications and open it. Its engine, `obid`, starts on this Mac by itself (Settings › Runner › This Mac), and first launch takes about two minutes: hello, hold fn to talk, your agents (logins already on your Mac show Connected; Connect signs in a tool that's installed but signed out, through its own login), then GitHub, after which every repository your GitHub login can push to is ready. Home opens with a first task in its box.
+
 ## Build from source
 
 To build it yourself, you need macOS 26 or later and Xcode 27.
@@ -46,7 +50,7 @@ To build it yourself, you need macOS 26 or later and Xcode 27.
 1. Open `apps/Oby.xcodeproj`.
 2. Run the **Oby** scheme on My Mac.
 
-The Mac app runs Oby's server, `obid`, for you once Settings › Runner › This Mac is on (it isn't on by default yet). To run `obid` on its own (on Linux, for example), see [docs/install.md](docs/install.md).
+The Mac app runs Oby's server, `obid`, for you (Settings › Runner › This Mac, on by default). To run `obid` on its own (on Linux, for example), see [docs/install.md](docs/install.md).
 
 ## Repository
 

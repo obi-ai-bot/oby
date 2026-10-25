@@ -21,7 +21,7 @@ struct ObyApp: App {
                 .keyboardShortcut(".", modifiers: [.control, .option, .command])
             // First launch was skipped or Accessibility refused: fn does nothing until it's allowed.
             if !AXIsProcessTrusted() {
-                Button("To Talk With fn, Allow Accessibility…") { Task { await Permissions().ask(.accessibility) } }
+                Button("To Talk With fn, Allow Accessibility…") { Permissions().askAccessibility() }
             }
             // Settings are pages in the window (docs/mac-design.md A1).
             Button("Settings…") { app.chat.showSettings() }
@@ -112,6 +112,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         island.feed.windowOpen = { [weak self] in self?.chat.isOpen ?? false }
         // Nothing alerts for what the window shows in front (#862).
         island.feed.windowShows = { [weak self] place in self?.chat.shows(place) ?? false }
+        RunnerFeed.settleThisMac()
         island.start()
         // obid as This Mac's engine: the Swift runner an older build registered goes, and the
         // engine is registered when nothing else serves this Mac (apps/mac/app/LoginItem.swift).
