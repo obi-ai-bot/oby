@@ -10,8 +10,7 @@ use serde::{Deserialize, Serialize};
 pub const MAX_RUNNING_RANGE: std::ops::RangeInclusive<u32> = 1..=20;
 
 /// Whether obid moves work past an account's usage limit to another account with room by itself,
-/// when the owner didn't say (`accountFailover`, #871). ponytail: the default waits on the owner's
-/// call on the provider terms (#29); it's this one line.
+/// when the owner didn't say (`accountFailover`, #871): on, the owner's decision of 2026-10-24.
 pub const ACCOUNT_FAILOVER: bool = true;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
