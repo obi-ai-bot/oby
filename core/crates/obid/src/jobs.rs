@@ -537,6 +537,23 @@ impl Source {
     }
 }
 
+/// What a job waiting for an account with room says (#872).
+fn room_step(wait: &Waiting) -> String {
+    format!(
+        "Waiting for {}. Use one anyway to start it now; otherwise it starts when an account has room.",
+        wait.text
+    )
+}
+
+/// A job waiting for room goes to `tool`: a model of another tool's gives way to the new tool's
+/// own, as a move's does.
+fn on_tool(job: &mut Job, tool: Tool) {
+    if job.agent != tool.id() {
+        job.agent = tool.id().into();
+        job.model = None;
+    }
+}
+
 /// Who adds the inbox's Confirm items (crate::sphere::link).
 pub type ConfirmHook = Arc<dyn Fn(crate::sphere::inbox::Item) + Send + Sync>;
 
@@ -3071,11 +3088,28 @@ impl Jobs {
             });
             let Some((tool, account)) = lifted.or_else(|| self.pick(Some(&job.agent), None).ok())
             else {
+                // Still waiting: what holds it as it is now, on the first account that does (the
+                // one Start now lifts), its tool's every account when they were all its tool's.
+                let one_tool = listed.iter().all(|id| {
+                    Tool::from_id(&job.agent)
+                        .is_some_and(|t| self.accounts(t).iter().any(|a| &a.id == id))
+                });
+                if let Some((tool, first, Some(now))) =
+                    self.in_reserve(one_tool.then_some(job.agent.as_str()))
+                    && (job.waiting.as_ref() != Some(&now) || job.account != first.id)
+                {
+                    self.update(&job.id, |job| {
+                        on_tool(job, tool);
+                        job.account = first.id.clone();
+                        job.step = room_step(&now);
+                        job.waiting = Some(now);
+                    });
+                }
                 continue;
             };
             let on = format!("{} · {}", tool.name(), account.name);
             self.update(&job.id, |job| {
-                job.agent = tool.id().into();
+                on_tool(job, tool);
                 job.account = account.id.clone();
                 job.waiting = None;
                 job.step = "Starting".into();
@@ -3203,10 +3237,7 @@ impl Jobs {
         job.phase = Some(Phase::Prepare);
         job.step = format!("Getting {} ready", job.repo_name());
         if let Some(wait) = waiting {
-            job.step = format!(
-                "Waiting for {}. Use one anyway to start it now; otherwise it starts when an account has room.",
-                wait.text
-            );
+            job.step = room_step(&wait);
             job.waiting = Some(wait);
         }
         // A follow-up starts only when nothing else moves its branch: checked and taken under one
@@ -14181,6 +14212,90 @@ mod tests {
         assert!(held > now + 3500 && held <= now + 3600, "{held}");
         jobs.mark_full("full", Some(now + 60), now);
         assert_eq!(jobs.usage.get("full").full_until, Some(held));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A job waiting for room (#872) keeps saying what holds it as the accounts change, on the
+    /// first of them, and taking another tool's account it drops a model of its first tool's.
+    #[tokio::test]
+    async fn a_job_waiting_for_room_follows_the_reserves() {
+        let root = std::env::temp_dir().join(format!("obid-wait-room-{}", uuid::Uuid::new_v4()));
+        let (claude, codex) = (root.join("accounts/c"), root.join("accounts/x"));
+        std::fs::create_dir_all(&claude).unwrap();
+        std::fs::create_dir_all(&codex).unwrap();
+        std::fs::write(claude.join(".credentials.json"), "{}").unwrap();
+        std::fs::write(codex.join("auth.json"), "{}").unwrap();
+        let config = crate::config::Config::parse(
+            &json!({"listen": "127.0.0.1:0", "home": root.join("home"), "owner": "o",
+                "repos": [{"repo": "o/r", "remote": "https://example.com/o/r.git"}],
+                "agents": {"claude": {"bin": "/usr/bin/true", "accounts": [{"id": "c", "name": "Claude one", "configDir": claude}]},
+                           "codex": {"bin": "/usr/bin/true", "accounts": [{"id": "x", "name": "Codex one", "configDir": codex}]}}})
+            .to_string(),
+        )
+        .unwrap();
+        let jobs = Jobs::open(
+            config,
+            crate::events::Events::new(),
+            Err("no sandbox".into()),
+        )
+        .unwrap();
+        let now = obi_protocol::time::now();
+        let reserved = crate::usage::Usage {
+            five_hour: Some(0.1),
+            seven_day: Some(0.85),
+            five_hour_resets: Some(now + 3600),
+            seven_day_resets: Some(now + 86_400),
+            ..Default::default()
+        };
+        jobs.usage.record("c", &reserved);
+        jobs.usage.record("x", &reserved);
+        let made = jobs
+            .create(NewJob {
+                repo: "o/r".into(),
+                kind: "fix".into(),
+                task: "Fix it".into(),
+                model: Some("opus".into()),
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(
+            (made.agent.as_str(), made.account.as_str()),
+            ("claude", "c")
+        );
+        let wait = made.waiting.clone().unwrap();
+        assert_eq!(wait.reserved, Some(vec!["c".into(), "x".into()]));
+        assert_eq!(
+            wait.text,
+            "an account with room: Claude one and Codex one are in their weekly reserve"
+        );
+
+        // Claude's fills: only Codex's reserve holds it now, and it waits on that one.
+        jobs.mark_full("c", None, now);
+        jobs.room_for_waiting();
+        let job = jobs.get(&made.id).unwrap();
+        let wait = job.waiting.clone().unwrap();
+        assert_eq!(wait.reserved, Some(vec!["x".into()]));
+        assert_eq!(
+            wait.text,
+            "an account with room: Codex one is in its weekly reserve"
+        );
+        assert_eq!(job.step, room_step(&wait));
+        assert_eq!((job.agent.as_str(), job.account.as_str()), ("codex", "x"));
+        assert_eq!(job.model, None);
+
+        // Use anyway on it: it starts there.
+        jobs.usage.lift("x", true).unwrap();
+        jobs.room_for_waiting();
+        let job = jobs.get(&made.id).unwrap();
+        assert_eq!(job.waiting, None);
+        assert_eq!((job.agent.as_str(), job.account.as_str()), ("codex", "x"));
+        assert!(
+            job.changes
+                .iter()
+                .any(|c| c.what == "Started when an account had room: Codex · Codex one"),
+            "{:?}",
+            job.changes
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 
