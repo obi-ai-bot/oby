@@ -166,6 +166,18 @@ fn plans_refuse_attachments_outside_the_apps_folder() {
             .text
             .contains("isn't one of the files the Oby app attached")
     );
+    // Where the Mac app saves them (`LocalRunner.attachments`, #891): a folder of its own in obid's.
+    let mac = obid.home.join("attachments/mac");
+    std::fs::create_dir_all(&mac).unwrap();
+    let screenshot = mac.join("screenshot-1a2b3c.png");
+    std::fs::write(&screenshot, b"\x89PNG\r\n\x1a\n").unwrap();
+    let answer = call(
+        &obid,
+        "POST",
+        "/v1/plans",
+        Some(&json!({"said":"hello", "attachments":[screenshot]})),
+    );
+    assert_eq!(answer.status, 200, "{}", answer.text);
 }
 
 #[test]

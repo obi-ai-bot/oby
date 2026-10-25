@@ -556,7 +556,7 @@ One turn of the conversation with Oby: words become work that starts, a question
 {"said": "Review oby PR #33"}
 ```
 
-`attachments`, when present, is a list of file paths in the runner's own attachments folder. The runner resolves `..` and symlinks before accepting them; a path outside that folder returns `422` naming the refused file. Accepted paths are checked again before they are copied into the job's input folder, including jobs restored after a restart: `.oby/inputs` on the Swift runner and `.obi/inputs` on `obid`.
+`attachments`, when present, is a list of file paths in the runner's own attachments folder (the Mac app saves what's attached on it in `attachments/mac` under obid's home, `~/Library/Application Support/Oby/Runner`). The runner resolves `..` and symlinks before accepting them; a path outside that folder returns `422` naming the refused file. Accepted paths are checked again before they are copied into the job's input folder, including jobs restored after a restart: `.oby/inputs` on the Swift runner and `.obi/inputs` on `obid`.
 
 `runsOn` (obid only, #808), when present, is a teammate's Obi whose Mac the jobs these words start run on (the message box's "Run on another Mac"): an active member whose card takes `run_request`, else `422`; or `{"obi", "grant"}`, on a share of their API account they gave this owner ([obid only: sharing your usage](#obid-only-sharing-your-usage)). Each job it starts has that `runsOn` ([obid only: sharing this Mac](#obid-only-sharing-this-mac)).
 

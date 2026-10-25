@@ -136,7 +136,7 @@ final class Tray {
         panel.allowsMultipleSelection = true
         guard panel.runModal() == .OK else { return }
         do {
-            try FileManager.default.createDirectory(at: Self.folder, withIntermediateDirectories: true)
+            try FileManager.default.createDirectory(at: Self.folder, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
             for source in panel.urls {
                 let target = Self.folder.appending(path: "\(UUID().uuidString)-\(source.lastPathComponent)")
                 try FileManager.default.copyItem(at: source, to: target)
@@ -154,7 +154,7 @@ final class Tray {
     }
 
     private func add(_ kind: Attachment.Kind, data: Data, extension ext: String) throws {
-        try FileManager.default.createDirectory(at: Self.folder, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: Self.folder, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         let name = kind == .screenshot ? "screenshot" : "clipboard"
         let file = Self.folder.appending(path: "\(name)-\(UUID().uuidString.prefix(6).lowercased()).\(ext)")
         try data.write(to: file)

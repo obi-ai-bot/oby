@@ -30,7 +30,7 @@ nonisolated enum LocalRunner {
 
     /// The app's own folder: `~/Library/Application Support/Oby` (`Workspace.root` without `OBY_HOME`).
     /// A Mac runner shares its `accounts.json` and account homes (Settings › Accounts adds and
-    /// signs them in: `accounts(local:)`) and the app's attachments with the app, and nothing else.
+    /// signs them in: `accounts(local:)`) with the app, and nothing else.
     static var appRoot: URL {
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appending(path: "Oby", directoryHint: .isDirectory)
     }
@@ -40,8 +40,9 @@ nonisolated enum LocalRunner {
     static var home: URL { appRoot.appending(path: "Runner", directoryHint: .isDirectory) }
 
     /// Where the app keeps what the user attached to a request (the tray's screenshots and clipboard):
-    /// the only files a dispatch may attach to a job (`Attachments.validated`).
-    static var attachments: URL { appRoot.appending(path: "attachments", directoryHint: .isDirectory) }
+    /// inside obid's own attachments folder, the only files obid hands an agent (#891), and in a
+    /// folder of its own there, so the tray's daily cleanup never touches obid's `attachments/github`.
+    static var attachments: URL { home.appending(path: "attachments/mac", directoryHint: .isDirectory) }
 
     /// The accounts the runner spreads jobs across. A runner for this Mac's app (`local`) reads the
     /// app's own `accounts.json` and account homes, so what Settings set up (Codex, named Claude
