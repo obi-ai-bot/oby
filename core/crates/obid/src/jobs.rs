@@ -4631,6 +4631,11 @@ impl Jobs {
         // Only a branch no other job uses, and only the clone's: what was pushed stays on the
         // remote.
         if !branch_stays && git::is_branch_name(&job.branch) {
+            // Under the lock the clone is got ready with: `git branch -D` rewrites its .git/config
+            // (it drops the branch's section, there or not), and a `git config` of git::ensure_clone
+            // meanwhile fails on git's lock, and with it another job's start.
+            let preparing = self.preparing(&job.repo);
+            let _preparing = preparing.lock().await;
             let _ = git::git(&clone, &["branch", "-D", "--", &job.branch]).await;
         }
         self.events.send("job", json!({"id": id, "deleted": true}));
@@ -14090,6 +14095,44 @@ mod tests {
         drop(publishing);
         assert!(jobs.lock().publishing.is_empty(), "released once dropped");
         drop(held);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Deleting a job drops its branch from obid's clone under the lock a job gets the clone ready
+    /// with: `git branch -D` rewrites the clone's .git/config, as git::ensure_clone's `git config`
+    /// does, and one of two at once fails on git's lock ("could not lock config file").
+    #[tokio::test]
+    async fn a_deleted_jobs_branch_waits_for_the_clones_lock() {
+        let root = std::env::temp_dir().join(format!("obid-delete-lock-{}", uuid::Uuid::new_v4()));
+        let home = root.join("home");
+        let mut job = Job::new(
+            "eeee0003".into(),
+            "o/r".into(),
+            "build".into(),
+            "Build it".into(),
+            "claude".into(),
+            "c".into(),
+        );
+        job.status = Status::Done;
+        job.base = Some("main".into());
+        job.branch = "oby/build-eeee0003".into();
+        let clone = git::clone_path(&home, "o/r");
+        std::fs::create_dir_all(&clone).unwrap();
+        cleanup_git(&clone, &["init", "-q"]);
+        cleanup_git(&clone, &["commit", "-q", "--allow-empty", "-m", "base"]);
+        cleanup_git(&clone, &["branch", "oby/build-eeee0003"]);
+        let jobs = jobs_with_kept(&home, &[&job]);
+        let branch = || cleanup_git(&clone, &["branch", "--list", "oby/build-eeee0003"]);
+        // Another job is getting the clone ready, writing its settings.
+        let preparing = jobs.preparing("o/r");
+        let held = preparing.lock().await;
+        let mut deleting = Box::pin(jobs.delete("eeee0003"));
+        let waited = tokio::time::timeout(Duration::from_secs(2), &mut deleting).await;
+        assert!(waited.is_err(), "it waits on the lock: {waited:?}");
+        assert!(!branch().is_empty(), "the branch is still there");
+        drop(held);
+        assert!(matches!(deleting.await, Some(Ok(false))));
+        assert!(branch().is_empty(), "the branch went");
         let _ = std::fs::remove_dir_all(&root);
     }
 
