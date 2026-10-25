@@ -1,6 +1,7 @@
 //! A job a usage limit stopped is tried again by itself once its reset comes (#740), from its job
-//! file, so a restart keeps waiting; one the owner dismissed or took on in a follow-up isn't. The
-//! real obid binary with the stand-in agent (tests/agents/fake-claude).
+//! file, so a restart keeps waiting; one the owner dismissed or took on in a follow-up isn't. A job
+//! a restart cut short picks up at the phase it was in. The real obid binary with the stand-in
+//! agent (tests/agents/fake-claude).
 mod support;
 
 use std::path::Path;
@@ -82,4 +83,69 @@ fn a_reset_job_is_tried_again_after_a_restart_unless_let_go() {
         assert_eq!(job["round"], 1, "{why}: {job}");
         assert!(job["notes"].is_null(), "{why}: {job}");
     }
+}
+
+/// A job a restart cut short while it ran its check, or while it published, picks up at that phase
+/// ("After any restart"): its check runs again on what it committed, never its agent's turn (here
+/// the agent would fail: `FAIL`), and a pass goes on to the end of its run, as after its last
+/// round; one with no check goes straight on. Its round and session stay.
+#[test]
+fn a_job_cut_short_while_checking_or_publishing_picks_up_there() {
+    let folder = Folder::new("cut-short");
+    let remote = fixture(&folder.0.join("fixture"));
+    let agent = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/agents/fake-claude");
+    let config = config(&folder.0, &remote, &agent);
+    let cut = |id: &str, phase: &str, check: Option<&str>| {
+        let mut job = Job::new(
+            id.into(),
+            "obi-e2e/fixture-app".into(),
+            "research".into(),
+            "FAIL".into(),
+            "claude".into(),
+            "stub".into(),
+        );
+        let now = obi_protocol::time::now();
+        job.branch = format!("oby/research-{id}");
+        job.status = Status::Running;
+        job.phase = serde_json::from_value(json!(phase)).unwrap();
+        job.check = check.map(str::to_owned);
+        job.session = Some(format!("{id}-0000-4000-8000-000000000000"));
+        job.round = Some(1);
+        job.started = Some(now - 120);
+        job.summary = "Looked around.".into();
+        job.summaries = Some(vec!["Looked around.".into()]);
+        job
+    };
+    let checking = cut("bbbb0001", "check", Some("true"));
+    let publishing = cut("bbbb0002", "publish", None);
+    let working = cut("bbbb0003", "work", Some("true"));
+    let dir = folder.0.join("home/jobs");
+    std::fs::create_dir_all(&dir).unwrap();
+    for job in [&checking, &publishing, &working] {
+        let path = dir.join(format!("{}.json", job.id));
+        std::fs::write(path, serde_json::to_vec(job).unwrap()).unwrap();
+    }
+    let obid = start(&folder.0, &config, None);
+
+    for (id, checked) in [(&checking.id, true), (&publishing.id, false)] {
+        let ended = within(60, &format!("{id} ended"), || {
+            let job = job(&obid, id);
+            (job["status"] != "queued" && job["status"] != "running").then_some(job)
+        });
+        assert_eq!(ended["status"], "done", "{ended}");
+        assert_eq!(ended["round"], 1, "{ended}");
+        assert_eq!(ended["summary"], "Looked around.", "{ended}");
+        assert_eq!(ended["summaries"], json!(["Looked around."]), "{ended}");
+        assert_eq!(
+            ended["checks"].as_array().map_or(0, Vec::len),
+            usize::from(checked),
+            "{ended}"
+        );
+    }
+    // Cut short while its agent worked, it picks its session up again: here the agent fails.
+    let worked = within(60, "the working job ended", || {
+        let job = job(&obid, &working.id);
+        (job["status"] != "queued" && job["status"] != "running").then_some(job)
+    });
+    assert_eq!(worked["status"], "interrupted", "{worked}");
 }

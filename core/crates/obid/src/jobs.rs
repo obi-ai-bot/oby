@@ -691,6 +691,11 @@ impl Jobs {
             if job.status == Status::Running {
                 job.status = Status::Queued;
                 job.step = "obid restarted while this ran: starting it again".into();
+                // Cut short while checking or publishing: its run picks up there.
+                job.cut = job
+                    .phase
+                    .filter(|p| matches!(p, Phase::Check | Phase::Publish))
+                    .or(job.cut);
                 job.phase = Some(Phase::Prepare);
                 let _ = store.save(&job);
             }
@@ -4169,6 +4174,43 @@ impl Jobs {
         Some(check_failed(command, &output))
     }
 
+    /// After `command` failed (`output`) in `round`: the next round's message, or how the job stops.
+    /// A failure the agent says (`said`) the task asked for (a test meant to fail) ends the rounds:
+    /// another round would undo what the owner asked. It isn't a pass, so nothing goes out: only
+    /// checks that pass publish (AGENTS.md), whatever the agent says, and nothing publishes it by
+    /// hand either: the owner's words decide. Past its last round it stops at a limit.
+    fn after_failed_check(
+        &self,
+        id: &str,
+        job: &Job,
+        command: &str,
+        output: &str,
+        said: &str,
+        round: u32,
+    ) -> Result<String, End> {
+        if said.trim_start().starts_with(FAILS_AS_ASKED) {
+            return Err(End::needs_you(
+                format!(
+                    "`{command}` fails, as the agent says the task asked for, so nothing was pushed. The branch is kept: tell it what you want."
+                ),
+                None,
+            ));
+        }
+        if round >= job.max_rounds() {
+            let limit = format!("`{command}` still fails after {round} round(s)");
+            self.update(id, |job| job.limit = Some(limit.clone()));
+            return Err(End::needs_you(
+                format!("Stopped at a limit: {limit}. The branch is kept and nothing was pushed."),
+                Some(crate::job::ONE_MORE_ROUND),
+            ));
+        }
+        let quoted: String = job.task.lines().map(|l| format!("> {l}\n")).collect();
+        Ok(format!(
+            "{}\n\nThe task, as the owner wrote it:\n\n{quoted}\nIf this failure is what the task asks for (a test meant to fail, say), change nothing: start the first line of your summary with `{FAILS_AS_ASKED}` and say so. Otherwise fix what it shows, run it again in the foreground, commit, and finish with a short summary.",
+            check_failed(command, output)
+        ))
+    }
+
     /// The end of the agent's stderr, when a turn died without saying why.
     fn agent_note(&self, id: &str) -> String {
         let text = std::fs::read_to_string(self.log_path(id, "agent.log")).unwrap_or_default();
@@ -6059,8 +6101,59 @@ impl Jobs {
         let mut told_to_commit = false;
         // How the transcript opens the next turn, when it's obid's words that start it.
         let mut opening: Option<String> = None;
+        // A restart cut it short while it ran its check or published ("After any restart"): it
+        // picks up there, its check run again on what it committed rather than its agent's turn
+        // (one with no check goes straight on), and a pass goes on to publish as after its last
+        // round. Words the owner sent meanwhile are its next turn instead.
+        let mut to_publish = false;
+        let cut = self.get(id).and_then(|j| j.cut);
+        if cut.is_some() {
+            self.update(id, |job| job.cut = None);
+        }
+        if cut.is_some() && words.is_empty() {
+            let job = self.get(id).ok_or("the job is gone")?;
+            match job.check.clone() {
+                None => to_publish = true,
+                Some(command) => {
+                    tracing::info!("job {id}: a restart cut it short, so its check runs again");
+                    self.update(id, |job| {
+                        job.status = Status::Running;
+                        job.started.get_or_insert_with(obi_protocol::time::now);
+                        job.phase = Some(Phase::Check);
+                        job.step = format!("Running {command}");
+                    });
+                    stages.begin("check");
+                    let run = self.check(id, &command, &spec, signal).await?;
+                    if *signal.borrow() != Signal::Run {
+                        return Ok(());
+                    }
+                    if run.passed {
+                        let words = self.last_turn(id);
+                        to_publish = words.is_empty();
+                        if !to_publish {
+                            message = words.join("\n\n");
+                            noted = true;
+                        }
+                    } else {
+                        let round = job.current_round();
+                        message = self.after_failed_check(
+                            id,
+                            &job,
+                            &command,
+                            &run.output,
+                            &job.summary,
+                            round,
+                        )?;
+                        self.update(id, |job| job.round = Some(round + 1));
+                    }
+                }
+            }
+        }
         'rounds: loop {
             loop {
+                if std::mem::take(&mut to_publish) {
+                    break;
+                }
                 let job = self.get(id).ok_or("the job is gone")?;
                 let round = job.current_round();
                 let mut flags: Vec<OsString> = [
@@ -6399,18 +6492,6 @@ impl Jobs {
                     if *signal.borrow() != Signal::Run {
                         return Ok(());
                     }
-                    // A failure the agent says the task asked for (a test meant to fail) ends the
-                    // rounds: another round would undo what the owner asked. It isn't a pass, so
-                    // nothing goes out: only checks that pass publish (AGENTS.md), whatever the
-                    // agent says, and nothing publishes it by hand either: the owner's words decide.
-                    if !run.passed && said.trim_start().starts_with(FAILS_AS_ASKED) {
-                        return Err(End::needs_you(
-                            format!(
-                                "`{command}` fails, as the agent says the task asked for, so nothing was pushed. The branch is kept: tell it what you want."
-                            ),
-                            None,
-                        ));
-                    }
                     if run.passed {
                         // The last turn, unless the owner's words came meanwhile: those are the next.
                         let words = self.last_turn(id);
@@ -6421,21 +6502,8 @@ impl Jobs {
                         noted = true;
                         continue;
                     }
-                    if !more_rounds {
-                        let limit = format!("`{command}` still fails after {round} round(s)");
-                        self.update(id, |job| job.limit = Some(limit.clone()));
-                        return Err(End::needs_you(
-                            format!(
-                                "Stopped at a limit: {limit}. The branch is kept and nothing was pushed."
-                            ),
-                            Some(crate::job::ONE_MORE_ROUND),
-                        ));
-                    }
-                    let quoted: String = job.task.lines().map(|l| format!("> {l}\n")).collect();
-                    message = format!(
-                        "{}\n\nThe task, as the owner wrote it:\n\n{quoted}\nIf this failure is what the task asks for (a test meant to fail, say), change nothing: start the first line of your summary with `{FAILS_AS_ASKED}` and say so. Otherwise fix what it shows, run it again in the foreground, commit, and finish with a short summary.",
-                        check_failed(command, &run.output)
-                    );
+                    message =
+                        self.after_failed_check(id, &job, command, &run.output, &said, round)?;
                 } else if job.max_rounds() > 1 {
                     let last = said
                         .lines()
