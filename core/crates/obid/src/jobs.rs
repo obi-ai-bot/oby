@@ -7631,15 +7631,19 @@ impl Jobs {
                     } else {
                         first
                     };
-                    // OpenAI refused the Codex login: no run on it starts again until the owner
-                    // signs in, and the job says so in words they can act on.
-                    if tool == Tool::Codex && codex_login_refused(&reason) {
-                        end_codex_login(&account, login_home().as_deref());
-                        reason = format!(
-                            "{} (Codex said: {})",
-                            codex_ended(&account.name),
-                            reason.trim_start_matches("Codex hit an error: ")
-                        );
+                    // OpenAI refused the Codex login, as Codex itself says (never the agent's own
+                    // words): no run on it starts again until the owner signs in, and the job says
+                    // so in words they can act on.
+                    if tool == Tool::Codex
+                        && let Some(error) = codex_error(&reason).filter(|e| codex_login_refused(e))
+                    {
+                        let login = self.login_path(id);
+                        let copy = match account.config_dir {
+                            Some(_) => login.join("auth.json"),
+                            None => login.join(".codex/auth.json"),
+                        };
+                        end_codex_login(&copy, &account.name);
+                        reason = format!("{} (Codex said: {error})", codex_ended(&account.name));
                     }
                     // A usage limit, a login, a crash: what's done is kept, and Try again picks the
                     // session up (after the reset, the sign-in). Past a usage limit's reset, obid
@@ -10855,6 +10859,15 @@ fn codex_credential(login: &Value) -> Option<u64> {
     Some(hasher.finish())
 }
 
+/// Codex's own words in a failed Codex run's `reason` (crate::codex): its turn's error (`Codex hit
+/// an error: …`, when the agent said nothing that turn) or a request it refused (`Codex couldn't
+/// …: …`). `None` when the reason is the agent's own last message, which may say anything.
+fn codex_error(reason: &str) -> Option<&str> {
+    reason
+        .strip_prefix("Codex hit an error: ")
+        .or_else(|| reason.starts_with("Codex couldn't ").then_some(reason))
+}
+
 /// Whether a Codex run's error says OpenAI refused its login: codex-cli 0.162.1's
 /// `workspace routing discovery unauthorized (401)` (`account/read`, `thread/start`), a `401
 /// Unauthorized` from the API, or the session ended (`token_revoked`, `refresh_token_invalidated`).
@@ -10873,15 +10886,16 @@ fn codex_login_refused(error: &str) -> bool {
     .any(|w| error.contains(w))
 }
 
-/// Remembers that OpenAI refused `account`'s Codex login as it is now: it isn't [`signed_in`]
-/// again (no review, failover or routing picks it) until the owner signs in again.
-fn end_codex_login(account: &crate::config::Account, home: Option<&Path>) {
-    let credential = login_file(Tool::Codex, account, home)
-        .and_then(|file| std::fs::read(file).ok())
+/// Remembers that OpenAI refused the Codex login a run used (`copy`, the run's `auth.json`), the
+/// one of `account`: it isn't [`signed_in`] again (no review, failover or routing picks it) until
+/// the account's login holds another token, as when the owner signed in again meanwhile.
+fn end_codex_login(copy: &Path, account: &str) {
+    let credential = std::fs::read(copy)
+        .ok()
         .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
         .and_then(|login| codex_credential(&login));
     if let Some(credential) = credential {
-        tracing::warn!("OpenAI refused Codex account {}'s login", account.name);
+        tracing::warn!("OpenAI refused Codex account {account}'s login");
         ended_codex().lock().unwrap().insert(credential);
     }
 }
@@ -13518,21 +13532,26 @@ mod tests {
         let refused = codex_access(3 * 86400);
         write(&refused);
         assert!(signed_in(Tool::Codex, &account, None));
-        for said in [
+        // Only Codex's own words about the run (its turn's error, a request it refused), never
+        // the agent's last message: one fixing an auth bug may well say "401 Unauthorized".
+        let refusal = |reason: &str| codex_error(reason).is_some_and(codex_login_refused);
+        for reason in [
             "Codex hit an error: workspace routing discovery unauthorized (401)",
-            "unexpected status 401 Unauthorized: Encountered invalidated oauth token for user",
-            r#"Failed to refresh token: {"error_code": "refresh_token_invalidated"}"#,
+            "Codex couldn't start a thread: workspace routing discovery unauthorized (401)",
+            "Codex hit an error: unexpected status 401 Unauthorized: Encountered invalidated oauth token for user",
+            r#"Codex hit an error: Failed to refresh token: {"error_code": "refresh_token_invalidated"}"#,
         ] {
-            assert!(codex_login_refused(said), "{said}");
+            assert!(refusal(reason), "{reason}");
         }
-        for said in [
+        for reason in [
             "Codex hit an error: You've hit your usage limit.",
             "Codex hit an error: stream disconnected before completion",
-            "the tests timed out after 401 ms",
+            "The endpoint returns 401 Unauthorized when the token is stale; I fixed the header.",
+            "workspace routing discovery unauthorized (401)",
         ] {
-            assert!(!codex_login_refused(said), "{said}");
+            assert!(!refusal(reason), "{reason}");
         }
-        end_codex_login(&account, None);
+        end_codex_login(&dir.join("auth.json"), "Codex");
         assert!(!signed_in(Tool::Codex, &account, None));
         let ended = Err("The Mac's Codex login for Codex has ended: run codex login.".to_owned());
         assert_eq!(codex_copy_ready(&dir.join("auth.json"), "Codex"), ended);
@@ -13544,6 +13563,16 @@ mod tests {
         write(&format!("{refused}x"));
         assert!(signed_in(Tool::Codex, &account, None));
         assert_eq!(login_note(Tool::Codex, &account, None), None);
+        // A run's copy refused after the owner signed in again meanwhile: what's ended is that
+        // copy's login, never the new one.
+        let copy = dir.join("copy.json");
+        std::fs::write(
+            &copy,
+            json!({"tokens": {"access_token": codex_access(86400)}}).to_string(),
+        )
+        .unwrap();
+        end_codex_login(&copy, "Codex");
+        assert!(signed_in(Tool::Codex, &account, None));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
