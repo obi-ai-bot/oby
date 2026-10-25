@@ -856,17 +856,17 @@ impl Feed {
                     // Nothing to read until gh signs in: through Oby wakes it, in a terminal
                     // shows within half an hour (of the Mac awake: tokio's clock stops while it
                     // sleeps), or at once with a refresh. Twice in a row first: one passing 401
-                    // reads again at the next tick.
+                    // reads again at the next tick, its lists kept meanwhile.
                     state.signed_out += 1;
-                    if state.signed_out >= 2 {
-                        state.next_check = now + LONGEST_WAIT;
-                    }
-                    // Signed in again, maybe as someone else: that read is a first one again.
-                    state.kept = Kept::default();
                     state.error = Some(why);
                     state.waits = 0;
-                    state.no_board_until = 0;
-                    self.keep(&state.kept);
+                    if state.signed_out >= 2 {
+                        state.next_check = now + LONGEST_WAIT;
+                        // Signed in again, maybe as someone else: that read is a first one again.
+                        state.kept = Kept::default();
+                        state.no_board_until = 0;
+                        self.keep(&state.kept);
+                    }
                 }
                 Got::Failed(why) => state.error = Some(why),
                 Got::Limited(_) => {

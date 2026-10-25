@@ -372,27 +372,28 @@ fn the_feed_lists_offers_new_work_once_and_starts_it_on_a_tap() {
         .unwrap();
     assert_eq!(review["answer"], Value::Null, "settled by itself");
 
-    // Signed out: empty lists, and the next read is a first one again (no flood).
+    // Signed out: one read that says so could pass, so the lists stay and the next read is at the
+    // next tick. After a second in a row, empty lists, the next read a first one again (no flood),
+    // and half an hour away, not 3 minutes.
     std::fs::write(
         gh.join("fail"),
         "To get started with GitHub CLI, please run:  gh auth login\n",
     )
     .unwrap();
     let out = refresh(&obid);
-    assert_eq!(
-        (&out["signedIn"], &out["reviews"]),
-        (&json!(false), &json!([])),
-        "{out}"
-    );
-    // Nothing to read until gh signs in: after a second read in a row says so (one could pass),
-    // its next read is half an hour away, not 3 minutes.
+    assert_eq!(out["signedIn"], true, "{out}");
+    assert_ne!(out["reviews"], json!([]), "{out}");
     let later = |minutes: i64| obi_protocol::time::format(obi_protocol::time::now() + minutes * 60);
     assert!(
         out["nextCheck"].as_str().unwrap() < later(4).as_str(),
         "{out}"
     );
     let again = refresh(&obid);
-    assert_eq!(again["signedIn"], false, "{again}");
+    assert_eq!(
+        (&again["signedIn"], &again["reviews"]),
+        (&json!(false), &json!([])),
+        "{again}"
+    );
     assert!(
         again["nextCheck"].as_str().unwrap() > later(25).as_str(),
         "{again}"
