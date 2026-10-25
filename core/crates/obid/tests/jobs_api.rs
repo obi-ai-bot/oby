@@ -2538,6 +2538,28 @@ fn permission_prompts_are_answered_by_the_rules() {
     }
 }
 
+/// A control request of a kind obid doesn't know (a newer Claude Code's) gets an error, never
+/// silence, which would hang the job; the agent's next request is answered as usual (#1095).
+#[test]
+fn an_unknown_control_request_is_refused_and_the_job_goes_on() {
+    let folder = Folder::new("unknown-request");
+    let remote = fixture(&folder.0.join("fixture"));
+    let obid = start(&folder.0, &config(&folder.0, &remote));
+    let ask = json!({"tool": "Read", "input": {"file_path": "src/greet.js"}});
+    let id = post_job(
+        &obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "research",
+               "task": format!("UNKNOWN REQUEST ASK: {ask}")}),
+    )
+    .body["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let job = wait(&obid, &id);
+    assert_eq!(job["status"], "done", "{job}");
+    assert_eq!(job["summary"], "answer: allow unknown: error", "{job}");
+}
+
 /// What a job's agent asks, one after another, as a job's task (the stand-in's `ASKS:`).
 fn asks(list: &[Value]) -> Value {
     json!({"repo": "obi-e2e/fixture-app", "kind": "research",
