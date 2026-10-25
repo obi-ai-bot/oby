@@ -246,6 +246,9 @@ struct SphereSettingsView: View {
                     } else {
                         SetCode(member.obi)
                     }
+                    if sphere.admin {
+                        Button("Remove", role: .destructive) { sphere.run { try await sphere.remove(member) } }.buttonStyle(.set)
+                    }
                 }
             }
         }
@@ -288,8 +291,8 @@ struct SphereSettingsView: View {
     private func inviting(_ name: String) -> some View {
         let domain = CreateSphereSheet.workDomain(email)
         return SetGroup("Invite", footer: domain != nil && anyone
-                            ? "One link for everyone at \(domain!): \(SphereModel.server?.host() ?? "the server") has each one sign in with Google, for 30 days. A new link stops none of the old ones."
-                            : "One link for your team, up to 50 people, for 7 days. Anyone who has it can join: send it only to them.") {
+                            ? "One link for everyone at \(domain!): \(SphereModel.server?.host() ?? "the server") has each one sign in with Google, for 30 days. A new link cancels the one before."
+                            : "One link for your team, up to 50 people, for 7 days. Anyone who has it can join: send it only to them. A new link cancels the one before.") {
             if let domain {
                 SetRow("Anyone with @\(domain) can join") { Toggle("Anyone with @\(domain) can join", isOn: $anyone).toggleStyle(.set) }
             }
@@ -301,6 +304,7 @@ struct SphereSettingsView: View {
                         copied = true
                     }
                     .buttonStyle(.set)
+                    Button("Cancel invite") { sphere.run { try await sphere.cancelTeamLink(); copied = false } }.buttonStyle(.set)
                 }
             }
             SetRow("") {
