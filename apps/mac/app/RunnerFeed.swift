@@ -69,8 +69,6 @@ final class RunnerFeed {
     /// obid's Tetrix, held once for every agent: read on connecting, then kept by its `tetrix`
     /// event and by Settings › Connectors' own reads; nil from a runner that doesn't hold one.
     var tetrix: TetrixStatus?
-    /// obid's Sentry as its last `sentry` event said (Settings › Connectors keeps the repositories).
-    var sentry: SentryStatus?
     /// The owner's reviews ready to post (`listen` items), and older watcher items, waiting in the
     /// inbox (Engine's inbox doesn't know their kinds), oldest first.
     private(set) var notices: [WatchNotice] = []
@@ -144,11 +142,7 @@ final class RunnerFeed {
     /// window hides the jobs that finished by then, the runner's and this Mac's alike.
     private(set) var clearedAt: Date?
     /// How the line to the runner is: Settings › Runner says it.
-    private(set) var connection = RunnerConnection.connecting {
-        didSet { if connection == .live && oldValue != .live { onLive() } }
-    }
-    /// The runner answers again (or for the first time): kept hook deliveries go to it (#1315).
-    @ObservationIgnored var onLive: () -> Void = {}
+    private(set) var connection = RunnerConnection.connecting
     /// The runner didn't answer the last try; the feed keeps trying.
     var down: Bool { if case .offline = connection { true } else { false } }
     /// The model and effort the runner's jobs use, as it last said (Settings › Models).
@@ -524,7 +518,7 @@ final class RunnerFeed {
                     case .tetrix(let status): tetrix = status
                     case .watchNotice(let notice): take(notice)
                     case .slack, .watch: break  // Slack and its watcher are cut (docs/trim.md)
-                    case .sentry(let status): sentry = status
+                    case .sentry: break  // Sentry is cut (docs/trim.md)
                     case .cleanup(let measured): cleanup = measured
                     // obid names each turn's, step's and word's conversation: the window shows one (#493).
                     case .turn(let turn, let extras):

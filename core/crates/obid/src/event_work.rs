@@ -17,15 +17,8 @@ use crate::jobs::{Jobs, NewJob};
 use crate::sphere::inbox::Item;
 
 /// Starts the work a `pluginEvent` offer (`item`) proposes. Fails, starting nothing, when the
-/// event isn't an offer, its repository isn't one of obid's, the vault can't be read, or (for a
-/// Sentry issue, read again now through `sentry`) Sentry can't be read.
-pub async fn start(
-    jobs: &Arc<Jobs>,
-    config: &Config,
-    sentry: Option<&crate::sentry::Sentry>,
-    item: &Item,
-    rule: Option<crate::job::RuleMark>,
-) -> Result<Job, ApiError> {
+/// event isn't an offer, its repository isn't one of obid's, or the vault can't be read.
+pub async fn start(jobs: &Arc<Jobs>, config: &Config, item: &Item) -> Result<Job, ApiError> {
     let refused = |status: StatusCode, why: String| ApiError::new(status, why);
     let event = item.plugin.as_ref().ok_or_else(|| {
         refused(
@@ -35,13 +28,7 @@ pub async fn start(
     })?;
     let text = |key: &str| event[key].as_str().unwrap_or_default();
     let plugin = text("id");
-    // A Sentry issue is looked into where its project maps now, not where it did when offered.
-    let mapped = (plugin == crate::sentry::SOURCE).then(|| {
-        sentry
-            .and_then(|s| s.repo_for(text("project")))
-            .unwrap_or_default()
-    });
-    let repo = mapped.as_deref().unwrap_or(text("repo"));
+    let repo = text("repo");
     if config.repos.find(repo).is_none() {
         return Err(refused(
             StatusCode::CONFLICT,
@@ -50,35 +37,7 @@ pub async fn start(
     }
     let (project, environment) = (text("project"), text("environment"));
     let (severity, ticket) = (text("severity"), text("ticket"));
-    let (kind, task, title, file, rendered) = if plugin == crate::sentry::SOURCE {
-        let found = &event["sentry"];
-        let short = found["shortId"].as_str().unwrap_or_default();
-        let sentry = sentry.ok_or_else(|| {
-            refused(
-                StatusCode::CONFLICT,
-                "Oby isn't connected to Sentry.".into(),
-            )
-        })?;
-        let quoted = sentry
-            .quote(found["issueId"].as_str().unwrap_or_default())
-            .await
-            .map_err(|why| {
-                refused(
-                    StatusCode::BAD_GATEWAY,
-                    format!("Nothing was started: {why}"),
-                )
-            })?;
-        let file = format!("sentry-{short}.md");
-        (
-            "investigate",
-            format!(
-                "Look into Sentry issue {short} in {project}. What Sentry reported is quoted in .obi/inputs/{file}."
-            ),
-            format!("Sentry: {short}"),
-            file,
-            quoted,
-        )
-    } else {
+    let (kind, task, title, file, rendered) = {
         let file = format!(
             "event-{}.md",
             item.id.strip_prefix("ev-").unwrap_or(&item.id)
@@ -143,7 +102,6 @@ pub async fn start(
         task,
         title: Some(crate::github_work::cut(&title, 60)),
         attachments: Some(vec![path.to_string_lossy().into_owned()]),
-        rule,
         ..NewJob::default()
     };
     jobs.create(new)

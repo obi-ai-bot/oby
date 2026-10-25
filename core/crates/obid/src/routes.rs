@@ -490,7 +490,6 @@ fn new_job(job: &Map<String, Value>) -> Result<NewJob, String> {
         start_from: None,
         runs_on: None,
         routine: None,
-        rule: None,
         untrusted: false,
         split: false,
         adding: None,

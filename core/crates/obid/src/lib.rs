@@ -32,7 +32,6 @@ pub mod git;
 pub mod github;
 pub mod github_login;
 pub mod github_work;
-pub mod hooks;
 pub mod job;
 pub mod jobs;
 pub mod limits;
@@ -52,11 +51,9 @@ pub mod repos;
 pub mod review;
 pub mod routes;
 pub mod routines;
-pub mod rules;
 pub mod sandbox;
 pub mod scan;
 pub mod secrets;
-pub mod sentry;
 pub mod settings;
 pub mod sphere;
 pub mod store;
@@ -339,7 +336,6 @@ pub async fn serve(
         source,
     })?;
     // A rule's start that a stop cut short is an offer again (#1314).
-    link.reopen_claims();
     // The plug-ins obid ships, installed where missing (disabled), then the host, which starts
     // the ones the owner enabled without waiting for them.
     stopwatch.lap("sphere");
@@ -379,17 +375,6 @@ pub async fn serve(
     let github =
         github_work::Feed::open(config.clone(), jobs.clone(), link.clone(), events.clone());
     let pushes = push::Push::open(&config.home, &config.push_relay);
-    let sentry = sentry::Sentry::open(
-        &config.home,
-        vault::shared().expect("the vault is installed first"),
-        events.clone(),
-    );
-    link.use_sentry(sentry.clone());
-    let hooks = hooks::Hooks::open(
-        &config.home,
-        vault::shared().expect("the vault is installed first"),
-        events.clone(),
-    );
     let tunnel = tunnel::Tunnel::open(
         &config.home,
         vault::shared().expect("the vault is installed first"),
@@ -420,8 +405,6 @@ pub async fn serve(
         tetrix,
         pages: web::Sessions::default(),
         github_work: github.clone(),
-        sentry,
-        hooks,
         push: pushes,
         stopping: stopping_rx.clone(),
         tunnel: tunnel.clone(),
@@ -509,8 +492,6 @@ pub async fn serve(
     // Routines run on their schedules (#395).
     shared.routines.attach(&shared);
     routines::spawn(shared.clone());
-    // Sentry's followed projects, every 5 minutes (crate::sentry).
-    sentry::spawn(shared.clone());
     // Job, check and inbox events go to the brain first (#590).
     brain::orchestrator::spawn(shared.clone());
     // Outside inbox items no rule sorts go to the quick model, once (crate::triage).
@@ -523,7 +504,9 @@ pub async fn serve(
         let shared = shared.clone();
         tokio::spawn(async move {
             while let Some(event) = events.recv().await {
-                rules::offer(&shared, shared.link.plugin_event_offer(&event));
+                shared
+                    .link
+                    .add_event_item(shared.link.plugin_event_offer(&event));
             }
         });
     }

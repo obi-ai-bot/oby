@@ -44,11 +44,7 @@ final class RemoteAccess {
     private(set) var on: Bool
     /// This Mac's hostname, once it has one: oby-<opaque>.<the control plane's device domain>.
     private(set) var hostname: String?
-    private(set) var tunnel = TunnelState.off {
-        didSet { if tunnel == .connected && oldValue != .connected { onConnected() } }
-    }
-    /// The tunnel is up again: what the control plane kept while it was down goes to obid (#1315).
-    @ObservationIgnored var onConnected: () -> Void = {}
+    private(set) var tunnel = TunnelState.off
     private(set) var busy = false
     /// What went wrong last, for Settings to show; nil once something works.
     private(set) var problem: String?
@@ -60,7 +56,6 @@ final class RemoteAccess {
     /// The Google Workspaces a members-only control plane is for ("deskree.com"); empty: anyone.
     private(set) var workspaces: [String] = []
 
-    /// Also Hooks.swift's: a hook's address is made at the same control plane, signed the same way.
     @ObservationIgnored let plane: ControlPlane
     @ObservationIgnored private let secrets: any VaultStore
     @ObservationIgnored private let defaults: UserDefaults
@@ -296,7 +291,7 @@ final class RemoteAccess {
         return registration.evicted?.name
     }
 
-    /// This Mac's key, made the first time it's needed (Hooks.swift signs with it too).
+    /// This Mac's key, made the first time it's needed.
     func signer() throws -> ControlPlane.Signer {
         if let saved = try secrets.value(Self.keyKey) { return try MacKey.signer(saved) }
         let saved = try MacKey.make()

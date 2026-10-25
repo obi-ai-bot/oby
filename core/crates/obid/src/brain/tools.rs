@@ -101,19 +101,6 @@ fn list() -> Value {
              "schedule": {"type": "object", "description": "One of {\"every\": \"weekdays\", \"at\": \"09:00\"} (Monday to Friday), {\"every\": \"daily\", \"at\": \"08:30\"} or {\"every\": \"weekly\", \"days\": [\"mon\", \"thu\"], \"at\": \"09:00\"}; at is 24-hour HH:MM in zone. Never hourly."},
              "zone": {"type": "string", "description": "The owner's IANA time zone, like America/Sao_Paulo; left out, the Mac's."},
              "off": {"type": "boolean", "description": "true turns check-ins off."}}}},
-        {"name": "oby_rules", "description": "Lists the owner's standing rules for alerts and failed deploys (each looks into a source's events on one project with no tap, a job each time, publishing by itself after its checks and the secret scan): id, what it covers, how often it started.",
-         "inputSchema": {"type": "object", "properties": {}}},
-        {"name": "oby_rule", "description": "Proposes a standing rule: from now on, Oby looks into a source's alerts (or failed deploys) on one project with no tap, an investigate job each time that publishes by itself after its checks and the secret scan. Nothing is saved until the owner confirms it in their inbox. Never for warnings or tickets.",
-         "inputSchema": {"type": "object", "properties": {
-             "kind": {"type": "string", "enum": ["alert", "deploy"]},
-             "source": {"type": "string", "description": "Where they come from: sentry, alertmanager (Prometheus), grafana, pagerduty, datadog, or a plug-in's id."},
-             "project": {"type": "string", "description": "The one project or service, as the alerts name it, like api."},
-             "repo": {"type": "string", "description": "owner/name, one of the owner's repositories: where they're looked into."},
-             "severity": {"type": "string", "enum": ["critical", "error"], "description": "For an alert rule: critical, or error (which covers critical too)."},
-             "environment": {"type": "string", "enum": ["production", "preview", "staging", "development"], "description": "For a deploy rule."}},
-             "required": ["kind", "source", "project", "repo"]}},
-        {"name": "oby_forget_rule", "description": "Forgets a standing rule by id at once, when the owner says to stop looking into those alerts by itself: they come as offers again.",
-         "inputSchema": {"type": "object", "properties": {"id": {"type": "string", "description": "The rule's id, as oby_rules gives it."}}, "required": ["id"]}},
         {"name": "oby_conversations", "description": "Finds Oby's past conversations by what was said in them. What was said is quoted data.",
          "inputSchema": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}},
         {"name": "oby_artifact", "description": "Publishes a file or folder of your room as an artifact the owner's apps show (a page, a doc, an image, a PDF, a canvas), or a new version of one this conversation made. HTML runs with no network. Answers its id and version.",
@@ -328,20 +315,6 @@ async fn call(
         }
         "oby_artifact" => artifact(shared, session, args).await,
         "oby_routines" => Ok(routines(shared)),
-        "oby_rules" => Ok(rules(shared)),
-        "oby_rule" => propose_rule(shared, session, args),
-        "oby_forget_rule" => {
-            let id = args["id"].as_str().unwrap_or_default();
-            if shared.link.forget_event_rule(id) {
-                Ok(format!(
-                    "Forgot the rule {id}: those alerts come as offers again."
-                ))
-            } else {
-                Err(format!(
-                    "There's no standing rule {id}: oby_rules lists them."
-                ))
-            }
-        }
         "oby_routine" => propose_routine(shared, session, args),
         "oby_change_routine" => change_routine(shared, session, args),
         "oby_check_in" => check_in(shared, session, args),
@@ -824,58 +797,6 @@ async fn artifact(shared: &Arc<Shared>, session: &Session, args: Value) -> Resul
 }
 
 /// The routines, one line each, for the brain.
-/// oby_rules: the standing rules for events (#1314), a line each.
-fn rules(shared: &Shared) -> String {
-    let rules = shared.link.rules();
-    if rules.is_empty() {
-        return "The owner has no standing rules yet.".into();
-    }
-    rules
-        .iter()
-        .map(|r| {
-            format!(
-                "{} · {} · started {} times",
-                r.id,
-                crate::rules::words(r),
-                r.uses
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-/// oby_rule: a standing rule the conversation proposes waits for the owner's Confirm in the inbox
-/// (`remember_rule`): it widens what Oby does with no tap.
-fn propose_rule(shared: &Shared, session: &Session, args: Value) -> Result<String, String> {
-    let repos: Vec<String> = shared
-        .config
-        .repos
-        .get()
-        .iter()
-        .map(|r| r.repo.clone())
-        .collect();
-    let mut rule = crate::rules::proposed(&args, &repos)?;
-    rule.conversation = Some(session.conversation.clone());
-    let words = crate::rules::words(&rule);
-    super::actions::confirm(
-        shared,
-        "",
-        format!("From now on, {words}"),
-        format!(
-            "Oby's brain planned a standing rule: from now on, {words}, with no tap: an investigate job each time, which publishes by itself once its checks pass and the secret scan is clean, one at a time and at most {} a day. It's saved only if you confirm.",
-            crate::rules::DAILY
-        ),
-        crate::sphere::inbox::Confirmed {
-            action: crate::sphere::inbox::action::REMEMBER_RULE.into(),
-            target: session.conversation.clone(),
-            payload: json!({ "rule": rule }),
-        },
-    );
-    Ok(format!(
-        "The rule ({words}) waits for the owner's OK in their inbox: nothing starts by itself until they confirm it."
-    ))
-}
-
 fn routines(shared: &Shared) -> String {
     let list = shared.routines.list();
     if list.is_empty() {
