@@ -4,7 +4,7 @@ The owner's decision of 2026-10-25: Oby had become a patchwork, so the Mac app a
 
 1. **Connect** Claude Code, Codex and Cursor: find what's signed in, each tool with its own login.
 2. **Dispatch** work between them and between accounts; when one account runs out, another carries on.
-3. **Don't stop:** finish the work, ask only at the step that's truly yours, show what was done.
+3. **Don't stop:** finish the work, ask only at the step that's truly yours, show what was done. What Oby asks waits on Home as one stack of cards, answered right there (#1442): "1/3" says how many decisions wait, the owner cycles through them, and each card links to its task.
 4. **Obys talk:** review requests between teammates' Obys first, working together later. GitHub is the only outside connection; Obys do the talking, not Slack.
 
 Under all four, **Tetrix**: Oby exists to promote it. Every agent gets Tetrix's graph through Oby's one connection, and that path has to be flawless.
