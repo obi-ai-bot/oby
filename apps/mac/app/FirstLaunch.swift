@@ -396,7 +396,8 @@ struct FirstLaunchView: View {
         let tool = Job.agentNames[agent] ?? agent
         let line: String = switch row {
         case .connected(let names): names.joined(separator: ", ")
-        case .missing: Tools.install[agent].map { "Not installed. Run `\($0)` in Terminal, and Oby finds it." } ?? "Not installed. Install \(tool), and Oby finds it."
+        case .missing: Tools.install[agent].map { "Not installed. Run `\($0)` in Terminal\(Tools.needs[agent].map { " (it needs \($0))" } ?? ""), and Oby finds it." }
+            ?? "Not installed. Install \(tool), and Oby finds it."
         case .outdated: "Update the Cursor CLI: `\(Tools.updateCursor)`. Oby needs its `acp` command."
         case .waiting: "Found on this Mac."
         case .signIn(let account): "\(account.name): signed out"

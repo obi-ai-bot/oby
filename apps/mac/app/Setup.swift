@@ -65,9 +65,12 @@ final class Tools {
     /// update a Cursor CLI without `acp`.
     static let install = [
         "claude": "curl -fsSL https://claude.ai/install.sh | bash",
+        // npm's: a brand-new Mac has no Node (`Tools.needs`).
         "codex": "npm install -g @openai/codex",
         "cursor": "curl https://cursor.com/install -fsS | bash",
     ]
+    /// What a tool's install command needs first, said with it.
+    static let needs = ["codex": "Node.js: nodejs.org, or `brew install node`"]
     static let updateCursor = "cursor-agent update"
 
     func refreshCommandLineTools() async {
