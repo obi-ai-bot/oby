@@ -70,6 +70,12 @@ export const ASK_LABEL: Record<AskKind, string> = {
 // One line of the agent's session: a file it read, a command it ran, what it said.
 export type LogLine = { tool: 'Read' | 'Edit' | 'Bash' | 'Grep' | 'Say'; text: string; ago: number };
 
+// what a queued job waits for: `kind` as the runner's (cap, update, schedule, limit), `text`
+// what follows "Waiting"
+export type Waiting = { kind: string; text: string };
+// obid holds it back until the Mac has room for it (docs/runner-api.md, admission by memory)
+export const MEMORY_WAIT: Waiting = { kind: 'cap', text: 'memory frees up' };
+
 export type Job = {
   id: string;
   type: string;        // which chip / side-panel group it's in (TYPES in tasks.ts)
@@ -87,6 +93,7 @@ export type Job = {
   check?: string;      // "Done when": the command that has to pass
   status: JobStatus;
   step: string;        // the live line, e.g. "Running swift test"
+  waiting?: Waiting;   // why a queued job hasn't started, as the runner says it (#238)
   round?: [number, number];
   stages: Stage[];
   ask?: Ask;

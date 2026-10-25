@@ -748,6 +748,21 @@ struct Measured {
     jobs: HashMap<String, JobMemory>,
     /// The queued jobs waiting for memory: since when, and the budget they wait to fit.
     waiting: HashMap<String, (i64, u64)>,
+    /// What each job's agent turn was told to build with, in bytes ([`process::BUILD_JOB_MEMORY`]
+    /// a job), until its check's build or its worker ends: the other builds hold it back as at
+    /// least that much ([`Jobs::build_env`]). Admission never weighs it: a grant never keeps a job
+    /// waiting.
+    granted: HashMap<String, u64>,
+}
+
+impl Measured {
+    /// What each running job's agent and check hold now ([`Load`]).
+    fn held(&self) -> HashMap<String, (u64, u64)> {
+        self.jobs
+            .iter()
+            .map(|(id, m)| (id.clone(), (m.agent_rss, m.check_rss)))
+            .collect()
+    }
 }
 
 /// A queued job waiting for memory (`status.memory.waiting`): the room it waits for, in bytes,
@@ -1468,20 +1483,29 @@ impl Jobs {
         if outputs.is_empty() {
             return Ok(0);
         }
-        let size = || -> u64 {
-            outputs
-                .iter()
-                .map(|dir| crate::api::disk_usage(&worktree.join(dir)))
-                .sum()
+        // The walks off the runtime's threads: a target/ can hold a million files.
+        let size = |worktree: PathBuf, outputs: Vec<PathBuf>| async move {
+            tokio::task::spawn_blocking(move || {
+                outputs
+                    .iter()
+                    .map(|dir| crate::api::disk_usage(&worktree.join(dir)))
+                    .sum::<u64>()
+            })
+            .await
+            .unwrap_or(0)
         };
-        let before = size();
+        let before = size(worktree.clone(), outputs.clone()).await;
         let mut rm: Vec<OsString> = vec!["/bin/rm".into(), "-rf".into(), "--".into()];
         rm.extend(outputs.iter().map(|dir| dir.clone().into_os_string()));
         let removed = self
             .sandboxed(id, &rm, None, SANDBOXED_GIT_LIMIT, usize::MAX)
             .await;
-        let freed = before.saturating_sub(size());
-        removed.map(|_| freed)
+        // What went is freed, all of it or not: an rm that stopped partway says why in the log.
+        let freed = before.saturating_sub(size(worktree, outputs).await);
+        if let Err(why) = removed {
+            tracing::info!("job {id}: {freed} bytes of its build outputs went, not all: {why}");
+        }
+        Ok(freed)
     }
 
     /// Waits until a job may have settled (it ended, was dismissed or archived, or Clear done was
@@ -1710,36 +1734,45 @@ impl Jobs {
     }
 
     /// [`process::build_env`] for a build of job `id` (its check's with `check`, else its agent's),
-    /// as wide as the room admission leaves it: what's spare less what the other running jobs may
-    /// still take ([`held_back`]: their agents here and, for an agent, one check, its own included).
-    /// Worked out at every turn and every check, so a turn that starts next to others builds
-    /// narrower. Nothing when memory can't be read: the build keeps its own defaults.
+    /// as wide as the room admission leaves it: what's spare less what the other running agents
+    /// here may still take ([`agents_held`]), each at least what its turn was told to build with,
+    /// and, for an agent, one of the other jobs' checks ([`check_held`]): any of them may start
+    /// its check during the turn; its own can't. Worked out at every turn and every check, so a
+    /// turn that starts next to others builds narrower. Nothing when memory can't be read: the
+    /// build keeps its own defaults.
     fn build_env(&self, id: &str, check: bool) -> Vec<(&'static str, OsString)> {
         let Some(machine) = self.reading() else {
             return Vec::new();
         };
-        let held: HashMap<String, (u64, u64)> = self
-            .measured()
-            .jobs
-            .iter()
-            .map(|(id, m)| (id.clone(), (m.agent_rss, m.check_rss)))
+        // record()'s order: the jobs' lock, then the meter's.
+        let state = self.lock();
+        let mut measured = self.measured();
+        let held = measured.held();
+        let others: Vec<Load> = state
+            .workers
+            .keys()
+            .filter(|w| *w != id)
+            .filter_map(|w| state.jobs.get(w))
+            .map(|job| {
+                let load = Load::of(&state.jobs, job, &held);
+                let granted = measured.granted.get(&job.id).copied().unwrap_or(0);
+                Load {
+                    agent: load.agent.max(granted),
+                    ..load
+                }
+            })
             .collect();
-        let room = {
-            let state = self.lock();
-            let others: Vec<Load> = state
-                .workers
-                .keys()
-                .filter(|w| *w != id)
-                .filter_map(|w| state.jobs.get(w))
-                .map(|job| Load::of(&state.jobs, job, &held))
-                .collect();
-            let own_check = state
-                .jobs
-                .get(id)
-                .map_or(0, |job| check_budget(state.jobs.values(), job));
-            spare(&machine).saturating_sub(held_back(&others, (!check).then_some(own_check)))
-        };
-        process::build_env(process::build_jobs(room))
+        let checks = if check { 0 } else { check_held(&others, 0) };
+        let room = spare(&machine).saturating_sub(agents_held(&others) + checks);
+        let jobs = process::build_jobs(room);
+        if check {
+            measured.granted.remove(id);
+        } else {
+            measured
+                .granted
+                .insert(id.to_owned(), jobs as u64 * process::BUILD_JOB_MEMORY);
+        }
+        process::build_env(jobs)
     }
 
     fn measured(&self) -> std::sync::MutexGuard<'_, Measured> {
@@ -1751,6 +1784,7 @@ impl Jobs {
     /// A job's worker ended and gave its slot back: the most its processes held at once is kept
     /// with it (`peakRss`), and it's no longer measured.
     fn metered(&self, id: &str) {
+        self.measured().granted.remove(id);
         let Some(memory) = self.measured().jobs.remove(id) else {
             return;
         };
@@ -3143,12 +3177,7 @@ impl Jobs {
             .any(|j| j.status == Status::Queued);
         let machine = if queued { self.reading() } else { None };
         // What the running jobs' agents and checks hold now ([`Load`]).
-        let held: HashMap<String, (u64, u64)> = self
-            .measured()
-            .jobs
-            .iter()
-            .map(|(id, m)| (id.clone(), (m.agent_rss, m.check_rss)))
-            .collect();
+        let held = self.measured().held();
         let mut start = Vec::new();
         let mut waiting = Vec::new();
         let mut short = Vec::new();
@@ -6461,8 +6490,9 @@ impl Jobs {
         let mut stop = signal.clone();
         // A check is new work too: it runs once memory has room for it ([`Jobs::check_fits`]). It
         // waits without its turn, so another check (a smaller one) runs meanwhile, and
-        // CHECK_MEMORY_WAIT at most: then it runs as it is. A stop ends either wait.
-        let give_up_at = tokio::time::Instant::now() + CHECK_MEMORY_WAIT;
+        // CHECK_MEMORY_WAIT at most from the first time memory had no room (a wait for the turn
+        // isn't one): then it runs as it is. A stop ends either wait.
+        let mut give_up_at = None;
         let mut short = false;
         let _turn = loop {
             let turn = tokio::select! {
@@ -6473,10 +6503,12 @@ impl Jobs {
                     return Ok(CheckRun { passed: false, output: String::new() });
                 }
             };
-            if tokio::time::Instant::now() >= give_up_at || self.check_fits(id) {
+            if give_up_at.is_some_and(|at| tokio::time::Instant::now() >= at) || self.check_fits(id)
+            {
                 break turn;
             }
             drop(turn);
+            give_up_at.get_or_insert(tokio::time::Instant::now() + CHECK_MEMORY_WAIT);
             if !short {
                 short = true;
                 self.update(id, |job| job.step = "Waiting for memory".into());
@@ -11431,45 +11463,60 @@ fn pull_request_open(job: &Job) -> bool {
 
 /// What the agent of a job like `job` (its tool, repository and kind, itself included when it
 /// ran before) may hold at once: [`learned`] from the agents of the latest such jobs measured here
-/// (`agentPeakRss`). A job on a teammate's Mac holds nothing here.
-fn budget<'a>(jobs: impl Iterator<Item = &'a Job>, job: &Job) -> u64 {
+/// (`agentPeakRss`). Until 3 were, at least [`DEFAULT_BUDGET`] and the few like it held, and more
+/// when its tool's agents held more in the repository whatever their kind, else in any repository:
+/// it borrows only upward, so a build never takes a research job's small peak. A job on a
+/// teammate's Mac holds nothing here.
+fn budget<'a>(jobs: impl Iterator<Item = &'a Job> + Clone, job: &Job) -> u64 {
     if job.runs_on.is_some() {
         return 0;
     }
-    learned(
-        jobs.filter(|j| j.agent == job.agent && j.repo == job.repo && j.kind == job.kind)
-            .filter(|j| j.runs_on.is_none())
-            .filter_map(|j| Some((j.finished?, j.agent_peak_rss?))),
-    )
+    let peaks = |like: &dyn Fn(&Job) -> bool| -> Vec<(i64, u64)> {
+        jobs.clone()
+            .filter(|j| j.agent == job.agent && j.runs_on.is_none() && like(j))
+            .filter_map(|j| Some((j.finished?, j.agent_peak_rss?)))
+            .collect()
+    };
+    let exact = peaks(&|j| j.repo == job.repo && j.kind == job.kind);
+    if exact.len() >= 3 {
+        return learned(exact);
+    }
+    let few = learned(exact);
+    [peaks(&|j| j.repo == job.repo), peaks(&|_| true)]
+        .into_iter()
+        .find(|peaks| peaks.len() >= 3)
+        .map_or(0, learned)
+        .max(few)
+        .max(DEFAULT_BUDGET)
 }
 
 /// What `job`'s check may hold at once: [`learned`] from its repository's latest checks
-/// (`checkPeakRss`), whatever their job; nothing for a job with no check.
+/// (`checkPeakRss`), whatever their job, and at least [`DEFAULT_BUDGET`] until 3 were; nothing for
+/// a job with no check.
 fn check_budget<'a>(jobs: impl Iterator<Item = &'a Job>, job: &Job) -> u64 {
     if job.check.is_none() {
         return 0;
     }
-    learned(
-        jobs.filter(|j| j.repo == job.repo)
-            .filter_map(|j| Some((j.finished?, j.check_peak_rss?))),
-    )
+    let peaks: Vec<(i64, u64)> = jobs
+        .filter(|j| j.repo == job.repo)
+        .filter_map(|j| Some((j.finished?, j.check_peak_rss?)))
+        .collect();
+    if peaks.len() < 3 {
+        learned(peaks).max(DEFAULT_BUDGET)
+    } else {
+        learned(peaks)
+    }
 }
 
-/// A budget from peaks measured `(when the job finished, peak)`: of the latest [`BUDGET_FROM`],
-/// the most, or with 5 or more the second most (one outlier doesn't hold every job back for the
-/// next ten), and at least [`DEFAULT_BUDGET`] until 3 were measured.
-fn learned(peaks: impl Iterator<Item = (i64, u64)>) -> u64 {
-    let mut latest: Vec<(i64, u64)> = peaks.collect();
-    latest.sort_unstable_by(|a, b| b.cmp(a));
-    latest.truncate(BUDGET_FROM);
-    let mut most: Vec<u64> = latest.into_iter().map(|(_, peak)| peak).collect();
+/// What measured peaks `(when the job finished, peak)` say: of the latest [`BUDGET_FROM`], the
+/// most, or with 5 or more the second most (one outlier doesn't hold every job back for the next
+/// ten); 0 with none.
+fn learned(mut peaks: Vec<(i64, u64)>) -> u64 {
+    peaks.sort_unstable_by(|a, b| b.cmp(a));
+    peaks.truncate(BUDGET_FROM);
+    let mut most: Vec<u64> = peaks.into_iter().map(|(_, peak)| peak).collect();
     most.sort_unstable_by(|a, b| b.cmp(a));
-    let budget = most.get(usize::from(most.len() >= 5)).copied().unwrap_or(0);
-    if most.len() < 3 {
-        budget.max(DEFAULT_BUDGET)
-    } else {
-        budget
-    }
+    most.get(usize::from(most.len() >= 5)).copied().unwrap_or(0)
 }
 
 /// What admission weighs of a job: what its agent and its check may hold at once, what they hold
@@ -11506,33 +11553,31 @@ fn fits(machine: Option<crate::meter::Machine>, running: &[Load], load: &Load) -
         return true;
     }
     let here = running.iter().filter(|l| l.here).count();
-    let room = machine.map_or(0, |m| {
-        spare(&m).saturating_sub(held_back(running, Some(load.check)))
-    });
+    let held = agents_held(running) + check_held(running, load.check);
+    let room = machine.map_or(0, |m| spare(&m).saturating_sub(held));
     admits(machine, here, room, load.agent)
 }
 
-/// What `running` jobs may still take: their agents here (each one's budget less what it holds)
-/// and, with `check` (the budget of one more job's check), one check, the largest budget of theirs
-/// and it, less what the check running holds: checks run one at a time.
-fn held_back(running: &[Load], check: Option<u64>) -> u64 {
-    let agents: u64 = running
+/// What the agents of `running` jobs here may still take: each one's budget less what it holds.
+fn agents_held(running: &[Load]) -> u64 {
+    running
         .iter()
         .filter(|l| l.here)
         .map(|l| l.agent.saturating_sub(l.agent_now))
-        .sum();
-    let Some(check) = check else {
-        return agents;
-    };
+        .sum()
+}
+
+/// What one check may still take, checks running one at a time: the largest check budget of
+/// `running` jobs and `more` (one more job's), less what the check running holds.
+fn check_held(running: &[Load], more: u64) -> u64 {
     let check_now: u64 = running.iter().map(|l| l.check_now).sum();
-    let check = running
+    running
         .iter()
         .map(|l| l.check)
-        .chain([check])
+        .chain([more])
         .max()
         .unwrap_or(0)
-        .saturating_sub(check_now);
-    agents + check
+        .saturating_sub(check_now)
 }
 
 /// What new work may take of `machine`'s available memory: all but a fifth of the machine, kept
@@ -11592,9 +11637,11 @@ fn done_with(state: &State, job: &Job) -> bool {
 
 /// The build outputs among the folders git ignores in `worktree` (`ls-files --directory -z`, each
 /// ending with `/`): a cache by its `CACHEDIR.TAG` (the Cache Directory Tagging convention, which
-/// Cargo's `target/` follows), Xcode's `DerivedData`, and a `node_modules`'s `.cache` (its packages
-/// stay: a check runs without the network). Never in `.obi/`, and only where every folder on the
-/// way is a real one, not a link.
+/// Cargo's `target/` follows: a regular file that begins with its signature), Xcode's
+/// `DerivedData`, and a `node_modules`'s `.cache`. A `node_modules`'s packages stay, and so does a
+/// Python virtual environment (its `pyvenv.cfg`), which uv tags as a cache too: a check runs
+/// without the network to install them again. Never in `.obi/`, and only where every folder on the
+/// way, the last one too, is a real one, not a link.
 fn build_outputs(worktree: &Path, listed: &str) -> Vec<PathBuf> {
     let real = |dir: &Path| {
         let mut at = worktree.to_path_buf();
@@ -11612,13 +11659,32 @@ fn build_outputs(worktree: &Path, listed: &str) -> Vec<PathBuf> {
         .filter_map(|dir| match dir.file_name().and_then(|n| n.to_str()) {
             Some("DerivedData") => Some(dir),
             Some("node_modules") => Some(dir.join(".cache")).filter(|cache| real(cache)),
-            _ => worktree
-                .join(&dir)
-                .join("CACHEDIR.TAG")
-                .is_file()
-                .then_some(dir),
+            _ => {
+                let at = worktree.join(&dir);
+                (tagged(&at) && !at.join("pyvenv.cfg").exists()).then_some(dir)
+            }
         })
         .collect()
+}
+
+/// Whether `dir` holds a `CACHEDIR.TAG`: a regular file of its own (not a link, a pipe or a
+/// device) that begins with the convention's signature.
+fn tagged(dir: &Path) -> bool {
+    use std::io::Read;
+    use std::os::unix::fs::OpenOptionsExt;
+    const SIGNATURE: &[u8] = b"Signature: 8a477f597d28d172789f06886806bc55";
+    let mut head = [0u8; SIGNATURE.len()];
+    std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(dir.join("CACHEDIR.TAG"))
+        .and_then(|file| {
+            if !file.metadata()?.is_file() {
+                return Err(std::io::Error::other("not a regular file"));
+            }
+            (&file).read_exact(&mut head)
+        })
+        .is_ok_and(|()| head == *SIGNATURE)
 }
 
 /// Why obid won't run git for a worktree whose `.git` names another repository.
@@ -14458,7 +14524,9 @@ mod tests {
             ran("r", "claude", "o/r", "research", 13, Some(8 * gib)),
             ran("e", "claude", "o/r", "fix", 14, None),
         ];
-        assert_eq!(budget(jobs.iter(), &new), DEFAULT_BUDGET);
+        // Fewer than 3 fixes measured: the tool's agents in the repository, whatever their kind,
+        // say more than the default (the research job's 8 GiB).
+        assert_eq!(budget(jobs.iter(), &new), 8 * gib);
         jobs.push(ran("f", "claude", "o/r", "fix", 15, Some(gib / 4)));
         assert_eq!(budget(jobs.iter(), &new), gib);
         // One run on a teammate's Mac measured nothing of its agent here.
@@ -14505,6 +14573,35 @@ mod tests {
         let mut unchecked = new.clone();
         unchecked.check = None;
         assert_eq!(check_budget(jobs.iter(), &unchecked), 0);
+
+        // A new repository: the tool's agents anywhere, and never less than the few like it held.
+        let elsewhere = vec![
+            ran("x1", "claude", "o/a", "fix", 1, Some(2 * gib)),
+            ran("x2", "claude", "o/a", "build", 2, Some(2 * gib)),
+            ran("x3", "claude", "o/b", "fix", 3, Some(gib)),
+        ];
+        let fresh = ran("fresh", "claude", "o/new", "research", 0, None);
+        assert_eq!(budget(elsewhere.iter(), &fresh), 2 * gib);
+        let mut known = elsewhere.clone();
+        known.push(ran("y", "claude", "o/new", "research", 4, Some(5 * gib)));
+        assert_eq!(budget(known.iter(), &fresh), 5 * gib);
+        // No 3 anywhere: the default.
+        assert_eq!(budget(elsewhere[..2].iter(), &fresh), DEFAULT_BUDGET);
+        // Only upward: a fix next to 3 research jobs that held 100 MiB takes the default.
+        let light: Vec<Job> = (1..=3)
+            .map(|n| {
+                ran(
+                    &format!("l{n}"),
+                    "claude",
+                    "o/new",
+                    "research",
+                    n,
+                    Some(gib / 10),
+                )
+            })
+            .collect();
+        let fix = ran("fix", "claude", "o/new", "fix", 0, None);
+        assert_eq!(budget(light.iter(), &fix), DEFAULT_BUDGET);
     }
 
     /// What admission holds back: the running agents' budgets less what they hold, and one check,
@@ -14632,8 +14729,9 @@ mod tests {
         assert!(admits(None, 5, 0, 4));
     }
 
-    /// A build is as wide as what admission leaves it: the other running agents' room and, for an
-    /// agent, one check are held back; a check isn't held back from itself.
+    /// A build is as wide as what admission leaves it: the other running agents' room, each at
+    /// least what its turn was told to build with, and, for an agent, one of the other jobs'
+    /// checks are held back; a check isn't held back from itself.
     #[tokio::test]
     async fn a_build_is_as_wide_as_admission_leaves_it() {
         use crate::meter::{Machine, Pressure};
@@ -14662,15 +14760,36 @@ mod tests {
                 .map(|(_, jobs)| jobs.to_string_lossy().parse::<usize>().unwrap())
         };
         // 14 GiB available on a 20 GiB Mac: 10 spare. b's agent may take 1.5 (nothing measured
-        // yet), and one check 1.5: 7 GiB for a's agent, 8.5 for a's check.
+        // yet): 8.5 GiB for a's check; a's agent holds b's check (1.5) back too: 7.
         let machine = Machine {
             total: 20 * gib,
             available: 14 * gib,
             pressure: Pressure::Normal,
         };
         jobs.measured().machine = Some((std::time::Instant::now(), machine));
-        assert_eq!(width(jobs.build_env("a", false)), Some(4.min(most)));
         assert_eq!(width(jobs.build_env("a", true)), Some(5.min(most)));
+        assert_eq!(width(jobs.build_env("a", false)), Some(4.min(most)));
+        // a's turn holds what it was told back from b's build the whole turn, read or not.
+        let granted = 4.min(most) as u64 * process::BUILD_JOB_MEMORY;
+        let b = spare(&machine) - granted.max(DEFAULT_BUDGET) - DEFAULT_BUDGET;
+        assert_eq!(
+            width(jobs.build_env("b", false)),
+            Some(process::build_jobs(b))
+        );
+        jobs.record(None, vec![("a".into(), 100 * 1024 * 1024, 0)]);
+        let b =
+            spare(&machine) - (granted.max(DEFAULT_BUDGET) - 100 * 1024 * 1024) - DEFAULT_BUDGET;
+        assert_eq!(
+            width(jobs.build_env("b", false)),
+            Some(process::build_jobs(b))
+        );
+        // a's check's build ends its turn's grant: its budget less what it holds, again.
+        jobs.build_env("a", true);
+        let b = spare(&machine) - (DEFAULT_BUDGET - 100 * 1024 * 1024) - DEFAULT_BUDGET;
+        assert_eq!(
+            width(jobs.build_env("b", false)),
+            Some(process::build_jobs(b))
+        );
         // Nothing spare: one at a time.
         jobs.measured().machine = Some((
             std::time::Instant::now(),
@@ -14689,7 +14808,7 @@ mod tests {
     fn build_in(tree: &Path) {
         std::fs::write(
             tree.join(".gitignore"),
-            "target/\nnode_modules/\nDerivedData/\nlogs/\n.obi/\n",
+            "target/\nnode_modules/\nDerivedData/\nlogs/\n.obi/\n.venv/\nunsigned/\ntlink\n",
         )
         .unwrap();
         for dir in [
@@ -14699,10 +14818,25 @@ mod tests {
             "DerivedData/Build",
             "logs",
             ".obi/target",
+            ".venv/lib",
+            "unsigned",
         ] {
             std::fs::create_dir_all(tree.join(dir)).unwrap();
         }
-        std::fs::write(tree.join("target/CACHEDIR.TAG"), "Signature: cargo\n").unwrap();
+        // Cargo's tag; uv tags its virtual environments the same way; a tag without the signature.
+        let tag = "Signature: 8a477f597d28d172789f06886806bc55\n# a build made this\n";
+        std::fs::write(tree.join("target/CACHEDIR.TAG"), tag).unwrap();
+        std::fs::write(tree.join(".venv/CACHEDIR.TAG"), tag).unwrap();
+        std::fs::write(tree.join(".venv/pyvenv.cfg"), "home = /usr/bin\n").unwrap();
+        std::fs::write(tree.join("unsigned/CACHEDIR.TAG"), "Signature: cargo\n").unwrap();
+        // A link as the last part, out of the worktree: to a tagged folder, and as a .cache.
+        let outside = tree.with_extension("outside");
+        std::fs::create_dir_all(outside.join("kept")).unwrap();
+        std::fs::write(outside.join("CACHEDIR.TAG"), tag).unwrap();
+        std::fs::write(outside.join("kept/file"), "mine").unwrap();
+        std::os::unix::fs::symlink(&outside, tree.join("tlink")).unwrap();
+        std::fs::create_dir_all(tree.join("web/node_modules")).unwrap();
+        std::os::unix::fs::symlink(&outside, tree.join("web/node_modules/.cache")).unwrap();
         std::fs::write(tree.join("target/debug/app"), vec![1u8; 64 * 1024]).unwrap();
         std::fs::write(tree.join("node_modules/.cache/babel/x.json"), "{}").unwrap();
         std::fs::write(
@@ -14712,7 +14846,7 @@ mod tests {
         .unwrap();
         std::fs::write(tree.join("DerivedData/Build/x"), "x").unwrap();
         std::fs::write(tree.join("logs/run.log"), "kept").unwrap();
-        std::fs::write(tree.join(".obi/target/CACHEDIR.TAG"), "Signature: cargo\n").unwrap();
+        std::fs::write(tree.join(".obi/target/CACHEDIR.TAG"), tag).unwrap();
     }
 
     /// Which ignored folders are a build's: a cache by its tag, `DerivedData`, a `node_modules`'s
@@ -14726,8 +14860,7 @@ mod tests {
         std::fs::create_dir_all(tree.join("away/target")).unwrap();
         std::fs::write(tree.join("away/target/CACHEDIR.TAG"), "").unwrap();
         std::os::unix::fs::symlink(tree.join("away"), tree.join("linked")).unwrap();
-        let listed =
-            "target/\0node_modules/\0DerivedData/\0logs/\0.obi/\0.obi/target/\0linked/target/\0";
+        let listed = "target/\0node_modules/\0DerivedData/\0logs/\0.obi/\0.obi/target/\0linked/target/\0.venv/\0unsigned/\0tlink/\0web/node_modules/\0";
         assert_eq!(
             build_outputs(&tree, listed),
             vec![
@@ -14736,6 +14869,7 @@ mod tests {
                 PathBuf::from("DerivedData")
             ]
         );
+        let _ = std::fs::remove_dir_all(tree.with_extension("outside"));
         let _ = std::fs::remove_dir_all(&tree);
     }
 
@@ -14770,9 +14904,17 @@ mod tests {
             "node_modules/left-pad/index.js",
             "logs/run.log",
             ".obi/target/CACHEDIR.TAG",
+            ".venv/pyvenv.cfg",
+            "unsigned/CACHEDIR.TAG",
         ] {
             assert!(tree.join(stays).exists(), "{stays} went");
         }
+        // Links stay links, and what they lead to out of the worktree stays whole.
+        for link in ["tlink", "web/node_modules/.cache"] {
+            assert!(std::fs::symlink_metadata(tree.join(link)).is_ok_and(|m| m.is_symlink()));
+        }
+        let outside = tree.with_extension("outside");
+        assert!(outside.join("kept/file").exists() && outside.join("CACHEDIR.TAG").exists());
         assert!(open_tree.join("target/debug/app").exists());
         assert_eq!(jobs.get("open").unwrap().build_freed, None);
 
