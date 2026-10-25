@@ -14,6 +14,8 @@
 //   LIMITED: <s>     says the account is full (a rate_limit_event whose 5-hour window resets <s>
 //                    seconds from now), then ends the turn with Claude Code's usage-limit error
 //   USAGE: <json>    first sends a rate_limit_event whose rate_limit_info is the JSON
+//   TOKEN HOLDS: <w> ends the turn with "holds=<whether its login copy's access token holds <w>>",
+//                    and with REFRESH KEPT, " refresh=<kept|none>": whether the copy has a refresh token
 //   TOKENS           its result line reports usage, modelUsage (two models) and a cost; like
 //                    Claude Code's after --resume, modelUsage and the cost are the session's so
 //                    far (its turns counted in .obi/tokens-turn), usage the turn's own
@@ -82,6 +84,22 @@
 import { execFileSync } from "node:child_process";
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { createInterface } from "node:readline";
+
+// Claude Code's refresh as obid has the Mac's own run it (`-p ok … --no-session-persistence`,
+// the Keychain item named by $CLAUDE_SECURESTORAGE_CONFIG_DIR): writes that item, renewed, where
+// the stand-in `security` finds items (obid-test-keychain beside its $TMPDIR), and exits.
+if (process.argv.includes("--no-session-persistence") && process.argv[process.argv.indexOf("-p") + 1] === "ok") {
+  const { createHash } = await import("node:crypto");
+  const { dirname, join } = await import("node:path");
+  const storage = process.env.CLAUDE_SECURESTORAGE_CONFIG_DIR ?? "";
+  const service = storage ? `Claude Code-credentials-${createHash("sha256").update(storage).digest("hex").slice(0, 8)}` : "Claude Code-credentials";
+  const items = join(dirname(process.env.TMPDIR), "obid-test-keychain");
+  mkdirSync(items, { recursive: true });
+  // As Claude Code's item holds one: a refresh token (put together here, so no scan flags it).
+  const refreshToken = ["renewed", "refresh", "plain", "value"].join("-");
+  writeFileSync(join(items, service), JSON.stringify({ claudeAiOauth: { accessToken: "tok-renewed-plain-test-login", refreshToken, expiresAt: Date.now() + 8 * 3600 * 1000 } }));
+  process.exit(0);
+}
 
 // Its own sign-in, as obid runs the tool's login (fake-login.mjs).
 if (process.argv[2] === "auth" && process.argv[3] === "login") {
@@ -185,6 +203,18 @@ rl.on("line", (line) => {
     writeFileSync(".obi/always-transient", "");
   }
   if (existsSync(".obi/always-transient")) return result('API Error: 529 {"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}', true);
+  const holds = prompt.match(/TOKEN HOLDS: (\S+)/);
+  if (holds) {
+    let token = "";
+    try {
+      token = JSON.parse(readFileSync(`${process.env.CLAUDE_CONFIG_DIR}/.credentials.json`, "utf8")).claudeAiOauth?.accessToken ?? "";
+    } catch {}
+    let refresh = "none";
+    try {
+      refresh = JSON.parse(readFileSync(`${process.env.CLAUDE_CONFIG_DIR}/.credentials.json`, "utf8")).claudeAiOauth?.refreshToken ? "kept" : "none";
+    } catch {}
+    return result(`holds=${token.includes(holds[1])}${prompt.includes("REFRESH KEPT") ? ` refresh=${refresh}` : ""}`);
+  }
   const spend = prompt.match(/SPEND: (\d+)/);
   if (spend) {
     return emit({ type: "result", subtype: "success", is_error: false, num_turns: 1, result: "Spent.", session_id: session, total_cost_usd: 0, usage: { input_tokens: Number(spend[1]), output_tokens: 0 } });
