@@ -101,8 +101,7 @@ struct ChatWindowTests {
 
     @Test func composerEscapeUsesTheSameExitHandlerAsTheWindow() async throws {
         var exits = 0
-        let root = ChatComposer(text: .constant(""), focused: .constant(true), tray: Tray(),
-                                onSend: {}, onScreenshot: {}, onStop: { exits += 1; return true })
+        let root = ComposerEditor(text: .constant(""), focused: .constant(true), onSend: {}, onStop: { exits += 1; return true })
             .onExitCommand { exits += 1 }
         let window = offscreenWindow(size: NSSize(width: 500, height: 100), root: root)
         window.makeKey()
