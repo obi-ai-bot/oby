@@ -84,6 +84,15 @@ nonisolated enum FirstLaunchSteps {
         return agents
     }
 
+    /// What the steps that need obid say while it doesn't answer: why, when the login item can't
+    /// start it (Oby isn't in Applications, macOS waits for an OK, registering failed).
+    static func waiting(inApplications: Bool, needsApproval: Bool, problem: String?) -> String {
+        if !inApplications { return RunnerLoginItem.moveToApplications }
+        if needsApproval { return "Oby’s engine waits for your OK in System Settings › General › Login Items." }
+        if let problem { return "Oby’s engine couldn’t start: \(problem)" }
+        return "Waiting for Oby’s engine on this Mac…"
+    }
+
     /// "12 repositories ready".
     static func ready(_ repos: [RunnerRepo]) -> String {
         repos.count == 1 ? "1 repository ready" : "\(repos.count) repositories ready"
@@ -106,6 +115,10 @@ struct FirstLaunchView: View {
 
     @State private var permissions = Permissions()
     @State private var tools = Tools()
+    /// obid's login item, for why the engine doesn't answer.
+    @State private var loginItem = RunnerLoginItem()
+    /// When gh's sign-in was started: a poll asked before then says nothing about it.
+    @State private var signInStarted: Date?
     @State private var step: Step
     /// The last thing you said while trying fn.
     @State private var heard = ""
@@ -216,8 +229,11 @@ struct FirstLaunchView: View {
                 Spacer()
                 if tools.looking { ProgressView().controlSize(.small) }
             }
-            text(engine ? "Oby found these on your Mac. Each signs in with its own login, so Oby never sees your password."
-                        : "Waiting for Oby’s engine on this Mac…")
+            if engine {
+                text("Oby found these on your Mac. Each signs in with its own login, so Oby never sees your password.")
+            } else {
+                waiting
+            }
             VStack(spacing: 10) {
                 ForEach(Tools.all, id: \.self) { toolRow($0) }
             }
@@ -233,10 +249,10 @@ struct FirstLaunchView: View {
             title("Connect GitHub")
             text("So Oby can list your repositories and open a pull request when an agent’s work passes its check. GitHub’s own sign-in does it; Oby never holds the key.")
             if !engine {
-                text("Waiting for Oby’s engine on this Mac…")
+                waiting
             } else if let gitHub, gitHub.signedIn {
                 card(symbol: "checkmark.circle", "GitHub", lines: [gitHub.user.map { "Signed in as \($0)" } ?? "Signed in",
-                                                                   repos.map(FirstLaunchSteps.ready) ?? "Reading your repositories…"]) {
+                                                                   repos.map(FirstLaunchSteps.ready) ?? "Finding your repositories…"]) {
                     Label("Connected", systemImage: "checkmark.circle.fill").font(.system(size: 13)).foregroundStyle(.green)
                 }
             } else if let gitHubSignIn {
@@ -261,6 +277,25 @@ struct FirstLaunchView: View {
     }
 
     // MARK: Pieces
+
+    /// Why obid doesn't answer yet, and the way on: the Login Items page, then Try again.
+    private var waiting: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            text(FirstLaunchSteps.waiting(inApplications: RunnerLoginItem.mayRegister(), needsApproval: loginItem.needsApproval,
+                                          problem: loginItem.problem))
+            HStack(spacing: 8) {
+                if loginItem.needsApproval {
+                    Button("Open Login Items Settings") { RunnerLoginItem.openSettings() }
+                }
+                Button("Try Again") {
+                    loginItem.register()
+                    feed.reconnect()
+                }
+            }
+        }
+        // Back from System Settings.
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in loginItem.refresh() }
+    }
 
     private var footer: some View {
         HStack(spacing: 12) {
@@ -388,6 +423,7 @@ struct FirstLaunchView: View {
         Task {
             do {
                 guard let runner = feed.runner else { throw RunnerError(message: "Oby isn't connected to its engine on this Mac yet.") }
+                signInStarted = .now
                 let signIn = try await runner.startGitHubSignIn()
                 guard signIn.isGitHubs else {
                     try? await runner.endGitHubSignIn()
@@ -403,14 +439,22 @@ struct FirstLaunchView: View {
     }
 
     /// While GitHub's step shows: whether gh is signed in, and once it is, the repositories it can push
-    /// to (obid reads GitHub's list again right after a sign-in). The first one's task waits in Home's box.
+    /// to (obid reads GitHub's list again right after a sign-in: until it has, "Finding your
+    /// repositories…"). A poll asked before the sign-in started says nothing about it. The first
+    /// repository's task waits in Home's box.
     private func watchGitHub() async {
         while !Task.isCancelled {
-            if engine, let runner = feed.runner, let login = try? await runner.gitHubLogin() {
-                if gitHubSignIn != nil, !login.signedIn, login.signIn == nil { problem = "GitHub’s sign-in ended without signing in." }
+            let asked = Date.now
+            if engine, let runner = feed.runner, let login = try? await runner.gitHubLogin(), signInStarted.map({ $0 <= asked }) ?? true {
+                if login.signedIn {
+                    gitHubSignIn = nil
+                    problem = nil
+                } else if login.signIn == nil {
+                    if gitHubSignIn != nil { problem = "GitHub’s sign-in ended without signing in." }
+                    gitHubSignIn = nil
+                }
                 gitHub = login
-                if login.signedIn || login.signIn == nil { gitHubSignIn = nil }
-                if login.signedIn, let listed = try? await runner.jobRepos() {
+                if login.signedIn, let listed = try? await runner.jobRepos(), !listed.isEmpty {
                     repos = listed
                     if let task = FirstLaunchSteps.suggestion(listed), Drafts.text(Drafts.home).isEmpty { Drafts.keep(task, as: Drafts.home) }
                 }

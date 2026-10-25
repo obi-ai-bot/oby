@@ -321,6 +321,9 @@ final class RunnerFeed {
         }
     }
 
+    /// Try again: follows the runner afresh, as after sleep.
+    func reconnect() { follow(again: true) }
+
     private func follow(again: Bool = false) {
         let local = UserDefaults.standard.bool(forKey: Self.thisMacKey)
         let url = local ? LocalRunner.url.absoluteString : UserDefaults.standard.string(forKey: "runnerURL") ?? ""

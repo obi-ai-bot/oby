@@ -84,10 +84,10 @@ A window of its own over the main one (760 × 520, the Safari-style toolbar wind
 | What | The moment | Oby's line first | Then |
 |---|---|---|---|
 | Microphone (Mac) | The first click on the window's voice button (Sangam's) | "Oby listens until you click again, up to a minute, and your words stay a draft until you send them. macOS asks about the microphone next." | macOS's prompt. |
-| Accessibility (the fn key, from any app) | Turning on "Hold fn to talk" in Settings › Voice, or the first fn press Oby can't hear yet | "To hear fn from any app, Oby needs Accessibility. It listens only while you hold it." | macOS's prompt; Oby checks for it every 2 s (macOS has no callback), as `FirstLaunch` does today. |
+| Accessibility (the fn key, from any app) | First launch's Hold fn step (its Allow), turning on "Hold fn to talk" in Settings › Voice, or the first fn press Oby can't hear yet | "To hear fn from any app, Oby needs Accessibility. It listens only while you hold it." | macOS's prompt; Oby checks for it every 2 s (macOS has no callback), as `FirstLaunch` does today. |
 | Microphone and speech (iPhone) | The first tap on the mic | "Oby listens until you tap Stop, up to a minute, and your words stay a draft until you send them." | iOS's prompts, microphone then speech. |
 | Screen Recording | The first "Show Oby your screen" | "To see your screen, macOS needs to let Oby record it. It looks only when you ask." | macOS's prompt. |
-| Notifications (Mac) | The first task you start | "Oby tells you when a task needs you or ends badly. Nothing else." | macOS's prompt. |
+| Notifications (Mac) | The first task that finishes, or the first thing that needs you (`RunnerFeed.post`) | "Oby tells you when a task needs you or ends badly. Nothing else." | macOS's prompt. |
 | Keep the Mac available | Pairing an iPhone, on a desktop Mac or a laptop on power | none: on by default, shown in Settings › iPhone | — |
 | "Can I remember that?" | The first time you say or do something that sounds like a rule (section 5) | the question itself | your yes, or not. |
 
@@ -185,7 +185,7 @@ What exists today, what must be built, and where. Local work (obid, the Mac and 
 | Pairing that doesn't lapse | 30-day tokens (`core/crates/obid/src/gateway.rs:238-288`) | Renew on use; end only when revoked or unused for 30 days; the iPhone keeps `expiresAt` and tells a gateway 401 apart ("This iPhone was removed…") | obid, iPhone | S |
 | End-to-end encryption (#287) | — | Keys from pairing; sealed requests, answers and event frames through the gateway on every route; the device-key signature on each request | obid, Mac, iPhone | L |
 | iPhone 3: asking at the right time | `Notifications.ask()` on connection (`apps/ios/app/Phone.swift:427-428`) | The screen, and asking after the first task otherwise | iPhone | S |
-| Mac 8 and 9: the first task | `POST /v1/plans` | Two suggestions made from the picked repositories; ask for notifications when the first task starts | Mac | S |
+| Mac 8 and 9: the first task | `POST /v1/plans` | One suggestion in Home's box, made from the first repository obid lists (done, #1399); notifications ask when the first task finishes (done) | Mac | S |
 | The setup window | FirstLaunch (`apps/mac/app/FirstLaunch.swift`) | Replace its steps with the screens above on Sangam's components (docs/mac-design.md B1); drop the Models and Permissions steps; fix "menu bar" and "Screen Recording" copy | Mac | M |
 | Asked later | Permission rows (`apps/mac/app/Setup.swift:9-101`) | The one-line explainers before each system prompt, at the moments above; the window's voice button listening on a click (AGENTS.md, as decided) | Mac, iPhone | S |
 | Errors and recovery | Mac offline banner (`apps/mac/app/App/RunnerOfflineNotice.swift`), iPhone offline line (`apps/ios/app/Phone.swift:238-242`) | One notice view in `apps/shared` and the states in the table above | Mac, iPhone | M |

@@ -47,6 +47,14 @@ struct FirstLaunchTests {
         #expect(try Runner.decoder.decode(RunnerStatus.self, from: Data(older.utf8)).availableLogins == nil)
     }
 
+    /// While obid doesn't answer, the steps that need it say why when the login item can't start it.
+    @Test func theStepsSayWhyTheEngineDoesntAnswer() {
+        #expect(FirstLaunchSteps.waiting(inApplications: false, needsApproval: true, problem: nil) == RunnerLoginItem.moveToApplications)
+        #expect(FirstLaunchSteps.waiting(inApplications: true, needsApproval: true, problem: "x").contains("Login Items"))
+        #expect(FirstLaunchSteps.waiting(inApplications: true, needsApproval: false, problem: "It failed.") == "Oby’s engine couldn’t start: It failed.")
+        #expect(FirstLaunchSteps.waiting(inApplications: true, needsApproval: false, problem: nil) == "Waiting for Oby’s engine on this Mac…")
+    }
+
     @Test func gitHubsStepCountsTheRepositoriesAndHomeGetsAFirstTask() throws {
         let json = #"{"repos": [{"repo": "deskree-inc/oby", "defaultBranch": "dev", "listed": true}, {"repo": "octo-cat/app", "defaultBranch": "main", "listed": false}]}"#
         struct Answer: Decodable { var repos: [RunnerRepo] }
