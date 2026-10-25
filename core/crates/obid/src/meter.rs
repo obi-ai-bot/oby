@@ -31,9 +31,9 @@ pub struct Machine {
 }
 
 /// The processes obid started that lead a session of their own (an agent, a check: the job
-/// sandbox's first program calls `setsid`), with the folder each runs in: its tree is it, what
-/// descends from it, and what's still in its process group.
-static ROOTS: Mutex<Vec<(u32, PathBuf)>> = Mutex::new(Vec::new());
+/// sandbox's first program calls `setsid`), with the folder each runs in and whether it's a check:
+/// its tree is it, what descends from it, and what's still in its process group.
+static ROOTS: Mutex<Vec<(u32, PathBuf, bool)>> = Mutex::new(Vec::new());
 
 /// A session leader obid measures while this lives ([`root`]).
 pub struct Root(u32);
@@ -41,8 +41,17 @@ pub struct Root(u32);
 /// Measures `pid`'s tree as running in `cwd` until the [`Root`] is dropped. Folders are compared
 /// as their real paths (`/private/var`, not `/var`).
 pub fn root(pid: u32, cwd: &Path) -> Root {
+    rooted(pid, cwd, false)
+}
+
+/// [`root`] for a check: measured apart from the agent ([`roots_in`]).
+pub fn check_root(pid: u32, cwd: &Path) -> Root {
+    rooted(pid, cwd, true)
+}
+
+fn rooted(pid: u32, cwd: &Path, check: bool) -> Root {
     if pid > 1 {
-        roots().push((pid, real(cwd)));
+        roots().push((pid, real(cwd), check));
     }
     Root(pid)
 }
@@ -53,23 +62,23 @@ fn real(path: &Path) -> PathBuf {
 
 impl Drop for Root {
     fn drop(&mut self) {
-        roots().retain(|(pid, _)| *pid != self.0);
+        roots().retain(|(pid, _, _)| *pid != self.0);
     }
 }
 
-fn roots() -> std::sync::MutexGuard<'static, Vec<(u32, PathBuf)>> {
+fn roots() -> std::sync::MutexGuard<'static, Vec<(u32, PathBuf, bool)>> {
     ROOTS
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-/// The roots running in `folder` or below it.
-pub fn roots_in(folder: &Path) -> Vec<u32> {
+/// The roots running in `folder` or below it: the checks', or the others'.
+pub fn roots_in(folder: &Path, checks: bool) -> Vec<u32> {
     let folder = real(folder);
     roots()
         .iter()
-        .filter(|(_, cwd)| cwd.starts_with(&folder))
-        .map(|(pid, _)| *pid)
+        .filter(|(_, cwd, check)| *check == checks && cwd.starts_with(&folder))
+        .map(|(pid, _, _)| *pid)
         .collect()
 }
 
@@ -109,18 +118,22 @@ pub fn tree_rss(table: &[Process], roots: &[u32]) -> u64 {
 }
 
 /// The machine's memory now, or `None` when it can't be read. `OBID_MEMORY_AVAILABLE` (bytes) says
-/// what's available instead, with no pressure: obid's tests can't fill a Mac's memory, and their
-/// jobs shouldn't wait on whatever else the Mac running them holds.
+/// what's available instead, with no pressure, and `OBID_MEMORY_TOTAL` the total: obid's tests
+/// can't fill a Mac's memory, and their jobs shouldn't wait on whatever else the Mac running them
+/// holds.
 pub fn machine() -> Option<Machine> {
     let machine = read_machine()?;
-    let said = std::env::var("OBID_MEMORY_AVAILABLE")
-        .ok()
-        .and_then(|bytes| bytes.parse().ok());
-    Some(match said {
+    let said = |name: &str| {
+        std::env::var(name)
+            .ok()
+            .and_then(|bytes| bytes.parse().ok())
+    };
+    let total = said("OBID_MEMORY_TOTAL").unwrap_or(machine.total);
+    Some(match said("OBID_MEMORY_AVAILABLE") {
         Some(available) => Machine {
-            available,
+            total,
+            available: available.min(total),
             pressure: Pressure::Normal,
-            ..machine
         },
         None => machine,
     })
@@ -410,9 +423,12 @@ Pages occupied by compressor:                 347536.
     fn roots_are_measured_while_they_live() {
         let folder = std::env::temp_dir().join(format!("meter-{}", std::process::id()));
         let kept = root(4_000_001, &folder.join("sub"));
-        assert_eq!(roots_in(&folder), vec![4_000_001]);
+        let check = check_root(4_000_002, &folder);
+        assert_eq!(roots_in(&folder, false), vec![4_000_001]);
+        assert_eq!(roots_in(&folder, true), vec![4_000_002]);
         drop(kept);
-        assert!(roots_in(&folder).is_empty());
+        drop(check);
+        assert!(roots_in(&folder, false).is_empty() && roots_in(&folder, true).is_empty());
     }
 
     #[test]

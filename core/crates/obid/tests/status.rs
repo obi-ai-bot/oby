@@ -85,6 +85,8 @@ fn command(folder: &Path, config_path: &Path) -> Command {
         .env("PATH", std::env::var_os("PATH").unwrap_or_default())
         .env("HOME", folder.join("env-home"))
         .env("TMPDIR", folder.join("tmp"))
+        // Room for every job, whatever the Mac running the test holds (crate::meter).
+        .env("OBID_MEMORY_AVAILABLE", "1099511627776")
         .env(
             "OBID_SECURITY_BIN",
             Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/agents/fake-security"),

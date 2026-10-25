@@ -416,6 +416,12 @@ pub struct Job {
     /// once, in bytes, as obid's meter read it while it ran (crate::meter); none before a reading.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub peak_rss: Option<u64>,
+    /// Of that, its agent's tree at its most, and its check's (they're learned apart: checks run
+    /// one at a time); none before a reading. Kept as they grow, not only at the end.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_peak_rss: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub check_peak_rss: Option<u64>,
     /// Claude Code's session and its counts at its last result, which the next turn's resumed
     /// counts include (crate::jobs). Never in the API's job.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -677,6 +683,8 @@ impl Job {
             moves: Vec::new(),
             usage: None,
             peak_rss: None,
+            agent_peak_rss: None,
+            check_peak_rss: None,
             usage_seen: None,
             window_share: None,
             routine: None,
@@ -1040,6 +1048,12 @@ impl Job {
         }
         if let Some(peak) = self.peak_rss {
             value["peakRss"] = json!(peak);
+        }
+        if let Some(peak) = self.agent_peak_rss {
+            value["agentPeakRss"] = json!(peak);
+        }
+        if let Some(peak) = self.check_peak_rss {
+            value["checkPeakRss"] = json!(peak);
         }
         if let Some(share) = self.window_share.as_ref().and_then(|s| s.to_json()) {
             value["windowShare"] = share;

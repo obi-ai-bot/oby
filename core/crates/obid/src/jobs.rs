@@ -662,9 +662,12 @@ pub struct Jobs {
 
 /// How often the meter reads while jobs run or wait for memory ([`Jobs::meter`]).
 const METER_TICK: Duration = Duration::from_secs(5);
-/// What a job may hold at once until obid has measured 3 of its tool and repository: about one
-/// cold Rust build next to its agent.
+/// What a job's agent, or a check, may hold at once until obid has measured 3 like it: about one
+/// cold Rust build.
 pub const DEFAULT_BUDGET: u64 = 1536 * 1024 * 1024;
+/// How much a peak grows before it's kept with the job while it runs (and a quarter of it), so a
+/// job obid didn't see end (a crash) is learned from too.
+const PEAK_STEP: u64 = 128 * 1024 * 1024;
 /// How many of the latest measured jobs of a tool and repository its budget is learned from.
 const BUDGET_FROM: usize = 10;
 /// The most a check waits for memory before it runs anyway, its build sized to what's there.
@@ -696,6 +699,14 @@ pub struct JobMemory {
     pub id: String,
     pub rss: u64,
     pub peak_rss: u64,
+    /// Its agent's tree and its check's, each at its most.
+    pub agent_peak_rss: u64,
+    pub check_peak_rss: u64,
+    /// What they hold now (`rss` is both).
+    #[serde(skip)]
+    pub agent_rss: u64,
+    #[serde(skip)]
+    pub check_rss: u64,
 }
 
 /// Why a Codex job can't go to a teammate's Mac: the guest VM's image carries Claude Code only
@@ -1420,11 +1431,14 @@ impl Jobs {
         };
         let Ok((machine, rss)) = tokio::task::spawn_blocking(move || {
             let table = crate::meter::processes();
-            let rss: Vec<(String, u64)> = folders
+            let tree = |folder: &Path, checks| {
+                crate::meter::tree_rss(&table, &crate::meter::roots_in(folder, checks))
+            };
+            let rss: Vec<(String, u64, u64)> = folders
                 .into_iter()
                 .map(|(id, folder)| {
-                    let roots = crate::meter::roots_in(&folder);
-                    (id, crate::meter::tree_rss(&table, &roots))
+                    let (agent, check) = (tree(&folder, false), tree(&folder, true));
+                    (id, agent, check)
                 })
                 .collect();
             (crate::meter::machine(), rss)
@@ -1433,31 +1447,74 @@ impl Jobs {
         else {
             return;
         };
-        self.record(machine, rss);
+        for memory in self.record(machine, rss) {
+            self.keep_peaks(&memory);
+        }
     }
 
     /// Keeps a reading: the machine's, and each job's that still has a worker. A job that ended
     /// while it was read is left out: the jobs' lock is held throughout, as a worker's end holds it
     /// to give its slot back before [`Jobs::metered`] takes the job's entry away, so an entry
-    /// never comes back for a job that ended.
-    fn record(&self, machine: Option<crate::meter::Machine>, rss: Vec<(String, u64)>) {
+    /// never comes back for a job that ended. `rss` is each job's agent's tree and its check's.
+    /// Answers the jobs whose peaks grew past what they keep by [`PEAK_STEP`] (or a quarter), to be
+    /// kept now ([`Jobs::keep_peaks`]).
+    fn record(
+        &self,
+        machine: Option<crate::meter::Machine>,
+        rss: Vec<(String, u64, u64)>,
+    ) -> Vec<JobMemory> {
         let state = self.lock();
         let mut measured = self.measured();
         if let Some(machine) = machine {
             measured.machine = Some((std::time::Instant::now(), machine));
         }
-        for (id, rss) in rss {
-            if !state.workers.contains_key(&id) {
+        let grew = |kept: Option<u64>, now: u64| {
+            let kept = kept.unwrap_or(0);
+            now > kept + PEAK_STEP.max(kept / 4)
+        };
+        let mut due = Vec::new();
+        for (id, agent, check) in rss {
+            let Some(job) = state
+                .jobs
+                .get(&id)
+                .filter(|_| state.workers.contains_key(&id))
+            else {
                 continue;
-            }
-            let job = measured.jobs.entry(id.clone()).or_insert(JobMemory {
+            };
+            let memory = measured.jobs.entry(id.clone()).or_insert(JobMemory {
                 id,
                 rss: 0,
                 peak_rss: 0,
+                agent_peak_rss: 0,
+                check_peak_rss: 0,
+                agent_rss: 0,
+                check_rss: 0,
             });
-            job.rss = rss;
-            job.peak_rss = job.peak_rss.max(rss);
+            memory.agent_rss = agent;
+            memory.check_rss = check;
+            memory.rss = agent + check;
+            memory.peak_rss = memory.peak_rss.max(memory.rss);
+            memory.agent_peak_rss = memory.agent_peak_rss.max(agent);
+            memory.check_peak_rss = memory.check_peak_rss.max(check);
+            if grew(job.agent_peak_rss, memory.agent_peak_rss)
+                || grew(job.check_peak_rss, memory.check_peak_rss)
+            {
+                due.push(memory.clone());
+            }
         }
+        due
+    }
+
+    /// Keeps a job's peaks with it (`peakRss`, `agentPeakRss`, `checkPeakRss`): the larger of
+    /// what it kept and `memory`'s.
+    fn keep_peaks(&self, memory: &JobMemory) {
+        let larger =
+            |kept: Option<u64>, now: u64| Some(kept.unwrap_or(0).max(now)).filter(|p| *p > 0);
+        self.update(&memory.id, |job| {
+            job.peak_rss = larger(job.peak_rss, memory.peak_rss);
+            job.agent_peak_rss = larger(job.agent_peak_rss, memory.agent_peak_rss);
+            job.check_peak_rss = larger(job.check_peak_rss, memory.check_peak_rss);
+        });
     }
 
     fn measured(&self) -> std::sync::MutexGuard<'_, Measured> {
@@ -1469,13 +1526,11 @@ impl Jobs {
     /// A job's worker ended and gave its slot back: the most its processes held at once is kept
     /// with it (`peakRss`), and it's no longer measured.
     fn metered(&self, id: &str) {
-        let Some(peak) = self.measured().jobs.remove(id).map(|m| m.peak_rss) else {
+        let Some(memory) = self.measured().jobs.remove(id) else {
             return;
         };
-        if peak > 0 {
-            self.update(id, |job| {
-                job.peak_rss = Some(job.peak_rss.unwrap_or(0).max(peak))
-            });
+        if memory.peak_rss > 0 {
+            self.keep_peaks(&memory);
         }
     }
 
@@ -1526,21 +1581,26 @@ impl Jobs {
         Some(machine)
     }
 
-    /// Whether the check of job `id` may start now, as far as memory goes ([`admits`]): this
-    /// job's agent already holds part of its budget, and the room the others may still take
-    /// isn't held back from a check, which would wait on them while they wait on it.
+    /// Whether the check of job `id` may start now, as far as memory goes ([`admits`]): room for
+    /// what its repository's checks hold at most ([`check_budget`]) in what's spare. The room the
+    /// running agents may still take isn't held back from it: one of them may be waiting on it.
+    /// Another job here running makes it more than the first of obid's; one on a teammate's Mac
+    /// doesn't.
     fn check_fits(&self, id: &str) -> bool {
         let machine = self.reading();
-        let (budget, others) = {
+        let (need, others) = {
             let state = self.lock();
             let Some(job) = state.jobs.get(id) else {
                 return true;
             };
-            let others = state.workers.keys().filter(|w| *w != id).count();
-            (budget(state.jobs.values(), job), others)
+            let others = state
+                .workers
+                .keys()
+                .filter(|w| *w != id)
+                .filter(|w| state.jobs.get(*w).is_some_and(|j| j.runs_on.is_none()))
+                .count();
+            (check_budget(state.jobs.values(), job), others)
         };
-        let held = self.measured().jobs.get(id).map_or(0, |m| m.rss);
-        let need = budget.saturating_sub(held);
         admits(machine, others, machine.map_or(0, |m| spare(&m)), need)
     }
 
@@ -2651,28 +2711,24 @@ impl Jobs {
             .values()
             .any(|j| j.status == Status::Queued);
         let machine = if queued { self.reading() } else { None };
-        // What the running jobs may still take: their budget, less what they hold now.
-        let held: HashMap<String, u64> = self
+        // What the running jobs' agents and checks hold now ([`Load`]).
+        let held: HashMap<String, (u64, u64)> = self
             .measured()
             .jobs
             .iter()
-            .map(|(id, m)| (id.clone(), m.rss))
+            .map(|(id, m)| (id.clone(), (m.agent_rss, m.check_rss)))
             .collect();
         let mut start = Vec::new();
         let mut waiting = Vec::new();
         let mut short = Vec::new();
         {
             let mut state = self.lock();
-            let reserved: u64 = state
+            let mut running: Vec<Load> = state
                 .workers
                 .keys()
                 .filter_map(|id| state.jobs.get(id))
-                .map(|job| {
-                    let budget = budget(state.jobs.values(), job);
-                    budget.saturating_sub(held.get(&job.id).copied().unwrap_or(0))
-                })
-                .sum();
-            let mut room = machine.map_or(0, |m| spare(&m).saturating_sub(reserved));
+                .map(|job| Load::of(&state.jobs, job, &held))
+                .collect();
             let mut queued: Vec<(i64, String)> = state
                 .jobs
                 .values()
@@ -2697,13 +2753,14 @@ impl Jobs {
                 let Some(job) = state.jobs.get(&id) else {
                     continue;
                 };
-                let budget = budget(state.jobs.values(), job);
-                // Oldest first: once one waits for memory, the younger ones wait behind it.
-                if !short.is_empty() || !admits(machine, state.workers.len(), room, budget) {
-                    short.push((id, budget));
+                let load = Load::of(&state.jobs, job, &held);
+                // Oldest first: once one here waits for memory, the younger ones here wait behind
+                // it. One on a teammate's Mac takes nothing of this Mac's but its check.
+                if load.here && (!short.is_empty() || !fits(machine, &running, &load)) {
+                    short.push((id, load.agent));
                     continue;
                 }
-                room = room.saturating_sub(budget);
+                running.push(load);
                 let (sender, receiver) = watch::channel(Signal::Run);
                 state.workers.insert(id.clone(), sender);
                 start.push((id, receiver));
@@ -5660,19 +5717,24 @@ impl Jobs {
             });
         }
         let mut stop = signal.clone();
-        let _turn = tokio::select! {
-            turn = self.checking.acquire() => {
-                turn.map_err(|e| format!("obid couldn't run the check: {e}"))?
-            }
-            _ = async { while *stop.borrow_and_update() == Signal::Run && stop.changed().await.is_ok() {} } => {
-                return Ok(CheckRun { passed: false, output: String::new() });
-            }
-        };
-        // A check is new work too: it starts once memory has room for it, waiting
-        // CHECK_MEMORY_WAIT at most (then it runs as it is), and a stop ends the wait.
+        // A check is new work too: it runs once memory has room for it ([`Jobs::check_fits`]). It
+        // waits without its turn, so another check (a smaller one) runs meanwhile, and
+        // CHECK_MEMORY_WAIT at most: then it runs as it is. A stop ends either wait.
         let give_up_at = tokio::time::Instant::now() + CHECK_MEMORY_WAIT;
         let mut short = false;
-        while !self.check_fits(id) && tokio::time::Instant::now() < give_up_at {
+        let _turn = loop {
+            let turn = tokio::select! {
+                turn = self.checking.acquire() => {
+                    turn.map_err(|e| format!("obid couldn't run the check: {e}"))?
+                }
+                _ = async { while *stop.borrow_and_update() == Signal::Run && stop.changed().await.is_ok() {} } => {
+                    return Ok(CheckRun { passed: false, output: String::new() });
+                }
+            };
+            if tokio::time::Instant::now() >= give_up_at || self.check_fits(id) {
+                break turn;
+            }
+            drop(turn);
             if !short {
                 short = true;
                 self.update(id, |job| job.step = "Waiting for memory".into());
@@ -5683,7 +5745,7 @@ impl Jobs {
                     return Ok(CheckRun { passed: false, output: String::new() });
                 }
             }
-        }
+        };
         if waiting || short {
             self.update(id, |job| job.step = step);
         }
@@ -10427,22 +10489,97 @@ fn pull_request_open(job: &Job) -> bool {
             .is_none_or(|pr| pr.state != "MERGED" && pr.state != "CLOSED")
 }
 
-/// What a job like `job` (its tool and repository, itself included when it ran before) may hold
-/// at once: the most the latest [`BUDGET_FROM`] measured ones held (`peakRss`), and at least
-/// [`DEFAULT_BUDGET`] until 3 of them were.
+/// What the agent of a job like `job` (its tool, repository and kind, itself included when it
+/// ran before) may hold at once: [`learned`] from the agents of the latest such jobs measured here
+/// (`agentPeakRss`). A job on a teammate's Mac holds nothing here.
 fn budget<'a>(jobs: impl Iterator<Item = &'a Job>, job: &Job) -> u64 {
-    let mut peaks: Vec<(i64, u64)> = jobs
-        .filter(|j| j.agent == job.agent && j.repo == job.repo)
-        .filter_map(|j| Some((j.finished?, j.peak_rss?)))
-        .collect();
-    peaks.sort_unstable_by(|a, b| b.cmp(a));
-    peaks.truncate(BUDGET_FROM);
-    let most = peaks.iter().map(|(_, peak)| *peak).max().unwrap_or(0);
-    if peaks.len() < 3 {
-        most.max(DEFAULT_BUDGET)
-    } else {
-        most
+    if job.runs_on.is_some() {
+        return 0;
     }
+    learned(
+        jobs.filter(|j| j.agent == job.agent && j.repo == job.repo && j.kind == job.kind)
+            .filter(|j| j.runs_on.is_none())
+            .filter_map(|j| Some((j.finished?, j.agent_peak_rss?))),
+    )
+}
+
+/// What `job`'s check may hold at once: [`learned`] from its repository's latest checks
+/// (`checkPeakRss`), whatever their job; nothing for a job with no check.
+fn check_budget<'a>(jobs: impl Iterator<Item = &'a Job>, job: &Job) -> u64 {
+    if job.check.is_none() {
+        return 0;
+    }
+    learned(
+        jobs.filter(|j| j.repo == job.repo)
+            .filter_map(|j| Some((j.finished?, j.check_peak_rss?))),
+    )
+}
+
+/// A budget from peaks measured `(when the job finished, peak)`: of the latest [`BUDGET_FROM`],
+/// the most, or with 5 or more the second most (one outlier doesn't hold every job back for the
+/// next ten), and at least [`DEFAULT_BUDGET`] until 3 were measured.
+fn learned(peaks: impl Iterator<Item = (i64, u64)>) -> u64 {
+    let mut latest: Vec<(i64, u64)> = peaks.collect();
+    latest.sort_unstable_by(|a, b| b.cmp(a));
+    latest.truncate(BUDGET_FROM);
+    let mut most: Vec<u64> = latest.into_iter().map(|(_, peak)| peak).collect();
+    most.sort_unstable_by(|a, b| b.cmp(a));
+    let budget = most.get(usize::from(most.len() >= 5)).copied().unwrap_or(0);
+    if most.len() < 3 {
+        budget.max(DEFAULT_BUDGET)
+    } else {
+        budget
+    }
+}
+
+/// What admission weighs of a job: what its agent and its check may hold at once, what they hold
+/// now, and whether its agent runs here (not on a teammate's Mac, where it takes none of this
+/// Mac's memory; its check runs here all the same).
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+struct Load {
+    agent: u64,
+    check: u64,
+    agent_now: u64,
+    check_now: u64,
+    here: bool,
+}
+
+impl Load {
+    fn of(jobs: &HashMap<String, Job>, job: &Job, held: &HashMap<String, (u64, u64)>) -> Load {
+        let (agent_now, check_now) = held.get(&job.id).copied().unwrap_or((0, 0));
+        Load {
+            agent: budget(jobs.values(), job),
+            check: check_budget(jobs.values(), job),
+            agent_now,
+            check_now,
+            here: job.runs_on.is_none(),
+        }
+    }
+}
+
+/// Whether a job of `load` may start next to `running` ([`admits`]): one on a teammate's Mac
+/// always may; one here when its agent's budget fits in what's spare once the running agents here
+/// may still take theirs (their budget less what they hold), and one check the largest check
+/// budget of them and it, less what the check running holds: checks run one at a time.
+fn fits(machine: Option<crate::meter::Machine>, running: &[Load], load: &Load) -> bool {
+    if !load.here {
+        return true;
+    }
+    let here = running.iter().filter(|l| l.here);
+    let agents: u64 = here
+        .clone()
+        .map(|l| l.agent.saturating_sub(l.agent_now))
+        .sum();
+    let check_now: u64 = running.iter().map(|l| l.check_now).sum();
+    let check = running
+        .iter()
+        .map(|l| l.check)
+        .chain([load.check])
+        .max()
+        .unwrap_or(0)
+        .saturating_sub(check_now);
+    let room = machine.map_or(0, |m| spare(&m).saturating_sub(agents + check));
+    admits(machine, here.count(), room, load.agent)
 }
 
 /// What new work may take of `machine`'s available memory: all but a fifth of the machine, kept
@@ -10799,7 +10936,7 @@ pub async fn run_check(
     // The writing ends live in the child now: the reader ends when it (and what it started) does.
     drop(command);
     let pgid = child.id().unwrap_or(0);
-    let _metered = crate::meter::root(pgid, cwd);
+    let _metered = crate::meter::check_root(pgid, cwd);
     let fed = watch.clone();
     let reading = tokio::task::spawn_blocking(move || {
         let mut reader = reader;
@@ -13022,7 +13159,7 @@ mod tests {
         jobs.lock()
             .workers
             .insert("live".into(), watch::channel(Signal::Run).0);
-        jobs.record(None, vec![("live".into(), 10), ("gone".into(), 20)]);
+        jobs.record(None, vec![("live".into(), 10, 0), ("gone".into(), 20, 0)]);
         let ids = |jobs: &Jobs| {
             let mut ids: Vec<String> = jobs.measured().jobs.keys().cloned().collect();
             ids.sort();
@@ -13031,59 +13168,200 @@ mod tests {
         assert_eq!(ids(&jobs), vec!["live".to_owned()]);
         // Its worker ends with a reading under way: the reading lands after the slot is back.
         jobs.lock().workers.remove("live");
-        jobs.record(None, vec![("live".into(), 30)]);
+        jobs.record(None, vec![("live".into(), 30, 0)]);
         assert_eq!(jobs.measured().jobs["live"].rss, 10);
         jobs.metered("live");
         assert!(ids(&jobs).is_empty());
         assert_eq!(jobs.get("live").unwrap().peak_rss, Some(10));
-        jobs.record(None, vec![("live".into(), 40)]);
+        jobs.record(None, vec![("live".into(), 40, 0)]);
         assert!(ids(&jobs).is_empty());
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// A budget is learned per tool and repository: at least the default until 3 jobs like it
-    /// were measured, then the most the latest 10 held, whatever the default.
+    /// A budget is learned per tool, repository and kind from the agents measured here: at least
+    /// the default until 3 were, then the most of the latest 10, the second most with 5 or more
+    /// (an outlier). A check's is its repository's checks', apart; a job with no check has none,
+    /// and one on a teammate's Mac holds nothing here.
     #[test]
     fn a_budget_is_the_most_recent_jobs_like_it_held() {
-        let ran = |id: &str, agent: &str, repo: &str, finished: i64, peak: Option<u64>| {
-            let mut job = Job::new(
-                id.into(),
-                repo.into(),
-                "fix".into(),
-                "Fix it".into(),
-                agent.into(),
-                "a".into(),
-            );
-            job.finished = Some(finished);
-            job.peak_rss = peak;
-            job
-        };
+        let ran =
+            |id: &str, agent: &str, repo: &str, kind: &str, finished: i64, peak: Option<u64>| {
+                let mut job = Job::new(
+                    id.into(),
+                    repo.into(),
+                    kind.into(),
+                    "Fix it".into(),
+                    agent.into(),
+                    "a".into(),
+                );
+                job.finished = Some(finished);
+                job.agent_peak_rss = peak;
+                job.check = Some("make test".into());
+                job
+            };
         let gib = 1024 * 1024 * 1024;
-        let new = ran("new", "claude", "o/r", 0, None);
+        let new = ran("new", "claude", "o/r", "fix", 0, None);
         let mut jobs = vec![
-            ran("a", "claude", "o/r", 10, Some(gib / 2)),
-            ran("b", "claude", "o/r", 11, Some(gib)),
-            // Another tool, another repository, one not measured: none counts.
-            ran("c", "codex", "o/r", 12, Some(8 * gib)),
-            ran("d", "claude", "o/other", 13, Some(8 * gib)),
-            ran("e", "claude", "o/r", 14, None),
+            ran("a", "claude", "o/r", "fix", 10, Some(gib / 2)),
+            ran("b", "claude", "o/r", "fix", 11, Some(gib)),
+            // Another tool, repository or kind, or one not measured: none counts.
+            ran("c", "codex", "o/r", "fix", 12, Some(8 * gib)),
+            ran("d", "claude", "o/other", "fix", 13, Some(8 * gib)),
+            ran("r", "claude", "o/r", "research", 13, Some(8 * gib)),
+            ran("e", "claude", "o/r", "fix", 14, None),
         ];
         assert_eq!(budget(jobs.iter(), &new), DEFAULT_BUDGET);
-        jobs.push(ran("f", "claude", "o/r", 15, Some(gib / 4)));
+        jobs.push(ran("f", "claude", "o/r", "fix", 15, Some(gib / 4)));
         assert_eq!(budget(jobs.iter(), &new), gib);
-        // The latest 10 only: a big one long ago is forgotten.
-        jobs.push(ran("old", "claude", "o/r", 1, Some(6 * gib)));
-        assert_eq!(budget(jobs.iter(), &new), 6 * gib);
+        // One run on a teammate's Mac measured nothing of its agent here.
+        let mut away = ran("away", "claude", "o/r", "fix", 16, Some(9 * gib));
+        away.runs_on = Some(crate::job::RunsOn {
+            obi: "obi-t".into(),
+            owner: "t".into(),
+            grant: None,
+        });
+        jobs.push(away.clone());
+        assert_eq!(budget(jobs.iter(), &new), gib);
+        assert_eq!(budget(jobs.iter(), &away), 0);
+        // With 5 measured, the one outlier is left out; then only the latest 10 count.
+        jobs.push(ran("big", "claude", "o/r", "fix", 17, Some(6 * gib)));
+        jobs.push(ran("g", "claude", "o/r", "fix", 18, Some(gib / 4)));
+        assert_eq!(budget(jobs.iter(), &new), gib);
         for n in 0..10 {
             jobs.push(ran(
                 &format!("n{n}"),
                 "claude",
                 "o/r",
+                "fix",
                 100 + n,
                 Some(3 * gib),
             ));
         }
         assert_eq!(budget(jobs.iter(), &new), 3 * gib);
+
+        // Checks are learned apart, per repository.
+        assert_eq!(check_budget(jobs.iter(), &new), DEFAULT_BUDGET);
+        for (n, peak) in [gib, 2 * gib, gib / 2].into_iter().enumerate() {
+            let mut checked = ran(
+                &format!("k{n}"),
+                "codex",
+                "o/r",
+                "test",
+                200 + n as i64,
+                None,
+            );
+            checked.check_peak_rss = Some(peak);
+            jobs.push(checked);
+        }
+        assert_eq!(check_budget(jobs.iter(), &new), 2 * gib);
+        let mut unchecked = new.clone();
+        unchecked.check = None;
+        assert_eq!(check_budget(jobs.iter(), &unchecked), 0);
+    }
+
+    /// What admission holds back: the running agents' budgets less what they hold, and one check,
+    /// the largest of theirs and the new job's, less what the check running holds; nothing for a
+    /// job on a teammate's Mac, which always starts.
+    #[test]
+    fn a_job_fits_next_to_what_runs() {
+        use crate::meter::{Machine, Pressure};
+        let gib = 1024 * 1024 * 1024;
+        // 12 GiB available on a 20 GiB Mac: 8 GiB spare once a fifth is kept free.
+        let machine = Some(Machine {
+            total: 20 * gib,
+            available: 12 * gib,
+            pressure: Pressure::Normal,
+        });
+        let here = |agent, check, agent_now, check_now| Load {
+            agent,
+            check,
+            agent_now,
+            check_now,
+            here: true,
+        };
+        let new = here(2 * gib, 2 * gib, 0, 0);
+        // Two agents that may take 2 GiB more each, and one 2 GiB check: 6, 2 left.
+        let running = [
+            here(3 * gib, 2 * gib, gib, 0),
+            here(3 * gib, 2 * gib, gib, 0),
+        ];
+        assert!(fits(machine, &running, &new));
+        // A third leaves 0: the check is held once, not once a job.
+        let three = [running[0], running[1], here(2 * gib, 2 * gib, 0, 0)];
+        assert!(!fits(machine, &three, &new));
+        // The check running holds 1 GiB of its 2 already: 1 GiB less held back.
+        let checking = [running[0], here(3 * gib, 2 * gib, gib, gib)];
+        assert!(fits(machine, &checking, &here(3 * gib, 0, 0, 0)));
+        assert!(!fits(machine, &running, &here(3 * gib, 0, 0, 0)));
+        // A job on a teammate's Mac starts whatever is left, and its agent holds nothing back
+        // here; its check counts as anyone's.
+        let away = Load {
+            agent: 0,
+            check: 4 * gib,
+            here: false,
+            ..Load::default()
+        };
+        assert!(fits(machine, &three, &away));
+        assert!(fits(machine, &[away], &here(2 * gib, 0, 0, 0)));
+        assert!(!fits(machine, &[away, running[0]], &here(3 * gib, 0, 0, 0)));
+        // Alone here, the first job starts whatever its budget.
+        assert!(fits(machine, &[away], &here(64 * gib, 0, 0, 0)));
+    }
+
+    /// A check runs once memory has room for its repository's checks' budget; alone here it runs
+    /// whatever, as the first job of obid's does, and a job on a teammate's Mac doesn't count.
+    #[tokio::test]
+    async fn a_check_waits_for_room_unless_its_job_is_alone() {
+        use crate::meter::{Machine, Pressure};
+        let (root, _clone, _base, jobs) = cleanup_home("check-room", false);
+        let gib = 1024 * 1024 * 1024;
+        let job = |id: &str| {
+            let mut job = Job::new(
+                id.into(),
+                "o/r".into(),
+                "fix".into(),
+                "Fix it".into(),
+                "claude".into(),
+                "a".into(),
+            );
+            job.check = Some("make test".into());
+            job
+        };
+        jobs.insert(job("checking"));
+        jobs.insert(job("other"));
+        let mut away = job("away");
+        away.runs_on = Some(crate::job::RunsOn {
+            obi: "obi-t".into(),
+            owner: "t".into(),
+            grant: None,
+        });
+        jobs.insert(away);
+        // 3 GiB available on 10: 1 GiB spare, less than a check's 1.5 GiB until one is measured.
+        let tight = Machine {
+            total: 10 * gib,
+            available: 3 * gib,
+            pressure: Pressure::Normal,
+        };
+        let worker = |id: &str| {
+            jobs.lock()
+                .workers
+                .insert(id.into(), watch::channel(Signal::Run).0);
+        };
+        worker("checking");
+        worker("away");
+        jobs.measured().machine = Some((std::time::Instant::now(), tight));
+        assert!(jobs.check_fits("checking"), "alone here, it runs");
+        worker("other");
+        assert!(!jobs.check_fits("checking"));
+        jobs.measured().machine = Some((
+            std::time::Instant::now(),
+            Machine {
+                available: 4 * gib,
+                ..tight
+            },
+        ));
+        assert!(jobs.check_fits("checking"));
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// New work starts only when the machine isn't pressed and has room; the first job of obid's

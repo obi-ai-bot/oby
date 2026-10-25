@@ -11,7 +11,11 @@ use serde_json::{Value, json};
 use support::*;
 
 fn post(obid: &Obid, task: &str) -> String {
-    let job = json!({"repo": "obi-e2e/fixture-app", "kind": "research", "task": task});
+    post_kind(obid, "research", task)
+}
+
+fn post_kind(obid: &Obid, kind: &str, task: &str) -> String {
+    let job = json!({"repo": "obi-e2e/fixture-app", "kind": kind, "task": task});
     let answer = call(obid, "POST", "/v1/jobs", Some(&json!({ "job": job })));
     assert_eq!(answer.status, 201, "{}", answer.text);
     answer.body["id"].as_str().unwrap().to_owned()
@@ -37,21 +41,38 @@ fn until(obid: &Obid, id: &str, ready: impl Fn(&Value) -> bool) -> Value {
     }
 }
 
+const GIB: u64 = 1024 * 1024 * 1024;
+
+/// A 10 GiB Mac with `available` bytes free: 2 GiB of it kept for the owner's apps.
+fn on_a_mac_with(name: &str, available: u64, seeded: &[obid::job::Job]) -> (Folder, Obid) {
+    let folder = Folder::new(name);
+    let remote = fixture(&folder.0.join("fixture"));
+    let agent = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/agents/fake-claude");
+    let config = config(&folder.0, &remote, &agent);
+    let jobs = folder.0.join("home/jobs");
+    std::fs::create_dir_all(&jobs).unwrap();
+    for job in seeded {
+        std::fs::write(
+            jobs.join(format!("{}.json", job.id)),
+            serde_json::to_vec(job).unwrap(),
+        )
+        .unwrap();
+    }
+    let (total, available) = ((10 * GIB).to_string(), available.to_string());
+    let env = [
+        ("OBID_MEMORY_TOTAL", total.as_str()),
+        ("OBID_MEMORY_AVAILABLE", available.as_str()),
+    ];
+    let obid = start_with(&folder.0, &config, None, &env);
+    (folder, obid)
+}
+
 /// With 2 GiB available and no job measured yet (each may take 1.5 GiB), the first job starts
 /// (nothing of obid's runs), the second waits for memory without a word in the inbox, status
 /// says so, and it starts once the first ends. Never one stopped for memory.
 #[test]
 fn a_job_waits_for_memory_and_starts_once_there_is_room() {
-    let folder = Folder::new("admission");
-    let remote = fixture(&folder.0.join("fixture"));
-    let agent = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/agents/fake-claude");
-    let config = config(&folder.0, &remote, &agent);
-    let obid = start_with(
-        &folder.0,
-        &config,
-        None,
-        &[("OBID_MEMORY_AVAILABLE", "2147483648")],
-    );
+    let (_folder, obid) = on_a_mac_with("admission", 2 * GIB, &[]);
     let first = post(&obid, "SLEEP");
     until(&obid, &first, |j| j["status"] == "running");
     let second = post(&obid, "SLEEP");
@@ -87,6 +108,71 @@ fn a_job_waits_for_memory_and_starts_once_there_is_room() {
     assert_eq!(status["memory"]["waiting"], json!([]));
     assert_eq!(
         call(&obid, "POST", &format!("/v1/jobs/{second}/stop"), None).status,
+        200
+    );
+}
+
+/// Oldest first: a big job that waits for memory holds back the younger ones here, even one small
+/// enough to fit, until it starts. Research jobs in the fixture measured 100 MiB (their agents and
+/// their checks), a fix none yet (1.5 GiB): with 1 GiB spare, a research job fits next to another,
+/// a fix doesn't.
+#[test]
+fn younger_jobs_wait_behind_one_waiting_for_memory() {
+    let now = obi_protocol::time::now();
+    let seeded: Vec<obid::job::Job> = (0..3)
+        .map(|n| {
+            let mut job = obid::job::Job::new(
+                format!("seed{n}"),
+                "obi-e2e/fixture-app".into(),
+                "research".into(),
+                "Look around".into(),
+                "claude".into(),
+                "stub".into(),
+            );
+            job.status = obid::job::Status::Done;
+            job.finished = Some(now - 600 + n);
+            job.agent_peak_rss = Some(100 * 1024 * 1024);
+            job.check_peak_rss = Some(100 * 1024 * 1024);
+            job
+        })
+        .collect();
+    let (_folder, obid) = on_a_mac_with("oldest-first", 3 * GIB, &seeded);
+    let small = post(&obid, "SLEEP");
+    until(&obid, &small, |j| j["status"] == "running");
+    let big = post_kind(&obid, "fix", "SLEEP");
+    until(&obid, &big, |j| j["step"] == "Waiting for memory");
+    // A second later: jobs queue by when they came, to the second.
+    std::thread::sleep(Duration::from_millis(1100));
+    let behind = post(&obid, "SLEEP");
+    until(&obid, &behind, |j| j["step"] == "Waiting for memory");
+    // Both listed, each with the room it waits for (the same second can start both waits).
+    let waits = call(&obid, "GET", "/v1/status", None).body["memory"]["waiting"].clone();
+    let budget_of = |id: &str| {
+        waits
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|w| w["id"] == id)
+            .map(|w| w["budget"].clone())
+    };
+    assert_eq!(waits.as_array().unwrap().len(), 2, "{waits}");
+    assert_eq!(budget_of(&big), Some(json!(1536 * 1024 * 1024)));
+    assert_eq!(budget_of(&behind), Some(json!(100 * 1024 * 1024)));
+
+    // The big one starts once it's alone; the small one behind it now waits for room.
+    assert_eq!(
+        call(&obid, "POST", &format!("/v1/jobs/{small}/stop"), None).status,
+        200
+    );
+    until(&obid, &big, |j| j["status"] == "running");
+    assert_eq!(job(&obid, &behind)["step"], "Waiting for memory");
+    assert_eq!(
+        call(&obid, "POST", &format!("/v1/jobs/{big}/stop"), None).status,
+        200
+    );
+    until(&obid, &behind, |j| j["status"] == "running");
+    assert_eq!(
+        call(&obid, "POST", &format!("/v1/jobs/{behind}/stop"), None).status,
         200
     );
 }
