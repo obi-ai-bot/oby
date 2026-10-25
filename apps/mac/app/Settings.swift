@@ -87,8 +87,9 @@ struct RunnerSettingsView: View {
     @AppStorage("runnerURL") private var runnerURL = ""
     /// "This Mac" (#283): the runner is Oby's login item on this Mac, and Oby follows it on 127.0.0.1.
     @AppStorage(RunnerFeed.thisMacKey) private var onThisMac = true
-    /// The login item, registered with "This Mac" and unregistered with a remote runner (apps/mac/app/LoginItem.swift).
-    @State private var loginItem = RunnerLoginItem()
+    /// The login item, registered with "This Mac" and unregistered with a remote runner (apps/mac/app/LoginItem.swift):
+    /// the one launch registered with, so a failure then shows here.
+    private let loginItem = RunnerLoginItem.shared
     /// Asking before install.sh's obid is moved into Oby.
     @State private var confirmingMove = false
     /// Merge checks on this Mac (apps/mac/app/MacChecks.swift).
@@ -99,6 +100,10 @@ struct RunnerSettingsView: View {
     @State private var watchProblem: String?
     /// The launch build (`Launch`) hides a remote runner and Apple Watch without iPhone.
     @AppStorage(Launch.everythingKey) private var everything = false
+
+    /// Checks on this Mac: off by default and hidden in the launch build (AGENTS.md, `Launch`), except
+    /// while one of its switches is on, so the owner can always turn it off.
+    nonisolated static func showsChecks(everything: Bool, merge: Bool, apple: Bool) -> Bool { everything || merge || apple }
 
     /// This Mac or a remote runner, and its URL: in the launch build, only on a Mac that already
     /// has a remote runner's address, so it can come back to This Mac. Otherwise This Mac is the
@@ -160,8 +165,7 @@ struct RunnerSettingsView: View {
         // As on the iPhone (apps/shared/PermissionsSection.swift).
         PermissionsSection(runner: feed.runner, defaultMode: feed.defaultMode, setDefault: feed.setDefaultMode)
         RoutinesSection(runner: feed.runner, changes: feed.routineChanges)
-        // Off by default, and hidden in the launch build (AGENTS.md, `Launch`).
-        if everything {
+        if Self.showsChecks(everything: everything, merge: runMergeChecks, apple: runAppleChecks) {
             SetGroup("Checks on this Mac") {
                 SetRow("Run merge checks on this Mac", about: "When Oby’s review approves a pull request, this Mac runs its tests and builds the Mac and iPhone apps, one at a time, before Oby merges it into dev.") {
                     Toggle("Run merge checks on this Mac", isOn: $runMergeChecks).toggleStyle(.set)

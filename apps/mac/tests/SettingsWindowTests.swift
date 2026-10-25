@@ -16,6 +16,11 @@ struct SettingsWindowTests {
     @Test func theLaunchBuildHidesSharingRemoteAndMostConnectors() {
         #expect(SettingsPage.shown(everything: false).map(\.label) == ["General", "Runner", "Accounts", "Models", "Connectors", "Memory", "Obysphere", "Vault", "About"])
         #expect(SettingsPage.shown(everything: true) == SettingsPage.allCases)
+        // Checks on this Mac: hidden unless asked for, or while one of its switches is on.
+        #expect(!RunnerSettingsView.showsChecks(everything: false, merge: false, apple: false))
+        #expect(RunnerSettingsView.showsChecks(everything: false, merge: false, apple: true))
+        #expect(RunnerSettingsView.showsChecks(everything: false, merge: true, apple: false))
+        #expect(RunnerSettingsView.showsChecks(everything: true, merge: false, apple: false))
         #expect(SettingsPage.shown(everything: false, remoteOn: true).contains(.remote))
         #expect(!SettingsPage.shown(everything: false, remoteOn: true).contains(.sharing))
         #expect(SettingsPage.shown(everything: false, sharingOn: true).contains(.sharing))

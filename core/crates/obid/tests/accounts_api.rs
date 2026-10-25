@@ -211,6 +211,18 @@ fn a_cursor_login_only_in_the_keychain_is_found() {
     );
     assert!(!asked.contains("cursor-refresh-token"), "{asked}");
     assert!(!obid.log().contains("keychain-held-access"));
+    // The statuses read the token's value at most once a minute; whether the item exists, each time.
+    call(&obid, "GET", "/v1/status", None);
+    call(&obid, "GET", "/v1/status", None);
+    let asked = std::fs::read_to_string(folder.0.join("tmp/obid-test-security-calls")).unwrap();
+    let read = |item: &str| {
+        asked
+            .lines()
+            .filter(|l| l.contains(&format!("-s {item}")) && l.ends_with(" -w"))
+            .count()
+    };
+    assert_eq!(read("cursor-access-token"), 1, "{asked}");
+    assert_eq!(read("cursor-api-key"), 1, "{asked}");
 }
 
 /// Cursor's own Keychain login whose access token has ended: it's signed out, its label says to run
