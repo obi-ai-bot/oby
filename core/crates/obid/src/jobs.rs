@@ -3554,12 +3554,20 @@ impl Jobs {
             if source != Source::Event
                 && let Some(next) = self.following(id)
             {
-                return Some(
-                    self.message_as(&next.id, text, source, &[], answers)?
-                        .map_err(|why| {
-                            Refused(format!("{} ({}): {}", next.short_title(), next.id, why.0))
-                        }),
-                );
+                let sent = self
+                    .message_as(&next.id, text, source, &[], answers)?
+                    .map_err(|why| {
+                        Refused(format!("{} ({}): {}", next.short_title(), next.id, why.0))
+                    });
+                // A Confirm of the words it never heard (#930, [`Jobs::unheard`]): the rest of
+                // them follow, so none is lost or heard twice.
+                if sent.is_ok()
+                    && source == Source::Confirmed
+                    && job.heard.first().map(String::as_str) == Some(text)
+                {
+                    self.pass_on_heard(id, text, &next.id);
+                }
+                return Some(sent);
             }
             return Some(match source {
                 // Past its safety limit, a follow-up would start its counters again.
@@ -3802,6 +3810,32 @@ impl Jobs {
                 }
                 Some(Err(why)) => {
                     self.unheard(&job, &first, &why.0);
+                    return;
+                }
+                None => return,
+            }
+        }
+    }
+
+    /// The first of the words job `id` never heard, `first`, went to its working follow-up `next`
+    /// on the owner's Confirm: it leaves `id`, and the rest go to `next` one by one, each leaving
+    /// `id` once heard. A refusal keeps the rest with `id` and asks again ([`Jobs::unheard`]).
+    fn pass_on_heard(self: &Arc<Self>, id: &str, first: &str, next: &str) {
+        let take = |words: &str| {
+            self.update(id, |job| {
+                if job.heard.first().map(String::as_str) == Some(words) {
+                    job.heard.remove(0);
+                }
+            });
+        };
+        take(first);
+        while let Some(words) = self.get(id).and_then(|j| j.heard.first().cloned()) {
+            match self.message_as(next, &words, Source::Confirmed, &[], true) {
+                Some(Ok(_)) => take(&words),
+                Some(Err(why)) => {
+                    if let Some(job) = self.get(id) {
+                        self.unheard(&job, &words, &why.0);
+                    }
                     return;
                 }
                 None => return,
@@ -14263,6 +14297,17 @@ mod tests {
         // Only once per ending: a second call does nothing.
         jobs.left_words("eeee0002");
         assert_eq!(jobs.get("eeee0002").unwrap().heard.len(), 2);
+
+        // The Confirm, once its follow-up can take words (a queued one does): both go on to it,
+        // and none stays with the first job to be heard twice.
+        jobs.update("eeee0003", |job| job.status = Status::Queued);
+        let sent = jobs.message("eeee0002", &"a".repeat(1200), Source::Confirmed);
+        assert!(matches!(sent, Some(Ok(_))), "{sent:?}");
+        assert_eq!(
+            jobs.get("eeee0003").unwrap().heard,
+            ["a".repeat(1200), "b".repeat(1200)]
+        );
+        assert!(jobs.get("eeee0002").unwrap().heard.is_empty());
         let _ = std::fs::remove_dir_all(&root);
     }
 
