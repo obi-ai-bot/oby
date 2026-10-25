@@ -56,6 +56,8 @@ final class Tray {
         // ponytail: a job copies its attachments when its worktree is ready, so they're kept a day
         // rather than tracked (the clipboard can hold secrets); a plan dispatched later than that
         // goes without them.
+        // Where older builds kept them, which nothing reads any more (#891).
+        try? FileManager.default.removeItem(at: LocalRunner.appRoot.appending(path: "attachments", directoryHint: .isDirectory))
         let old = Date.now.addingTimeInterval(-24 * 3600)
         let files = (try? FileManager.default.contentsOfDirectory(at: Self.folder, includingPropertiesForKeys: [.contentModificationDateKey])) ?? []
         for file in files where ((try? file.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate ?? .now) < old {
@@ -136,7 +138,7 @@ final class Tray {
         panel.allowsMultipleSelection = true
         guard panel.runModal() == .OK else { return }
         do {
-            try FileManager.default.createDirectory(at: Self.folder, withIntermediateDirectories: true)
+            try FileManager.default.createDirectory(at: Self.folder, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
             for source in panel.urls {
                 let target = Self.folder.appending(path: "\(UUID().uuidString)-\(source.lastPathComponent)")
                 try FileManager.default.copyItem(at: source, to: target)
@@ -154,7 +156,7 @@ final class Tray {
     }
 
     private func add(_ kind: Attachment.Kind, data: Data, extension ext: String) throws {
-        try FileManager.default.createDirectory(at: Self.folder, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: Self.folder, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         let name = kind == .screenshot ? "screenshot" : "clipboard"
         let file = Self.folder.appending(path: "\(name)-\(UUID().uuidString.prefix(6).lowercased()).\(ext)")
         try data.write(to: file)
