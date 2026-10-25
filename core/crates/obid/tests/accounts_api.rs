@@ -182,6 +182,24 @@ fn a_fresh_obid_lists_the_logins_already_on_the_mac() {
     assert_eq!(ids(&obid), ["default", "codex", "cursor"]);
 }
 
+/// A tool installed and signed in after obid started, as during a fresh Mac's first launch, is
+/// offered at the next status, with no restart.
+#[test]
+fn a_login_made_after_start_is_offered_without_a_restart() {
+    use std::os::unix::fs::PermissionsExt;
+    let folder = Folder::new("accounts-later");
+    let remote = folder.0.join("remote.git");
+    let config = config(&folder.0, &remote, &agent("fake-claude"));
+    let bin = folder.0.join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let obid = start(&folder.0, &config, Some(&bin));
+    assert!(offered(&obid).is_empty());
+    std::fs::write(bin.join("codex"), "#!/bin/sh\nexit 0\n").unwrap();
+    std::fs::set_permissions(bin.join("codex"), std::fs::Permissions::from_mode(0o755)).unwrap();
+    codex_login(&folder.0.join("env-home"), 3600);
+    assert_eq!(offered(&obid), [("codex".into(), "codex".into())]);
+}
+
 /// Cursor's own login only in the macOS Keychain, where cursor-agent keeps it by default there: with
 /// `cursorKeychain` on (set here: left out, obid's choice also looks at the person's real home), a
 /// fresh obid lists the login, signed in, as it lists a login file. It only ever asks for the access

@@ -144,6 +144,8 @@ struct FirstLaunchView: View {
     @State private var gitHub: GitHubLogin?
     @State private var gitHubSignIn: GitHubSignIn?
     @State private var repos: [RunnerRepo]?
+    /// Install was clicked on Apple's command-line tools: macOS's installer is under way.
+    @State private var installingCommandLineTools = false
 
     /// `step`, `gitHub` and `repos`: where it starts, for its pictures (apps/mac/tests/WindowScreens.swift).
     init(voice: Voice, feed: RunnerFeed, step: Step = .hello, gitHub: GitHubLogin? = nil, repos: [RunnerRepo]? = nil,
@@ -184,11 +186,11 @@ struct FirstLaunchView: View {
             }
         }
         .task(id: step) {
-            if step == .agents { await tools.refresh() }
+            if step == .agents { await tools.refresh(); await watchLogins() }
             if step == .github { await watchGitHub() }
         }
-        // Once obid answers, the logins it found on this Mac become its accounts.
-        .task(id: engine) { await adopt() }
+        // Once obid answers, and whenever it finds another, the logins on this Mac become its accounts.
+        .task(id: engine ? feed.availableLogins.map(\.agent) : []) { await adopt() }
         // Back from a tool's page or Terminal.
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             if step == .agents { Task { await tools.refresh() } }
@@ -251,6 +253,7 @@ struct FirstLaunchView: View {
                 waiting
             }
             VStack(spacing: 10) {
+                commandLineToolsRow
                 ForEach(Tools.all, id: \.self) { toolRow($0) }
             }
             caption("One is enough to start. A second login of the same tool, like a work account, goes in Settings › Accounts.")
@@ -369,13 +372,31 @@ struct FirstLaunchView: View {
         .background(.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 12))
     }
 
+    /// git comes with them: without, a brand-new Mac's first job can't clone, and macOS's own dialog
+    /// would pop up out of nowhere when something first runs git.
+    private var commandLineToolsRow: some View {
+        let line = tools.commandLineTools ? "Installed"
+            : installingCommandLineTools ? "Installing. Oby looks again when macOS’s installer is done."
+            : "Git and the tools your agents’ jobs need. macOS installs them in a few minutes."
+        return card(symbol: "hammer", "Apple’s command-line tools", lines: [line]) {
+            if tools.commandLineTools {
+                Label("Installed", systemImage: "checkmark.circle.fill").font(.system(size: 13)).foregroundStyle(.green)
+            } else {
+                Button("Install") {
+                    installingCommandLineTools = true
+                    Task { await Tools.installCommandLineTools() }
+                }
+            }
+        }
+    }
+
     private func toolRow(_ agent: String) -> some View {
         let row = FirstLaunchSteps.agent(agent, installed: tools.installed.contains(agent), cursorHasACP: tools.cursorHasACP,
                                          engine: engine, accounts: feed.accounts)
         let tool = Job.agentNames[agent] ?? agent
         let line: String = switch row {
         case .connected(let names): names.joined(separator: ", ")
-        case .missing: agent == "cursor" ? "Install the Cursor CLI: `\(Tools.installCursor)`, and Oby finds it." : "Not installed. Install \(tool), and Oby finds it."
+        case .missing: Tools.install[agent].map { "Not installed. Run `\($0)` in Terminal, and Oby finds it." } ?? "Not installed. Install \(tool), and Oby finds it."
         case .outdated: "Update the Cursor CLI: `\(Tools.updateCursor)`. Oby needs its `acp` command."
         case .waiting: "Found on this Mac."
         case .signIn(let account): "\(account.name): signed out"
@@ -387,10 +408,10 @@ struct FirstLaunchView: View {
                 Label("Connected", systemImage: "checkmark.circle.fill").font(.system(size: 13)).foregroundStyle(.green)
             case .missing, .outdated:
                 // Installing is never automatic: the command is for the user to run.
-                if agent == "cursor" {
+                if let command = row == .missing ? Tools.install[agent] : Tools.updateCursor {
                     Button("Copy Command") {
                         NSPasteboard.general.clearContents()
-                        NSPasteboard.general.setString(row == .missing ? Tools.installCursor : Tools.updateCursor, forType: .string)
+                        NSPasteboard.general.setString(command, forType: .string)
                     }
                 }
             case .waiting:
@@ -431,6 +452,16 @@ struct FirstLaunchView: View {
         for agent in FirstLaunchSteps.adopt(feed.availableLogins, accounts: feed.accounts) {
             // obid's `accounts` event brings it to the row.
             _ = try? await runner.restoreDefaultLogin(agent: agent)
+        }
+    }
+
+    /// While the agents step shows: obid's accounts and the logins it finds, every few seconds, so a
+    /// tool installed and signed in meanwhile (in Terminal, or its own app) reads Connected.
+    private func watchLogins() async {
+        while !Task.isCancelled {
+            try? await Task.sleep(for: .seconds(3))
+            await feed.refreshAccounts()
+            if !tools.commandLineTools { await tools.refreshCommandLineTools() }
         }
     }
 

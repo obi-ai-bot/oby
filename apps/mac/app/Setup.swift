@@ -40,10 +40,17 @@ final class Tools {
     /// Whether the installed Cursor CLI has `acp` (`cursor-agent acp --help` exits 0), which obid
     /// runs it with; true until known.
     private(set) var cursorHasACP = true
+    /// Whether Apple's command-line tools are installed (`xcode-select -p` answers): git, which every
+    /// job's clone needs, comes with them. True until known.
+    private(set) var commandLineTools = true
 
+    /// Reads the login shell's PATH again first: a tool installed while first launch waits for it
+    /// (Claude Code's installer makes `~/.local/bin` on a fresh Mac) is found without a restart.
     func refresh() async {
         looking = true
         defer { looking = false }
+        await Task.detached { Shell.reloadPath() }.value
+        await refreshCommandLineTools()
         var found: Set<String> = []
         for (agent, command) in [("claude", "claude"), ("codex", "codex"), ("cursor", "cursor-agent")] where await Self.onPath(command) {
             found.insert(agent)
@@ -54,9 +61,23 @@ final class Tools {
         }
     }
 
-    /// What the setup row says to install Cursor's CLI, and to update one without `acp`.
-    static let installCursor = "curl https://cursor.com/install -fsS | bash"
+    /// What the setup row copies to install each tool's CLI (each tool's own installer), and to
+    /// update a Cursor CLI without `acp`.
+    static let install = [
+        "claude": "curl -fsSL https://claude.ai/install.sh | bash",
+        "codex": "npm install -g @openai/codex",
+        "cursor": "curl https://cursor.com/install -fsS | bash",
+    ]
     static let updateCursor = "cursor-agent update"
+
+    func refreshCommandLineTools() async {
+        commandLineTools = (try? await Shell.run(["/usr/bin/xcode-select", "-p"], timeout: 10))?.status == 0
+    }
+
+    /// macOS's own installer for the command-line tools: its dialog asks, and it takes a few minutes.
+    nonisolated static func installCommandLineTools() async {
+        _ = try? await Shell.run(["/usr/bin/xcode-select", "--install"], timeout: 30)
+    }
 
     nonisolated static func onPath(_ command: String) async -> Bool {
         (try? await Shell.run(["which", command], timeout: 10))?.status == 0

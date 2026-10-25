@@ -805,6 +805,9 @@ pub fn account_json(
 }
 
 async fn status(State(shared): State<Arc<Shared>>) -> Result<axum::Json<Status>, ApiError> {
+    // A tool installed or signed in since obid started (first launch on a fresh Mac) shows up here.
+    let agents = shared.config.agents.clone();
+    let _ = tokio::task::spawn_blocking(move || crate::accounts::refind_own_logins(&agents)).await;
     let accounts = crate::accounts::list_now(&shared).await;
     let cleaned = shared.jobs.cleaned();
     Ok(axum::Json(Status {
