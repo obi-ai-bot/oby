@@ -2696,6 +2696,16 @@ fn stop_and_stop_all_end_the_agents() {
     // Its worker ended: the most it held is kept with the job.
     let kept = until(&obid, &id, |j| j["peakRss"].is_u64());
     assert!(kept["peakRss"].as_u64().unwrap() >= rss);
+    // And it's no longer measured: status shows no job running.
+    let give_up_at = Instant::now() + Duration::from_secs(10);
+    loop {
+        let status = request(&obid, "GET", "/v1/status", None).body;
+        if status["memory"]["jobs"] == json!([]) {
+            break;
+        }
+        assert!(Instant::now() < give_up_at, "a stopped job stays measured: {status}");
+        std::thread::sleep(Duration::from_millis(100));
+    }
     assert_eq!(
         request(&obid, "POST", &format!("/v1/jobs/{id}/stop"), None).body["status"],
         "stopped"

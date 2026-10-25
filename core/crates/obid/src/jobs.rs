@@ -1396,11 +1396,23 @@ impl Jobs {
         else {
             return;
         };
+        self.record(machine, rss);
+    }
+
+    /// Keeps a reading: the machine's, and each job's that still has a worker. A job that ended
+    /// while it was read is left out: the jobs' lock is held throughout, as a worker's end holds it
+    /// to give its slot back before [`Jobs::metered`] takes the job's entry away, so an entry
+    /// never comes back for a job that ended.
+    fn record(&self, machine: Option<crate::meter::Machine>, rss: Vec<(String, u64)>) {
+        let state = self.lock();
         let mut measured = self.measured();
         if let Some(machine) = machine {
             measured.machine = Some((std::time::Instant::now(), machine));
         }
         for (id, rss) in rss {
+            if !state.workers.contains_key(&id) {
+                continue;
+            }
             let job = measured.jobs.entry(id.clone()).or_insert(JobMemory {
                 id,
                 rss: 0,
@@ -1417,7 +1429,8 @@ impl Jobs {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    /// A job's worker ended: the most its processes held at once is kept with it (`peakRss`).
+    /// A job's worker ended and gave its slot back: the most its processes held at once is kept
+    /// with it (`peakRss`), and it's no longer measured.
     fn metered(&self, id: &str) {
         let Some(peak) = self.measured().jobs.remove(id).map(|m| m.peak_rss) else {
             return;
@@ -2602,7 +2615,6 @@ impl Jobs {
             let jobs = self.clone();
             tokio::spawn(async move {
                 jobs.work(&id, signal).await;
-                jobs.metered(&id);
                 if let Some(connections) = jobs.connections.get() {
                     connections.close_job(&id).await;
                 }
@@ -2611,6 +2623,8 @@ impl Jobs {
                     state.workers.remove(&id);
                     state.wrapping.remove(&id);
                 }
+                // Once its slot is back: a reading under way can't measure it again ([`Jobs::record`]).
+                jobs.metered(&id);
                 jobs.changed.notify_waiters();
                 jobs.cleaning.notify_one();
                 jobs.schedule();
@@ -12604,6 +12618,43 @@ mod tests {
         ] {
             assert!(stays.exists(), "{} was removed", stays.display());
         }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A reading keeps only the jobs that still have a worker: one that ended while it was read
+    /// gets no entry back, so status doesn't show it running; one that ends after is taken out with
+    /// its peak kept.
+    #[tokio::test]
+    async fn a_reading_never_brings_back_a_job_that_ended() {
+        let (root, _clone, _base, jobs) = cleanup_home("record", false);
+        let job = Job::new(
+            "live".into(),
+            "o/r".into(),
+            "fix".into(),
+            "Fix it".into(),
+            "claude".into(),
+            "a".into(),
+        );
+        jobs.insert(job);
+        jobs.lock()
+            .workers
+            .insert("live".into(), watch::channel(Signal::Run).0);
+        jobs.record(None, vec![("live".into(), 10), ("gone".into(), 20)]);
+        let ids = |jobs: &Jobs| {
+            let mut ids: Vec<String> = jobs.measured().jobs.keys().cloned().collect();
+            ids.sort();
+            ids
+        };
+        assert_eq!(ids(&jobs), vec!["live".to_owned()]);
+        // Its worker ends with a reading under way: the reading lands after the slot is back.
+        jobs.lock().workers.remove("live");
+        jobs.record(None, vec![("live".into(), 30)]);
+        assert_eq!(jobs.measured().jobs["live"].rss, 10);
+        jobs.metered("live");
+        assert!(ids(&jobs).is_empty());
+        assert_eq!(jobs.get("live").unwrap().peak_rss, Some(10));
+        jobs.record(None, vec![("live".into(), 40)]);
+        assert!(ids(&jobs).is_empty());
         let _ = std::fs::remove_dir_all(&root);
     }
 

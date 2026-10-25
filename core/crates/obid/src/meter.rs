@@ -38,12 +38,17 @@ static ROOTS: Mutex<Vec<(u32, PathBuf)>> = Mutex::new(Vec::new());
 /// A session leader obid measures while this lives ([`root`]).
 pub struct Root(u32);
 
-/// Measures `pid`'s tree as running in `cwd` until the [`Root`] is dropped.
+/// Measures `pid`'s tree as running in `cwd` until the [`Root`] is dropped. Folders are compared
+/// as their real paths (`/private/var`, not `/var`).
 pub fn root(pid: u32, cwd: &Path) -> Root {
     if pid > 1 {
-        roots().push((pid, cwd.to_path_buf()));
+        roots().push((pid, real(cwd)));
     }
     Root(pid)
+}
+
+fn real(path: &Path) -> PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
 impl Drop for Root {
@@ -60,9 +65,10 @@ fn roots() -> std::sync::MutexGuard<'static, Vec<(u32, PathBuf)>> {
 
 /// The roots running in `folder` or below it.
 pub fn roots_in(folder: &Path) -> Vec<u32> {
+    let folder = real(folder);
     roots()
         .iter()
-        .filter(|(_, cwd)| cwd.starts_with(folder))
+        .filter(|(_, cwd)| cwd.starts_with(&folder))
         .map(|(pid, _)| *pid)
         .collect()
 }
@@ -151,19 +157,45 @@ pub fn processes() -> Vec<Process> {
 #[cfg(target_os = "macos")]
 const PRESSURE_LEVEL: &str = "kern.memorystatus_vm_pressure_level";
 
-/// `program`'s output, or `None` when it didn't run or failed.
+/// How long a reading's program may take (it takes milliseconds): status waits on it.
+#[cfg(target_os = "macos")]
+const RUN_LIMIT: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// `program`'s output, or `None` when it didn't run, failed or took longer than [`RUN_LIMIT`]
+/// (then it's ended).
 #[cfg(target_os = "macos")]
 fn run(program: &str, args: &[&str]) -> Option<String> {
-    let out = std::process::Command::new(program)
+    let mut child = std::process::Command::new(program)
         .args(args)
         .env_clear()
         .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
-        .output()
+        .spawn()
         .ok()?;
-    out.status
-        .success()
-        .then(|| String::from_utf8_lossy(&out.stdout).into_owned())
+    // Read as it writes, so a full pipe never holds it up.
+    let mut stdout = child.stdout.take()?;
+    let reading = std::thread::spawn(move || {
+        let mut out = String::new();
+        std::io::Read::read_to_string(&mut stdout, &mut out).map(|_| out)
+    });
+    let give_up_at = std::time::Instant::now() + RUN_LIMIT;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                let out = reading.join().ok()?.ok()?;
+                return status.success().then_some(out);
+            }
+            Ok(None) if std::time::Instant::now() < give_up_at => {
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+        }
+    }
 }
 
 /// `sysctl -n hw.memsize kern.memorystatus_vm_pressure_level` and `vm_stat`, read.
