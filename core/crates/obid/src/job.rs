@@ -407,6 +407,10 @@ pub struct Job {
     /// What its turns used, in tokens and cost, as its tool reported them (#731).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage: Option<crate::usage::Tokens>,
+    /// The most resident memory its processes (agent, check and what they started) held at
+    /// once, in bytes, as obid's meter read it while it ran (crate::meter); none before a reading.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub peak_rss: Option<u64>,
     /// Claude Code's session and its counts at its last result, which the next turn's resumed
     /// counts include (crate::jobs). Never in the API's job.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -666,6 +670,7 @@ impl Job {
             changes: Vec::new(),
             moves: Vec::new(),
             usage: None,
+            peak_rss: None,
             usage_seen: None,
             window_share: None,
             routine: None,
@@ -1026,6 +1031,9 @@ impl Job {
         }
         if let Some(usage) = &self.usage {
             value["usage"] = json!(usage);
+        }
+        if let Some(peak) = self.peak_rss {
+            value["peakRss"] = json!(peak);
         }
         if let Some(share) = self.window_share.as_ref().and_then(|s| s.to_json()) {
             value["windowShare"] = share;

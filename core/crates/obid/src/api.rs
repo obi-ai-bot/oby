@@ -621,6 +621,17 @@ pub struct Status {
     pub cursor_keychain: KeychainJson,
     /// The tunnel phones reach this Mac through (crate::tunnel): `{state, detail}`.
     pub tunnel: serde_json::Value,
+    /// The machine's memory and each running job's (crate::meter); left out when it can't be read.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub memory: Option<MemoryJson>,
+}
+
+/// `status.memory`, in bytes.
+#[derive(Serialize)]
+pub struct MemoryJson {
+    #[serde(flatten)]
+    pub machine: crate::meter::Machine,
+    pub jobs: Vec<crate::jobs::JobMemory>,
 }
 
 #[derive(Serialize)]
@@ -834,6 +845,11 @@ async fn status(State(shared): State<Arc<Shared>>) -> Result<axum::Json<Status>,
             auto: crate::jobs::cursor_keychain_auto(),
         },
         tunnel: shared.tunnel.json(),
+        memory: shared
+            .jobs
+            .memory()
+            .await
+            .map(|(machine, jobs)| MemoryJson { machine, jobs }),
     }))
 }
 

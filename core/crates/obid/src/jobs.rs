@@ -651,6 +651,30 @@ pub struct Jobs {
     pub usage: crate::usage::Usages,
     /// Told when an account's usage changed: the `accounts` event goes out (crate::lib).
     pub usage_changed: Notify,
+    /// What the meter last read: the machine's memory, and each running job's ([`Jobs::meter`]).
+    measured: Mutex<Measured>,
+    /// Wakes the meter: a job started.
+    metering: Notify,
+}
+
+/// How often the meter reads while jobs run ([`Jobs::meter`]).
+const METER_TICK: Duration = Duration::from_secs(5);
+
+/// What the meter last read ([`Jobs::meter`]).
+#[derive(Default)]
+struct Measured {
+    machine: Option<(std::time::Instant, crate::meter::Machine)>,
+    jobs: HashMap<String, JobMemory>,
+}
+
+/// A running job's processes' resident memory, in bytes (`status.memory.jobs`): now, and the most
+/// at once since it started.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct JobMemory {
+    pub id: String,
+    pub rss: u64,
+    pub peak_rss: u64,
 }
 
 /// Why a Codex job can't go to a teammate's Mac: the guest VM's image carries Claude Code only
@@ -750,6 +774,8 @@ impl Jobs {
             cleaned: Mutex::new(Cleaned::default()),
             usage,
             usage_changed: Notify::new(),
+            measured: Mutex::new(Measured::default()),
+            metering: Notify::new(),
         }))
     }
 
@@ -1322,6 +1348,107 @@ impl Jobs {
     /// How many slots are taken: jobs a worker runs.
     pub fn running(&self) -> usize {
         self.lock().workers.len()
+    }
+
+    /// Reads the machine's memory and each running job's processes every [`METER_TICK`] while
+    /// any job runs, and nothing while none does (crate::meter).
+    pub async fn meter(self: Arc<Self>, mut stopping: watch::Receiver<bool>) {
+        loop {
+            if self.running() == 0 {
+                tokio::select! {
+                    () = self.metering.notified() => continue,
+                    _ = stopping.changed() => return,
+                }
+            }
+            self.measure().await;
+            tokio::select! {
+                () = tokio::time::sleep(METER_TICK) => {}
+                _ = stopping.changed() => return,
+            }
+        }
+    }
+
+    /// One reading: the machine, and each running job's processes, those running in its worktree.
+    async fn measure(&self) {
+        let folders: Vec<(String, PathBuf)> = {
+            let state = self.lock();
+            state
+                .workers
+                .keys()
+                .filter_map(|id| {
+                    let worktree = state.jobs.get(id)?.worktree.as_ref()?;
+                    Some((id.clone(), PathBuf::from(worktree)))
+                })
+                .collect()
+        };
+        let Ok((machine, rss)) = tokio::task::spawn_blocking(move || {
+            let table = crate::meter::processes();
+            let rss: Vec<(String, u64)> = folders
+                .into_iter()
+                .map(|(id, folder)| {
+                    let roots = crate::meter::roots_in(&folder);
+                    (id, crate::meter::tree_rss(&table, &roots))
+                })
+                .collect();
+            (crate::meter::machine(), rss)
+        })
+        .await
+        else {
+            return;
+        };
+        let mut measured = self.measured();
+        if let Some(machine) = machine {
+            measured.machine = Some((std::time::Instant::now(), machine));
+        }
+        for (id, rss) in rss {
+            let job = measured.jobs.entry(id.clone()).or_insert(JobMemory {
+                id,
+                rss: 0,
+                peak_rss: 0,
+            });
+            job.rss = rss;
+            job.peak_rss = job.peak_rss.max(rss);
+        }
+    }
+
+    fn measured(&self) -> std::sync::MutexGuard<'_, Measured> {
+        self.measured
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// A job's worker ended: the most its processes held at once is kept with it (`peakRss`).
+    fn metered(&self, id: &str) {
+        let Some(peak) = self.measured().jobs.remove(id).map(|m| m.peak_rss) else {
+            return;
+        };
+        if peak > 0 {
+            self.update(id, |job| {
+                job.peak_rss = Some(job.peak_rss.unwrap_or(0).max(peak))
+            });
+        }
+    }
+
+    /// The machine's memory, as the meter last read it or now when that's older than a tick
+    /// (nothing runs, so the meter sleeps), and each running job's; `None` when it can't be read.
+    pub async fn memory(&self) -> Option<(crate::meter::Machine, Vec<JobMemory>)> {
+        let fresh = self
+            .measured()
+            .machine
+            .filter(|(at, _)| at.elapsed() < METER_TICK);
+        let machine = match fresh {
+            Some((_, machine)) => machine,
+            None => {
+                let machine = tokio::task::spawn_blocking(crate::meter::machine)
+                    .await
+                    .ok()??;
+                self.measured().machine = Some((std::time::Instant::now(), machine));
+                machine
+            }
+        };
+        let mut jobs: Vec<JobMemory> = self.measured().jobs.values().cloned().collect();
+        jobs.sort_by(|a, b| a.id.cmp(&b.id));
+        Some((machine, jobs))
     }
 
     /// Marks `account` as being signed in or removed, unless a job that hasn't ended (queued or
@@ -2468,10 +2595,14 @@ impl Jobs {
                 }
             });
         }
+        if !start.is_empty() {
+            self.metering.notify_one();
+        }
         for (id, signal) in start {
             let jobs = self.clone();
             tokio::spawn(async move {
                 jobs.work(&id, signal).await;
+                jobs.metered(&id);
                 if let Some(connections) = jobs.connections.get() {
                     connections.close_job(&id).await;
                 }
@@ -10287,6 +10418,7 @@ pub async fn run_check(
     // The writing ends live in the child now: the reader ends when it (and what it started) does.
     drop(command);
     let pgid = child.id().unwrap_or(0);
+    let _metered = crate::meter::root(pgid, cwd);
     let fed = watch.clone();
     let reading = tokio::task::spawn_blocking(move || {
         let mut reader = reader;

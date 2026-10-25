@@ -2668,6 +2668,24 @@ fn stop_and_stop_all_end_the_agents() {
     assert_eq!(status["running"], 1);
     assert_eq!(status["accounts"][0]["id"], "stub");
     assert_eq!(status["accounts"][0]["running"], 1);
+    // The meter reads its agent's processes as it runs (crate::meter).
+    let give_up_at = Instant::now() + Duration::from_secs(10);
+    let rss = loop {
+        let status = request(&obid, "GET", "/v1/status", None).body;
+        let jobs = status["memory"]["jobs"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        if let Some(job) = jobs.iter().find(|j| j["id"] == id.as_str()) {
+            break job["rss"].as_u64().unwrap();
+        }
+        assert!(
+            Instant::now() < give_up_at,
+            "the meter never read the job: {status}"
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    };
+    assert!(rss > 0);
     let started = Instant::now();
     let stopped = request(&obid, "POST", &format!("/v1/jobs/{id}/stop"), None);
     assert_eq!(stopped.status, 200);
@@ -2675,6 +2693,9 @@ fn stop_and_stop_all_end_the_agents() {
     assert!(started.elapsed() < Duration::from_secs(2));
     assert!(stopped_beating(&obid, &id), "the agent outlived its stop");
     assert_eq!(wait(&obid, &id)["status"], "stopped");
+    // Its worker ended: the most it held is kept with the job.
+    let kept = until(&obid, &id, |j| j["peakRss"].is_u64());
+    assert!(kept["peakRss"].as_u64().unwrap() >= rss);
     assert_eq!(
         request(&obid, "POST", &format!("/v1/jobs/{id}/stop"), None).body["status"],
         "stopped"

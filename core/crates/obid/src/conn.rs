@@ -123,6 +123,8 @@ pub struct Conn {
     /// (crate::agent): the task stands for progress as a change in `watch` does, for
     /// [`FILE_WINDOWS`] windows at most without a line (a server or a `--watch` never ends).
     pub holding: bool,
+    /// Its processes count as its job's while it runs (crate::meter).
+    _metered: crate::meter::Root,
 }
 
 impl Conn {
@@ -192,6 +194,7 @@ impl Conn {
             timed_out: false,
             quiet_out: false,
             holding: false,
+            _metered: crate::meter::root(pgid, &launch.cwd),
         })
     }
 

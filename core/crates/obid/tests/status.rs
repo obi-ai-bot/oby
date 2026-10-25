@@ -301,6 +301,12 @@ fn status_answers_with_engine_obid() {
     assert_eq!(status["tunnel"], json!({"state": "off", "detail": null}));
     // claudeKeychain left out: obid decided, and the stand-in Keychain holds no Claude login.
     assert_eq!(status["claudeKeychain"], json!({"on": false, "auto": true}));
+    // The machine's memory, read as status was asked, and no job running (crate::meter).
+    let memory = &status["memory"];
+    let total = memory["total"].as_u64().unwrap();
+    assert!(total > 0 && memory["available"].as_u64().unwrap() <= total);
+    assert!(["normal", "warn", "critical"].contains(&memory["pressure"].as_str().unwrap()));
+    assert_eq!(memory["jobs"], json!([]));
     let worktrees = folder.0.join("home").join("worktrees");
     assert_eq!(
         measured_status(&obid, &host).body["cleanup"],
