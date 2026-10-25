@@ -5982,7 +5982,17 @@ impl Jobs {
         }
 
         let words = self.take_heard(id);
-        let mut message = if !words.is_empty() && job.session.is_some() {
+        // A restart cut it short while it ran its check or published ("After any restart"): it
+        // picks up there (below), and builds no prompt it won't send (nor asks Tetrix or the
+        // plug-ins for one). Words the owner sent meanwhile are its next turn instead.
+        let cut = self.get(id).and_then(|j| j.cut);
+        if cut.is_some() {
+            self.update(id, |job| job.cut = None);
+        }
+        let picks_up = cut.is_some() && words.is_empty();
+        let mut message = if picks_up {
+            String::new()
+        } else if !words.is_empty() && job.session.is_some() {
             // A round the owner asked for: the agent picks its session up and hears their words,
             // after the check's output when a failing check stopped it: One more round, Try again
             // and the orchestrator's retry alike.
@@ -6062,7 +6072,7 @@ impl Jobs {
             message
         };
         // What the fences around connected apps' results mean, once (#575).
-        if let Some(rule) = self.connection_rule(id, tool) {
+        if !picks_up && let Some(rule) = self.connection_rule(id, tool) {
             message = format!("{message}\n\n{rule}");
         }
         // What the secret scan found the last time it blocked publishing: the same again stops.
@@ -6101,24 +6111,23 @@ impl Jobs {
         let mut told_to_commit = false;
         // How the transcript opens the next turn, when it's obid's words that start it.
         let mut opening: Option<String> = None;
-        // A restart cut it short while it ran its check or published ("After any restart"): it
-        // picks up there, its check run again on what it committed rather than its agent's turn
-        // (one with no check goes straight on), and a pass goes on to publish as after its last
-        // round. Words the owner sent meanwhile are its next turn instead.
+        // Picked up where a restart cut it: its check run again on what it committed rather than
+        // its agent's turn (one with no check goes straight on), and a pass goes on to publish as
+        // after its last round. Running at once, at the phase it was in, so another restart cuts
+        // it there again.
         let mut to_publish = false;
-        let cut = self.get(id).and_then(|j| j.cut);
-        if cut.is_some() {
-            self.update(id, |job| job.cut = None);
-        }
-        if cut.is_some() && words.is_empty() {
+        if picks_up {
+            self.update(id, |job| {
+                job.status = Status::Running;
+                job.started.get_or_insert_with(obi_protocol::time::now);
+                job.phase = cut;
+            });
             let job = self.get(id).ok_or("the job is gone")?;
             match job.check.clone() {
                 None => to_publish = true,
                 Some(command) => {
                     tracing::info!("job {id}: a restart cut it short, so its check runs again");
                     self.update(id, |job| {
-                        job.status = Status::Running;
-                        job.started.get_or_insert_with(obi_protocol::time::now);
                         job.phase = Some(Phase::Check);
                         job.step = format!("Running {command}");
                     });
