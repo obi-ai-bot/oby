@@ -1,5 +1,6 @@
 import Darwin
 import Foundation
+import Synchronization
 import Testing
 @testable import Oby
 
@@ -104,6 +105,40 @@ struct ChatUXTests {
         model.cancel()
         for _ in 0..<1000 where !feed.echoes.isEmpty { await Task.yield() }
         #expect(model.thread.isEmpty)
+    }
+
+    /// Stop, then new words at once: the runner hears Stop before the words, so it can't cancel them.
+    /// New words in place of a turn under way tell the runner first too (`IslandModel.ask`).
+    @Test func stopReachesTheRunnerBeforeTheNextWords() async throws {
+        let heard = Mutex<[String]>([])
+        let stub = RunnerStub { request in
+            if request.path.hasSuffix("/v1/plans/cancel") {
+                // A slow answer: words sent without waiting for it would get there first.
+                Thread.sleep(forTimeInterval: 0.3)
+                heard.withLock { $0.append("cancelled") }
+            } else if request.path.hasSuffix("/v1/plans") {
+                heard.withLock { $0.append("plan: \(request.json?["said"] as? String ?? "")") }
+            }
+            return (500, "{}")
+        }
+        let model = IslandModel(feed: RunnerFeed(), availability: MacAvailability())
+        model.plansOn = stub.runner
+        func waitFor(_ line: String) async throws {
+            for _ in 0..<250 where !heard.withLock({ $0.contains(line) }) { try await Task.sleep(for: .milliseconds(20)) }
+        }
+        model.ask("first")
+        model.cancel()
+        model.ask("second")
+        try await waitFor("plan: second")
+        var order = heard.withLock { $0 }
+        #expect(try #require(order.firstIndex(of: "cancelled")) < #require(order.firstIndex(of: "plan: second")), "\(order)")
+
+        heard.withLock { $0 = [] }
+        model.ask("third")
+        model.ask("fourth")
+        try await waitFor("plan: fourth")
+        order = heard.withLock { $0 }
+        #expect(try #require(order.firstIndex(of: "cancelled")) < #require(order.firstIndex(of: "plan: fourth")), "\(order)")
     }
 
     @Test func wordsThatDontReachObidStayMarkedUntilTriedAgainOrEdited() async throws {

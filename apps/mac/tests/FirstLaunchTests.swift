@@ -82,9 +82,10 @@ struct FirstLaunchTests {
         #expect(defaults.object(forKey: RunnerFeed.thisMacKey) as? Bool == false)
     }
 
-    @Test func aChoiceAlreadyMadeIsKept() throws {
+    @Test func aChoiceMadeWithARemoteRunnerIsKept() throws {
         let remote = try defaults()
         remote.set(false, forKey: RunnerFeed.thisMacKey)
+        remote.set("http://tetrix-lab:8790", forKey: "runnerURL")
         RunnerFeed.settleThisMac(remote)
         #expect(remote.object(forKey: RunnerFeed.thisMacKey) as? Bool == false)
         let here = try defaults()
@@ -92,5 +93,14 @@ struct FirstLaunchTests {
         here.set("http://tetrix-lab:8790", forKey: "runnerURL")
         RunnerFeed.settleThisMac(here)
         #expect(here.object(forKey: RunnerFeed.thisMacKey) as? Bool == true)
+    }
+
+    /// This Mac off with no runner to follow is no engine at all since the app runs none (#895): on.
+    @Test func thisMacOffWithNoRunnerTurnsOn() throws {
+        let off = try defaults()
+        off.set(false, forKey: RunnerFeed.thisMacKey)
+        off.set("  ", forKey: "runnerURL")
+        RunnerFeed.settleThisMac(off)
+        #expect(off.object(forKey: RunnerFeed.thisMacKey) as? Bool == true)
     }
 }

@@ -92,6 +92,14 @@ struct AccountRowsTests {
         #expect(Usage.fiveHourLine(snapshot("P", week: 0.2, fiveHour: 0.85), now: now) == "5-hour limit 85% used · resets in 2 h")
     }
 
+    /// obid doesn't serve `/v1/settings/models` yet: its 404 means the Models page shows the models
+    /// its status says, as they are, with no error; any other failure is shown.
+    @Test func modelsShowAsTheyAreWhenTheRunnerCantSetThem() {
+        #expect(!ModelsSettingsView.servesModels(after: RunnerError(message: "Not found", status: 404)))
+        #expect(ModelsSettingsView.servesModels(after: RunnerError(message: "Bad gateway", status: 502)))
+        #expect(ModelsSettingsView.servesModels(after: URLError(.timedOut)))
+    }
+
     /// The Mac opens a sign-in page obid answers only when it's https on the tool's own site, with
     /// no login or port: a runner can't send the person to a look-alike to type their code.
     @Test func onlyTheToolsOwnSignInPageOpens() throws {

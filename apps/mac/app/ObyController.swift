@@ -23,7 +23,7 @@ final class IslandController {
     private var handing = false
     private var registeredKey: String?
     private var observingAvailability = false
-    /// Every repository the user pushed to lately: names the voice listens for. Fetched when you
+    /// The repositories obid's jobs may start in: names the voice listens for. Fetched when you
     /// first talk, and again each time until it works.
     private var repos: [String] = []
     /// Whether the reply listens again, VoiceOver has it, and Oby listens again by itself (`TalkTurn`).
@@ -51,15 +51,16 @@ final class IslandController {
         /// VoiceOver says it now, cutting off what it was saying.
         var announce: (String) -> Void = { IslandController.announce($0) }
         var guideGlobeKey: () -> Void = { Task { GlobeKey.guideOnce() } }
-        /// The repositories the voice listens for.
-        var knownRepos: () async -> [String] = { (try? await Workspace.knownRepos()) ?? [] }
+        /// The repositories the voice listens for: the ones obid's jobs may start in (`GET /v1/repos`).
+        var knownRepos: () async -> [String]
     }
     var outside: Outside
 
     /// Tests give a voice with no microphone (`Voice(saying:)`).
     init(voice: Voice = Voice()) {
         model = IslandModel(feed: feed, updater: updater, availability: availability, voice: voice)
-        outside = Outside(ask: { [model] in model.ask($0, spoken: true) })
+        outside = Outside(ask: { [model] in model.ask($0, spoken: true) },
+                          knownRepos: { [feed] in (try? await feed.runner?.jobRepos().map(\.repo)) ?? [] })
         model.remote = remote
         model.vault = .shared
         // A restart never interrupts a check this Mac runs for the runner.

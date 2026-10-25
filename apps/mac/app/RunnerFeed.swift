@@ -244,12 +244,14 @@ final class RunnerFeed {
     /// Settings › Runner's choice: true for the runner on this Mac (#283), false for a remote one at `runnerURL`.
     static let thisMacKey = "runnerOnThisMac"
 
-    /// This Mac is the runner unless a choice was made (#894): a new install starts on This Mac, and so
-    /// does one that never chose; one that never chose but follows a remote runner by its URL keeps it.
-    /// A choice already made is never changed. Once, at launch, before anything reads the key.
+    /// This Mac is the runner unless another one is followed (#894): with no runner URL it's on,
+    /// whatever was chosen before, since the app runs no engine of its own (#895) and off would leave
+    /// none; with one, a choice already made stays, and an install that never chose keeps following
+    /// it. Once, at launch, before anything reads the key.
     static func settleThisMac(_ defaults: UserDefaults = .standard) {
-        guard defaults.object(forKey: thisMacKey) == nil else { return }
-        defaults.set(defaults.string(forKey: "runnerURL")?.trimmingCharacters(in: .whitespaces).isEmpty ?? true, forKey: thisMacKey)
+        let url = defaults.string(forKey: "runnerURL")?.trimmingCharacters(in: .whitespaces) ?? ""
+        if url.isEmpty { return defaults.set(true, forKey: thisMacKey) }
+        if defaults.object(forKey: thisMacKey) == nil { defaults.set(false, forKey: thisMacKey) }
     }
 
     /// A runner at `url`; one on this Mac (`local`) only with its `token`, which every request carries.

@@ -37,6 +37,8 @@ final class IslandModel {
     @ObservationIgnored var onReply: (_ text: String, _ spoken: Bool) -> Void = { _, _ in }
     /// The plan under way on the runner, until it ends or is cancelled.
     @ObservationIgnored private var planning: Task<Void, Never>?
+    /// Stop's word to the runner, on its way: the next words wait for it, so it can't cancel them.
+    @ObservationIgnored private var cancelling: Task<Void, Never>?
     /// Counts asks: an answer to a turn that was cancelled or replaced is ignored.
     @ObservationIgnored private var asking = 0
     /// The runner words go to: tests give their own; nil is the feed's.
@@ -80,11 +82,12 @@ final class IslandModel {
         let said = words.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !said.isEmpty else { return }
         if Conversation.cancels(said) { return cancel() }
-        let replacing = planning
+        let replacing = planning, stopped = cancelling
         asking += 1
         let mine = asking
         talk = .thinking(said)
         planning = Task {
+            await stopped?.value
             if replacing != nil { await feed.cancelPlan(on: plansOn) }
             replacing?.cancel()
             _ = await replacing?.result
@@ -103,10 +106,11 @@ final class IslandModel {
 
     /// Ends the turn under way: the runner is told, so its plan starts and stops nothing, and its
     /// request stops now, so your words leave the thread without waiting for the runner's answer.
+    /// The next words go once the runner has heard it.
     func cancel() {
         asking += 1
         talk = .none
-        Task { await feed.cancelPlan(on: plansOn) }
+        cancelling = Task { [feed, plansOn] in await feed.cancelPlan(on: plansOn) }
         planning?.cancel()
         planning = nil
     }

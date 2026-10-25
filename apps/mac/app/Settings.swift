@@ -101,7 +101,8 @@ struct RunnerSettingsView: View {
     @AppStorage(Launch.everythingKey) private var everything = false
 
     /// This Mac or a remote runner, and its URL: in the launch build, only on a Mac that already
-    /// has a remote runner's address, so it can come back to This Mac. Otherwise one This Mac switch.
+    /// has a remote runner's address, so it can come back to This Mac. Otherwise This Mac is the
+    /// runner, with no switch: off would leave no engine at all (#895).
     private var choosesRemote: Bool { everything || !runnerURL.isEmpty }
 
     var body: some View {
@@ -116,8 +117,9 @@ struct RunnerSettingsView: View {
                 SetRow("Runner") {
                     SetSegmented("Runner", selection: $onThisMac, options: [(true, "This Mac"), (false, "Remote")])
                 }
-            } else {
-                SetRow("This Mac") { Toggle("This Mac", isOn: $onThisMac).toggleStyle(.set) }
+            } else if !onThisMac {
+                // Only off by hand since launch (`RunnerFeed.settleThisMac` turns it on): the way back.
+                SetRow("This Mac") { Button("Turn On") { onThisMac = true }.buttonStyle(.set) }
             }
             if onThisMac {
                 SetRow("Login item") {
@@ -1591,13 +1593,23 @@ struct ModelsSettingsView: View {
     let feed: RunnerFeed
     /// What the runner offers, once it has answered.
     @State private var runnerOptions: ModelOptions?
+    /// Whether the runner lets its models be set: obid doesn't yet (no `/v1/settings/models` routes),
+    /// and then the page shows the ones its status says, as they are.
+    @State private var runnerServesModels = true
     @State private var problem: String?
 
     var body: some View {
         // In a stack that's always there: the sections are empty until the options arrive, and a
         // task on an empty view never runs.
         VStack(alignment: .leading, spacing: 0) {
-            if runnerOptions == nil || feed.models == nil {
+            if !runnerServesModels, let models = feed.models {
+                SetGroup(feed.local ? "On this Mac" : "On \(feed.name)",
+                         footer: "New jobs use these. Oby’s engine doesn’t let you change them yet. Oby’s brain stays on Haiku: it plans and answers in the conversation, so it should be quick.") {
+                    SetRow("Claude Code") { SetValue(models.claude.label) }
+                    SetRow("Codex") { SetValue(models.codex.label) }
+                    if let cursor = models.cursor { SetRow("Cursor") { SetValue(ModelChoice.name(cursor.model)) } }
+                }
+            } else if runnerOptions == nil || feed.models == nil {
                 SetGroup(problem: problem) { SetRow(feed.local ? "Waiting for the runner on this Mac…" : "Waiting for \(feed.name)…", quiet: true) }
             } else if feed.local {
                 RunnerModelsSections(options: runnerOptions, models: feed.models, save: feed.setModels, place: "on this Mac",
@@ -1618,10 +1630,17 @@ struct ModelsSettingsView: View {
         guard feed.connection == .live, let runner = feed.runner else { return }
         do {
             runnerOptions = try await runner.modelOptions()
+            runnerServesModels = true
             problem = nil
         } catch {
-            problem = error.localizedDescription
+            runnerServesModels = Self.servesModels(after: error)
+            problem = runnerServesModels ? error.localizedDescription : nil
         }
+    }
+
+    /// A 404 says the runner has no models to set (obid today): nothing wrong to show.
+    nonisolated static func servesModels(after error: any Error) -> Bool {
+        (error as? RunnerError)?.status != 404
     }
 }
 
