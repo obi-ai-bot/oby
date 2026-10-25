@@ -1517,6 +1517,20 @@ impl Jobs {
         });
     }
 
+    /// [`process::build_env`] for a build that shares the machine's available memory with
+    /// `sharing` builds: the meter's reading while it's at most two ticks old, else one now; nothing
+    /// when memory can't be read, and the build keeps its own defaults.
+    fn build_env(&self, sharing: usize) -> Vec<(&'static str, OsString)> {
+        let read = self
+            .measured()
+            .machine
+            .filter(|(at, _)| at.elapsed() < 2 * METER_TICK)
+            .map(|(_, machine)| machine);
+        read.or_else(crate::meter::machine)
+            .map(|machine| process::build_env(process::build_jobs(machine.available, sharing)))
+            .unwrap_or_default()
+    }
+
     fn measured(&self) -> std::sync::MutexGuard<'_, Measured> {
         self.measured
             .lock()
@@ -4824,6 +4838,9 @@ impl Jobs {
         let mut spec = spec.clone();
         let mut extra: Vec<(&str, OsString)> = spec.git_env();
         extra.extend(process::show_rust(&spec.temp));
+        // Its builds share what's free with the other jobs' (crate::meter): as many at once as
+        // that holds.
+        extra.extend(self.build_env(self.running()));
         if let Some(token) = self.apple_check_token(&job.id) {
             extra.push((
                 "OBY_CHECK_URL",
@@ -5785,6 +5802,8 @@ impl Jobs {
         let argv = sandbox.wrap(&spec, &argv);
         let mut extra = spec.git_env();
         extra.extend(process::show_rust(&spec.temp));
+        // One check at a time: its build takes what's free now.
+        extra.extend(self.build_env(1));
         let env = process::sandbox_env(&process::tools_path(), &spec.temp, &extra);
         let running = run_check(
             &argv,

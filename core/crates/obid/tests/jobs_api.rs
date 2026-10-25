@@ -1923,6 +1923,41 @@ fn uncommitted_work_gets_one_commit_turn() {
     );
 }
 
+/// A job's agent is told how wide to build from the Mac's free memory (crate::process,
+/// `build_jobs`): the same count for Cargo's jobs, Rust's test threads and the repository's own
+/// scripts, at least one and at most half the cores.
+#[test]
+fn a_jobs_builds_are_sized_to_memory() {
+    let folder = Folder::new("build-jobs");
+    let remote = fixture(&folder.0.join("fixture"));
+    let obid = start(&folder.0, &config(&folder.0, &remote));
+    let id = post_job(
+        &obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "research", "task": "REPORT"}),
+    )
+    .body["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert_eq!(wait(&obid, &id)["status"], "done");
+    let report: Value = serde_json::from_str(
+        &std::fs::read_to_string(
+            obid.home
+                .join("worktrees")
+                .join(&id)
+                .join(".obi/report.json"),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let env = &report["env"];
+    let jobs: usize = env["CARGO_BUILD_JOBS"].as_str().unwrap().parse().unwrap();
+    let most = (std::thread::available_parallelism().unwrap().get() / 2).max(1);
+    assert!((1..=most).contains(&jobs), "{env}");
+    assert_eq!(env["RUST_TEST_THREADS"], env["CARGO_BUILD_JOBS"]);
+    assert_eq!(env["OBY_BUILD_JOBS"], env["CARGO_BUILD_JOBS"]);
+}
+
 /// The job's temporary HOME, with the package caches its agent filled, stays between its runs
 /// for the offline check, and goes with its worktree; the MCP config's broker token never stays.
 #[test]
