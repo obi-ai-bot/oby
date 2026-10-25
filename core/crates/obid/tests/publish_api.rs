@@ -1927,7 +1927,8 @@ fn every_reviewer_failing_waits_for_the_owner_in_one_item() {
     std::thread::sleep(std::time::Duration::from_secs(2));
     assert_eq!(reviews_of(&obid, &id).len(), 2);
     assert_eq!(review_items(&obid, &id).len(), 1);
-    // Try again: the review again, its fallback too, then the owner's again, in one new item.
+    // Try again: the review again, then the owner's again, in one new item. Codex's 401 ended its
+    // login (#1423), so it isn't tried again until the owner signs in: Claude Code alone takes it.
     let tried = call(
         &obid,
         "POST",
@@ -1935,13 +1936,14 @@ fn every_reviewer_failing_waits_for_the_owner_in_one_item() {
         Some(&json!({"answer": "Try again"})),
     );
     assert_eq!(tried.status, 200, "{}", tried.text);
-    let job = waits(4);
+    let job = waits(3);
     assert_eq!(job["reviewNeedsYou"], true);
+    assert_eq!(reviews_of(&obid, &id)[2]["agent"], "claude");
     let again = review_items(&obid, &id);
     assert_eq!(again.len(), 1, "{again:?}");
     assert_ne!(again[0]["id"], items[0]["id"]);
     std::thread::sleep(std::time::Duration::from_secs(2));
-    assert_eq!(reviews_of(&obid, &id).len(), 4);
+    assert_eq!(reviews_of(&obid, &id).len(), 3);
 }
 
 /// A round Oby's review asked for that pushes nothing new leaves the changes on the pull request's
