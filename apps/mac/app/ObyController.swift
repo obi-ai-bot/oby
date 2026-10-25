@@ -122,6 +122,7 @@ final class IslandController {
         observeAvailability()
         // Remote access: obid runs the tunnel (#896); a token an older Oby kept goes to obid once.
         Task { await remote.start() }
+        Task { await Self.withdrawDeskAlerts() }
         model.onReply = { [weak self] text, spoken in self?.replied(text, spoken: spoken) }
         feed.onFollow = { [weak self] local in
             self?.availability.setRunnerEnabled(local)
@@ -346,6 +347,19 @@ final class IslandController {
     }
 
     // MARK: Alerts
+
+    /// Alerts about the Desk's own jobs, from before #895 (`localJob` in their info): nothing opens them
+    /// any more, so they go, at launch.
+    static func withdrawDeskAlerts() async {
+        let center = UNUserNotificationCenter.current()
+        let old = deskAlerts(await center.deliveredNotifications().map { ($0.request.identifier, $0.request.content.userInfo) })
+        if !old.isEmpty { center.removeDeliveredNotifications(withIdentifiers: old) }
+    }
+
+    /// Of the alerts delivered, by id with their info, the Desk's.
+    nonisolated static func deskAlerts(_ delivered: [(id: String, info: [AnyHashable: Any])]) -> [String] {
+        delivered.filter { $0.info["localJob"] != nil }.map(\.id)
+    }
 
     /// One alert, replacing an earlier one with the same `id`.
     static func alert(_ title: String, id: String) {

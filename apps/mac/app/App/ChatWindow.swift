@@ -251,7 +251,8 @@ final class ChatState {
             since = .now
             defaults.set(since, forKey: Self.sinceKey)
         }
-        seen = Set(defaults.stringArray(forKey: Self.seenKey) ?? [])
+        // Rows of the Desk's own jobs (`mac/…`, before #895) are gone: so are the ids they were seen by.
+        seen = Set((defaults.stringArray(forKey: Self.seenKey) ?? []).filter { !$0.hasPrefix("mac/") })
         archiveAfter = defaults.string(forKey: ArchiveAfter.key).flatMap(ArchiveAfter.init) ?? .threeDays
     }
     /// When done tasks leave Home for Archived (Home's ⋮, Archive completed), remembered.
