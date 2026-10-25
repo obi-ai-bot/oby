@@ -14158,6 +14158,30 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// A Jobs over `home` with `jobs` kept there before it opens, for the crash and claim tests.
+    fn jobs_with_kept(home: &Path, jobs: &[&Job]) -> Arc<Jobs> {
+        std::fs::create_dir_all(home.join("jobs")).unwrap();
+        for job in jobs {
+            std::fs::write(
+                home.join(format!("jobs/{}.json", job.id)),
+                serde_json::to_vec(job).unwrap(),
+            )
+            .unwrap();
+        }
+        let config = crate::config::Config::parse(
+            &json!({"listen": "127.0.0.1:0", "home": home, "owner": "o",
+                "repos": [{"repo": "o/r", "remote": "https://example.com/o/r.git"}]})
+            .to_string(),
+        )
+        .unwrap();
+        Jobs::open(
+            config,
+            crate::events::Events::new(),
+            Err("no sandbox".into()),
+        )
+        .unwrap()
+    }
+
     /// The owner's words that came while a job wrapped up, left unheard when it ended, start its
     /// follow-up one by one, each within its own 2,000 characters: the first is its task, the
     /// rest its first prompt's end. Refused, they stay with the job and a Confirm item tries
@@ -14240,30 +14264,6 @@ mod tests {
         jobs.left_words("eeee0002");
         assert_eq!(jobs.get("eeee0002").unwrap().heard.len(), 2);
         let _ = std::fs::remove_dir_all(&root);
-    }
-
-    /// A Jobs over `home` with `jobs` kept there before it opens, for the crash and claim tests.
-    fn jobs_with_kept(home: &Path, jobs: &[&Job]) -> Arc<Jobs> {
-        std::fs::create_dir_all(home.join("jobs")).unwrap();
-        for job in jobs {
-            std::fs::write(
-                home.join(format!("jobs/{}.json", job.id)),
-                serde_json::to_vec(job).unwrap(),
-            )
-            .unwrap();
-        }
-        let config = crate::config::Config::parse(
-            &json!({"listen": "127.0.0.1:0", "home": home, "owner": "o",
-                "repos": [{"repo": "o/r", "remote": "https://example.com/o/r.git"}]})
-            .to_string(),
-        )
-        .unwrap();
-        Jobs::open(
-            config,
-            crate::events::Events::new(),
-            Err("no sandbox".into()),
-        )
-        .unwrap()
     }
 
     /// A publish dropped part way (a Publish by hand whose request went) leaves no claim on
