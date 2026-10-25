@@ -30,10 +30,13 @@
 # obid's tests that make a sandbox of their own (tests/sandbox.rs, the plug-in tests) fail there,
 # not verified: they're verified outside a job's sandbox only.
 #
-# Builds and tests use 4 cores and 4 test threads unless CARGO_BUILD_JOBS or RUST_TEST_THREADS
-# say otherwise: obid runs one check at a time, and a Mac has other work.
+# Builds and tests run as many jobs at once as obid says the Mac's memory leaves them (OBY_BUILD_JOBS,
+# CARGO_BUILD_JOBS, RUST_TEST_THREADS: one per 1.5 GiB of the room admission leaves, at most half the
+# cores), for Cargo, Rust's tests, swift test (-j) and xcodebuild (-jobs). Run by hand, outside obid,
+# every one gets 4, on purpose: obid runs one check at a time, and a Mac has other work.
 set -eo pipefail
-export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-4}" RUST_TEST_THREADS="${RUST_TEST_THREADS:-4}"
+jobs="${OBY_BUILD_JOBS:-4}"
+export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-$jobs}" RUST_TEST_THREADS="${RUST_TEST_THREADS:-$jobs}"
 cd "$(dirname "$0")/.."
 
 base=$(git merge-base "${1:-origin/dev}" HEAD) || {
@@ -140,7 +143,7 @@ if [[ -n "$rust" ]]; then
 fi
 
 # Ad hoc signing with no team or profile, as the Mac checks build (Engine/Checks.swift).
-xcode=(xcodebuild -quiet -project apps/Oby.xcodeproj -derivedDataPath "$cache/DerivedData"
+xcode=(xcodebuild -quiet -jobs "$jobs" -project apps/Oby.xcodeproj -derivedDataPath "$cache/DerivedData"
     -clonedSourcePackagesDirPath "$cache/SourcePackages"
     CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM= PROVISIONING_PROFILE_SPECIFIER=
     ENABLE_HARDENED_RUNTIME=NO)
@@ -158,9 +161,9 @@ if [[ -z "$nested" ]]; then
     if [[ -n "$mac" ]]; then apple Oby platform=macOS "$mac_suites"; fi
     if [[ -n "$ios" ]]; then apple ObyPhone "platform=iOS Simulator,name=iPhone 17,OS=latest" "$ios_suites"; fi
     if [[ -n "$swift" ]]; then
-        step swift test --scratch-path "$cache/swiftpm"
+        step swift test -j "$jobs" --scratch-path "$cache/swiftpm"
     elif [[ -n "$swift_suites" ]]; then
-        step swift test --scratch-path "$cache/swiftpm" --filter "$(each "$swift_suites" | paste -sd '|' -)"
+        step swift test -j "$jobs" --scratch-path "$cache/swiftpm" --filter "$(each "$swift_suites" | paste -sd '|' -)"
     fi
 elif [[ -n "$mac$ios$swift$swift_suites" ]]; then
     echo "oby-check: the Apple apps and swift test don't run in a job's sandbox (SwiftPM's own can't nest in it): the Mac check runs them before merging"

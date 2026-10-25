@@ -1517,6 +1517,39 @@ impl Jobs {
         });
     }
 
+    /// [`process::build_env`] for a build of job `id` (its check's with `check`, else its agent's),
+    /// as wide as the room admission leaves it: what's spare less what the other running jobs may
+    /// still take ([`held_back`]: their agents here and, for an agent, one check, its own included).
+    /// Worked out at every turn and every check, so a turn that starts next to others builds
+    /// narrower. Nothing when memory can't be read: the build keeps its own defaults.
+    fn build_env(&self, id: &str, check: bool) -> Vec<(&'static str, OsString)> {
+        let Some(machine) = self.reading() else {
+            return Vec::new();
+        };
+        let held: HashMap<String, (u64, u64)> = self
+            .measured()
+            .jobs
+            .iter()
+            .map(|(id, m)| (id.clone(), (m.agent_rss, m.check_rss)))
+            .collect();
+        let room = {
+            let state = self.lock();
+            let others: Vec<Load> = state
+                .workers
+                .keys()
+                .filter(|w| *w != id)
+                .filter_map(|w| state.jobs.get(w))
+                .map(|job| Load::of(&state.jobs, job, &held))
+                .collect();
+            let own_check = state
+                .jobs
+                .get(id)
+                .map_or(0, |job| check_budget(state.jobs.values(), job));
+            spare(&machine).saturating_sub(held_back(&others, (!check).then_some(own_check)))
+        };
+        process::build_env(process::build_jobs(room))
+    }
+
     fn measured(&self) -> std::sync::MutexGuard<'_, Measured> {
         self.measured
             .lock()
@@ -4824,6 +4857,8 @@ impl Jobs {
         let mut spec = spec.clone();
         let mut extra: Vec<(&str, OsString)> = spec.git_env();
         extra.extend(process::show_rust(&spec.temp));
+        // Its builds take what admission leaves them next to the other jobs (crate::meter).
+        extra.extend(self.build_env(&job.id, false));
         if let Some(token) = self.apple_check_token(&job.id) {
             extra.push((
                 "OBY_CHECK_URL",
@@ -5785,6 +5820,8 @@ impl Jobs {
         let argv = sandbox.wrap(&spec, &argv);
         let mut extra = spec.git_env();
         extra.extend(process::show_rust(&spec.temp));
+        // One check at a time: its build takes what the running agents leave it.
+        extra.extend(self.build_env(id, true));
         let env = process::sandbox_env(&process::tools_path(), &spec.temp, &extra);
         let running = run_check(
             &argv,
@@ -10565,21 +10602,34 @@ fn fits(machine: Option<crate::meter::Machine>, running: &[Load], load: &Load) -
     if !load.here {
         return true;
     }
-    let here = running.iter().filter(|l| l.here);
-    let agents: u64 = here
-        .clone()
+    let here = running.iter().filter(|l| l.here).count();
+    let room = machine.map_or(0, |m| {
+        spare(&m).saturating_sub(held_back(running, Some(load.check)))
+    });
+    admits(machine, here, room, load.agent)
+}
+
+/// What `running` jobs may still take: their agents here (each one's budget less what it holds)
+/// and, with `check` (the budget of one more job's check), one check, the largest budget of theirs
+/// and it, less what the check running holds: checks run one at a time.
+fn held_back(running: &[Load], check: Option<u64>) -> u64 {
+    let agents: u64 = running
+        .iter()
+        .filter(|l| l.here)
         .map(|l| l.agent.saturating_sub(l.agent_now))
         .sum();
+    let Some(check) = check else {
+        return agents;
+    };
     let check_now: u64 = running.iter().map(|l| l.check_now).sum();
     let check = running
         .iter()
         .map(|l| l.check)
-        .chain([load.check])
+        .chain([check])
         .max()
         .unwrap_or(0)
         .saturating_sub(check_now);
-    let room = machine.map_or(0, |m| spare(&m).saturating_sub(agents + check));
-    admits(machine, here.count(), room, load.agent)
+    agents + check
 }
 
 /// What new work may take of `machine`'s available memory: all but a fifth of the machine, kept
@@ -13382,6 +13432,57 @@ mod tests {
         assert!(admits(at(Pressure::Warn), 0, 0, 4));
         assert!(!admits(at(Pressure::Critical), 0, 8, 4));
         assert!(admits(None, 5, 0, 4));
+    }
+
+    /// A build is as wide as what admission leaves it: the other running agents' room and, for an
+    /// agent, one check are held back; a check isn't held back from itself.
+    #[tokio::test]
+    async fn a_build_is_as_wide_as_admission_leaves_it() {
+        use crate::meter::{Machine, Pressure};
+        let (root, _clone, _base, jobs) = cleanup_home("build-width", false);
+        let gib = 1024 * 1024 * 1024;
+        let most =
+            (std::thread::available_parallelism().map_or(2, std::num::NonZero::get) / 2).max(1);
+        for id in ["a", "b"] {
+            let mut job = Job::new(
+                id.into(),
+                "o/r".into(),
+                "fix".into(),
+                "Fix it".into(),
+                "claude".into(),
+                "a".into(),
+            );
+            job.check = Some("make test".into());
+            jobs.insert(job);
+            jobs.lock()
+                .workers
+                .insert(id.into(), watch::channel(Signal::Run).0);
+        }
+        let width = |env: Vec<(&str, OsString)>| {
+            env.iter()
+                .find(|(name, _)| *name == "CARGO_BUILD_JOBS")
+                .map(|(_, jobs)| jobs.to_string_lossy().parse::<usize>().unwrap())
+        };
+        // 14 GiB available on a 20 GiB Mac: 10 spare. b's agent may take 1.5 (nothing measured
+        // yet), and one check 1.5: 7 GiB for a's agent, 8.5 for a's check.
+        let machine = Machine {
+            total: 20 * gib,
+            available: 14 * gib,
+            pressure: Pressure::Normal,
+        };
+        jobs.measured().machine = Some((std::time::Instant::now(), machine));
+        assert_eq!(width(jobs.build_env("a", false)), Some(4.min(most)));
+        assert_eq!(width(jobs.build_env("a", true)), Some(5.min(most)));
+        // Nothing spare: one at a time.
+        jobs.measured().machine = Some((
+            std::time::Instant::now(),
+            Machine {
+                available: 5 * gib,
+                ..machine
+            },
+        ));
+        assert_eq!(width(jobs.build_env("a", false)), Some(1));
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// When git can't run in the job's sandbox, or can't answer, the worktree stays, said in
