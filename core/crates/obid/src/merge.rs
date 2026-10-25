@@ -995,9 +995,10 @@ pub fn teammate_id(job: &str, head: &str) -> String {
 
 /// GitHub requires another person's approval on a repository Oby hasn't learned (the owner's
 /// decision of 2026-10-25): Oby asks once, for that head, whether a teammate's Oby reviews it, and
-/// remembers the yes for the repository, so every later pull request there goes to a teammate by
-/// itself.
-pub fn teammate_card(job: &Job, head: &str, workflow: &Workflow) -> Item {
+/// remembers the yes for the repository (a `review` memory), so every later pull request there
+/// that needs another person's approval goes to a teammate by itself. How it merges isn't asked
+/// here: "Ready to merge?" ([`ready_card`]) still is.
+pub fn teammate_card(job: &Job, head: &str) -> Item {
     let name = name(&job.repo);
     card(
         job,
@@ -1011,8 +1012,7 @@ pub fn teammate_card(job: &Job, head: &str, workflow: &Workflow) -> Item {
             (
                 ASK_TEAMMATE,
                 format!(
-                    "Asks a teammate's Oby now, and remembers. For {name}: {} Next time I'll just ask.",
-                    workflow.sentence()
+                    "Asks a teammate's Oby now, and remembers for {name}: next time I'll just ask. I'll still ask you before it merges."
                 ),
             ),
             (

@@ -9201,22 +9201,20 @@ impl Jobs {
         };
         let card = if let Some(why) = stop {
             Some(crate::merge::stopped_card(&job, &head, &why))
-        } else if required && workflow.is_none() {
+        } else if required
+            && workflow.is_none()
+            && !crate::memory::teammate_reviews(&home, &job.repo)
+        {
             // A repository Oby hasn't learned asks its owner first, once for that head: a
             // teammate's Oby reviews it only after their yes, which Oby remembers for the
-            // repository (the owner's decision of 2026-10-25). Out of an Obysphere, no teammate's
-            // Oby can: the owner hears what to do instead.
-            match (link.as_ref().filter(|l| l.in_sphere()), effective) {
-                (Some(_), Some(mut teammate)) => {
-                    teammate.review = crate::memory::Approval::Teammate;
-                    Some(crate::merge::teammate_card(&job, &head, &teammate))
-                }
-                _ => Some(crate::merge::stopped_card(
-                    &job,
-                    &head,
-                    &crate::merge::no_sphere(&job.repo),
-                )),
-            }
+            // repository (the owner's decision of 2026-10-25), and then without asking again. How
+            // it merges stays theirs to say: "Ready to merge?" still asks. Out of an Obysphere, no
+            // teammate's Oby can: the owner hears what to do instead.
+            Some(if link.as_ref().is_some_and(|l| l.in_sphere()) {
+                crate::merge::teammate_card(&job, &head)
+            } else {
+                crate::merge::stopped_card(&job, &head, &crate::merge::no_sphere(&job.repo))
+            })
         } else if by_teammate || required {
             let goal = job.short_title();
             let change = crate::sphere::approval::Change {
@@ -9401,9 +9399,10 @@ impl Jobs {
     }
 
     /// The owner's Ask a teammate, and remember, on the job `id`'s card about `head` (crate::merge,
-    /// `teammate_card`; the owner's decision of 2026-10-25): their yes to "Can I remember that?",
-    /// so the repository's workflow is kept with a teammate's Oby as its review (the rest as
-    /// learned, or as the card proposed), then a teammate's Oby is asked right away
+    /// `teammate_card`; the owner's decision of 2026-10-25): their yes to "Can I remember that?" is
+    /// about who reviews, never how it merges. Oby keeps a `review` memory for the repository
+    /// (`memory::remember_review`), or, where the owner taught it a workflow since, changes only
+    /// that workflow's review to a teammate's Oby; then a teammate's Oby is asked right away
     /// (`Link::ask_teammate`). What came of the ask, in Oby's words; why not, otherwise: nothing
     /// was asked, nor remembered.
     pub async fn ask_teammate_and_remember(&self, id: &str, head: &str) -> Result<String, String> {
@@ -9424,32 +9423,33 @@ impl Jobs {
             .and_then(std::sync::Weak::upgrade)
             .ok_or("Oby isn't in an Obysphere.")?;
         let home = self.config.home.clone();
-        let (pr, merging) =
+        let (pr, _) =
             crate::github::view_merging(&gh, &job.repo, number, obi_protocol::time::now()).await?;
-        let merging = merging?;
         if !pr.is_open() || pr.head.as_deref() != Some(head) {
             return Err("It moved on since: a new card comes if it still needs a teammate.".into());
         }
-        let owner = crate::github_login::read_status(&gh)
-            .await
-            .user
-            .ok_or("obid's gh isn't signed in to GitHub.")?;
-        let reviewer = crate::github_login::reviewer(&gh, &home, &owner).await;
-        let learned = crate::memory::workflow(&home, &job.repo).and_then(|m| m.workflow);
-        let reviewers = crate::merge::accounts(&home, &owner, &reviewer, learned.as_ref())
-            .ok_or("Oby couldn't tell who its reviewer accounts are.")?;
-        let mut workflow = learned
-            .or_else(|| crate::merge::proposed(&job, &pr, &merging, &reviewers))
-            .ok_or("It isn't one Oby may merge.")?;
-        workflow.review = crate::memory::Approval::Teammate;
         let name = job.repo.rsplit('/').next().unwrap_or(&job.repo).to_owned();
         let from = format!("You asked a teammate's Oby to review {name}#{number}");
-        crate::memory::remember_workflow(&home, &job.repo, workflow, &from, &self.repo_branches())
-            .await
-            .map_err(|why| {
-                tracing::warn!("job {id}: the teammate workflow wasn't remembered: {why:?}");
-                "Oby couldn't remember it: try again.".to_owned()
-            })?;
+        let remembered = match crate::memory::workflow(&home, &job.repo).and_then(|m| m.workflow) {
+            Some(mut learned) => {
+                learned.review = crate::memory::Approval::Teammate;
+                crate::memory::remember_workflow(
+                    &home,
+                    &job.repo,
+                    learned,
+                    &from,
+                    &self.repo_branches(),
+                )
+                .await
+            }
+            None => {
+                crate::memory::remember_review(&home, &job.repo, &from, &self.repo_branches()).await
+            }
+        };
+        remembered.map_err(|why| {
+            tracing::warn!("job {id}: the teammate review wasn't remembered: {why:?}");
+            "Oby couldn't remember it: try again.".to_owned()
+        })?;
         let goal = job.short_title();
         let change = crate::sphere::approval::Change {
             repo: &job.repo,
