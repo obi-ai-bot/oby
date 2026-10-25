@@ -1581,3 +1581,84 @@ button.sphere-logo-badge:hover { color: var(--ink); background: #3a3a39; }
 
 /* reduce motion: menus and panels just appear, switches just switch */
 @media (prefers-reduced-motion: reduce) { .row-menu, .add-panel { animation: none; } .set-switch, .set-switch::after { transition: none; } }
+
+/* First launch (Welcome.tsx): Oby on top, a title and a line, the scene, then
+   dots and the buttons. Past the first scene Oby steps back to make room. */
+.welcome { position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center; padding: 0 var(--gutter) 64px; background: var(--bg); color: var(--ink); overflow: hidden; }
+.welcome-bar { position: absolute; inset: 0 0 auto; height: var(--bar); display: flex; align-items: center; justify-content: flex-end; padding: 0 12px; -webkit-app-region: drag; }
+.welcome-skip { padding: 4px 8px; border-radius: 6px; color: var(--muted); font-size: var(--text-md); transition: color var(--fade); -webkit-app-region: no-drag; }
+.welcome-skip:hover { color: var(--ink); }
+.welcome-oby { flex: none; height: 220px; margin-top: 20px; transition: height 520ms var(--warm); }
+.welcome-oby .oby-frame { transform-origin: 50% 0; transition: transform 520ms var(--warm); }
+.welcome.is-small .welcome-oby { height: 116px; }
+.welcome.is-small .welcome-oby .oby-frame { transform: scale(0.55); }
+.welcome-text { display: flex; flex-direction: column; align-items: center; width: 100%; animation: wl-rise 420ms var(--warm) both; }
+.welcome-title { margin: 0; font-size: var(--text-title); font-weight: 600; letter-spacing: -0.01em; text-align: center; }
+.welcome-line { max-width: 470px; margin: 8px 0 0; color: var(--text); font-size: var(--text-base); line-height: 1.45; text-align: center; }
+.welcome-scene { width: min(540px, 100%); margin-top: 28px; }
+.welcome-foot { position: absolute; inset: auto 0 0; height: 64px; display: flex; align-items: center; justify-content: space-between; padding: 0 24px; }
+.welcome-dots { display: flex; gap: 6px; }
+.welcome-dots span { width: 6px; height: 6px; border-radius: 3px; background: var(--line-strong); transition: width var(--fade), background-color var(--fade); }
+.welcome-dots .is-on { width: 18px; background: var(--ink); }
+.welcome-actions { display: flex; gap: 8px; }
+@keyframes wl-rise { from { opacity: 0; transform: translateY(8px); } }
+@keyframes wl-pop { from { opacity: 0; transform: scale(0.85); } }
+
+.wl-card { display: flex; align-items: center; gap: 12px; border-radius: 14px; background: var(--chip); }
+.wl-two { min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.wl-name { color: var(--ink); font-size: var(--text-base); white-space: nowrap; }
+.wl-sub { color: var(--muted); font-size: var(--text-sm); white-space: nowrap; }
+.wl-note { margin: 14px 0 0; color: var(--muted); font-size: var(--text-sm); text-align: center; opacity: 0; transition: opacity 420ms var(--warm); }
+.wl-note.is-in { opacity: 1; }
+
+/* 1. what's signed in: each row arrives, looks, then says */
+.wl-found { display: flex; flex-direction: column; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.wl-agent { height: 56px; padding: 0 12px 0 16px; opacity: 0; transform: translateY(8px) scale(0.98); transition: opacity 360ms var(--warm), transform var(--settle); }
+.wl-agent.is-in { opacity: 1; transform: none; }
+.wl-agent .wl-two { flex: 1; }
+.wl-ready { display: inline-flex; align-items: center; gap: 4px; color: var(--text); font-size: var(--text-md); animation: wl-pop 360ms var(--spring) both; }
+
+/* 2. each request travels from you, through Oby, to an agent */
+.wl-lanes { display: flex; flex-direction: column; gap: 10px; margin: 0; padding: 0; list-style: none; }
+.wl-lane { height: 48px; display: grid; grid-template-columns: 1fr 64px 1fr; align-items: center; gap: 12px; }
+.wl-lane > .wl-bubble { justify-self: end; transform: translateX(-12px); }
+.wl-lane.is-asked > .wl-bubble { opacity: 1; transform: none; }
+.wl-wire { position: relative; height: 1px; background: var(--line); }
+.wl-spark { position: absolute; top: -2px; left: 0; width: 5px; height: 5px; border-radius: 50%; background: var(--ink); opacity: 0; }
+.wl-lane.is-sent .wl-spark { animation: wl-travel 480ms var(--ease-in) both; }
+@keyframes wl-travel { 0% { left: 0; opacity: 1; } 85% { opacity: 1; } 100% { left: calc(100% - 5px); opacity: 0; } }
+.wl-to { display: flex; align-items: center; gap: 10px; opacity: 0.3; transition: opacity 320ms var(--warm) 400ms; }
+.wl-to .status { visibility: hidden; transition: visibility 0s 400ms; }
+.wl-lane.is-sent .wl-to { opacity: 1; }
+.wl-lane.is-sent .wl-to .status { visibility: visible; }
+
+/* 3. accounts filling up; the task card moves down a row when one runs out */
+.wl-accounts { position: relative; display: flex; flex-direction: column; gap: 8px; }
+.wl-account { height: 52px; display: grid; grid-template-columns: 20px 112px 96px 36px 1fr; align-items: center; gap: 12px; }
+.wl-gauge { height: 4px; border-radius: 2px; background: var(--line); overflow: hidden; }
+.wl-gauge > span { display: block; height: 100%; border-radius: 2px; background: var(--text); transition: width 700ms var(--warm), background-color var(--fade); }
+.wl-gauge.is-full > span { background: var(--full); }
+.wl-gauge.is-over > span { background: var(--over); }
+.wl-pct { color: var(--muted); font-size: var(--text-sm); font-variant-numeric: tabular-nums; }
+.wl-job { position: absolute; right: 0; height: 32px; padding: 0 12px 0 10px; gap: 8px; color: var(--ink); font-size: var(--text-md); white-space: nowrap; transition: top var(--settle); }
+
+/* 4. what Oby did by itself, then the one step that's yours */
+.wl-did { width: min(380px, 100%); margin: 0 auto; }
+.wl-did ul { display: flex; flex-direction: column; gap: 4px; margin: 0; padding: 0; list-style: none; }
+.wl-did li { height: 24px; display: flex; align-items: center; gap: 8px; color: var(--text); font-size: var(--text-md); opacity: 0; transform: translateY(4px); transition: opacity 300ms var(--warm), transform 300ms var(--warm); }
+.wl-did li.is-in { opacity: 1; transform: none; }
+.wl-did li svg, .wl-decide svg { flex: none; color: var(--ink); }
+.wl-decide { min-height: 52px; margin-top: 12px; padding: 10px 10px 10px 14px; gap: 10px; opacity: 0; transform: translateY(8px) scale(0.98); transition: opacity 360ms var(--warm), transform var(--settle); }
+.wl-decide.is-in { opacity: 1; transform: none; }
+.wl-decide-text { flex: 1; color: var(--ink); font-size: var(--text-md); line-height: 1.35; }
+
+/* 5. two Obys talking */
+.wl-talk { width: min(440px, 100%); margin: 0 auto; }
+.wl-talk-head { display: flex; justify-content: space-between; margin-bottom: 12px; color: var(--text); font-size: var(--text-md); }
+.wl-talk-head > span { display: inline-flex; align-items: center; gap: 8px; }
+.wl-msgs { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; }
+.wl-bubble { max-width: 290px; padding: 8px 12px; border-radius: 14px; background: var(--chip); color: var(--ink); font-size: var(--text-md); white-space: nowrap; opacity: 0; transform: translateY(6px); transition: opacity 320ms var(--warm), transform var(--settle); }
+.wl-bubble.is-peer { align-self: flex-end; background: var(--chip-hover); }
+.wl-bubble.is-in { opacity: 1; transform: none; }
+
+@media (prefers-reduced-motion: reduce) { .welcome *, .welcome-text { transition-duration: 0ms !important; animation-duration: 0ms !important; } }
