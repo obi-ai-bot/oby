@@ -28,6 +28,8 @@
 //                    next (counted in .obi/usage-turn)
 //   ASK: <json>      asks obid's permission for {"tool", "input"} and answers with what obid said
 //                    (an AskUserQuestion's with " answers: <its updatedInput's answers>")
+//   UNKNOWN REQUEST  with ASK: first sends a control request of a kind no Claude Code has, waits
+//                    for its answer, then asks; the result ends with " unknown: <the answer's subtype>"
 //   ASKS: <json>     asks for each of a list of {"tool", "input"} in turn, then ends the turn with
 //                    "answers: allow, deny: <why>, …"
 //   LOGIN: <home>    reads its login in its HOME, writes a hook into its ~/.claude/settings.json
@@ -141,6 +143,9 @@ const leaked = Object.keys(process.env).filter((name) =>
   name === "CLAUDECODE" || (name.startsWith("CLAUDE_CODE_") && name !== "CLAUDE_CODE_TMPDIR") || name.startsWith("ANTHROPIC_") || name === "GH_TOKEN" || name === "GITHUB_TOKEN" || name === "OBID_API_TOKEN");
 
 let asked = null;
+// UNKNOWN REQUEST: what obid answered the request of a new kind, and the ask it holds back.
+let unknown = null;
+let afterUnknown = null;
 let queue = [];
 let listing = false;
 const said = [];
@@ -157,6 +162,13 @@ rl.on("line", (line) => {
   } catch {
     return;
   }
+  if (message.type === "control_response" && message.response?.request_id === "u1") {
+    unknown = message.response.subtype;
+    const next = afterUnknown;
+    afterUnknown = null;
+    if (next) next();
+    return;
+  }
   if (message.type === "control_response" && asked) {
     const answer = message.response?.response ?? {};
     asked = null;
@@ -167,7 +179,7 @@ rl.on("line", (line) => {
     }
     // An AskUserQuestion's answer (#858) comes in its updatedInput.
     const answers = answer.updatedInput?.answers;
-    result(`answer: ${answer.behavior}${answers ? ` answers: ${JSON.stringify(answers)}` : ""}`);
+    result(`answer: ${answer.behavior}${answers ? ` answers: ${JSON.stringify(answers)}` : ""}${unknown ? ` unknown: ${unknown}` : ""}`);
     return;
   }
   if (message.type !== "user") return;
@@ -495,7 +507,13 @@ rl.on("line", (line) => {
   } else if (ask) {
     const { tool, input } = JSON.parse(ask[1]);
     asked = tool;
-    emit({ type: "control_request", request_id: "r1", request: { subtype: "can_use_tool", tool_name: tool, input } });
+    const send = () => emit({ type: "control_request", request_id: "r1", request: { subtype: "can_use_tool", tool_name: tool, input } });
+    if (prompt.includes("UNKNOWN REQUEST")) {
+      afterUnknown = send;
+      emit({ type: "control_request", request_id: "u1", request: { subtype: "elicit_something_new", detail: { anything: true } } });
+    } else {
+      send();
+    }
   } else {
     result("Nothing to do.");
   }
