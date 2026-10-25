@@ -738,13 +738,12 @@ impl Place {
         }
     }
 
-    /// Takes the copied login out once the turn's runs ended.
+    /// Takes the copied login out once the turn's runs ended, and lets the keeper's hold on it
+    /// go at once: another account's turn writes its own copy into the same `config` folder next,
+    /// which a refresh of this one's must never overwrite (#877).
     fn forget_login(&self) {
         crate::jobs::forget_login_secrets(&self.login);
-        if std::fs::symlink_metadata(&self.config).is_ok_and(|m| m.is_dir()) {
-            let _ = std::fs::remove_file(self.config.join(".credentials.json"));
-            let _ = std::fs::remove_file(self.config.join("auth.json"));
-        }
+        crate::jobs::forget_login_secrets(&self.config);
     }
 
     /// Before every run: what the agent could have left for the next Claude Code or Codex to load
@@ -2369,6 +2368,28 @@ mod tests {
             place: Place::of(&root, "c"),
             since: Instant::now(),
         }
+    }
+
+    /// A turn's login copy goes when its runs end, and so does the keeper's hold on it, at once:
+    /// the next turn, on another account maybe, writes its own copy into the same folder, which a
+    /// refresh of this account's must never overwrite (#877).
+    #[test]
+    fn a_turns_login_copy_is_let_go_when_it_ends() {
+        let root = std::env::temp_dir().join(format!("obid-turn-copy-{}", uuid::Uuid::new_v4()));
+        let place = Place::of(&root, "c");
+        std::fs::create_dir_all(&place.config).unwrap();
+        let copy = place.config.join(".credentials.json");
+        std::fs::write(&copy, "{}").unwrap();
+        let service = format!("test-{}", uuid::Uuid::new_v4());
+        crate::jobs::keeping(&service, Some(&root.join("account")), copy.clone());
+        assert_eq!(
+            crate::jobs::kept_copies(&service),
+            std::slice::from_ref(&copy)
+        );
+        place.forget_login();
+        assert!(!copy.exists());
+        assert!(crate::jobs::kept_copies(&service).is_empty());
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     fn account(id: &str, config_dir: Option<&str>) -> crate::config::Account {

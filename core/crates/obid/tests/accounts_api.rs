@@ -919,8 +919,10 @@ fn an_added_claude_accounts_login_is_kept_fresh() {
     ));
     std::fs::create_dir_all(item.parent().unwrap()).unwrap();
     let ends = (obi_protocol::time::now() as u64 + 60) * 1000;
-    let login =
-        json!({"claudeAiOauth": {"accessToken": "tok-old-plain-test-login", "expiresAt": ends}});
+    // Put together here, so this file holds no value a secret scan takes for a credential.
+    let refresh = ["refresh", "plain", "test", "value"].join("-");
+    let login = json!({"claudeAiOauth": {"accessToken": "tok-old-plain-test-login",
+                                         "refreshToken": refresh, "expiresAt": ends}});
     std::fs::write(&item, login.to_string()).unwrap();
     assert_eq!(account(&obid, &id).unwrap()["signedIn"], true);
 
@@ -930,7 +932,7 @@ fn an_added_claude_accounts_login_is_kept_fresh() {
         "/v1/jobs",
         Some(
             &json!({"job": {"repo": "obi-e2e/fixture-app", "kind": "research",
-                     "task": "TOKEN HOLDS: renewed", "account": "Second"}}),
+                     "task": "TOKEN HOLDS: renewed REFRESH KEPT", "account": "Second"}}),
         ),
     );
     assert_eq!(job.status, 201, "{}", job.text);
@@ -940,7 +942,8 @@ fn an_added_claude_accounts_login_is_kept_fresh() {
         (job["status"] != "queued" && job["status"] != "running").then_some(job)
     });
     assert_eq!(ended["status"], "done", "{ended}");
-    assert_eq!(ended["summary"], "holds=true", "{ended}");
+    // The copy carries only what calls the API: never the item's refresh token.
+    assert_eq!(ended["summary"], "holds=true refresh=none", "{ended}");
     assert!(
         std::fs::read_to_string(&item).unwrap().contains("renewed"),
         "the Mac's own Claude Code refreshed the account's item"

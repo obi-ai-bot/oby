@@ -4463,6 +4463,7 @@ impl Jobs {
                 })?;
                 match tool {
                     Tool::Claude => {
+                        keep_folder_copy(dir, &login);
                         extra.push(("CLAUDE_CONFIG_DIR", login.clone().into_os_string()))
                     }
                     Tool::Codex => {
@@ -4805,6 +4806,11 @@ impl Jobs {
                     codex_copy_ready(&login.join("auth.json"), &account.name)?;
                     extra.push(("CODEX_HOME", login.as_os_str().to_owned()));
                 } else {
+                    // A conversation's copy is kept fresh while its turn runs; the brain's lives
+                    // one call.
+                    if confined {
+                        keep_folder_copy(shared, login);
+                    }
                     extra.push(("CLAUDE_CONFIG_DIR", login.as_os_str().to_owned()));
                 }
             }
@@ -9145,6 +9151,29 @@ fn forget_keychain_copy(path: &Path) {
     }
 }
 
+/// For tests: the keeper keeps the login `service` (of `config_dir`), and `copy` of it.
+#[cfg(test)]
+pub(crate) fn keeping(service: &str, config_dir: Option<&Path>, copy: PathBuf) {
+    kept().push(Kept {
+        service: service.to_owned(),
+        config_dir: config_dir.map(Path::to_path_buf),
+        bin: PathBuf::from("/usr/bin/false"),
+        used: std::time::Instant::now(),
+        copies: Vec::new(),
+    });
+    keep_keychain_copy(service, copy);
+}
+
+/// For tests: the copies the keeper writes again of the login `service`.
+#[cfg(test)]
+pub(crate) fn kept_copies(service: &str) -> Vec<PathBuf> {
+    kept()
+        .iter()
+        .filter(|k| k.service == service)
+        .flat_map(|k| k.copies.clone())
+        .collect()
+}
+
 /// With `claudeKeychain` on, obid's keeper: every 60 seconds, on a thread of its own, each login it
 /// keeps (the default one, and the accounts obid added) is refreshed when it's due and the running
 /// jobs' copies written again ([`keep_one`]),
@@ -9456,22 +9485,24 @@ pub(crate) fn copy_account_login(tool: Tool, account: &Path, to: &Path) -> std::
         return write_login(&to.join("auth.json"), &copy);
     }
     // Only what calls the API, never a refresh token, from the Keychain or the folder's file
-    // ([`account_login`], #651).
-    let from_keychain = keychain_login(Some(account));
-    let kept = from_keychain.is_some();
-    let Some(bytes) = from_keychain.or_else(|| folder_login(account)) else {
+    // ([`account_login`], #651). A job's or a conversation's copy is kept fresh by the keeper
+    // while the account's login is kept ([`keep_folder_copy`]).
+    let Some(bytes) = account_login(account) else {
         return Ok(());
     };
     learn_claude_tokens(&bytes, &keychain_service(Some(account)));
-    write_login(&to.join(".credentials.json"), &bytes)?;
-    // Written again by the keeper while it keeps the account's login fresh (#877).
-    if kept {
-        keep_keychain_copy(
-            &keychain_service(Some(account)),
-            to.join(".credentials.json"),
-        );
-    }
-    Ok(())
+    write_login(&to.join(".credentials.json"), &bytes)
+}
+
+/// A job's or a conversation's copy of an account folder's Claude Code login (`login`'s
+/// `.credentials.json`), written again by the keeper while it keeps that account's login fresh
+/// (#877: only an account obid added; for any other, nothing is kept). Let go when the run or
+/// turn ends ([`forget_login_secrets`]).
+fn keep_folder_copy(account: &Path, login: &Path) {
+    keep_keychain_copy(
+        &keychain_service(Some(account)),
+        login.join(".credentials.json"),
+    );
 }
 
 /// A job's own folder (`login`) for an account with a folder of its own (`account`), never the
