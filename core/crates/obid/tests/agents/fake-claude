@@ -76,6 +76,12 @@
 //   a handoff note   asked for one (obid's prompt when a job stalls): ends the turn with the note,
 //                    "Done: … Left: … Failed: …", or says nothing when the task said NO NOTE
 //   ON PURPOSE       in a fix round's quoted task: ends the turn with "FAILS AS ASKED: …"
+//   HALF REBASE ON NEXT TURN  its next turn rebases its last commit onto one of its own changing
+//                    the same file, leaves it conflicted, and ends with "Left a rebase half done."
+//   REBASES WHEN TOLD  from now on, told by obid to rebase (`git rebase --onto <base> <start>`),
+//                    runs it and resolves any conflict keeping both sides ("both"), then ends the
+//                    turn with "Rebased onto the base."; HALF REBASE WHEN TOLD leaves a conflicted
+//                    rebase half done instead ("Left the rebase half done.")
 //   AGAIN: <words>   keeps the words (maybe none) in .obi/again, then goes on with the rest of the
 //                    prompt; a later "Try again, …" (after the check's output, when one stopped the
 //                    job) that finds them writes .obi/tried and ends the turn with them
@@ -88,7 +94,7 @@
 
 import { execFileSync } from "node:child_process";
 import { randomFillSync } from "node:crypto";
-import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createInterface } from "node:readline";
 
 // Claude Code's refresh as obid has the Mac's own run it (`-p ok … --no-session-persistence`,
@@ -239,6 +245,50 @@ rl.on("line", (line) => {
       refresh = JSON.parse(readFileSync(`${process.env.CLAUDE_CONFIG_DIR}/.credentials.json`, "utf8")).claudeAiOauth?.refreshToken ? "kept" : "none";
     } catch {}
     return result(`holds=${token.includes(holds[1])}${prompt.includes("REFRESH KEPT") ? ` refresh=${refresh}` : ""}`);
+  }
+  // HALF REBASE ON NEXT TURN: its next turn starts a rebase of its last commit onto a commit of its
+  // own that changes the same file, and leaves it conflicted.
+  if (prompt.includes("HALF REBASE ON NEXT TURN")) {
+    mkdirSync(".obi", { recursive: true });
+    writeFileSync(".obi/half-next", prompt.match(/COMMIT: (\S+)/)?.[1] ?? "a.txt");
+  } else if (existsSync(".obi/half-next")) {
+    const file = readFileSync(".obi/half-next", "utf8");
+    rmSync(".obi/half-next");
+    const git = (args, input) => execFileSync("git", args, { encoding: "utf8", input, env: { ...process.env, GIT_INDEX_FILE: ".obi/half-index" } }).trim();
+    const parent = git(["rev-parse", "HEAD~1"]);
+    const blob = git(["hash-object", "-w", "--stdin"], "theirs\n");
+    git(["read-tree", parent]);
+    git(["update-index", "--add", "--cacheinfo", `100644,${blob},${file}`]);
+    const tree = git(["write-tree"]);
+    const theirs = git(["commit-tree", tree, "-p", parent, "-m", "Theirs"]);
+    try {
+      execFileSync("git", ["-c", "commit.gpgsign=false", "rebase", "--onto", theirs, "HEAD~1"], { stdio: "ignore" });
+    } catch {}
+    return result("Left a rebase half done.");
+  }
+  // REBASES WHEN TOLD / HALF REBASE WHEN TOLD: told by obid to rebase onto the moved base, it runs
+  // the command obid named; on conflicts it resolves them (both sides kept) and goes on, or leaves
+  // the rebase half done.
+  if (prompt.includes("REBASES WHEN TOLD") || prompt.includes("HALF REBASE WHEN TOLD")) {
+    mkdirSync(".obi", { recursive: true });
+    writeFileSync(".obi/rebase-when-told", prompt.includes("HALF REBASE WHEN TOLD") ? "half" : "whole");
+  }
+  const rebase = prompt.match(/`git rebase --onto (\S+) (\S+)`/);
+  if (rebase && existsSync(".obi/rebase-when-told")) {
+    const half = readFileSync(".obi/rebase-when-told", "utf8") === "half";
+    const env = { ...process.env, GIT_EDITOR: "true" };
+    try {
+      execFileSync("git", ["-c", "commit.gpgsign=false", "rebase", "--onto", rebase[1], rebase[2]], { env, stdio: "ignore" });
+    } catch {
+      if (half) return result("Left the rebase half done.");
+      const unmerged = execFileSync("git", ["diff", "--name-only", "--diff-filter=U"], { encoding: "utf8" }).split("\n").filter(Boolean);
+      for (const file of unmerged) {
+        writeFileSync(file, "both\n");
+        execFileSync("git", ["add", file]);
+      }
+      execFileSync("git", ["-c", "commit.gpgsign=false", "rebase", "--continue"], { env, stdio: "ignore" });
+    }
+    return result("Rebased onto the base.");
   }
   const spend = prompt.match(/SPEND: (\d+)/);
   if (spend) {

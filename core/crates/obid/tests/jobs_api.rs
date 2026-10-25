@@ -1556,6 +1556,290 @@ fn a_job_at_its_limit_goes_on_on_an_account_with_room() {
     );
 }
 
+/// The remote's main moved: a commit of `file` with `text` pushed onto it, or, with `force`, onto
+/// its parent and force-pushed over it. Main's head before and after.
+fn move_main(
+    folder: &Path,
+    remote: &Path,
+    file: &str,
+    text: &str,
+    force: bool,
+) -> (String, String) {
+    let work = folder.join(format!("push-{file}"));
+    git(
+        folder,
+        &[
+            "clone",
+            "-q",
+            "-b",
+            "main",
+            remote.to_str().unwrap(),
+            work.to_str().unwrap(),
+        ],
+    );
+    let before = git(&work, &["rev-parse", "HEAD"]);
+    if force {
+        git(&work, &["reset", "-q", "--hard", "HEAD~1"]);
+    }
+    std::fs::write(work.join(file), text).unwrap();
+    git(&work, &["add", file]);
+    git(
+        &work,
+        &[
+            "-c",
+            "user.name=T",
+            "-c",
+            "user.email=t@example.com",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-q",
+            "-m",
+            &format!("Add {file}"),
+        ],
+    );
+    let push = if force { "-f" } else { "-q" };
+    git(&work, &["push", "-q", push, "origin", "HEAD:main"]);
+    (before, git(&work, &["rev-parse", "HEAD"]))
+}
+
+/// Try again's words to job `id`, and the job once its second round ended.
+fn try_again(obid: &Obid, id: &str) -> Value {
+    let more = request(
+        obid,
+        "POST",
+        &format!("/v1/jobs/{id}/messages"),
+        Some(
+            &json!({"text": "Try again, picking up where you left off. Finish with a short summary as asked."})
+                .to_string(),
+        ),
+    );
+    assert_eq!(more.status, 200, "{}", more.text);
+    until(obid, id, |j| {
+        j["round"] == 2 && j["status"] != "queued" && j["status"] != "running"
+    })
+}
+
+/// A job whose base moved while it ran is put on the base as it is now before its check: its own
+/// commits rebased onto it, its start the new base. When they conflict, its agent has one round to
+/// rebase them itself, then the job needs the owner (Try again), its branch as it was.
+#[test]
+fn a_job_is_rebased_onto_its_moved_base_before_its_check() {
+    let folder = Folder::new("moved-base");
+    let remote = fixture(&folder.0.join("fixture"));
+    let obid = start(&folder.0, &config(&folder.0, &remote));
+    let clone = obid.home.join("clones/obi-e2e/fixture-app");
+    let post = |task: &str| {
+        post_job(
+            &obid,
+            json!({"repo": "obi-e2e/fixture-app", "kind": "build", "task": task, "check": "false", "rounds": 1}),
+        )
+        .body["id"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    };
+
+    let id = post("COMMIT: a.txt");
+    assert_eq!(wait(&obid, &id)["status"], "interrupted");
+    let (_, moved) = move_main(&folder.0, &remote, "b.txt", "b\n", false);
+    let job = try_again(&obid, &id);
+    assert_eq!(job["status"], "interrupted", "{job}");
+    assert_eq!(job["startCommit"], moved.as_str(), "{job}");
+    let branch = format!("refs/heads/oby/build-{id}");
+    git(&clone, &["merge-base", "--is-ancestor", &moved, &branch]);
+    assert_eq!(
+        git(
+            &clone,
+            &["log", "--format=%s", &format!("{moved}..{branch}")]
+        ),
+        "Add a.txt"
+    );
+
+    // Conflicting: one round for its agent (here it does nothing), then the owner.
+    let id = post("COMMIT: zz.txt");
+    assert_eq!(wait(&obid, &id)["status"], "interrupted");
+    let branch = format!("refs/heads/oby/build-{id}");
+    let before = git(&clone, &["rev-parse", &branch]);
+    move_main(&folder.0, &remote, "zz.txt", "theirs\n", false);
+    let job = try_again(&obid, &id);
+    assert_eq!(job["status"], "interrupted", "{job}");
+    assert_eq!(
+        job["reason"],
+        "main moved while this ran, and its commits don't rebase onto it (conflicts in zz.txt). The branch is kept as it was and nothing was pushed: Try again has its agent rebase it, or rebase it yourself.",
+        "{job}"
+    );
+    assert_eq!(job["nextStep"], "Try again", "{job}");
+    assert_eq!(git(&clone, &["rev-parse", &branch]), before);
+}
+
+/// Its agent's rebase round: one it finishes counts, the job's commits starting at the new base
+/// (so they're counted and replayed as its own only); one it leaves half done is aborted and the
+/// job needs the owner, its branch as it was. A force-pushed base drops the commits it took back.
+/// A branch obid pushed before goes out again rebased, through the lease on what it pushed.
+#[test]
+fn a_rebase_round_counts_only_when_it_ends_and_goes_out_through_the_lease() {
+    let folder = Folder::new("rebase-round");
+    let remote = fixture(&folder.0.join("fixture"));
+    let config = config(&folder.0, &remote);
+    let obid = start(&folder.0, &config);
+    let clone = obid.home.join("clones/obi-e2e/fixture-app");
+    let post = |task: &str, check: Value| {
+        post_job(
+            &obid,
+            json!({"repo": "obi-e2e/fixture-app", "kind": "build", "task": task, "check": check, "rounds": 1}),
+        )
+        .body["id"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    };
+    let on = |commit: &str, branch: &str| {
+        Command::new("git")
+            .env_remove("GIT_OBJECT_DIRECTORY")
+            .env_remove("GIT_ALTERNATE_OBJECT_DIRECTORIES")
+            .args(["merge-base", "--is-ancestor", commit, branch])
+            .current_dir(&clone)
+            .status()
+            .unwrap()
+            .success()
+    };
+
+    // Its agent resolves the conflict: the job's one commit sits on the new base.
+    let id = post("COMMIT: zz.txt REBASES WHEN TOLD", json!("false"));
+    assert_eq!(wait(&obid, &id)["status"], "interrupted");
+    let (_, moved) = move_main(&folder.0, &remote, "zz.txt", "theirs\n", false);
+    let job = try_again(&obid, &id);
+    assert_eq!(job["status"], "interrupted", "{job}");
+    assert_eq!(job["startCommit"], moved.as_str(), "{job}");
+    let branch = format!("refs/heads/oby/build-{id}");
+    assert_eq!(
+        git(
+            &clone,
+            &["log", "--format=%s", &format!("{moved}..{branch}")]
+        ),
+        "Add zz.txt"
+    );
+    assert_eq!(git(&clone, &["show", &format!("{branch}:zz.txt")]), "both");
+
+    // Left half done: aborted, the branch as it was, and the owner's.
+    let id = post("COMMIT: yy.txt HALF REBASE WHEN TOLD", json!("false"));
+    assert_eq!(wait(&obid, &id)["status"], "interrupted");
+    let branch = format!("refs/heads/oby/build-{id}");
+    let before = git(&clone, &["rev-parse", &branch]);
+    move_main(&folder.0, &remote, "yy.txt", "theirs\n", false);
+    let job = try_again(&obid, &id);
+    assert_eq!(job["status"], "interrupted", "{job}");
+    assert!(
+        job["reason"].as_str().unwrap().starts_with(
+            "main moved while this ran, and its commits don't rebase onto it (conflicts in yy.txt)."
+        ),
+        "{job}"
+    );
+    assert_eq!(git(&clone, &["rev-parse", &branch]), before);
+    assert!(
+        !obid
+            .home
+            .join(format!(
+                "clones/obi-e2e/fixture-app/.git/worktrees/{id}/rebase-merge"
+            ))
+            .exists()
+    );
+
+    // Main force-pushed: the job's commit replayed on the new main, the dropped one gone.
+    let id = post("COMMIT: c3.txt", json!("false"));
+    assert_eq!(wait(&obid, &id)["status"], "interrupted");
+    let (dropped, forced) = move_main(&folder.0, &remote, "f.txt", "f\n", true);
+    let job = try_again(&obid, &id);
+    assert_eq!(job["startCommit"], forced.as_str(), "{job}");
+    let branch = format!("refs/heads/oby/build-{id}");
+    assert!(on(&forced, &branch));
+    assert!(
+        !on(&dropped, &branch),
+        "the commit main dropped isn't the job's"
+    );
+    assert_eq!(
+        git(
+            &clone,
+            &["log", "--format=%s", &format!("{forced}..{branch}")]
+        ),
+        "Add c3.txt"
+    );
+
+    // Published, then main moves and it has another round: its branch goes out again, rebased,
+    // over the head it pushed.
+    let id = post("COMMIT: d4.txt", Value::Null);
+    let job = wait(&obid, &id);
+    assert_eq!(job["status"], "done", "{job}");
+    let pushed = git(
+        &remote,
+        &["rev-parse", &format!("refs/heads/oby/build-{id}")],
+    );
+    drop(obid);
+    let file = folder.0.join(format!("home/jobs/{id}.json"));
+    let mut kept: Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+    kept["status"] = json!("interrupted");
+    kept["nextStep"] = json!("Try again");
+    kept["reason"] = json!("Stopped part way.");
+    std::fs::write(&file, serde_json::to_vec(&kept).unwrap()).unwrap();
+    let obid = start(&folder.0, &config);
+    let (_, moved) = move_main(&folder.0, &remote, "e5.txt", "e\n", false);
+    let job = try_again(&obid, &id);
+    assert_eq!(job["status"], "done", "{job}");
+    let republished = git(
+        &remote,
+        &["rev-parse", &format!("refs/heads/oby/build-{id}")],
+    );
+    assert_ne!(republished, pushed, "{job}");
+    git(
+        &remote,
+        &["merge-base", "--is-ancestor", &moved, &republished],
+    );
+    assert_eq!(
+        git(
+            &remote,
+            &["log", "--format=%s", &format!("{moved}..{republished}")]
+        ),
+        "Add d4.txt"
+    );
+}
+
+/// A rebase its agent left half done is aborted before anything else, a base that doesn't fetch
+/// included: nothing half done is checked, kept on the branch or published.
+#[test]
+fn a_half_done_rebase_is_aborted_even_when_the_base_doesnt_fetch() {
+    let folder = Folder::new("half-no-fetch");
+    let remote = fixture(&folder.0.join("fixture"));
+    let obid = start(&folder.0, &config(&folder.0, &remote));
+    let clone = obid.home.join("clones/obi-e2e/fixture-app");
+    let id = post_job(
+        &obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "build", "task": "COMMIT: hh.txt HALF REBASE ON NEXT TURN",
+               "check": "false", "rounds": 1}),
+    )
+    .body["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert_eq!(wait(&obid, &id)["status"], "interrupted");
+    let branch = format!("refs/heads/oby/build-{id}");
+    let before = git(&clone, &["rev-parse", &branch]);
+    // The remote is gone: every fetch fails from now on.
+    std::fs::rename(&remote, remote.with_extension("gone")).unwrap();
+    let job = try_again(&obid, &id);
+    assert_eq!(job["status"], "interrupted", "{job}");
+    assert_eq!(git(&clone, &["rev-parse", &branch]), before, "{job}");
+    assert_eq!(git(&clone, &["show", &format!("{branch}:hh.txt")]), "hello");
+    assert!(
+        !obid
+            .home
+            .join(format!(
+                "clones/obi-e2e/fixture-app/.git/worktrees/{id}/rebase-merge"
+            ))
+            .exists()
+    );
+}
+
 /// A job stopped at a limit after committing keeps its commits and counts them (#757): words told
 /// to it start a follow-up from its branch, whose worktree has them.
 #[test]
