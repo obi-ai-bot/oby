@@ -416,6 +416,9 @@ final class SphereModel {
         var obiId: String?
         var owner: String
         var lastError: String?
+        /// The delegation obid holds: its scope, and when it ends (never the JWT).
+        var delegation: Delegation?
+        struct Delegation: Decodable, Equatable { var scope: String?; var expiresAt: Date? }
     }
 
     /// One entry of the Sphere's directory.
@@ -823,6 +826,36 @@ final class SphereModel {
     func answer(_ request: Request, _ option: String) async throws {
         _ = try await raw(try runner(), "POST", "v1/inbox/\(request.id)/answer", ["answer": option])
         try await refresh()
+    }
+
+    /// A new delegation with the scope of the one obid holds (`PUT /v1/obid/sphere/membership`), when
+    /// that one ends within `within`: a delegation lasts exactly 30 days, and nothing else renews it
+    /// while sharing is hidden, so every member would drop out on day 30, and their iPhone's relay
+    /// with them (#1215). Answers whether it signed one.
+    @discardableResult
+    func renewDelegation(within: TimeInterval, now: Date = .now) async throws -> Bool {
+        let runner = try runner()
+        let membership: Membership = try await runner.call("GET", "v1/obid/sphere")
+        guard membership.state == "joined", let sphere = membership.sphere, let obi = membership.obiId,
+              let held = membership.delegation, let scope = held.scope,
+              (held.expiresAt ?? now).timeIntervalSince(now) <= within else { return false }
+        let key = try OwnerKey.of(membership.owner)
+        _ = try await raw(runner, "PUT", "v1/obid/sphere/membership", [
+            "delegation": try key.assertion(owner: membership.owner, sphere: sphere, scope: scope, mayAct: obi, now: now),
+        ])
+        return true
+    }
+
+    /// Keeps this Mac's Oby in its Obysphere past 30 days (#1215): a new delegation at launch, once
+    /// obid answers, then every 6 hours once 5 or fewer days are left.
+    static func keepRenewing(feed: RunnerFeed) async {
+        let sphere = SphereModel(feed: feed)
+        var launched = false
+        while !Task.isCancelled {
+            if (try? await sphere.renewDelegation(within: launched ? 5 * 86_400 : .infinity)) != nil { launched = true }
+            // ponytail: polls; 60 s until obid first answers, then 6 h, about 20 tries in the last 5 days.
+            try? await Task.sleep(for: .seconds(launched ? 6 * 3600 : 60))
+        }
     }
 
     /// The runner's call with a JSON body the protocol shapes (snake_case inside), unchanged.

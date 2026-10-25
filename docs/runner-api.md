@@ -2533,6 +2533,7 @@ The Obi's place in one Sphere: its key, its owner-signed agent card, its owner's
 ```json
 {"state": "joined", "url": "http://127.0.0.1:8787", "sphere": "e2e", "obiId": "obi-wellington", "owner": "wellington",
  "keyId": "ed25519:…", "publicKey": "…", "card": { …the signed agent card… },
+ "delegation": {"scope": "send:review_request send:question reply receive directory:read audit:read", "expiresAt": "2026-11-13T12:00:00Z"},
  "tokenExpiresAt": "2026-10-14T13:00:05Z", "lastPoll": "2026-10-14T12:00:40Z", "lastError": null}
 ```
 
@@ -2859,6 +2860,8 @@ Running a teammate's job on this Mac, and one of the owner's jobs on a teammate'
 **`GET /v1/obid/sharing/macs`**: the teammates' Macs this owner may send a job to, from their runner statuses (the directory shows one only to the owners it is offered to): `[{"obi", "owner", "free", "size", "agents", "verified"}]`. Never whether their owner is at them, nor when they expect to be free (no `free_at`: it would say their owner's schedule). It reads the directory again when the last read is older than 15 seconds.
 
 **`PUT /v1/obid/sphere/membership`** with `{"card"}`, `{"delegation"}` or both, signed by the owner: a new card (a higher `card_seq`, the same Obi, key, Sphere and owner, checked as at joining; it goes to the Sphere first, `PUT …/members/{obi}/card`) and/or a new delegation (checked as at joining). The Mac app sends a card that accepts `run_request` when the owner turns sharing on, and a delegation with `send:run_request` so the owner's jobs can go to a teammate's Mac. `409` before joining, `422` with why, `502` with the Sphere's refusal.
+
+**Renewing the delegation.** `GET /v1/obid/sphere`'s `delegation` is the scope of the delegation obid holds and when it ends (its `exp`), never the JWT, or null. A delegation lasts 30 days, so the Mac app signs a new one with the same scope and sends it here at launch, and every 6 hours once 5 or fewer days are left (#1215).
 
 **This Mac as the host.** A `run_request` arrives only when the card accepts it. obid takes at most one from each teammate's owner every 15 minutes and declines the rest, so requests can't probe when the owner is at the Mac. obid decides by the owner's settings alone, whatever the request or the Sphere says, and declines otherwise (the reasons below are its own; the guest is told `unavailable`, and no reply to a `run_request` names a rule): sharing on, the sender's owner offered the Mac and, with `ask`, allowed once (`policy`); a slot free (`busy`); the Mac free: on power, not in Low Power Mode, cooler than `serious`, and idle 10 minutes or inside the schedule, as `obi-vm signals` reads them (`not_free`); `obi-vm` and the image here (`not_free`). Those reasons stay in obid's log: the decline the guest gets says only `unavailable` (with no rule named), whatever the reason, and only `expired`, `out_of_scope` and `share_used`, the guest's own doing, keep theirs (the owner's decision of 2026-10-21; spec protocol.md section 4, rule 9). With `ask` and nobody allowed yet, an `obiRequest` item waits in the inbox: `{sender} asks to use this Mac while you're away`, options `Allow`, `Allow {sender} from now on`, `Decline`, the request's title and words only quoted (`obi.quoted`). An accepted job:
 

@@ -308,6 +308,17 @@ fn from_client(error: &ClientError) -> ApiError {
     }
 }
 
+/// What the app needs of the delegation obid holds to sign the next one before it ends (#1215): its
+/// scope and when it ends. Never the JWT itself.
+fn delegation_json(delegation: &str) -> Value {
+    let claims = obi_protocol::jwt::parse(delegation).map(|p| p.claims);
+    let claims = claims.as_ref();
+    json!({
+        "scope": claims.and_then(|c| c["scope"].as_str()),
+        "expiresAt": claims.and_then(|c| c["exp"].as_i64()).map(time::format),
+    })
+}
+
 fn new_uuid() -> String {
     uuid::Uuid::new_v4().to_string()
 }
@@ -1640,6 +1651,7 @@ impl Link {
             "keyId": key.map(|k| k.key_id()),
             "publicKey": key.map(|k| k.public_key()),
             "card": joined.map(|m| &m.card),
+            "delegation": state.delegation.as_deref().map(delegation_json),
             "tokenExpiresAt": state.token.as_ref().map(|t| time::format(t.1)),
             "lastPoll": state.last_poll.map(time::format),
             "lastError": state.last_error,
@@ -7138,6 +7150,29 @@ mod tests {
             card: json!({}),
             joined_at: time::now(),
         }
+    }
+
+    /// The app reads the delegation's scope and end, to sign the next before it ends (#1215); never
+    /// the JWT.
+    #[tokio::test]
+    async fn the_membership_says_when_the_delegation_ends() {
+        let (link, home, _stop) = sender_link("delegation-ends", Some("joined"));
+        assert!(link.membership_json()["delegation"].is_null());
+        let key = Keypair::from_seed(&[7; 32]);
+        let jwt = obi_protocol::jwt::sign(
+            &json!({"scope": "receive reply", "exp": 1_900_000_000}),
+            &key,
+        )
+        .ok()
+        .unwrap();
+        link.lock().delegation = Some(jwt.clone());
+        let shown = link.membership_json();
+        assert_eq!(
+            shown["delegation"],
+            json!({"scope": "receive reply", "expiresAt": time::format(1_900_000_000)})
+        );
+        assert!(!shown.to_string().contains(&jwt));
+        let _ = std::fs::remove_dir_all(&home);
     }
 
     /// Out of a Sphere, start() leaves the sender and the clock off; with a membership, joined or

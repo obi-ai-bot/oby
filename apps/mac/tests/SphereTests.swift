@@ -259,6 +259,37 @@ struct SphereTests {
         #expect(try SphereModel.operatorToken.value(server.host) == first)
     }
 
+    /// The delegation lasts 30 days: the Mac signs the next, with the scope obid holds, once 5 or
+    /// fewer are left, and not before (#1215).
+    @MainActor @Test func theDelegationIsRenewedBeforeItsThirtyDaysEnd() async throws {
+        let owner = "tester-\(UUID().uuidString.lowercased().prefix(8))"
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let ends = ISO8601DateFormatter().string(from: now.addingTimeInterval(4 * 86_400))
+        let obid = RunnerStub { request in
+            switch (request.method, request.path) {
+            case ("GET", "/v1/obid/sphere"):
+                (200, #"{"state": "joined", "owner": "\#(owner)", "url": "https://obysphere.example", "sphere": "acme", "obiId": "obi-\#(owner)", "delegation": {"scope": "receive reply directory:read", "expiresAt": "\#(ends)"}}"#)
+            case ("PUT", "/v1/obid/sphere/membership"): (200, "{}")
+            default: (404, "{}")
+            }
+        }
+        defer { try? OwnerKey.store.remove(owner) }
+        let feed = RunnerFeed()
+        feed.stageAlerts(following: obid.runner)
+        let sphere = SphereModel(feed: feed)
+        #expect(try await !sphere.renewDelegation(within: 3 * 86_400, now: now))
+        #expect(obid.requests.allSatisfy { $0.method == "GET" })
+        #expect(try await sphere.renewDelegation(within: 5 * 86_400, now: now))
+        let put = try #require(obid.requests.last)
+        #expect(put.method == "PUT" && put.path == "/v1/obid/sphere/membership" && put.json?["card"] == nil)
+        let jwt = try #require(put.json?["delegation"] as? String)
+        let payload = try #require(Data(base64url: jwt.split(separator: ".").map(String.init)[1]))
+        let claims = try #require(try JSONSerialization.jsonObject(with: payload) as? [String: Any])
+        #expect(claims["scope"] as? String == "receive reply directory:read")
+        #expect(claims["exp"] as? Int == 1_800_000_000 + 2_592_000)
+        #expect((claims["may_act"] as? [String: String])?["sub"] == "obi-\(owner)")
+    }
+
     /// The Join screen asks a server Oby doesn't know nothing until "I trust" is ticked.
     @MainActor @Test func anUnknownServersPreviewWaitsForTrust() async throws {
         let server = RunnerStub { request in
