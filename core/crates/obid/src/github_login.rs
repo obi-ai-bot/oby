@@ -547,8 +547,9 @@ async fn start(shared: &Arc<Shared>, gh: &Path, who: Who) -> Result<Arc<SignIn>,
             }
         }
         if signed && who == Who::Owner {
-            // What the new login can push to, now rather than within the hour.
+            // What the new login can push to, and its work, now rather than at the next tick.
             shared.config.repos.nudge();
+            shared.github_work.wake();
         }
         tracing::info!(
             "GitHub sign-in ({who:?}) ended {}",
