@@ -116,7 +116,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         island.start()
         // obid as This Mac's engine: the Swift runner an older build registered goes, and the
         // engine is registered when nothing else serves this Mac (apps/mac/app/LoginItem.swift).
-        RunnerLoginItem().reconcile(onThisMac: UserDefaults.standard.bool(forKey: RunnerFeed.thisMacKey))
+        RunnerLoginItem.shared.reconcile(onThisMac: UserDefaults.standard.bool(forKey: RunnerFeed.thisMacKey))
         // Outside Applications (opened from the disk image or Downloads): no engine, no updates.
         if !RunnerLoginItem.mayRegister() { askToMoveToApplications() }
         // Scheduled update checks (apps/mac/app/Updater.swift), in the build that ships. A Debug build from

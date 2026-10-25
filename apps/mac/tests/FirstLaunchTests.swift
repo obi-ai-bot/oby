@@ -63,6 +63,12 @@ struct FirstLaunchTests {
         #expect(FirstLaunchSteps.ready(Array(repos.prefix(1))) == "1 repository ready")
         #expect(FirstLaunchSteps.suggestion(repos) == "Find a small bug in oby and fix it")
         #expect(FirstLaunchSteps.suggestion([]) == nil)
+        // A login that can push to none says so once obid has had time to read GitHub.
+        let since = Date.now
+        #expect(FirstLaunchSteps.shown([], signedInSince: since, now: since + 5) == nil)
+        #expect(FirstLaunchSteps.shown([], signedInSince: since, now: since + FirstLaunchSteps.finding) == [])
+        #expect(FirstLaunchSteps.shown(repos, signedInSince: since, now: since) == repos)
+        #expect(FirstLaunchSteps.ready([]) == "No repositories yet")
     }
 
     func defaults() throws -> UserDefaults {

@@ -87,8 +87,9 @@ struct RunnerSettingsView: View {
     @AppStorage("runnerURL") private var runnerURL = ""
     /// "This Mac" (#283): the runner is Oby's login item on this Mac, and Oby follows it on 127.0.0.1.
     @AppStorage(RunnerFeed.thisMacKey) private var onThisMac = true
-    /// The login item, registered with "This Mac" and unregistered with a remote runner (apps/mac/app/LoginItem.swift).
-    @State private var loginItem = RunnerLoginItem()
+    /// The login item, registered with "This Mac" and unregistered with a remote runner (apps/mac/app/LoginItem.swift):
+    /// the one launch registered with, so a failure then shows here.
+    private let loginItem = RunnerLoginItem.shared
     /// Asking before install.sh's obid is moved into Oby.
     @State private var confirmingMove = false
     /// Merge checks on this Mac (apps/mac/app/MacChecks.swift).
@@ -99,6 +100,10 @@ struct RunnerSettingsView: View {
     @State private var watchProblem: String?
     /// The launch build (`Launch`) hides a remote runner and Apple Watch without iPhone.
     @AppStorage(Launch.everythingKey) private var everything = false
+
+    /// Checks on this Mac: off by default and hidden in the launch build (AGENTS.md, `Launch`), except
+    /// while one of its switches is on, so the owner can always turn it off.
+    nonisolated static func showsChecks(everything: Bool, merge: Bool, apple: Bool) -> Bool { everything || merge || apple }
 
     /// This Mac or a remote runner, and its URL: in the launch build, only on a Mac that already
     /// has a remote runner's address, so it can come back to This Mac. Otherwise This Mac is the
@@ -160,12 +165,14 @@ struct RunnerSettingsView: View {
         // As on the iPhone (apps/shared/PermissionsSection.swift).
         PermissionsSection(runner: feed.runner, defaultMode: feed.defaultMode, setDefault: feed.setDefaultMode)
         RoutinesSection(runner: feed.runner, changes: feed.routineChanges)
-        SetGroup("Checks on this Mac") {
-            SetRow("Run merge checks on this Mac", about: "When Oby’s review approves a pull request, this Mac runs its tests and builds the Mac and iPhone apps, one at a time, before Oby merges it into dev.") {
-                Toggle("Run merge checks on this Mac", isOn: $runMergeChecks).toggleStyle(.set)
-            }
-            SetRow("Build and test agents’ work on this Mac", about: "When an agent on the runner asks, this Mac builds and tests the Mac and iPhone apps at its latest commit, before Oby’s review has read it, and the agent gets the compiler’s errors and failing tests.") {
-                Toggle("Build and test agents’ work on this Mac", isOn: $runAppleChecks).toggleStyle(.set)
+        if Self.showsChecks(everything: everything, merge: runMergeChecks, apple: runAppleChecks) {
+            SetGroup("Checks on this Mac") {
+                SetRow("Run merge checks on this Mac", about: "When Oby’s review approves a pull request, this Mac runs its tests and builds the Mac and iPhone apps, one at a time, before Oby merges it into dev.") {
+                    Toggle("Run merge checks on this Mac", isOn: $runMergeChecks).toggleStyle(.set)
+                }
+                SetRow("Build and test agents’ work on this Mac", about: "When an agent on the runner asks, this Mac builds and tests the Mac and iPhone apps at its latest commit, before Oby’s review has read it, and the agent gets the compiler’s errors and failing tests.") {
+                    Toggle("Build and test agents’ work on this Mac", isOn: $runAppleChecks).toggleStyle(.set)
+                }
             }
         }
         if everything {
@@ -1594,7 +1601,7 @@ struct ModelsSettingsView: View {
     /// What the runner offers, once it has answered.
     @State private var runnerOptions: ModelOptions?
     /// Whether the runner lets its models be set: obid doesn't yet (no `/v1/settings/models` routes),
-    /// and then the page shows the ones its status says, as they are.
+    /// and then the page says what it runs with.
     @State private var runnerServesModels = true
     @State private var problem: String?
 
@@ -1602,12 +1609,13 @@ struct ModelsSettingsView: View {
         // In a stack that's always there: the sections are empty until the options arrive, and a
         // task on an empty view never runs.
         VStack(alignment: .leading, spacing: 0) {
-            if !runnerServesModels, let models = feed.models {
+            if !runnerServesModels {
+                // What obid does (core/crates/obid/src/config.rs, CONVERSATION_MODEL): its status's
+                // `models` are placeholders it doesn't run with.
                 SetGroup(feed.local ? "On this Mac" : "On \(feed.name)",
-                         footer: "New jobs use these. Oby’s engine doesn’t let you change them yet. Oby’s brain stays on Haiku: it plans and answers in the conversation, so it should be quick.") {
-                    SetRow("Claude Code") { SetValue(models.claude.label) }
-                    SetRow("Codex") { SetValue(models.codex.label) }
-                    if let cursor = models.cursor { SetRow("Cursor") { SetValue(ModelChoice.name(cursor.model)) } }
+                         footer: "Oby’s engine doesn’t let you change these yet.") {
+                    SetRow("Jobs", about: "Unless Oby picks a model for a job, as you ask it to.") { SetValue("Each tool’s own default") }
+                    SetRow("Conversations", about: "Codex’s own model when a conversation runs on Codex.") { SetValue("Sonnet 5.5 on Claude Code") }
                 }
             } else if runnerOptions == nil || feed.models == nil {
                 SetGroup(problem: problem) { SetRow(feed.local ? "Waiting for the runner on this Mac…" : "Waiting for \(feed.name)…", quiet: true) }
