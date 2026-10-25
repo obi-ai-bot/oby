@@ -835,12 +835,6 @@ struct ConnectorsSettingsView: View {
     @State private var problems: [String: String] = [:]
     /// gh's sign-in under way on the runner, shown in its sheet until it signs in or is cancelled.
     @State private var gitHubSignIn: GitHubSignIn?
-    /// Connect… on Slack asks for the Slack app's two tokens in these fields, cleared once sent.
-    @State private var askingSlack = false
-    @State private var userToken = ""
-    @State private var botToken = ""
-    /// The app-level token, for live channels (Socket Mode): optional.
-    @State private var appToken = ""
     /// Connect… on Sentry asks for its address, the organization and a token, cleared once sent.
     @State private var askingSentry = false
     @State private var sentryURL = SentryStatus.defaultURL
@@ -907,17 +901,6 @@ struct ConnectorsSettingsView: View {
         } message: {
             Text("Its MCP server's address, starting with https://. You sign in on its own page, once, for every agent on \(feed.name).")
         }
-        .alert("Connect Slack", isPresented: $askingSlack) {
-            SecureField("User OAuth Token", text: $userToken, prompt: Text("xoxp-…"))
-            SecureField("Bot User OAuth Token", text: $botToken, prompt: Text("xoxb-…"))
-            SecureField("App-Level Token (optional)", text: $appToken, prompt: Text("xapp-…"))
-            Button("Connect") { connectSlack(row: "slack") }
-                .disabled(!SlackStatus.isToken(userToken, "xoxp-") || !SlackStatus.isToken(botToken, "xoxb-")
-                          || (!appToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !SlackStatus.isToken(appToken, "xapp-")))
-            Button("Cancel", role: .cancel) { (userToken, botToken, appToken) = ("", "", "") }
-        } message: {
-            Text("Your workspace's Oby app's tokens, from api.slack.com/apps › OAuth & Permissions › OAuth Tokens, and its app-level token (Basic Information) for live channels. obid checks them with Slack and keeps them in its vault; this Mac doesn't keep them.")
-        }
         .alert("Connect Sentry", isPresented: $askingSentry) {
             TextField("Sentry's address", text: $sentryURL, prompt: Text(SentryStatus.defaultURL))
             TextField("Organization", text: $sentryOrg, prompt: Text("your-org"))
@@ -970,7 +953,7 @@ struct ConnectorsSettingsView: View {
         let runner = (feed.runner == nil && !staged) || feed.connection != .live ? nil : Connectors.RunnerState(
             name: feed.name, local: feed.local, accounts: feed.accounts, github: feed.github, checks: feed.checkRuns,
             gitHubLogin: lists.gitHub, plugins: lists.plugins, connections: lists.connections, tetrix: feed.tetrix,
-            slack: feed.slack, watch: feed.watch, sentry: lists.sentry, hooks: lists.hooks)
+            sentry: lists.sentry, hooks: lists.hooks)
         return Connectors.shown(Connectors.list(accounts: runner?.accounts, runner: runner), everything: everything)
     }
 
@@ -1038,17 +1021,11 @@ struct ConnectorsSettingsView: View {
         #if DEBUG
         if let staged = feed.stagedLists {
             lists = staged
-            if let slack = staged.slack { feed.slack = slack }
-            if let watch = staged.watch { feed.watch = watch }
             return
         }
         #endif
         defer {
             if let status = lists.tetrix { feed.tetrix = status }
-            // Read here, then kept by their events (obid signing out after a refused token); a read
-            // that failed keeps what the events said.
-            if let slack = lists.slack { feed.slack = slack }
-            if let watch = lists.watch { feed.watch = watch }
         }
         guard feed.connection == .live, let runner = feed.runner else {
             lists = Connectors.Lists()
@@ -1060,7 +1037,7 @@ struct ConnectorsSettingsView: View {
     /// A button: what takes something away asks first; signing in or out opens Terminal.
     private func perform(_ action: Connector.Action, _ connector: Connector) {
         switch action {
-        case .disablePlugin, .disconnect, .disconnectTetrix, .disconnectSlack, .disconnectSentry: confirming = connector
+        case .disablePlugin, .disconnect, .disconnectTetrix, .disconnectSentry: confirming = connector
         case .connectSentry:
             (sentryURL, sentryOrg, sentryToken) = (lists.sentry?.url ?? SentryStatus.defaultURL, lists.sentry?.org ?? "", "")
             askingSentry = true
@@ -1070,33 +1047,6 @@ struct ConnectorsSettingsView: View {
         case .connectAlerts(let source):
             alerting = AlertingTool.all.first { $0.source == source }
         case .disconnectAlerts: confirming = connector
-        case .connectSlack:
-            (userToken, botToken, appToken) = ("", "", "")
-            askingSlack = true
-        case .setWatchLive(let live):
-            guard feed.local, let runner = feed.runner else { return }
-            Task {
-                busy = true
-                defer { busy = false }
-                do {
-                    feed.watch = try await runner.setWatchLive(live)
-                    problems[connector.id] = nil
-                } catch {
-                    problems[connector.id] = error.localizedDescription
-                }
-            }
-        case .setTellAuthors(let on):
-            guard feed.local, let runner = feed.runner else { return }
-            Task {
-                busy = true
-                defer { busy = false }
-                do {
-                    feed.slack = try await runner.setSlackTellAuthors(on)
-                    problems[connector.id] = nil
-                } catch {
-                    problems[connector.id] = error.localizedDescription
-                }
-            }
         case .accounts: openSettings(.accounts)
         case .connectTetrix(let server): signInToTetrix(server, row: connector.id)
         case .connectOtherTetrix:
@@ -1134,7 +1084,6 @@ struct ConnectorsSettingsView: View {
                 }
                 if let status = try? await runner.tetrix() { feed.tetrix = status }
             }
-        case .disconnectSlack: disconnectSlack(row: connector.id)
         case .disconnectAlerts(let id):
             guard feed.local, let runner = feed.runner, let remote else { return }
             Task {
@@ -1189,8 +1138,6 @@ struct ConnectorsSettingsView: View {
             return "\(feed.name) forgets it and its agents can't reach it any more. Its secret stays in the runner's vault."
         case .disconnectTetrix:
             return "\(feed.local ? "obid" : feed.name) forgets its Tetrix login, and agents on every account stop getting Tetrix's tools."
-        case .disconnectSlack:
-            return "obid forgets its Slack login, and the watcher reads only GitHub until you connect Slack again."
         case .disconnectSentry:
             return "obid forgets its Sentry token, and Sentry's errors stop reaching your inbox until you connect it again."
         case .disconnectAlerts:
@@ -1297,26 +1244,6 @@ struct ConnectorsSettingsView: View {
         }
     }
 
-    /// Gives obid the two tokens typed, then forgets them here: obid checks them with Slack and says
-    /// why when it doesn't take them.
-    private func connectSlack(row: String) {
-        let (user, bot) = (userToken.trimmingCharacters(in: .whitespacesAndNewlines), botToken.trimmingCharacters(in: .whitespacesAndNewlines))
-        let app = appToken.trimmingCharacters(in: .whitespacesAndNewlines)
-        (userToken, botToken, appToken) = ("", "", "")
-        guard feed.local, let runner = feed.runner else { return }
-        Task {
-            busy = true
-            defer { busy = false }
-            do {
-                feed.slack = try await runner.connectSlack(user: user, bot: bot, app: app.isEmpty ? nil : app)
-                problems[row] = nil
-            } catch {
-                problems[row] = error.localizedDescription
-            }
-            if let watch = try? await runner.watch() { feed.watch = watch }
-        }
-    }
-
     /// Gives obid Sentry's address, the organization and the token typed, then forgets the token
     /// here: obid checks it only reads and says why when it doesn't take it. Connected, Projects… opens.
     private func connectSentry(row: String) {
@@ -1383,23 +1310,6 @@ struct ConnectorsSettingsView: View {
             } catch {
                 problems["sentry-projects"] = error.localizedDescription
             }
-        }
-    }
-
-    /// obid forgets the Slack tokens: the row says Not connected at its 204, then as obid says.
-    private func disconnectSlack(row: String) {
-        guard feed.local, let runner = feed.runner else { return }
-        Task {
-            busy = true
-            defer { busy = false }
-            do {
-                try await runner.disconnectSlack()
-                feed.slack?.connected = false
-                problems[row] = nil
-            } catch {
-                problems[row] = error.localizedDescription
-            }
-            if let status = try? await runner.slack() { feed.slack = status }
         }
     }
 

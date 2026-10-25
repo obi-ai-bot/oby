@@ -69,13 +69,10 @@ final class RunnerFeed {
     /// obid's Tetrix, held once for every agent: read on connecting, then kept by its `tetrix`
     /// event and by Settings › Connectors' own reads; nil from a runner that doesn't hold one.
     var tetrix: TetrixStatus?
-    /// obid's Slack and its watcher (Settings › Connectors), read there and kept by their events.
-    var slack: SlackStatus?
     /// obid's Sentry as its last `sentry` event said (Settings › Connectors keeps the repositories).
     var sentry: SentryStatus?
-    var watch: WatchStatus?
-    /// The watcher's and the channel listener's items waiting in the inbox (Engine's inbox doesn't
-    /// know their kinds), oldest first.
+    /// The owner's reviews ready to post (`listen` items), and older watcher items, waiting in the
+    /// inbox (Engine's inbox doesn't know their kinds), oldest first.
     private(set) var notices: [WatchNotice] = []
     /// What each job carries that Engine's Job doesn't read yet (its mode, the permission it waits
     /// on, its question's recommended option and plan), by job id.
@@ -381,8 +378,6 @@ final class RunnerFeed {
         accounts = []
         availableLogins = []
         tetrix = nil
-        slack = nil
-        watch = nil
         models = nil
         accountFailover = nil
         extras = [:]
@@ -528,9 +523,8 @@ final class RunnerFeed {
                     case .check(let check): if check.state == .queued { checks.look(runner) }
                     case .tetrix(let status): tetrix = status
                     case .watchNotice(let notice): take(notice)
-                    case .slack(let status): slack = status
+                    case .slack, .watch: break  // Slack and its watcher are cut (docs/trim.md)
                     case .sentry(let status): sentry = status
-                    case .watch(let status): watch = status
                     case .cleanup(let measured): cleanup = measured
                     // obid names each turn's, step's and word's conversation: the window shows one (#493).
                     case .turn(let turn, let extras):

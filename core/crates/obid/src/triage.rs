@@ -410,7 +410,7 @@ where
     let nonce = crate::brain::briefing::nonce();
     let described: Vec<String> = items.iter().map(|i| described(i, &nonce)).collect();
     let mut out = vec![NEEDS_YOU; items.len()];
-    let asked = match crate::watch::scan_each(&described, scratch).await {
+    let asked = match crate::scan::scan_each(&described, scratch).await {
         Err(why) => {
             tracing::warn!("triage: nothing sent, the secret scan couldn't run ({why})");
             false

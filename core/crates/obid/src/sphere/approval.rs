@@ -165,7 +165,7 @@ pub fn as_reviewed(
 }
 
 /// Posts an approving review of `sha` on pull request `number` of `repo` with `gh` as the owner
-/// (crate::listen::create_review, pinned to `sha` by `commit_id`): only while the pull request is
+/// (crate::review::create_review, pinned to `sha` by `commit_id`): only while the pull request is
 /// still the change reviewed ([`as_reviewed`], into `base`), and when the owner's login can push to
 /// `repo` (an approval without that wouldn't count). The words pass the secret scan first and are
 /// written in `scratch`. `still` says, right before GitHub is asked, whether the approval may still
@@ -218,7 +218,7 @@ pub async fn post(
             "the request expired, or this Oby left its Obysphere, before GitHub was asked".into(),
         );
     }
-    let text = crate::listen::create_review(gh, None, repo, number, &file, "APPROVE", sha)
+    let text = crate::review::create_review(gh, None, repo, number, &file, "APPROVE", sha)
         .await
         .map_err(|(_, why)| why)?;
     let posted: Value = serde_json::from_str(&text).unwrap_or_default();

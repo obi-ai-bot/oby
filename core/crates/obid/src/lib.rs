@@ -36,7 +36,6 @@ pub mod hooks;
 pub mod job;
 pub mod jobs;
 pub mod limits;
-pub mod listen;
 pub mod logs;
 pub mod memory;
 pub mod merge;
@@ -59,7 +58,6 @@ pub mod scan;
 pub mod secrets;
 pub mod sentry;
 pub mod settings;
-pub mod slack;
 pub mod sphere;
 pub mod store;
 pub mod teammates;
@@ -70,7 +68,6 @@ pub mod triage;
 pub mod tunnel;
 pub mod usage;
 pub mod vault;
-pub mod watch;
 pub mod web;
 
 use std::future::Future;
@@ -382,12 +379,6 @@ pub async fn serve(
     let github =
         github_work::Feed::open(config.clone(), jobs.clone(), link.clone(), events.clone());
     let pushes = push::Push::open(&config.home, &config.push_relay);
-    let slack = slack::Slack::open(
-        &config.home,
-        vault::shared().expect("the vault is installed first"),
-        events.clone(),
-    );
-    jobs.use_slack(slack.clone());
     let sentry = sentry::Sentry::open(
         &config.home,
         vault::shared().expect("the vault is installed first"),
@@ -399,8 +390,6 @@ pub async fn serve(
         vault::shared().expect("the vault is installed first"),
         events.clone(),
     );
-    let watch = watch::Watch::open(&config.home, events.clone());
-    let listen = listen::Listen::open(&config.home, events.clone());
     let tunnel = tunnel::Tunnel::open(
         &config.home,
         vault::shared().expect("the vault is installed first"),
@@ -431,11 +420,8 @@ pub async fn serve(
         tetrix,
         pages: web::Sessions::default(),
         github_work: github.clone(),
-        slack,
         sentry,
         hooks,
-        watch,
-        listen,
         push: pushes,
         stopping: stopping_rx.clone(),
         tunnel: tunnel.clone(),
@@ -525,10 +511,6 @@ pub async fn serve(
     routines::spawn(shared.clone());
     // Sentry's followed projects, every 5 minutes (crate::sentry).
     sentry::spawn(shared.clone());
-    // The watcher, every 15 minutes on weekdays (crate::watch).
-    watch::spawn(shared.clone());
-    // The Slack channels the owner picked, live and caught up every 15 minutes (crate::listen).
-    listen::spawn(shared.clone());
     // Job, check and inbox events go to the brain first (#590).
     brain::orchestrator::spawn(shared.clone());
     // Outside inbox items no rule sorts go to the quick model, once (crate::triage).

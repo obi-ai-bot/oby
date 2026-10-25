@@ -463,7 +463,7 @@ struct WindowScreens {
     @Test(arguments: ["connectors-ready", "connectors-on", "accounts", "task"])
     func tetrix(_ screen: String) async throws {
         let suite = try #require(UserDefaults(suiteName: "oby-screens-\(UUID().uuidString)"))
-        // The launch build hides Tetrix (`Launch`).
+        // Tetrix's page with everything on (`Launch`), for its other rows.
         suite.set(true, forKey: Launch.everythingKey)
         suite.set(true, forKey: "ObySidebarOpen")
         suite.set(Double(Tokens.sidebar), forKey: "ObySidebarWidth")
@@ -508,7 +508,7 @@ struct WindowScreens {
     /// connected. Made up, no runner asked.
     @Test func connectors() async throws {
         let suite = try #require(UserDefaults(suiteName: "oby-screens-\(UUID().uuidString)"))
-        // Every row, as the launch build hides all but GitHub and Slack (`Launch`).
+        // Every row, as the launch build hides all but GitHub and Tetrix (`Launch`).
         suite.set(true, forKey: Launch.everythingKey)
         suite.set(true, forKey: "ObySidebarOpen")
         suite.set(Double(Tokens.sidebar), forKey: "ObySidebarWidth")
