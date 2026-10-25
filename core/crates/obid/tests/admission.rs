@@ -114,26 +114,32 @@ fn a_job_waits_for_memory_and_starts_once_there_is_room() {
 
 /// Oldest first: a big job that waits for memory holds back the younger ones here, even one small
 /// enough to fit, until it starts. Research jobs in the fixture measured 100 MiB (their agents and
-/// their checks), a fix none yet (1.5 GiB): with 1 GiB spare, a research job fits next to another,
-/// a fix doesn't.
+/// their checks), fixes 3 GiB: with 1 GiB spare, a research job fits next to another, a fix
+/// doesn't.
 #[test]
 fn younger_jobs_wait_behind_one_waiting_for_memory() {
     let now = obi_protocol::time::now();
+    let measured = |n: i64, kind: &str, agent: u64| {
+        let mut job = obid::job::Job::new(
+            format!("seed-{kind}-{n}"),
+            "obi-e2e/fixture-app".into(),
+            kind.into(),
+            "Look around".into(),
+            "claude".into(),
+            "stub".into(),
+        );
+        job.status = obid::job::Status::Done;
+        job.finished = Some(now - 600 + n);
+        job.agent_peak_rss = Some(agent);
+        job.check_peak_rss = Some(100 * 1024 * 1024);
+        job
+    };
     let seeded: Vec<obid::job::Job> = (0..3)
-        .map(|n| {
-            let mut job = obid::job::Job::new(
-                format!("seed{n}"),
-                "obi-e2e/fixture-app".into(),
-                "research".into(),
-                "Look around".into(),
-                "claude".into(),
-                "stub".into(),
-            );
-            job.status = obid::job::Status::Done;
-            job.finished = Some(now - 600 + n);
-            job.agent_peak_rss = Some(100 * 1024 * 1024);
-            job.check_peak_rss = Some(100 * 1024 * 1024);
-            job
+        .flat_map(|n| {
+            [
+                measured(n, "research", 100 * 1024 * 1024),
+                measured(n, "fix", 3 * GIB),
+            ]
         })
         .collect();
     let (_folder, obid) = on_a_mac_with("oldest-first", 3 * GIB, &seeded);
@@ -156,7 +162,7 @@ fn younger_jobs_wait_behind_one_waiting_for_memory() {
             .map(|w| w["budget"].clone())
     };
     assert_eq!(waits.as_array().unwrap().len(), 2, "{waits}");
-    assert_eq!(budget_of(&big), Some(json!(1536 * 1024 * 1024)));
+    assert_eq!(budget_of(&big), Some(json!(3 * GIB)));
     assert_eq!(budget_of(&behind), Some(json!(100 * 1024 * 1024)));
 
     // The big one starts once it's alone; the small one behind it now waits for room.

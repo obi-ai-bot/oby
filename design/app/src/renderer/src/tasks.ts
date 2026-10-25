@@ -1,6 +1,6 @@
 import { useSyncExternalStore } from 'react';
 import { BRANDS, type Brand } from './brands';
-import { AGENTS, ARCHIVE, GITHUB_WORK, JOBS, hasAttachments, type Archived, type Attachments, type GitHubItem, type Job, type Message } from './mock';
+import { AGENTS, ARCHIVE, GITHUB_WORK, JOBS, MEMORY_WAIT, hasAttachments, type Archived, type Attachments, type GitHubItem, type Job, type Message } from './mock';
 import { streamWords } from './stream';
 
 // Tasks are Oby's jobs (mock.ts) as Home shows them. Each belongs to a kind of
@@ -181,9 +181,10 @@ const rank = (t: Task) => (t.fresh ? 0 : t.status === 'needs' ? 1 : t.job.status
 export const tasksWith = (status: Status) => onHome().filter((t) => t.status === status).sort((a, b) => rank(a) - rank(b));
 export const tasksOf = (type: string) =>
   onHome().filter((t) => t.type === type).sort((a, b) => rank(a) - rank(b));
-// queued until the Mac has room for it (obid's admission by memory): its step says so, and Home
-// counts it apart from what runs
-export const waitsForMemory = (t: Task) => t.job.status === 'queued' && t.job.step === 'Waiting for memory';
+// queued until the Mac has room for it (obid's admission by memory, MEMORY_WAIT as Swift's
+// Waiting.memory): Home counts it apart from what runs
+export const waitsForMemory = (t: Task) =>
+  t.job.status === 'queued' && t.job.waiting?.kind === MEMORY_WAIT.kind && t.job.waiting?.text === MEMORY_WAIT.text;
 export const memoryCount = () => onHome().filter(waitsForMemory).length;
 export const runningCount = () => onHome().filter((t) => t.status === 'running' && !waitsForMemory(t)).length;
 export const countOf = (status: Status, type?: string) =>
