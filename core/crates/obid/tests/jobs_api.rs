@@ -2197,6 +2197,21 @@ fn a_failure_the_task_asked_for_ends_the_rounds() {
     );
 }
 
+/// The prompts the stand-in agent got in the job's worktree (`KEEP PROMPTS`), oldest first.
+fn prompts(obid: &Obid, id: &str) -> Vec<String> {
+    let log = obid
+        .home
+        .join("worktrees")
+        .join(id)
+        .join(".obi/prompts.log");
+    std::fs::read_to_string(&log)
+        .unwrap_or_default()
+        .split("<<<end of prompt>>>\n")
+        .filter(|p| !p.is_empty())
+        .map(str::to_owned)
+        .collect()
+}
+
 /// Words for a job that hasn't started are kept for its first prompt, its step still saying what
 /// it waits for; the owner's words while its check runs are its next turn (#930). Never "Tell it
 /// again in a moment".
@@ -2251,21 +2266,6 @@ fn words_wait_for_a_job_that_isnt_at_work() {
     let asked = prompts(&obid, &checked);
     assert_eq!(asked.len(), 2, "{asked:?}");
     assert_eq!(asked[1], "One more thing: list the tests too.\n");
-}
-
-/// The prompts the stand-in agent got in the job's worktree (`KEEP PROMPTS`), oldest first.
-fn prompts(obid: &Obid, id: &str) -> Vec<String> {
-    let log = obid
-        .home
-        .join("worktrees")
-        .join(id)
-        .join(".obi/prompts.log");
-    std::fs::read_to_string(&log)
-        .unwrap_or_default()
-        .split("<<<end of prompt>>>\n")
-        .filter(|p| !p.is_empty())
-        .map(str::to_owned)
-        .collect()
 }
 
 /// #958: a fix, build or test with a check gets 3 rounds when nobody named a number, however it
