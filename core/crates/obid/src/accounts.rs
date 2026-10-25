@@ -154,6 +154,12 @@ impl Live {
         self.0.write().unwrap_or_else(|e| e.into_inner())
     }
 
+    /// Whether `dir` is the folder of an account the API added (`home/accounts/<id>`, obid's own):
+    /// one the Swift engine never runs on, so obid keeps its Claude Code login fresh (#877).
+    pub fn made(&self, dir: &Path) -> bool {
+        self.read().saved.added.iter().any(|a| a.config_dir == dir)
+    }
+
     /// Every account's folder no box may read (#655): the accounts' now
     /// ([`crate::jobs::account_folders`]), and those of the accounts removed, which may still hold
     /// a login.
@@ -1128,7 +1134,7 @@ pub async fn sign_in(
 /// Whether what a tool's login writes in the account's folder `dir` is the person's own: the
 /// folder, and the login file, its locks and the folders on the way to it, where they're there,
 /// each a real file or folder (not a link) owned by the person. Else why not.
-fn login_paths_safe(tool: Tool, dir: &Path) -> Result<(), String> {
+pub(crate) fn login_paths_safe(tool: Tool, dir: &Path) -> Result<(), String> {
     use std::os::unix::fs::MetadataExt;
     let uid = nix::unistd::getuid().as_raw();
     let check = |path: &Path, shown: &str| match std::fs::symlink_metadata(path) {
@@ -1651,6 +1657,21 @@ mod tests {
             .iter()
             .flat_map(|a| a.accounts.iter().map(|a| a.id.clone()))
             .collect()
+    }
+
+    /// Only a folder of an account the API added is obid's own, kept fresh (#877): never one the
+    /// configuration names, which the Swift engine may run on.
+    #[test]
+    fn only_the_folders_obid_added_are_made() {
+        let live = Live::new(agents(Some(vec![account(
+            "work",
+            "Work",
+            Some("/srv/work"),
+        )])));
+        live.write().saved.added.push(added("a1b2c3d4", "claude"));
+        assert!(live.made(Path::new("/srv/obid/accounts/a1b2c3d4")));
+        assert!(!live.made(Path::new("/srv/work")));
+        assert!(!live.made(Path::new("/srv/obid/accounts/a1b2c3d5")));
     }
 
     #[test]

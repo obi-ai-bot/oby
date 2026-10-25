@@ -871,3 +871,78 @@ fn a_new_sign_in_forgets_how_the_account_paid() {
     });
     assert_eq!(kept[&id]["fiveHour"], 0.3);
 }
+
+/// A Claude Code account obid added stays signed in (#877): with its token near its end, the
+/// Mac's own Claude Code refreshes the account's own Keychain item before a job's run (the
+/// stand-in `security` finds the items a test puts in `$TMPDIR/obid-test-keychain`), and the job
+/// runs on the renewed login, in a copy of its own.
+#[cfg(target_os = "macos")]
+#[test]
+fn an_added_claude_accounts_login_is_kept_fresh() {
+    use std::os::unix::fs::PermissionsExt;
+    let folder = Folder::new("added-fresh");
+    let remote = fixture(&folder.0.join("fixture"));
+    // A stand-in claude its refresh can run with only the system's PATH (node by its path), outside
+    // the person's home a job's box hides.
+    let bin = folder.0.join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    for name in ["fake-claude", "fake-login.mjs"] {
+        std::fs::copy(agent(name), bin.join(name)).unwrap();
+    }
+    let node = std::process::Command::new("sh")
+        .args(["-c", "command -v node"])
+        .output()
+        .unwrap();
+    let node = String::from_utf8(node.stdout).unwrap();
+    let claude = bin.join("claude");
+    std::fs::write(
+        &claude,
+        format!(
+            "#!/bin/sh\nexec '{}' '{}' \"$@\"\n",
+            node.trim(),
+            bin.join("fake-claude").display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&claude, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let mut config = config(&folder.0, &remote, &claude);
+    config["claudeKeychain"] = json!(true);
+    let obid = start(&folder.0, &config, None);
+    let added = add(&obid, json!({"agent": "claude", "name": "Second"}));
+    assert_eq!(added.status, 201, "{}", added.text);
+    let id = added.body["id"].as_str().unwrap().to_owned();
+    let dir = obid.home.join("accounts").join(&id);
+    let digest = obi_protocol::keys::sha256(dir.as_os_str().as_encoded_bytes());
+    let item = folder.0.join(format!(
+        "tmp/obid-test-keychain/Claude Code-credentials-{}",
+        &hex::encode(digest)[..8]
+    ));
+    std::fs::create_dir_all(item.parent().unwrap()).unwrap();
+    let ends = (obi_protocol::time::now() as u64 + 60) * 1000;
+    let login =
+        json!({"claudeAiOauth": {"accessToken": "tok-old-plain-test-login", "expiresAt": ends}});
+    std::fs::write(&item, login.to_string()).unwrap();
+    assert_eq!(account(&obid, &id).unwrap()["signedIn"], true);
+
+    let job = call(
+        &obid,
+        "POST",
+        "/v1/jobs",
+        Some(
+            &json!({"job": {"repo": "obi-e2e/fixture-app", "kind": "research",
+                     "task": "TOKEN HOLDS: renewed", "account": "Second"}}),
+        ),
+    );
+    assert_eq!(job.status, 201, "{}", job.text);
+    let job_id = job.body["id"].as_str().unwrap().to_owned();
+    let ended = within(60, "the job ended", || {
+        let job = call(&obid, "GET", &format!("/v1/jobs/{job_id}"), None).body;
+        (job["status"] != "queued" && job["status"] != "running").then_some(job)
+    });
+    assert_eq!(ended["status"], "done", "{ended}");
+    assert_eq!(ended["summary"], "holds=true", "{ended}");
+    assert!(
+        std::fs::read_to_string(&item).unwrap().contains("renewed"),
+        "the Mac's own Claude Code refreshed the account's item"
+    );
+}
