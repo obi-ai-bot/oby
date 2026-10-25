@@ -1133,6 +1133,8 @@ fn uninstalling_ends_whatever_of_obids_is_still_running() {
             .env_clear()
             .env("HOME", rig.user_home())
             .env("PATH", rig.tools())
+            // Room for every job, whatever the Mac running the test holds (crate::meter).
+            .env("OBID_MEMORY_AVAILABLE", "1099511627776")
             // Never the person's real Keychain (support::start).
             .env(
                 "OBID_SECURITY_BIN",

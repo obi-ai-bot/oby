@@ -242,7 +242,7 @@ async function main() {
       guestModelApi: `http://127.0.0.1:${modelPort}`,
     };
     writeFileSync(join(dir, "config.json"), JSON.stringify(config, null, 2));
-    start(`obid-${who}`, OBID, ["serve", "--config", join(dir, "config.json")], { env: { HOME: join(dir, "env-home"), TMPDIR: join(dir, "tmp"), PATH: process.env.PATH } });
+    start(`obid-${who}`, OBID, ["serve", "--config", join(dir, "config.json")], { env: { HOME: join(dir, "env-home"), TMPDIR: join(dir, "tmp"), PATH: process.env.PATH, OBID_MEMORY_AVAILABLE: "1099511627776" /* room for every job, whatever this Mac holds */ } });
     const api = (path, opts = {}) => call(`http://127.0.0.1:${port}/v1${path}`, { ...opts, token });
     await within(30, `${who}'s obid answering`, async () => (await api("/status")).status === 200);
     const made = expect(await api("/obid/sphere/key", { method: "POST" }), 200, "the key");

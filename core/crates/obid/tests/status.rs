@@ -85,6 +85,8 @@ fn command(folder: &Path, config_path: &Path) -> Command {
         .env("PATH", std::env::var_os("PATH").unwrap_or_default())
         .env("HOME", folder.join("env-home"))
         .env("TMPDIR", folder.join("tmp"))
+        // Room for every job, whatever the Mac running the test holds (crate::meter).
+        .env("OBID_MEMORY_AVAILABLE", "1099511627776")
         .env(
             "OBID_SECURITY_BIN",
             Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/agents/fake-security"),
@@ -307,6 +309,7 @@ fn status_answers_with_engine_obid() {
     assert!(total > 0 && memory["available"].as_u64().unwrap() <= total);
     assert!(["normal", "warn", "critical"].contains(&memory["pressure"].as_str().unwrap()));
     assert_eq!(memory["jobs"], json!([]));
+    assert_eq!(memory["waiting"], json!([]));
     let worktrees = folder.0.join("home").join("worktrees");
     assert_eq!(
         measured_status(&obid, &host).body["cleanup"],

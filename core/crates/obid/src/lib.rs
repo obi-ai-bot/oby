@@ -463,8 +463,17 @@ pub async fn serve(
     push::spawn(shared.clone());
     // The worktrees' cleanup pass, in the background: never before the first answer.
     tokio::spawn(keep_worktrees_clean(shared.clone(), cancelled.clone()));
-    // The machine's memory and each running job's, while jobs run (crate::meter).
+    // The machine's memory and each running job's, while jobs run or wait for it (crate::meter).
+    // A job that waits for memory first gets what conversations' waiting Claude Codes hold.
     tokio::spawn(jobs.clone().meter(stopping_rx.clone()));
+    {
+        let shared = Arc::downgrade(&shared);
+        jobs.on_short_of_memory(Box::new(move || {
+            if let Some(shared) = shared.upgrade() {
+                shared.harness.end_all_warm();
+            }
+        }));
+    }
     // A tool reported an account's usage: every app hears the accounts as they are now.
     {
         let shared = shared.clone();

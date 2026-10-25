@@ -632,6 +632,7 @@ pub struct MemoryJson {
     #[serde(flatten)]
     pub machine: crate::meter::Machine,
     pub jobs: Vec<crate::jobs::JobMemory>,
+    pub waiting: Vec<crate::jobs::MemoryWait>,
 }
 
 #[derive(Serialize)]
@@ -849,7 +850,11 @@ async fn status(State(shared): State<Arc<Shared>>) -> Result<axum::Json<Status>,
             .jobs
             .memory()
             .await
-            .map(|(machine, jobs)| MemoryJson { machine, jobs }),
+            .map(|(machine, jobs, waiting)| MemoryJson {
+                machine,
+                jobs,
+                waiting,
+            }),
     }))
 }
 

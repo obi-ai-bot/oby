@@ -143,6 +143,8 @@ fn start_with(folder: &Path, config: &Value, path_first: Option<&Path>) -> Obid 
         .env("PATH", search)
         .env("HOME", folder.join("env-home"))
         .env("TMPDIR", folder.join("tmp"))
+        // Room for every job a test starts, whatever the Mac running it holds (crate::meter).
+        .env("OBID_MEMORY_AVAILABLE", "1099511627776")
         // Never the person's real Keychain (support::start): obid asks it at start when
         // claudeKeychain is left out.
         .env(

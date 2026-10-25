@@ -236,6 +236,8 @@ pub fn start_with(
         .env("HOME", folder.join("env-home"))
         .env("TMPDIR", folder.join("tmp"))
         .env("OBID_LOG", "info")
+        // Room for every job a test starts, whatever the Mac running it holds (crate::meter).
+        .env("OBID_MEMORY_AVAILABLE", "1099511627776")
         // Every refresh reads (crate::github_work): tests refresh more often than 15 seconds.
         .env("OBID_GITHUB_REFRESH_SECONDS", "0")
         // Never the person's real Keychain: a stand-in `security` that finds nothing and says

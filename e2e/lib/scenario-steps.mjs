@@ -321,6 +321,8 @@ async function step2(ctx) {
         HOME: live ? homedir() : join(o.dir, "env-home"),
         TMPDIR: join(o.dir, "tmp"),
         PATH: process.env.PATH,
+        // Room for every job, whatever the Mac running the scenario holds (obid's crate::meter).
+        OBID_MEMORY_AVAILABLE: "1099511627776",
       },
       log: join(o.dir, "obid.log"),
     });
