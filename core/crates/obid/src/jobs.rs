@@ -4483,7 +4483,7 @@ impl Jobs {
                     "obid can't find the home Cursor's own login is in.".to_owned()
                 })?;
                 copy_cursor(
-                    &home.join(cursor_login_file()),
+                    own_cursor_login(&home),
                     &home.join(".cursor/cli-config.json"),
                     &home,
                     &login,
@@ -8389,23 +8389,25 @@ fn login_file(
 }
 
 /// Whether `account`'s login is on this Mac: its [`login_file`] (a regular file only, as the
-/// copies take it), or Claude Code's item in the macOS Keychain, which obid copies in its place
-/// ([`keychain_login`]). Whether a run can use it is [`signed_in`].
+/// copies take it), or Claude Code's item in the macOS Keychain, or Cursor's own login there, which
+/// obid copies in its place ([`keychain_login`], [`cursor_keychain_login`]). Whether a run can use it
+/// is [`signed_in`].
 pub(crate) fn has_login(tool: Tool, account: &crate::config::Account, home: Option<&Path>) -> bool {
-    login_file(tool, account, home)
-        .is_some_and(|path| std::fs::symlink_metadata(path).is_ok_and(|m| m.is_file()))
+    login_file(tool, account, home).is_some_and(|path| is_regular_file(&path))
         || (tool == Tool::Claude && keychain_has(account.config_dir.as_deref()))
+        || (tool == Tool::Cursor && account.config_dir.is_none() && cursor_keychain_has())
 }
 
 /// Whether `account` has a login a boxed run can use (#626): [`has_login`], and for Codex an access
 /// token that doesn't end within 5 minutes ([`codex_copy_ready`]: a copy can't refresh it), for
-/// Cursor an access token or API key in its file (all a run's copy keeps). Claude Code's is only
-/// looked for.
+/// Cursor an access token or API key in its file, or its own login in the Keychain (all a run's copy
+/// keeps). Claude Code's is only looked for.
 pub(crate) fn signed_in(tool: Tool, account: &crate::config::Account, home: Option<&Path>) -> bool {
     has_login(tool, account, home)
         && match (tool, login_file(tool, account, home)) {
             (Tool::Codex, Some(file)) => codex_copy_ready(&file, &account.name).is_ok(),
-            (Tool::Cursor, Some(file)) => cursor_has_token(&file),
+            // With no file, the login is Cursor's own Keychain item's, which holds a token.
+            (Tool::Cursor, Some(file)) => cursor_has_token(&file) || !is_regular_file(&file),
             _ => true,
         }
 }
@@ -8585,6 +8587,110 @@ fn without_refresh(bytes: &[u8]) -> Option<Vec<u8>> {
         }
     }
     serde_json::to_vec(&json!({ "claudeAiOauth": kept })).ok()
+}
+
+/// Whether obid copies Cursor's own login from the macOS Keychain (`cursorKeychain` in the
+/// configuration, or obid's own choice when it's left out, set when obid starts), and whether obid
+/// chose it itself.
+static CURSOR_KEYCHAIN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static CURSOR_KEYCHAIN_AUTO: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Whether the Cursor Keychain copy is on.
+pub fn cursor_keychain_on() -> bool {
+    CURSOR_KEYCHAIN.load(Ordering::Relaxed)
+}
+
+/// Whether obid chose the Cursor Keychain copy's setting itself (`GET /v1/status`, `cursorKeychain`).
+pub fn cursor_keychain_auto() -> bool {
+    CURSOR_KEYCHAIN_AUTO.load(Ordering::Relaxed)
+}
+
+/// Turns the Cursor Keychain copy on or off (crate::serve), and says whether obid chose it.
+pub fn use_cursor_keychain(on: bool, auto: bool) {
+    CURSOR_KEYCHAIN.store(on, Ordering::Relaxed);
+    CURSOR_KEYCHAIN_AUTO.store(auto, Ordering::Relaxed);
+}
+
+/// Whether obid turns the Cursor Keychain copy on by itself, with `cursorKeychain` left out, as for
+/// Claude Code ([`keychain_wanted`]): on macOS, when Cursor's own login is in the Keychain (where
+/// cursor-agent keeps it there by default) and no login file ([`cursor_login_file`]) is there. Only
+/// whether an item exists is looked at, never what it holds.
+pub fn cursor_keychain_wanted() -> bool {
+    let file = person_homes()
+        .iter()
+        .any(|home| is_regular_file(&home.join(cursor_login_file())));
+    wanted(cfg!(target_os = "macos"), file, || {
+        CURSOR_ITEMS
+            .iter()
+            .any(|(_, service)| cursor_keychain_item(service, false).is_some())
+    })
+}
+
+/// Cursor's own login in the macOS Keychain, as cursor-agent 2026.10.01 keeps it there with its
+/// credential store left as it is: account `cursor-user`, the access token in `cursor-access-token`
+/// and the API key in `cursor-api-key`, by the login file's keys. Its refresh token
+/// (`cursor-refresh-token`) is never asked for: a refresh inside a box would rotate it away from the
+/// Mac's own cursor-agent (#651).
+const CURSOR_ITEMS: [(&str, &str); 2] = [
+    ("accessToken", "cursor-access-token"),
+    ("apiKey", "cursor-api-key"),
+];
+
+/// `security`'s answer for Cursor's Keychain item `service`: its value with `-w`, else only whether
+/// it's there.
+#[cfg(target_os = "macos")]
+fn cursor_keychain_item(service: &str, value: bool) -> Option<Vec<u8>> {
+    let mut command = std::process::Command::new(security_bin());
+    command
+        .args(["find-generic-password", "-a", "cursor-user", "-s", service])
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    if value {
+        command.arg("-w");
+    }
+    let output = command.output().ok()?;
+    output.status.success().then_some(output.stdout)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn cursor_keychain_item(_service: &str, _value: bool) -> Option<Vec<u8>> {
+    None
+}
+
+/// Whether Cursor's own login is in the Keychain, while the copy is on.
+fn cursor_keychain_has() -> bool {
+    cursor_keychain_on()
+        && CURSOR_ITEMS
+            .iter()
+            .any(|(_, service)| cursor_keychain_item(service, false).is_some())
+}
+
+/// Cursor's own login from the macOS Keychain, while the copy is on: as the login file a run's copy
+/// is made from ([`copy_cursor`]), with only its access token and API key ([`cursor_login_json`]).
+/// None when neither is there.
+fn cursor_keychain_login() -> Option<Vec<u8>> {
+    if !cursor_keychain_on() {
+        return None;
+    }
+    cursor_login_json(|service| cursor_keychain_item(service, true))
+}
+
+/// The login file `{accessToken, apiKey}` from Cursor's Keychain items, as `read` answers each
+/// (`security -w` ends it with a newline); an empty or missing one is left out, and none at all is
+/// no login.
+fn cursor_login_json(read: impl Fn(&str) -> Option<Vec<u8>>) -> Option<Vec<u8>> {
+    let mut login = serde_json::Map::new();
+    for (key, service) in CURSOR_ITEMS {
+        let Some(bytes) = read(service) else { continue };
+        let value = String::from_utf8_lossy(&bytes).trim_end().to_owned();
+        if !value.is_empty() {
+            login.insert(key.into(), value.into());
+        }
+    }
+    (!login.is_empty())
+        .then(|| serde_json::to_vec(&login).ok())
+        .flatten()
 }
 
 /// When the access token in Claude Code's `login` ends (milliseconds since 1970), if it says.
@@ -9377,7 +9483,7 @@ pub(crate) fn copy_account_folder(tool: Tool, account: &Path, login: &Path) -> s
         // the box with whatever tokens they carry (agents have no code-host login).
         Tool::Codex => copy_account_login(tool, account, login),
         Tool::Cursor => copy_cursor(
-            &account.join(cursor_login_file()),
+            read(cursor_login_file()),
             &account.join("cli-config.json"),
             account,
             login,
@@ -9385,12 +9491,28 @@ pub(crate) fn copy_account_folder(tool: Tool, account: &Path, login: &Path) -> s
     }
 }
 
-/// A Cursor job's own folder (`login`, its `HOME`) from the login file `from` and the settings
-/// `settings` (`cli-config.json`), an account's or Cursor's own (`~/.cursor`): the login as only its
-/// access token and API key ([`cursor_without_refresh`]), again before every start; once, the
-/// settings, then obid's over them ([`acp::cursor::rewrite_config`]); never its `mcp.json` (MCP
-/// servers starting inside the box, with their tokens). `account` names the login's secrets.
-fn copy_cursor(from: &Path, settings: &Path, account: &Path, login: &Path) -> std::io::Result<()> {
+/// Cursor's own login in `home`: its login file (a regular file, as it is), else its Keychain
+/// item's ([`cursor_keychain_login`]), where cursor-agent keeps it by default on macOS.
+fn own_cursor_login(home: &Path) -> Option<Vec<u8>> {
+    let file = home.join(cursor_login_file());
+    if is_regular_file(&file) {
+        return std::fs::read(file).ok();
+    }
+    cursor_keychain_login()
+}
+
+/// A Cursor job's own folder (`login`, its `HOME`) from the login file's bytes `from` and the
+/// settings `settings` (`cli-config.json`), an account's or Cursor's own (`~/.cursor`, its login
+/// file or Keychain item, [`own_cursor_login`]): the login as only its access token and API key
+/// ([`cursor_without_refresh`]), again before every start; once, the settings, then obid's over them
+/// ([`acp::cursor::rewrite_config`]); never its `mcp.json` (MCP servers starting inside the box,
+/// with their tokens). `account` names the login's secrets.
+fn copy_cursor(
+    from: Option<Vec<u8>>,
+    settings: &Path,
+    account: &Path,
+    login: &Path,
+) -> std::io::Result<()> {
     not_a_link(login).map_err(std::io::Error::other)?;
     store::make_private_dir(login)?;
     // A regular file, as it is.
@@ -9401,7 +9523,7 @@ fn copy_cursor(from: &Path, settings: &Path, account: &Path, login: &Path) -> st
             .flatten()
     };
     let file = cursor_login_file();
-    if let Some(copy) = read(from).and_then(|bytes| cursor_without_refresh(&bytes, account)) {
+    if let Some(copy) = from.and_then(|bytes| cursor_without_refresh(&bytes, account)) {
         let mut folder = login.to_path_buf();
         for part in Path::new(file)
             .parent()
@@ -11281,6 +11403,43 @@ mod tests {
         assert_eq!(copied, json!({"accessToken": access, "apiKey": null}));
         // Never the account's MCP servers.
         assert!(!login.join("mcp.json").exists());
+        assert!(
+            !crate::secrets::known().redact(&access).contains(&access),
+            "not learned"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Cursor's own login only in the macOS Keychain (cursor-agent's default there): a run's copy
+    /// is its access token and API key, as from a login file, and its refresh token is never asked
+    /// for. Nothing in the Keychain is no login.
+    #[test]
+    fn a_cursor_login_from_the_keychain_is_only_its_access_token_and_api_key() {
+        let access = ["keychain-access-", &"a".repeat(30)].concat();
+        let read = |service: &str| -> Option<Vec<u8>> {
+            assert_ne!(
+                service, "cursor-refresh-token",
+                "the refresh token is never asked for"
+            );
+            (service == "cursor-access-token").then(|| format!("{access}\n").into_bytes())
+        };
+        let bytes = cursor_login_json(read).unwrap();
+        assert_eq!(
+            serde_json::from_slice::<Value>(&bytes).unwrap(),
+            json!({"accessToken": access})
+        );
+        assert_eq!(cursor_login_json(|_| None), None);
+        assert_eq!(cursor_login_json(|_| Some(b"\n".to_vec())), None);
+
+        let root =
+            std::env::temp_dir().join(format!("obid-cursor-keychain-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let login = root.join("login");
+        copy_cursor(Some(bytes), &root.join("cli-config.json"), &root, &login).unwrap();
+        let copied: Value =
+            serde_json::from_slice(&std::fs::read(login.join(cursor_login_file())).unwrap())
+                .unwrap();
+        assert_eq!(copied, json!({"accessToken": access}));
         assert!(
             !crate::secrets::known().redact(&access).contains(&access),
             "not learned"

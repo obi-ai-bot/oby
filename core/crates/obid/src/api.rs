@@ -617,6 +617,8 @@ pub struct Status {
     pub cleanup: Option<CleanupJson>,
     /// Whether obid copies Claude Code's Keychain login, and whether it chose that itself.
     pub claude_keychain: KeychainJson,
+    /// The same for Cursor's own login.
+    pub cursor_keychain: KeychainJson,
     /// The tunnel phones reach this Mac through (crate::tunnel): `{state, detail}`.
     pub tunnel: serde_json::Value,
 }
@@ -826,6 +828,10 @@ async fn status(State(shared): State<Arc<Shared>>) -> Result<axum::Json<Status>,
         claude_keychain: KeychainJson {
             on: crate::jobs::keychain_on(),
             auto: crate::jobs::keychain_auto(),
+        },
+        cursor_keychain: KeychainJson {
+            on: crate::jobs::cursor_keychain_on(),
+            auto: crate::jobs::cursor_keychain_auto(),
         },
         tunnel: shared.tunnel.json(),
     }))

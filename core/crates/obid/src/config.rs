@@ -94,6 +94,10 @@ struct File {
     /// left out, obid decides when it starts (crate::jobs::keychain_wanted).
     #[serde(default)]
     claude_keychain: Option<bool>,
+    /// Whether obid copies Cursor's own login from the macOS Keychain (crate::jobs,
+    /// cursor_keychain_login); left out, obid decides when it starts (crate::jobs::cursor_keychain_wanted).
+    #[serde(default)]
+    cursor_keychain: Option<bool>,
     /// Sharing this Mac (crate::sphere::hosting): where `obi-vm` and the guest image are.
     #[serde(default)]
     vm_helper: Option<PathBuf>,
@@ -267,6 +271,11 @@ pub struct Config {
     /// and then obid turns it on by itself on macOS when Claude Code's default login is only in the
     /// Keychain (crate::jobs::keychain_wanted, the owner's decision of 2026-10-18).
     pub claude_keychain: Option<bool>,
+    /// `cursorKeychain`: obid copies Cursor's own login from the macOS Keychain, where cursor-agent
+    /// keeps it by default, into a boxed run's place for it (only its access token and API key). As
+    /// `claude_keychain`: `None` when it's left out, and then obid turns it on by itself on macOS when
+    /// Cursor's own login is only in the Keychain (crate::jobs::cursor_keychain_wanted).
+    pub cursor_keychain: Option<bool>,
     /// How conversations run.
     pub conversation: Conversation,
     /// `vmHelper` and `vmImage`: `obi-vm` and the guest image's folder, when not the defaults
@@ -629,6 +638,7 @@ impl Config {
             job_token_budget,
             gateway,
             claude_keychain: file.claude_keychain,
+            cursor_keychain: file.cursor_keychain,
             vm_helper: file.vm_helper,
             vm_image: file.vm_image,
             vm_image_url: file.vm_image_url,
@@ -936,6 +946,12 @@ mod tests {
         );
         assert_eq!(
             parse(serde_json::json!({"claudeKeychain": false})),
+            Some(false)
+        );
+        let cursor = |extra| Config::parse(&with(extra)).unwrap().cursor_keychain;
+        assert_eq!(cursor(serde_json::json!({})), None);
+        assert_eq!(
+            cursor(serde_json::json!({"cursorKeychain": false})),
             Some(false)
         );
     }

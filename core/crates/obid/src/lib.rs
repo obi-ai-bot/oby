@@ -254,6 +254,15 @@ pub async fn serve(
         }
         jobs::keep_keychain_logins();
     }
+    // cursorKeychain the same way: left out, on by itself on macOS when Cursor's own login is only
+    // in the Keychain, where cursor-agent keeps it by default.
+    let cursor = config
+        .cursor_keychain
+        .unwrap_or_else(jobs::cursor_keychain_wanted);
+    jobs::use_cursor_keychain(cursor, config.cursor_keychain.is_none());
+    if cursor && config.cursor_keychain.is_none() {
+        tracing::info!("cursorKeychain on by itself: Cursor's login is only in the Keychain");
+    }
     vault::install(&config.home, &config.vault);
     stopwatch.lap("vault");
     // What the accounts API changed, over the configuration's accounts, before anything uses them;

@@ -182,6 +182,37 @@ fn a_fresh_obid_lists_the_logins_already_on_the_mac() {
     assert_eq!(ids(&obid), ["default", "codex", "cursor"]);
 }
 
+/// Cursor's own login only in the macOS Keychain, where cursor-agent keeps it by default there: with
+/// `cursorKeychain` on (set here: left out, obid's choice also looks at the person's real home), a
+/// fresh obid lists the login, signed in, as it lists a login file. It only ever asks for the access
+/// token and API key, never the refresh token, and never logs what it read.
+#[cfg(target_os = "macos")]
+#[test]
+fn a_cursor_login_only_in_the_keychain_is_found() {
+    let folder = Folder::new("accounts-cursor-keychain");
+    let remote = folder.0.join("remote.git");
+    let mut config = config(&folder.0, &remote, &agent("fake-claude"));
+    config["agents"]["cursor"] = json!({"bin": agent("fake-cursor"), "accounts": []});
+    config["cursorKeychain"] = json!(true);
+    let security = agent("fake-security-cursor");
+    let obid = start_with(
+        &folder.0,
+        &config,
+        None,
+        &[("OBID_SECURITY_BIN", security.to_str().unwrap())],
+    );
+    assert_eq!(own(&obid), [("cursor".into(), json!(true), json!(null))]);
+    let status = call(&obid, "GET", "/v1/status", None).body;
+    assert_eq!(status["cursorKeychain"], json!({"on": true, "auto": false}));
+    let asked = std::fs::read_to_string(folder.0.join("tmp/obid-test-security-calls")).unwrap();
+    assert!(
+        asked.contains("-a cursor-user -s cursor-access-token"),
+        "{asked}"
+    );
+    assert!(!asked.contains("cursor-refresh-token"), "{asked}");
+    assert!(!obid.log().contains("keychain-held-access"));
+}
+
 /// An obid that ran before keeps its accounts as they are: the logins it finds on the Mac are only
 /// offered, and listed on the owner's word.
 #[test]

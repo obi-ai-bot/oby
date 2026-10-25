@@ -1,0 +1,14 @@
+#!/bin/sh
+# A stand-in for macOS's /usr/bin/security in obid's tests (OBID_SECURITY_BIN), as fake-security
+# but holding Cursor's own login as cursor-agent keeps it in the Keychain on macOS: account
+# cursor-user, its access token in cursor-access-token (with -w, the token). Nothing else is there.
+# It notes what it was asked in $TMPDIR/obid-test-security-calls.
+printf '%s\n' "$*" >> "${TMPDIR:-/nonexistent}/obid-test-security-calls"
+case " $* " in
+*" -a cursor-user -s cursor-access-token "*) ;;
+*) exit 44 ;;
+esac
+case " $* " in
+*" -w "*) printf '%s\n' "keychain-held-access" ;;
+esac
+exit 0
