@@ -247,7 +247,7 @@ struct WindowScreens {
 
     @Test func task() async throws {
         let state = ChatState(defaults: .scratch)
-        state.trail.start(.group(.review), .job(id: "r2", local: false))
+        state.trail.start(.group(.review), .job(id: "r2"))
         try await shoot("mac-task", model: model(), state: state)
     }
 
@@ -268,8 +268,8 @@ struct WindowScreens {
     /// A task's page renaming it in place in the title bar (Sangam's `crumb-rename`).
     @Test func taskRenaming() async throws {
         let state = ChatState(defaults: .scratch)
-        state.trail.start(.job(id: "i3", local: false))
-        state.renaming = .init(id: SidebarSections.JobRow.id("i3", local: false), inBar: true)
+        state.trail.start(.job(id: "i3"))
+        state.renaming = .init(id: SidebarSections.JobRow.id("i3"), inBar: true)
         try await shoot("mac-task-rename", model: model(), state: state)
     }
 
@@ -480,7 +480,7 @@ struct WindowScreens {
                          lists: Connectors.Lists(plugins: [], connections: nil, gitHub: GitHubLogin(gh: true, signedIn: true, user: "you", signIn: nil)),
                          extras: ["r3": report])
         let state = ChatState()
-        if screen == "task" { state.trail.start(.group(.review), .job(id: "r3", local: false)) }
+        if screen == "task" { state.trail.start(.group(.review), .job(id: "r3")) }
         else { state.openSettings(screen == "accounts" ? .accounts : .connectors) }
         let character = ObyCharacter(query: "embed&size=1.23")
         let window = ChatWindow.make(ChatView(model: model, state: state, character: character).defaultAppStorage(suite),
@@ -531,7 +531,7 @@ struct WindowScreens {
 
     @Test func taskNeedingYou() async throws {
         let state = ChatState(defaults: .scratch)
-        state.trail.start(.group(.review), .job(id: "r1", local: false))
+        state.trail.start(.group(.review), .job(id: "r1"))
         try await shoot("mac-task-needs", model: model(), state: state)
     }
 }

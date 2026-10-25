@@ -32,7 +32,7 @@ final class IslandController {
     private var fading: Task<Void, Never>?
     /// Opens the Oby window (apps/mac/app/App/ChatWindow.swift), on a job's screen when one is named: the
     /// app sets it.
-    var openWindow: (_ job: (id: String, local: Bool)?) -> Void = { _ in }
+    var openWindow: (_ job: String?) -> Void = { _ in }
     /// The window (or first launch) is up, in front, and showing what you say (Home or the
     /// conversation): the pill stays away then, except for Oby's reply, which only the conversation
     /// it went to shows. The app sets it.
@@ -347,16 +347,12 @@ final class IslandController {
 
     // MARK: Alerts
 
-    /// An alert for a job on this Mac, as the runner's (RunnerFeed.post): a click opens the window on it.
-    static let localJobKey = "localJob"
-
-    /// One alert, replacing an earlier one with the same `id`. `local`: the id of this Mac's job it is about.
-    static func alert(_ title: String, id: String, local job: String? = nil) {
+    /// One alert, replacing an earlier one with the same `id`.
+    static func alert(_ title: String, id: String) {
         let content = UNMutableNotificationContent()
         content.title = title
         content.sound = .default
         content.threadIdentifier = "jobs"
-        if let job { content.userInfo = [localJobKey: job] }
         let request = UNNotificationRequest(identifier: id, content: content, trigger: nil)
         Task {
             do { try await UNUserNotificationCenter.current().add(request) } catch {

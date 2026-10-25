@@ -21,8 +21,8 @@ struct SidebarTests {
     @MainActor @Test func openChatAlwaysReturnsToTheConversation() {
         let state = ChatState()
         #expect(state.trail.isHome)
-        state.open(job: ("job", true))
-        #expect(state.trail.steps == [.job(id: "job", local: true)])
+        state.open(job: "job")
+        #expect(state.trail.steps == [.job(id: "job")])
         state.trail.push(.talk)
         state.open()
         #expect(state.trail.steps == [.talk])

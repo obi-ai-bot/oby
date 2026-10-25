@@ -5,8 +5,8 @@ import Observation
 /// panel lists them, and which one the window shows. The Swift runner keeps one thread and answers
 /// 404 to `GET /v1/conversations`: then `served` stays false, nothing here shows, and every call
 /// goes out as it did before, so the one thread is the latest conversation of a runner that has
-/// them. Only the runner on this Mac plans through the runner (`RunnerFeed.local`); a remote
-/// runner's conversations aren't listed, as the Mac's own brain would answer in them.
+/// them. Only the runner on this Mac's are read (`RunnerFeed.local`); a remote runner's aren't
+/// listed yet (#585).
 /// Where `POST /v1/plans` puts the user's words (obid only, #493): the conversation it names, a new
 /// one, or (neither) the latest, as every app from before conversations sends them.
 nonisolated enum PlanTarget: Equatable, Sendable {
@@ -249,14 +249,14 @@ extension RunnerFeed {
 extension IslandModel {
     /// Whether a job's page offers the way to its conversation: the one that started it, or (a
     /// runner with one thread) the thread, when one of its turns started the job.
-    func hasConversation(of job: String, local: Bool) -> Bool {
-        if feed.conversationsOn, !local { return feed.startedIn(job: job) != nil }
+    func hasConversation(of job: String) -> Bool {
+        if feed.conversationsOn { return feed.startedIn(job: job) != nil }
         return ConversationModel.started(job, in: thread)
     }
 
     /// Makes the conversation that started the job the one the window shows.
-    func showConversation(of job: String, local: Bool) {
-        guard feed.conversationsOn, !local, let id = feed.startedIn(job: job) else { return }
+    func showConversation(of job: String) {
+        guard feed.conversationsOn, let id = feed.startedIn(job: job) else { return }
         Task { await feed.conversations.open(id) }
     }
 }

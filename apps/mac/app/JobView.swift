@@ -16,7 +16,7 @@ struct JobView: View {
     let onMessage: (String) async throws -> Void
     let onDismiss: () async throws -> Void
     /// Its mode, the permission it waits on and its question with the plan: what the runner says
-    /// about its job, or this Mac's own job's (`RunnerJobExtras(local:)`).
+    /// about its job.
     var extras: RunnerJobExtras? = nil
     /// Changes the job's mode, here or on the runner.
     var onMode: ((RunnerMode) async throws -> Void)? = nil

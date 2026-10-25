@@ -71,19 +71,19 @@ struct WindowTests {
         var trail = WindowTrail()
         #expect(trail.isHome && trail.top == nil)
         trail.start(.group(.review))
-        trail.push(.job(id: "a", local: false))
+        trail.push(.job(id: "a"))
         trail.push(.talk)
-        #expect(trail.steps == [.group(.review), .job(id: "a", local: false), .talk])
+        #expect(trail.steps == [.group(.review), .job(id: "a"), .talk])
         // A task and its conversation go back and forth rather than piling up.
-        trail.push(.job(id: "a", local: false))
-        #expect(trail.steps == [.group(.review), .job(id: "a", local: false)])
+        trail.push(.job(id: "a"))
+        #expect(trail.steps == [.group(.review), .job(id: "a")])
         trail.back()
         #expect(trail.steps == [.group(.review)])
-        trail.push(.job(id: "b", local: true))
+        trail.push(.job(id: "b"))
         trail.back(to: 0)
         #expect(trail.steps == [.group(.review)])
-        trail.start(.job(id: "c", local: true), .talk)
-        #expect(trail.steps == [.job(id: "c", local: true), .talk])
+        trail.start(.job(id: "c"), .talk)
+        #expect(trail.steps == [.job(id: "c"), .talk])
         trail.closeAll()
         #expect(trail.isHome)
         trail.back()
@@ -94,14 +94,13 @@ struct WindowTests {
     /// lights the job whose page shows, or whose conversation was opened from it.
     @Test func aGoneJobsPageLeavesAndTheRightRowIsLit() {
         var trail = WindowTrail()
-        trail.start(.group(.issues), .job(id: "gone", local: false), .talk)
-        #expect(trail.shows(job: "gone", local: false))
-        #expect(!trail.shows(job: "gone", local: true))
-        trail.drop { $0 == .job(id: "gone", local: false) }
+        trail.start(.group(.issues), .job(id: "gone"), .talk)
+        #expect(trail.shows(job: "gone"))
+        trail.drop { $0 == .job(id: "gone") }
         #expect(trail.steps == [.group(.issues)])
         trail.drop { $0 == .group(.review) }
         #expect(trail.steps == [.group(.issues)])
-        #expect(!trail.shows(job: "gone", local: false))
+        #expect(!trail.shows(job: "gone"))
     }
 
     /// "Go to conversation" shows on a task's page only when a turn started it.
@@ -146,8 +145,7 @@ struct WindowTests {
             if question { job.question = Plan.Question(text: "Which?", options: []) }
             return job
         }
-        let work = SidebarSections.work(local: [job("r", .running), job("q", .queued), job("n", .running, question: true), job("d", .done)],
-                                        runner: [], since: .distantFuture, seen: [])
+        let work = SidebarSections.work([job("r", .running), job("q", .queued), job("n", .running, question: true), job("d", .done)], since: .distantFuture, seen: [])
         #expect(HomeLine.attention(running: work.count { $0.status == .running }, needs: work.count { $0.status == .needs })
             == "2 running tasks · 1 needs you")
     }

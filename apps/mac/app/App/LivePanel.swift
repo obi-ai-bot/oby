@@ -6,21 +6,19 @@ import SwiftUI
 /// under them opens the Waiting list, each saying what it waits for (#238).
 struct LiveView: View {
     let model: IslandModel
-    let onOpen: (_ job: String, _ local: Bool) -> Void
+    let onOpen: (_ job: String) -> Void
     @State private var showsWaiting = false
 
     private var feed: RunnerFeed { model.feed }
 
-    /// Queued and running jobs, newest first, with where each is.
-    private var active: [(job: Job, local: Bool)] {
-        feed.active.map { ($0, false) }.sorted { $0.0.created > $1.0.created }
-    }
+    /// Queued and running jobs, newest first.
+    private var active: [Job] { feed.active.sorted { $0.created > $1.created } }
 
     /// The ones working (running, or getting ready to).
-    private var live: [(job: Job, local: Bool)] { active.filter { $0.job.isWorking } }
+    private var live: [Job] { active.filter(\.isWorking) }
 
     /// The ones queued behind something.
-    private var waiting: [(job: Job, local: Bool)] { active.filter { $0.job.isWaiting } }
+    private var waiting: [Job] { active.filter(\.isWaiting) }
 
     var body: some View {
         let live = self.live
@@ -44,10 +42,10 @@ struct LiveView: View {
                         // Every second: the elapsed time moves on.
                         TimelineView(.periodic(from: .now, by: 1)) { context in
                             LazyVStack(spacing: 12) {
-                                ForEach(live, id: \.job.id) { entry in
-                                    JobChip(job: entry.job, account: Self.account(of: entry.job, feed: feed),
-                                            onOpen: { onOpen(entry.job.id, entry.local) },
-                                            onStop: { model.stopChatJob(entry.job.id) })
+                                ForEach(live) { job in
+                                    JobChip(job: job, account: Self.account(of: job, feed: feed),
+                                            onOpen: { onOpen(job.id) },
+                                            onStop: { model.stopChatJob(job.id) })
                                 }
                             }
                             .padding(.horizontal, 14)
@@ -63,7 +61,7 @@ struct LiveView: View {
     }
 
     /// "14 waiting", which opens the Waiting list: each job's title and what it waits for.
-    private func waitingList(_ waiting: [(job: Job, local: Bool)], line: String) -> some View {
+    private func waitingList(_ waiting: [Job], line: String) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             Button { showsWaiting.toggle() } label: {
                 HStack(spacing: 6) {
@@ -78,11 +76,11 @@ struct LiveView: View {
             .accessibilityLabel(line)
             .accessibilityHint(showsWaiting ? "Hides the waiting jobs" : "Shows the waiting jobs")
             if showsWaiting {
-                ForEach(waiting, id: \.job.id) { entry in
-                    Button { onOpen(entry.job.id, entry.local) } label: {
+                ForEach(waiting) { job in
+                    Button { onOpen(job.id) } label: {
                         VStack(alignment: .leading, spacing: 2) {
-                            Text(entry.job.heading).font(.system(size: 13, weight: .semibold)).lineLimit(1)
-                            Text(entry.job.line).font(.system(size: 12)).foregroundStyle(.white.opacity(0.5)).lineLimit(1)
+                            Text(job.heading).font(.system(size: 13, weight: .semibold)).lineLimit(1)
+                            Text(job.line).font(.system(size: 12)).foregroundStyle(.white.opacity(0.5)).lineLimit(1)
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(.horizontal, 10).padding(.vertical, 6)

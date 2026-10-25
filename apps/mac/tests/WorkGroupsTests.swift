@@ -38,26 +38,26 @@ struct WorkGroupsTests {
         #expect(WorkList.groups([item("t")], by: .type).map(\.label) == ["Tasks"])
     }
 
-    /// The Mac's own and the runner's jobs: a review, an issue fix and a typed task land in three
+    /// The runner's jobs: a review, an issue fix and a typed task land in three
     /// groups (the issue's first test), and grouping by status puts them by where they stand.
     @Test func aReviewAnIssueAndATaskLandInThreeGroupsThenRegroupByStatus() {
         let review = job("rv", kind: .review, status: .running, created: 30)
         let fix = job("fx", kind: .fix, issue: 251, status: .failed, created: 20)
         let typed = job("tk", status: .done, created: 10)
-        let items = SidebarSections.work(local: [fix, typed], runner: [review], since: now - 3600, seen: [])
+        let items = SidebarSections.work([fix, typed, review], since: now - 3600, seen: [])
         let byType = WorkList.groups(items, by: .type)
         #expect(byType.map(\.label) == ["Review PR", "Issues", "Tasks"])
-        #expect(byType.map { $0.items.map(\.id) } == [["runner/rv"], ["mac/fx"], ["mac/tk"]])
+        #expect(byType.map { $0.items.map(\.id) } == [["runner/rv"], ["runner/fx"], ["runner/tk"]])
         let byStatus = WorkList.groups(items, by: .status)
         #expect(byStatus.map(\.label) == ["Needs you", "Running", "Completed"])
-        #expect(byStatus.map { $0.items.map(\.id) } == [["mac/fx"], ["runner/rv"], ["mac/tk"]])
+        #expect(byStatus.map { $0.items.map(\.id) } == [["runner/fx"], ["runner/rv"], ["runner/tk"]])
     }
 
     /// The runner this Mac talks to says nothing of who asked for a job (only obid's jobs carry
     /// `obi.fromOwner`, docs/runner-api.md), so the Mac shows no teammate group rather than
     /// inventing one.
     @Test func theMacShowsNoTeammateGroupWhileItsRunnerNamesNoRequester() {
-        let items = SidebarSections.work(local: [job("a"), job("b", kind: .review)], runner: [], since: now, seen: [])
+        let items = SidebarSections.work([job("a"), job("b", kind: .review)], since: now, seen: [])
         #expect(!items.contains { if case .teammate = $0.type { true } else { false } })
     }
 
@@ -68,14 +68,14 @@ struct WorkGroupsTests {
         asking.question = Plan.Question(text: "Which branch?", options: [])
         let rows = [job("w", status: .running, created: 50), job("q", status: .queued, created: 40),
                     job("f", status: .failed, created: 30), asking, job("d", status: .done, created: 20)]
-        let items = SidebarSections.work(local: rows, runner: [], since: .distantFuture, seen: [])
+        let items = SidebarSections.work(rows, since: .distantFuture, seen: [])
         let marks = Dictionary(uniqueKeysWithValues: items.map { ($0.id, $0.mark) })
-        #expect(marks == ["mac/w": .working, "mac/q": .queued, "mac/f": .needs, "mac/ask": .needs, "mac/d": .done])
-        #expect(items.first { $0.id == "mac/q" }?.status == .running)
+        #expect(marks == ["runner/w": .working, "runner/q": .queued, "runner/f": .needs, "runner/ask": .needs, "runner/d": .done])
+        #expect(items.first { $0.id == "runner/q" }?.status == .running)
         // New: arrived after the window's Oby started, and not opened yet; whatever its state.
-        let fresh = SidebarSections.work(local: [job("n", status: .failed, created: 5), job("o", created: 7200)], runner: [], since: now - 60, seen: [])
+        let fresh = SidebarSections.work([job("n", status: .failed, created: 5), job("o", created: 7200)], since: now - 60, seen: [])
         #expect(fresh.map(\.mark) == [.new, .working])
-        #expect(SidebarSections.work(local: [job("n", created: 5)], runner: [], since: now - 60, seen: ["mac/n"]).map(\.mark) == [.working])
+        #expect(SidebarSections.work([job("n", created: 5)], since: now - 60, seen: ["runner/n"]).map(\.mark) == [.working])
         #expect([WorkMark.new, .needs, .working, .queued, .done].map(\.rawValue) == ["New", "Needs you", "Working", "Queued", "Done"])
     }
 
@@ -87,8 +87,8 @@ struct WorkGroupsTests {
         var quick = job("quick", status: .done, created: 600)
         quick.finished = now - 300
         let running = job("run", status: .running, created: 60)
-        let items = SidebarSections.work(local: [quick, running, long], runner: [], since: .distantFuture, seen: [])
-        #expect(items.map(\.id) == ["mac/long", "mac/run", "mac/quick"])
+        let items = SidebarSections.work([quick, running, long], since: .distantFuture, seen: [])
+        #expect(items.map(\.id) == ["runner/long", "runner/run", "runner/quick"])
     }
 
     /// Kinds in their order, teammates by name between Issues and Tasks; empty kinds left out. Each

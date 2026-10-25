@@ -46,7 +46,7 @@ final class ChatWindow: NSObject, NSWindowDelegate {
 
     /// Shows the window, on the conversation or on a job's page when one is named; on Home, with
     /// Oby and its message box, when Oby was just opened.
-    func show(job: (id: String, local: Bool)? = nil, home: Bool = false) {
+    func show(job: String? = nil, home: Bool = false) {
         state.open(job: job)
         if home {
             state.section = .home
@@ -277,10 +277,10 @@ final class ChatState {
     var spotlight: SettingsSpotlight?
 
     /// A job's page, or the conversation with Oby, from a fresh start.
-    func open(job: (id: String, local: Bool)? = nil) {
+    func open(job: String? = nil) {
         visible = true
         if let job {
-            trail.start(.job(id: job.id, local: job.local))
+            trail.start(.job(id: job))
         } else {
             trail.start(.talk)
             section = .conversations
@@ -350,7 +350,7 @@ struct ChatView: View {
         .onExitCommand { if !state.trail.isHome { withAnimation(motion) { state.trail.back() } } }
         // Opened: its blue dot goes.
         .onChange(of: state.trail.top, initial: true) { _, top in
-            if case .job(let id, let local) = top { state.seen.insert(SidebarSections.JobRow.id(id, local: local)) }
+            if case .job(let id) = top { state.seen.insert(SidebarSections.JobRow.id(id)) }
             if top == .talk { model.markChatRead() }
         }
         // What the page shows needs no alert any more (#862).
@@ -361,7 +361,7 @@ struct ChatView: View {
         .onChange(of: model.feed.jobs.map(\.id)) {
             state.trail.drop { step in
                 switch step {
-                case .job(let id, _): !model.feed.jobs.contains { $0.id == id }
+                case .job(let id): !model.feed.jobs.contains { $0.id == id }
                 case .session(let id): !model.feed.jobs.contains { $0.id == id }
                 default: false
                 }
@@ -412,7 +412,7 @@ private struct HomeView: View {
                     stage
                         .opacity(away ? 0 : 1).scaleEffect(away && !reduceMotion ? 0.98 : 1)
                     if !away {
-                        HomeDecisions(model: model, height: height, onOpen: { state.trail.start(.job(id: $0, local: $1)) })
+                        HomeDecisions(model: model, height: height, onOpen: { state.trail.start(.job(id: $0)) })
                             .frame(maxWidth: Tokens.homeBox - 2 * Tokens.gutter)
                             .padding(.horizontal, Tokens.gutter).padding(.bottom, 12)
                     }
@@ -507,24 +507,24 @@ private struct HomeView: View {
         switch step {
         case .talk:
             ConversationPage(model: model, composerFocusRequest: state.composerFocusRequest,
-                             onOpenJob: { state.trail.push(.job(id: $0, local: $1)) }, onBack: back)
-        case .job(let id, let local):
-            JobPane(model: model, id: id, local: local, onBack: back,
-                    onOpenJob: { state.trail.push(.job(id: $0, local: local)) },
+                             onOpenJob: { state.trail.push(.job(id: $0)) }, onBack: back)
+        case .job(let id):
+            JobPane(model: model, id: id, onBack: back,
+                    onOpenJob: { state.trail.push(.job(id: $0)) },
                     onConversation: { state.trail.push(.talk) },
-                    onSession: local ? nil : { state.trail.push(.session(id: id)) }).takesKeys()
+                    onSession: { state.trail.push(.session(id: id)) }).takesKeys()
         case .session(let id):
             SessionPane(model: model, id: id, onBack: back).takesKeys()
         case .group(let kind):
             GroupPane(model: model, state: state, kind: kind, items: work.filter { $0.type == kind },
-                      onOpenJob: { state.trail.push(.job(id: $0, local: $1)) },
+                      onOpenJob: { state.trail.push(.job(id: $0)) },
                       onOpenArchive: { state.trail.push(.archived) },
                       onConnectGitHub: { state.openSettings(.connectors) }, onClose: back)
                 .takesKeys()
         case .archived:
             ArchivePane(items: model.archive(state),
                         loading: model.feed.connection == .connecting && !model.feed.showingKept,
-                        onOpenJob: { state.trail.push(.job(id: $0, local: $1)) })
+                        onOpenJob: { state.trail.push(.job(id: $0)) })
                 .takesKeys()
         case .settings(let page):
             SettingsPane(model: model, page: page)
@@ -540,7 +540,7 @@ private struct HomeDecisions: View {
     let model: IslandModel
     /// Home's height: the cards get what Oby's stage and the box leave.
     let height: CGFloat
-    let onOpen: (_ job: String, _ local: Bool) -> Void
+    let onOpen: (_ job: String) -> Void
     @State private var content: CGFloat = 0
 
     /// What the title bar, Oby's stage (smaller while something waits) and the message box need,
@@ -695,9 +695,9 @@ private struct TitleBar: View {
                     .help("Installs the update and relaunches Oby. While this Mac runs a check for the runner, it waits for the check to end.")
                     .padding(.trailing, state.trail.isHome ? Tokens.gutter : 8)
             }
-            if case .job(let id, let local) = state.trail.top, model.hasConversation(of: id, local: local) {
+            if case .job(let id) = state.trail.top, model.hasConversation(of: id) {
                 Button("Go to conversation") {
-                    model.showConversation(of: id, local: local)
+                    model.showConversation(of: id)
                     state.trail.push(.talk)
                 }
                     .buttonStyle(ChipButtonStyle())
@@ -713,9 +713,9 @@ private struct TitleBar: View {
 extension TitleBar {
     /// The task on top, when a task's page is, as its side panel row has it.
     private var shownTask: SidebarSections.JobRow? {
-        guard case .job(let id, let local) = state.trail.top,
+        guard case .job(let id) = state.trail.top,
               let job = model.feed.jobs.first(where: { $0.id == id }) else { return nil }
-        return SidebarSections.JobRow(job: job, local: local)
+        return SidebarSections.JobRow(job: job)
     }
 
     /// The conversation on top, when one of obid's is (#493), not a new one yet.
@@ -817,7 +817,7 @@ enum WindowLabels {
         case .archived: "Archived"
         case .settings(let page): page.label
         case .talk: model.feed.conversationsOn ? model.feed.conversations.shownTitle : "Oby"
-        case .job(let id, _):
+        case .job(let id):
             model.feed.jobs.first { $0.id == id }?.heading ?? "Task"
         case .session: "Session"
         }
@@ -852,53 +852,6 @@ struct EyeLevel: Layout {
         let room = max(0, bounds.height - size.height)
         view.place(at: CGPoint(x: bounds.midX, y: bounds.minY + room / 2.6 + size.height / 2), anchor: .center,
                    proposal: ProposedViewSize(width: bounds.width, height: size.height))
-    }
-}
-
-/// Messenger bubbles: no per-message chrome, one centered timestamp above each group.
-struct TurnRow: View {
-    let turn: Turn
-    var grouped = false
-    let jobs: [Job]
-    let account: (_ job: Job, _ local: Bool) -> String
-    let isLocal: (_ id: String) -> Bool
-    let onOpenJob: (_ job: String, _ local: Bool) -> Void
-    var onStopJob: ((_ job: String, _ local: Bool) -> Void)? = nil
-    var showTime = true
-    /// What Oby does for these words, a step at a time (#304): under the bubble, before its answer.
-    var steps: [TurnStep] = []
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            if showTime {
-                Text(ConversationModel.dayTitle(turn.date, now: .now, calendar: .current) + " " + ConversationModel.clock(turn.date))
-                    .font(OBYStyle.caption).foregroundStyle(OBYStyle.tertiary)
-                    .frame(maxWidth: .infinity).padding(.top, OBYStyle.Space.lg).padding(.bottom, OBYStyle.Space.sm)
-            }
-            MessageBubbleLayout(trailing: turn.who == .user) {
-                ReadingText(turn.text, color: turn.who == .user ? OBYStyle.userText : OBYStyle.primary)
-                    .textSelection(.enabled)
-                    .padding(.horizontal, OBYStyle.Space.lg).padding(.vertical, 14)
-                    .background(turn.who == .user ? OBYStyle.userBubble : OBYStyle.assistantBubble,
-                                in: RoundedRectangle(cornerRadius: OBYStyle.bubble, style: .continuous))
-            }
-            if let markdown = ConversationModel.markdownDetails(for: turn) {
-                Text(markdown).font(OBYStyle.body).foregroundStyle(OBYStyle.primary).textSelection(.enabled)
-                    .padding(.leading, OBYStyle.Space.lg)
-            }
-            if !steps.isEmpty {
-                StepList(steps: steps).padding(.horizontal, OBYStyle.Space.sm)
-            }
-            ForEach(jobs) { job in
-                Text("Started \(job.heading)").font(OBYStyle.caption).foregroundStyle(OBYStyle.tertiary)
-                    .frame(maxWidth: .infinity).padding(.vertical, OBYStyle.Space.sm)
-                let local = isLocal(job.id)
-                JobChip(job: job, account: account(job, local), onOpen: { onOpenJob(job.id, local) },
-                        onStop: onStopJob.map { stop in { stop(job.id, local) } })
-            }
-        }
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel("\(turn.who == .user ? "You" : "Oby"), \(ConversationModel.clock(turn.date)): \(turn.text)")
     }
 }
 
@@ -946,12 +899,11 @@ struct ThinkingLine: View {
 private struct JobPane: View {
     let model: IslandModel
     let id: String
-    let local: Bool
     var onBack: (() -> Void)? = nil
     var onOpenJob: (String) -> Void = { _ in }
     /// Its conversation, made the one shown, over the page.
     var onConversation: () -> Void = {}
-    /// Full session: the job's session over its page; nil for this Mac's own jobs, which keep none.
+    /// Full session: the job's session over its page.
     var onSession: (() -> Void)? = nil
     @State private var problem: String?
     /// The page's own attachments: never what waits in Home's box.
@@ -969,8 +921,8 @@ private struct JobPane: View {
                          onSession: onSession, usage: model.usageRows, voice: model.voice, talkKeyListening: model.listening,
                          onTold: { _ in
                              // Sangam's tellFromTask: its conversation opens on the words and Oby's answer.
-                             guard TaskPage.afterTold(hasConversation: model.hasConversation(of: job.id, local: local)) == .conversation else { return false }
-                             model.showConversation(of: job.id, local: local)
+                             guard TaskPage.afterTold(hasConversation: model.hasConversation(of: job.id)) == .conversation else { return false }
+                             model.showConversation(of: job.id)
                              onConversation()
                              return true
                          })
@@ -983,13 +935,12 @@ private struct JobPane: View {
             }
         }
         .onChange(of: id, initial: true) { old, new in
-            if old != new, !local { feed.showing(old, false) }
-            guard !local else { return }
+            if old != new { feed.showing(old, false) }
             feed.showing(new, true)
             Task {
                 do { try await feed.fetch(new) } catch { problem = error.localizedDescription }
             }
         }
-        .onDisappear { if !local { feed.showing(id, false) } }
+        .onDisappear { feed.showing(id, false) }
     }
 }

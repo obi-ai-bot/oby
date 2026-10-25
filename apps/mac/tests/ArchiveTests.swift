@@ -56,7 +56,7 @@ struct ArchiveTests {
         var job = Job(id: "j", request: "r", agent: "codex", account: "default", repo: "deskree-inc/oby", branch: "oby/x",
                       base: "dev", pr: nil, kind: .build, task: "t", created: now)
         job.title = "Vault tests"
-        let items = SidebarSections.work(local: [], runner: [job], since: now, seen: [])
+        let items = SidebarSections.work([job], since: now, seen: [])
         #expect(ArchivePane.matching(items, "").count == 1 && ArchivePane.matching(items, " vault ").count == 1)
         #expect(ArchivePane.matching(items, "CODEX").count == 1 && ArchivePane.matching(items, "tasks").count == 1)
         #expect(ArchivePane.matching(items, "login").isEmpty)

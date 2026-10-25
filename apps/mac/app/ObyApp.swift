@@ -203,8 +203,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         switch place {
         case .job(let id):
             if let draft { Drafts.keep(draft, as: Drafts.task(id)) }
-            chat.show(job: (id: id, local: false))
-        case .localJob(let id): chat.show(job: (id: id, local: true))
+            chat.show(job: id)
         case .conversation(let id):
             if let draft { Drafts.keep(draft, as: Drafts.conversation(id)) }
             chat.show(conversation: id)
