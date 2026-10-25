@@ -35,12 +35,14 @@ nonisolated enum SettingsPage: String, CaseIterable, Hashable, Sendable {
     }
 
     /// The pages the side panel lists: the launch build leaves out Sharing and Remote access (`Launch`),
-    /// except while they're on, so the owner can always turn them off.
+    /// except while they're on, so the owner can always turn them off, and Vault, which does nothing
+    /// under obid (AGENTS.md, "The launch build").
     static func shown(everything: Bool, remoteOn: Bool = false, sharingOn: Bool = false) -> [SettingsPage] {
         allCases.filter { page in
             switch page {
             case .sharing: everything || sharingOn
             case .remote: everything || remoteOn
+            case .vault: everything
             default: true
             }
         }
