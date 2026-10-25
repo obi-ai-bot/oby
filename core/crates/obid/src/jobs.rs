@@ -320,6 +320,58 @@ fn clean_note(text: &str) -> Option<String> {
     (!flagged).then(|| crate::brain::read::clamp(&text, NOTE_MAX))
 }
 
+/// What [`Jobs::onto_base`] did: nothing to do; rebased, its commits starting at this base commit
+/// now; or the files whose conflicts stopped the rebase.
+enum Onto {
+    Same,
+    Rebased(String),
+    Conflict(Vec<String>),
+}
+
+/// The round that has the agent rebase its commits onto the moved base itself.
+fn rebase_prompt(job: &Job, start: &str, files: &[String]) -> String {
+    let base = job.base.as_deref().unwrap_or("main");
+    format!(
+        "The base branch {base} moved while you worked, and your commits don't rebase onto it cleanly (conflicts in {}). Rebase them onto it yourself: run `git rebase --onto origin/{base} {start}`, resolve each conflict keeping what both sides meant, `git rebase --continue`, then run the checks in the foreground and finish with a short summary. Never merge the base into this branch.",
+        files_said(files)
+    )
+}
+
+/// Why a job stops when its commits still don't rebase onto its moved base after its round.
+fn not_rebased(job: &Job, files: &[String]) -> End {
+    let base = job.base.as_deref().unwrap_or("main");
+    End::needs_you(
+        format!(
+            "{base} moved while this ran, and its commits don't rebase onto it (conflicts in {}). The branch is kept as it was and nothing was pushed: Try again has its agent rebase it, or rebase it yourself.",
+            files_said(files)
+        ),
+        Some(crate::job::TRY_AGAIN),
+    )
+}
+
+/// The files a conflict names, at most 20 and 2,000 characters: the rest as a count.
+fn files_said(files: &[String]) -> String {
+    if files.is_empty() {
+        return "files git didn't name".into();
+    }
+    let mut said = String::new();
+    let mut named = 0;
+    for file in files.iter().take(20) {
+        if said.len() + file.len() > 2000 {
+            break;
+        }
+        if !said.is_empty() {
+            said.push_str(", ");
+        }
+        said.push_str(file);
+        named += 1;
+    }
+    match files.len() - named {
+        0 => said,
+        more => format!("{said} and {more} more"),
+    }
+}
+
 /// How an owner's job that didn't end done ends. Like Claude Code, which ends only at a limit, a
 /// crash or a stop, obid calls few things failed: a job stopped part way with a session to pick up
 /// needs its owner (`interrupted`), its work kept on its branch.
@@ -4736,6 +4788,153 @@ impl Jobs {
         .await
     }
 
+    /// Puts the job's own commits on its base as the remote has it now: the base fetched into
+    /// obid's clone, and when it moved (or was force-pushed) since the job's commits started at
+    /// `start`, those commits (`start..HEAD`) rebased onto it in the job's sandbox, HEAD detached at
+    /// the result as before; `start_commit` is the new base from then on. Only a job's own `oby/`
+    /// branch that started from the base (never a pull request's or another job's, whose commits
+    /// aren't all its own), with nothing left uncommitted. A conflict aborts the rebase and says
+    /// which files: its agent gets one round to rebase it ([`rebase_prompt`]). A base that can't
+    /// be fetched leaves it as it is.
+    async fn onto_base(&self, id: &str, start: &str) -> Onto {
+        let Some(job) = self.get(id) else {
+            return Onto::Same;
+        };
+        // A rebase its agent left half done (conflicts unresolved, its commits partly applied) is
+        // no rebase: aborted first, before anything else can stop here (a fetch that fails), so
+        // nothing half done is ever checked or published. For a job obid rebases, it counts as its
+        // round's failure.
+        let half = self.abort_half_rebase(id).await;
+        let Some(repo) = self.repo(&job.repo) else {
+            return Onto::Same;
+        };
+        let base = job.base.clone().unwrap_or(repo.default_branch.clone());
+        if !crate::merge::own_branch(&job, &job.branch)
+            || job.pr.is_some()
+            || job.start_from.is_some()
+            || job.review_of.is_some()
+            || !git::is_branch_name(&base)
+            || !git::is_sha(start)
+        {
+            return Onto::Same;
+        }
+        if let Some(files) = half {
+            return Onto::Conflict(files);
+        }
+        let clone = git::clone_path(&self.config.home, &repo.repo);
+        let tracking = format!("refs/remotes/origin/{base}");
+        {
+            let preparing = self.preparing(&repo.repo);
+            let _fetching = preparing.lock().await;
+            if let Err(e) = git::fetch(
+                &clone,
+                &repo.remote,
+                &[format!("+refs/heads/{base}:{tracking}")],
+            )
+            .await
+            {
+                tracing::info!("job {id}: {base} didn't fetch, so it isn't rebased: {e}");
+                return Onto::Same;
+            }
+        }
+        let Ok(now) = git::git(
+            &clone,
+            &["rev-parse", "--verify", &format!("{tracking}^{{commit}}")],
+        )
+        .await
+        else {
+            return Onto::Same;
+        };
+        let on = |commit: &str| {
+            let commit = commit.to_owned();
+            async move {
+                self.sandboxed_git(id, &["merge-base", "--is-ancestor", &commit, "HEAD"], None)
+                    .await
+                    .is_ok()
+            }
+        };
+        if on(&now).await {
+            if now == start {
+                return Onto::Same;
+            }
+            // Its commits sit on the base as it is now (its agent rebased them, or its base only
+            // moved forward under them since): they start there from now on. Not when the base went
+            // back under where they started: the commits it dropped aren't the job's, and go below.
+            let went_back = git::git(&clone, &["merge-base", "--is-ancestor", &now, start])
+                .await
+                .is_ok();
+            if !went_back || !on(start).await {
+                self.update(id, |job| job.start_commit = Some(now.clone()));
+                return Onto::Rebased(now);
+            }
+        }
+        if self.uncommitted(id).await {
+            return Onto::Same;
+        }
+        let (name, email) = &self.identity;
+        let rebased = self
+            .sandboxed_git(
+                id,
+                &[
+                    "-c",
+                    &format!("user.name={name}"),
+                    "-c",
+                    &format!("user.email={email}"),
+                    "-c",
+                    "commit.gpgsign=false",
+                    "rebase",
+                    "--quiet",
+                    "--no-autostash",
+                    "--onto",
+                    &now,
+                    start,
+                ],
+                None,
+            )
+            .await;
+        if rebased.is_ok() {
+            tracing::info!("job {id}: {base} moved, so its commits were rebased onto {now}");
+            self.update(id, |job| {
+                job.start_commit = Some(now.clone());
+                job.changed(format!("Rebased onto {base} as it is now, by Oby"));
+            });
+            return Onto::Rebased(now);
+        }
+        let files = self.unmerged(id).await;
+        let _ = self.sandboxed_git(id, &["rebase", "--abort"], None).await;
+        tracing::info!("job {id}: {base} moved, and its commits don't rebase onto it");
+        Onto::Conflict(files)
+    }
+
+    /// A rebase left in progress in the job's worktree (its `rebase-merge` or `rebase-apply`, or
+    /// unmerged paths), aborted: the files it left in conflict, or none when there was none.
+    async fn abort_half_rebase(&self, id: &str) -> Option<Vec<String>> {
+        let (admin, _) = self.own_git_dirs(id).await.ok()?;
+        let unmerged = self.unmerged(id).await;
+        if !admin.join("rebase-merge").exists()
+            && !admin.join("rebase-apply").exists()
+            && unmerged.is_empty()
+        {
+            return None;
+        }
+        let _ = self.sandboxed_git(id, &["rebase", "--abort"], None).await;
+        tracing::info!("job {id}: its agent left a rebase half done: aborted");
+        Some(unmerged)
+    }
+
+    /// The files a rebase in the job's worktree left with conflicts, as git in its sandbox says.
+    async fn unmerged(&self, id: &str) -> Vec<String> {
+        self.sandboxed_git(id, &["diff", "--name-only", "--diff-filter=U"], None)
+            .await
+            .map(|out| {
+                String::from_utf8_lossy(&out)
+                    .lines()
+                    .map(str::to_owned)
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     /// What the agent left uncommitted when its job ended without commits to publish (stopped, at
     /// a limit, failed, or done with none of its own): one [`WIP_MESSAGE`] commit of all of it, in
     /// the job's sandbox, so keep_commits keeps it on the job's branch (#606). It never counts as
@@ -6175,6 +6374,10 @@ impl Jobs {
         signal: &watch::Receiver<Signal>,
     ) -> Result<(), String> {
         let job = self.get(id).ok_or("the job is gone")?;
+        // It starts over from a fresh worktree whatever a restart cut: nothing to pick up.
+        if job.cut.is_some() {
+            self.update(id, |job| job.cut = None);
+        }
         let quoted = job.obi_request.clone().ok_or("the job has no request")?;
         let request: ReviewRequest = serde_json::from_value(quoted["body"].clone())
             .map_err(|e| format!("the request isn't a review_request: {e}"))?;
@@ -6606,7 +6809,7 @@ impl Jobs {
         }
         drop(prepared);
         let job = self.get(id).ok_or("the job is gone")?;
-        let start_commit = job.start_commit.clone().unwrap_or_default();
+        let mut start_commit = job.start_commit.clone().unwrap_or_default();
         // Where its branch was when this run started: a job whose own publish failed is tried
         // again by itself only when this run made new commits (runner-api.md, "Job").
         let clone = git::clone_path(&self.config.home, &repo.repo);
@@ -6864,6 +7067,10 @@ impl Jobs {
         let mut told_to_commit = false;
         // How the transcript opens the next turn, when it's obid's words that start it.
         let mut opening: Option<String> = None;
+        // Its base moved and its commits didn't rebase onto it: its agent had its one round to do it.
+        let mut rebase_round = false;
+        // The round a failed check gave it, counted when its turn launches.
+        let mut round_due = false;
         // Picked up where a restart cut it: its check run again on what it committed rather than
         // its agent's turn (one with no check goes straight on), and a pass goes on to publish as
         // after its last round. Running at once, at the phase it was in, so another restart cuts
@@ -6876,9 +7083,26 @@ impl Jobs {
                 job.phase = cut;
             });
             let job = self.get(id).ok_or("the job is gone")?;
-            match job.check.clone() {
-                None => to_publish = true,
-                Some(command) => {
+            // On its base as it is now, as any check is: a conflict is its agent's round.
+            let onto = match job.check {
+                Some(_) => self.onto_base(id, &start_commit).await,
+                None => Onto::Same,
+            };
+            match (job.check.clone(), onto) {
+                (None, _) => to_publish = true,
+                (Some(_), Onto::Conflict(files)) => {
+                    rebase_round = true;
+                    message = rebase_prompt(&job, &start_commit, &files);
+                    noted = true;
+                    opening = Some(format!(
+                        "Oby told {} to rebase onto the moved base",
+                        tool.name()
+                    ));
+                }
+                (Some(command), onto) => {
+                    if let Onto::Rebased(base) = onto {
+                        start_commit = base;
+                    }
                     tracing::info!("job {id}: a restart cut it short, so its check runs again");
                     self.update(id, |job| {
                         job.phase = Some(Phase::Check);
@@ -6906,7 +7130,7 @@ impl Jobs {
                             &job.summary,
                             round,
                         )?;
-                        self.update(id, |job| job.round = Some(round + 1));
+                        round_due = true;
                     }
                 }
             }
@@ -6917,7 +7141,9 @@ impl Jobs {
                     break;
                 }
                 let job = self.get(id).ok_or("the job is gone")?;
-                let round = job.current_round();
+                // A failed check's next round counts once its turn launches (below), so a restart
+                // before then runs the same round's check again.
+                let round = job.current_round() + u32::from(round_due);
                 let mut flags: Vec<OsString> = [
                     "-p",
                     "--input-format",
@@ -7070,6 +7296,7 @@ impl Jobs {
                     }
                     job.started.get_or_insert_with(obi_protocol::time::now);
                     job.phase = Some(Phase::Work);
+                    job.round = Some(round);
                     if told_to_wait && message == WAIT_HERE {
                         job.step = "Oby: wait for it in the foreground".into();
                     } else if message == COMMIT_HERE {
@@ -7078,6 +7305,7 @@ impl Jobs {
                         job.step = format!("Starting {}", tool.name());
                     }
                 });
+                round_due = false;
                 stages.begin(&format!("agent round {round}"));
                 self.transcribed(
                     id,
@@ -7299,6 +7527,26 @@ impl Jobs {
                 }
                 let job = self.get(id).ok_or("the job is gone")?;
                 let more_rounds = round < job.max_rounds();
+                // What it's checked on, and publishes, is on its base as it is now.
+                if job.check.is_some() {
+                    match self.onto_base(id, &start_commit).await {
+                        Onto::Same => {}
+                        Onto::Rebased(base) => start_commit = base,
+                        Onto::Conflict(files) if !rebase_round => {
+                            rebase_round = true;
+                            message = rebase_prompt(&job, &start_commit, &files);
+                            // Its reply leaves the job's summary to the work's.
+                            noted = true;
+                            self.lock().wrapping.remove(id);
+                            opening = Some(format!(
+                                "Oby told {} to rebase onto the moved base",
+                                tool.name()
+                            ));
+                            continue;
+                        }
+                        Onto::Conflict(files) => return Err(not_rebased(&job, &files)),
+                    }
+                }
                 if let Some(command) = &job.check {
                     self.update(id, |job| {
                         job.phase = Some(Phase::Check);
@@ -7353,9 +7601,28 @@ impl Jobs {
                 if !turn.notes.is_empty() {
                     message = format!("{}\n\n{message}", turn.notes.join("\n"));
                 }
-                self.update(id, |job| job.round = Some(round + 1));
+                round_due = true;
             }
 
+            // With no check to run on it, it's put on its base as it is now before it publishes.
+            if let Some(job) = self.get(id).filter(|j| j.check.is_none()) {
+                match self.onto_base(id, &start_commit).await {
+                    Onto::Same => {}
+                    Onto::Rebased(base) => start_commit = base,
+                    Onto::Conflict(files) if !rebase_round => {
+                        rebase_round = true;
+                        message = rebase_prompt(&job, &start_commit, &files);
+                        noted = true;
+                        self.lock().wrapping.remove(id);
+                        opening = Some(format!(
+                            "Oby told {} to rebase onto the moved base",
+                            tool.name()
+                        ));
+                        continue 'rounds;
+                    }
+                    Onto::Conflict(files) => return Err(not_rebased(&job, &files)),
+                }
+            }
             // What it made to be looked at, listed on the job before it ends.
             stages.begin("artifacts");
             self.publish_artifacts(id).await;
