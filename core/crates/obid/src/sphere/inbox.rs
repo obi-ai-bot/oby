@@ -103,6 +103,9 @@ pub mod action {
     /// Change a job's mode, tool or account (`oby_change_job`): `target` the job, `payload`
     /// `{"mode": "…"}`, `{"agent": "…", "account": "…"}` or both.
     pub const CHANGE_JOB: &str = "change_job";
+    /// Make a check Oby guessed the check of a repository that has none (#1062): `target` the
+    /// repository, `payload` `{"check": "<command>"}`.
+    pub const SET_CHECK: &str = "set_check";
 }
 
 /// A `confirm` item: `title` says exactly what `Confirm` does, `confirmed` is what obid carries

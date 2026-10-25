@@ -4402,6 +4402,17 @@ impl Link {
                 }
                 Ok(())
             }
+            // The check Oby offered for a repository with none (#1062), kept on the owner's tap.
+            inbox::action::SET_CHECK => {
+                let check = confirmed.payload["check"].as_str().unwrap_or("");
+                if check.trim().is_empty() || check.contains('\n') || check.chars().count() > 200 {
+                    return Err(api(StatusCode::CONFLICT, "That check's plan was lost."));
+                }
+                self.config
+                    .repos
+                    .set_check(target, check)
+                    .map_err(|why| api(StatusCode::CONFLICT, why))
+            }
             // The ones that answer an inbox item, as the owner would have.
             inbox::action::ACCEPT
             | inbox::action::ACCEPT_REMEMBER

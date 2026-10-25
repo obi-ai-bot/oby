@@ -1,6 +1,7 @@
 //! What Settings changes and obid keeps across restarts, in `home/settings.json` (0600): how many
 //! jobs run at once (docs/runner-api.md, "GET /v1/settings/jobs and PUT /v1/settings/jobs"), and
-//! the owner's check-in (docs/runner-api.md, "obid only: check-ins (#1116)").
+//! the owner's check-in (docs/runner-api.md, "obid only: check-ins (#1116)"), and which
+//! repositories Oby has offered a check for (#1062).
 
 use std::path::{Path, PathBuf};
 
@@ -30,6 +31,9 @@ pub struct Settings {
     /// account of the tool with room by itself (#871, #874); [`ACCOUNT_FAILOVER`] when unset.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub account_failover: Option<bool>,
+    /// The repositories Oby has offered a check for (#1062), once each, whatever the answer.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub checks_offered: Vec<String>,
 }
 
 impl Settings {
@@ -70,6 +74,7 @@ impl Default for Settings {
             check_in: None,
             check_in_sent: None,
             account_failover: None,
+            checks_offered: Vec::new(),
         }
     }
 }
