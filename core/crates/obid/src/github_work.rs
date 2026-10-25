@@ -27,7 +27,8 @@ use crate::jobs::{Jobs, NewJob};
 
 /// How often obid reads, in seconds, and the first wait after a rate limit.
 pub const EVERY: i64 = 180;
-/// The longest a rate limit makes obid wait.
+/// The longest a rate limit makes obid wait, and how long a feed that isn't signed in waits
+/// unless the owner signs in through Oby ([`Feed::wake`]).
 const LONGEST_WAIT: i64 = 1800;
 /// Fewer GraphQL points left than this, and obid waits for GitHub's reset.
 const LOW_POINTS: i64 = 50;
@@ -761,6 +762,8 @@ pub struct Feed {
     state: Mutex<Seen>,
     /// One read at a time.
     reading: tokio::sync::Mutex<()>,
+    /// Reads now: the owner just signed gh in through Oby.
+    woken: tokio::sync::Notify,
 }
 
 impl Feed {
@@ -784,7 +787,13 @@ impl Feed {
                 ..Seen::default()
             }),
             reading: tokio::sync::Mutex::new(()),
+            woken: tokio::sync::Notify::new(),
         })
+    }
+
+    /// Reads at once, not at the next tick: gh was just signed in.
+    pub fn wake(&self) {
+        self.woken.notify_one();
     }
 
     fn lock(&self) -> MutexGuard<'_, Seen> {
@@ -805,6 +814,7 @@ impl Feed {
                 let wait = (feed.lock().next_check - time::now()).clamp(1, LONGEST_WAIT);
                 tokio::select! {
                     () = tokio::time::sleep(Duration::from_secs(wait as u64)) => {}
+                    () = feed.woken.notified() => {}
                     _ = stopping.wait_for(|stop| *stop) => return,
                 }
             }
@@ -841,6 +851,9 @@ impl Feed {
             state.next_check = now + EVERY;
             match got {
                 Got::SignedOut(why) => {
+                    // Nothing to read until gh signs in: through Oby wakes it, in a terminal
+                    // shows within half an hour, or at once with a refresh.
+                    state.next_check = now + LONGEST_WAIT;
                     // Signed in again, maybe as someone else: that read is a first one again.
                     state.kept = Kept::default();
                     state.error = Some(why);
