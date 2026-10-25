@@ -741,6 +741,8 @@ struct Seen {
     next_check: i64,
     /// Rate limits in a row.
     waits: u32,
+    /// Reads in a row that found gh signed out: the second waits [`LONGEST_WAIT`].
+    signed_out: u32,
     /// No read before then.
     wait_until: i64,
     /// When the last read began: a refresh within [`refresh_every`] of it doesn't read again.
@@ -852,8 +854,13 @@ impl Feed {
             match got {
                 Got::SignedOut(why) => {
                     // Nothing to read until gh signs in: through Oby wakes it, in a terminal
-                    // shows within half an hour, or at once with a refresh.
-                    state.next_check = now + LONGEST_WAIT;
+                    // shows within half an hour (of the Mac awake: tokio's clock stops while it
+                    // sleeps), or at once with a refresh. Twice in a row first: one passing 401
+                    // reads again at the next tick.
+                    state.signed_out += 1;
+                    if state.signed_out >= 2 {
+                        state.next_check = now + LONGEST_WAIT;
+                    }
                     // Signed in again, maybe as someone else: that read is a first one again.
                     state.kept = Kept::default();
                     state.error = Some(why);
@@ -905,6 +912,7 @@ impl Feed {
                         );
                     }
                     state.waits = 0;
+                    state.signed_out = 0;
                     if no_board && board {
                         if state.no_board_until == 0 {
                             tracing::warn!("GitHub work: {NO_BOARD_SCOPE}");

@@ -384,11 +384,18 @@ fn the_feed_lists_offers_new_work_once_and_starts_it_on_a_tap() {
         (&json!(false), &json!([])),
         "{out}"
     );
-    // Nothing to read until gh signs in: its next read is half an hour away, not 3 minutes.
-    let soonest = obi_protocol::time::format(obi_protocol::time::now() + 25 * 60);
+    // Nothing to read until gh signs in: after a second read in a row says so (one could pass),
+    // its next read is half an hour away, not 3 minutes.
+    let later = |minutes: i64| obi_protocol::time::format(obi_protocol::time::now() + minutes * 60);
     assert!(
-        out["nextCheck"].as_str().unwrap() > soonest.as_str(),
+        out["nextCheck"].as_str().unwrap() < later(4).as_str(),
         "{out}"
+    );
+    let again = refresh(&obid);
+    assert_eq!(again["signedIn"], false, "{again}");
+    assert!(
+        again["nextCheck"].as_str().unwrap() > later(25).as_str(),
+        "{again}"
     );
     std::fs::remove_file(gh.join("fail")).unwrap();
     serve(&gh, &[(REPO, 702), (REPO, 800)], &[], &[]);
