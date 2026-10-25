@@ -1958,6 +1958,37 @@ fn a_jobs_builds_are_sized_to_memory() {
     assert_eq!(env["OBY_BUILD_JOBS"], env["CARGO_BUILD_JOBS"]);
 }
 
+/// A job's check is told how wide to build too, the same count for every name, as its agent is.
+#[test]
+fn a_jobs_check_builds_are_sized_to_memory() {
+    let folder = Folder::new("check-jobs");
+    let remote = fixture(&folder.0.join("fixture"));
+    let bin = fake_gh(&folder.0);
+    let obid = start_with(&folder.0, &config(&folder.0, &remote), Some(&bin));
+    let check = "echo \"width $CARGO_BUILD_JOBS $RUST_TEST_THREADS $OBY_BUILD_JOBS\"";
+    let id = post_job(
+        &obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "build", "task": "COMMIT: c.txt", "check": check}),
+    )
+    .body["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let job = wait(&obid, &id);
+    assert_eq!(job["status"], "done", "{job}");
+    let log = std::fs::read_to_string(obid.home.join("logs").join(&id).join("check.log")).unwrap();
+    let said: Vec<usize> = log
+        .lines()
+        .find_map(|l| l.strip_prefix("width "))
+        .unwrap_or_else(|| panic!("{log}"))
+        .split(' ')
+        .map(|n| n.parse().unwrap())
+        .collect();
+    let most = (std::thread::available_parallelism().unwrap().get() / 2).max(1);
+    assert!((1..=most).contains(&said[0]), "{said:?}");
+    assert_eq!(said, [said[0]; 3]);
+}
+
 /// The job's temporary HOME, with the package caches its agent filled, stays between its runs
 /// for the offline check, and goes with its worktree; the MCP config's broker token never stays.
 #[test]

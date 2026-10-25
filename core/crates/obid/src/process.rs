@@ -104,12 +104,12 @@ pub fn sandbox_env(
 /// About what one rustc of a big crate holds: a build gets one job for each this much memory.
 pub const BUILD_JOB_MEMORY: u64 = 1536 * 1024 * 1024;
 
-/// How many jobs a build runs at once, and its tests' threads, with `available` bytes of memory
-/// that `sharing` builds may take together: one for each [`BUILD_JOB_MEMORY`] of its share, at
-/// most half the cores (the Mac has other work), at least 1.
-pub fn build_jobs(available: u64, sharing: usize) -> usize {
+/// How many jobs a build runs at once, and its tests' threads, with `room` bytes of memory left it
+/// (crate::jobs, admission's room): one for each [`BUILD_JOB_MEMORY`], at most half the cores (the
+/// Mac has other work), at least 1.
+pub fn build_jobs(room: u64) -> usize {
     let cores = std::thread::available_parallelism().map_or(2, std::num::NonZero::get);
-    let fits = available / BUILD_JOB_MEMORY / sharing.max(1) as u64;
+    let fits = room / BUILD_JOB_MEMORY;
     usize::try_from(fits)
         .unwrap_or(usize::MAX)
         .clamp(1, (cores / 2).max(1))
@@ -434,19 +434,18 @@ mod usual_folders_tests {
 mod build_tests {
     use super::*;
 
-    /// A build gets one job per 1.5 GiB of its share of what's free, at most half the cores, at
-    /// least one; every name says the same number.
+    /// A build gets one job per 1.5 GiB of the room left it, at most half the cores, at least one;
+    /// every name says the same number.
     #[test]
     fn builds_are_as_wide_as_memory_holds() {
         let gib = 1024 * 1024 * 1024;
         let most =
             (std::thread::available_parallelism().map_or(2, std::num::NonZero::get) / 2).max(1);
-        assert_eq!(build_jobs(0, 1), 1);
-        assert_eq!(build_jobs(gib, 1), 1);
-        assert_eq!(build_jobs(3 * gib, 1), 2.min(most));
-        assert_eq!(build_jobs(6 * gib, 2), 2.min(most));
-        assert_eq!(build_jobs(6 * gib, 0), 4.min(most));
-        assert_eq!(build_jobs(1024 * gib, 1), most);
+        assert_eq!(build_jobs(0), 1);
+        assert_eq!(build_jobs(gib), 1);
+        assert_eq!(build_jobs(3 * gib), 2.min(most));
+        assert_eq!(build_jobs(6 * gib), 4.min(most));
+        assert_eq!(build_jobs(1024 * gib), most);
         assert_eq!(
             build_env(3),
             vec![
