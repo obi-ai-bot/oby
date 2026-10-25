@@ -3020,10 +3020,10 @@ impl Jobs {
         &self,
         agent: Option<&str>,
     ) -> Option<(Tool, crate::config::Account, Option<Waiting>)> {
-        let tools: Vec<Tool> = match agent
+        let asked = agent
             .map(str::trim)
-            .filter(|a| !a.is_empty() && !a.eq_ignore_ascii_case("auto"))
-        {
+            .filter(|a| !a.is_empty() && !a.eq_ignore_ascii_case("auto"));
+        let tools: Vec<Tool> = match asked {
             None => Tool::ALL.to_vec(),
             Some(id) => vec![Tool::from_id(id)?],
         };
@@ -3055,6 +3055,7 @@ impl Jobs {
                 kind: "limit".into(),
                 text: format!("an account with room: {line}"),
                 reserved: Some(held.iter().map(|(_, a)| a.id.clone()).collect()),
+                tool: asked.map(str::to_owned),
             }),
         ))
     }
@@ -3086,16 +3087,13 @@ impl Jobs {
                         .map(|a| (tool, a))
                 })
             });
-            let Some((tool, account)) = lifted.or_else(|| self.pick(Some(&job.agent), None).ok())
+            // The tool it asked for, else any: never narrowed by where it waits now.
+            let asked = job.waiting.as_ref().and_then(|w| w.tool.clone());
+            let Some((tool, account)) = lifted.or_else(|| self.pick(asked.as_deref(), None).ok())
             else {
                 // Still waiting: what holds it as it is now, on the first account that does (the
-                // one Start now lifts), its tool's every account when they were all its tool's.
-                let one_tool = listed.iter().all(|id| {
-                    Tool::from_id(&job.agent)
-                        .is_some_and(|t| self.accounts(t).iter().any(|a| &a.id == id))
-                });
-                if let Some((tool, first, Some(now))) =
-                    self.in_reserve(one_tool.then_some(job.agent.as_str()))
+                // one Start now lifts).
+                if let Some((tool, first, Some(now))) = self.in_reserve(asked.as_deref())
                     && (job.waiting.as_ref() != Some(&now) || job.account != first.id)
                 {
                     self.update(&job.id, |job| {
@@ -3436,6 +3434,7 @@ impl Jobs {
                 kind: kind.into(),
                 text: text.into(),
                 reserved: None,
+                tool: None,
             };
             let said = self
                 .lock()
@@ -14216,16 +14215,25 @@ mod tests {
         assert_eq!((job.agent.as_str(), job.account.as_str()), ("codex", "x"));
         assert_eq!(job.model, None);
 
-        // Use anyway on it: it starts there.
-        jobs.usage.lift("x", true).unwrap();
+        assert_eq!(wait.tool, None);
+
+        // Claude's account has room again: waiting on Codex's reserve never narrowed it to Codex,
+        // so it starts there (Use anyway: jobs_api's the_api_lifts_and_restores_the_reserve).
+        let room = crate::usage::Usage {
+            five_hour: Some(0.1),
+            seven_day: Some(0.2),
+            full_until: Some(now - 1),
+            ..Default::default()
+        };
+        jobs.usage.record("c", &room);
         jobs.room_for_waiting();
         let job = jobs.get(&made.id).unwrap();
         assert_eq!(job.waiting, None);
-        assert_eq!((job.agent.as_str(), job.account.as_str()), ("codex", "x"));
+        assert_eq!((job.agent.as_str(), job.account.as_str()), ("claude", "c"));
         assert!(
             job.changes
                 .iter()
-                .any(|c| c.what == "Started when an account had room: Codex · Codex one"),
+                .any(|c| c.what == "Started when an account had room: Claude Code · Claude one"),
             "{:?}",
             job.changes
         );

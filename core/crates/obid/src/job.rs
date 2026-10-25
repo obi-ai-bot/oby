@@ -93,6 +93,10 @@ pub struct Waiting {
     /// the apps offer "Use Personal anyway" on each.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reserved: Option<Vec<String>>,
+    /// The tool a job waiting for room asked for (`claude`, `codex`, `cursor`), or none: then any
+    /// tool's account with room starts it, wherever it waits now (#872).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool: Option<String>,
 }
 
 impl Waiting {
