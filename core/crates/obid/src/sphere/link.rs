@@ -291,6 +291,8 @@ pub struct Link {
     relay: std::sync::OnceLock<Arc<crate::relay::Relay>>,
     /// Who obid acts for in its Sphere ([`Link::owner`]).
     owner: Mutex<String>,
+    /// The runner status loop, started at the first follow only.
+    status_kept: std::sync::Once,
 }
 
 fn api(status: StatusCode, message: impl Into<String>) -> ApiError {
@@ -486,10 +488,21 @@ impl Link {
         let client = membership
             .as_ref()
             .and_then(|m| Client::new(&m.url, &m.sphere).ok());
-        let owner = membership
+        // The owner it joined as (an Oby that joined before `home/owner` existed keeps it now), else
+        // the one it joined a Sphere as before it left, else config's.
+        let joined_as = membership
             .as_ref()
             .and_then(|m| obi_protocol::card::params(&m.card)?.get("owner")?.as_str())
-            .map_or_else(|| config.owner.clone(), str::to_owned);
+            .map(str::to_owned);
+        if let Some(owner) = &joined_as
+            && files.load_owner().is_none()
+            && let Err(e) = files.save_owner(owner)
+        {
+            tracing::error!("can't keep the owner obid joined as: {e}");
+        }
+        let owner = joined_as
+            .or_else(|| files.load_owner())
+            .unwrap_or_else(|| config.owner.clone());
         let state = State {
             key,
             membership,
@@ -538,6 +551,7 @@ impl Link {
             sentry: std::sync::OnceLock::new(),
             relay: std::sync::OnceLock::new(),
             owner: Mutex::new(owner),
+            status_kept: std::sync::Once::new(),
         });
         // The inbox hears of the permissions jobs wait on. Jobs tells it with none of its own
         // locks held, and never while this Link's state is locked (only `start_obi_review` is
@@ -1605,8 +1619,21 @@ impl Link {
     /// next join makes a new one. The exchanges and the inbox stay.
     pub async fn leave(&self) -> Result<Value, ApiError> {
         let _one = self.joining.lock().await;
+        // No send under way, and nothing left to send: an exchange's waiting replies were for this
+        // Sphere, never the next one's.
+        let _sending = self.sending.lock().await;
         if self.has_membership() {
             self.settle_on_revoke();
+        }
+        let waiting: Vec<String> = self
+            .lock()
+            .exchanges
+            .values()
+            .filter(|e| !e.outbox.is_empty())
+            .map(|e| e.correlation_id.clone())
+            .collect();
+        for cid in waiting {
+            self.update_exchange(&cid, |e| e.outbox.clear());
         }
         self.files.forget().map_err(|e| {
             api(
@@ -1917,7 +1944,8 @@ impl Link {
         let kept = self
             .files
             .save_membership(&membership)
-            .and_then(|()| self.files.save_delegation(&delegation));
+            .and_then(|()| self.files.save_delegation(&delegation))
+            .and_then(|()| self.files.save_owner(&owner));
         {
             let mut state = self.lock();
             state.membership = Some(membership);
@@ -2173,7 +2201,7 @@ impl Link {
         if self.following.swap(true, Ordering::SeqCst) {
             return;
         }
-        self.keep_runner_status();
+        self.status_kept.call_once(|| self.keep_runner_status());
         let link = self.clone();
         tokio::spawn(async move {
             tokio::select! {
@@ -5539,10 +5567,12 @@ impl Link {
         self.owner.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
-    /// Until obid joins a Sphere, its owner becomes `github`, the login gh is signed in as, when
-    /// config's `owner` is still the Mac's login name obid wrote at its first start (#1214): a
+    /// Until obid first joins a Sphere, its owner becomes `github`, the login gh is signed in as,
+    /// when config's `owner` is still the Mac's login name obid wrote at its first start (#1214): a
     /// Sphere binds one owner key per owner id, and two people's Macs often share a login name
-    /// (or have one that isn't an id, `john.doe`). An owner the person set themselves stays.
+    /// (or have one that isn't an id, `john.doe`). An owner the person set themselves stays, and so
+    /// does the one obid ever joined as (`home/owner`, kept after a leave): the Sphere would refuse
+    /// that person's rejoin under another id ("this account joined as another owner").
     pub fn adopt_github_owner(&self, github: &str) {
         let github = github.to_ascii_lowercase();
         let login = nix::unistd::User::from_uid(nix::unistd::getuid())
@@ -5550,6 +5580,7 @@ impl Link {
             .flatten()
             .map(|user| user.name);
         if self.lock().membership.is_some()
+            || self.files.load_owner().is_some()
             || login.as_deref() != Some(self.config.owner.as_str())
             || !is_slug(&github)
         {
@@ -7070,8 +7101,19 @@ mod tests {
         assert!(home.join("sphere/membership.json").is_file());
         assert!(home.join("keys/obi.key").is_file());
 
+        let mut exchange = Exchange::new(
+            "outgoing",
+            json!({"correlation_id": "c-waiting", "type": "question"}),
+            "obi-ernesto".into(),
+            None,
+        );
+        exchange.outbox.push(json!({"id": "m-1"}));
+        link.lock().exchanges.insert("c-waiting".into(), exchange);
+
         let left = link.leave().await.ok().unwrap();
         assert_eq!(left["state"], "none");
+        // What waited to go to that Sphere never goes to the next.
+        assert!(link.lock().exchanges["c-waiting"].outbox.is_empty());
         assert!(!link.has_membership());
         assert!(!home.join("sphere").exists());
         assert!(!home.join("keys/obi.key").exists());
@@ -7112,7 +7154,8 @@ mod tests {
         assert_eq!(link.owner(), "wellington");
         let _ = std::fs::remove_dir_all(&home);
 
-        // A membership kept: the owner its card names, whatever config says.
+        // A membership kept: the owner its card names, whatever config says; kept in `home/owner`,
+        // and still the owner after a leave, and after a restart (#1214).
         let home = std::env::temp_dir().join(format!("obid-link-owner-in-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&home);
         let mut kept = membership("joined");
@@ -7128,6 +7171,20 @@ mod tests {
         let link = Link::open(config, jobs, events, stopping).unwrap();
         link.adopt_github_owner("wellprado");
         assert_eq!(link.owner(), "carol");
+        assert_eq!(Files::new(&home).load_owner().as_deref(), Some("carol"));
+        link.leave().await.ok().unwrap();
+        link.adopt_github_owner("wellprado");
+        assert_eq!(link.owner(), "carol");
+        let config = Config::parse(
+            &json!({"listen": "127.0.0.1:0", "home": home, "owner": login}).to_string(),
+        )
+        .unwrap();
+        let events = Events::new();
+        let jobs = Jobs::open(config.clone(), events.clone(), Err("no sandbox".into())).unwrap();
+        let (_stop, stopping) = watch::channel(false);
+        let again = Link::open(config, jobs, events, stopping).unwrap();
+        again.adopt_github_owner("wellprado");
+        assert_eq!(again.owner(), "carol");
         let _ = std::fs::remove_dir_all(&home);
     }
 

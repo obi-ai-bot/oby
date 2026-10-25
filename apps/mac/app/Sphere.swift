@@ -765,21 +765,29 @@ final class SphereModel {
     /// Leaves the Obysphere (docs/runner-api.md, `DELETE /v1/obid/sphere`), so this Mac can join
     /// another or this one again (#1214). This Mac's Oby is removed there first, with the owner's own
     /// token, which obid never holds; then obid forgets the Sphere and its Obi key.
+    /// When the Sphere can't be told, this Mac leaves all the same, and says so: the Sphere still
+    /// lists this Oby until its admin removes it.
     func leave() async throws {
         let runner = try runner()
         let membership: Membership = try await runner.call("GET", "v1/obid/sphere")
+        var untold: Error?
         if membership.state == "joined", let url = membership.url.flatMap(URL.init(string:)),
            let sphere = membership.sphere, let obi = membership.obiId {
             let server = SphereServer(base: url)
-            // ponytail: a Sphere that can't be reached still lists this Oby, removed by its admin later.
-            if let token = try? await server.ownerToken(owner: membership.owner, sphere: sphere,
-                                                         key: try OwnerKey.of(membership.owner), scope: "directory:read") {
-                _ = try? await server.call("DELETE", "spheres/\(sphere)/members/\(obi)", bearer: token)
+            do {
+                let token = try await server.ownerToken(owner: membership.owner, sphere: sphere,
+                                                        key: try OwnerKey.of(membership.owner), scope: "directory:read")
+                _ = try await server.call("DELETE", "spheres/\(sphere)/members/\(obi)", bearer: token)
+            } catch {
+                untold = error
             }
         }
         _ = try await runner.send("DELETE", "v1/obid/sphere")
         (name, admin, members, teamLink, requests) = (nil, false, [], nil, [])
         try await refresh()
+        if let untold {
+            throw RunnerError(message: "This Mac left \(membership.sphere ?? "the Obysphere"), but the Obysphere couldn't be told (\(untold.localizedDescription)): it still lists your Oby until its admin removes it.")
+        }
     }
 
     /// A new card and delegation for this Mac's Oby (docs/runner-api.md, `PUT /v1/obid/sphere/membership`):

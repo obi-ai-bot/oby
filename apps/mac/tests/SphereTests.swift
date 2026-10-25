@@ -332,6 +332,7 @@ struct SphereTests {
 
     /// Leave removes this Mac's Oby on the Sphere with the owner's own token, then obid forgets it (#1214).
     @MainActor @Test func leavingRemovesThisObyOnTheSphereThenObidForgetsIt() async throws {
+        Stubbed.left.withLock { $0 = false }
         let owner = "tester-\(UUID().uuidString.lowercased().prefix(8))"
         let server = RunnerStub { request in
             switch (request.method, request.path) {
@@ -365,6 +366,37 @@ struct SphereTests {
         #expect(server.requests.last?.authorization == "Bearer owner-token")
         #expect(obid.requests.contains { $0.method == "DELETE" && $0.path == "/v1/obid/sphere" })
         #expect(!sphere.joined && sphere.membership?.state == "none")
+    }
+
+    /// A Sphere that can't be told still lets this Mac leave, and the owner hears it's still listed there.
+    @MainActor @Test func leavingWhenTheSphereCantBeToldLeavesAndSaysSo() async throws {
+        Stubbed.left.withLock { $0 = false }
+        let owner = "tester-\(UUID().uuidString.lowercased().prefix(8))"
+        let server = RunnerStub { _ in (503, #"{"error": {"code": "unavailable", "message": "down"}}"#) }
+        let joined = #"{"state": "joined", "owner": "\#(owner)", "url": "https://\#(server.host)", "sphere": "acme", "obiId": "obi-\#(owner)"}"#
+        let left = #"{"state": "none", "owner": "\#(owner)"}"#
+        let obid = RunnerStub { request in
+            switch (request.method, request.path) {
+            case ("GET", "/v1/obid/sphere"): (200, Stubbed.left.withLock { $0 } ? left : joined)
+            case ("DELETE", "/v1/obid/sphere"): { Stubbed.left.withLock { $0 = true }; return (200, left) }()
+            default: (404, "{}")
+            }
+        }
+        let session = SphereServer.session
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [RunnerStubProtocol.self] + (configuration.protocolClasses ?? [])
+        SphereServer.session = URLSession(configuration: configuration, delegate: NoRedirects(), delegateQueue: nil)
+        defer {
+            SphereServer.session = session
+            try? OwnerKey.store.remove(owner)
+        }
+        let feed = RunnerFeed()
+        feed.stageAlerts(following: obid.runner)
+        let sphere = SphereModel(feed: feed)
+        let untold = await #expect(throws: RunnerError.self) { try await sphere.leave() }
+        #expect(untold?.message.hasPrefix("This Mac left acme, but the Obysphere couldn't be told") == true)
+        #expect(obid.requests.contains { $0.method == "DELETE" && $0.path == "/v1/obid/sphere" })
+        #expect(sphere.membership?.state == "none")
     }
 
     @Test func anObysphereIdComesFromItsName() {

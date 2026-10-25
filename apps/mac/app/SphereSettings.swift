@@ -261,17 +261,20 @@ struct SphereSettingsView: View {
             }
         }
         if sphere.admin { inviting(name) }
-        // Last, set apart (Sangam's design; an admin's Delete Obysphere waits for a server route).
-        SetGroup {
-            SetRow("Leave \(name)", about: "You’ll lose access until someone invites you back.") {
-                Button("Leave", role: .destructive) { leaving = true }.buttonStyle(.set)
+        // Last, set apart: an invited member leaves (Sangam's design). Its admin gets Delete
+        // Obysphere there instead, which waits for a server route: nothing for now.
+        if !sphere.admin {
+            SetGroup {
+                SetRow("Leave \(name)", about: "You’ll lose access until someone invites you back.") {
+                    Button("Leave", role: .destructive) { leaving = true }.buttonStyle(.set)
+                }
             }
-        }
-        .confirmationDialog("Leave \(name)?", isPresented: $leaving, titleVisibility: .visible) {
-            Button("Leave", role: .destructive) { sphere.run { try await sphere.leave() } }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("You’ll lose access to \(name) and everything its Obys share. To come back, someone has to invite you again.")
+            .confirmationDialog("Leave \(name)?", isPresented: $leaving, titleVisibility: .visible) {
+                Button("Leave", role: .destructive) { sphere.run { try await sphere.leave() } }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("You’ll lose access to \(name) and everything its Obys share. To come back, someone has to invite you again.")
+            }
         }
     }
 
