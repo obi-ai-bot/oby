@@ -2197,6 +2197,62 @@ fn a_failure_the_task_asked_for_ends_the_rounds() {
     );
 }
 
+/// Words for a job that hasn't started are kept for its first prompt, its step still saying what
+/// it waits for; the owner's words while its check runs are its next turn (#930). Never "Tell it
+/// again in a moment".
+#[test]
+fn words_wait_for_a_job_that_isnt_at_work() {
+    let folder = Folder::new("words-wait");
+    let remote = fixture(&folder.0.join("fixture"));
+    let obid = start(&folder.0, &config(&folder.0, &remote));
+    let one = request(
+        &obid,
+        "PUT",
+        "/v1/settings/jobs",
+        Some(&json!({"maxRunning": 1}).to_string()),
+    );
+    assert_eq!(one.status, 200, "{}", one.text);
+    let new = |job: Value| post_job(&obid, job).body["id"].as_str().unwrap().to_owned();
+    let tell = |id: &str, text: &str| {
+        request(
+            &obid,
+            "POST",
+            &format!("/v1/jobs/{id}/messages"),
+            Some(&json!({ "text": text }).to_string()),
+        )
+    };
+    let busy = new(json!({"repo": "obi-e2e/fixture-app", "kind": "research", "task": "SLEEP"}));
+    beat(&obid, &busy);
+    let queued =
+        new(json!({"repo": "obi-e2e/fixture-app", "kind": "research", "task": "KEEP PROMPTS"}));
+    let waiting = until(&obid, &queued, |j| j["status"] == "queued");
+    let told = tell(&queued, "Also read the README first.");
+    assert_eq!(told.status, 200, "{}", told.text);
+    assert_eq!(told.body["status"], "queued");
+    assert_eq!(told.body["step"], waiting["step"], "{}", told.text);
+    assert_eq!(
+        request(&obid, "POST", &format!("/v1/jobs/{busy}/stop"), None).status,
+        200
+    );
+    assert_eq!(wait(&obid, &queued)["status"], "done");
+    let asked = prompts(&obid, &queued);
+    assert_eq!(asked.len(), 1, "{asked:?}");
+    assert!(
+        asked[0].ends_with("Also read the README first.\n"),
+        "{asked:?}"
+    );
+
+    let checked = new(json!({"repo": "obi-e2e/fixture-app", "kind": "research",
+                             "task": "KEEP PROMPTS", "check": "sleep 3"}));
+    until(&obid, &checked, |j| j["step"] == "Running sleep 3");
+    let told = tell(&checked, "One more thing: list the tests too.");
+    assert_eq!(told.status, 200, "{}", told.text);
+    assert_eq!(wait(&obid, &checked)["status"], "done");
+    let asked = prompts(&obid, &checked);
+    assert_eq!(asked.len(), 2, "{asked:?}");
+    assert_eq!(asked[1], "One more thing: list the tests too.\n");
+}
+
 /// The prompts the stand-in agent got in the job's worktree (`KEEP PROMPTS`), oldest first.
 fn prompts(obid: &Obid, id: &str) -> Vec<String> {
     let log = obid

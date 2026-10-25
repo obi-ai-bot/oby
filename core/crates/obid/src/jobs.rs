@@ -3323,6 +3323,7 @@ impl Jobs {
                 }
                 // Once its slot is back: a reading under way can't measure it again ([`Jobs::record`]).
                 jobs.metered(&id);
+                jobs.left_words(&id);
                 // Its slot is back first: a panic again while it's ended frees nothing less.
                 if let Some(said) = panicked {
                     let ended = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -3615,24 +3616,35 @@ impl Jobs {
         }
         let heard = |job: &mut Job| hear(job, text);
         if job.status.is_active() {
-            // Checked and changed under one lock: a worker wrapping up takes no more words.
+            // Checked and changed under one lock. A job at work hears them as its next turn; one
+            // not started yet with its first prompt, its step still saying what it waits for; one
+            // wrapping up keeps the owner's own words for a round obid opens, else they start its
+            // follow-up once it ends (#930, `Jobs::left_words`).
             let taken = {
                 let mut state = self.lock();
-                let working = state.workers.contains_key(id) && !state.wrapping.contains(id);
+                let worker = state.workers.contains_key(id);
+                let wrapping = state.wrapping.contains(id);
                 let job = state.jobs.get_mut(id)?;
-                if working && job.status == Status::Running && job.phase == Some(Phase::Work) {
+                let starting = job.status == Status::Queued || job.phase == Some(Phase::Prepare);
+                if worker
+                    && !wrapping
+                    && job.status == Status::Running
+                    && job.phase == Some(Phase::Work)
+                {
                     heard(job);
+                    Some(job.clone())
+                } else if starting || (worker && source.owners()) {
+                    job.notes.get_or_insert_with(Vec::new).push(text.to_owned());
+                    job.heard.push(text.to_owned());
                     Some(job.clone())
                 } else {
                     None
                 }
             };
             let Some(job) = taken else {
-                return Some(Err(Refused(if job.status == Status::Queued {
-                    format!("{tool} hasn't started yet. Tell it again in a moment.")
-                } else {
-                    format!("{tool} is wrapping up. Tell it again once it's done.")
-                })));
+                return Some(Err(Refused(format!(
+                    "{tool} is wrapping up: only the owner's own words wait for it now."
+                ))));
             };
             if let Err(e) = self.store.save(&job) {
                 tracing::error!("can't keep job {id}: {e}");
@@ -3711,6 +3723,41 @@ impl Jobs {
         self.changed.notify_waiters();
         self.schedule();
         Some(Ok(resumed))
+    }
+
+    /// A round obid opens after the agent's last turn (a rebase, the commit, the decision check,
+    /// the scan's fix) takes words again, and `message` ends with the owner's words that came
+    /// while the job wrapped up (#930).
+    fn reopened(&self, id: &str, message: String) -> String {
+        self.lock().wrapping.remove(id);
+        let words = self.take_heard(id);
+        if words.is_empty() {
+            message
+        } else {
+            format!("{message}\n\n{}", words.join("\n\n"))
+        }
+    }
+
+    /// Its worker ended with the owner's words still unheard (they came while it wrapped up,
+    /// #930): they're taken and start its follow-up, as if the owner sent them now. A job the
+    /// owner stopped drops them (its notes keep them).
+    fn left_words(self: &Arc<Self>, id: &str) {
+        let Some(job) = self.get(id) else {
+            return;
+        };
+        if job.heard.is_empty() || job.status.is_active() || job.obi.is_some() {
+            return;
+        }
+        let words = self.take_heard(id);
+        if job.status == Status::Stopped {
+            return;
+        }
+        if let Some(Err(why)) = self.message(id, &words.join("\n\n"), Source::Owner) {
+            tracing::info!(
+                "job {id}: the owner's words after it ended started nothing: {}",
+                why.0
+            );
+        }
     }
 
     /// The owner's words the agent hasn't heard yet, taken: what its next turn hears.
@@ -7761,7 +7808,7 @@ impl Jobs {
                             message = rebase_prompt(&job, &start_commit, &files);
                             // Its reply leaves the job's summary to the work's.
                             noted = true;
-                            self.lock().wrapping.remove(id);
+                            message = self.reopened(id, message);
                             opening = Some(format!(
                                 "Oby told {} to rebase onto the moved base",
                                 tool.name()
@@ -7837,7 +7884,7 @@ impl Jobs {
                         rebase_round = true;
                         message = rebase_prompt(&job, &start_commit, &files);
                         noted = true;
-                        self.lock().wrapping.remove(id);
+                        message = self.reopened(id, message);
                         opening = Some(format!(
                             "Oby told {} to rebase onto the moved base",
                             tool.name()
@@ -7866,7 +7913,7 @@ impl Jobs {
                 opening = Some(format!("Oby told {} to commit its work", tool.name()));
                 // Its reply leaves the job's summary to the work's.
                 noted = true;
-                self.lock().wrapping.remove(id);
+                message = self.reopened(id, message);
                 continue 'rounds;
             }
             self.teammates_ended(id, &worktree, &start_commit).await;
@@ -7952,7 +7999,7 @@ impl Jobs {
                     });
                 } else {
                     message = crate::decisions::prompt(&conflicts);
-                    self.lock().wrapping.remove(id);
+                    message = self.reopened(id, message);
                     self.update(id, |job| {
                         job.phase = Some(Phase::Work);
                         job.publish_step = None;
@@ -8058,7 +8105,7 @@ impl Jobs {
                             .unwrap_or_else(|| repo.default_branch.clone());
                         message = crate::publish::fix_prompt(&found, &base);
                         blocked_before = Some(found);
-                        self.lock().wrapping.remove(id);
+                        message = self.reopened(id, message);
                         self.update(id, |job| {
                             job.phase = Some(Phase::Work);
                             job.publish_step = None;
