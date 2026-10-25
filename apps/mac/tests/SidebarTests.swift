@@ -64,8 +64,8 @@ struct SidebarTests {
         working.phase = .work
         working.rounds = 4
         working.round = 3
-        let queuedProgress = LiveView.progress(queued) ?? -1
-        let workingProgress = LiveView.progress(working) ?? -1
+        let queuedProgress = JobSummary.progress(queued) ?? -1
+        let workingProgress = JobSummary.progress(working) ?? -1
         // Getting ready is at the start; round 3 of 4 is half way through Work.
         #expect(queuedProgress >= 0 && queuedProgress < 0.2)
         #expect(workingProgress > queuedProgress && workingProgress < 0.6)
@@ -74,6 +74,6 @@ struct SidebarTests {
         merged.commits = 2
         merged.published = "https://github.com/deskree-inc/oby/pull/42"
         merged.pullRequest = PullRequestStatus(state: .merged, reviewDecision: .approved, base: "dev", mergedAt: now, checkedAt: now)
-        #expect((LiveView.progress(merged) ?? 0) > workingProgress)
+        #expect((JobSummary.progress(merged) ?? 0) > workingProgress)
     }
 }

@@ -1,7 +1,7 @@
 import SwiftUI
 
-/// What the window can do with one job, this Mac's own or the runner's: the same calls the job's
-/// screen makes (apps/mac/app/JobView.swift), gathered once so its card and its page share them.
+/// What the window can do with one job, this Mac's own or the runner's, gathered once so its card
+/// and its page share them.
 struct TaskActions {
     var place: String
     var account: String?
@@ -17,7 +17,7 @@ struct TaskActions {
     /// Move to…; nil for Oby's own reviews, which pick their account themselves.
     var move: ((MoveTarget) async throws -> Void)?
     /// Nil where this Mac can't publish (a runner's job, on a Mac without a Secure Enclave).
-    var publishing: JobView.Publishing?
+    var publishing: Publishing?
     var readReport: (() async throws -> ResearchDocument)?
     var fileProposal: ((Int, Bool) async throws -> FileProposalResult)?
     /// The page's box (Sangam's TaskView): the words, and the files with them, for Oby to pass on;
@@ -39,6 +39,13 @@ struct TaskActions {
     /// The + is there where the files can go: obid on this Mac, and a finished job, whose words
     /// start a follow-up (a job at work takes words only).
     static func attaches(_ job: Job, runnerHere: Bool) -> Bool { runnerHere && !job.isActive }
+
+    /// Publishing by hand: what it would do, in the words shown and approved (the runner's own,
+    /// for its jobs), and doing exactly that, on the click.
+    struct Publishing {
+        var action: () async throws -> String
+        var publish: (String) async throws -> Void
+    }
 
     /// What Later puts off: the job's open inbox item, else the permission it waits on.
     enum LaterTarget: Equatable { case item(String), permission(String) }
@@ -64,7 +71,7 @@ struct TaskActions {
                 feed.apply(try await feed.about(job.id) { try await $0.move(job.id, agent: target.agent, account: target.account, model: target.model) })
             } : nil,
             publishing: feed.device.key.isAvailable
-                ? JobView.Publishing(action: { try await feed.publishAction(job.id) }, publish: { try await feed.publish(job.id, action: $0) })
+                ? Publishing(action: { try await feed.publishAction(job.id) }, publish: { try await feed.publish(job.id, action: $0) })
                 : nil,
             readReport: { try await feed.about(job.id) { try await $0.report(job.id) } },
             fileProposal: { index, start in try await feed.about(job.id) { try await $0.fileProposal(job.id, index: index, start: start) } },
@@ -307,7 +314,7 @@ struct TaskCardView: View {
         let repo = job.repo.split(separator: "/").last.map(String.init)
         // "Claude Code · Personal · on Wellington’s Mac · oby" (Sangam's design, #808).
         let on = model.feed.extras[job.id]?.runsOn.map { "on \(RunnerMac.person($0.owner))’s Mac" }
-        return ([job.agentName, actions.account ?? LiveView.account(of: job, feed: model.feed)]
+        return ([job.agentName, actions.account ?? JobSummary.account(of: job, feed: model.feed)]
             + [on, repo].compactMap { $0 }).filter { !$0.isEmpty }.joined(separator: " · ")
     }
 }
@@ -812,3 +819,108 @@ struct TaskPagePreview: View {
 #Preview("Failed") { TaskPagePreview(fixture: .failed) }
 #Preview("Done") { TaskPagePreview(fixture: .done) }
 #endif
+
+/// Move to…: a tool, one of its accounts with its usage, and a model, then what the move will do.
+/// The task page opens it.
+struct MovePanel: View {
+    let job: Job
+    /// The accounts where it runs, with their usage.
+    let accounts: [AccountState]
+    let onMove: (MoveTarget) async throws -> Void
+    let onClose: () -> Void
+    @State private var moveAgent: String
+    /// Nil: keep its account on the same tool, else the least busy with room.
+    @State private var moveAccount: String?
+    /// Nil: its model as it is.
+    @State private var moveModel: String?
+    @State private var busy = false
+    @State private var problem: String?
+
+    init(job: Job, accounts: [AccountState], onMove: @escaping (MoveTarget) async throws -> Void, onClose: @escaping () -> Void) {
+        self.job = job
+        self.accounts = accounts
+        self.onMove = onMove
+        self.onClose = onClose
+        _moveAgent = State(initialValue: job.agent)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Move to").font(.system(size: 14, weight: .semibold)).accessibilityAddTraits(.isHeader)
+            HStack(spacing: 6) {
+                ForEach(MoveChoice.tools, id: \.0) { tool in
+                    choice(tool.1, selected: moveAgent == tool.0) { moveAgent = tool.0; moveAccount = nil; moveModel = nil }
+                }
+            }
+            Text("Account").font(.system(size: 12, weight: .semibold)).foregroundStyle(.white.opacity(0.6))
+            choice(moveAgent == job.agent ? "Keep its account" : "Least busy with room", selected: moveAccount == nil) { moveAccount = nil }
+            ForEach(accounts.filter { $0.account.agent == moveAgent }, id: \.account.id) { state in
+                let usage = MoveChoice.usage(signedIn: state.signedIn, fiveHour: state.fiveHour, sevenDay: state.sevenDay)
+                choice("\(state.account.name) · \(usage)", selected: moveAccount == state.account.id,
+                       warn: MoveChoice.busy(fiveHour: state.fiveHour, sevenDay: state.sevenDay)) { moveAccount = state.account.id }
+                    .disabled(!state.signedIn)
+            }
+            Text("Oby never picks an account past 80% of its 5-hour or weekly limit; one you pick takes the job anyway.")
+                .font(.system(size: 11)).foregroundStyle(.white.opacity(0.5))
+            Text("Model").font(.system(size: 12, weight: .semibold)).foregroundStyle(.white.opacity(0.6))
+            HStack(spacing: 6) {
+                choice("As it is", selected: moveModel == nil) { moveModel = nil }
+                choice("Settings default", selected: moveModel == Moves.toolDefault) { moveModel = Moves.toolDefault }
+            }
+            HStack(spacing: 6) {
+                ForEach(Moves.models[moveAgent] ?? [], id: \.self) { model in
+                    choice(AgentModels.name(model), selected: moveModel == model) { moveModel = model }
+                }
+            }
+            Text(MoveChoice.effect(active: job.isActive, running: job.status == .running))
+                .font(.system(size: 12)).foregroundStyle(.white.opacity(0.75))
+            if let problem {
+                Text(problem).font(.system(size: 12)).foregroundStyle(.red).lineLimit(3)
+            }
+            HStack(spacing: 8) {
+                Button(action: move) {
+                    Text(busy ? "Moving…" : "Move").font(.system(size: 13, weight: .semibold)).foregroundStyle(.black)
+                        .padding(.horizontal, 14).frame(height: 30)
+                        .background(.white, in: Capsule())
+                }
+                .buttonStyle(.plain)
+                .disabled(busy)
+                Button { problem = nil; onClose() } label: { pill("Not now") }
+                    .buttonStyle(.plain)
+                    .disabled(busy)
+            }
+        }
+        .padding(14)
+        .background(.white.opacity(0.07), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+    }
+
+    private func choice(_ title: String, selected: Bool, warn: Bool = false, _ pick: @escaping () -> Void) -> some View {
+        Button(action: pick) {
+            Text(title).font(.system(size: 12, weight: selected ? .semibold : .regular))
+                .foregroundStyle(selected ? Color.black : warn ? Color.orange : Color.white)
+                .padding(.horizontal, 10).frame(height: 24)
+                .background(selected ? Color.white : Color.white.opacity(0.12), in: Capsule())
+        }
+        .buttonStyle(.plain)
+        .accessibilityAddTraits(selected ? .isSelected : [])
+    }
+
+    private func move() {
+        let target = MoveTarget(agent: moveAgent, account: moveAccount, model: moveModel)
+        Task {
+            busy = true
+            defer { busy = false }
+            do {
+                try await onMove(target)
+                problem = nil
+                onClose()
+            } catch { problem = error.localizedDescription }
+        }
+    }
+
+    private func pill(_ title: String) -> some View {
+        Text(title).font(.system(size: 12, weight: .semibold))
+            .padding(.horizontal, 10).frame(height: 24)
+            .background(.white.opacity(0.12), in: Capsule())
+    }
+}

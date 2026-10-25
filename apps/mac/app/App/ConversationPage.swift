@@ -129,7 +129,7 @@ struct ConversationPage: View {
                                 MessageRow(row: row, first: index == 0, now: context.date,
                                            jobs: ThreadTaskLine.cards(under: row.turn, in: turns, jobs: all, startedBy: startedBy),
                                            followUps: { conversation.endedTurn(row.turn) ? [] : ThreadTaskLine.attached(to: $0, in: all, shown: shown) },
-                                           account: { LiveView.account(of: $0, feed: feed) },
+                                           account: { JobSummary.account(of: $0, feed: feed) },
                                            steps: conversation.steps(under: row.turn, in: turns),
                                            arrived: conversation.arrived[row.turn.id],
                                            streamed: conversation.streamed(under: row.turn, in: turns),

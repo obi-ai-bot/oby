@@ -858,45 +858,6 @@ struct EyeLevel: Layout {
     }
 }
 
-/// The bubble hugs its text while its row fills the column; long text gets at most 75%.
-struct MessageBubbleLayout: Layout {
-    var trailing: Bool
-    private func content(_ width: CGFloat, subviews: Subviews) -> CGSize {
-        subviews[0].sizeThatFits(ProposedViewSize(width: min(width * 0.75, OBYStyle.threadWidth * 0.75), height: nil))
-    }
-    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
-        let width = proposal.width ?? OBYStyle.threadWidth
-        return CGSize(width: width, height: content(width, subviews: subviews).height)
-    }
-    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
-        let size = content(bounds.width, subviews: subviews)
-        subviews[0].place(at: CGPoint(x: trailing ? bounds.maxX - size.width : bounds.minX, y: bounds.minY),
-                          proposal: ProposedViewSize(size))
-    }
-}
-
-struct ThinkingLine: View {
-    /// Steps of the runner's turn run: "Working" instead of "Thinking" (#304).
-    var working = false
-    /// Why Stop didn't go through, or nil.
-    var problem: String? = nil
-    let onStop: () -> Void
-    var body: some View {
-        HStack(spacing: OBYStyle.Space.sm) {
-            HStack(spacing: OBYStyle.Space.xs) {
-                ForEach(0..<3) { _ in Circle().fill(OBYStyle.tertiary).frame(width: 4, height: 4) }
-            }.accessibilityHidden(true)
-            Text(working ? "Working" : "Thinking").font(OBYStyle.small).foregroundStyle(OBYStyle.tertiary)
-            StopButton(action: onStop)
-            if let problem {
-                Text(problem).font(OBYStyle.caption).foregroundStyle(.orange)
-            }
-            Spacer()
-        }
-        .padding(.vertical, OBYStyle.Space.sm)
-    }
-}
-
 /// A job's page over Home (Sangam's TaskView): a runner's job open here stays across new lists,
 /// and one older than its latest 50 is fetched.
 private struct JobPane: View {
