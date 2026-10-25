@@ -1338,7 +1338,7 @@ fn oby_tell_job_never_answers_a_jobs_question() {
 }
 
 /// A follow-up is a job a turn starts: it counts against the turn's ten, and a turn starts at most
-/// one follow-up of a job.
+/// one follow-up of a job: more words for it go to that one, queued, which keeps them (#930).
 #[test]
 fn a_turn_starts_one_follow_up_of_a_job_within_its_ten() {
     let (_folder, obid) = obid("harness-follow-up-caps", true);
@@ -1375,7 +1375,10 @@ fn a_turn_starts_one_follow_up_of_a_job_within_its_ten() {
         json!({"said": format!(r#"REPEAT 2 {tell}"#), "new": true}),
     );
     assert!(
-        twice.body["text"].as_str().unwrap().contains("refused"),
+        twice.body["text"]
+            .as_str()
+            .unwrap()
+            .contains("I told it what you said"),
         "{}",
         twice.text
     );
