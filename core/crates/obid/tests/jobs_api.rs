@@ -3591,19 +3591,32 @@ fn the_api_lifts_and_restores_the_reserve() {
     assert_eq!(stub["reserved"], true);
     assert!(stub["fullUntil"].is_null());
 
-    // In its reserve, it takes only a job sent to it by name.
-    let refused = post_job(&obid, job("Nothing to do".into()));
-    assert_eq!(refused.status, 422, "{}", refused.text);
-    assert!(
-        refused
-            .text
-            .contains("Stub is in its weekly reserve (82% of its week used)"),
-        "{}",
-        refused.text
-    );
+    // In its reserve, it runs only a job sent to it by name; another waits, queued, taking no
+    // slot, with "Use Stub anyway" on it (#872), never refused.
     let mut named = job("Nothing to do".into());
     named["account"] = json!("stub");
     assert_eq!(post_job(&obid, named.clone()).status, 201);
+    let held = |obid: &Obid| {
+        let waits = post_job(obid, job("Nothing to do".into()));
+        assert_eq!(waits.status, 201, "{}", waits.text);
+        let id = waits.body["id"].as_str().unwrap().to_owned();
+        std::thread::sleep(Duration::from_millis(300));
+        let job = request(obid, "GET", &format!("/v1/jobs/{id}"), None).body;
+        assert_eq!(job["status"], "queued", "{job}");
+        assert_eq!(
+            job["waiting"],
+            json!({"kind": "limit", "text": "an account with room: Stub is in its weekly reserve", "reserved": ["stub"]})
+        );
+        assert_eq!(job["startWhen"], json!([{"room": true, "agent": "claude"}]));
+        assert!(
+            job["step"].as_str().unwrap().starts_with(
+                "Waiting for an account with room: Stub is in its weekly reserve. Use one anyway"
+            ),
+            "{job}"
+        );
+        id
+    };
+    let waiting = held(&obid);
 
     let lift =
         |obid: &Obid, body: &str| request(obid, "POST", "/v1/accounts/stub/reserve", Some(body));
@@ -3613,6 +3626,18 @@ fn the_api_lifts_and_restores_the_reserve() {
     assert_eq!(
         lifted.body["reserveLiftedUntil"],
         obi_protocol::time::format(reset)
+    );
+    // Use anyway: the waiting job starts there by itself.
+    let started = wait(&obid, &waiting);
+    assert_eq!(started["status"], "done", "{started}");
+    assert!(started["waiting"].is_null());
+    assert!(
+        started["changes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|c| c["what"] == "Started when an account had room: Claude Code · Stub"),
+        "{started}"
     );
     assert_eq!(post_job(&obid, job("Nothing to do".into())).status, 201);
 
@@ -3627,7 +3652,14 @@ fn the_api_lifts_and_restores_the_reserve() {
     assert_eq!(restored.status, 200, "{}", restored.text);
     assert_eq!(restored.body["reserved"], true);
     assert!(restored.body["reserveLiftedUntil"].is_null());
-    assert_eq!(post_job(&obid, job("Nothing to do".into())).status, 422);
+    // Start now (the apps' button on a job waiting to start) lifts its account's reserve.
+    let waiting = held(&obid);
+    let now = request(&obid, "POST", &format!("/v1/jobs/{waiting}/start"), None);
+    assert_eq!(now.status, 200, "{}", now.text);
+    assert_eq!(wait(&obid, &waiting)["status"], "done");
+    assert_eq!(status(&obid)["reserved"], false);
+    let again = request(&obid, "POST", &format!("/v1/jobs/{waiting}/start"), None);
+    assert_eq!(again.status, 409, "{}", again.text);
 
     let nobody = request(
         &obid,

@@ -183,6 +183,7 @@ pub fn router(shared: Arc<Shared>) -> Router {
             get(crate::routes::transcript_entry),
         )
         .route("/v1/jobs/{id}/stop", post(crate::routes::stop))
+        .route("/v1/jobs/{id}/start", post(crate::routes::start))
         .route("/v1/jobs/{id}/dismiss", post(crate::routes::dismiss))
         .route("/v1/jobs/{id}/messages", post(crate::routes::message))
         .route("/v1/jobs/{id}/permission", post(crate::routes::permission))
