@@ -719,35 +719,59 @@ fn check_api_error(error: crate::jobs::CheckResultError) -> ApiError {
     }
 }
 
-/// `GET /v1/settings/jobs`: how many jobs run at once.
-pub async fn job_settings(State(shared): State<Arc<Shared>>) -> Response {
-    json(
-        StatusCode::OK,
-        json!({"maxRunning": shared.jobs.max_running()}),
-    )
+/// The jobs' settings as `GET` and `PUT /v1/settings/jobs` answer them.
+fn job_settings_json(shared: &Shared) -> Value {
+    json!({"maxRunning": shared.jobs.max_running(), "accountFailover": shared.jobs.account_failover()})
 }
 
-/// `PUT /v1/settings/jobs`: `{"maxRunning": 1…20}`, kept across restarts. Raising it starts
-/// waiting jobs at once; lowering it stops nothing.
+/// `GET /v1/settings/jobs`: how many jobs run at once, and whether work moves on past an
+/// account's usage limit by itself.
+pub async fn job_settings(State(shared): State<Arc<Shared>>) -> Response {
+    json(StatusCode::OK, job_settings_json(&shared))
+}
+
+/// `PUT /v1/settings/jobs`: `{"maxRunning": 1…20, "accountFailover": true|false}`, either or both,
+/// kept across restarts. Raising `maxRunning` starts waiting jobs at once; lowering it stops
+/// nothing.
 pub async fn set_job_settings(
     State(shared): State<Arc<Shared>>,
     body: Bytes,
 ) -> Result<Response, ApiError> {
     let value: Value = serde_json::from_slice(&body)
         .map_err(|_| ApiError::new(StatusCode::BAD_REQUEST, "That isn't JSON."))?;
-    let max = value
-        .get("maxRunning")
-        .and_then(Value::as_u64)
-        .and_then(|n| u32::try_from(n).ok())
-        .ok_or_else(|| {
-            ApiError::new(
-                StatusCode::UNPROCESSABLE_ENTITY,
-                "The body is {\"maxRunning\": 1 to 20}.",
-            )
-        })?;
+    let bad = || {
+        ApiError::new(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "The body is {\"maxRunning\": 1 to 20, \"accountFailover\": true or false}, either or both.",
+        )
+    };
+    let max = match value.get("maxRunning") {
+        None => None,
+        Some(n) => Some(
+            n.as_u64()
+                .and_then(|n| u32::try_from(n).ok())
+                .ok_or_else(bad)?,
+        ),
+    };
+    let failover = match value.get("accountFailover") {
+        None => None,
+        Some(on) => Some(on.as_bool().ok_or_else(bad)?),
+    };
+    if max.is_none() && failover.is_none() {
+        return Err(bad());
+    }
     use crate::jobs::SettingsError;
-    match shared.jobs.set_max_running(max) {
-        Ok(max) => Ok(json(StatusCode::OK, json!({"maxRunning": max}))),
+    let kept = match max {
+        Some(max) => shared.jobs.set_max_running(max).map(|_| ()),
+        None => Ok(()),
+    }
+    .and_then(|()| match failover {
+        Some(on) => crate::settings::update(&shared.config.home, |s| s.account_failover = Some(on))
+            .map_err(SettingsError::Unkept),
+        None => Ok(()),
+    });
+    match kept {
+        Ok(()) => Ok(json(StatusCode::OK, job_settings_json(&shared))),
         Err(SettingsError::Refused(why)) => {
             Err(ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, why))
         }

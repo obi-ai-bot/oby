@@ -634,7 +634,9 @@ pub async fn run(
         ),
         _ => shared.jobs.none_signed_in(tool),
     };
-    for account in accounts.iter().take(3) {
+    // One account only while the owner keeps failover off (`accountFailover`, #871).
+    let most = if shared.jobs.account_failover() { 3 } else { 1 };
+    for account in accounts.iter().take(most) {
         match session(shared, account, said, given, asked, control, None).await {
             Ok(mut answered) => {
                 if !full.is_empty() {

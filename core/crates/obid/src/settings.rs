@@ -9,6 +9,11 @@ use serde::{Deserialize, Serialize};
 /// How many jobs may run at once: 1 to 20.
 pub const MAX_RUNNING_RANGE: std::ops::RangeInclusive<u32> = 1..=20;
 
+/// Whether obid moves work past an account's usage limit to another account with room by itself,
+/// when the owner didn't say (`accountFailover`, #871). ponytail: the default waits on the owner's
+/// call on the provider terms (#29); it's this one line.
+pub const ACCOUNT_FAILOVER: bool = true;
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Settings {
@@ -22,6 +27,16 @@ pub struct Settings {
     /// one day, even off and on again.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub check_in_sent: Option<i64>,
+    /// Whether a job (and a conversation's turn) past its account's usage limit goes on on another
+    /// account of the tool with room by itself (#871, #874); [`ACCOUNT_FAILOVER`] when unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_failover: Option<bool>,
+}
+
+impl Settings {
+    pub fn account_failover(&self) -> bool {
+        self.account_failover.unwrap_or(ACCOUNT_FAILOVER)
+    }
 }
 
 /// When Oby checks in by itself, and where (#1116): set, changed and turned off only by the
@@ -55,6 +70,7 @@ impl Default for Settings {
             max_running: default_max_running(),
             check_in: None,
             check_in_sent: None,
+            account_failover: None,
         }
     }
 }

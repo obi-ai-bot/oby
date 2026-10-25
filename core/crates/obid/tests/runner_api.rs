@@ -1082,7 +1082,8 @@ fn the_api_hands_out_checks_takes_their_results_and_tells_every_app() {
 
 /// ParallelTests.theCapIsInStatusAndSettings: `status.maxRunning` starts at 6; Settings changes it
 /// with `PUT /v1/settings/jobs`, 1 to 20 (0 and 21 are refused), `GET` says it, status follows,
-/// and obid keeps it across a restart.
+/// and obid keeps it across a restart. obid's `accountFailover` (#871) is set the same way, on its
+/// own or with the cap, and kept too.
 #[test]
 fn the_cap_is_in_status_and_settings() {
     let folder = Folder::new("cap");
@@ -1116,10 +1117,21 @@ fn the_cap_is_in_status_and_settings() {
         Some(&json!({"maxRunning": 3})),
     );
     assert_eq!(set.status, 200, "{}", set.text);
-    assert_eq!(set.body, json!({"maxRunning": 3}));
+    assert_eq!(set.body, json!({"maxRunning": 3, "accountFailover": true}));
+    for refused in [json!({"accountFailover": "no"}), json!({})] {
+        let answer = call(&obid, "PUT", "/v1/settings/jobs", Some(&refused));
+        assert_eq!(answer.status, 422, "{refused}: {}", answer.text);
+    }
+    let off = call(
+        &obid,
+        "PUT",
+        "/v1/settings/jobs",
+        Some(&json!({"accountFailover": false})),
+    );
+    assert_eq!(off.body, json!({"maxRunning": 3, "accountFailover": false}));
     assert_eq!(
         call(&obid, "GET", "/v1/settings/jobs", None).body,
-        json!({"maxRunning": 3})
+        json!({"maxRunning": 3, "accountFailover": false})
     );
     assert_eq!(call(&obid, "GET", "/v1/status", None).body["maxRunning"], 3);
     assert!(obid.stop().success());
@@ -1127,7 +1139,7 @@ fn the_cap_is_in_status_and_settings() {
     let obid = start(&folder.0, &config, None);
     assert_eq!(
         call(&obid, "GET", "/v1/settings/jobs", None).body,
-        json!({"maxRunning": 3})
+        json!({"maxRunning": 3, "accountFailover": false})
     );
     assert_eq!(call(&obid, "GET", "/v1/status", None).body["maxRunning"], 3);
 }

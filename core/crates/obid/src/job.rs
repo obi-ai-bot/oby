@@ -457,6 +457,10 @@ pub struct Job {
     /// Every time its tool or account was changed (`oby_change_job`), oldest first.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub moves: Vec<Move>,
+    /// The owner named its account (`POST /v1/jobs`, `oby_change_job`): it stays there past a
+    /// usage limit, never moved by Oby (#871). Kept in its file, never in the API.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub named: bool,
     /// The routine whose run started it (crate::routines), or none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub routine: Option<RoutineMark>,
@@ -692,6 +696,7 @@ impl Job {
             archived: None,
             changes: Vec::new(),
             moves: Vec::new(),
+            named: false,
             usage: None,
             peak_rss: None,
             agent_peak_rss: None,
