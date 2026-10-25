@@ -533,8 +533,9 @@ final class SphereModel {
         name = about["name"] as? String
         admin = about["admin_owner"] as? String == owner
         let list = try await server.call("GET", "spheres/\(sphere)/members", bearer: token)["members"] as? [[String: Any]] ?? []
+        // A removed member drops off the list (Sangam's Members).
         members = list.compactMap { entry in
-            guard let obi = entry["obi"] as? String, obi != membership?.obiId else { return nil }
+            guard let obi = entry["obi"] as? String, obi != membership?.obiId, entry["status"] as? String == "active" else { return nil }
             let params = ((entry["card"] as? [String: Any])?["capabilities"] as? [String: Any])
                 .flatMap { ($0["extensions"] as? [[String: Any]])?.first?["params"] as? [String: Any] }
             return Member(obi: obi, owner: entry["owner"] as? String ?? "", name: (entry["card"] as? [String: Any])?["name"] as? String ?? obi,
@@ -636,14 +637,45 @@ final class SphereModel {
     }
 
     /// A link for anyone at `domain` (with a sign-in) for 30 days, or else one for up to 50 people
-    /// for 7 days (sphere-api.md section 4, open invitations), kept for Settings to copy again.
+    /// for 7 days (sphere-api.md section 4, open invitations), kept for Settings to copy again. The
+    /// link made before is cancelled: one team link at a time (#1217).
     func makeTeamLink(domain: String?) async throws -> InviteLink {
-        guard let server, let owner, let sphere = membership?.sphere else { throw RunnerError(message: "This Oby isn't in an Obysphere.") }
-        let token = try await server.ownerToken(owner: owner, sphere: sphere, key: try OwnerKey.of(owner), scope: "admin")
+        let (server, owner, sphere, token) = try await adminToken()
         let link = try await invitation(server: server, token: token, sphere: sphere, name: name ?? sphere, by: owner, uses: domain == nil ? 50 : 1000, domain: domain)
+        if let old = teamLink { try? await withdraw(old, server: server, sphere: sphere, token: token) }
         try? Self.teamLinks.save(link.link, as: sphere)
         teamLink = link
         return link
+    }
+
+    /// Cancels the team link (sphere-api.md section 4, withdraw): it joins no one from now on (#1217).
+    func cancelTeamLink() async throws {
+        guard let link = teamLink else { return }
+        let (server, _, sphere, token) = try await adminToken()
+        try await withdraw(link, server: server, sphere: sphere, token: token)
+        try? Self.teamLinks.remove(sphere)
+        teamLink = nil
+    }
+
+    /// Takes `member`'s Oby out of the Obysphere (sphere-api.md section 4, revoke): its tokens stop
+    /// working, what waits for it is dropped, and its own Oby learns it within a minute (#1217).
+    func remove(_ member: Member) async throws {
+        let (server, _, sphere, token) = try await adminToken()
+        _ = try await server.call("DELETE", "spheres/\(sphere)/members/\(member.obi)", bearer: token)
+        try await refresh()
+    }
+
+    /// The admin's own token, with the Sphere it's for.
+    private func adminToken() async throws -> (SphereServer, String, String, String) {
+        guard let server, let owner, let sphere = membership?.sphere else { throw RunnerError(message: "This Oby isn't in an Obysphere.") }
+        return (server, owner, sphere, try await server.ownerToken(owner: owner, sphere: sphere, key: try OwnerKey.of(owner), scope: "admin"))
+    }
+
+    /// Withdraws `link`; one the Sphere no longer has is gone already.
+    private func withdraw(_ link: InviteLink, server: SphereServer, sphere: String, token: String) async throws {
+        do {
+            _ = try await server.call("DELETE", "spheres/\(sphere)/invitations/\(link.id)", bearer: token)
+        } catch let error as RunnerError where error.status == 404 {}
     }
 
     /// A named invitation `for` one owner, used once in 7 days; else an open one for `uses` Obis,

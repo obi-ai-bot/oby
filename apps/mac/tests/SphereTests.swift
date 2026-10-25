@@ -228,6 +228,58 @@ struct SphereTests {
         #expect(obid.requests.contains { $0.method == "POST" && $0.path == "/v1/obid/sphere/join" })
     }
 
+    /// The admin takes a member out and the team link back, with the admin's own token; a removed
+    /// member drops off the list, and a new link cancels the one before (#1217).
+    @MainActor @Test func theAdminRemovesAMemberAndCancelsTheTeamLink() async throws {
+        let owner = "tester-\(UUID().uuidString.lowercased().prefix(8))"
+        let id = "acme-\(UUID().uuidString.lowercased().prefix(8))"
+        let server = RunnerStub { request in
+            switch (request.method, request.path) {
+            case ("POST", "/v0.1/oauth/token"): (200, #"{"access_token": "admin-token"}"#)
+            case ("GET", "/v0.1/spheres/\(id)"): (200, #"{"name": "Acme", "admin_owner": "\#(owner)"}"#)
+            case ("GET", "/v0.1/spheres/\(id)/members"):
+                (200, #"{"members": [{"obi": "obi-sangam", "owner": "sangam", "status": "active", "card": {"name": "Sangam's Oby"}}, {"obi": "obi-gone", "owner": "gone", "status": "revoked"}]}"#)
+            case ("DELETE", "/v0.1/spheres/\(id)/members/obi-sangam"): (200, "{}")
+            case ("DELETE", "/v0.1/spheres/\(id)/invitations/inv-1"), ("DELETE", "/v0.1/spheres/\(id)/invitations/inv-2"): (204, "")
+            case ("POST", "/v0.1/spheres/\(id)/invitations"): (201, #"{"invitation_id": "inv-2", "secret": "s2"}"#)
+            default: (404, #"{"error": {"code": "not_found", "message": ""}}"#)
+            }
+        }
+        let obid = RunnerStub { request in
+            switch request.path {
+            case "/v1/obid/sphere": (200, #"{"state": "joined", "owner": "\#(owner)", "url": "https://\#(server.host)", "sphere": "\#(id)", "obiId": "obi-\#(owner)"}"#)
+            case "/v1/obid/sphere/pins", "/v1/inbox": (200, "[]")
+            default: (404, "{}")
+            }
+        }
+        let session = SphereServer.session
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [RunnerStubProtocol.self] + (configuration.protocolClasses ?? [])
+        SphereServer.session = URLSession(configuration: configuration, delegate: NoRedirects(), delegateQueue: nil)
+        defer {
+            SphereServer.session = session
+            try? OwnerKey.store.remove(owner)
+            try? SphereModel.teamLinks.remove(id)
+        }
+        let first = InviteLink(server: URL(string: "https://\(server.host)")!, sphere: id, name: "Acme", by: owner, id: "inv-1", secret: "s1")
+        try SphereModel.teamLinks.save(first.link, as: id)
+        let feed = RunnerFeed()
+        feed.stageAlerts(following: obid.runner)
+        let sphere = SphereModel(feed: feed)
+        try await sphere.refresh()
+        #expect(sphere.admin && sphere.members.map(\.obi) == ["obi-sangam"] && sphere.teamLink?.id == "inv-1")
+        let deletes = { server.requests.filter { $0.method == "DELETE" }.map { "\($0.path) \($0.authorization ?? "")" } }
+
+        try await sphere.remove(sphere.members[0])
+        #expect(deletes() == ["/v0.1/spheres/\(id)/members/obi-sangam Bearer admin-token"])
+        _ = try await sphere.makeTeamLink(domain: nil)
+        #expect(deletes().last == "/v0.1/spheres/\(id)/invitations/inv-1 Bearer admin-token")
+        #expect(sphere.teamLink?.id == "inv-2")
+        try await sphere.cancelTeamLink()
+        #expect(deletes().last == "/v0.1/spheres/\(id)/invitations/inv-2 Bearer admin-token")
+        #expect(sphere.teamLink == nil && (try SphereModel.teamLinks.value(id)) == nil)
+    }
+
     /// A Deploy… while the token is being used makes a new one: that one, and the clipboard holding
     /// it, stay.
     @MainActor @Test func aNewDeployWhileUsingKeepsTheNewToken() async throws {
