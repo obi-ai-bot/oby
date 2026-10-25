@@ -1174,7 +1174,9 @@ impl Jobs {
     /// The cleanup pass (docs/runner-api.md, `cleanup`): removes the worktree of every settled job
     /// ([`settled_in`]) whose worktree holds nothing that exists nowhere else
     /// ([`Jobs::worktree_holds_work`]), through obid's clone, and keeps the rest in `status.cleanup.kept`.
-    /// `cleared` is when Clear done was last pressed. Answers how many it removed.
+    /// `cleared` is when Clear done was last pressed. A job done with ([`done_with`]) that keeps
+    /// its worktree a while yet loses its build outputs now ([`Jobs::free_build_outputs`]).
+    /// Answers how many worktrees it removed or freed space in.
     pub async fn clean_worktrees(&self, now: i64, cleared: Option<i64>) -> usize {
         let settled: Vec<Job> = {
             let state = self.lock();
@@ -1220,6 +1222,45 @@ impl Jobs {
             tracing::info!("job {}: its worktree was cleaned up", job.id);
             self.update(&job.id, |j| j.worktree = None);
             removed += 1;
+        }
+        let built: Vec<(String, String)> = {
+            let state = self.lock();
+            state
+                .jobs
+                .values()
+                .filter(|job| done_with(&state, job) && job.builds_left())
+                .filter(|job| self.worktree_path(&job.id).exists())
+                .map(|job| (job.id.clone(), job.repo.clone()))
+                .collect()
+        };
+        for (id, repo) in built {
+            if self.shutting_down.load(Ordering::Relaxed) {
+                break;
+            }
+            let preparing = self.preparing(&repo);
+            let _preparing = preparing.lock().await;
+            let done = {
+                let state = self.lock();
+                state.jobs.get(&id).is_some_and(|j| done_with(&state, j))
+            };
+            if !done || !self.worktree_path(&id).exists() {
+                continue;
+            }
+            // Tried once per end, freed or not: a worktree git can't answer for stays as it is.
+            let bytes = match self.free_build_outputs(&id).await {
+                Ok(bytes) => bytes,
+                Err(why) => {
+                    tracing::info!("job {id}: its build outputs stay: {why}");
+                    0
+                }
+            };
+            if bytes > 0 {
+                tracing::info!("job {id}: its build outputs went, {bytes} bytes");
+                removed += 1;
+            }
+            self.update(&id, |j| {
+                j.build_freed = Some(crate::job::BuildFreed { bytes, at: now })
+            });
         }
         *self.cleaned.lock().unwrap_or_else(|e| e.into_inner()) = Cleaned {
             last_run: Some(now),
@@ -1290,6 +1331,41 @@ impl Jobs {
             Ok(refs) if !refs.is_empty() => None,
             _ => Some("It has commits that aren't on the remote.".into()),
         }
+    }
+
+    /// Deletes the build outputs in a job's worktree ([`build_outputs`]: a build makes them again)
+    /// and answers how many bytes that freed. Only folders git ignores: never the job's work, which
+    /// is its commits. git lists them and `rm` takes them in the job's sandbox, so a link the agent
+    /// left leads nowhere outside its worktree.
+    async fn free_build_outputs(&self, id: &str) -> Result<u64, String> {
+        let ignored = [
+            "ls-files",
+            "--others",
+            "--ignored",
+            "--exclude-standard",
+            "--directory",
+            "-z",
+        ];
+        let listed = self.sandboxed_git(id, &ignored, None).await?;
+        let worktree = self.worktree_path(id);
+        let outputs = build_outputs(&worktree, &String::from_utf8_lossy(&listed));
+        if outputs.is_empty() {
+            return Ok(0);
+        }
+        let size = || -> u64 {
+            outputs
+                .iter()
+                .map(|dir| crate::api::disk_usage(&worktree.join(dir)))
+                .sum()
+        };
+        let before = size();
+        let mut rm: Vec<OsString> = vec!["/bin/rm".into(), "-rf".into(), "--".into()];
+        rm.extend(outputs.iter().map(|dir| dir.clone().into_os_string()));
+        let removed = self
+            .sandboxed(id, &rm, None, SANDBOXED_GIT_LIMIT, usize::MAX)
+            .await;
+        let freed = before.saturating_sub(size());
+        removed.map(|_| freed)
     }
 
     /// Waits until a job may have settled (it ended, was dismissed or archived, or Clear done was
@@ -4403,6 +4479,28 @@ impl Jobs {
         limit: Duration,
         max: usize,
     ) -> Result<Vec<u8>, String> {
+        let mut argv: Vec<OsString> = vec![
+            "git".into(),
+            "-c".into(),
+            "core.hooksPath=/dev/null".into(),
+            "-c".into(),
+            "core.fsmonitor=false".into(),
+        ];
+        argv.extend(args.iter().map(OsString::from));
+        self.sandboxed(id, &argv, input, limit, max).await
+    }
+
+    /// Runs `argv` in the job's sandbox, in its worktree, as its git runs there
+    /// ([`Self::sandboxed_git`]): no network, and nothing to write but the worktree and the job's
+    /// own git folders.
+    async fn sandboxed(
+        &self,
+        id: &str,
+        argv: &[OsString],
+        input: Option<Vec<u8>>,
+        limit: Duration,
+        max: usize,
+    ) -> Result<Vec<u8>, String> {
         let sandbox = self.sandbox.as_ref().map_err(String::clone)?;
         let worktree = self.worktree_path(id);
         let (admin, common) = self.own_git_dirs(id).await?;
@@ -4414,17 +4512,9 @@ impl Jobs {
         let mut spec = self.spec(&worktree, &admin, &common, &temp, true, Tool::Claude);
         spec.network = false;
         spec.read_only.clear();
-        let mut argv: Vec<OsString> = vec![
-            "git".into(),
-            "-c".into(),
-            "core.hooksPath=/dev/null".into(),
-            "-c".into(),
-            "core.fsmonitor=false".into(),
-        ];
-        argv.extend(args.iter().map(OsString::from));
         let env = process::sandbox_env(&process::tools_path(), &temp, &spec.git_env());
         sandboxed_output(
-            &sandbox.wrap(&spec, &argv),
+            &sandbox.wrap(&spec, argv),
             &env,
             &worktree,
             input,
@@ -8171,6 +8261,8 @@ impl Jobs {
                 }
             });
             if closed {
+                // Merged or closed: its job may be done with, and its build outputs go.
+                self.cleaning.notify_one();
                 if let Some(link) = self.link.get().and_then(std::sync::Weak::upgrade) {
                     link.merge_items(&job.id, None);
                 }
@@ -10667,7 +10759,15 @@ fn settled_in(state: &State, job: &Job, now: i64, cleared: Option<i64>) -> bool 
         || job.archived.is_some()
         || cleared.is_some_and(|at| finished <= at)
         || job.kind == "review" && job.obi.is_none();
-    !job.status.is_active()
+    done_with(state, job) && (put_away || now - finished >= SETTLE_AFTER)
+}
+
+/// Whether `job` is done with, as far as obid's records tell: it ended and needs nothing, no
+/// worker or publish holds it, its pull request isn't open, and no follow-up still at work carries
+/// its branch on. Nothing waits on its worktree's builds any more ([`Jobs::free_build_outputs`]).
+fn done_with(state: &State, job: &Job) -> bool {
+    job.finished.is_some()
+        && !job.status.is_active()
         && !job.needs_you()
         && !state.workers.contains_key(&job.id)
         && !state.publishing.contains(&job.id)
@@ -10677,7 +10777,37 @@ fn settled_in(state: &State, job: &Job, now: i64, cleared: Option<i64>) -> bool 
                 && j.branch == job.branch
                 && (j.status.is_active() || j.needs_you() || pull_request_open(j))
         })
-        && (put_away || now - finished >= SETTLE_AFTER)
+}
+
+/// The build outputs among the folders git ignores in `worktree` (`ls-files --directory -z`, each
+/// ending with `/`): a cache by its `CACHEDIR.TAG` (the Cache Directory Tagging convention, which
+/// Cargo's `target/` follows), Xcode's `DerivedData`, and a `node_modules`'s `.cache` (its packages
+/// stay: a check runs without the network). Never in `.obi/`, and only where every folder on the
+/// way is a real one, not a link.
+fn build_outputs(worktree: &Path, listed: &str) -> Vec<PathBuf> {
+    let real = |dir: &Path| {
+        let mut at = worktree.to_path_buf();
+        dir.components().all(|part| {
+            at.push(part);
+            matches!(part, std::path::Component::Normal(_))
+                && std::fs::symlink_metadata(&at).is_ok_and(|m| m.is_dir())
+        })
+    };
+    listed
+        .split('\0')
+        .filter_map(|entry| entry.strip_suffix('/'))
+        .map(PathBuf::from)
+        .filter(|dir| !dir.starts_with(".obi") && real(dir))
+        .filter_map(|dir| match dir.file_name().and_then(|n| n.to_str()) {
+            Some("DerivedData") => Some(dir),
+            Some("node_modules") => Some(dir.join(".cache")).filter(|cache| real(cache)),
+            _ => worktree
+                .join(&dir)
+                .join("CACHEDIR.TAG")
+                .is_file()
+                .then_some(dir),
+        })
+        .collect()
 }
 
 /// Why obid won't run git for a worktree whose `.git` names another repository.
@@ -13482,6 +13612,104 @@ mod tests {
             },
         ));
         assert_eq!(width(jobs.build_env("a", false)), Some(1));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// What a build leaves in a worktree: Cargo's `target/` (its `CACHEDIR.TAG`), `node_modules`
+    /// with its `.cache`, Xcode's `DerivedData`, and, ignored too, logs no build made and a cache in
+    /// `.obi/`, all in `.gitignore`.
+    fn build_in(tree: &Path) {
+        std::fs::write(
+            tree.join(".gitignore"),
+            "target/\nnode_modules/\nDerivedData/\nlogs/\n.obi/\n",
+        )
+        .unwrap();
+        for dir in [
+            "target/debug",
+            "node_modules/.cache/babel",
+            "node_modules/left-pad",
+            "DerivedData/Build",
+            "logs",
+            ".obi/target",
+        ] {
+            std::fs::create_dir_all(tree.join(dir)).unwrap();
+        }
+        std::fs::write(tree.join("target/CACHEDIR.TAG"), "Signature: cargo\n").unwrap();
+        std::fs::write(tree.join("target/debug/app"), vec![1u8; 64 * 1024]).unwrap();
+        std::fs::write(tree.join("node_modules/.cache/babel/x.json"), "{}").unwrap();
+        std::fs::write(
+            tree.join("node_modules/left-pad/index.js"),
+            "module.exports = 1;\n",
+        )
+        .unwrap();
+        std::fs::write(tree.join("DerivedData/Build/x"), "x").unwrap();
+        std::fs::write(tree.join("logs/run.log"), "kept").unwrap();
+        std::fs::write(tree.join(".obi/target/CACHEDIR.TAG"), "Signature: cargo\n").unwrap();
+    }
+
+    /// Which ignored folders are a build's: a cache by its tag, `DerivedData`, a `node_modules`'s
+    /// `.cache` (not its packages); never one in `.obi/`, one with no tag, or one reached through
+    /// a link.
+    #[test]
+    fn build_outputs_are_only_a_builds() {
+        let tree = std::env::temp_dir().join(format!("obid-outputs-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&tree).unwrap();
+        build_in(&tree);
+        std::fs::create_dir_all(tree.join("away/target")).unwrap();
+        std::fs::write(tree.join("away/target/CACHEDIR.TAG"), "").unwrap();
+        std::os::unix::fs::symlink(tree.join("away"), tree.join("linked")).unwrap();
+        let listed =
+            "target/\0node_modules/\0DerivedData/\0logs/\0.obi/\0.obi/target/\0linked/target/\0";
+        assert_eq!(
+            build_outputs(&tree, listed),
+            vec![
+                PathBuf::from("target"),
+                PathBuf::from("node_modules/.cache"),
+                PathBuf::from("DerivedData")
+            ]
+        );
+        let _ = std::fs::remove_dir_all(&tree);
+    }
+
+    /// A job done with that keeps its worktree a while yet (it ended an hour ago) loses its build
+    /// outputs on the next pass, git and `rm` in its sandbox, and says what that freed; the rest
+    /// of its worktree stays. One whose pull request is open keeps them, and the next pass doesn't
+    /// look at the first again.
+    #[tokio::test]
+    async fn a_job_done_with_loses_its_build_outputs() {
+        let (root, clone, base, jobs) = cleanup_home("builds", true);
+        let now = obi_protocol::time::now();
+        let (mut done, tree) = ended(&jobs, &clone, &base, "built", now);
+        done.finished = Some(now - 60 * 60);
+        let (mut open, open_tree) = ended(&jobs, &clone, &base, "open", now);
+        open.finished = Some(now - 60 * 60);
+        open.published = Some("https://github.com/o/r/pull/1".into());
+        for (job, tree) in [(done, &tree), (open, &open_tree)] {
+            build_in(tree);
+            jobs.lock().jobs.insert(job.id.clone(), job);
+        }
+
+        assert_eq!(jobs.clean_worktrees(now, None).await, 1);
+        let freed = jobs.get("built").unwrap().build_freed.unwrap();
+        assert!(freed.bytes >= 64 * 1024, "{freed:?}");
+        assert_eq!(freed.at, now);
+        for gone in ["target", "DerivedData", "node_modules/.cache"] {
+            assert!(!tree.join(gone).exists(), "{gone} stayed");
+        }
+        for stays in [
+            ".git",
+            ".gitignore",
+            "node_modules/left-pad/index.js",
+            "logs/run.log",
+            ".obi/target/CACHEDIR.TAG",
+        ] {
+            assert!(tree.join(stays).exists(), "{stays} went");
+        }
+        assert!(open_tree.join("target/debug/app").exists());
+        assert_eq!(jobs.get("open").unwrap().build_freed, None);
+
+        assert_eq!(jobs.clean_worktrees(now + 1, None).await, 0);
+        assert_eq!(jobs.get("built").unwrap().build_freed.unwrap().at, now);
         let _ = std::fs::remove_dir_all(&root);
     }
 

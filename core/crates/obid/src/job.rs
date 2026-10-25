@@ -187,6 +187,13 @@ impl Review {
     }
 }
 
+/// What deleting a job's build outputs freed, in bytes, and when, in seconds since the epoch.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BuildFreed {
+    pub bytes: u64,
+    pub at: i64,
+}
+
 /// A job as obid keeps it (`home/jobs/<id>.json`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -422,6 +429,10 @@ pub struct Job {
     pub agent_peak_rss: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub check_peak_rss: Option<u64>,
+    /// What deleting its worktree's build outputs freed once it was done with, and when
+    /// (crate::jobs, `free_build_outputs`); none before that.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub build_freed: Option<BuildFreed>,
     /// Claude Code's session and its counts at its last result, which the next turn's resumed
     /// counts include (crate::jobs). Never in the API's job.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -685,6 +696,7 @@ impl Job {
             peak_rss: None,
             agent_peak_rss: None,
             check_peak_rss: None,
+            build_freed: None,
             usage_seen: None,
             window_share: None,
             routine: None,
@@ -891,6 +903,13 @@ impl Job {
             && self.current_review().is_some_and(|r| !r.approved())
     }
 
+    /// Whether its worktree's build outputs may still be there: none deleted since it last ended.
+    pub fn builds_left(&self) -> bool {
+        self.build_freed
+            .as_ref()
+            .is_none_or(|freed| self.finished.is_some_and(|end| end > freed.at))
+    }
+
     /// Waiting for Publish (its own publish failed), with commits its pull request won't take,
     /// failed or interrupted, Oby's review left for the owner, or its merge stopped where only
     /// the owner takes it on (crate::merge), and not dismissed.
@@ -1054,6 +1073,9 @@ impl Job {
         }
         if let Some(peak) = self.check_peak_rss {
             value["checkPeakRss"] = json!(peak);
+        }
+        if let Some(freed) = &self.build_freed {
+            value["buildFreed"] = json!({"bytes": freed.bytes, "at": date(Some(freed.at))});
         }
         if let Some(share) = self.window_share.as_ref().and_then(|s| s.to_json()) {
             value["windowShare"] = share;
