@@ -1468,20 +1468,29 @@ impl Jobs {
         if outputs.is_empty() {
             return Ok(0);
         }
-        let size = || -> u64 {
-            outputs
-                .iter()
-                .map(|dir| crate::api::disk_usage(&worktree.join(dir)))
-                .sum()
+        // The walks off the runtime's threads: a target/ can hold a million files.
+        let size = |worktree: PathBuf, outputs: Vec<PathBuf>| async move {
+            tokio::task::spawn_blocking(move || {
+                outputs
+                    .iter()
+                    .map(|dir| crate::api::disk_usage(&worktree.join(dir)))
+                    .sum::<u64>()
+            })
+            .await
+            .unwrap_or(0)
         };
-        let before = size();
+        let before = size(worktree.clone(), outputs.clone()).await;
         let mut rm: Vec<OsString> = vec!["/bin/rm".into(), "-rf".into(), "--".into()];
         rm.extend(outputs.iter().map(|dir| dir.clone().into_os_string()));
         let removed = self
             .sandboxed(id, &rm, None, SANDBOXED_GIT_LIMIT, usize::MAX)
             .await;
-        let freed = before.saturating_sub(size());
-        removed.map(|_| freed)
+        // What went is freed, all of it or not: an rm that stopped partway says why in the log.
+        let freed = before.saturating_sub(size(worktree, outputs).await);
+        if let Err(why) = removed {
+            tracing::info!("job {id}: {freed} bytes of its build outputs went, not all: {why}");
+        }
+        Ok(freed)
     }
 
     /// Waits until a job may have settled (it ended, was dismissed or archived, or Clear done was
@@ -11592,9 +11601,11 @@ fn done_with(state: &State, job: &Job) -> bool {
 
 /// The build outputs among the folders git ignores in `worktree` (`ls-files --directory -z`, each
 /// ending with `/`): a cache by its `CACHEDIR.TAG` (the Cache Directory Tagging convention, which
-/// Cargo's `target/` follows), Xcode's `DerivedData`, and a `node_modules`'s `.cache` (its packages
-/// stay: a check runs without the network). Never in `.obi/`, and only where every folder on the
-/// way is a real one, not a link.
+/// Cargo's `target/` follows: a regular file that begins with its signature), Xcode's
+/// `DerivedData`, and a `node_modules`'s `.cache`. A `node_modules`'s packages stay, and so does a
+/// Python virtual environment (its `pyvenv.cfg`), which uv tags as a cache too: a check runs
+/// without the network to install them again. Never in `.obi/`, and only where every folder on the
+/// way, the last one too, is a real one, not a link.
 fn build_outputs(worktree: &Path, listed: &str) -> Vec<PathBuf> {
     let real = |dir: &Path| {
         let mut at = worktree.to_path_buf();
@@ -11612,13 +11623,32 @@ fn build_outputs(worktree: &Path, listed: &str) -> Vec<PathBuf> {
         .filter_map(|dir| match dir.file_name().and_then(|n| n.to_str()) {
             Some("DerivedData") => Some(dir),
             Some("node_modules") => Some(dir.join(".cache")).filter(|cache| real(cache)),
-            _ => worktree
-                .join(&dir)
-                .join("CACHEDIR.TAG")
-                .is_file()
-                .then_some(dir),
+            _ => {
+                let at = worktree.join(&dir);
+                (tagged(&at) && !at.join("pyvenv.cfg").exists()).then_some(dir)
+            }
         })
         .collect()
+}
+
+/// Whether `dir` holds a `CACHEDIR.TAG`: a regular file of its own (not a link, a pipe or a
+/// device) that begins with the convention's signature.
+fn tagged(dir: &Path) -> bool {
+    use std::io::Read;
+    use std::os::unix::fs::OpenOptionsExt;
+    const SIGNATURE: &[u8] = b"Signature: 8a477f597d28d172789f06886806bc55";
+    let mut head = [0u8; SIGNATURE.len()];
+    std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(dir.join("CACHEDIR.TAG"))
+        .and_then(|file| {
+            if !file.metadata()?.is_file() {
+                return Err(std::io::Error::other("not a regular file"));
+            }
+            (&file).read_exact(&mut head)
+        })
+        .is_ok_and(|()| head == *SIGNATURE)
 }
 
 /// Why obid won't run git for a worktree whose `.git` names another repository.
@@ -14689,7 +14719,7 @@ mod tests {
     fn build_in(tree: &Path) {
         std::fs::write(
             tree.join(".gitignore"),
-            "target/\nnode_modules/\nDerivedData/\nlogs/\n.obi/\n",
+            "target/\nnode_modules/\nDerivedData/\nlogs/\n.obi/\n.venv/\nunsigned/\ntlink\n",
         )
         .unwrap();
         for dir in [
@@ -14699,10 +14729,25 @@ mod tests {
             "DerivedData/Build",
             "logs",
             ".obi/target",
+            ".venv/lib",
+            "unsigned",
         ] {
             std::fs::create_dir_all(tree.join(dir)).unwrap();
         }
-        std::fs::write(tree.join("target/CACHEDIR.TAG"), "Signature: cargo\n").unwrap();
+        // Cargo's tag; uv tags its virtual environments the same way; a tag without the signature.
+        let tag = "Signature: 8a477f597d28d172789f06886806bc55\n# a build made this\n";
+        std::fs::write(tree.join("target/CACHEDIR.TAG"), tag).unwrap();
+        std::fs::write(tree.join(".venv/CACHEDIR.TAG"), tag).unwrap();
+        std::fs::write(tree.join(".venv/pyvenv.cfg"), "home = /usr/bin\n").unwrap();
+        std::fs::write(tree.join("unsigned/CACHEDIR.TAG"), "Signature: cargo\n").unwrap();
+        // A link as the last part, out of the worktree: to a tagged folder, and as a .cache.
+        let outside = tree.with_extension("outside");
+        std::fs::create_dir_all(outside.join("kept")).unwrap();
+        std::fs::write(outside.join("CACHEDIR.TAG"), tag).unwrap();
+        std::fs::write(outside.join("kept/file"), "mine").unwrap();
+        std::os::unix::fs::symlink(&outside, tree.join("tlink")).unwrap();
+        std::fs::create_dir_all(tree.join("web/node_modules")).unwrap();
+        std::os::unix::fs::symlink(&outside, tree.join("web/node_modules/.cache")).unwrap();
         std::fs::write(tree.join("target/debug/app"), vec![1u8; 64 * 1024]).unwrap();
         std::fs::write(tree.join("node_modules/.cache/babel/x.json"), "{}").unwrap();
         std::fs::write(
@@ -14712,7 +14757,7 @@ mod tests {
         .unwrap();
         std::fs::write(tree.join("DerivedData/Build/x"), "x").unwrap();
         std::fs::write(tree.join("logs/run.log"), "kept").unwrap();
-        std::fs::write(tree.join(".obi/target/CACHEDIR.TAG"), "Signature: cargo\n").unwrap();
+        std::fs::write(tree.join(".obi/target/CACHEDIR.TAG"), tag).unwrap();
     }
 
     /// Which ignored folders are a build's: a cache by its tag, `DerivedData`, a `node_modules`'s
@@ -14726,8 +14771,7 @@ mod tests {
         std::fs::create_dir_all(tree.join("away/target")).unwrap();
         std::fs::write(tree.join("away/target/CACHEDIR.TAG"), "").unwrap();
         std::os::unix::fs::symlink(tree.join("away"), tree.join("linked")).unwrap();
-        let listed =
-            "target/\0node_modules/\0DerivedData/\0logs/\0.obi/\0.obi/target/\0linked/target/\0";
+        let listed = "target/\0node_modules/\0DerivedData/\0logs/\0.obi/\0.obi/target/\0linked/target/\0.venv/\0unsigned/\0tlink/\0web/node_modules/\0";
         assert_eq!(
             build_outputs(&tree, listed),
             vec![
@@ -14736,6 +14780,7 @@ mod tests {
                 PathBuf::from("DerivedData")
             ]
         );
+        let _ = std::fs::remove_dir_all(tree.with_extension("outside"));
         let _ = std::fs::remove_dir_all(&tree);
     }
 
@@ -14770,9 +14815,17 @@ mod tests {
             "node_modules/left-pad/index.js",
             "logs/run.log",
             ".obi/target/CACHEDIR.TAG",
+            ".venv/pyvenv.cfg",
+            "unsigned/CACHEDIR.TAG",
         ] {
             assert!(tree.join(stays).exists(), "{stays} went");
         }
+        // Links stay links, and what they lead to out of the worktree stays whole.
+        for link in ["tlink", "web/node_modules/.cache"] {
+            assert!(std::fs::symlink_metadata(tree.join(link)).is_ok_and(|m| m.is_symlink()));
+        }
+        let outside = tree.with_extension("outside");
+        assert!(outside.join("kept/file").exists() && outside.join("CACHEDIR.TAG").exists());
         assert!(open_tree.join("target/debug/app").exists());
         assert_eq!(jobs.get("open").unwrap().build_freed, None);
 
