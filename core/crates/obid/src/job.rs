@@ -43,6 +43,9 @@ pub const ONE_MORE_ROUND: &str = "One more round";
 pub const TRY_AGAIN: &str = "Try again";
 /// How the reason of a job obid's own bug (a panic in its task) ended starts (#914).
 pub const CRASHED: &str = "obid hit a bug while running this job, so it stopped it: ";
+/// How the `reviewError` of a job whose head no reviewer could review starts: the owner hears of it
+/// from its own inbox item (crate::sphere::inbox::review_item), never as an orchestrator event.
+pub const COULDNT_REVIEW: &str = "Oby couldn't review ";
 /// The reason of a job obid kept going down with (#915): it isn't picked up again by itself.
 pub const LOOPED: &str = "obid went down 3 times in 30 minutes while this ran, so Oby left it here. Try again carries it on.";
 

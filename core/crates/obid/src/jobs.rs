@@ -8657,7 +8657,7 @@ impl Jobs {
                 .as_deref()
                 .and_then(|url| crate::github::pull_request_number(url, &author.repo))
                 .map_or("its pull request".to_owned(), |n| format!("#{n}"));
-            let error = (!retry).then(|| format!("Oby couldn't review {number}: {why}"));
+            let error = (!retry).then(|| format!("{}{number}: {why}", crate::job::COULDNT_REVIEW));
             let author = self.update(&of, |job| {
                 job.reviewing = None;
                 job.review_failed = Some(failed);
