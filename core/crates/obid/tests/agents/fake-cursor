@@ -18,6 +18,7 @@
 //   TWICE            round one asks to push and is told no; round two writes .obi/twice and says
 //                    what its prompt started with
 //   ENV              says its HOME, XDG_CONFIG_HOME, CURSOR_CONFIG_DIR, model, mode and settings
+//   LOGIN            says which keys its login file holds, and the file itself
 //   anything else    "Nothing to do."
 // It fails the prompt when its environment holds a Claude Code, Anthropic, GitHub or Cursor login
 // variable, or obid's token.
@@ -166,6 +167,14 @@ async function prompt(id, text) {
   }
   if (task.includes("FAIL")) return send({ id, error: { code: -32603, message: "it broke" } });
   if (task.includes("REFUSE")) return answered(id, "refusal");
+  if (task.includes("LOGIN")) {
+    const file = process.platform === "darwin"
+      ? join(process.env.HOME || "/nonexistent", ".cursor", "auth.json")
+      : join(process.env.XDG_CONFIG_HOME || "/nonexistent", "cursor", "auth.json");
+    const login = readFileSync(file, "utf8");
+    say([`keys=${Object.keys(JSON.parse(login)).sort().join(",")}`, `login=${login}`].join("\n"));
+    return answered(id);
+  }
   if (task.includes("ENV")) {
     const settings = JSON.parse(readFileSync(join(config, "cli-config.json"), "utf8"));
     say([`HOME=${process.env.HOME}`, `XDG_CONFIG_HOME=${process.env.XDG_CONFIG_HOME}`, `CURSOR_CONFIG_DIR=${process.env.CURSOR_CONFIG_DIR}`,

@@ -512,6 +512,48 @@ fn cursors_own_login_runs_from_a_copy() {
     );
 }
 
+/// Cursor's own login only in the macOS Keychain (`cursorKeychain`, a stand-in `security` holding
+/// its access and refresh tokens): a job runs from a private copy holding only the access token
+/// (and an API key, when there's one), the refresh token never asked for; the copy is gone once
+/// the run ends, and the token never shows in what the job says.
+#[cfg(target_os = "macos")]
+#[test]
+fn cursors_keychain_login_runs_from_a_copy_of_only_what_calls_the_api() {
+    let folder = Folder::new("cursor-keychain");
+    let remote = fixture(&folder.0.join("fixture"));
+    let mut config = config(&folder.0, &remote, &agents().join("fake-claude"));
+    config["agents"] = json!({"cursor": {"bin": agents().join("fake-cursor"), "accounts": []}});
+    config["cursorKeychain"] = json!(true);
+    let security = agents().join("fake-security-cursor");
+    let obid = start_with(
+        &folder.0,
+        &config,
+        None,
+        &[("OBID_SECURITY_BIN", security.to_str().unwrap())],
+    );
+    let id = dispatch(&obid, json!({"agent": "cursor", "task": "LOGIN"}));
+    let job = ended(&obid, &id);
+    assert_eq!(job["status"], "done", "{job}\n{}", obid.log());
+    assert_eq!(job["account"], "cursor");
+    let said = summary(&job);
+    assert!(said.contains("keys=accessToken\n"), "{said}");
+    assert!(
+        !said.contains("keychain-held-access") && said.contains("[redacted"),
+        "{said}"
+    );
+    assert!(!said.contains("keychain-held-refresh"), "{said}");
+    let login = obid.home.join("logins").join(&id);
+    assert!(login.is_dir());
+    assert!(!login.join(".cursor/auth.json").exists());
+    let asked = std::fs::read_to_string(folder.0.join("tmp/obid-test-security-calls")).unwrap();
+    assert!(
+        asked.contains("-a cursor-user -s cursor-access-token"),
+        "{asked}"
+    );
+    assert!(!asked.contains("cursor-refresh-token"), "{asked}");
+    assert!(!obid.log().contains("keychain-held-access"));
+}
+
 /// obid's fixed denials hold for Cursor: a push is `reject_once`, and the next round's prompt
 /// starts with what obid declined and why, since ACP's answer carries no words. Cursor's question
 /// is skipped, a request for obid's files is refused, and a fine command is allowed once.

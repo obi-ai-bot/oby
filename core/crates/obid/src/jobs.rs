@@ -6241,7 +6241,9 @@ impl Jobs {
                     };
                     return Err(stall(why).await);
                 }
-                let said = turn.last_said();
+                // The job's summary keeps the agent's words without any secret obid holds, as its
+                // transcript does: a login copy's token, a job's MCP token, the vault's.
+                let said = crate::secrets::known().redact(&turn.last_said());
                 if !turn.succeeded() {
                     let subtype = turn.result.as_ref().and_then(|r| r.get("subtype"));
                     if subtype.and_then(Value::as_str) == Some("error_max_turns") {
@@ -8406,8 +8408,11 @@ pub(crate) fn signed_in(tool: Tool, account: &crate::config::Account, home: Opti
     has_login(tool, account, home)
         && match (tool, login_file(tool, account, home)) {
             (Tool::Codex, Some(file)) => codex_copy_ready(&file, &account.name).is_ok(),
-            // With no file, the login is Cursor's own Keychain item's, which holds a token.
-            (Tool::Cursor, Some(file)) => cursor_has_token(&file) || !is_regular_file(&file),
+            (Tool::Cursor, Some(file)) if is_regular_file(&file) => cursor_has_token(&file),
+            // With no file, the login is Cursor's own Keychain items'.
+            (Tool::Cursor, Some(_)) => {
+                cursor_keychain_login().is_some_and(|login| cursor_login_live(&login))
+            }
             _ => true,
         }
 }
@@ -8434,16 +8439,20 @@ pub(crate) fn login_note(
     login_problem(tool, account, home).map(|_| "Run codex once")
 }
 
-/// Whether Cursor's login file holds what a run's copy keeps ([`cursor_without_refresh`]): an
-/// access token or an API key.
+/// Whether Cursor's login file holds what a run's copy keeps ([`cursor_login_live`]).
 fn cursor_has_token(file: &Path) -> bool {
-    let login: Value = std::fs::read(file)
-        .ok()
-        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-        .unwrap_or_default();
-    ["accessToken", "apiKey"]
-        .iter()
-        .any(|key| login[key].as_str().is_some_and(|t| !t.is_empty()))
+    std::fs::read(file).is_ok_and(|bytes| cursor_login_live(&bytes))
+}
+
+/// Whether a Cursor login (its file, or its Keychain items as [`cursor_login_json`] makes them)
+/// holds what a run's copy keeps ([`cursor_without_refresh`]): an API key, or an access token that
+/// hasn't ended, when its JWT says when (`exp`). An empty value is none.
+fn cursor_login_live(login: &[u8]) -> bool {
+    let login: Value = serde_json::from_slice(login).unwrap_or_default();
+    let value = |key: &str| login[key].as_str().filter(|t| !t.is_empty());
+    value("apiKey").is_some()
+        || value("accessToken")
+            .is_some_and(|token| jwt_ends(token).is_none_or(|ends| ends > now_ms() / 1000))
 }
 
 /// The name Claude Code gives its login in the macOS Keychain for a `CLAUDE_CONFIG_DIR` (none: its
@@ -11445,6 +11454,22 @@ mod tests {
             "not learned"
         );
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A Cursor login is signed in only with something a run can use: an API key, or an access
+    /// token that hasn't ended (when its JWT says). Empty values, or nothing, are signed out.
+    #[test]
+    fn a_cursor_login_is_signed_in_only_with_a_live_token_or_key() {
+        let live = |login: Value| cursor_login_live(login.to_string().as_bytes());
+        assert!(live(json!({"accessToken": codex_access(3600)})));
+        assert!(live(json!({"accessToken": "opaque-token-with-no-expiry"})));
+        assert!(!live(json!({"accessToken": codex_access(-60)})));
+        assert!(live(
+            json!({"accessToken": codex_access(-60), "apiKey": "key-of-the-account"})
+        ));
+        assert!(!live(json!({"accessToken": "", "apiKey": ""})));
+        assert!(!live(json!({})));
+        assert!(!cursor_login_live(b"not json"));
     }
 
     /// What a box of an older obid could have planted in an account's folder for the next unboxed
