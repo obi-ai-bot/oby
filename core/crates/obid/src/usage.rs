@@ -21,7 +21,7 @@ pub const NEARLY_FULL: f64 = 0.95;
 const WEEK: i64 = 7 * 86_400;
 /// How long a refused account is held when its tool didn't say when it resets: its next report
 /// says more.
-const UNKNOWN_RESET: i64 = 3_600;
+pub(crate) const UNKNOWN_RESET: i64 = 3_600;
 /// The last second `time::format` writes with four digits (9999-12-31T23:59:59Z).
 const LAST: i64 = 253_402_300_799;
 
@@ -76,6 +76,22 @@ impl Usage {
     pub fn reserved(&self, now: i64) -> bool {
         self.seven_day_at(now).unwrap_or(0.0) >= RESERVE && self.lifted_until(now).is_none()
     }
+    /// When it takes automatic work again, as far as its tool said: the latest of the resets that
+    /// hold it ([`Usage::held`]). `None` when it can now, or when no reset of them is known.
+    pub fn free_at(&self, now: i64) -> Option<i64> {
+        self.held(now)?;
+        let five = (self.five_hour_at(now).unwrap_or(0.0) >= NEARLY_FULL)
+            .then_some(self.five_hour_resets)
+            .flatten();
+        let week = (self.seven_day_at(now).unwrap_or(0.0) >= NEARLY_FULL || self.reserved(now))
+            .then(|| self.week_resets(now))
+            .flatten();
+        [self.full_until_at(now), five, week]
+            .into_iter()
+            .flatten()
+            .max()
+    }
+
     /// Why it can't take automatic work now ("is at 96% of its week"), or `None` when it can.
     pub fn held(&self, now: i64) -> Option<String> {
         let percent = |used: f64| (used * 100.0).round() as i64;
@@ -795,6 +811,26 @@ mod tests {
         usage.full_until = Some(300);
         assert!(usage.held(201).is_some());
         assert_eq!(usage.held(300), None);
+    }
+
+    /// When an account takes automatic work again: the latest reset of what holds it (#871).
+    #[test]
+    fn free_at_is_the_latest_reset_that_holds_it() {
+        let mut usage = week(0.5, 900);
+        assert_eq!(usage.free_at(100), None, "it has room");
+        usage.full_until = Some(300);
+        assert_eq!(usage.free_at(100), Some(300));
+        usage.five_hour = Some(0.97);
+        usage.five_hour_resets = Some(400);
+        assert_eq!(usage.free_at(100), Some(400));
+        usage.seven_day = Some(0.85);
+        assert_eq!(usage.free_at(100), Some(900), "its weekly reserve too");
+        usage.seven_day_resets = None;
+        assert_eq!(
+            usage.free_at(100),
+            Some(400),
+            "a reset it didn't say isn't known"
+        );
     }
 
     #[test]

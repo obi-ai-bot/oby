@@ -1374,6 +1374,100 @@ fn a_usage_limit_is_tried_again_after_its_reset() {
     assert_eq!(job["reason"], "Claude AI usage limit reached.");
 }
 
+/// A job whose account hits its usage limit goes on by itself on another account of the tool with
+/// room (#871): the same session, worktree, branch and round, its agent told why, the move on the
+/// job. The full account is marked full, so routing passes it by. With every account full, the job
+/// waits for the reset and the owner gets one `limit` item saying when the first has room again.
+#[test]
+fn a_job_at_its_limit_goes_on_on_an_account_with_room() {
+    let folder = Folder::new("failover");
+    let remote = fixture(&folder.0.join("fixture"));
+    let mut config = config(&folder.0, &remote);
+    let accounts = folder.0.join("home/accounts");
+    config["agents"]["claude"]["accounts"] = json!([
+        {"id": "full", "name": "Full", "configDir": accounts.join("full")},
+        {"id": "room", "name": "Room", "configDir": accounts.join("room")}
+    ]);
+    let ends = (obi_protocol::time::now() + 10 * 86_400) * 1000;
+    for account in ["full", "room"] {
+        std::fs::create_dir_all(accounts.join(account)).unwrap();
+        let login = json!({"claudeAiOauth": {"accessToken": format!("tok-{account}-plain-test-login"), "expiresAt": ends}});
+        std::fs::write(
+            accounts.join(account).join(".credentials.json"),
+            login.to_string(),
+        )
+        .unwrap();
+    }
+    let obid = start(&folder.0, &config);
+    let post = |task: &str| {
+        post_job(
+            &obid,
+            json!({"repo": "obi-e2e/fixture-app", "kind": "research", "task": task}),
+        )
+    };
+    let id = post("LIMITED ON: full").body["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let job = wait(&obid, &id);
+    assert_eq!(job["status"], "done", "{job}");
+    assert_eq!(job["account"], "room", "{job}");
+    assert_eq!(job["round"], 1, "{job}");
+    let session = job["session"].as_str().unwrap();
+    assert_eq!(
+        job["summary"],
+        format!("went on: resume={session} told=true"),
+        "{job}"
+    );
+    assert_eq!(job["moves"][0]["from"], "Claude Code · Full", "{job}");
+    assert_eq!(job["moves"][0]["to"], "Claude Code · Room", "{job}");
+    assert!(
+        job["moves"][0]["why"]
+            .as_str()
+            .unwrap()
+            .starts_with("Full hit its usage limit until "),
+        "{job}"
+    );
+    let status = request(&obid, "GET", "/v1/status", None).body;
+    let full = status["accounts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["id"] == "full")
+        .cloned()
+        .unwrap();
+    assert!(full["fullUntil"].is_string(), "{full}");
+
+    // Routing passes the full account by; the other fills too.
+    let next = post("LIMITED ON: tok");
+    assert_eq!(next.body["account"], "room", "{}", next.text);
+    let id = next.body["id"].as_str().unwrap().to_owned();
+    let job = wait(&obid, &id);
+    assert_eq!(job["status"], "interrupted", "{job}");
+    assert!(job["resumesAt"].is_string(), "{job}");
+    assert!(job["moves"].as_array().unwrap().is_empty(), "{job}");
+    let inbox = request(&obid, "GET", "/v1/inbox", None).body;
+    let limits: Vec<&Value> = inbox
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|i| i["kind"] == "limit")
+        .collect();
+    assert_eq!(limits.len(), 1, "{inbox}");
+    assert_eq!(limits[0]["job"], id.as_str(), "{inbox}");
+    assert!(
+        limits[0]["text"].as_str().unwrap().starts_with(
+            "Every Claude Code account is full. The first with room again is Full, at "
+        ),
+        "{inbox}"
+    );
+    assert_eq!(
+        limits[0]["options"],
+        json!(["Try again", "Dismiss"]),
+        "{inbox}"
+    );
+}
+
 /// A job stopped at a limit after committing keeps its commits and counts them (#757): words told
 /// to it start a follow-up from its branch, whose worktree has them.
 #[test]

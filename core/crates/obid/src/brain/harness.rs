@@ -427,8 +427,10 @@ fn prestart(shared: &Arc<Shared>) {
 async fn start_next(shared: &Arc<Shared>, id: &str) -> Result<(), String> {
     let account = shared
         .jobs
-        .signed_in_account(Tool::Claude)
-        .ok_or("no Claude Code account is signed in")?;
+        .thinking_accounts(Tool::Claude)
+        .into_iter()
+        .next()
+        .ok_or("no Claude Code account is signed in with room")?;
     let busy = shared.harness.busy(id);
     let _held = busy.lock().await;
     // Taken by a new conversation whose turn ran first, or started already.
@@ -604,15 +606,60 @@ pub async fn run(
     if !shared.config.conversation.harness || super::lead::leads(said) {
         return turn::run(shared, said, given, asked, control).await;
     }
-    // The agent the configuration names: Claude Code, or Codex (super::harness_codex).
+    // The agent the configuration names: Claude Code, or Codex (super::harness_codex), on the
+    // accounts it thinks with, best first (#874); the one its session is on first while that one
+    // has room, so it keeps its session. Another is tried only when a turn's account filled: at
+    // most three in one turn.
     let tool = shared.config.conversation.agent;
-    let why = match shared.jobs.signed_in_account(tool) {
-        None => shared.jobs.none_signed_in(tool),
-        Some(account) => match session(shared, &account, said, given, asked, control, None).await {
-            Ok(answered) => return answered,
-            Err(why) => why,
-        },
+    let mut accounts = shared.jobs.thinking_accounts(tool);
+    let place = Place::of(&shared.config.home, &control.conversation);
+    if let Some(on) = kept_on(&place).filter(|on| shared.jobs.has_room(on))
+        && let Some(at) = accounts.iter().position(|a| a.id == on)
+    {
+        let account = accounts.remove(at);
+        accounts.insert(0, account);
+    }
+    let mut full = Vec::new();
+    let mut why = match shared.jobs.signed_in_account(tool) {
+        Some(account) if accounts.is_empty() => format!(
+            "{} · {} {}",
+            tool.name(),
+            account.name,
+            shared
+                .jobs
+                .usage
+                .get(&account.id)
+                .held(obi_protocol::time::now())
+                .unwrap_or_default()
+        ),
+        _ => shared.jobs.none_signed_in(tool),
     };
+    for account in accounts.iter().take(3) {
+        match session(shared, account, said, given, asked, control, None).await {
+            Ok(mut answered) => {
+                if !full.is_empty() {
+                    let on = format!("Oby answered on {} · {}", tool.name(), account.name);
+                    answered.talk = said_why(answered.talk, &on, &full.join("; "));
+                }
+                return answered;
+            }
+            Err(failed) => {
+                why = failed;
+                // Only an account its turn found full is another's to take over.
+                let now = obi_protocol::time::now();
+                let usage = shared.jobs.usage.get(&account.id);
+                if !control.live() || usage.full_until_at(now).is_none() {
+                    break;
+                }
+                full.push(format!(
+                    "{} · {} {}",
+                    tool.name(),
+                    account.name,
+                    usage.held(now).unwrap_or_default()
+                ));
+            }
+        }
+    }
     if !control.live() {
         return Answered {
             talk: Talk::None,
@@ -625,8 +672,11 @@ pub async fn run(
         control.conversation
     );
     let mut answered = turn::run(shared, said, given, asked, control).await;
+    if !full.is_empty() {
+        why = full.join("; ");
+    }
     let why = placed(&crate::secrets::known().redact(&why), &homes(shared));
-    answered.talk = said_why(answered.talk, &why);
+    answered.talk = said_why(answered.talk, "Oby's plan loop answered", &why);
     answered
 }
 
@@ -651,9 +701,10 @@ pub(super) async fn supervise(
     .await
 }
 
-/// The plan loop's answer, with the line that says why it answered.
-fn said_why(talk: Talk, why: &str) -> Talk {
-    let line = format!("(Oby's plan loop answered: {}.)", why.trim_end_matches('.'));
+/// The plan loop's answer (or another account's, #874), with the line that says who answered and
+/// why: `(<who>: <why>.)`.
+fn said_why(talk: Talk, who: &str, why: &str) -> Talk {
+    let line = format!("({who}: {}.)", why.trim_end_matches('.'));
     match talk {
         Talk::Reply { text, jobs } if text.is_empty() => Talk::Reply { text: line, jobs },
         Talk::Reply { text, jobs } => Talk::Reply {
@@ -929,13 +980,22 @@ struct Kept {
     web: bool,
 }
 
-/// Whether the conversation's session on `account` read something untrusted, even one that's
-/// never picked up again (ended for good: its id is gone, its taint isn't).
-fn kept_taint(place: &Place, account: &str) -> bool {
+/// Whether the conversation's session read something untrusted, even one that's never picked up
+/// again (ended for good: its id is gone, its taint isn't), on whichever account: the taint is the
+/// conversation's, so a turn moved to another account keeps it (#874).
+fn kept_taint(place: &Place) -> bool {
     std::fs::read(&place.session)
         .ok()
         .and_then(|bytes| serde_json::from_slice::<Kept>(&bytes).ok())
-        .is_some_and(|kept| kept.account == account && kept.web)
+        .is_some_and(|kept| kept.web)
+}
+
+/// The account the conversation's kept session is on.
+fn kept_on(place: &Place) -> Option<String> {
+    let bytes = std::fs::read(&place.session).ok()?;
+    serde_json::from_slice::<Kept>(&bytes)
+        .ok()
+        .map(|kept| kept.account)
 }
 
 fn kept(place: &Place, account: &str) -> Option<Kept> {
@@ -1019,9 +1079,7 @@ async fn session(
         control: control.clone(),
         jobs: Mutex::new(vec![]),
         nonce: super::briefing::nonce(),
-        web: AtomicBool::new(
-            resumed.as_ref().is_some_and(|k| k.web) || kept_taint(&place, &account.id),
-        ),
+        web: AtomicBool::new(resumed.as_ref().is_some_and(|k| k.web) || kept_taint(&place)),
         dispatched: AtomicUsize::new(0),
         told: AtomicUsize::new(0),
         kept: if unattended {
@@ -1377,6 +1435,14 @@ async fn attempts(
             return Ok((text, End::Answered));
         }
         let why = turn.text().lines().next().unwrap_or("").trim().to_owned();
+        // A usage limit: the account is marked full, as a job's is, and isn't tried again; the
+        // turn moves on to another account (`run`, #874).
+        if turn.resets.is_some() || crate::limits::is_limit(&why) {
+            let now = obi_protocol::time::now();
+            let reset = turn.resets.or_else(|| crate::limits::reset_in(&why, now));
+            shared.jobs.mark_full(&account.id, reset, now);
+            return Err(format!("{} hit its usage limit ({why})", account.name));
+        }
         failures.push(format!("attempt {attempt}: {} ({why})", turn.exit));
         // A session that can't be picked up (another account's, or gone): a new one. A waiting
         // Claude Code that had ended is started again on its session.
@@ -2920,10 +2986,13 @@ mod tests {
     #[test]
     fn the_plan_loop_says_why_it_answered() {
         assert_eq!(
-            said_why(Talk::reply("Fine."), NO_ACCOUNT),
+            said_why(Talk::reply("Fine."), "Oby's plan loop answered", NO_ACCOUNT),
             Talk::reply(format!("Fine.\n(Oby's plan loop answered: {NO_ACCOUNT}.)"))
         );
-        assert_eq!(said_why(Talk::None, NO_ACCOUNT), Talk::None);
+        assert_eq!(
+            said_why(Talk::None, "Oby's plan loop answered", NO_ACCOUNT),
+            Talk::None
+        );
     }
 
     #[test]

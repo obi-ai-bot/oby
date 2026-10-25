@@ -30,6 +30,9 @@
 //                  prompt names each, quoted>"
 //   SLOWFAIL <ms>  waits that long, then ends the turn with an error result
 //   FAIL           ends the turn with an error result
+//   FULL ON <w>    on an account whose login's access token holds <w>, says the account is full
+//                  (a refused rate_limit_event) and ends the turn with Claude Code's usage-limit
+//                  error; elsewhere says "answered"
 //   anything else  says "Nothing to do." (what it says as a job's agent)
 // A supervisor turn (the prompt starts "Oby here, not the owner") does what supervise.txt in its
 // room says instead, when there is one ($JOB the job it names): each line but the last an OBY
@@ -299,6 +302,18 @@ async function act(words, prompt = "", before = resumed) {
   } else if (words.startsWith("SLOWFAIL ")) {
     await new Promise((done) => setTimeout(done, Number(words.split(" ")[1])));
     result("it broke slowly", true);
+  } else if (words.startsWith("FULL ON ")) {
+    let token = "";
+    try {
+      token = JSON.parse(readFileSync(join(process.env.CLAUDE_CONFIG_DIR, ".credentials.json"), "utf8")).claudeAiOauth?.accessToken ?? "";
+    } catch {}
+    if (token.includes(words.slice("FULL ON ".length))) {
+      const resetsAt = Math.floor(Date.now() / 1000) + 3600;
+      emit({ type: "rate_limit_event", session_id: session, rate_limit_info: { status: "rejected", resetsAt } });
+      result("Claude AI usage limit reached.", true);
+    } else {
+      say("answered");
+    }
   } else if (words.startsWith("FAIL")) {
     result("it broke", true);
   } else {

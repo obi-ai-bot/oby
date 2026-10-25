@@ -2310,6 +2310,55 @@ fn oby_tasks_keeps_a_list_that_reaches_every_turn() {
     assert!(!prompt.contains("Your task list"), "{prompt}");
 }
 
+/// A turn whose account hits its usage limit moves on to another account with room (#874): that
+/// one is marked full and not tried again, the turn is answered on the other, and the reply says so
+/// in one line. The next turn starts on the account with room.
+#[test]
+fn a_full_account_hands_the_turn_to_another() {
+    let folder = Folder::new("harness-full");
+    let remote = fixture(&folder.0.join("fixture"));
+    let mut config = config(&folder.0, &remote, &harness());
+    config["conversation"] = json!({"agent": "claude"});
+    let accounts = folder.0.join("home/accounts");
+    config["agents"]["claude"]["accounts"] = json!([
+        {"id": "stub", "name": "Stub", "configDir": accounts.join("stub")},
+        {"id": "second", "name": "Second", "configDir": accounts.join("second")}
+    ]);
+    let ends = (obi_protocol::time::now() + 10 * 86_400) * 1000;
+    for account in ["stub", "second"] {
+        std::fs::create_dir_all(accounts.join(account)).unwrap();
+        let login = json!({"claudeAiOauth": {"accessToken": format!("tok-{account}-plain-test-login"), "expiresAt": ends}});
+        std::fs::write(
+            accounts.join(account).join(".credentials.json"),
+            login.to_string(),
+        )
+        .unwrap();
+    }
+    let obid = start(&folder.0, &config, None);
+    let answer = said(&obid, json!({"said": "FULL ON stub", "new": true}));
+    let text = oby_said(&answer);
+    assert!(
+        text.starts_with(
+            "answered\n(Oby answered on Claude Code · Second: Claude Code · Stub hit its usage limit until "
+        ),
+        "{}",
+        answer.text
+    );
+    assert_eq!(turns(&obid).len(), 2, "one try on each account");
+    let status = call(&obid, "GET", "/v1/status", None).body;
+    let stub = status["accounts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["id"] == "stub")
+        .cloned()
+        .unwrap();
+    assert!(stub["fullUntil"].is_string(), "{stub}");
+    let next = said(&obid, json!({"said": "FULL ON stub", "new": true}));
+    assert_eq!(oby_said(&next), "answered", "{}", next.text);
+    assert_eq!(turns(&obid).len(), 3, "straight on the account with room");
+}
+
 /// oby_change_job moves a job that ended to another account; continued, it starts a new session
 /// there that hears its task and where it was moved from, and the move is on the job.
 #[test]
