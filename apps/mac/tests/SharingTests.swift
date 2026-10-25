@@ -205,7 +205,7 @@ struct SharingTests {
     @Test func eachMembersKeyFingerprintShowsAndAChangedKeyWaitsForYou() {
         var member = SphereModel.Member(obi: "obi-ernesto", owner: "ernesto", name: "Ernesto's Oby", active: true, accepts: [],
                                         fingerprint: "ed25519:abc")
-        #expect(SphereSettingsView.memberAbout(member) == "ernesto · key ed25519:abc · unverified")
+        #expect(SphereSettingsView.memberAbout(member) == "ernesto · key ed25519:abc · not compared yet")
         member.verified = true
         #expect(SphereSettingsView.memberAbout(member) == "ernesto · key ed25519:abc")
         member.changedTo = "ed25519:xyz"

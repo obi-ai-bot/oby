@@ -417,6 +417,10 @@ private struct HomeView: View {
                             .frame(maxWidth: Tokens.homeBox - 2 * Tokens.gutter)
                             .padding(.horizontal, Tokens.gutter).padding(.bottom, 12)
                     }
+                    if !away && model.feed.local {
+                        EngineDownLine(feed: model.feed).frame(maxWidth: Tokens.homeBox - 2 * Tokens.gutter)
+                            .padding(.horizontal, Tokens.gutter).padding(.bottom, 8)
+                    }
                     if model.listening && !away {
                         ListeningLine(voice: model.voice).frame(maxWidth: Tokens.homeBox - 2 * Tokens.gutter)
                             .padding(.horizontal, Tokens.gutter).padding(.bottom, 8)

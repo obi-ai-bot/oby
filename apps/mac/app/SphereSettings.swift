@@ -214,14 +214,21 @@ struct SphereSettingsView: View {
         if let new = member.changedTo {
             return "\(who) · their key changed to \(new). Your Oby doesn't trust them until you compare it with \(member.owner), in person or by phone, and accept it."
         }
-        return member.fingerprint.map { "\(who) · key \($0)\(member.verified ? "" : " · unverified")" } ?? who
+        return member.fingerprint.map { "\(who) · key \($0)\(member.verified ? "" : " · not compared yet")" } ?? who
+    }
+
+    /// Why a key reads "not compared yet", while one does: it works as it is, and comparing makes sure.
+    static func compareNote(_ members: [SphereModel.Member]) -> String? {
+        guard members.contains(where: { !$0.verified && $0.fingerprint != nil && $0.changedTo == nil }) else { return nil }
+        return "Oby trusts each teammate’s key from when it first saw it, and that’s enough to work together. To be sure it’s really them, Verify key and compare it with them in person or by phone."
     }
 
     // MARK: In one
 
     @ViewBuilder private var joined: some View {
         let name = sphere.name ?? sphere.membership?.sphere ?? "Obysphere"
-        SetGroup(name, footer: sphere.membership?.lastError.map { "Last problem with the Obysphere: \($0)" }, problem: sphere.problem) {
+        SetGroup(name, footer: sphere.membership?.lastError.map { "Last problem with the Obysphere: \($0)" } ?? Self.compareNote(sphere.members),
+                 problem: sphere.problem) {
             SetRow("You", about: [sphere.admin ? "Admin" : "Member", sphere.ownFingerprint.map { "your key \($0)" }].compactMap(\.self).joined(separator: " · ")) {
                 SetCode(sphere.owner ?? "")
             }

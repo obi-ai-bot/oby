@@ -189,7 +189,7 @@ struct RunnerSettingsView: View {
                 }
             }
         }
-        SetGroup("Publishing", footer: "Oby opens a pull request by itself once a job’s check passes and the secret scan is clean. When that failed, publish by hand here or on your iPhone: your click is the approval, signed by this Mac’s key, as the iPhone’s. Oby merges only into dev, once its review approves and your Mac’s checks pass.") {
+        SetGroup("Publishing", footer: "Oby opens a pull request by itself once a job’s check passes and the secret scan is clean. When that failed, publish by hand here or on your iPhone: your click is the approval, signed by this Mac’s key, as the iPhone’s. Oby merges the way each repository works, as it learned from you, and asks you first in a repository it hasn’t learned yet.") {
             SetRow("Publishing key") { SetValue(feed.runner == nil ? "Off" : feed.device.status) }
             // The runner's own line (pairing is closed: how to open it), then Try again.
             if feed.runner != nil, let problem = feed.device.problem {
