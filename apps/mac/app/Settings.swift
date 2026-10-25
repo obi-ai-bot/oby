@@ -413,6 +413,7 @@ struct AccountsSettingsView: View {
     /// The tool's own login for one of obid's accounts, under way in its sheet.
     @State private var signingIn: ShownAccountSignIn?
     @State private var problem: String?
+    @State private var failoverProblem: String?
 
     var body: some View {
         if feed.runner != nil {
@@ -435,8 +436,24 @@ struct AccountsSettingsView: View {
                 }
             }
             if feed.local { runnerAddAccount }
+            // The owner's switch (the owner's decision of 2026-10-24): only from a runner that has it.
+            if let on = feed.accountFailover {
+                SetGroup("At an account’s limit", problem: failoverProblem) {
+                    SetRow("Move work to another account", about: AccountsSettingsView.failoverAbout) {
+                        Toggle("Move work to another account", isOn: Binding(get: { on }, set: { on in
+                            Task {
+                                failoverProblem = nil
+                                do { try await feed.setAccountFailover(on) } catch { failoverProblem = error.localizedDescription }
+                            }
+                        }))
+                        .toggleStyle(.set)
+                    }
+                }
+            }
         }
     }
+
+    static let failoverAbout = "When an account hits its usage limit, Oby carries its job on on another signed-in account of the same tool with room, in the same branch. A job you sent to an account by name stays on it."
 
     /// The tool picked has an own login (Claude Code, Codex) removed here that obid doesn't list.
     private var restorable: String? {

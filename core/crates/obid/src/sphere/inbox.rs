@@ -821,10 +821,16 @@ pub fn limit_item(
     job: &crate::job::Job,
     tool: crate::agent::Tool,
     first: Option<(i64, String)>,
+    stays: bool,
     now: i64,
 ) -> Item {
     let tool = tool.name();
     let text = match first {
+        // Failover off, or an account the owner named: it waits for its own account.
+        Some((at, name)) if stays => format!(
+            "Every {tool} account is full. This job stays on {name}, which has room again at {}: Oby carries it on by itself then.",
+            time::format(at)
+        ),
         Some((at, name)) => format!(
             "Every {tool} account is full. The first with room again is {name}, at {}: Oby carries this job on by itself then.",
             time::format(at)

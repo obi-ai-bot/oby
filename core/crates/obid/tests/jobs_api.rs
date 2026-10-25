@@ -1532,6 +1532,28 @@ fn a_job_at_its_limit_goes_on_on_an_account_with_room() {
         json!(["Try again", "Dismiss"]),
         "{limits:?}"
     );
+
+    // Named to Room with every account full: it stays there, and its item says so.
+    let named = post("LIMITED ON: tok", Some("Room")).body["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert_eq!(wait(&obid, &named)["status"], "interrupted");
+    // Made before the job ended.
+    let item = request(&obid, "GET", "/v1/inbox", None)
+        .body
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["kind"] == "limit" && i["job"] == named.as_str())
+        .cloned()
+        .unwrap();
+    assert!(
+        item["text"].as_str().unwrap().starts_with(
+            "Every Claude Code account is full. This job stays on Room, which has room again at "
+        ),
+        "{item}"
+    );
 }
 
 /// A job stopped at a limit after committing keeps its commits and counts them (#757): words told

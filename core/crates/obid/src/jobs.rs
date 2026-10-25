@@ -2712,12 +2712,16 @@ impl Jobs {
 
     /// No account of `tool` has room for the job its limit stopped: the owner gets one `limit`
     /// item about it, saying when the first of them has room again, which it answers.
+    /// A job that doesn't move (failover off, or its account named by the owner) waits for its own
+    /// account's reset instead, and the item says so.
     fn all_full(&self, id: &str, tool: Tool, now: i64) -> Option<i64> {
         let job = self.get(id)?;
         let home = login_home();
+        let stays = !self.moves_on(&job);
         let first = self
             .accounts(tool)
             .into_iter()
+            .filter(|a| !stays || a.id == job.account)
             .filter(|a| signed_in(tool, a, home.as_deref()))
             .filter_map(|a| Some((self.usage.get(&a.id).free_at(now)?, a.name)))
             .min();
@@ -2725,7 +2729,9 @@ impl Jobs {
         if let Some(link) = self.link.get().and_then(std::sync::Weak::upgrade) {
             link.limit_items(
                 id,
-                Some(crate::sphere::inbox::limit_item(&job, tool, first, now)),
+                Some(crate::sphere::inbox::limit_item(
+                    &job, tool, first, stays, now,
+                )),
             );
         }
         at
@@ -6688,7 +6694,8 @@ impl Jobs {
         let temp = self.temp_path(id);
         let (tool, mut account) = self.job_account(&job)?;
         // Its account filled (in the run before, or since it was routed there): another of the
-        // tool with room takes it on (#871).
+        // tool with room takes it on (#871). As it was before, should that account's login not run.
+        let unmoved = job.clone();
         let moved = match self.move_on(id, tool, &account).await {
             Some(next) => {
                 account = next;
@@ -6997,11 +7004,21 @@ impl Jobs {
                     && job.runs_on.is_none()
                     && let Err(why) = self.claude_login_ready(Some(&account)).await
                 {
-                    // Moved here past a limit: a login that can't run waits for the first reset,
-                    // as the limit would have.
+                    // Moved here past a limit: a login that can't run puts it back on its account
+                    // and waits for the first reset, as the limit would have.
                     if !moved {
                         return Err(why.into());
                     }
+                    self.update(id, |job| {
+                        job.account = unmoved.account.clone();
+                        job.session = unmoved.session.clone();
+                        job.moves = unmoved.moves.clone();
+                        job.heard = unmoved.heard.clone();
+                        job.changed(format!(
+                            "Moved back by Oby: {}'s login couldn't run",
+                            account.name
+                        ));
+                    });
                     let now = obi_protocol::time::now();
                     let resumes = self
                         .all_full(id, tool, now)

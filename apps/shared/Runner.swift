@@ -588,6 +588,13 @@ extension ModelChoice {
     }
 }
 
+/// `GET /v1/settings/jobs`: how many jobs run at once and, on obid, whether a job past its
+/// account's usage limit goes on on another account (`accountFailover`); nil from a runner without it.
+nonisolated struct JobSettings: Codable, Equatable, Sendable {
+    var maxRunning: Int?
+    var accountFailover: Bool?
+}
+
 nonisolated struct ModelSettings: Codable, Equatable, Sendable {
     var claude: ModelChoice
     var codex: ModelChoice
@@ -1225,6 +1232,14 @@ nonisolated struct Runner: Sendable {
         return try await call("POST", "v1/jobs/\(id)/messages",
                               body: Body(text: text, conversation: conversation ? true : nil, attachments: attachments.isEmpty ? nil : attachments))
     }
+    func jobSettings() async throws -> JobSettings { try await call("GET", "v1/settings/jobs") }
+
+    /// Turns obid's account failover on or off (`PUT /v1/settings/jobs` with only `accountFailover`).
+    func setAccountFailover(_ on: Bool) async throws -> JobSettings {
+        struct Body: Encodable { var accountFailover: Bool }
+        return try await call("PUT", "v1/settings/jobs", body: Body(accountFailover: on))
+    }
+
     func models() async throws -> ModelSettings { try await call("GET", "v1/settings/models") }
     func modelOptions() async throws -> ModelOptions { try await call("GET", "v1/settings/models/options") }
 

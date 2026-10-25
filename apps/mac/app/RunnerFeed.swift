@@ -156,6 +156,9 @@ final class RunnerFeed {
     var down: Bool { if case .offline = connection { true } else { false } }
     /// The model and effort the runner's jobs use, as it last said (Settings › Models).
     private(set) var models: ModelSettings?
+    /// Whether the runner moves a job past its account's usage limit to another account, as it last
+    /// said (Settings › Accounts); nil from a runner without the setting.
+    private(set) var accountFailover: Bool?
     private(set) var cleanup: RunnerStatus.Cleanup?
     /// Who the runner's own GitHub calls act as, `app` or `owner`, and whether its check runs reach
     /// pull requests, as it last said (Settings › Connectors); nil from older runners.
@@ -367,6 +370,7 @@ final class RunnerFeed {
         slack = nil
         watch = nil
         models = nil
+        accountFailover = nil
         extras = [:]
         permissionHistory = []
         defaultMode = nil
@@ -415,6 +419,7 @@ final class RunnerFeed {
                         async let historyAnswer = try? runner.inboxWithWords(state: "done")
                         async let tetrixAnswer = try? runner.tetrix()
                         async let routinesAnswer = try? runner.routines()
+                        async let jobSettingsAnswer = try? runner.jobSettings()
                         async let conversationsAnswer: Data? = local ? runner.conversationsAnswer(limit: 200) : nil
                         async let gitHubRead: Void = readGitHub { try await runner.gitHubWork() }
                         let status = try await statusAnswer
@@ -430,6 +435,7 @@ final class RunnerFeed {
                         accounts = status.accounts
                         availableLogins = status.availableLogins ?? []
                         models = status.models
+                        accountFailover = await jobSettingsAnswer?.accountFailover
                         cleanup = status.cleanup
                         github = status.github
                         checkRuns = status.checks
@@ -787,6 +793,12 @@ final class RunnerFeed {
             apply(job)
         }
         return url
+    }
+
+    /// Turns the runner's account failover on or off (Settings › Accounts).
+    func setAccountFailover(_ on: Bool) async throws {
+        guard let runner else { throw RunnerError(message: "Set the runner's URL in Settings first.") }
+        accountFailover = try await runner.setAccountFailover(on).accountFailover
     }
 
     /// Saves the model and effort the runner's jobs use (Settings › Models).
