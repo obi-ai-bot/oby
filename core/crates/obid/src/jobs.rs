@@ -9562,14 +9562,20 @@ impl Jobs {
         };
         let card = if let Some(why) = stop {
             Some(crate::merge::stopped_card(&job, &head, &why))
-        } else if required && workflow.is_none() {
-            // A repository Oby hasn't learned asks its owner first: no teammate is asked to
-            // review it before the owner said how it merges.
-            Some(crate::merge::stopped_card(
-                &job,
-                &head,
-                crate::merge::REQUIRES_PERSON,
-            ))
+        } else if required
+            && workflow.is_none()
+            && !crate::memory::teammate_reviews(&home, &job.repo)
+        {
+            // A repository Oby hasn't learned asks its owner first, once for that head: a
+            // teammate's Oby reviews it only after their yes, which Oby remembers for the
+            // repository (the owner's decision of 2026-10-25), and then without asking again. How
+            // it merges stays theirs to say: "Ready to merge?" still asks. Out of an Obysphere, no
+            // teammate's Oby can: the owner hears what to do instead.
+            Some(if link.as_ref().is_some_and(|l| l.in_sphere()) {
+                crate::merge::teammate_card(&job, &head)
+            } else {
+                crate::merge::stopped_card(&job, &head, &crate::merge::no_sphere(&job.repo))
+            })
         } else if by_teammate || required {
             let goal = job.short_title();
             let change = crate::sphere::approval::Change {
@@ -9742,6 +9748,84 @@ impl Jobs {
         });
     }
 
+    /// Each repository obid works in, with its default branch: what a workflow memory is checked
+    /// against.
+    fn repo_branches(&self) -> Vec<(String, String)> {
+        self.config
+            .repos
+            .get()
+            .iter()
+            .map(|r| (r.repo.clone(), r.default_branch.clone()))
+            .collect()
+    }
+
+    /// The owner's Ask a teammate, and remember, on the job `id`'s card about `head` (crate::merge,
+    /// `teammate_card`; the owner's decision of 2026-10-25): their yes to "Can I remember that?" is
+    /// about who reviews, never how it merges. Oby keeps a `review` memory for the repository
+    /// (`memory::remember_review`), or, where the owner taught it a workflow since, changes only
+    /// that workflow's review to a teammate's Oby; then a teammate's Oby is asked right away
+    /// (`Link::ask_teammate`). What came of the ask, in Oby's words; why not, otherwise: nothing
+    /// was asked, nor remembered.
+    pub async fn ask_teammate_and_remember(&self, id: &str, head: &str) -> Result<String, String> {
+        let job = self.get(id).ok_or("There's no such job.")?;
+        // Only a job Oby still carries, at the head Oby pushed (crate::merge::ready's own rule).
+        if !carries(&job) || job.pushed_head() != Some(head) {
+            return Err("It isn't one Oby carries on at that commit any more.".into());
+        }
+        let gh = crate::github::gh().ok_or("GitHub's CLI (gh) isn't installed.")?;
+        let number = job
+            .published
+            .as_deref()
+            .and_then(|url| crate::github::pull_request_number(url, &job.repo))
+            .ok_or("The job has no pull request of its own.")?;
+        let link = self
+            .link
+            .get()
+            .and_then(std::sync::Weak::upgrade)
+            .ok_or("Oby isn't in an Obysphere.")?;
+        let home = self.config.home.clone();
+        let (pr, _) =
+            crate::github::view_merging(&gh, &job.repo, number, obi_protocol::time::now()).await?;
+        if !pr.is_open() || pr.head.as_deref() != Some(head) {
+            return Err("It moved on since: a new card comes if it still needs a teammate.".into());
+        }
+        let name = job.repo.rsplit('/').next().unwrap_or(&job.repo).to_owned();
+        let from = format!("You asked a teammate's Oby to review {name}#{number}");
+        let remembered = match crate::memory::workflow(&home, &job.repo).and_then(|m| m.workflow) {
+            Some(mut learned) => {
+                learned.review = crate::memory::Approval::Teammate;
+                crate::memory::remember_workflow(
+                    &home,
+                    &job.repo,
+                    learned,
+                    &from,
+                    &self.repo_branches(),
+                )
+                .await
+            }
+            None => {
+                crate::memory::remember_review(&home, &job.repo, &from, &self.repo_branches()).await
+            }
+        };
+        remembered.map_err(|why| {
+            tracing::warn!("job {id}: the teammate review wasn't remembered: {why:?}");
+            "Oby couldn't remember it: try again.".to_owned()
+        })?;
+        let goal = job.short_title();
+        let change = crate::sphere::approval::Change {
+            repo: &job.repo,
+            pr: number,
+            base: &pr.base,
+            head_branch: &job.branch,
+            head,
+            goal: &goal,
+        };
+        Ok(match link.ask_teammate(&change).await {
+            crate::sphere::approval::Teammate::Waiting(said)
+            | crate::sphere::approval::Teammate::NeedsYou(said) => said,
+        })
+    }
+
     /// The owner's Merge, or Merge and remember, on the job `id`'s "Ready to merge?" card about
     /// `head` (crate::sphere::link): GitHub is read again, the pull request must still be at that
     /// head and hold by the workflow the card proposes (or the one the owner taught Oby since),
@@ -9794,17 +9878,16 @@ impl Jobs {
             tracing::info!("job {id}: sent {} {} {}", sent.action, sent.repo, sent.id);
         }
         if remember && learned.is_none() {
-            let repos: Vec<(String, String)> = self
-                .config
-                .repos
-                .get()
-                .iter()
-                .map(|r| (r.repo.clone(), r.default_branch.clone()))
-                .collect();
             let name = job.repo.rsplit('/').next().unwrap_or(&job.repo).to_owned();
             let from = format!("You merged {name}#{number} this way");
-            if let Err(why) =
-                crate::memory::remember_workflow(&home, &job.repo, workflow, &from, &repos).await
+            if let Err(why) = crate::memory::remember_workflow(
+                &home,
+                &job.repo,
+                workflow,
+                &from,
+                &self.repo_branches(),
+            )
+            .await
             {
                 tracing::warn!("job {id}: merged, but its workflow wasn't remembered: {why:?}");
                 return Ok(Some(

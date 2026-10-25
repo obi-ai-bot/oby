@@ -871,7 +871,7 @@ fn owners_call(item: &Item, words: &str, job: Option<&Job>) -> Owners {
         // A review the listener started: Approve posts on GitHub, which only the owner does.
         "listen" => Owners::Refuse("only you can approve or dismiss it, in your inbox.".into()),
         // A merge card: merging is the owner's tap, or the workflow they taught Oby (#853).
-        "merge" => Owners::Refuse("only you can merge it, in your inbox.".into()),
+        "merge" => Owners::Refuse("only you can merge it, or ask a teammate, in your inbox.".into()),
         // A job's plan is the owner's to approve or send back, either way (#609).
         "plan" => Owners::Refuse(
             "it's a job's plan: only you can approve it or send it back, in your inbox.".into(),
@@ -1388,7 +1388,7 @@ mod tests {
         for words in ["Merge", "Merge, and remember", "Leave it open"] {
             assert_eq!(
                 owners_call(&card, words, None),
-                Owners::Refuse("only you can merge it, in your inbox.".into()),
+                Owners::Refuse("only you can merge it, or ask a teammate, in your inbox.".into()),
                 "{words}"
             );
         }

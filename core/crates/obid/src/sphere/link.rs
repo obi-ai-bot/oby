@@ -1060,8 +1060,10 @@ impl Link {
 
     /// `POST /v1/inbox/{id}/answer` on a `merge` card (crate::merge): Merge, or Merge and
     /// remember, merges it (`Jobs::merge_by_owner`), the item claimed (done) first so a second tap
-    /// merges nothing, and open again when it didn't merge; Leave it open, Dismiss or done settle
-    /// it, and nothing is sent; later puts it off.
+    /// merges nothing, and open again when it didn't merge; Ask a teammate, and remember, saves
+    /// the repository's workflow and asks a teammate's Oby (`Jobs::ask_teammate_and_remember`),
+    /// claimed the same way, its outcome the answer's `note`; Leave it open, Not now, Dismiss or
+    /// done settle it, and nothing is sent; later puts it off.
     async fn answer_merge(
         &self,
         mut item: Item,
@@ -1074,6 +1076,7 @@ impl Link {
             self.save_item(&item);
             return Ok(item.to_json());
         }
+        let asking = answer.as_deref() == Some(crate::merge::ASK_TEAMMATE);
         let merging = matches!(
             answer.as_deref(),
             Some(crate::merge::MERGE | crate::merge::MERGE_AND_REMEMBER)
@@ -1082,7 +1085,7 @@ impl Link {
             && !item.options.contains(answer)
         {
             // Unclaim: the answer isn't one of its options.
-            if merging {
+            if merging || asking {
                 self.lock().inbox.insert(item.id.clone(), item.clone());
             }
             return Err(api(
@@ -1090,12 +1093,24 @@ impl Link {
                 format!("The answer is one of: {}.", item.options.join("; ")),
             ));
         }
-        if merging {
+        if merging || asking {
             let head = crate::merge::item_head(&item.id)
                 .unwrap_or_default()
                 .to_owned();
-            let remember = answer.as_deref() == Some(crate::merge::MERGE_AND_REMEMBER);
-            let merged = self.jobs.merge_by_owner(&item.job, &head, remember).await;
+            let merged = if asking {
+                // The owner's yes: remembered for the repository, then a teammate's Oby is asked.
+                self.jobs
+                    .ask_teammate_and_remember(&item.job, &head)
+                    .await
+                    .map(Some)
+                    .map_err(|why| format!("Nothing was asked: {why}"))
+            } else {
+                let remember = answer.as_deref() == Some(crate::merge::MERGE_AND_REMEMBER);
+                self.jobs
+                    .merge_by_owner(&item.job, &head, remember)
+                    .await
+                    .map_err(|why| format!("Not merged: {why}"))
+            };
             if let Err(why) = &merged {
                 // Open again, unless it was settled meanwhile.
                 let open = {
@@ -1112,9 +1127,10 @@ impl Link {
                 if open {
                     self.save_item(&item);
                 }
-                return Err(api(StatusCode::CONFLICT, format!("Not merged: {why}")));
+                return Err(api(StatusCode::CONFLICT, why.clone()));
             }
-            // Merged: done, whatever came after it (a workflow it couldn't remember is `note`).
+            // Merged, or a teammate asked: done, whatever came after it (a workflow it couldn't
+            // remember, or what came of the ask, is `note`).
             if let Ok(Some(note)) = merged {
                 item.done = Some(time::now());
                 item.answer = answer;
@@ -2046,6 +2062,14 @@ impl Link {
         let state = self.lock();
         state.membership.as_ref().filter(|m| m.state == "joined")?;
         state.client.clone()
+    }
+
+    /// Whether obid is a member of an Obysphere now (`joined`).
+    pub fn in_sphere(&self) -> bool {
+        self.lock()
+            .membership
+            .as_ref()
+            .is_some_and(|m| m.state == "joined")
     }
 
     /// An access token for the phone relay's calls and socket, and when it ends (Unix seconds).
@@ -3929,9 +3953,10 @@ impl Link {
                 .filter(|m| m.state == "joined")
                 .map(|m| m.obi_id.clone())
             else {
-                return Teammate::NeedsYou(
-                    "Oby isn't in an Obysphere, so no teammate's Oby can approve it.".into(),
-                );
+                return Teammate::NeedsYou(format!(
+                    "Oby isn't in an Obysphere, so no teammate's Oby can approve it. {}",
+                    approval::instead(change.repo, true)
+                ));
             };
             let mut asked = Vec::new();
             for e in approval::requests(
@@ -3991,14 +4016,16 @@ impl Link {
                     (obi, owner)
                 }
                 None if asked.is_empty() => {
-                    return Teammate::NeedsYou(
-                        "No teammate's Oby in the Obysphere takes reviews.".into(),
-                    );
+                    return Teammate::NeedsYou(format!(
+                        "No teammate's Oby in the Obysphere takes reviews. {}",
+                        approval::instead(change.repo, false)
+                    ));
                 }
                 None => {
-                    return Teammate::NeedsYou(
-                        "No teammate's Oby could approve it on GitHub.".into(),
-                    );
+                    return Teammate::NeedsYou(format!(
+                        "No teammate's Oby could approve it on GitHub. {}",
+                        approval::instead(change.repo, false)
+                    ));
                 }
             }
         };
@@ -4954,8 +4981,9 @@ impl Link {
                 }
             };
         }
-        // A merge card (crate::merge): Merge, or Merge and remember, claims the item under the
-        // lock (done), then merges with no lock held, as Approve does above.
+        // A merge card (crate::merge): Merge, Merge and remember, or Ask a teammate and remember,
+        // claims the item under the lock (done), then acts with no lock held, as Approve does
+        // above.
         let merge = {
             let mut state = self.lock();
             let item = state
@@ -4965,7 +4993,9 @@ impl Link {
                 .cloned();
             if item.is_some()
                 && matches!(&given, Given::Answer(a)
-                    if a == crate::merge::MERGE || a == crate::merge::MERGE_AND_REMEMBER)
+                    if a == crate::merge::MERGE
+                        || a == crate::merge::MERGE_AND_REMEMBER
+                        || a == crate::merge::ASK_TEAMMATE)
                 && let Some(kept) = state.inbox.get_mut(id)
             {
                 kept.done = Some(time::now());
@@ -6939,7 +6969,7 @@ mod tests {
         assert_eq!(
             link.ask_teammate(&change).await,
             Teammate::NeedsYou(
-                "Oby isn't in an Obysphere, so no teammate's Oby can approve it.".into()
+                "Oby isn't in an Obysphere, so no teammate's Oby can approve it. Invite a teammate who can push to acme/app to an Obysphere with you, or get their approval on GitHub yourself.".into()
             )
         );
         let member = |owner: &str| Member {
@@ -6974,7 +7004,7 @@ mod tests {
         }
         assert_eq!(
             link.ask_teammate(&change).await,
-            Teammate::NeedsYou("No teammate's Oby in the Obysphere takes reviews.".into()),
+            Teammate::NeedsYou("No teammate's Oby in the Obysphere takes reviews. Invite a teammate who can push to acme/app to your Obysphere, or get their approval on GitHub yourself.".into()),
             "never itself"
         );
         let set = |e: Exchange| {
@@ -7003,7 +7033,7 @@ mod tests {
         ));
         assert_eq!(
             link.ask_teammate(&change).await,
-            Teammate::NeedsYou("No teammate's Oby could approve it on GitHub.".into()),
+            Teammate::NeedsYou("No teammate's Oby could approve it on GitHub. Invite a teammate who can push to acme/app to your Obysphere, or get their approval on GitHub yourself.".into()),
             "zoe couldn't, and nobody else can"
         );
         let _ = std::fs::remove_dir_all(&home);

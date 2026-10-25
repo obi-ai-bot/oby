@@ -411,7 +411,7 @@ fn a_required_approval_goes_to_a_teammate_or_the_owner() {
     let card = within(30, "the card", || merge_cards(&obid).into_iter().next());
     assert_eq!(
         card["text"],
-        "GitHub requires another person's approval here. Oby isn't in an Obysphere, so no teammate's Oby can approve it."
+        "GitHub requires another person's approval here. Oby isn't in an Obysphere, so no teammate's Oby can approve it. Invite a teammate who can push to obi-e2e/fixture-app to an Obysphere with you, or get their approval on GitHub yourself."
     );
     assert_eq!(job(&obid)["mergeNeedsYou"], true);
     std::thread::sleep(std::time::Duration::from_secs(2));
@@ -721,7 +721,7 @@ fn a_teammate_workflow_asks_a_teammates_oby() {
     let card = within(30, "the card", || merge_cards(&obid).into_iter().next());
     assert_eq!(
         card["text"],
-        "Oby isn't in an Obysphere, so no teammate's Oby can approve it."
+        "Oby isn't in an Obysphere, so no teammate's Oby can approve it. Invite a teammate who can push to obi-e2e/fixture-app to an Obysphere with you, or get their approval on GitHub yourself."
     );
     let waiting = job(&obid);
     assert_eq!(waiting["mergeNeedsYou"], true);
@@ -817,19 +817,184 @@ fn a_stale_reviewer_login_on_a_reviewer_workflow_asks_the_owner_once() {
     });
 }
 
-/// A repository Oby hasn't learned whose rules require an approving review asks its owner, and
-/// no teammate is asked to review it first.
+/// A repository Oby hasn't learned whose rules require an approving review, out of an
+/// Obysphere: the owner hears, once, that no teammate's Oby can review it and what to do instead;
+/// nothing is asked or sent.
 #[test]
-fn an_unlearned_repository_with_required_approvals_asks_only_the_owner() {
+fn an_unlearned_repository_out_of_a_sphere_says_what_to_do() {
     let folder = Folder::new("merge-required-unlearned");
     let obid = started_with(&folder, false, None, published(), &["requires-approval"]);
     let card = within(30, "the card", || merge_cards(&obid).into_iter().next());
-    // X5's ask would have said why no teammate could: only the owner's words here.
     assert_eq!(
         card["text"],
-        "GitHub requires another person's approval here."
+        "GitHub requires another person's approval on obi-e2e/fixture-app, and Oby isn't in an Obysphere, so no teammate's Oby can review it. Invite a teammate who can push to obi-e2e/fixture-app to an Obysphere with you, or get their approval on GitHub yourself."
     );
     assert_eq!(merge_cards(&obid).len(), 1);
+    assert_eq!(job(&obid)["mergeNeedsYou"], true);
+    assert!(!calls(&folder.0).contains("-X PUT"));
+}
+
+/// The job's pull request into a dev whose rules require an approving review, in a repository
+/// Oby hasn't learned (where the owner said yes to a teammate's review before, when `reviewed`),
+/// with obid in a fake Obysphere where ernesto's Oby takes reviews.
+async fn in_a_sphere(folder: &Folder, reviewed: bool) -> (FakeSphere, Obid, TestObi) {
+    let sphere = FakeSphere::start().await;
+    if reviewed {
+        let dir = folder.0.join("home/memory/repos/obi-e2e/fixture-app");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("m5e6f7a8b.md"),
+            format!(
+                "---\nid: m5e6f7a8b\nscope: project\nrepo: {REPO}\nkind: review\nsource: user\ntitle: Who reviews fixture-app\nfrom: You asked a teammate's Oby to review fixture-app#6\ncreated: 2026-10-25T10:00:00Z\nupdated: 2026-10-25T10:00:00Z\nused: 0\n---\nWhere GitHub requires another person's approval on {REPO}, Oby asks a teammate's Oby to review it. It still asks you before it merges.\n"
+            ),
+        )
+        .unwrap();
+    }
+    let obid = tokio::task::block_in_place(|| {
+        started_with(folder, false, None, published(), &["requires-approval"])
+    });
+    let joined = tokio::task::block_in_place(|| join_a(&obid, &sphere, &Owner::new("wellington")));
+    assert_eq!(joined["state"], "joined");
+    let ernesto = TestObi::join(&sphere, "obi-ernesto", "ernesto").await;
+    (sphere, obid, ernesto)
+}
+
+/// The card asking whether a teammate's Oby reviews the job's head.
+fn teammate_card(obid: &Obid) -> Value {
+    let id = format!("merge-teammate-{ID}-{}", head());
+    tokio::task::block_in_place(|| {
+        within(30, "the teammate card", || {
+            merge_cards(obid).into_iter().find(|c| c["id"] == id)
+        })
+    })
+}
+
+fn answer(obid: &Obid, card: &Value, answer: &str) -> Answer {
+    tokio::task::block_in_place(|| {
+        call(
+            obid,
+            "POST",
+            &format!("/v1/inbox/{}/answer", card["id"].as_str().unwrap()),
+            Some(&json!({"answer": answer})),
+        )
+    })
+}
+
+/// A repository Oby hasn't learned whose rules require another person's approval asks the owner
+/// once, for that head, whether a teammate's Oby reviews it (the owner's decision of 2026-10-25).
+/// Their yes keeps only who reviews (a `review` memory, never a workflow) and asks a teammate's
+/// Oby right away. Once the teammate approved, how it merges is still the owner's to say: "Ready to
+/// merge?" asks, and nothing merges by itself.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_yes_remembers_a_teammate_for_the_repository_and_asks_one() {
+    let folder = Folder::new("merge-teammate-yes");
+    let (_sphere, obid, ernesto) = in_a_sphere(&folder, false).await;
+    let card = teammate_card(&obid);
+    assert_eq!(card["title"], "Needs a teammate: Fix the thing");
+    assert_eq!(
+        card["text"],
+        "GitHub requires another person's approval on obi-e2e/fixture-app. Ask a teammate's Oby to review it, and remember that for this repository?"
+    );
+    assert_eq!(
+        card["options"],
+        json!(["Ask a teammate, and remember", "Not now"])
+    );
+    assert_eq!(
+        tokio::task::block_in_place(|| job(&obid))["mergeNeedsYou"],
+        true
+    );
+    let answered = answer(&obid, &card, "Ask a teammate, and remember");
+    assert_eq!(answered.status, 200, "{}", answered.text);
+    assert_eq!(
+        answered.body["note"],
+        "Asked ernesto's Oby to review it and approve it on GitHub."
+    );
+    let asked = ernesto.receive(1, 20).await;
+    assert_eq!(asked[0]["type"], "review_request");
+    assert_eq!(asked[0]["body"]["repo"], REPO);
+    assert_eq!(asked[0]["body"]["pr"], 7);
+    assert_eq!(asked[0]["body"]["head_sha"], head());
+    let memory = tokio::task::block_in_place(|| call(&obid, "GET", "/v1/memory", None).body);
+    let memories = memory["memories"].as_array().unwrap();
+    assert_eq!(memories.len(), 1, "{memory}");
+    assert_eq!(memories[0]["kind"], "review");
+    assert_eq!(memories[0]["repo"], REPO);
+    assert_eq!(memories[0]["title"], "Who reviews fixture-app");
+    assert_eq!(
+        memories[0]["text"],
+        "Where GitHub requires another person's approval on obi-e2e/fixture-app, Oby asks a teammate's Oby to review it. It still asks you before it merges."
+    );
+    assert_eq!(
+        memories[0]["from"],
+        "You asked a teammate's Oby to review fixture-app#7"
+    );
+    assert!(memories[0].get("workflow").is_none(), "{memory}");
+    // ernesto's Oby has it: nothing waits on the owner, and nothing merged.
+    tokio::task::block_in_place(|| {
+        within(30, "nothing to wait on the owner", || {
+            (merge_cards(&obid).is_empty() && job(&obid)["mergeNeedsYou"] == false).then_some(())
+        })
+    });
+    // The teammate approved on GitHub: "Ready to merge?" asks, and nothing merges by itself.
+    std::fs::write(folder.0.join("gh/person"), "").unwrap();
+    let ready = tokio::task::block_in_place(|| {
+        within(30, "the ready card", || {
+            merge_cards(&obid)
+                .into_iter()
+                .find(|c| c["id"] == format!("merge-ready-{ID}-{}", head()))
+        })
+    });
+    assert_eq!(ready["title"], "Ready to merge: Fix the thing");
+    assert!(!calls(&folder.0).contains("-X PUT"));
+    assert!(tokio::task::block_in_place(|| job(&obid))["mergedBy"].is_null());
+}
+
+/// A repository whose owner said yes to a teammate's review before: every later pull request
+/// there that needs another person's approval goes to a teammate's Oby by itself, with no card.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_remembered_teammate_review_asks_a_teammate_with_no_card() {
+    let folder = Folder::new("merge-teammate-remembered");
+    let (_sphere, obid, ernesto) = in_a_sphere(&folder, true).await;
+    let asked = ernesto.receive(1, 30).await;
+    assert_eq!(asked[0]["type"], "review_request");
+    assert_eq!(asked[0]["body"]["pr"], 7);
+    tokio::task::block_in_place(|| {
+        within(30, "nothing to wait on the owner", || {
+            (merge_cards(&obid).is_empty() && job(&obid)["mergeNeedsYou"] == false).then_some(())
+        })
+    });
+    assert!(!calls(&folder.0).contains("-X PUT"));
+}
+
+/// "Not now": nothing is asked, sent or remembered, and that head waits quietly.
+#[tokio::test(flavor = "multi_thread")]
+async fn not_now_keeps_waiting_quietly() {
+    let folder = Folder::new("merge-teammate-not-now");
+    let (_sphere, obid, ernesto) = in_a_sphere(&folder, false).await;
+    let card = teammate_card(&obid);
+    let answered = answer(&obid, &card, "Not now");
+    assert_eq!(answered.status, 200, "{}", answered.text);
+    let read = calls(&folder.0).matches("pr view 7").count();
+    tokio::task::block_in_place(|| {
+        within(30, "a few more reads", || {
+            (calls(&folder.0).matches("pr view 7").count() >= read + 3).then_some(())
+        })
+    });
+    let quiet = tokio::task::block_in_place(|| (merge_cards(&obid), job(&obid)));
+    assert!(quiet.0.is_empty(), "{:?}", quiet.0);
+    assert_eq!(quiet.1["mergeNeedsYou"], false);
+    assert!(quiet.1["mergeError"].is_null());
+    let memory = tokio::task::block_in_place(|| call(&obid, "GET", "/v1/memory", None).body);
+    assert!(
+        memory["memories"].as_array().is_none_or(|m| m.is_empty()),
+        "{memory}"
+    );
+    let sent = ernesto
+        .client
+        .deliveries(&ernesto.token, 50, 1)
+        .await
+        .unwrap();
+    assert!(sent.is_empty(), "{sent:?}");
     assert!(!calls(&folder.0).contains("-X PUT"));
 }
 

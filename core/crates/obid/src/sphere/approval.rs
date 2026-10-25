@@ -274,6 +274,19 @@ pub enum Teammate {
     NeedsYou(String),
 }
 
+/// What the owner can do when no teammate's Oby can approve a pull request on `repo`: who to
+/// invite (to an Obysphere with them when `no_sphere`), or get that approval on GitHub.
+pub fn instead(repo: &str, no_sphere: bool) -> String {
+    let to = if no_sphere {
+        "to an Obysphere with you"
+    } else {
+        "to your Obysphere"
+    };
+    format!(
+        "Invite a teammate who can push to {repo} {to}, or get their approval on GitHub yourself."
+    )
+}
+
 /// The `review_request` body that asks for `change`'s approval: its checks pass on the teammate's
 /// Mac and no blocker findings, at its head.
 pub fn request_body(change: &Change) -> Value {
