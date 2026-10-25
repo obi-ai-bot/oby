@@ -14,20 +14,23 @@ struct EngineDownLine: View {
         VStack(spacing: 0) {
             Color.clear.frame(height: 0)
             if shown {
-                HStack(spacing: 10) {
+                VStack(alignment: .leading, spacing: 8) {
                     Label(FirstLaunchSteps.waiting(inApplications: RunnerLoginItem.mayRegister(), needsApproval: loginItem.needsApproval,
                                                    problem: loginItem.problem,
                                                    otherwise: "Oby’s engine on this Mac isn’t answering, so nothing runs."),
                           systemImage: "exclamationmark.triangle")
                         .font(Tokens.font(Tokens.textSm)).foregroundStyle(Tokens.needs)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    Button("Open Login Items Settings") { RunnerLoginItem.openSettings() }.buttonStyle(.set)
-                    Button("Try Again") {
-                        loginItem.register()
-                        feed.reconnect()
+                        .fixedSize(horizontal: false, vertical: true)
+                    HStack(spacing: 8) {
+                        Button("Open Login Items Settings") { RunnerLoginItem.openSettings() }.buttonStyle(.set)
+                        Button("Try Again") {
+                            loginItem.register()
+                            feed.reconnect()
+                        }
+                        .buttonStyle(.set)
                     }
-                    .buttonStyle(.set)
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
         // A moment's drop (obid restarting, waking from sleep) says nothing.
