@@ -74,6 +74,8 @@ pub struct Seen {
     jobs: HashMap<String, Snapshot>,
     checks: HashSet<String>,
     items: HashSet<String>,
+    /// The jobs obid's own bug ended, or obid kept going down with: the owner's (#914).
+    crashed: HashSet<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -108,6 +110,16 @@ impl Seen {
                 .collect(),
             checks: HashSet::new(),
             items: items.iter().cloned().collect(),
+            // Those that crashed before obid started are the owner's too.
+            crashed: jobs
+                .iter()
+                .filter(|j| {
+                    j.reason.as_deref().is_some_and(|r| {
+                        r.starts_with(crate::job::CRASHED) || r == crate::job::LOOPED
+                    })
+                })
+                .map(|j| j.id.clone())
+                .collect(),
         }
     }
 
@@ -128,9 +140,20 @@ impl Seen {
         // A stalled job a conversation started is that conversation's to supervise
         // (super::supervisor), not an event of the orchestrator's. How Oby's review of published
         // work ended is told on the job it reviewed.
+        // obid's own bug, or obid going down with it, is the owner's (#914): tried again by Oby, a
+        // bug that's always there would only loop.
+        let crashed = job["reason"]
+            .as_str()
+            .is_some_and(|r| r.starts_with(crate::job::CRASHED) || r == crate::job::LOOPED);
+        if crashed {
+            self.crashed.insert(id.to_owned());
+        } else {
+            self.crashed.remove(id);
+        }
         if !job["dismissed"].is_null()
             || (!job["stalled"].is_null() && !job["conversation"].is_null())
             || !job["reviewOf"].is_null()
+            || crashed
         {
             return vec![];
         }
@@ -195,7 +218,11 @@ impl Seen {
         let (Some(id), Some(job)) = (check["id"].as_str(), check["job"].as_str()) else {
             return vec![];
         };
-        if !matches!(state, "failed" | "error") || !self.checks.insert(id.to_owned()) {
+        // A crashed job's Mac check is the owner's too: retried by Oby, the bug would loop.
+        if !matches!(state, "failed" | "error")
+            || self.crashed.contains(job)
+            || !self.checks.insert(id.to_owned())
+        {
             return vec![];
         }
         let kind = check["kind"].as_str().unwrap_or("merge");
@@ -219,6 +246,8 @@ impl Seen {
             || item.id.starts_with("orchestrator-")
             // Already the owner's to decide: escalating would only leave a second item for it.
             || matches!(item.kind.as_str(), "confirm" | "start" | "permission" | "plan" | "question" | "github" | "merge" | crate::sphere::inbox::QUESTION_KIND)
+            // obid's own bug's item is the owner's too (#914): an answer from Oby would loop it.
+            || crate::sphere::inbox::is_crash_item(item)
             // What someone said, told to the owner, and what a plug-in sent: never the brain's
             // to act on (#1124).
             || matches!(item.kind.as_str(), "watch" | "listen" | "pluginEvent")
@@ -901,6 +930,20 @@ mod tests {
         assert!(seen.item(&item("p1", "permission")).is_empty());
         assert!(seen.item(&item("q1", "question")).is_empty());
         assert_eq!(seen.item(&item("f1", "failed")).len(), 1);
+        // obid's own bug's item is the owner's (#914), and so is the job it ended.
+        assert!(seen.item(&item("j1-crash-1700000000", "failed")).is_empty());
+        let crashed = serde_json::json!({"id": "j2", "status": "failed", "title": "Crashed",
+            "limit": null, "reviewError": null, "dismissed": null, "resumesAt": null,
+            "reason": format!("{}it broke. Its branch and worktree are kept.", crate::job::CRASHED)});
+        assert!(seen.job(&crashed).is_empty());
+        let looped = serde_json::json!({"id": "j3", "status": "interrupted", "title": "Looped",
+            "limit": null, "reviewError": null, "dismissed": null, "resumesAt": null,
+            "reason": crate::job::LOOPED});
+        assert!(seen.job(&looped).is_empty());
+        // Nor does a Mac check of a crashed job, while another job's still does.
+        let check = |id: &str, job: &str| serde_json::json!({"id": id, "job": job, "state": "failed", "kind": "merge"});
+        assert!(seen.check(&check("c2", "j2")).is_empty());
+        assert_eq!(seen.check(&check("c1", "j1")).len(), 1);
         // What a plug-in sent is never the orchestrator's to act on (#1124).
         assert!(seen.item(&item("ev-vercel-1", "pluginEvent")).is_empty());
     }

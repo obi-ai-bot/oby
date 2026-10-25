@@ -5003,6 +5003,47 @@ impl Link {
                     Given::Later(at) => self.answer_permission_item(item, None, Some(at)),
                 };
             }
+            // A crashed job's `failed` item (#911): Try again runs it again, Dismiss lets the job
+            // go. The answer claims it under the lock, so a second tap carries nothing out.
+            if item.kind == "failed" {
+                let mut item = item;
+                match &given {
+                    Given::Later(at) => item.later = Some(*at),
+                    Given::Done => item.done = Some(now),
+                    Given::Answer(a) if a == crate::job::TRY_AGAIN || a == inbox::DISMISS => {
+                        item.answer = Some(a.clone());
+                        item.done = Some(now);
+                    }
+                    Given::Answer(_) => {
+                        return Err(api(
+                            StatusCode::UNPROCESSABLE_ENTITY,
+                            "The answer is Try again or Dismiss.",
+                        ));
+                    }
+                }
+                state.inbox.insert(item.id.clone(), item.clone());
+                drop(state);
+                self.save_item(&item);
+                let carried = match item.answer.as_deref() {
+                    Some(crate::job::TRY_AGAIN) => self.jobs.message(
+                        &item.job,
+                        crate::brain::actions::TRY_AGAIN,
+                        crate::jobs::Source::Owner,
+                    ),
+                    Some(_) => self.jobs.dismiss(&item.job),
+                    None => return Ok(item.to_json()),
+                };
+                let refused = match carried {
+                    Some(Ok(_)) => return Ok(item.to_json()),
+                    Some(Err(refused)) => refused.0,
+                    None => "That job is gone.".to_owned(),
+                };
+                item.answer = None;
+                item.done = None;
+                self.lock().inbox.insert(item.id.clone(), item.clone());
+                self.save_item(&item);
+                return Err(api(StatusCode::CONFLICT, refused));
+            }
             if item.kind == "start" {
                 // Start claims the item under the lock: a second Start at the same moment finds
                 // it done and starts nothing (review on #552).

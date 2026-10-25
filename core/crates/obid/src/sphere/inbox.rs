@@ -865,6 +865,56 @@ pub fn limit_item(
     }
 }
 
+/// Whether `item` is a [`crash_item`]: obid's own bug's, the owner's to answer (#914).
+pub fn is_crash_item(item: &Item) -> bool {
+    item.kind == "failed" && item.id.contains("-crash-")
+}
+
+/// The `failed` item on a job obid's own bug ended, or obid kept going down with (#911, #915):
+/// one per such end (its id names when it ended). Try again runs it again; Dismiss lets it go.
+pub fn crash_item(job: &crate::job::Job, now: i64) -> Item {
+    Item {
+        id: format!("{}-crash-{}", job.id, job.finished.unwrap_or(now)),
+        kind: "failed".into(),
+        job: job.id.clone(),
+        title: job.short_title(),
+        text: job
+            .reason
+            .clone()
+            .unwrap_or_else(|| job.summary.clone())
+            .lines()
+            .next()
+            .unwrap_or_default()
+            .to_owned(),
+        // Another Obi's review is never run again here: the Obi that asked was told it failed.
+        options: if job.obi.is_some() {
+            vec![DISMISS.into()]
+        } else {
+            vec![crate::job::TRY_AGAIN.into(), DISMISS.into()]
+        },
+        details: Some(if job.obi.is_some() {
+            vec!["Lets it go: the Obi that asked was told it failed.".into()]
+        } else {
+            vec![
+                "Runs the job again, in its own session where it has one.".into(),
+                "Lets the job go. Its branch stays.".into(),
+            ]
+        }),
+        recommended: None,
+        created: now,
+        done: None,
+        later: None,
+        answer: None,
+        obi: None,
+        plugin: None,
+        arrived: Some(arrival()),
+        confirm: None,
+        start: None,
+        github: None,
+        watch: None,
+    }
+}
+
 /// A `watch` item's id: `watch-` and 16 hex characters of its notice's key.
 pub fn watch_item_id(key: &str) -> String {
     format!(
@@ -1189,6 +1239,33 @@ mod tests {
 
     /// #858: the agent's question is an `agentQuestion` item: its text the question, its options
     /// the labels and its details their descriptions, its id the permission's.
+    /// A crash item offers Try again, but never on another Obi's review, which can't be run again
+    /// here: the Obi that asked was told it failed (#914's review).
+    #[test]
+    fn a_reviews_crash_item_offers_no_try_again() {
+        let mut job = crate::job::Job::new(
+            "j1".into(),
+            "o/r".into(),
+            "review".into(),
+            "Review it".into(),
+            "claude".into(),
+            "c".into(),
+        );
+        job.reason = Some(format!("{}boom.", crate::job::CRASHED));
+        job.finished = Some(5);
+        let own = crash_item(&job, 9);
+        assert_eq!(own.options, [crate::job::TRY_AGAIN, DISMISS]);
+        assert_eq!(own.id, "j1-crash-5");
+        assert!(is_crash_item(&own));
+        job.obi = Some(crate::job::ObiRef {
+            correlation_id: "c".into(),
+            from: "obi-t".into(),
+            from_owner: "t".into(),
+            request_id: "r".into(),
+        });
+        assert_eq!(crash_item(&job, 9).options, [DISMISS]);
+    }
+
     #[test]
     fn the_agents_question_is_its_own_item() {
         use super::*;

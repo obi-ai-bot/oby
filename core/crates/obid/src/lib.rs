@@ -196,12 +196,36 @@ async fn keep_worktrees_clean(shared: Arc<api::Shared>, cancelled: Arc<AtomicBoo
 /// starts: it waits for it at most [`MEASURE_FIRST`], then answers and lets the walk finish in
 /// the background. A `stop` that resolves while it waits ends the walk and returns at once,
 /// without `ready` being told anything: a stop while starting is a stop, not a wait.
+/// A panic says where and what in obid's log (its stderr), with every secret obid knows taken out,
+/// never Rust's raw line (#914). The hook waits on no lock, refreshes nothing and logs through no
+/// subscriber (#911: a panic can come while one is held): the message is withheld when the secrets
+/// can't be read at once.
+fn redacted_panics() {
+    std::panic::set_hook(Box::new(|info| {
+        let payload = info.payload();
+        let said = payload
+            .downcast_ref::<&str>()
+            .map(|s| (*s).to_owned())
+            .or_else(|| payload.downcast_ref::<String>().cloned())
+            .unwrap_or_else(|| "unknown".into());
+        let place = info
+            .location()
+            .map(|l| format!("{}:{}", l.file(), l.line()))
+            .unwrap_or_default();
+        let said = secrets::known()
+            .try_redact(&said)
+            .unwrap_or_else(|| "(withheld: obid couldn't take its secrets out of it)".into());
+        eprintln!("obid: panic at {place}: {said}");
+    }));
+}
+
 pub async fn serve(
     config: Config,
     token: String,
     stop: impl Future<Output = ()> + Send + 'static,
     ready: impl FnOnce(SocketAddr),
 ) -> Result<(), StartError> {
+    redacted_panics();
     let mut stopwatch = Stopwatch::new();
     let address = config.listen;
     let listener = tokio::net::TcpListener::bind(address)

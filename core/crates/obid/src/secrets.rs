@@ -136,6 +136,13 @@ impl Secrets {
         redacted(&inner.needles, text, self.label())
     }
 
+    /// As [`Secrets::redact`], without refreshing the vault or waiting for the set's lock: none
+    /// while it's held. What a panic hook may use: a panic can come while the lock is held.
+    pub fn try_redact(&self, text: &str) -> Option<String> {
+        let inner = self.inner.try_read().ok()?;
+        Some(redacted(&inner.needles, text, self.label()))
+    }
+
     /// The set as it is now, read once (the vault refreshed once): what a scan of many lines
     /// asks, rather than reading the vault again for each one.
     pub fn snapshot(&self) -> Snapshot {

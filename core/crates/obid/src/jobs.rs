@@ -71,6 +71,12 @@ const RESET_STEP: &str = "Oby: trying again after the usage reset";
 const RESET_NOTE: &str = "Oby tried again after the usage reset.";
 /// How often obid looks for a job whose reset came.
 const RESET_TICK: Duration = Duration::from_secs(15);
+/// What obid's stop leaves in its home when every worker ended in time (#915).
+const STOPPED_CLEANLY: &str = "stopped-cleanly";
+/// A job picked up this many times after obid went down with it, within [`CRASH_WINDOW`] seconds,
+/// stays `interrupted` at the next start (#915).
+const CRASH_RESUMES: usize = 2;
+const CRASH_WINDOW: i64 = 30 * 60;
 /// How often obid lets git tidy a clone.
 const TIDY_EVERY: Duration = Duration::from_secs(24 * 60 * 60);
 /// How long a job that ended keeps its worktree unless it's put away (docs/runner-api.md, `cleanup`).
@@ -318,6 +324,13 @@ fn clean_note(text: &str) -> Option<String> {
             .lines()
             .any(|line| !crate::scan::matches(line).is_empty());
     (!flagged).then(|| crate::brain::read::clamp(&text, NOTE_MAX))
+}
+
+/// Whether obid's own bug ended `job` (a panic in its task), or obid kept going down with it.
+fn crashed(job: &Job) -> bool {
+    job.reason
+        .as_deref()
+        .is_some_and(|r| r.starts_with(crate::job::CRASHED) || r == crate::job::LOOPED)
 }
 
 /// What [`Jobs::onto_base`] did: nothing to do; rebased, its commits starting at this base commit
@@ -779,6 +792,11 @@ impl Jobs {
         sandbox: Result<Sandbox, String>,
     ) -> std::io::Result<Arc<Jobs>> {
         let store = Store::open(&config.home)?;
+        // obid's last stop ended every worker in time ([`Jobs::shutdown`]): else it went down
+        // some other way (a crash, a kill, a stop that didn't finish), and a job it ran counts it.
+        let clean = config.home.join(STOPPED_CLEANLY);
+        let stopped_cleanly = std::fs::remove_file(&clean).is_ok();
+        let now = obi_protocol::time::now();
         let mut jobs = HashMap::new();
         for mut job in store.load_all() {
             // The agent's question keeps waiting for the owner, `running` with no agent: its
@@ -787,7 +805,9 @@ impl Jobs {
                 jobs.insert(job.id.clone(), job);
                 continue;
             }
-            // Any other permission waited on an agent that is gone: the agent asks again.
+            // Any other permission waited on an agent that is gone: the agent asks again. No agent
+            // was at work while it waited, so obid's going down doesn't count against it (#915).
+            let waited = job.permission.is_some();
             job.permission = None;
             job.question_call = None;
             // ponytail: before #525 every published job said obid didn't review it; drop it once
@@ -798,6 +818,37 @@ impl Jobs {
                 .is_some_and(|e| e.starts_with("obid doesn't run Oby's review yet"))
             {
                 job.review_error = None;
+            }
+            // At work when obid went down some other way than a stop it was asked for: running, or
+            // queued with nothing it waits for (a worker getting it ready). Picked up twice in the
+            // last 30 minutes after that already, it stays here for the owner, rather than take
+            // obid down again (#915).
+            let at_work = job.status == Status::Running
+                || (job.status == Status::Queued && job.waiting.is_none());
+            if at_work && !stopped_cleanly && !waited {
+                job.crash_resumes.retain(|at| now - at < CRASH_WINDOW);
+                if job.crash_resumes.len() >= CRASH_RESUMES {
+                    tracing::warn!(
+                        "job {}: obid went down 3 times in 30 minutes while it ran: left interrupted",
+                        job.id
+                    );
+                    job.status = Status::Interrupted;
+                    job.summary = match job.summary.trim() {
+                        "" => crate::job::LOOPED.to_owned(),
+                        said => format!("{}\n\n{said}", crate::job::LOOPED),
+                    };
+                    job.reason = Some(crate::job::LOOPED.into());
+                    job.next_step = Some(crate::job::TRY_AGAIN.into());
+                    job.finished = Some(now);
+                    job.step = String::new();
+                    job.crash_resumes.clear();
+                    let _ = store.save(&job);
+                    crate::failures::observe(&config.home, &job);
+                    jobs.insert(job.id.clone(), job);
+                    continue;
+                }
+                job.crash_resumes.push(now);
+                let _ = store.save(&job);
             }
             if job.status == Status::Running {
                 job.status = Status::Queued;
@@ -818,7 +869,6 @@ impl Jobs {
         let api_url = format!("http://{}", config.listen);
         let approvals = crate::approval::Approvals::open(&config.home);
         let transcripts = crate::transcript::Transcripts::new(&config.home);
-        let now = obi_protocol::time::now();
         transcripts.sweep(|id| {
             jobs.get(id).is_some_and(|job: &Job| {
                 job.finished
@@ -1085,6 +1135,17 @@ impl Jobs {
     /// Starts the queued jobs there are slots for, follows the published pull requests, and tidies
     /// the clones once a day.
     pub fn resume(self: &Arc<Self>) {
+        // The jobs obid kept going down with, each one item for the owner (#915).
+        let looped: Vec<String> = self
+            .lock()
+            .jobs
+            .values()
+            .filter(|j| j.dismissed.is_none() && j.reason.as_deref() == Some(crate::job::LOOPED))
+            .map(|j| j.id.clone())
+            .collect();
+        for id in looped {
+            self.crash_item(&id);
+        }
         self.schedule();
         let jobs = self.clone();
         tokio::spawn(async move { jobs.follow_pull_requests().await });
@@ -3191,8 +3252,38 @@ impl Jobs {
         }
         for (id, signal) in start {
             let jobs = self.clone();
-            tokio::spawn(async move {
-                jobs.work(&id, signal).await;
+            let work = {
+                let (jobs, id) = (jobs.clone(), id.clone());
+                async move { jobs.work(&id, signal).await }
+            };
+            jobs.spawn_worker(id, work);
+        }
+    }
+
+    /// Runs a job's `work` in a task of its own, then gives its slot back whatever it ended with,
+    /// a panic too (#914): a job whose task panicked ends `failed` ([`Jobs::crashed`]), and a queued
+    /// one starts in its place.
+    fn spawn_worker(
+        self: &Arc<Self>,
+        id: String,
+        work: impl std::future::Future<Output = ()> + Send + 'static,
+    ) {
+        let jobs = self.clone();
+        tokio::spawn(async move {
+            {
+                let panicked = match tokio::spawn(work).await {
+                    Err(e) if e.is_panic() => {
+                        let payload = e.into_panic();
+                        Some(
+                            payload
+                                .downcast_ref::<&str>()
+                                .map(|s| (*s).to_owned())
+                                .or_else(|| payload.downcast_ref::<String>().cloned())
+                                .unwrap_or_else(|| "unknown".into()),
+                        )
+                    }
+                    _ => None,
+                };
                 if let Some(connections) = jobs.connections.get() {
                     connections.close_job(&id).await;
                 }
@@ -3203,10 +3294,95 @@ impl Jobs {
                 }
                 // Once its slot is back: a reading under way can't measure it again ([`Jobs::record`]).
                 jobs.metered(&id);
+                // Its slot is back first: a panic again while it's ended frees nothing less.
+                if let Some(said) = panicked {
+                    let ended = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        jobs.crashed(&id, &said)
+                    }));
+                    if ended.is_err() {
+                        tracing::error!("job {id}: obid hit a bug again while it ended the job");
+                    }
+                    // Another Obi's review answers its exchange: failed.
+                    if jobs.get(&id).is_some_and(|j| j.obi.is_some()) {
+                        let (jobs, id) = (jobs.clone(), id.clone());
+                        let _ =
+                            tokio::spawn(async move { jobs.review_ended(&id, false).await }).await;
+                    }
+                }
                 jobs.changed.notify_waiters();
                 jobs.cleaning.notify_one();
                 jobs.schedule();
+            }
+        });
+    }
+
+    /// obid hit a bug (a panic) in job `id`'s task (#914): the job ends `failed`, saying so with the
+    /// panic's first line (at most 300 characters, every secret obid knows taken out), and what its
+    /// run would have taken out at its end goes: its login's copy, its agent's MCP configuration,
+    /// what it waited on. Its branch and worktree stay; the owner gets one item about it.
+    fn crashed(&self, id: &str, said: &str) {
+        let said = one_line(
+            &crate::secrets::known().redact(said.lines().next().unwrap_or_default()),
+            300,
+        );
+        tracing::error!("job {id}: obid hit a bug: {said}");
+        // A panic mid-publish leaves no claim on publishing it: Try again and Publish take it.
+        self.lock().publishing.remove(id);
+        let _ = std::fs::remove_file(self.temp_path(id).join(MCP_CONFIG_FILE));
+        forget_login_secrets(&self.login_path(id));
+        self.drop_asks(id, false);
+        // It had ended (a panic in what comes after its run): it stays as it ended, the bug noted.
+        if self.get(id).is_some_and(|j| !j.status.is_active()) {
+            self.update(id, |job| {
+                job.changed(format!("obid hit a bug after this ended: {said}"))
             });
+            return;
+        }
+        let review = self.get(id).and_then(|j| {
+            let body: ReviewRequest =
+                serde_json::from_value(j.obi_request?.get("body")?.clone()).ok()?;
+            Some(review::failed_result(&body))
+        });
+        // Another Obi's review can't be tried again here: the Obi that asked is told it failed.
+        let reason = if review.is_some() {
+            format!(
+                "{}{said}. The Obi that asked for this review was told it failed.",
+                crate::job::CRASHED
+            )
+        } else {
+            format!(
+                "{}{said}. Its branch and worktree are kept. Try again runs it again.",
+                crate::job::CRASHED
+            )
+        };
+        self.update(id, |job| {
+            job.status = Status::Failed;
+            job.summary = reason.clone();
+            job.reason = Some(reason.clone());
+            job.finished = Some(obi_protocol::time::now());
+            job.step = String::new();
+            job.next_step = None;
+            job.publish_step = None;
+            job.resumes_at = None;
+            job.crash_resumes.clear();
+            if job.obi.is_some() {
+                job.review_result = review;
+            }
+        });
+        self.crash_item(id);
+    }
+
+    /// The owner's one item about a job obid's own bug ended, or obid kept going down with
+    /// (#911, #915): one per such end, made again by no restart.
+    fn crash_item(&self, id: &str) {
+        if let (Some(link), Some(job)) = (
+            self.link.get().and_then(std::sync::Weak::upgrade),
+            self.get(id),
+        ) {
+            link.add_items(vec![crate::sphere::inbox::crash_item(
+                &job,
+                obi_protocol::time::now(),
+            )]);
         }
     }
 
@@ -3452,7 +3628,7 @@ impl Jobs {
             ))));
         }
         // A job moved since its last round starts a new session on its new choice.
-        if job.session.is_none() && job.moves.is_empty() {
+        if job.session.is_none() && job.moves.is_empty() && !crashed(&job) {
             return Some(Err(Refused(
                 "This job never started, so there's no session to pick up.".into(),
             )));
@@ -4554,6 +4730,11 @@ impl Jobs {
     pub async fn shutdown(&self, within: Duration) {
         self.shutting_down
             .store(true, std::sync::atomic::Ordering::Relaxed);
+        // A stop that was asked for, however long its jobs take to end: the next start knows it from
+        // a crash (#915).
+        if let Err(e) = store::write_private(&self.config.home.join(STOPPED_CLEANLY), b"") {
+            tracing::warn!("obid couldn't note that it stopped cleanly: {e}");
+        }
         for worker in self.lock().workers.values() {
             let _ = worker.send(Signal::Shutdown);
         }
@@ -5214,6 +5395,12 @@ impl Jobs {
         }
         forget_login_secrets(&self.login_path(id));
         self.drop_asks(id, *signal.borrow() == Signal::Shutdown);
+        // It ended (a shutdown isn't an end): an old crash never counts against a later run.
+        if *signal.borrow() != Signal::Shutdown
+            && self.get(id).is_some_and(|j| !j.crash_resumes.is_empty())
+        {
+            self.update(id, |job| job.crash_resumes.clear());
+        }
         let stopped = *signal.borrow() != Signal::Run;
         match outcome {
             // The owner stopped it: its exchange gets a failed result. A shutdown leaves it be.
@@ -8601,8 +8788,16 @@ impl Jobs {
             }
             job
         };
+        // Its claim goes however this ends: a panic, or a future dropped part way (a Publish by
+        // hand whose request went), never leaves the job claimed until a restart (#914).
+        struct Claim<'a>(&'a Jobs, &'a str);
+        impl Drop for Claim<'_> {
+            fn drop(&mut self) {
+                self.0.lock().publishing.remove(self.1);
+            }
+        }
+        let claim = Claim(self, id);
         let Some(base) = job.base.clone() else {
-            self.lock().publishing.remove(id);
             return Err(Failure::Failed(
                 "Nothing to publish: it has no base.".into(),
             ));
@@ -8621,7 +8816,7 @@ impl Jobs {
             }
             Err(why) => Err(Failure::Failed(why)),
         };
-        self.lock().publishing.remove(id);
+        drop(claim);
         if let Err(failure) = &outcome {
             tracing::info!("job {id}: not published: {}", failure.line());
         }
@@ -11733,6 +11928,15 @@ pub async fn run_check(
     drop(command);
     let pgid = child.id().unwrap_or(0);
     let _metered = crate::meter::check_root(pgid, cwd);
+    // Dropped part way (its job's task panicked, #914), what it started ends too, not only the
+    // first process `kill_on_drop` ends.
+    struct Group(u32);
+    impl Drop for Group {
+        fn drop(&mut self) {
+            process::signal_group(self.0, nix::sys::signal::Signal::SIGKILL);
+        }
+    }
+    let _group = Group(pgid);
     let fed = watch.clone();
     let reading = tokio::task::spawn_blocking(move || {
         let mut reader = reader;
@@ -13754,6 +13958,187 @@ mod tests {
         assert!(held > now + 3500 && held <= now + 3600, "{held}");
         jobs.mark_full("full", Some(now + 60), now);
         assert_eq!(jobs.usage.get("full").full_until, Some(held));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A Jobs over `home` with `jobs` kept there before it opens, for the crash and claim tests.
+    fn jobs_with_kept(home: &Path, jobs: &[&Job]) -> Arc<Jobs> {
+        std::fs::create_dir_all(home.join("jobs")).unwrap();
+        for job in jobs {
+            std::fs::write(
+                home.join(format!("jobs/{}.json", job.id)),
+                serde_json::to_vec(job).unwrap(),
+            )
+            .unwrap();
+        }
+        let config = crate::config::Config::parse(
+            &json!({"listen": "127.0.0.1:0", "home": home, "owner": "o",
+                "repos": [{"repo": "o/r", "remote": "https://example.com/o/r.git"}]})
+            .to_string(),
+        )
+        .unwrap();
+        Jobs::open(
+            config,
+            crate::events::Events::new(),
+            Err("no sandbox".into()),
+        )
+        .unwrap()
+    }
+
+    /// A publish dropped part way (a Publish by hand whose request went) leaves no claim on
+    /// publishing the job: held while it waits on its repository's lock, gone once dropped (#914's
+    /// review).
+    #[tokio::test]
+    async fn a_dropped_publish_leaves_no_claim() {
+        let root = std::env::temp_dir().join(format!("obid-claim-{}", uuid::Uuid::new_v4()));
+        let home = root.join("home");
+        let mut job = Job::new(
+            "eeee0001".into(),
+            "o/r".into(),
+            "build".into(),
+            "Build it".into(),
+            "claude".into(),
+            "c".into(),
+        );
+        job.status = Status::Done;
+        job.base = Some("main".into());
+        job.branch = "oby/build-eeee0001".into();
+        // obid's clone, with the job's branch one commit over its base.
+        let clone = git::clone_path(&home, "o/r");
+        std::fs::create_dir_all(&clone).unwrap();
+        cleanup_git(&clone, &["init", "-q"]);
+        cleanup_git(&clone, &["commit", "-q", "--allow-empty", "-m", "base"]);
+        cleanup_git(&clone, &["commit", "-q", "--allow-empty", "-m", "work"]);
+        cleanup_git(&clone, &["branch", "oby/build-eeee0001"]);
+        let jobs = jobs_with_kept(&home, &[&job]);
+        // Its base's fetch waits for the repository's lock, held here.
+        let preparing = jobs.preparing("o/r");
+        let held = preparing.lock().await;
+        let mut publishing = Box::pin(jobs.publish_job("eeee0001", None, |_| Ok(())));
+        let waited = tokio::time::timeout(Duration::from_secs(2), &mut publishing).await;
+        assert!(waited.is_err(), "it waits on the lock: {waited:?}");
+        assert!(
+            jobs.lock().publishing.contains("eeee0001"),
+            "claimed while it waits"
+        );
+        drop(publishing);
+        assert!(jobs.lock().publishing.is_empty(), "released once dropped");
+        drop(held);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A panic after its job ended (in what comes after its run) leaves the job as it ended: the
+    /// bug is noted on it, and no item asks to try it again (#914's review).
+    #[tokio::test]
+    async fn a_panic_after_its_job_ended_keeps_how_it_ended() {
+        let root = std::env::temp_dir().join(format!("obid-ended-{}", uuid::Uuid::new_v4()));
+        let mut job = Job::new(
+            "eeee0002".into(),
+            "o/r".into(),
+            "build".into(),
+            "Build it".into(),
+            "claude".into(),
+            "c".into(),
+        );
+        job.status = Status::Done;
+        job.summary = "Built it.".into();
+        let jobs = jobs_with_kept(&root.join("home"), &[&job]);
+        let (sender, _) = watch::channel(Signal::Run);
+        jobs.lock().workers.insert("eeee0002".into(), sender);
+        jobs.spawn_worker("eeee0002".into(), async { panic!("after the end") });
+        for _ in 0..100 {
+            if jobs
+                .get("eeee0002")
+                .is_some_and(|j| j.changes.iter().any(|c| c.what.contains("after the end")))
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        let job = jobs.get("eeee0002").unwrap();
+        assert_eq!(job.status, Status::Done);
+        assert_eq!(job.summary, "Built it.");
+        assert!(
+            job.changes
+                .iter()
+                .any(|c| c.what == "obid hit a bug after this ended: after the end"),
+            "{:?}",
+            job.changes
+        );
+        assert!(jobs.lock().workers.is_empty());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A job whose task panics ends `failed`, saying so with the panic's words (every secret obid
+    /// knows taken out), gives its slot back, and leaves no claim on publishing it (a panic
+    /// mid-publish); Try again carries it on, a fresh run when it had no session (#914).
+    #[tokio::test]
+    async fn a_job_whose_task_panics_ends_failed_and_gives_its_slot_back() {
+        let root = std::env::temp_dir().join(format!("obid-panic-{}", uuid::Uuid::new_v4()));
+        let home = root.join("home");
+        let mut job = Job::new(
+            "dddd0001".into(),
+            "o/r".into(),
+            "fix".into(),
+            "Fix it".into(),
+            "claude".into(),
+            "c".into(),
+        );
+        job.status = Status::Running;
+        std::fs::create_dir_all(home.join("jobs")).unwrap();
+        std::fs::write(
+            home.join("jobs/dddd0001.json"),
+            serde_json::to_vec(&job).unwrap(),
+        )
+        .unwrap();
+        let config = crate::config::Config::parse(
+            &json!({"listen": "127.0.0.1:0", "home": home, "owner": "o",
+                "repos": [{"repo": "o/r", "remote": "https://example.com/o/r.git"}]})
+            .to_string(),
+        )
+        .unwrap();
+        let jobs = Jobs::open(
+            config,
+            crate::events::Events::new(),
+            Err("no sandbox".into()),
+        )
+        .unwrap();
+        let (sender, _) = watch::channel(Signal::Run);
+        jobs.lock().workers.insert("dddd0001".into(), sender);
+        jobs.lock().publishing.insert("dddd0001".into());
+        // Put together here, so this file holds no value a secret scan flags.
+        let secret = ["panic", "secret", "4f1e2d3c"].join("-");
+        crate::secrets::known().learn("a test's secret", &secret);
+        let said = format!("the index is out of range near {secret}");
+        jobs.spawn_worker("dddd0001".into(), async move { panic!("{said}") });
+        for _ in 0..100 {
+            if jobs
+                .get("dddd0001")
+                .is_some_and(|j| j.status == Status::Failed)
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert!(jobs.lock().workers.is_empty(), "its slot is given back");
+        assert!(
+            jobs.lock().publishing.is_empty(),
+            "no claim on publishing it"
+        );
+        let job = jobs.get("dddd0001").unwrap();
+        assert_eq!(job.status, Status::Failed);
+        let reason = job.reason.unwrap();
+        assert!(reason.starts_with(crate::job::CRASHED), "{reason}");
+        assert!(
+            reason.contains("the index is out of range near"),
+            "{reason}"
+        );
+        assert!(!reason.contains(&secret), "{reason}");
+        assert!(job.session.is_none());
+        assert!(matches!(
+            jobs.message("dddd0001", crate::brain::actions::TRY_AGAIN, Source::Owner),
+            Some(Ok(_))
+        ));
         let _ = std::fs::remove_dir_all(&root);
     }
 

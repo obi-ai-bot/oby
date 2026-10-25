@@ -38,6 +38,8 @@ pub enum Trigger {
     Limit,
     /// Publishing it failed.
     PublishError,
+    /// obid's own bug ended it, or obid kept going down while it ran (#911).
+    Crash,
 }
 
 impl Trigger {
@@ -46,6 +48,7 @@ impl Trigger {
             Trigger::Failed => "failed",
             Trigger::Limit => "limit",
             Trigger::PublishError => "publishError",
+            Trigger::Crash => "crash",
         }
     }
 }
@@ -122,7 +125,19 @@ pub fn found(job: &Job, now: i64) -> Option<(String, Trigger, String)> {
     if now - finished >= FRESH {
         return None;
     }
+    let crashed = job
+        .reason
+        .as_deref()
+        .is_some_and(|r| r.starts_with(crate::job::CRASHED) || r == crate::job::LOOPED);
     let (trigger, what) = match job.status {
+        Status::Failed | Status::Interrupted if crashed => (
+            Trigger::Crash,
+            if job.status == Status::Failed {
+                "obid hit a bug while it ran.".to_owned()
+            } else {
+                "obid kept going down while it ran.".to_owned()
+            },
+        ),
         Status::Failed => match &job.limit {
             Some(limit) => (Trigger::Limit, format!("Stopped at a limit: {limit}")),
             None if job.summary.starts_with("Not published:") => (
