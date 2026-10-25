@@ -17,7 +17,7 @@ struct WindowInputTests {
                       pr: nil, kind: .review, task: "review", created: now - 60)
         job.status = .running
         feed.apply(job)
-        return IslandModel(desk: Desk(), feed: feed, availability: MacAvailability())
+        return IslandModel(feed: feed, availability: MacAvailability())
     }
 
     /// The panel's settings live in the app's own defaults (the test host is the app): set for a

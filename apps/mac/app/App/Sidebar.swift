@@ -70,8 +70,7 @@ extension IslandModel {
 
     private func work(_ state: ChatState, archived: Bool) -> [WorkList.Item<SidebarSections.JobRow>] {
         let after = state.archiveAfter, now = Date.now
-        return SidebarSections.work(local: desk.jobs.filter { self.archived($0, local: true, after: after, now: now) == archived },
-                                    runner: feed.jobs.filter { self.archived($0, local: false, after: after, now: now) == archived },
+        return SidebarSections.work(local: [], runner: feed.jobs.filter { self.archived($0, after: after, now: now) == archived },
                                     since: state.since, seen: state.seen,
                                     routines: Set(feed.extras.compactMap { $0.value.routine == nil ? nil : $0.key }))
     }
@@ -99,7 +98,6 @@ struct SidebarView: View {
     private var folded: Set<String> { state.folded }
     private var more: Set<String> { state.more }
 
-    private var desk: Desk { model.desk }
     private var feed: RunnerFeed { model.feed }
     /// The panel lists obid's conversations (#493) instead of Home's work.
     private var listsConversations: Bool { feed.conversationsOn && state.section == .conversations }

@@ -223,20 +223,9 @@ nonisolated enum Connectors {
         return lists
     }
 
-    /// The accounts jobs run on, from where Settings › Accounts lists them (`AccountPlaces`): with obid
-    /// on this Mac only obid's, never this Mac's own `accounts.json` beside it, which names the same
-    /// logins under other ids; with a remote runner this Mac's and the runner's; with none, this Mac's.
-    /// `runner` is nil while the runner doesn't answer: with obid on this Mac that's nil too, as nothing is known yet.
-    static func accounts(mac: [AccountState], runner: [AccountState]?, local: Bool, hasRunner: Bool) -> [AccountState]? {
-        let places = AccountPlaces.of(local: local, runner: hasRunner)
-        if places == [.runner], runner == nil { return nil }
-        return places.flatMap { $0 == .mac ? mac : runner ?? [] }
-    }
-
     /// Every service, in the design's order: Deskree Ops, Tetrix, GitHub, the coding tools, then the
     /// rest the design shows, and after them what the runner adds (obid's plug-ins, its connections).
-    /// `accounts` are the ones jobs run on (`accounts(mac:runner:local:hasRunner:)`), nil while the runner
-    /// that holds them doesn't answer; `runner` is nil while it doesn't answer. Then what it holds says it waits for it.
+    /// `accounts` are the ones jobs run on, the runner's, nil while it doesn't answer; `runner` is nil while it doesn't answer. Then what it holds says it waits for it.
     static func list(accounts: [AccountState]?, runner: RunnerState?) -> [Connector] {
         let soon = coming.map { id, name, about, brand in
             Connector(id: id, name: name, about: about, place: thisMac, how: "Coming soon", state: .available, way: nil, brand: brand, soon: true)

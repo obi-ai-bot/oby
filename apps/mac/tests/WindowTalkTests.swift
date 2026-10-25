@@ -123,7 +123,7 @@ struct WindowTalkTests {
     /// things ask for it.
     @Test func whatNeedsYouIsCountedOncePerJob() {
         let feed = RunnerFeed()
-        let model = IslandModel(desk: Desk(), feed: feed, availability: MacAvailability())
+        let model = IslandModel(feed: feed, availability: MacAvailability())
         #expect(model.working == 0 && model.needsYou == 0)
         feed.apply(job("f1", .failed))
         #expect(model.needsYou == 1)

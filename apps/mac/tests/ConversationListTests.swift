@@ -232,21 +232,14 @@ struct ConversationListTests {
         #expect(!list.nextToLatest)
     }
 
-    /// Each of obid's conversations is only its own turns: this Mac's history from before the runner
-    /// planned joins the one thread of a runner that keeps one, never a conversation.
+    /// Each of obid's conversations is only its own turns, and the words on their way to it.
     @Test func aConversationShowsOnlyItsOwnTurns() {
-        let mine = [Turn(id: "m1", date: now - 60, who: .user, text: "before the runner planned")]
-        #expect(IslandModel.localTurns(mine, conversations: false).map(\.id) == ["m1"])
-        #expect(IslandModel.localTurns(mine, conversations: true).isEmpty)
         let feed = RunnerFeed()
-        let model = IslandModel(desk: Desk(), feed: feed, availability: MacAvailability())
-        #expect(model.localTurns.map(\.id) == model.desk.turns.map(\.id))
+        let model = IslandModel(feed: feed, availability: MacAvailability())
         feed.conversations.take([convo("a")])
-        #expect(model.localTurns.isEmpty)
+        #expect(model.thread.isEmpty)
         feed.conversation.apply(Turn(id: "r1", date: now, who: .user, text: "in a"))
         #expect(model.thread.map(\.id) == ["r1"])
-        feed.conversations.reset()
-        #expect(model.localTurns.map(\.id) == model.desk.turns.map(\.id))
     }
 
     @Test func aRunnerWithOneThreadIgnoresConversationEvents() {

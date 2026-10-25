@@ -57,23 +57,13 @@ struct ConnectorsTests {
         #expect(list.last?.brand == nil && list.last?.symbol == "link")
     }
 
-    /// With obid on this Mac, the accounts are obid's alone, as Settings › Accounts lists them: this
-    /// Mac's own accounts.json names the same logins under other ids (Claude Code's Deskree as
-    /// `32203c5b…` beside obid's `deskree`, Codex's default as `codex-default` beside `codex`), and
-    /// listing both showed "Claude Code · Deskree" twice. A remote runner adds its own to this Mac's.
+    /// The accounts are the runner's alone, as Settings › Accounts lists them: the app keeps none of
+    /// its own (#895), so "Claude Code · Deskree" shows once.
     @Test func theAccountsJobsRunOnOnce() {
         func claude(_ id: String, _ name: String) -> AccountState {
             AccountState(account: Account(id: id, agent: "claude", name: name, payer: "", home: nil), label: "Max")
         }
-        let mac = [claude("default", "Personal"), claude("32203c5b", "Deskree")]
-        let obid = [claude("default", "Personal"), claude("deskree", "Deskree")]
-        #expect(Connectors.accounts(mac: mac, runner: obid, local: true, hasRunner: true)?.map(\.account.id) == ["default", "deskree"])
-        #expect(Connectors.accounts(mac: mac, runner: obid, local: false, hasRunner: true)?.count == 4)
-        #expect(Connectors.accounts(mac: mac, runner: nil, local: false, hasRunner: false)?.map(\.account.id) == ["default", "32203c5b"])
-        // A remote runner that doesn't answer leaves this Mac's own; obid on this Mac that doesn't, nothing known yet.
-        #expect(Connectors.accounts(mac: mac, runner: nil, local: false, hasRunner: true)?.count == 2)
-        #expect(Connectors.accounts(mac: mac, runner: nil, local: true, hasRunner: true) == nil)
-        let row = Connectors.list(accounts: Connectors.accounts(mac: mac, runner: obid, local: true, hasRunner: true), runner: nil).first { $0.id == "claude" }
+        let row = Connectors.list(accounts: [claude("default", "Personal"), claude("deskree", "Deskree")], runner: nil).first { $0.id == "claude" }
         #expect(row?.how == "Signed in with Claude Code's own login: Personal, Deskree")
     }
 
@@ -267,7 +257,7 @@ struct ConnectorsTests {
             let row = try #require(list.first { $0.id == id })
             #expect(row.state == .available && row.way == .steps("Shows here once Oby's runner answers (Settings › Runner)."))
         }
-        let silent = Connectors.list(accounts: Connectors.accounts(mac: [personal], runner: nil, local: true, hasRunner: true), runner: nil)
+        let silent = Connectors.list(accounts: nil, runner: nil)
         for id in ["claude", "codex", "cursor"] {
             let row = try #require(silent.first { $0.id == id })
             #expect(!row.connected && row.way == .steps("Shows here once Oby's runner answers (Settings › Runner)."))

@@ -82,15 +82,11 @@ struct CharacterTests {
     }
 
     @Test func obyShowsLoadingWhileTheBrainThinks() throws {
-        let folder = FileManager.default.temporaryDirectory.appending(path: "oby-character-\(UUID().uuidString)")
-        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: folder) }
-        let desk = Desk(accounts: AccountStore(root: folder), store: JobStore(url: folder.appending(path: "oby.sqlite")))
-        let model = IslandModel(desk: desk, feed: RunnerFeed(), availability: MacAvailability())
+        let model = IslandModel(feed: RunnerFeed(), availability: MacAvailability())
         #expect(model.mood == "idle")
-        desk.talk = .thinking("What's left on #499?")
+        model.talk = .thinking("What's left on #499?")
         #expect(model.mood == "loading")
-        desk.talk = .reply("Two checks.")
+        model.talk = .reply("Two checks.")
         #expect(model.mood == "idle")
         model.listening = true
         #expect(model.mood == "listening")

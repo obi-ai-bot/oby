@@ -358,10 +358,10 @@ struct UsageRow: Identifiable, Equatable {
 }
 
 extension IslandModel {
-    /// Every account where jobs run (the runner's on this Mac, else this Mac's own, as Settings ›
-    /// Accounts lists them), with its week: nil while it's unknown, signed out or reset.
+    /// Every account where jobs run (the runner's, as Settings › Accounts lists them), with its week:
+    /// nil while it's unknown, signed out or reset.
     var usageRows: [UsageRow] {
-        (feed.local ? feed.accounts : desk.accounts.accounts).map {
+        feed.accounts.map {
             UsageRow(id: $0.account.id, agent: $0.account.agent, name: $0.account.name,
                      week: Usage.week($0.usage), resets: $0.sevenDayResets)
         }

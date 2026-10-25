@@ -213,7 +213,7 @@ final class RunnerFeed {
     /// The URL followed now, or nil before `start`.
     @ObservationIgnored private var url: String?
     /// Settings › Runner says "This Mac" (#283): the runner is the login item on this Mac, at
-    /// `LocalRunner.url`, with its own token; this Mac's desk then plans and runs nothing itself.
+    /// `LocalRunner.url`, with its own token. The app itself plans and runs nothing (#895).
     private(set) var local = false
     /// The local runner's token, read from obid's private file or the Swift runner's keychain.
     @ObservationIgnored private var token: String?

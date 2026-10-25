@@ -60,7 +60,7 @@ struct SettingsWindowTests {
     }
 
     @Test func theTrailNamesThePage() {
-        let model = IslandModel(desk: Desk(), feed: RunnerFeed(), availability: MacAvailability())
+        let model = IslandModel(feed: RunnerFeed(), availability: MacAvailability())
         #expect(WindowLabels.label(.settings(.remote), model: model) == "Remote access")
     }
 

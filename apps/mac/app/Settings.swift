@@ -35,16 +35,16 @@ struct SettingsPane: View {
     }
 
     @ViewBuilder private var content: some View {
-        let feed = model.feed, store = model.desk.accounts
+        let feed = model.feed
         switch page {
-        case .general: GeneralSettingsView(desk: model.desk)
+        case .general: GeneralSettingsView()
         case .runner: RunnerSettingsView(feed: feed, availability: model.availability, remote: model.remote)
         case .sharing: SharingSettingsView(feed: feed)
         case .remote:
             if let remote = model.remote { RemoteAccessSettingsView(remote: remote) }
-        case .accounts: AccountsSettingsView(store: store, feed: feed)
-        case .models: ModelsSettingsView(store: store, feed: feed)
-        case .connectors: ConnectorsSettingsView(store: store, feed: feed, remote: model.remote)
+        case .accounts: AccountsSettingsView(feed: feed)
+        case .models: ModelsSettingsView(feed: feed)
+        case .connectors: ConnectorsSettingsView(feed: feed, remote: model.remote)
         case .memory: MemorySettingsView(runner: feed.runner)
         case .sphere: SphereSettingsView(feed: feed)
         case .vault: VaultSettingsView(vault: model.vault ?? .shared)
@@ -53,25 +53,15 @@ struct SettingsPane: View {
     }
 }
 
-/// Settings › General: what the iPhone's Settings has too (apps/shared/SettingsSections.swift),
-/// opening at login, and how much this Mac's own jobs ask.
+/// Settings › General: what the iPhone's Settings has too (apps/shared/SettingsSections.swift), and
+/// opening at login. How much jobs ask is the runner's, in Settings › Runner.
 struct GeneralSettingsView: View {
-    /// This Mac's desk: Settings › Permissions' default for the jobs it runs itself (#134). The
-    /// runner's is in Settings › Runner.
-    let desk: Desk
-    @State private var mode = PermissionMode.bypass
-    /// The rules Always allow (or a deny) saved on this Mac, read when Settings opens.
-    @State private var rules: [PermissionRule] = []
     @State private var openAtLogin = SMAppService.mainApp.status == .enabled
     @State private var problem: String?
 
     var body: some View {
         SetGroup(problem: problem) {
             SetRow("Open at login") { Toggle("Open at login", isOn: $openAtLogin).toggleStyle(.set) }
-        }
-        .onAppear {
-            mode = desk.defaultMode
-            rules = desk.permissionRules
         }
         .onChange(of: openAtLogin) { _, on in
             do {
@@ -82,37 +72,8 @@ struct GeneralSettingsView: View {
                 openAtLogin = SMAppService.mainApp.status == .enabled
             }
         }
-        SetGroup("Permissions on this Mac", footer: "How much the jobs this Mac runs itself ask. Each job’s Mode menu changes it while it runs. Always allow saves a rule, so it doesn’t ask again; remove the rule to be asked again. The runner’s jobs follow Runner › Permissions.") {
-            SetRow("Default mode", about: RunnerMode(mode.rawValue)?.help) {
-                SetSelect("Default mode", selection: $mode,
-                          options: RunnerMode.local.map { (PermissionMode(rawValue: $0.rawValue) ?? .bypass, $0.label) })
-            }
-            if rules.isEmpty {
-                SetRow("No saved rules", quiet: true)
-            }
-            ForEach(rules) { rule in
-                SetRow(about: "\(rule.decision == .deny ? "Denied" : "Allowed") · \(rule.repo)") {
-                    SetCode(rule.rule)
-                } control: {
-                    Button("Remove", role: .destructive) { forget(rule) }
-                        .buttonStyle(.set)
-                        .accessibilityLabel("Remove \(rule.rule)")
-                }
-            }
-        }
-        .onChange(of: mode) { _, chosen in if desk.defaultMode != chosen { desk.defaultMode = chosen } }
         VoiceSection(footer: "When you talk to Oby with fn, your words show as you speak and Oby answers in writing. After fn + Space, it listens again for your answer once its reply shows, until you press fn or say “stop”.")
         NotificationsSection()
-    }
-
-    private func forget(_ rule: PermissionRule) {
-        do {
-            try desk.forgetRule(rule.id)
-            problem = nil
-        } catch {
-            problem = error.localizedDescription
-        }
-        rules = desk.permissionRules
     }
 }
 
@@ -194,7 +155,7 @@ struct RunnerSettingsView: View {
             }
             SetRow("Availability") { SetValue(availability.label) }
         }
-        // As on the iPhone (apps/shared/PermissionsSection.swift). This Mac's own jobs' default is in General.
+        // As on the iPhone (apps/shared/PermissionsSection.swift).
         PermissionsSection(runner: feed.runner, defaultMode: feed.defaultMode, setDefault: feed.setDefaultMode)
         RoutinesSection(runner: feed.runner, changes: feed.routineChanges)
         SetGroup("Checks on this Mac") {
@@ -427,26 +388,13 @@ private struct ReserveLine: View {
     }
 }
 
-/// Where Settings › Accounts lists accounts from (docs/mac-design.md C1), as one list: with obid on
-/// this Mac (Settings › Runner › This Mac) only obid's, which it plans and runs every job on; with a
-/// remote runner this Mac's own and the runner's; with none, this Mac's.
-nonisolated enum AccountPlaces: Equatable, Sendable {
-    case mac, runner
-
-    static func of(local: Bool, runner: Bool) -> [AccountPlaces] {
-        local ? [.runner] : runner ? [.mac, .runner] : [.mac]
-    }
-}
-
 /// Settings › Accounts: the logins Oby spreads jobs across, who pays for each, and how much of its week
-/// each has used, as Sangam's usage rows, from where jobs run (`AccountPlaces`).
+/// each has used, as Sangam's usage rows: the runner's, where every job runs (docs/mac-design.md C1).
 struct AccountsSettingsView: View {
-    let store: AccountStore
     let feed: RunnerFeed
     @State private var agent = "claude"
     @State private var name = ""
     @State private var payer = ""
-    @State private var removing: Account?
     /// One of obid's accounts, asked about before it goes.
     @State private var removingRunner: Account?
     /// The tools' own logins removed here (`default`, `codex`), comma-separated: Add an account
@@ -457,28 +405,13 @@ struct AccountsSettingsView: View {
     @State private var signingIn: ShownAccountSignIn?
     @State private var problem: String?
 
-    private var places: [AccountPlaces] { AccountPlaces.of(local: feed.local, runner: feed.runner != nil) }
-
     var body: some View {
-        let both = places.count > 1
-        if places.contains(.mac) {
-            AccountSections("Accounts on this Mac", items: store.accounts, id: \.account.id, usage: \.usage,
-                            place: both ? "on this Mac" : nil) { state in
-                AccountUsageRow(state: state, payer: state.account.payer) { lift in _ = store.liftReserve(state.account.id, lift) } buttons: {
-                    if !state.signedIn {
-                        Button("Sign In") { attempt { try store.signIn(state.account) } }.buttonStyle(.set)
-                    }
-                    Button("Remove", role: .destructive) { removing = state.account }.buttonStyle(.set)
-                }
-            }
-            addAccount
-        }
-        if places.contains(.runner) {
+        if feed.runner != nil {
             // obid's own accounts, signed in on it through each tool's own login. Its accounts API is
             // loopback only (docs/runner-api.md, "obid only: accounts"): a runner elsewhere lists them here,
             // and they're added, signed in and removed on that machine.
             AccountSections(feed.local ? "Accounts on this Mac" : "Accounts on \(feed.name)", items: feed.accounts, id: \.account.id,
-                            usage: \.usage, place: both ? "on \(feed.name)" : nil) { state in
+                            usage: \.usage, place: nil) { state in
                 AccountUsageRow(state: state, payer: state.account.payer) { lift in
                     // The runner's "accounts" event brings the change back.
                     guard let runner = feed.runner else { throw RunnerError(message: "Set the runner's URL in Settings first.") }
@@ -539,27 +472,6 @@ struct AccountsSettingsView: View {
                     .buttonStyle(.set)
                 }
             }
-        }
-    }
-
-    /// Adds to this Mac's own accounts, which only Oby on this Mac uses.
-    private var addAccount: some View {
-        addForm {
-            try store.add(agent: agent, name: name.trimmingCharacters(in: .whitespaces), payer: payer.trimmingCharacters(in: .whitespaces))
-        }
-        .task { await store.refresh() }
-        // Kept beyond Sangam's mock: removing deletes the account's settings folder and its login, so
-        // macOS's confirmation first.
-        .confirmationDialog("Remove \(removing?.name ?? "this account")?",
-                            isPresented: Binding(get: { removing != nil }, set: { if !$0 { removing = nil } }),
-                            presenting: removing) { account in
-            Button("Remove", role: .destructive) { attempt { try store.remove(account) } }
-        } message: { account in
-            Text(account.home == nil ? "Its login stays in the tool's own settings." : "Oby deletes this account's settings folder, with its login. This can’t be undone.")
-        }
-        // Back from signing in, in Terminal.
-        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
-            Task { await store.refresh() }
         }
     }
 
@@ -625,15 +537,6 @@ struct AccountsSettingsView: View {
                 signingIn = try await ShownAccountSignIn.start(account, on: feed)
                 problem = nil
             } catch { problem = error.localizedDescription }
-        }
-    }
-
-    private func attempt(_ action: () throws -> Void) {
-        do {
-            try action()
-            problem = nil
-        } catch {
-            problem = error.localizedDescription
         }
     }
 }
@@ -885,7 +788,6 @@ struct SentryProjectsSheet: View {
 /// "Connected" or its button (apps/mac/app/Connectors.swift). How it's signed in is the row's tooltip;
 /// Disconnect and the rest are in its context menu, so the row stays as clean as the design's.
 struct ConnectorsSettingsView: View {
-    let store: AccountStore
     let feed: RunnerFeed
     /// Remote access: a monitoring tool's hook is made with this Mac's key, and its alerts come
     /// through the tunnel (#1311).
@@ -947,11 +849,6 @@ struct ConnectorsSettingsView: View {
                 Text("No connector matches “\(typed)”")
                     .font(Tokens.font(Tokens.textBase)).foregroundStyle(Tokens.muted).padding(.horizontal, 16).padding(.bottom, 24)
             }
-        }
-        .task { await store.refresh() }
-        // Back from signing in or out, in Terminal.
-        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
-            Task { await store.refresh() }
         }
         // Once the runner answers, and again after it comes back or Settings › Runner changes it.
         .task(id: feed.connection) { await load() }
@@ -1037,7 +934,7 @@ struct ConnectorsSettingsView: View {
         }
     }
 
-    /// This Mac's accounts, and what the runner said about itself while it answers.
+    /// What the runner said about itself, and its accounts, while it answers.
     private var list: [Connector] {
         #if DEBUG
         let staged = feed.stagedLists != nil
@@ -1048,9 +945,7 @@ struct ConnectorsSettingsView: View {
             name: feed.name, local: feed.local, accounts: feed.accounts, github: feed.github, checks: feed.checkRuns,
             gitHubLogin: lists.gitHub, plugins: lists.plugins, connections: lists.connections, tetrix: feed.tetrix,
             slack: feed.slack, watch: feed.watch, sentry: lists.sentry, hooks: lists.hooks)
-        let accounts = Connectors.accounts(mac: store.accounts, runner: runner?.accounts, local: feed.local,
-                                           hasRunner: feed.runner != nil || staged)
-        return Connectors.shown(Connectors.list(accounts: accounts, runner: runner), everything: everything)
+        return Connectors.shown(Connectors.list(accounts: runner?.accounts, runner: runner), everything: everything)
     }
 
     private var typedURL: String { url.trimmingCharacters(in: .whitespaces) }
@@ -1690,75 +1585,26 @@ struct VaultSettingsView: View {
     }
 }
 
-/// Settings › Models: which model and effort Claude Code and Codex jobs use, on this Mac and on the
-/// runner (as the iPhone sets them, apps/shared/SettingsSections.swift).
+/// Settings › Models: which model and effort the runner's Claude Code, Codex and Cursor jobs use (as
+/// the iPhone sets them, apps/shared/SettingsSections.swift; docs/mac-design.md C2).
 struct ModelsSettingsView: View {
-    let store: AccountStore
     let feed: RunnerFeed
-    @AppStorage("claude.model") private var claudeModel = AgentModels.defaults["claude.model"] ?? ""
-    @AppStorage("claude.effort") private var claudeEffort = AgentModels.defaults["claude.effort"] ?? ""
-    @AppStorage("claude.complexEffort") private var claudeComplexEffort = AgentModels.defaults["claude.complexEffort"] ?? ""
-    @AppStorage("codex.model") private var codexModel = AgentModels.defaults["codex.model"] ?? ""
-    @AppStorage("codex.effort") private var codexEffort = AgentModels.defaults["codex.effort"] ?? ""
-    @AppStorage("codex.complexEffort") private var codexComplexEffort = AgentModels.defaults["codex.complexEffort"] ?? ""
-    @AppStorage("cursor.model") private var cursorModel = AgentModels.defaults["cursor.model"] ?? "auto"
-    /// What the signed-in Codex account offers, from its own model list.
-    @State private var codexModels: [CodexModel] = []
-    /// What the signed-in Cursor account offers (`cursor-agent models`); Cursor has no effort.
-    @State private var cursorModels: [CursorModel] = []
     /// What the runner offers, once it has answered.
     @State private var runnerOptions: ModelOptions?
-    /// Whether the runner serves its models: obid doesn't yet (no `/v1/settings/models` routes), and
-    /// then the page is this Mac's own models, as before.
-    @State private var runnerServesModels = true
     @State private var problem: String?
 
     var body: some View {
-        // With obid on this Mac it runs every job: its models are the only ones (docs/mac-design.md C2).
-        if feed.local && runnerServesModels {
-            // In a stack that's always there: the sections are empty until the options arrive, and a
-            // task on an empty view never runs.
-            VStack(alignment: .leading, spacing: 0) {
-                if runnerOptions == nil || feed.models == nil {
-                    SetGroup(problem: problem) { SetRow("Waiting for the runner on this Mac…", quiet: true) }
-                } else {
-                    RunnerModelsSections(options: runnerOptions, models: feed.models, save: feed.setModels, place: "on this Mac",
-                                         footer: "New jobs on this Mac use these. Oby’s brain stays on Haiku: it plans and answers in the conversation, so it should be quick.")
-                }
-            }
-            .task(id: feed.connection) { await loadOptions() }
-        } else {
-            mine
-            if feed.runner != nil {
+        // In a stack that's always there: the sections are empty until the options arrive, and a
+        // task on an empty view never runs.
+        VStack(alignment: .leading, spacing: 0) {
+            if runnerOptions == nil || feed.models == nil {
+                SetGroup(problem: problem) { SetRow(feed.local ? "Waiting for the runner on this Mac…" : "Waiting for \(feed.name)…", quiet: true) }
+            } else if feed.local {
+                RunnerModelsSections(options: runnerOptions, models: feed.models, save: feed.setModels, place: "on this Mac",
+                                     footer: "New jobs on this Mac use these. Oby’s brain stays on Haiku: it plans and answers in the conversation, so it should be quick.")
+            } else {
                 RunnerModelsSections(options: runnerOptions, models: feed.models, save: feed.setModels, place: "on \(feed.name)")
             }
-        }
-    }
-
-    /// This Mac's own models, for the jobs its desk runs.
-    @ViewBuilder private var mine: some View {
-        let efforts = AgentModels.claudeEfforts.map { ($0, AgentModels.effortName($0)) }
-        SetGroup("Claude Code on this Mac") {
-            SetRow("Model") { SetSelect("Claude Code model", selection: $claudeModel, options: AgentModels.claude) }
-            SetRow("Effort") { SetSelect("Claude Code effort", selection: $claudeEffort, options: efforts) }
-            SetRow("Complex job effort") { SetSelect("Claude Code complex job effort", selection: $claudeComplexEffort, options: efforts) }
-        }
-        SetGroup("Codex on this Mac") {
-            SetRow("Model") { SetSelect("Codex model", selection: $codexModel, options: codexChoices.map { ($0.id, $0.name) }) }
-            SetRow("Effort") { SetSelect("Codex effort", selection: $codexEffort, options: codexEfforts.map { ($0, AgentModels.effortName($0)) }) }
-            SetRow("Complex job effort") {
-                SetSelect("Codex complex job effort", selection: $codexComplexEffort, options: codexEfforts.map { ($0, AgentModels.effortName($0)) })
-            }
-        }
-        SetGroup("Cursor on this Mac", footer: "New jobs on this Mac use these. Oby’s brain stays on Haiku: it plans and answers in the conversation, so it should be quick.",
-                 problem: problem) {
-            SetRow("Model") { SetSelect("Cursor model", selection: $cursorModel, options: cursorChoices.map { ($0.id, $0.name) }) }
-        }
-        .task { codexModels = (try? await CodexAgent.models(home: nil)) ?? [] }
-        .task {
-            // Jobs run on Oby's own Cursor account: its model list, when one is signed in.
-            guard let account = store.accounts.first(where: { $0.account.agent == "cursor" && $0.signedIn }) else { return }
-            cursorModels = await CursorModels.list(home: account.account.home)
         }
         // Once the runner answers, and again after it comes back or its URL changes.
         .task(id: feed.connection) { await loadOptions() }
@@ -1774,32 +1620,8 @@ struct ModelsSettingsView: View {
             runnerOptions = try await runner.modelOptions()
             problem = nil
         } catch {
-            runnerServesModels = Self.servesModels(after: error)
-            problem = runnerServesModels ? error.localizedDescription : nil
+            problem = error.localizedDescription
         }
-    }
-
-    /// A 404 says the runner has no models to set (obid today): nothing wrong to show.
-    nonisolated static func servesModels(after error: any Error) -> Bool {
-        (error as? RunnerError)?.status != 404
-    }
-
-    /// The account's models, plus the chosen one while the list loads (or if the plan dropped it).
-    private var codexChoices: [CodexModel] {
-        codexModels.contains { $0.id == codexModel } ? codexModels
-            : [CodexModel(id: codexModel, name: codexModel, efforts: AgentModels.claudeEfforts)] + codexModels
-    }
-
-    /// Cursor's models, with Auto first (Cursor picks) and the chosen one while the list loads.
-    private var cursorChoices: [CursorModel] {
-        var choices = [CursorModel(id: "auto", name: "Auto")] + cursorModels.filter { $0.id != "auto" }
-        if !choices.contains(where: { $0.id == cursorModel }) { choices.append(CursorModel(id: cursorModel, name: cursorModel)) }
-        return choices
-    }
-
-    private var codexEfforts: [String] {
-        let efforts = codexChoices.first { $0.id == codexModel }?.efforts ?? []
-        return efforts.contains(codexEffort) ? efforts : [codexEffort] + efforts
     }
 }
 
@@ -1809,17 +1631,6 @@ extension AccountState {
         Usage.Snapshot(agent: account.agent, name: account.name, label: label, fiveHour: fiveHour, sevenDay: sevenDay,
                        fiveHourResets: fiveHourResets, sevenDayResets: sevenDayResets, running: running,
                        reserveLiftedUntil: reserveLifted, runnerSignedIn: runnerSignedIn)
-    }
-}
-
-extension AccountStore {
-    /// Opens Terminal on the tool's own login, with the account's home in the environment.
-    func signIn(_ account: Account) throws {
-        let script = URL(filePath: account.home ?? homes.path).appending(path: "sign-in-\(account.id).command")
-        try FileManager.default.createDirectory(at: script.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try Self.signInScript(for: account).write(to: script, atomically: true, encoding: .utf8)
-        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: script.path)
-        guard NSWorkspace.shared.open(script) else { throw Shell.Failure(message: "Couldn't open Terminal to sign in.") }
     }
 }
 

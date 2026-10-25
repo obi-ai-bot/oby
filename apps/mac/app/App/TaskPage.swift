@@ -48,41 +48,8 @@ struct TaskActions {
         return permissions.first { $0.job == job && $0.done == nil }.map { .permission($0.id) }
     }
 
-    @MainActor static func of(_ job: Job, local: Bool, model: IslandModel) -> TaskActions {
-        let desk = model.desk, feed = model.feed
-        if local {
-            return TaskActions(
-                place: "This Mac", account: desk.accounts.accounts.first { $0.account.id == job.account }?.account.name,
-                extras: RunnerJobExtras(local: job), accounts: desk.accounts.accounts,
-                stop: { desk.stop(job.id) },
-                message: { try desk.message(job.id, $0) }, dismiss: { try desk.dismiss(job.id) },
-                permission: { try desk.answerPermission(job.id, $0, message: $1) },
-                mode: { try desk.changeMode(job.id, to: $0) },
-                startNow: { try desk.startNow(job.id) }, useAnyway: { _ = desk.liftReserve($0, true) },
-                move: job.reviewOf == nil ? { target in _ = try desk.move(job.id, to: target) } : nil,
-                publishing: JobView.Publishing(action: { Publish.action(for: job, base: job.base ?? "") },
-                                               publish: { _ in _ = try await desk.publish(job.id, approve: { _ in }) }),
-                readReport: {
-                    guard let saved = desk.store.report(job.id) else { throw Shell.Failure(message: "This job has no research report.") }
-                    return ResearchDocument(job: saved.job, commit: saved.commit, markdown: saved.markdown,
-                                            proposals: saved.proposals.map { ResearchProposal(index: $0.index, repo: $0.repo, title: $0.title, body: $0.body, labels: $0.labels, filed: $0.filed, filedAt: $0.filedAt) })
-                },
-                fileProposal: { index, start in try await fileLocalProposal(job, index: index, start: start, desk: desk) },
-                tell: { text, _ in
-                    try desk.message(job.id, text)
-                    // The thread the window opens on it gets the words and Oby's answer, as obid's conversation does.
-                    if model.hasConversation(of: job.id, local: true) {
-                        let account = desk.accounts.accounts.first { $0.account.id == job.account }?.account.name ?? job.account
-                        desk.told(text, reply: TaskFacts.relay(job, heard: job, account: account), job: job.id)
-                    }
-                    return job
-                },
-                later: {
-                    guard case .item(let id) = laterTarget(job.id, inbox: desk.inbox) else { return false }
-                    _ = try await desk.answer(id, .later(.now.addingTimeInterval(3600)))
-                    return true
-                })
-        }
+    @MainActor static func of(_ job: Job, model: IslandModel) -> TaskActions {
+        let feed = model.feed
         return TaskActions(
             place: feed.name, account: nil, extras: feed.extras[job.id], accounts: feed.accounts,
             stop: { Task { if let stopped = try? await feed.about(job.id, { try await $0.stop(job.id) }) { feed.apply(stopped) } } },
@@ -120,37 +87,6 @@ struct TaskActions {
             useShare: { share in
                 if feed.runner != nil { feed.apply(try await feed.about(job.id) { try await $0.place(job.id, on: share.from, grant: share.grant) }) }
             })
-    }
-
-    /// Files one of this Mac's research report's proposed issues, after the secret scan, and starts
-    /// work on it when asked.
-    @MainActor private static func fileLocalProposal(_ job: Job, index: Int, start: Bool, desk: Desk) async throws -> FileProposalResult {
-        guard var saved = desk.store.report(job.id),
-              let position = saved.proposals.firstIndex(where: { $0.index == index }) else {
-            throw Shell.Failure(message: "There's no proposed issue with that index.")
-        }
-        guard saved.proposals[position].filed == nil else { throw Shell.Failure(message: "This issue was already filed.") }
-        let proposal = saved.proposals[position]
-        do {
-            let findings = try await Publish.scan(texts: [("issue title", proposal.title), ("issue body", proposal.filedBody)])
-            guard findings.isEmpty else { throw Shell.Failure(message: "The proposed issue didn't pass Oby's secret scan.") }
-        } catch { throw Shell.Failure(message: "Oby's secret scanner couldn't run or found a secret; nothing was filed.") }
-        let result = try await Shell.run(["gh", "issue", "create", "-R", proposal.repo, "--title", proposal.title, "--body-file", "-"],
-                                         input: Data(proposal.filedBody.utf8), as: .app)
-        guard result.status == 0, let url = URL(string: result.text), url.scheme == "https", url.host == "github.com" else {
-            throw Shell.Failure(message: result.err.isEmpty ? "GitHub couldn't create the proposed issue." : result.err)
-        }
-        let issueURL = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
-        saved.proposals[position].filed = issueURL
-        saved.proposals[position].filedAt = .now
-        desk.store.save(saved)
-        desk.sent(job.id, Outgoing(action: .issue, repo: proposal.repo, id: issueURL))
-        let number = url.path.split(separator: "/").last.flatMap { Int($0) }
-        var started: Job?
-        if start, let number {
-            started = try await desk.dispatch(Desk.NewJob(repo: proposal.repo, kind: "build", task: "Work on #\(number): \(proposal.title)", issue: number))
-        }
-        return FileProposalResult(issue: issueURL, jobId: started?.id)
     }
 }
 
@@ -282,7 +218,7 @@ struct TaskCardView: View {
     private var job: Job { item.job.job }
 
     var body: some View {
-        let actions = TaskActions.of(job, local: item.job.local, model: model)
+        let actions = TaskActions.of(job, model: model)
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 10) {
                 AgentMark(agent: job.agent).font(Tokens.font(13, .semibold)).frame(width: 16).foregroundStyle(Tokens.muted)
@@ -350,7 +286,7 @@ struct TaskCardView: View {
         .onTapGesture(perform: onOpen)
         .overlay(alignment: .topTrailing) {
             if hovering && job.isActive {
-                StopButton { model.stopChatJob(job.id, local: item.job.local) }.padding(.top, 14).padding(.trailing, 14)
+                StopButton { model.stopChatJob(job.id) }.padding(.top, 14).padding(.trailing, 14)
             }
         }
         .onHover { hovering = $0 }
@@ -371,7 +307,7 @@ struct TaskCardView: View {
         let repo = job.repo.split(separator: "/").last.map(String.init)
         // "Claude Code · Personal · on Wellington’s Mac · oby" (Sangam's design, #808).
         let on = item.job.local ? nil : model.feed.extras[job.id]?.runsOn.map { "on \(RunnerMac.person($0.owner))’s Mac" }
-        return ([job.agentName, actions.account ?? LiveView.account(of: job, local: item.job.local, desk: model.desk, feed: model.feed)]
+        return ([job.agentName, actions.account ?? LiveView.account(of: job, feed: model.feed)]
             + [on, repo].compactMap { $0 }).filter { !$0.isEmpty }.joined(separator: " · ")
     }
 }

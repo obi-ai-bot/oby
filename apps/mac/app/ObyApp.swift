@@ -93,7 +93,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        // Hosting the unit tests: no desk, and no fight with the Oby that's already running.
+        // Hosting the unit tests: no runner followed, and no fight with the Oby that's already running.
         guard NSClassFromString("XCTestCase") == nil else { return }
         // A pipe to an agent that just exited must not take Oby down with it.
         signal(SIGPIPE, SIG_IGN)
@@ -102,7 +102,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         let others = NSRunningApplication.runningApplications(withBundleIdentifier: Bundle.main.bundleIdentifier ?? "")
             .filter { $0 != .current }
         guard others.isEmpty else { NSApp.terminate(nil); return }
-        // Before the desk starts, so a click on an alert that launched Oby still arrives.
+        // Before the feed starts, so a click on an alert that launched Oby still arrives.
         UNUserNotificationCenter.current().delegate = self
         RunnerFeed.registerCategories()
         island.openWindow = { [weak self] job in self?.chat.show(job: job) }
@@ -189,7 +189,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             case .say(let conversation, let words): try await feed.say(words, in: conversation)
             case .pick(let conversation?, let said, let question, let option):
                 try await feed.say(Desk.answered(said, question: question, option: option), in: conversation)
-            case .pick(nil, let said, let question, let option): island.desk.answer(option, said: said, question: question)
+            case .pick(nil, let said, let question, let option): island.model.answer(option, said: said, question: question)
             }
         } catch {
             // The words typed wait in the box there.
@@ -256,7 +256,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     func applicationWillTerminate(_ notification: Notification) {
         // The tunnel is obid's (#896): it keeps running; only the app's check-ins stop.
         island.remote.stop()
-        island.desk.quit()
     }
 }
 

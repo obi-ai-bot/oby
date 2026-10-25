@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// The window's right column, "Live": every agent working now, on this Mac and on the runner,
+/// The window's right column, "Live": every agent working now on the runner,
 /// with its tool and account, its current step, how far along it is where that's known, and how
 /// long it has run. Click one for its screen. Jobs waiting their turn aren't cards: "14 waiting"
 /// under them opens the Waiting list, each saying what it waits for (#238).
@@ -9,12 +9,11 @@ struct LiveView: View {
     let onOpen: (_ job: String, _ local: Bool) -> Void
     @State private var showsWaiting = false
 
-    private var desk: Desk { model.desk }
     private var feed: RunnerFeed { model.feed }
 
     /// Queued and running jobs, newest first, with where each is.
     private var active: [(job: Job, local: Bool)] {
-        (desk.active.map { ($0, true) } + feed.active.map { ($0, false) }).sorted { $0.0.created > $1.0.created }
+        feed.active.map { ($0, false) }.sorted { $0.0.created > $1.0.created }
     }
 
     /// The ones working (running, or getting ready to).
@@ -46,9 +45,9 @@ struct LiveView: View {
                         TimelineView(.periodic(from: .now, by: 1)) { context in
                             LazyVStack(spacing: 12) {
                                 ForEach(live, id: \.job.id) { entry in
-                                    JobChip(job: entry.job, account: Self.account(of: entry.job, local: entry.local, desk: desk, feed: feed),
+                                    JobChip(job: entry.job, account: Self.account(of: entry.job, feed: feed),
                                             onOpen: { onOpen(entry.job.id, entry.local) },
-                                            onStop: { model.stopChatJob(entry.job.id, local: entry.local) })
+                                            onStop: { model.stopChatJob(entry.job.id) })
                                 }
                             }
                             .padding(.horizontal, 14)
@@ -98,10 +97,9 @@ struct LiveView: View {
         .padding(.horizontal, 18)
     }
 
-    /// The account's name as this Mac or the runner knows it, else its id.
-    static func account(of job: Job, local: Bool, desk: Desk, feed: RunnerFeed) -> String {
-        let states = local ? desk.accounts.accounts : feed.accounts
-        return states.first { $0.account.id == job.account }?.account.name ?? job.account
+    /// The account's name as the runner knows it, else its id.
+    static func account(of job: Job, feed: RunnerFeed) -> String {
+        feed.accounts.first { $0.account.id == job.account }?.account.name ?? job.account
     }
 
     /// How far along a job is, 0 to 1, from its pipeline's stage and, within Work, its round; nil
