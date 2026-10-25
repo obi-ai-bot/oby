@@ -7167,8 +7167,13 @@ impl Jobs {
         }
         // Oby's review of published work reads what its author was asked and the repository's
         // rules as the base has them, quoted (crate::review): never the rules the change itself
-        // writes, which its author could steer the review with.
-        if job.review_of.is_some() {
+        // writes, which its author could steer the review with. A Claude Code job gets the rules
+        // too (#612): under `--setting-sources ""`, which keeps the repository's settings out,
+        // Claude Code loads no CLAUDE.md (measured with 2.1.302). Codex and Cursor read the
+        // worktree's own rules files themselves.
+        let reviews = job.review_of.is_some();
+        let mut rules_quoted = false;
+        if reviews || job.agent == Tool::Claude.id() {
             let mut files = Vec::new();
             for name in ["AGENTS.md", "CLAUDE.md"] {
                 let blob = format!("refs/remotes/origin/{base}:{name}");
@@ -7177,15 +7182,22 @@ impl Jobs {
                     git::git(&clone, &["cat-file", "blob", &blob]).await.ok(),
                 ));
             }
-            let inputs = crate::obi_dir::folder(&worktree, "inputs")
-                .map_err(|e| format!("obid can't make .obi/inputs: {e}"))?;
-            for (file, text) in [
-                (review::ASKED_FILE, review::asked(&job.task, &job.request)),
-                (review::RULES_FILE, review::base_rules(&base, &files)),
-            ] {
-                let text = crate::secrets::known().redact(&crate::vault::for_agent(&text)?);
-                crate::obi_dir::write_new(&inputs, file, text.as_bytes())
-                    .map_err(|e| format!("obid couldn't quote {file} for the review: {e}"))?;
+            rules_quoted = !reviews && files.iter().any(|(_, text)| text.is_some());
+            let mut quoted = Vec::new();
+            if reviews {
+                quoted.push((review::ASKED_FILE, review::asked(&job.task, &job.request)));
+            }
+            if reviews || rules_quoted {
+                quoted.push((review::RULES_FILE, review::base_rules(&base, &files)));
+            }
+            if !quoted.is_empty() {
+                let inputs = crate::obi_dir::folder(&worktree, "inputs")
+                    .map_err(|e| format!("obid can't make .obi/inputs: {e}"))?;
+                for (file, text) in quoted {
+                    let text = crate::secrets::known().redact(&crate::vault::for_agent(&text)?);
+                    crate::obi_dir::write_new(&inputs, file, text.as_bytes())
+                        .map_err(|e| format!("obid couldn't quote {file} for the agent: {e}"))?;
+                }
             }
         }
         let (admin, common) = self.own_git_dirs(id).await?;
@@ -7254,6 +7266,9 @@ impl Jobs {
             }
         } else {
             let mut message = owner_prompt(&job);
+            if rules_quoted {
+                message = format!("{message}\n\n{}", review::rules_line(&base));
+            }
             let purpose = if job.kind == "review" {
                 obi_plugin_api::Purpose::Review
             } else if Self::mode_of(&job) == Mode::Plan {

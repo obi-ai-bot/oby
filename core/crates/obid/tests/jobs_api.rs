@@ -2197,6 +2197,55 @@ fn a_failure_the_task_asked_for_ends_the_rounds() {
     );
 }
 
+/// Claude Code loads no CLAUDE.md under obid's `--setting-sources ""` (measured with 2.1.302,
+/// #612): a Claude Code job's first prompt points at the repository's rules as its base has them,
+/// quoted in `.obi/inputs/base-rules.md`. A repository with none gets neither.
+#[test]
+fn a_claude_job_is_given_the_repositorys_rules() {
+    let folder = Folder::new("rules");
+    let remote = fixture(&folder.0.join("fixture"));
+    let obid = start(&folder.0, &config(&folder.0, &remote));
+    let research = |obid: &Obid| {
+        let id = post_job(
+            obid,
+            json!({"repo": "obi-e2e/fixture-app", "kind": "research", "task": "KEEP PROMPTS"}),
+        )
+        .body["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        assert_eq!(wait(obid, &id)["status"], "done");
+        let quoted = obid
+            .home
+            .join("worktrees")
+            .join(&id)
+            .join(".obi/inputs/base-rules.md");
+        (prompts(obid, &id), std::fs::read_to_string(quoted).ok())
+    };
+    let (asked, quoted) = research(&obid);
+    assert!(!asked[0].contains("base-rules.md"), "{asked:?}");
+    assert_eq!(quoted, None);
+
+    move_main(
+        &folder.0,
+        &remote,
+        "CLAUDE.md",
+        "End every commit message with CANARY.\n",
+        false,
+    );
+    let (asked, quoted) = research(&obid);
+    assert!(
+        asked[0].contains("are quoted in .obi/inputs/base-rules.md: read it before you start"),
+        "{asked:?}"
+    );
+    let quoted = quoted.expect("the rules are quoted");
+    assert!(
+        quoted.contains("## CLAUDE.md\n\nEnd every commit message with CANARY.\n"),
+        "{quoted}"
+    );
+    assert!(quoted.contains("(main has no AGENTS.md.)"), "{quoted}");
+}
+
 /// The prompts the stand-in agent got in the job's worktree (`KEEP PROMPTS`), oldest first.
 fn prompts(obid: &Obid, id: &str) -> Vec<String> {
     let log = obid
