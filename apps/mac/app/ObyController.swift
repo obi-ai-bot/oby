@@ -129,6 +129,7 @@ final class IslandController {
             self?.updateAvailability()
         }
         feed.start()
+        Task { [feed] in await SphereModel.keepRenewing(feed: feed) }
         talkKey.on = { [weak self] in self?.talk($0) }
         talkKey.start()
         stopAllKey.on = { [weak self] in self?.stopAll() }
