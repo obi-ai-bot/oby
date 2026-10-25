@@ -509,14 +509,8 @@ pub struct Job {
     /// The routine whose run started it (crate::routines), or none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub routine: Option<RoutineMark>,
-    /// The standing rule that started it with no tap (crate::rules, #1314), or none. Such a job
-    /// runs in Sandbox mode at most, and publishes by itself as any job does (the owner's
-    /// decision of 2026-10-24).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub rule: Option<RuleMark>,
     /// The conversation that started it had read something it didn't write (a file, a command's
-    /// output, the web, an attachment): it runs in Sandbox mode at most, as a standing rule's
-    /// job, and publishes by itself as any job does (the owner's decision of 2026-10-24,
+    /// output, the web, an attachment): it runs in Sandbox mode at most, and publishes by itself as any job does (the owner's decision of 2026-10-24,
     /// replacing 2026-10-23's by hand).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub untrusted: bool,
@@ -563,14 +557,6 @@ pub struct MergedBy {
     pub memory: Option<String>,
     /// Seconds since the epoch.
     pub at: i64,
-}
-
-/// Which standing rule started a job (#1314): the rule's id and type.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct RuleMark {
-    pub id: String,
-    #[serde(rename = "type")]
-    pub kind: String,
 }
 
 /// Which routine's run a job is (docs/runner-api.md, "obid only: routines"): the routine, its
@@ -752,7 +738,6 @@ impl Job {
             usage_seen: None,
             window_share: None,
             routine: None,
-            rule: None,
             untrusted: false,
             ran_secs: None,
             budget_from: None,
@@ -1089,10 +1074,6 @@ impl Job {
         });
         if let Some(activity) = &self.activity {
             value["activity"] = activity.clone();
-        }
-        // A standing rule's job (#1314) says which rule started it.
-        if let Some(rule) = &self.rule {
-            value["rule"] = json!({"id": rule.id, "type": rule.kind});
         }
         if self.untrusted {
             value["untrusted"] = json!(true);

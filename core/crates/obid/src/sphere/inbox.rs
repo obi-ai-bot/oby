@@ -70,9 +70,6 @@ pub mod action {
     pub const START: &str = "start";
     /// Answer any other item: `target` the item, `payload` `{"answer": "…"}`.
     pub const ANSWER_ITEM: &str = "answer_item";
-    /// Save a standing rule the conversation proposed (crate::rules, #1314): `target` the
-    /// conversation, `payload` `{"rule": <the rule, as GET /v1/obid/decisions keeps it>}`.
-    pub const REMEMBER_RULE: &str = "remember_rule";
     /// Keeps the owner's standing permission to approve a teammate's pull requests on a repository
     /// on GitHub when Oby's review passes (crate::sphere::approval): `target` the item it was
     /// asked from, `payload` `{"fromOwner", "repo"}` (`repo` may be `*`).

@@ -499,9 +499,6 @@ pub struct NewJob {
     /// The routine whose run it is (crate::routines).
     #[serde(default)]
     pub routine: Option<crate::job::RoutineMark>,
-    /// The standing rule that started it (crate::rules). Never from the API.
-    #[serde(skip)]
-    pub rule: Option<crate::job::RuleMark>,
     /// Its conversation had read something untrusted ([`Job::untrusted`]).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub untrusted: bool,
@@ -3196,9 +3193,6 @@ impl Jobs {
         // A follow-up of a rule's job is the rule's too (#1314): never Bypass. A Start item's job
         // never carries `rule` (it's never from the API): found here. So is an untrusted one's.
         let of = job.follow_up_of.as_deref().and_then(|of| self.get(of));
-        job.rule = new
-            .rule
-            .or_else(|| of.as_ref().and_then(|of| of.rule.clone()));
         job.untrusted = new.untrusted || of.as_ref().is_some_and(|of| of.untrusted);
         // An account the owner named keeps the job past its limit (#871); a follow-up's is its
         // job's.
@@ -3215,9 +3209,8 @@ impl Jobs {
             let mode = new
                 .mode
                 .unwrap_or_else(|| self.default_mode().as_str().to_owned());
-            // An alert's text led a rule's job, with no tap, or text Oby didn't write led its
-            // conversation: never Bypass, whatever the default.
-            if (job.rule.is_some() || job.untrusted) && mode == Mode::Bypass.as_str() {
+            // Text Oby didn't write led its conversation: never Bypass, whatever the default.
+            if job.untrusted && mode == Mode::Bypass.as_str() {
                 Mode::Sandbox.as_str().to_owned()
             } else {
                 mode
