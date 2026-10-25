@@ -4482,13 +4482,16 @@ impl Jobs {
                 let home = login_home().ok_or_else(|| {
                     "obid can't find the home Cursor's own login is in.".to_owned()
                 })?;
-                copy_cursor(
-                    own_cursor_login(&home),
-                    &home.join(".cursor/cli-config.json"),
-                    &home,
-                    &login,
-                )
-                .map_err(|e| format!("obid can't copy Cursor's login for this job: {e}"))?;
+                let own = own_cursor_login(&home);
+                // A copy can't refresh it: only the Mac's own cursor-agent does.
+                if own
+                    .as_deref()
+                    .is_some_and(|login| !cursor_login_live(login))
+                {
+                    return Err(CURSOR_ENDED.into());
+                }
+                copy_cursor(own, &home.join(".cursor/cli-config.json"), &home, &login)
+                    .map_err(|e| format!("obid can't copy Cursor's login for this job: {e}"))?;
                 acp::cursor::warn_if_long(&login);
                 extra.extend(acp::cursor::environment(&login));
                 spec.accounts.push(login);
@@ -8410,24 +8413,30 @@ pub(crate) fn signed_in(tool: Tool, account: &crate::config::Account, home: Opti
             (Tool::Codex, Some(file)) => codex_copy_ready(&file, &account.name).is_ok(),
             (Tool::Cursor, Some(file)) if is_regular_file(&file) => cursor_has_token(&file),
             // With no file, the login is Cursor's own Keychain items'.
-            (Tool::Cursor, Some(_)) => {
-                cursor_keychain_login().is_some_and(|login| cursor_login_live(&login))
-            }
+            (Tool::Cursor, Some(_)) => cursor_keychain_live(),
             _ => true,
         }
 }
 
 /// Why a login that's there can't run, as a run would say it: Codex's access token ends within 5
-/// minutes, and only Codex itself refreshes it ([`codex_copy_ready`]).
+/// minutes, and only Codex itself refreshes it ([`codex_copy_ready`]); Cursor's own Keychain login
+/// has ended, and only the Mac's own cursor-agent refreshes it ([`cursor_keychain_live`]).
 fn login_problem(
     tool: Tool,
     account: &crate::config::Account,
     home: Option<&Path>,
 ) -> Option<String> {
     let file = login_file(tool, account, home)?;
-    (tool == Tool::Codex && has_login(tool, account, home))
-        .then(|| codex_copy_ready(&file, &account.name).err())
-        .flatten()
+    if !has_login(tool, account, home) {
+        return None;
+    }
+    match tool {
+        Tool::Codex => codex_copy_ready(&file, &account.name).err(),
+        Tool::Cursor if !is_regular_file(&file) && !cursor_keychain_live() => {
+            Some(CURSOR_ENDED.into())
+        }
+        _ => None,
+    }
 }
 
 /// What the apps show beside an account whose login is there but can't run ([`login_problem`]).
@@ -8436,8 +8445,14 @@ pub(crate) fn login_note(
     account: &crate::config::Account,
     home: Option<&Path>,
 ) -> Option<&'static str> {
-    login_problem(tool, account, home).map(|_| "Run codex once")
+    login_problem(tool, account, home).map(|_| match tool {
+        Tool::Cursor => "Run cursor-agent once",
+        _ => "Run codex once",
+    })
 }
+
+/// Why a run on Cursor's own login doesn't start when its token has ended.
+const CURSOR_ENDED: &str = "The Mac's Cursor login has ended: run cursor-agent once.";
 
 /// Whether Cursor's login file holds what a run's copy keeps ([`cursor_login_live`]).
 fn cursor_has_token(file: &Path) -> bool {
@@ -8665,6 +8680,22 @@ fn cursor_keychain_item(service: &str, value: bool) -> Option<Vec<u8>> {
 #[cfg(not(target_os = "macos"))]
 fn cursor_keychain_item(_service: &str, _value: bool) -> Option<Vec<u8>> {
     None
+}
+
+/// Whether Cursor's own Keychain login can run ([`cursor_login_live`]), for `GET /v1/status` and
+/// routing: its values are read at most once a minute, not at every status (a run's copy reads them
+/// afresh, [`cursor_keychain_login`]).
+fn cursor_keychain_live() -> bool {
+    static LAST: Mutex<Option<(std::time::Instant, bool)>> = Mutex::new(None);
+    let mut last = LAST.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((at, live)) = *last
+        && at.elapsed() < Duration::from_secs(60)
+    {
+        return live;
+    }
+    let live = cursor_keychain_login().is_some_and(|login| cursor_login_live(&login));
+    *last = Some((std::time::Instant::now(), live));
+    live
 }
 
 /// Whether Cursor's own login is in the Keychain, while the copy is on.

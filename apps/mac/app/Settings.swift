@@ -160,12 +160,15 @@ struct RunnerSettingsView: View {
         // As on the iPhone (apps/shared/PermissionsSection.swift).
         PermissionsSection(runner: feed.runner, defaultMode: feed.defaultMode, setDefault: feed.setDefaultMode)
         RoutinesSection(runner: feed.runner, changes: feed.routineChanges)
-        SetGroup("Checks on this Mac") {
-            SetRow("Run merge checks on this Mac", about: "When Oby’s review approves a pull request, this Mac runs its tests and builds the Mac and iPhone apps, one at a time, before Oby merges it into dev.") {
-                Toggle("Run merge checks on this Mac", isOn: $runMergeChecks).toggleStyle(.set)
-            }
-            SetRow("Build and test agents’ work on this Mac", about: "When an agent on the runner asks, this Mac builds and tests the Mac and iPhone apps at its latest commit, before Oby’s review has read it, and the agent gets the compiler’s errors and failing tests.") {
-                Toggle("Build and test agents’ work on this Mac", isOn: $runAppleChecks).toggleStyle(.set)
+        // Off by default, and hidden in the launch build (AGENTS.md, `Launch`).
+        if everything {
+            SetGroup("Checks on this Mac") {
+                SetRow("Run merge checks on this Mac", about: "When Oby’s review approves a pull request, this Mac runs its tests and builds the Mac and iPhone apps, one at a time, before Oby merges it into dev.") {
+                    Toggle("Run merge checks on this Mac", isOn: $runMergeChecks).toggleStyle(.set)
+                }
+                SetRow("Build and test agents’ work on this Mac", about: "When an agent on the runner asks, this Mac builds and tests the Mac and iPhone apps at its latest commit, before Oby’s review has read it, and the agent gets the compiler’s errors and failing tests.") {
+                    Toggle("Build and test agents’ work on this Mac", isOn: $runAppleChecks).toggleStyle(.set)
+                }
             }
         }
         if everything {
@@ -1594,7 +1597,7 @@ struct ModelsSettingsView: View {
     /// What the runner offers, once it has answered.
     @State private var runnerOptions: ModelOptions?
     /// Whether the runner lets its models be set: obid doesn't yet (no `/v1/settings/models` routes),
-    /// and then the page shows the ones its status says, as they are.
+    /// and then the page says what it runs with.
     @State private var runnerServesModels = true
     @State private var problem: String?
 
@@ -1602,12 +1605,13 @@ struct ModelsSettingsView: View {
         // In a stack that's always there: the sections are empty until the options arrive, and a
         // task on an empty view never runs.
         VStack(alignment: .leading, spacing: 0) {
-            if !runnerServesModels, let models = feed.models {
+            if !runnerServesModels {
+                // What obid does (core/crates/obid/src/config.rs, CONVERSATION_MODEL): its status's
+                // `models` are placeholders it doesn't run with.
                 SetGroup(feed.local ? "On this Mac" : "On \(feed.name)",
-                         footer: "New jobs use these. Oby’s engine doesn’t let you change them yet. Oby’s brain stays on Haiku: it plans and answers in the conversation, so it should be quick.") {
-                    SetRow("Claude Code") { SetValue(models.claude.label) }
-                    SetRow("Codex") { SetValue(models.codex.label) }
-                    if let cursor = models.cursor { SetRow("Cursor") { SetValue(ModelChoice.name(cursor.model)) } }
+                         footer: "Oby’s engine doesn’t let you change these yet.") {
+                    SetRow("Jobs", about: "Unless Oby picks a model for a job, as you ask it to.") { SetValue("Each tool’s own default") }
+                    SetRow("Conversations", about: "Codex’s own model when a conversation runs on Codex.") { SetValue("Sonnet 5.5 on Claude Code") }
                 }
             } else if runnerOptions == nil || feed.models == nil {
                 SetGroup(problem: problem) { SetRow(feed.local ? "Waiting for the runner on this Mac…" : "Waiting for \(feed.name)…", quiet: true) }

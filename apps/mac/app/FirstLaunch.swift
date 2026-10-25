@@ -95,7 +95,21 @@ nonisolated enum FirstLaunchSteps {
 
     /// "12 repositories ready".
     static func ready(_ repos: [RunnerRepo]) -> String {
-        repos.count == 1 ? "1 repository ready" : "\(repos.count) repositories ready"
+        switch repos.count {
+        case 0: "No repositories yet"
+        case 1: "1 repository ready"
+        default: "\(repos.count) repositories ready"
+        }
+    }
+
+    /// How long GitHub's step says "Finding your repositories…" once gh is signed in, while obid's
+    /// list is empty: it reads GitHub again right after a sign-in. After that, none is none.
+    static let finding: TimeInterval = 20
+
+    /// The list to show: obid's when it has some, an empty one once `finding` has passed since gh
+    /// was signed in, else nil (still finding).
+    static func shown(_ listed: [RunnerRepo], signedInSince: Date, now: Date = .now) -> [RunnerRepo]? {
+        !listed.isEmpty || now.timeIntervalSince(signedInSince) >= finding ? listed : nil
     }
 
     /// The first task Home's box offers: one in the repository obid lists first (the listed ones, then
@@ -115,10 +129,12 @@ struct FirstLaunchView: View {
 
     @State private var permissions = Permissions()
     @State private var tools = Tools()
-    /// obid's login item, for why the engine doesn't answer.
-    @State private var loginItem = RunnerLoginItem()
+    /// obid's login item, as launch registered it: why the engine doesn't answer.
+    private let loginItem = RunnerLoginItem.shared
     /// When gh's sign-in was started: a poll asked before then says nothing about it.
     @State private var signInStarted: Date?
+    /// When obid first said gh is signed in: its list of repositories may come a little after.
+    @State private var signedInSince: Date?
     @State private var step: Step
     /// The last thing you said while trying fn.
     @State private var heard = ""
@@ -454,8 +470,10 @@ struct FirstLaunchView: View {
                     gitHubSignIn = nil
                 }
                 gitHub = login
-                if login.signedIn, let listed = try? await runner.jobRepos(), !listed.isEmpty {
-                    repos = listed
+                if login.signedIn { signedInSince = signedInSince ?? .now }
+                if login.signedIn, let since = signedInSince, let listed = try? await runner.jobRepos(),
+                   let shown = FirstLaunchSteps.shown(listed, signedInSince: since) {
+                    repos = shown
                     if let task = FirstLaunchSteps.suggestion(listed), Drafts.text(Drafts.home).isEmpty { Drafts.keep(task, as: Drafts.home) }
                 }
             }

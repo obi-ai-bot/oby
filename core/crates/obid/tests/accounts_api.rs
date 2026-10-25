@@ -213,6 +213,61 @@ fn a_cursor_login_only_in_the_keychain_is_found() {
     assert!(!obid.log().contains("keychain-held-access"));
 }
 
+/// Cursor's own Keychain login whose access token has ended: it's signed out, its label says to run
+/// cursor-agent once (only the Mac's own refreshes it), and a job on it doesn't start, saying so.
+#[cfg(target_os = "macos")]
+#[test]
+fn a_cursor_keychain_login_that_ended_says_run_cursor_agent_once() {
+    use base64::Engine;
+    let folder = Folder::new("accounts-cursor-ended");
+    let remote = fixture(&folder.0.join("fixture"));
+    let mut config = config(&folder.0, &remote, &agent("fake-claude"));
+    config["agents"]["cursor"] = json!({"bin": agent("fake-cursor"), "accounts": []});
+    config["cursorKeychain"] = json!(true);
+    let encode = |v: Value| base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(v.to_string());
+    let ended = format!(
+        "{}.{}.sig",
+        encode(json!({"alg": "RS256"})),
+        encode(json!({"exp": 1}))
+    );
+    let security = agent("fake-security-cursor");
+    let obid = start_with(
+        &folder.0,
+        &config,
+        None,
+        &[
+            ("OBID_SECURITY_BIN", security.to_str().unwrap()),
+            ("FAKE_CURSOR_ACCESS", &ended),
+        ],
+    );
+    assert_eq!(
+        own(&obid),
+        [(
+            "cursor".into(),
+            json!(false),
+            json!("Run cursor-agent once")
+        )]
+    );
+    let job = call(
+        &obid,
+        "POST",
+        "/v1/jobs",
+        Some(
+            &json!({"job": {"repo": "obi-e2e/fixture-app", "kind": "investigate", "task": "ENV", "account": "cursor"}}),
+        ),
+    );
+    assert_eq!(job.status, 201, "{}", job.text);
+    let id = job.body["id"].as_str().unwrap().to_owned();
+    let failed = within(30, "the job ended", || {
+        let job = call(&obid, "GET", &format!("/v1/jobs/{id}"), None).body;
+        (job["status"] != "queued" && job["status"] != "running").then_some(job)
+    });
+    assert!(
+        failed.to_string().contains("run cursor-agent once"),
+        "{failed}"
+    );
+}
+
 /// An obid that ran before keeps its accounts as they are: the logins it finds on the Mac are only
 /// offered, and listed on the owner's word.
 #[test]

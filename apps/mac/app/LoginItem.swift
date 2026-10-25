@@ -16,6 +16,9 @@ import ServiceManagement
 /// its own label, keeps running until the person moves it into Oby (`moveFromScript`).
 @Observable
 final class RunnerLoginItem {
+    /// The one launch registers with, so first launch shows why a registration failed at once.
+    static let shared = RunnerLoginItem()
+
     static let plist = "com.deskree.oby.obid.plist"
     /// Not install.sh's `com.deskree.obid`: macOS's background-task records keep a label tied to the
     /// file that first used it, and an app agent under install.sh's label then never starts (seen
