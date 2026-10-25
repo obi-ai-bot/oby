@@ -7,6 +7,8 @@ struct InlinePermission: View {
     var keyboardEnabled = false
     var focusRequest = 0
     var onTell: (() -> Void)? = nil
+    /// Over the card, a line apart (Home's stack: its task, where it is, Open task).
+    var head: AnyView? = nil
     @State private var expanded = false
     @State private var busy = false
     @State private var problem: String?
@@ -23,6 +25,7 @@ struct InlinePermission: View {
 
     private var card: some View {
         VStack(alignment: .leading, spacing: 0) {
+            if let head { CardHead(head: head) }
             if let receipt = Self.receipt(record) { Receipt(text: receipt, expanded: $expanded) }
             if record.done == nil || expanded {
                 AskCard(kind: "Permission", title: record.permission.title, detail: record.permission.detail,
