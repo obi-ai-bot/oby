@@ -219,28 +219,41 @@ fn link_cargo_subcommands(from: &Path, temp: &Path, link: bool) {
 
 /// The `PATH` processes get: obid's own, then what the login shell adds (AGENTS.md, "PATH"), then
 /// where CLIs are installed that only an interactive shell (`.zshrc`) adds ([`usual_folders`]), so
-/// a tool installed for the person is found even when obid was started with a short `PATH`.
+/// a tool installed for the person is found even when obid was started with a short `PATH`. The
+/// first two are read once (the shell takes a moment); the usual folders are looked at every time,
+/// so a tool installed after obid started (Claude Code's installer makes `~/.local/bin` on a fresh
+/// Mac) is found without restarting it.
 pub fn tools_path() -> OsString {
-    static PATH: OnceLock<OsString> = OnceLock::new();
-    PATH.get_or_init(|| {
+    static BASE: OnceLock<Vec<PathBuf>> = OnceLock::new();
+    let base = BASE.get_or_init(|| {
         let mut dirs: Vec<PathBuf> = std::env::var_os("PATH")
             .map(|p| std::env::split_paths(&p).collect())
             .unwrap_or_default();
-        let home = std::env::var_os("HOME").map(PathBuf::from);
-        let usual = home.as_deref().map(usual_folders).unwrap_or_default();
-        for dir in login_shell_path().into_iter().chain(usual) {
+        for dir in login_shell_path() {
             if !dirs.contains(&dir) {
                 dirs.push(dir);
             }
         }
-        if dirs.is_empty() {
-            dirs = ["/usr/local/bin", "/usr/bin", "/bin"]
-                .map(PathBuf::from)
-                .to_vec();
+        dirs
+    });
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    path_with_usual(base, home.as_deref())
+}
+
+/// `base`, then the [`usual_folders`] of `home` it doesn't have yet.
+fn path_with_usual(base: &[PathBuf], home: Option<&Path>) -> OsString {
+    let mut dirs = base.to_vec();
+    for dir in home.map(usual_folders).unwrap_or_default() {
+        if !dirs.contains(&dir) {
+            dirs.push(dir);
         }
-        std::env::join_paths(dirs).unwrap_or_else(|_| "/usr/local/bin:/usr/bin:/bin".into())
-    })
-    .clone()
+    }
+    if dirs.is_empty() {
+        dirs = ["/usr/local/bin", "/usr/bin", "/bin"]
+            .map(PathBuf::from)
+            .to_vec();
+    }
+    std::env::join_paths(dirs).unwrap_or_else(|_| "/usr/local/bin:/usr/bin:/bin".into())
 }
 
 /// Where the person's CLIs usually are when their `PATH` is set in `.zshrc`, which a login shell
@@ -426,6 +439,22 @@ mod usual_folders_tests {
                 .then(|| home.join(".nvm/versions/node").join(version).join("bin"));
             assert_eq!(bin, wanted, "{alias}");
         }
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// A folder an installer makes after obid started is on the next `PATH`: a tool installed
+    /// during first launch is seen without a restart.
+    #[test]
+    fn a_folder_made_after_start_is_on_the_next_path() {
+        let home = std::env::temp_dir().join(format!("obid-later-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(&home).unwrap();
+        let base = [PathBuf::from("/usr/bin")];
+        let local = home.join(".local/bin");
+        let has = |path: OsString| std::env::split_paths(&path).any(|dir| dir == local);
+        assert!(!has(path_with_usual(&base, Some(&home))));
+        std::fs::create_dir_all(&local).unwrap();
+        assert!(has(path_with_usual(&base, Some(&home))));
         let _ = std::fs::remove_dir_all(&home);
     }
 }

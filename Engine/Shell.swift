@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 
 /// Runs the user's command-line tools (git, gh, claude) the way their terminal would.
 nonisolated enum Shell {
@@ -18,10 +19,30 @@ nonisolated enum Shell {
         var errorDescription: String? { message }
     }
 
-    /// Oby's own environment with PATH from the user's login shell, read once. The login shell
-    /// comes from the user database: it can differ from $SHELL. Claude Code refuses to start
-    /// inside another Claude session, so its variables never pass through.
-    static let environment: [String: String] = {
+    /// Oby's own environment with PATH from the user's login shell, then the folders installers put
+    /// CLIs in that only an interactive shell (`.zshrc`) adds, as obid looks (process.rs
+    /// `usual_folders`). Read once, and again on `reloadPath()`. The login shell comes from the user
+    /// database: it can differ from $SHELL. Claude Code refuses to start inside another Claude
+    /// session, so its variables never pass through.
+    static var environment: [String: String] {
+        read.withLock { env in
+            if let env { return env }
+            let fresh = loginEnvironment()
+            env = fresh
+            return fresh
+        }
+    }
+
+    private static let read = Mutex<[String: String]?>(nil)
+
+    /// Reads the login shell's PATH again, so a tool installed since Oby started is found
+    /// (`Tools.refresh`, while first launch waits for one). It runs the login shell: off the main actor.
+    static func reloadPath() {
+        let fresh = loginEnvironment()
+        read.withLock { $0 = fresh }
+    }
+
+    private static func loginEnvironment() -> [String: String] {
         var env = ProcessInfo.processInfo.environment
         for key in env.keys where key == "CLAUDECODE" || key.hasPrefix("CLAUDE_CODE_") || key.hasPrefix("ANTHROPIC_") {
             env[key] = nil
@@ -45,8 +66,15 @@ nonisolated enum Shell {
                 if let path = lines.first(where: { $0.hasPrefix("PATH=") }) { env["PATH"] = String(path.dropFirst(5)) }
             }
         }
+        let home = NSHomeDirectory()
+        var path = (env["PATH"] ?? "").split(separator: ":").map(String.init)
+        for dir in ["\(home)/.local/bin", "\(home)/.bun/bin", "/opt/homebrew/bin"] where !path.contains(dir) {
+            var folder: ObjCBool = false
+            if FileManager.default.fileExists(atPath: dir, isDirectory: &folder), folder.boolValue { path.append(dir) }
+        }
+        if !path.isEmpty { env["PATH"] = path.joined(separator: ":") }
         return env
-    }()
+    }
 
     /// Runs a tool found on the user's PATH. `env` adds variables, and a nil value removes one.
     /// After `timeout` seconds it's ended, with all it started (`Halt`), and so it is when the task

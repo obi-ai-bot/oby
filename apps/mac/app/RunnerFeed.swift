@@ -277,6 +277,14 @@ final class RunnerFeed {
         conversation.lookUp = { [weak self] id in try await self?.runner?.artifact(id) }
     }
 
+    /// Reads the accounts and the logins obid finds on this Mac again (`GET /v1/status`, which looks
+    /// again for logins made since it started): first launch's agents step, while it shows.
+    func refreshAccounts() async {
+        guard connection == .live, let runner, let status = try? await runner.status() else { return }
+        accounts = status.accounts
+        availableLogins = status.availableLogins ?? []
+    }
+
     #if DEBUG
     /// What Settings' pictures show (apps/mac/tests/WindowScreens.swift): the runner on this Mac with
     /// made-up accounts and models, and no runner asked.
