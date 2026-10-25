@@ -1395,12 +1395,13 @@ fn the_clones_settings_cant_hide_a_merge_or_a_submodule() {
     let folder = Folder::new("publish-clone-settings");
     let bin = fake_gh(&folder.0);
     let (obid, remote, _) = obid_with(&folder, &bin);
-    // A first job makes the clone; then its settings are changed.
+    // A first job makes the clone; once Oby's review of it is over too, nothing of obid's runs
+    // there (it writes the clone's settings getting it ready for a job), and they are changed.
     let warm = dispatch(
         &obid,
         json!({"repo": "obi-e2e/fixture-app", "kind": "build", "task": "COMMIT: warm.txt"}),
     );
-    assert_eq!(ended(&obid, &warm)["published"], PULL);
+    assert_eq!(reviewed(&obid, &warm, 1)["published"], PULL);
     let clone = obid.home.join("clones/obi-e2e/fixture-app");
     git(&clone, &["config", "log.diffMerges", "off"]);
     git(&clone, &["config", "diff.ignoreSubmodules", "all"]);
