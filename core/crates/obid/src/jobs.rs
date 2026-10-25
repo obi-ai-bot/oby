@@ -14148,73 +14148,6 @@ mod tests {
         (root, clone, base, jobs)
     }
 
-    /// The accounts Oby thinks with, best first (#874): those with room, then those held only by
-    /// their weekly reserve, then the rest, the least of their 5-hour window first; never one
-    /// marked full or signed out. A job whose account filled goes on on the first with room whose
-    /// login can run now (#871): never one whose token has ended.
-    #[tokio::test]
-    async fn thinking_and_moving_on_take_the_accounts_with_room_first() {
-        let root = std::env::temp_dir().join(format!("obid-room-{}", uuid::Uuid::new_v4()));
-        let accounts = root.join("accounts");
-        let ids = ["full", "reserved", "busy", "ended", "room", "out"];
-        let listed: Vec<Value> = ids
-            .iter()
-            .map(|id| json!({"id": id, "name": id, "configDir": accounts.join(id)}))
-            .collect();
-        for id in &ids[..5] {
-            std::fs::create_dir_all(accounts.join(id)).unwrap();
-            std::fs::write(accounts.join(id).join(".credentials.json"), "{}").unwrap();
-        }
-        // Signed in, with room, but its token ended a minute ago.
-        let ended = json!({"claudeAiOauth": {"accessToken": "a", "expiresAt": (obi_protocol::time::now() - 60) * 1000}});
-        std::fs::write(accounts.join("ended/.credentials.json"), ended.to_string()).unwrap();
-        let config = crate::config::Config::parse(
-            &json!({"listen": "127.0.0.1:0", "home": root.join("home"), "owner": "o",
-                "repos": [{"repo": "o/r", "remote": "https://example.com/o/r.git"}],
-                "agents": {"claude": {"bin": "/usr/bin/true", "accounts": listed}}})
-            .to_string(),
-        )
-        .unwrap();
-        let jobs = Jobs::open(
-            config,
-            crate::events::Events::new(),
-            Err("no sandbox".into()),
-        )
-        .unwrap();
-        let now = obi_protocol::time::now();
-        let usage = |five: f64, week: f64| crate::usage::Usage {
-            five_hour: Some(five),
-            seven_day: Some(week),
-            five_hour_resets: Some(now + 3600),
-            seven_day_resets: Some(now + 86_400),
-            ..Default::default()
-        };
-        jobs.usage.record("reserved", &usage(0.1, 0.85));
-        jobs.usage.record("busy", &usage(0.97, 0.1));
-        jobs.usage.record("room", &usage(0.5, 0.5));
-        jobs.mark_full("full", None, now);
-        let order: Vec<String> = jobs
-            .thinking_accounts(Tool::Claude)
-            .into_iter()
-            .map(|a| a.id)
-            .collect();
-        assert_eq!(order, ["ended", "room", "reserved", "busy"]);
-        assert_eq!(
-            jobs.room_for(Tool::Claude, "full")
-                .await
-                .map(|a| a.id)
-                .as_deref(),
-            Some("room")
-        );
-        assert_eq!(jobs.room_for(Tool::Claude, "room").await, None);
-        // An hour when the tool named no reset; a later mark already kept stays.
-        let held = jobs.usage.get("full").full_until.unwrap();
-        assert!(held > now + 3500 && held <= now + 3600, "{held}");
-        jobs.mark_full("full", Some(now + 60), now);
-        assert_eq!(jobs.usage.get("full").full_until, Some(held));
-        let _ = std::fs::remove_dir_all(&root);
-    }
-
     /// A job waiting for room (#872) keeps saying what holds it as the accounts change, on the
     /// first of them, and taking another tool's account it drops a model of its first tool's.
     #[tokio::test]
@@ -14296,6 +14229,73 @@ mod tests {
             "{:?}",
             job.changes
         );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The accounts Oby thinks with, best first (#874): those with room, then those held only by
+    /// their weekly reserve, then the rest, the least of their 5-hour window first; never one
+    /// marked full or signed out. A job whose account filled goes on on the first with room whose
+    /// login can run now (#871): never one whose token has ended.
+    #[tokio::test]
+    async fn thinking_and_moving_on_take_the_accounts_with_room_first() {
+        let root = std::env::temp_dir().join(format!("obid-room-{}", uuid::Uuid::new_v4()));
+        let accounts = root.join("accounts");
+        let ids = ["full", "reserved", "busy", "ended", "room", "out"];
+        let listed: Vec<Value> = ids
+            .iter()
+            .map(|id| json!({"id": id, "name": id, "configDir": accounts.join(id)}))
+            .collect();
+        for id in &ids[..5] {
+            std::fs::create_dir_all(accounts.join(id)).unwrap();
+            std::fs::write(accounts.join(id).join(".credentials.json"), "{}").unwrap();
+        }
+        // Signed in, with room, but its token ended a minute ago.
+        let ended = json!({"claudeAiOauth": {"accessToken": "a", "expiresAt": (obi_protocol::time::now() - 60) * 1000}});
+        std::fs::write(accounts.join("ended/.credentials.json"), ended.to_string()).unwrap();
+        let config = crate::config::Config::parse(
+            &json!({"listen": "127.0.0.1:0", "home": root.join("home"), "owner": "o",
+                "repos": [{"repo": "o/r", "remote": "https://example.com/o/r.git"}],
+                "agents": {"claude": {"bin": "/usr/bin/true", "accounts": listed}}})
+            .to_string(),
+        )
+        .unwrap();
+        let jobs = Jobs::open(
+            config,
+            crate::events::Events::new(),
+            Err("no sandbox".into()),
+        )
+        .unwrap();
+        let now = obi_protocol::time::now();
+        let usage = |five: f64, week: f64| crate::usage::Usage {
+            five_hour: Some(five),
+            seven_day: Some(week),
+            five_hour_resets: Some(now + 3600),
+            seven_day_resets: Some(now + 86_400),
+            ..Default::default()
+        };
+        jobs.usage.record("reserved", &usage(0.1, 0.85));
+        jobs.usage.record("busy", &usage(0.97, 0.1));
+        jobs.usage.record("room", &usage(0.5, 0.5));
+        jobs.mark_full("full", None, now);
+        let order: Vec<String> = jobs
+            .thinking_accounts(Tool::Claude)
+            .into_iter()
+            .map(|a| a.id)
+            .collect();
+        assert_eq!(order, ["ended", "room", "reserved", "busy"]);
+        assert_eq!(
+            jobs.room_for(Tool::Claude, "full")
+                .await
+                .map(|a| a.id)
+                .as_deref(),
+            Some("room")
+        );
+        assert_eq!(jobs.room_for(Tool::Claude, "room").await, None);
+        // An hour when the tool named no reset; a later mark already kept stays.
+        let held = jobs.usage.get("full").full_until.unwrap();
+        assert!(held > now + 3500 && held <= now + 3600, "{held}");
+        jobs.mark_full("full", Some(now + 60), now);
+        assert_eq!(jobs.usage.get("full").full_until, Some(held));
         let _ = std::fs::remove_dir_all(&root);
     }
 
