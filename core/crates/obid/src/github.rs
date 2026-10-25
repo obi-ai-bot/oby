@@ -24,21 +24,7 @@ const GH_TIMEOUT: Duration = Duration::from_secs(120);
 /// The GitHub CLI obid uses: the one Oby.app carries when obid runs from inside it (the owner's
 /// decision of 2026-10-18: nobody installs gh to use Oby), else the login shell's, or none.
 pub fn gh() -> Option<PathBuf> {
-    std::env::current_exe()
-        .ok()
-        .and_then(|exe| bundled_gh(&exe))
-        .or_else(|| crate::process::resolve_bin("gh"))
-}
-
-/// `Contents/MacOS/gh` of the app obid runs from (`Contents/Helpers/obid` or `Contents/MacOS/obid`),
-/// signed with it (apps/mac/app/Tools/bundle-gh.sh); none for an obid anywhere else.
-fn bundled_gh(exe: &Path) -> Option<PathBuf> {
-    let contents = exe.parent()?.parent()?;
-    if contents.file_name()? != "Contents" {
-        return None;
-    }
-    let gh = contents.join("MacOS/gh");
-    crate::sandbox::is_executable(&gh).then_some(gh)
+    crate::app::bundled("gh").or_else(|| crate::process::resolve_bin("gh"))
 }
 
 /// The pull request as obid last read it from GitHub (`pullRequest` on a job): only typed status,
@@ -798,26 +784,6 @@ mod tests {
     use super::*;
 
     /// The gh Oby.app carries is found only beside an obid inside an app's Contents.
-    #[test]
-    fn the_bundled_gh_is_found_only_inside_the_app() {
-        use std::os::unix::fs::PermissionsExt;
-        let root = std::env::temp_dir().join(format!("obid-bundled-gh-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
-        let contents = root.join("Oby.app/Contents");
-        for dir in ["MacOS", "Helpers"] {
-            std::fs::create_dir_all(contents.join(dir)).unwrap();
-        }
-        let gh = contents.join("MacOS/gh");
-        std::fs::write(&gh, "#!/bin/sh\n").unwrap();
-        std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755)).unwrap();
-        assert_eq!(bundled_gh(&contents.join("Helpers/obid")), Some(gh.clone()));
-        assert_eq!(bundled_gh(&contents.join("MacOS/obid")), Some(gh.clone()));
-        assert_eq!(bundled_gh(&root.join("bin/obid")), None);
-        std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o644)).unwrap();
-        assert_eq!(bundled_gh(&contents.join("Helpers/obid")), None);
-        let _ = std::fs::remove_dir_all(&root);
-    }
-
     #[test]
     fn only_pull_requests_of_the_jobs_repository() {
         let repo = "deskree-inc/oby";

@@ -38,6 +38,23 @@ fn resources_of(exe: &Path) -> Option<PathBuf> {
         .filter(|dir| dir.is_dir())
 }
 
+/// A tool Oby.app carries beside obid, signed with it (gh, gitleaks: apps/mac/app/Tools/bundle-*.sh):
+/// `Contents/MacOS/<name>` of the app obid runs from (`Contents/Helpers/obid` or
+/// `Contents/MacOS/obid`); none for an obid anywhere else.
+pub fn bundled(name: &str) -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    bundled_beside(&exe, name)
+}
+
+fn bundled_beside(exe: &Path, name: &str) -> Option<PathBuf> {
+    let contents = exe.parent()?.parent()?;
+    if contents.file_name()? != "Contents" {
+        return None;
+    }
+    let tool = contents.join("MacOS").join(name);
+    crate::sandbox::is_executable(&tool).then_some(tool)
+}
+
 /// What obid writes the first time, as install.sh does: listening where the Mac app looks for it,
 /// in the home the app reads the token from, the person's login as owner, Claude Code with its
 /// default login, Codex too when it's on the login shell's PATH, the gateway on for pairing, and
@@ -121,6 +138,29 @@ pub fn log_to_file(home: &Path) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_bundled_tool_is_found_only_inside_the_app() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!("obid-bundled-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let contents = root.join("Oby.app/Contents");
+        for dir in ["MacOS", "Helpers"] {
+            std::fs::create_dir_all(contents.join(dir)).unwrap();
+        }
+        for name in ["gh", "gitleaks"] {
+            let tool = contents.join("MacOS").join(name);
+            std::fs::write(&tool, "#!/bin/sh\n").unwrap();
+            std::fs::set_permissions(&tool, std::fs::Permissions::from_mode(0o755)).unwrap();
+            let found = |exe: &Path| bundled_beside(exe, name);
+            assert_eq!(found(&contents.join("Helpers/obid")), Some(tool.clone()));
+            assert_eq!(found(&contents.join("MacOS/obid")), Some(tool.clone()));
+            assert_eq!(found(&root.join("bin/obid")), None);
+            std::fs::set_permissions(&tool, std::fs::Permissions::from_mode(0o644)).unwrap();
+            assert_eq!(found(&contents.join("Helpers/obid")), None);
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
     fn folder(name: &str) -> PathBuf {
         let path = std::env::temp_dir().join(format!("obid-app-{name}-{}", std::process::id()));

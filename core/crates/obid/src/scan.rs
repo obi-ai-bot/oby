@@ -12,7 +12,7 @@
 //! when the vault can't be read the scan can't run (`crate::vault::check`): nothing goes out.
 
 use std::ffi::OsString;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::time::Duration;
 
@@ -856,8 +856,9 @@ fn name_lines(names: &[String]) -> Vec<(String, usize, String)> {
         .collect()
 }
 
-/// gitleaks on the same lines, when it's installed: `Ok` with what it found (nothing when it isn't
-/// installed), `Err` when it is and couldn't run. It runs in a folder of its own under `scratch`,
+/// gitleaks on the same lines: `Ok` with what it found, `Err` when it couldn't run or there is none
+/// (#1026: the built-in rules alone miss keys only gitleaks knows, so a scan without it isn't one,
+/// and nothing goes out). It runs in a folder of its own under `scratch`,
 /// with only `PATH`, `HOME` and `TMPDIR` (that folder), so no configuration of the machine's or
 /// the person's changes what it looks for.
 pub async fn gitleaks(texts: &[(String, String)], scratch: &Path) -> Result<Vec<Finding>, String> {
@@ -870,9 +871,27 @@ pub async fn gitleaks_lines(
     lines: &[(String, usize, String)],
     scratch: &Path,
 ) -> Result<Vec<Finding>, String> {
-    match crate::process::resolve_bin("gitleaks") {
+    gitleaks_from(gitleaks_bin(), lines, scratch).await
+}
+
+/// Why the scan can't run on a machine with no gitleaks.
+pub const NO_GITLEAKS: &str =
+    "gitleaks isn't installed: Oby.app carries its own; elsewhere, put gitleaks on obid's PATH";
+
+/// The gitleaks obid scans with: the one Oby.app carries (pinned and checked when the app is
+/// built, apps/mac/app/Tools/bundle-gitleaks.sh), else the login shell's.
+pub fn gitleaks_bin() -> Option<PathBuf> {
+    crate::app::bundled("gitleaks").or_else(|| crate::process::resolve_bin("gitleaks"))
+}
+
+async fn gitleaks_from(
+    bin: Option<PathBuf>,
+    lines: &[(String, usize, String)],
+    scratch: &Path,
+) -> Result<Vec<Finding>, String> {
+    match bin {
         Some(bin) => gitleaks_with(&bin, lines, scratch).await,
-        None => Ok(Vec::new()),
+        None => Err(NO_GITLEAKS.into()),
     }
 }
 
@@ -1188,7 +1207,7 @@ exit 99"#,
     /// artifact whose first file is a PDF, hid a key only gitleaks knows (#648's re-review, N1).
     #[tokio::test]
     async fn a_first_line_like_a_pdf_or_a_zip_doesnt_blind_gitleaks() {
-        if crate::process::resolve_bin("gitleaks").is_none() {
+        if gitleaks_bin().is_none() {
             return;
         }
         let folder = scratch("magic");
@@ -1214,7 +1233,7 @@ exit 99"#,
     /// end it didn't find is a scan that couldn't run (#648's third review, R1).
     #[tokio::test]
     async fn a_gitleaks_that_read_nothing_is_a_scan_that_couldnt_run() {
-        if crate::process::resolve_bin("gitleaks").is_none() {
+        if gitleaks_bin().is_none() {
             return;
         }
         let folder = scratch("sniffed");
@@ -1244,7 +1263,7 @@ exit 99"#,
     /// read clean (#648's fourth review, S1). The input is made here, not kept in the repository.
     #[tokio::test]
     async fn a_gitleaks_allow_comment_hides_nothing() {
-        if crate::process::resolve_bin("gitleaks").is_none() {
+        if gitleaks_bin().is_none() {
             return;
         }
         let folder = scratch("allow");
@@ -1275,7 +1294,7 @@ exit 99"#,
     /// it's clean, as it was before the canary (S2).
     #[tokio::test]
     async fn a_last_line_that_names_a_secret_stays_clean() {
-        if crate::process::resolve_bin("gitleaks").is_none() {
+        if gitleaks_bin().is_none() {
             return;
         }
         let folder = scratch("last-line");
@@ -1362,14 +1381,16 @@ exit 99"#,
             .collect();
         let token = format!("ghp_{varied}");
         let found = gitleaks(&texts(&format!("token = {token}")), &folder).await;
-        match crate::process::resolve_bin("gitleaks") {
+        match gitleaks_bin() {
             Some(_) => assert!(!found.unwrap().is_empty(), "gitleaks found nothing"),
-            None => assert_eq!(
-                found,
-                Ok(Vec::new()),
-                "no gitleaks: the built-in rules alone"
-            ),
+            None => assert_eq!(found, Err(NO_GITLEAKS.into()), "no gitleaks: no scan"),
         }
+        // With none at all, the scan can't run: the built-in rules alone aren't one (#1026).
+        assert_eq!(
+            gitleaks_from(None, &lines_of(&texts("token")), &folder).await,
+            Err(NO_GITLEAKS.into())
+        );
+
         let _ = std::fs::remove_dir_all(&folder);
     }
 
