@@ -687,7 +687,8 @@ pub struct Jobs {
     /// How many jobs run at once (Settings, `home/settings.json`).
     max_running: std::sync::atomic::AtomicUsize,
     shutting_down: std::sync::atomic::AtomicBool,
-    identity: (String, String),
+    /// Who jobs' commits are by ([`commit_identity`], [`Jobs::identity`]).
+    identity: Mutex<(String, String)>,
     /// One check at a time, whatever the job ([`Jobs::check`]).
     checking: tokio::sync::Semaphore,
     /// One preparation at a time per repository (Engine/Desk.swift, `setups`): its clone is
@@ -900,7 +901,8 @@ impl Jobs {
             })
         });
         let usage = crate::usage::Usages::open(&config.home);
-        Ok(Arc::new(Jobs {
+        let github = identity.1.ends_with(NO_EMAIL);
+        let made = Arc::new(Jobs {
             config,
             store,
             events,
@@ -920,7 +922,7 @@ impl Jobs {
             transcripts,
             max_running: std::sync::atomic::AtomicUsize::new(max_running),
             shutting_down: std::sync::atomic::AtomicBool::new(false),
-            identity,
+            identity: Mutex::new(identity),
             checking: tokio::sync::Semaphore::new(1),
             preparing: Mutex::new(HashMap::new()),
             review_hook: std::sync::OnceLock::new(),
@@ -944,7 +946,19 @@ impl Jobs {
             measured: Mutex::new(Measured::default()),
             metering: Notify::new(),
             short_of_memory: std::sync::OnceLock::new(),
-        }))
+        });
+        if github && let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            runtime.spawn(github_email(Arc::downgrade(&made)));
+        }
+        Ok(made)
+    }
+
+    /// Who jobs' commits are by now: name and email.
+    fn identity(&self) -> (String, String) {
+        self.identity
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     /// What obid lets go of when a job starts waiting for memory (once; a second call changes
@@ -5316,7 +5330,7 @@ impl Jobs {
         if self.uncommitted(id).await {
             return Onto::Same;
         }
-        let (name, email) = &self.identity;
+        let (name, email) = &self.identity();
         let rebased = self
             .sandboxed_git(
                 id,
@@ -5396,7 +5410,7 @@ impl Jobs {
             return Ok(());
         }
         self.sandboxed_git(id, &["add", "--all"], None).await?;
-        let (name, email) = &self.identity;
+        let (name, email) = &self.identity();
         self.sandboxed_git(
             id,
             &[
@@ -5921,7 +5935,7 @@ impl Jobs {
             }
         }
         if COMMITTING.contains(&job.kind.as_str()) || job.obi.is_none() {
-            let (name, email) = &self.identity;
+            let (name, email) = &self.identity();
             for key in ["GIT_AUTHOR_NAME", "GIT_COMMITTER_NAME"] {
                 extra.push((key, name.into()));
             }
@@ -11777,8 +11791,11 @@ pub fn person_homes() -> Vec<PathBuf> {
     homes
 }
 
+/// The end of the email commits get with no git email and no GitHub login.
+const NO_EMAIL: &str = "@users.noreply.obi.invalid";
+
 /// Who commits made in a job are by: the person's git identity as obid's own git sees it, else
-/// the owner.
+/// the owner (and [`github_email`] once gh is signed in).
 fn commit_identity(owner: &str) -> (String, String) {
     let read = |key: &str| {
         std::process::Command::new("git")
@@ -11792,8 +11809,42 @@ fn commit_identity(owner: &str) -> (String, String) {
     };
     (
         read("user.name").unwrap_or_else(|| owner.to_owned()),
-        read("user.email").unwrap_or_else(|| format!("{owner}@users.noreply.obi.invalid")),
+        read("user.email").unwrap_or_else(|| format!("{owner}{NO_EMAIL}")),
     )
+}
+
+/// With no git email, the GitHub login's noreply address (`gh api user`), so commits link to the
+/// person and org rules or CLA bots take them: now, then once a minute until gh is signed in
+/// (first launch signs it in after obid starts).
+// ponytail: polls gh; a hook on obid's own GitHub sign-in would be exact, but misses `gh auth login`.
+async fn github_email(jobs: std::sync::Weak<Jobs>) {
+    const NOREPLY: &str = r#""\(.id)+\(.login)@users.noreply.github.com""#;
+    while jobs.strong_count() > 0 {
+        if let Some(gh) = crate::github::gh()
+            && let Ok(said) = crate::github::run(&gh, &["api", "user", "--jq", NOREPLY]).await
+            && let Some(email) = noreply(&said)
+        {
+            if let Some(jobs) = jobs.upgrade() {
+                jobs.identity.lock().unwrap_or_else(|e| e.into_inner()).1 = email;
+            }
+            return;
+        }
+        tokio::time::sleep(Duration::from_secs(60)).await;
+    }
+}
+
+/// `said` when it's a GitHub noreply address, `<id>+<login>@users.noreply.github.com`.
+fn noreply(said: &str) -> Option<String> {
+    let (id, rest) = said.trim().split_once('+')?;
+    let login = rest.strip_suffix("@users.noreply.github.com")?;
+    (!id.is_empty()
+        && id.bytes().all(|b| b.is_ascii_digit())
+        && !login.is_empty()
+        && login.len() <= 39
+        && login
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-'))
+    .then(|| said.trim().to_owned())
 }
 
 /// A folder of the job's own, 0700.
@@ -12847,6 +12898,24 @@ mod tests {
         );
         assert_eq!(held.options, ["Dismiss"]);
         assert!(held.watch.as_ref().unwrap()["review"].is_null());
+    }
+
+    /// Only a GitHub noreply address from `gh api user` becomes the commits' email.
+    #[test]
+    fn only_a_github_noreply_address_is_the_commit_email() {
+        assert_eq!(
+            super::noreply("583231+octocat@users.noreply.github.com\n").as_deref(),
+            Some("583231+octocat@users.noreply.github.com")
+        );
+        for not in [
+            "octocat@users.noreply.github.com",
+            "x+octocat@users.noreply.github.com",
+            "1+octo cat@users.noreply.github.com",
+            "1+octocat@example.com",
+            "",
+        ] {
+            assert_eq!(super::noreply(not), None, "{not}");
+        }
     }
 
     /// The same failing call 5 times is a loop, whatever is read in between or however its
