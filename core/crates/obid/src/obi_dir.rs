@@ -220,7 +220,12 @@ mod tests {
             })
         };
         for round in 0..200u32 {
-            write_new(&dir, "event.md", &vec![b'a' + (round % 26) as u8; 256 << 10]).unwrap();
+            write_new(
+                &dir,
+                "event.md",
+                &vec![b'a' + (round % 26) as u8; 256 << 10],
+            )
+            .unwrap();
         }
         done.store(true, std::sync::atomic::Ordering::Relaxed);
         assert!(reader.join().unwrap() > 0, "the reader read something");
