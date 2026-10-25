@@ -265,6 +265,11 @@ pub struct Job {
     pub mode: Option<String>,
     pub waiting: Option<Waiting>,
     pub phase: Option<Phase>,
+    /// The phase a restart cut it short in, when it was checking or publishing: its next run picks
+    /// up there, its check run again rather than its agent's turn. Kept in its file, never in the
+    /// API; taken when that run starts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cut: Option<Phase>,
     pub dismissed: Option<i64>,
     /// The job's worktree, an absolute path, once it exists.
     pub worktree: Option<String>,
@@ -621,6 +626,7 @@ impl Job {
             mode: None,
             waiting: None,
             phase: None,
+            cut: None,
             dismissed: None,
             worktree: None,
             obi: None,
