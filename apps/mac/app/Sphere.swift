@@ -696,29 +696,88 @@ final class SphereModel {
 
     /// Joins with `invite` (docs/runner-api.md, `POST /v1/obid/sphere/join`): obid's key, its card
     /// signed here with the owner key, and the owner's delegation to it; first a sign-in with Google
-    /// when the link is for one Workspace's people.
+    /// when the link is for one Workspace's people. A membership that was revoked is left first.
     func join(_ invite: InviteLink) async throws {
         let runner = try runner()
         let membership: Membership = try await runner.call("GET", "v1/obid/sphere")
-        if let mismatch = invite.mismatch(owner: membership.owner) { throw RunnerError(message: mismatch) }
-        let key = try OwnerKey.of(membership.owner)
+        let owner = membership.owner
+        if let mismatch = invite.mismatch(owner: owner) { throw RunnerError(message: mismatch) }
+        if membership.state == "revoked" { _ = try await runner.send("DELETE", "v1/obid/sphere") }
+        let key = try OwnerKey.of(owner)
         let url = invite.server.absoluteString.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        let obi = invite.obi ?? "obi-\(membership.owner)"
         var invitation: [String: Any] = ["id": invite.id, "secret": invite.secret]
         if invite.owner == nil, try await preview(invite).domain != nil {
             invitation["signin"] = try await SphereServer(base: invite.server).signIn(key: key)
         }
         _ = try await runner.send("POST", "v1/obid/sphere/key")
-        let made = try await raw(runner, "POST", "v1/obid/sphere/card", [
-            "url": url, "sphere": invite.sphere, "obiId": obi, "name": "\(membership.owner)'s Oby",
-            "ownerKey": key.publicKey, "accepts": Self.accepts,
-        ])
-        guard let card = made["card"] as? [String: Any] else { throw RunnerError(message: "obid made no card.") }
-        _ = try await raw(runner, "POST", "v1/obid/sphere/join", [
-            "url": url, "sphere": invite.sphere, "invitation": invitation,
-            "card": try key.sign(card: card),
-            "delegation": try key.assertion(owner: membership.owner, sphere: invite.sphere, scope: Self.obiScopes, mayAct: obi),
-        ])
+        // A named invitation's Obi id is its own; else obi-<owner>, then -2, -3… while the Sphere has
+        // had one by that id (it never takes one twice: a reinstall, a second Mac, a leave, #1214).
+        let ids = invite.obi.map { [$0] } ?? Self.obiIds(owner: owner)
+        for obi in ids {
+            do {
+                let made = try await raw(runner, "POST", "v1/obid/sphere/card", [
+                    "url": url, "sphere": invite.sphere, "obiId": obi, "name": "\(owner)'s Oby",
+                    "ownerKey": key.publicKey, "accepts": Self.accepts,
+                ])
+                guard let card = made["card"] as? [String: Any] else { throw RunnerError(message: "obid made no card.") }
+                _ = try await raw(runner, "POST", "v1/obid/sphere/join", [
+                    "url": url, "sphere": invite.sphere, "invitation": invitation,
+                    "card": try key.sign(card: card),
+                    "delegation": try key.assertion(owner: owner, sphere: invite.sphere, scope: Self.obiScopes, mayAct: obi),
+                ])
+                break
+            } catch let error as RunnerError where error.message.contains(Self.idTaken) && obi != ids.last {
+                continue
+            } catch let error as RunnerError {
+                throw Self.joinProblem(error, owner: owner, sphere: invite.name) ?? error
+            }
+        }
+        try await refresh()
+    }
+
+    /// The Obi ids an open invitation's join tries, in order.
+    nonisolated static func obiIds(owner: String) -> [String] { ["obi-\(owner)"] + (2...9).map { "obi-\(owner)-\($0)" } }
+    /// What the Sphere says of an Obi id it had before (sphere-api.md section 4, redeem).
+    nonisolated static let idTaken = "Obi ids are never reused"
+
+    /// The Sphere's refusal of a join in plain words, with what to do (#1214), or nil for one shown as it is.
+    nonisolated static func joinProblem(_ error: RunnerError, owner: String, sphere: String) -> RunnerError? {
+        let said = error.message
+        let words: String? = if said.contains("the owner already has another bound key") {
+            "\(sphere) already has \(owner) with another Mac's key (another Mac, or Oby before a reinstall). For now you're in an Obysphere from one Mac: join from that one."
+        } else if said.contains("the owner is bound to another account") {
+            "\(sphere) knows \(owner) by another Google account: sign in with that one."
+        } else if said.contains("this account joined as another owner") {
+            "That Google account is in \(sphere) as someone else. Sign in with your own work account."
+        } else if let domain = said.firstMatch(of: /this invitation is for (\S+) accounts/)?.1 {
+            "This link is for people at \(domain): sign in with your \(domain) Google account."
+        } else if said.contains("invitation_invalid") {
+            "This link has expired, was used up or was cancelled. Ask whoever sent it for a new one."
+        } else if said.contains(idTaken) {
+            "\(sphere) has had Obys called obi-\(owner) to obi-\(owner)-9 already. Ask its admin for a link made for you."
+        } else {
+            nil
+        }
+        return words.map { RunnerError(message: $0, status: error.status) }
+    }
+
+    /// Leaves the Obysphere (docs/runner-api.md, `DELETE /v1/obid/sphere`), so this Mac can join
+    /// another or this one again (#1214). This Mac's Oby is removed there first, with the owner's own
+    /// token, which obid never holds; then obid forgets the Sphere and its Obi key.
+    func leave() async throws {
+        let runner = try runner()
+        let membership: Membership = try await runner.call("GET", "v1/obid/sphere")
+        if membership.state == "joined", let url = membership.url.flatMap(URL.init(string:)),
+           let sphere = membership.sphere, let obi = membership.obiId {
+            let server = SphereServer(base: url)
+            // ponytail: a Sphere that can't be reached still lists this Oby, removed by its admin later.
+            if let token = try? await server.ownerToken(owner: membership.owner, sphere: sphere,
+                                                         key: try OwnerKey.of(membership.owner), scope: "directory:read") {
+                _ = try? await server.call("DELETE", "spheres/\(sphere)/members/\(obi)", bearer: token)
+            }
+        }
+        _ = try await runner.send("DELETE", "v1/obid/sphere")
+        (name, admin, members, teamLink, requests) = (nil, false, [], nil, [])
         try await refresh()
     }
 

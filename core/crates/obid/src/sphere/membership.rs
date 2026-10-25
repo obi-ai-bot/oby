@@ -106,6 +106,18 @@ impl Files {
         store::write_private(&self.membership, &text)
     }
 
+    /// Removes the Obi key and the Sphere's folder with everything in it (obid left its Sphere).
+    pub fn forget(&self) -> std::io::Result<()> {
+        let gone = |r: std::io::Result<()>| match r {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e),
+            _ => Ok(()),
+        };
+        gone(std::fs::remove_dir_all(
+            self.membership.parent().expect("a folder"),
+        ))?;
+        gone(std::fs::remove_file(&self.key))
+    }
+
     pub fn load_delegation(&self) -> Option<String> {
         std::fs::read_to_string(&self.delegation)
             .ok()

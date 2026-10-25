@@ -21,6 +21,7 @@ struct SphereSettingsView: View {
     @State private var comparing: SphereModel.Member?
     @State private var job: Job.ID?
     @State private var sent: String?
+    @State private var leaving = false
     /// Host your own: kept while Oby runs, so the token Deploy… made outlives this page.
     @State private var host = HostOwn.shared
     private let feed: RunnerFeed
@@ -43,7 +44,7 @@ struct SphereSettingsView: View {
             Task {
                 // The membership first: on a page just opened it isn't read yet.
                 try? await sphere.refresh()
-                if sphere.joined { sphere.problem = "This Oby is in an Obysphere already." } else { open(opened) }
+                if sphere.joined { sphere.problem = "This Oby is in an Obysphere already: leave it first, at the bottom of this page." } else { open(opened) }
             }
         }
         // While the page is open: the membership, the members and what waits, every 20 seconds.
@@ -58,6 +59,11 @@ struct SphereSettingsView: View {
     // MARK: Not in one yet
 
     @ViewBuilder private var notJoined: some View {
+        if let removed = sphere.membership.flatMap({ $0.state == "revoked" ? $0.sphere ?? "your Obysphere" : nil }) {
+            SetGroup("Removed from \(removed)", footer: "Its admin removed this Oby. Leave it to join another Obysphere, or this one again with a new link.") {
+                SetRow("") { Button("Leave \(removed)") { sphere.run { try await sphere.leave() } }.buttonStyle(.set) }
+            }
+        }
         if let invite {
             // "Join Deskree" (onboarding.md section 4).
             // The name and who sent it are only what the link says; the server is what joining trusts.
@@ -258,6 +264,15 @@ struct SphereSettingsView: View {
         }
         if sphere.admin { inviting(name) }
         asking
+        SetGroup("Leave", footer: "Your Oby stops answering \(name)'s Obys, and your iPhone stops reaching this Mac through it. You can join again with an invite link.") {
+            SetRow("") { Button("Leave \(name)…", role: .destructive) { leaving = true }.buttonStyle(.set) }
+        }
+        .confirmationDialog("Leave \(name)?", isPresented: $leaving, titleVisibility: .visible) {
+            Button("Leave", role: .destructive) { sphere.run { try await sphere.leave() } }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text(sphere.admin ? "You're its admin: once you leave, Oby can't invite anyone to it until you're back in, with an invite link." : "You can join again with an invite link.")
+        }
     }
 
     private func inviting(_ name: String) -> some View {

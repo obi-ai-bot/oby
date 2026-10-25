@@ -68,6 +68,11 @@ impl Pins {
         }
     }
 
+    /// Forgets every pin (obid left its Sphere; their file went with `home/sphere`).
+    pub fn forget_all(&self) {
+        *self.pins.lock().unwrap() = Kept::default();
+    }
+
     fn save(&self, pins: &Kept) {
         let saved = self
             .path

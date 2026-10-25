@@ -114,6 +114,12 @@ impl GitHubLogin {
         }
     }
 
+    /// The login gh is signed in as on this Mac, as last read (kept [`STATUS_KEPT`]).
+    pub async fn owner_user(&self) -> Option<String> {
+        let gh = crate::github::gh();
+        self.owner.status(gh.as_deref(), None).await.user
+    }
+
     fn of(&self, who: Who) -> &Login {
         match who {
             Who::Owner => &self.owner,

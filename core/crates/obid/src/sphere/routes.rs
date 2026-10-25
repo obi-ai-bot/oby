@@ -40,7 +40,18 @@ fn limit(text: Option<&str>, default: usize, max: usize) -> Result<usize, ApiErr
 
 /// `GET /v1/obid/sphere`.
 pub async fn membership(State(shared): State<Arc<Shared>>) -> Response {
+    // Until obid joins, the owner it would join as may be the GitHub login (Link::adopt_github_owner).
+    if !shared.link.has_membership()
+        && let Some(user) = shared.github.owner_user().await
+    {
+        shared.link.adopt_github_owner(&user);
+    }
     json(StatusCode::OK, shared.link.membership_json())
+}
+
+/// `DELETE /v1/obid/sphere`.
+pub async fn leave(State(shared): State<Arc<Shared>>) -> Result<Response, ApiError> {
+    Ok(json(StatusCode::OK, shared.link.leave().await?))
 }
 
 /// `GET /v1/obid/sphere/pins`.

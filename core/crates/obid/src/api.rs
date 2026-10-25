@@ -272,7 +272,10 @@ pub fn router(shared: Arc<Shared>) -> Router {
         .route("/v1/failures/{id}", get(crate::failures::get_route))
         .route("/v1/failures/{id}/fix", post(crate::failures::fix_route))
         .route("/v1/inbox/{id}/answer", post(crate::sphere::routes::answer))
-        .route("/v1/obid/sphere", get(crate::sphere::routes::membership))
+        .route(
+            "/v1/obid/sphere",
+            get(crate::sphere::routes::membership).delete(crate::sphere::routes::leave),
+        )
         .route("/v1/obid/sphere/pins", get(crate::sphere::routes::pins))
         .route(
             "/v1/obid/sphere/pins/{owner}",

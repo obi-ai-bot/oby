@@ -289,6 +289,8 @@ pub struct Link {
     sentry: std::sync::OnceLock<Arc<crate::sentry::Sentry>>,
     /// The phone relay (crate::relay): told at once when this Obi's membership is revoked.
     relay: std::sync::OnceLock<Arc<crate::relay::Relay>>,
+    /// Who obid acts for in its Sphere ([`Link::owner`]).
+    owner: Mutex<String>,
 }
 
 fn api(status: StatusCode, message: impl Into<String>) -> ApiError {
@@ -484,6 +486,10 @@ impl Link {
         let client = membership
             .as_ref()
             .and_then(|m| Client::new(&m.url, &m.sphere).ok());
+        let owner = membership
+            .as_ref()
+            .and_then(|m| obi_protocol::card::params(&m.card)?.get("owner")?.as_str())
+            .map_or_else(|| config.owner.clone(), str::to_owned);
         let state = State {
             key,
             membership,
@@ -531,6 +537,7 @@ impl Link {
             setup: super::hosting::Setup::from(&setup_config),
             sentry: std::sync::OnceLock::new(),
             relay: std::sync::OnceLock::new(),
+            owner: Mutex::new(owner),
         });
         // The inbox hears of the permissions jobs wait on. Jobs tells it with none of its own
         // locks held, and never while this Link's state is locked (only `start_obi_review` is
@@ -1575,7 +1582,7 @@ impl Link {
             "url": joined.map(|m| &m.url),
             "sphere": joined.map(|m| &m.sphere),
             "obiId": joined.map(|m| &m.obi_id),
-            "owner": self.config.owner,
+            "owner": self.owner(),
             "keyId": key.map(|k| k.key_id()),
             "publicKey": key.map(|k| k.public_key()),
             "card": joined.map(|m| &m.card),
@@ -1583,6 +1590,49 @@ impl Link {
             "lastPoll": state.last_poll.map(time::format),
             "lastError": state.last_error,
         })
+    }
+
+    /// Whether obid keeps a membership, joined or revoked.
+    pub fn has_membership(&self) -> bool {
+        self.lock().membership.is_some()
+    }
+
+    /// `DELETE /v1/obid/sphere`: obid leaves its Sphere, joined or revoked, so it can join another
+    /// or the same one again (#1214). The app revokes the Obi there first, when the Sphere answers:
+    /// that takes the owner's own token, which obid never holds. What's open is settled as at a
+    /// revoke, and `home/sphere` goes (the membership, the delegation, what obid saw of the chain,
+    /// the owner keys it pinned), and the Obi key with it: a Sphere never takes a key twice, so the
+    /// next join makes a new one. The exchanges and the inbox stay.
+    pub async fn leave(&self) -> Result<Value, ApiError> {
+        let _one = self.joining.lock().await;
+        if self.has_membership() {
+            self.settle_on_revoke();
+        }
+        self.files.forget().map_err(|e| {
+            api(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("obid couldn't forget its Obysphere: {e}"),
+            )
+        })?;
+        {
+            let mut state = self.lock();
+            state.key = None;
+            state.membership = None;
+            state.delegation = None;
+            state.client = None;
+            state.token = None;
+            state.directory = Directory::default();
+            state.directory_read = 0;
+            state.last_poll = None;
+            state.last_error = None;
+        }
+        *self.chain.lock().unwrap_or_else(|e| e.into_inner()) = ChainKept::default();
+        self.pins.forget_all();
+        // The phone relay's socket stops serving phones now.
+        if let Some(relay) = self.relay.get() {
+            relay.wake();
+        }
+        Ok(self.membership_json())
     }
 
     /// `POST /v1/obid/sphere/key`: the Obi key, made the first time.
@@ -1710,11 +1760,12 @@ impl Link {
         }
         let (key_id, public_key, issued_at) =
             (key.key_id(), key.public_key(), time::format(time::now()));
+        let owner = self.owner();
         let unsigned = obi_protocol::identity::unsigned_card(&obi_protocol::identity::CardFields {
             sphere_url: url,
             sphere,
             obi_id,
-            owner: &self.config.owner,
+            owner: &owner,
             owner_key,
             name,
             description,
@@ -1823,11 +1874,11 @@ impl Link {
                 param("sphere")
             )));
         }
-        if param("owner") != self.config.owner {
+        let owner = self.owner();
+        if param("owner") != owner {
             return Err(invalid(format!(
-                "The card's owner is {}, not obid's owner {}.",
+                "The card's owner is {}, not obid's owner {owner}.",
                 param("owner"),
-                self.config.owner
             )));
         }
         let obi_id = param("obi_id").to_owned();
@@ -1840,7 +1891,7 @@ impl Link {
             &delegation,
             &obi_protocol::identity::DelegationCheck {
                 owner_key: &owner_key,
-                owner: &self.config.owner,
+                owner: &owner,
                 sphere: &sphere,
                 obi_id: &obi_id,
                 now,
@@ -2127,7 +2178,12 @@ impl Link {
         tokio::spawn(async move {
             tokio::select! {
                 () = link.clone().run_follower() => {}
-                () = stopped(link.stopping.clone()) => {}
+                () = stopped(link.stopping.clone()) => return,
+            }
+            // Left or revoked: a later join follows again, also one that came while this ended.
+            link.following.store(false, Ordering::SeqCst);
+            if link.is_joined() {
+                link.follow();
             }
         });
     }
@@ -5477,8 +5533,29 @@ impl Link {
         &self.config.home
     }
 
-    pub(super) fn owner(&self) -> &str {
-        &self.config.owner
+    /// Who obid acts for in its Sphere: the owner it joined as while it keeps a membership, else
+    /// config's `owner`, or the GitHub login it adopted ([`Link::adopt_github_owner`]).
+    pub(crate) fn owner(&self) -> String {
+        self.owner.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    /// Until obid joins a Sphere, its owner becomes `github`, the login gh is signed in as, when
+    /// config's `owner` is still the Mac's login name obid wrote at its first start (#1214): a
+    /// Sphere binds one owner key per owner id, and two people's Macs often share a login name
+    /// (or have one that isn't an id, `john.doe`). An owner the person set themselves stays.
+    pub fn adopt_github_owner(&self, github: &str) {
+        let github = github.to_ascii_lowercase();
+        let login = nix::unistd::User::from_uid(nix::unistd::getuid())
+            .ok()
+            .flatten()
+            .map(|user| user.name);
+        if self.lock().membership.is_some()
+            || login.as_deref() != Some(self.config.owner.as_str())
+            || !is_slug(&github)
+        {
+            return;
+        }
+        *self.owner.lock().unwrap_or_else(|e| e.into_inner()) = github;
     }
 
     pub(super) fn model_api_base(&self) -> Option<String> {
@@ -6014,6 +6091,7 @@ impl Link {
                     .map(str::to_owned)
             })
             .unwrap_or_default();
+        let owner = self.owner();
         let mut card = None;
         if let Some(new) = map.get("card") {
             obi_protocol::card::verify(
@@ -6029,7 +6107,7 @@ impl Link {
             if param("key_id") != key.key_id()
                 || param("obi_id") != membership.obi_id
                 || param("sphere") != membership.sphere
-                || param("owner") != self.config.owner
+                || param("owner") != owner
             {
                 return Err(invalid(
                     "The card isn't for this Obi, its key, Sphere and owner.".into(),
@@ -6051,7 +6129,7 @@ impl Link {
                     d,
                     &obi_protocol::identity::DelegationCheck {
                         owner_key: &owner_key,
-                        owner: &self.config.owner,
+                        owner: &owner,
                         sphere: &membership.sphere,
                         obi_id: &membership.obi_id,
                         now,
@@ -6214,7 +6292,7 @@ impl Link {
         body["label"] = json!(label);
         body["agent"] = json!("claude");
         let account = body["account"].as_str().unwrap_or("").to_owned();
-        if body["who"] == self.config.owner {
+        if body["who"] == self.owner() {
             return Err(api(
                 StatusCode::UNPROCESSABLE_ENTITY,
                 "A share is for someone else.",
@@ -6446,7 +6524,7 @@ impl Link {
             .filter(|g| g.account.as_deref() == Some(account))
             .map(|g| g.id.clone())
             .collect();
-        let owner = self.config.owner.clone();
+        let owner = self.owner();
         for id in ids {
             self.count_use(&id, &owner, micros);
         }
@@ -6454,7 +6532,7 @@ impl Link {
 
     /// "Sangam used the share of Deskree API": once a period for each person and share.
     fn share_used_item(&self, grant: &super::shares::Grant, owner: &str, now: i64) {
-        if owner == self.config.owner {
+        if owner == self.owner() {
             return;
         }
         let name = super::hosting::person(owner);
@@ -6980,6 +7058,77 @@ mod tests {
             );
             let _ = std::fs::remove_dir_all(&home);
         }
+    }
+
+    /// Leaving forgets the Sphere, revoked or not: its folder and the Obi key go, the next key is a
+    /// new one, and nothing refuses a join any more (#1214).
+    #[tokio::test]
+    async fn leaving_forgets_the_sphere_and_the_obi_key() {
+        let (link, home, _stop) = sender_link("leave", Some("revoked"));
+        let before = link.make_key().await.ok().unwrap()["keyId"].clone();
+        ChainKept::default().save(&home);
+        assert!(home.join("sphere/membership.json").is_file());
+        assert!(home.join("keys/obi.key").is_file());
+
+        let left = link.leave().await.ok().unwrap();
+        assert_eq!(left["state"], "none");
+        assert!(!link.has_membership());
+        assert!(!home.join("sphere").exists());
+        assert!(!home.join("keys/obi.key").exists());
+        assert_ne!(link.make_key().await.ok().unwrap()["keyId"], before);
+        // Again, with nothing to leave: the same answer.
+        assert_eq!(link.leave().await.ok().unwrap()["state"], "none");
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// Until obid joins, the owner it would join as is the GitHub login when config's owner is
+    /// still the Mac's login name; an owner set by hand stays, and so does the one it joined as.
+    #[tokio::test]
+    async fn until_it_joins_the_owner_is_the_github_login() {
+        let login = nix::unistd::User::from_uid(nix::unistd::getuid())
+            .unwrap()
+            .unwrap()
+            .name;
+        let home = std::env::temp_dir().join(format!("obid-link-owner-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        let config = Config::parse(
+            &json!({"listen": "127.0.0.1:0", "home": home, "owner": login}).to_string(),
+        )
+        .unwrap();
+        let events = Events::new();
+        let jobs = Jobs::open(config.clone(), events.clone(), Err("no sandbox".into())).unwrap();
+        let (_stop, stopping) = watch::channel(false);
+        let link = Link::open(config, jobs, events, stopping).unwrap();
+        link.adopt_github_owner("not_a_slug");
+        assert_eq!(link.owner(), login);
+        link.adopt_github_owner("WellPrado");
+        assert_eq!(link.owner(), "wellprado");
+        assert_eq!(link.membership_json()["owner"], "wellprado");
+        let _ = std::fs::remove_dir_all(&home);
+
+        // An owner set by hand ("wellington", not the login name) stays.
+        let (link, home, _stop) = sender_link("owner-set", None);
+        link.adopt_github_owner("wellprado");
+        assert_eq!(link.owner(), "wellington");
+        let _ = std::fs::remove_dir_all(&home);
+
+        // A membership kept: the owner its card names, whatever config says.
+        let home = std::env::temp_dir().join(format!("obid-link-owner-in-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        let mut kept = membership("joined");
+        kept.card = json!({"capabilities": {"extensions": [{"params": {"owner": "carol"}}]}});
+        Files::new(&home).save_membership(&kept).unwrap();
+        let config = Config::parse(
+            &json!({"listen": "127.0.0.1:0", "home": home, "owner": login}).to_string(),
+        )
+        .unwrap();
+        let events = Events::new();
+        let jobs = Jobs::open(config.clone(), events.clone(), Err("no sandbox".into())).unwrap();
+        let (_stop, stopping) = watch::channel(false);
+        let link = Link::open(config, jobs, events, stopping).unwrap();
+        link.adopt_github_owner("wellprado");
+        assert_eq!(link.owner(), "carol");
+        let _ = std::fs::remove_dir_all(&home);
     }
 
     /// A review request from obi-ernesto, `cid` its id, expiring at `expires_at`.
