@@ -286,6 +286,18 @@ export const JOBS: Job[] = [
     summary: 'The test built its dates in local time; it now pins UTC. Passed 50 runs in a row.', created: 27, finished: 5,
   },
   {
+    // reviewed and green, in a repository whose way of merging Oby hasn't learned yet: it asks once
+    id: 'i8', type: 'issues', title: 'Webhooks ignore Retry-After', from: github, request: 'fix tetrix-ee #381, webhook retries ignore Retry-After on a 429',
+    agent: 'claude', account: 'Deskree', model: 'Opus 5.5', repo: 'deskree-inc/tetrix-ee', branch: 'oby/fix-381', base: 'dev', check: 'pnpm test webhooks',
+    status: 'done', step: 'Ready to merge', commits: 2, published: 'deskree-inc/tetrix-ee#497',
+    stages: stages('review', 'current', ['prepare', 'work', 'check', 'publish', 'review', 'merged'], 'pnpm test webhooks'), created: 48, finished: 9,
+    ask: {
+      kind: 'merge', headline: 'Merge tetrix-ee #497 into dev?',
+      text: 'Checks passed on 7e3f1d2 and my review found nothing to change. I haven’t learned how tetrix-ee merges yet, so this first one is yours.',
+      options: ['Squash and merge', 'Rebase and merge', 'Leave it open'], recommended: 0,
+    },
+  },
+  {
     id: 'i3', type: 'issues', title: 'Memory spike on deploy', from: deskree, request: 'Deskree Ops: api-gateway memory hits 1.8 GB for 3 min after each deploy.',
     agent: 'claude', account: 'Deskree', model: 'Opus 5.5', repo: 'deskree-inc/api-gateway', branch: 'oby/investigate-deploy-memory', base: 'main',
     status: 'done', step: 'Done', stages: stages('work', 'done', ['prepare', 'work']), created: 45, finished: 12,
@@ -385,6 +397,18 @@ export const JOBS: Job[] = [
       time: { aside: 'Ran 22m · jobs like this: 12–20m', basis: 'It ran past the usual range because round 1 failed its checks and round 2 ran them again.' },
       counts: [[31, 'read'], [7, 'edits'], [9, 'commands'], [4, 'test runs'], [3, 'Tetrix']],
       usage: { tokens: '3.6M', cost: '$4.90', fiveHour: 58, job5: '19%', week: 34, jobWeek: '4%' },
+    },
+  },
+  {
+    // a permission prompt: the job has no network, and one install needs it
+    id: 's3', type: 'tasks', title: 'Virtualize the side panel', request: 'the side panel stutters past 200 tasks, virtualize the list',
+    agent: 'codex', account: 'Personal', model: 'GPT-6-Astra', repo: 'deskree-inc/oby', branch: 'oby/virtual-sidebar', base: 'dev', check: 'npm run typecheck',
+    status: 'running', step: 'Asked to use the network', round: [1, 3], stages: stages('work', 'current', undefined, 'npm run typecheck'), created: 9,
+    ask: {
+      kind: 'permission', headline: 'Let Codex fetch one package from npm?',
+      text: 'It wants @tanstack/react-virtual for the list. The job has no network, so this one install needs your OK; nothing else goes out.',
+      options: ['Allow once', 'Deny'], recommended: 0,
+      detail: 'npm install @tanstack/react-virtual@3.13.12',
     },
   },
   {
@@ -642,11 +666,11 @@ export const followUpsOf = (id: string) => FOLLOW_UPS[id] ?? [];
 // opening message (not the task's title, which comes later). One for every
 // mock task; a new one is named after your words.
 const CONVO_TITLES: Record<string, string> = {
-  s5: 'Invite links dying after an hour',
+  s5: 'Invite links dying after an hour', s3: 'Side panel stutter past 200 tasks',
   r1: 'Review of Ernesto’s retry jitter PR', r2: 'Review of Dima’s graph tests PR',
   r3: 'Review of Wellington’s settings PR', r4: 'Review of Daniel’s usage meters PR',
   r5: 'Review of Ernesto’s webhook fix',
-  i1: 'Attention queue order in oby', i2: 'Flaky DST test in schedule', i3: 'Memory spike after deploys',
+  i1: 'Attention queue order in oby', i2: 'Flaky DST test in schedule', i8: 'Webhook retries and Retry-After', i3: 'Memory spike after deploys',
   i4: 'Search not matching accents', i5: 'Dark mode flash on load', i6: 'Broken link in onboarding',
   i7: 'Typo on the pricing page',
   w1: 'Status bar states for the island', w2: 'Resizing the inspection window',

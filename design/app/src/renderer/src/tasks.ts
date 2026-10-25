@@ -116,11 +116,12 @@ export function relay(id: string, text: string): { line: string; start?: () => s
   return { line: `Passed to ${agent}. It’ll pick that up after ${k.job.round ? 'this round' : 'its current step'}.` };
 }
 // Picked an answer to its decision: it shows as your reply, and Oby confirms.
-// (Kept until the mock has somewhere to send it; the task stays as it was.)
+// Nothing's left for you to decide, so it no longer needs you: the agent goes
+// on (done, it stays done). Later keeps it needing you, only put off.
 export function answer(id: string, option: string) {
   const k = tasks.find((x) => x.id === id);
   if (!k) return;
-  update(id, () => ({ answer: option }));
+  update(id, () => ({ answer: option, status: option === 'Later' ? k.status : k.job.status === 'done' ? 'done' : 'running' }));
   say(id, { who: 'you', text: option, ago: 0 });
   const agent = AGENTS[k.job.agent].name;
   reply(id, () => (option === 'Later' ? 'Okay, it’ll wait. I’ll bring it back up in an hour.' : `Got it. ${agent} will go with that.`));

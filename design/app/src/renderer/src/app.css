@@ -154,6 +154,68 @@ button.crumb:hover { color: var(--ink); background: var(--hover); }
 .chip-dots .is-fresh { background: var(--unread); }
 .chip-dots .is-needs { background: var(--needs); }
 
+/* What Oby is asking you (AskStack): its cards under the attention line, as
+   wide as the message box's field; the top one whole, the next two peeking out
+   under it, each a step further back. The stack eases to each top card's height */
+.asks {
+  position: relative;
+  width: min(480px, 100%);
+  margin-bottom: calc(var(--peeks) * 8px);
+  transition: height 360ms var(--warm), margin 360ms var(--warm);
+}
+/* the last one answered: the stack folds away as it leaves, its two gaps given
+   back, so nothing jumps when it's gone */
+.asks.is-empty { height: 0 !important; margin: -8px 0; }
+.ask-card { position: relative; z-index: 3; padding: 16px 18px; border-radius: 22px; background: var(--chip); text-align: left; user-select: text; }
+.ask-card .tc-ask { margin-top: 12px; padding-top: 12px; }
+/* Home keeps it short: what happened in 3 lines at most, the command or plan in
+   3 (it scrolls); the task's page has all of it */
+.ask-card .tc-ask-text { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.ask-card .tc-code { max-height: 74px; overflow-y: auto; scrollbar-width: none; }
+/* the way to its page, at the head's end */
+.ask-open { flex: none; margin-right: -4px; color: var(--muted); font-size: var(--text-md); }
+.ask-peek {
+  position: absolute;
+  inset: 0;
+  z-index: calc(3 - var(--d));
+  border-radius: 22px;
+  background: color-mix(in srgb, var(--chip) calc(110% - var(--d) * 25%), var(--bg));
+  transform-origin: 50% 100%;
+  transform: translateY(calc(var(--d) * 8px)) scale(calc(1 - var(--d) * 0.05));
+  transition: transform var(--settle), background-color var(--settle);
+  animation: fade-in 280ms var(--warm) both;
+}
+/* the next one comes up from where it peeked, its words a moment after */
+.ask-card.is-up { animation: ask-up var(--settle) both; }
+.ask-card.is-up > * { animation: fade-in 240ms var(--warm) 100ms both; }
+@keyframes ask-up { from { transform: translateY(8px) scale(0.95); background-color: color-mix(in srgb, var(--chip) 85%, var(--bg)); } }
+/* answered, it lifts off the top; put off (Later), it sinks back behind the next */
+.ask-card.is-out, .ask-card.is-later { position: absolute; top: 0; left: 0; right: 0; pointer-events: none; }
+.ask-card.is-out { z-index: 4; animation: ask-out 260ms var(--ease-in) both; }
+.ask-card.is-later { z-index: 2; animation: ask-later 300ms var(--ease-in) both; }
+@keyframes ask-out { to { opacity: 0; transform: translateY(-16px) scale(0.98); } }
+@keyframes ask-later { to { opacity: 0; transform: translateY(14px) scale(0.95); } }
+/* While Oby asks, the stage makes room: the chips keep to one row, Oby
+   steps back (smaller) when the window is too short for all of it, and what
+   still doesn't fit scrolls */
+.stage:has(.asks) { overflow-y: auto; }
+.stage:has(.asks) .oby-frame { min-height: 100px; }
+.stage:has(.asks) .attention { flex-shrink: 0; }
+.stage:has(.asks) .chips { max-width: 520px; }
+/* a window too short for Oby and a card (down to the smallest, 520px): the card
+   wins, a little tighter, so the chips still fit under it */
+@media (max-height: 600px) {
+  .stage:has(.asks) { padding-bottom: 12px; }
+  .stage:has(.asks) .oby-frame { display: none; }
+  .stage:has(.asks) .attention { margin-top: 0; }
+  .ask-card .tc-ask-text { -webkit-line-clamp: 2; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .asks, .ask-peek { transition: none; }
+  .ask-card.is-up, .ask-card.is-up > * { animation: fade-in 200ms ease-out both; }
+  .ask-card.is-out, .ask-card.is-later { animation: fade-out 200ms ease-out both; }
+}
+
 .composer {
   transition: opacity 220ms cubic-bezier(0.22, 0.61, 0.36, 1), transform 220ms cubic-bezier(0.22, 0.61, 0.36, 1);
   display: flex;

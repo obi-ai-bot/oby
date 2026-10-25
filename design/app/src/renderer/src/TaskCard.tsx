@@ -68,7 +68,8 @@ export default function TaskCard({ task, alone = false, onOpen, onSession, style
         </div>
       )}
 
-      {task.status === 'needs' && j.ask && <AskBlock task={task} />}
+      {/* answered, it no longer needs you, but the pick stays on the card */}
+      {j.ask && (task.status === 'needs' || task.answer) && <AskBlock task={task} />}
 
       {/* done: what it left behind, one line; on its page, Result has it */}
       {result && <div className="tc-done"><div>{result}</div></div>}
@@ -181,9 +182,11 @@ export default function TaskCard({ task, alone = false, onOpen, onSession, style
 // The decision a task needs from you: what kind, Oby's headline over what
 // happened, then the choices (the recommended one first-looking) and Later.
 // On the card a pick shows as a check line; in the conversation it shows as
-// your reply, and the block just loses its buttons.
-export function AskBlock({ task, inChat = false }: { task: Task; inChat?: boolean }) {
+// your reply, and the block just loses its buttons. onAnswer: told after a
+// pick (Home's stack, to send the card away).
+export function AskBlock({ task, inChat = false, onAnswer }: { task: Task; inChat?: boolean; onAnswer?: (option: string) => void }) {
   const ask = task.job.ask!;
+  const pick = (o: string) => { answer(task.id, o); onAnswer?.(o); };
   return (
     <div className="tc-ask">
       <span className={`tc-ask-kind is-${ask.kind}`}>{ASK_LABEL[ask.kind]}</span>
@@ -198,12 +201,12 @@ export function AskBlock({ task, inChat = false }: { task: Task; inChat?: boolea
             <button
               key={o}
               className={`tc-option${i === (ask.recommended ?? 0) ? ' is-primary' : ''}${o === 'Deny' ? ' is-danger' : ''}`}
-              onClick={() => answer(task.id, o)}
+              onClick={() => pick(o)}
             >
               {o}
             </button>
           ))}
-          <button className="tc-option is-quiet" onClick={() => answer(task.id, 'Later')}>Later</button>
+          <button className="tc-option is-quiet" onClick={() => pick('Later')}>Later</button>
         </div>
       )}
     </div>
