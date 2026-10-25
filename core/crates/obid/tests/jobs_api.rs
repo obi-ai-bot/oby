@@ -2703,7 +2703,10 @@ fn stop_and_stop_all_end_the_agents() {
         if status["memory"]["jobs"] == json!([]) {
             break;
         }
-        assert!(Instant::now() < give_up_at, "a stopped job stays measured: {status}");
+        assert!(
+            Instant::now() < give_up_at,
+            "a stopped job stays measured: {status}"
+        );
         std::thread::sleep(Duration::from_millis(100));
     }
     assert_eq!(
