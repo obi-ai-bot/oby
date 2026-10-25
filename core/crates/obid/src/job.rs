@@ -154,6 +154,21 @@ pub struct RunsOn {
     pub grant: Option<String>,
 }
 
+/// Oby's reviews of a pushed head that ended before a verdict (failed or interrupted: a login
+/// refused, the tool crashing), and whether Oby left that head to the owner (docs/runner-api.md,
+/// "Oby's review").
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReviewFailed {
+    /// The head they read.
+    pub commit: String,
+    /// Each review job, and the account it ran on.
+    pub reviews: Vec<(String, String)>,
+    /// No other reviewer could take it: it waits for the owner's Try again.
+    #[serde(default)]
+    pub needs_you: bool,
+}
+
 /// Oby's latest verdict on a job's published work (docs/runner-api.md, "Oby's review").
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -258,6 +273,9 @@ pub struct Job {
     /// with room, never Cursor). It starts once one does.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub no_reviewer: Option<String>,
+    /// Oby's reviews of its pushed head that couldn't give a verdict.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub review_failed: Option<ReviewFailed>,
     pub summaries: Option<Vec<String>>,
     pub issue: Option<u64>,
     pub rounds: Option<u32>,
@@ -644,6 +662,7 @@ impl Job {
             review: None,
             review_of: None,
             no_reviewer: None,
+            review_failed: None,
             summaries: None,
             issue: None,
             rounds: None,
@@ -883,6 +902,7 @@ impl Job {
         self.published = Some(url);
         self.publish_error = None;
         self.review_error = None;
+        self.review_failed = None;
     }
 
     /// The head Oby's review reads next, if one is due: done and published, its pull request
@@ -909,13 +929,21 @@ impl Job {
 
     /// Oby's review still asks for changes on the pull request's head, and nothing more happens by
     /// itself: its reviews ran out ([`crate::review::REVIEWS`]), or the round they asked for left
-    /// the head as it was.
+    /// the head as it was; or no reviewer could review that head ([`Job::review_failed_here`]).
     pub fn review_needs_you(&self) -> bool {
         self.status == Status::Done
             && self.dismissed.is_none()
             && self.reviewing.is_none()
             && self.pull_request_open()
-            && self.current_review().is_some_and(|r| !r.approved())
+            && (self.current_review().is_some_and(|r| !r.approved())
+                || self.review_failed_here().is_some_and(|f| f.needs_you))
+    }
+
+    /// The reviews of the pull request's head, as obid pushed it, that couldn't give a verdict.
+    pub fn review_failed_here(&self) -> Option<&ReviewFailed> {
+        self.review_failed
+            .as_ref()
+            .filter(|f| self.pushed_head() == Some(f.commit.as_str()))
     }
 
     /// Whether its worktree's build outputs may still be there: none deleted since it last ended.
@@ -1929,5 +1957,18 @@ mod tests {
         assert_eq!(review(&job)["detail"], APPROVED_BY_OBY);
         assert_eq!(job.to_json()["review"]["date"], "2026-10-09T21:42:53Z");
         assert!(job.to_json()["review"].get("sameAccount").is_none());
+        // No reviewer could give its head a verdict: the owner's, until a new head is pushed.
+        job.review = None;
+        job.review_failed = Some(ReviewFailed {
+            commit: "def".into(),
+            reviews: vec![("r1".into(), "codex:codex".into())],
+            needs_you: false,
+        });
+        assert!(!job.review_needs_you(), "another reviewer takes it first");
+        job.review_failed.as_mut().unwrap().needs_you = true;
+        assert!(job.review_needs_you() && job.needs_you());
+        assert_eq!(job.to_json()["reviewNeedsYou"], true);
+        push(&mut job, "efg");
+        assert!(!job.review_needs_you() && job.review_failed_here().is_none());
     }
 }

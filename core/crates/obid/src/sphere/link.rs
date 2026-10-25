@@ -977,6 +977,30 @@ impl Link {
         }
     }
 
+    /// The job `job`'s item about Oby's review that couldn't run now (`inbox::review_item`): `item`,
+    /// when there is one, added, and the job's other open ones done, with no answer.
+    pub fn review_items(&self, job: &str, item: Option<Item>) {
+        let keep = item.as_ref().map(|i| i.id.clone());
+        let stale: Vec<String> = self
+            .lock()
+            .inbox
+            .values()
+            .filter(|i| {
+                inbox::is_review_item(i)
+                    && i.job == job
+                    && i.done.is_none()
+                    && Some(&i.id) != keep.as_ref()
+            })
+            .map(|i| i.id.clone())
+            .collect();
+        for id in stale {
+            self.settle(&id);
+        }
+        if let Some(item) = item {
+            self.add_items(vec![item]);
+        }
+    }
+
     /// The job `job`'s merge card now (crate::merge): `card`, added unless the owner answered it
     /// before (they aren't asked again about that head and reason); one the follower settled by
     /// itself is offered again. Every other open `merge` item of the job is done, with no answer:
@@ -5025,6 +5049,10 @@ impl Link {
                 drop(state);
                 self.save_item(&item);
                 let carried = match item.answer.as_deref() {
+                    // Oby's review that couldn't run: Try again is its review's, never the job's.
+                    Some(crate::job::TRY_AGAIN) if inbox::is_review_item(&item) => {
+                        self.jobs.review_again(&item.job)
+                    }
                     Some(crate::job::TRY_AGAIN) => self.jobs.message(
                         &item.job,
                         crate::brain::actions::TRY_AGAIN,

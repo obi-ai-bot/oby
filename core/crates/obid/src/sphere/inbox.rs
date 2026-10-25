@@ -915,6 +915,41 @@ pub fn crash_item(job: &crate::job::Job, now: i64) -> Item {
     }
 }
 
+/// Whether `item` is a [`review_item`]: Oby's review that no reviewer could give, the owner's.
+pub fn is_review_item(item: &Item) -> bool {
+    item.kind == "failed" && item.id.contains("-review-")
+}
+
+/// The `failed` item on a job whose head no reviewer could review (`reviewNeedsYou`): one per give
+/// up (its id names the last review that ended before a verdict), saying why (`error`, its
+/// `reviewError`). Try again starts the review again (`Jobs::review_again`). Merging without
+/// Oby's review isn't offered: no workflow merges without a review (AGENTS.md).
+pub fn review_item(job: &crate::job::Job, review: &str, error: &str) -> Item {
+    Item {
+        id: format!("{}-review-{review}", job.id),
+        kind: "failed".into(),
+        job: job.id.clone(),
+        title: job.short_title(),
+        text: error.to_owned(),
+        options: vec![crate::job::TRY_AGAIN.into()],
+        details: Some(vec![
+            "Asks Oby to review it again, on the first reviewer that can.".into(),
+        ]),
+        recommended: None,
+        created: time::now(),
+        done: None,
+        later: None,
+        answer: None,
+        obi: None,
+        plugin: None,
+        arrived: Some(arrival()),
+        confirm: None,
+        start: None,
+        github: None,
+        watch: None,
+    }
+}
+
 /// A `watch` item's id: `watch-` and 16 hex characters of its notice's key.
 pub fn watch_item_id(key: &str) -> String {
     format!(

@@ -189,7 +189,9 @@ impl Seen {
             });
         }
         // Oby's review gave no verdict, or its changes and their rounds didn't settle it: once.
+        // One no reviewer could give is the owner's already, in obid's own item.
         let why = match &now.review_error {
+            _ if now.review_needs_you && now.review_error.is_some() => None,
             Some(error) if Some(error) != before.review_error.as_ref() => {
                 Some(super::briefing::line(error, 200))
             }
@@ -248,6 +250,8 @@ impl Seen {
             || matches!(item.kind.as_str(), "confirm" | "start" | "permission" | "plan" | "question" | "github" | "merge" | crate::sphere::inbox::QUESTION_KIND)
             // obid's own bug's item is the owner's too (#914): an answer from Oby would loop it.
             || crate::sphere::inbox::is_crash_item(item)
+            // So is a review no reviewer could give: obid fell back already.
+            || crate::sphere::inbox::is_review_item(item)
             // What someone said, told to the owner, and what a plug-in sent: never the brain's
             // to act on (#1124).
             || matches!(item.kind.as_str(), "watch" | "listen" | "pluginEvent")
