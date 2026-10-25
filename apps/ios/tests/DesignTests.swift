@@ -21,6 +21,9 @@ struct DesignTests {
         #expect(HomeLine.attention(running: 1, needs: 0) == "1 running task · nothing needs you")
         #expect(HomeLine.attention(running: 0, needs: 3) == "3 need you")
         #expect(HomeLine.attention(running: 0, needs: 0) == "All quiet. Give me something to work on")
+        // What obid holds back for memory, apart from what runs, as the Mac says it.
+        #expect(HomeLine.attention(running: 2, needs: 1, memory: 1) == "2 running tasks · 1 waiting for memory · 1 needs you")
+        #expect(HomeLine.attention(running: 0, needs: 0, memory: 2) == "2 waiting for memory")
         // The owner's first name, from the Mac's own name, when it says whose it is.
         #expect(HomeLine.owner(ofMac: "Wellington's MacBook Pro") == "Wellington")
         #expect(HomeLine.owner(ofMac: "Sangam’s Mac mini") == "Sangam")

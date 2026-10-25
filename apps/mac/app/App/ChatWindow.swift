@@ -451,7 +451,7 @@ private struct HomeView: View {
         let groups = WorkList.kinds(work)
         // A task waiting for memory is active, but not running: the line says it apart.
         let memory = work.count { $0.job.job.waitsForMemory }
-        let running = work.count { $0.status == .running } - memory, needs = work.count { $0.status == .needs }
+        let running = work.count { $0.status == .running && !$0.job.job.waitsForMemory }, needs = work.count { $0.status == .needs }
         return EyeLevel {
             VStack(spacing: 16) {
                 StagedOby(model: model, character: character)

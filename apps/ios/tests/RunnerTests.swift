@@ -17,6 +17,17 @@ struct RunnerTests {
         #expect(again == job)
     }
 
+    /// A job obid holds back for memory decodes as it is (a `cap` wait in its own words), and
+    /// waits for memory; one running doesn't.
+    @Test func aJobWaitingForMemory() throws {
+        let queued = job.replacingOccurrences(of: #""status": "running", "step": "Running pnpm test""#,
+                                              with: #""status": "queued", "step": "Waiting for memory", "waiting": {"kind": "cap", "text": "memory frees up"}"#)
+        #expect(queued != job)
+        let decoded = try Runner.decoder.decode(Job.self, from: Data(queued.utf8))
+        #expect(decoded.waitsForMemory && decoded.waiting == .memory)
+        #expect(try !Runner.decoder.decode(Job.self, from: Data(job.utf8)).waitsForMemory)
+    }
+
     @Test func planResults() throws {
         // A reply with the job it started (#269), as the runner answers `POST /v1/plans`.
         let started = #"{"kind": "reply", "text": "On it. Claude Code is reviewing oby PR #33 on Personal.", "jobs": [\#(job)], "drafts": []}"#

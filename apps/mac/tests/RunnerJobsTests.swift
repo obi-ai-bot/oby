@@ -47,7 +47,7 @@ struct RunnerJobsTests {
         #expect(queued != jobs)
         let decoded = try Runner.decoder.decode([Job].self, from: Data(queued.utf8))
         #expect(decoded.map(\.id) == ["4bbb145a", "e4ea28be"])
-        #expect(decoded[0].waitsForMemory && decoded[0].isWaiting && decoded[0].waiting?.kind == .cap)
+        #expect(decoded[0].waitsForMemory && decoded[0].isWaiting && decoded[0].waiting == .memory)
         #expect(!decoded[1].waitsForMemory)
         var slot = decoded[0]
         slot.waiting = .slot

@@ -119,16 +119,18 @@ struct HomeView: View {
     /// Oby, the line under it, and the chips.
     private var stage: some View {
         let work = phone.work
-        let running = work.count { $0.status == .running }
+        // A task waiting for memory is active, but not running: the line says it apart.
+        let memory = work.count { $0.job.waitsForMemory }
+        let running = work.count { $0.status == .running && !$0.job.waitsForMemory }
         let needs = WorkList.needsYou(work, loose: phone.loose.count)
         return VStack(spacing: 0) {
             StageOby(character: character)
             Button {
                 if let first = PhoneWork.firstNeeding(work, inbox: phone.answering) { phone.homePath.append(first) }
             } label: {
-                Text(HomeLine.attention(running: running, needs: needs))
+                Text(HomeLine.attention(running: running, needs: needs, memory: memory))
                     .font(Tokens.font(Tokens.textBase))
-                    .foregroundStyle(running + needs == 0 ? Tokens.text : Tokens.muted)
+                    .foregroundStyle(running + needs + memory == 0 ? Tokens.text : Tokens.muted)
                     .multilineTextAlignment(.center)
             }
             .buttonStyle(.plain)
