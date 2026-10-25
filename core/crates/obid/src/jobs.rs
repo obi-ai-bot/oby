@@ -3797,6 +3797,76 @@ impl Jobs {
         ))
     }
 
+    /// The first job in a GitHub repository with no check offers one (#1062), once per repository
+    /// (`checksOffered` in `home/settings.json`), whatever the answer: a `confirm` item whose
+    /// command obid guessed from the files at `commit` in its own clone
+    /// (crate::repos::guess_check). Confirm keeps it on the repository (`set_check`), for the jobs
+    /// after this one; this one goes on with none, its pull request saying so.
+    async fn offer_check(&self, job: &Job, clone: &Path, commit: &str) {
+        let Some(hook) = self.confirm_hook.get() else {
+            return;
+        };
+        let same = |r: &String| r.eq_ignore_ascii_case(&job.repo);
+        if job.check.is_some()
+            || job.review_of.is_some()
+            || job.runs_on.is_some()
+            || self
+                .repo(&job.repo)
+                .is_none_or(|r| r.check.is_some() || !crate::github::is_remote(&r.remote))
+            || crate::settings::load(&self.config.home)
+                .checks_offered
+                .iter()
+                .any(same)
+        {
+            return;
+        }
+        let Ok(listed) = git::git(clone, &["ls-tree", "--name-only", commit]).await else {
+            return;
+        };
+        let names: Vec<String> = listed.lines().map(str::to_owned).collect();
+        let mut texts = Vec::new();
+        for name in ["Makefile", "package.json"] {
+            if names.iter().any(|n| n == name)
+                && let Ok(text) = git::git(clone, &["show", &format!("{commit}:{name}")]).await
+            {
+                texts.push((name, text));
+            }
+        }
+        let read = |name: &str| {
+            texts
+                .iter()
+                .find(|(n, _)| *n == name)
+                .map(|(_, t)| t.clone())
+        };
+        let Some(check) = crate::repos::guess_check(&names, read) else {
+            return;
+        };
+        let first = crate::settings::update(&self.config.home, |settings| {
+            let first = !settings.checks_offered.iter().any(same);
+            if first {
+                settings.checks_offered.push(job.repo.clone());
+            }
+            first
+        });
+        if !matches!(first, Ok(true)) {
+            return;
+        }
+        let repo = &job.repo;
+        hook(crate::sphere::inbox::confirm_item(
+            &job.id,
+            format!("Use `{check}` as the check for {repo}"),
+            format!(
+                "Can I use `{check}` as the check for {repo}? It has none, so its pull requests go out after the secret scan alone. With `{check}` as its check, every job there runs it in its box, with no network, before anything goes out. It's kept only if you confirm."
+            ),
+            crate::sphere::inbox::Confirmed {
+                action: crate::sphere::inbox::action::SET_CHECK.into(),
+                target: repo.clone(),
+                payload: json!({"check": check}),
+            },
+            obi_protocol::time::now(),
+        ));
+    }
+
     fn note(&self, note: PermissionNote) {
         if let Some(hook) = self.permission_hook.get() {
             hook(note);
@@ -7037,6 +7107,7 @@ impl Jobs {
         // Where its branch was when this run started: a job whose own publish failed is tried
         // again by itself only when this run made new commits (runner-api.md, "Job").
         let clone = git::clone_path(&self.config.home, &repo.repo);
+        self.offer_check(&job, &clone, &start_commit).await;
         let before_head = git::git(
             &clone,
             &[
@@ -14029,6 +14100,89 @@ mod tests {
         assert!(held > now + 3500 && held <= now + 3600, "{held}");
         jobs.mark_full("full", Some(now + 60), now);
         assert_eq!(jobs.usage.get("full").full_until, Some(held));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The first job in a GitHub repository with no check offers the check obid guessed, once:
+    /// never again there, whatever the answer, and never where there's a check (#1062).
+    #[tokio::test]
+    async fn a_repository_with_no_check_is_offered_one_once() {
+        let root = std::env::temp_dir().join(format!("obid-offer-{}", uuid::Uuid::new_v4()));
+        let home = root.join("home");
+        let clone = root.join("clone");
+        std::fs::create_dir_all(&clone).unwrap();
+        std::fs::write(
+            clone.join("package.json"),
+            r#"{"scripts": {"test": "vitest"}}"#,
+        )
+        .unwrap();
+        std::fs::write(clone.join("pnpm-lock.yaml"), "").unwrap();
+        let git = |args: &[&str]| {
+            let done = std::process::Command::new("git")
+                .args([
+                    "-c",
+                    "user.name=t",
+                    "-c",
+                    "user.email=t@t",
+                    "-c",
+                    "commit.gpgsign=false",
+                ])
+                .args(args)
+                .current_dir(&clone)
+                .output()
+                .unwrap();
+            assert!(done.status.success(), "{done:?}");
+            String::from_utf8(done.stdout).unwrap().trim().to_owned()
+        };
+        git(&["init", "-q"]);
+        git(&["add", "."]);
+        git(&["commit", "-qm", "init"]);
+        let commit = git(&["rev-parse", "HEAD"]);
+        let config = crate::config::Config::parse(
+            &json!({"listen": "127.0.0.1:0", "home": home, "owner": "o", "repos": [
+                {"repo": "o/app", "remote": "https://github.com/o/app.git"},
+                {"repo": "o/checked", "remote": "https://github.com/o/checked.git", "check": "make"},
+                {"repo": "o/local", "remote": "https://example.com/o/local.git"}]})
+            .to_string(),
+        )
+        .unwrap();
+        let jobs = Jobs::open(
+            config,
+            crate::events::Events::new(),
+            Err("no sandbox".into()),
+        )
+        .unwrap();
+        let items = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let kept = items.clone();
+        jobs.on_confirm(Arc::new(move |item| kept.lock().unwrap().push(item)));
+        let job = |repo: &str| {
+            let mut job = Job::new(
+                "ffff0001".into(),
+                repo.into(),
+                "fix".into(),
+                "Fix it".into(),
+                "claude".into(),
+                "c".into(),
+            );
+            job.check = jobs.repo(repo).and_then(|r| r.check);
+            job
+        };
+        for repo in ["o/checked", "o/local", "o/app", "O/App"] {
+            jobs.offer_check(&job(repo), &clone, &commit).await;
+        }
+        let items = items.lock().unwrap().clone();
+        assert_eq!(items.len(), 1, "{items:?}");
+        assert_eq!(items[0].title, "Use `pnpm test` as the check for o/app");
+        assert!(
+            items[0]
+                .text
+                .starts_with("Can I use `pnpm test` as the check for o/app?")
+        );
+        let confirmed = items[0].confirm.as_deref().unwrap();
+        assert_eq!(confirmed.action, crate::sphere::inbox::action::SET_CHECK);
+        assert_eq!(confirmed.target, "o/app");
+        assert_eq!(confirmed.payload, json!({"check": "pnpm test"}));
+        assert_eq!(crate::settings::load(&home).checks_offered, ["o/app"]);
         let _ = std::fs::remove_dir_all(&root);
     }
 
