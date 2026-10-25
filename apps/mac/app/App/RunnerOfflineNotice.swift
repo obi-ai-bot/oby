@@ -1,6 +1,5 @@
 import SwiftUI
 
-/// Connection failures stay visible beside the conversation they affect.
 /// Home, once Oby's engine on this Mac hasn't answered for a few seconds (after first launch, nothing
 /// else says so): why, as first launch says it, and the way on: Login Items, then Try Again.
 struct EngineDownLine: View {
@@ -11,7 +10,9 @@ struct EngineDownLine: View {
     static var after: Duration = .seconds(5)
 
     var body: some View {
-        Group {
+        // A view that's always there, so the task runs while the line is hidden.
+        VStack(spacing: 0) {
+            Color.clear.frame(height: 0)
             if shown {
                 HStack(spacing: 10) {
                     Label(FirstLaunchSteps.waiting(inApplications: RunnerLoginItem.mayRegister(), needsApproval: loginItem.needsApproval,
@@ -41,6 +42,7 @@ struct EngineDownLine: View {
     }
 }
 
+/// Connection failures stay visible beside the conversation they affect.
 struct RunnerOfflineNotice: View {
     let name: String
     var body: some View {
