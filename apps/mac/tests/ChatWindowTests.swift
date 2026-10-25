@@ -266,6 +266,23 @@ struct ChatWindowTests {
         #expect(IslandInbox.entries(feed: feed, now: now + 120).count == 1)
     }
 
+    @Test func homeStackKeepsItsPlaceAndGoesRound() {
+        let place = HomeStack.Place(id: "b", index: 1)
+        #expect(HomeStack.index(of: place, in: ["a", "b", "c"]) == 1)
+        // Answered or put off: the one after takes its place, "2/3" becoming "2/2".
+        #expect(HomeStack.index(of: place, in: ["a", "c"]) == 1)
+        // The last one gone: round to the first.
+        #expect(HomeStack.index(of: HomeStack.Place(id: "c", index: 2), in: ["a", "b"]) == 0)
+        // One coming back above it moves its place, not the card on top.
+        #expect(HomeStack.index(of: place, in: ["z", "a", "b"]) == 2)
+        #expect(HomeStack.index(of: HomeStack.Place(), in: ["a"]) == 0)
+        // Previous and next wrap at both ends; with one card they stay put.
+        #expect(HomeStack.step(0, by: -1, count: 3) == 2)
+        #expect(HomeStack.step(2, by: 1, count: 3) == 0)
+        #expect(HomeStack.step(1, by: 1, count: 3) == 2)
+        #expect(HomeStack.step(0, by: 1, count: 1) == 0)
+    }
+
     @Test func returnNeverTakesADestructiveRecommendation() {
         for answer in ["Deny", "Dismiss", "Stop", "Stop job"] {
             #expect(CardOption.defaultOption([CardOption(label: answer, answer: answer, recommended: true)]) == nil)
