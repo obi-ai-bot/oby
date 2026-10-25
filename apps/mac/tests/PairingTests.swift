@@ -105,4 +105,44 @@ struct PairingTests {
         #expect(PairingRoute.gatewayPort(config: Data(#"{"gateway": "127.0.0.1:70000"}"#.utf8)) == nil)
         #expect(PairingRoute.gatewayPort(config: Data(#"{"gateway": "127.0.0.1:0"}"#.utf8)) == nil)
     }
+    /// In an Obysphere the Mac asks obid for no route: it pairs the phone through the Sphere's relay,
+    /// with no Tailscale or Remote access (#1377). With a route, its URL, as before.
+    @MainActor @Test func inAnObysphereTheInvitationNeedsNoRoute() async throws {
+        let invitation = #"{"code":"123456","expiresAt":"2026-10-26T12:02:00Z","hostname":"My Mac","link":"{}","name":"My Mac","secret":"s","url":"https://obysphere.example"}"#
+        let obid = RunnerStub { request in
+            switch request.path {
+            case "/v1/obid/sphere": (200, #"{"state": "joined", "owner": "wellington", "url": "https://obysphere.example", "sphere": "acme", "obiId": "obi-wellington"}"#)
+            case "/v1/pairing/invite": (200, invitation)
+            default: (404, "{}")
+            }
+        }
+        #expect(await PairingView.inSphere(obid.runner))
+        let approval = Approval(device: "mac-1", action: "", signedAt: "2026-10-26T12:00:00Z", signature: "sig")
+        let made = try await PairingView.invite(obid.runner, name: "My Mac", route: nil, approval: approval)
+        #expect(made.url == "https://obysphere.example")
+        let body = try #require(obid.requests.last?.json)
+        #expect(body["url"] == nil)
+        #expect(body["hostname"] == nil)
+        #expect(body["name"] as? String == "My Mac")
+        #expect((body["approval"] as? [String: Any])?["device"] as? String == "mac-1")
+
+        _ = try await PairingView.invite(obid.runner, name: "My Mac", route: .tailscale("mac.tail0000.ts.net:8443"), approval: approval)
+        #expect(obid.requests.last?.json?["url"] as? String == "https://mac.tail0000.ts.net:8443")
+        #expect(obid.requests.last?.json?["hostname"] as? String == "mac.tail0000.ts.net:8443")
+    }
+
+    /// Out of an Obysphere obid's own words say what to do, and no runner means no Sphere.
+    @MainActor @Test func outOfAnObysphereObidSaysToJoinOne() async throws {
+        let obid = RunnerStub { request in
+            request.path == "/v1/obid/sphere" ? (200, #"{"state": "none", "owner": "wellington"}"#)
+                : (409, #"{"error": "Join or host an Obysphere first (Settings › Obysphere)."}"#)
+        }
+        #expect(await !PairingView.inSphere(obid.runner))
+        #expect(await !PairingView.inSphere(nil))
+        let approval = Approval(device: "mac-1", action: "", signedAt: "2026-10-26T12:00:00Z", signature: "sig")
+        let refused = await #expect(throws: RunnerError.self) {
+            try await PairingView.invite(obid.runner, name: "My Mac", route: nil, approval: approval)
+        }
+        #expect(refused?.message == "Join or host an Obysphere first (Settings › Obysphere).")
+    }
 }
