@@ -541,6 +541,23 @@ impl Source {
     }
 }
 
+/// What a job waiting for an account with room says (#872).
+fn room_step(wait: &Waiting) -> String {
+    format!(
+        "Waiting for {}. Use one anyway to start it now; otherwise it starts when an account has room.",
+        wait.text
+    )
+}
+
+/// A job waiting for room goes to `tool`: a model of another tool's gives way to the new tool's
+/// own, as a move's does.
+fn on_tool(job: &mut Job, tool: Tool) {
+    if job.agent != tool.id() {
+        job.agent = tool.id().into();
+        job.model = None;
+    }
+}
+
 /// Who adds the inbox's Confirm items (crate::sphere::link).
 pub type ConfirmHook = Arc<dyn Fn(crate::sphere::inbox::Item) + Send + Sync>;
 
@@ -1208,6 +1225,13 @@ impl Jobs {
                 return;
             }
             let now = obi_protocol::time::now();
+            // A week's reset ends a reserve: a job waiting for room looks again (#872).
+            let for_room = self.lock().jobs.values().any(|j| {
+                j.status == Status::Queued && j.waiting.as_ref().is_some_and(Waiting::for_room)
+            });
+            if for_room {
+                self.schedule();
+            }
             let due: Vec<String> = self
                 .lock()
                 .jobs
@@ -2933,7 +2957,16 @@ impl Jobs {
     fn vetted(
         &self,
         new: &NewJob,
-    ) -> Result<(Repo, Tool, crate::config::Account, Option<Vec<String>>), Refused> {
+    ) -> Result<
+        (
+            Repo,
+            Tool,
+            crate::config::Account,
+            Option<Vec<String>>,
+            Option<Waiting>,
+        ),
+        Refused,
+    > {
         let repo = self
             .repo(&new.repo)
             .or_else(|| new.adding.clone().filter(|a| a.repo == new.repo))
@@ -2953,7 +2986,20 @@ impl Jobs {
         {
             return Err(Refused("title is one line of 1 to 60 characters.".into()));
         }
-        let (tool, account) = self.pick(new.agent.as_deref(), new.account.as_deref())?;
+        let named = new
+            .account
+            .as_deref()
+            .is_some_and(|a| !a.trim().is_empty() && !a.trim().eq_ignore_ascii_case("auto"));
+        // Held back by weekly reserves alone, it waits for one to be lifted, or for room (#872).
+        let (tool, account, waiting) = match self.pick(new.agent.as_deref(), new.account.as_deref())
+        {
+            Ok((tool, account)) => (tool, account, None),
+            Err(refused) if !named => match self.in_reserve(new.agent.as_deref()) {
+                Some(held) => held,
+                None => return Err(refused),
+            },
+            Err(refused) => return Err(refused),
+        };
         if let Some(rounds) = new.rounds
             && !(1..=10).contains(&rounds)
         {
@@ -2988,11 +3034,138 @@ impl Jobs {
                 tool.name()
             )));
         }
-        Ok((repo, tool, account, files))
+        Ok((repo, tool, account, files, waiting))
+    }
+
+    /// When no account has room only because of weekly reserves (#872): the first of those of
+    /// `agent`'s tool (any tool for none or `auto`), signed in and under 95% of both windows, and
+    /// what the job waits for, naming every one of them for the apps' "Use … anyway".
+    fn in_reserve(
+        &self,
+        agent: Option<&str>,
+    ) -> Option<(Tool, crate::config::Account, Option<Waiting>)> {
+        let asked = agent
+            .map(str::trim)
+            .filter(|a| !a.is_empty() && !a.eq_ignore_ascii_case("auto"));
+        let tools: Vec<Tool> = match asked {
+            None => Tool::ALL.to_vec(),
+            Some(id) => vec![Tool::from_id(id)?],
+        };
+        let home = login_home();
+        let now = obi_protocol::time::now();
+        let held: Vec<(Tool, crate::config::Account)> = tools
+            .into_iter()
+            .filter(|t| self.agent_config(*t).is_some())
+            .flat_map(|tool| self.accounts(tool).into_iter().map(move |a| (tool, a)))
+            .filter(|(tool, a)| {
+                !self.being_changed(&a.id)
+                    && signed_in(*tool, a, home.as_deref())
+                    && self.usage.get(&a.id).only_reserved(now)
+            })
+            .collect();
+        let (tool, first) = held.first().cloned()?;
+        let names: Vec<&str> = held.iter().map(|(_, a)| a.name.as_str()).collect();
+        let line = match names.as_slice() {
+            [one] => format!("{one} is in its weekly reserve"),
+            [rest @ .., last] => {
+                format!("{} and {last} are in their weekly reserve", rest.join(", "))
+            }
+            [] => unreachable!(),
+        };
+        Some((
+            tool,
+            first,
+            Some(Waiting {
+                kind: "limit".into(),
+                text: format!("an account with room: {line}"),
+                reserved: Some(held.iter().map(|(_, a)| a.id.clone()).collect()),
+                tool: asked.map(str::to_owned),
+            }),
+        ))
+    }
+
+    /// Jobs waiting for an account with room (#872) that has one now take it: an account in
+    /// their list whose reserve the owner lifted (Use anyway), else the first of their tool with
+    /// room. Then they wait for a slot like any queued job.
+    fn room_for_waiting(&self) {
+        let waiting: Vec<Job> = self
+            .lock()
+            .jobs
+            .values()
+            .filter(|j| {
+                j.status == Status::Queued && j.waiting.as_ref().is_some_and(Waiting::for_room)
+            })
+            .cloned()
+            .collect();
+        for job in waiting {
+            let listed = job
+                .waiting
+                .as_ref()
+                .and_then(|w| w.reserved.clone())
+                .unwrap_or_default();
+            let lifted = listed.iter().find_map(|id| {
+                Tool::ALL.into_iter().find_map(|tool| {
+                    self.accounts(tool)
+                        .into_iter()
+                        .find(|a| &a.id == id && self.has_room(id))
+                        .map(|a| (tool, a))
+                })
+            });
+            // The tool it asked for, else any: never narrowed by where it waits now.
+            let asked = job.waiting.as_ref().and_then(|w| w.tool.clone());
+            let Some((tool, account)) = lifted.or_else(|| self.pick(asked.as_deref(), None).ok())
+            else {
+                // Still waiting: what holds it as it is now, on the first account that does (the
+                // one Start now lifts).
+                if let Some((tool, first, Some(now))) = self.in_reserve(asked.as_deref())
+                    && (job.waiting.as_ref() != Some(&now) || job.account != first.id)
+                {
+                    self.update(&job.id, |job| {
+                        on_tool(job, tool);
+                        job.account = first.id.clone();
+                        job.step = room_step(&now);
+                        job.waiting = Some(now);
+                    });
+                }
+                continue;
+            };
+            let on = format!("{} · {}", tool.name(), account.name);
+            self.update(&job.id, |job| {
+                on_tool(job, tool);
+                job.account = account.id.clone();
+                job.waiting = None;
+                job.step = "Starting".into();
+                job.changed(format!("Started when an account had room: {on}"));
+            });
+        }
+    }
+
+    /// The owner lifted an account's weekly reserve (`POST /v1/accounts/{id}/reserve`): a job
+    /// waiting for room may start on it now (#872).
+    pub fn reserve_changed(self: &Arc<Self>) {
+        self.schedule();
+    }
+
+    /// `POST /v1/jobs/{id}/start` (the apps' Start now, #872): a job waiting for an account with
+    /// room starts on its own account, the first of those its weekly reserve held back, that
+    /// reserve lifted as Use anyway lifts it. obid makes no other job wait to start.
+    pub fn start_now(self: &Arc<Self>, id: &str) -> Option<Result<Job, Refused>> {
+        let job = self.get(id)?;
+        if job.status != Status::Queued || !job.waiting.as_ref().is_some_and(Waiting::for_room) {
+            return Some(Err(Refused(
+                "It isn't waiting to start: obid starts every other job as soon as it can.".into(),
+            )));
+        }
+        if let Err(e) = self.usage.lift(&job.account, true) {
+            return Some(Err(Refused(format!("obid couldn't lift its reserve: {e}"))));
+        }
+        self.usage_changed.notify_one();
+        self.schedule();
+        self.get(id).map(Ok)
     }
 
     pub fn create(self: &Arc<Self>, new: NewJob) -> Result<Job, Refused> {
-        let (repo, tool, account, files) = self.vetted(&new)?;
+        let (repo, tool, account, files, waiting) = self.vetted(&new)?;
         // Whoever asks (the API, the brain), whatever agent was named or is the default.
         if new.runs_on.is_some() && tool != Tool::Claude {
             return Err(Refused(GUEST_ONLY_CLAUDE.into()));
@@ -3086,6 +3259,10 @@ impl Jobs {
         };
         job.phase = Some(Phase::Prepare);
         job.step = format!("Getting {} ready", job.repo_name());
+        if let Some(wait) = waiting {
+            job.step = room_step(&wait);
+            job.waiting = Some(wait);
+        }
         // A follow-up starts only when nothing else moves its branch: checked and taken under one
         // lock (insert takes the same job again).
         if job.follow_up_of.is_some() {
@@ -3195,6 +3372,7 @@ impl Jobs {
         {
             return;
         }
+        self.room_for_waiting();
         let queued = self
             .lock()
             .jobs
@@ -3214,10 +3392,12 @@ impl Jobs {
                 .filter_map(|id| state.jobs.get(id))
                 .map(|job| Load::of(&state.jobs, job, &held))
                 .collect();
+            // One waiting for an account with room takes no slot ([`Jobs::room_for_waiting`]).
             let mut queued: Vec<(i64, String)> = state
                 .jobs
                 .values()
                 .filter(|j| j.status == Status::Queued && !state.workers.contains_key(&j.id))
+                .filter(|j| !j.waiting.as_ref().is_some_and(Waiting::for_room))
                 .map(|j| (j.created, j.id.clone()))
                 .collect();
             queued.sort();
@@ -3278,6 +3458,8 @@ impl Jobs {
             let wait = Waiting {
                 kind: kind.into(),
                 text: text.into(),
+                reserved: None,
+                tool: None,
             };
             let said = self
                 .lock()
@@ -14625,6 +14807,99 @@ mod tests {
         .unwrap();
         let jobs = Jobs::open(config, crate::events::Events::new(), sandbox).unwrap();
         (root, clone, base, jobs)
+    }
+
+    /// A job waiting for room (#872) keeps saying what holds it as the accounts change, on the
+    /// first of them, and taking another tool's account it drops a model of its first tool's.
+    #[tokio::test]
+    async fn a_job_waiting_for_room_follows_the_reserves() {
+        let root = std::env::temp_dir().join(format!("obid-wait-room-{}", uuid::Uuid::new_v4()));
+        let (claude, codex) = (root.join("accounts/c"), root.join("accounts/x"));
+        std::fs::create_dir_all(&claude).unwrap();
+        std::fs::create_dir_all(&codex).unwrap();
+        std::fs::write(claude.join(".credentials.json"), "{}").unwrap();
+        std::fs::write(codex.join("auth.json"), "{}").unwrap();
+        let config = crate::config::Config::parse(
+            &json!({"listen": "127.0.0.1:0", "home": root.join("home"), "owner": "o",
+                "repos": [{"repo": "o/r", "remote": "https://example.com/o/r.git"}],
+                "agents": {"claude": {"bin": "/usr/bin/true", "accounts": [{"id": "c", "name": "Claude one", "configDir": claude}]},
+                           "codex": {"bin": "/usr/bin/true", "accounts": [{"id": "x", "name": "Codex one", "configDir": codex}]}}})
+            .to_string(),
+        )
+        .unwrap();
+        let jobs = Jobs::open(
+            config,
+            crate::events::Events::new(),
+            Err("no sandbox".into()),
+        )
+        .unwrap();
+        let now = obi_protocol::time::now();
+        let reserved = crate::usage::Usage {
+            five_hour: Some(0.1),
+            seven_day: Some(0.85),
+            five_hour_resets: Some(now + 3600),
+            seven_day_resets: Some(now + 86_400),
+            ..Default::default()
+        };
+        jobs.usage.record("c", &reserved);
+        jobs.usage.record("x", &reserved);
+        let made = jobs
+            .create(NewJob {
+                repo: "o/r".into(),
+                kind: "fix".into(),
+                task: "Fix it".into(),
+                model: Some("opus".into()),
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(
+            (made.agent.as_str(), made.account.as_str()),
+            ("claude", "c")
+        );
+        let wait = made.waiting.clone().unwrap();
+        assert_eq!(wait.reserved, Some(vec!["c".into(), "x".into()]));
+        assert_eq!(
+            wait.text,
+            "an account with room: Claude one and Codex one are in their weekly reserve"
+        );
+
+        // Claude's fills: only Codex's reserve holds it now, and it waits on that one.
+        jobs.mark_full("c", None, now);
+        jobs.room_for_waiting();
+        let job = jobs.get(&made.id).unwrap();
+        let wait = job.waiting.clone().unwrap();
+        assert_eq!(wait.reserved, Some(vec!["x".into()]));
+        assert_eq!(
+            wait.text,
+            "an account with room: Codex one is in its weekly reserve"
+        );
+        assert_eq!(job.step, room_step(&wait));
+        assert_eq!((job.agent.as_str(), job.account.as_str()), ("codex", "x"));
+        assert_eq!(job.model, None);
+
+        assert_eq!(wait.tool, None);
+
+        // Claude's account has room again: waiting on Codex's reserve never narrowed it to Codex,
+        // so it starts there (Use anyway: jobs_api's the_api_lifts_and_restores_the_reserve).
+        let room = crate::usage::Usage {
+            five_hour: Some(0.1),
+            seven_day: Some(0.2),
+            full_until: Some(now - 1),
+            ..Default::default()
+        };
+        jobs.usage.record("c", &room);
+        jobs.room_for_waiting();
+        let job = jobs.get(&made.id).unwrap();
+        assert_eq!(job.waiting, None);
+        assert_eq!((job.agent.as_str(), job.account.as_str()), ("claude", "c"));
+        assert!(
+            job.changes
+                .iter()
+                .any(|c| c.what == "Started when an account had room: Claude Code · Claude one"),
+            "{:?}",
+            job.changes
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// The accounts Oby thinks with, best first (#874): those with room, then those held only by

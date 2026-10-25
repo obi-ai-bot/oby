@@ -882,6 +882,7 @@ pub async fn reserve(
         .usage
         .lift(&id, lift)
         .map_err(|e| unkept(Path::new("usage.json"), e))?;
+    shared.jobs.reserve_changed();
     send_accounts(&shared).await;
     Ok(answer(
         StatusCode::OK,

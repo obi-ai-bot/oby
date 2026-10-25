@@ -140,6 +140,18 @@ pub async fn stop(
     Ok(json(StatusCode::OK, job.to_json()))
 }
 
+/// `POST /v1/jobs/{id}/start`: a job waiting for an account with room starts now (#872).
+pub async fn start(
+    State(shared): State<Arc<Shared>>,
+    Path(id): Path<String>,
+) -> Result<Response, ApiError> {
+    match shared.jobs.start_now(&id) {
+        None => Err(ApiError::new(StatusCode::NOT_FOUND, NO_JOB)),
+        Some(Err(refused)) => Err(ApiError::new(StatusCode::CONFLICT, refused.0)),
+        Some(Ok(job)) => Ok(json(StatusCode::OK, job.to_json())),
+    }
+}
+
 /// `POST /v1/stop-all`.
 pub async fn stop_all(State(shared): State<Arc<Shared>>) -> Response {
     let stopped = shared.jobs.stop_all();

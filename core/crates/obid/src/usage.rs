@@ -76,6 +76,14 @@ impl Usage {
     pub fn reserved(&self, now: i64) -> bool {
         self.seven_day_at(now).unwrap_or(0.0) >= RESERVE && self.lifted_until(now).is_none()
     }
+    /// Held back by its weekly reserve alone, which the owner may lift (#872): not full, under 95%
+    /// of both windows.
+    pub fn only_reserved(&self, now: i64) -> bool {
+        self.reserved(now)
+            && self.full_until_at(now).is_none()
+            && self.five_hour_at(now).unwrap_or(0.0) < NEARLY_FULL
+            && self.seven_day_at(now).unwrap_or(0.0) < NEARLY_FULL
+    }
     /// When it takes automatic work again, as far as its tool said: the latest of the resets that
     /// hold it ([`Usage::held`]). `None` when it can now, or when no reset of them is known.
     pub fn free_at(&self, now: i64) -> Option<i64> {

@@ -92,6 +92,21 @@ pub struct Offer {
 pub struct Waiting {
     pub kind: String,
     pub text: String,
+    /// Waiting for room while only these accounts' weekly reserves stand in the way (#872), by id:
+    /// the apps offer "Use Personal anyway" on each.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reserved: Option<Vec<String>>,
+    /// The tool a job waiting for room asked for (`claude`, `codex`, `cursor`), or none: then any
+    /// tool's account with room starts it, wherever it waits now (#872).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool: Option<String>,
+}
+
+impl Waiting {
+    /// Whether it waits for an account with room (#872): it takes no slot meanwhile.
+    pub fn for_room(&self) -> bool {
+        self.reserved.is_some()
+    }
 }
 
 /// On a review job another Obi asked for: the exchange it answers (runner-api.md, "obid only:
@@ -1045,7 +1060,10 @@ impl Job {
             "changes": self.changes.iter().map(|c| json!({"what": c.what, "date": obi_protocol::time::format(c.date)})).collect::<Vec<_>>(),
             "xcodeCloud": null,
             "xcodeCloudError": null,
-            "startWhen": null,
+            // The one start condition obid sets, by itself: the apps' "Use … anyway" shows on a job
+            // waiting to start (#872).
+            "startWhen": self.waiting.as_ref().filter(|w| self.status == Status::Queued && w.for_room())
+                .map(|_| json!([{"room": true, "agent": self.agent}])),
             "waiting": self.waiting.as_ref().filter(|_| self.status == Status::Queued),
             "mode": self.mode.as_deref().unwrap_or("bypass"),
             "permission": self.permission,
