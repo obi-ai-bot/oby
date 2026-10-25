@@ -961,40 +961,6 @@ pub fn watch_item_id(key: &str) -> String {
     )
 }
 
-/// The `watch` item telling the owner what `person` said or did (crate::watch): obid's own words
-/// from the notice's typed fields; what they wrote, the title and the model's topic quoted under
-/// `watch.quoted`, for the card only.
-pub fn watch_item(kind: &str, person: &str, notice: &crate::watch::Notice, now: i64) -> Item {
-    let title = match notice.source.as_str() {
-        "slack" => format!("{person} on Slack, in {}", notice.place),
-        _ => format!("{person} on {}", notice.place),
-    };
-    Item {
-        id: format!("{kind}-{}", &watch_item_id(&notice.key)["watch-".len()..]),
-        kind: kind.into(),
-        job: String::new(),
-        title: title.chars().take(80).collect(),
-        text: format!("{person} {}.", notice.what),
-        options: vec![DISMISS.into()],
-        details: Some(vec!["Mark it read.".into()]),
-        recommended: None,
-        created: now,
-        done: None,
-        later: None,
-        answer: None,
-        obi: None,
-        plugin: None,
-        arrived: Some(arrival()),
-        confirm: None,
-        start: None,
-        github: None,
-        watch: Some(Box::new(json!({
-            "source": notice.source, "place": notice.place, "url": notice.url, "at": notice.at,
-            "quoted": {"text": notice.quoted, "title": notice.title, "topic": notice.topic},
-        }))),
-    }
-}
-
 /// A permission item's id: `<job>-permission-<permission>`.
 pub fn permission_item_id(job: &str, permission: &str) -> String {
     format!("{job}-permission-{permission}")

@@ -70,16 +70,10 @@ pub struct Shared {
     pub pages: crate::web::Sessions,
     /// What GitHub wants from the owner (crate::github_work).
     pub github_work: Arc<crate::github_work::Feed>,
-    /// Oby's Slack login (crate::slack).
-    pub slack: Arc<crate::slack::Slack>,
     /// Oby's Sentry login (crate::sentry).
     pub sentry: Arc<crate::sentry::Sentry>,
     /// The webhooks outside systems send through the control plane (crate::hooks).
     pub hooks: Arc<crate::hooks::Hooks>,
-    /// The watcher: one person's words about what the owner watches, told to them (crate::watch).
-    pub watch: Arc<crate::watch::Watch>,
-    /// The Slack channels the owner picked, heard through Socket Mode (crate::listen).
-    pub listen: Arc<crate::listen::Listen>,
     /// The phones' FCM tokens and the job alerts sent to them (crate::push).
     pub push: crate::push::Push,
     /// True once obid is stopping: streams end.
@@ -214,11 +208,8 @@ pub fn router(shared: Arc<Shared>) -> Router {
         .route("/v1/notifications", post(crate::push::register))
         .merge(crate::connections::router())
         .merge(crate::tetrix::router())
-        .merge(crate::slack::router())
         .merge(crate::sentry::router())
         .merge(crate::hooks::router())
-        .merge(crate::watch::router())
-        .merge(crate::listen::router())
         .route("/v1/checks/next", get(crate::routes::next_check))
         .route("/v1/checks/{id}/bundle", get(crate::routes::check_bundle))
         .route("/v1/checks/{id}/result", post(crate::routes::check_result))

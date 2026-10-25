@@ -1069,6 +1069,41 @@ pub async fn scan(texts: &[(String, String)], scratch: &Path) -> Verdict {
     }
 }
 
+/// Which of `texts` the secret scan flags, each scanned alone (a secret over several lines can't
+/// run into the next text). Empty texts aren't scanned. An error when the scan can't run.
+// ponytail: one scan per text, a gitleaks run each; a run reads at most 100 of them.
+pub(crate) async fn scan_each(
+    texts: &[String],
+    scratch: &Path,
+) -> Result<std::collections::BTreeSet<usize>, String> {
+    // A folder of this call's own: two scans at once never remove each other's.
+    let folder = scratch.join(uuid::Uuid::new_v4().simple().to_string());
+    crate::store::make_private_dir(scratch)
+        .and_then(|()| crate::store::make_private_dir(&folder))
+        .map_err(|e| format!("its folder: {e}"))?;
+    let scratch = folder.as_path();
+    let mut flagged = std::collections::BTreeSet::new();
+    let mut result = Ok(());
+    for (n, text) in texts
+        .iter()
+        .enumerate()
+        .filter(|(_, t)| !t.trim().is_empty())
+    {
+        match scan(&[("text".into(), text.clone())], scratch).await {
+            Verdict::Clean => {}
+            Verdict::Found(_) => {
+                flagged.insert(n);
+            }
+            Verdict::CouldNotRun(why) => {
+                result = Err(why);
+                break;
+            }
+        }
+    }
+    let _ = std::fs::remove_dir_all(scratch);
+    result.map(|()| flagged)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

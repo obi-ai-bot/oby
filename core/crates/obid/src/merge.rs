@@ -1158,7 +1158,7 @@ pub async fn approve(
     } else if !go() {
         Err((false, "the job changed before it went out".into()))
     } else {
-        crate::listen::create_review(
+        crate::review::create_review(
             gh,
             Some(folder.as_path()),
             &job.repo,

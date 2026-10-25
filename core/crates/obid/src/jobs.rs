@@ -728,8 +728,6 @@ pub struct Jobs {
     routines: std::sync::OnceLock<Arc<crate::routines::Routines>>,
     /// Oby's Tetrix login: every owner's job's agent gets Tetrix through obid (crate::tetrix).
     tetrix: std::sync::OnceLock<Arc<crate::tetrix::Tetrix>>,
-    /// Oby's Slack login: a posted review's author is told with it (crate::listen::tell_author).
-    slack: std::sync::OnceLock<Arc<crate::slack::Slack>>,
     /// Where a job's `.obi/artifacts/` is published when it ends.
     artifacts: std::sync::OnceLock<Arc<crate::artifacts::Artifacts>>,
     /// Loopback endpoint given to agents for `oby-check apple`.
@@ -951,7 +949,6 @@ impl Jobs {
             connections: std::sync::OnceLock::new(),
             routines: std::sync::OnceLock::new(),
             tetrix: std::sync::OnceLock::new(),
-            slack: std::sync::OnceLock::new(),
             artifacts: std::sync::OnceLock::new(),
             api_url: Mutex::new(api_url),
             approvals,
@@ -1019,23 +1016,6 @@ impl Jobs {
     pub fn tetrix_used(&self, id: &str, change: impl FnOnce(&mut crate::tetrix::Use)) {
         self.update(id, |job| {
             change(job.tetrix.get_or_insert_with(Default::default))
-        });
-    }
-
-    pub fn use_slack(&self, slack: Arc<crate::slack::Slack>) {
-        let _ = self.slack.set(slack);
-    }
-
-    pub fn slack(&self) -> Option<Arc<crate::slack::Slack>> {
-        self.slack.get().cloned()
-    }
-
-    /// The Slack message the owner sent `user` (a Slack user id) for job `id`, in its outgoing
-    /// actions.
-    pub fn sent_on_slack(&self, id: &str, user: &str) {
-        self.update(id, |job| {
-            let sent = crate::publish::Outgoing::new("slackMessage", &job.repo, user, None);
-            job.outgoing.push(sent);
         });
     }
 
@@ -8847,7 +8827,7 @@ impl Jobs {
         if job.summary.trim().is_empty() {
             return;
         }
-        let (verdict, summary) = crate::listen::decided(job.summary.trim());
+        let (verdict, summary) = crate::review::decided(job.summary.trim());
         let Some(link) = self.link.get().and_then(std::sync::Weak::upgrade) else {
             return;
         };
@@ -12984,7 +12964,7 @@ fn tail_chars(text: &str, limit: usize) -> String {
 
 /// The inbox item for the owner's finished review. `clean` keeps the summary, which is what
 /// Approve posts; otherwise the item shows nothing and only Dismiss.
-fn owner_review_item(
+pub fn owner_review_item(
     job_id: &str,
     repo: &str,
     number: u64,
@@ -13000,7 +12980,7 @@ fn owner_review_item(
                 "Post this review on pull request #{number} in {repo} as you? Approve posts the review shown here with Oby's verdict, from your GitHub login."
             ),
             vec![
-                crate::listen::APPROVE.to_owned(),
+                crate::review::APPROVE.to_owned(),
                 crate::sphere::inbox::DISMISS.to_owned(),
             ],
             vec![

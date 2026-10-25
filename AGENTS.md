@@ -20,7 +20,7 @@ Oby is a native macOS app (SwiftUI, macOS 26 and later) that lives in a window a
 Oby launches lean, and where this differs from Sangam's design, this wins until the owner says otherwise. The plan, its workstreams and its checklist: https://claude.ai/artifact/GUdcsv2sLN3CqviHVDSYCE.
 
 - What launches: Home, conversations, tasks, the sidebar and fn to talk. Mac share (Settings › Sharing), Runner share (Run on another Mac, Shared with you, Use X's share) and Remote access are hidden on the Mac and the iPhone, not deleted: their code still builds, its tests still pass, and Sangam's screens for them stay the target when they come back. A `showEverything` default, with no UI, shows them on Deskree's own Macs.
-- Connectors show GitHub and Slack only.
+- Connectors show GitHub and Tetrix only: Slack is cut (docs/trim.md, the owner's decision of 2026-10-25).
 - Oby answers in text, never aloud, and the user's words show as they talk, in the window and in the talk pill.
 - The iPhone reaches the Mac through the user's own Obysphere, sealed end to end with the Mac's key pinned from the QR: the Sphere passes sealed frames and never sees a body, a device token or a login.
 - Anyone hosts an Obysphere from a Deploy to Cloudflare button (obi-ai-bot/obi-sphere, public once its `dev` is in `main`), with a workers.dev address or their own domain.

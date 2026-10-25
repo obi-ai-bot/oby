@@ -48,12 +48,12 @@ struct ConnectorsTests {
         #expect(Connectors.list(accounts: [], runner: nil).first { $0.id == "claude" }?.how == "No Claude Code account yet")
     }
 
-    /// The design's ten services, in its order, each with its own mark; then what the runner adds.
+    /// The design's nine services, in its order, each with its own mark; then what the runner adds.
     @Test func theDesignsServicesInItsOrder() {
         let mail = ConnectedApp(name: "mail", mcp: "https://mcp.example.com/mcp", api: nil, secret: "mail-token", header: nil, secretSaved: true, lastUsed: nil)
         let list = Connectors.list(accounts: [personal], runner: lab(connections: [mail]))
-        #expect(list.map(\.name) == ["Deskree Ops", "Tetrix", "GitHub", "Claude", "ChatGPT", "Cursor", "Slack", "Gmail", "Google Meet", "Zoom", "mail"])
-        #expect(list.prefix(10).map(\.brand) == ["deskree", "tetrix", "github", "claude", "openai", "cursor", "slack", "gmail", "meet", "zoom"])
+        #expect(list.map(\.name) == ["Deskree Ops", "Tetrix", "GitHub", "Claude", "ChatGPT", "Cursor", "Gmail", "Google Meet", "Zoom", "mail"])
+        #expect(list.prefix(9).map(\.brand) == ["deskree", "tetrix", "github", "claude", "openai", "cursor", "gmail", "meet", "zoom"])
         #expect(list.last?.brand == nil && list.last?.symbol == "link")
     }
 
@@ -97,39 +97,6 @@ struct ConnectorsTests {
         let failed = Connectors.tetrix(TetrixStatus(presets: [dogfood], error: "Tetrix refused the sign-in."), place: "This Mac", local: true)
         #expect(failed.state == .broken && failed.how == "Tetrix refused the sign-in.")
         #expect(Connectors.tetrix(TetrixStatus(), place: "This Mac", local: true).way == .button("Connect…", .connectOtherTetrix))
-    }
-
-    /// Slack, held by obid for its watcher with the owner's own app's tokens: a real row once obid
-    /// says it holds Slack, Connect… asking for the two tokens, and the watcher's Slack message
-    /// switched here.
-    @Test func slackOnceObidHoldsIt() throws {
-        var runner = Connectors.RunnerState(name: "This Mac", local: true, accounts: [])
-        #expect(try #require(Connectors.list(accounts: [], runner: runner).first { $0.id == "slack" }).soon, "coming until obid says")
-        runner.slack = SlackStatus()
-        let first = try #require(Connectors.list(accounts: [], runner: runner).first { $0.id == "slack" })
-        #expect(!first.soon && first.state == .available && first.brand == "slack")
-        #expect(first.way == .button("Connect…", .connectSlack) && first.also == nil)
-
-        let refused = Connectors.slack(SlackStatus(error: "Slack refused Oby's tokens: paste new ones in Settings › Connectors › Slack."),
-                                       watch: nil, place: "This Mac", local: true)
-        #expect(refused.state == .broken && refused.how.hasPrefix("Slack refused"))
-
-        let dry = WatchStatus(rules: .init(name: "Dmitry watcher", live: false, enabled: true))
-        let on = Connectors.slack(SlackStatus(connected: true, team: "Deskree"), watch: dry, place: "This Mac", local: true)
-        #expect(on.state == .connected && on.way == .button("Disconnect…", .disconnectSlack))
-        #expect(on.also == .button("Watcher: Send Slack Messages", .setWatchLive(true)))
-        #expect(on.how.hasSuffix("Dmitry watcher: a dry run, it tells you in Oby and only writes down the Slack message."))
-        #expect(on.more == .button("Reviews: Tell Authors on Slack", .setTellAuthors(true)))
-        let telling = Connectors.slack(SlackStatus(connected: true, tellAuthors: true), watch: nil, place: "This Mac", local: true)
-        #expect(telling.more == .button("Reviews: Don't Tell Authors", .setTellAuthors(false)))
-        #expect(telling.how.contains("to the author of a pull request once your review of it is posted"))
-        #expect(first.more == nil, "only once connected")
-        let live = WatchStatus(rules: .init(name: "Dmitry watcher", live: true, enabled: true))
-        #expect(Connectors.slack(SlackStatus(connected: true), watch: live, place: "This Mac", local: true).also
-                == .button("Watcher: Dry Run Only", .setWatchLive(false)))
-
-        let remote = Connectors.slack(SlackStatus(), watch: nil, place: "tetrix-lab", local: false)
-        #expect(remote.also == nil && remote.more == nil && remote.way == .steps("Connect or disconnect it on tetrix-lab itself, with Oby there."))
     }
 
     /// Connect takes only what looks like each kind of token.
@@ -262,7 +229,7 @@ struct ConnectorsTests {
             let row = try #require(silent.first { $0.id == id })
             #expect(!row.connected && row.way == .steps("Shows here once Oby's runner answers (Settings › Runner)."))
         }
-        #expect(list.count == 10)
+        #expect(list.count == 9)
         #expect(Connectors.list(accounts: [], runner: lab(github: nil)).first { $0.id == "github" }?.way
                 == .steps("tetrix-lab doesn't say: it needs a newer runner."))
     }
@@ -272,9 +239,9 @@ struct ConnectorsTests {
     @Test func servicesNotYetConnectableAreComing() {
         let everything = Connectors.list(accounts: [personal, deskree, cursor], runner: lab())
         let coming = everything.filter(\.soon)
-        #expect(coming.map(\.name) == ["Deskree Ops", "Slack", "Gmail", "Google Meet", "Zoom"])
+        #expect(coming.map(\.name) == ["Deskree Ops", "Gmail", "Google Meet", "Zoom"])
         #expect(coming.allSatisfy { $0.state == .available && $0.way == nil && $0.also == nil })
-        #expect(coming.map(\.about) == ["Projects, deploys and incidents", "Read and send messages", "Read and manage your email",
+        #expect(coming.map(\.about) == ["Projects, deploys and incidents", "Read and manage your email",
                                         "Join meetings and keep the notes", "Join meetings and keep the notes"])
     }
 
@@ -290,7 +257,7 @@ struct ConnectorsTests {
         #expect(all.map(\.title) == ["Connected", "Available"])
         #expect(all.map(\.items.count).reduce(0, +) == list.count)
         #expect(ids(all, "Connected") == ["github", "claude", "codex"])
-        #expect(ids(all, "Available") == ["deskree", "tetrix", "cursor", "slack", "gmail", "meet", "zoom"])
+        #expect(ids(all, "Available") == ["deskree", "tetrix", "cursor", "gmail", "meet", "zoom"])
         #expect(Connectors.groups(list, query: "nothing like it").isEmpty)
         // Where a row is isn't shown, so it isn't searched: "mac" isn't in every row.
         #expect(Connectors.groups(list, query: "this mac").isEmpty && Connectors.groups(list, query: "tetrix-lab").isEmpty)
@@ -377,8 +344,6 @@ struct ConnectorsTests {
         #expect(lists.problems == ["Couldn't read the plug-ins on tetrix-lab: The runner didn't let this device in.",
                                    "Couldn't read the connections on tetrix-lab: The runner couldn't read connections.json.",
                                    "Couldn't read Tetrix on tetrix-lab: The runner didn't let this device in.",
-                                   "Couldn't read Slack on tetrix-lab: The runner didn't let this device in.",
-                                   "Couldn't read the watcher on tetrix-lab: The runner didn't let this device in.",
                                    "Couldn't read Sentry on tetrix-lab: The runner didn't let this device in.",
                                    "Couldn't read the alerting hooks on tetrix-lab: The runner didn't let this device in."])
     }
