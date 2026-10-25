@@ -228,8 +228,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     func application(_ application: NSApplication, open urls: [URL]) {
         guard let invite = urls.lazy.compactMap(InviteLink.init(opened:)).first else { return }
         OpenedInvite.shared.invite = invite
-        // During first launch it waits for it to close.
-        if launched && !firstLaunch.isOpen { chat.showSettings(.sphere) }
+        // During first launch, or while an update's waits to start, it waits for it.
+        if launched && !firstLaunch.isOpen && !firstLaunch.starting { chat.showSettings(.sphere) }
     }
 
     /// Clicking Oby's Dock icon, or opening it again (Spotlight, Finder, `open`), while it runs opens its window.
