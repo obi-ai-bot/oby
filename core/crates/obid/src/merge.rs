@@ -840,6 +840,10 @@ pub fn note(job: &mut Job, outcome: &Result<Merged, Blocked>, by: MergedBy) {
 pub const MERGE: &str = "Merge";
 pub const MERGE_AND_REMEMBER: &str = "Merge, and remember";
 pub const LEAVE_OPEN: &str = "Leave it open";
+/// The options of the card that asks whether a teammate's Oby reviews a repository Oby hasn't
+/// learned, where GitHub requires another person's approval ([`teammate_card`]).
+pub const ASK_TEAMMATE: &str = "Ask a teammate, and remember";
+pub const NOT_NOW: &str = "Not now";
 /// Why it isn't posted again: someone dismissed it on that commit.
 pub const DISMISSED_APPROVAL: &str = "Someone dismissed Oby's approval of this commit on GitHub, so Oby won't approve it again: approve it there yourself, or ask Oby for another round.";
 /// The words of Oby's approval on GitHub: obid's own, never a model's.
@@ -981,6 +985,50 @@ pub fn ready_card(job: &Job, number: u64, head: &str, workflow: &Workflow) -> It
                 "Nothing is sent. I won't ask again for this commit.".into(),
             ),
         ],
+    )
+}
+
+/// The id of the job's card that asks whether a teammate's Oby reviews it: one per head.
+pub fn teammate_id(job: &str, head: &str) -> String {
+    format!("merge-teammate-{job}-{head}")
+}
+
+/// GitHub requires another person's approval on a repository Oby hasn't learned (the owner's
+/// decision of 2026-10-25): Oby asks once, for that head, whether a teammate's Oby reviews it, and
+/// remembers the yes for the repository, so every later pull request there goes to a teammate by
+/// itself.
+pub fn teammate_card(job: &Job, head: &str, workflow: &Workflow) -> Item {
+    let name = name(&job.repo);
+    card(
+        job,
+        teammate_id(&job.id, head),
+        format!("Needs a teammate: {}", job.short_title()),
+        format!(
+            "GitHub requires another person's approval on {}. Ask a teammate's Oby to review it, and remember that for this repository?",
+            job.repo
+        ),
+        vec![
+            (
+                ASK_TEAMMATE,
+                format!(
+                    "Asks a teammate's Oby now, and remembers. For {name}: {} Next time I'll just ask.",
+                    workflow.sentence()
+                ),
+            ),
+            (
+                NOT_NOW,
+                "Nothing is sent. It stays open, and I won't ask again for this commit.".into(),
+            ),
+        ],
+    )
+}
+
+/// Why no teammate's Oby can approve a pull request on `repo` that GitHub requires another
+/// person's approval for: the Mac isn't in an Obysphere.
+pub fn no_sphere(repo: &str) -> String {
+    format!(
+        "GitHub requires another person's approval on {repo}, and Oby isn't in an Obysphere, so no teammate's Oby can review it. {}",
+        crate::sphere::approval::instead(repo, true)
     )
 }
 

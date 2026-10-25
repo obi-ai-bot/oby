@@ -1404,7 +1404,7 @@ fn owners_only(kind: &str, answer: &str) -> Option<&'static str> {
     // A merge card is the owner's to answer, either way (#853).
     if kind == "merge" {
         return Some(
-            "Only the owner merges, or leaves it open, in their inbox: Oby can't answer it.",
+            "Only the owner merges, asks a teammate, or leaves it open, in their inbox: Oby can't answer it.",
         );
     }
     // A job's agent's question is the owner's to answer (#858).
