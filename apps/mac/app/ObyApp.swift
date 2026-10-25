@@ -83,7 +83,10 @@ struct MenuBarLabel: View {
 
 final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
     let island = IslandController()
-    lazy var firstLaunch = FirstLaunch(island: island)
+    lazy var firstLaunch = FirstLaunch(island: island) { [unowned self] in
+        // An oby://join link opened before or during first launch: its page, filled in, instead of Home.
+        if OpenedInvite.shared.invite != nil { chat.showSettings(.sphere) } else { chat.show(job: nil) }
+    }
     /// The Oby window: the conversation, Agents and Live (#11).
     lazy var chat = ChatWindow(island: island)
 
@@ -127,13 +130,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         // Opened by hand (Finder, Spotlight, the Dock, `open`), Oby comes up in front with its window, as
         // any Mac app does; started at login, it waits in the menu bar.
         launched = true
-        if !FirstLaunch.done {
-            firstLaunch.show()
-        } else if OpenedInvite.shared.invite != nil {
-            // Opened by an oby://join link that came before this: its page instead of Home.
-            chat.showSettings(.sphere)
-        } else if !launchedAtLogin {
-            chat.show(home: true)
+        Task {
+            if !FirstLaunch.done, await firstLaunch.start() { return }
+            if OpenedInvite.shared.invite != nil {
+                // Opened by an oby://join link that came before this: its page instead of Home.
+                chat.showSettings(.sphere)
+            } else if !launchedAtLogin {
+                chat.show(home: true)
+            }
         }
     }
 
@@ -224,7 +228,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     func application(_ application: NSApplication, open urls: [URL]) {
         guard let invite = urls.lazy.compactMap(InviteLink.init(opened:)).first else { return }
         OpenedInvite.shared.invite = invite
-        if launched { chat.showSettings(.sphere) }
+        // During first launch it waits for it to close.
+        if launched && !firstLaunch.isOpen { chat.showSettings(.sphere) }
     }
 
     /// Clicking Oby's Dock icon, or opening it again (Spotlight, Finder, `open`), while it runs opens its window.

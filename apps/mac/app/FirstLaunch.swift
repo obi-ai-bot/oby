@@ -6,23 +6,51 @@ import SwiftUI
 /// signed in through each tool's own login, and the repositories are the ones its gh can push to.
 /// Every step can be skipped, closing the window skips the rest, and the menu shows it again.
 final class FirstLaunch: NSObject, NSWindowDelegate {
-    static let doneKey = "firstLaunchDone"
+    static let doneKey = "firstLaunchOnObidDone"
+    /// Set by the first launch before obid's (0.3.0 and earlier): someone updating sees this one
+    /// once too, from the first step still to do.
+    static let olderDoneKey = "firstLaunchDone"
     static var done: Bool { UserDefaults.standard.bool(forKey: doneKey) }
 
     private let island: IslandController
+    /// What opens once it's closed: Home, or an invite's page.
+    private let closed: () -> Void
     private var window: NSWindow?
 
-    init(island: IslandController) { self.island = island }
+    init(island: IslandController, closed: @escaping () -> Void) {
+        self.island = island
+        self.closed = closed
+    }
 
     var isOpen: Bool { window?.isVisible ?? false }
 
-    func show() {
+    /// Not done yet (launch): a new install sees every step. Someone updating from an older first
+    /// launch sees only the steps still to do, once obid answers (a few seconds at most), and none
+    /// when everything's set: then it's done without showing. Whether it showed.
+    func start() async -> Bool {
+        guard UserDefaults.standard.bool(forKey: Self.olderDoneKey) else {
+            show()
+            return true
+        }
+        let feed = island.feed
+        for _ in 0..<20 where feed.connection != .live { try? await Task.sleep(for: .milliseconds(250)) }
+        let gitHub = feed.connection == .live ? try? await feed.runner?.gitHubLogin() : nil
+        guard let step = FirstLaunchSteps.firstToDo(accessibility: AXIsProcessTrusted(), accounts: feed.accounts,
+                                                    gitHub: gitHub?.signedIn == true) else {
+            UserDefaults.standard.set(true, forKey: Self.doneKey)
+            return false
+        }
+        show(from: step)
+        return true
+    }
+
+    func show(from step: FirstLaunchView.Step = .hello) {
         NSApp.activate()
         if let window {
             window.makeKeyAndOrderFront(nil)
             return
         }
-        let view = FirstLaunchView(voice: island.model.voice, feed: island.feed, onDone: { [weak self] in self?.window?.close() })
+        let view = FirstLaunchView(voice: island.model.voice, feed: island.feed, step: step, onDone: { [weak self] in self?.window?.close() })
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 640, height: 580),
                               styleMask: [.titled, .closable, .fullSizeContentView], backing: .buffered, defer: false)
         window.titlebarAppearsTransparent = true
@@ -37,11 +65,11 @@ final class FirstLaunch: NSObject, NSWindowDelegate {
         self.window = window
     }
 
-    /// Finished, skipped or closed: it doesn't come back by itself, and Oby's window opens on Home.
+    /// Finished, skipped or closed: it doesn't come back by itself, and Oby's window opens (`closed`).
     func windowWillClose(_ notification: Notification) {
         UserDefaults.standard.set(true, forKey: Self.doneKey)
         window = nil
-        island.openWindow(nil)
+        closed()
     }
 }
 
@@ -72,6 +100,15 @@ nonisolated enum FirstLaunchSteps {
         if !engine { return .waiting }
         if let out = mine.first { return .signIn(out.account) }
         return .connect
+    }
+
+    /// Where an older first launch's update starts (`FirstLaunch.start`): hello is skipped, and so is
+    /// each step already done (Accessibility allowed, an agent signed in on obid, GitHub signed in).
+    /// Nil: nothing left.
+    static func firstToDo(accessibility: Bool, accounts: [AccountState], gitHub: Bool) -> FirstLaunchView.Step? {
+        if !accessibility { return .talk }
+        if !accounts.contains(where: \.signedIn) { return .agents }
+        return gitHub ? nil : .github
     }
 
     /// The tools' own logins already on this Mac that obid offers (`availableLogins`) for tools it has

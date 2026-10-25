@@ -410,6 +410,8 @@ private struct IconStrip: View {
     /// The Obysphere this Oby is in, by name, once read; nil while it's in none.
     @State private var sphere: String?
 
+    static var builtInServer: Bool { !(Bundle.main.object(forInfoDictionaryKey: "ObySphereURL") as? String ?? "").isEmpty }
+
     private var homeDot: Color? {
         if work.contains(where: { $0.status == .needs }) { return Tokens.needs }
         return work.contains(where: \.fresh) ? Tokens.unread : nil
@@ -437,7 +439,11 @@ private struct IconStrip: View {
                 }
                 .buttonStyle(.plain).help(sphere).accessibilityLabel(sphere)
             } else {
-                RailButton(symbol: "plus", label: "Create an Obysphere", on: false) { creating = true }
+                RailButton(symbol: "plus", label: "Create an Obysphere", on: false) {
+                    // With a Sphere server built in (Deskree's builds), a newcomer most likely joins
+                    // one: Settings › Obysphere, Join first, then Create.
+                    if Self.builtInServer { withAnimation(Tokens.warm) { state.openSettings(.sphere) } } else { creating = true }
+                }
             }
             Spacer(minLength: 0)
             account
