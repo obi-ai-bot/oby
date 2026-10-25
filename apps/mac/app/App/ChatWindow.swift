@@ -449,14 +449,16 @@ private struct HomeView: View {
     /// panel groups by.
     private var stage: some View {
         let groups = WorkList.kinds(work)
-        let running = work.count { $0.status == .running }, needs = work.count { $0.status == .needs }
+        // A task waiting for memory is active, but not running: the line says it apart.
+        let memory = work.count { $0.job.job.waitsForMemory }
+        let running = work.count { $0.status == .running } - memory, needs = work.count { $0.status == .needs }
         return EyeLevel {
             VStack(spacing: 16) {
                 StagedOby(model: model, character: character)
                     .padding(.bottom, -8)
-                Text(HomeLine.attention(running: running, needs: needs))
+                Text(HomeLine.attention(running: running, needs: needs, memory: memory))
                     .font(Tokens.font(Tokens.textBase))
-                    .foregroundStyle(running + needs == 0 ? Tokens.text : Tokens.muted)
+                    .foregroundStyle(running + needs + memory == 0 ? Tokens.text : Tokens.muted)
                 if !groups.isEmpty {
                     CenteredFlow(spacing: 8) {
                         ForEach(groups) { group in

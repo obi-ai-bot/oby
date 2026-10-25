@@ -38,6 +38,29 @@ struct RunnerJobsTests {
         #expect(try Runner.decoder.decode([Job].self, from: Data(plan.utf8))[0].mode == .plan)
     }
 
+    /// A job obid holds back for memory comes as a `cap` wait (the kind this Mac decodes) with its
+    /// own words: the list still reads, the job waits for memory, and Home's line says so apart
+    /// from what runs.
+    @Test func aJobWaitingForMemoryReadsAndHomeSaysSo() throws {
+        let queued = jobs.replacingOccurrences(of: #""status":"done","step":"","summary":"I called"#,
+                                               with: #""status":"queued","step":"Waiting for memory","waiting":{"kind":"cap","text":"memory frees up"},"summary":"I called"#)
+        #expect(queued != jobs)
+        let decoded = try Runner.decoder.decode([Job].self, from: Data(queued.utf8))
+        #expect(decoded.map(\.id) == ["4bbb145a", "e4ea28be"])
+        #expect(decoded[0].waitsForMemory && decoded[0].isWaiting && decoded[0].waiting?.kind == .cap)
+        #expect(!decoded[1].waitsForMemory)
+        var slot = decoded[0]
+        slot.waiting = .slot
+        #expect(!slot.waitsForMemory)
+
+        #expect(HomeLine.attention(running: 2, needs: 1, memory: 1) == "2 running tasks · 1 waiting for memory · 1 needs you")
+        #expect(HomeLine.attention(running: 1, needs: 0, memory: 2) == "1 running task · 2 waiting for memory · nothing needs you")
+        #expect(HomeLine.attention(running: 0, needs: 1, memory: 1) == "1 waiting for memory · 1 needs you")
+        #expect(HomeLine.attention(running: 0, needs: 0, memory: 1) == "1 waiting for memory")
+        #expect(HomeLine.attention(running: 2, needs: 1) == "2 running tasks · 1 needs you")
+        #expect(HomeLine.attention(running: 0, needs: 0) == HomeLine.idle)
+    }
+
     /// Sandbox is one of the runner's modes: Settings › Permissions and a job's Mode menu offer it.
     /// This Mac's own jobs run only the modes its desk knows.
     @Test func sandboxIsARunnerMode() {

@@ -892,6 +892,10 @@ nonisolated struct TurnStep: Codable, Identifiable, Equatable, Sendable {
 }
 
 extension Job {
+    /// Queued until the Mac has room for it (obid's admission by memory, docs/runner-api.md): the
+    /// `cap` wait, in the words the runner gives it.
+    nonisolated var waitsForMemory: Bool { status == .queued && waiting?.text == "memory frees up" }
+
     #if os(iOS) || os(watchOS)
     nonisolated var pullRequestState: String? { pullRequest?.state }
     nonisolated var reviewDecision: String? { pullRequest?.reviewDecision }
