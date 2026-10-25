@@ -7702,6 +7702,20 @@ impl Jobs {
                     } else {
                         first
                     };
+                    // OpenAI refused the Codex login, as Codex itself says (never the agent's own
+                    // words): no run on it starts again until the owner signs in, and the job says
+                    // so in words they can act on.
+                    if tool == Tool::Codex
+                        && let Some(error) = codex_error(&reason).filter(|e| codex_login_refused(e))
+                    {
+                        let login = self.login_path(id);
+                        let copy = match account.config_dir {
+                            Some(_) => login.join("auth.json"),
+                            None => login.join(".codex/auth.json"),
+                        };
+                        end_codex_login(&copy, &account.name);
+                        reason = format!("{} (Codex said: {error})", codex_ended(&account.name));
+                    }
                     // A usage limit, a login, a crash: what's done is kept, and Try again picks the
                     // session up (after the reset, the sign-in). Past a usage limit's reset, obid
                     // tries again by itself; a reset already gone by is a stale one, and arms
@@ -9897,8 +9911,9 @@ pub(crate) fn login_note(
     account: &crate::config::Account,
     home: Option<&Path>,
 ) -> Option<&'static str> {
-    login_problem(tool, account, home).map(|_| match tool {
+    login_problem(tool, account, home).map(|why| match tool {
         Tool::Cursor => "Run cursor-agent once",
+        _ if why.contains(CODEX_SIGN_IN) => "Run codex login",
         _ => "Run codex once",
     })
 }
@@ -10870,6 +10885,9 @@ pub(crate) fn codex_copy_ready(copy: &Path, account: &str) -> Result<(), String>
         return Ok(());
     };
     let login: Value = serde_json::from_slice(&bytes).unwrap_or_default();
+    if codex_credential(&login).is_some_and(|c| ended_codex().lock().unwrap().contains(&c)) {
+        return Err(codex_ended(account));
+    }
     let ready = match login["tokens"]["access_token"].as_str() {
         None => login.is_object(),
         Some(token) => jwt_ends(token).is_some_and(|ends| ends > now_ms() / 1000 + 5 * 60),
@@ -10877,6 +10895,80 @@ pub(crate) fn codex_copy_ready(copy: &Path, account: &str) -> Result<(), String>
     ready.then_some(()).ok_or_else(|| {
         format!("The Mac's Codex login for {account} needs refreshing: run codex once.")
     })
+}
+
+/// What a Codex login OpenAI refused needs: a new sign-in, which only the owner can do.
+const CODEX_SIGN_IN: &str = "run codex login";
+
+/// Why a run on a Codex login OpenAI refused doesn't start ([`end_codex_login`]).
+fn codex_ended(account: &str) -> String {
+    format!("The Mac's Codex login for {account} has ended: {CODEX_SIGN_IN}.")
+}
+
+/// The Codex logins OpenAI refused, by their credential ([`codex_credential`]): never signed in
+/// again until the login changes (a new `codex login` holds another token). A copy can't refresh,
+/// and its token's `exp` still says it's good: OpenAI ends a session early (its refresh token
+/// invalidated, `token_revoked`), as it did the owner's on 2026-10-21.
+/// ponytail: in memory, so after a restart a dead login is tried once more; keep it on disk if
+/// that run costs too much.
+fn ended_codex() -> &'static Mutex<std::collections::HashSet<u64>> {
+    static ENDED: std::sync::OnceLock<Mutex<std::collections::HashSet<u64>>> =
+        std::sync::OnceLock::new();
+    ENDED.get_or_init(Default::default)
+}
+
+/// A Codex login's credential (its ChatGPT access token, else its API key), hashed: what obid
+/// keeps of one OpenAI refused, never the token.
+fn codex_credential(login: &Value) -> Option<u64> {
+    use std::hash::{Hash, Hasher};
+    let token = login["tokens"]["access_token"]
+        .as_str()
+        .or(login["OPENAI_API_KEY"].as_str())
+        .filter(|t| !t.is_empty())?;
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    token.hash(&mut hasher);
+    Some(hasher.finish())
+}
+
+/// Codex's own words in a failed Codex run's `reason` (crate::codex): its turn's error (`Codex hit
+/// an error: …`, when the agent said nothing that turn) or a request it refused (`Codex couldn't
+/// …: …`). `None` when the reason is the agent's own last message, which may say anything.
+fn codex_error(reason: &str) -> Option<&str> {
+    reason
+        .strip_prefix("Codex hit an error: ")
+        .or_else(|| reason.starts_with("Codex couldn't ").then_some(reason))
+}
+
+/// Whether a Codex run's error says OpenAI refused its login: codex-cli 0.162.1's
+/// `workspace routing discovery unauthorized (401)` (`account/read`, `thread/start`), a `401
+/// Unauthorized` from the API, or the session ended (`token_revoked`, `refresh_token_invalidated`).
+/// A run on a copy can't refresh, so trying again changes nothing until the owner signs in.
+fn codex_login_refused(error: &str) -> bool {
+    let error = error.to_lowercase();
+    [
+        "unauthorized (401)",
+        "401 unauthorized",
+        "token_revoked",
+        "refresh_token_invalidated",
+        "invalidated oauth token",
+        "your session has ended",
+    ]
+    .iter()
+    .any(|w| error.contains(w))
+}
+
+/// Remembers that OpenAI refused the Codex login a run used (`copy`, the run's `auth.json`), the
+/// one of `account`: it isn't [`signed_in`] again (no review, failover or routing picks it) until
+/// the account's login holds another token, as when the owner signed in again meanwhile.
+fn end_codex_login(copy: &Path, account: &str) {
+    let credential = std::fs::read(copy)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+        .and_then(|login| codex_credential(&login));
+    if let Some(credential) = credential {
+        tracing::warn!("OpenAI refused Codex account {account}'s login");
+        ended_codex().lock().unwrap().insert(credential);
+    }
 }
 
 /// When a JWT ends (its `exp`, seconds since 1970), if it says.
@@ -13487,6 +13579,72 @@ mod tests {
         assert_eq!(codex_copy_ready(&copy, "Codex"), Ok(()));
         assert_eq!(codex_copy_ready(&root.join("nowhere"), "Codex"), Ok(()));
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A Codex login OpenAI refused (codex-cli 0.162.1's `workspace routing discovery unauthorized
+    /// (401)`, though its token's `exp` is days away) isn't signed in any more, and a copy of it
+    /// doesn't run, until the owner signs in again: then the new token is signed in.
+    #[test]
+    fn a_codex_login_openai_refused_is_signed_out_until_a_new_sign_in() {
+        let dir = std::env::temp_dir().join(format!("obid-codex-ended-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let account = crate::config::Account {
+            id: "codex".into(),
+            name: "Codex".into(),
+            config_dir: Some(dir.clone()),
+            payer: None,
+        };
+        let write = |token: &str| {
+            let login =
+                json!({"tokens": {"access_token": token, "refresh_token": "", "account_id": "a"}});
+            std::fs::write(dir.join("auth.json"), login.to_string()).unwrap();
+        };
+        let refused = codex_access(3 * 86400);
+        write(&refused);
+        assert!(signed_in(Tool::Codex, &account, None));
+        // Only Codex's own words about the run (its turn's error, a request it refused), never
+        // the agent's last message: one fixing an auth bug may well say "401 Unauthorized".
+        let refusal = |reason: &str| codex_error(reason).is_some_and(codex_login_refused);
+        for reason in [
+            "Codex hit an error: workspace routing discovery unauthorized (401)",
+            "Codex couldn't start a thread: workspace routing discovery unauthorized (401)",
+            "Codex hit an error: unexpected status 401 Unauthorized: Encountered invalidated oauth token for user",
+            r#"Codex hit an error: Failed to refresh token: {"error_code": "refresh_token_invalidated"}"#,
+        ] {
+            assert!(refusal(reason), "{reason}");
+        }
+        for reason in [
+            "Codex hit an error: You've hit your usage limit.",
+            "Codex hit an error: stream disconnected before completion",
+            "The endpoint returns 401 Unauthorized when the token is stale; I fixed the header.",
+            "workspace routing discovery unauthorized (401)",
+        ] {
+            assert!(!refusal(reason), "{reason}");
+        }
+        end_codex_login(&dir.join("auth.json"), "Codex");
+        assert!(!signed_in(Tool::Codex, &account, None));
+        let ended = Err("The Mac's Codex login for Codex has ended: run codex login.".to_owned());
+        assert_eq!(codex_copy_ready(&dir.join("auth.json"), "Codex"), ended);
+        assert_eq!(
+            login_note(Tool::Codex, &account, None),
+            Some("Run codex login")
+        );
+        // Signed in again: another token, which runs.
+        write(&format!("{refused}x"));
+        assert!(signed_in(Tool::Codex, &account, None));
+        assert_eq!(login_note(Tool::Codex, &account, None), None);
+        // A run's copy refused after the owner signed in again meanwhile: what's ended is that
+        // copy's login, never the new one.
+        let copy = dir.join("copy.json");
+        std::fs::write(
+            &copy,
+            json!({"tokens": {"access_token": codex_access(86400)}}).to_string(),
+        )
+        .unwrap();
+        end_codex_login(&copy, "Codex");
+        assert!(signed_in(Tool::Codex, &account, None));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// A login copied from a file isn't one the keeper writes again: only a copy made from the
