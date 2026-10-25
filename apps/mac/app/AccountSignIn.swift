@@ -49,11 +49,11 @@ struct AccountSignInSheet: View {
                 Text(userCode).font(Tokens.mono(30)).foregroundStyle(Tokens.ink).textSelection(.enabled)
                     .accessibilityLabel("Code \(userCode.map(String.init).joined(separator: " "))")
             } else if shown.signIn.pasteCode {
-                Text("\(tool)'s page opened in your browser. Sign in as \(shown.account.name), then paste the code it shows.")
+                Text("\(tool)'s page opened in your browser. Sign in with the account you want Oby to use, then paste the code it shows.")
                     .font(Tokens.font(Tokens.textBase)).foregroundStyle(Tokens.text).multilineTextAlignment(.center)
                 SetField("Code", text: $code, prompt: "Paste the code").onSubmit(send).disabled(sending)
             } else {
-                Text("\(tool)'s page opened in your browser. Sign in there as \(shown.account.name).")
+                Text("\(tool)'s page opened in your browser. Sign in there with the account you want Oby to use.")
                     .font(Tokens.font(Tokens.textBase)).foregroundStyle(Tokens.text).multilineTextAlignment(.center)
             }
             if !shown.signIn.pasteCode || sending {

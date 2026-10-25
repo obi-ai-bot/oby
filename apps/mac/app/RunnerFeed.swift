@@ -289,6 +289,12 @@ final class RunnerFeed {
         connection = .live
     }
 
+    /// The runner on this Mac not answering (Home's `EngineDownLine` picture).
+    func stageDown() {
+        local = true
+        connection = .offline("The runner on this Mac hasn't started yet.")
+    }
+
     /// Following `runner`, past its first lists: what changes from here alerts (the alert tests).
     func stageAlerts(following runner: Runner) {
         url = runner.base.absoluteString

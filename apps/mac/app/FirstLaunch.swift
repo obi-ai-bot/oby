@@ -130,11 +130,12 @@ nonisolated enum FirstLaunchSteps {
 
     /// What the steps that need obid say while it doesn't answer: why, when the login item can't
     /// start it (Oby isn't in Applications, macOS waits for an OK, registering failed).
-    static func waiting(inApplications: Bool, needsApproval: Bool, problem: String?) -> String {
+    static func waiting(inApplications: Bool, needsApproval: Bool, problem: String?,
+                        otherwise: String = "Waiting for Oby’s engine on this Mac…") -> String {
         if !inApplications { return RunnerLoginItem.moveToApplications }
         if needsApproval { return "Oby’s engine waits for your OK in System Settings › General › Login Items." }
         if let problem { return "Oby’s engine couldn’t start: \(problem)" }
-        return "Waiting for Oby’s engine on this Mac…"
+        return otherwise
     }
 
     /// "12 repositories ready".

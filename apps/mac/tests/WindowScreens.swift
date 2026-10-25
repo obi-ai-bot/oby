@@ -408,6 +408,15 @@ struct WindowScreens {
         try await save("mac-obid-\(screen)", window: window)
     }
 
+    /// Home when Oby's engine on this Mac doesn't answer: why, Open Login Items Settings, Try Again.
+    @Test func homeEngineDown() async throws {
+        let model = IslandModel(feed: RunnerFeed(), availability: MacAvailability())
+        model.feed.stageDown()
+        EngineDownLine.after = .zero
+        defer { EngineDownLine.after = .seconds(5) }
+        try await shoot("mac-home-engine-down", model: model, state: ChatState(defaults: .scratch))
+    }
+
     /// First launch on obid (#893, docs/onboarding.md): each step over made-up accounts and
     /// repositories staged on the feed, no runner asked, then Home with the first task in its box.
     /// The agents step reads which tools this Mac really has.
