@@ -22,11 +22,8 @@ struct TalkControllerTests {
     let island: IslandController
 
     init() throws {
-        let folder = FileManager.default.temporaryDirectory.appending(path: "oby-talk-\(UUID().uuidString)")
-        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-        let desk = Desk(accounts: AccountStore(root: folder), store: JobStore(url: folder.appending(path: "oby.sqlite")))
         let out = out
-        island = IslandController(desk: desk, voice: Voice(saying: { out.words.isEmpty ? "" : out.words.removeFirst() }))
+        island = IslandController(voice: Voice(saying: { out.words.isEmpty ? "" : out.words.removeFirst() }))
         island.outside = .init(ask: { out.asked.append($0) }, post: { title, _ in out.posted.append(title) },
                                announce: { out.announced.append($0) }, guideGlobeKey: {}, knownRepos: { ["deskree-inc/oby"] })
         // The window shows what you say: the pill only comes for a reply.

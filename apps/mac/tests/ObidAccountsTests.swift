@@ -92,20 +92,12 @@ struct AccountRowsTests {
         #expect(Usage.fiveHourLine(snapshot("P", week: 0.2, fiveHour: 0.85), now: now) == "5-hour limit 85% used · resets in 2 h")
     }
 
-    /// obid doesn't serve `/v1/settings/models` yet: its 404 means the Models page shows this Mac's
-    /// own models, as before, with no error; any other failure is shown.
-    @Test func modelsFallBackWhenTheRunnerHasNone() {
+    /// obid doesn't serve `/v1/settings/models` yet: its 404 means the Models page shows the models
+    /// its status says, as they are, with no error; any other failure is shown.
+    @Test func modelsShowAsTheyAreWhenTheRunnerCantSetThem() {
         #expect(!ModelsSettingsView.servesModels(after: RunnerError(message: "Not found", status: 404)))
         #expect(ModelsSettingsView.servesModels(after: RunnerError(message: "Bad gateway", status: 502)))
         #expect(ModelsSettingsView.servesModels(after: URLError(.timedOut)))
-    }
-
-    /// With obid on this Mac, only its accounts; with a remote runner, this Mac's and the runner's;
-    /// with none, this Mac's.
-    @Test func whichAccountsShow() {
-        #expect(AccountPlaces.of(local: true, runner: true) == [.runner])
-        #expect(AccountPlaces.of(local: false, runner: true) == [.mac, .runner])
-        #expect(AccountPlaces.of(local: false, runner: false) == [.mac])
     }
 
     /// The Mac opens a sign-in page obid answers only when it's https on the tool's own site, with

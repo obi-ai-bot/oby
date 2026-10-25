@@ -1,10 +1,9 @@
 import SwiftUI
 
-/// Answers stay pending until the desk/runner confirms them. The shared inbox record is the receipt,
+/// Answers stay pending until the runner confirms them. The shared inbox record is the receipt,
 /// including when another device answered; no optimistic result is stored in the view.
 struct InlineDecision: View {
     let entry: IslandInbox.Entry
-    let desk: Desk
     let feed: RunnerFeed
     var keyboardEnabled = false
     var focusRequest = 0
@@ -18,32 +17,21 @@ struct InlineDecision: View {
 
     private var item: InboxItem { entry.item }
     private var settled: Bool { item.done != nil }
-    private var words: InboxWords {
-        entry.local ? InboxWords(headline: item.headline, happened: item.happened, recommended: item.recommended, why: item.why)
-            : feed.inboxWords[item.id] ?? InboxWords()
-    }
-    private var extras: RunnerJobExtras? { entry.local ? nil : feed.extras[item.job] }
+    private var words: InboxWords { feed.inboxWords[item.id] ?? InboxWords() }
+    private var extras: RunnerJobExtras? { feed.extras[item.job] }
     /// Its kind as the runner names it: Engine reads a `confirm` item (#546) as a `start`.
-    private var kind: String { entry.local ? "\(item.kind)" : item.shownKind(words) }
+    private var kind: String { item.shownKind(words) }
     /// A confirm item: its title is what Confirm does, the words it would send are quoted apart,
     /// and it takes Confirm or Cancel, nothing recommended, no words of the user's own.
     private var confirming: Bool { kind == RunnerConfirm.kind }
 
     private var livePermission: RunnerPermission? {
         guard item.kind == .permission else { return nil }
-        if entry.local, let permission = desk.jobs.first(where: { $0.id == item.job })?.permission {
-            return RunnerPermission(id: permission.id, tool: permission.tool, title: permission.title,
-                                    detail: permission.detail, rule: permission.rule, always: permission.always)
-        }
         return extras?.permission
     }
     private var permission: RunnerPermission? { livePermission ?? permissionSnapshot }
 
-    private var liveQuestion: Question? {
-        extras?.question ?? desk.jobs.first { entry.local && $0.id == item.job }?.question.map {
-            Question(text: $0.text, options: $0.options, details: $0.details, recommended: $0.recommended)
-        }
-    }
+    private var liveQuestion: Question? { extras?.question }
 
     private var question: Question? { liveQuestion ?? questionSnapshot }
     static func receipt(_ item: InboxItem, permission: RunnerPermission? = nil) -> String? {
@@ -86,7 +74,7 @@ struct InlineDecision: View {
                         onHint: item.kind.takesWords ? onTell : nil,
                         onChoose: { answer($0.answer) },
                         onLater: settled ? nil : { answer(later: .now.addingTimeInterval(3600)) },
-                        onOpen: item.job.isEmpty ? nil : { onOpen(item.job, entry.local) })
+                        onOpen: item.job.isEmpty ? nil : { onOpen(item.job, false) })
                     .padding(.top, settled ? 12 : 0)
             }
             if let problem { Text(problem).font(Tokens.font(Tokens.textSm)).foregroundStyle(Tokens.danger).padding(.top, 8) }
@@ -109,11 +97,7 @@ struct InlineDecision: View {
         Task {
             defer { busy = false }
             do {
-                if entry.local {
-                    try await desk.answer(item.id, value.map { .answer($0) } ?? .later(later ?? .now))
-                } else {
-                    try await feed.settle(item.id, answer: value, later: later)
-                }
+                try await feed.settle(item.id, answer: value, later: later)
             } catch { problem = error.localizedDescription }
         }
     }

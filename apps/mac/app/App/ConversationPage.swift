@@ -25,16 +25,15 @@ struct ConversationPage: View {
     @State private var typing = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    private var desk: Desk { model.desk }
     private var feed: RunnerFeed { model.feed }
     private var conversation: ConversationModel { feed.conversation }
-    private var thinking: Bool { if case .thinking = desk.talk { true } else { false } }
+    private var thinking: Bool { if case .thinking = model.talk { true } else { false } }
 
     var body: some View {
         VStack(spacing: 0) {
             thread
-            if case .question(let said, let question) = desk.talk {
-                BrainQuestion(question: question, onChoose: { desk.answer($0, said: said, question: question.text) }, onLater: { desk.cancel() })
+            if case .question(let said, let question) = model.talk {
+                BrainQuestion(question: question, onChoose: { model.answer($0, said: said, question: question.text) }, onLater: { model.cancel() })
                     .frame(maxWidth: Tokens.column).padding(.horizontal, Tokens.gutter).padding(.top, 8)
                     .transition(.opacity.combined(with: .offset(y: 12)))
             }
@@ -47,7 +46,7 @@ struct ConversationPage: View {
         }
         .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height = $0 }
         // Esc stops the turn Oby is thinking about; with nothing to stop, it goes back a page.
-        .onExitCommand { if thinking { desk.cancel() } else { onBack() } }
+        .onExitCommand { if thinking { model.cancel() } else { onBack() } }
         .onAppear { typing = true; model.markChatRead() }
         .onChange(of: composerFocusRequest) { typing = true }
         .onChange(of: model.thread.last?.id) { if model.chatWindowVisible { model.markChatRead() } }
@@ -66,11 +65,10 @@ struct ConversationPage: View {
     private var thread: some View {
         // Every half minute: a time that turns into yesterday's, and the inbox's waits move on.
         TimelineView(.periodic(from: .now, by: 30)) { context in
-            let turns = conversation.thread(with: model.localTurns)
-            let entries = (desk.inbox.map { IslandInbox.Entry(item: $0, local: true) }
-                + (feed.inbox + feed.inboxHistory).map { IslandInbox.Entry(item: $0, local: false) })
+            let turns = model.thread
+            let entries = (feed.inbox + feed.inboxHistory).map { IslandInbox.Entry(item: $0) }
                 .filter { $0.item.isDecision && ($0.item.later == nil || $0.item.later! <= context.date) }
-                .filter { $0.local || own($0.item.job, turns, item: $0.item.id) }
+                .filter { own($0.item.job, turns, item: $0.item.id) }
                 .sorted { $0.item.created < $1.item.created }
             let waiting = entries.filter { $0.item.isOpen }
             // The watcher's and the listener's items: no job, no conversation, so on top of the thread.
@@ -84,7 +82,7 @@ struct ConversationPage: View {
             })
             let rows = ChatRuns.rows(turns)
             // Every job a card may show, which words started each (obid's `turn`), and those shown where they started.
-            let all = desk.jobs + feed.jobs
+            let all = feed.jobs
             let startedBy = { (job: Job) in
                 ThreadTaskLine.startedBy(turn: feed.extras[job.id]?.turn, in: feed.extras[job.id]?.conversation,
                                          showing: feed.conversations.shown)
@@ -131,18 +129,18 @@ struct ConversationPage: View {
                                 MessageRow(row: row, first: index == 0, now: context.date,
                                            jobs: ThreadTaskLine.cards(under: row.turn, in: turns, jobs: all, startedBy: startedBy),
                                            followUps: { conversation.endedTurn(row.turn) ? [] : ThreadTaskLine.attached(to: $0, in: all, shown: shown) },
-                                           account: { LiveView.account(of: $0, local: $1, desk: desk, feed: feed) },
-                                           isLocal: { id in desk.jobs.contains { $0.id == id } },
+                                           account: { job, _ in LiveView.account(of: job, feed: feed) },
+                                           isLocal: { _ in false },
                                            steps: conversation.steps(under: row.turn, in: turns),
                                            arrived: conversation.arrived[row.turn.id],
                                            streamed: conversation.streamed(under: row.turn, in: turns),
                                            conversation: conversation, feed: feed,
-                                           onOpenJob: onOpenJob, onStopJob: { model.stopChatJob($0, local: $1) },
-                                           onRetry: { feed.retryEcho(row.turn.id); desk.ask(row.turn.text) },
+                                           onOpenJob: onOpenJob, onStopJob: { id, _ in model.stopChatJob(id) },
+                                           onRetry: { feed.retryEcho(row.turn.id); model.ask(row.turn.text) },
                                            onEdit: { feed.dropEcho(row.turn.id); text = row.turn.text; typing = true })
                                     .task(id: row.turn.jobs ?? []) {
                                         // A runner's job older than its list: fetched, so its card shows.
-                                        for id in ConversationModel.missing(of: row.turn, among: desk.jobs + feed.jobs) { try? await feed.fetch(id) }
+                                        for id in ConversationModel.missing(of: row.turn, among: feed.jobs) { try? await feed.fetch(id) }
                                     }
                                 ForEach(entries.filter { anchors[$0.id] == .some(row.turn.id) }) { decision($0, active: oldest == $0.id).padding(.top, 12) }
                                 ForEach(permissions.filter { ConversationModel.decisionAnchor(job: $0.job, created: $0.created, turns: turns) == row.turn.id }) { record in
@@ -162,7 +160,7 @@ struct ConversationPage: View {
                     .scrollIndicators(.never)
                     .defaultScrollAnchor(.bottom)
                     .onChange(of: turns.count) { withAnimation(reduceMotion ? nil : Tokens.warm) { proxy.scrollTo("end", anchor: .bottom) } }
-                    .onChange(of: desk.talk) { proxy.scrollTo("end", anchor: .bottom) }
+                    .onChange(of: model.talk) { proxy.scrollTo("end", anchor: .bottom) }
                     .onChange(of: conversation.steps) { proxy.scrollTo("end", anchor: .bottom) }
                     .onChange(of: conversation.streamed) { proxy.scrollTo("end", anchor: .bottom) }
                 }
@@ -172,17 +170,16 @@ struct ConversationPage: View {
     }
 
     private func stop() {
-        if thinking { desk.cancel() }
+        if thinking { model.cancel() }
         if conversation.working { Task { await feed.stopTurn() } }
     }
 
     private func decision(_ entry: IslandInbox.Entry, active: Bool) -> some View {
-        InlineDecision(entry: entry, desk: desk, feed: feed, keyboardEnabled: active, focusRequest: decisionFocus, onOpen: onOpenJob,
+        InlineDecision(entry: entry, feed: feed, keyboardEnabled: active, focusRequest: decisionFocus, onOpen: onOpenJob,
                        onTell: {
                            guard !sendingAnswer else { return }
                            replyTarget = ReplyTarget(title: entry.item.title, send: { value in
-                               if entry.local { try await desk.answer(entry.item.id, .answer(value)) }
-                               else { try await feed.settle(entry.item.id, answer: value) }
+                               try await feed.settle(entry.item.id, answer: value)
                            })
                            sendProblem = nil
                            typing = true
@@ -246,13 +243,13 @@ struct ConversationPage: View {
         let value = text
         let words = value.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !sendingAnswer, !words.isEmpty else { return }
-        let question: (said: String, text: String)? = if case .question(let said, let question) = desk.talk { (said, question.text) } else { nil }
+        let question: (said: String, text: String)? = if case .question(let said, let question) = model.talk { (said, question.text) } else { nil }
         let route = ChatSend.route(replying: replyTarget != nil, questionWaits: question != nil)
         // An answer goes to an agent or the brain as one message, at most 2,000 characters.
         if route != .oby, words.count > ChatSend.most { sendProblem = ChatSend.tooLong; return }
         switch route {
         case .answer:
-            if let question { desk.answer(value, said: question.said, question: question.text) }
+            if let question { model.answer(value, said: question.said, question: question.text) }
             text = ""
             return
         case .oby:

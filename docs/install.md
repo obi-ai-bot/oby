@@ -154,7 +154,7 @@ obid's API token is `home/api-token` (0600, in a 0700 home). The installer makes
 
 **Doesn't move, and stays behind:**
 
-- **Jobs, the inbox, the conversation, failure records and past results.** They are in `oby.sqlite` and `jobs/`. Finish or publish what you need before you switch; obid starts with an empty list. Keep the old folder until you are sure (the Swift runner is frozen, but its data is yours).
+- **Jobs, the inbox, the conversation, failure records and past results.** They are in `oby.sqlite` and `jobs/`. Finish or publish what you need before you switch; obid starts with an empty list. Keep the old folder until you are sure (the Swift runner is frozen, but its data is yours). The Mac app no longer shows them, nor the Swift engine's own `accounts.json` in `~/Library/Application Support/Oby`: since #895 it runs no engine of its own, and lists only its runner's jobs and accounts. Nothing there is read, moved or deleted.
 - **Decisions.** The rules saved for a repository ("always") and what the Swift runner learned are in `oby.sqlite`; obid's remembered decisions ([runner-api.md](runner-api.md), "obid only: remembered decisions") start empty and fill as you answer.
 - **The GitHub App** (tetrix-lab's `OBY_GITHUB_APP_ID`): obid publishes with your own `gh` login.
 - **Merging.** obid never merges; that stays a person's step.

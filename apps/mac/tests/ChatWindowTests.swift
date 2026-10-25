@@ -124,7 +124,7 @@ struct ChatWindowTests {
 
     @Test func openingChatFocusesTheComposerAndNewDecisionsLeaveTypingAlone() async throws {
         let feed = RunnerFeed()
-        let model = IslandModel(desk: Desk(), feed: feed, availability: MacAvailability())
+        let model = IslandModel(feed: feed, availability: MacAvailability())
         let state = ChatState(defaults: .scratch)
         state.open()
         let window = offscreenWindow(size: NSSize(width: 900, height: 600),
@@ -215,7 +215,6 @@ struct ChatWindowTests {
     }
 
     @Test func confirmedAnswersLeaveTheInboxButStayInTheTranscript() {
-        let desk = Desk()
         let feed = RunnerFeed()
         var item = InboxItem(id: "decision", kind: .question, job: "j", title: "Job", text: "Which?",
                              options: ["A", "B"], created: now)
@@ -225,7 +224,7 @@ struct ChatWindowTests {
         item.answer = "B"
         feed.apply(item)
         #expect(feed.inbox.isEmpty && feed.inboxHistory.first?.answer == "B")
-        #expect(!IslandInbox.waits(desk: desk, feed: feed, now: now + 20))
+        #expect(!IslandInbox.waits(feed: feed, now: now + 20))
         feed.apply(item)
         #expect(feed.inboxHistory.count == 1)
         feed.forget()
@@ -255,7 +254,6 @@ struct ChatWindowTests {
     }
 
     @Test func waitingDecisionsCountAndChooseTheOldestTarget() {
-        let desk = Desk()
         let feed = RunnerFeed()
         let first = InboxItem(id: "first", kind: .question, job: "j", title: "Job", text: "Which?", options: ["A"], created: now)
         var second = first
@@ -263,10 +261,10 @@ struct ChatWindowTests {
         second.created = now + 60
         feed.apply(second)
         feed.apply(first)
-        #expect(IslandInbox.entries(desk: desk, feed: feed, now: now + 120).map(\.id) == ["runner/first", "runner/second"])
+        #expect(IslandInbox.entries(feed: feed, now: now + 120).map(\.id) == ["runner/first", "runner/second"])
         second.later = now + 3600
         feed.apply(second)
-        #expect(IslandInbox.entries(desk: desk, feed: feed, now: now + 120).count == 1)
+        #expect(IslandInbox.entries(feed: feed, now: now + 120).count == 1)
     }
 
     @Test func returnNeverTakesADestructiveRecommendation() {

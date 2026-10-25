@@ -43,7 +43,7 @@ struct WindowScreens {
             job("t2", "Bump Sparkle to 2.9.6", status: .done, ago: 30000),
         ]
         for job in jobs.reversed() { feed.apply(job) }
-        return IslandModel(desk: Desk(), feed: feed, availability: MacAvailability())
+        return IslandModel(feed: feed, availability: MacAvailability())
     }
 
     /// Opens the window on `state`, lets it settle, and saves what's on it as `name`.png.
@@ -414,7 +414,7 @@ struct WindowScreens {
     @Test(arguments: ["hello", "talk", "agents", "github", "home"])
     func firstLaunch(_ screen: String) async throws {
         // A first launch: no tasks yet.
-        let model = IslandModel(desk: Desk(), feed: RunnerFeed(), availability: MacAvailability())
+        let model = IslandModel(feed: RunnerFeed(), availability: MacAvailability())
         model.feed.stage(
             accounts: [AccountState(account: Account(id: "default", agent: "claude", name: "Personal", payer: "", home: nil), label: nil, runnerSignedIn: true),
                        AccountState(account: Account(id: "e5f6a7b8", agent: "cursor", name: "Personal", payer: "", home: nil), label: nil, runnerSignedIn: false)],
@@ -495,20 +495,14 @@ struct WindowScreens {
     }
 
     /// Settings › Connectors as this Mac had it on 2026-10-20 (Sangam's SettingsView.tsx `Connectors`): obid
-    /// on this Mac with Claude Code's Personal and Deskree and Codex's default login, while the Mac's own
-    /// accounts.json names the same logins under other ids; Tetrix and GitHub connected. Made up, no runner asked.
+    /// on this Mac with Claude Code's Personal and Deskree and Codex's default login; Tetrix and GitHub
+    /// connected. Made up, no runner asked.
     @Test func connectors() async throws {
         let suite = try #require(UserDefaults(suiteName: "oby-screens-\(UUID().uuidString)"))
         // Every row, as the launch build hides all but GitHub and Slack (`Launch`).
         suite.set(true, forKey: Launch.everythingKey)
         suite.set(true, forKey: "ObySidebarOpen")
         suite.set(Double(Tokens.sidebar), forKey: "ObySidebarWidth")
-        let root = FileManager.default.temporaryDirectory.appending(path: "oby-screens-\(UUID().uuidString)")
-        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        let mac = [Account(id: "default", agent: "claude", name: "Personal", payer: "", home: nil),
-                   Account(id: "32203c5b", agent: "claude", name: "Deskree", payer: "", home: root.appending(path: "accounts/32203c5b").path),
-                   Account(id: "codex-default", agent: "codex", name: "Deskree", payer: "", home: nil)]
-        try JSONEncoder().encode(mac).write(to: root.appending(path: "accounts.json"))
         func account(_ id: String, _ agent: String, _ name: String) -> AccountState {
             AccountState(account: Account(id: id, agent: agent, name: name, payer: "", home: nil), label: nil, tetrix: true, runnerSignedIn: true)
         }
@@ -520,8 +514,7 @@ struct WindowScreens {
         let dogfood = TetrixStatus.Server(preset: "dogfood", name: "Tetrix Dogfood", url: URL(string: "https://mcp.tetrix.dev/mcp")!)
         feed.stage(tetrix: TetrixStatus(connected: true, url: dogfood.url, preset: "dogfood", presets: [dogfood]),
                    lists: Connectors.Lists(plugins: [], connections: nil, gitHub: GitHubLogin(gh: true, signedIn: true, user: "you", signIn: nil)))
-        let desk = Desk(accounts: AccountStore(root: root), store: JobStore(url: root.appending(path: "oby.sqlite")))
-        let model = IslandModel(desk: desk, feed: feed, availability: MacAvailability())
+        let model = IslandModel(feed: feed, availability: MacAvailability())
         let state = ChatState(defaults: .scratch)
         state.openSettings(.connectors)
         let character = ObyCharacter(query: "embed&size=1.23")

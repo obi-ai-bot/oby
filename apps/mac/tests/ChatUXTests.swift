@@ -1,5 +1,6 @@
 import Darwin
 import Foundation
+import Synchronization
 import Testing
 @testable import Oby
 
@@ -34,7 +35,7 @@ struct ChatUXTests {
     /// gives way only to its own turn (they reached obid after all).
     @Test func onlyObidsTurnOfTheirIdSettlesWordsOnTheirWay() async throws {
         let feed = RunnerFeed()
-        let model = IslandModel(desk: Desk(), feed: feed, availability: MacAvailability())
+        let model = IslandModel(feed: feed, availability: MacAvailability())
         feed.conversations.take([RunnerConversation(id: "a", title: "A")])
         feed.echo("yes")
         let echo = try #require(feed.echoes.first?.turn)
@@ -66,7 +67,7 @@ struct ChatUXTests {
 
     @Test func wordsShowAtOnceAndAreGoneWhenObidListsThemOrTheyreGivenUp() async throws {
         let feed = RunnerFeed()
-        let model = IslandModel(desk: Desk(), feed: feed, availability: MacAvailability())
+        let model = IslandModel(feed: feed, availability: MacAvailability())
         feed.conversations.take([RunnerConversation(id: "a", title: "A")])
         let (fd, port) = try silentPort()
         defer { close(fd) }
@@ -88,14 +89,11 @@ struct ChatUXTests {
     /// and the request takes that echo up: one bubble.
     @Test func sendToBubbleTakesNoRoundTrip() async throws {
         let feed = RunnerFeed()
-        let desk = Desk()
-        let model = IslandModel(desk: desk, feed: feed, availability: MacAvailability())
+        let model = IslandModel(feed: feed, availability: MacAvailability())
         feed.conversations.take([RunnerConversation(id: "a", title: "A")])
         let (fd, port) = try silentPort()
         defer { close(fd) }
-        let runner = Runner(base: try #require(URL(string: "http://127.0.0.1:\(port)")))
-        desk.plansElsewhere = { true }
-        desk.planElsewhere = { said, answer in try await feed.plan(said, answer: answer, on: runner) }
+        model.plansOn = Runner(base: try #require(URL(string: "http://127.0.0.1:\(port)")))
         let clock = ContinuousClock()
         let sent = clock.now
         model.sendChat("ship it")
@@ -104,14 +102,48 @@ struct ChatUXTests {
         #expect(model.thread.map(\.text) == ["ship it"] && took < .milliseconds(50))
         for _ in 0..<1000 where !(feed.echoes.first?.sending ?? true) { await Task.yield() }
         #expect(feed.echoes.count == 1 && feed.echoes[0].sending && model.thread.count == 1)
-        desk.cancel()
+        model.cancel()
         for _ in 0..<1000 where !feed.echoes.isEmpty { await Task.yield() }
         #expect(model.thread.isEmpty)
     }
 
+    /// Stop, then new words at once: the runner hears Stop before the words, so it can't cancel them.
+    /// New words in place of a turn under way tell the runner first too (`IslandModel.ask`).
+    @Test func stopReachesTheRunnerBeforeTheNextWords() async throws {
+        let heard = Mutex<[String]>([])
+        let stub = RunnerStub { request in
+            if request.path.hasSuffix("/v1/plans/cancel") {
+                // A slow answer: words sent without waiting for it would get there first.
+                Thread.sleep(forTimeInterval: 0.3)
+                heard.withLock { $0.append("cancelled") }
+            } else if request.path.hasSuffix("/v1/plans") {
+                heard.withLock { $0.append("plan: \(request.json?["said"] as? String ?? "")") }
+            }
+            return (500, "{}")
+        }
+        let model = IslandModel(feed: RunnerFeed(), availability: MacAvailability())
+        model.plansOn = stub.runner
+        func waitFor(_ line: String) async throws {
+            for _ in 0..<250 where !heard.withLock({ $0.contains(line) }) { try await Task.sleep(for: .milliseconds(20)) }
+        }
+        model.ask("first")
+        model.cancel()
+        model.ask("second")
+        try await waitFor("plan: second")
+        var order = heard.withLock { $0 }
+        #expect(try #require(order.firstIndex(of: "cancelled")) < #require(order.firstIndex(of: "plan: second")), "\(order)")
+
+        heard.withLock { $0 = [] }
+        model.ask("third")
+        model.ask("fourth")
+        try await waitFor("plan: fourth")
+        order = heard.withLock { $0 }
+        #expect(try #require(order.firstIndex(of: "cancelled")) < #require(order.firstIndex(of: "plan: fourth")), "\(order)")
+    }
+
     @Test func wordsThatDontReachObidStayMarkedUntilTriedAgainOrEdited() async throws {
         let feed = RunnerFeed()
-        let model = IslandModel(desk: Desk(), feed: feed, availability: MacAvailability())
+        let model = IslandModel(feed: feed, availability: MacAvailability())
         feed.conversations.take([RunnerConversation(id: "a", title: "A")])
         // Nothing listens on port 9.
         let nowhere = Runner(base: try #require(URL(string: "http://127.0.0.1:9")))

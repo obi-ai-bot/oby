@@ -54,7 +54,7 @@ struct SessionPane: View {
     private func tell(_ job: Job) {
         let text = note.trimmingCharacters(in: .whitespacesAndNewlines)
         guard (1...2000).contains(text.count), !sending else { return }
-        let message = TaskActions.of(job, local: false, model: model).message
+        let message = TaskActions.of(job, model: model).message
         sending = true
         Task {
             defer { sending = false }

@@ -73,7 +73,7 @@ final class Tray {
         return "(The user attached \(parts.joined(separator: " and ")).)"
     }
 
-    /// The attachments' paths, for the jobs a request starts (`Desk.ask`).
+    /// The attachments' paths, for the jobs a request starts (`IslandModel.ask`).
     var paths: [String] { items.map(\.file.path) }
 
     /// The request went out: the chips go, and the files stay for its jobs.

@@ -358,10 +358,10 @@ struct ChatView: View {
             if let place { model.feed.seen(place) }
         }
         // A job that left every list: its page goes too.
-        .onChange(of: model.desk.jobs.map(\.id) + model.feed.jobs.map(\.id)) {
+        .onChange(of: model.feed.jobs.map(\.id)) {
             state.trail.drop { step in
                 switch step {
-                case .job(let id, let local): !(local ? model.desk.jobs : model.feed.jobs).contains { $0.id == id }
+                case .job(let id, _): !model.feed.jobs.contains { $0.id == id }
                 case .session(let id): !model.feed.jobs.contains { $0.id == id }
                 default: false
                 }
@@ -552,7 +552,7 @@ private struct HomeDecisions: View {
 
     /// The inbox's decisions that wait now, here and on the runner, the oldest first.
     static func entries(_ model: IslandModel, now: Date) -> [IslandInbox.Entry] {
-        IslandInbox.entries(desk: model.desk, feed: model.feed, now: now).filter(\.item.isDecision)
+        IslandInbox.entries(feed: model.feed, now: now).filter(\.item.isDecision)
     }
 
     /// A runner's permission it only names in its job (an older runner's, #134).
@@ -574,7 +574,7 @@ private struct HomeDecisions: View {
                 ScrollView {
                     VStack(spacing: 12) {
                         ForEach(entries) { entry in
-                            InlineDecision(entry: entry, desk: model.desk, feed: model.feed, onOpen: onOpen)
+                            InlineDecision(entry: entry, feed: model.feed, onOpen: onOpen)
                         }
                         ForEach(permissions) { record in
                             InlinePermission(record: record, feed: model.feed)
@@ -714,7 +714,7 @@ extension TitleBar {
     /// The task on top, when a task's page is, as its side panel row has it.
     private var shownTask: SidebarSections.JobRow? {
         guard case .job(let id, let local) = state.trail.top,
-              let job = (local ? model.desk.jobs : model.feed.jobs).first(where: { $0.id == id }) else { return nil }
+              let job = model.feed.jobs.first(where: { $0.id == id }) else { return nil }
         return SidebarSections.JobRow(job: job, local: local)
     }
 
@@ -817,8 +817,8 @@ enum WindowLabels {
         case .archived: "Archived"
         case .settings(let page): page.label
         case .talk: model.feed.conversationsOn ? model.feed.conversations.shownTitle : "Oby"
-        case .job(let id, let local):
-            (local ? model.desk.jobs : model.feed.jobs).first { $0.id == id }?.heading ?? "Task"
+        case .job(let id, _):
+            model.feed.jobs.first { $0.id == id }?.heading ?? "Task"
         case .session: "Session"
         }
     }
@@ -957,16 +957,15 @@ private struct JobPane: View {
     /// The page's own attachments: never what waits in Home's box.
     @State private var tray = Tray()
 
-    private var desk: Desk { model.desk }
     private var feed: RunnerFeed { model.feed }
-    private var job: Job? { (local ? desk.jobs : feed.jobs).first { $0.id == id } }
+    private var job: Job? { feed.jobs.first { $0.id == id } }
 
     var body: some View {
         Group {
             if let job {
-                TaskPage(job: job, actions: TaskActions.of(job, local: local, model: model), tray: tray,
+                TaskPage(job: job, actions: TaskActions.of(job, model: model), tray: tray,
                          publishNow: model.publishing == job.id, onPublishNow: { model.publishing = nil }, onBack: onBack,
-                         followUps: ThreadTaskLine.followUps(of: job.id, in: local ? desk.jobs : feed.jobs), onOpenJob: onOpenJob,
+                         followUps: ThreadTaskLine.followUps(of: job.id, in: feed.jobs), onOpenJob: onOpenJob,
                          onSession: onSession, usage: model.usageRows, voice: model.voice, talkKeyListening: model.listening,
                          onTold: { _ in
                              // Sangam's tellFromTask: its conversation opens on the words and Oby's answer.

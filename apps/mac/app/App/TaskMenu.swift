@@ -18,7 +18,7 @@ struct TaskMenu: View {
     private var job: Job { row.job }
 
     var body: some View {
-        let manages = model.managesJobs(local: row.local)
+        let manages = model.managesJobs
         if let onViewDetails { Button("View details", action: onViewDetails) }
         if model.hasConversation(of: job.id, local: row.local) {
             Button("Open conversation") {
@@ -28,7 +28,7 @@ struct TaskMenu: View {
         }
         if manages { Button("Rename", action: onRename) }
         if job.isActive {
-            Button("Stop task") { model.stopChatJob(job.id, local: row.local) }
+            Button("Stop task") { model.stopChatJob(job.id) }
         } else if manages, !job.waitsForYou, model.feed.extras[job.id]?.archived == nil {
             Button("Archive task") { state.act { try await model.feed.archive(job.id) } }
         }
