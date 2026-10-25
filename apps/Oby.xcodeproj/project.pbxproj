@@ -120,6 +120,7 @@
 				Oby.entitlements,
 				Tools/bundle-cloudflared.sh,
 				Tools/bundle-gh.sh,
+				Tools/bundle-gitleaks.sh,
 				Tools/bundle-obi-vm.sh,
 				Tools/bundle-obid.sh,
 				Tools/com.deskree.oby.obid.plist,
@@ -402,6 +403,7 @@
 				0B1E0C0A00000000000000F1 /* Bundle the character */,
 				0B1E0C0A00000000000000F2 /* Bundle cloudflared */,
 				0B1E0C0A00000000000000F4 /* Bundle gh */,
+				0B1E0C0A00000000000000F5 /* Bundle gitleaks */,
 				0B1E0C0A00000000000000F3 /* Bundle obid */,
 				0B1E0C0A0000000000000AF4 /* Bundle obi-vm */,
 			);
@@ -730,6 +732,27 @@
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/zsh;
 			shellScript = "set -e\n# Download (once, into the cache), bundle and sign GitHub's CLI: apps/mac/app/Tools/bundle-gh.sh.\nzsh \"$SRCROOT/mac/app/Tools/bundle-gh.sh\"\n";
+		};
+		0B1E0C0A00000000000000F5 /* Bundle gitleaks */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+				"$(SRCROOT)/mac/app/Tools/bundle-gitleaks.sh",
+			);
+			name = "Bundle gitleaks";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+				"$(TARGET_BUILD_DIR)/$(EXECUTABLE_FOLDER_PATH)/gitleaks",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/zsh;
+			shellScript = "set -e\n# Download (once, into the cache), check, bundle and sign gitleaks (#1026): apps/mac/app/Tools/bundle-gitleaks.sh.\nzsh \"$SRCROOT/mac/app/Tools/bundle-gitleaks.sh\"\n";
 		};
 		0B1E0C0A00000000000000F1 /* Bundle the character */ = {
 			isa = PBXShellScriptBuildPhase;
