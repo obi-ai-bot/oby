@@ -408,6 +408,47 @@ struct WindowScreens {
         try await save("mac-obid-\(screen)", window: window)
     }
 
+    /// First launch on obid (#893, docs/onboarding.md): each step over made-up accounts and
+    /// repositories staged on the feed, no runner asked, then Home with the first task in its box.
+    /// The agents step reads which tools this Mac really has.
+    @Test(arguments: ["hello", "talk", "agents", "github", "home"])
+    func firstLaunch(_ screen: String) async throws {
+        // A first launch: no tasks yet.
+        let model = IslandModel(desk: Desk(), feed: RunnerFeed(), availability: MacAvailability())
+        model.feed.stage(
+            accounts: [AccountState(account: Account(id: "default", agent: "claude", name: "Personal", payer: "", home: nil), label: nil, runnerSignedIn: true),
+                       AccountState(account: Account(id: "e5f6a7b8", agent: "cursor", name: "Personal", payer: "", home: nil), label: nil, runnerSignedIn: false)],
+            models: ModelSettings(claude: ModelChoice(model: "claude-opus-5-5", effort: "xhigh"), codex: ModelChoice(model: "gpt-6.1-sol", effort: "high"),
+                                  cursor: CursorModelChoice(model: "auto")),
+            options: ModelOptions(claude: .init(models: [.init(id: "claude-opus-5-5", name: "Opus 5.5")], efforts: ["high"]),
+                                  codex: .init(models: [.init(id: "gpt-6.1-sol", name: "gpt-6.1-sol", efforts: ["high"])]),
+                                  cursor: .init(models: [.init(id: "auto", name: "Auto")])))
+        let repos = [RunnerRepo(repo: "deskree-inc/oby", defaultBranch: "dev", listed: true),
+                     RunnerRepo(repo: "deskree-inc/tetrix-ee", defaultBranch: "main", listed: false),
+                     RunnerRepo(repo: "octo-cat/notes", defaultBranch: "main", listed: false)]
+        guard let step = FirstLaunchView.Step.allCases.first(where: { "\($0)" == screen }) else {
+            // Home, as First Launch leaves it: the first task waits in its box (the app's own defaults, put back after).
+            let defaults = UserDefaults.standard, before = defaults.object(forKey: Drafts.key)
+            defer { if let before { defaults.set(before, forKey: Drafts.key) } else { defaults.removeObject(forKey: Drafts.key) } }
+            Drafts.keep(try #require(FirstLaunchSteps.suggestion(repos)), as: Drafts.home)
+            return try await shoot("mac-first-launch-home", model: model, state: ChatState(defaults: .scratch))
+        }
+        let view = FirstLaunchView(voice: model.voice, feed: model.feed, step: step,
+                                   gitHub: GitHubLogin(gh: true, signedIn: true, user: "octo-cat"), repos: repos, onDone: {})
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 640, height: 580),
+                              styleMask: [.titled, .closable, .fullSizeContentView], backing: .buffered, defer: false)
+        window.titlebarAppearsTransparent = true
+        window.titleVisibility = .hidden
+        window.appearance = NSAppearance(named: .darkAqua)
+        window.isReleasedWhenClosed = false
+        window.contentView = NSHostingView(rootView: view)
+        window.setFrameOrigin(NSPoint(x: 40, y: 40))
+        window.orderFrontRegardless()
+        defer { window.close() }
+        try await Task.sleep(for: .milliseconds(step == .agents ? 4000 : 800))
+        try await save("mac-first-launch-\(screen)", window: window)
+    }
+
     /// Tetrix held by obid for every agent (Settings › Connectors, ready and connected; Accounts'
     /// "used in" lines; a job's Tetrix section): staged on the feed, no runner asked.
     @Test(arguments: ["connectors-ready", "connectors-on", "accounts", "task"])

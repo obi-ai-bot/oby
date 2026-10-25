@@ -665,6 +665,14 @@ nonisolated struct RunnerStatus: Decodable, Equatable, Sendable {
     /// Whether Oby's review and Mac check go on pull requests as check runs: `ok`, `missing
     /// permission` or `no app`. Older runners don't send it.
     var checks: String?
+    /// The tools' own logins obid found on this Mac that aren't accounts (obid only), each listed
+    /// with `restoreDefaultLogin`. Older runners don't send it.
+    var availableLogins: [AvailableLogin]?
+
+    struct AvailableLogin: Codable, Equatable, Sendable {
+        var agent: String
+        var id: String
+    }
 
     struct Cleanup: Codable, Equatable, Sendable {
         var path: String
@@ -1626,6 +1634,14 @@ nonisolated struct Runner: Sendable {
         _ = try await send("DELETE", "v1/github/sign-in")
     }
 
+    /// The repositories a job may start in (docs/runner-api.md, "obid only: repositories"): the
+    /// listed ones, then every one obid's gh can push to.
+    func jobRepos() async throws -> [RunnerRepo] {
+        struct Answer: Decodable { var repos: [RunnerRepo] }
+        let answer: Answer = try await call("GET", "v1/repos")
+        return answer.repos
+    }
+
     // MARK: obid's accounts (docs/runner-api.md, "obid only: accounts"): loopback only, so only obid on this Mac
 
     /// Adds an account: obid makes its folder, and it's signed in with `startAccountSignIn`.
@@ -1634,7 +1650,8 @@ nonisolated struct Runner: Sendable {
         return try await call("POST", "v1/accounts", body: Body(agent: agent, name: name, payer: payer.isEmpty ? nil : payer))
     }
 
-    /// Lists the tool's own login again (`default`, `codex`) after it was removed here.
+    /// Lists the tool's own login (`default`, `codex`, `cursor`): after it was removed here, or
+    /// when obid found it on this Mac (`availableLogins`).
     func restoreDefaultLogin(agent: String) async throws -> RunnerAccount {
         struct Body: Encodable { var agent: String; var `default` = true }
         return try await call("POST", "v1/accounts", body: Body(agent: agent))
@@ -1943,6 +1960,13 @@ nonisolated struct AccountSignIn: Decodable, Equatable, Sendable {
               let host = url.host()?.lowercased() else { return false }
         return (Self.sites[agent] ?? []).contains { host == $0 || host.hasSuffix("." + $0) }
     }
+}
+
+/// A repository a job may start in, as `GET /v1/repos` lists it.
+nonisolated struct RunnerRepo: Decodable, Equatable, Sendable {
+    var repo: String
+    var defaultBranch: String
+    var listed: Bool
 }
 
 /// gh's own sign-in under way: GitHub's device page, the code to type there, when it runs out.

@@ -1,170 +1,56 @@
 import AppKit
 import ApplicationServices
-import AVFoundation
 import Observation
-import UserNotifications
 
-/// The permissions Oby uses, each asked only when it's needed and each on its own: one denied
-/// leaves the others working.
+/// Accessibility, which the talk key needs to notice fn in any app. The microphone asks on the
+/// first hold (apps/mac/app/Voice.swift) and notifications when the first task finishes
+/// (`RunnerFeed.post`): each is asked when it's needed, and each on its own.
 @Observable
 final class Permissions {
-    enum Kind: CaseIterable { case accessibility, microphone, notifications }
-    enum State { case allowed, notAsked, denied }
+    private(set) var accessibility = false
 
-    private(set) var states: [Kind: State] = [:]
+    // macOS doesn't say whether Accessibility was refused, only whether it's allowed.
+    func refresh() { accessibility = AXIsProcessTrusted() }
 
-    func state(_ kind: Kind) -> State { states[kind] ?? .notAsked }
-
-    func refresh() async {
-        // macOS doesn't say whether Accessibility was refused, only whether it's allowed.
-        states[.accessibility] = AXIsProcessTrusted() ? .allowed : .notAsked
-        let microphone: State = switch AVCaptureDevice.authorizationStatus(for: .audio) {
-        case .authorized: .allowed
-        case .notDetermined: .notAsked
-        default: .denied
-        }
-        let notifications: State = switch await UNUserNotificationCenter.current().notificationSettings().authorizationStatus {
-        case .authorized, .provisional: .allowed
-        case .notDetermined: .notAsked
-        default: .denied
-        }
-        states[.microphone] = microphone
-        states[.notifications] = notifications
-    }
-
-    /// macOS's own prompt the first time; after that only System Settings can change it.
-    func ask(_ kind: Kind) async {
-        switch (kind, state(kind)) {
-        case (_, .allowed):
-            return
-        case (.accessibility, _):
-            // macOS's prompt the first time, System Settings after. The talk key's tap installs by
-            // itself once it's allowed.
-            if UserDefaults.standard.bool(forKey: "accessibilityAsked") {
-                Self.openSettings(kind)
-            } else {
-                UserDefaults.standard.set(true, forKey: "accessibilityAsked")
-                AXIsProcessTrustedWithOptions([kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary)
+    /// macOS's prompt the first time, System Settings after. The talk key's tap installs by itself
+    /// once it's allowed.
+    func askAccessibility() {
+        guard !AXIsProcessTrusted() else { return refresh() }
+        if UserDefaults.standard.bool(forKey: "accessibilityAsked") {
+            if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {
+                NSWorkspace.shared.open(url)
             }
-        case (.microphone, .notAsked):
-            _ = await AVCaptureDevice.requestAccess(for: .audio)
-        case (.notifications, .notAsked):
-            _ = try? await UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound])
-        default:
-            Self.openSettings(kind)
+        } else {
+            UserDefaults.standard.set(true, forKey: "accessibilityAsked")
+            AXIsProcessTrustedWithOptions([kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary)
         }
-        await refresh()
-    }
-
-    static func title(_ kind: Kind) -> String {
-        switch kind {
-        case .accessibility: "Accessibility"
-        case .microphone: "Microphone"
-        case .notifications: "Notifications"
-        }
-    }
-
-    /// Why Oby asks, in the words the step shows.
-    static func reason(_ kind: Kind) -> String {
-        switch kind {
-        case .accessibility: "So Oby notices you holding fn (or Control-Option) in any app. It reads no other keys."
-        case .microphone: "So Oby hears you while you hold fn, and only then. What you say is written down on this Mac."
-        case .notifications: "So Oby tells you when a job on your runner is done or needs you, while Oby's window is closed."
-        }
-    }
-
-    /// Without it: what stops working, and nothing else.
-    static func without(_ kind: Kind) -> String {
-        switch kind {
-        case .accessibility: "Without it, type to Oby in its window instead of holding fn."
-        case .microphone: "Without it, type to Oby instead of talking."
-        case .notifications: "Without it, check Oby's window for your runner's jobs."
-        }
-    }
-
-    static func symbol(_ kind: Kind) -> String {
-        switch kind {
-        case .accessibility: "keyboard"
-        case .microphone: "mic"
-        case .notifications: "bell.badge"
-        }
-    }
-
-    static func openSettings(_ kind: Kind) {
-        let pane = switch kind {
-        case .accessibility: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
-        case .microphone: "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone"
-        case .notifications: "x-apple.systempreferences:com.apple.Notifications-Settings.extension"
-        }
-        if let url = URL(string: pane) { NSWorkspace.shared.open(url) }
+        refresh()
     }
 }
 
-/// The coding tools on this Mac, which of them are connected, and the models each one offers.
-/// Claude Code, Codex and Cursor connect through Oby's accounts (each with a home of its own, and a
-/// sign-in that runs the tool's own login command); Gemini isn't in the first version.
+/// The coding tools installed on this Mac. Their accounts are obid's (`RunnerFeed.accounts`):
+/// obid finds each tool's own login and signs new ones in through the tool's own login.
 @Observable
 final class Tools {
-    struct Model: Hashable { var id: String; var name: String }
+    static let all = ["claude", "codex", "cursor"]
 
-    static let all = ["claude", "codex", "cursor", "gemini"]
-
-    let store: AccountStore
-    /// The command each installed tool runs as, by agent.
-    private(set) var installed: [String: String] = [:]
-    /// Each connected tool's own model list, by agent.
-    private(set) var models: [String: [Model]] = [:]
+    /// The tools whose CLI is on the login shell's PATH, by agent.
+    private(set) var installed: Set<String> = []
     private(set) var looking = false
-    /// Whether the installed Cursor CLI has `acp` (`cursor-agent acp --help` exits 0); true until known.
+    /// Whether the installed Cursor CLI has `acp` (`cursor-agent acp --help` exits 0), which obid
+    /// runs it with; true until known.
     private(set) var cursorHasACP = true
-
-    init(store: AccountStore) { self.store = store }
-
-    /// Signed in, with a model list Oby could read.
-    var connected: [String] { Self.all.filter { !(models[$0] ?? []).isEmpty } }
-
-    func accounts(_ agent: String) -> [AccountState] { store.accounts.filter { $0.account.agent == agent } }
 
     func refresh() async {
         looking = true
         defer { looking = false }
-        var found: [String: String] = [:]
-        for (agent, commands) in [("claude", ["claude"]), ("codex", ["codex"]), ("cursor", ["cursor-agent"]), ("gemini", ["gemini"])] {
-            for command in commands {
-                if await Self.onPath(command) {
-                    found[agent] = command
-                    break
-                }
-            }
+        var found: Set<String> = []
+        for (agent, command) in [("claude", "claude"), ("codex", "codex"), ("cursor", "cursor-agent")] where await Self.onPath(command) {
+            found.insert(agent)
         }
         installed = found
-        await store.refresh()
-
-        var lists: [String: [Model]] = [:]
-        if found["claude"] != nil, accounts("claude").contains(where: \.signedIn) {
-            // Claude Code has no command that lists models: Oby's own list of Claude Code's models.
-            lists["claude"] = AgentModels.claude.map { Model(id: $0.0, name: $0.1) }
-        }
-        if found["codex"] != nil, let account = accounts("codex").first(where: \.signedIn) {
-            let home = account.account.home.map { URL(filePath: $0) }
-            lists["codex"] = ((try? await CodexAgent.models(home: home)) ?? []).map { Model(id: $0.id, name: $0.name) }
-        }
-        if let cursor = found["cursor"] {
-            cursorHasACP = (try? await Shell.run([cursor, "acp", "--help"], timeout: 15))?.status == 0
-            // Jobs run on an account of Oby's own, never on the user's `~/.cursor`: its models.
-            if let account = accounts("cursor").first(where: \.signedIn) {
-                lists["cursor"] = await CursorModels.list(home: account.account.home).map { Model(id: $0.id, name: $0.name) }
-            }
-        }
-        models = lists
-    }
-
-    /// Codex gets an account of its own, then signs in to it in Terminal.
-    func connect(_ agent: String) throws {
-        if let account = accounts(agent).first(where: { !$0.signedIn })?.account {
-            try store.signIn(account)
-        } else {
-            try store.signIn(store.add(agent: agent, name: "Personal", payer: ""))
+        if found.contains("cursor") {
+            cursorHasACP = (try? await Shell.run(["cursor-agent", "acp", "--help"], timeout: 15))?.status == 0
         }
     }
 
@@ -174,71 +60,5 @@ final class Tools {
 
     nonisolated static func onPath(_ command: String) async -> Bool {
         (try? await Shell.run(["which", command], timeout: 10))?.status == 0
-    }
-
-    /// `cursor-agent models` (Engine/Cursor.swift reads it).
-    nonisolated static func cursorModels(_ text: String) -> [Model] {
-        CursorModels.parse(text).map { Model(id: $0.id, name: $0.name) }
-    }
-}
-
-/// Which model does what: the Lead thinks, routine jobs run on a smaller model, complex jobs on a
-/// stronger one. Routine jobs are each tool's `<agent>.model`, which jobs already read; the
-/// Lead's pick waits for the Lead (#64); the complex pick is what Oby offers for complex work.
-enum ModelPicks {
-    /// The best planner first: Claude holds Oby to a typed plan, then Codex, then Cursor.
-    static let planners = ["claude", "codex", "cursor"]
-    /// The tools Oby can run jobs on.
-    static let workers = ["claude", "codex", "cursor"]
-
-    /// 0 small, 1 everyday, 2 strong, 3 strongest (Fable, Astra: only when the user picks it).
-    nonisolated static func size(_ id: String) -> Int {
-        // "gemini" holds "mini": it says nothing about size.
-        let id = id.lowercased().replacingOccurrences(of: "gemini", with: "")
-        if ["fable", "astra"].contains(where: { id.contains($0) }) { return 3 }
-        if ["opus", "-max", "-pro", "ultra"].contains(where: { id.contains($0) }) { return 2 }
-        if ["haiku", "mini", "nano", "flash", "lite", "small"].contains(where: { id.contains($0) }) { return 0 }
-        return 1
-    }
-
-    /// A model smaller than the complex jobs': an everyday one (Sonnet 5.5 for Claude Code) when
-    /// there's a strong one above it. When there isn't (Codex, whose stronger Astra needs asking),
-    /// complex jobs take the first everyday model, so routine jobs go one smaller: a small model,
-    /// else a later everyday one (lists put the newest first). Cursor's "auto" only if it's all
-    /// there is: that's Cursor choosing, not a model.
-    nonisolated static func routine(_ models: [String]) -> String? {
-        let models = models == ["auto"] ? models : models.filter { $0 != "auto" }
-        let everyday = models.filter { size($0) == 1 }
-        if !models.contains(where: { size($0) == 2 }) {
-            if let small = models.first(where: { size($0) == 0 }) { return small }
-            if everyday.count > 1 { return everyday.last }
-        }
-        return everyday.first ?? models.min { size($0) < size($1) }
-    }
-
-    /// The strongest model short of the ones that need asking (Opus 5.5 for Claude Code).
-    nonisolated static func complex(_ models: [String]) -> String? {
-        let allowed = models.filter { size($0) < 3 }
-        return (allowed.isEmpty ? models : allowed).max { size($0) < size($1) }
-    }
-
-    /// The Lead thinks with the best planner connected, on its routine model.
-    nonisolated static func lead(_ models: [String: [String]]) -> (agent: String, model: String)? {
-        for agent in planners {
-            if let model = routine(models[agent] ?? []) { return (agent, model) }
-        }
-        return nil
-    }
-
-    /// A value the user saved (in first launch or Settings), not one of Oby's registered defaults.
-    static func saved(_ key: String) -> String? {
-        UserDefaults.standard.persistentDomain(forName: Bundle.main.bundleIdentifier ?? "")?[key] as? String
-    }
-
-    /// The model Oby offers for complex work: the user's pick, else Oby's stronger model
-    /// (for whoever never picked). Nil when that's the model jobs already use: nothing to offer.
-    static func complex(for agent: String) -> String? {
-        let model = UserDefaults.standard.string(forKey: "\(agent).complexModel") ?? AgentModels.stronger[agent]
-        return model == AgentModels.value(agent, "model") ? nil : model
     }
 }
