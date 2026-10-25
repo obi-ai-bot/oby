@@ -429,6 +429,14 @@ impl Conn {
     }
 }
 
+/// A turn dropped without [`Conn::finish`] (its job's task panicked, #914) leaves nothing running:
+/// its whole group goes, as finish's end does, not only the agent `kill_on_drop` ends.
+impl Drop for Conn {
+    fn drop(&mut self) {
+        process::signal_group(self.pgid, nix::sys::signal::Signal::SIGKILL);
+    }
+}
+
 /// The answer to request `id` in `message`, when it is one: its result, or the error it carries.
 pub fn answer_to(message: &Value, id: u64) -> Option<Result<Value, RpcError>> {
     if message.get("method").is_some() || message.get("id").and_then(Value::as_u64) != Some(id) {

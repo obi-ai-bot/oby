@@ -800,6 +800,7 @@ pub fn cause(trigger: Trigger) -> &'static str {
         Trigger::Failed => "failed",
         Trigger::Limit => "stopped at a limit",
         Trigger::PublishError => "publish failed",
+        Trigger::Crash => "obid's own bug or crash ended it",
     }
 }
 

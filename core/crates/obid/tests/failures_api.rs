@@ -184,3 +184,112 @@ fn the_api_lists_failures_and_fixes_them() {
     let obid = start(&folder.0, &config, None);
     assert_eq!(failures(&obid, ""), list);
 }
+
+/// A job obid kept going down with stays `interrupted` (#915): picked up twice in the last 30
+/// minutes after obid went down while it ran, the next start leaves it for the owner, with a
+/// failure record (trigger `crash`) and one `failed` item (Try again, Dismiss), made once across
+/// restarts; so does one queued with nothing it waits for (a worker getting it ready). A job
+/// picked up fewer times carries on and, once it ends, counts nothing more. After a stop that was
+/// asked for (`home/stopped-cleanly`), nobody's count grows.
+#[test]
+fn a_job_obid_keeps_going_down_with_stays_interrupted() {
+    let running = |id: &str, resumes: &[i64]| {
+        let mut job = obid::job::Job::new(
+            id.into(),
+            "obi-e2e/fixture-app".into(),
+            "investigate".into(),
+            "Look around".into(),
+            "claude".into(),
+            "stub".into(),
+        );
+        let now = obi_protocol::time::now();
+        job.branch = format!("oby/investigate-{id}");
+        job.status = obid::job::Status::Running;
+        job.started = Some(now - 200);
+        let mut kept = serde_json::to_value(&job).unwrap();
+        kept["crashResumes"] = json!(resumes.iter().map(|ago| now - ago).collect::<Vec<_>>());
+        kept
+    };
+    let put = |folder: &Path, jobs: &[&Value]| {
+        let dir = folder.join("home/jobs");
+        std::fs::create_dir_all(&dir).unwrap();
+        for job in jobs {
+            let path = dir.join(format!("{}.json", job["id"].as_str().unwrap()));
+            std::fs::write(path, serde_json::to_vec(job).unwrap()).unwrap();
+        }
+    };
+    let kept = |folder: &Path, id: &str| -> Value {
+        serde_json::from_slice(&std::fs::read(folder.join(format!("home/jobs/{id}.json"))).unwrap())
+            .unwrap()
+    };
+
+    let folder = Folder::new("crash-loop");
+    let remote = fixture(&folder.0.join("fixture"));
+    let settings = config(&folder.0, &remote, &fake_claude());
+    let looping = running("cccc0001", &[600, 60]);
+    // An old pick-up, past the 30 minutes, doesn't count.
+    let once = running("cccc0002", &[3000, 60]);
+    // Queued with nothing it waits for: a worker was getting it ready.
+    let mut preparing = running("cccc0004", &[600, 60]);
+    preparing["status"] = json!("queued");
+    put(&folder.0, &[&looping, &once, &preparing]);
+    let mut obid = start(&folder.0, &settings, None);
+    let left = call(&obid, "GET", "/v1/jobs/cccc0001", None).body;
+    assert_eq!(left["status"], "interrupted", "{left}");
+    assert_eq!(
+        left["reason"],
+        "obid went down 3 times in 30 minutes while this ran, so Oby left it here. Try again carries it on.",
+        "{left}"
+    );
+    assert_eq!(left["nextStep"], "Try again", "{left}");
+    assert!(
+        left.get("crashResumes").is_none(),
+        "never in the API: {left}"
+    );
+    let held = call(&obid, "GET", "/v1/jobs/cccc0004", None).body;
+    assert_eq!(held["status"], "interrupted", "{held}");
+    assert_eq!(wait(&obid, "cccc0002")["status"], "done");
+    assert!(kept(&folder.0, "cccc0002").get("crashResumes").is_none());
+    let crashes: Vec<Value> = failures(&obid, "")
+        .into_iter()
+        .filter(|f| f["trigger"] == "crash")
+        .collect();
+    assert_eq!(crashes.len(), 2, "{crashes:?}");
+    let items = |obid: &Obid| -> Vec<Value> {
+        call(obid, "GET", "/v1/inbox", None)
+            .body
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|i| i["kind"] == "failed")
+            .cloned()
+            .collect()
+    };
+    let one = within(10, "the owner's items", || {
+        let one = items(&obid);
+        (one.len() == 2).then_some(one)
+    });
+    let mut each: Vec<&str> = one.iter().map(|i| i["job"].as_str().unwrap()).collect();
+    each.sort();
+    assert_eq!(each, ["cccc0001", "cccc0004"], "one item each: {one:?}");
+    assert_eq!(one[0]["options"], json!(["Try again", "Dismiss"]));
+    // A clean stop, then a start: the same one item, nothing counted.
+    obid.stop();
+    let mut obid = start(&folder.0, &settings, None);
+    std::thread::sleep(Duration::from_secs(1));
+    assert_eq!(items(&obid).len(), 2);
+    assert_eq!(
+        call(&obid, "GET", "/v1/jobs/cccc0001", None).body["status"],
+        "interrupted"
+    );
+    obid.stop();
+
+    // After a clean stop a job picked up twice already carries on.
+    let folder = Folder::new("clean-stop");
+    let remote = fixture(&folder.0.join("fixture"));
+    let settings = config(&folder.0, &remote, &fake_claude());
+    put(&folder.0, &[&running("cccc0003", &[600, 60])]);
+    std::fs::write(folder.0.join("home/stopped-cleanly"), "").unwrap();
+    let obid = start(&folder.0, &settings, None);
+    assert_eq!(wait(&obid, "cccc0003")["status"], "done");
+}

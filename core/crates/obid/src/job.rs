@@ -41,6 +41,10 @@ impl Status {
 pub const ONE_MORE_ROUND: &str = "One more round";
 /// A next step: the agent's session picked up again where it stopped.
 pub const TRY_AGAIN: &str = "Try again";
+/// How the reason of a job obid's own bug (a panic in its task) ended starts (#914).
+pub const CRASHED: &str = "obid hit a bug while running this job, so it stopped it: ";
+/// The reason of a job obid kept going down with (#915): it isn't picked up again by itself.
+pub const LOOPED: &str = "obid went down 3 times in 30 minutes while this ran, so Oby left it here. Try again carries it on.";
 
 /// The Review stage once Oby's review approved the pull request's head.
 pub const APPROVED_BY_OBY: &str = "Approved by Oby";
@@ -277,6 +281,11 @@ pub struct Job {
     /// API; taken when that run starts.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cut: Option<Phase>,
+    /// When obid picked it up again after going down while it ran, other than by a clean stop
+    /// (#915): the last 30 minutes' only. Kept in its file, never in the API; emptied when the job
+    /// ends.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub crash_resumes: Vec<i64>,
     pub dismissed: Option<i64>,
     /// The job's worktree, an absolute path, once it exists.
     pub worktree: Option<String>,
@@ -652,6 +661,7 @@ impl Job {
             waiting: None,
             phase: None,
             cut: None,
+            crash_resumes: Vec::new(),
             dismissed: None,
             worktree: None,
             obi: None,
