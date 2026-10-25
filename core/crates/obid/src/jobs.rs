@@ -8493,9 +8493,15 @@ impl Jobs {
 
     /// Who reviews `author`'s published work (docs/runner-api.md, "Oby's review"): an account of
     /// another tool first, then another of its own, else the author's own in a session of the
-    /// review's own; always one signed in, not being changed and with room, and never Cursor.
-    /// `Err` says why none fits: the review waits for one.
+    /// review's own; always one signed in, not being changed and with room, and never Cursor, nor
+    /// one whose review of this head couldn't give a verdict. `Err` says why none fits: the review
+    /// waits for one.
     fn reviewer(&self, author: &Job) -> Result<(Tool, crate::config::Account), String> {
+        let failed: Vec<&str> = author
+            .review_failed_here()
+            .into_iter()
+            .flat_map(|f| f.reviews.iter().map(|(_, on)| on.as_str()))
+            .collect();
         let home = login_home();
         let now = obi_protocol::time::now();
         let own = Tool::from_id(&author.agent);
@@ -8508,7 +8514,10 @@ impl Jobs {
         let mut held = Vec::new();
         for tool in tools {
             for account in self.accounts(tool) {
-                if self.being_changed(&account.id) || !signed_in(tool, &account, home.as_deref()) {
+                if self.being_changed(&account.id)
+                    || !signed_in(tool, &account, home.as_deref())
+                    || failed.contains(&reviewed_on(tool.id(), &account.id).as_str())
+                {
                     continue;
                 }
                 if let Some(why) = self.usage.get(&account.id).held(now) {
@@ -8583,6 +8592,35 @@ impl Jobs {
             job.review_error = None;
             job.no_reviewer = None;
         });
+        self.review_items(id, None);
+    }
+
+    /// The owner's Try again on Oby's review that no reviewer could give (its `failed` inbox item,
+    /// [`crate::sphere::inbox::review_item`]): the head's review starts again, on the first
+    /// reviewer that may take it, with one more to fall back on. `None` for a job obid doesn't
+    /// have; `Err` when its review isn't waiting for the owner.
+    pub fn review_again(self: &Arc<Self>, id: &str) -> Option<Result<Job, Refused>> {
+        let job = self.get(id)?;
+        if !job.review_needs_you() || job.current_review().is_some() {
+            return Some(Err(Refused(
+                "Oby's review of it isn't waiting for you.".into(),
+            )));
+        }
+        self.update(id, |job| {
+            job.review_failed = None;
+            job.review_error = None;
+        });
+        self.start_review(id);
+        self.schedule();
+        self.get(id).map(Ok)
+    }
+
+    /// The job `id`'s inbox item about Oby's review that couldn't run: `item` when there is one,
+    /// and its other open ones done, with no answer.
+    fn review_items(&self, id: &str, item: Option<crate::sphere::inbox::Item>) {
+        if let Some(link) = self.link.get().and_then(std::sync::Weak::upgrade) {
+            link.review_items(id, item);
+        }
     }
 
     /// Oby's reviews left hanging, settled on each pass of [`Jobs::follow_pull_requests`] (so
@@ -8664,8 +8702,69 @@ impl Jobs {
             (Status::Done, None) => Some("it gave no verdict".to_owned()),
             (Status::Done, Some(_)) => None,
             (Status::Stopped, _) => Some("it was stopped".to_owned()),
-            (status, _) => Some(review.reason.unwrap_or_else(|| status.as_str().to_owned())),
+            (status, _) => Some(
+                review
+                    .reason
+                    .clone()
+                    .unwrap_or_else(|| status.as_str().to_owned()),
+            ),
         };
+        // It ended before a verdict (a login refused, the tool crashing): on the next reviewer
+        // that may take it, once; then the owner's, in one item. Never one the owner let go.
+        let recorded = author
+            .review_failed_here()
+            .is_some_and(|f| f.reviews.iter().any(|(job, _)| job == id));
+        if matches!(review.status, Status::Failed | Status::Interrupted)
+            && (review.dismissed.is_none() || recorded)
+        {
+            let mut failed =
+                author
+                    .review_failed_here()
+                    .cloned()
+                    .unwrap_or_else(|| crate::job::ReviewFailed {
+                        commit: head.clone().unwrap_or_default(),
+                        reviews: Vec::new(),
+                        needs_you: false,
+                    });
+            if !recorded {
+                failed
+                    .reviews
+                    .push((id.to_owned(), reviewed_on(&review.agent, &review.account)));
+            }
+            let mut tried = author.clone();
+            tried.review_failed = Some(failed.clone());
+            let retry =
+                !failed.needs_you && failed.reviews.len() < 2 && self.reviewer(&tried).is_ok();
+            failed.needs_you = !retry;
+            let why = why.unwrap_or_default();
+            let number = author
+                .published
+                .as_deref()
+                .and_then(|url| crate::github::pull_request_number(url, &author.repo))
+                .map_or("its pull request".to_owned(), |n| format!("#{n}"));
+            let error = (!retry).then(|| format!("{}{number}: {why}", crate::job::COULDNT_REVIEW));
+            let author = self.update(&of, |job| {
+                job.reviewing = None;
+                job.review_failed = Some(failed);
+                job.review_error = error.clone();
+            });
+            // Its end is its author's to tell: the review job itself needs no one.
+            self.update(id, |review| {
+                review.dismissed.get_or_insert_with(obi_protocol::time::now);
+            });
+            if retry {
+                tracing::info!(
+                    "job {of}: its review {id} ended before a verdict ({why}): another reviewer takes it"
+                );
+                self.start_review(&of);
+            } else if let (Some(author), Some(error)) = (author, error) {
+                self.review_items(
+                    &of,
+                    Some(crate::sphere::inbox::review_item(&author, id, &error)),
+                );
+            }
+            return;
+        }
         let Some((approved, text)) = verdict.filter(|_| why.is_none()) else {
             self.update(&of, |job| {
                 job.reviewing = None;
@@ -8710,8 +8809,10 @@ impl Jobs {
             && !carried
             && !past_safety(&author))
         .then(|| self.quote_review(&of, round, &by, &text));
+        self.review_items(&of, None);
         self.update(&of, |job| {
             job.reviewing = None;
+            job.review_failed = None;
             job.review_error = match &quoted {
                 Some(Err(why)) => Some(format!(
                     "Oby's review asks for changes, and obid couldn't hand them to the agent: {why}"
@@ -10828,6 +10929,11 @@ fn learn_claude_tokens(bytes: &[u8], service: &str) {
             crate::secrets::known().learn(&format!("{service} {key}"), token);
         }
     }
+}
+
+/// How a review's account is named in its author's `review_failed`: its tool and account id.
+fn reviewed_on(tool: &str, account: &str) -> String {
+    format!("{tool}:{account}")
 }
 
 /// Codex's `auth.json` as obid copies it, jobs' and conversations' alike: all of it but the

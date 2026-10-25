@@ -189,7 +189,9 @@ impl Seen {
             });
         }
         // Oby's review gave no verdict, or its changes and their rounds didn't settle it: once.
+        // One no reviewer could give is the owner's already, in obid's own item.
         let why = match &now.review_error {
+            Some(error) if error.starts_with(crate::job::COULDNT_REVIEW) => None,
             Some(error) if Some(error) != before.review_error.as_ref() => {
                 Some(super::briefing::line(error, 200))
             }
@@ -248,6 +250,8 @@ impl Seen {
             || matches!(item.kind.as_str(), "confirm" | "start" | "permission" | "plan" | "question" | "github" | "merge" | crate::sphere::inbox::QUESTION_KIND)
             // obid's own bug's item is the owner's too (#914): an answer from Oby would loop it.
             || crate::sphere::inbox::is_crash_item(item)
+            // So is a review no reviewer could give: obid fell back already.
+            || crate::sphere::inbox::is_review_item(item)
             // What someone said, told to the owner, and what a plug-in sent: never the brain's
             // to act on (#1124).
             || matches!(item.kind.as_str(), "watch" | "listen" | "pluginEvent")
@@ -1027,6 +1031,14 @@ mod tests {
         assert!(seen.job(&job(None, false)).is_empty());
         assert_eq!(seen.job(&job(None, true)).len(), 1);
         assert!(seen.job(&job(None, true)).is_empty());
+        // A review no reviewer could give is the owner's in obid's own item: no event. Changes
+        // obid couldn't hand to the agent still are one.
+        let mut fresh = Seen::default();
+        let none = "Oby couldn't review #7: The Mac's Codex login for Codex has ended";
+        assert!(fresh.job(&job(Some(none), true)).is_empty());
+        let unhanded =
+            "Oby's review asks for changes, and obid couldn't hand them to the agent: disk full";
+        assert_eq!(fresh.job(&job(Some(unhanded), true)).len(), 1);
         // The review job itself: failed or interrupted, it's told on the job it reviewed.
         let review = serde_json::json!({"id": "r1", "status": "failed", "title": "Oby review: Fix", "limit": null, "reviewError": null, "reviewOf": "j1", "dismissed": null});
         assert!(Seen::default().job(&review).is_empty());

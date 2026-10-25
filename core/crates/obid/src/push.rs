@@ -295,6 +295,22 @@ pub fn wanted(jobs: &[Job], inbox: &[Value]) -> Vec<(String, Alert)> {
             wanted.push((format!("permission:{}", permission.id), asks));
             continue;
         }
+        // Oby's review left it to the owner: no reviewer could review its head, or its changes
+        // and their rounds didn't settle it. Once per head.
+        if job.status == Status::Done && !job.can_publish() && job.review_needs_you() {
+            let title = job.short_title();
+            let said = match &job.review_error {
+                Some(error) => (format!("Couldn't review: {title}"), error.clone(), "job"),
+                None => (
+                    format!("Changes requested: {title}"),
+                    "Oby's review still asks for changes. Take it from here.".to_owned(),
+                    "job",
+                ),
+            };
+            let head = job.pushed_head().unwrap_or_default();
+            wanted.push((format!("review:{head}"), alert(said, true)));
+            continue;
+        }
         let said = match job.status {
             Status::Done if job.can_publish() => self::alert(job, Notice::Ready),
             Status::Failed => self::alert(job, Notice::Failed),
@@ -1320,6 +1336,44 @@ mod tests {
         );
         job.title = Some("Android push".into());
         job
+    }
+
+    /// Oby's review that no reviewer could give, or whose changes its rounds didn't settle, alerts
+    /// once per head, as needing the owner.
+    #[test]
+    fn a_review_left_to_the_owner_alerts_once_per_head() {
+        let mut job = job("j1");
+        job.status = Status::Done;
+        job.published = Some("https://github.com/deskree-inc/oby/pull/7".into());
+        job.branch = "oby/fix-j1".into();
+        job.outgoing.push(crate::publish::Outgoing::new(
+            "push",
+            &job.repo,
+            "abc",
+            Some("oby/fix-j1"),
+        ));
+        let done = wanted(std::slice::from_ref(&job), &[]);
+        assert_eq!(
+            (done[0].1.title.as_str(), done[0].1.urgent),
+            ("Done: Android push", false)
+        );
+        job.review_error = Some("Oby couldn't review #7: The Mac's Codex login has ended.".into());
+        job.review_failed = Some(crate::job::ReviewFailed {
+            commit: "abc".into(),
+            reviews: vec![
+                ("r1".into(), "codex:codex".into()),
+                ("r2".into(), "claude:default".into()),
+            ],
+            needs_you: true,
+        });
+        let said = wanted(std::slice::from_ref(&job), &[]);
+        assert_eq!(said[0].0, "review:abc");
+        assert_eq!(said[0].1.title, "Couldn't review: Android push");
+        assert_eq!(
+            said[0].1.body,
+            "Oby couldn't review #7: The Mac's Codex login has ended."
+        );
+        assert!(said[0].1.urgent);
     }
 
     fn permission() -> crate::permissions::Permission {
