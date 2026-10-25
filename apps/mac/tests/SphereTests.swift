@@ -280,10 +280,135 @@ struct SphereTests {
         #expect(server.requests.map(\.path) == ["/v0.1/spheres/acme/invitations/inv-1/preview"])
     }
 
+    /// An open link's join takes obi-<owner>, then -2, -3… while the Sphere has had that id (a
+    /// reinstall, a second Mac, a leave); a revoked membership is left first (#1214).
+    @MainActor @Test func aJoinTakesTheNextObiIdTheSphereHasntHad() async throws {
+        let owner = "tester-\(UUID().uuidString.lowercased().prefix(8))"
+        let server = RunnerStub { request in
+            request.path == "/v0.1/spheres/acme/invitations/inv-1/preview" ? (200, #"{"name": "Acme", "member_count": 3}"#) : (404, "{}")
+        }
+        let obid = RunnerStub { request in
+            switch (request.method, request.path) {
+            case ("GET", "/v1/obid/sphere"): (200, #"{"state": "revoked", "owner": "\#(owner)", "sphere": "old"}"#)
+            case ("POST", "/v1/obid/sphere/card"): (200, #"{"card": {"name": "x"}}"#)
+            case ("POST", "/v1/obid/sphere/join"):
+                Stubbed.joins.withLock { $0 += 1; return $0 } == 1
+                    ? (502, #"{"error": "The Sphere refused it: conflict: obi-\#(owner) is or was a member: Obi ids are never reused"}"#)
+                    : (200, "{}")
+            default: (200, "{}")
+            }
+        }
+        let session = SphereServer.session
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [RunnerStubProtocol.self] + (configuration.protocolClasses ?? [])
+        SphereServer.session = URLSession(configuration: configuration, delegate: NoRedirects(), delegateQueue: nil)
+        defer {
+            SphereServer.session = session
+            try? OwnerKey.store.remove(owner)
+        }
+        let feed = RunnerFeed()
+        feed.stageAlerts(following: obid.runner)
+        let invite = InviteLink(server: URL(string: "https://\(server.host)")!, sphere: "acme", name: "Acme", by: "sangam", id: "inv-1", secret: "s")
+        try await SphereModel(feed: feed).join(invite)
+        let calls = obid.requests.map { "\($0.method) \($0.path)" }
+        #expect(calls.firstIndex(of: "DELETE /v1/obid/sphere") ?? .max < calls.firstIndex(of: "POST /v1/obid/sphere/key") ?? 0)
+        #expect(obid.requests.filter { $0.path == "/v1/obid/sphere/card" }.map { $0.json?["obiId"] as? String }
+            == ["obi-\(owner)", "obi-\(owner)-2"])
+        #expect(calls.filter { $0 == "POST /v1/obid/sphere/join" }.count == 2)
+    }
+
+    /// What the Sphere refuses a join for, said plainly with what to do (#1214).
+    @Test func theSpheresRefusalsOfAJoinSayWhatToDo() {
+        let problem = { (said: String) in
+            SphereModel.joinProblem(RunnerError(message: "The Sphere refused it: \(said)", status: 502), owner: "wellprado", sphere: "Deskree")?.message
+        }
+        #expect(problem("forbidden: the owner already has another bound key")
+            == "Deskree already has wellprado with another Mac's key (another Mac, or Oby before a reinstall). For now you're in an Obysphere from one Mac: join from that one.")
+        #expect(problem("forbidden: this invitation is for deskree.com accounts") == "This link is for people at deskree.com: sign in with your deskree.com Google account.")
+        #expect(problem("invitation_invalid: the invitation is unknown, used up, expired, or the secret is wrong")?.hasPrefix("This link has expired") == true)
+        #expect(problem("conflict: obi-wellprado-9 is or was a member: Obi ids are never reused")?.contains("Ask its admin") == true)
+        #expect(problem("bad_request: the body doesn't match") == nil)
+    }
+
+    /// Leave removes this Mac's Oby on the Sphere with the owner's own token, then obid forgets it (#1214).
+    @MainActor @Test func leavingRemovesThisObyOnTheSphereThenObidForgetsIt() async throws {
+        Stubbed.left.withLock { $0 = false }
+        let owner = "tester-\(UUID().uuidString.lowercased().prefix(8))"
+        let server = RunnerStub { request in
+            switch (request.method, request.path) {
+            case ("POST", "/v0.1/oauth/token"): (200, #"{"access_token": "owner-token"}"#)
+            case ("DELETE", "/v0.1/spheres/acme/members/obi-\(owner)"): (200, "{}")
+            default: (404, "{}")
+            }
+        }
+        let joined = #"{"state": "joined", "owner": "\#(owner)", "url": "https://\#(server.host)", "sphere": "acme", "obiId": "obi-\#(owner)"}"#
+        let left = #"{"state": "none", "owner": "\#(owner)"}"#
+        let obid = RunnerStub { request in
+            switch (request.method, request.path) {
+            case ("GET", "/v1/obid/sphere"): (200, Stubbed.left.withLock { $0 } ? left : joined)
+            case ("DELETE", "/v1/obid/sphere"): { Stubbed.left.withLock { $0 = true }; return (200, left) }()
+            default: (404, "{}")
+            }
+        }
+        let session = SphereServer.session
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [RunnerStubProtocol.self] + (configuration.protocolClasses ?? [])
+        SphereServer.session = URLSession(configuration: configuration, delegate: NoRedirects(), delegateQueue: nil)
+        defer {
+            SphereServer.session = session
+            try? OwnerKey.store.remove(owner)
+        }
+        let feed = RunnerFeed()
+        feed.stageAlerts(following: obid.runner)
+        let sphere = SphereModel(feed: feed)
+        try await sphere.leave()
+        #expect(server.requests.map { "\($0.method) \($0.path)" } == ["POST /v0.1/oauth/token", "DELETE /v0.1/spheres/acme/members/obi-\(owner)"])
+        #expect(server.requests.last?.authorization == "Bearer owner-token")
+        #expect(obid.requests.contains { $0.method == "DELETE" && $0.path == "/v1/obid/sphere" })
+        #expect(!sphere.joined && sphere.membership?.state == "none")
+    }
+
+    /// A Sphere that can't be told still lets this Mac leave, and the owner hears it's still listed there.
+    @MainActor @Test func leavingWhenTheSphereCantBeToldLeavesAndSaysSo() async throws {
+        Stubbed.left.withLock { $0 = false }
+        let owner = "tester-\(UUID().uuidString.lowercased().prefix(8))"
+        let server = RunnerStub { _ in (503, #"{"error": {"code": "unavailable", "message": "down"}}"#) }
+        let joined = #"{"state": "joined", "owner": "\#(owner)", "url": "https://\#(server.host)", "sphere": "acme", "obiId": "obi-\#(owner)"}"#
+        let left = #"{"state": "none", "owner": "\#(owner)"}"#
+        let obid = RunnerStub { request in
+            switch (request.method, request.path) {
+            case ("GET", "/v1/obid/sphere"): (200, Stubbed.left.withLock { $0 } ? left : joined)
+            case ("DELETE", "/v1/obid/sphere"): { Stubbed.left.withLock { $0 = true }; return (200, left) }()
+            default: (404, "{}")
+            }
+        }
+        let session = SphereServer.session
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [RunnerStubProtocol.self] + (configuration.protocolClasses ?? [])
+        SphereServer.session = URLSession(configuration: configuration, delegate: NoRedirects(), delegateQueue: nil)
+        defer {
+            SphereServer.session = session
+            try? OwnerKey.store.remove(owner)
+        }
+        let feed = RunnerFeed()
+        feed.stageAlerts(following: obid.runner)
+        let sphere = SphereModel(feed: feed)
+        let untold = await #expect(throws: RunnerError.self) { try await sphere.leave() }
+        #expect(untold?.message.hasPrefix("This Mac left acme, but the Obysphere couldn't be told") == true)
+        #expect(obid.requests.contains { $0.method == "DELETE" && $0.path == "/v1/obid/sphere" })
+        #expect(sphere.membership?.state == "none")
+    }
+
     @Test func anObysphereIdComesFromItsName() {
         #expect(SphereSettingsView.slug("Deskree × Avenga") == "deskree-avenga")
         #expect(SphereSettingsView.slug("  Déskree  ") == "deskree")
     }
+}
+
+/// What the stubbed obids above remember between calls (the suite is serialized).
+private enum Stubbed {
+    static let joins = Mutex(0)
+    static let left = Mutex(false)
 }
 
 /// Answers every request to obysphere.deskree.com with a 307 to elsewhere.example, and notes

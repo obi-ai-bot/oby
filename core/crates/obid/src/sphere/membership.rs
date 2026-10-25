@@ -5,6 +5,8 @@
 //!   log or agent ever sees it, and the job sandbox hides `home` from agents.
 //! - `sphere/membership.json` (0600): the Sphere, the Obi's id and its owner-signed card.
 //! - `sphere/delegation.jwt` (0600): the owner's delegation, never shown again once kept.
+//! - `owner` (0600): the owner id obid joined a Sphere as. It outlives a leave, so obid joins again
+//!   as the same owner: a Sphere binds an owner to their first key and Google account (#1214).
 
 use std::path::{Path, PathBuf};
 
@@ -56,6 +58,7 @@ pub struct Files {
     key: PathBuf,
     membership: PathBuf,
     delegation: PathBuf,
+    owner: PathBuf,
 }
 
 impl Files {
@@ -64,6 +67,7 @@ impl Files {
             key: home.join("keys").join("obi.key"),
             membership: home.join("sphere").join("membership.json"),
             delegation: home.join("sphere").join("delegation.jwt"),
+            owner: home.join("owner"),
         }
     }
 
@@ -104,6 +108,31 @@ impl Files {
         store::make_private_dir(self.membership.parent().expect("a folder"))?;
         let text = serde_json::to_vec_pretty(membership).map_err(std::io::Error::other)?;
         store::write_private(&self.membership, &text)
+    }
+
+    /// The owner id obid joined a Sphere as, if it ever joined one.
+    pub fn load_owner(&self) -> Option<String> {
+        std::fs::read_to_string(&self.owner)
+            .ok()
+            .map(|t| t.trim().to_owned())
+            .filter(|t| !t.is_empty())
+    }
+
+    pub fn save_owner(&self, owner: &str) -> std::io::Result<()> {
+        store::write_private(&self.owner, owner.as_bytes())
+    }
+
+    /// Removes the Obi key and the Sphere's folder with everything in it (obid left its Sphere).
+    /// The owner it joined as stays.
+    pub fn forget(&self) -> std::io::Result<()> {
+        let gone = |r: std::io::Result<()>| match r {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e),
+            _ => Ok(()),
+        };
+        gone(std::fs::remove_dir_all(
+            self.membership.parent().expect("a folder"),
+        ))?;
+        gone(std::fs::remove_file(&self.key))
     }
 
     pub fn load_delegation(&self) -> Option<String> {

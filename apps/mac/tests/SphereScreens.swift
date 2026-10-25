@@ -11,6 +11,47 @@ import Testing
 struct SphereScreens {
     let folder = URL(fileURLWithPath: ProcessInfo.processInfo.environment["OBY_SCREENS"] ?? NSTemporaryDirectory())
 
+    /// Settings › Obysphere in an Obysphere, with Leave at the bottom; and once its admin removed this
+    /// Oby, Leave to join another (#1214). The Sphere is faked for this test alone.
+    @Test func leaveAnObysphere() async throws {
+        let server = RunnerStub { request in
+            switch (request.method, request.path) {
+            case ("POST", "/v0.1/oauth/token"): (200, #"{"access_token": "owner-token"}"#)
+            case ("GET", "/v0.1/spheres/deskree"): (200, #"{"name": "Deskree", "admin_owner": "doti"}"#)
+            case ("GET", "/v0.1/spheres/deskree/members"):
+                (200, #"{"members": [{"obi": "obi-sangam", "owner": "sangam", "status": "active", "card": {"name": "Sangam's Oby"}}]}"#)
+            default: (404, "{}")
+            }
+        }
+        let owner = "tester-\(UUID().uuidString.lowercased().prefix(8))"
+        let joined = #"{"state": "joined", "owner": "\#(owner)", "url": "https://\#(server.host)", "sphere": "deskree", "obiId": "obi-\#(owner)"}"#
+        let obid = RunnerStub { request in
+            switch request.path {
+            case "/v1/obid/sphere": (200, joined)
+            case "/v1/obid/sphere/pins", "/v1/inbox": (200, "[]")
+            default: (404, "{}")
+            }
+        }
+        let session = SphereServer.session
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [RunnerStubProtocol.self] + (configuration.protocolClasses ?? [])
+        SphereServer.session = URLSession(configuration: configuration, delegate: NoRedirects(), delegateQueue: nil)
+        defer {
+            SphereServer.session = session
+            try? OwnerKey.store.remove(owner)
+        }
+        let feed = RunnerFeed()
+        feed.stageAlerts(following: obid.runner)
+        try await save(settings(SphereSettingsView(feed: feed)), as: "sphere-leave")
+
+        let removed = RunnerStub { request in
+            request.path == "/v1/obid/sphere" ? (200, #"{"state": "revoked", "owner": "\#(owner)", "sphere": "deskree"}"#) : (404, "{}")
+        }
+        let gone = RunnerFeed()
+        gone.stageAlerts(following: removed.runner)
+        try await save(settings(SphereSettingsView(feed: gone)), as: "sphere-removed")
+    }
+
     @Test func createSheet() async throws {
         try await save(CreateSphereSheet(feed: RunnerFeed(), email: "doti@gmail.com", done: { _ in }, close: {}), as: "sphere-create-empty")
         try await save(CreateSphereSheet(feed: RunnerFeed(), name: "Deskree Platform", emails: ["ernesto@deskree.com", "sangam@deskree.com"],
