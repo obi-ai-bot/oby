@@ -1414,7 +1414,7 @@ final class RunnerFeed {
     /// in a conversation).
     func seen(_ place: AlertPlace) {
         let ids: [String] = switch place {
-        case .job(let id), .localJob(let id): [id]
+        case .job(let id): [id]
         case .conversation(let id):
             [Alerts.answerID(id)] + inbox.filter { Alerts.place(of: $0, conversation: inboxWords[$0.id]?.conversation) == place }.map(\.id)
         case .window: []

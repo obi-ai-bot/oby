@@ -96,7 +96,7 @@ nonisolated struct RunnerRule: Codable, Identifiable, Equatable, Sendable {
 #if os(macOS)
 /// A job's mode, the permission it waits on, and its question with the recommended option and the
 /// plan, as the Mac's job screen shows them: a runner's job's, read from the same JSON (never
-/// failing the job, as from a runner Engine's Job can't read), or this Mac's own (`init(local:)`).
+/// failing the job, as from a runner Engine's Job can't read).
 nonisolated struct RunnerJobExtras: Decodable, Equatable, Sendable {
     var id: String
     var mode: String?
@@ -167,16 +167,6 @@ nonisolated struct RunnerJobExtras: Decodable, Equatable, Sendable {
         }
         let list = (try? Runner.decoder.decode([Lossy].self, from: data))?.compactMap(\.extras) ?? []
         return Dictionary(list.map { ($0.id, $0) }, uniquingKeysWith: { $1 })
-    }
-
-    /// The same, for one of this Mac's own jobs, from Engine's Job, which carries them since #134.
-    init(local job: Job) {
-        self.init(id: job.id, mode: job.currentMode.rawValue,
-                  permission: job.permission.map {
-                      RunnerPermission(id: $0.id, tool: $0.tool, title: $0.title, detail: $0.detail, rule: $0.rule, always: $0.always)
-                  },
-                  question: job.question.map { Question(text: $0.text, options: $0.options, recommended: $0.recommended, plan: $0.plan) })
-        tetrix = job.tetrix.map { TetrixJobReport(connected: $0.connected, calls: $0.calls, saved: $0.stamps?.sessions ?? []) }
     }
 }
 #endif

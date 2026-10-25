@@ -7,7 +7,7 @@ nonisolated enum WindowStep: Hashable, Sendable {
     case group(WorkType)
     /// Archived (Sangam's ArchiveView): the done tasks that left Home.
     case archived
-    case job(id: String, local: Bool)
+    case job(id: String)
     case session(id: String)
     case talk
     case settings(SettingsPage)
@@ -147,8 +147,8 @@ nonisolated enum HomeLine {
 extension WindowTrail {
     /// Whether the job's page is what shows, or what the conversation on top was opened from: its
     /// row in the side panel is lit.
-    func shows(job: String, local: Bool) -> Bool {
-        let step = WindowStep.job(id: job, local: local)
+    func shows(job: String) -> Bool {
+        let step = WindowStep.job(id: job)
         if top == step { return true }
         return top == .talk && steps.count > 1 && steps[steps.count - 2] == step
     }

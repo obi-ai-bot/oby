@@ -9,7 +9,7 @@ import SwiftUI
 struct ConversationPage: View {
     let model: IslandModel
     let composerFocusRequest: Int
-    let onOpenJob: (_ job: String, _ local: Bool) -> Void
+    let onOpenJob: (_ job: String) -> Void
     /// Esc with nothing to stop: back a page.
     let onBack: () -> Void
     @State private var text = ""
@@ -118,7 +118,7 @@ struct ConversationPage: View {
                             }
                             ForEach(notices) { notice in
                                 InlineNotice(notice: notice, feed: feed, keyboardEnabled: oldest == "notice/\(notice.id)", focusRequest: decisionFocus,
-                                             onOpen: { onOpenJob($0, false) })
+                                             onOpen: { onOpenJob($0) })
                                     .id("notice/\(notice.id)").padding(.bottom, 12)
                             }
                             ForEach(entries.filter { anchors[$0.id] == .some(nil) }) { decision($0, active: oldest == $0.id).padding(.bottom, 12) }
@@ -129,13 +129,12 @@ struct ConversationPage: View {
                                 MessageRow(row: row, first: index == 0, now: context.date,
                                            jobs: ThreadTaskLine.cards(under: row.turn, in: turns, jobs: all, startedBy: startedBy),
                                            followUps: { conversation.endedTurn(row.turn) ? [] : ThreadTaskLine.attached(to: $0, in: all, shown: shown) },
-                                           account: { job, _ in LiveView.account(of: job, feed: feed) },
-                                           isLocal: { _ in false },
+                                           account: { LiveView.account(of: $0, feed: feed) },
                                            steps: conversation.steps(under: row.turn, in: turns),
                                            arrived: conversation.arrived[row.turn.id],
                                            streamed: conversation.streamed(under: row.turn, in: turns),
                                            conversation: conversation, feed: feed,
-                                           onOpenJob: onOpenJob, onStopJob: { id, _ in model.stopChatJob(id) },
+                                           onOpenJob: onOpenJob, onStopJob: { model.stopChatJob($0) },
                                            onRetry: { feed.retryEcho(row.turn.id); model.ask(row.turn.text) },
                                            onEdit: { feed.dropEcho(row.turn.id); text = row.turn.text; typing = true })
                                     .task(id: row.turn.jobs ?? []) {
@@ -289,8 +288,7 @@ private struct MessageRow: View {
     let jobs: [Job]
     /// The follow-ups that go with a job's card, told somewhere the thread doesn't show.
     let followUps: (Job) -> [Job]
-    let account: (_ job: Job, _ local: Bool) -> String
-    let isLocal: (_ id: String) -> Bool
+    let account: (_ job: Job) -> String
     let steps: [TurnStep]
     /// When Oby's answer came while the thread was open: its words come in from then.
     let arrived: Date?
@@ -298,8 +296,8 @@ private struct MessageRow: View {
     let streamed: ConversationModel.Streamed?
     let conversation: ConversationModel
     let feed: RunnerFeed
-    let onOpenJob: (_ job: String, _ local: Bool) -> Void
-    let onStopJob: (_ job: String, _ local: Bool) -> Void
+    let onOpenJob: (_ job: String) -> Void
+    let onStopJob: (_ job: String) -> Void
     /// On words that didn't reach the runner (`RunnerFeed.Echo`): send them again, or take them back
     /// into the box.
     let onRetry: () -> Void
@@ -338,17 +336,15 @@ private struct MessageRow: View {
             if let streamed { StreamingAnswer(streamed: streamed) }
             ForEach(conversation.artifactRefs(of: turn), id: \.self) { artifact($0) }
             ForEach(jobs) { job in
-                let local = isLocal(job.id)
-                ThreadTask(job: job, account: account(job, local), on: local ? nil : feed.extras[job.id]?.runsOn.map { RunnerMac.person($0.owner) },
-                           onOpen: { onOpenJob(job.id, local) }, onStop: { onStopJob(job.id, local) })
-                if !local { ForEach(feed.extras[job.id]?.artifacts ?? [], id: \.self) { artifact($0) } }
+                ThreadTask(job: job, account: account(job), on: feed.extras[job.id]?.runsOn.map { RunnerMac.person($0.owner) },
+                           onOpen: { onOpenJob(job.id) }, onStop: { onStopJob(job.id) })
+                ForEach(feed.extras[job.id]?.artifacts ?? [], id: \.self) { artifact($0) }
                 ForEach(followUps(job)) { next in
-                    let local = isLocal(next.id)
-                    Text(ThreadTaskLine.followUp(next, account: account(next, local))).font(Tokens.font(Tokens.textMd))
+                    Text(ThreadTaskLine.followUp(next, account: account(next))).font(Tokens.font(Tokens.textMd))
                         .foregroundStyle(Tokens.muted).fixedSize(horizontal: false, vertical: true)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                    ThreadTask(job: next, account: account(next, local), on: local ? nil : feed.extras[next.id]?.runsOn.map { RunnerMac.person($0.owner) },
-                               onOpen: { onOpenJob(next.id, local) }, onStop: { onStopJob(next.id, local) })
+                    ThreadTask(job: next, account: account(next), on: feed.extras[next.id]?.runsOn.map { RunnerMac.person($0.owner) },
+                               onOpen: { onOpenJob(next.id) }, onStop: { onStopJob(next.id) })
                 }
             }
             if row.endsRun {

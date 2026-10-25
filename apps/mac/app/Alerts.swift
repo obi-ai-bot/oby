@@ -4,8 +4,6 @@ import AppKit
 nonisolated enum AlertPlace: Equatable, Sendable {
     /// A runner job's page.
     case job(String)
-    /// One of this Mac's own jobs (the Swift desk's).
-    case localJob(String)
     case conversation(String)
     /// The window, on the conversation shown.
     case window
@@ -14,7 +12,7 @@ nonisolated enum AlertPlace: Equatable, Sendable {
     /// Settings and the rest, where no alert's thing is.
     static func shown(_ top: WindowStep?, conversation: String?) -> AlertPlace? {
         switch top {
-        case .job(let id, let local): local ? .localJob(id) : .job(id)
+        case .job(let id): .job(id)
         case .session(let id): .job(id)
         case .talk: conversation.map(AlertPlace.conversation)
         default: nil
@@ -293,7 +291,6 @@ enum Alerts {
     /// What the window opens on for an alert's `info`.
     static func place(_ info: [AnyHashable: Any]) -> AlertPlace {
         if let job = info[RunnerFeed.jobKey] as? String { return .job(job) }
-        if let job = info[IslandController.localJobKey] as? String { return .localJob(job) }
         if let conversation = info[conversationKey] as? String { return .conversation(conversation) }
         return .window
     }
@@ -349,7 +346,7 @@ enum Alerts {
     /// One stack per job, or per conversation for its work and Oby's answers there.
     static func thread(_ place: AlertPlace) -> String {
         switch place {
-        case .job(let id), .localJob(let id): "job-\(id)"
+        case .job(let id): "job-\(id)"
         case .conversation(let id): "conversation-\(id)"
         case .window: "oby"
         }
@@ -358,7 +355,6 @@ enum Alerts {
     private static func info(_ place: AlertPlace) -> [String: String] {
         switch place {
         case .job(let id): [RunnerFeed.jobKey: id]
-        case .localJob(let id): [IslandController.localJobKey: id]
         case .conversation(let id): [conversationKey: id]
         case .window: [:]
         }

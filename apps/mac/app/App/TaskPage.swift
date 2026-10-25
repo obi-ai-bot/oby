@@ -306,7 +306,7 @@ struct TaskCardView: View {
     private func meta(_ actions: TaskActions) -> String {
         let repo = job.repo.split(separator: "/").last.map(String.init)
         // "Claude Code · Personal · on Wellington’s Mac · oby" (Sangam's design, #808).
-        let on = item.job.local ? nil : model.feed.extras[job.id]?.runsOn.map { "on \(RunnerMac.person($0.owner))’s Mac" }
+        let on = model.feed.extras[job.id]?.runsOn.map { "on \(RunnerMac.person($0.owner))’s Mac" }
         return ([job.agentName, actions.account ?? LiveView.account(of: job, feed: model.feed)]
             + [on, repo].compactMap { $0 }).filter { !$0.isEmpty }.joined(separator: " · ")
     }

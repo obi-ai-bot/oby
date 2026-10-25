@@ -83,7 +83,7 @@ struct BriefingCountTests {
         #expect(waiting[1].line == "After #223 merges" && waiting[0].line == "Runner update")
         #expect(running.badge == JobBadge(text: "Working", tone: .blue) && running.group == .working)
         #expect(JobList.groups(feed.jobs, by: \.group).map(\.group) == [.working, .waiting])
-        #expect(SidebarSections.work(local: [], runner: feed.jobs, since: .distantFuture, seen: []).filter { $0.mark == .queued }.count == 14)
+        #expect(SidebarSections.work(feed.jobs, since: .distantFuture, seen: []).filter { $0.mark == .queued }.count == 14)
         desk.elsewhere = { [Briefing.Place(name: "tetrix-lab", jobs: feed.jobs, inbox: [])] }
         #expect(desk.briefing(turns: []).working == model.working)
         #expect(desk.briefing(turns: []).text.contains("Working now: 1 agent is working: Vault secrets on tetrix-lab. 14 jobs are waiting."))

@@ -9,7 +9,7 @@ struct GroupPane: View {
     let kind: WorkType
     /// The kind's tasks, in Home's order (`WorkList.ranked`).
     let items: [WorkList.Item<SidebarSections.JobRow>]
-    let onOpenJob: (_ job: String, _ local: Bool) -> Void
+    let onOpenJob: (_ job: String) -> Void
     let onOpenArchive: () -> Void
     /// Connect GitHub: Settings › Connectors, where GitHub's row signs obid's gh in with GitHub's
     /// own device sign-in (#690).
@@ -83,7 +83,7 @@ struct GroupPane: View {
                 // A routine waiting for its next run says when (Sangam's tasks.ts).
                 if tab == .running { ForEach(upcoming) { UpcomingRoutineCard(routine: $0) } }
                 ForEach(cards) { item in
-                    TaskCardView(item: item, model: model, state: state) { onOpenJob(item.job.job.id, item.job.local) }
+                    TaskCardView(item: item, model: model, state: state) { onOpenJob(item.job.job.id) }
                 }
                 if tab != .todo && cards.isEmpty && (tab == .done || upcoming.isEmpty) {
                     if feed.connection == .connecting && !feed.showingKept {
@@ -136,7 +136,7 @@ struct GroupPane: View {
 struct ArchivePane: View {
     let items: [WorkList.Item<SidebarSections.JobRow>]
     var loading = false
-    let onOpenJob: (_ job: String, _ local: Bool) -> Void
+    let onOpenJob: (_ job: String) -> Void
     @State private var query = ""
     @FocusState private var searching: Bool
 
@@ -160,7 +160,7 @@ struct ArchivePane: View {
                 .padding(.horizontal, 14).frame(height: 40)
                 .overlay { RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(searching ? Tokens.lineFocus : Tokens.line) }
                 VStack(spacing: 2) {
-                    ForEach(shown) { item in ArchiveRow(item: item) { onOpenJob(item.job.job.id, item.job.local) } }
+                    ForEach(shown) { item in ArchiveRow(item: item) { onOpenJob(item.job.job.id) } }
                 }
                 if shown.isEmpty {
                     if loading && query.trimmingCharacters(in: .whitespaces).isEmpty {

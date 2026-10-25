@@ -32,7 +32,7 @@ final class IslandController {
     private var fading: Task<Void, Never>?
     /// Opens the Oby window (apps/mac/app/App/ChatWindow.swift), on a job's screen when one is named: the
     /// app sets it.
-    var openWindow: (_ job: (id: String, local: Bool)?) -> Void = { _ in }
+    var openWindow: (_ job: String?) -> Void = { _ in }
     /// The window (or first launch) is up, in front, and showing what you say (Home or the
     /// conversation): the pill stays away then, except for Oby's reply, which only the conversation
     /// it went to shows. The app sets it.
@@ -122,6 +122,7 @@ final class IslandController {
         observeAvailability()
         // Remote access: obid runs the tunnel (#896); a token an older Oby kept goes to obid once.
         Task { await remote.start() }
+        Task { await Self.withdrawDeskAlerts() }
         model.onReply = { [weak self] text, spoken in self?.replied(text, spoken: spoken) }
         feed.onFollow = { [weak self] local in
             self?.availability.setRunnerEnabled(local)
@@ -347,16 +348,25 @@ final class IslandController {
 
     // MARK: Alerts
 
-    /// An alert for a job on this Mac, as the runner's (RunnerFeed.post): a click opens the window on it.
-    static let localJobKey = "localJob"
+    /// Alerts about the Desk's own jobs, from before #895 (`localJob` in their info): nothing opens them
+    /// any more, so they go, at launch.
+    static func withdrawDeskAlerts() async {
+        let center = UNUserNotificationCenter.current()
+        let old = deskAlerts(await center.deliveredNotifications().map { ($0.request.identifier, $0.request.content.userInfo) })
+        if !old.isEmpty { center.removeDeliveredNotifications(withIdentifiers: old) }
+    }
 
-    /// One alert, replacing an earlier one with the same `id`. `local`: the id of this Mac's job it is about.
-    static func alert(_ title: String, id: String, local job: String? = nil) {
+    /// Of the alerts delivered, by id with their info, the Desk's.
+    nonisolated static func deskAlerts(_ delivered: [(id: String, info: [AnyHashable: Any])]) -> [String] {
+        delivered.filter { $0.info["localJob"] != nil }.map(\.id)
+    }
+
+    /// One alert, replacing an earlier one with the same `id`.
+    static func alert(_ title: String, id: String) {
         let content = UNMutableNotificationContent()
         content.title = title
         content.sound = .default
         content.threadIdentifier = "jobs"
-        if let job { content.userInfo = [localJobKey: job] }
         let request = UNNotificationRequest(identifier: id, content: content, trigger: nil)
         Task {
             do { try await UNUserNotificationCenter.current().add(request) } catch {

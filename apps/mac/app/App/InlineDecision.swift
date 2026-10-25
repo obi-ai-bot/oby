@@ -7,7 +7,7 @@ struct InlineDecision: View {
     let feed: RunnerFeed
     var keyboardEnabled = false
     var focusRequest = 0
-    var onOpen: (_ job: String, _ local: Bool) -> Void = { _, _ in }
+    var onOpen: (_ job: String) -> Void = { _ in }
     var onTell: (() -> Void)? = nil
     @State private var expanded = false
     @State private var busy = false
@@ -74,7 +74,7 @@ struct InlineDecision: View {
                         onHint: item.kind.takesWords ? onTell : nil,
                         onChoose: { answer($0.answer) },
                         onLater: settled ? nil : { answer(later: .now.addingTimeInterval(3600)) },
-                        onOpen: item.job.isEmpty ? nil : { onOpen(item.job, false) })
+                        onOpen: item.job.isEmpty ? nil : { onOpen(item.job) })
                     .padding(.top, settled ? 12 : 0)
             }
             if let problem { Text(problem).font(Tokens.font(Tokens.textSm)).foregroundStyle(Tokens.danger).padding(.top, 8) }

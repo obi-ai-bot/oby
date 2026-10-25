@@ -195,4 +195,13 @@ struct AlertActionTests {
         #expect(Alerts.answer("reply", typed: words, info: info(alert)) == .open(.job("j"), draft: String(repeating: "w", count: 2000)))
         #expect(Alerts.answer("reply", typed: String(repeating: "w", count: 2000), info: info(alert)) == .tell(job: "j", words: String(repeating: "w", count: 2000), said: "failed"))
     }
+
+    /// The Desk's own jobs' alerts, from before #895, go at launch, and the runner's stay; the Desk's
+    /// seen rows (`mac/…`) go too.
+    @Test func theDesksOldAlertsAndSeenRowsGo() throws {
+        #expect(IslandController.deskAlerts([("a", ["localJob": "j1"]), ("b", [RunnerFeed.jobKey: "j2"]), ("c", [:])]) == ["a"])
+        let defaults = try #require(UserDefaults(suiteName: "AlertActionTests-\(UUID().uuidString)"))
+        defaults.set(["mac/old", "runner/new"], forKey: "newWorkSeen")
+        #expect(ChatState(defaults: defaults).seen == ["runner/new"])
+    }
 }

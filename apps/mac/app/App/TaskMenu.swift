@@ -20,9 +20,9 @@ struct TaskMenu: View {
     var body: some View {
         let manages = model.managesJobs
         if let onViewDetails { Button("View details", action: onViewDetails) }
-        if model.hasConversation(of: job.id, local: row.local) {
+        if model.hasConversation(of: job.id) {
             Button("Open conversation") {
-                model.showConversation(of: job.id, local: row.local)
+                model.showConversation(of: job.id)
                 onOpenChat()
             }
         }

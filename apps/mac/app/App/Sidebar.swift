@@ -5,12 +5,11 @@ import SystemConfiguration
 /// The sidebar's sections, as the window lists them: what each row says, with no view in the
 /// way, so the tests read them (apps/mac/tests/SidebarTests.swift).
 nonisolated enum SidebarSections {
-    /// A job, this Mac's own or the runner's.
+    /// One of the runner's jobs.
     struct JobRow: Identifiable, Equatable, Sendable {
         var job: Job
-        var local: Bool
-        var id: String { Self.id(job.id, local: local) }
-        static func id(_ job: String, local: Bool) -> String { (local ? "mac/" : "runner/") + job }
+        var id: String { Self.id(job.id) }
+        static func id(_ job: String) -> String { "runner/" + job }
     }
 
     /// What the conversation's icon says under the pointer: the last message, or a hello.
@@ -23,7 +22,7 @@ nonisolated enum SidebarSections {
         "Oby, \(obyPreview(last))" + (unread ? ", unread reply" : "")
     }
 
-    /// Every job on Home as a task (#496), this Mac's and the runner's, latest first (by when it
+    /// Every job on Home as a task (#496), the runner's, latest first (by when it
     /// finished, else when it was created, so "the latest done" are the last to finish): its kind of
     /// work, where it stands, and whether it's new (created after `since`, when the window's state
     /// began, and not in `seen`, the rows opened since). The caller leaves out what Clear done took.
@@ -33,9 +32,8 @@ nonisolated enum SidebarSections {
     /// requester to group by rather than one made up.
     /// `routines`: the runner's jobs that are a routine's run (obid's `routine`, #395), which go
     /// under Routines.
-    static func work(local: [Job], runner: [Job], since: Date, seen: Set<String>, routines: Set<String> = []) -> [WorkList.Item<JobRow>] {
-        let rows = local.map { JobRow(job: $0, local: true) } + runner.map { JobRow(job: $0, local: false) }
-        return rows
+    static func work(_ jobs: [Job], since: Date, seen: Set<String>, routines: Set<String> = []) -> [WorkList.Item<JobRow>] {
+        jobs.map { JobRow(job: $0) }
             .sorted {
                 let left = $0.job.finished ?? $0.job.created, right = $1.job.finished ?? $1.job.created
                 return left == right ? $0.id < $1.id : left > right
@@ -43,7 +41,7 @@ nonisolated enum SidebarSections {
             .map { row in
                 let job = row.job
                 let status: WorkStatus = job.needsYou || job.waitsForAnswer || job.waitsForPermission ? .needs : job.isActive ? .running : .done
-                let routine = !row.local && routines.contains(job.id)
+                let routine = routines.contains(job.id)
                 return WorkList.Item(id: row.id, job: row, type: .of(review: job.kind == .review, issue: job.issue, requester: nil, routine: routine),
                                      status: status, queued: job.status == .queued, fresh: job.created > since && !seen.contains(row.id))
             }
@@ -70,7 +68,7 @@ extension IslandModel {
 
     private func work(_ state: ChatState, archived: Bool) -> [WorkList.Item<SidebarSections.JobRow>] {
         let after = state.archiveAfter, now = Date.now
-        return SidebarSections.work(local: [], runner: feed.jobs.filter { self.archived($0, after: after, now: now) == archived },
+        return SidebarSections.work(feed.jobs.filter { self.archived($0, after: after, now: now) == archived },
                                     since: state.since, seen: state.seen,
                                     routines: Set(feed.extras.compactMap { $0.value.routine == nil ? nil : $0.key }))
     }
@@ -310,9 +308,8 @@ private struct TaskRow: View {
     @State private var hovering = false
 
     private var job: Job { item.job.job }
-    private var local: Bool { item.job.local }
-    private var step: WindowStep { .job(id: job.id, local: local) }
-    private var picked: Bool { state.trail.shows(job: job.id, local: local) }
+    private var step: WindowStep { .job(id: job.id) }
+    private var picked: Bool { state.trail.shows(job: job.id) }
     private var done: Bool { item.status == .done }
     private var renaming: Bool { state.renaming == .init(id: item.id) }
 
@@ -349,7 +346,7 @@ private struct TaskRow: View {
         .background(picked ? Tokens.active : hovering ? Tokens.hover : .clear, in: RoundedRectangle(cornerRadius: Tokens.rowRadius, style: .continuous))
         .onHover { hovering = $0 }
         .animation(Tokens.fade, value: hovering)
-        .help(local ? "On this Mac" : "On \(model.feed.name)")
+        .help("On \(model.feed.name)")
         .contextMenu { actions }
     }
 
