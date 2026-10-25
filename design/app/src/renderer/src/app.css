@@ -169,11 +169,15 @@ button.crumb:hover { color: var(--ink); background: var(--hover); }
 .ask-card { position: relative; z-index: 3; padding: 16px 18px; border-radius: 22px; background: var(--chip); text-align: left; user-select: text; }
 .ask-card .tc-ask { margin-top: 12px; padding-top: 12px; }
 /* Home keeps it short: what happened in 3 lines at most, the command or plan in
-   3 (it scrolls); the task's page has all of it */
+   2 (it scrolls); the task’s page has all of it */
 .ask-card .tc-ask-text { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
-.ask-card .tc-code { max-height: 74px; overflow-y: auto; scrollbar-width: none; }
-/* the way to its page, at the head's end */
-.ask-open { flex: none; margin-right: -4px; color: var(--muted); font-size: var(--text-md); }
+.ask-card .tc-code { max-height: 56px; overflow-y: auto; scrollbar-width: none; }
+/* where it is in the stack ("2/5"), always there, between the arrows that go
+   round it; then the way to its page, at the head's end */
+.ask-nav { flex: none; margin: -2px 0; display: flex; align-items: center; gap: 2px; color: var(--muted); font-size: var(--text-sm); font-variant-numeric: tabular-nums; }
+.ask-nav .icon-button { width: 24px; height: 24px; border-radius: 6px; }
+.ask-count { min-width: 28px; color: var(--text); text-align: center; }
+.ask-open { flex: none; margin: 0 -4px 0 6px; color: var(--muted); font-size: var(--text-md); }
 .ask-peek {
   position: absolute;
   inset: 0;
@@ -189,18 +193,23 @@ button.crumb:hover { color: var(--ink); background: var(--hover); }
 .ask-card.is-up { animation: ask-up var(--settle) both; }
 .ask-card.is-up > * { animation: fade-in 240ms var(--warm) 100ms both; }
 @keyframes ask-up { from { transform: translateY(8px) scale(0.95); background-color: color-mix(in srgb, var(--chip) 85%, var(--bg)); } }
-/* answered, it lifts off the top; put off (Later), it sinks back behind the next */
-.ask-card.is-out, .ask-card.is-later { position: absolute; top: 0; left: 0; right: 0; pointer-events: none; }
+/* answered, it lifts off the top; put off (Later), it sinks back behind the
+   next; gone round, it sinks back too, drifting the way you went */
+.ask-card.is-out, .ask-card.is-later, .ask-card.is-next, .ask-card.is-prev { position: absolute; top: 0; left: 0; right: 0; pointer-events: none; }
 .ask-card.is-out { z-index: 4; animation: ask-out 260ms var(--ease-in) both; }
 .ask-card.is-later { z-index: 2; animation: ask-later 300ms var(--ease-in) both; }
+.ask-card.is-next { z-index: 2; animation: ask-next 300ms var(--ease-in) both; }
+.ask-card.is-prev { z-index: 2; animation: ask-prev 300ms var(--ease-in) both; }
 @keyframes ask-out { to { opacity: 0; transform: translateY(-16px) scale(0.98); } }
 @keyframes ask-later { to { opacity: 0; transform: translateY(14px) scale(0.95); } }
+@keyframes ask-next { to { opacity: 0; transform: translate(-16px, 10px) scale(0.95); } }
+@keyframes ask-prev { to { opacity: 0; transform: translate(16px, 10px) scale(0.95); } }
 /* While Oby asks, the stage makes room: the chips keep to one row, Oby
    steps back (smaller) when the window is too short for all of it, and what
    still doesn't fit scrolls */
 .stage:has(.asks) { overflow-y: auto; }
-.stage:has(.asks) .oby-frame { min-height: 100px; }
-.stage:has(.asks) .attention { flex-shrink: 0; }
+.stage:has(.asks) .oby-frame { min-height: 84px; }
+.stage:has(.asks) .attention { flex-shrink: 0; align-self: stretch; }  /* the stage's width, not its cards': a long title fades instead */
 .stage:has(.asks) .chips { max-width: 520px; }
 /* a window too short for Oby and a card (down to the smallest, 520px): the card
    wins, a little tighter, so the chips still fit under it */
@@ -213,7 +222,7 @@ button.crumb:hover { color: var(--ink); background: var(--hover); }
 @media (prefers-reduced-motion: reduce) {
   .asks, .ask-peek { transition: none; }
   .ask-card.is-up, .ask-card.is-up > * { animation: fade-in 200ms ease-out both; }
-  .ask-card.is-out, .ask-card.is-later { animation: fade-out 200ms ease-out both; }
+  .ask-card.is-out, .ask-card.is-later, .ask-card.is-next, .ask-card.is-prev { animation: fade-out 200ms ease-out both; }
 }
 
 .composer {

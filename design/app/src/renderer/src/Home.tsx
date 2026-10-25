@@ -350,7 +350,7 @@ export default function Home() {
           <section className="attention" aria-label="Your tasks">
             <span className={`attention-label${running || needsYou || memory ? '' : ' is-idle'}`}>{attention(running, needsYou, memory)}</span>
             {/* what Oby is asking you, answered here; opening one goes to its task's page */}
-            <AskStack onOpen={openTask} />
+            <AskStack active={!away} onOpen={openTask} />
             {/* every kind of work, in its usual order, whatever's going on in it (a
                 kind with nothing open opens on its completed ones), so the kinds
                 show here even while the side panel groups by status */}
