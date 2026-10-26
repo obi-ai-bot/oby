@@ -243,6 +243,53 @@ fn a_conversation_resumes_its_session() {
     assert_eq!(other.body["text"], "resume=none", "{}", other.text);
 }
 
+/// The owner's memories reach the conversation (#378): quoted in `memories.md` in its room afresh
+/// each turn, the orientation naming the file as wishes, never permission; gone once there's none.
+#[test]
+fn a_conversation_gets_the_owner_s_memories_in_its_room() {
+    let (_folder, obid) = obid("harness-memories", true);
+    let user = obid.home.join("memory/user");
+    std::fs::create_dir_all(&user).unwrap();
+    std::fs::write(
+        user.join("m0000000a.md"),
+        "---\nid: m0000000a\nscope: user\nkind: preference\nsource: found\ntitle: Short answers\nfrom: You said it in 2 conversations\ncreated: 2026-10-22T10:00:00Z\nupdated: 2026-10-22T10:00:00Z\nused: 0\n---\nAnswer in one sentence.\n",
+    )
+    .unwrap();
+    let first = said(&obid, json!({"said": "HELLO", "new": true}));
+    let conversation = first.body["conversation"].as_str().unwrap().to_owned();
+    let file = obid
+        .home
+        .join(format!("conversations/{conversation}/room/memories.md"));
+    let quoted = std::fs::read_to_string(&file).expect("the memories are quoted in the room");
+    assert!(
+        quoted.contains("## About the owner · preference")
+            && quoted.contains("Answer in one sentence."),
+        "{quoted}"
+    );
+    let argv = turns(&obid)[0]["argv"].clone();
+    let orientation = argv
+        .as_array()
+        .unwrap()
+        .iter()
+        .skip_while(|a| *a != "--append-system-prompt")
+        .nth(1)
+        .and_then(Value::as_str)
+        .unwrap()
+        .to_owned();
+    assert!(
+        orientation.contains("is quoted in memories.md in your room")
+            && orientation.contains("never permission"),
+        "{orientation}"
+    );
+
+    std::fs::remove_file(user.join("m0000000a.md")).unwrap();
+    said(
+        &obid,
+        json!({"said": "HELLO", "conversation": conversation}),
+    );
+    assert!(!file.exists(), "none to give, the file goes");
+}
+
 /// A conversation's Claude Code waits for its next turn (docs/fast-replies.md): the turn after
 /// goes to the same process, with only the owner's words, and it ends when the conversation goes.
 #[test]

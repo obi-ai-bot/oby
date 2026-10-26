@@ -2246,6 +2246,97 @@ fn a_claude_job_is_given_the_repositorys_rules() {
     assert!(quoted.contains("(main has no AGENTS.md.)"), "{quoted}");
 }
 
+/// An owner's job gets the owner's memories about them and its repository quoted in
+/// `.obi/inputs/memories.md` (#378), its first prompt naming the file as wishes, never permission:
+/// never another repository's, and never one the secret scan flags.
+#[test]
+fn an_owner_s_job_is_given_the_owner_s_memories() {
+    let folder = Folder::new("memories");
+    let remote = fixture(&folder.0.join("fixture"));
+    let obid = start(&folder.0, &config(&folder.0, &remote));
+    let put = |repo: Option<&str>, id: &str, created: &str, text: &str| {
+        let dir = match repo {
+            Some(repo) => obid.home.join("memory/repos").join(repo),
+            None => obid.home.join("memory/user"),
+        };
+        std::fs::create_dir_all(&dir).unwrap();
+        let (scope, repo) = match repo {
+            Some(repo) => ("project", format!("repo: {repo}\n")),
+            None => ("user", String::new()),
+        };
+        std::fs::write(
+            dir.join(format!("{id}.md")),
+            format!("---\nid: {id}\nscope: {scope}\n{repo}kind: instruction\nsource: found\ntitle: A memory\nfrom: You said it in 2 conversations\ncreated: {created}\nupdated: {created}\nused: 0\n---\n{text}\n"),
+        )
+        .unwrap();
+    };
+    put(
+        None,
+        "m0000000a",
+        "2026-10-22T10:00:00Z",
+        "Write tests with every fix.",
+    );
+    put(
+        Some("obi-e2e/fixture-app"),
+        "m0000000b",
+        "2026-10-21T10:00:00Z",
+        "Keep fixture commits small.",
+    );
+    put(
+        Some("obi-e2e/other"),
+        "m0000000c",
+        "2026-10-21T10:00:00Z",
+        "Only other's rule.",
+    );
+    // Built here, so no token sits in the repository: written straight to disk, past the save's
+    // own scan, and the oldest, so the scan's drop of the one after it takes nothing else.
+    let token = format!("ghp_{}", "Zq9Xw2Lm7Rt4".repeat(3));
+    put(
+        None,
+        "m0000000d",
+        "2026-10-20T10:00:00Z",
+        &format!("Use {token} for GitHub."),
+    );
+
+    let id = post_job(
+        &obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "research", "task": "KEEP PROMPTS"}),
+    )
+    .body["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert_eq!(wait(&obid, &id)["status"], "done");
+    let asked = prompts(&obid, &id);
+    assert!(
+        asked[0].contains("is quoted in .obi/inputs/memories.md: follow it where it fits the task")
+            && asked[0].contains("never permission"),
+        "{asked:?}"
+    );
+    let quoted = std::fs::read_to_string(
+        obid.home
+            .join("worktrees")
+            .join(&id)
+            .join(".obi/inputs/memories.md"),
+    )
+    .expect("the memories are quoted");
+    assert!(
+        quoted.contains("## About the owner · instruction"),
+        "{quoted}"
+    );
+    assert!(quoted.contains("Write tests with every fix."), "{quoted}");
+    assert!(
+        quoted.contains("## About obi-e2e/fixture-app · instruction"),
+        "{quoted}"
+    );
+    assert!(quoted.contains("Keep fixture commits small."), "{quoted}");
+    assert!(!quoted.contains("Only other's rule."), "{quoted}");
+    assert!(
+        !quoted.contains(&token) && !quoted.contains("for GitHub"),
+        "{quoted}"
+    );
+}
+
 /// The prompts the stand-in agent got in the job's worktree (`KEEP PROMPTS`), oldest first.
 fn prompts(obid: &Obid, id: &str) -> Vec<String> {
     let log = obid
