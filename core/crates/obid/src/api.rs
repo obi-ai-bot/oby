@@ -369,6 +369,7 @@ pub fn router(shared: Arc<Shared>) -> Router {
 }
 
 /// `{"error": "One line a person can read."}` with a 4xx or 5xx status.
+#[derive(Debug)]
 pub struct ApiError {
     pub status: StatusCode,
     pub message: String,

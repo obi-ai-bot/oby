@@ -252,11 +252,12 @@ nodes { ... on RenamedTitleEvent { actor { login } } } } \
 comments(first: 100) { nodes { id author { login } authorAssociation \
 userContentEdits(first: 20) { pageInfo { hasNextPage } nodes { editor { login } } } } } } } }";
 
-/// What Oby signs what it publishes with (crate::publish::body, and the issues the Mac app and the
-/// Swift runner file: Engine/Failures.swift's `oby-failure` issues, review follow-ups, research
-/// proposals), under whoever's login, a teammate's Oby's too: a text carrying it is an agent's or
-/// a model's, never the owner's own words. Forging it only makes text untrusted.
-const OBY_SIGNS: &str = "by oby:";
+/// What Oby signs what it publishes with (crate::publish::body, every review obid posts,
+/// crate::review::SIGNED, and the issues the Mac app and the Swift runner file:
+/// Engine/Failures.swift's `oby-failure` issues, review follow-ups, research proposals), under
+/// whoever's login, a teammate's Oby's too: a text carrying it is an agent's or a model's, never
+/// the owner's own words. Forging it only makes text untrusted.
+pub(crate) const OBY_SIGNS: &str = "by oby:";
 
 /// Whether everything people wrote in `shown`, what `gh issue view --json
 /// title,body,author,comments,…` printed for issue `number` on `repo`, is the owner's own words

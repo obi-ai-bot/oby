@@ -127,6 +127,15 @@ fn subject(item: &Item) -> Option<(String, String)> {
         let kind = match work["list"].as_str() {
             Some("reviews") => "pull_request.review_requested",
             Some("mine" | "checks") => "check.failed",
+            // Comments on Oby's own pull request: a review asking for changes among them is what
+            // a plug-in's `pull_request.changes_requested` is about.
+            Some("comments")
+                if work["quoted"]["said"]
+                    .as_array()
+                    .is_some_and(|said| said.iter().any(|s| s["state"] == "CHANGES_REQUESTED")) =>
+            {
+                "pull_request.changes_requested"
+            }
             Some("comments") => "pull_request.commented",
             _ => "issue.assigned",
         };
@@ -154,14 +163,15 @@ fn subject(item: &Item) -> Option<(String, String)> {
 }
 
 /// Everything an outside item is about: its [`subject`], and for failed checks on the owner's own
-/// pull request its head commit too, which a plug-in's `check.failed` may name instead. Only the
-/// first makes the item itself a duplicate: two pull requests on one commit are two things.
+/// pull request, or Oby's, its head commit too, which a plug-in's `check.failed` may name instead.
+/// Only the first makes the item itself a duplicate: two pull requests on one commit are two
+/// things.
 fn subjects(item: &Item) -> Vec<(String, String)> {
     let mut found: Vec<(String, String)> = subject(item).into_iter().collect();
     if let Some(work) = item
         .github
         .as_deref()
-        .filter(|w| item.kind == "github" && w["list"] == "mine")
+        .filter(|w| item.kind == "github" && (w["list"] == "mine" || w["list"] == "checks"))
         && let (Some(repo), Some(head)) = (work["repo"].as_str(), work["head"].as_str())
     {
         found.push(("check.failed".into(), format!("{repo}@{head}")));
@@ -829,6 +839,24 @@ mod tests {
         let mut twin = work("mine", 13, "wellington", "Fix CI");
         twin.github.as_mut().unwrap()["head"] = json!("a".repeat(40));
         assert_eq!(sorted(&kept, &[&fix, &twin], 0), [NEEDS_YOU; 2]);
+        // On Oby's own pull request (crate::github_events): its Fix CI stands for the plug-in's
+        // red check on its head, and its comments, once a review among them asks for changes,
+        // for the plug-in's changes requested.
+        let mut red = work("checks", 12, "wellington", "Fix CI");
+        red.arrived = Some(6);
+        red.github.as_mut().unwrap()["head"] = json!("a".repeat(40));
+        assert_eq!(sorted(&kept, &[&on_head, &red], 0), [IGNORE, NEEDS_YOU]);
+        let changes = event(
+            "pull_request.changes_requested",
+            json!({"pr": 12}),
+            "sangam",
+        );
+        let mut said = work("comments", 12, "sangam", "Address it");
+        said.arrived = Some(7);
+        assert_eq!(sorted(&kept, &[&changes, &said], 0), [NEEDS_YOU; 2]);
+        said.github.as_mut().unwrap()["quoted"] =
+            json!({"said": [{"kind": "review", "state": "CHANGES_REQUESTED"}]});
+        assert_eq!(sorted(&kept, &[&changes, &said], 0), [IGNORE, NEEDS_YOU]);
         let alert = |id: &str, severity: &str, at: u64| {
             let mut alert = event(
                 "alert.fired",
