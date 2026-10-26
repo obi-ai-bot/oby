@@ -1494,7 +1494,9 @@ fn a_moved_env_and_a_key_from_a_side_branch_are_found() {
     }
 }
 
-/// The jobs reviewing job `id`'s published work, oldest first.
+/// The jobs reviewing job `id`'s published work, oldest first by `created`, which is in whole
+/// seconds: reviews created in the same second come in any order (by their random ids), so tell
+/// those apart by their agent.
 fn reviews_of(obid: &Obid, id: &str) -> Vec<Value> {
     let jobs = call(obid, "GET", "/v1/jobs", None).body;
     let mut reviews: Vec<Value> = jobs
@@ -1852,13 +1854,18 @@ fn a_failed_reviewer_falls_back_to_the_other_tool() {
     assert_eq!(job["review"]["agent"], "claude");
     assert_eq!(job["reviewError"], Value::Null);
     assert_eq!(job["reviewNeedsYou"], false);
+    // Codex's first: Claude Code's verdict landed, so Codex's review, which ended without one, came
+    // before it. Told apart by agent: Codex fails fast, and both can be created in one second.
     let reviews = reviews_of(&obid, &id);
     assert_eq!(reviews.len(), 2, "{reviews:?}");
-    let (codex, claude) = (&reviews[0], &reviews[1]);
-    assert_eq!(
-        (codex["agent"].as_str(), codex["account"].as_str()),
-        (Some("codex"), Some("codex"))
-    );
+    let by = |agent: &str| {
+        reviews
+            .iter()
+            .find(|r| r["agent"] == agent)
+            .unwrap_or_else(|| panic!("no {agent} review: {reviews:?}"))
+    };
+    let (codex, claude) = (by("codex"), by("claude"));
+    assert_eq!(codex["account"], "codex");
     assert!(
         matches!(codex["status"].as_str(), Some("failed" | "interrupted")),
         "{codex}"
@@ -1875,7 +1882,6 @@ fn a_failed_reviewer_falls_back_to_the_other_tool() {
         "its end is its author's: {codex}"
     );
     assert_eq!(claude["id"], job["review"]["job"]);
-    assert_eq!(claude["agent"], "claude");
     assert!(review_items(&obid, &id).is_empty());
 }
 
@@ -1894,14 +1900,19 @@ fn every_reviewer_failing_waits_for_the_owner_in_one_item() {
                "task": "COMMIT: hello.txt CODEX REFUSED BROKEN REVIEW",
                "check": "test -f hello.txt", "account": "stub"}),
     );
+    // Settled once its item is in the inbox too: the job says it needs the owner a moment (two
+    // writes to disk) before its item is added (`Jobs::reviewed`).
     let waits = |reviews: usize| {
         within(120, "the review waits for the owner", || {
             let job = call(&obid, "GET", &format!("/v1/jobs/{id}"), None).body;
-            (job["reviewNeedsYou"] == true && reviews_of(&obid, &id).len() == reviews)
-                .then_some(job)
+            let items = review_items(&obid, &id);
+            (job["reviewNeedsYou"] == true
+                && reviews_of(&obid, &id).len() == reviews
+                && !items.is_empty())
+            .then_some((job, items))
         })
     };
-    let job = waits(2);
+    let (job, items) = waits(2);
     let error = job["reviewError"].as_str().unwrap_or_default();
     assert!(
         error.starts_with("Oby couldn't review #7: ") && error.contains("Invalid API key"),
@@ -1914,13 +1925,18 @@ fn every_reviewer_failing_waits_for_the_owner_in_one_item() {
         stage(&job, "review")["detail"],
         format!("Waiting for review · {error}")
     );
-    let agents: Vec<Value> = reviews_of(&obid, &id)
-        .iter()
-        .map(|r| r["agent"].clone())
-        .collect();
-    assert_eq!(agents, [json!("codex"), json!("claude")]);
-    let items = review_items(&obid, &id);
+    let reviews = reviews_of(&obid, &id);
+    let mut agents: Vec<&str> = reviews.iter().filter_map(|r| r["agent"].as_str()).collect();
+    agents.sort_unstable();
+    assert_eq!(agents, ["claude", "codex"], "{reviews:?}");
     assert_eq!(items.len(), 1, "{items:?}");
+    // Codex's first, then Claude Code's: the item names the review that gave up last, and its
+    // error is Claude Code's (above). Not by `created`: both can be created in one second.
+    let claude = reviews.iter().find(|r| r["agent"] == "claude").unwrap();
+    assert_eq!(
+        items[0]["id"],
+        format!("{id}-review-{}", claude["id"].as_str().unwrap())
+    );
     assert_eq!(items[0]["text"], error);
     assert_eq!(items[0]["options"], json!(["Try again"]));
     // Never a loop: nothing more starts by itself.
@@ -1936,10 +1952,10 @@ fn every_reviewer_failing_waits_for_the_owner_in_one_item() {
         Some(&json!({"answer": "Try again"})),
     );
     assert_eq!(tried.status, 200, "{}", tried.text);
-    let job = waits(3);
+    let (job, again) = waits(3);
     assert_eq!(job["reviewNeedsYou"], true);
+    // Created at least two seconds after the others: last by `created`.
     assert_eq!(reviews_of(&obid, &id)[2]["agent"], "claude");
-    let again = review_items(&obid, &id);
     assert_eq!(again.len(), 1, "{again:?}");
     assert_ne!(again[0]["id"], items[0]["id"]);
     std::thread::sleep(std::time::Duration::from_secs(2));
