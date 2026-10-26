@@ -14,9 +14,6 @@ struct SphereSettingsView: View {
     @State private var trusted = false
     @State private var creating = false
     @State private var serverText = UserDefaults.standard.string(forKey: SphereModel.serverKey) ?? ""
-    @State private var email: String?
-    @State private var anyone = true
-    @State private var copied = false
     /// The member whose key you're about to accept, once you've compared it with them.
     @State private var comparing: SphereModel.Member?
     @State private var leaving = false
@@ -231,20 +228,33 @@ struct SphereSettingsView: View {
 
     @ViewBuilder private var joined: some View {
         let name = sphere.name ?? sphere.membership?.sphere ?? "Obysphere"
-        SetGroup(name, footer: sphere.membership?.lastError.map { "Last problem with the Obysphere: \($0)" } ?? Self.compareNote(sphere.members),
+        // Its picture, name and address (Sangam's first group). The server keeps no picture and no
+        // rename yet (docs/obysphere.md, step 3), and its address stays as it was made (the owner's
+        // decision of 2026-10-25).
+        SetGroup(footer: sphere.admin ? "A new picture and name come once the Obysphere server keeps them. Its address stays as it was made."
+                                      : "Only its admins can change these.",
                  problem: sphere.problem) {
-            SetRow("You", about: [sphere.admin ? "Admin" : "Member", sphere.ownFingerprint.map { "your key \($0)" }].compactMap(\.self).joined(separator: " · ")) {
-                SetCode(sphere.owner ?? "")
+            SetRow("Avatar", about: sphere.admin ? "A square image, at least 128px" : nil) {
+                SphereTile(name: name, image: SphereTile.kept, size: 40)
             }
-            if sphere.members.isEmpty { SetRow("No one else has joined yet", quiet: true) }
+            SetRow("Name") { Text(name).font(Tokens.font(Tokens.textBase)).foregroundStyle(Tokens.text) }
+            // Under its label, where a long address wraps.
+            if let address = sphere.address { SetRow("Obysphere URL", about: address) }
+        }
+        // Everyone in it, you first; an admin removes the others. Keys stay underneath (the owner's
+        // decision of 2026-10-25): a changed one asks on Home, and here; comparing one on purpose
+        // comes with the member's own page (docs/obysphere.md, step 5).
+        SetGroup("Members · \(sphere.memberCount)",
+                 footer: sphere.membership?.lastError.map { "Last problem with the Obysphere: \($0)" } ?? Self.compareNote(sphere.members)) {
+            SetRow("\(NSFullUserName()) (you)", about: [sphere.owner, sphere.ownFingerprint.map { "your key \($0)" }].compactMap(\.self).joined(separator: " · ")) {
+                Text(sphere.admin ? "Admin" : "Member").font(Tokens.font(Tokens.textMd)).foregroundStyle(Tokens.muted)
+            }
             ForEach(sphere.members) { member in
-                SetRow(member.name, about: Self.memberAbout(member)) {
+                SetRow(SpherePanel.shown(member.owner), about: Self.memberAbout(member)) {
                     if member.changedTo != nil {
-                        Button("Accept new key") { comparing = member }.buttonStyle(.set)
-                    } else if !member.verified && member.fingerprint != nil {
-                        Button("Verify key") { comparing = member }.buttonStyle(.set)
+                        Button("Compare new key") { comparing = member }.buttonStyle(.set)
                     } else {
-                        SetCode(member.obi)
+                        Text("Member").font(Tokens.font(Tokens.textMd)).foregroundStyle(Tokens.muted)
                     }
                     if sphere.admin {
                         Button("Remove", role: .destructive) { sphere.run { try await sphere.remove(member) } }.buttonStyle(.set)
@@ -265,14 +275,15 @@ struct SphereSettingsView: View {
         } message: {
             Text("\(comparing?.changedTo ?? comparing?.fingerprint ?? "")\n\nCompare it with \(comparing?.owner ?? "them") in person or by phone, every character. Your Oby trusts their Oby with this key.")
         }
-        if !sphere.requests.isEmpty {
-            SetGroup("Asked of your Oby") {
-                ForEach(sphere.requests) { request in requestRow(request) }
+        // Last, set apart: its admin deletes it, anyone else leaves (Sangam's design). Deleting
+        // waits for the server (docs/obysphere.md, step 3).
+        if sphere.admin {
+            SetGroup {
+                SetRow("Delete Obysphere", about: "Deletes \(name) for all \(sphere.memberCount) members. You can’t undo this. It comes once the Obysphere server can delete one.") {
+                    Button("Delete", role: .destructive) {}.buttonStyle(.set).disabled(true)
+                }
             }
         }
-        if sphere.admin { inviting(name) }
-        // Last, set apart: an invited member leaves (Sangam's design). Its admin gets Delete
-        // Obysphere there instead, which waits for a server route: nothing for now.
         if !sphere.admin {
             SetGroup {
                 SetRow("Leave \(name)", about: "You’ll lose access until someone invites you back.") {
@@ -284,56 +295,6 @@ struct SphereSettingsView: View {
                 Button("Cancel", role: .cancel) {}
             } message: {
                 Text("You’ll lose access to \(name) and everything its Obys share. To come back, someone has to invite you again.")
-            }
-        }
-    }
-
-    private func inviting(_ name: String) -> some View {
-        let domain = CreateSphereSheet.workDomain(email)
-        return SetGroup("Invite", footer: domain != nil && anyone
-                            ? "One link for everyone at \(domain!): \(SphereModel.server?.host() ?? "the server") has each one sign in with Google, for 30 days. A new link cancels the one before."
-                            : "One link for your team, up to 50 people, for 7 days. Anyone who has it can join: send it only to them. A new link cancels the one before.") {
-            if let domain {
-                SetRow("Anyone with @\(domain) can join") { Toggle("Anyone with @\(domain) can join", isOn: $anyone).toggleStyle(.set) }
-            }
-            if let link = sphere.teamLink {
-                // The secret after the # only through Copy, which conceals it.
-                SetRow { SetCode(link.link.components(separatedBy: "#")[0] + "#…") } control: {
-                    Button(copied ? "Copied" : "Copy") {
-                        Self.copySecret(link.link)
-                        copied = true
-                    }
-                    .buttonStyle(.set)
-                    Button("Cancel invite") { sphere.run { try await sphere.cancelTeamLink(); copied = false } }.buttonStyle(.set)
-                }
-            }
-            SetRow("") {
-                Button(sphere.teamLink == nil ? "Make a link" : "Make a new link") {
-                    sphere.run { _ = try await sphere.makeTeamLink(domain: anyone ? domain : nil); copied = false }
-                }
-                .buttonStyle(.set)
-            }
-        }
-        .task { email = await CreateSphereSheet.ownEmail() }
-    }
-
-    /// What another Oby asks: obid's words from typed fields, then the other Oby's own text,
-    /// quoted, then the four answers.
-    private func requestRow(_ request: SphereModel.Request) -> some View {
-        SetRow(about: request.text) {
-            VStack(alignment: .leading, spacing: 6) {
-                Text(verbatim: request.title)
-                ForEach(Array(request.quoted.enumerated()), id: \.offset) { _, line in
-                    Text(verbatim: "\(line.0): “\(line.1)”").font(Tokens.font(Tokens.textSm)).foregroundStyle(Tokens.muted)
-                        .textSelection(.enabled)
-                }
-                HStack {
-                    ForEach(Array(request.options.enumerated()), id: \.offset) { index, option in
-                        Button(option) { sphere.run { try await sphere.answer(request, option) } }
-                            .buttonStyle(.set)
-                            .help(request.details.indices.contains(index) ? request.details[index] : option)
-                    }
-                }
             }
         }
     }

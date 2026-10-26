@@ -115,7 +115,7 @@ struct SidebarView: View {
     var body: some View {
         HStack(spacing: 0) {
             IconStrip(model: model, state: state, work: work)
-            content
+            if state.section == .sphere { SpherePanel(model: model, state: state) } else { content }
         }
         .frame(width: width)
         .frame(maxHeight: .infinity)
@@ -432,10 +432,18 @@ private struct IconStrip: View {
             Tokens.edge.frame(width: 20, height: 1).accessibilityHidden(true)
             // ponytail: one Obysphere, since obid joins one; Sangam's strip lists several and keeps the + under them.
             if let sphere {
-                Button { withAnimation(Tokens.warm) { state.openSettings(.sphere) } } label: {
+                // The panel goes to the Obysphere (Sangam's), ringed while it shows.
+                Button { withAnimation(Tokens.warm) { state.section = .sphere } } label: {
                     SphereTile(name: sphere, image: SphereTile.kept).frame(width: 32, height: 32).contentShape(Rectangle())
+                        .overlay {
+                            if state.section == .sphere {
+                                RoundedRectangle(cornerRadius: Tokens.iconRadius + 3, style: .continuous)
+                                    .strokeBorder(Tokens.ink.opacity(0.7), lineWidth: 1.5).padding(-4)
+                            }
+                        }
                 }
                 .buttonStyle(.plain).help(sphere).accessibilityLabel(sphere)
+                .accessibilityAddTraits(state.section == .sphere ? .isSelected : [])
             } else {
                 RailButton(symbol: "plus", label: "Create an Obysphere", on: false) { creating = true }
             }
@@ -445,11 +453,12 @@ private struct IconStrip: View {
         .sheet(isPresented: $creating) {
             CreateSphereSheet(feed: model.feed, done: { _ in
                 creating = false
-                withAnimation(Tokens.warm) { state.openSettings(.sphere) }
+                state.sphereChanged += 1
+                withAnimation(Tokens.warm) { state.section = .sphere }
             }, close: { creating = false })
         }
-        // Read when Oby's engine is up, and again once one is made.
-        .task(id: "\(model.feed.runner != nil) \(creating)") {
+        // Read when Oby's engine is up, and again once one is made, joined or left.
+        .task(id: "\(model.feed.runner != nil) \(creating) \(state.sphereChanged)") {
             let read = SphereModel(feed: model.feed)
             try? await read.refresh()
             // Joined shows its tile even when the Sphere itself doesn't answer, so the + never offers a second one.

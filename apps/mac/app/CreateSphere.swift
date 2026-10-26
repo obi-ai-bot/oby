@@ -218,7 +218,7 @@ private struct ModalField<Content: View>: View {
 
 /// Addresses typed into one field (Sangam's EmailField): each, once finished (a comma, a space or
 /// Return after it, or a list pasted in), becomes a tag, red if it isn't an email, with an x to take it out.
-private struct EmailTags: View {
+struct EmailTags: View {
     @Binding var emails: [String]
     @Binding var draft: String
     let submit: () -> Void

@@ -11,6 +11,11 @@ nonisolated enum WindowStep: Hashable, Sendable {
     case session(id: String)
     case talk
     case settings(SettingsPage)
+    /// An Obysphere's settings, from its ⋮ in the side panel (Sangam's SphereSettings.tsx), named
+    /// for the trail ("Deskree settings").
+    case sphereSettings(name: String)
+    /// What an Obysphere's Obys look things up in (Sangam's KnowledgeView.tsx).
+    case knowledge(name: String, admin: Bool)
 }
 
 /// Settings' pages, in the side panel's Settings section in this order (Sangam's SettingsView.tsx
