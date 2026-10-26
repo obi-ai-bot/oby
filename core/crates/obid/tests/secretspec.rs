@@ -5,7 +5,8 @@
 //!   the owner's vault as `check.<NAME>`, and nothing its own branch adds to the file;
 //! - every value the check prints, or writes in a file, is taken out before obid keeps it or its
 //!   agent reads it, and the agent never has one in its environment or its prompt;
-//! - a received review's check gets nothing, whatever the file asks.
+//! - a received review's check gets nothing, whatever the file asks, and neither does a follow-up
+//!   of it.
 //!
 //! Every value here is an obviously fake test value.
 
@@ -63,6 +64,8 @@ echo "plain: $FAKE_CHECK_TOKEN"
 echo "base64: $(printf '%s' "$FAKE_CHECK_TOKEN" | base64)"
 mkdir -p .obi
 printf 'token=%s\n' "$FAKE_CHECK_TOKEN" > .obi/check-wrote.txt
+printf 'staged=%s\n' "$FAKE_CHECK_TOKEN" > staged.txt
+if git add staged.txt 2>/dev/null; then echo "git add: done"; else echo "git add: refused"; fi
 exit 1
 "#;
 
@@ -201,7 +204,11 @@ fn an_owners_check_gets_the_bases_values_and_nothing_leaves_it() {
         "{log}"
     );
     assert!(
-        log.contains("obid: the check wrote a declared secret in .obi/check-wrote.txt"),
+        log.lines().any(
+            |l| l.starts_with("obid: the check wrote a declared secret in ")
+                && l.contains(".obi/check-wrote.txt")
+                && l.contains("staged.txt")
+        ),
         "{log}"
     );
     holds_none(&log, &fake(), "check.log");
@@ -211,6 +218,32 @@ fn an_owners_check_gets_the_bases_values_and_nothing_leaves_it() {
     let worktree = obid.home.join(format!("worktrees/{id}"));
     let wrote = std::fs::read_to_string(worktree.join(".obi/check-wrote.txt")).unwrap();
     assert_eq!(wrote, "token=[check secret: FAKE_CHECK_TOKEN]\n");
+    // What it staged in git, which obid can't read inside, is undone: the objects gone, the file
+    // unstaged and taken out like any other.
+    assert!(log.contains("git add: done"), "{log}");
+    assert!(log.contains("obid: the check wrote to git"), "{log}");
+    assert_eq!(
+        std::fs::read_to_string(worktree.join("staged.txt")).unwrap(),
+        "staged=[check secret: FAKE_CHECK_TOKEN]\n"
+    );
+    // Nothing the job's branch holds has a value: not its commits (obid's own "work left
+    // uncommitted" one took the cleaned file), nor any object of the job's own.
+    let admin = PathBuf::from(
+        std::fs::read_to_string(worktree.join(".git")).unwrap()["gitdir: ".len()..].trim(),
+    );
+    let history = Command::new("git")
+        .args(["log", "-p", "--all"])
+        .env("GIT_OBJECT_DIRECTORY", admin.join("objects"))
+        .env(
+            "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+            obid.home.join("clones/obi-e2e/fixture-app/.git/objects"),
+        )
+        .current_dir(&worktree)
+        .output()
+        .unwrap();
+    let history = String::from_utf8_lossy(&history.stdout);
+    assert!(history.contains("round 2"), "{history}");
+    holds_none(&history, &fake(), "the job's git history");
     // (d) The agent: its second prompt has the check's output, with no value in it; its
     // environment never had one; what it read of the check's file had it taken out.
     let prompts = std::fs::read_to_string(worktree.join(".obi/prompts.log")).unwrap();
@@ -292,4 +325,18 @@ async fn a_received_reviews_check_gets_nothing() {
         "{log}"
     );
     holds_none(&log, &fake(), "the review's check.log");
+
+    // (a) Telling the ended review something ("fix the lint") starts a follow-up that runs the
+    // same code: it gets nothing either, and neither does a follow-up of that.
+    let follow = jobs
+        .create(obid::jobs::follow_up(&ended, "fix the lint"))
+        .unwrap();
+    let why = follow.check_refuses_secrets().unwrap();
+    assert!(why.contains("another Oby asked for this job"), "{why}");
+    jobs.stop(&follow.id);
+    let again = jobs
+        .create(obid::jobs::follow_up(&follow, "and the tests"))
+        .unwrap();
+    assert!(again.check_refuses_secrets().is_some());
+    jobs.stop(&again.id);
 }

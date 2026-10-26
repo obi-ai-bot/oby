@@ -3239,6 +3239,12 @@ impl Jobs {
         // never carries `rule` (it's never from the API): found here. So is an untrusted one's.
         let of = job.follow_up_of.as_deref().and_then(|of| self.get(of));
         job.untrusted = new.untrusted || of.as_ref().is_some_and(|of| of.untrusted);
+        // A follow-up runs the code of the job it follows: when that one's check got none of the
+        // owner's secrets, neither does this one's (crate::secretspec).
+        job.foreign = of.as_ref().and_then(|of| {
+            of.check_refuses_secrets()
+                .map(|why| format!("it follows up a job whose check got none of them ({why})"))
+        });
         // An account the owner named keeps the job past its limit (#871); a follow-up's is its
         // job's.
         job.named = match &of {
@@ -7334,7 +7340,7 @@ impl Jobs {
         let mut env = process::sandbox_env(&process::tools_path(), &spec.temp, &extra);
         declared.apply(&mut env);
         let secrets = declared.secrets();
-        let since = std::time::SystemTime::now();
+        let before = declared.before(&spec).await;
         let running = run_check(
             &argv,
             &env,
@@ -7354,14 +7360,18 @@ impl Jobs {
             }
         };
         // What it wrote, before the agent or anything else reads it.
-        for path in declared.scrub_files(&[&spec.worktree, &spec.temp], since) {
-            let shown = path
-                .strip_prefix(&spec.worktree)
-                .or_else(|_| path.strip_prefix(&spec.temp))
-                .unwrap_or(&path);
-            declared.notes.push(format!(
-                "the check wrote a declared secret in {}, so obid took it out.",
-                shown.display()
+        let scrubbed = declared.scrub(&spec, before).await;
+        declared.notes.extend(scrubbed.notes);
+        if !scrubbed.stuck.is_empty() {
+            let _ = std::fs::write(self.log_path(id, "check.log"), declared.noted(""));
+            return Err(format!(
+                "obid couldn't take a declared secret out of what the check wrote, or remove it ({}), so the job stopped before its agent read it.",
+                scrubbed
+                    .stuck
+                    .iter()
+                    .map(|p| p.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
             ));
         }
         record(Some(run.as_ref().is_ok_and(|run| run.passed)));
@@ -7369,6 +7379,34 @@ impl Jobs {
         run.output = declared.noted(&run.output);
         let _ = std::fs::write(self.log_path(id, "check.log"), &run.output);
         Ok(run)
+    }
+
+    /// Why the code job `job` checks out isn't only its owner's own, so its check gets none of the
+    /// owner's secrets, or none: a base an agent may have written (a job's own `oby/` branch, or
+    /// the job's branch itself), or a pull request that isn't the owner's own from a branch of
+    /// `repo` itself (a fork's, a teammate's), whose code it runs or builds on. What GitHub can't
+    /// say counts as not the owner's.
+    async fn code_refuses_secrets(
+        &self,
+        job: &Job,
+        repo: &crate::config::Repo,
+        base: &str,
+    ) -> Option<String> {
+        if let Some(why) = crate::secretspec::agent_written_base(base, &job.branch) {
+            return Some(why);
+        }
+        // A job about a pull request runs its code, or code built on it (a follow-up's branch):
+        // only the owner's own pull request from a branch of this repository gets values.
+        let pr = job.pr?;
+        let Some(gh) = crate::github::gh() else {
+            return Some(format!(
+                "it runs pull request #{pr}'s code, and obid can't ask GitHub whose it is"
+            ));
+        };
+        match crate::secretspec::owners_own_pr(&gh, &repo.repo, pr).await {
+            Ok(()) => None,
+            Err(why) => Some(format!("it runs pull request #{pr}'s code, {why}")),
+        }
     }
 
     /// The secrets job `id`'s repository declares for its check in `secretspec.toml` on the job's
@@ -7397,7 +7435,11 @@ impl Jobs {
                 return Filled::refused(format!("obid gave this check no secrets: {why}"));
             }
         };
-        if let Some(why) = job.check_refuses_secrets() {
+        let refused = match job.check_refuses_secrets() {
+            Some(why) => Some(why),
+            None => self.code_refuses_secrets(&job, &repo, &base).await,
+        };
+        if let Some(why) = refused {
             return Filled::refused(format!(
                 "{FILE} on {base} declares {}; obid gave this check none of its owner's secrets: {why}.",
                 names.join(", ")

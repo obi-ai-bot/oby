@@ -514,6 +514,12 @@ pub struct Job {
     /// replacing 2026-10-23's by hand).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub untrusted: bool,
+    /// Why the code it runs isn't only its owner's own, when it follows up a job whose check got
+    /// none of the owner's secrets (crate::secretspec): a received review, a job that ran on a
+    /// teammate's Mac, another person's pull request. Carried to every follow-up of it, so a
+    /// follow-up never runs that code with the owner's values. Never in the API's job.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub foreign: Option<String>,
     /// Why obid didn't merge its pull request, when only the owner can take it on from here
     /// (crate::merge); none otherwise.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -622,13 +628,19 @@ impl Job {
     }
 
     /// Why its check gets none of the owner's secrets its repository declares (crate::secretspec),
-    /// or none when it gets them: a job another Oby asked for (a review), or one whose agent ran on
-    /// a teammate's Mac, whose commits came from there, gets nothing.
-    pub fn check_refuses_secrets(&self) -> Option<&'static str> {
+    /// or none when it gets them, as far as the job itself says: a job another Oby asked for (a
+    /// review), one whose agent ran on a teammate's Mac (its commits came from there), a follow-up
+    /// of any job refused ([`Job::foreign`]), and one whose conversation read something Oby didn't
+    /// write. What it checks out decides too (crate::jobs, `declared_secrets`).
+    pub fn check_refuses_secrets(&self) -> Option<String> {
         if self.obi.is_some() {
-            Some("another Oby asked for this job")
+            Some("another Oby asked for this job".into())
         } else if self.runs_on.is_some() {
-            Some("this job's agent ran on a teammate's Mac")
+            Some("this job's agent ran on a teammate's Mac".into())
+        } else if let Some(why) = &self.foreign {
+            Some(why.clone())
+        } else if self.untrusted {
+            Some("this job's conversation read something Oby didn't write".into())
         } else {
             None
         }
@@ -752,6 +764,7 @@ impl Job {
             window_share: None,
             routine: None,
             untrusted: false,
+            foreign: None,
             ran_secs: None,
             budget_from: None,
             merge_error: None,
@@ -1598,9 +1611,19 @@ mod tests {
             request_id: "r".into(),
         });
         assert_eq!(
-            review.check_refuses_secrets(),
+            review.check_refuses_secrets().as_deref(),
             Some("another Oby asked for this job")
         );
+        let mut untrusted = self::job();
+        untrusted.untrusted = true;
+        assert!(untrusted.check_refuses_secrets().is_some());
+        let mut follow_up = self::job();
+        follow_up.foreign = Some("it follows up a job that got none: x".into());
+        assert_eq!(
+            follow_up.check_refuses_secrets().as_deref(),
+            Some("it follows up a job that got none: x")
+        );
+        assert!(follow_up.to_json().get("foreign").is_none());
     }
 
     /// Ported from RunnerTests/RunnerTests.swift, `jobsHaveISODatesAndEveryKey`: every key the
