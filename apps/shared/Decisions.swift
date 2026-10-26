@@ -304,11 +304,31 @@ nonisolated struct ObiAsk: Decodable, Equatable, Sendable {
         var summary: String?
         var title: String?
         var choices: [String]?
+        /// A review's conditions, in the asker's words: a typed one's note, a custom one's text.
+        var acceptance: [Condition]?
 
-        private enum Keys: String, CodingKey { case text, goal, summary, title, choices }
+        nonisolated struct Condition: Decodable, Equatable, Sendable {
+            var index: Int?
+            var note: String?
+            var text: String?
 
-        init(text: String? = nil, goal: String? = nil, summary: String? = nil, title: String? = nil, choices: [String]? = nil) {
-            (self.text, self.goal, self.summary, self.title, self.choices) = (text, goal, summary, title, choices)
+            private enum Keys: String, CodingKey { case index, note, text }
+
+            init(index: Int? = nil, note: String? = nil, text: String? = nil) { (self.index, self.note, self.text) = (index, note, text) }
+
+            init(from decoder: any Decoder) throws {
+                let keys = try decoder.container(keyedBy: Keys.self)
+                index = try? keys.decodeIfPresent(Int.self, forKey: .index)
+                note = try? keys.decodeIfPresent(String.self, forKey: .note)
+                text = try? keys.decodeIfPresent(String.self, forKey: .text)
+            }
+        }
+
+        private enum Keys: String, CodingKey { case text, goal, summary, title, choices, acceptance }
+
+        init(text: String? = nil, goal: String? = nil, summary: String? = nil, title: String? = nil, choices: [String]? = nil,
+             acceptance: [Condition]? = nil) {
+            (self.text, self.goal, self.summary, self.title, self.choices, self.acceptance) = (text, goal, summary, title, choices, acceptance)
         }
 
         init(from decoder: any Decoder) throws {
@@ -318,6 +338,7 @@ nonisolated struct ObiAsk: Decodable, Equatable, Sendable {
             summary = try? keys.decodeIfPresent(String.self, forKey: .summary)
             title = try? keys.decodeIfPresent(String.self, forKey: .title)
             choices = try? keys.decodeIfPresent([String].self, forKey: .choices)
+            acceptance = try? keys.decodeIfPresent([Condition].self, forKey: .acceptance)
         }
     }
 
@@ -325,10 +346,14 @@ nonisolated struct ObiAsk: Decodable, Equatable, Sendable {
     static let named: Set<String> = ["review_request", "host_approval"]
 
     /// Its words as a card shows them: what it asks (a question's text, a review's goal, a job's
-    /// title), a review's summary, and a question's choices, which the owner answers in words.
+    /// title), a review's summary and conditions, and a question's choices, which the owner answers
+    /// in words.
     var words: String? {
         let choices = (quoted?.choices ?? []).compactMap(InboxWords.plain)
-        let parts = [quoted?.text, quoted?.goal, quoted?.title, quoted?.summary].compactMap(InboxWords.plain)
+        let conditions = (quoted?.acceptance ?? []).enumerated().flatMap { position, condition in
+            [condition.note, condition.text].compactMap(InboxWords.plain).map { "Condition \((condition.index ?? position) + 1): \($0)" }
+        }
+        let parts = [quoted?.text, quoted?.goal, quoted?.title, quoted?.summary].compactMap(InboxWords.plain) + conditions
             + (choices.isEmpty ? [] : ["Their choices: " + choices.joined(separator: " · ")])
         return parts.isEmpty ? nil : parts.joined(separator: "\n\n")
     }
