@@ -297,7 +297,7 @@ struct SphereSettingsView: View {
                 role(sphere.owner ?? "", you: true)
             }
             ForEach(sphere.members) { member in
-                SetRow(SpherePanel.shown(member.owner), about: Self.memberAbout(member)) {
+                SetRow(SpherePanel.shown(member), about: Self.memberAbout(member)) {
                     if member.changedTo != nil {
                         Button("Compare new key") { comparing = member }.buttonStyle(.set)
                     } else {

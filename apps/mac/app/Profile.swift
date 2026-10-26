@@ -3,10 +3,10 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 /// You, as Oby shows you on this Mac (Sangam's account menu and OwnerAvatar): the name you gave
-/// it, else your macOS name, and your picture, else your initials on your name's colour. Both stay
-/// on this Mac: the Obysphere still knows you by your owner id, which never changes.
-// ponytail: not shared with the Obysphere yet; its card's `name` could carry the name (a re-signed
-// card), a picture needs a field the protocol doesn't have.
+/// it, else your macOS name, and your picture, else your initials on your name's colour. The name
+/// you gave goes to your Obysphere in your Oby's card (`SphereModel.cardName`), your macOS name
+/// never; the Obysphere still knows you by your owner id, which never changes.
+// ponytail: the picture stays on this Mac; sharing it needs a card field the protocol doesn't have.
 @MainActor @Observable final class Profile {
     /// Swapped only by tests and pictures of the window.
     static var shared = Profile()
@@ -84,7 +84,8 @@ struct ProfileSheet: View {
     init(close: @escaping () -> Void) {
         let profile = Profile.shared
         (self.profile, self.close) = (profile, close)
-        (_name, _image) = (State(initialValue: profile.name), State(initialValue: profile.picture))
+        // Only a name you gave: saving a new picture doesn't give your macOS name to the Obysphere.
+        (_name, _image) = (State(initialValue: profile.given), State(initialValue: profile.picture))
     }
 
     private var shown: String {
@@ -100,7 +101,7 @@ struct ProfileSheet: View {
                 IconButton(symbol: "xmark", action: close).keyboardShortcut(.cancelAction).accessibilityLabel("Close")
             }
             .padding(.top, -4).padding(.trailing, -6).padding(.bottom, 8)
-            Text("How Oby shows you on this Mac.")
+            Text("How Oby shows you. Teammates in your Obysphere see the name you give; your picture stays on this Mac.")
                 .font(Tokens.font(Tokens.textBase)).foregroundStyle(Tokens.muted).padding(.bottom, 20)
 
             // The picture beside the name, as the Create sheet's logo: a click chooses one; its badge adds or takes it out.
