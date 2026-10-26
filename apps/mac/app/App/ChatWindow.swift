@@ -480,6 +480,8 @@ private struct HomeView: View {
                         }
                     }
                     .frame(maxWidth: 440)
+                    // The pointer arriving on the chips: Oby glances over.
+                    .onHover { if $0 { character?.glance() } }
                     .accessibilityElement(children: .contain)
                     .accessibilityLabel("Your tasks")
                 }
@@ -502,7 +504,7 @@ private struct HomeView: View {
                        placeholder: replyTarget == nil ? HomeLine.placeholder(fullName: NSFullUserName()) : "Your answer…",
                        maximumHeight: height * 0.5, focusRequest: state.homeFocusRequest,
                        onSend: ask, onScreenshot: screenshot, onStop: { false }, usage: model.usageRows,
-                       voice: model.voice, talkKeyListening: model.listening)
+                       voice: model.voice, talkKeyListening: model.listening, tasks: model.work(state).map(\.job.job))
                 .disabled(sendingAnswer)
                 .keepsDraft($text, as: Drafts.home)
         }
@@ -549,7 +551,7 @@ private struct HomeView: View {
         switch step {
         case .talk:
             ConversationPage(model: model, composerFocusRequest: state.composerFocusRequest,
-                             onOpenJob: { state.trail.push(.job(id: $0)) }, onBack: back)
+                             onOpenJob: { state.trail.push(.job(id: $0)) }, onBack: back, tasks: model.work(state).map(\.job.job))
         case .job(let id):
             JobPane(model: model, id: id, onBack: back,
                     onOpenJob: { state.trail.push(.job(id: $0)) },
@@ -783,44 +785,6 @@ private struct HomeDecisions: View {
     }
 }
 
-/// Where Home's stack of decisions is (HomeDecisions), and how its cards come and go.
-enum HomeStack {
-    /// The card on top and its place in the stack.
-    struct Place: Equatable {
-        var id = ""
-        var index = 0
-    }
-
-    /// The top card's place: the same card while it waits; gone (answered, put off), the one that
-    /// took its place, round to the first after the last.
-    static func index(of place: Place, in ids: [String]) -> Int {
-        guard !ids.isEmpty else { return 0 }
-        return ids.firstIndex(of: place.id) ?? place.index % ids.count
-    }
-
-    /// One step round the stack, either way, wrapping at both ends.
-    static func step(_ index: Int, by step: Int, count: Int) -> Int {
-        count > 0 ? ((index + step) % count + count) % count : 0
-    }
-
-    /// How the top card leaves: answered, it lifts off; gone round, it sinks back, drifting the way
-    /// you went (the demo's ask-out, ask-next, ask-prev).
-    enum Exit {
-        case lift, next, prev
-
-        var transition: AnyTransition {
-            switch self {
-            case .lift: .offset(y: -16).combined(with: .scale(scale: 0.98)).combined(with: .opacity)
-            case .next: .offset(x: -16, y: 10).combined(with: .scale(scale: 0.95, anchor: .bottom)).combined(with: .opacity)
-            case .prev: .offset(x: 16, y: 10).combined(with: .scale(scale: 0.95, anchor: .bottom)).combined(with: .opacity)
-            }
-        }
-
-        /// The next card comes up from where it peeked.
-        static let rise: AnyTransition = .offset(y: 8).combined(with: .scale(scale: 0.95, anchor: .bottom)).combined(with: .opacity)
-    }
-}
-
 /// Oby on Home's stage, a little smaller while something waits on you, so its cards fit under it.
 /// A view of its own: only it and the cards follow the inbox, never Home and the pages over it.
 private struct StagedOby: View {
@@ -834,7 +798,8 @@ private struct StagedOby: View {
 }
 
 /// Oby on Home's stage: the live character, hidden until its first frame is drawn so nothing
-/// the page paints while it loads can flash.
+/// the page paints while it loads can flash. It watches the pointer while it shows, and never
+/// takes a click or the keyboard.
 private struct OnStage: View {
     let character: ObyCharacter?
 
@@ -843,6 +808,7 @@ private struct OnStage: View {
             WebView(character.page)
                 .webViewContentBackground(.hidden)
                 .opacity(character.ready ? 1 : 0)
+                .background(PointerFeed(character: character, showing: !character.paused))
                 .allowsHitTesting(false)
                 .accessibilityElement()
                 .accessibilityLabel("Oby")

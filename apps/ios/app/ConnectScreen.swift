@@ -9,6 +9,9 @@ import UIKit
 /// code; the QR code first ("Scan the code"), then the Macs Bonjour finds on this network and the
 /// six digits typed for one, or an invitation pasted from a message. Either buys the device token
 /// every gateway request carries (Phone.swift, GatewayTokenStore); a hostname alone can't.
+/// The launch build (`Launch`) pairs through the Mac's Obysphere, by the QR code alone: obid doesn't
+/// advertise itself over Bonjour, so "On this network" is left out (and Local Network isn't asked
+/// for), and so is another runner, as on the Mac, unless one is set.
 struct ConnectScreen: View {
     @Environment(Phone.self) private var phone
     @State private var problem: String?
@@ -21,6 +24,7 @@ struct ConnectScreen: View {
     @State private var address = ""
     @State private var another = false
     @FocusState private var typing: Bool
+    @AppStorage(Launch.everythingKey) private var everything = false
 
     var body: some View {
         ScrollView {
@@ -40,11 +44,11 @@ struct ConnectScreen: View {
                 }
                 .buttonBorderShape(.capsule).tint(Tokens.pill).foregroundStyle(Tokens.item)
                 .padding(.top, 10)
-                onThisNetwork.padding(.top, 28)
+                if everything { onThisNetwork.padding(.top, 28) }
                 if let problem {
                     SetAbout(problem, color: Tokens.danger).frame(maxWidth: .infinity, alignment: .leading).padding(.top, 12)
                 }
-                anotherRunner.padding(.top, 28)
+                if everything || phone.runnerURL != nil { anotherRunner.padding(.top, 28) }
             }
             .padding(.horizontal, Tokens.gutter).padding(.bottom, 32)
         }
@@ -53,7 +57,7 @@ struct ConnectScreen: View {
         .obyPage()
         .navigationBarTitleDisplayMode(.inline)
         .onAppear {
-            browser.start()
+            if everything { browser.start() }
             chosenMac = phone.link?.name ?? ""
             address = phone.runnerURL?.absoluteString ?? ""
             another = phone.runnerURL != nil

@@ -47,6 +47,8 @@ struct Request {
     answer: Option<Answer>,
     turns: Option<Vec<InputTurn>>,
     attachments: Option<Vec<String>>,
+    /// The jobs the owner attached to the words (Sangam's Attach tasks), by id.
+    jobs: Option<Vec<String>>,
     /// The conversation it joins; left out, the latest (#493).
     conversation: Option<String>,
     /// True: it starts a new conversation.
@@ -95,6 +97,7 @@ pub async fn plan(State(shared): State<Arc<Shared>>, body: Bytes) -> Result<Resp
         &shared.config.home,
         req.attachments.as_deref().unwrap_or(&[]),
     )?;
+    let jobs = attached_jobs(&shared, req.jobs.unwrap_or_default())?;
     // Left out, a request joins the latest conversation, as it did when there was only one: the
     // apps from before #493 send none and show one thread.
     let target = match (req.conversation, req.new.unwrap_or(false)) {
@@ -156,7 +159,9 @@ pub async fn plan(State(shared): State<Arc<Shared>>, body: Bytes) -> Result<Resp
             )
         })
         .unwrap_or_else(|| words.to_owned());
-    let begun = shared.conversations.begin(target, said.clone(), id)?;
+    let begun = shared
+        .conversations
+        .begin(target, said.clone(), jobs.clone(), id)?;
     // The same words sent again: obid has them (and answered, or answers, them in its turn).
     if begun.repeated {
         return Ok((
@@ -171,6 +176,7 @@ pub async fn plan(State(shared): State<Arc<Shared>>, body: Bytes) -> Result<Resp
         turn: begun.turn,
         said,
         attachments,
+        jobs,
         runs_on,
     };
     // The turn goes on by itself: a client that stops waiting can't be told from a slow one, so
@@ -194,6 +200,7 @@ pub async fn plan(State(shared): State<Arc<Shared>>, body: Bytes) -> Result<Resp
         let asked = Asked {
             said,
             attachments: &next.words.attachments,
+            jobs: &next.words.jobs,
             conversation: &conversation,
             turn: &control.turn,
             runs_on: next.words.runs_on.as_ref(),
@@ -658,6 +665,33 @@ fn validate_turns(input: Option<Vec<InputTurn>>) -> Result<Option<Vec<Turn>>, Ap
     }
     Ok(Some(out))
 }
+/// The most jobs one message attaches.
+const ATTACHED_JOBS: usize = 20;
+
+/// The jobs the owner attached to their words, each once: only jobs obid has, which Oby's tools
+/// read anyway (`oby_job`), so an id grants nothing.
+fn attached_jobs(shared: &Shared, ids: Vec<String>) -> Result<Vec<String>, ApiError> {
+    let mut out: Vec<String> = vec![];
+    for id in ids {
+        if shared.jobs.get(&id).is_none() {
+            return Err(ApiError::new(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "jobs names a job this runner doesn't have.",
+            ));
+        }
+        if !out.contains(&id) {
+            out.push(id);
+        }
+    }
+    if out.len() > ATTACHED_JOBS {
+        return Err(ApiError::new(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "A message attaches at most 20 jobs.",
+        ));
+    }
+    Ok(out)
+}
+
 pub(crate) fn validate_attachments(home: &Path, paths: &[String]) -> Result<Vec<String>, ApiError> {
     let path = home.join("attachments");
     let root = path.canonicalize().unwrap_or(path);

@@ -98,7 +98,7 @@ struct RunnerSettingsView: View {
     @AppStorage(MacChecks.appleSetting) private var runAppleChecks = true
     @State private var watches: [PairedWatch] = []
     @State private var watchProblem: String?
-    /// The launch build (`Launch`) hides a remote runner, Routines, Apple Watch without iPhone and Pair a device.
+    /// The launch build (`Launch`) hides a remote runner, Routines and Apple Watch without iPhone.
     @AppStorage(Launch.everythingKey) private var everything = false
 
     /// Checks on this Mac: off by default and hidden in the launch build (AGENTS.md, `Launch`), except
@@ -215,8 +215,8 @@ struct RunnerSettingsView: View {
             // A runner older than the Watch API has no list: then there's nothing to show.
             watches = (try? await runner.watches()) ?? []
         }
-        // The iPhone is parked, and pairing needs a route on the tailnet: the launch build hides it.
-        if everything { PairingView(feed: feed, remote: remote) }
+        // The launch build's too: in an Obysphere the iPhone pairs through it, with no Tailscale.
+        PairingView(feed: feed, remote: remote)
     }
 
     private func remove(_ watch: PairedWatch) {

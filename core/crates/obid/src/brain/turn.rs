@@ -78,6 +78,8 @@ pub struct Words {
     pub turn: String,
     pub said: String,
     pub attachments: Vec<String>,
+    /// The jobs the owner attached (`POST /v1/plans`'s `jobs`).
+    pub jobs: Vec<String>,
     pub runs_on: Option<crate::job::RunsOn>,
 }
 
@@ -154,6 +156,7 @@ impl Turns {
                     .collect::<Vec<_>>()
                     .join("\n\n"),
                 attachments: taken.iter().flat_map(|w| w.attachments.clone()).collect(),
+                jobs: taken.iter().flat_map(|w| w.jobs.clone()).collect(),
                 runs_on: taken.iter().rev().find_map(|w| w.runs_on.clone()),
             },
             turns: taken.into_iter().map(|w| w.turn).collect(),
@@ -1663,6 +1666,7 @@ mod tests {
             turn: turn.into(),
             said: format!("said {turn}"),
             attachments: vec![format!("{turn}.png")],
+            jobs: vec![],
             runs_on: (turn == "t2").then(|| crate::job::RunsOn {
                 obi: "dima".into(),
                 owner: "Dima".into(),

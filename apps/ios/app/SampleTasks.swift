@@ -2,7 +2,7 @@
 import Foundation
 
 /// Debug builds only: launched with `-ObySampleTasks YES`, Home shows three made-up tasks (one
-/// running, one that needs you, one done), so a simulator with no runner jobs can show Sangam's
+/// running, one that needs you, one done) and two decisions in its stack, so a simulator with no runner jobs can show Sangam's
 /// cards and pages. Nothing is sent: a runner's list, when one arrives, replaces them.
 /// ponytail: fixed JSON, enough for screenshots; a preview catalog would replace it if one comes.
 enum SampleTasks {
@@ -22,6 +22,14 @@ enum SampleTasks {
             #"{"id": "sample-done", "request": "Add the About row to Settings", "agent": "claude", "account": "default", "repo": "deskree-inc/oby", "branch": "oby/about", "base": "dev", "kind": "build", "title": "Settings About row", "task": "Add About", "status": "done", "step": "", "summary": "Settings has an About section with the app's version and the runner it reaches.", "created": "\#(at(36))", "started": "\#(at(36))", "finished": "\#(at(2))", "commits": 2, "published": "https://github.com/deskree-inc/oby/pull/412", "pipeline": {"stages": [\#(stages(["done", "done", "done", "done", "done"]))], "number": 5, "total": 5}, "tetrix": \#(tetrixReport)}"#,
         ]
         return list.compactMap { try? Runner.decoder.decode(Job.self, from: Data($0.utf8)) }
+    }
+
+    /// What waits on you, for Home's stack: the review's permission and a question on the fix.
+    static var inbox: [InboxItem] {
+        let now = ISO8601DateFormatter().string(from: .now.addingTimeInterval(-300))
+        return [#"{"kind": "permission", "id": "sample-ask-1", "job": "sample-needs", "title": "Run swift test", "text": "Codex wants to run the tests before it reviews.", "options": ["Allow", "Always allow", "Deny"], "created": "\#(now)", "headline": "Codex wants to run swift test", "happened": "It runs RunnerTests before reviewing #33.", "recommended": 0}"#,
+                #"{"kind": "question", "id": "sample-ask-2", "job": "sample-run", "title": "Which copy for the empty state?", "text": "Two ways to say it; which one?", "options": ["Sign in to see your tasks", "Nothing here yet"], "created": "\#(now)", "headline": "Which words for the empty state?", "recommended": 0}"#]
+            .compactMap { try? Runner.decoder.decode(InboxItem.self, from: Data($0.utf8)) }
     }
 
     /// Two made-up accounts, one past 80% of its week, for the message box's usage gauge.

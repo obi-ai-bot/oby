@@ -67,6 +67,8 @@ pub struct Session {
     /// The owner's words this turn.
     pub said: String,
     pub attachments: Vec<String>,
+    /// The jobs the owner attached to their words, by obid's own ids.
+    pub attached_jobs: Vec<String>,
     /// The teammate's Mac the owner picked for this turn's jobs (#808).
     pub runs_on: Option<crate::job::RunsOn>,
     pub control: Arc<Control>,
@@ -1077,6 +1079,7 @@ async fn session(
         conversation: control.conversation.clone(),
         said: said.to_owned(),
         attachments: asked.attachments.to_vec(),
+        attached_jobs: asked.jobs.to_vec(),
         runs_on: asked.runs_on.cloned(),
         control: control.clone(),
         jobs: Mutex::new(vec![]),
@@ -1271,7 +1274,19 @@ async fn attempts(
     if tasks.is_some() && tainted {
         session.taint();
     }
+    // The jobs the owner attached (Sangam's Attach tasks), by obid's own ids, checked when the
+    // words came: the agent reads each with oby_job, which quotes what agents wrote.
+    let jobs = (!session.attached_jobs.is_empty()).then(|| {
+        format!(
+            "The owner attached these jobs to their words; read each with oby_job: {}.",
+            session.attached_jobs.join(", ")
+        )
+    });
     let with = |prompt: String| {
+        let prompt = match &jobs {
+            Some(jobs) => format!("{jobs}\n\n{prompt}"),
+            None => prompt,
+        };
         let prompt = match &attached {
             Some(names) => format!("{names}\n\n{prompt}"),
             None => prompt,
@@ -2786,6 +2801,7 @@ mod tests {
             conversation: "c1".into(),
             said: String::new(),
             attachments: vec![],
+            attached_jobs: vec![],
             runs_on: None,
             control,
             jobs: Mutex::new(vec![]),
@@ -3035,6 +3051,7 @@ mod tests {
             conversation: "c1".into(),
             said: String::new(),
             attachments: vec![],
+            attached_jobs: vec![],
             runs_on: None,
             control,
             jobs: Mutex::new(vec![]),

@@ -69,8 +69,8 @@ final class IslandModel {
         let said = tray.note.map { "\(text)\n\n\($0)" } ?? text
         feed.runsOnNext = tray.place?.obi
         // The words show in the thread now, not once the runner lists them (`RunnerFeed.Echo`).
-        feed.echo(said)
-        ask(said, attachments: tray.paths)
+        feed.echo(said, jobs: tray.tasks)
+        ask(said, attachments: tray.paths, jobs: tray.tasks)
         tray.clear()
     }
 
@@ -78,8 +78,8 @@ final class IslandModel {
     /// bare "never mind", "stop" or "cancel" only ends the turn under way; any other words wait their
     /// turn (Sangam's design: the runner answers them once the turn under way ends), and the latest
     /// words' answer is the one shown. `spoken`: you talked, so the talk key's pill shows the reply.
-    /// `attachments` go to the jobs the words start.
-    func ask(_ words: String, spoken: Bool = false, attachments: [String] = []) {
+    /// `attachments` go to the jobs the words start; `jobs` are the tasks attached to them.
+    func ask(_ words: String, spoken: Bool = false, attachments: [String] = [], jobs: [String] = []) {
         let said = words.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !said.isEmpty else { return }
         if Conversation.cancels(said) { return cancel() }
@@ -90,7 +90,7 @@ final class IslandModel {
         planning = Task {
             await stopped?.value
             var result: Desk.Talk
-            do { result = try await feed.plan(said, answer: nil, attachments: attachments, on: plansOn) } catch { result = .reply(error.localizedDescription) }
+            do { result = try await feed.plan(said, answer: nil, attachments: attachments, jobs: jobs, on: plansOn) } catch { result = .reply(error.localizedDescription) }
             guard asking == mine else { return }
             talk = result
             if let reply = Desk.reply(in: result) { onReply(reply, spoken) }

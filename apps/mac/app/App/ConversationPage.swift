@@ -12,6 +12,8 @@ struct ConversationPage: View {
     let onOpenJob: (_ job: String) -> Void
     /// Esc with nothing to stop: back a page.
     let onBack: () -> Void
+    /// What + › Attach tasks offers: Home's tasks.
+    var tasks: [Job] = []
     @State private var text = ""
     struct ReplyTarget {
         var title: String
@@ -222,7 +224,7 @@ struct ConversationPage: View {
                        onStop: { guard thinking || conversation.working else { return false }; stop(); return true },
                        onEscape: onBack, usage: model.usageRows,
                        voice: model.voice, talkKeyListening: model.listening,
-                       onStopTurn: stop, working: thinking || conversation.working)
+                       onStopTurn: stop, working: thinking || conversation.working, tasks: tasks)
                 .disabled(sendingAnswer)
                 .keepsDraft($text, as: Drafts.conversation(feed.conversations.shown))
         }

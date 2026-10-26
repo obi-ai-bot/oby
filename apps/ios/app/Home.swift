@@ -138,7 +138,7 @@ struct HomeView: View {
             .accessibilityHint(needs > 0 ? "Opens what needs you" : "")
             .padding(.top, 14)
             CenteredFlow(spacing: 8) {
-                ForEach(WorkList.kinds(work)) { group in
+                ForEach(WorkList.kinds(work, routines: Launch.everything)) { group in
                     HomeChip(label: group.label, fresh: group.fresh, needs: group.needs > 0) {
                         if let kind = group.type { phone.homePath.append(.kind(kind)) }
                     }
@@ -152,8 +152,9 @@ struct HomeView: View {
         .frame(maxWidth: .infinity)
     }
 
-    /// What waits on you (the owner's decision of 2026-10-24: answered here with a tap, without
-    /// opening its task), then Running and Recent (the iPhone's side panel, cut short).
+    /// What waits on you, as one stack of cards (the owner's decision of 2026-10-24: answered here
+    /// with a tap, without opening its task; AskStack), then Running and Recent (the iPhone's side
+    /// panel, cut short).
     @ViewBuilder private var lists: some View {
         let asks = phone.answering.filter { Self.asks.contains($0.kind) }
         let rows = PhoneWork.running(phone.work)
@@ -161,9 +162,7 @@ struct HomeView: View {
         VStack(alignment: .leading, spacing: 0) {
             if !asks.isEmpty {
                 ListLabel(title: "Needs you", more: "Inbox") { phone.homePath.append(.inbox) }
-                ForEach(asks) { item in
-                    InboxDecision(item: item, openTask: true).padding(.horizontal, 10).padding(.bottom, 12)
-                }
+                AskStack(items: asks).padding(.horizontal, 10).padding(.bottom, 12)
             }
             if !rows.isEmpty {
                 ListLabel(title: "Running", more: "See all") { phone.homePath.append(.all) }
@@ -230,6 +229,97 @@ private struct ListLabel: View {
         }
         .font(Tokens.font(Tokens.textSm)).foregroundStyle(Tokens.label)
         .padding(.horizontal, 10).frame(height: 26)
+    }
+}
+
+/// Everything waiting on you, as the Mac's Home has it (its HomeDecisions, Sangam's AskStack, #1442):
+/// a stack of cards, the oldest on top. The top card is the whole decision, answered right here,
+/// under a head with its task and where it is in the stack ("2/5") between the arrows that go round
+/// it; the next two peek out under it. Answered (once the runner confirms), it lifts away and the
+/// one after takes its place; put off with Later, it leaves until it's due again.
+private struct AskStack: View {
+    @Environment(Phone.self) private var phone
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    let items: [InboxItem]
+    /// The card on top, and where it was: gone, the one that took its place.
+    @State private var at = HomeStack.Place()
+    /// How the top card leaves: lifted when answered, sunk the way you went when you go round.
+    @State private var exit = HomeStack.Exit.lift
+
+    var body: some View {
+        let index = HomeStack.index(of: at, in: items.map(\.id))
+        let top = items[index]
+        let peeks = min(2, items.count - 1)
+        ZStack {
+            InboxDecision(item: top, openTask: true, head: AnyView(head(top, index: index)))
+                .id(top.id)
+                .transition(reduceMotion ? .opacity : .asymmetric(insertion: HomeStack.Exit.rise, removal: exit.transition))
+        }
+        // The next two, a step further back each, peeking out under it.
+        .background(alignment: .bottom) {
+            ZStack {
+                ForEach(Array((1...2).reversed().filter { $0 <= peeks }), id: \.self) { depth in
+                    RoundedRectangle(cornerRadius: Tokens.askRadius, style: .continuous)
+                        .fill(Tokens.chip.mix(with: Tokens.bg, by: 0.25 * Double(depth) - 0.1))
+                        .scaleEffect(1 - 0.05 * CGFloat(depth), anchor: .bottom)
+                        .offset(y: 8 * CGFloat(depth))
+                }
+            }
+            .accessibilityHidden(true)
+        }
+        .padding(.bottom, 8 * CGFloat(peeks))
+        .animation(reduceMotion ? .easeOut(duration: 0.2) : Tokens.settle, value: top.id)
+        .animation(reduceMotion ? nil : Tokens.warm, value: peeks)
+        // Kept in step with the list: a card coming back above it moves its place, not the card.
+        .onChange(of: HomeStack.Place(id: top.id, index: index), initial: true) { _, place in at = place }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Needs you")
+    }
+
+    /// The card's head (the demo's `tc-head`): its task's agent and name, and where it is in the
+    /// stack between the arrows that go round it (none with only one).
+    private func head(_ item: InboxItem, index: Int) -> some View {
+        let job = phone.jobs.first { $0.id == item.job }
+        let many = items.count > 1
+        return HStack(spacing: 8) {
+            if let job {
+                AgentMark(agent: job.agent).font(Tokens.font(13, .semibold)).frame(width: 16).foregroundStyle(Tokens.muted)
+            } else {
+                ObyMark(size: 16)
+            }
+            Text(job?.heading ?? item.title).font(Tokens.font(Tokens.textBase, .semibold)).foregroundStyle(Tokens.ink)
+                .lineLimit(1).fadeOut()
+            Spacer(minLength: 0)
+            HStack(spacing: 0) {
+                if many { arrow("chevron.left", "Previous") { go(-1, from: index) } }
+                Text("\(index + 1)/\(items.count)").font(Tokens.font(Tokens.textSm)).monospacedDigit()
+                    .foregroundStyle(Tokens.text).frame(minWidth: 28)
+                    .accessibilityLabel("\(index + 1) of \(items.count)")
+                if many { arrow("chevron.right", "Next") { go(1, from: index) } }
+            }
+            .padding(.vertical, -10)
+        }
+    }
+
+    private func arrow(_ symbol: String, _ label: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: symbol).font(Tokens.font(13, .semibold)).foregroundStyle(Tokens.muted)
+                .frame(width: 36, height: 44).contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(label)
+    }
+
+    /// Round the stack by one: the card on top sinks back the way you went (set a moment before it
+    /// goes, so it leaves that way), the next comes up.
+    private func go(_ step: Int, from index: Int) {
+        let next = HomeStack.step(index, by: step, count: items.count)
+        guard next != index else { return }
+        exit = step > 0 ? .next : .prev
+        DispatchQueue.main.async {
+            at = HomeStack.Place(id: items[next].id, index: next)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { exit = .lift }
+        }
     }
 }
 

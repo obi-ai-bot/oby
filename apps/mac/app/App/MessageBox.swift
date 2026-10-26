@@ -72,7 +72,12 @@ struct MessageBox: View {
     var onStopTurn: (() -> Void)? = nil
     /// Whether a turn is under way: then the end slot is Stop.
     var working = false
+    /// The tasks + › Attach tasks offers (Sangam's), latest first; nil where the box doesn't talk to
+    /// Oby. Other Obys (Sangam's Add other Obys, and @ in the words) wait for sealed Obysphere
+    /// messages (#1233).
+    var tasks: [Job]? = nil
     @State private var width: CGFloat = 480
+    @State private var pickingTasks = false
     @State private var hovering = false
     @State private var listening = false
     @State private var limit: Task<Void, Never>?
@@ -86,7 +91,7 @@ struct MessageBox: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            if attachments && (!tray.items.isEmpty || tray.place != nil) { tags.padding(.bottom, 6) }
+            if attachments && (!tray.items.isEmpty || tray.place != nil || !attachedTasks.isEmpty) { tags.padding(.bottom, 6) }
             if stacked {
                 editor.padding(BoxMetrics.stackedPadding)
                 HStack(spacing: 4) {
@@ -115,6 +120,14 @@ struct MessageBox: View {
         .onHover { hovering = $0 }
         .animation(Tokens.fade, value: hovering || focused)
         .overlay(alignment: .top) { if attachments { problem.offset(y: -28) } }
+        .popover(isPresented: $pickingTasks, arrowEdge: .top) {
+            TaskPicker(tasks: tasks ?? [], picked: tray.tasks, onPick: { job in
+                if !tray.tasks.contains(job.id) { tray.tasks.append(job.id) }
+                pickingTasks = false
+                focused = true
+            }, onClose: { pickingTasks = false })
+            .frame(width: max(width, 320))
+        }
         // Leaving the screen stops listening; what was heard stays as a draft.
         .onDisappear { if listening { stopListening() } }
     }
@@ -166,8 +179,8 @@ struct MessageBox: View {
             }
     }
 
-    /// + : a screenshot, what you copied, or a file (Sangam's + panel's Add files; the Obys and tasks
-    /// it can add come with obid).
+    /// + : a screenshot, what you copied, a file (Sangam's + panel's Add files), and where the box
+    /// talks to Oby, tasks (its Attach tasks; its Add other Obys waits for #1233).
     @ViewBuilder private var plus: some View {
         if attachments { plusMenu } else { Color.clear.frame(width: 4, height: BoxMetrics.button) }
     }
@@ -177,6 +190,7 @@ struct MessageBox: View {
             Button("Screenshot", action: onScreenshot).disabled(tray.capturing)
             Button("Clipboard", action: tray.pasteClipboard)
             Button("File…", action: tray.chooseFile)
+            if tasks != nil { Button("Attach tasks") { pickingTasks = true } }
             // Where the box talks to Oby: run its jobs on a teammate's Mac that's free (Sangam's
             // "Run on another Mac", #808), with your own accounts.
             if usage != nil && !tray.macs.isEmpty { placeMenu }
@@ -276,9 +290,15 @@ struct MessageBox: View {
         }
     }
 
-    /// What goes with the words, as tags over them.
+    /// The tasks attached, where the box attaches them: each with its title, "Task" once it's gone.
+    private var attachedTasks: [(id: String, title: String)] {
+        guard let tasks else { return [] }
+        return tray.tasks.map { id in (id, tasks.first { $0.id == id }?.heading ?? "Task") }
+    }
+
+    /// What goes with the words, as tags over them, wrapping (Sangam's `.composer-tags`).
     private var tags: some View {
-        HStack(spacing: 6) {
+        CenteredFlow(spacing: 6, centred: false) {
             if let mac = tray.place {
                 HStack(spacing: 6) {
                     Image(systemName: "laptopcomputer").font(Tokens.font(11)).foregroundStyle(Tokens.muted)
@@ -295,22 +315,30 @@ struct MessageBox: View {
                 .background(Tokens.chipHover, in: Capsule())
             }
             ForEach(tray.items) { item in
-                HStack(spacing: 6) {
-                    Image(systemName: item.icon).font(Tokens.font(11)).foregroundStyle(Tokens.muted)
-                    Text(item.label).lineLimit(1)
-                    Button { tray.remove(item) } label: {
-                        Image(systemName: "xmark").font(Tokens.font(9, .bold)).foregroundStyle(Tokens.muted)
-                            .frame(width: 18, height: 18).contentShape(Circle())
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("Remove \(item.label)")
-                }
-                .font(Tokens.font(Tokens.textSm)).foregroundStyle(Tokens.item)
-                .padding(.leading, 6).padding(.trailing, 3).frame(height: 24)
-                .background(Tokens.chipHover, in: Capsule())
+                tag(item.label, icon: item.icon) { tray.remove(item) }
+            }
+            ForEach(attachedTasks, id: \.id) { task in
+                tag(task.title, icon: "checklist") { tray.tasks.removeAll { $0 == task.id } }
             }
         }
         .padding(3)
+    }
+
+    private func tag(_ label: String, icon: String, remove: @escaping () -> Void) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: icon).font(Tokens.font(11)).foregroundStyle(Tokens.muted)
+            Text(label).lineLimit(1)
+            Button(action: remove) {
+                Image(systemName: "xmark").font(Tokens.font(9, .bold)).foregroundStyle(Tokens.muted)
+                    .frame(width: 18, height: 18).contentShape(Circle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Remove \(label)")
+        }
+        .font(Tokens.font(Tokens.textSm)).foregroundStyle(Tokens.item)
+        .padding(.leading, 6).padding(.trailing, 3).frame(height: 24)
+        .background(Tokens.chipHover, in: Capsule())
+        .frame(maxWidth: 240, alignment: .leading)
     }
 
     /// Why the last screenshot or paste didn't work, over the box.
@@ -450,5 +478,148 @@ private struct UsageGauge: View {
         .padding(.horizontal, 8).padding(.top, 8).padding(.bottom, 20)
         .frame(width: 340)
         .background(Tokens.surface)
+    }
+}
+
+/// Sangam's + › Attach tasks: a search over your tasks, over the box. Typing narrows it, the arrows
+/// move the lit row (the first match until they do), Return attaches it, Esc closes it; a task
+/// attached already has a check.
+struct TaskPicker: View {
+    let tasks: [Job]
+    let picked: [String]
+    let onPick: (Job) -> Void
+    let onClose: () -> Void
+    @State private var query = ""
+    @State private var lit = 0
+
+    /// The tasks whose title holds what's typed, in their order (Sangam's search).
+    nonisolated static func matches(_ tasks: [Job], _ query: String) -> [Job] {
+        let typed = query.trimmingCharacters(in: .whitespaces).lowercased()
+        return typed.isEmpty ? tasks : tasks.filter { $0.heading.lowercased().contains(typed) }
+    }
+
+    /// The row lit after an arrow, round from the last to the first and back.
+    nonisolated static func moved(_ lit: Int, down: Bool, count: Int) -> Int {
+        guard count > 0 else { return 0 }
+        return (min(lit, count - 1) + (down ? 1 : count - 1)) % count
+    }
+
+    var body: some View {
+        let found = Self.matches(tasks, query)
+        let at = min(lit, max(found.count - 1, 0))
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 8) {
+                Image(systemName: "magnifyingglass").font(Tokens.font(12)).foregroundStyle(Tokens.muted)
+                TaskSearch(text: $query, placeholder: "Search tasks") { key in
+                    switch key {
+                    case .up, .down: lit = Self.moved(lit, down: key == .down, count: found.count)
+                    case .pick: if found.indices.contains(at) { onPick(found[at]) }
+                    case .close: onClose()
+                    }
+                }
+                .onChange(of: query) { lit = 0 }
+            }
+            .padding(.horizontal, 8).frame(height: 32)
+            Rectangle().fill(Tokens.surfaceEdge).frame(height: 1)
+            if found.isEmpty {
+                // ponytail: Sangam's list says "Nothing matches" even with no tasks at all; with none, it says so.
+                Text(tasks.isEmpty ? "No tasks yet" : "Nothing matches “\(query.trimmingCharacters(in: .whitespaces))”")
+                    .font(Tokens.font(Tokens.textSm)).foregroundStyle(Tokens.muted).padding(.horizontal, 10).padding(.vertical, 8)
+            } else {
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        VStack(spacing: 0) {
+                            ForEach(Array(found.enumerated()), id: \.element.id) { index, job in
+                                row(job, lit: index == at).onHover { if $0 { lit = index } }
+                            }
+                        }
+                    }
+                    .frame(height: min(CGFloat(found.count) * 36, 240))
+                    .onChange(of: at) { proxy.scrollTo(found[at].id) }
+                }
+                .accessibilityElement(children: .contain)
+                .accessibilityLabel("Tasks")
+            }
+        }
+        .padding(4)
+        .background(Tokens.surface)
+    }
+
+    private func row(_ job: Job, lit: Bool) -> some View {
+        let mark = ThreadTaskLine.mark(job)
+        let attached = picked.contains(job.id)
+        return Button { onPick(job) } label: {
+            HStack(spacing: 10) {
+                WorkMarkView(mark: mark).frame(width: 16)
+                Text(job.heading).font(Tokens.font(Tokens.textBase)).foregroundStyle(lit ? Tokens.ink : Tokens.item).fadeOut()
+                if attached { Image(systemName: "checkmark").font(Tokens.font(11, .semibold)).foregroundStyle(Tokens.muted) }
+            }
+            .padding(.horizontal, 10).frame(height: 36)
+            .background(lit ? Tokens.hover : .clear, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("\(job.heading), \(ThreadTaskLine.status(mark))")
+        .accessibilityAddTraits(attached ? .isSelected : [])
+    }
+}
+
+/// The picker's search, in AppKit: a SwiftUI TextField's field editor keeps ↑ and ↓ for itself, so
+/// the list never hears them. It takes the keys as it lands in its window (the popover's).
+private struct TaskSearch: NSViewRepresentable {
+    enum Key { case up, down, pick, close }
+
+    @Binding var text: String
+    let placeholder: String
+    let onKey: (Key) -> Void
+
+    final class Field: NSTextField {
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            window?.makeFirstResponder(self)
+        }
+    }
+
+    final class Keys: NSObject, NSTextFieldDelegate {
+        var parent: TaskSearch
+        init(_ parent: TaskSearch) { self.parent = parent }
+
+        func controlTextDidChange(_ note: Notification) { parent.text = (note.object as? NSTextField)?.stringValue ?? "" }
+
+        func control(_ control: NSControl, textView: NSTextView, doCommandBy selector: Selector) -> Bool {
+            let key: Key? = switch selector {
+            case #selector(NSResponder.moveUp(_:)): .up
+            case #selector(NSResponder.moveDown(_:)): .down
+            case #selector(NSResponder.insertNewline(_:)): .pick
+            // A field editor's Esc would offer completions.
+            case #selector(NSResponder.cancelOperation(_:)): .close
+            default: nil
+            }
+            guard let key else { return false }
+            parent.onKey(key)
+            return true
+        }
+    }
+
+    func makeCoordinator() -> Keys { Keys(self) }
+
+    func makeNSView(context: Context) -> Field {
+        let field = Field()
+        field.isBordered = false
+        field.drawsBackground = false
+        field.focusRingType = .none
+        field.font = .systemFont(ofSize: Tokens.textMd)
+        field.textColor = NSColor(Tokens.ink)
+        field.placeholderAttributedString = NSAttributedString(string: placeholder, attributes: [
+            .foregroundColor: NSColor(Tokens.muted), .font: NSFont.systemFont(ofSize: Tokens.textMd),
+        ])
+        field.setAccessibilityLabel(placeholder)
+        field.delegate = context.coordinator
+        return field
+    }
+
+    func updateNSView(_ field: Field, context: Context) {
+        context.coordinator.parent = self
+        if field.stringValue != text { field.stringValue = text }
     }
 }

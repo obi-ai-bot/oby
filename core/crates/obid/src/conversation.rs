@@ -414,7 +414,14 @@ impl Conversations {
     /// words (a lower-case UUID). The user's turn of that id with the same words, in `target` (the
     /// conversation named, the latest, or for a new one the one those words started), is the same
     /// words sent again: `repeated`, and nothing is added. Any other turn of that id is `IdTaken`.
-    pub fn begin(&self, target: Target, said: String, id: Option<String>) -> Result<Begun, Error> {
+    /// `jobs`: the jobs the owner attached to the words (Sangam's Attach tasks), kept on their turn.
+    pub fn begin(
+        &self,
+        target: Target,
+        said: String,
+        jobs: Vec<String>,
+        id: Option<String>,
+    ) -> Result<Begun, Error> {
         let mut threads = self.lock();
         if let Some(id) = id.as_deref()
             && let Some(at) = threads
@@ -469,7 +476,7 @@ impl Conversations {
             index,
             "user",
             said,
-            vec![],
+            jobs,
             false,
             vec![],
             id,
@@ -1427,7 +1434,7 @@ mod tests {
         let events = crate::events::Events::new();
         let conversations = super::Conversations::open(&home, events.clone());
         let id = conversations
-            .begin(super::Target::New, "first".into(), None)
+            .begin(super::Target::New, "first".into(), vec![], None)
             .unwrap()
             .conversation;
         {
