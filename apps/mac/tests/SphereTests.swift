@@ -165,6 +165,65 @@ struct SphereTests {
         }
     }
 
+    @Test func anObyClaimLinkCarriesItsHostAndCode() async throws {
+        let claim = try #require(URL(string: "oby://claim/Sphere.Acme.com:8443#c0de-_x").flatMap(ClaimLink.init(opened:)))
+        #expect(claim.server.absoluteString == "https://sphere.acme.com:8443" && claim.code == "c0de-_x" && claim.host == "sphere.acme.com")
+        // This Mac's own Sphere, tried out over plain http: only for the claim.
+        for local in ["127.0.0.1:8797", "localhost:8797", "localhost"] {
+            let link = try #require(URL(string: "oby://claim/\(local)#c").flatMap(ClaimLink.init(opened:)), "\(local)")
+            #expect(link.server.absoluteString == "http://\(local)")
+        }
+        await #expect(throws: RunnerError.self) { try await SphereServer(base: URL(string: "http://127.0.0.1:8797")!).call("POST", "spheres") }
+        for other in ["oby://claim/sphere.acme.com", "oby://claim/sphere.acme.com#", "oby://claim/sphere.acme.com?code=c#c",
+                      "oby://claim/sphere.acme.com/x#c", "oby://claim/me@sphere.acme.com#c", "oby://claim/#c", "oby://claim/sphere.local#c",
+                      "oby://claim/10.0.0.5:8797#c", "oby://join/sphere.acme.com#c", "https://sphere.acme.com/claim#c"] {
+            #expect(URL(string: other).flatMap(ClaimLink.init(opened:)) == nil, "\(other)")
+        }
+    }
+
+    /// A claim against a fake Obysphere: the new token goes there once with the code, and is kept,
+    /// with the server set, only on `{"claimed": true}`; a wrong code, a refused token or a Sphere
+    /// claimed already keeps nothing and says which.
+    @MainActor @Test func aClaimKeepsTheTokenOnlyWhenTheSphereSaysClaimed() async throws {
+        let defaults = try #require(UserDefaults(suiteName: "com.deskree.oby.tests.\(UUID().uuidString)"))
+        let host = HostOwn(defaults: defaults, pasteboard: NSPasteboard(name: .init("com.deskree.oby.tests.\(UUID().uuidString)")))
+        let server = RunnerStub { request in
+            guard request.method == "POST", request.path == "/v0.1/claim" else { return (403, #"{"error": {"code": "forbidden", "message": ""}}"#) }
+            return switch request.json?["code"] as? String {
+            case "right": (200, #"{"claimed": true}"#)
+            case "refused": (400, #"{"error": {"code": "bad_request", "message": "operator_token must be 32 to 512 characters"}}"#)
+            case "taken": (409, #"{"error": {"code": "conflict", "message": "this Sphere is already claimed"}}"#)
+            default: (401, #"{"error": {"code": "unauthorized", "message": "the claim code is wrong"}}"#)
+            }
+        }
+        let session = SphereServer.session
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [RunnerStubProtocol.self] + (configuration.protocolClasses ?? [])
+        SphereServer.session = URLSession(configuration: configuration, delegate: NoRedirects(), delegateQueue: nil)
+        defer {
+            SphereServer.session = session
+            try? SphereModel.operatorToken.remove(server.host)
+        }
+
+        for (code, says) in [("wrong", "code is wrong"), ("refused", "refused the token"), ("taken", "claimed already")] {
+            let link = try #require(URL(string: "oby://claim/\(server.host)#\(code)").flatMap(ClaimLink.init(opened:)))
+            #expect(await host.claim(link) == false)
+            #expect(host.problem?.contains(says) == true, "\(code): \(host.problem ?? "")")
+            #expect(try SphereModel.operatorToken.value(server.host) == nil)
+            #expect(defaults.string(forKey: SphereModel.serverKey) == nil)
+        }
+
+        let link = try #require(URL(string: "oby://claim/\(server.host)#right").flatMap(ClaimLink.init(opened:)))
+        #expect(await host.claim(link))
+        let sent = try #require(server.requests.last)
+        let token = try #require(sent.json?["operator_token"] as? String)
+        #expect(sent.json?["code"] as? String == "right" && sent.authorization == nil)
+        #expect(token.count == 43 && token.allSatisfy { $0.isASCII && ($0.isLetter || $0.isNumber || "-_".contains($0)) })
+        #expect(Set(server.requests.compactMap { $0.json?["operator_token"] as? String }).count == 4, "a new token each time")
+        #expect(try SphereModel.operatorToken.value(server.host) == token)
+        #expect(defaults.string(forKey: SphereModel.serverKey) == "https://\(server.host)" && host.problem == nil)
+    }
+
     /// Host your own, with a fake Obysphere and obid: Deploy's token, copied concealed (paste one, into
     /// Cloudflare); the address (paste two), asked nothing until Check, and then without the token;
     /// the token goes to that host only once it's confirmed, and is kept under it; then Create makes

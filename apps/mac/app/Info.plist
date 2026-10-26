@@ -21,7 +21,7 @@
 	<!-- The Obysphere server (apps/mac/app/Sphere.swift, SphereModel.server), from apps/config/Signing.xcconfig. -->
 	<key>ObySphereURL</key>
 	<string>$(OBY_SPHERE_URL)</string>
-	<!-- oby://join/<host>#…: an Obysphere's join page's Open in Oby (apps/mac/app/ObyApp.swift, AppDelegate). -->
+	<!-- oby://join/<host>#… and oby://claim/<host>#…: an Obysphere's join and claim pages' Open in Oby (apps/mac/app/ObyApp.swift, AppDelegate). -->
 	<key>CFBundleURLTypes</key>
 	<array>
 		<dict>
