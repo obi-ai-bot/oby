@@ -234,7 +234,7 @@ pub fn seal(unsigned: &mut Map<String, Value>, recipient: &[u8; 32]) -> Result<(
 }
 
 /// [`seal`] with the sender's new X25519 key given: the known answers, and nothing else, give it.
-pub fn seal_with(
+fn seal_with(
     unsigned: &mut Map<String, Value>,
     recipient: &[u8; 32],
     ephemeral: &[u8; 32],

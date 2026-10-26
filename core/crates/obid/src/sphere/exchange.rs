@@ -52,6 +52,11 @@ pub struct Exchange {
     /// in: what the self-answer limits count, also after a restart. Never in the API's answer.
     #[serde(default)]
     pub self_answered: Option<i64>,
+    /// The id of the outbox's first reply once obid tried to send it: from then on it goes as it
+    /// is, never signed again, unless the Sphere refused it in a way that says it kept nothing.
+    /// Never in the API's answer.
+    #[serde(default)]
+    pub tried: Option<String>,
 }
 
 impl Exchange {
@@ -83,6 +88,7 @@ impl Exchange {
             request,
             outbox: Vec::new(),
             self_answered: None,
+            tried: None,
         }
     }
 

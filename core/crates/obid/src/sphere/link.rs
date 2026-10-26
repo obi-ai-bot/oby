@@ -50,8 +50,20 @@ const POLL_WAIT: u32 = 25;
 const DIRECTORY_EVERY: i64 = 60;
 /// The longest a reply waits to be sent again after a failure.
 const BACKOFF_MAX: Duration = Duration::from_secs(30);
-/// What obid's card says it is.
-const OBID_VERSION: &str = env!("CARGO_PKG_VERSION");
+/// What obid's card says it is: from 0.2.0, an obid that reads a card with a seal key (#1233). One
+/// from before refuses such a card (its schema closes `params`), so obid puts its seal key in a card
+/// only once every other member's card says it reads one ([`reads_seal_keys`]).
+const OBID_VERSION: &str = "0.2.0";
+
+/// Whether a card's `version` is an obid's that reads a card with a seal key: 0.2.0 or later.
+fn reads_seal_keys(version: &str) -> bool {
+    let parts: Vec<u64> = version
+        .split(['.', '-', '+'])
+        .take(3)
+        .map_while(|p| p.parse().ok())
+        .collect();
+    parts.len() == 3 && (parts[0], parts[1]) >= (0, 2)
+}
 /// The scopes a delegation must grant for obid to follow and answer.
 const NEEDED_SCOPES: [&str; 2] = ["receive", "reply"];
 /// The most model runs answering questions by themselves at once, across every sender.
@@ -70,8 +82,10 @@ struct Member {
     /// Its runner status, when the directory shows it to this Obi's owner (protocol.md section
     /// 14), signature checked.
     runner: Option<Value>,
-    /// The key its words are sealed for, from its trusted card (protocol.md section 9.1).
+    /// The key its words are sealed for, from its trusted card (protocol.md section 9.1), and that
+    /// card's `issued_at`: what it sent before then may come in the clear.
     seal: Option<[u8; 32]>,
+    sealed_since: Option<i64>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -84,6 +98,11 @@ struct State {
     key: Option<Arc<Keypair>>,
     /// The seal key other Obis seal this Obi's words for (crate::sphere::membership).
     seal: Option<Arc<SealKey>>,
+    /// Whether obid may put its seal key in a card (identity.md section 2): its Sphere's health says
+    /// `seal`, and every other active member's card says an obid that reads one. From the last
+    /// directory read.
+    sphere_seals: bool,
+    team_reads_seal_keys: bool,
     membership: Option<Membership>,
     delegation: Option<String>,
     client: Option<Client>,
@@ -106,6 +125,33 @@ struct State {
     /// Every envelope id obid has handled: the messages of its exchanges, and the ones it dropped.
     seen: HashSet<String>,
     dropped: Vec<String>,
+}
+
+/// `sealing` in `GET /v1/obid/sphere`: `on` once the card carries obid's seal key; `card_needed`
+/// when the owner should sign a new card (to say obid reads seal keys, or to add its own once every
+/// member reads them); `waiting` until the Sphere or a teammate's obid can take one.
+fn sealing(state: &State) -> &'static str {
+    let version = state
+        .membership
+        .as_ref()
+        .and_then(|m| m.card["version"].as_str())
+        .unwrap_or("");
+    if !own_seal_keys(state).is_empty() {
+        "on"
+    } else if !reads_seal_keys(version) || (state.sphere_seals && state.team_reads_seal_keys) {
+        "card_needed"
+    } else {
+        "waiting"
+    }
+}
+
+/// When this Obi's card first carried its seal key: its `issued_at`, while it carries it.
+fn own_sealed_since(state: &State) -> Option<i64> {
+    if own_seal_keys(state).is_empty() {
+        return None;
+    }
+    let params = obi_protocol::card::params(&state.membership.as_ref()?.card)?;
+    params.get("issued_at")?.as_str().and_then(time::parse)
 }
 
 /// This Obi's seal keys for check 11 (protocol.md section 9.1): its seal key once its card carries
@@ -288,6 +334,63 @@ fn wire(kept: &Value) -> Value {
         wire["body"] = sealed;
     }
     wire
+}
+
+/// The reply `make` builds from `body`, its words shortened until it fits the most a message may be
+/// (protocol.md section 3; sealed, words are about a third longer): every summary and finding detail
+/// longer than 100 characters halved, as often as it takes. A review's result that still doesn't
+/// fit goes `failed`, with no text; any other reply goes as it is, and the Sphere says why it can't.
+fn fitted(
+    mut body: Value,
+    make: impl Fn(&Value) -> Result<Value, String>,
+) -> Result<Value, String> {
+    loop {
+        let envelope = make(&body)?;
+        let size = obi_protocol::jcs::canonical_bytes(&wire(&envelope))
+            .map_err(|e| e.to_string())?
+            .len();
+        if size <= obi_protocol::MAX_ENVELOPE_BYTES {
+            return Ok(envelope);
+        }
+        if halve_texts(&mut body) {
+            continue;
+        }
+        if body["for"] != "review_request" {
+            return Ok(envelope);
+        }
+        let mut failed = json!({"for": "review_request", "outcome": "failed", "repo": body["repo"],
+                                "head_sha": body["head_sha"], "findings": []});
+        if let Some(rule) = body.get("by_rule") {
+            failed["by_rule"] = rule.clone();
+        }
+        return make(&failed);
+    }
+}
+
+/// Halves every summary and finding detail of `body` longer than 100 characters: whether one was.
+fn halve_texts(body: &mut Value) -> bool {
+    let mut halved = false;
+    let mut halve = |text: &mut Value| {
+        let Some(words) = text.as_str() else { return };
+        let count = words.chars().count();
+        if count > 100 {
+            *text = json!(format!(
+                "{}…",
+                words.chars().take(count / 2).collect::<String>()
+            ));
+            halved = true;
+        }
+    };
+    if let Some(summary) = body.get_mut("summary") {
+        halve(summary);
+    }
+    let findings = body.get_mut("findings").and_then(Value::as_array_mut);
+    for finding in findings.into_iter().flatten() {
+        if let Some(detail) = finding.get_mut("detail") {
+            halve(detail);
+        }
+    }
+    halved
 }
 
 /// The link. One per obid; one Sphere per obid in this version.
@@ -566,6 +669,8 @@ impl Link {
         let state = State {
             key,
             seal,
+            sphere_seals: false,
+            team_reads_seal_keys: false,
             membership,
             delegation,
             client,
@@ -1466,9 +1571,7 @@ impl Link {
             "publicKey": key.map(|k| k.public_key()),
             "sealKeyId": state.seal.as_ref().map(|s| s.key_id()),
             "sealPublicKey": state.seal.as_ref().map(|s| s.public_key()),
-            // `on` once the card carries obid's seal key; `card_needed` until the owner signs one
-            // that does (protocol.md section 9.1).
-            "sealing": joined.map(|_| if own_seal_keys(&state).is_empty() { "card_needed" } else { "on" }),
+            "sealing": joined.map(|_| sealing(&state)),
             "accepts": joined.map(Membership::accepts),
             "card": joined.map(|m| &m.card),
             "delegation": state.delegation.as_deref().map(delegation_json),
@@ -1689,8 +1792,19 @@ impl Link {
         }
         let (key_id, public_key, issued_at) =
             (key.key_id(), key.public_key(), time::format(time::now()));
-        let seal = self.seal_key()?;
-        let (seal_key_id, seal_public_key) = (seal.key_id(), seal.public_key());
+        // Its seal key goes in only once the Sphere and every other member can take a card with
+        // one (identity.md section 2): a joining Obi's card has none, and a later one may.
+        if self.is_joined()
+            && let Err(e) = self.read_directory().await
+        {
+            self.note_error(&e);
+        }
+        let ready = {
+            let state = self.lock();
+            state.membership.is_some() && state.sphere_seals && state.team_reads_seal_keys
+        };
+        let seal = ready.then(|| self.seal_key()).transpose()?;
+        let seal = seal.as_ref().map(|s| (s.key_id(), s.public_key()));
         let owner = self.owner();
         let unsigned = obi_protocol::identity::unsigned_card(&obi_protocol::identity::CardFields {
             sphere_url: url,
@@ -1706,7 +1820,7 @@ impl Link {
             accepts: &accepts,
             card_seq,
             issued_at: &issued_at,
-            seal: Some((&seal_key_id, &seal_public_key)),
+            seal: seal.as_ref().map(|(id, key)| (id.as_str(), key.as_str())),
         });
         let problems = obi_protocol::identity::unsigned_card_problems(&unsigned);
         if !problems.is_empty() {
@@ -2064,6 +2178,10 @@ impl Link {
                     },
                 );
             }
+            // An Obi whose trusted card had a seal key is sent nothing in the clear again.
+            if params.and_then(obi_protocol::seal::card_key).is_some() {
+                self.pins.mark_seals(obi);
+            }
             directory.members.insert(
                 obi.to_owned(),
                 Member {
@@ -2084,17 +2202,35 @@ impl Link {
                         .filter(|r| runner_signed(r, &directory.keys, obi))
                         .cloned(),
                     seal: params.and_then(obi_protocol::seal::card_key),
+                    sealed_since: params
+                        .filter(|p| obi_protocol::seal::card_key(p).is_some())
+                        .and_then(|p| p.get("issued_at")?.as_str().and_then(time::parse)),
                 },
             );
         }
+        // Whether obid may put its seal key in a card (identity.md section 2): every other active
+        // member's obid reads one, whatever obid trusts of it, and the Sphere takes one (asked
+        // until it says so).
+        let me = self.lock().membership.as_ref().map(|m| m.obi_id.clone());
+        let team_reads_seal_keys = members
+            .iter()
+            .filter(|m| m["status"] == "active" && me.as_deref() != m["obi"].as_str())
+            .all(|m| reads_seal_keys(m["card"]["version"].as_str().unwrap_or("")));
+        let sphere_seals = self.lock().sphere_seals
+            || self
+                .client()?
+                .health()
+                .await
+                .is_ok_and(|h| h["seal"] == true);
         let revoked = {
             let mut state = self.lock();
-            let me = state.membership.as_ref().map(|m| m.obi_id.clone());
             let revoked = me
                 .and_then(|me| members.iter().find(|m| m["obi"] == me.as_str()).cloned())
                 .is_some_and(|m| m["status"] == "revoked");
             state.directory = directory;
             state.directory_read = now;
+            state.team_reads_seal_keys = team_reads_seal_keys;
+            state.sphere_seals = sphere_seals;
             if revoked && let Some(m) = state.membership.as_mut() {
                 m.state = "revoked".into();
             }
@@ -2215,11 +2351,16 @@ impl Link {
             seq: Some(delivery.seq),
             seen_ids: Vec::new(),
             seal_keys: Some(own_seal_keys(&state)),
-            sender_seals: state
-                .directory
-                .members
-                .get(from)
-                .is_some_and(|m| m.seal.is_some()),
+            // Words in the clear count against a sender that seals only once both cards had a seal
+            // key when it wrote them: a message sent before either card gained one is taken.
+            sender_seals: state.directory.members.get(from).is_some_and(|m| {
+                let created = delivery.envelope["created_at"]
+                    .as_str()
+                    .and_then(time::parse)
+                    .unwrap_or(i64::MAX);
+                let since = m.sealed_since.zip(own_sealed_since(&state));
+                since.is_some_and(|(theirs, mine)| created >= theirs.max(mine))
+            }),
         };
         obi_protocol::envelope::verify_and_open(&delivery.envelope, &context)
     }
@@ -2933,7 +3074,43 @@ impl Link {
                 });
                 continue;
             }
-            let next = self.sealed_reply(cid, next);
+            // Before its first try a reply is sealed for the peer and fitted to the most a message
+            // may be (protocol.md section 9.1); once tried, it goes again as it is, so a retry
+            // after an answer that never came sends the same bytes.
+            let id = next["id"].as_str().unwrap_or("").to_owned();
+            let tried = self
+                .lock()
+                .exchanges
+                .get(cid)
+                .and_then(|e| e.tried.as_deref())
+                == Some(id.as_str());
+            let next = if tried {
+                next
+            } else {
+                match self.prepare_reply(cid, &next) {
+                    Ok(prepared) => prepared,
+                    Err(why) => {
+                        // It waits, never going in the clear instead, for the directory read
+                        // before its next try to list a seal key obid trusts.
+                        tracing::warn!("sphere: exchange {cid}: {why}");
+                        self.update_exchange(cid, |e| e.error = Some(why.clone()));
+                        if let Err(e) = self.read_directory().await {
+                            self.note_error(&e);
+                        }
+                        return false;
+                    }
+                }
+            };
+            self.update_exchange(cid, |e| {
+                if let Some(first) = e.outbox.first_mut() {
+                    *first = next.clone();
+                }
+                if next["type"] == "result" {
+                    e.result = Some(next["body"].clone());
+                }
+                e.tried = Some(id.clone());
+            });
+            let peer = next["to"].as_str().unwrap_or("").to_owned();
             let sent = match self.token().await {
                 Ok(token) => match self.client() {
                     Ok(client) => client.send(&token, &wire(&next)).await,
@@ -2941,21 +3118,45 @@ impl Link {
                 },
                 Err(e) => Err(e),
             };
-            match sent {
+            // The Sphere checks a message's id before its seal (sphere-api.md 6.1, checks 8 and
+            // 11), so these refusals say it kept nothing under this id: the peer's card gained a
+            // seal key, or another one. The directory is read again, and the reply prepared afresh.
+            let reseal = match &sent {
                 Err(ClientError::Refused { code, .. }) if code == "not_sealed" => {
-                    // The peer's card has a seal key this Obi didn't know of yet: the directory is
-                    // read again, and the reply sealed for it on the next try.
-                    if let Err(e) = self.read_directory().await {
-                        self.note_error(&e);
-                    }
+                    self.pins.mark_seals(&peer);
+                    true
+                }
+                Err(ClientError::Refused { code, .. }) if code == "invalid_envelope" => {
+                    next.get("seal").is_some()
+                }
+                _ => false,
+            };
+            if reseal {
+                if let Err(e) = self.read_directory().await {
+                    self.note_error(&e);
                     return false;
                 }
+                let now_for = self
+                    .lock()
+                    .directory
+                    .members
+                    .get(&peer)
+                    .and_then(|m| m.seal)
+                    .map(|key| obi_protocol::seal::key_id_of(&key));
+                if next.get("seal").is_none()
+                    || now_for.as_deref() != next["seal"]["key_id"].as_str()
+                {
+                    self.update_exchange(cid, |e| e.tried = None);
+                    continue;
+                }
+            }
+            match sent {
                 Ok(sent) => {
-                    let id = next["id"].as_str().unwrap_or("").to_owned();
                     self.keep_receipt(&sent);
                     self.lock().seen.insert(id);
                     self.update_exchange(cid, |e| {
                         e.outbox.remove(0);
+                        e.tried = None;
                         e.messages.push(Message {
                             direction: "sent".into(),
                             seq: Some(sent.seq),
@@ -2977,6 +3178,7 @@ impl Link {
                     tracing::warn!("sphere: exchange {cid}: {line}");
                     self.update_exchange(cid, |e| {
                         e.outbox.clear();
+                        e.tried = None;
                         e.error = Some(line.clone());
                     });
                     return true;
@@ -2990,46 +3192,46 @@ impl Link {
         }
     }
 
-    /// `next`, the exchange's first waiting reply, as it goes: sealed for the peer when its card has
-    /// a seal key and `next` isn't sealed yet (protocol.md section 9.1), signed again, and kept so,
-    /// so a retry sends the same bytes. A reply in the clear the Sphere already refused for that
-    /// is all this ever reseals: one it recorded is never signed again.
-    fn sealed_reply(&self, cid: &str, next: Value) -> Value {
-        if next.get("seal").is_some() {
-            return next;
-        }
-        let resealed = {
+    /// The exchange's first waiting reply, `next`, made ready for its first try (protocol.md
+    /// section 9.1): sealed for the peer when its trusted card has a seal key, signed again, and its
+    /// words shortened until it fits ([`fitted`]). `Err` with why keeps it waiting: a peer that
+    /// seals (known to, or its request came sealed) with no seal key obid trusts now, or a seal
+    /// that failed. Nothing goes in the clear to an Obi that seals.
+    fn prepare_reply(&self, cid: &str, next: &Value) -> Result<Value, String> {
+        let (recipient, must_seal, key, peer) = {
             let state = self.lock();
-            let peer = next["to"].as_str().unwrap_or("");
-            let recipient = state.directory.members.get(peer).and_then(|m| m.seal);
-            match (recipient, state.key.clone(), next.as_object()) {
-                (Some(recipient), Some(key), Some(map)) => {
-                    let mut unsigned = map.clone();
-                    unsigned.remove("signature");
-                    obi_protocol::seal::seal(&mut unsigned, &recipient)
-                        .map_err(|e| e.to_string())
-                        .and_then(|()| {
-                            obi_protocol::envelope::sign(&unsigned, &key).map_err(|e| e.to_string())
-                        })
-                        .map(|signed| kept(signed, next["body"].clone()))
-                }
-                _ => return next,
-            }
+            let exchange = state.exchanges.get(cid).ok_or("the exchange is gone")?;
+            let peer = exchange.peer.clone();
+            (
+                state.directory.members.get(&peer).and_then(|m| m.seal),
+                self.pins.seals(&peer) || exchange.request.get("seal").is_some(),
+                state.key.clone().ok_or("obid has no Obi key")?,
+                peer,
+            )
         };
-        match resealed {
-            Ok(resealed) => {
-                self.update_exchange(cid, |e| {
-                    if let Some(first) = e.outbox.first_mut() {
-                        *first = resealed.clone();
-                    }
-                });
-                resealed
-            }
-            Err(e) => {
-                tracing::error!("sphere: exchange {cid}: a reply couldn't be sealed: {e}");
-                next
-            }
+        if recipient.is_none() && must_seal {
+            return Err(format!(
+                "A reply waits for a seal key of {peer}'s that obid trusts: it never goes in the clear."
+            ));
         }
+        let mut unsigned = next.as_object().cloned().unwrap_or_default();
+        for member in ["signature", "seal", "sealed"] {
+            unsigned.remove(member);
+        }
+        fitted(next["body"].clone(), |body| {
+            let mut unsigned = unsigned.clone();
+            unsigned.insert("body".into(), body.clone());
+            if let Some(recipient) = &recipient {
+                obi_protocol::seal::seal(&mut unsigned, recipient)?;
+            }
+            let signed =
+                obi_protocol::envelope::sign(&unsigned, &key).map_err(|e| e.to_string())?;
+            Ok(if recipient.is_some() {
+                kept(signed, body.clone())
+            } else {
+                signed
+            })
+        })
     }
 
     /// Changes the exchange `cid`, keeps it and tells the apps.
@@ -3770,126 +3972,161 @@ impl Link {
                 )));
             }
         }
-        if let Err(e) = self.read_directory().await {
-            self.note_error(&e);
-            return Err(from_client(&e));
-        }
-        let (envelope, peer_owner) = {
-            let state = self.lock();
-            let member = state
-                .directory
-                .members
-                .get(&to)
-                .ok_or_else(|| invalid(format!("{to} isn't a member of {}.", joined.sphere)))?;
-            if !member.active {
-                return Err(invalid(format!("{to} has been revoked.")));
+        // Built, sealed and sent; once more after a seal refusal, with the directory read again.
+        let mut attempt = 0;
+        loop {
+            attempt += 1;
+            if let Err(e) = self.read_directory().await {
+                self.note_error(&e);
+                return Err(from_client(&e));
             }
-            if !member.accepts.contains(&kind) {
-                return Err(invalid(format!("{to}'s card doesn't accept {kind}.")));
-            }
-            if kind == "share_offer"
-                && !state.sharing.grants.iter().any(|g| {
-                    g.id == action["grant"].as_str().unwrap_or("") && g.offered_to(&member.owner)
-                })
-            {
-                return Err(invalid(
-                    "obid offers only a share its owner set in Settings › Sharing.".into(),
-                ));
-            }
-            let key = state
-                .key
-                .clone()
-                .ok_or_else(|| api(StatusCode::CONFLICT, "There's no Obi key."))?;
-            let id = new_uuid();
-            let now = time::now();
-            let unsigned = json!({
-                "protocol": obi_protocol::PROTOCOL,
-                "id": id,
-                "type": kind,
-                "from": joined.obi_id,
-                "to": to,
-                "sphere": joined.sphere,
-                "correlation_id": id,
-                "created_at": time::format(now),
-                "expires_at": time::format(now + expires_in),
-                "key_id": key.key_id(),
-                "body": action.clone(),
-            });
-            let Value::Object(mut unsigned) = unsigned else {
-                unreachable!("an envelope is an object")
-            };
-            // Scanned above, the words are sealed for the receiver when its card has a seal key,
-            // then signed (protocol.md section 9.1).
-            if let Some(recipient) = &member.seal {
-                obi_protocol::seal::seal(&mut unsigned, recipient).map_err(|e| {
+            let (envelope, peer_owner) = {
+                let state = self.lock();
+                let member =
+                    state.directory.members.get(&to).ok_or_else(|| {
+                        invalid(format!("{to} isn't a member of {}.", joined.sphere))
+                    })?;
+                if !member.active {
+                    return Err(invalid(format!("{to} has been revoked.")));
+                }
+                if !member.accepts.contains(&kind) {
+                    return Err(invalid(format!("{to}'s card doesn't accept {kind}.")));
+                }
+                // An Obi known to seal gets nothing in the clear: not when the Sphere serves an older
+                // card, or a key list its card doesn't sign (protocol.md section 9.1).
+                if member.seal.is_none() && self.pins.seals(&to) {
+                    return Err(api(
+                        StatusCode::CONFLICT,
+                        format!(
+                            "{to} seals, and obid trusts no seal key of its now: nothing was sent."
+                        ),
+                    ));
+                }
+                if kind == "share_offer"
+                    && !state.sharing.grants.iter().any(|g| {
+                        g.id == action["grant"].as_str().unwrap_or("")
+                            && g.offered_to(&member.owner)
+                    })
+                {
+                    return Err(invalid(
+                        "obid offers only a share its owner set in Settings › Sharing.".into(),
+                    ));
+                }
+                let key = state
+                    .key
+                    .clone()
+                    .ok_or_else(|| api(StatusCode::CONFLICT, "There's no Obi key."))?;
+                let id = new_uuid();
+                let now = time::now();
+                let unsigned = json!({
+                    "protocol": obi_protocol::PROTOCOL,
+                    "id": id,
+                    "type": kind,
+                    "from": joined.obi_id,
+                    "to": to,
+                    "sphere": joined.sphere,
+                    "correlation_id": id,
+                    "created_at": time::format(now),
+                    "expires_at": time::format(now + expires_in),
+                    "key_id": key.key_id(),
+                    "body": action.clone(),
+                });
+                let Value::Object(mut unsigned) = unsigned else {
+                    unreachable!("an envelope is an object")
+                };
+                // Scanned above, the words are sealed for the receiver when its card has a seal key,
+                // then signed (protocol.md section 9.1).
+                if let Some(recipient) = &member.seal {
+                    obi_protocol::seal::seal(&mut unsigned, recipient).map_err(|e| {
+                        api(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            format!("obid couldn't seal it: {e}"),
+                        )
+                    })?;
+                }
+                let envelope = obi_protocol::envelope::sign(&unsigned, &key).map_err(|e| {
                     api(
                         StatusCode::INTERNAL_SERVER_ERROR,
-                        format!("obid couldn't seal it: {e}"),
+                        format!("obid couldn't sign it: {e}"),
                     )
                 })?;
-            }
-            let envelope = obi_protocol::envelope::sign(&unsigned, &key).map_err(|e| {
-                api(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("obid couldn't sign it: {e}"),
-                )
-            })?;
-            // What the receiver will check, checked here first.
-            let context = obi_protocol::envelope::Context {
-                now: Some(now),
-                sphere: Some(joined.sphere.clone()),
-                receiver: Some(to.clone()),
-                keys: state.directory.keys.clone(),
-                seq: None,
-                seen_ids: Vec::new(),
-                // Sealed for the receiver, its words are checked by the schema alone here.
-                seal_keys: None,
-                sender_seals: false,
+                // What the receiver will check, checked here first.
+                let context = obi_protocol::envelope::Context {
+                    now: Some(now),
+                    sphere: Some(joined.sphere.clone()),
+                    receiver: Some(to.clone()),
+                    keys: state.directory.keys.clone(),
+                    seq: None,
+                    seen_ids: Vec::new(),
+                    // Sealed for the receiver, its words are checked by the schema alone here.
+                    seal_keys: None,
+                    sender_seals: false,
+                };
+                obi_protocol::envelope::verify(&envelope, &context).map_err(|r| {
+                    invalid(format!("That message wouldn't pass the spec's checks: {r}"))
+                })?;
+                (envelope, member.owner.clone())
             };
-            obi_protocol::envelope::verify(&envelope, &context).map_err(|r| {
-                invalid(format!("That message wouldn't pass the spec's checks: {r}"))
-            })?;
-            (envelope, member.owner.clone())
-        };
-        let cid = envelope["id"].as_str().unwrap_or("").to_owned();
-        let kept_envelope = if envelope.get("seal").is_some() {
-            kept(envelope.clone(), action)
-        } else {
-            envelope.clone()
-        };
-        let mut exchange = Exchange::new("outgoing", kept_envelope.clone(), to, Some(peer_owner));
-        exchange.state = "sent".into();
-        // Kept before it goes, so a reply that comes back at once finds it.
-        self.lock().exchanges.insert(cid.clone(), exchange.clone());
-        let sent = match self.token().await {
-            Ok(token) => match self.client() {
-                Ok(client) => client.send(&token, &envelope).await,
+            let cid = envelope["id"].as_str().unwrap_or("").to_owned();
+            let kept_envelope = if envelope.get("seal").is_some() {
+                kept(envelope.clone(), action.clone())
+            } else {
+                envelope.clone()
+            };
+            let mut exchange = Exchange::new(
+                "outgoing",
+                kept_envelope.clone(),
+                to.clone(),
+                Some(peer_owner),
+            );
+            exchange.state = "sent".into();
+            // Kept before it goes, so a reply that comes back at once finds it.
+            self.lock().exchanges.insert(cid.clone(), exchange.clone());
+            let sent = match self.token().await {
+                Ok(token) => match self.client() {
+                    Ok(client) => client.send(&token, &envelope).await,
+                    Err(e) => Err(e),
+                },
                 Err(e) => Err(e),
-            },
-            Err(e) => Err(e),
-        };
-        match sent {
-            Ok(sent) => {
-                self.keep_receipt(&sent);
-                self.lock().seen.insert(cid.clone());
-                let updated = self.update_exchange(&cid, |e| {
-                    e.messages.insert(
-                        0,
-                        Message {
-                            direction: "sent".into(),
-                            seq: Some(sent.seq),
-                            at: sent.recorded_at.clone(),
-                            envelope: kept_envelope.clone(),
-                        },
-                    );
-                });
-                Ok(updated.unwrap_or(exchange).to_json())
-            }
-            Err(e) => {
-                self.lock().exchanges.remove(&cid);
-                self.exchanges.remove(&cid);
-                self.refused_token(&e);
-                Err(from_client(&e))
+            };
+            match sent {
+                Ok(sent) => {
+                    self.keep_receipt(&sent);
+                    self.lock().seen.insert(cid.clone());
+                    let updated = self.update_exchange(&cid, |e| {
+                        e.messages.insert(
+                            0,
+                            Message {
+                                direction: "sent".into(),
+                                seq: Some(sent.seq),
+                                at: sent.recorded_at.clone(),
+                                envelope: kept_envelope.clone(),
+                            },
+                        );
+                    });
+                    return Ok(updated.unwrap_or(exchange).to_json());
+                }
+                Err(e) => {
+                    self.lock().exchanges.remove(&cid);
+                    self.exchanges.remove(&cid);
+                    // The Sphere kept nothing: `to`'s card gained a seal key, or another, since the
+                    // directory was read. Built once more for the card it has now.
+                    let sealing = match &e {
+                        ClientError::Refused { code, .. } if code == "not_sealed" => {
+                            self.pins.mark_seals(&to);
+                            true
+                        }
+                        ClientError::Refused { code, .. } => {
+                            code == "invalid_envelope" && envelope.get("seal").is_some()
+                        }
+                        _ => false,
+                    };
+                    if sealing && attempt == 1 {
+                        continue;
+                    }
+                    self.refused_token(&e);
+                    return Err(from_client(&e));
+                }
             }
         }
     }
@@ -6772,6 +7009,68 @@ mod tests {
         assert!(obi_protocol::schema::is_valid("actions/result", &body));
     }
 
+    /// A review that is too big once sealed is shortened until it fits, and still opens; one that
+    /// can't fit, whatever is shortened, goes `failed`, with no text (protocol.md section 9.1).
+    #[test]
+    fn a_review_too_big_once_sealed_is_shortened_to_fit() {
+        let key = SealKey::generate().unwrap();
+        let signer = Keypair::from_seed_string("obid fit test");
+        let findings: Vec<Value> = (0..50)
+            .map(|i| json!({"id": format!("f-{i:016x}"), "severity": "minor", "file": "src/a.js", "line": i + 1,
+                            "title": format!("Finding {i}"), "detail": "Ünïcode détail. ".repeat(250)}))
+            .collect();
+        let body = json!({"for": "review_request", "outcome": "approved", "repo": "o/r",
+            "head_sha": "6d20146f366b9fac8907b5066c30ee39aaec09b3", "findings": findings,
+            "acceptance": [{"index": 0, "kind": "no_blocker_findings", "met": true}],
+            "summary": "s".repeat(4000), "by_rule": "d-3f9a0c1b2e4d"});
+        let unsigned = json!({"protocol": "obi/0.1", "id": "8a6c1f4e-5d2b-4c7a-9e3f-1b2c3d4e5f60", "type": "result",
+            "from": "obi-a", "to": "obi-b", "sphere": "s", "correlation_id": "9a6c1f4e-5d2b-4c7a-9e3f-1b2c3d4e5f60",
+            "in_reply_to": "9a6c1f4e-5d2b-4c7a-9e3f-1b2c3d4e5f60", "created_at": "2026-10-26T12:00:00Z",
+            "expires_at": "2026-10-26T13:00:00Z", "key_id": signer.key_id()});
+        let make = |body: &Value| -> Result<Value, String> {
+            let mut unsigned = unsigned.as_object().unwrap().clone();
+            unsigned.insert("body".into(), body.clone());
+            obi_protocol::seal::seal(&mut unsigned, key.public())?;
+            let signed =
+                obi_protocol::envelope::sign(&unsigned, &signer).map_err(|e| e.to_string())?;
+            Ok(kept(signed, body.clone()))
+        };
+        assert!(
+            obi_protocol::jcs::canonical_bytes(&wire(&make(&body).unwrap()))
+                .unwrap()
+                .len()
+                > obi_protocol::MAX_ENVELOPE_BYTES
+        );
+        let fit = fitted(body, make).unwrap();
+        let sent = wire(&fit);
+        assert!(
+            obi_protocol::jcs::canonical_bytes(&sent).unwrap().len()
+                <= obi_protocol::MAX_ENVELOPE_BYTES
+        );
+        let opened = obi_protocol::seal::open(&sent, &key).unwrap();
+        assert_eq!(opened, fit["body"]);
+        assert!(obi_protocol::schema::is_valid("actions/result", &opened));
+        assert_eq!(opened["outcome"], "approved");
+        assert_eq!(opened["findings"].as_array().unwrap().len(), 50);
+        let detail = opened["findings"][0]["detail"].as_str().unwrap();
+        assert!(detail.starts_with("Ünïcode détail.") && detail.ends_with('…'));
+        // Whatever is shortened, it doesn't fit: a text-free `failed`, its rule kept.
+        let huge = fitted(fit["body"].clone(), |body| {
+            let pad = if body["outcome"] == "failed" {
+                0
+            } else {
+                70_000
+            };
+            Ok(json!({"body": body, "pad": "x".repeat(pad)}))
+        })
+        .unwrap();
+        assert_eq!(
+            huge["body"],
+            json!({"for": "review_request", "outcome": "failed", "repo": "o/r",
+                   "head_sha": "6d20146f366b9fac8907b5066c30ee39aaec09b3", "findings": [], "by_rule": "d-3f9a0c1b2e4d"})
+        );
+    }
+
     #[test]
     fn bodies_take_only_their_fields() {
         assert!(object(br#"{"to": "x"}"#, &["to"]).is_ok());
@@ -6894,6 +7193,7 @@ mod tests {
             accepts: vec!["review_request".into()],
             runner: None,
             seal: None,
+            sealed_since: None,
         };
         let asked = |state: &str, result: Option<Value>| {
             let body = approval::request_body(&change);
@@ -7350,6 +7650,7 @@ mod tests {
                 accepts: vec!["review_request".into()],
                 runner: None,
                 seal: None,
+                sealed_since: None,
             },
         );
         let inbox_before = link.lock().inbox.len();

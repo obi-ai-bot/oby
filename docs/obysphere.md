@@ -4,7 +4,7 @@ The owner, 2026-10-25: clicking Deskree's Obysphere in Sangam's design isn't wha
 
 It builds on [onboarding.md](onboarding.md) section 4 (roles, Knowledge per Obysphere, another Obysphere is another world) and [trim.md](trim.md) core 4 (Obys talk: reviews first, working together later).
 
-Obi-to-Obi messages (review summaries, questions, answers) are sealed end to end between two Obys whose cards have a seal key (#1233; spec `protocol.md` section 9.1): the Obysphere's server, and members who read its audit log, see who, when, what kind and which repository, never the words.
+The words of Obi-to-Obi messages (review summaries, findings, questions, answers) are sealed end to end between two Obys whose cards have a seal key (#1233; spec `protocol.md` section 9.1): the Obysphere's server, and members who read its audit log, see who, when and what kind, the repository, branches, files and lines, never the words.
 
 ## What each side has today
 
@@ -132,7 +132,7 @@ Each step is one pull request, tested as the merge ritual says, and checked agai
 1. **Asks on Home** (part 6). Small, Mac and Engine only, and it fixes a real gap today.
 2. **The side panel and the settings page** (parts 1 and 4), over what the server has today. Rename, avatar, delete and the invited list show once the server has them, and say so until then. The server address and Host your own move to Settings › General.
 3. **obi-sphere: the Obysphere's edits** (rename, image, delete, a second admin) and **invitations** (list, label). Then Invite member and Invited in the Mac (part 3).
-4. **Sealed message bodies** (#1233, done): only the two Obys in an exchange read it; the server and the other members see only that it happened.
+4. **Sealed message bodies** (#1233, done): only the two Obys in an exchange read the words; the server and the other members see that it happened, who and what it's about (the repository, branches, files and lines), never what anyone wrote.
 5. **Conversations with other Obys** (part 2): the spec's optional link first, then obid's store and API, then the member's page and the conversation in the Mac.
 6. **Knowledge** (part 5): the Tetrix audit's fixes, then the spec's `lookup` and the record of sources, the admin's and the member's obid, then the page.
 7. **Several Obyspheres**, after conversations (decision 1).

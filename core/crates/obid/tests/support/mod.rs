@@ -705,6 +705,33 @@ pub fn join_as(
     joined.body
 }
 
+/// What the Mac app does when obid says `sealing` `card_needed` (Sphere.swift, `sealCard`): a new
+/// card from obid, signed by the owner, kept with `PUT /v1/obid/sphere/membership`. Answers
+/// `sealing` after.
+pub fn seal_card(obid: &Obid, sphere: &FakeSphere, owner: &Owner) -> Value {
+    let me = call(obid, "GET", "/v1/obid/sphere", None).body;
+    assert_eq!(me["sealing"], "card_needed", "{me}");
+    let made = call(
+        obid,
+        "POST",
+        "/v1/obid/sphere/card",
+        Some(
+            &json!({"url": sphere.url, "sphere": SPHERE, "obiId": me["obiId"], "name": "Wellington's Obi",
+                     "ownerKey": owner.key.public_key(), "accepts": me["accepts"]}),
+        ),
+    );
+    assert_eq!(made.status, 200, "{}", made.text);
+    let signed = card::sign(made.body["card"].as_object().unwrap(), &owner.key).unwrap();
+    let renewed = call(
+        obid,
+        "PUT",
+        "/v1/obid/sphere/membership",
+        Some(&json!({"card": signed})),
+    );
+    assert_eq!(renewed.status, 200, "{}", renewed.text);
+    renewed.body["sealing"].clone()
+}
+
 /// An Obi the test plays, through the fake Sphere's HTTP API like any Obi.
 pub struct TestObi {
     pub id: String,
@@ -729,7 +756,12 @@ impl TestObi {
         owner: &str,
         accepts: &[&str],
     ) -> TestObi {
-        TestObi::join_with(sphere, id, owner, accepts, None).await
+        TestObi::join_with(sphere, id, owner, accepts, None, "0.2.0").await
+    }
+
+    /// [`TestObi::join`], an Obi whose implementation predates seal keys: its card says 0.1.0.
+    pub async fn join_old(sphere: &FakeSphere, id: &str, owner: &str) -> TestObi {
+        TestObi::join_with(sphere, id, owner, &["review_request"], None, "0.1.0").await
     }
 
     /// [`TestObi::join`], an Obi whose card has a seal key: what's sent to it is sealed for it.
@@ -738,7 +770,7 @@ impl TestObi {
             "obid sphere test seal key {id}"
         )))
         .unwrap();
-        TestObi::join_with(sphere, id, owner, &["review_request"], Some(seal)).await
+        TestObi::join_with(sphere, id, owner, &["review_request"], Some(seal), "0.2.0").await
     }
 
     async fn join_with(
@@ -747,6 +779,7 @@ impl TestObi {
         owner: &str,
         accepts: &[&str],
         seal: Option<SealKey>,
+        version: &str,
     ) -> TestObi {
         let owner = Owner::new(owner);
         let key = Keypair::from_seed_string(&format!("obid sphere test obi {id}"));
@@ -762,7 +795,7 @@ impl TestObi {
             owner_key: &owner_key,
             name: "A test Obi",
             description: obi_protocol::identity::DEFAULT_DESCRIPTION,
-            version: "0.1.0",
+            version,
             key_id: &key_id,
             public_key: &public_key,
             accepts: &accepts,
@@ -958,6 +991,11 @@ pub struct SphereState {
     pub relay_sockets: u64,
     /// How long the access tokens it gives last, when not an hour.
     pub token_lifetime: Option<i64>,
+    /// A Sphere from before sealing: its health doesn't say `seal`.
+    pub predates_sealing: bool,
+    /// The next send of this type is recorded and delivered, and its answer is lost: `503`, once
+    /// the test lets it go (`FakeSphere::lose_next_answer`).
+    pub lose: Option<(String, Arc<tokio::sync::Notify>)>,
 }
 
 pub type RelaySender = tokio::sync::mpsc::UnboundedSender<axum::extract::ws::Message>;
@@ -991,6 +1029,7 @@ impl FakeSphere {
                 post(redeem),
             )
             .route("/v0.1/oauth/token", post(token))
+            .route("/v0.1/health", get(health))
             .route("/v0.1/spheres/{sphere}/members", get(members))
             .route("/v0.1/spheres/{sphere}/messages", post(send))
             .route("/v0.1/spheres/{sphere}/deliveries", get(deliveries))
@@ -1031,6 +1070,14 @@ impl FakeSphere {
     pub fn hold_next(&self, kind: &str) -> Arc<tokio::sync::Notify> {
         let release = Arc::new(tokio::sync::Notify::new());
         self.lock().hold = Some((kind.to_owned(), release.clone()));
+        release
+    }
+
+    /// Records and delivers the next send of type `kind`, and answers it `503` (the answer lost on
+    /// the way) only once the test calls `notify_one` on what this returns.
+    pub fn lose_next_answer(&self, kind: &str) -> Arc<tokio::sync::Notify> {
+        let release = Arc::new(tokio::sync::Notify::new());
+        self.lock().lose = Some((kind.to_owned(), release.clone()));
         release
     }
 
@@ -1228,6 +1275,15 @@ async fn token(
     axum::Json(json!({"access_token": token, "issued_token_type": "urn:ietf:params:oauth:token-type:access_token",
                       "token_type": "Bearer", "expires_in": lifetime, "scope": OBI_SCOPES}))
         .into_response()
+}
+
+/// `GET /v0.1/health`: `seal: true` but for a Sphere from before sealing.
+async fn health(State(state): State<Arc<Mutex<SphereState>>>) -> Response {
+    let mut health = json!({"ok": true, "protocol": "obi/0.1"});
+    if !state.lock().unwrap().predates_sealing {
+        health["seal"] = json!(true);
+    }
+    axum::Json(health).into_response()
 }
 
 async fn members(State(state): State<Arc<Mutex<SphereState>>>, headers: HeaderMap) -> Response {
@@ -1866,6 +1922,15 @@ fn record(state: &Mutex<SphereState>, headers: &HeaderMap, body: &[u8]) -> Respo
         env.clone(),
         false,
     ));
+    if let Some((_, release)) = state.lose.take_if(|(lost, _)| *lost == kind) {
+        let mut response = sphere_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "internal",
+            "the answer was lost",
+        );
+        response.extensions_mut().insert(Held(release));
+        return answer(&mut state, StatusCode::SERVICE_UNAVAILABLE, response);
+    }
     let sent = json!({"id": env["id"], "seq": seq, "entry_hash": entry["hash"], "recorded_at": recorded_at});
     let mut response = (StatusCode::ACCEPTED, axum::Json(sent)).into_response();
     if let Some((_, release)) = state.hold.take_if(|(held, _)| *held == kind) {
