@@ -314,7 +314,7 @@ actor Server {
         case "sphere_exchange":
             if let given = arguments["id"]?.text?.trimmingCharacters(in: .whitespacesAndNewlines), !given.isEmpty {
                 let path = "/v1/obid/sphere/exchanges/\(RunnerAPI.segment(given))"
-                return try await sphere(missing: "This Oby has no exchange \(given).") { Reply(text: Render.exchange(try await runner.call("GET", path))) }
+                return try await sphere(missing: "This Oby has no exchange with that id: sphere_exchange without an id lists them.") { Reply(text: Render.exchange(try await runner.call("GET", path))) }
             }
             let limit = try number("limit", 1...100) ?? 10
             return try await sphere { Reply(text: Render.exchanges(try await runner.call("GET", "/v1/obid/sphere/exchanges?limit=\(limit)").array ?? [])) }
