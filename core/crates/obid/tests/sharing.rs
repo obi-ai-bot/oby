@@ -209,6 +209,11 @@ fn walk(dir: &Path) -> Vec<std::path::PathBuf> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+// Hosting a guest job needs Apple silicon: its VM image is arm64 (hosting::Hosting::ready).
+#[cfg_attr(
+    not(target_arch = "aarch64"),
+    ignore = "hosting a guest job needs Apple silicon (an arm64 VM image)"
+)]
 async fn a_job_runs_on_a_teammates_mac_with_the_owners_own_key_and_comes_back_with_its_commit() {
     let (hf, gf) = (Folder::new("share-host"), Folder::new("share-guest"));
     let p = pair(&hf, &gf, json!({"who": "everyone"}), json!({})).await;
@@ -348,6 +353,11 @@ async fn a_job_runs_on_a_teammates_mac_with_the_owners_own_key_and_comes_back_wi
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+// Hosting a guest job needs Apple silicon: its VM image is arm64 (hosting::Hosting::ready).
+#[cfg_attr(
+    not(target_arch = "aarch64"),
+    ignore = "hosting a guest job needs Apple silicon (an arm64 VM image)"
+)]
 async fn a_teammates_first_job_waits_for_the_owners_allow_and_from_now_on_isnt_asked_again() {
     let (hf, gf) = (
         Folder::new("share-ask-host"),
@@ -413,6 +423,11 @@ async fn a_teammates_first_job_waits_for_the_owners_allow_and_from_now_on_isnt_a
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+// Hosting a guest job needs Apple silicon: its VM image is arm64 (hosting::Hosting::ready).
+#[cfg_attr(
+    not(target_arch = "aarch64"),
+    ignore = "hosting a guest job needs Apple silicon (an arm64 VM image)"
+)]
 async fn stop_sends_the_job_back_with_its_commit_and_it_needs_its_owner() {
     let (hf, gf) = (
         Folder::new("share-stop-host"),
@@ -506,6 +521,11 @@ async fn stop_sends_the_job_back_with_its_commit_and_it_needs_its_owner() {
 /// "waiting to join", and never keeps the status from going out (the Sphere refuses a `for` with a
 /// name it doesn't know).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+// Hosting a guest job needs Apple silicon: its VM image is arm64 (hosting::Hosting::ready).
+#[cfg_attr(
+    not(target_arch = "aarch64"),
+    ignore = "hosting a guest job needs Apple silicon (an arm64 VM image)"
+)]
 async fn a_mac_is_offered_only_to_chosen_people_who_have_joined() {
     let (hf, gf) = (Folder::new("people-host"), Folder::new("people-guest"));
     let p = pair(
@@ -533,6 +553,11 @@ async fn a_mac_is_offered_only_to_chosen_people_who_have_joined() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+// Hosting a guest job needs Apple silicon: its VM image is arm64 (hosting::Hosting::ready).
+#[cfg_attr(
+    not(target_arch = "aarch64"),
+    ignore = "hosting a guest job needs Apple silicon (an arm64 VM image)"
+)]
 async fn with_sharing_off_or_the_mac_busy_a_job_is_declined_with_the_reason() {
     let (hf, gf) = (
         Folder::new("share-off-host"),
@@ -696,6 +721,11 @@ fn ended(guest: &Obid, job: &str) -> Value {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+// Hosting a guest job needs Apple silicon: its VM image is arm64 (hosting::Hosting::ready).
+#[cfg_attr(
+    not(target_arch = "aarch64"),
+    ignore = "hosting a guest job needs Apple silicon (an arm64 VM image)"
+)]
 async fn a_share_of_an_api_account_runs_on_its_mac_with_its_key_metered_until_used_then_revoked() {
     let (hf, gf) = (
         Folder::new("share-api-host"),
@@ -880,6 +910,11 @@ async fn a_share_of_an_api_account_runs_on_its_mac_with_its_key_metered_until_us
 /// One run_request per teammate every 15 minutes: a second one at once is declined however the
 /// Mac is, so requests can't probe when Wellington is at it (the owner's decision of 2026-10-21).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+// Hosting a guest job needs Apple silicon: its VM image is arm64 (hosting::Hosting::ready).
+#[cfg_attr(
+    not(target_arch = "aarch64"),
+    ignore = "hosting a guest job needs Apple silicon (an arm64 VM image)"
+)]
 async fn a_second_request_within_15_minutes_is_declined() {
     let (hf, gf) = (
         Folder::new("share-often-host"),
