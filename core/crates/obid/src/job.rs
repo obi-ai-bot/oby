@@ -1592,7 +1592,7 @@ mod tests {
     }
 
     /// Only an owner's job whose agent ran here gets the secrets its repository declares for its
-    /// check: never another Obi's review, nor a job that ran on a teammate's Mac.
+    /// check: never another Oby's review, nor a job that ran on a teammate's Mac.
     #[test]
     fn only_an_owners_job_run_here_gets_declared_secrets() {
         let mut job = job();

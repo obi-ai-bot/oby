@@ -1,5 +1,5 @@
 //! Secrets a repository declares for its check (crate::secretspec; oby-plan E1, "Secrets you
-//! declare"), on the real obid binary and as obid runs a review another Obi asked for:
+//! declare"), on the real obid binary and as obid runs a review another Oby asked for:
 //!
 //! - an owner's job's check gets the values its base branch's `secretspec.toml` declares, from
 //!   the owner's vault as `check.<NAME>`, and nothing its own branch adds to the file;
@@ -268,7 +268,7 @@ fn an_owners_check_gets_the_bases_values_and_nothing_leaves_it() {
     holds_none(&obid_log, &fake(), "obid's log");
 }
 
-/// (a) A review another Obi asked for: its check gets none of the owner's values, though the
+/// (a) A review another Oby asked for: its check gets none of the owner's values, though the
 /// base's `secretspec.toml` asks and the owner's vault has them, and obid says why.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_received_reviews_check_gets_nothing() {
