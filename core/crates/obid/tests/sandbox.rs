@@ -197,6 +197,7 @@ fn spec(world: &World, network: bool, commits: bool, account: bool) -> Spec {
         hidden: vec![world.home.clone(), world.person.clone()],
         network,
         loopback: false,
+        proxied: false,
         frozen: Vec::new(),
     }
 }
@@ -553,6 +554,81 @@ setTimeout(() => process.exit(0), 3000);";
                 "loopback {loopback}, {line}: {said}"
             );
         }
+    }
+}
+
+/// #616: a proxied agent (macOS, `Spec::proxied`) keeps the same fences and reaches loopback (its
+/// own servers, obid's MCP servers, obid's egress proxy), and nothing beyond it: a socket of its
+/// own to an address outside fails at the OS, over IPv4, IPv6 or UDP, and no host name resolves,
+/// whatever a check of its commands let through. Outside the sandbox the same probe does each, so
+/// the refusals aren't this machine's.
+#[cfg(target_os = "macos")]
+#[test]
+fn a_proxied_agent_reaches_loopback_and_nothing_beyond() {
+    outside_a_job();
+    let world = world("proxied");
+    let spec = Spec {
+        proxied: true,
+        ..spec(&world, true, false, true)
+    };
+    let ran = run(&world, &spec);
+    the_same_fences(&ran, &world, false);
+    assert!(
+        ran.connected,
+        "the proxied agent never reached loopback\n{}",
+        ran.raw
+    );
+    let proxy = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = proxy.local_addr().unwrap().port();
+    let probe = format!(
+        "const net = require('net');
+const own = net.createServer(c => c.end('own')).listen(0, '127.0.0.1', () => {{
+  net.connect(own.address().port, '127.0.0.1').on('data', d => console.log('loopback ' + d));
+}}).on('error', () => console.log('loopback no'));
+net.connect({port}, '127.0.0.1').on('connect', () => console.log('proxy ok'))
+  .on('error', () => console.log('proxy no'));
+require('dns').lookup('example.com', e => console.log('dns ' + (e ? 'no' : 'ok')));
+net.connect(443, '1.1.1.1').on('connect', () => console.log('outside ok'))
+  .on('error', () => console.log('outside no'));
+net.connect(443, '2606:4700:4700::1111').on('connect', () => console.log('outside6 ok'))
+  .on('error', () => console.log('outside6 no'));
+require('dgram').createSocket('udp4').send('x', 53, '1.1.1.1', e => console.log('udp ' + (e ? 'no' : 'ok')));
+setTimeout(() => process.exit(0), 3000);"
+    );
+    let sandbox = Sandbox::detect(Path::new(env!("CARGO_BIN_EXE_obid"))).unwrap();
+    let probe_argv: Vec<OsString> = vec!["node".into(), "-e".into(), probe.into()];
+    let env = obid::process::sandbox_env(&obid::process::tools_path(), &spec.temp, &[]);
+    let said = |argv: &[OsString]| {
+        let output = Command::new(&argv[0])
+            .args(&argv[1..])
+            .env_clear()
+            .envs(env.clone())
+            .current_dir(&world.worktree)
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&output.stdout).into_owned()
+    };
+    let control = said(&probe_argv);
+    let ipv6 = control.lines().any(|l| l == "outside6 ok");
+    if !ipv6 {
+        eprintln!("this machine has no IPv6 route, so IPv6 proves nothing here");
+    }
+    for line in ["outside ok", "dns ok", "udp ok"] {
+        assert!(
+            control.lines().any(|l| l == line),
+            "outside the sandbox, {line}: this machine doesn't, so this proves nothing: {control}"
+        );
+    }
+    let inside = said(&sandbox.wrap(&spec, &probe_argv));
+    for line in [
+        "loopback own",
+        "proxy ok",
+        "dns no",
+        "outside no",
+        "outside6 no",
+        "udp no",
+    ] {
+        assert!(inside.lines().any(|l| l == line), "{line}: {inside}");
     }
 }
 

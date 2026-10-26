@@ -23,6 +23,7 @@ pub mod conversation;
 pub mod decisions;
 pub mod detail;
 pub mod devices;
+pub mod egress;
 pub mod event_work;
 pub mod events;
 pub mod facts;
@@ -119,6 +120,21 @@ pub enum StartError {
         path: std::path::PathBuf,
         source: std::io::Error,
     },
+}
+
+/// As many open files as this Mac lets obid have: each tunnel of the egress proxy holds two, and
+/// macOS starts a process with 256 (#1471's review). macOS refuses more than `OPEN_MAX` (10240)
+/// when the hard limit is unlimited.
+fn raise_open_files() {
+    use nix::sys::resource::{Resource, getrlimit, setrlimit};
+    let Ok((soft, hard)) = getrlimit(Resource::RLIMIT_NOFILE) else {
+        return;
+    };
+    for want in [hard, hard.min(10240)] {
+        if want <= soft || setrlimit(Resource::RLIMIT_NOFILE, want, hard).is_ok() {
+            return;
+        }
+    }
 }
 
 /// Makes `home` if it isn't there yet, and keeps it its owner's alone (0700): it holds the API
@@ -324,6 +340,10 @@ pub async fn serve(
         }
     })?;
     jobs.set_api_address(bound);
+    // Jobs started its agents' egress proxy (crate::egress, #616), whose tunnels hold two files each.
+    if jobs.confines_egress() {
+        raise_open_files();
+    }
     stopwatch.lap("jobs");
     let (stopping_tx, stopping_rx) = tokio::sync::watch::channel(false);
     let link = sphere::Link::open(

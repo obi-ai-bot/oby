@@ -15,7 +15,8 @@
 //! - **Network**: none for the check, but, for the owner's own jobs, loopback ([`Spec::loopback`]):
 //!   the servers its tests start on 127.0.0.1. An agent has its own network namespace, with
 //!   slirp4netns so it still reaches its model's API, and the host's abstract Unix sockets are not
-//!   in it.
+//!   in it. On macOS an agent's only way off the Mac is obid's egress proxy ([`Spec::proxied`],
+//!   crate::egress): nothing beyond loopback, and no DNS resolver.
 //!
 //! - **No terminal, no one to ask**: the process leads a session of its own, so it has no
 //!   controlling terminal (none to push keystrokes into with `TIOCSTI` when obid was started from a
@@ -194,6 +195,11 @@ pub struct Spec {
     /// nothing of the host's on it, either way; Seatbelt can't make one, so on macOS this is the
     /// host's, which the job's agent reaches anyway. Never the DNS resolver.
     pub loopback: bool,
+    /// With `network`, it reaches nothing beyond loopback, where obid's egress proxy is
+    /// (crate::egress), and no DNS resolver: whatever leaves the Mac goes through the proxy, named
+    /// by its host. Seatbelt only ([`Sandbox::confines_egress`]); bubblewrap's agent still has
+    /// slirp4netns (#616's next step).
+    pub proxied: bool,
     /// Folders inside the worktree that stay read-only: a conversation's checkouts of the
     /// repositories in its room (`room/repos`). Each must exist before the process starts.
     pub frozen: Vec<PathBuf>,
@@ -294,6 +300,12 @@ impl Sandbox {
     /// Whether what obid starts stays in the job sandbox obid itself runs in ([`Tool::Enclosing`]).
     pub fn encloses(&self) -> bool {
         self.tool == Tool::Enclosing
+    }
+
+    /// Whether [`Spec::proxied`] holds here: Seatbelt's. Inside an enclosing sandbox what obid
+    /// starts keeps that sandbox's network, and its proxy (the variables a process keeps).
+    pub fn confines_egress(&self) -> bool {
+        matches!(self.tool, Tool::Seatbelt(_))
     }
 
     /// The command line that runs `argv` inside the sandbox `spec` describes: the program, then its
@@ -451,6 +463,7 @@ impl Spec {
             hidden,
             network: self.network,
             loopback: self.loopback,
+            proxied: self.proxied,
             frozen: self.frozen.iter().map(real).collect(),
         }
     }
@@ -779,11 +792,15 @@ fn seatbelt_profile_reading(spec: &Spec, confined: bool, loopback: bool) -> Stri
     // Docker's daemon, an editor's command socket. A socket is reached by connecting, not by
     // reading, so the file rules above don't hold it back. None but the job's own, in its own
     // folders, and, with the network, the DNS resolver's (an agent names its model's API by host
-    // name). Never the resolver's without: Seatbelt keeps this allow over the `(deny network*)`
-    // below, and a lookup carries what it names out (it did until 2026-10-24).
+    // name). Never the resolver's without, nor through the proxy, which names hosts itself:
+    // Seatbelt keeps this allow over the `(deny network*)` below, and a lookup carries what it
+    // names out (it did until 2026-10-24).
     profile.push_str("(deny network-outbound (remote unix-socket))\n");
     profile.push_str("(allow network-outbound");
-    for socket in RESOLVER_SOCKETS.iter().filter(|_| spec.network) {
+    for socket in RESOLVER_SOCKETS
+        .iter()
+        .filter(|_| spec.network && !spec.proxied)
+    {
         profile.push_str(&format!(
             " (remote unix-socket (path-literal {}))",
             sbpl_text(socket)
@@ -808,6 +825,12 @@ fn seatbelt_profile_reading(spec: &Spec, confined: bool, loopback: bool) -> Stri
             }
             profile.push_str(")\n");
         }
+    } else if spec.proxied {
+        // After the Unix sockets' rules: placed before them, Seatbelt refuses loopback too. What
+        // listens stays as it was: Seatbelt's `localhost` takes a listen on 0.0.0.0 too, and its
+        // inbound rules hold only at the listen, so a server on 0.0.0.0 can't be refused without a
+        // test's own on 127.0.0.1 (#1471's review; docs/runner-api.md, the egress proxy).
+        profile.push_str("(deny network-outbound (remote ip \"*:*\"))\n(allow network-outbound (remote ip \"localhost:*\"))\n");
     } else if !loopback {
         profile.push_str("(deny network-outbound (remote ip \"localhost:*\"))\n");
     }
@@ -1751,6 +1774,32 @@ mod tests {
         );
         assert_eq!(maskable_socket(&real).unwrap(), real);
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// #616: a proxied agent's profile reaches nothing beyond loopback and no DNS resolver, the
+    /// rules for addresses last (before the Unix sockets' rules, Seatbelt refuses loopback too).
+    #[test]
+    fn a_proxied_profile_reaches_only_loopback() {
+        let spec = Spec {
+            worktree: "/w".into(),
+            temp: "/t".into(),
+            network: true,
+            proxied: true,
+            ..Spec::default()
+        };
+        let profile = seatbelt_profile_reading(&spec, false, true);
+        let deny = profile
+            .find("(deny network-outbound (remote ip \"*:*\"))\n(allow network-outbound (remote ip \"localhost:*\"))")
+            .expect("only loopback");
+        assert!(deny > profile.rfind("unix-socket").unwrap());
+        assert!(!profile.contains("mDNSResponder"));
+        let open = Spec {
+            proxied: false,
+            ..spec
+        };
+        let profile = seatbelt_profile_reading(&open, false, true);
+        assert!(profile.contains("mDNSResponder"));
+        assert!(!profile.contains("(remote ip \"*:*\")"));
     }
 
     /// A conversation's shell command with the network never reaches this machine's loopback,

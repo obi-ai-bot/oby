@@ -603,6 +603,9 @@ struct Ask {
     reply: tokio::sync::oneshot::Sender<Answer>,
     input: Value,
     answers: Vec<String>,
+    /// Told when the owner answers it themselves, before `reply` (the egress proxy keeps only
+    /// their answers past a change of mode or rules); a change of them settles it untold.
+    owner: Option<tokio::sync::oneshot::Sender<()>>,
 }
 
 /// Why words that aren't the owner's own don't answer the agent's question (#858).
@@ -734,6 +737,8 @@ pub struct Jobs {
     routines: std::sync::OnceLock<Arc<crate::routines::Routines>>,
     /// Oby's Tetrix login: every owner's job's agent gets Tetrix through obid (crate::tetrix).
     tetrix: std::sync::OnceLock<Arc<crate::tetrix::Tetrix>>,
+    /// A job's agent's only way off the Mac (crate::egress, #616).
+    egress: std::sync::OnceLock<Arc<crate::egress::Egress>>,
     /// Where a job's `.obi/artifacts/` is published when it ends.
     artifacts: std::sync::OnceLock<Arc<crate::artifacts::Artifacts>>,
     /// Loopback endpoint given to agents for `oby-check apple`.
@@ -758,6 +763,10 @@ pub struct Jobs {
     /// (a conversation's waiting Claude Code, crate::brain::harness).
     short_of_memory: std::sync::OnceLock<Box<dyn Fn() + Send + Sync>>,
 }
+
+/// The most sites one job's agent waits for the owner's answer about at once, through obid's
+/// egress proxy ([`Jobs::ask_about`]): more would flood the inbox.
+const MOST_SITES_ASKED: usize = 3;
 
 /// How often the meter reads while jobs run or wait for memory ([`Jobs::meter`]).
 const METER_TICK: Duration = Duration::from_secs(5);
@@ -957,6 +966,7 @@ impl Jobs {
             connections: std::sync::OnceLock::new(),
             routines: std::sync::OnceLock::new(),
             tetrix: std::sync::OnceLock::new(),
+            egress: std::sync::OnceLock::new(),
             artifacts: std::sync::OnceLock::new(),
             api_url: Mutex::new(api_url),
             approvals,
@@ -971,6 +981,14 @@ impl Jobs {
         });
         if github && let Ok(runtime) = tokio::runtime::Handle::try_current() {
             runtime.spawn(github_email(Arc::downgrade(&made)));
+        }
+        // Where the box holds an agent to obid's egress proxy, every agent obid starts gets it
+        // (crate::egress, #616): never one without (`Jobs::launch` refuses to start it then).
+        if made.confines_egress() && tokio::runtime::Handle::try_current().is_ok() {
+            match crate::egress::Egress::start(&made) {
+                Ok(egress) => made.use_egress(egress),
+                Err(e) => tracing::error!("obid's egress proxy can't listen: {e}"),
+            }
         }
         Ok(made)
     }
@@ -1005,6 +1023,16 @@ impl Jobs {
 
     pub fn use_tetrix(&self, tetrix: Arc<crate::tetrix::Tetrix>) {
         let _ = self.tetrix.set(tetrix);
+    }
+
+    /// Whether this machine's job sandbox holds an agent to obid's egress proxy
+    /// ([`Sandbox::confines_egress`]).
+    pub fn confines_egress(&self) -> bool {
+        self.sandbox.as_ref().is_ok_and(Sandbox::confines_egress)
+    }
+
+    pub fn use_egress(&self, egress: Arc<crate::egress::Egress>) {
+        let _ = self.egress.set(egress);
     }
 
     /// Oby's Tetrix, when `job` is the owner's own and Oby is signed in to Tetrix.
@@ -3513,6 +3541,9 @@ impl Jobs {
                 if let Some(connections) = jobs.connections.get() {
                     connections.close_job(&id).await;
                 }
+                if let Some(egress) = jobs.egress.get() {
+                    egress.close(&id);
+                }
                 {
                     let mut state = jobs.lock();
                     state.workers.remove(&id);
@@ -4255,6 +4286,10 @@ impl Jobs {
             return Some(Err(e));
         }
         *kept = changed;
+        // What the rule let agents reach is decided again (crate::egress).
+        if let Some(egress) = self.egress.get() {
+            egress.forget(None);
+        }
         Some(Ok(kept.rules.clone()))
     }
 
@@ -4282,6 +4317,9 @@ impl Jobs {
                 return;
             }
             *kept = changed;
+        }
+        if let Some(egress) = self.egress.get() {
+            egress.forget(None);
         }
         let waiting: Vec<String> = self.lock().asks.keys().cloned().collect();
         for id in waiting {
@@ -4348,6 +4386,7 @@ impl Jobs {
                 reply,
                 input: Value::Null,
                 answers: Vec::new(),
+                owner: None,
             });
             asks.len() == 1
         };
@@ -4469,28 +4508,165 @@ impl Jobs {
                 self.answered(id, &call, worktree, Some(&why));
                 Ruling::Now(Answer::Deny(why))
             }
+            permissions::Verdict::Ask => Ruling::Ask(
+                self.wait_for_owner(id, call, input, &job.repo, &bounds, None, None)
+                    .expect("no limit to wait under"),
+            ),
+        }
+    }
+
+    /// Puts `call` on job `id`'s card for the owner, saying which sites their yes opens; its
+    /// answer comes later, and `owner` hears when it's the owner's own. None, and nothing asked,
+    /// when `most_sites` of the job's fetches wait for the owner already (counted as it's put).
+    #[allow(clippy::too_many_arguments)]
+    fn wait_for_owner(
+        &self,
+        id: &str,
+        call: Call,
+        input: &Value,
+        repo: &str,
+        bounds: &permissions::Bounds,
+        owner: Option<tokio::sync::oneshot::Sender<()>>,
+        most_sites: Option<usize>,
+    ) -> Option<tokio::sync::oneshot::Receiver<Answer>> {
+        let mut permission = permissions::card(&call, &permissions::new_id(), repo, bounds);
+        let sites = self.sites_opened(&call, bounds);
+        if !sites.is_empty() {
+            permission.detail.push_str(&format!(
+                "\n\nAllowing it lets this job reach {} until it ends.",
+                sites.join(", ")
+            ));
+        }
+        let (reply, answer) = tokio::sync::oneshot::channel();
+        let first = {
+            let mut state = self.lock();
+            let asks = state.asks.entry(id.to_owned()).or_default();
+            let fetches = asks.iter().filter(|a| a.call.tool == "WebFetch").count();
+            if most_sites.is_some_and(|most| fetches >= most) {
+                return None;
+            }
+            asks.push_back(Ask {
+                call,
+                permission,
+                reply,
+                input: input.clone(),
+                answers: Vec::new(),
+                owner,
+            });
+            asks.len() == 1
+        };
+        if first {
+            self.show(id, None);
+        }
+        Some(answer)
+    }
+
+    /// What job `id`'s agent reaches through obid's egress proxy (crate::egress, #616) without
+    /// a decision of its own: its tool's own services on 443 go through; telemetry to anyone
+    /// else, and anything more for another Obi's review (it only reads, and never asks), don't.
+    /// None for a site the job decides ([`Jobs::ask_about`]).
+    pub(crate) fn reach_now(&self, id: &str, host: &str, port: u16) -> Option<Result<(), String>> {
+        let Some(job) = self.get(id) else {
+            return Some(Err("The job is gone.".into()));
+        };
+        if Tool::from_id(&job.agent).is_some_and(|tool| crate::egress::tools_own(tool, host, port))
+        {
+            return Some(Ok(()));
+        }
+        (crate::egress::telemetry(host) || job.obi.is_some()).then(|| {
+            Err(format!(
+                "This job doesn't reach {}.",
+                crate::egress::site(host, port)
+            ))
+        })
+    }
+
+    /// How job `id` decides a site its agent wants to reach (`host` on `port`), once for its
+    /// worker (crate::egress keeps the answer): as a fetch from it (`WebFetch` of
+    /// `https://<site>/`). A package registry goes through in Sandbox mode
+    /// ([`crate::egress::REGISTRIES`]); else the repository's rules and the job's mode answer, or
+    /// the owner's card does (Allow for the rest of the job, Always allow saving the rule too). At
+    /// most [`MOST_SITES_ASKED`] wait for the owner at once: another is refused this once.
+    pub(crate) fn ask_about(&self, id: &str, host: &str, port: u16) -> crate::egress::Asked {
+        use crate::egress::Asked;
+        let Some(job) = self.get(id) else {
+            return Asked::Now(Err("The job is gone.".into()));
+        };
+        let site = crate::egress::site(host, port);
+        let input = json!({"url": format!("https://{site}/")});
+        let call = Call::new("WebFetch", &input);
+        let worktree = self.worktree_path(id);
+        let mode = Self::mode_of(&job);
+        if port == 443 && mode == Mode::Sandbox && crate::egress::REGISTRIES.contains(&host) {
+            self.answered(id, &call, &worktree, None);
+            return Asked::Now(Ok(()));
+        }
+        let bounds = self.bounds(&job, &worktree);
+        match permissions::decide(&call, mode, &self.rules_for(&job.repo), &bounds) {
+            permissions::Verdict::Allow => {
+                self.answered(id, &call, &worktree, None);
+                Asked::Now(Ok(()))
+            }
+            permissions::Verdict::Deny(why) => {
+                self.answered(id, &call, &worktree, Some(&why));
+                Asked::Now(Err(why))
+            }
             permissions::Verdict::Ask => {
-                let permission =
-                    permissions::card(&call, &permissions::new_id(), &job.repo, &bounds);
-                let (reply, answer) = tokio::sync::oneshot::channel();
-                let first = {
-                    let mut state = self.lock();
-                    let asks = state.asks.entry(id.to_owned()).or_default();
-                    asks.push_back(Ask {
-                        call,
-                        permission,
-                        reply,
-                        input: input.clone(),
-                        answers: Vec::new(),
-                    });
-                    asks.len() == 1
-                };
-                if first {
-                    self.show(id, None);
+                let (owner, by_owner) = tokio::sync::oneshot::channel();
+                match self.wait_for_owner(
+                    id,
+                    call,
+                    &input,
+                    &job.repo,
+                    &bounds,
+                    Some(owner),
+                    Some(MOST_SITES_ASKED),
+                ) {
+                    Some(answer) => Asked::Card { answer, by_owner },
+                    None => Asked::Busy(format!(
+                        "Other sites are waiting for the owner: ask for {site} again once they answer."
+                    )),
                 }
-                Ruling::Ask(answer)
             }
         }
+    }
+
+    /// The repository's rule that refuses job `id` the site `host` on `port`, said as the
+    /// agent hears it: checked at every connection, so a deny saved later stops a site the
+    /// owner had let through.
+    pub(crate) fn denied_site(&self, id: &str, host: &str, port: u16) -> Option<String> {
+        let job = self.get(id)?;
+        let call = Call::new(
+            "WebFetch",
+            &json!({"url": format!("https://{}/", crate::egress::site(host, port))}),
+        );
+        let worktree = self.worktree_path(id);
+        self.rules_for(&job.repo)
+            .into_iter()
+            .find(|r| r.decision == "deny" && permissions::covers(&r.rule, &call, &worktree, false))
+            .map(|r| format!("The owner's rule {} refuses this in {}.", r.rule, r.repo))
+    }
+
+    /// The sites the owner's yes to `call` lets the job's agent reach through the egress proxy
+    /// until the job ends, as its card says: a fetch's site, and the `http(s)://` addresses of
+    /// the commands in it that reach the network as obid reads them (not a comment's, nor an
+    /// `echo`'s). None where agents aren't proxied.
+    fn sites_opened(&self, call: &Call, bounds: &permissions::Bounds) -> Vec<String> {
+        if self.egress.get().is_none()
+            || permissions::reach(call, bounds) != Some(permissions::Reach::Network)
+        {
+            return Vec::new();
+        }
+        let words = match call.tool.as_str() {
+            "WebFetch" => call.url.iter().cloned().collect(),
+            "Bash" => call
+                .command
+                .as_deref()
+                .map(|command| permissions::network_words(command, bounds))
+                .unwrap_or_default(),
+            _ => Vec::new(),
+        };
+        crate::egress::sites_named(&words)
     }
 
     /// Keeps on the job a permission obid answered by its own rules, `refused` with the words the
@@ -4721,6 +4897,16 @@ impl Jobs {
                     .get_or_insert_with(Vec::new)
                     .push(words.to_owned());
             });
+        }
+        // The owner's own yes opens the sites it names (a rule's or a mode's never does).
+        if matches!(answer, Answer::Allow)
+            && let Some(egress) = self.egress.get()
+        {
+            let bounds = self.bounds(&job, &self.worktree_path(id));
+            egress.let_through(id, &self.sites_opened(&ask.call, &bounds));
+        }
+        if let Some(owner) = ask.owner {
+            let _ = owner.send(());
         }
         let _ = ask.reply.send(answer);
         if decision == Decision::Always
@@ -4953,6 +5139,10 @@ impl Jobs {
                 job.mode = Some(mode.as_str().to_owned());
             }
         })?;
+        // What the old mode let its agent reach is decided again (crate::egress).
+        if let Some(egress) = self.egress.get() {
+            egress.forget(Some(id));
+        }
         self.reconsider(id);
         self.get(id)
     }
@@ -6099,6 +6289,7 @@ impl Jobs {
             // An agent keeps the network any agent has (its model's API); the check gets none.
             network: true,
             loopback: false,
+            proxied: false,
             frozen: Vec::new(),
         }
     }
@@ -6139,6 +6330,18 @@ impl Jobs {
         })?;
         let mut spec = spec.clone();
         let mut extra: Vec<(&str, OsString)> = spec.git_env();
+        // Its only way off the Mac: obid's proxy, which lets its tool's own services through and
+        // decides every other site (crate::egress, #616). Never the network without it.
+        if sandbox.confines_egress() {
+            let egress = self.egress.get().ok_or_else(|| {
+                format!(
+                    "obid's egress proxy isn't running, so {} didn't start.",
+                    tool.name()
+                )
+            })?;
+            extra.extend(crate::egress::env(&egress.open(&job.id)));
+            spec.proxied = true;
+        }
         extra.extend(process::show_rust(&spec.temp));
         // Its builds take what admission leaves them next to the other jobs (crate::meter).
         extra.extend(self.build_env(&job.id, false));
@@ -6251,11 +6454,18 @@ impl Jobs {
                 argv.extend(flags);
                 argv
             }
-            Tool::Codex => codex::argv(
-                bin,
-                broker.map(|(url, token)| (url.as_str(), token.as_str())),
-                tetrix.as_ref().map(|(url, _)| url.as_str()),
-            ),
+            Tool::Codex => {
+                let mut argv = codex::argv(
+                    bin,
+                    broker.map(|(url, token)| (url.as_str(), token.as_str())),
+                    tetrix.as_ref().map(|(url, _)| url.as_str()),
+                );
+                // No plug-in sync: at every start Codex clones its curated marketplace from
+                // github.com, which the egress proxy would ask the owner about (#616), and a job's
+                // `CODEX_HOME` has no plug-in in it anyway.
+                argv.splice(1..1, ["-c".into(), "features.plugins=false".into()]);
+                argv
+            }
             Tool::Cursor => acp::cursor::argv(bin),
         };
         if job.review_of.is_some() {
@@ -6410,6 +6620,7 @@ impl Jobs {
             hidden,
             network,
             loopback: false,
+            proxied: false,
             frozen,
         };
         // No file it writes grows past 256 MB (bash's `ulimit -f` counts KB), then bash runs the
@@ -6491,6 +6702,7 @@ impl Jobs {
             hidden,
             network: true,
             loopback: false,
+            proxied: false,
             frozen,
         };
         let mut extra: Vec<(&str, OsString)> = Vec::new();
@@ -16982,5 +17194,310 @@ mod tests {
             env.iter()
                 .any(|(k, v)| k == "CLAUDE_CODE_DISABLE_CLAUDE_MDS" && v == "1")
         );
+    }
+
+    /// #616 and #1471's review: obid's egress proxy tunnels to a site the repository's rules
+    /// allow only TLS whose hello names it; refuses a request without the job's token, and a site
+    /// a rule denies (on any port) without asking; asks the owner about a new site with one card
+    /// however many connections wait for it (Deny and Allow each holding for the job), at most 3
+    /// cards at once; decides again after a change of mode; opens a site a command names only on
+    /// the owner's own yes, never a comment's or a rule's; and lets nothing through once the job's
+    /// worker ends.
+    #[tokio::test]
+    async fn the_egress_proxy_lets_through_asks_and_refuses_by_site() {
+        use base64::Engine;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let root = std::env::temp_dir().join(format!("obid-egress-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let config = crate::config::Config::parse(
+            &serde_json::json!({"listen": "127.0.0.1:0", "home": root.join("home"), "owner": "o",
+                "repos": [{"repo": "o/r", "remote": "https://example.com/o/r.git"}]})
+            .to_string(),
+        )
+        .unwrap();
+        let jobs = Jobs::open(
+            config,
+            crate::events::Events::new(),
+            Err("no sandbox".into()),
+        )
+        .unwrap();
+        let mut job = Job::new(
+            "j".into(),
+            "o/r".into(),
+            "fix".into(),
+            "Fix it".into(),
+            "claude".into(),
+            "a".into(),
+        );
+        job.status = Status::Running;
+        job.mode = Some("sandbox".into());
+        jobs.lock().jobs.insert("j".into(), job);
+        // An upstream that echoes, at a site the repository's rule allows.
+        let upstream = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let up = upstream.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            while let Ok((mut stream, _)) = upstream.accept().await {
+                tokio::spawn(async move {
+                    let mut buf = [0u8; 512];
+                    while let Ok(n) = stream.read(&mut buf).await {
+                        if n == 0 || stream.write_all(&buf[..n]).await.is_err() {
+                            break;
+                        }
+                    }
+                });
+            }
+        });
+        jobs.save_rule(&format!("WebFetch(domain:localhost:{up})"), "o/r");
+        jobs.kept().rules.push(Rule {
+            id: "rdeny".into(),
+            rule: "WebFetch(domain:denied.invalid)".into(),
+            repo: "o/r".into(),
+            decision: "deny".into(),
+            created: 0,
+        });
+        let egress = crate::egress::Egress::start(&jobs).unwrap();
+        jobs.use_egress(egress.clone());
+        let proxy = egress.open("j");
+        let (login, port) = proxy
+            .trim_start_matches("http://")
+            .rsplit_once('@')
+            .unwrap();
+        let auth = base64::engine::general_purpose::STANDARD.encode(login);
+        let port: u16 = port.rsplit(':').next().unwrap().parse().unwrap();
+        let connect = move |target: String, auth: Option<String>| async move {
+            let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", port))
+                .await
+                .unwrap();
+            let auth = auth
+                .map(|a| format!("Proxy-Authorization: Basic {a}\r\n"))
+                .unwrap_or_default();
+            stream
+                .write_all(format!("CONNECT {target} HTTP/1.1\r\n{auth}\r\n").as_bytes())
+                .await
+                .unwrap();
+            let mut head = Vec::new();
+            let mut byte = [0u8; 1];
+            while !head.ends_with(b"\r\n\r\n") && stream.read(&mut byte).await.unwrap_or(0) == 1 {
+                head.push(byte[0]);
+            }
+            let status = String::from_utf8_lossy(&head)
+                .split(' ')
+                .nth(1)
+                .unwrap_or("")
+                .to_owned();
+            (status, stream)
+        };
+        let status = |target: &str| {
+            let (target, auth) = (target.to_owned(), auth.clone());
+            async move { connect(target, Some(auth)).await.0 }
+        };
+        let cards = || jobs.lock().asks.get("j").map_or(0, VecDeque::len);
+        let card = || jobs.get("j").unwrap().permission;
+        let waiting = || async {
+            loop {
+                if let Some(waiting) = card() {
+                    break waiting;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        };
+        // What comes back through a tunnel to the echo, after sending `bytes`: none once it closed.
+        let echoed = |mut stream: tokio::net::TcpStream, bytes: Vec<u8>| async move {
+            stream.write_all(&bytes).await.unwrap();
+            let mut back = vec![0u8; bytes.len()];
+            let read = tokio::time::timeout(Duration::from_secs(5), stream.read_exact(&mut back));
+            matches!(read.await, Ok(Ok(_))).then_some(back)
+        };
+
+        // The rule's site: tunnelled, its hello naming it.
+        let hello = crate::egress::client_hello(Some("localhost"), false);
+        let (status_line, stream) = connect(format!("localhost:{up}"), Some(auth.clone())).await;
+        assert_eq!(status_line, "200");
+        assert_eq!(echoed(stream, hello.clone()).await, Some(hello));
+        // Another name in its hello (a CDN would serve that site), an encrypted hello, or no TLS
+        // at all: the tunnel closes, and nothing reached the echo.
+        for bytes in [
+            crate::egress::client_hello(Some("attacker.workers.dev"), false),
+            crate::egress::client_hello(Some("localhost"), true),
+            b"GET / HTTP/1.1\r\nHost: attacker.workers.dev\r\n\r\n".to_vec(),
+        ] {
+            let (status_line, stream) =
+                connect(format!("localhost:{up}"), Some(auth.clone())).await;
+            assert_eq!(status_line, "200");
+            assert_eq!(echoed(stream, bytes).await, None);
+        }
+        // No token, a wrong one: refused, and nobody is asked.
+        assert_eq!(connect(format!("localhost:{up}"), None).await.0, "407");
+        let wrong = base64::engine::general_purpose::STANDARD.encode("oby:nope");
+        assert_eq!(
+            connect(format!("localhost:{up}"), Some(wrong)).await.0,
+            "407"
+        );
+        // A rule's denial, on its port or another: refused at once.
+        assert_eq!(status("denied.invalid:443").await, "403");
+        assert_eq!(status("a.denied.invalid:8443").await, "403");
+        assert!(card().is_none());
+        // A new site: one card, as a fetch from it, however many connections wait for it.
+        let asked = [
+            tokio::spawn(status("asked.invalid:443")),
+            tokio::spawn(status("asked.invalid:443")),
+        ];
+        let first = waiting().await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert_eq!(cards(), 1);
+        assert_eq!(first.title, "Fetch asked.invalid");
+        assert_eq!(
+            first.rule.as_deref(),
+            Some("WebFetch(domain:asked.invalid)")
+        );
+        assert!(
+            first
+                .detail
+                .contains("lets this job reach asked.invalid until it ends")
+        );
+        jobs.answer_permission("j", &first.id, Decision::Deny, None)
+            .unwrap();
+        for one in asked {
+            assert_eq!(one.await.unwrap(), "403");
+        }
+        // Refused until the job ends: no second card.
+        assert_eq!(status("asked.invalid:443").await, "403");
+        assert!(card().is_none());
+        // Allowed once: through (it doesn't resolve, so 502) until the job ends, no second card.
+        let once = tokio::spawn(status("once.invalid:443"));
+        let first = waiting().await;
+        jobs.answer_permission("j", &first.id, Decision::Allow, None)
+            .unwrap();
+        assert_eq!(once.await.unwrap(), "502");
+        assert_eq!(status("once.invalid:443").await, "502");
+        assert!(card().is_none());
+        // A deny rule saved later stops it all the same.
+        jobs.kept().rules.push(Rule {
+            id: "rlater".into(),
+            rule: "WebFetch(domain:once.invalid)".into(),
+            repo: "o/r".into(),
+            decision: "deny".into(),
+            created: 0,
+        });
+        assert_eq!(status("once.invalid:443").await, "403");
+        jobs.kept().rules.retain(|r| r.id != "rlater");
+        // At most 3 sites wait for the owner at once: a 4th is refused this once, with no card.
+        let three: Vec<_> = ["a1.invalid:443", "a2.invalid:443", "a3.invalid:443"]
+            .into_iter()
+            .map(|site| tokio::spawn(status(site)))
+            .collect();
+        while cards() < 3 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(status("a4.invalid:443").await, "403");
+        assert_eq!(cards(), 3);
+        for _ in 0..3 {
+            let first = waiting().await;
+            jobs.answer_permission("j", &first.id, Decision::Deny, None)
+                .unwrap();
+        }
+        for one in three {
+            assert_eq!(one.await.unwrap(), "403");
+        }
+        // The tool's own API on 443 (not another port), and in Sandbox mode a registry: no card.
+        assert_eq!(jobs.reach_now("j", "api.anthropic.com", 443), Some(Ok(())));
+        assert_eq!(jobs.reach_now("j", "api.anthropic.com", 22), None);
+        assert!(matches!(
+            jobs.ask_about("j", "registry.npmjs.org", 443),
+            crate::egress::Asked::Now(Ok(()))
+        ));
+        assert!(matches!(
+            jobs.reach_now("j", "http-intake.logs.us5.datadoghq.com", 443),
+            Some(Err(_))
+        ));
+        let worktree = root.join("worktree");
+        // A fetch the owner allowed: its site goes through without asking again.
+        let Ruling::Ask(_fetch) = jobs.rule_on(
+            "j",
+            "WebFetch",
+            &json!({"url": "https://docs.invalid/x"}),
+            &worktree,
+        ) else {
+            panic!("the fetch went through by itself");
+        };
+        let first = card().unwrap();
+        jobs.answer_permission("j", &first.id, Decision::Allow, None)
+            .unwrap();
+        assert_eq!(status("docs.invalid:443").await, "502");
+        assert!(card().is_none());
+        // A command's comment opens nothing, and its card names no site.
+        let Ruling::Ask(_git) = jobs.rule_on(
+            "j",
+            "Bash",
+            &json!({"command": "git fetch origin # https://evil.invalid"}),
+            &worktree,
+        ) else {
+            panic!("the fetch went through by itself");
+        };
+        let first = card().unwrap();
+        assert!(
+            !first.detail.contains("lets this job reach"),
+            "{}",
+            first.detail
+        );
+        jobs.answer_permission("j", &first.id, Decision::Allow, None)
+            .unwrap();
+        let evil = tokio::spawn(status("evil.invalid:443"));
+        let first = waiting().await;
+        assert_eq!(first.title, "Fetch evil.invalid");
+        jobs.answer_permission("j", &first.id, Decision::Deny, None)
+            .unwrap();
+        assert_eq!(evil.await.unwrap(), "403");
+        // A rule's allow of a command opens nothing either: its site still asks.
+        jobs.save_rule("Bash(curl:*)", "o/r");
+        let Ruling::Now(Answer::Allow) = jobs.rule_on(
+            "j",
+            "Bash",
+            &json!({"command": "curl https://ruled.invalid/"}),
+            &worktree,
+        ) else {
+            panic!("the rule didn't allow it");
+        };
+        let ruled = tokio::spawn(status("ruled.invalid:443"));
+        let first = waiting().await;
+        jobs.answer_permission("j", &first.id, Decision::Deny, None)
+            .unwrap();
+        assert_eq!(ruled.await.unwrap(), "403");
+        // A card a change of mode settled isn't the owner's answer: the next change decides again.
+        let pending = tokio::spawn(status("pending.invalid:443"));
+        waiting().await;
+        jobs.set_mode("j", Mode::Bypass).unwrap();
+        assert_eq!(pending.await.unwrap(), "502");
+        jobs.set_mode("j", Mode::Sandbox).unwrap();
+        let again = tokio::spawn(status("pending.invalid:443"));
+        let first = waiting().await;
+        assert_eq!(first.title, "Fetch pending.invalid");
+        jobs.answer_permission("j", &first.id, Decision::Deny, None)
+            .unwrap();
+        assert_eq!(again.await.unwrap(), "403");
+        // What Bypass let through is decided again in Sandbox mode.
+        jobs.set_mode("j", Mode::Bypass).unwrap();
+        assert_eq!(status("bypass.invalid:443").await, "502");
+        jobs.set_mode("j", Mode::Sandbox).unwrap();
+        let again = tokio::spawn(status("bypass.invalid:443"));
+        let first = waiting().await;
+        assert_eq!(first.title, "Fetch bypass.invalid");
+        jobs.answer_permission("j", &first.id, Decision::Deny, None)
+            .unwrap();
+        assert_eq!(again.await.unwrap(), "403");
+        // Once the job's worker ends its token lets nothing through.
+        jobs.spawn_worker("j".into(), async {});
+        let ended = loop {
+            let said = connect(format!("localhost:{up}"), Some(auth.clone()))
+                .await
+                .0;
+            if said != "200" {
+                break said;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        };
+        assert_eq!(ended, "407");
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

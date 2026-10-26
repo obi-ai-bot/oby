@@ -1385,14 +1385,26 @@ fn downloads(words: &[String], bounds: &Bounds) -> bool {
 
 /// Whether `command` reaches the network: a client, an install, a clone, in any of the simple
 /// commands it runs ([`simple_commands`]), or bash's `/dev/tcp` anywhere. Matching words is
-/// best-effort, like publishing's (`crate::policy`): neither OS sandbox limits an agent's network
-/// yet, and a script that opens a socket itself isn't caught here. Code nested deeper than obid
-/// reads asks.
+/// best-effort, like publishing's (`crate::policy`): a script that opens a socket itself isn't
+/// caught here (on macOS the box and obid's egress proxy hold it, crate::egress; on Linux nothing
+/// does yet). Code nested deeper than obid reads asks.
 fn uses_network(command: &str, bounds: &Bounds) -> bool {
     command.contains("/dev/tcp")
         || command.contains("/dev/udp")
         || simple_commands(command)
             .is_none_or(|commands| commands.iter().any(|c| downloads(&c.words, bounds)))
+}
+
+/// The words of the simple commands in `command` that reach the network as obid reads them
+/// ([`downloads`]), in order: what the owner's yes to it opens to the job (crate::egress), never
+/// a comment's, an `echo`'s or another command's.
+pub fn network_words(command: &str, bounds: &Bounds) -> Vec<String> {
+    simple_commands(command)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|c| downloads(&c.words, bounds))
+        .flat_map(|c| c.words)
+        .collect()
 }
 
 /// Names that say a file holds secrets or a login, wherever it is.
@@ -2191,11 +2203,17 @@ fn matches(rule: &str, call: &Call, worktree: &Path, allowing: bool) -> bool {
             };
     }
     if let Some(site) = content.strip_prefix("domain:") {
-        return call
-            .url
-            .as_deref()
-            .and_then(host)
-            .is_some_and(|h| h == site || h.ends_with(&format!(".{site}")));
+        // A deny covers the site on every port; an allow, the port it names (none: the scheme's
+        // own) (#1471's review).
+        let Some(host) = call.url.as_deref().and_then(host) else {
+            return false;
+        };
+        let ((name, port), (site, site_port)) = (without_port(&host), without_port(site));
+        let ports_fit = match site_port {
+            Some(site_port) => port == Some(site_port),
+            None => !allowing || port.is_none(),
+        };
+        return ports_fit && (name == site || name.ends_with(&format!(".{site}")));
     }
     if READS.contains(&family(&call.tool)) {
         let places: Vec<&String> = call.paths.iter().chain(&call.reads).collect();
@@ -2387,6 +2405,20 @@ pub fn card(call: &Call, id: &str, repo: &str, bounds: &Bounds) -> Permission {
         always: what.map(|w| format!("Yes, and don't ask again for {w} in {repo}")),
         why: why.map(|r| r.why().to_owned()),
         question: None,
+    }
+}
+
+/// A host and its port, when it names one (`example.com:8443`, `[::1]:8443`).
+fn without_port(host: &str) -> (&str, Option<&str>) {
+    match host.rsplit_once(':') {
+        Some((name, port))
+            if !port.is_empty()
+                && port.bytes().all(|b| b.is_ascii_digit())
+                && (!name.contains(':') || name.ends_with(']')) =>
+        {
+            (name, Some(port))
+        }
+        _ => (host, None),
     }
 }
 
@@ -3206,6 +3238,28 @@ mod tests {
             Verdict::Ask
         );
         assert_eq!(decided(&fetch("https://notexample.com/")), Verdict::Ask);
+        // #1471's review: an allow covers its own port, a deny every port.
+        assert_eq!(decided(&fetch("https://example.com:8443/")), Verdict::Ask);
+        let port = rule("WebFetch(domain:example.com:8443)", "allow");
+        let on_port =
+            |call: &Call| decide(call, Mode::Sandbox, std::slice::from_ref(&port), worktree);
+        assert_eq!(on_port(&fetch("https://example.com:8443/")), Verdict::Allow);
+        assert_eq!(on_port(&fetch("https://example.com/")), Verdict::Ask);
+        let deny = rule("WebFetch(domain:evil.example)", "deny");
+        for url in ["https://evil.example/", "https://a.evil.example:8443/"] {
+            assert!(
+                matches!(
+                    decide(
+                        &fetch(url),
+                        Mode::Bypass,
+                        std::slice::from_ref(&deny),
+                        worktree
+                    ),
+                    Verdict::Deny(_)
+                ),
+                "{url}"
+            );
+        }
         let grep =
             |path: &str| Call::new("Grep", &serde_json::json!({"pattern": "x", "path": path}));
         let place_card = card(&grep("/etc"), "p2", "o/r", worktree);
