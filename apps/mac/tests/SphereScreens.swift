@@ -97,6 +97,50 @@ struct SphereScreens {
         try await save(settings(SphereSettingsView(feed: feed)), as: "sphere-admin")
     }
 
+    /// The side panel on an Obysphere, its admin's Invite member, its Knowledge (empty for now) and a
+    /// teammate's changed key on Home (docs/obysphere.md, step 2). The Sphere is faked for this test alone.
+    @Test func thePanelInviteKnowledgeAndAChangedKey() async throws {
+        let owner = "tester-\(UUID().uuidString.lowercased().prefix(8))"
+        let id = "deskree-\(UUID().uuidString.lowercased().prefix(8))"
+        let server = RunnerStub { request in
+            switch (request.method, request.path) {
+            case ("POST", "/v0.1/oauth/token"): (200, #"{"access_token": "owner-token"}"#)
+            case ("GET", "/v0.1/spheres/\(id)"): (200, #"{"name": "Deskree", "admin_owner": "\#(owner)"}"#)
+            case ("GET", "/v0.1/spheres/\(id)/members"):
+                (200, #"{"members": [{"obi": "obi-wellington", "owner": "wellington", "status": "active", "card": {"name": "wellington's Oby"}}, {"obi": "obi-ernesto", "owner": "ernesto", "status": "active", "card": {"name": "ernesto's Oby"}}, {"obi": "obi-sangam", "owner": "sangam", "status": "active", "card": {"name": "sangam's Oby"}}]}"#)
+            default: (404, "{}")
+            }
+        }
+        let obid = RunnerStub { request in
+            switch request.path {
+            case "/v1/obid/sphere": (200, #"{"state": "joined", "owner": "\#(owner)", "url": "https://\#(server.host)", "sphere": "\#(id)", "obiId": "obi-\#(owner)"}"#)
+            case "/v1/obid/sphere/pins": (200, #"[{"owner": "ernesto", "fingerprint": "ed25519:4f1c9a", "changedTo": "ed25519:9b27e0d4c1a8f3e6"}]"#)
+            case "/v1/inbox": (200, "[]")
+            default: (404, "{}")
+            }
+        }
+        let session = SphereServer.session
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [RunnerStubProtocol.self] + (configuration.protocolClasses ?? [])
+        SphereServer.session = URLSession(configuration: configuration, delegate: NoRedirects(), delegateQueue: nil)
+        defer {
+            SphereServer.session = session
+            try? OwnerKey.store.remove(owner)
+        }
+        let feed = RunnerFeed()
+        feed.stageAlerts(following: obid.runner)
+        let model = IslandModel(feed: feed, availability: MacAvailability())
+        try await save(SpherePanel(model: model, state: ChatState()).frame(width: Tokens.sidebar - Tokens.rail, height: 420).background(Tokens.bg),
+                       as: "sphere-panel")
+        let sphere = SphereModel(feed: feed)
+        try await sphere.refresh()
+        try await save(InviteSheet(sphere: sphere, close: {}), as: "sphere-invite")
+        try await save(KnowledgePane(name: "Deskree", admin: true).frame(width: Tokens.column + 48, height: 340).background(Tokens.bg), as: "sphere-knowledge")
+        let pin = try #require(await KeyChangeCard.changed(feed).first)
+        try await save(KeyChangeCard(pin: pin, feed: feed, head: AnyView(Text(KeyChangeCard.title(pin))), onLater: {}, onDone: {})
+                        .padding(24).frame(width: 560).background(Tokens.bg), as: "sphere-key-changed")
+    }
+
     /// The Join screen an oby://join link opened, with the trust question for a server Oby doesn't
     /// know (in the link's own words: nothing is asked of it yet); then Host your own once Deploy
     /// copied the token, and once an address is checked.

@@ -3,7 +3,7 @@ import SwiftUI
 import WebKit
 
 /// The side panel's sections, picked by the icons on its left and the account menu (Sangam's Sidebar.tsx).
-nonisolated enum PanelSection: Sendable { case home, conversations, settings }
+nonisolated enum PanelSection: Sendable { case home, conversations, settings, sphere }
 
 /// Opens a Settings page in the window: the message box's usage panel asks for Accounts. Equal while
 /// it opens on the same window's state, so views reading it don't redraw on every update.
@@ -274,6 +274,8 @@ final class ChatState {
     var more: Set<String> = []
     /// What the side panel lists: Home's work, or (with obid's conversations, #493) the conversations.
     var section = PanelSection.home
+    /// Moves on when this Oby joined, made or left its Obysphere: the strip reads its tile again.
+    var sphereChanged = 0
     /// The setting the Settings page showing points at (`SettingsSpotlight`).
     var spotlight: SettingsSpotlight?
 
@@ -568,6 +570,10 @@ private struct HomeView: View {
                 .takesKeys()
         case .settings(let page):
             SettingsPane(model: model, page: page)
+        case .sphereSettings(let name):
+            SphereSettingsPane(model: model, name: name)
+        case .knowledge(let name, let admin):
+            KnowledgePane(name: name, admin: admin).takesKeys()
         }
     }
 }
@@ -621,33 +627,50 @@ private struct HomeDecisions: View {
     private enum Card: Identifiable {
         case decision(IslandInbox.Entry)
         case permission(RunnerFeed.PermissionRecord)
+        /// A teammate's Oby whose key changed (docs/obysphere.md part 4).
+        case key(SphereModel.Pin)
 
         var id: String {
             switch self {
             case .decision(let entry): entry.id
             case .permission(let record): "permission/" + record.id
+            case .key(let pin): "key/" + pin.owner
             }
         }
         var job: String {
             switch self {
             case .decision(let entry): entry.item.job
             case .permission(let record): record.job
+            case .key: ""
             }
         }
         var title: String {
             switch self {
             case .decision(let entry): entry.item.title
             case .permission(let record): record.permission.title
+            case .key(let pin): KeyChangeCard.title(pin)
             }
         }
     }
+
+    /// Teammates' Obys whose key changed (obid's pins), and those put off with Later until then.
+    @State private var keys: [SphereModel.Pin] = []
+    @State private var keysLater: [String: Date] = [:]
 
     var body: some View {
         // Every half minute: what was put off comes back.
         TimelineView(.periodic(from: .now, by: 30)) { context in
             let cards = Self.entries(model, now: context.date).map(Card.decision)
                 + Self.permissions(model, now: context.date).map(Card.permission)
+                + keys.filter { keysLater[$0.owner].map { $0 <= context.date } ?? true }.map(Card.key)
             if !cards.isEmpty { stack(cards) }
+        }
+        // obid's own record, read every half minute: nothing goes to the Obysphere for it.
+        .task(id: model.feed.runner != nil) {
+            while !Task.isCancelled {
+                keys = await KeyChangeCard.changed(model.feed)
+                try? await Task.sleep(for: .seconds(30))
+            }
         }
     }
 
@@ -699,6 +722,10 @@ private struct HomeDecisions: View {
                            onTell: { onTell(entry) }, head: head)
         case .permission(let record):
             InlinePermission(record: record, feed: model.feed, keyboardEnabled: true, focusRequest: focusRequest, head: head)
+        case .key(let pin):
+            KeyChangeCard(pin: pin, feed: model.feed, head: head, keyboardEnabled: true, focusRequest: focusRequest,
+                          onLater: { keysLater[pin.owner] = .now.addingTimeInterval(3600) },
+                          onDone: { keys.removeAll { $0.owner == pin.owner } })
         }
     }
 
@@ -1019,6 +1046,8 @@ enum WindowLabels {
         case .group(let kind): kind.label
         case .archived: "Archived"
         case .settings(let page): page.label
+        case .sphereSettings(let name): "\(name) settings"
+        case .knowledge: "Knowledge"
         case .talk: model.feed.conversationsOn ? model.feed.conversations.shownTitle : "Oby"
         case .job(let id):
             model.feed.jobs.first { $0.id == id }?.heading ?? "Task"

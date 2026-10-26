@@ -403,8 +403,8 @@ final class HostOwn {
 // MARK: The model
 
 /// This Mac's place in its Obysphere: what obid says of its membership, the Sphere's name and
-/// members as the owner reads them, the requests from other Obys waiting for the owner, and what
-/// the owner does there (create it, invite, join, leave, answer). Oby asks a teammate's Oby for a
+/// members as the owner reads them, and what the owner does there (create it, invite, join, leave).
+/// What other Obys ask waits on Home (docs/obysphere.md, part 6). Oby asks a teammate's Oby for a
 /// review by itself (obid's merge follower), never from here (the owner's decision of 2026-10-25).
 @MainActor @Observable
 final class SphereModel {
@@ -445,18 +445,6 @@ final class SphereModel {
         var verified: Bool?
     }
 
-    /// An `obiRequest` inbox item (docs/runner-api.md, "Obi-to-Obi requests in the inbox"). Its
-    /// title and text are obid's own words from typed fields; `quoted` is the other Oby's text,
-    /// shown whole and as text only.
-    struct Request: Identifiable, Equatable {
-        var id: String
-        var title: String
-        var text: String
-        var options: [String]
-        var details: [String]
-        var quoted: [(String, String)]
-        static func == (a: Request, b: Request) -> Bool { a.id == b.id && a.options == b.options }
-    }
 
     /// The Obysphere server this Oby makes Obyspheres on and trusts links from: Settings ›
     /// Obysphere's Server, else the app's ObySphereURL (OBY_SPHERE_URL in apps/config/Signing.xcconfig,
@@ -479,10 +467,11 @@ final class SphereModel {
     private(set) var membership: Membership?
     private(set) var name: String?
     private(set) var admin = false
+    /// Its admin, by owner id (one per Obysphere today, sphere-api.md section 3).
+    private(set) var adminOwner: String?
     private(set) var members: [Member] = []
     /// Your owner key's fingerprint, for the others to compare.
     private(set) var ownFingerprint: String?
-    private(set) var requests: [Request] = []
     var problem: String?
     var busy = false
 
@@ -491,6 +480,14 @@ final class SphereModel {
     var joined: Bool { membership?.state == "joined" }
     /// Who this Mac's Oby acts for (obid's `owner`).
     var owner: String? { membership?.owner }
+    /// How many are in it, you included (Sangam's "9 members").
+    var memberCount: Int { members.count + 1 }
+    /// Where it is, as Create showed it: "deskree on obysphere.deskree.com". It can't change (the
+    /// owner's decision of 2026-10-25, docs/obysphere.md).
+    var address: String? {
+        guard let sphere = membership?.sphere, let host = server?.base.host() else { return nil }
+        return "\(sphere) on \(host)"
+    }
     /// The operator token's keychain item, on the Mac that deployed the Obysphere server (obi-sphere's
     /// scripts/deploy.mjs), its account the server's host: a token only ever goes to the server it was
     /// made for. Every other Mac creates an Obysphere by signing in with Google, when the server lets
@@ -526,7 +523,7 @@ final class SphereModel {
         }
     }
 
-    /// obid's membership, then the Sphere's name and members and the waiting requests.
+    /// obid's membership, then the Sphere's name, its admin and its members.
     func refresh() async throws {
         let runner = try runner()
         membership = try await runner.call("GET", "v1/obid/sphere")
@@ -535,7 +532,8 @@ final class SphereModel {
         let token = try await server.ownerToken(owner: owner, sphere: sphere, key: try OwnerKey.of(owner), scope: "directory:read")
         let about = try await server.call("GET", "spheres/\(sphere)", bearer: token)
         name = about["name"] as? String
-        admin = about["admin_owner"] as? String == owner
+        adminOwner = about["admin_owner"] as? String
+        admin = adminOwner == owner
         let list = try await server.call("GET", "spheres/\(sphere)/members", bearer: token)["members"] as? [[String: Any]] ?? []
         // A removed member drops off the list (Sangam's Members).
         members = list.compactMap { entry in
@@ -554,27 +552,6 @@ final class SphereModel {
             members[index].verified = pin?.verified ?? false
         }
         ownFingerprint = try? OwnerKey.of(owner).keyId
-        let inbox = (try JSONSerialization.jsonObject(with: try await runner.send("GET", "v1/inbox"))) as? [[String: Any]] ?? []
-        requests = inbox.compactMap(Self.request)
-    }
-
-    /// An open `obiRequest` item as the owner sees it, or nil for any other.
-    nonisolated static func request(_ item: [String: Any]) -> Request? {
-        guard item["kind"] as? String == "obiRequest", item["done"] == nil || item["done"] is NSNull,
-              let id = item["id"] as? String else { return nil }
-        let quoted = (item["obi"] as? [String: Any])?["quoted"] as? [String: Any] ?? [:]
-        var lines: [(String, String)] = []
-        for key in ["goal", "summary", "text"] {
-            if let text = quoted[key] as? String { lines.append((key.capitalized, text)) }
-        }
-        for (index, condition) in (quoted["acceptance"] as? [[String: Any]] ?? []).enumerated() {
-            for key in ["note", "text"] {
-                if let text = condition[key] as? String { lines.append(("Condition \(index + 1)", text)) }
-            }
-        }
-        for choice in quoted["choices"] as? [String] ?? [] { lines.append(("Choice", choice)) }
-        return Request(id: id, title: item["title"] as? String ?? "", text: item["text"] as? String ?? "",
-                       options: item["options"] as? [String] ?? [], details: item["details"] as? [String] ?? [], quoted: lines)
     }
 
     // MARK: Admin
@@ -650,6 +627,14 @@ final class SphereModel {
         try? Self.teamLinks.save(link.link, as: sphere)
         teamLink = link
         return link
+    }
+
+    /// A link for `emails`, one use each, for 7 days (or, limited to `domain`, for anyone there for
+    /// 30): the admin sends it from their own Mail (the owner's decision of 2026-10-25), and the
+    /// Obysphere keeps no address. Its uses aren't listed yet: the server keeps no list of invitations.
+    func invite(_ emails: [String], domain: String?) async throws -> InviteLink {
+        let (server, owner, sphere, token) = try await adminToken()
+        return try await invitation(server: server, token: token, sphere: sphere, name: name ?? sphere, by: owner, uses: emails.count, domain: domain)
     }
 
     /// Cancels the team link (sphere-api.md section 4, withdraw): it joins no one from now on (#1217).
@@ -818,7 +803,7 @@ final class SphereModel {
             }
         }
         _ = try await runner.send("DELETE", "v1/obid/sphere")
-        (name, admin, members, teamLink, requests) = (nil, false, [], nil, [])
+        (name, admin, adminOwner, members, teamLink) = (nil, false, nil, [], nil)
         try await refresh()
         if let untold {
             throw RunnerError(message: "This Mac left \(membership.sphere ?? "the Obysphere"), but the Obysphere couldn't be told (\(untold.localizedDescription)): it still lists your Oby until its admin removes it.")
@@ -846,17 +831,11 @@ final class SphereModel {
         try await refresh()
     }
 
-    /// Answers a request with one of its options (`POST /v1/inbox/{id}/answer`).
     /// You compared `member`'s new key with them: obid trusts it from now on.
     /// Accepts their changed key, or verifies the one pinned: only after you compared it with them.
     func acceptKey(_ member: Member) async throws {
         guard let fingerprint = member.changedTo ?? member.fingerprint else { return }
         _ = try await raw(try runner(), "POST", "v1/obid/sphere/pins/\(member.owner)", ["fingerprint": fingerprint])
-        try await refresh()
-    }
-
-    func answer(_ request: Request, _ option: String) async throws {
-        _ = try await raw(try runner(), "POST", "v1/inbox/\(request.id)/answer", ["answer": option])
         try await refresh()
     }
 

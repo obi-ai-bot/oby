@@ -10,6 +10,15 @@ import Testing
 /// Serialized: Host your own puts a fake Obysphere in `SphereServer.session` for a moment.
 @Suite(.serialized)
 struct SphereTests {
+    /// The side panel's count under an Obysphere's name, you included (Sangam's "9 members"), and the
+    /// card a teammate's changed key brings to Home.
+    @Test func thePanelCountsYouAndAChangedKeyAsks() {
+        #expect(SpherePanel.count(1) == "1 member")
+        #expect(SpherePanel.count(9) == "9 members")
+        #expect(KeyChangeCard.title(SphereModel.Pin(owner: "ernesto", fingerprint: "ed25519:a", changedTo: "ed25519:b")) == "Ernesto’s Oby has a new key")
+        #expect(SpherePanel.shown("well-prado") == "Well-prado")
+    }
+
     @Test func canonicalJSONIsRFC8785ForTheProtocolsValues() {
         let value: [String: Any] = ["b": [true, false, NSNull()], "a": 1, "é": "x", "c": ["z": "\"\\\n\u{1}/é"]]
         #expect(String(decoding: Canonical.json(value), as: UTF8.self) == #"{"a":1,"b":[true,false,null],"c":{"z":"\"\\\n\u0001/é"},"é":"x"}"#)
