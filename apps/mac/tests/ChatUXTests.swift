@@ -108,7 +108,8 @@ struct ChatUXTests {
     }
 
     /// Stop, then new words at once: the runner hears Stop before the words, so it can't cancel them.
-    /// New words in place of a turn under way tell the runner first too (`IslandModel.ask`).
+    /// New words while a turn is under way wait their turn: the runner keeps them, and nothing is
+    /// cancelled (`IslandModel.ask`, docs/mac-design.md 1.6).
     @Test func stopReachesTheRunnerBeforeTheNextWords() async throws {
         let heard = Mutex<[String]>([])
         let stub = RunnerStub { request in
@@ -137,8 +138,9 @@ struct ChatUXTests {
         model.ask("third")
         model.ask("fourth")
         try await waitFor("plan: fourth")
+        try await waitFor("plan: third")
         order = heard.withLock { $0 }
-        #expect(try #require(order.firstIndex(of: "cancelled")) < #require(order.firstIndex(of: "plan: fourth")), "\(order)")
+        #expect(!order.contains("cancelled") && order.contains("plan: third"), "\(order)")
     }
 
     @Test func wordsThatDontReachObidStayMarkedUntilTriedAgainOrEdited() async throws {
