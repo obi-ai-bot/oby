@@ -97,7 +97,7 @@ The window's voice button listens on a click, until a second click or Stop, at m
 
 ### Other people's Obys: the Obysphere
 
-An Obysphere is a team or community (Sangam's "Deskree"). Its admins are whoever made it and whoever they made admins; one person can be an admin in one sphere and a member in another. Admins invite and remove people and connect its Knowledge (Tetrix, or any MCP server) once, for that sphere only: every member's Oby uses it as Sangam designed, while the admin's sign-in stays with the admin's Oby or Oby Cloud, which answers members' lookups and returns only the answer. Other Obys reach yours only with typed requests (a review, a question); their words show quoted under their owner's name, and you decide what yours answers. Obyspheres are part of Oby Cloud (onboarding.md, section 4).
+An Obysphere is a team or community (Sangam's "Deskree"). Its admins are whoever made it and whoever they made admins; one person can be an admin in one sphere and a member in another. Admins invite and remove people and connect its Knowledge (Tetrix, or any MCP server) once, for that sphere only: every member's Oby uses it as Sangam designed, while the admin's sign-in stays with the admin's Oby or Oby Cloud, which answers members' lookups and returns only the answer. Other Obys reach yours only with typed requests (a review, a question); their words show quoted under their owner's name, and you decide what yours answers. An Obysphere isn't part of Oby Cloud: its server is obi-sphere's, which anyone hosts free from its Deploy to Cloudflare button, and making or joining one needs no Oby Cloud account (onboarding.md, section 4).
 
 ### Memory: how you like work done
 
