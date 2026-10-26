@@ -621,6 +621,19 @@ impl Job {
         self.obi.is_none() && self.runs_on.is_none()
     }
 
+    /// Why its check gets none of the owner's secrets its repository declares (crate::secretspec),
+    /// or none when it gets them: a job another Oby asked for (a review), or one whose agent ran on
+    /// a teammate's Mac, whose commits came from there, gets nothing.
+    pub fn check_refuses_secrets(&self) -> Option<&'static str> {
+        if self.obi.is_some() {
+            Some("another Oby asked for this job")
+        } else if self.runs_on.is_some() {
+            Some("this job's agent ran on a teammate's Mac")
+        } else {
+            None
+        }
+    }
+
     pub fn merged(&self) -> bool {
         self.to_json()["pullRequest"]["state"] == "MERGED"
     }
@@ -1563,6 +1576,31 @@ mod tests {
             request_id: "r".into(),
         });
         assert!(!review.check_keeps_loopback());
+    }
+
+    /// Only an owner's job whose agent ran here gets the secrets its repository declares for its
+    /// check: never another Obi's review, nor a job that ran on a teammate's Mac.
+    #[test]
+    fn only_an_owners_job_run_here_gets_declared_secrets() {
+        let mut job = job();
+        assert_eq!(job.check_refuses_secrets(), None);
+        job.runs_on = Some(RunsOn {
+            obi: "ernesto-mac".into(),
+            owner: "ernesto".into(),
+            grant: None,
+        });
+        assert!(job.check_refuses_secrets().is_some());
+        let mut review = self::job();
+        review.obi = Some(ObiRef {
+            correlation_id: "c".into(),
+            from: "ernesto-mac".into(),
+            from_owner: "ernesto".into(),
+            request_id: "r".into(),
+        });
+        assert_eq!(
+            review.check_refuses_secrets(),
+            Some("another Oby asked for this job")
+        );
     }
 
     /// Ported from RunnerTests/RunnerTests.swift, `jobsHaveISODatesAndEveryKey`: every key the

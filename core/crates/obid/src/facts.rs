@@ -208,6 +208,9 @@ pub struct CheckWatch {
     /// The failing test the next lines are the message of.
     message_of: Option<usize>,
     partial: Vec<u8>,
+    /// What takes the check's declared secrets out of each line before anything is kept of it
+    /// (crate::secretspec).
+    secrets: Option<std::sync::Arc<crate::secrets::Secrets>>,
 }
 
 impl CheckWatch {
@@ -222,7 +225,15 @@ impl CheckWatch {
             failing: Vec::new(),
             message_of: None,
             partial: Vec::new(),
+            secrets: None,
         }
+    }
+
+    /// The same run, each line it reads with `secrets` taken out first: the values a check's
+    /// repository declares (crate::secretspec) are in no failing test's name or message.
+    pub fn redacting(mut self, secrets: std::sync::Arc<crate::secrets::Secrets>) -> CheckWatch {
+        self.secrets = Some(secrets);
+        self
     }
 
     /// The command line that runs the steps as the one line would, printing a marker before each
@@ -250,7 +261,10 @@ impl CheckWatch {
             let line: Vec<u8> = self.partial.drain(..=end).collect();
             let text = String::from_utf8_lossy(&line);
             // A line a progress bar rewrote with `\r`: what it shows last.
-            let shown = text.trim_end().rsplit('\r').next().unwrap_or("").to_owned();
+            let mut shown = text.trim_end().rsplit('\r').next().unwrap_or("").to_owned();
+            if let Some(secrets) = &self.secrets {
+                shown = secrets.redact(&shown);
+            }
             self.line(&shown);
         }
         // ponytail: a line longer than this is no runner's summary.

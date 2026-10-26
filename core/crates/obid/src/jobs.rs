@@ -7294,10 +7294,12 @@ impl Jobs {
         // Each step between its top-level `&&`s timed, its tests counted, live (#734).
         let round = self.get(id).map_or(1, |job| job.current_round());
         let marker = format!("obid-step-{}", random_check_id()?);
-        let watch = Arc::new(Mutex::new(crate::facts::CheckWatch::new(
-            marker,
-            crate::facts::steps(command),
-        )));
+        // The secrets its repository declares on its base branch, for an owner's job only.
+        let mut declared = self.declared_secrets(id).await;
+        let watch = Arc::new(Mutex::new(
+            crate::facts::CheckWatch::new(marker, crate::facts::steps(command))
+                .redacting(declared.secrets()),
+        ));
         let record = |ended| {
             let record = watch
                 .lock()
@@ -7329,7 +7331,10 @@ impl Jobs {
         extra.extend(process::show_rust(&spec.temp));
         // One check at a time: its build takes what the running agents leave it.
         extra.extend(self.build_env(id, true));
-        let env = process::sandbox_env(&process::tools_path(), &spec.temp, &extra);
+        let mut env = process::sandbox_env(&process::tools_path(), &spec.temp, &extra);
+        declared.apply(&mut env);
+        let secrets = declared.secrets();
+        let since = std::time::SystemTime::now();
         let running = run_check(
             &argv,
             &env,
@@ -7337,6 +7342,7 @@ impl Jobs {
             CHECK_LIMIT,
             signal.clone(),
             Some(watch.clone()),
+            Some(&secrets),
         );
         tokio::pin!(running);
         let mut tick = tokio::time::interval(CHECK_TICK);
@@ -7347,10 +7353,63 @@ impl Jobs {
                 _ = tick.tick() => record(None),
             }
         };
+        // What it wrote, before the agent or anything else reads it.
+        for path in declared.scrub_files(&[&spec.worktree, &spec.temp], since) {
+            let shown = path
+                .strip_prefix(&spec.worktree)
+                .or_else(|_| path.strip_prefix(&spec.temp))
+                .unwrap_or(&path);
+            declared.notes.push(format!(
+                "the check wrote a declared secret in {}, so obid took it out.",
+                shown.display()
+            ));
+        }
         record(Some(run.as_ref().is_ok_and(|run| run.passed)));
-        let run = run.map_err(|e| format!("obid couldn't run the check: {e}"))?;
+        let mut run = run.map_err(|e| format!("obid couldn't run the check: {e}"))?;
+        run.output = declared.noted(&run.output);
         let _ = std::fs::write(self.log_path(id, "check.log"), &run.output);
         Ok(run)
+    }
+
+    /// The secrets job `id`'s repository declares for its check in `secretspec.toml` on the job's
+    /// base branch, as obid's clone has it, with their values from the owner's vault
+    /// (crate::secretspec): none for a job another Oby asked for or one that ran on a teammate's
+    /// Mac, nor when the base has no such file.
+    async fn declared_secrets(&self, id: &str) -> crate::secretspec::Filled {
+        use crate::secretspec::{FILE, Filled};
+        let Some(job) = self.get(id) else {
+            return Filled::default();
+        };
+        let Some(repo) = self.repo(&job.repo) else {
+            return Filled::default();
+        };
+        let base = job.base.clone().unwrap_or(repo.default_branch.clone());
+        let clone = git::clone_path(&self.config.home, &repo.repo);
+        let names = match crate::secretspec::at_base(&clone, &base).await {
+            Ok(None) => return Filled::default(),
+            Ok(Some(text)) => crate::secretspec::names(&text),
+            Err(why) => Err(why),
+        };
+        let names = match names {
+            Ok(names) if names.is_empty() => return Filled::default(),
+            Ok(names) => names,
+            Err(why) => {
+                return Filled::refused(format!("obid gave this check no secrets: {why}"));
+            }
+        };
+        if let Some(why) = job.check_refuses_secrets() {
+            return Filled::refused(format!(
+                "{FILE} on {base} declares {}; obid gave this check none of its owner's secrets: {why}.",
+                names.join(", ")
+            ));
+        }
+        let filled = Filled::fill(&names, crate::vault::value);
+        tracing::info!(
+            "job {id}: its check gets {} of the {} secret(s) {FILE} on {base} declares",
+            filled.names().len(),
+            names.len()
+        );
+        filled
     }
 
     /// A review another Obi asked for, steps 2 to 7 (runner-api.md, "obid only: Obi-to-Obi review
@@ -13138,6 +13197,10 @@ pub struct CheckRun {
 
 /// Runs a check's command line: its output together, at most [`CHECK_LIMIT`] long, ended with
 /// everything it started when it runs too long or the job stops.
+///
+/// `secrets` (the values its repository declares, crate::secretspec) are taken out of its output
+/// before it is cut to size or kept: when only its end was kept, the first line, which a value may
+/// have been cut in, goes too.
 pub async fn run_check(
     argv: &[OsString],
     env: &[(OsString, OsString)],
@@ -13145,6 +13208,7 @@ pub async fn run_check(
     limit: Duration,
     mut signal: watch::Receiver<Signal>,
     watch: Option<Arc<Mutex<crate::facts::CheckWatch>>>,
+    secrets: Option<&crate::secrets::Secrets>,
 ) -> std::io::Result<CheckRun> {
     let (reader, writer) = std::io::pipe()?;
     clear_recorded_exit(env);
@@ -13189,6 +13253,7 @@ pub async fn run_check(
             }
         };
         let mut kept: Vec<u8> = Vec::new();
+        let mut cut = false;
         let mut buffer = [0u8; 8192];
         loop {
             match std::io::Read::read(&mut reader, &mut buffer) {
@@ -13198,13 +13263,14 @@ pub async fn run_check(
                     kept.extend_from_slice(&buffer[..n]);
                     if kept.len() > 2 * CHECK_OUTPUT_MAX {
                         kept.drain(..kept.len() - CHECK_OUTPUT_MAX);
+                        cut = true;
                     }
                 }
             }
         }
         // The last line, when it has no newline of its own.
         feed(b"\n");
-        kept
+        (kept, cut)
     });
     let mut timed_out = false;
     let status = tokio::select! {
@@ -13221,11 +13287,21 @@ pub async fn run_check(
     };
     // Whatever it left running would hold the output open.
     process::signal_group(pgid, nix::sys::signal::Signal::SIGKILL);
-    let kept = tokio::time::timeout(Duration::from_secs(5), reading)
+    let (mut kept, cut) = tokio::time::timeout(Duration::from_secs(5), reading)
         .await
         .ok()
         .and_then(Result::ok)
         .unwrap_or_default();
+    if let Some(secrets) = secrets.filter(|secrets| !secrets.is_empty()) {
+        if cut {
+            let start = kept
+                .iter()
+                .position(|&b| b == b'\n')
+                .map_or(kept.len(), |at| at + 1);
+            kept.drain(..start);
+        }
+        kept = secrets.redact(&String::from_utf8_lossy(&kept)).into_bytes();
+    }
     let mut output = String::from_utf8_lossy(&kept).into_owned();
     if let Some(watch) = &watch {
         let watch = watch
