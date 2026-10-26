@@ -74,6 +74,10 @@ pub mod action {
     /// on GitHub when Oby's review passes (crate::sphere::approval): `target` the item it was
     /// asked from, `payload` `{"fromOwner", "repo"}` (`repo` may be `*`).
     pub const REMEMBER_APPROVAL: &str = "remember_approval";
+    /// Approve a teammate's pull request on GitHub, as the owner, for one exchange at one commit
+    /// (crate::sphere::approval::item): `target` the item itself, `payload` `{"correlationId",
+    /// "from", "fromOwner", "repo", "pr", "baseBranch", "headSha", "expiresAt", "job"}`.
+    pub const APPROVE_ON_HOST: &str = "approve_on_host";
     /// Add a review request's repository and start Oby's review of it (#1118): `target` its
     /// `github` offer's id, `payload` `{"repo", "number"}`.
     pub const ADD_REPOSITORY: &str = "add_repository";

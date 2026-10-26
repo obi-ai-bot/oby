@@ -3330,13 +3330,7 @@ impl Link {
             None,
         );
         self.settle_host_approvals(
-            |i| {
-                i.obi
-                    .as_ref()
-                    .and_then(|o| o["expiresAt"].as_str())
-                    .and_then(time::parse)
-                    .is_none_or(|t| t <= now)
-            },
+            |i| approval::ask_expiry(i).flatten().is_none_or(|t| t <= now),
             "It lapsed when the request expired: nothing was approved.",
         );
     }
@@ -3709,11 +3703,13 @@ impl Link {
         self.send_now(&cid).await;
     }
 
-    /// A review whose request asks to approve it on GitHub (`approve_on_host`) came out approved:
-    /// under the owner's standing permission for the sender's owner and the repository (a
-    /// remembered [`approval::HOST_APPROVAL`] decision, never anything received) obid approves it
-    /// there now; without one it asks the owner in the inbox. What the result's `host_review` says:
-    /// `approved`, `unable` or `asked`.
+    /// A review whose request asks to approve it on GitHub (`approve_on_host`) came out approved.
+    /// Under the owner's standing permission for the sender's owner and the repository (a
+    /// remembered [`approval::HOST_APPROVAL`] decision, never anything received), obid approves it
+    /// there now when the people who own every file it changes already approved that commit
+    /// ([`Link::code_owners_approved`]); otherwise it asks the owner to confirm this one exchange
+    /// with their own tap ([`approval::item`]). What the result's `host_review` says: `approved`,
+    /// `unable` or `asked`.
     async fn approve_on_host(
         &self,
         cid: &str,
@@ -3727,26 +3723,27 @@ impl Link {
         let Some(pr) = request["pr"].as_u64() else {
             return "unable";
         };
-        let now = time::now();
-        let (decisions, asking, until) = {
-            let mut state = self.lock();
-            // Revoked meanwhile (the exchange settled here): nothing more is done for its peer.
-            let exchange = state.exchanges.get(cid).filter(|e| e.state == "accepted");
-            let open = exchange.is_some();
-            let expires_at = exchange
-                .and_then(|e| e.request["expires_at"].as_str())
-                .unwrap_or("")
-                .to_owned();
-            let until = time::parse(&expires_at).unwrap_or(0);
-            if !open
-                || state
-                    .membership
-                    .as_ref()
-                    .is_none_or(|m| m.state != "joined")
-            {
+        // Revoked meanwhile (the exchange settled here), or out of the Sphere: nothing more is done
+        // for its peer. The expiry, when the exchange is still open.
+        let open = |state: &State| {
+            state
+                .exchanges
+                .get(cid)
+                .filter(|e| e.state == "accepted")
+                .filter(|_| {
+                    state
+                        .membership
+                        .as_ref()
+                        .is_some_and(|m| m.state == "joined")
+                })
+                .map(|e| e.request["expires_at"].as_str().unwrap_or("").to_owned())
+        };
+        let (expires_at, permitted) = {
+            let state = self.lock();
+            let Some(expires_at) = open(&state) else {
                 return "unable";
-            }
-            let allowed = decisions::covering(
+            };
+            let permitted = decisions::covering(
                 &state.decisions,
                 approval::HOST_APPROVAL,
                 from_owner,
@@ -3754,40 +3751,194 @@ impl Link {
             )
             .filter(|d| d.decision == "accept")
             .map(|d| d.id.clone());
-            match allowed {
-                Some(id) => {
-                    if let Some(d) = state.decisions.iter_mut().find(|d| d.id == id) {
-                        d.uses += 1;
-                        d.last_used = Some(now);
-                    }
-                    (Some(state.decisions.clone()), None, until)
-                }
-                None => {
-                    let mut item = approval::item(cid, from, from_owner, request, &expires_at, now);
-                    if let Some(obi) = item.obi.as_mut() {
-                        obi["job"] = json!(job);
-                    }
-                    state.inbox.insert(item.id.clone(), item.clone());
-                    (None, Some(item), until)
-                }
-            }
+            (expires_at, permitted)
         };
-        if let Some(item) = asking {
-            self.save_item(&item);
-            return "asked";
+        let until = time::parse(&expires_at).unwrap_or(0);
+        if let Some(id) = permitted {
+            match self
+                .code_owners_approved(cid, repo, pr, base, sha, &expires_at)
+                .await
+            {
+                Ok(()) => {
+                    let decisions = {
+                        let mut state = self.lock();
+                        if let Some(d) = state.decisions.iter_mut().find(|d| d.id == id) {
+                            d.uses += 1;
+                            d.last_used = Some(time::now());
+                        }
+                        state.decisions.clone()
+                    };
+                    self.save_decisions(&decisions);
+                    return match self.post_approval(repo, pr, base, sha, until).await {
+                        Ok(url) => {
+                            self.jobs.approved_on_github(job, repo, &url);
+                            "approved"
+                        }
+                        Err(why) => {
+                            tracing::warn!(
+                                "sphere: exchange {cid}: obid didn't approve {repo}#{pr}: {why}"
+                            );
+                            "unable"
+                        }
+                    };
+                }
+                Err(why) => tracing::info!(
+                    "sphere: exchange {cid}: no code owner's approval of {repo}#{pr} to stand next to ({why}): asking the owner"
+                ),
+            }
         }
-        if let Some(decisions) = decisions {
-            self.save_decisions(&decisions);
+        let asking = {
+            let mut state = self.lock();
+            if open(&state).is_none() {
+                return "unable";
+            }
+            let item = approval::item(
+                cid,
+                from,
+                from_owner,
+                request,
+                &expires_at,
+                job,
+                time::now(),
+            );
+            state.inbox.insert(item.id.clone(), item.clone());
+            item
+        };
+        self.save_item(&asking);
+        "asked"
+    }
+
+    /// Whether the people who own every file of pull request `pr` of `repo` approved `sha` on
+    /// GitHub, so that obid's approval, under the owner's standing permission, stands next to
+    /// theirs (`obi_protocol::host_approval`, the spec's rule): what the owner's `gh` reads
+    /// ([`approval::code_host`]) right now. Why not, else.
+    async fn code_owners_approved(
+        &self,
+        cid: &str,
+        repo: &str,
+        pr: u64,
+        base: &str,
+        sha: &str,
+        expires_at: &str,
+    ) -> Result<(), String> {
+        use obi_protocol::host_approval::{Context, Input, Request, decide};
+        let gh = crate::github::gh().ok_or("gh isn't installed")?;
+        let (code_host, owner_login) = approval::code_host(&gh, repo, pr, base, sha).await?;
+        let context = Context {
+            now: time::format(time::now()),
+            request: Request {
+                correlation_id: cid.to_owned(),
+                head_sha: sha.to_owned(),
+                expires_at: expires_at.to_owned(),
+            },
+            member: self.is_joined(),
+            owner_login,
+            standing_permission: true,
+        };
+        let input = Input {
+            owner_confirmations: Vec::new(),
+            code_host,
+        };
+        decide(&context, &input).map_err(|r| r.message)
+    }
+
+    /// The owner confirmed approving a teammate's pull request on GitHub for one exchange, `item`
+    /// ([`approval::item`]), with their device's signature made at `signed_at` (checked by the
+    /// route, once). obid checks it as the spec's rule does (`obi_protocol::host_approval`): that
+    /// exchange, still open to approve, at the commit its request named, a confirmation from the
+    /// owner's device within two minutes; then approves it ([`Link::post_approval`]). The claim is
+    /// on disk before GitHub is asked: obid stopping mid-post never approves it twice.
+    async fn confirmed_approval(
+        &self,
+        item: &str,
+        payload: &Value,
+        signed_at: Option<i64>,
+    ) -> Result<(), ApiError> {
+        use obi_protocol::host_approval::{Confirmation, Context, Input, Request, decide};
+        let text = |key: &str| payload[key].as_str().unwrap_or("").to_owned();
+        let (cid, repo, base, job) = (
+            text("correlationId"),
+            text("repo"),
+            text("baseBranch"),
+            text("job"),
+        );
+        let pr = payload["pr"].as_u64().unwrap_or(0);
+        let lost = || {
+            api(
+                StatusCode::CONFLICT,
+                "Nothing was approved: that request is gone.",
+            )
+        };
+        if item != approval::item_id(&cid) || !crate::github::is_repo(&repo) || pr == 0 {
+            return Err(lost());
         }
-        match self.post_approval(repo, pr, base, sha, until).await {
+        // The commit and the expiry are the request's own, as obid keeps it.
+        let (head, expires_at) = {
+            let state = self.lock();
+            let exchange = state.exchanges.get(&cid).ok_or_else(lost)?;
+            let body = &exchange.request["body"];
+            if exchange.direction != "incoming"
+                || !approval::asked(body)
+                || body["repo"] != json!(repo)
+                || body["pr"].as_u64() != Some(pr)
+            {
+                return Err(lost());
+            }
+            (
+                body["head_sha"].as_str().unwrap_or("").to_owned(),
+                exchange.request["expires_at"]
+                    .as_str()
+                    .unwrap_or("")
+                    .to_owned(),
+            )
+        };
+        let context = Context {
+            now: time::format(time::now()),
+            request: Request {
+                correlation_id: cid.clone(),
+                head_sha: head.clone(),
+                expires_at: expires_at.clone(),
+            },
+            member: self.is_joined(),
+            owner_login: String::new(),
+            standing_permission: false,
+        };
+        let input = Input {
+            owner_confirmations: vec![Confirmation {
+                correlation_id: cid.clone(),
+                head_sha: text("headSha"),
+                signed_at: signed_at.map(time::format).unwrap_or_default(),
+                from_owner_device: signed_at.is_some(),
+                used_before: false,
+            }],
+            ..Input::default()
+        };
+        if let Err(refused) = decide(&context, &input) {
+            let why = if refused.code == "lapsed" {
+                "That request lapsed: nothing was approved.".to_owned()
+            } else {
+                format!("Nothing was approved: {}.", refused.message)
+            };
+            return Err(api(StatusCode::CONFLICT, why));
+        }
+        // Kept before GitHub is asked: obid stopping mid-post never approves it twice.
+        let claimed = self.item(item).ok_or_else(lost)?;
+        if let Err(why) = self.keep_item(&claimed) {
+            return Err(api(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Nothing was approved: obid couldn't keep the claim ({why})."),
+            ));
+        }
+        let until = time::parse(&expires_at).unwrap_or(0);
+        match self.post_approval(&repo, pr, &base, &head, until).await {
             Ok(url) => {
-                self.jobs.approved_on_github(job, repo, &url);
-                "approved"
+                self.jobs.approved_on_github(&job, &repo, &url);
+                Ok(())
             }
-            Err(why) => {
-                tracing::warn!("sphere: exchange {cid}: obid didn't approve {repo}#{pr}: {why}");
-                "unable"
-            }
+            Err(why) => Err(api(
+                StatusCode::BAD_GATEWAY,
+                format!("Nothing was approved: {why}."),
+            )),
         }
     }
 
@@ -3814,8 +3965,9 @@ impl Link {
         posted
     }
 
-    /// Settles the open asks to approve a teammate's pull request on GitHub ([`approval::item`])
-    /// that `due` picks: done with no answer, `why` at the end of their text. Nothing is approved.
+    /// Settles the open asks to approve a teammate's pull request on GitHub ([`approval::item`],
+    /// and the `obiRequest` ones from before it) that `due` picks: done with no answer, `why` at
+    /// the end of their text. Nothing is approved.
     fn settle_host_approvals(&self, due: impl Fn(&Item) -> bool, why: &str) {
         let now = time::now();
         let settled: Vec<Item> = {
@@ -3823,13 +3975,7 @@ impl Link {
             state
                 .inbox
                 .values_mut()
-                .filter(|i| {
-                    i.done.is_none()
-                        && i.obi
-                            .as_ref()
-                            .is_some_and(|o| o["type"] == approval::HOST_APPROVAL)
-                        && due(i)
-                })
+                .filter(|i| i.done.is_none() && approval::ask_expiry(i).is_some() && due(i))
                 .map(|i| {
                     i.done = Some(now);
                     i.text = format!("{} {why}", i.text);
@@ -3842,12 +3988,11 @@ impl Link {
         }
     }
 
-    /// `POST /v1/inbox/{id}/answer` on an item asking whether to approve a teammate's pull request
-    /// on GitHub ([`approval::item`]): `Accept` approves it now (claimed by `answer` under the
-    /// lock), `Accept, and remember for this repo` also asks for a Confirm to keep the standing
-    /// permission (#776: an API token alone never keeps one); `Decline` or done approve nothing.
-    /// A yes after the request expired, or once obid left its Sphere, approves nothing; the claim
-    /// is on disk before GitHub is asked; an approval that fails closes the item with why.
+    /// `POST /v1/inbox/{id}/answer` on an `obiRequest` item asking whether to approve a teammate's
+    /// pull request on GitHub, as obid made them before the owner's Confirm was needed: an answer
+    /// approves nothing. `Accept` (or with remember) turns it into the `confirm` item that asks the
+    /// same ([`approval::item`], the same id), and is refused (`403`): only the owner's tap on it
+    /// approves. `Decline` or done close it; later puts it off.
     async fn answer_host_approval(
         &self,
         mut item: Item,
@@ -3855,9 +4000,7 @@ impl Link {
         later: Option<i64>,
     ) -> Result<Value, ApiError> {
         let now = time::now();
-        let open = item.clone();
         let obi = item.obi.clone().unwrap_or_default();
-        let text = |key: &str| obi[key].as_str().unwrap_or("").to_owned();
         let approving = matches!(
             answer.as_deref(),
             Some(inbox::ACCEPT | inbox::ACCEPT_REMEMBER)
@@ -3873,54 +4016,23 @@ impl Link {
                 format!("The answer is one of: {}.", item.options.join("; ")),
             ));
         } else if approving {
-            let (repo, base, sha) = (text("repo"), text("baseBranch"), text("headSha"));
-            let pr = obi["pr"].as_u64().unwrap_or(0);
-            item.done = Some(now);
-            if time::parse(&text("expiresAt")).is_none_or(|t| t <= now) || !self.is_joined() {
-                item.text = format!(
-                    "{} It lapsed: the request expired, or this Oby left its Obysphere, so nothing was approved.",
-                    item.text
-                );
-                self.lock().inbox.insert(item.id.clone(), item.clone());
-                self.save_item(&item);
-                return Err(api(
-                    StatusCode::CONFLICT,
-                    "That request lapsed: nothing was approved.",
-                ));
-            }
-            item.answer = answer.clone();
-            // Kept before GitHub is asked: obid stopping mid-post never approves it twice.
-            if let Err(why) = self.keep_item(&item) {
-                self.lock().inbox.insert(open.id.clone(), open.clone());
-                self.save_item(&open);
-                return Err(api(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("Nothing was approved: obid couldn't keep the claim ({why})."),
-                ));
-            }
-            let until = time::parse(&text("expiresAt")).unwrap_or(0);
-            match self.post_approval(&repo, pr, &base, &sha, until).await {
-                Ok(url) => {
-                    self.jobs.approved_on_github(&text("job"), &repo, &url);
-                    if answer.as_deref() == Some(inbox::ACCEPT_REMEMBER) {
-                        self.add_confirm(approval::remember_item(
-                            &text("fromOwner"),
-                            &repo,
-                            Some(&item.id),
-                            now,
-                        ));
-                    }
-                }
-                Err(why) => {
-                    item.text = format!("{} It wasn't approved: {why}.", item.text);
-                    self.lock().inbox.insert(item.id.clone(), item.clone());
-                    self.save_item(&item);
-                    return Err(api(
-                        StatusCode::BAD_GATEWAY,
-                        format!("Nothing was approved: {why}."),
-                    ));
-                }
-            }
+            let text = |key: &str| obi[key].as_str().unwrap_or("").to_owned();
+            let request = json!({
+                "repo": text("repo"), "pr": obi["pr"], "base_branch": text("baseBranch"),
+                "head_sha": text("headSha"),
+            });
+            let asking = approval::item(
+                &text("correlationId"),
+                &text("from"),
+                &text("fromOwner"),
+                &request,
+                &text("expiresAt"),
+                &text("job"),
+                now,
+            );
+            self.lock().inbox.insert(asking.id.clone(), asking.clone());
+            self.save_item(&asking);
+            return Err(api(StatusCode::FORBIDDEN, NEEDS_YOUR_TAP));
         } else {
             item.done = Some(now);
             item.answer = answer;
@@ -4482,6 +4594,7 @@ impl Link {
         mut item: Item,
         answer: Option<String>,
         later: Option<i64>,
+        signed_at: Option<i64>,
     ) -> Result<Value, ApiError> {
         if let Some(at) = later {
             item.later = Some(at);
@@ -4495,7 +4608,7 @@ impl Link {
                 }
                 if answer == inbox::CONFIRM {
                     let done = match item.confirm.clone() {
-                        Some(confirmed) => self.carry_out(*confirmed).await,
+                        Some(confirmed) => self.carry_out(*confirmed, signed_at).await,
                         None => Err(api(StatusCode::CONFLICT, "That item says nothing to do.")),
                     };
                     // What it was for moved on (the permission was answered, the job ended): the
@@ -4518,8 +4631,13 @@ impl Link {
         Ok(item.to_json())
     }
 
-    /// What a confirmed `confirm` item does: one dispatcher, a case per action.
-    async fn carry_out(self: &Arc<Self>, confirmed: inbox::Confirmed) -> Result<(), ApiError> {
+    /// What a confirmed `confirm` item does: one dispatcher, a case per action. `signed_at`: when
+    /// the owner's device signed the Confirm.
+    async fn carry_out(
+        self: &Arc<Self>,
+        confirmed: inbox::Confirmed,
+        signed_at: Option<i64>,
+    ) -> Result<(), ApiError> {
         let target = confirmed.target.as_str();
         match confirmed.action.as_str() {
             inbox::action::ALWAYS_ALLOW => {
@@ -4632,6 +4750,10 @@ impl Link {
                 };
                 self.save_decisions(&kept);
                 Ok(())
+            }
+            inbox::action::APPROVE_ON_HOST => {
+                self.confirmed_approval(target, &confirmed.payload, signed_at)
+                    .await
             }
             inbox::action::CREATE_ROUTINE => {
                 let draft: crate::routines::Draft =
@@ -5054,8 +5176,9 @@ impl Link {
         id: &str,
         body: &[u8],
         approved: &str,
+        signed_at: i64,
     ) -> Result<Value, ApiError> {
-        let answered = self.answer_as(id, body, Some(approved)).await;
+        let answered = self.answer_as(id, body, Some((approved, signed_at))).await;
         answered.map(|shown| self.with_triage(shown))
     }
 
@@ -5063,7 +5186,7 @@ impl Link {
         self: &Arc<Self>,
         id: &str,
         body: &[u8],
-        approved: Option<&str>,
+        approved: Option<(&str, i64)>,
     ) -> Result<Value, ApiError> {
         let map = object(body, &["answer", "done", "later"])?;
         let one_of = "The body is exactly one of {\"answer\": …}, {\"done\": true} or {\"later\": \"<date>\"}.";
@@ -5112,7 +5235,7 @@ impl Link {
             // checked before the item is claimed, so a refused Confirm leaves it open (#776).
             if let Some(open) = &item
                 && confirming
-                && approved != Some(open.title.as_str())
+                && approved.map(|(title, _)| title) != Some(open.title.as_str())
             {
                 return Err(api(StatusCode::FORBIDDEN, NEEDS_YOUR_TAP));
             }
@@ -5126,9 +5249,13 @@ impl Link {
         };
         if let Some(item) = confirm {
             return match given {
-                Given::Answer(answer) => self.answer_confirm(item, Some(answer), None).await,
-                Given::Done => self.answer_confirm(item, None, None).await,
-                Given::Later(at) => self.answer_confirm(item, None, Some(at)).await,
+                Given::Answer(answer) => {
+                    let signed_at = approved.map(|(_, at)| at);
+                    self.answer_confirm(item, Some(answer), None, signed_at)
+                        .await
+                }
+                Given::Done => self.answer_confirm(item, None, None, None).await,
+                Given::Later(at) => self.answer_confirm(item, None, Some(at), None).await,
             };
         }
         // A question's item, answered or declined: the words pass the publish gate first, with
@@ -5307,28 +5434,18 @@ impl Link {
                 Given::Later(_) => {}
             }
         }
-        // Approving a teammate's pull request on GitHub: an approving answer claims the item under
-        // the lock (done), so a second one at the same moment approves nothing.
-        let host_approval = {
-            let mut state = self.lock();
-            let item = state
-                .inbox
-                .get(id)
-                .filter(|i| {
-                    i.done.is_none()
-                        && i.obi
-                            .as_ref()
-                            .is_some_and(|o| o["type"] == approval::HOST_APPROVAL)
-                })
-                .cloned();
-            if item.is_some()
-                && matches!(&given, Given::Answer(a) if a == inbox::ACCEPT || a == inbox::ACCEPT_REMEMBER)
-                && let Some(kept) = state.inbox.get_mut(id)
-            {
-                kept.done = Some(time::now());
-            }
-            item
-        };
+        // Approving a teammate's pull request on GitHub, asked before the owner's Confirm was needed.
+        let host_approval = self
+            .lock()
+            .inbox
+            .get(id)
+            .filter(|i| {
+                i.done.is_none()
+                    && i.obi
+                        .as_ref()
+                        .is_some_and(|o| o["type"] == approval::HOST_APPROVAL)
+            })
+            .cloned();
         if let Some(item) = host_approval {
             return match given {
                 Given::Answer(answer) => self.answer_host_approval(item, Some(answer), None).await,
@@ -7150,11 +7267,13 @@ mod tests {
         );
     }
 
-    /// A save keeps and tells what is in memory now, never an older copy its caller still holds:
-    /// a request's arrival that saves after the owner already answered can't put the item back to
-    /// open, nor its exchange back to waiting, on the stream or on disk.
+    /// Approving a teammate's pull request on GitHub takes the owner's own tap on that exchange's
+    /// ask, at the commit its request named, signed within two minutes, while the request is open
+    /// and obid is in its Sphere: no API answer, no other exchange's tap, no tap on an ask for
+    /// another commit, no stale one, none after the expiry or a revoke. Every refusal here comes
+    /// before gh is asked anything.
     #[tokio::test]
-    async fn a_yes_to_approve_after_the_expiry_or_a_revoke_approves_nothing() {
+    async fn only_the_owners_fresh_tap_on_that_exchange_at_that_commit_approves() {
         let home = std::env::temp_dir().join(format!("obid-link-host-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&home);
         let config = Config::parse(
@@ -7164,24 +7283,39 @@ mod tests {
         let events = Events::new();
         let jobs = Jobs::open(config.clone(), events.clone(), Err("no sandbox".into())).unwrap();
         let (_stop, stopping) = watch::channel(false);
-        let link = Link::open(config, jobs, events, stopping).unwrap();
+        let link = Arc::new(Link::open(config, jobs, events, stopping).unwrap());
         let now = time::now();
+        const HEAD: &str = "6d20146f366b9fac8907b5066c30ee39aaec09b3";
+        const OLDER: &str = "1111111111111111111111111111111111111111";
         // A repository GitHub doesn't have: were anything to reach gh, it would find nothing.
-        let request = json!({"repo": "obi-x5-test/none", "pr": 12, "base_branch": "main",
-                             "head_sha": "6d20146f366b9fac8907b5066c30ee39aaec09b3"});
-        let ask = |cid: &str, expires: i64| {
+        let request = |head: &str| {
+            json!({"repo": "obi-x5-test/none", "pr": 12, "base_branch": "main", "head_sha": head,
+                   "approve_on_host": true})
+        };
+        // The exchange as obid keeps it, its result sent (`asked`), and the ask in the inbox.
+        let ask = |cid: &str, head: &str, asked_at: &str, expires: i64| {
+            let envelope = json!({"id": cid, "correlation_id": cid, "type": "review_request",
+                                  "expires_at": time::format(expires), "body": request(head)});
+            let mut exchange = Exchange::new(
+                "incoming",
+                envelope,
+                "obi-ernesto".into(),
+                Some("ernesto".into()),
+            );
+            exchange.state = "done".into();
+            link.lock().exchanges.insert(cid.into(), exchange);
             let item = approval::item(
                 cid,
                 "obi-ernesto",
                 "ernesto",
-                &request,
+                &request(asked_at),
                 &time::format(expires),
+                "",
                 now,
             );
             link.lock().inbox.insert(item.id.clone(), item.clone());
-            item.id
+            item
         };
-        let accept = json!({"answer": inbox::ACCEPT}).to_string();
         let membership = |state: &str| Membership {
             state: state.into(),
             url: "http://127.0.0.1:1".into(),
@@ -7191,33 +7325,133 @@ mod tests {
             joined_at: 0,
         };
         link.lock().membership = Some(membership("joined"));
-        let late = ask("c-late", now - 1);
-        let refused = link.answer(&late, accept.as_bytes()).await.unwrap_err();
-        assert_eq!(refused.status, StatusCode::CONFLICT);
-        let item = link.item(&late).unwrap();
-        assert!(item.done.is_some() && item.answer.is_none());
-        assert!(
-            item.text.ends_with("so nothing was approved."),
-            "{}",
-            item.text
+        let confirm = json!({"answer": inbox::CONFIRM}).to_string();
+        let tap = |item: &Item, at: i64| {
+            let (link, item, confirm) = (link.clone(), item.clone(), confirm.clone());
+            async move {
+                link.answer_confirmed(&item.id, confirm.as_bytes(), &item.title, at)
+                    .await
+            }
+        };
+
+        // The ask names the exchange (its id) and the commit (its title), which the device signs.
+        let item = ask("c-1", HEAD, HEAD, now + 3600);
+        assert_eq!(item.id, "obi-approve-c-1");
+        assert_eq!(item.kind, "confirm");
+        assert_eq!(
+            item.title,
+            "Approve ernesto's pull request #12 on obi-x5-test/none at 6d20146 on GitHub, as you"
         );
-        // The clock settles an ask whose request expired.
-        let waiting = ask("c-waiting", now - 1);
+        assert_eq!(item.options, [inbox::CONFIRM, inbox::CANCEL]);
+        // No device, no approval: the API token alone is refused and the ask stays open.
+        let refused = link.answer(&item.id, confirm.as_bytes()).await.unwrap_err();
+        assert_eq!(refused.status, StatusCode::FORBIDDEN);
+        assert!(link.item(&item.id).unwrap().done.is_none());
+        // A tap signed 121 seconds ago is stale.
+        let refused = tap(&item, now - 121).await.unwrap_err();
+        assert_eq!(refused.status, StatusCode::CONFLICT, "{}", refused.message);
+        assert!(refused.message.starts_with("Nothing was approved"));
+
+        // The ask carries another commit than the exchange's request: it counts for nothing.
+        let older = ask("c-2", HEAD, OLDER, now + 3600);
+        let refused = tap(&older, now).await.unwrap_err();
+        assert_eq!(refused.status, StatusCode::CONFLICT, "{}", refused.message);
+        // One exchange's tap, carried over to another exchange's ask, approves nothing.
+        let first = ask("c-3", HEAD, HEAD, now + 3600);
+        let second = ask("c-4", HEAD, HEAD, now + 3600);
+        let carried = link
+            .confirmed_approval(
+                &first.id,
+                &second.confirm.as_ref().unwrap().payload,
+                Some(now),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(carried.status, StatusCode::CONFLICT);
+        assert_eq!(
+            carried.message,
+            "Nothing was approved: that request is gone."
+        );
+        // No device's signature at all: nothing either.
+        let unsigned = link
+            .confirmed_approval(&first.id, &first.confirm.as_ref().unwrap().payload, None)
+            .await
+            .unwrap_err();
+        assert_eq!(unsigned.status, StatusCode::CONFLICT);
+
+        // After the expiry, a tap approves nothing, and the clock settles the ask.
+        let late = ask("c-late", HEAD, HEAD, now - 1);
+        let refused = tap(&late, now).await.unwrap_err();
+        assert_eq!(
+            refused.message,
+            "That request lapsed: nothing was approved."
+        );
+        let waiting = ask("c-waiting", HEAD, HEAD, now - 1);
         link.expire();
-        assert!(link.item(&waiting).unwrap().done.is_some());
-        // Revoked: a yes approves nothing, and the revoke settles every open ask.
-        let open = ask("c-open", now + 3600);
-        let other = ask("c-other", now + 3600);
+        assert!(link.item(&waiting.id).unwrap().done.is_some());
+        // Revoked: a tap approves nothing, and the revoke settles every open ask.
+        let open = ask("c-open", HEAD, HEAD, now + 3600);
+        let other = ask("c-other", HEAD, HEAD, now + 3600);
         link.lock().membership = Some(membership("revoked"));
-        let refused = link.answer(&open, accept.as_bytes()).await.unwrap_err();
-        assert_eq!(refused.status, StatusCode::CONFLICT);
+        let refused = tap(&open, now).await.unwrap_err();
+        assert_eq!(
+            refused.message,
+            "That request lapsed: nothing was approved."
+        );
         link.settle_on_revoke();
-        let settled = link.item(&other).unwrap();
+        let settled = link.item(&other.id).unwrap();
         assert!(settled.done.is_some() && settled.answer.is_none());
         assert!(
             settled
                 .text
                 .ends_with("This Oby left its Obysphere: nothing was approved.")
+        );
+
+        // An ask obid made before the owner's tap was needed: Accept approves nothing, and the
+        // ask comes back, the same id, as the Confirm only the owner's tap answers.
+        link.lock().membership = Some(membership("joined"));
+        let legacy = Item {
+            id: approval::item_id("c-legacy"),
+            kind: "obiRequest".into(),
+            job: String::new(),
+            title: "Approve ernesto's pull request on GitHub?".into(),
+            text: String::new(),
+            options: vec![
+                inbox::ACCEPT.into(),
+                inbox::ACCEPT_REMEMBER.into(),
+                inbox::DECLINE.into(),
+            ],
+            details: None,
+            recommended: None,
+            created: now,
+            done: None,
+            later: None,
+            answer: None,
+            obi: Some(
+                json!({"correlationId": "c-legacy", "from": "obi-ernesto", "fromOwner": "ernesto",
+                             "type": approval::HOST_APPROVAL, "repo": "obi-x5-test/none", "pr": 12,
+                             "baseBranch": "main", "headSha": HEAD, "expiresAt": time::format(now + 3600)}),
+            ),
+            plugin: None,
+            arrived: None,
+            confirm: None,
+            start: None,
+            github: None,
+            watch: None,
+        };
+        link.lock().inbox.insert(legacy.id.clone(), legacy.clone());
+        let accept = json!({"answer": inbox::ACCEPT}).to_string();
+        let refused = link
+            .answer(&legacy.id, accept.as_bytes())
+            .await
+            .unwrap_err();
+        assert_eq!(refused.status, StatusCode::FORBIDDEN);
+        let now_asked = link.item(&legacy.id).unwrap();
+        assert_eq!(now_asked.kind, "confirm");
+        assert!(now_asked.done.is_none());
+        assert_eq!(
+            now_asked.confirm.unwrap().action,
+            inbox::action::APPROVE_ON_HOST
         );
         let _ = std::fs::remove_dir_all(&home);
     }

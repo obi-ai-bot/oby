@@ -1,7 +1,7 @@
 //! The Obi-to-Obi protocol v0.1, as obi-ai-bot/obi-sphere's `spec/` defines it (`protocol.md`,
 //! `identity.md`, `sphere-api.md`, the JSON Schemas and the conformance suite): canonical JSON,
 //! Ed25519 keys and signatures, the typed messages, and the checks a receiver makes on envelopes,
-//! agent cards and audit chains. Its behavior follows the spec's reference verifier,
+//! agent cards and audit chains, and when a receiver may approve on the code host. Its behavior follows the spec's reference verifier,
 //! `spec/conformance/lib/obi.mjs`, check for check; `cargo test -p obi-protocol` judges every
 //! conformance case, and the `obi-conformance` binary is what `run.mjs --impl` runs.
 
@@ -9,6 +9,7 @@ pub mod card;
 pub mod chain;
 pub mod client;
 pub mod envelope;
+pub mod host_approval;
 pub mod identity;
 pub mod jcs;
 pub mod jwt;
@@ -184,6 +185,7 @@ pub fn judge(case: &Value) -> Result<(), Rejection> {
         }
         Some("card") => card::verify(&input, &card::Context::from_value(&context)),
         Some("audit") => chain::verify(&input, &keys_from_value(context.get("keys"))),
+        Some("host_approval") => host_approval::verify(&input, &context),
         other => Err(Rejection::new(
             "bad_request",
             format!("unknown case kind {}", other.unwrap_or("(none)")),

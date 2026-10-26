@@ -229,6 +229,7 @@ pub async fn answer(
         ));
     };
     let key = shared.devices.public_key(&approval.device);
+    let signed_at = obi_protocol::time::parse(&approval.signed_at).unwrap_or_default();
     if let Err(why) = shared.jobs.approvals().check_confirm(
         &approval,
         &id,
@@ -242,7 +243,7 @@ pub async fn answer(
         StatusCode::OK,
         shared
             .link
-            .answer_confirmed(&id, &rest, &item.title)
+            .answer_confirmed(&id, &rest, &item.title, signed_at)
             .await?,
     ))
 }

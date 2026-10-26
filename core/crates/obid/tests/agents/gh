@@ -22,6 +22,14 @@
 #   approvals   one line per `gh api -X POST …/reviews` (crate::listen::create_review): its
 #               arguments and its body file's text; it answers a review's html_url
 #   no-push     when it exists, `gh api repos/<repo> --jq .permissions.push` says false (else true)
+#   contents/<path>   what `gh api repos/<repo>/contents/<path>` answers (a CODEOWNERS file); without
+#               it, GitHub's 404
+#   files, reviews    what `gh api repos/<repo>/pulls/<n>/files` and `…/reviews` answer (after
+#               gh's --jq: one JSON object a line); without them, nothing
+#   changed     what `gh api repos/<repo>/pulls/<n> --jq .changed_files` answers (else the lines
+#               of files)
+#   teams/<org>-<team>   the team's members, a login a line: `gh api orgs/<org>/teams/<team>/
+#               memberships/<login>` says active for them, else GitHub's 404
 work="$HOME/github"
 if [ -d "$work" ]; then
   echo "$1 $2" >> "$work/calls"
@@ -43,8 +51,25 @@ if [ -d "$work" ]; then
     "api user") cat "$work/user"; exit $? ;;
     "api user/orgs") cat "$work/orgs"; exit $? ;;
     "api repos/"*)
+      case "$2" in
+        */contents/*)
+          f="$work/contents/${2#*/contents/}"
+          if [ -f "$f" ]; then cat "$f"; exit 0; fi
+          echo "gh: Not Found (HTTP 404)" >&2; exit 1 ;;
+        */pulls/*/files) cat "$work/files" 2>/dev/null; exit 0 ;;
+        */pulls/*/reviews) cat "$work/reviews" 2>/dev/null; exit 0 ;;
+        */pulls/*)
+          if [ -f "$work/changed" ]; then cat "$work/changed"
+          elif [ -f "$work/files" ]; then grep -c . "$work/files"
+          else echo 0; fi
+          exit 0 ;;
+      esac
       if [ -f "$work/no-push" ]; then echo false; else echo true; fi
       exit 0 ;;
+    "api orgs/"*)
+      rest=${2#orgs/}; org=${rest%%/*}; team=${rest#*/teams/}; team=${team%%/*}; login=${2##*/}
+      if grep -qx "$login" "$work/teams/$org-$team" 2>/dev/null; then echo active; exit 0; fi
+      echo "gh: Not Found (HTTP 404)" >&2; exit 1 ;;
     "api -X")
       body=""
       for arg in "$@"; do case "$arg" in body=@*) body=$(cat "${arg#body=@}") ;; esac; done
