@@ -661,7 +661,14 @@ impl Connections {
 
     async fn initialize_upstream(&self, job: &str, c: &Connection) -> Result<(), String> {
         let key = format!("{job}/{}", c.name);
-        self.upstreams.lock().await.remove(&key);
+        // A new session keeps what the last whole listing gave: it's the same server, so a session
+        // it expired never costs the job its tools, or another session to list them again.
+        let tools = self
+            .upstreams
+            .lock()
+            .await
+            .remove(&key)
+            .and_then(|u| u.tools);
         let init = self
             .send_mcp(
                 job,
@@ -676,7 +683,12 @@ impl Connections {
             .and_then(Value::as_str)
             .unwrap_or(MCP_VERSIONS[0])
             .to_owned();
-        self.upstreams.lock().await.entry(key).or_default().version = Some(version);
+        {
+            let mut upstreams = self.upstreams.lock().await;
+            let upstream = upstreams.entry(key).or_default();
+            upstream.version = Some(version);
+            upstream.tools = tools;
+        }
         self.send_mcp(
             job,
             c,
