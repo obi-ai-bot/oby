@@ -236,11 +236,19 @@ nonisolated enum Connectors {
         }
         let there = local ? nil : Connector.Way.steps("Connect or disconnect it on \(place) itself, with Oby there: Tetrix's sign-in comes back to that machine.")
         switch status.state {
-        case .connected:
+        case .connected(let server):
+            // A refresh obid couldn't do: it still holds the login and tries again at each call.
+            guard status.error == nil else {
+                return row(.broken, there ?? .button("Reconnect", .connectTetrix(server)), local ? .button("Disconnect…", .disconnectTetrix) : nil)
+            }
             return row(.connected, there ?? .button("Disconnect…", .disconnectTetrix), nil)
         case .signingIn:
             return row(.unconfirmed, there ?? .button("Open the Page Again", .reopenTetrixSignIn), local ? .button("Cancel", .cancelTetrixSignIn) : nil)
         case .available:
+            // Signed out by Tetrix: Reconnect signs in to the same one again.
+            if status.error != nil, let server = status.server {
+                return row(.broken, there ?? .button("Reconnect", .connectTetrix(server)), local ? .button("Another Tetrix…", .connectOtherTetrix) : nil)
+            }
             let first = status.presets.first
             return row(status.error == nil ? .available : .broken,
                        there ?? first.map { .button("Connect", .connectTetrix($0)) } ?? .button("Connect…", .connectOtherTetrix),

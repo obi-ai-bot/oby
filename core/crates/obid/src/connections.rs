@@ -231,7 +231,9 @@ pub struct Connections {
 struct Upstream {
     session: Option<String>,
     version: Option<String>,
-    tools: HashMap<String, Value>,
+    /// What a whole listing gave; none until one came back, so a listing that failed or was cut
+    /// off by its caller's timeout is asked again, never kept as no tools for the rest of the job.
+    tools: Option<HashMap<String, Value>>,
 }
 
 impl Connections {
@@ -603,15 +605,17 @@ impl Connections {
         again: bool,
     ) -> Result<HashMap<String, Value>, String> {
         let key = format!("{job}/{}", c.name);
-        let state = self.upstreams.lock().await;
-        let initialized = state.get(&key).is_some_and(|u| u.version.is_some());
-        let cached = state.get(&key).map(|u| u.tools.clone());
-        drop(state);
-        if initialized && !again {
-            return Ok(cached.unwrap_or_default());
-        }
-        if !initialized {
-            self.initialize_upstream(job, c).await?;
+        let listed = self
+            .upstreams
+            .lock()
+            .await
+            .get(&key)
+            .and_then(|u| u.tools.clone());
+        match listed {
+            Some(tools) if !again => return Ok(tools),
+            Some(_) => {}
+            // Never listed whole: a new session, in case the last one stopped halfway.
+            None => self.initialize_upstream(job, c).await?,
         }
         let mut tools = HashMap::new();
         let mut cursor: Option<String> = None;
@@ -651,7 +655,7 @@ impl Connections {
                 break;
             }
         }
-        self.upstreams.lock().await.entry(key).or_default().tools = tools.clone();
+        self.upstreams.lock().await.entry(key).or_default().tools = Some(tools.clone());
         Ok(tools)
     }
 

@@ -71,10 +71,11 @@ nonisolated struct TetrixStatus: Decodable, Equatable, Sendable {
         return .available
     }
 
-    /// "Signed in to Tetrix Dogfood. Every agent on every account uses it.", or what's under way.
+    /// "Signed in to Tetrix Dogfood. Every agent on every account uses it.", or what's under way. A
+    /// refresh obid couldn't do says so while it's still signed in.
     var how: String {
         switch state {
-        case .connected(let server): "Signed in to \(server.name). Every agent on every account uses it."
+        case .connected(let server): error ?? "Signed in to \(server.name). Every agent on every account uses it."
         case .signingIn(let server): "Signing in to \(server.name) in your browser…"
         case .available:
             error ?? (presets.first.map { "\($0.name): every agent on every account uses it. You sign in once, on Tetrix's own page." }
@@ -181,12 +182,17 @@ nonisolated struct TetrixJobReport: Codable, Equatable, Sendable {
     /// The session ids `save_session` answered the agent.
     var saved: [String]
     var gaps: Gaps?
+    /// "Tetrix wasn't reachable, so this job ran without the graph: …", in obid's words, while it
+    /// couldn't reach Tetrix the last time the job tried; nil otherwise.
+    var unreachable: String?
 
-    private enum Keys: String, CodingKey { case connected, calls, context, saved, gaps, stamps }
+    private enum Keys: String, CodingKey { case connected, calls, context, saved, gaps, stamps, unreachable }
     private struct Stamps: Decodable { var sessions: [String]? }
 
-    init(connected: Bool? = nil, calls: [String: Int] = [:], context: Bool? = nil, saved: [String] = [], gaps: Gaps? = nil) {
+    init(connected: Bool? = nil, calls: [String: Int] = [:], context: Bool? = nil, saved: [String] = [], gaps: Gaps? = nil,
+         unreachable: String? = nil) {
         (self.connected, self.calls, self.context, self.saved, self.gaps) = (connected, calls, context, saved, gaps)
+        self.unreachable = unreachable
     }
 
     /// Never fails: a `tetrix` that isn't an object reads as an empty report, so it can't take the
@@ -197,6 +203,7 @@ nonisolated struct TetrixJobReport: Codable, Equatable, Sendable {
         calls = (try? keys?.decodeIfPresent([String: Int].self, forKey: .calls)) ?? [:]
         context = try? keys?.decodeIfPresent(Bool.self, forKey: .context)
         gaps = try? keys?.decodeIfPresent(Gaps.self, forKey: .gaps)
+        unreachable = try? keys?.decodeIfPresent(String.self, forKey: .unreachable)
         // A runner without `saved` still names the sessions its commits were stamped with.
         saved = (try? keys?.decodeIfPresent([String].self, forKey: .saved))
             ?? (try? keys?.decodeIfPresent(Stamps.self, forKey: .stamps))?.sessions ?? []
@@ -209,10 +216,11 @@ nonisolated struct TetrixJobReport: Codable, Equatable, Sendable {
         try keys.encodeIfPresent(context, forKey: .context)
         try keys.encode(saved, forKey: .saved)
         try keys.encodeIfPresent(gaps, forKey: .gaps)
+        try keys.encodeIfPresent(unreachable, forKey: .unreachable)
     }
 
     /// Nothing worth a section: it wasn't asked, saved nothing and has no gaps to tell.
-    var isEmpty: Bool { calls.isEmpty && saved.isEmpty && context != true && (gaps?.isEmpty ?? true) }
+    var isEmpty: Bool { calls.isEmpty && saved.isEmpty && context != true && (gaps?.isEmpty ?? true) && unreachable == nil }
 
     /// "Asked Tetrix 4 times: search_entities 2, get_entity 1, save_session 1", busiest first.
     var callsLine: String {
