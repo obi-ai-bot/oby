@@ -295,6 +295,11 @@ pub async fn macs(State(shared): State<Arc<Shared>>) -> Response {
     json(StatusCode::OK, shared.link.macs_json().await)
 }
 
+/// `GET /v1/obid/sphere/members`.
+pub async fn members(State(shared): State<Arc<Shared>>) -> Result<Response, ApiError> {
+    Ok(json(StatusCode::OK, shared.link.members_json().await?))
+}
+
 /// `GET /v1/obid/sphere/audit`.
 pub async fn audit(State(shared): State<Arc<Shared>>) -> Result<Response, ApiError> {
     Ok(json(StatusCode::OK, shared.link.audit_json().await?))
