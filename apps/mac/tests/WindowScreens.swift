@@ -59,11 +59,12 @@ struct WindowScreens {
     }
 
     /// `hover`: where the pointer rests for the picture, from the window's top left.
-    func shoot(_ name: String, model: IslandModel, state: ChatState, sidebar: Bool = true, hover: CGPoint? = nil) async throws {
-        try await withPanel(open: sidebar) { try await picture(name, model: model, state: state, hover: hover) }
+    /// `fullScreen`: in macOS full screen, as the green button puts it.
+    func shoot(_ name: String, model: IslandModel, state: ChatState, sidebar: Bool = true, hover: CGPoint? = nil, fullScreen: Bool = false) async throws {
+        try await withPanel(open: sidebar) { try await picture(name, model: model, state: state, hover: hover, fullScreen: fullScreen) }
     }
 
-    private func picture(_ name: String, model: IslandModel, state: ChatState, hover: CGPoint? = nil) async throws {
+    private func picture(_ name: String, model: IslandModel, state: ChatState, hover: CGPoint? = nil, fullScreen: Bool = false) async throws {
         // Oby itself, from the app's bundled character, once it has drawn.
         let character = ObyCharacter(query: "embed&size=1.23")
         let window = ChatWindow.make(ChatView(model: model, state: state, character: character))
@@ -71,6 +72,7 @@ struct WindowScreens {
         window.orderFrontRegardless()
         defer { window.close() }
         ChatWindow.measureLights(window, into: state)
+        if fullScreen { try await window.fullScreen(true, state: state) }
         for _ in 0..<50 where !character.ready { try await Task.sleep(for: .milliseconds(100)) }
         try await Task.sleep(for: .milliseconds(1200))
         if let hover, let height = window.contentView?.bounds.height,
@@ -81,6 +83,21 @@ struct WindowScreens {
             try await Task.sleep(for: .milliseconds(500))
         }
         try await save(name, window: window)
+        if fullScreen { try await window.fullScreen(false, state: state) }
+    }
+
+    /// The window in macOS full screen, which a tester found broken on Oby 0.4.2: Home, the
+    /// conversation, a task and Settings, with the side panel open and closed.
+    @Test(arguments: ["home", "convo", "task", "settings"], [true, false])
+    func fullScreen(_ screen: String, panel: Bool) async throws {
+        let state = ChatState(defaults: .scratch)
+        switch screen {
+        case "convo": state.trail.start(.talk)
+        case "task": state.trail.start(.group(.review), .job(id: "r2"))
+        case "settings": state.openSettings(.about)
+        default: break
+        }
+        try await shoot("mac-full-\(screen)-\(panel ? "open" : "closed")", model: model(), state: state, sidebar: panel, fullScreen: true)
     }
 
     /// Names the window in `windows.txt` and waits for the shell's picture of it.

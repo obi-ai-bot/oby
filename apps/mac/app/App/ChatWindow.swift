@@ -140,7 +140,7 @@ final class ChatWindow: NSObject, NSWindowDelegate {
         window.title = "Oby"
         window.titlebarAppearsTransparent = true
         window.titleVisibility = .hidden
-        window.toolbar = NSToolbar(identifier: "ObyWindow")
+        useToolbar(true, window)
         window.toolbarStyle = .unified
         window.isMovableByWindowBackground = false
         window.appearance = NSAppearance(named: .darkAqua)
@@ -151,13 +151,22 @@ final class ChatWindow: NSObject, NSWindowDelegate {
         return window
     }
 
+    /// The toolbar comes off just before full screen and goes back once it has ended, as in Sangam's
+    /// window_style.mm: in full screen macOS keeps a toolbar on show, a grey band over the window's
+    /// top that hid the title bar, the side panel's head and each page's title (a tester's full
+    /// screen on 0.4.2), and leaving with one on rounds the window's picture with a plain window's corners.
+    static func useToolbar(_ on: Bool, _ window: NSWindow) {
+        window.toolbar = on ? NSToolbar(identifier: "ObyWindow") : nil
+    }
+
     /// Where macOS put the traffic lights: the title bar is as tall as twice their middle, and its
-    /// content starts just right of them. In full screen there are none.
+    /// content starts just right of them. In full screen there are none: the bar keeps its height
+    /// and starts at the edge (Sangam's `.is-full-screen`).
     static func measureLights(_ window: NSWindow, into state: ChatState) {
-        // In full screen the lights live in a toolbar window of their own (and hide): no measuring across it.
-        guard let zoom = window.standardWindowButton(.zoomButton), zoom.window === window, !zoom.isHidden,
+        // In full screen, and leaving it until the toolbar is back, the lights aren't where the window has them.
+        guard window.toolbar != nil, let zoom = window.standardWindowButton(.zoomButton), zoom.window === window, !zoom.isHidden,
               !window.styleMask.contains(.fullScreen), let bar = zoom.superview, let content = window.contentView else {
-            state.chrome = WindowChrome(bar: Tokens.bar, afterLights: 12)
+            state.chrome.afterLights = 12
             return
         }
         let frame = content.convert(bar.convert(zoom.frame, to: nil), from: nil)
@@ -168,8 +177,13 @@ final class ChatWindow: NSObject, NSWindowDelegate {
     private func measureLights() { if let window { Self.measureLights(window, into: state) } }
 
     func windowDidResize(_ notification: Notification) { measureLights() }
+    func windowWillEnterFullScreen(_ notification: Notification) { if let window { Self.useToolbar(false, window) } }
     func windowDidEnterFullScreen(_ notification: Notification) { measureLights() }
-    func windowDidExitFullScreen(_ notification: Notification) { measureLights() }
+    func windowDidExitFullScreen(_ notification: Notification) {
+        if let window { Self.useToolbar(true, window) }
+        measureLights()
+    }
+    func windowDidFailToEnterFullScreen(_ notification: Notification) { windowDidExitFullScreen(notification) }
     func windowWillClose(_ notification: Notification) {
         window?.alphaValue = 1
         endSplash(reveal: false)

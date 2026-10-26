@@ -200,5 +200,60 @@ struct WindowInputTests {
             #expect(state.folded == ["review"], "opening the page unfolded the group")
         }
     }
+
+    /// Full screen (a tester found it broken on 0.4.2): no toolbar's band over the window's top, so
+    /// the page reaches the screen's top edge, the title bar keeps its height and starts at the edge,
+    /// and the panel's toggle there gets a click. Leaving, the window is back as it was.
+    @Test func fullScreenGivesTheWholeScreenAndComesBackAsItWas() async throws {
+        try await withPanel(open: false) {
+            let state = ChatState(defaults: .scratch)
+            let window = ChatWindow.make(ChatView(model: model(), state: state, character: nil))
+            window.setFrameOrigin(NSPoint(x: 40, y: 40))
+            window.orderFrontRegardless()
+            window.makeKey()
+            defer { window.close() }
+            ChatWindow.measureLights(window, into: state)
+            let windowed = (frame: window.frame, chrome: state.chrome)
+            #expect(windowed.chrome.afterLights > 40, "the lights weren't measured")
+
+            try await window.fullScreen(true, state: state)
+            #expect(window.contentView?.safeAreaInsets.top == 0, "something covers the window's top")
+            #expect(window.toolbar == nil)
+            #expect(state.chrome == WindowChrome(bar: windowed.chrome.bar, afterLights: 12))
+            try await Task.sleep(for: .milliseconds(600))
+            let height = window.contentView?.bounds.height ?? 0
+            for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+                let event = try #require(NSEvent.mouseEvent(with: type, location: NSPoint(x: 12 + 16, y: height - state.chrome.bar / 2), modifierFlags: [],
+                                                            timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+                                                            context: nil, eventNumber: 0, clickCount: 1, pressure: 1))
+                window.sendEvent(event)
+            }
+            try await Task.sleep(for: .milliseconds(400))
+            #expect(UserDefaults.standard.bool(forKey: "ObySidebarOpen"), "the panel's toggle didn't get the click")
+
+            try await window.fullScreen(false, state: state)
+            #expect(window.toolbar != nil)
+            #expect(window.frame == windowed.frame)
+            #expect(state.chrome == windowed.chrome)
+        }
+    }
+}
+
+extension NSWindow {
+    /// Into macOS full screen as the green button does, or out of it, with what ChatWindow does
+    /// around it as the window's delegate, once the move has ended.
+    func fullScreen(_ on: Bool, state: ChatState) async throws {
+        guard styleMask.contains(.fullScreen) != on else { return }
+        let ended = NotificationCenter.default.notifications(named: on ? NSWindow.didEnterFullScreenNotification : NSWindow.didExitFullScreenNotification, object: self)
+        if on { ChatWindow.useToolbar(false, self) }
+        toggleFullScreen(nil)
+        let waiting = Task { for await _ in ended { return } }
+        let timeout = Task { try await Task.sleep(for: .seconds(10)); waiting.cancel() }
+        await waiting.value
+        timeout.cancel()
+        #expect(styleMask.contains(.fullScreen) == on, "the window didn't \(on ? "enter" : "leave") full screen")
+        if !on { ChatWindow.useToolbar(true, self) }
+        ChatWindow.measureLights(self, into: state)
+    }
 }
 // Temporary: finds where the two cards' targets moved. Not committed.
