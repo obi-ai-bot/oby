@@ -671,6 +671,14 @@ pub async fn run(
             end: End::Cancelled,
         };
     }
+    // The plan loop's model reads the same words: it would fail the same way.
+    if why == super::TOO_LONG {
+        return Answered {
+            talk: Talk::reply(super::TOO_LONG),
+            details: None,
+            end: End::BrainFailed,
+        };
+    }
     tracing::info!(
         "conversation {}: the plan loop answers: {why}",
         control.conversation
@@ -1477,6 +1485,10 @@ async fn attempts(
             return Ok((text, End::Answered));
         }
         let why = turn.text().lines().next().unwrap_or("").trim().to_owned();
+        // More than the model can read at once: not tried again, here or on the plan loop (`run`).
+        if super::too_long(&why) {
+            return Err(super::TOO_LONG.into());
+        }
         // A usage limit: the account is marked full, as a job's is, and isn't tried again; the
         // turn moves on to another account (`run`, #874).
         if turn.resets.is_some() || crate::limits::is_limit(&why) {

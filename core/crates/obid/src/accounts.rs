@@ -1555,7 +1555,7 @@ fn command(
 /// [`SYSTEM_PATH`], then the folder the tool's binary is in (links followed: Cursor's runs the
 /// `node` beside it), then, for a script that starts `#!/usr/bin/env <program>` (a CLI installed
 /// with npm: `#!/usr/bin/env node`), the folder of that program as obid finds it.
-fn login_path(bin: &Path) -> String {
+pub(crate) fn login_path(bin: &Path) -> String {
     let real = std::fs::canonicalize(bin).ok();
     let mut path = SYSTEM_PATH.to_owned();
     let mut add = |dir: Option<&Path>| {
