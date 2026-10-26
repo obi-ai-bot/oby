@@ -337,8 +337,8 @@ fn wire(kept: &Value) -> Value {
 }
 
 /// The reply `make` builds from `body`, its words shortened until it fits the most a message may be
-/// (protocol.md section 3; sealed, words are about a third longer): every summary and finding detail
-/// longer than 100 characters halved, as often as it takes. A review's result that still doesn't
+/// (protocol.md section 3; sealed, words are about a third longer): every summary, finding title
+/// and finding detail longer than 100 characters halved, as often as it takes. A review's result that still doesn't
 /// fit goes `failed`, with no text; any other reply goes as it is, and the Sphere says why it can't.
 fn fitted(
     mut body: Value,
@@ -367,7 +367,8 @@ fn fitted(
     }
 }
 
-/// Halves every summary and finding detail of `body` longer than 100 characters: whether one was.
+/// Halves every summary, finding title and finding detail of `body` longer than 100 characters:
+/// whether one was.
 fn halve_texts(body: &mut Value) -> bool {
     let mut halved = false;
     let mut halve = |text: &mut Value| {
@@ -386,8 +387,10 @@ fn halve_texts(body: &mut Value) -> bool {
     }
     let findings = body.get_mut("findings").and_then(Value::as_array_mut);
     for finding in findings.into_iter().flatten() {
-        if let Some(detail) = finding.get_mut("detail") {
-            halve(detail);
+        for text in ["title", "detail"] {
+            if let Some(text) = finding.get_mut(text) {
+                halve(text);
+            }
         }
     }
     halved
@@ -1799,9 +1802,12 @@ impl Link {
         {
             self.note_error(&e);
         }
+        // A card that carries it already never drops it: teammates know this Obi seals, and would
+        // hold what they send it.
         let ready = {
             let state = self.lock();
-            state.membership.is_some() && state.sphere_seals && state.team_reads_seal_keys
+            !own_seal_keys(&state).is_empty()
+                || (state.membership.is_some() && state.sphere_seals && state.team_reads_seal_keys)
         };
         let seal = ready.then(|| self.seal_key()).transpose()?;
         let seal = seal.as_ref().map(|s| (s.key_id(), s.public_key()));
@@ -2352,14 +2358,17 @@ impl Link {
             seen_ids: Vec::new(),
             seal_keys: Some(own_seal_keys(&state)),
             // Words in the clear count against a sender that seals only once both cards had a seal
-            // key when it wrote them: a message sent before either card gained one is taken.
+            // key when it wrote them: a message sent before either card gained one, or within the
+            // clock skew after (a card is issued a little before the Sphere takes it), is taken.
             sender_seals: state.directory.members.get(from).is_some_and(|m| {
                 let created = delivery.envelope["created_at"]
                     .as_str()
                     .and_then(time::parse)
                     .unwrap_or(i64::MAX);
                 let since = m.sealed_since.zip(own_sealed_since(&state));
-                since.is_some_and(|(theirs, mine)| created >= theirs.max(mine))
+                since.is_some_and(|(theirs, mine)| {
+                    created >= theirs.max(mine) + obi_protocol::CLOCK_SKEW_SECONDS
+                })
             }),
         };
         obi_protocol::envelope::verify_and_open(&delivery.envelope, &context)
@@ -3194,9 +3203,10 @@ impl Link {
 
     /// The exchange's first waiting reply, `next`, made ready for its first try (protocol.md
     /// section 9.1): sealed for the peer when its trusted card has a seal key, signed again, and its
-    /// words shortened until it fits ([`fitted`]). `Err` with why keeps it waiting: a peer that
-    /// seals (known to, or its request came sealed) with no seal key obid trusts now, or a seal
-    /// that failed. Nothing goes in the clear to an Obi that seals.
+    /// words shortened until it fits ([`fitted`]). `Err` with why keeps it waiting: a peer known to
+    /// seal with no seal key obid trusts now, or a seal that failed. Nothing goes in the clear to an
+    /// Obi that seals; a peer whose card has no seal key yet (it may still seal what it sends)
+    /// gets words in the clear.
     fn prepare_reply(&self, cid: &str, next: &Value) -> Result<Value, String> {
         let (recipient, must_seal, key, peer) = {
             let state = self.lock();
@@ -3204,7 +3214,7 @@ impl Link {
             let peer = exchange.peer.clone();
             (
                 state.directory.members.get(&peer).and_then(|m| m.seal),
-                self.pins.seals(&peer) || exchange.request.get("seal").is_some(),
+                self.pins.seals(&peer),
                 state.key.clone().ok_or("obid has no Obi key")?,
                 peer,
             )

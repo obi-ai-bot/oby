@@ -1121,16 +1121,21 @@ final class SphereModel {
     }
 
     /// Keeps this Mac's Oby in its Obysphere past 30 days (#1215): a new delegation at launch, once
-    /// obid answers, then every 6 hours once 5 or fewer days are left. A card without obid's seal
-    /// key is signed again the same way (#1233).
+    /// obid answers, then every 6 hours once 5 or fewer days are left. And a new card as soon as
+    /// obid says `card_needed` (#1233): to say it reads seal keys, or with its own once its team can
+    /// read one, so teammates seal what they send it.
     static func keepRenewing(feed: RunnerFeed) async {
         let sphere = SphereModel(feed: feed)
-        var launched = false
+        var renewed: Date?
         while !Task.isCancelled {
-            if (try? await sphere.renewDelegation(within: launched ? 5 * 86_400 : .infinity)) != nil { launched = true }
+            if renewed.map({ Date.now.timeIntervalSince($0) >= 6 * 3600 }) ?? true,
+               (try? await sphere.renewDelegation(within: renewed == nil ? .infinity : 5 * 86_400)) != nil {
+                renewed = .now
+            }
             _ = try? await sphere.sealCard()
-            // ponytail: polls; 60 s until obid first answers, then 6 h, about 20 tries in the last 5 days.
-            try? await Task.sleep(for: .seconds(launched ? 6 * 3600 : 60))
+            // ponytail: polls obid on this Mac; 60 s until it first answers, then every 5 minutes for
+            // `card_needed` (obid has no membership event to wait on), the delegation every 6 hours.
+            try? await Task.sleep(for: .seconds(renewed == nil ? 60 : 300))
         }
     }
 

@@ -707,7 +707,8 @@ pub fn join_as(
 
 /// What the Mac app does when obid says `sealing` `card_needed` (Sphere.swift, `sealCard`): a new
 /// card from obid, signed by the owner, kept with `PUT /v1/obid/sphere/membership`. Answers
-/// `sealing` after.
+/// `sealing` after. The card says it was issued a while ago, so the grace a receiver gives words in
+/// the clear after both cards had a seal key (the clock skew) has passed.
 pub fn seal_card(obid: &Obid, sphere: &FakeSphere, owner: &Owner) -> Value {
     let me = call(obid, "GET", "/v1/obid/sphere", None).body;
     assert_eq!(me["sealing"], "card_needed", "{me}");
@@ -721,7 +722,10 @@ pub fn seal_card(obid: &Obid, sphere: &FakeSphere, owner: &Owner) -> Value {
         ),
     );
     assert_eq!(made.status, 200, "{}", made.text);
-    let signed = card::sign(made.body["card"].as_object().unwrap(), &owner.key).unwrap();
+    let mut unsigned = made.body["card"].clone();
+    unsigned["capabilities"]["extensions"][0]["params"]["issued_at"] =
+        json!(time::format(time::now() - 1000));
+    let signed = card::sign(unsigned.as_object().unwrap(), &owner.key).unwrap();
     let renewed = call(
         obid,
         "PUT",
