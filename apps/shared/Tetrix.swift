@@ -8,6 +8,10 @@ struct TetrixReportView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
+            if let unreachable = report.unreachable {
+                Text(verbatim: unreachable).font(Tokens.font(Tokens.textSm)).foregroundStyle(Tokens.needsInk)
+                    .textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+            }
             line(report.callsLine)
             if report.context == true { line("Tetrix's context was ready before it started") }
             line(report.saved.isEmpty ? "No session saved" : "Session saved: " + report.saved.joined(separator: ", "))

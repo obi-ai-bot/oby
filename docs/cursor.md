@@ -91,7 +91,7 @@ what the schema and Cursor's own ACP page show.
 
 | Method | Oby's answer |
 | --- | --- |
-| `cursor/create_plan` | The plan card (as `ExitPlanMode`). Approve: `{outcome: "accepted"}`, then Cursor's mode goes to `agent` and a prompt tells it to go ahead. Reject: `{outcome: "rejected", reason}`. |
+| `cursor/create_plan` | The plan card (as `ExitPlanMode`): in Plan mode it waits for the owner, a `plan` inbox item (#1008). Approve: `{outcome: "accepted"}`, then Cursor's mode goes to `agent` and a prompt tells it to go ahead. Keep planning, or the owner's words: `{outcome: "rejected", reason}`, and Cursor stays in `plan`. A job that only reads gets `rejected` without asking. |
 | `cursor/ask_question` | On obid, the job's question, as Claude Code's `AskUserQuestion` (docs/runner-api.md, `permission`): each question's `prompt`, its options' `label`s and `allowMultiple`. The owner's options go back as `{outcome: {outcome: "answered", answers: [{questionId, selectedOptionIds}]}}` (Cursor's documented shape, cursor.com/docs/cli/acp); their own words as `{outcome: "skipped", reason: <the words>}`, then as the next prompt of the same turn, since the answer takes option ids only; a no is `skipped` with the decline. Over ACP Cursor rarely sends it today (Cursor traced it to how ACP sessions are identified on their side, forum thread 172976, 2026-09-25), so obid also gives every Cursor job its `oby` MCP server with one tool, `oby_ask_owner`: it returns at once (Cursor's MCP calls time out after about a minute), the turn ends, and the owner's answer resumes the session with `session/load` and `session/prompt`. The Swift engine skips it. |
 | `cursor/update_todos`, `cursor/task` | Notifications: a step line for now (#381's activity list isn't in yet). |
 | any other request (`fs/*`, `terminal/*`) | A JSON-RPC error: Cursor never waits on Oby. |
@@ -112,7 +112,42 @@ cursor-agent --sandbox disabled acp
   never the account's folder: docs/runner-api.md, "The job sandbox", #655.)
 - `CURSOR_API_KEY` and `CURSOR_AUTH_TOKEN` are removed from every agent's environment (Shell.swift).
 - A repository's `.cursor/cli.json` with a non-empty `allow` is asked about once per repository,
-  before Cursor starts.
+  before Cursor starts. (obid refuses to start Cursor there instead, #1075.)
+- A repository's hooks wait for the owner's yes before Cursor starts (obid only): see below.
+
+### A repository's hooks
+
+Cursor runs hooks from the workspace's `.cursor/hooks.json` and, while "Include third-party
+configs" is on (its default), Claude Code's from `.claude/settings.json` and
+`.claude/settings.local.json` (cursor.com/docs/hooks, cursor.com/docs/reference/third-party-hooks).
+A hook runs as Cursor's own child, outside `session/request_permission`, so obid's prompts never
+see it; Claude Code jobs don't load them (`--setting-sources ""`). Cursor's docs name no flag or
+`cli-config.json` key that stops project or third-party hooks (`--disable-project-configs` covers
+only `.cursor/cli.json`), and whether they fire under `cursor-agent acp` isn't proven (Paperclip
+found hooks in Cursor's ACP code, `doc/architecture/runner-cursor-capabilities.md`). So obid
+assumes they do:
+
+- Before a Cursor job starts, obid reads those three files in the job's worktree, as the job will
+  see them, and names each hook as `<file> (<event>): <what it runs>`: its `command` (Claude Code's
+  under a matcher's own `hooks`), else its `prompt` or `url`. A file it can't read as JSON is named
+  whole, with its SHA-256. Settings with no `hooks`, and events with no hook, are nothing.
+- With any hook, the job waits on a permission card (`tool` `RepositoryHooks`, the hooks quoted as
+  data in `title` and `detail`), in every mode: only the owner answers it. Allow starts this run with
+  them; Always allow saves the rule `RepositoryHooks(<16 hex of the hooks' SHA-256>)` for the
+  repository, so later jobs on those very hooks start without asking, and a changed or added hook
+  asks again. No starts nothing: the job fails with `Cursor didn't start: you said no to this
+  repository's hooks, which Cursor runs itself, outside obid's prompts. Claude Code and Codex
+  jobs don't run them: move it to one of them, or start it again and allow them.`
+- obid never edits the repository's files, the account's folder or `~/.cursor` for this: there's
+  nothing in the job's own folder copy that would switch hooks off.
+- Probe step 6 (`scripts/cursor-probe.sh signed-in`) says whether project and third-party hooks fire
+  under `acp`, with and without `--trust` (Cursor's docs: project hooks need a trusted workspace), and
+  lists `--help` lines and `cli-config.json` keys that could be a switch. If one proves reliable,
+  obid can set it in the job's own `cli-config.json` and stop asking.
+- Not covered: a hook the agent itself writes during a run (an edit to one of those files, which
+  Cursor may load at once; the next run asks about it), and Cursor's enterprise and team hooks
+  (`/Library/Application Support/Cursor/hooks.json`, the dashboard), which are the machine's and the
+  team's, not the repository's.
 - On Linux the box binds `.local/share/cursor-agent` (`Agents.tools`) and Cursor's own sandbox
   stays disabled (bubblewrap can't nest); Oby answers every command.
 - Sign-in is the tool's own command in Terminal: `cursor-agent login` with the three variables

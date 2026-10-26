@@ -12,6 +12,9 @@ struct SpherePanel: View {
     @State private var inviting = false
     @State private var leaving = false
     @State private var folded = false
+    @State private var invitedFolded = false
+    /// The address Resend invite just sent to, for its "Sent".
+    @State private var sentTo: String?
 
     init(model: IslandModel, state: ChatState) {
         self.model = model
@@ -127,6 +130,77 @@ struct SpherePanel: View {
                         .padding(.horizontal, 10).padding(.vertical, 6).fixedSize(horizontal: false, vertical: true)
                 }
             }
+            if let invitations = sphere.invitations, !invitations.isEmpty { invited(invitations) }
+        }
+    }
+
+    /// Invited (Sangam's): who hasn't joined yet, each with an admin's ⋮, Resend invite (for one this
+    /// Mac sent: "Sent" for a moment) and Cancel invite. Once they join, they're under Members.
+    private func invited(_ invitations: [SphereModel.Invitation]) -> some View {
+        VStack(alignment: .leading, spacing: 1) {
+            Button { withAnimation(Tokens.warm) { invitedFolded.toggle() } } label: {
+                HStack(spacing: 4) {
+                    Text("Invited").font(Tokens.font(Tokens.textSm, .medium)).foregroundStyle(Tokens.muted)
+                    Image(systemName: "chevron.down").font(Tokens.font(9, .semibold)).foregroundStyle(Tokens.muted)
+                        .rotationEffect(.degrees(invitedFolded ? -90 : 0))
+                    Spacer(minLength: 0)
+                    Text("\(invitations.count)").font(Tokens.font(Tokens.textSm)).foregroundStyle(Tokens.muted).monospacedDigit()
+                }
+                .padding(.horizontal, 10).frame(height: 28).contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .padding(.top, 12)
+            if !invitedFolded {
+                ForEach(invitations) { invitation in
+                    InvitedRow(invitation: invitation, sent: sentTo == invitation.email && invitation.email != nil) {
+                        sphere.run {
+                            try await sphere.resend(invitation)
+                            sentTo = invitation.email
+                            try? await Task.sleep(for: .seconds(2))
+                            if sentTo == invitation.email { sentTo = nil }
+                        }
+                    } cancel: {
+                        sphere.run { try await sphere.cancel(invitation) }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Someone invited who hasn't joined (Sangam's `invited-row`): a letter's mark and the address, or
+/// what the link is for; on hover, its ⋮.
+private struct InvitedRow: View {
+    let invitation: SphereModel.Invitation
+    let sent: Bool
+    let resend: () -> Void
+    let cancel: () -> Void
+    @State private var hovering = false
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "envelope").font(Tokens.font(11, .semibold)).foregroundStyle(Tokens.muted)
+                .frame(width: 22, height: 22).background(Tokens.chip, in: Circle())
+            Text(invitation.shown).font(Tokens.font(Tokens.textBase)).foregroundStyle(Tokens.muted).lineLimit(1).truncationMode(.middle)
+            Spacer(minLength: 0)
+            if sent { Text("Sent").font(Tokens.font(Tokens.textSm)).foregroundStyle(Tokens.muted) }
+            // Its ⋮ on hover, as the side panel's rows have theirs.
+            if hovering {
+                Menu {
+                    if invitation.email != nil { Button("Resend invite", action: resend) }
+                    Button("Cancel invite", role: .destructive, action: cancel)
+                } label: { IconButton(symbol: "ellipsis", rotated: true, size: 22) }
+                    .menuStyle(.button).buttonStyle(.plain).menuIndicator(.hidden).fixedSize()
+                    .accessibilityLabel("More for \(invitation.shown)")
+            }
+        }
+        .padding(.horizontal, 10).frame(height: 34)
+        .contentShape(Rectangle())
+        .onHover { hovering = $0 }
+        // Keyboard and VoiceOver reach the same two answers without hovering.
+        .accessibilityActions {
+            if invitation.email != nil { Button("Resend invite", action: resend) }
+            Button("Cancel invite", action: cancel)
         }
     }
 }
@@ -157,11 +231,10 @@ private struct MemberRow: View {
     }
 }
 
-/// Invite member (Sangam's InviteModal.tsx; docs/obysphere.md part 3) over what the Obysphere server
-/// has today: the emails get one link for that many people, which the admin sends from their own
-/// Mail (the owner's decision of 2026-10-25), only for the admin's work domain when they say so;
-/// and the team link, to copy and pass on. The server lists no invitations yet, so nobody shows as
-/// Invited. Only its admin invites; anyone else is told who can.
+/// Invite member (Sangam's InviteModal.tsx; docs/obysphere.md part 3): each email gets a link of its
+/// own, used once, which the admin sends from their own Mail (the owner's decision of 2026-10-25),
+/// only for the admin's work domain when they say so; and the team link, to copy and pass on. Those
+/// waiting show as Invited. Only an admin invites; anyone else is told who can.
 struct InviteSheet: View {
     let sphere: SphereModel
     let close: () -> Void
@@ -264,8 +337,8 @@ struct InviteSheet: View {
         Task {
             defer { sending = false }
             do {
-                let link = try await sphere.invite(invited, domain: onlyDomain ? domain : nil)
-                SphereModel.mail(link, to: invited)
+                // A link of its own for each address, each in a message of its own (decision 2).
+                for made in try await sphere.invite(invited, domain: onlyDomain ? domain : nil) { SphereModel.mail(made.link, to: [made.email]) }
                 sent = true
                 try? await Task.sleep(for: .milliseconds(1200))
                 close()

@@ -4285,6 +4285,91 @@ impl Jobs {
         }
     }
 
+    /// A Cursor job starts with its repository's hooks ([`acp::cursor::repository_hooks`]) only on
+    /// the owner's yes, which Cursor would otherwise run as its own children, outside obid's
+    /// prompts: a card like any permission's, allowed once, or always for these very hooks in this
+    /// repository (the rule `RepositoryHooks(<digest>)`: a changed hook asks again). A no starts
+    /// nothing, and says Claude Code and Codex don't run them; a stop ends the wait.
+    async fn allow_repository_hooks(
+        &self,
+        id: &str,
+        repo: &str,
+        hooks: &[String],
+        signal: &watch::Receiver<Signal>,
+    ) -> Result<(), End> {
+        let detail = hooks.join("\n");
+        let digest = hex::encode(obi_protocol::keys::sha256(detail.as_bytes()));
+        let rule = format!("{}({})", permissions::REPOSITORY_HOOKS, &digest[..16]);
+        if self
+            .rules_for(repo)
+            .iter()
+            .any(|r| r.rule == rule && r.decision == "allow")
+        {
+            return Ok(());
+        }
+        let runs = hooks
+            .iter()
+            .map(|h| h.split_once(": ").map_or(h.as_str(), |(_, run)| run))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let title = format!("Let Cursor run this repository's hooks: {runs}");
+        let permission = Permission {
+            id: permissions::new_id(),
+            tool: permissions::REPOSITORY_HOOKS.into(),
+            title: if title.chars().count() > 120 {
+                format!("{}…", title.chars().take(119).collect::<String>())
+            } else {
+                title
+            },
+            detail: detail.chars().take(2000).collect(),
+            rule: Some(rule),
+            always: Some(format!(
+                "Yes, and don't ask again for these hooks in {repo}"
+            )),
+            why: Some("Cursor runs a repository's hooks itself, outside obid's prompts.".into()),
+            question: None,
+        };
+        let call = Call {
+            tool: permissions::REPOSITORY_HOOKS.into(),
+            command: Some(detail),
+            ..Call::default()
+        };
+        let (reply, mut answer) = tokio::sync::oneshot::channel();
+        let first = {
+            let mut state = self.lock();
+            let asks = state.asks.entry(id.to_owned()).or_default();
+            asks.push_back(Ask {
+                call,
+                permission,
+                reply,
+                input: Value::Null,
+                answers: Vec::new(),
+            });
+            asks.len() == 1
+        };
+        if first {
+            self.show(id, None);
+        }
+        let mut signal = signal.clone();
+        let answer = loop {
+            if *signal.borrow() != Signal::Run {
+                return Err(End::Failed("It stopped before Cursor started.".into()));
+            }
+            tokio::select! {
+                answer = &mut answer => break answer,
+                changed = signal.changed() => if changed.is_err() {
+                    return Err(End::Failed("It stopped before Cursor started.".into()));
+                },
+            }
+        };
+        match answer {
+            Ok(Answer::Allow | Answer::AllowWith(_)) => Ok(()),
+            _ => Err(End::Failed(
+                "Cursor didn't start: you said no to this repository's hooks, which Cursor runs itself, outside obid's prompts. Claude Code and Codex jobs don't run them: move it to one of them, or start it again and allow them.".into(),
+            )),
+        }
+    }
+
     /// The rules for one repository.
     fn rules_for(&self, repo: &str) -> Vec<Rule> {
         self.kept()
@@ -4355,11 +4440,9 @@ impl Jobs {
             self.answered(id, &call, worktree, Some(&why));
             return Ruling::Now(Answer::Deny(why));
         }
-        // Claude Code's plan in Plan mode waits for the owner's own answer (#609). Codex ends its
-        // turn with its plan, and Cursor's goes on as it did.
-        let plan = call.tool == "ExitPlanMode"
-            && mode == Mode::Plan
-            && Tool::from_id(&job.agent) == Some(Tool::Claude);
+        // A plan in Plan mode waits for the owner's own answer (#609): Claude Code's ExitPlanMode
+        // and Cursor's create_plan alike (#1008). Codex ends its turn with its plan.
+        let plan = call.tool == "ExitPlanMode" && mode == Mode::Plan;
         // The agent's question waits for the owner's own answer in every mode, Bypass too (#858):
         // no mode or rule can answer it for them.
         let question = call.tool == permissions::ASK_USER_QUESTION;
@@ -7631,6 +7714,11 @@ impl Jobs {
                     "Cursor didn't start: this repository's .cursor/cli.json lets it run {} without asking obid, and obid can't ask you about that yet.",
                     allowed.join(", ")
                 ).into());
+            }
+            let hooks = acp::cursor::repository_hooks(&worktree);
+            if !hooks.is_empty() {
+                self.allow_repository_hooks(id, &job.repo, &hooks, signal)
+                    .await?;
             }
         }
 
@@ -16410,9 +16498,9 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// #609: Claude Code's plan in Plan mode waits for the owner: a new mode or the brain's words
-    /// don't settle it, Keep planning sends it back and Approve goes on in Ask mode. Cursor's plan
-    /// goes on as before.
+    /// #609: a plan in Plan mode waits for the owner, Cursor's as Claude Code's (#1008): a new mode
+    /// or the brain's words don't settle it, Keep planning sends it back and Approve goes on in Ask
+    /// mode. A job that only reads gets no card, on either.
     #[tokio::test]
     async fn a_plan_in_plan_mode_waits_for_the_owner() {
         let root = std::env::temp_dir().join(format!("obid-plan-{}", std::process::id()));
@@ -16433,6 +16521,7 @@ mod tests {
             ("j", "claude", "fix"),
             ("c", "cursor", "fix"),
             ("r", "claude", "review"),
+            ("cr", "cursor", "review"),
         ] {
             let mut job = Job::new(
                 id.into(),
@@ -16450,13 +16539,18 @@ mod tests {
         let plan = |id: &str, text: &str| {
             jobs.rule_on(id, "ExitPlanMode", &json!({"plan": text}), &worktree)
         };
-        assert!(matches!(plan("c", "1. Fix"), Ruling::Now(Answer::Allow)));
-        // A job that only reads never leaves Plan: its plan is declined, never the owner's card.
-        let Ruling::Now(Answer::Deny(why)) = plan("r", "1. Report") else {
-            panic!("a review's plan wasn't declined");
+        let Ruling::Ask(_cursor) = plan("c", "1. Fix") else {
+            panic!("Cursor's plan went through by itself");
         };
-        assert!(why.contains("only reads"), "{why}");
-        assert!(jobs.get("r").unwrap().permission.is_none());
+        assert!(jobs.get("c").unwrap().permission.unwrap().is_plan());
+        // A job that only reads never leaves Plan: its plan is declined, never the owner's card.
+        for id in ["r", "cr"] {
+            let Ruling::Now(Answer::Deny(why)) = plan(id, "1. Report") else {
+                panic!("a review's plan wasn't declined");
+            };
+            assert!(why.contains("only reads"), "{why}");
+            assert!(jobs.get(id).unwrap().permission.is_none());
+        }
         let Ruling::Ask(sent_back) = plan("j", "1. Fix") else {
             panic!("the plan went through by itself");
         };

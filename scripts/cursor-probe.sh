@@ -5,8 +5,10 @@
 #                                       runs: no login, no network call that needs one.
 #   scripts/cursor-probe.sh signed-in   Two throwaway account homes you sign in to (two different
 #                                       Cursor accounts), then status, models, an edit and a command,
-#                                       MCP through `mcpServers`, `session/load`. It never reads a
-#                                       token file: it only stats files and asks Cursor for `status`.
+#                                       MCP through `mcpServers`, `session/load`, and whether a
+#                                       repository's hooks fire under `acp` (with and without
+#                                       `--trust`). It never reads a token file: it only stats files
+#                                       and asks Cursor for `status`.
 #
 # Both print a redacted report (emails, tokens and your home folder are masked) to paste into
 # docs/cursor.md and the pull request. Nothing is written outside the temporary folder it makes
@@ -311,12 +313,69 @@ def signed_in():
         say("session/load: " + json.dumps(loaded.get("error") or "ok"))
         again.close()
     say()
+    say("## 6. A repository's hooks under acp (docs/cursor.md, \"A repository's hooks\")")
+    # A repository with Cursor's own hooks and Claude Code's (which Cursor loads as third-party
+    # hooks); each hook only appends its name to hooks-fired in the throwaway folder.
+    hooks_repo = os.path.join(folder, "hooks-repo")
+    os.makedirs(os.path.join(hooks_repo, ".cursor"))
+    os.makedirs(os.path.join(hooks_repo, ".claude"))
+    subprocess.run(["git", "init", "-q", hooks_repo], check=False)
+    with open(os.path.join(hooks_repo, "README.md"), "w") as f:
+        f.write("probe\n")
+    fired = os.path.join(folder, "hooks-fired")
+    script = os.path.join(folder, "hook.sh")
+    with open(script, "w") as f:
+        f.write('#!/bin/sh\necho "$1" >> "$(dirname "$0")/hooks-fired"\ncat >/dev/null\necho "{}"\n')
+    os.chmod(script, 0o755)
+    events = ["sessionStart", "beforeSubmitPrompt", "preToolUse", "beforeShellExecution",
+              "beforeReadFile", "afterFileEdit", "stop"]
+    with open(os.path.join(hooks_repo, ".cursor/hooks.json"), "w") as f:
+        json.dump({"version": 1, "hooks": {e: [{"command": f"{script} cursor:{e}"}] for e in events}}, f)
+    claude = {e: [{"hooks": [{"type": "command", "command": f"{script} claude:{e}"}]}]
+              for e in ("SessionStart", "UserPromptSubmit", "Stop")}
+    claude["PreToolUse"] = [{"matcher": "*", "hooks": [{"type": "command", "command": f"{script} claude:PreToolUse"}]}]
+    with open(os.path.join(hooks_repo, ".claude/settings.json"), "w") as f:
+        json.dump({"hooks": claude}, f)
+
+    def hooks_fired(label, args):
+        if os.path.exists(fired):
+            os.remove(fired)
+        acp = Acp(env, hooks_repo, args=args)
+        acp.initialize()
+        session = acp.call("session/new", {"cwd": hooks_repo, "mcpServers": []})
+        sid = session.get("result", {}).get("sessionId")
+        if sid:
+            acp.call("session/prompt", {"sessionId": sid, "prompt": [{"type": "text", "text":
+                     "Read README.md, then run the shell command `echo hooks` and tell me its output."}]}, timeout=120)
+        acp.close()
+        time.sleep(2)
+        seen = open(fired).read().split() if os.path.exists(fired) else []
+        started = "started" if sid else "did NOT start: " + json.dumps(session.get("error"))
+        say(f"{label}: session {started}; hooks fired: {', '.join(seen) or 'none'}")
+        return seen
+
+    plain = hooks_fired("as obid runs it (--sandbox disabled acp)", ("--sandbox", "disabled"))
+    trusted = hooks_fired("with --trust (--sandbox disabled --trust acp)", ("--sandbox", "disabled", "--trust"))
+    code, text = run(["--help"], env)
+    switches = [l.strip() for l in text.splitlines() if re.search(r"(?i)hook|third|trust|import|project", l)]
+    say("--help lines about hooks, trust or project configs: " + ("; ".join(switches) or "none"))
+    cli_config = os.path.join(config, "cli-config.json")
+    try:
+        with open(cli_config) as f:
+            say("cli-config.json keys (names only): " + ", ".join(sorted(json.load(f))))
+    except (OSError, ValueError) as e:
+        say(f"cli-config.json keys: unreadable ({e.__class__.__name__})")
+    say()
     say("## Summary for CursorFacts (Engine/Cursor.swift)")
     say(f"separateLogins = {str(different).lower()}")
     say(f"editsAsk = {str(bool(asked.get('edit'))).lower()}")
     say(f"honoursMcpServers = {str(bool(facts.get('honoursMcpServers'))).lower()}")
     say(f"modelOption = {str(facts['modelOption']).lower()}")
     say(f"(loadSession = {facts['loadSession']}, mcp http = {facts['mcpHttp']}; commands asked: {asked.get('command')})")
+    say(f"projectHooksFire = {str(any(s.startswith('cursor:') for s in plain)).lower()} "
+        f"(with --trust: {str(any(s.startswith('cursor:') for s in trusted)).lower()})")
+    say(f"thirdPartyHooksFire = {str(any(s.startswith('claude:') for s in plain)).lower()} "
+        f"(with --trust: {str(any(s.startswith('claude:') for s in trusted)).lower()})")
     say(f"(throwaway folder {folder}: delete it when done)")
     return 0
 

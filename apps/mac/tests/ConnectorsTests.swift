@@ -97,6 +97,18 @@ struct ConnectorsTests {
         let failed = Connectors.tetrix(TetrixStatus(presets: [dogfood], error: "Tetrix refused the sign-in."), place: "This Mac", local: true)
         #expect(failed.state == .broken && failed.how == "Tetrix refused the sign-in.")
         #expect(Connectors.tetrix(TetrixStatus(), place: "This Mac", local: true).way == .button("Connect…", .connectOtherTetrix))
+
+        // A login obid couldn't refresh needs attention, with Reconnect, while it's still held; one
+        // Tetrix signed out reconnects to the same Tetrix.
+        let refresh = "Oby couldn't refresh its Tetrix login: Tetrix's sign-in server answered HTTP 503. It tries again at the next call."
+        let stale = Connectors.tetrix(TetrixStatus(connected: true, url: dogfood.url, preset: "dogfood", presets: [dogfood], error: refresh),
+                                      place: "This Mac", local: true)
+        #expect(stale.state == .broken && stale.how == refresh)
+        #expect(stale.way == .button("Reconnect", .connectTetrix(dogfood)) && stale.also == .button("Disconnect…", .disconnectTetrix))
+        let out = Connectors.tetrix(TetrixStatus(url: dogfood.url, preset: "dogfood", presets: [dogfood], error: "Tetrix signed Oby out: sign in again."),
+                                    place: "This Mac", local: true)
+        #expect(out.state == .broken && out.how == "Tetrix signed Oby out: sign in again.")
+        #expect(out.way == .button("Reconnect", .connectTetrix(dogfood)) && out.also == .button("Another Tetrix…", .connectOtherTetrix))
     }
 
     /// Connect takes only what looks like each kind of token.
