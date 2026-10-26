@@ -578,9 +578,15 @@ pub(crate) async fn post_with(
     }
 }
 
+/// What every review obid posts on GitHub ends with, unless it's signed already: under whoever's
+/// login, its words are Oby's or a model's, never the owner's own (crate::github_work, "by Oby:";
+/// crate::github_events reads reviews on Oby's own pull requests).
+pub const SIGNED: &str = "by Oby: Oby wrote this review.";
+
 /// Posts the review in `file` on pull request `number` of `repo`, as the reviewer whose settings
-/// folder is `reviewer` or as the owner: `event` on the commit `sha`. What GitHub answered (the
-/// review, as JSON); its error says too whether GitHub refused it as the poster's own pull request.
+/// folder is `reviewer` or as the owner: `event` on the commit `sha`, signed ([`SIGNED`]). What
+/// GitHub answered (the review, as JSON); its error says too whether GitHub refused it as the
+/// poster's own pull request.
 pub(crate) async fn create_review(
     gh: &Path,
     reviewer: Option<&Path>,
@@ -590,6 +596,12 @@ pub(crate) async fn create_review(
     event: &str,
     sha: &str,
 ) -> Result<String, (bool, String)> {
+    let text = std::fs::read_to_string(file)
+        .map_err(|e| (false, format!("obid couldn't read the review: {e}")))?;
+    if !text.to_lowercase().contains(crate::github_work::OBY_SIGNS) {
+        crate::store::write_private(file, format!("{}\n\n{SIGNED}", text.trim_end()).as_bytes())
+            .map_err(|e| (false, format!("obid couldn't sign the review: {e}")))?;
+    }
     let path = format!("repos/{repo}/pulls/{number}/reviews");
     let commit = format!("commit_id={sha}");
     let event = format!("event={event}");
@@ -1169,15 +1181,22 @@ esac
         };
         let post = |event| post_with(&gh, &home, "acme/app", 7, &file, event, SHA);
 
-        // Someone else's pull request: the owner's approval.
+        // Someone else's pull request: the owner's approval, signed as Oby's words, once.
         std::fs::write(home.join("author"), "someone").unwrap();
         post("APPROVE").await.unwrap();
         assert_eq!(reviews(&calls()), [review("owner", "APPROVE")]);
+        let signed = format!("Oby's verdict: approved.\n\n{SIGNED}");
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), signed);
+        assert!(
+            crate::merge::APPROVAL.ends_with(SIGNED),
+            "signed as it's written"
+        );
 
         // The owner's own, no reviewer signed in: the owner's comment.
         std::fs::write(home.join("author"), "Octo-Cat").unwrap();
         post("APPROVE").await.unwrap();
         assert_eq!(reviews(&calls()), [review("owner", "COMMENT")]);
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), signed);
 
         // The owner's own, a reviewer who can push: its approval, the head read again after
         // everything else and just before it.

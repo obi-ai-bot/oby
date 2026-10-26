@@ -30,6 +30,7 @@ pub mod failures;
 pub mod gateway;
 pub mod git;
 pub mod github;
+pub mod github_events;
 pub mod github_login;
 pub mod github_work;
 pub mod job;

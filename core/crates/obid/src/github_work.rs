@@ -252,11 +252,12 @@ nodes { ... on RenamedTitleEvent { actor { login } } } } \
 comments(first: 100) { nodes { id author { login } authorAssociation \
 userContentEdits(first: 20) { pageInfo { hasNextPage } nodes { editor { login } } } } } } } }";
 
-/// What Oby signs what it publishes with (crate::publish::body, and the issues the Mac app and the
-/// Swift runner file: Engine/Failures.swift's `oby-failure` issues, review follow-ups, research
-/// proposals), under whoever's login, a teammate's Oby's too: a text carrying it is an agent's or
-/// a model's, never the owner's own words. Forging it only makes text untrusted.
-const OBY_SIGNS: &str = "by oby:";
+/// What Oby signs what it publishes with (crate::publish::body, every review obid posts,
+/// crate::review::SIGNED, and the issues the Mac app and the Swift runner file:
+/// Engine/Failures.swift's `oby-failure` issues, review follow-ups, research proposals), under
+/// whoever's login, a teammate's Oby's too: a text carrying it is an agent's or a model's, never
+/// the owner's own words. Forging it only makes text untrusted.
+pub(crate) const OBY_SIGNS: &str = "by oby:";
 
 /// Whether everything people wrote in `shown`, what `gh issue view --json
 /// title,body,author,comments,…` printed for issue `number` on `repo`, is the owner's own words
@@ -757,9 +758,9 @@ struct Seen {
 
 /// The feed: what obid last read, and the reads.
 pub struct Feed {
-    config: Config,
-    jobs: Arc<Jobs>,
-    link: Arc<crate::sphere::Link>,
+    pub(crate) config: Config,
+    pub(crate) jobs: Arc<Jobs>,
+    pub(crate) link: Arc<crate::sphere::Link>,
     events: Events,
     state: Mutex<Seen>,
     /// One read at a time.
@@ -798,6 +799,11 @@ impl Feed {
         self.woken.notify_one();
     }
 
+    /// gh's GitHub login at the last read, or none while it isn't signed in.
+    pub fn login(&self) -> Option<String> {
+        self.lock().kept.login.clone()
+    }
+
     fn lock(&self) -> MutexGuard<'_, Seen> {
         self.state.lock().unwrap_or_else(|e| e.into_inner())
     }
@@ -807,8 +813,10 @@ impl Feed {
         self.config.repos.find(repo).is_some()
     }
 
-    /// Reads every [`EVERY`] seconds (or once a rate limit's wait is over) until obid stops.
+    /// Reads every [`EVERY`] seconds (or once a rate limit's wait is over) until obid stops, and
+    /// sooner when GitHub's events say so (crate::github_events).
     pub fn spawn(self: &Arc<Self>, mut stopping: tokio::sync::watch::Receiver<bool>) {
+        crate::github_events::spawn(self.clone(), stopping.clone());
         let feed = self.clone();
         tokio::spawn(async move {
             loop {

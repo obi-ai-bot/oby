@@ -846,9 +846,9 @@ pub const ASK_TEAMMATE: &str = "Ask a teammate, and remember";
 pub const NOT_NOW: &str = "Not now";
 /// Why it isn't posted again: someone dismissed it on that commit.
 pub const DISMISSED_APPROVAL: &str = "Someone dismissed Oby's approval of this commit on GitHub, so Oby won't approve it again: approve it there yourself, or ask Oby for another round.";
-/// The words of Oby's approval on GitHub: obid's own, never a model's.
-pub const APPROVAL: &str =
-    "Oby reviewed this commit and approves it. Its review is in Oby, on the job that opened this.";
+/// The words of Oby's approval on GitHub: obid's own, never a model's, signed as every review obid
+/// posts is (crate::review::SIGNED).
+pub const APPROVAL: &str = "Oby reviewed this commit and approves it. Its review is in Oby, on the job that opened this.\n\nby Oby: Oby wrote this review.";
 
 /// The workflow a merge card proposes for a repository Oby hasn't learned yet: a squash into the
 /// pull request's base (never main, master or trunk), approved the way it was (Oby's own review

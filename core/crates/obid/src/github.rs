@@ -703,7 +703,7 @@ pub fn decode_merging(text: &str) -> Option<Merging> {
 /// A head's check runs and statuses (`statusCheckRollup`), summed up: any failed is `FAILURE`,
 /// then any not finished (or that reads as nothing known) is `PENDING`, then `SUCCESS`; an empty
 /// list is `NONE`.
-fn rollup(list: &[Value]) -> &'static str {
+pub(crate) fn rollup(list: &[Value]) -> &'static str {
     const FAILED: [&str; 7] = [
         "FAILURE",
         "ERROR",
