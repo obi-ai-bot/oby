@@ -446,6 +446,8 @@ fn job_size<'a>(mac: &Mac, request: &'a Value) -> &'a str {
 }
 
 /// Whether `home`'s disk has room for a job's whole disk and 5 GB more.
+// The cast is a no-op on Linux, where fsblkcnt_t is u64; macOS's is u32.
+#[allow(clippy::unnecessary_cast)]
 fn room_for(home: &Path, size: Size) -> bool {
     nix::sys::statvfs::statvfs(home).is_ok_and(|s| {
         (s.blocks_available() as u64).saturating_mul(s.fragment_size()) >= (size.disk_gib + 5) << 30
