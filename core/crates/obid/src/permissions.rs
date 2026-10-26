@@ -3540,9 +3540,8 @@ mod tests {
         }
     }
 
-    /// #858: the owner's answer as Claude Code takes it: an option's label in its own case, several
-    /// for a multiple choice, or the owner's words; and the tool's input with `answers`, each by
-    /// the question's whole text.
+    /// `oby_ask_owner` asks one question, cut as an AskUserQuestion's is, and the answer reaches
+    /// the agent's next turn.
     #[test]
     fn oby_ask_owner_asks_one_question_and_is_answered_later() {
         let call = ask_owner_call(&json!({"question": "Which store?", "options": [
@@ -3570,6 +3569,9 @@ mod tests {
         assert!(answered_later(&kept, true).starts_with("obid restarted"));
     }
 
+    /// #858: the owner's answer as Claude Code takes it: an option's label in its own case, several
+    /// for a multiple choice, or the owner's words; and the tool's input with `answers`, each by
+    /// the question's whole text.
     #[test]
     fn a_question_is_answered_with_its_options_or_words() {
         let question = |multi_select| Question {
