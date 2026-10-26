@@ -642,6 +642,13 @@ final class SphereModel {
         }
     }
 
+    /// The kept team link while the Obysphere still lists its invitation as usable; nil once it
+    /// doesn't. Unknown (`invitations` nil: not an admin, or a server without the list) keeps it.
+    nonisolated static func usable(_ link: InviteLink, among invitations: [Invitation]?) -> InviteLink? {
+        guard let invitations else { return link }
+        return invitations.contains { $0.id == link.id } ? link : nil
+    }
+
     /// obid's membership, then the Sphere's name, its admin and its members.
     func refresh() async throws {
         let runner = try runner()
@@ -657,6 +664,12 @@ final class SphereModel {
         admin = admins.contains(owner)
         await keepPicture(server, sphere, token, sha: about["image_sha256"] as? String)
         invitations = admin && current ? try? await listInvitations(server, sphere) : nil
+        // A kept team link the Obysphere no longer has (cancelled, used up or expired) joins no one:
+        // it's forgotten, so Make a link shows again instead of a link that's refused.
+        if let link = teamLink, Self.usable(link, among: invitations) == nil {
+            try? Self.teamLinks.remove(sphere)
+            teamLink = nil
+        }
         let list = try await server.call("GET", "spheres/\(sphere)/members", bearer: token)["members"] as? [[String: Any]] ?? []
         // A removed member drops off the list (Sangam's Members).
         members = list.compactMap { entry in

@@ -246,6 +246,10 @@ struct InviteSheet: View {
     @State private var sent = false
     @State private var copied = false
     @State private var problem: String?
+    /// The links Send just made, one per address: Mail may not open a message (a browser that takes
+    /// mailto: shows about:blank), and a link's secret is shown only once, so each can be copied here.
+    @State private var made: [(email: String, link: InviteLink)] = []
+    @State private var copiedFor: String?
 
     private var name: String { sphere.name ?? sphere.membership?.sphere ?? "the Obysphere" }
     private var domain: String? { CreateSphereSheet.workDomain(email) }
@@ -306,6 +310,27 @@ struct InviteSheet: View {
             Text(problem).font(Tokens.font(Tokens.textSm)).foregroundStyle(Tokens.danger).padding(.top, 16)
                 .fixedSize(horizontal: false, vertical: true)
         }
+        if !made.isEmpty {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Mail opens a message for each address. If it didn’t, copy a link and send it yourself.")
+                    .font(Tokens.font(Tokens.textSm)).foregroundStyle(Tokens.text).fixedSize(horizontal: false, vertical: true)
+                ForEach(made.indices, id: \.self) { index in
+                    let invited = made[index]
+                    HStack(spacing: 8) {
+                        Text(invited.email).font(Tokens.font(Tokens.textBase)).foregroundStyle(Tokens.item).lineLimit(1)
+                        Spacer(minLength: 0)
+                        // The secret after the # only through Copy, which conceals it.
+                        Button(copiedFor == invited.email ? "Copied" : "Copy link") {
+                            SphereSettingsView.copySecret(invited.link.link)
+                            copiedFor = invited.email
+                        }
+                        .buttonStyle(.set)
+                        .accessibilityLabel("Copy the link for \(invited.email)")
+                    }
+                }
+            }
+            .padding(.top, 16)
+        }
         HStack {
             Spacer()
             Button(action: send) {
@@ -337,11 +362,11 @@ struct InviteSheet: View {
         Task {
             defer { sending = false }
             do {
-                // A link of its own for each address, each in a message of its own (decision 2).
-                for made in try await sphere.invite(invited, domain: onlyDomain ? domain : nil) { SphereModel.mail(made.link, to: [made.email]) }
+                // A link of its own for each address, each in a message of its own (decision 2). The
+                // sheet stays open with each link to copy, in case Mail didn't open.
+                made = try await sphere.invite(invited, domain: onlyDomain ? domain : nil)
+                for invite in made { SphereModel.mail(invite.link, to: [invite.email]) }
                 sent = true
-                try? await Task.sleep(for: .milliseconds(1200))
-                close()
             } catch { problem = error.localizedDescription }
         }
     }
