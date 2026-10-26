@@ -458,7 +458,10 @@ fn room_for(home: &Path, size: Size) -> bool {
 /// disk and console, and every socket folder of this home's.
 pub fn clean_leftovers(home: &Path) {
     let _ = std::fs::remove_dir_all(home.join("g"));
-    if let Ok(dir) = vm::sockets_base(home) {
+    // Only when the user's sockets folder is already there: starting up never makes it.
+    if vm::sockets_user_dir().exists()
+        && let Ok(dir) = vm::sockets_base(home)
+    {
         let _ = std::fs::remove_dir_all(dir);
     }
 }

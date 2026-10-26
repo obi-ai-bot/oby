@@ -124,11 +124,9 @@ pub struct Place {
     pub sockets: PathBuf,
 }
 
-/// This obid home's folder for its jobs' sockets, at a short path:
-/// `/private/tmp/obi-guests-<uid>/<8 hex of the home>` (`/tmp/…` off macOS). A user folder there
-/// that isn't this user's, or isn't 0700, or is a link, is refused.
-pub fn sockets_base(home: &Path) -> Result<PathBuf, String> {
-    use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
+/// This user's folder for every obid home's job sockets, at a short path:
+/// `/private/tmp/obi-guests-<uid>` (`/tmp/…` off macOS). Only the path: nothing is made.
+pub fn sockets_user_dir() -> PathBuf {
     let uid = nix::unistd::getuid().as_raw();
     // macOS's /tmp is a link to /private/tmp: the real path, as before. Elsewhere /tmp is real.
     let tmp = if cfg!(target_os = "macos") {
@@ -136,7 +134,16 @@ pub fn sockets_base(home: &Path) -> Result<PathBuf, String> {
     } else {
         "/tmp"
     };
-    let user = PathBuf::from(format!("{tmp}/obi-guests-{uid}"));
+    PathBuf::from(format!("{tmp}/obi-guests-{uid}"))
+}
+
+/// This obid home's folder for its jobs' sockets, `<sockets_user_dir>/<8 hex of the home>`,
+/// making the user folder if it's missing. A user folder that isn't this user's, or isn't 0700,
+/// or is a link, is refused.
+pub fn sockets_base(home: &Path) -> Result<PathBuf, String> {
+    use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
+    let uid = nix::unistd::getuid().as_raw();
+    let user = sockets_user_dir();
     let _ = std::fs::DirBuilder::new().mode(0o700).create(&user);
     let meta = std::fs::symlink_metadata(&user)
         .map_err(|e| format!("no folder for the job's sockets: {e}"))?;
