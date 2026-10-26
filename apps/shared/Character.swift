@@ -9,7 +9,9 @@ final class ObyCharacter {
     let page: WebPage
     private let events = CharacterEvents()
     private var loaded = false
-    private var paused = false
+    private(set) var paused = false
+    /// Where `look` last put the pointer. Not observed: it moves 60 times a second.
+    @ObservationIgnored private var looking: CGPoint?
     /// Oby's first frame is drawn (its `ready` event). Show its frame from then on: shown before,
     /// it may flash while the page loads.
     private(set) var ready = false
@@ -55,6 +57,25 @@ final class ObyCharacter {
 
     /// One expression now, then back to the state.
     func play(_ expression: String) { run("oby.play(name)", ["name": expression]) }
+
+    /// Where the pointer is, in the page's CSS px from its top left (past its edges when it's
+    /// outside the frame). Nil lets go: Oby looks around on its own.
+    func look(_ point: CGPoint?) {
+        looking = point
+        guard let point else { return run("oby.look(null)", [:]) }
+        run("oby.look(x, y)", ["x": Double(point.x), "y": Double(point.y)])
+    }
+
+    /// A glance where the pointer is, as at a click (the pointer arriving on Home's chips).
+    func glance() { if let looking { notice(looking) } }
+
+    /// A click there: Oby glances at it, then goes back to its own business.
+    func notice(_ point: CGPoint) { run("oby.notice(x, y)", ["x": Double(point.x), "y": Double(point.y)]) }
+
+    /// A click on Oby's frame, as a click in the page: a poke when it lands on Oby (the page decides).
+    func poke(_ point: CGPoint) {
+        run("document.getElementById('stage').dispatchEvent(new PointerEvent('pointerdown', { clientX: x, clientY: y }))", ["x": Double(point.x), "y": Double(point.y)])
+    }
 
     /// A paused Oby draws nothing, so a closed window costs no CPU.
     func pause(_ on: Bool) {

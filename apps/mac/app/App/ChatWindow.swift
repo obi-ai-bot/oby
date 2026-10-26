@@ -480,6 +480,8 @@ private struct HomeView: View {
                         }
                     }
                     .frame(maxWidth: 440)
+                    // The pointer arriving on the chips: Oby glances over.
+                    .onHover { if $0 { character?.glance() } }
                     .accessibilityElement(children: .contain)
                     .accessibilityLabel("Your tasks")
                 }
@@ -834,7 +836,8 @@ private struct StagedOby: View {
 }
 
 /// Oby on Home's stage: the live character, hidden until its first frame is drawn so nothing
-/// the page paints while it loads can flash.
+/// the page paints while it loads can flash. It watches the pointer while it shows, and never
+/// takes a click or the keyboard.
 private struct OnStage: View {
     let character: ObyCharacter?
 
@@ -843,6 +846,7 @@ private struct OnStage: View {
             WebView(character.page)
                 .webViewContentBackground(.hidden)
                 .opacity(character.ready ? 1 : 0)
+                .background(PointerFeed(character: character, showing: !character.paused))
                 .allowsHitTesting(false)
                 .accessibilityElement()
                 .accessibilityLabel("Oby")
