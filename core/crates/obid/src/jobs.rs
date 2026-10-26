@@ -603,6 +603,9 @@ struct Ask {
     reply: tokio::sync::oneshot::Sender<Answer>,
     input: Value,
     answers: Vec<String>,
+    /// Told when the owner answers it themselves, before `reply` (the egress proxy keeps only
+    /// their answers past a change of mode or rules); a change of them settles it untold.
+    owner: Option<tokio::sync::oneshot::Sender<()>>,
 }
 
 /// Why words that aren't the owner's own don't answer the agent's question (#858).
@@ -4379,6 +4382,7 @@ impl Jobs {
                 reply,
                 input: Value::Null,
                 answers: Vec::new(),
+                owner: None,
             });
             asks.len() == 1
         };
@@ -4500,35 +4504,57 @@ impl Jobs {
                 self.answered(id, &call, worktree, Some(&why));
                 Ruling::Now(Answer::Deny(why))
             }
-            permissions::Verdict::Ask => {
-                let mut permission =
-                    permissions::card(&call, &permissions::new_id(), &job.repo, &bounds);
-                let sites = self.sites_opened(&call, &bounds);
-                if !sites.is_empty() {
-                    permission.detail.push_str(&format!(
-                        "\n\nAllowing it lets this job reach {} until it ends.",
-                        sites.join(", ")
-                    ));
-                }
-                let (reply, answer) = tokio::sync::oneshot::channel();
-                let first = {
-                    let mut state = self.lock();
-                    let asks = state.asks.entry(id.to_owned()).or_default();
-                    asks.push_back(Ask {
-                        call,
-                        permission,
-                        reply,
-                        input: input.clone(),
-                        answers: Vec::new(),
-                    });
-                    asks.len() == 1
-                };
-                if first {
-                    self.show(id, None);
-                }
-                Ruling::Ask(answer)
-            }
+            permissions::Verdict::Ask => Ruling::Ask(
+                self.wait_for_owner(id, call, input, &job.repo, &bounds, None, None)
+                    .expect("no limit to wait under"),
+            ),
         }
+    }
+
+    /// Puts `call` on job `id`'s card for the owner, saying which sites their yes opens; its
+    /// answer comes later, and `owner` hears when it's the owner's own. None, and nothing asked,
+    /// when `most_sites` of the job's fetches wait for the owner already (counted as it's put).
+    #[allow(clippy::too_many_arguments)]
+    fn wait_for_owner(
+        &self,
+        id: &str,
+        call: Call,
+        input: &Value,
+        repo: &str,
+        bounds: &permissions::Bounds,
+        owner: Option<tokio::sync::oneshot::Sender<()>>,
+        most_sites: Option<usize>,
+    ) -> Option<tokio::sync::oneshot::Receiver<Answer>> {
+        let mut permission = permissions::card(&call, &permissions::new_id(), repo, bounds);
+        let sites = self.sites_opened(&call, bounds);
+        if !sites.is_empty() {
+            permission.detail.push_str(&format!(
+                "\n\nAllowing it lets this job reach {} until it ends.",
+                sites.join(", ")
+            ));
+        }
+        let (reply, answer) = tokio::sync::oneshot::channel();
+        let first = {
+            let mut state = self.lock();
+            let asks = state.asks.entry(id.to_owned()).or_default();
+            let fetches = asks.iter().filter(|a| a.call.tool == "WebFetch").count();
+            if most_sites.is_some_and(|most| fetches >= most) {
+                return None;
+            }
+            asks.push_back(Ask {
+                call,
+                permission,
+                reply,
+                input: input.clone(),
+                answers: Vec::new(),
+                owner,
+            });
+            asks.len() == 1
+        };
+        if first {
+            self.show(id, None);
+        }
+        Some(answer)
     }
 
     /// What job `id`'s agent reaches through obid's egress proxy (crate::egress, #616) without
@@ -4572,24 +4598,49 @@ impl Jobs {
             return Asked::Now(Ok(()));
         }
         let bounds = self.bounds(&job, &worktree);
-        let asking = || {
-            self.lock().asks.get(id).map_or(0, |asks| {
-                asks.iter().filter(|a| a.call.tool == "WebFetch").count()
-            })
-        };
-        if permissions::decide(&call, mode, &self.rules_for(&job.repo), &bounds)
-            == permissions::Verdict::Ask
-            && asking() >= MOST_SITES_ASKED
-        {
-            return Asked::Busy(format!(
-                "Other sites are waiting for the owner: ask for {site} again once they answer."
-            ));
+        match permissions::decide(&call, mode, &self.rules_for(&job.repo), &bounds) {
+            permissions::Verdict::Allow => {
+                self.answered(id, &call, &worktree, None);
+                Asked::Now(Ok(()))
+            }
+            permissions::Verdict::Deny(why) => {
+                self.answered(id, &call, &worktree, Some(&why));
+                Asked::Now(Err(why))
+            }
+            permissions::Verdict::Ask => {
+                let (owner, by_owner) = tokio::sync::oneshot::channel();
+                match self.wait_for_owner(
+                    id,
+                    call,
+                    &input,
+                    &job.repo,
+                    &bounds,
+                    Some(owner),
+                    Some(MOST_SITES_ASKED),
+                ) {
+                    Some(answer) => Asked::Card { answer, by_owner },
+                    None => Asked::Busy(format!(
+                        "Other sites are waiting for the owner: ask for {site} again once they answer."
+                    )),
+                }
+            }
         }
-        match self.rule_on(id, "WebFetch", &input, &worktree) {
-            Ruling::Now(Answer::Allow | Answer::AllowWith(_)) => Asked::Now(Ok(())),
-            Ruling::Now(Answer::Deny(why)) => Asked::Now(Err(why)),
-            Ruling::Ask(answer) => Asked::Card(answer),
-        }
+    }
+
+    /// The repository's rule that refuses job `id` the site `host` on `port`, said as the
+    /// agent hears it: checked at every connection, so a deny saved later stops a site the
+    /// owner had let through.
+    pub(crate) fn denied_site(&self, id: &str, host: &str, port: u16) -> Option<String> {
+        let job = self.get(id)?;
+        let call = Call::new(
+            "WebFetch",
+            &json!({"url": format!("https://{}/", crate::egress::site(host, port))}),
+        );
+        let worktree = self.worktree_path(id);
+        self.rules_for(&job.repo)
+            .into_iter()
+            .find(|r| r.decision == "deny" && permissions::covers(&r.rule, &call, &worktree, false))
+            .map(|r| format!("The owner's rule {} refuses this in {}.", r.rule, r.repo))
     }
 
     /// The sites the owner's yes to `call` lets the job's agent reach through the egress proxy
@@ -4849,6 +4900,9 @@ impl Jobs {
         {
             let bounds = self.bounds(&job, &self.worktree_path(id));
             egress.let_through(id, &self.sites_opened(&ask.call, &bounds));
+        }
+        if let Some(owner) = ask.owner {
+            let _ = owner.send(());
         }
         let _ = ask.reply.send(answer);
         if decision == Decision::Always
@@ -17247,6 +17301,16 @@ mod tests {
         assert_eq!(once.await.unwrap(), "502");
         assert_eq!(status("once.invalid:443").await, "502");
         assert!(card().is_none());
+        // A deny rule saved later stops it all the same.
+        jobs.kept().rules.push(Rule {
+            id: "rlater".into(),
+            rule: "WebFetch(domain:once.invalid)".into(),
+            repo: "o/r".into(),
+            decision: "deny".into(),
+            created: 0,
+        });
+        assert_eq!(status("once.invalid:443").await, "403");
+        jobs.kept().rules.retain(|r| r.id != "rlater");
         // At most 3 sites wait for the owner at once: a 4th is refused this once, with no card.
         let three: Vec<_> = ["a1.invalid:443", "a2.invalid:443", "a3.invalid:443"]
             .into_iter()
@@ -17329,6 +17393,18 @@ mod tests {
         jobs.answer_permission("j", &first.id, Decision::Deny, None)
             .unwrap();
         assert_eq!(ruled.await.unwrap(), "403");
+        // A card a change of mode settled isn't the owner's answer: the next change decides again.
+        let pending = tokio::spawn(status("pending.invalid:443"));
+        waiting().await;
+        jobs.set_mode("j", Mode::Bypass).unwrap();
+        assert_eq!(pending.await.unwrap(), "502");
+        jobs.set_mode("j", Mode::Sandbox).unwrap();
+        let again = tokio::spawn(status("pending.invalid:443"));
+        let first = waiting().await;
+        assert_eq!(first.title, "Fetch pending.invalid");
+        jobs.answer_permission("j", &first.id, Decision::Deny, None)
+            .unwrap();
+        assert_eq!(again.await.unwrap(), "403");
         // What Bypass let through is decided again in Sandbox mode.
         jobs.set_mode("j", Mode::Bypass).unwrap();
         assert_eq!(status("bypass.invalid:443").await, "502");

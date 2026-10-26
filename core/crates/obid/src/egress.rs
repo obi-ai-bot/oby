@@ -25,8 +25,10 @@ pub struct Egress {
     port: u16,
     /// Each open job's door, by its token: a worker's own, gone with it.
     doors: Mutex<HashMap<String, Door>>,
-    /// Room for [`MOST_TUNNELS`] at once, every job's together.
+    /// Room for [`MOST_TUNNELS`] at once, every job's together, taken once a request's token
+    /// checks out; and for [`MOST_UNKNOWN`] whose head and token aren't read yet.
     room: Arc<tokio::sync::Semaphore>,
+    unknown: Arc<tokio::sync::Semaphore>,
     /// The proxy obid itself is behind, as last read ([`Upstream::now`]).
     upstream: Mutex<(Option<Instant>, Option<Upstream>)>,
 }
@@ -52,14 +54,21 @@ struct Known {
 /// How a site that isn't decided yet is: answered now, by a card the owner answers, or not now.
 pub enum Asked {
     Now(Result<(), String>),
-    Card(tokio::sync::oneshot::Receiver<Answer>),
+    /// Its answer, and, told before it, whether it's the owner's own.
+    Card {
+        answer: tokio::sync::oneshot::Receiver<Answer>,
+        by_owner: tokio::sync::oneshot::Receiver<()>,
+    },
     /// Refused this once (too many sites wait for the owner), and decided another time.
     Busy(String),
 }
 
-/// The most tunnels open at once, every job's together, and one job's.
+/// The most tunnels open at once, every job's together, and one job's; and the most connections
+/// whose request isn't read yet, which have [`HEAD_WAIT`] to send it.
 const MOST_TUNNELS: usize = 1024;
 const MOST_PER_JOB: usize = 64;
+const MOST_UNKNOWN: usize = 128;
+const HEAD_WAIT: Duration = Duration::from_secs(5);
 /// A tunnel nothing went through for this long ends.
 const IDLE: Duration = Duration::from_secs(10 * 60);
 /// The most a connection waits for the owner's answer about its site (the card keeps waiting).
@@ -91,6 +100,7 @@ impl Egress {
             port: listener.local_addr()?.port(),
             doors: Mutex::new(HashMap::new()),
             room: Arc::new(tokio::sync::Semaphore::new(MOST_TUNNELS)),
+            unknown: Arc::new(tokio::sync::Semaphore::new(MOST_UNKNOWN)),
             upstream: Mutex::new((None, None)),
         });
         let (weak, jobs) = (Arc::downgrade(&egress), Arc::downgrade(jobs));
@@ -106,14 +116,11 @@ impl Egress {
                 };
                 let Some(egress) = weak.upgrade() else { break };
                 // Full: the connection closes at once, holding nothing.
-                let Ok(room) = egress.room.clone().try_acquire_owned() else {
+                let Ok(unknown) = egress.unknown.clone().try_acquire_owned() else {
                     continue;
                 };
                 let jobs = jobs.clone();
-                tokio::spawn(async move {
-                    egress.serve(client, jobs).await;
-                    drop(room);
-                });
+                tokio::spawn(async move { egress.serve(client, jobs, unknown).await });
             }
         });
         Ok(egress)
@@ -234,6 +241,10 @@ impl Egress {
         port: u16,
         jobs: &Jobs,
     ) -> Result<(), String> {
+        // A deny rule holds whatever was decided before it was saved.
+        if let Some(why) = jobs.denied_site(job, host, port) {
+            return Err(why);
+        }
         let site = site(host, port);
         let waiting = || {
             Err(format!(
@@ -260,14 +271,19 @@ impl Egress {
                 result
             }
             Asked::Busy(why) => Err(why),
-            Asked::Card(answer) => {
-                // The answer is kept whenever it comes, even after this connection gave up.
+            Asked::Card {
+                answer,
+                mut by_owner,
+            } => {
+                // The answer is kept whenever it comes, even after this connection gave up; a
+                // change of mode or rules that settled it is decided again with the next.
                 let deciding = tokio::spawn(async move {
-                    let (result, by_owner) = match answer.await {
-                        Ok(Answer::Allow | Answer::AllowWith(_)) => (Ok(()), true),
-                        Ok(Answer::Deny(why)) => (Err(why), true),
-                        Err(_) => (Err("Nobody answered.".to_owned()), false),
+                    let result = match answer.await {
+                        Ok(Answer::Allow | Answer::AllowWith(_)) => Ok(()),
+                        Ok(Answer::Deny(why)) => Err(why),
+                        Err(_) => Err("Nobody answered.".to_owned()),
                     };
+                    let by_owner = by_owner.try_recv().is_ok();
                     *known = Some(Known {
                         result: result.clone(),
                         by_owner,
@@ -282,8 +298,13 @@ impl Egress {
         }
     }
 
-    async fn serve(&self, mut client: TcpStream, jobs: Weak<Jobs>) {
-        let Some((head, early)) = read_head(&mut client).await else {
+    async fn serve(
+        &self,
+        mut client: TcpStream,
+        jobs: Weak<Jobs>,
+        unknown: tokio::sync::OwnedSemaphorePermit,
+    ) {
+        let Some((head, early)) = read_head(&mut client, HEAD_WAIT).await else {
             return;
         };
         let Some((host, port)) = target(&head) else {
@@ -312,6 +333,17 @@ impl Egress {
             .await;
             return;
         };
+        // A job's own request now: it takes room of every job's, never before.
+        let Ok(_room) = self.room.clone().try_acquire_owned() else {
+            refuse(
+                &mut client,
+                "503 Service Unavailable",
+                "obid's proxy has every connection it takes open: try again.",
+            )
+            .await;
+            return;
+        };
+        drop(unknown);
         let Some(jobs) = jobs.upgrade() else { return };
         let allowed = match jobs.reach_now(&job, &host, port) {
             Some(now) => now,
@@ -382,7 +414,7 @@ impl Egress {
                 )
                 .await
                 .ok()?;
-            let (answer, before) = read_head(&mut stream).await?;
+            let (answer, before) = read_head(&mut stream, Duration::from_secs(15)).await?;
             (answer.split(' ').nth(1) == Some("200")).then_some((stream, before))
         };
         tokio::time::timeout(Duration::from_secs(15), connect)
@@ -451,17 +483,30 @@ impl Upstream {
         Upstream::from_scutil(&String::from_utf8_lossy(&said.stdout))
     }
 
-    /// `http://[user:password@]host:port`.
+    /// `[http://][user:password@]host[:port]`, the login percent-encoded. Another scheme
+    /// (`https://`, `socks5://`) isn't one the proxy speaks: it's said once, and the proxy
+    /// connects straight, as before.
     fn from_url<'a>(url: &str, skip: impl Iterator<Item = &'a str>) -> Option<Upstream> {
-        let rest = url
-            .strip_prefix("http://")
-            .unwrap_or(url)
-            .trim_end_matches('/');
+        let rest = match url.split_once("://") {
+            None => url,
+            Some((scheme, rest)) if scheme.eq_ignore_ascii_case("http") => rest,
+            Some((scheme, _)) => {
+                static SAID: std::sync::Once = std::sync::Once::new();
+                SAID.call_once(|| {
+                    tracing::warn!(
+                        "egress: obid's own proxy is a {scheme}:// one, which the egress proxy can't go through: it connects straight"
+                    )
+                });
+                return None;
+            }
+        };
+        let rest = rest.split('/').next().unwrap_or(rest);
         let (login, at) = match rest.rsplit_once('@') {
-            Some((login, at)) => (
-                Some(base64::engine::general_purpose::STANDARD.encode(login)),
-                at,
-            ),
+            Some((login, at)) => {
+                let (user, password) = login.split_once(':').unwrap_or((login, ""));
+                let login = format!("{}:{}", unescaped(user), unescaped(password));
+                (Some(base64::engine::general_purpose::STANDARD.encode(login)), at)
+            }
             None => (None, rest),
         };
         let (host, port) = at.rsplit_once(':').unwrap_or((at, "80"));
@@ -505,15 +550,45 @@ impl Upstream {
 
     /// Whether `host` goes straight, past this proxy.
     fn skips(&self, host: &str) -> bool {
-        self.skip.iter().any(|domain| within(host, domain))
+        self.skip
+            .iter()
+            .any(|domain| domain == "*" || within(host, domain))
     }
 }
 
-/// A `NO_PROXY` or exceptions entry as a domain (`*.corp` and `.corp` are `corp`); an address
-/// range isn't kept.
+/// A `NO_PROXY` or exceptions entry as a domain (`*.corp` and `.corp` are `corp`; `*` is every
+/// host); an address range isn't kept.
 fn skipped(entry: &str) -> Option<String> {
-    let entry = entry.trim().trim_start_matches('*').trim_start_matches('.');
+    let entry = entry.trim();
+    if entry == "*" {
+        return Some("*".into());
+    }
+    let entry = entry.trim_start_matches('*').trim_start_matches('.');
     (!entry.is_empty() && !entry.contains('/')).then(|| entry.to_ascii_lowercase())
+}
+
+/// `text` with its `%XX` escapes decoded.
+fn unescaped(text: &str) -> String {
+    let mut out = Vec::new();
+    let mut at = 0;
+    while at < text.len() {
+        let byte = text.as_bytes()[at];
+        let escaped = (byte == b'%')
+            .then(|| text.get(at + 1..at + 3))
+            .flatten()
+            .and_then(|hex| u8::from_str_radix(hex, 16).ok());
+        match escaped {
+            Some(decoded) => {
+                out.push(decoded);
+                at += 3;
+            }
+            None => {
+                out.push(byte);
+                at += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 /// Both ways at once until both ends are done, or nothing went either way for [`IDLE`].
@@ -558,8 +633,8 @@ async fn splice(mut client: TcpStream, mut upstream: TcpStream) {
 }
 
 /// The request's head as text, and whatever the client sent after it (a TLS hello that didn't
-/// wait for the answer); none when it doesn't come within 30 seconds or [`HEAD_CAP`].
-async fn read_head(client: &mut TcpStream) -> Option<(String, Vec<u8>)> {
+/// wait for the answer); none when it doesn't come within `wait` or [`HEAD_CAP`].
+async fn read_head(client: &mut TcpStream, wait: Duration) -> Option<(String, Vec<u8>)> {
     let mut buffer = Vec::new();
     let read = async {
         let mut chunk = [0u8; 4096];
@@ -577,9 +652,7 @@ async fn read_head(client: &mut TcpStream) -> Option<(String, Vec<u8>)> {
             buffer.extend_from_slice(&chunk[..n]);
         }
     };
-    let end = tokio::time::timeout(Duration::from_secs(30), read)
-        .await
-        .ok()??;
+    let end = tokio::time::timeout(wait, read).await.ok()??;
     let head = String::from_utf8(buffer[..end].to_vec()).ok()?;
     Some((head, buffer[end + 4..].to_vec()))
 }
@@ -697,10 +770,15 @@ fn named(body: &[u8]) -> Option<Named> {
     }
     let length = hello.u16()?;
     let mut extensions = Reader(hello.take(length)?);
+    // An extension twice, or two names, would let a server read another than obid did.
+    let mut seen = std::collections::HashSet::new();
     while !extensions.0.is_empty() {
         let kind = extensions.u16()?;
         let length = extensions.u16()?;
         let data = extensions.take(length)?;
+        if !seen.insert(kind) {
+            return None;
+        }
         match kind {
             0 => {
                 let mut data = Reader(data);
@@ -710,9 +788,10 @@ fn named(body: &[u8]) -> Option<Named> {
                     let kind = list.u8()?;
                     let length = list.u16()?;
                     let name = list.take(length)?;
-                    if kind == 0 {
-                        named.sni = Some(String::from_utf8(name.to_vec()).ok()?);
+                    if kind != 0 || named.sni.is_some() {
+                        return None;
                     }
+                    named.sni = Some(String::from_utf8(name.to_vec()).ok()?);
                 }
             }
             0xfe0d => named.ech = true,
@@ -882,6 +961,12 @@ pub(crate) fn client_hello(sni: Option<&str>, ech: bool) -> Vec<u8> {
     if ech {
         extensions.extend([0xfe, 0x0d, 0, 1, 0]);
     }
+    hello_with(&extensions)
+}
+
+/// A TLS ClientHello record with these extensions, as they're written.
+#[cfg(test)]
+fn hello_with(extensions: &[u8]) -> Vec<u8> {
     let mut body = vec![3, 3];
     body.extend([7u8; 32]);
     body.extend([0, 0, 2, 0x13, 0x01, 1, 0]);
@@ -997,6 +1082,20 @@ mod tests {
         split.extend((b.len() as u16).to_be_bytes());
         split.extend(b);
         assert_eq!(parse_hello(&split), Hello::Whole(named));
+        // Two names, or an extension twice: a server could read another name than obid did.
+        let name = |n: &str| [&[0u8][..], &(n.len() as u16).to_be_bytes(), n.as_bytes()].concat();
+        let server_name = |list: Vec<u8>| {
+            let data = [&(list.len() as u16).to_be_bytes()[..], &list].concat();
+            [&[0u8, 0][..], &(data.len() as u16).to_be_bytes(), &data].concat()
+        };
+        let two = server_name([name("chatgpt.com"), name("evil.example")].concat());
+        assert_eq!(parse_hello(&hello_with(&two)), Hello::NotTls);
+        let twice = [
+            server_name(name("chatgpt.com")),
+            server_name(name("evil.example")),
+        ]
+        .concat();
+        assert_eq!(parse_hello(&hello_with(&twice)), Hello::NotTls);
     }
 
     #[test]
@@ -1019,5 +1118,17 @@ mod tests {
             Upstream::from_scutil("<dictionary> {\n  HTTPSEnable : 0\n}\n"),
             None
         );
+        // #1471's review: another scheme isn't followed (straight, as before); a login is
+        // percent-decoded; `NO_PROXY=*` skips it for every host.
+        for other in ["https://proxy.corp:443", "socks5://proxy.corp:1080"] {
+            assert_eq!(Upstream::from_url(other, std::iter::empty()), None, "{other}");
+        }
+        let up = Upstream::from_url("me%40corp:p%3Aw@proxy.corp:3128", std::iter::empty()).unwrap();
+        assert_eq!(
+            up.login,
+            Some(base64::engine::general_purpose::STANDARD.encode("me@corp:p:w"))
+        );
+        let up = Upstream::from_url("http://proxy.corp:3128", ["*"].into_iter()).unwrap();
+        assert!(up.skips("example.com"));
     }
 }
