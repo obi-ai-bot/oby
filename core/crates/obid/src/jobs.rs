@@ -7747,6 +7747,23 @@ impl Jobs {
             if rules_quoted {
                 message = format!("{message}\n\n{}", review::rules_line(&base));
             }
+            // The owner's memories about them and the job's repository, quoted (#378). Never on a
+            // teammate's Mac: only the job's code goes there, never its inputs.
+            if job.runs_on.is_none()
+                && let Some(text) =
+                    crate::memory::for_agent(&self.config.home, &[job.repo.as_str()]).await?
+            {
+                let written = crate::obi_dir::folder(&worktree, "inputs").and_then(|dir| {
+                    crate::obi_dir::write_new(&dir, crate::memory::FILE, text.as_bytes())
+                });
+                match written {
+                    Ok(_) => {
+                        let path = format!(".obi/inputs/{}", crate::memory::FILE);
+                        message = format!("{message}\n\n{}", crate::memory::prompt_line(&path));
+                    }
+                    Err(e) => tracing::warn!("job {id}: the owner's memories weren't quoted: {e}"),
+                }
+            }
             let purpose = if job.kind == "review" {
                 obi_plugin_api::Purpose::Review
             } else if Self::mode_of(&job) == Mode::Plan {
