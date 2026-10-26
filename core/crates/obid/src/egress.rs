@@ -81,9 +81,12 @@ fn valid_host(host: &str) -> bool {
 }
 
 impl Egress {
-    /// Starts the proxy on `127.0.0.1`, on a port of its own, deciding for `jobs`.
-    pub async fn start(jobs: &Arc<Jobs>) -> std::io::Result<Arc<Egress>> {
-        let listener = TcpListener::bind(("127.0.0.1", 0)).await?;
+    /// Starts the proxy on `127.0.0.1`, on a port of its own, deciding for `jobs`, on the Tokio
+    /// runtime this is called in.
+    pub fn start(jobs: &Arc<Jobs>) -> std::io::Result<Arc<Egress>> {
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0))?;
+        listener.set_nonblocking(true)?;
+        let listener = TcpListener::from_std(listener)?;
         let egress = Arc::new(Egress {
             port: listener.local_addr()?.port(),
             doors: Mutex::new(HashMap::new()),
@@ -223,7 +226,14 @@ impl Egress {
 
     /// Whether the job of door `token` may reach `host` on `port`: decided once for its worker,
     /// connections to a site being decided waiting for that one answer, at most [`CARD_WAIT`].
-    async fn decide(&self, token: &str, job: &str, host: &str, port: u16, jobs: &Jobs) -> Result<(), String> {
+    async fn decide(
+        &self,
+        token: &str,
+        job: &str,
+        host: &str,
+        port: u16,
+        jobs: &Jobs,
+    ) -> Result<(), String> {
         let site = site(host, port);
         let waiting = || {
             Err(format!(
@@ -346,7 +356,11 @@ impl Egress {
     /// A connection to `host:port`: straight, or through the proxy obid itself is behind; and
     /// what that proxy sent past its answer, for the client.
     async fn connect(&self, host: &str, port: u16) -> Option<(TcpStream, Vec<u8>)> {
-        let upstream = self.upstream().await.filter(|up| !up.skips(host));
+        let loopback = host == "localhost" || host.starts_with("127.") || host == "[::1]";
+        let upstream = match loopback {
+            true => None,
+            false => self.upstream().await.filter(|up| !up.skips(host)),
+        };
         let name = host.trim_start_matches('[').trim_end_matches(']');
         let connect = async {
             let Some(up) = upstream else {
@@ -382,12 +396,16 @@ impl Egress {
     async fn upstream(&self) -> Option<Upstream> {
         {
             let kept = self.upstream.lock().unwrap_or_else(|e| e.into_inner());
-            if kept.0.is_some_and(|at| at.elapsed() < Duration::from_secs(60)) {
+            if kept
+                .0
+                .is_some_and(|at| at.elapsed() < Duration::from_secs(60))
+            {
                 return kept.1.clone();
             }
         }
         let now = Upstream::now().await;
-        *self.upstream.lock().unwrap_or_else(|e| e.into_inner()) = (Some(Instant::now()), now.clone());
+        *self.upstream.lock().unwrap_or_else(|e| e.into_inner()) =
+            (Some(Instant::now()), now.clone());
         now
     }
 }
@@ -435,9 +453,15 @@ impl Upstream {
 
     /// `http://[user:password@]host:port`.
     fn from_url<'a>(url: &str, skip: impl Iterator<Item = &'a str>) -> Option<Upstream> {
-        let rest = url.strip_prefix("http://").unwrap_or(url).trim_end_matches('/');
+        let rest = url
+            .strip_prefix("http://")
+            .unwrap_or(url)
+            .trim_end_matches('/');
         let (login, at) = match rest.rsplit_once('@') {
-            Some((login, at)) => (Some(base64::engine::general_purpose::STANDARD.encode(login)), at),
+            Some((login, at)) => (
+                Some(base64::engine::general_purpose::STANDARD.encode(login)),
+                at,
+            ),
             None => (None, rest),
         };
         let (host, port) = at.rsplit_once(':').unwrap_or((at, "80"));
@@ -648,7 +672,8 @@ impl<'a> Reader<'a> {
         self.take(1).map(|b| usize::from(b[0]))
     }
     fn u16(&mut self) -> Option<usize> {
-        self.take(2).map(|b| usize::from(u16::from_be_bytes([b[0], b[1]])))
+        self.take(2)
+            .map(|b| usize::from(u16::from_be_bytes([b[0], b[1]])))
     }
 }
 
@@ -936,12 +961,27 @@ mod tests {
         };
         let named = whole(client_hello(Some("chatgpt.com"), false));
         assert!(hello_fits(&named, "chatgpt.com"));
-        assert!(hello_fits(&whole(client_hello(Some("ChatGPT.com."), false)), "chatgpt.com"));
-        assert!(!hello_fits(&whole(client_hello(Some("attacker.workers.dev"), false)), "chatgpt.com"));
-        assert!(!hello_fits(&whole(client_hello(Some("chatgpt.com"), true)), "chatgpt.com"));
-        assert!(!hello_fits(&whole(client_hello(None, false)), "chatgpt.com"));
+        assert!(hello_fits(
+            &whole(client_hello(Some("ChatGPT.com."), false)),
+            "chatgpt.com"
+        ));
+        assert!(!hello_fits(
+            &whole(client_hello(Some("attacker.workers.dev"), false)),
+            "chatgpt.com"
+        ));
+        assert!(!hello_fits(
+            &whole(client_hello(Some("chatgpt.com"), true)),
+            "chatgpt.com"
+        ));
+        assert!(!hello_fits(
+            &whole(client_hello(None, false)),
+            "chatgpt.com"
+        ));
         assert!(hello_fits(&whole(client_hello(None, false)), "1.2.3.4"));
-        assert!(!hello_fits(&whole(client_hello(Some("evil.example"), false)), "1.2.3.4"));
+        assert!(!hello_fits(
+            &whole(client_hello(Some("evil.example"), false)),
+            "1.2.3.4"
+        ));
         // Not TLS, and a hello cut short.
         assert_eq!(parse_hello(b"GET / HTTP/1.1\r\n\r\n"), Hello::NotTls);
         let hello = client_hello(Some("chatgpt.com"), false);
@@ -961,13 +1001,23 @@ mod tests {
 
     #[test]
     fn the_proxy_obid_is_behind_is_read() {
-        let up = Upstream::from_url("http://me:pw@proxy.corp:3128/", ["*.corp", "10.0.0.0/8", ""].into_iter()).unwrap();
+        let up = Upstream::from_url(
+            "http://me:pw@proxy.corp:3128/",
+            ["*.corp", "10.0.0.0/8", ""].into_iter(),
+        )
+        .unwrap();
         assert_eq!((up.host.as_str(), up.port), ("proxy.corp", 3128));
         assert_eq!(up.login.as_deref(), Some("bWU6cHc="));
         assert!(up.skips("git.corp") && !up.skips("example.com"));
         let said = "<dictionary> {\n  ExceptionsList : <array> {\n    0 : *.local\n    1 : 169.254/16\n  }\n  HTTPSEnable : 1\n  HTTPSPort : 8080\n  HTTPSProxy : proxy.example\n}\n";
         let up = Upstream::from_scutil(said).unwrap();
-        assert_eq!((up.host.as_str(), up.port, up.skip.clone()), ("proxy.example", 8080, vec!["local".to_owned()]));
-        assert_eq!(Upstream::from_scutil("<dictionary> {\n  HTTPSEnable : 0\n}\n"), None);
+        assert_eq!(
+            (up.host.as_str(), up.port, up.skip.clone()),
+            ("proxy.example", 8080, vec!["local".to_owned()])
+        );
+        assert_eq!(
+            Upstream::from_scutil("<dictionary> {\n  HTTPSEnable : 0\n}\n"),
+            None
+        );
     }
 }

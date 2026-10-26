@@ -3249,7 +3249,12 @@ mod tests {
         for url in ["https://evil.example/", "https://a.evil.example:8443/"] {
             assert!(
                 matches!(
-                    decide(&fetch(url), Mode::Bypass, std::slice::from_ref(&deny), worktree),
+                    decide(
+                        &fetch(url),
+                        Mode::Bypass,
+                        std::slice::from_ref(&deny),
+                        worktree
+                    ),
                     Verdict::Deny(_)
                 ),
                 "{url}"

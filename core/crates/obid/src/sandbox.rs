@@ -826,9 +826,11 @@ fn seatbelt_profile_reading(spec: &Spec, confined: bool, loopback: bool) -> Stri
             profile.push_str(")\n");
         }
     } else if spec.proxied {
-        // After the Unix sockets' rules: placed before them, Seatbelt refuses loopback too. And
-        // nothing listens beyond loopback: a server on 0.0.0.0 would serve the network.
-        profile.push_str("(deny network-outbound (remote ip \"*:*\"))\n(allow network-outbound (remote ip \"localhost:*\"))\n(deny network-bind network-inbound (local ip \"*:*\"))\n(allow network-bind network-inbound (local ip \"localhost:*\"))\n");
+        // After the Unix sockets' rules: placed before them, Seatbelt refuses loopback too. What
+        // listens stays as it was: Seatbelt's `localhost` takes a listen on 0.0.0.0 too, and its
+        // inbound rules hold only at the listen, so a server on 0.0.0.0 can't be refused without a
+        // test's own on 127.0.0.1 (#1471's review; docs/runner-api.md, the egress proxy).
+        profile.push_str("(deny network-outbound (remote ip \"*:*\"))\n(allow network-outbound (remote ip \"localhost:*\"))\n");
     } else if !loopback {
         profile.push_str("(deny network-outbound (remote ip \"localhost:*\"))\n");
     }
@@ -1774,9 +1776,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// #616: a proxied agent's profile reaches nothing beyond loopback and no DNS resolver, and
-    /// listens on nothing beyond it, the rules for addresses last (before the Unix sockets'
-    /// rules, Seatbelt refuses loopback too).
+    /// #616: a proxied agent's profile reaches nothing beyond loopback and no DNS resolver, the
+    /// rules for addresses last (before the Unix sockets' rules, Seatbelt refuses loopback too).
     #[test]
     fn a_proxied_profile_reaches_only_loopback() {
         let spec = Spec {
@@ -1788,8 +1789,8 @@ mod tests {
         };
         let profile = seatbelt_profile_reading(&spec, false, true);
         let deny = profile
-            .find("(deny network-outbound (remote ip \"*:*\"))\n(allow network-outbound (remote ip \"localhost:*\"))\n(deny network-bind network-inbound (local ip \"*:*\"))\n(allow network-bind network-inbound (local ip \"localhost:*\"))")
-            .expect("only loopback, out and in");
+            .find("(deny network-outbound (remote ip \"*:*\"))\n(allow network-outbound (remote ip \"localhost:*\"))")
+            .expect("only loopback");
         assert!(deny > profile.rfind("unix-socket").unwrap());
         assert!(!profile.contains("mDNSResponder"));
         let open = Spec {

@@ -975,6 +975,14 @@ impl Jobs {
         if github && let Ok(runtime) = tokio::runtime::Handle::try_current() {
             runtime.spawn(github_email(Arc::downgrade(&made)));
         }
+        // Where the box holds an agent to obid's egress proxy, every agent obid starts gets it
+        // (crate::egress, #616): never one without (`Jobs::launch` refuses to start it then).
+        if made.confines_egress() && tokio::runtime::Handle::try_current().is_ok() {
+            match crate::egress::Egress::start(&made) {
+                Ok(egress) => made.use_egress(egress),
+                Err(e) => tracing::error!("obid's egress proxy can't listen: {e}"),
+            }
+        }
         Ok(made)
     }
 
@@ -4531,8 +4539,7 @@ impl Jobs {
         let Some(job) = self.get(id) else {
             return Some(Err("The job is gone.".into()));
         };
-        if Tool::from_id(&job.agent)
-            .is_some_and(|tool| crate::egress::tools_own(tool, host, port))
+        if Tool::from_id(&job.agent).is_some_and(|tool| crate::egress::tools_own(tool, host, port))
         {
             return Some(Ok(()));
         }
@@ -17064,11 +17071,13 @@ mod tests {
         );
     }
 
-    /// #616: obid's egress proxy lets a job's agent through to a site the repository's rules allow,
-    /// asks the owner about a new one with the permission card (Deny refusing it, and Allow letting
-    /// it through, each until the job ends, without a second card), refuses one a rule denies
-    /// without asking, and refuses a request without the job's token. Its tool's own API, a
-    /// registry in Sandbox mode and a site the owner already allowed a fetch from go through.
+    /// #616 and #1471's review: obid's egress proxy tunnels to a site the repository's rules
+    /// allow only TLS whose hello names it; refuses a request without the job's token, and a site
+    /// a rule denies (on any port) without asking; asks the owner about a new site with one card
+    /// however many connections wait for it (Deny and Allow each holding for the job), at most 3
+    /// cards at once; decides again after a change of mode; opens a site a command names only on
+    /// the owner's own yes, never a comment's or a rule's; and lets nothing through once the job's
+    /// worker ends.
     #[tokio::test]
     async fn the_egress_proxy_lets_through_asks_and_refuses_by_site() {
         use base64::Engine;
@@ -17105,7 +17114,7 @@ mod tests {
         tokio::spawn(async move {
             while let Ok((mut stream, _)) = upstream.accept().await {
                 tokio::spawn(async move {
-                    let mut buf = [0u8; 64];
+                    let mut buf = [0u8; 512];
                     while let Ok(n) = stream.read(&mut buf).await {
                         if n == 0 || stream.write_all(&buf[..n]).await.is_err() {
                             break;
@@ -17122,7 +17131,7 @@ mod tests {
             decision: "deny".into(),
             created: 0,
         });
-        let egress = crate::egress::Egress::start(&jobs).await.unwrap();
+        let egress = crate::egress::Egress::start(&jobs).unwrap();
         jobs.use_egress(egress.clone());
         let proxy = egress.open("j");
         let (login, port) = proxy
@@ -17131,7 +17140,7 @@ mod tests {
             .unwrap();
         let auth = base64::engine::general_purpose::STANDARD.encode(login);
         let port: u16 = port.rsplit(':').next().unwrap().parse().unwrap();
-        let connect = |target: String, auth: Option<String>| async move {
+        let connect = move |target: String, auth: Option<String>| async move {
             let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", port))
                 .await
                 .unwrap();
@@ -17144,7 +17153,7 @@ mod tests {
                 .unwrap();
             let mut head = Vec::new();
             let mut byte = [0u8; 1];
-            while !head.ends_with(b"\r\n\r\n") && stream.read(&mut byte).await.unwrap() == 1 {
+            while !head.ends_with(b"\r\n\r\n") && stream.read(&mut byte).await.unwrap_or(0) == 1 {
                 head.push(byte[0]);
             }
             let status = String::from_utf8_lossy(&head)
@@ -17154,105 +17163,194 @@ mod tests {
                 .to_owned();
             (status, stream)
         };
+        let status = |target: &str| {
+            let (target, auth) = (target.to_owned(), auth.clone());
+            async move { connect(target, Some(auth)).await.0 }
+        };
+        let cards = || jobs.lock().asks.get("j").map_or(0, VecDeque::len);
         let card = || jobs.get("j").unwrap().permission;
+        let waiting = || async {
+            loop {
+                if let Some(waiting) = card() {
+                    break waiting;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        };
+        // What comes back through a tunnel to the echo, after sending `bytes`: none once it closed.
+        let echoed = |mut stream: tokio::net::TcpStream, bytes: Vec<u8>| async move {
+            stream.write_all(&bytes).await.unwrap();
+            let mut back = vec![0u8; bytes.len()];
+            let read = tokio::time::timeout(Duration::from_secs(5), stream.read_exact(&mut back));
+            matches!(read.await, Ok(Ok(_))).then_some(back)
+        };
 
-        // The rule's site: tunnelled.
-        let (status, mut stream) = connect(format!("localhost:{up}"), Some(auth.clone())).await;
-        assert_eq!(status, "200");
-        stream.write_all(b"ping").await.unwrap();
-        let mut echoed = [0u8; 4];
-        stream.read_exact(&mut echoed).await.unwrap();
-        assert_eq!(&echoed, b"ping");
-        // No token, a wrong one, or a plain request: refused, and nobody is asked.
+        // The rule's site: tunnelled, its hello naming it.
+        let hello = crate::egress::client_hello(Some("localhost"), false);
+        let (status_line, stream) = connect(format!("localhost:{up}"), Some(auth.clone())).await;
+        assert_eq!(status_line, "200");
+        assert_eq!(echoed(stream, hello.clone()).await, Some(hello));
+        // Another name in its hello (a CDN would serve that site), an encrypted hello, or no TLS
+        // at all: the tunnel closes, and nothing reached the echo.
+        for bytes in [
+            crate::egress::client_hello(Some("attacker.workers.dev"), false),
+            crate::egress::client_hello(Some("localhost"), true),
+            b"GET / HTTP/1.1\r\nHost: attacker.workers.dev\r\n\r\n".to_vec(),
+        ] {
+            let (status_line, stream) =
+                connect(format!("localhost:{up}"), Some(auth.clone())).await;
+            assert_eq!(status_line, "200");
+            assert_eq!(echoed(stream, bytes).await, None);
+        }
+        // No token, a wrong one: refused, and nobody is asked.
         assert_eq!(connect(format!("localhost:{up}"), None).await.0, "407");
         let wrong = base64::engine::general_purpose::STANDARD.encode("oby:nope");
         assert_eq!(
             connect(format!("localhost:{up}"), Some(wrong)).await.0,
             "407"
         );
-        // A rule's denial: refused at once.
-        assert_eq!(
-            connect("denied.invalid:443".into(), Some(auth.clone()))
-                .await
-                .0,
-            "403"
-        );
+        // A rule's denial, on its port or another: refused at once.
+        assert_eq!(status("denied.invalid:443").await, "403");
+        assert_eq!(status("a.denied.invalid:8443").await, "403");
         assert!(card().is_none());
-        // A new site: the owner's card, as a fetch from it.
-        let asked = tokio::spawn(connect("asked.invalid:443".into(), Some(auth.clone())));
-        let waiting = loop {
-            if let Some(waiting) = card() {
-                break waiting;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        };
-        assert_eq!(waiting.title, "Fetch asked.invalid");
+        // A new site: one card, as a fetch from it, however many connections wait for it.
+        let asked = [
+            tokio::spawn(status("asked.invalid:443")),
+            tokio::spawn(status("asked.invalid:443")),
+        ];
+        let first = waiting().await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert_eq!(cards(), 1);
+        assert_eq!(first.title, "Fetch asked.invalid");
         assert_eq!(
-            waiting.rule.as_deref(),
+            first.rule.as_deref(),
             Some("WebFetch(domain:asked.invalid)")
         );
-        assert_eq!(
-            waiting.why.as_deref(),
-            Some(permissions::Reach::Network.why())
+        assert!(
+            first
+                .detail
+                .contains("lets this job reach asked.invalid until it ends")
         );
-        jobs.answer_permission("j", &waiting.id, Decision::Deny, None)
+        jobs.answer_permission("j", &first.id, Decision::Deny, None)
             .unwrap();
-        assert_eq!(asked.await.unwrap().0, "403");
+        for one in asked {
+            assert_eq!(one.await.unwrap(), "403");
+        }
         // Refused until the job ends: no second card.
-        assert_eq!(
-            connect("asked.invalid:443".into(), Some(auth.clone()))
-                .await
-                .0,
-            "403"
-        );
+        assert_eq!(status("asked.invalid:443").await, "403");
         assert!(card().is_none());
         // Allowed once: through (it doesn't resolve, so 502) until the job ends, no second card.
-        let once = tokio::spawn(connect("once.invalid:443".into(), Some(auth.clone())));
-        let waiting = loop {
-            if let Some(waiting) = card() {
-                break waiting;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        };
-        jobs.answer_permission("j", &waiting.id, Decision::Allow, None)
+        let once = tokio::spawn(status("once.invalid:443"));
+        let first = waiting().await;
+        jobs.answer_permission("j", &first.id, Decision::Allow, None)
             .unwrap();
-        assert_eq!(once.await.unwrap().0, "502");
-        assert_eq!(
-            connect("once.invalid:443".into(), Some(auth.clone()))
-                .await
-                .0,
-            "502"
-        );
+        assert_eq!(once.await.unwrap(), "502");
+        assert_eq!(status("once.invalid:443").await, "502");
         assert!(card().is_none());
-        // The tool's own API and, in Sandbox mode, a registry: no card.
-        assert_eq!(jobs.may_reach("j", "api.anthropic.com", 443).await, Ok(()));
-        assert_eq!(jobs.may_reach("j", "registry.npmjs.org", 443).await, Ok(()));
-        assert!(
-            jobs.may_reach("j", "http-intake.logs.us5.datadoghq.com", 443)
-                .await
-                .is_err()
-        );
-        // A fetch the owner allowed: its site goes through without asking again.
+        // At most 3 sites wait for the owner at once: a 4th is refused this once, with no card.
+        let three: Vec<_> = ["a1.invalid:443", "a2.invalid:443", "a3.invalid:443"]
+            .into_iter()
+            .map(|site| tokio::spawn(status(site)))
+            .collect();
+        while cards() < 3 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(status("a4.invalid:443").await, "403");
+        assert_eq!(cards(), 3);
+        for _ in 0..3 {
+            let first = waiting().await;
+            jobs.answer_permission("j", &first.id, Decision::Deny, None)
+                .unwrap();
+        }
+        for one in three {
+            assert_eq!(one.await.unwrap(), "403");
+        }
+        // The tool's own API on 443 (not another port), and in Sandbox mode a registry: no card.
+        assert_eq!(jobs.reach_now("j", "api.anthropic.com", 443), Some(Ok(())));
+        assert_eq!(jobs.reach_now("j", "api.anthropic.com", 22), None);
+        assert!(matches!(
+            jobs.ask_about("j", "registry.npmjs.org", 443),
+            crate::egress::Asked::Now(Ok(()))
+        ));
+        assert!(matches!(
+            jobs.reach_now("j", "http-intake.logs.us5.datadoghq.com", 443),
+            Some(Err(_))
+        ));
         let worktree = root.join("worktree");
+        // A fetch the owner allowed: its site goes through without asking again.
         let Ruling::Ask(_fetch) = jobs.rule_on(
             "j",
             "WebFetch",
-            &json!({"url": "https://docs.example/x"}),
+            &json!({"url": "https://docs.invalid/x"}),
             &worktree,
         ) else {
             panic!("the fetch went through by itself");
         };
-        let waiting = card().unwrap();
-        jobs.answer_permission("j", &waiting.id, Decision::Allow, None)
+        let first = card().unwrap();
+        jobs.answer_permission("j", &first.id, Decision::Allow, None)
             .unwrap();
-        assert_eq!(jobs.may_reach("j", "docs.example", 443).await, Ok(()));
+        assert_eq!(status("docs.invalid:443").await, "502");
         assert!(card().is_none());
-        // Once the job's worker ends its token lets nothing through.
-        egress.close("j");
-        assert_eq!(
-            connect(format!("localhost:{up}"), Some(auth)).await.0,
-            "407"
+        // A command's comment opens nothing, and its card names no site.
+        let Ruling::Ask(_git) = jobs.rule_on(
+            "j",
+            "Bash",
+            &json!({"command": "git fetch origin # https://evil.invalid"}),
+            &worktree,
+        ) else {
+            panic!("the fetch went through by itself");
+        };
+        let first = card().unwrap();
+        assert!(
+            !first.detail.contains("lets this job reach"),
+            "{}",
+            first.detail
         );
+        jobs.answer_permission("j", &first.id, Decision::Allow, None)
+            .unwrap();
+        let evil = tokio::spawn(status("evil.invalid:443"));
+        let first = waiting().await;
+        assert_eq!(first.title, "Fetch evil.invalid");
+        jobs.answer_permission("j", &first.id, Decision::Deny, None)
+            .unwrap();
+        assert_eq!(evil.await.unwrap(), "403");
+        // A rule's allow of a command opens nothing either: its site still asks.
+        jobs.save_rule("Bash(curl:*)", "o/r");
+        let Ruling::Now(Answer::Allow) = jobs.rule_on(
+            "j",
+            "Bash",
+            &json!({"command": "curl https://ruled.invalid/"}),
+            &worktree,
+        ) else {
+            panic!("the rule didn't allow it");
+        };
+        let ruled = tokio::spawn(status("ruled.invalid:443"));
+        let first = waiting().await;
+        jobs.answer_permission("j", &first.id, Decision::Deny, None)
+            .unwrap();
+        assert_eq!(ruled.await.unwrap(), "403");
+        // What Bypass let through is decided again in Sandbox mode.
+        jobs.set_mode("j", Mode::Bypass).unwrap();
+        assert_eq!(status("bypass.invalid:443").await, "502");
+        jobs.set_mode("j", Mode::Sandbox).unwrap();
+        let again = tokio::spawn(status("bypass.invalid:443"));
+        let first = waiting().await;
+        assert_eq!(first.title, "Fetch bypass.invalid");
+        jobs.answer_permission("j", &first.id, Decision::Deny, None)
+            .unwrap();
+        assert_eq!(again.await.unwrap(), "403");
+        // Once the job's worker ends its token lets nothing through.
+        jobs.spawn_worker("j".into(), async {});
+        let ended = loop {
+            let said = connect(format!("localhost:{up}"), Some(auth.clone()))
+                .await
+                .0;
+            if said != "200" {
+                break said;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        };
+        assert_eq!(ended, "407");
         let _ = std::fs::remove_dir_all(&root);
     }
 }

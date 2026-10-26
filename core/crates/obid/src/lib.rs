@@ -339,16 +339,9 @@ pub async fn serve(
         }
     })?;
     jobs.set_api_address(bound);
-    // A job's agent's only way off the Mac, where the box holds it to that (crate::egress, #616).
+    // Jobs started its agents' egress proxy (crate::egress, #616), whose tunnels hold two files each.
     if jobs.confines_egress() {
         raise_open_files();
-        let egress = egress::Egress::start(&jobs)
-            .await
-            .map_err(|source| StartError::Listen {
-                address: SocketAddr::from(([127, 0, 0, 1], 0)),
-                source,
-            })?;
-        jobs.use_egress(egress);
     }
     stopwatch.lap("jobs");
     let (stopping_tx, stopping_rx) = tokio::sync::watch::channel(false);

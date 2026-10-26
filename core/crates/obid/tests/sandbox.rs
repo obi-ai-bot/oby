@@ -560,8 +560,8 @@ setTimeout(() => process.exit(0), 3000);";
 /// #616: a proxied agent (macOS, `Spec::proxied`) keeps the same fences and reaches loopback (its
 /// own servers, obid's MCP servers, obid's egress proxy), and nothing beyond it: a socket of its
 /// own to an address outside fails at the OS, over IPv4, IPv6 or UDP, and no host name resolves,
-/// whatever a check of its commands let through. Outside the sandbox the same probe reaches the
-/// outside address, so the refusal isn't this machine's.
+/// whatever a check of its commands let through. Outside the sandbox the same probe does each, so
+/// the refusals aren't this machine's.
 #[cfg(target_os = "macos")]
 #[test]
 fn a_proxied_agent_reaches_loopback_and_nothing_beyond() {
@@ -609,10 +609,16 @@ setTimeout(() => process.exit(0), 3000);"
         String::from_utf8_lossy(&output.stdout).into_owned()
     };
     let control = said(&probe_argv);
-    assert!(
-        control.lines().any(|l| l == "outside ok"),
-        "this machine doesn't reach 1.1.1.1 itself, so this proves nothing: {control}"
-    );
+    let ipv6 = control.lines().any(|l| l == "outside6 ok");
+    if !ipv6 {
+        eprintln!("this machine has no IPv6 route, so IPv6 proves nothing here");
+    }
+    for line in ["outside ok", "dns ok", "udp ok"] {
+        assert!(
+            control.lines().any(|l| l == line),
+            "outside the sandbox, {line}: this machine doesn't, so this proves nothing: {control}"
+        );
+    }
     let inside = said(&sandbox.wrap(&spec, &probe_argv));
     for line in [
         "loopback own",
