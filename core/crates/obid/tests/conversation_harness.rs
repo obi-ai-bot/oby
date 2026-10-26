@@ -1745,6 +1745,54 @@ fn attachments_reach_the_session_in_its_room() {
     assert!(!copied.join("leak.bin").exists());
 }
 
+/// The jobs the owner attaches to their words (Sangam's Attach tasks) are named before them by
+/// id, each once, and kept on the owner's turn, where the apps show their cards. An id obid
+/// doesn't have is refused, and its words go nowhere.
+#[test]
+fn attached_jobs_are_named_before_the_words_and_kept_on_the_turn() {
+    let (_folder, obid) = obid("harness-attach-jobs", true);
+    let started = said(
+        &obid,
+        json!({"said": r#"OBY oby_dispatch {"repo": "obi-e2e/fixture-app", "task": "Add a greeting", "kind": "build"}"#, "new": true}),
+    );
+    let conversation = started.body["conversation"].as_str().unwrap().to_owned();
+    let id = started.body["jobs"][0]["id"].as_str().unwrap().to_owned();
+
+    let forged = call(
+        &obid,
+        "POST",
+        "/v1/plans",
+        Some(&json!({"said": "SAY forged", "conversation": conversation, "jobs": ["not-a-job"]})),
+    );
+    assert_eq!(forged.status, 422, "{}", forged.text);
+
+    said(
+        &obid,
+        json!({"said": "SAY ok", "conversation": conversation, "jobs": [id, id]}),
+    );
+    let prompt = turns(&obid).last().unwrap()["prompt"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(
+        prompt.contains(&format!(
+            "The owner attached these jobs to their words; read each with oby_job: {id}.\n\n"
+        )) && prompt.ends_with("SAY ok"),
+        "{prompt}"
+    );
+    let thread = call(
+        &obid,
+        "GET",
+        &format!("/v1/conversation?id={conversation}"),
+        None,
+    )
+    .body;
+    let thread = thread.as_array().unwrap();
+    let mine = thread.iter().find(|t| t["text"] == "SAY ok").unwrap();
+    assert_eq!(mine["jobs"], json!([id]));
+    assert!(!thread.iter().any(|t| t["text"] == "SAY forged"));
+}
+
 /// An attachment is untrusted input (P2): the work a turn that gets one dispatches is marked
 /// untrusted, so it never runs in Bypass.
 #[test]

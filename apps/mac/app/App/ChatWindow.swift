@@ -504,7 +504,7 @@ private struct HomeView: View {
                        placeholder: replyTarget == nil ? HomeLine.placeholder(fullName: NSFullUserName()) : "Your answer…",
                        maximumHeight: height * 0.5, focusRequest: state.homeFocusRequest,
                        onSend: ask, onScreenshot: screenshot, onStop: { false }, usage: model.usageRows,
-                       voice: model.voice, talkKeyListening: model.listening)
+                       voice: model.voice, talkKeyListening: model.listening, tasks: model.work(state).map(\.job.job))
                 .disabled(sendingAnswer)
                 .keepsDraft($text, as: Drafts.home)
         }
@@ -551,7 +551,7 @@ private struct HomeView: View {
         switch step {
         case .talk:
             ConversationPage(model: model, composerFocusRequest: state.composerFocusRequest,
-                             onOpenJob: { state.trail.push(.job(id: $0)) }, onBack: back)
+                             onOpenJob: { state.trail.push(.job(id: $0)) }, onBack: back, tasks: model.work(state).map(\.job.job))
         case .job(let id):
             JobPane(model: model, id: id, onBack: back,
                     onOpenJob: { state.trail.push(.job(id: $0)) },

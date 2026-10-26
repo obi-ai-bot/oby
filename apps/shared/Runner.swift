@@ -1276,12 +1276,14 @@ nonisolated struct Runner: Sendable {
     /// `id`: the id the app gave the words (its echo's, a lower-case UUID), which obid's turn of them
     /// takes; sent again with it (Try again after a lost answer), obid adds nothing (obid only).
     /// `runsOn`: the teammate's Obi whose Mac the jobs these words start run on (obid only, #808).
+    /// `jobs`: the tasks attached to the words (Sangam's Attach tasks, obid only, #1173), left out when none.
     func planned(_ said: String, answer: (question: String, option: String)? = nil, attachments: [String] = [],
-                 conversation: String? = nil, new: Bool = false, id: String? = nil, runsOn: String? = nil) async throws -> PlannedTurn {
+                 conversation: String? = nil, new: Bool = false, id: String? = nil, runsOn: String? = nil,
+                 jobs: [String] = []) async throws -> PlannedTurn {
         struct Answer: Encodable { var question: String; var option: String }
-        struct Body: Encodable { var said: String; var answer: Answer?; var attachments: [String]; var conversation: String?; var new: Bool?; var id: String?; var runsOn: String? }
+        struct Body: Encodable { var said: String; var answer: Answer?; var attachments: [String]; var conversation: String?; var new: Bool?; var id: String?; var runsOn: String?; var jobs: [String]? }
         let body = Body(said: said, answer: answer.map { Answer(question: $0.question, option: $0.option) }, attachments: attachments,
-                        conversation: conversation, new: new ? true : nil, id: id, runsOn: runsOn)
+                        conversation: conversation, new: new ? true : nil, id: id, runsOn: runsOn, jobs: jobs.isEmpty ? nil : jobs)
         return try await call("POST", "v1/plans", body: body, timeout: Self.planTimeout)
     }
 

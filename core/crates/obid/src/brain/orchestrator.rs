@@ -684,6 +684,7 @@ async fn run(shared: &Arc<Shared>, batch: Vec<Event>, ledger: Arc<Mutex<Ledger>>
     let asked = Asked {
         said: "",
         attachments: &[],
+        jobs: &[],
         conversation: CONVERSATION,
         turn: "",
         runs_on: None,
