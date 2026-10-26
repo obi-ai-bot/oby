@@ -1,6 +1,6 @@
 # Working on Oby
 
-Oby is a native macOS app (SwiftUI, macOS 26 and later) that lives in a window and the menu bar and hands coding work to the user's own Claude Code, Codex and Cursor CLIs (Gemini later). The product is described in [README.md](README.md); what is being built, and in which order, is the GitHub project "Oby — Roadmap" (one milestone per feature, F1 to F16).
+Oby is a native macOS app (SwiftUI, macOS 26 and later) that lives in a window and the menu bar and hands coding work to the user's own Claude Code, Codex and Cursor CLIs (Gemini later). Its desktop app is moving to Electron (`apps/electron`, Dmytro and Wellington's call of 2026-10-26): it started as a copy of Sangam's design, shows only the conversation (Oby sets a new user up in it), is mocked until the experience is right, and then talks to obid, which stays in Rust. The Swift Mac app gets no new work meanwhile. The product is described in [README.md](README.md); what is being built, and in which order, is the GitHub project "Oby — Roadmap" (one milestone per feature, F1 to F16).
 
 ## How we work
 
@@ -67,6 +67,7 @@ Oby launches lean, and where this differs from Sangam's design, this wins until 
 
 ## Build and run
 
+- The Electron app: `cd apps/electron && npm install && npm run dev` (the window), or `npm run web` for the renderer alone in a browser; `npm run typecheck`. `?everything` shows all of Sangam's design; `apps/electron/README.md` maps it.
 - Open `apps/Oby.xcodeproj` in Xcode 27 and run the `Oby` scheme on My Mac, or `xcodebuild -project apps/Oby.xcodeproj -scheme Oby build`.
 - Tests: `MacTests` (Swift Testing, hosted by the app). Run them with ⌘U or `xcodebuild -project apps/Oby.xcodeproj -scheme Oby -destination 'platform=macOS' test`. While tests run, a test-host Oby is alive, so a freshly launched Oby quits (one instance at a time): launch it again when they finish.
 - What changed, checked: `scripts/oby-check.sh` runs only the suites a change reaches (obid's touched lib modules and test binaries with fmt and clippy, the touched MacTests or iOSTests suites, `swift test`), then gitleaks; `OBY_CHECK_PLAN=1` prints what it would run. It's this repository's check in obid (`"check": "scripts/oby-check.sh"` on `obi-ai-bot/oby` in its `config.json`, docs/runner-api.md, `repos`), so Oby's jobs here run it in their sandbox.
