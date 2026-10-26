@@ -501,7 +501,7 @@ private struct HomeView: View {
                 Text(sendProblem).font(Tokens.font(Tokens.textSm)).foregroundStyle(Tokens.danger).padding(.horizontal, 12)
             }
             MessageBox(text: $text, focused: $typing, tray: model.tray,
-                       placeholder: replyTarget == nil ? HomeLine.placeholder(fullName: NSFullUserName()) : "Your answer…",
+                       placeholder: replyTarget == nil ? HomeLine.placeholder(fullName: Profile.shared.name) : "Your answer…",
                        maximumHeight: height * 0.5, focusRequest: state.homeFocusRequest,
                        onSend: ask, onScreenshot: screenshot, onStop: { false }, usage: model.usageRows,
                        voice: model.voice, talkKeyListening: model.listening, tasks: model.work(state).map(\.job.job))
