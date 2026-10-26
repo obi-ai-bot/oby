@@ -498,6 +498,8 @@ private struct IconStrip: View {
         .help("Account")
         .accessibilityLabel("\(name)’s account")
         .sheet(isPresented: $editingProfile) { ProfileSheet { editingProfile = false } }
+        // A new name reaches teammates now, in a new card, not at the 5-minute look (`keepRenewing`).
+        .onChange(of: Profile.shared.given) { Task { [feed = model.feed] in _ = try? await SphereModel(feed: feed).renewCard() } }
     }
 }
 

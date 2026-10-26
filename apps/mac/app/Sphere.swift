@@ -505,6 +505,9 @@ final class SphereModel {
         /// does (#1233), and the request types the card accepts.
         var sealing: String?
         var accepts: [String]?
+        /// The owner-signed card obid holds, of which the Mac reads only its name.
+        var card: Card?
+        struct Card: Decodable, Equatable { var name: String? }
     }
 
     /// One entry of the Sphere's directory.
@@ -676,7 +679,7 @@ final class SphereModel {
             guard let obi = entry["obi"] as? String, obi != membership?.obiId, entry["status"] as? String == "active" else { return nil }
             let params = ((entry["card"] as? [String: Any])?["capabilities"] as? [String: Any])
                 .flatMap { ($0["extensions"] as? [[String: Any]])?.first?["params"] as? [String: Any] }
-            return Member(obi: obi, owner: entry["owner"] as? String ?? "", name: (entry["card"] as? [String: Any])?["name"] as? String ?? obi,
+            return Member(obi: obi, owner: entry["owner"] as? String ?? "", name: (entry["card"] as? [String: Any])?["name"] as? String ?? "",
                           active: entry["status"] as? String == "active", accepts: params?["accepts"] as? [String] ?? [])
         }
         // The fingerprints to compare with each person, from the keys obid pinned.
@@ -994,7 +997,7 @@ final class SphereModel {
         for obi in ids {
             do {
                 let made = try await raw(runner, "POST", "v1/obid/sphere/card", [
-                    "url": url, "sphere": invite.sphere, "obiId": obi, "name": "\(owner)'s Oby",
+                    "url": url, "sphere": invite.sphere, "obiId": obi, "name": Self.cardName(owner, given: Profile.shared.given),
                     "ownerKey": key.publicKey, "accepts": Self.accepts,
                 ])
                 guard let card = made["card"] as? [String: Any] else { throw RunnerError(message: "obid made no card.") }
@@ -1077,7 +1080,7 @@ final class SphereModel {
         }
         let key = try OwnerKey.of(membership.owner)
         let made = try await raw(runner, "POST", "v1/obid/sphere/card", [
-            "url": url, "sphere": sphere, "obiId": obi, "name": "\(membership.owner)'s Oby",
+            "url": url, "sphere": sphere, "obiId": obi, "name": Self.cardName(membership.owner, given: Profile.shared.given),
             "ownerKey": key.publicKey, "accepts": sharing ? Self.accepts + ["run_request", "share_offer"] : Self.accepts,
         ])
         guard let card = made["card"] as? [String: Any] else { throw RunnerError(message: "obid made no card.") }
@@ -1114,18 +1117,35 @@ final class SphereModel {
         return true
     }
 
-    /// A new card with obid's seal key, once, when the card obid holds has none (#1233): the same
-    /// `accepts`, signed with this Mac's owner key, so teammates' Obys seal what they send this one.
-    /// Answers whether it signed one.
+    /// What this Mac's Oby is called in its card, which teammates' Obys show (spec identity.md
+    /// section 2: its owner writes it, and a new card may change it): "<the name you gave in Oby>'s
+    /// Oby", else "<owner>'s Oby". Never your macOS name unless you gave it, nor a name a card can't
+    /// carry.
+    nonisolated static func cardName(_ owner: String, given: String) -> String {
+        "\(given.isEmpty || given.unicodeScalars.count > 90 || !isLineText(given) ? owner : given)'s Oby"
+    }
+
+    /// One line a card's `name` may carry (common.schema.json's `line_text`): no control character,
+    /// no bidirectional override or isolate.
+    nonisolated static func isLineText(_ text: String) -> Bool {
+        !text.unicodeScalars.contains { $0.value < 0x20 || $0.value == 0x7F || (0x202A...0x202E).contains($0.value) || (0x2066...0x2069).contains($0.value) }
+    }
+
+    /// A new card, once, when the one obid holds is behind: without obid's seal key (#1233), so
+    /// teammates' Obys seal what they send this one, or with another name than `cardName` (the owner
+    /// changed theirs). The same `accepts`, signed with this Mac's owner key. Answers whether it
+    /// signed one.
     @discardableResult
-    func sealCard() async throws -> Bool {
+    func renewCard() async throws -> Bool {
         let runner = try runner()
         let membership: Membership = try await runner.call("GET", "v1/obid/sphere")
-        guard membership.state == "joined", membership.sealing == "card_needed", let url = membership.url,
+        let name = Self.cardName(membership.owner, given: Profile.shared.given)
+        let renamed = membership.card.map { $0.name != name } ?? false
+        guard membership.state == "joined", membership.sealing == "card_needed" || renamed, let url = membership.url,
               let sphere = membership.sphere, let obi = membership.obiId else { return false }
         let key = try OwnerKey.of(membership.owner)
         let made = try await raw(runner, "POST", "v1/obid/sphere/card", [
-            "url": url, "sphere": sphere, "obiId": obi, "name": "\(membership.owner)'s Oby",
+            "url": url, "sphere": sphere, "obiId": obi, "name": name,
             "ownerKey": key.publicKey, "accepts": membership.accepts ?? Self.accepts,
         ])
         guard let card = made["card"] as? [String: Any] else { throw RunnerError(message: "obid made no card.") }
@@ -1136,7 +1156,7 @@ final class SphereModel {
     /// Keeps this Mac's Oby in its Obysphere past 30 days (#1215): a new delegation at launch, once
     /// obid answers, then every 6 hours once 5 or fewer days are left. And a new card as soon as
     /// obid says `card_needed` (#1233): to say it reads seal keys, or with its own once its team can
-    /// read one, so teammates seal what they send it.
+    /// read one, so teammates seal what they send it; or once its name isn't the owner's (`cardName`).
     static func keepRenewing(feed: RunnerFeed) async {
         let sphere = SphereModel(feed: feed)
         var renewed: Date?
@@ -1145,7 +1165,7 @@ final class SphereModel {
                (try? await sphere.renewDelegation(within: renewed == nil ? .infinity : 5 * 86_400)) != nil {
                 renewed = .now
             }
-            _ = try? await sphere.sealCard()
+            _ = try? await sphere.renewCard()
             // ponytail: polls obid on this Mac; 60 s until it first answers, then every 5 minutes for
             // `card_needed` (obid has no membership event to wait on), the delegation every 6 hours.
             try? await Task.sleep(for: .seconds(renewed == nil ? 60 : 300))

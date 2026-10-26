@@ -55,6 +55,30 @@ struct SphereTests {
         #expect(SpherePanel.shown("well-prado") == "Well-prado")
     }
 
+    /// Your Oby's card carries the name you gave in Oby, else your owner id: never your macOS name,
+    /// nor what a card can't carry (spec common.schema.json `line_text`, at most 100 characters).
+    @Test func aCardIsNamedForWhatYouGave() {
+        #expect(SphereModel.cardName("wellprado", given: "") == "wellprado's Oby")
+        #expect(SphereModel.cardName("wellprado", given: "Wellington Prado") == "Wellington Prado's Oby")
+        #expect(SphereModel.cardName("wellprado", given: "Well\u{202E}odarP") == "wellprado's Oby")
+        #expect(SphereModel.cardName("wellprado", given: "Well\nPrado") == "wellprado's Oby")
+        #expect(SphereModel.cardName("wellprado", given: String(repeating: "W", count: 91)) == "wellprado's Oby")
+    }
+
+    /// Teammates show the name a member's card carries without its "'s Oby", else their owner id;
+    /// a name no Oby would sign is their owner id too.
+    @Test func aMemberShowsTheNameTheyGave() {
+        func member(_ name: String) -> SphereModel.Member { .init(obi: "obi-mallory", owner: "mallory", name: name, active: true, accepts: []) }
+        #expect(SpherePanel.shown(member("Mallory Lima's Oby")) == "Mallory Lima")
+        #expect(SpherePanel.shown(member("mallory's Oby")) == "Mallory")
+        #expect(SpherePanel.shown(member("")) == "Mallory")
+        #expect(SpherePanel.shown(member("'s Oby")) == "Mallory")
+        #expect(SpherePanel.shown(member("Mallory's Obi")) == "Mallory")
+        #expect(SpherePanel.shown(member("\u{202E}yrtmyD's Oby")) == "Mallory")
+        // Their key still goes by their owner id, whatever they're called.
+        #expect(KeyChangeCard.title(SphereModel.Pin(owner: "mallory", fingerprint: "ed25519:a", changedTo: "ed25519:b")) == "Mallory’s Oby has a new key")
+    }
+
     @Test func canonicalJSONIsRFC8785ForTheProtocolsValues() {
         let value: [String: Any] = ["b": [true, false, NSNull()], "a": 1, "é": "x", "c": ["z": "\"\\\n\u{1}/é"]]
         #expect(String(decoding: Canonical.json(value), as: UTF8.self) == #"{"a":1,"b":[true,false,null],"c":{"z":"\"\\\n\u0001/é"},"é":"x"}"#)
@@ -467,14 +491,51 @@ struct SphereTests {
             return (stub, SphereModel(feed: feed))
         }
         let (needed, sphere) = obid(sealing: "card_needed")
-        #expect(try await sphere.sealCard())
+        #expect(try await sphere.renewCard())
         let made = try #require(needed.requests.first { $0.method == "POST" })
         #expect(made.json?["accepts"] as? [String] == ["review_request", "question"])
         let put = try #require(needed.requests.last)
         #expect(put.method == "PUT" && put.json?["card"] != nil && put.json?["delegation"] == nil)
         let (on, sealed) = obid(sealing: "on")
-        #expect(try await !sealed.sealCard())
+        #expect(try await !sealed.renewCard())
         #expect(on.requests.allSatisfy { $0.method == "GET" })
+    }
+
+    /// A card with another name than the one you gave in Oby is signed again once, named for it; one
+    /// already named for it, never.
+    @MainActor @Test func aCardIsSignedAgainForANewName() async throws {
+        let owner = "tester-\(UUID().uuidString.lowercased().prefix(8))"
+        let before = Profile.shared
+        Profile.shared = Profile(defaults: .scratch, file: URL(filePath: NSTemporaryDirectory()).appending(path: "profile-\(UUID().uuidString)"))
+        defer { Profile.shared = before; try? OwnerKey.store.remove(owner) }
+        func obid(named name: String) -> (RunnerStub, SphereModel) {
+            let stub = RunnerStub { request in
+                switch (request.method, request.path) {
+                case ("GET", "/v1/obid/sphere"):
+                    (200, #"{"state": "joined", "owner": "\#(owner)", "url": "https://obysphere.example", "sphere": "acme", "obiId": "obi-\#(owner)", "sealing": "on", "accepts": ["review_request", "question"], "card": {"name": "\#(name)"}}"#)
+                case ("POST", "/v1/obid/sphere/card"): (200, #"{"card": {"name": "a card"}}"#)
+                case ("PUT", "/v1/obid/sphere/membership"): (200, "{}")
+                default: (404, "{}")
+                }
+            }
+            let feed = RunnerFeed()
+            feed.stageAlerts(following: stub.runner)
+            return (stub, SphereModel(feed: feed))
+        }
+        let (unnamed, same) = obid(named: "\(owner)'s Oby")
+        #expect(try await !same.renewCard())
+        #expect(unnamed.requests.allSatisfy { $0.method == "GET" })
+
+        try Profile.shared.save(name: " Ana Lima ", picture: nil)
+        let (old, renamed) = obid(named: "\(owner)'s Oby")
+        #expect(try await renamed.renewCard())
+        let made = try #require(old.requests.first { $0.method == "POST" })
+        #expect(made.json?["name"] as? String == "Ana Lima's Oby")
+        #expect(made.json?["accepts"] as? [String] == ["review_request", "question"])
+        #expect(old.requests.last?.method == "PUT")
+        let (current, kept) = obid(named: "Ana Lima's Oby")
+        #expect(try await !kept.renewCard())
+        #expect(current.requests.allSatisfy { $0.method == "GET" })
     }
 
     /// The Join screen asks a server Oby doesn't know nothing until "I trust" is ticked.
