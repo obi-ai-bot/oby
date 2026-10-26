@@ -6,6 +6,8 @@ Oby is a native macOS app (SwiftUI, macOS 26 and later) that lives in a window a
 
 - Branch from `dev` and open pull requests into `dev`. `dev` is merged into `main` only when a feature's "Test it when it's done" list passes on a real Mac.
 - One feature at a time, in roadmap order. Each feature issue has the test, the build list and the feasibility notes; read its spikes before starting.
+- Plans are written in [obi-ai-bot/oby-plan](https://github.com/obi-ai-bot/oby-plan) (internal; since 2026-10-26), not in this repository: the Obysphere roadmap and its epics, the research behind them, and ideas not yet scheduled. Features are still issues here and on the board. When a plan's epic has a piece that lands in Oby, follow its order and its "done when".
+- Work from this repository is Oby only (the owner's decision of 2026-10-26): Dmytro owns the Obysphere (obi-ai-bot/obi-sphere: its server, spec and deploys). Don't open pull requests there or deploy it unless the owner asks.
 - Update the issue at every step, in the same turn: `status:in-progress` and the branch name when work starts; `status:in-review` and the pull request link when it's open; `status:blocked` and what it waits on; status labels off when it's merged. Move it on the project board too.
 - Commits follow Conventional Commits. Agents commit unsigned in their worktree (they have no signing key); commits are signed when Oby pushes them. Report the checks you actually ran and what they printed.
 
