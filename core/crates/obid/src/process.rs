@@ -90,6 +90,12 @@ pub fn sandbox_env(
     // Foundation's home is the password database's, whatever `HOME` says, so SwiftPM's caches and
     // Xcode's DerivedData would go in the person's hidden `~/Library`: this makes it the job's.
     env.push(("CFFIXED_USER_HOME".into(), temp.as_os_str().to_os_string()));
+    // What `extra` sets wins over what obid's own environment had (a job's own proxy).
+    env.retain(|(name, _)| {
+        !extra
+            .iter()
+            .any(|(set, _)| name.as_os_str() == OsStr::new(set))
+    });
     for (name, value) in extra {
         env.push(((*name).into(), value.clone()));
     }

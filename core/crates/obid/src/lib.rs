@@ -23,6 +23,7 @@ pub mod conversation;
 pub mod decisions;
 pub mod detail;
 pub mod devices;
+pub mod egress;
 pub mod event_work;
 pub mod events;
 pub mod facts;
@@ -323,6 +324,14 @@ pub async fn serve(
         }
     })?;
     jobs.set_api_address(bound);
+    // A job's agent's only way off the Mac (crate::egress, #616).
+    let egress = egress::Egress::start(&jobs)
+        .await
+        .map_err(|source| StartError::Listen {
+            address: SocketAddr::from(([127, 0, 0, 1], 0)),
+            source,
+        })?;
+    jobs.use_egress(egress);
     stopwatch.lap("jobs");
     let (stopping_tx, stopping_rx) = tokio::sync::watch::channel(false);
     let link = sphere::Link::open(
