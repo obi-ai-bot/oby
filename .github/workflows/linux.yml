@@ -1,4 +1,6 @@
-# Linux CI: what this repository's own checks already run, on GitHub's standard Ubuntu runners.
+# Linux CI: what this repository's own checks already run, on Deskree's DigitalOcean runners for Oby
+# ([self-hosted, linux, do-oby]: one fresh Ubuntu 24.04 droplet per job, destroyed after it, never
+# Tetrix's boxes). A fork PR's run waits for a maintainer's approval before it gets a runner.
 #
 #   Rust (core)        scripts/oby-check.sh's core/ part, for the whole workspace: cargo fmt --check,
 #                      clippy -D warnings on every target, cargo test (obid's sandbox tests included)
@@ -6,7 +8,8 @@
 #   Control plane      cloud/control-plane: pnpm test (vitest inside Miniflare) and pnpm check
 #   E2E (stub agents)  make e2e: headless, stub agents, no credentials, against oby-sphere's dev
 #
-# The Apple apps (xcodebuild) and swift test are the Mac check's (AGENTS.md, "Build and run").
+# The Apple apps (xcodebuild) and swift test can't run on Linux: they stay the Mac check's
+# (scripts/oby-check.sh on the author's Mac; AGENTS.md, "Build and run").
 #
 # A draft pull request runs the workflow but skips its jobs (a skipped job reports success under
 # the same name), unless it has the `full-ci` label: that takes effect on the next push after
@@ -42,7 +45,7 @@ jobs:
   rust:
     name: Rust (core)
     if: github.event_name != 'pull_request' || !github.event.pull_request.draft || contains(github.event.pull_request.labels.*.name, 'full-ci')
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, do-oby]
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -58,14 +61,17 @@ jobs:
 
       # obid's job sandbox on Linux is bubblewrap (with slirp4netns for an agent's network), and
       # tests/sandbox.rs, the plug-in tests and the job tests make one. Ubuntu 24.04's AppArmor
-      # refuses unprivileged user namespaces by default, which bubblewrap needs: this throwaway
-      # runner allows them. The last line proves bubblewrap works here, so a sandbox test that
+      # refuses unprivileged user namespaces by default, which bubblewrap needs: the throwaway
+      # droplet allows them. The last line proves bubblewrap works here, so a sandbox test that
       # fails is the sandbox's failure, not the runner's.
       - name: bubblewrap for obid's job sandbox
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq bubblewrap slirp4netns
-          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          # The droplet image has both already; this only fills a gap.
+          if ! command -v bwrap >/dev/null || ! command -v slirp4netns >/dev/null; then
+            sudo apt-get update -qq && sudo apt-get install -y -qq bubblewrap slirp4netns
+          fi
+          [ "$(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null || echo 0)" = 0 ] \
+            || sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
           bwrap --ro-bind / / --unshare-all --die-with-parent true
 
       - name: cargo fmt --check
@@ -80,7 +86,7 @@ jobs:
   secrets:
     name: Secret scan (gitleaks)
     if: github.event_name != 'pull_request' || !github.event.pull_request.draft || contains(github.event.pull_request.labels.*.name, 'full-ci')
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, do-oby]
     timeout-minutes: 10
     env:
       GITLEAKS_VERSION: 8.30.1
@@ -119,7 +125,7 @@ jobs:
   control-plane:
     name: Control plane
     if: github.event_name != 'pull_request' || !github.event.pull_request.draft || contains(github.event.pull_request.labels.*.name, 'full-ci')
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, do-oby]
     timeout-minutes: 15
     defaults:
       run:
@@ -152,7 +158,7 @@ jobs:
   e2e:
     name: E2E (stub agents)
     if: github.event_name != 'pull_request' || !github.event.pull_request.draft || contains(github.event.pull_request.labels.*.name, 'full-ci')
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, do-oby]
     timeout-minutes: 45
     env:
       OBI_SPHERE_DIR: ${{ github.workspace }}/oby-sphere
@@ -183,9 +189,12 @@ jobs:
       # obid runs each job's agent (here the stub) in its bubblewrap sandbox: see the Rust job.
       - name: bubblewrap for obid's job sandbox
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq bubblewrap slirp4netns
-          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          # The droplet image has both already; this only fills a gap.
+          if ! command -v bwrap >/dev/null || ! command -v slirp4netns >/dev/null; then
+            sudo apt-get update -qq && sudo apt-get install -y -qq bubblewrap slirp4netns
+          fi
+          [ "$(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null || echo 0)" = 0 ] \
+            || sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
           bwrap --ro-bind / / --unshare-all --die-with-parent true
 
       # pnpm's version comes from oby-sphere's server/package.json (packageManager).
