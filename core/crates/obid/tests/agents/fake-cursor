@@ -9,7 +9,10 @@
 //   COMMIT: <file>   writes the file (no request), then asks to commit, and commits when allowed
 //   ASK: <command>   asks to run the command and says which option obid chose
 //   PLAN             in plan mode, sends its plan (`cursor/create_plan`) and says what came back
-//   QUESTION         asks a question (`cursor/ask_question`) and says what came back
+//   QUESTION         asks a question (`cursor/ask_question`) and says what came back; a later
+//                    prompt says what it heard
+//   ASK OWNER        asks the owner with Oby's `oby_ask_owner` (its `oby` server), then ends its
+//                    turn; resumed, says what it heard
 //   FS               asks obid to read a file (`fs/read_text_file`) and says what came back
 //   ESCAPE           writes a file outside the worktree without asking, and says how that went
 //   SLEEP            beats: writes a growing count to .obi/beat every 50 ms until it is cancelled
@@ -64,6 +67,8 @@ const ask = (method, params) => new Promise((done) => {
 });
 let session = null;
 let state = null;
+// The MCP servers obid gave the session: only Oby's own (`oby`, `tetrix`), on obid's port.
+let servers = [];
 let cancelled = null;
 
 const save = () => writeFileSync(join(sessions, `${session}.json`), JSON.stringify(state));
@@ -138,8 +143,34 @@ async function prompt(id, text) {
     return answered(id);
   }
   if (task.includes("QUESTION")) {
-    const answer = await ask("cursor/ask_question", { sessionId: session, questions: [{ id: "q", prompt: "Which?", options: ["a", "b"] }] });
-    say(`question: ${answer?.outcome?.outcome}`);
+    if (state.asked) {
+      say(`heard: ${text} after ${state.asked}`);
+      return answered(id);
+    }
+    state.asked = "nothing";
+    save();
+    const answer = await ask("cursor/ask_question", { toolCallId: "q1", title: "Need input",
+      questions: [{ id: "q", prompt: "Which?", options: [{ id: "a", label: "A" }, { id: "b", label: "B" }] }] });
+    state.asked = `question: ${answer?.outcome?.outcome} ${JSON.stringify(answer?.outcome?.answers ?? answer?.outcome?.reason)}`;
+    save();
+    say(state.asked);
+    return answered(id);
+  }
+  if (task.includes("ASK OWNER")) {
+    if (state.asked) {
+      say(`heard: ${text}`);
+      return answered(id);
+    }
+    state.asked = true;
+    save();
+    const server = servers.find((s) => s.name === "oby");
+    const post = (method, params) => fetch(server.url, { method: "POST",
+      headers: Object.fromEntries([["content-type", "application/json"], ...server.headers.map((h) => [h.name, h.value])]),
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }) }).then((r) => r.json());
+    const listed = await post("tools/list", {});
+    say(`listed: ${listed.result.tools.map((t) => t.name).join(", ")}\n`);
+    const answer = await post("tools/call", { name: "oby_ask_owner", arguments: { question: "Which store?", options: [{ label: "SQLite" }] } });
+    say(`Asked: ${answer.result.content[0].text}`);
     return answered(id);
   }
   if (task.includes("FS")) {
@@ -208,7 +239,9 @@ rl.on("line", (line) => {
     case "session/load": {
       if (!signedIn) return send({ id, error: { code: -32000, message: "Authentication required" } });
       mkdirSync(sessions, { recursive: true });
-      if (params.mcpServers?.length) return send({ id, error: { code: -32602, message: "obid gave MCP servers" } });
+      servers = params.mcpServers ?? [];
+      if (servers.some((s) => !["oby", "tetrix"].includes(s.name) || !s.url.includes("/v1/agent/")))
+        return send({ id, error: { code: -32602, message: `obid gave MCP servers: ${JSON.stringify(servers.map((s) => s.name))}` } });
       if (method === "session/load") {
         const file = join(sessions, `${params.sessionId}.json`);
         if (!existsSync(file)) return send({ id, error: { code: -32602, message: `no session ${params.sessionId}` } });

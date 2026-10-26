@@ -8,7 +8,8 @@
 //! round's message as `session/prompt`. It answers every request the agent waits on: permissions
 //! (`allow_once`, never `allow_always`, which would let later calls past obid), Cursor's plan
 //! (`cursor/create_plan`, as Claude Code's `ExitPlanMode`) and question (`cursor/ask_question`,
-//! skipped); anything else is refused. The prompt's answer ends the turn, and stdin closes.
+//! as Claude Code's `AskUserQuestion`); anything else is refused. The prompt's answer ends the
+//! turn, and stdin closes.
 //!
 //! A permission's answer carries no words, so what obid declined and why goes in the turn's
 //! `notes`, which the next prompt starts with.
@@ -71,6 +72,7 @@ pub async fn run_turn(
         thinking: String::new(),
         notes: Vec::new(),
         plan_approved: false,
+        owners_words: None,
         tokens: crate::usage::Tokens::default(),
     };
     let mut turn = Turn::default();
@@ -436,6 +438,52 @@ fn option(request: &Value, kind: &str) -> Option<String> {
         .and_then(|o| o["optionId"].as_str().map(str::to_owned))
 }
 
+/// The owner's answers to Cursor's questions (as AskUserQuestion's `answers`, by each question's
+/// text) as the ids of the options they picked; or, when any is in their own words, every answer
+/// in words: the one, or each `"question": "answer"` on a line.
+fn chosen_options(questions: &[Value], answers: &Value) -> Result<Vec<Value>, String> {
+    let mut chosen = Vec::new();
+    let mut said = Vec::new();
+    let mut own_words = false;
+    for q in questions {
+        let Some(answer) = q["prompt"].as_str().and_then(|p| answers[p].as_str()) else {
+            continue;
+        };
+        let options = q["options"]
+            .as_array()
+            .map(Vec::as_slice)
+            .unwrap_or_default();
+        let id = |label: &str| {
+            options
+                .iter()
+                .find(|o| o["label"] == label)
+                .and_then(|o| o["id"].as_str())
+        };
+        // A label as it is, or several picked, as AskUserQuestion joins them.
+        let ids: Option<Vec<&str>> = match id(answer) {
+            Some(id) => Some(vec![id]),
+            None if q["allowMultiple"] == json!(true) => answer.split(", ").map(id).collect(),
+            None => None,
+        };
+        match ids {
+            Some(ids) => chosen.push(json!({"questionId": q["id"], "selectedOptionIds": ids})),
+            None => own_words = true,
+        }
+        said.push((q["prompt"].clone(), answer.to_owned()));
+    }
+    if !own_words {
+        return Ok(chosen);
+    }
+    Err(match said.as_slice() {
+        [(_, answer)] => answer.clone(),
+        _ => said
+            .iter()
+            .map(|(q, a)| format!("{q}: {}", json!(a)))
+            .collect::<Vec<_>>()
+            .join("\n"),
+    })
+}
+
 fn selected(option: String) -> Value {
     json!({"outcome": {"outcome": "selected", "optionId": option}})
 }
@@ -500,6 +548,9 @@ struct Run<D, E> {
     notes: Vec<String>,
     /// The tool's plan was approved while it was in plan mode: it goes ahead in its agent mode.
     plan_approved: bool,
+    /// The owner answered its question in their own words, which Cursor's answer can't carry
+    /// (option ids only): the turn goes on with them.
+    owners_words: Option<String>,
     /// What this turn's prompts used, when the agent reports it (crate::usage::acp_tokens).
     tokens: crate::usage::Tokens,
 }
@@ -622,6 +673,16 @@ impl<D: Fn(&str, &Value) -> Ruling, E: FnMut(Event)> Run<D, E> {
                 .prompt(
                     "Your plan is approved: carry it out now, then finish with a short summary.",
                 )
+                .await?;
+        }
+        if let Some(words) = self.owners_words.take()
+            && ended.1 == "end_turn"
+        {
+            ended = self
+                .prompt(&format!(
+                    "The owner answered your question in their own words: {}. Carry on with that, then finish with a short summary.",
+                    json!(words)
+                ))
                 .await?;
         }
         let (stop_reason, said) = (ended.1, ended.0);
@@ -888,13 +949,44 @@ impl<D: Fn(&str, &Value) -> Ruling, E: FnMut(Event)> Run<D, E> {
                 self.conn.reply(&id, reply).await;
             }
             Some("cursor/ask_question") => {
-                self.conn
-                    .reply(
-                        &id,
-                        json!({"outcome": {"outcome": "skipped", "reason":
-                            "obid can't put a question to the owner here. Decide yourself, or say what you need in your summary."}}),
-                    )
-                    .await;
+                // As Claude Code's AskUserQuestion (#858): the owner picks an option or answers in
+                // their own words, which go back as `skipped` with the words, and come next.
+                let questions = params["questions"].as_array().cloned().unwrap_or_default();
+                let asked: Vec<Value> = questions
+                    .iter()
+                    .map(|q| {
+                        json!({"question": q["prompt"], "header": params["title"],
+                               "multiSelect": q["allowMultiple"] == json!(true),
+                               "options": q["options"].as_array().into_iter().flatten()
+                                   .map(|o| json!({"label": o["label"]})).collect::<Vec<_>>()})
+                    })
+                    .collect();
+                let ruling = (self.decide)(
+                    crate::permissions::ASK_USER_QUESTION,
+                    &json!({ "questions": asked }),
+                );
+                let Ok(answer) = self.conn.settle(ruling).await else {
+                    return;
+                };
+                let reply = match answer {
+                    Answer::AllowWith(given) => match chosen_options(&questions, &given["answers"])
+                    {
+                        Ok(answers) => {
+                            json!({"outcome": {"outcome": "answered", "answers": answers}})
+                        }
+                        Err(words) => {
+                            self.owners_words = Some(words.clone());
+                            json!({"outcome": {"outcome": "skipped", "reason": words}})
+                        }
+                    },
+                    Answer::Allow => json!({"outcome": {"outcome": "skipped", "reason":
+                        crate::permissions::QUESTION_DECLINED}}),
+                    Answer::Deny(why) => {
+                        (self.on_event)(Event::Denied(why.clone()));
+                        json!({"outcome": {"outcome": "skipped", "reason": why}})
+                    }
+                };
+                self.conn.reply(&id, reply).await;
             }
             // `fs/*`, `terminal/*` and anything else: refused, so the agent never waits on obid.
             _ => self.conn.refuse(&id).await,
@@ -1117,6 +1209,36 @@ mod tests {
         let mut other = ToolCall::default();
         other.merge(&json!({"kind": "other", "title": "Something new"}));
         assert_eq!(other.calls(), None);
+    }
+
+    #[test]
+    fn the_owners_answers_go_back_as_option_ids_or_words() {
+        let questions = vec![
+            json!({"id": "q1", "prompt": "Which?", "options": [{"id": "a", "label": "A"}, {"id": "b", "label": "B, too"}]}),
+            json!({"id": "q2", "prompt": "Which ones?", "allowMultiple": true,
+                   "options": [{"id": "x", "label": "X"}, {"id": "y", "label": "Y"}]}),
+        ];
+        assert_eq!(
+            chosen_options(
+                &questions,
+                &json!({"Which?": "B, too", "Which ones?": "X, Y"})
+            ),
+            Ok(vec![
+                json!({"questionId": "q1", "selectedOptionIds": ["b"]}),
+                json!({"questionId": "q2", "selectedOptionIds": ["x", "y"]}),
+            ])
+        );
+        assert_eq!(
+            chosen_options(&questions[..1], &json!({"Which?": "Neither"})),
+            Err("Neither".into())
+        );
+        assert_eq!(
+            chosen_options(
+                &questions,
+                &json!({"Which?": "A", "Which ones?": "X and Z"})
+            ),
+            Err("\"Which?\": \"A\"\n\"Which ones?\": \"X and Z\"".into())
+        );
     }
 
     #[test]

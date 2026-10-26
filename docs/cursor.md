@@ -92,7 +92,7 @@ what the schema and Cursor's own ACP page show.
 | Method | Oby's answer |
 | --- | --- |
 | `cursor/create_plan` | The plan card (as `ExitPlanMode`). Approve: `{outcome: "accepted"}`, then Cursor's mode goes to `agent` and a prompt tells it to go ahead. Reject: `{outcome: "rejected", reason}`. |
-| `cursor/ask_question` | `{outcome: "skipped"}`: questions go to the user in the summary, as Codex's are refused. |
+| `cursor/ask_question` | On obid, the job's question, as Claude Code's `AskUserQuestion` (docs/runner-api.md, `permission`): each question's `prompt`, its options' `label`s and `allowMultiple`. The owner's options go back as `{outcome: {outcome: "answered", answers: [{questionId, selectedOptionIds}]}}` (Cursor's documented shape, cursor.com/docs/cli/acp); their own words as `{outcome: "skipped", reason: <the words>}`, then as the next prompt of the same turn, since the answer takes option ids only; a no is `skipped` with the decline. Over ACP Cursor rarely sends it today (Cursor traced it to how ACP sessions are identified on their side, forum thread 172976, 2026-09-25), so obid also gives every Cursor job its `oby` MCP server with one tool, `oby_ask_owner`: it returns at once (Cursor's MCP calls time out after about a minute), the turn ends, and the owner's answer resumes the session with `session/load` and `session/prompt`. The Swift engine skips it. |
 | `cursor/update_todos`, `cursor/task` | Notifications: a step line for now (#381's activity list isn't in yet). |
 | any other request (`fs/*`, `terminal/*`) | A JSON-RPC error: Cursor never waits on Oby. |
 
