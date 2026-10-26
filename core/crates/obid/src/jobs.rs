@@ -10052,6 +10052,38 @@ impl Jobs {
             });
             return cards(None);
         }
+        // In its base's merge queue (crate::merge): GitHub merges it, and nothing waits on the
+        // owner meanwhile. Taken out without merging, the owner hears it, once for that head, and
+        // obid doesn't add that head again by itself.
+        if let Some(queued) = &job.merge_queued {
+            let Ok(now) = crate::github::in_queue(gh, &job.repo, number).await else {
+                return;
+            };
+            if now.queued || now.state != "OPEN" {
+                if now.state == "MERGED" {
+                    // Merged since this read: the next one settles it and deletes its branch.
+                    self.follow_now(id);
+                }
+                self.update(id, |job| {
+                    job.merge_needs_you = false;
+                    job.merge_error = None;
+                });
+                return cards(None);
+            }
+            tracing::info!("job {id}: GitHub took it out of the merge queue");
+            let out = queued.head.clone();
+            self.update(id, |job| {
+                job.merge_queued = None;
+                job.merge_dequeued = Some(out);
+            });
+        }
+        if self
+            .get(id)
+            .is_some_and(|job| job.merge_dequeued.as_deref() == Some(head.as_str()))
+        {
+            let card = crate::merge::stopped_card(&job, &head, &crate::merge::dequeued(&pr.base));
+            return self.raise_merge_card(id, link.as_ref(), Some(card));
+        }
         let home = self.config.home.clone();
         let Some(owner) = crate::github_login::read_status(gh).await.user else {
             return;
@@ -10255,19 +10287,30 @@ impl Jobs {
                 }
             }
         };
-        // What waits on the owner now: the card, unless they answered it already (Leave it open,
-        // Dismiss): then not again for this head and reason. A card the follower settled by
-        // itself (the state went and came back) is offered again.
+        self.raise_merge_card(id, link.as_ref(), card);
+    }
+
+    /// What waits on the owner now about the job `id`'s merge: `card`, unless they answered it
+    /// already (Leave it open, Dismiss): then not again for this head and reason. A card the
+    /// follower settled by itself (the state went and came back) is offered again. None settles
+    /// the job's merge cards.
+    fn raise_merge_card(
+        &self,
+        id: &str,
+        link: Option<&std::sync::Arc<crate::sphere::Link>>,
+        card: Option<crate::sphere::inbox::Item>,
+    ) {
         let answered = card.as_ref().is_some_and(|c| {
-            link.as_ref()
-                .and_then(|l| l.item(&c.id))
+            link.and_then(|l| l.item(&c.id))
                 .is_some_and(|i| i.done.is_some() && i.answer.is_some())
         });
         self.update(id, |job| {
             job.merge_needs_you = card.is_some() && !answered;
             job.merge_error = card.as_ref().filter(|_| !answered).map(|c| c.text.clone());
         });
-        cards(card);
+        if let Some(link) = link {
+            link.merge_items(id, card);
+        }
     }
 
     /// Right before obid sends `action` for the job `id` about `head` (crate::merge): whether the
@@ -10471,7 +10514,13 @@ impl Jobs {
                 ));
             }
         }
-        Ok(None)
+        // In the base's merge queue: GitHub merges it once the queue's checks pass.
+        Ok(merged.queued.is_some().then(|| {
+            format!(
+                "Added to {}'s merge queue: GitHub merges it once its checks pass.",
+                pr.base
+            )
+        }))
     }
 }
 
@@ -15170,6 +15219,101 @@ mod tests {
             jobs.get("j").unwrap().pull_request_error.is_some(),
             "read now"
         );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A pull request obid added to its base's merge queue (crate::merge): while it's in the
+    /// queue nothing waits on the owner and nothing more is sent. Taken out without merging, the
+    /// owner hears it, one card for that head, and obid doesn't add it again by itself: the next
+    /// read asks GitHub nothing.
+    #[tokio::test]
+    async fn a_pull_request_taken_out_of_the_merge_queue_is_the_owners() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!("obid-dequeued-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let gh = root.join("gh");
+        std::fs::write(
+            &gh,
+            format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{dir}/calls'\ncase \"$*\" in\n  \"api graphql -f query=query\"*) cat '{dir}/queue.json' ;;\n  *) exit 1 ;;\nesac\n",
+                dir = root.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let queue = |queued: bool| {
+            let answer = serde_json::json!({"data": {"repository": {"pullRequest": {
+                "state": "OPEN", "isInMergeQueue": queued, "headRefOid": "a".repeat(40)}}}});
+            std::fs::write(root.join("queue.json"), answer.to_string()).unwrap();
+        };
+        let config = crate::config::Config::parse(
+            &serde_json::json!({"listen": "127.0.0.1:0", "home": root.join("home"), "owner": "o",
+                "repos": [{"repo": "o/r", "remote": "https://example.com/o/r.git"}]})
+            .to_string(),
+        )
+        .unwrap();
+        let jobs = Jobs::open(
+            config,
+            crate::events::Events::new(),
+            Err("no sandbox".into()),
+        )
+        .unwrap();
+        let mut job = Job::new(
+            "j".into(),
+            "o/r".into(),
+            "fix".into(),
+            "Fix it".into(),
+            "claude".into(),
+            "a".into(),
+        );
+        job.status = Status::Done;
+        job.branch = "oby/fix-it".into();
+        job.published = Some("https://github.com/o/r/pull/3".into());
+        job.merge_queued = Some(crate::job::Queued {
+            head: "a".repeat(40),
+            by: crate::job::MergedBy {
+                by: "memory".into(),
+                memory: Some("m1".into()),
+                at: 1,
+            },
+        });
+        jobs.put(job);
+        let pr = crate::github::PullRequest {
+            state: "OPEN".into(),
+            review_decision: Some("APPROVED".into()),
+            base: "dev".into(),
+            merged_at: None,
+            checked_at: obi_protocol::time::now(),
+            head: Some("a".repeat(40)),
+        };
+        let carry = || jobs.carry("j", &gh, &pr, crate::github::Merging::default());
+
+        queue(true);
+        carry().await;
+        let job = jobs.get("j").unwrap();
+        assert!(job.merge_queued.is_some());
+        assert!(!job.merge_needs_you && job.merge_error.is_none());
+        let calls = std::fs::read_to_string(root.join("calls")).unwrap();
+        assert_eq!(calls.lines().count(), 1, "{calls}");
+        assert!(
+            calls.contains("isInMergeQueue") && calls.ends_with("-F number=3\n"),
+            "{calls}"
+        );
+
+        queue(false);
+        carry().await;
+        let job = jobs.get("j").unwrap();
+        assert!(job.merge_queued.is_none());
+        assert_eq!(job.merge_dequeued, Some("a".repeat(40)));
+        assert!(job.merge_needs_you && job.needs_you());
+        assert_eq!(job.merge_error, Some(crate::merge::dequeued("dev")));
+        assert!(job.to_json().get("mergeQueued").is_none());
+
+        std::fs::remove_file(root.join("calls")).unwrap();
+        carry().await;
+        let job = jobs.get("j").unwrap();
+        assert_eq!(job.merge_error, Some(crate::merge::dequeued("dev")));
+        assert!(!root.join("calls").exists(), "asked GitHub again");
         let _ = std::fs::remove_dir_all(&root);
     }
 

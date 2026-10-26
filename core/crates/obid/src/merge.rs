@@ -87,8 +87,20 @@ fn needs_you(why: impl Into<String>) -> Blocked {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Merged {
     pub method: Method,
-    /// The merge, then the branch's deletion when it went: the job's `outgoing`.
+    /// The merge, then the branch's deletion when it went: the job's `outgoing`. Or, on a base
+    /// that merges through a merge queue, its addition to the queue (`mergeQueue`).
     pub outgoing: Vec<Outgoing>,
+    /// The head obid added to the base's merge queue, when it went there: not merged yet, and its
+    /// branch stays until GitHub merges it ([`closed`]).
+    pub queued: Option<String>,
+}
+
+/// Why a pull request GitHub took out of `base`'s merge queue isn't merged: what the owner hears
+/// (one card per head), and why obid doesn't add that head again by itself.
+pub fn dequeued(base: &str) -> String {
+    format!(
+        "GitHub removed it from {base}'s merge queue, so it isn't merged. See why on GitHub, then add it to the queue there, or ask Oby for another round."
+    )
 }
 
 /// Whether `branch` is the one obid created for `job`: its own `oby/` branch. The only branch a
@@ -329,6 +341,10 @@ pub fn ready(
     }
     match merging.merge_state.as_deref() {
         Some("CLEAN" | "HAS_HOOKS") => Ok(()),
+        // A base that merges only through its merge queue can say so of a pull request ready for
+        // it: the queue merges it on the base as it is then, and GitHub refuses to add one that
+        // anything else blocks.
+        Some("BLOCKED" | "BEHIND") if merging.merge_queue.is_some() => Ok(()),
         Some("DIRTY") => Err(conflict()),
         Some("BEHIND") => Err(wait(format!(
             "Not merged yet: it's behind {base}, so it needs a rebase first."
@@ -553,7 +569,9 @@ fn owned<'a>(
 /// Merges the job's pull request by `workflow`: reads it and its reviews from GitHub once more,
 /// checks everything [`ready`] does and that it's still the pull request it read, writes Oby's
 /// own commit title and message and scans them, then `PUT …/pulls/{n}/merge` at the head it
-/// checked, and deletes the job's own branch. Its files go in `home/tmp/merge-<job id>`, removed
+/// checked, and deletes the job's own branch. A base whose rules require a merge queue takes no
+/// `PUT`: obid adds the pull request to the queue at that head instead (`enqueuePullRequest`), and
+/// its branch is deleted once GitHub merges it ([`closed`]). Its files go in `home/tmp/merge-<job id>`, removed
 /// after. `reviewers`: Oby's reviewer accounts and the owner's login, as [`ready`] takes them.
 /// `go` is asked right
 /// before the merge is sent (`merge`) and before its branch is deleted (`branchDelete`): whether
@@ -640,6 +658,25 @@ async fn merging(
             pr.base
         )));
     }
+    // GitHub refuses a merge into a base whose rules require its merge queue: it goes there
+    // instead, landed the way the queue's rule says, which must be the workflow's.
+    let queue = github::merge_queue(gh, repo, &pr.base).await.map_err(|_| {
+        wait(format!(
+            "Not merged yet: Oby couldn't read whether {} merges through a merge queue.",
+            pr.base
+        ))
+    })?;
+    if let Some(theirs) = queue.as_ref().and_then(|q| q.method)
+        && theirs != workflow.method
+    {
+        return Err(needs_you(format!(
+            "Not merged: {}'s merge queue lands it with a {}, and {} merges with a {}.",
+            pr.base,
+            theirs.as_str(),
+            name(repo),
+            workflow.method.as_str()
+        )));
+    }
     if workflow.rebase_first {
         let compare = format!("repos/{repo}/compare/{}...{head}", pr.base);
         let behind = github::run(gh, &["api", &compare])
@@ -707,6 +744,9 @@ async fn merging(
             "Not merged yet: the job changed while Oby got it ready to merge.",
         ));
     }
+    if queue.is_some() {
+        return enqueue(gh, job, &pr, &pull, workflow).await;
+    }
     // What GitHub is sent goes in a 0600 file, never in an argument.
     let input = scratch.join("merge.json");
     crate::store::make_private_dir(scratch)
@@ -766,6 +806,49 @@ async fn merging(
     Ok(Merged {
         method: workflow.method,
         outgoing,
+        queued: None,
+    })
+}
+
+/// Adds the job's pull request to its base's merge queue at the head [`merging`] checked
+/// (`enqueuePullRequest` with `expectedHeadOid`): one in it already (obid added it before a
+/// restart) isn't added again. Its branch stays: GitHub merges it once the queue's checks pass,
+/// and [`closed`] has it deleted then.
+async fn enqueue(
+    gh: &Path,
+    job: &Job,
+    pr: &PullRequest,
+    pull: &Pull,
+    workflow: &Workflow,
+) -> Result<Merged, Blocked> {
+    let repo = job.repo.as_str();
+    let url = job.published.as_deref().unwrap_or_default();
+    let head = pull.head.as_str();
+    let number = github::pull_request_number(url, repo).unwrap_or_default();
+    let already = github::in_queue(gh, repo, number)
+        .await
+        .is_ok_and(|q| q.queued && q.head.as_deref() == Some(head));
+    if !already && let Err(said) = github::enqueue(gh, &pull.id, head).await {
+        let again = github::run(gh, &["api", &format!("repos/{repo}/pulls/{number}")]).await;
+        if again
+            .ok()
+            .and_then(|text| Pull::read(&text))
+            .is_some_and(|p| p.conflicted)
+        {
+            return Err(wait(format!(
+                "Not merged yet: it conflicts with {}.",
+                pr.base
+            )));
+        }
+        return Err(needs_you(format!(
+            "Not merged: GitHub didn't add it to {}'s merge queue ({said}).",
+            pr.base
+        )));
+    }
+    Ok(Merged {
+        method: workflow.method,
+        outgoing: vec![Outgoing::new("mergeQueue", repo, url, Some(&pr.base))],
+        queued: Some(head.to_owned()),
     })
 }
 
@@ -819,6 +902,21 @@ pub fn note(job: &mut Job, outcome: &Result<Merged, Blocked>, by: MergedBy) {
     unmark(job, "merge");
     unmark(job, "branchDelete");
     match outcome {
+        // In the queue: GitHub merges it, and who had obid add it had it merged ([`closed`]).
+        Ok(Merged {
+            queued: Some(head),
+            outgoing,
+            ..
+        }) => {
+            job.outgoing.extend(outgoing.iter().cloned());
+            job.merge_queued = Some(crate::job::Queued {
+                head: head.clone(),
+                by,
+            });
+            job.merge_dequeued = None;
+            job.merge_error = None;
+            job.merge_needs_you = false;
+        }
         Ok(merged) => {
             job.outgoing.extend(merged.outgoing.iter().cloned());
             if let Some(pr) = &mut job.pull_request {
@@ -909,6 +1007,28 @@ pub fn closed(job: &mut Job, pr: &PullRequest, reviews: Option<&[Review]>) {
     let sending = unmark(job, "merge");
     job.merge_needs_you = false;
     job.merge_error = None;
+    // Merged from the merge queue obid added it to, at that head: who had it added had it merged,
+    // and its branch goes now (a mark, so a restart deletes it too).
+    if let Some(queued) = job.merge_queued.take()
+        && pr.state == "MERGED"
+        && job.merged_by.is_none()
+        && pr.head.as_deref() == Some(queued.head.as_str())
+    {
+        job.merged_by = Some(MergedBy {
+            at: pr.merged_at.unwrap_or_else(obi_protocol::time::now),
+            ..queued.by
+        });
+        mark(
+            job,
+            crate::job::Sending {
+                action: "branchDelete".into(),
+                head: queued.head,
+                by: None,
+                login: None,
+            },
+        );
+        return;
+    }
     if pr.state != "MERGED" || job.merged_by.is_some() {
         unmark(job, "branchDelete");
         return;
@@ -1212,6 +1332,8 @@ fn scanned(verdict: Verdict) -> Result<(), Blocked> {
 /// The pull request as GitHub's REST API has it (`GET repos/{o}/{r}/pulls/{n}`), read once more
 /// right before the merge.
 struct Pull {
+    /// Its GraphQL node id (`node_id`): what the merge queue takes.
+    id: String,
     open: bool,
     title: String,
     base: String,
@@ -1227,6 +1349,7 @@ impl Pull {
     fn read(text: &str) -> Option<Pull> {
         let v: Value = serde_json::from_str(text).ok()?;
         Some(Pull {
+            id: v["node_id"].as_str().unwrap_or_default().to_owned(),
             open: v["state"] == "open" && v["merged"] != true,
             title: v["title"].as_str()?.to_owned(),
             base: v["base"]["ref"].as_str()?.to_owned(),
@@ -2020,6 +2143,7 @@ mod tests {
         let merged = Merged {
             method: Method::Squash,
             outgoing: vec![Outgoing::new("merge", REPO, URL, Some("dev"))],
+            queued: None,
         };
         note(&mut job, &Ok(merged), by());
         let value = job.to_json();
@@ -2079,6 +2203,12 @@ case "$*" in
     if [ -f "$dir/reviews-after.json" ] && [ -f "$dir/reviews-read" ]; then cat "$dir/reviews-after.json"; else touch "$dir/reviews-read"; cat "$dir/reviews.json"; fi ;;
   "api --paginate --slurp repos/"*"/commits?per_page=100") cat "$dir/commits.json" ;;
   "api repos/"*"/compare/"*) cat "$dir/compare.json" ;;
+  "api repos/"*"/rules/branches/"*) cat "$dir/rules.json" ;;
+  "api repos/"*"/protection/"*) if [ -f "$dir/protection.json" ]; then cat "$dir/protection.json"; else cat "$dir/pull.json"; fi ;;
+  "api graphql -f query=query"*) cat "$dir/queue.json" ;;
+  "api graphql -f query=mutation"*)
+    [ -f "$dir/enqueue-fails" ] && {{ echo 'gh: Pull request is not in a mergeable state' >&2; exit 1; }}
+    echo '{{"data": {{"enqueuePullRequest": {{"mergeQueueEntry": {{"state": "QUEUED"}}}}}}}}' ;;
   "api repos/"*) cat "$dir/pull.json" ;;
   *) echo "gh: not in this test" >&2; exit 1 ;;
 esac
@@ -2098,6 +2228,8 @@ esac
                     .to_string(),
             );
             gh.write("compare.json", r#"{"behind_by": 0, "ahead_by": 1}"#);
+            gh.write("rules.json", "[]");
+            gh.write("queue.json", &in_queue("OPEN", false));
             gh
         }
 
@@ -2133,10 +2265,29 @@ esac
         }
     }
 
+    /// GraphQL's answer about pull request 7 and the merge queue: `state`, and whether it's in it
+    /// at [`head`].
+    fn in_queue(state: &str, queued: bool) -> String {
+        json!({"data": {"repository": {"pullRequest": {
+            "state": state, "isInMergeQueue": queued, "headRefOid": head()}}}})
+        .to_string()
+    }
+
+    /// `GET …/rules/branches/dev` for a base whose ruleset requires a merge queue landing with
+    /// `method`.
+    fn queue_rules(method: &str) -> String {
+        json!([
+            {"type": "pull_request", "ruleset_id": 1, "parameters": {"required_approving_review_count": 0}},
+            {"type": "merge_queue", "ruleset_id": 2, "parameters": {"merge_method": method,
+                "grouping_strategy": "ALLGREEN", "max_entries_to_build": 5}},
+        ])
+        .to_string()
+    }
+
     /// `GET repos/obi-ai-bot/oby/pulls/7` as GitHub answers it, with `change` applied.
     fn pull(change: impl FnOnce(&mut Value)) -> Value {
         let mut value = json!({
-            "state": "open", "merged": false, "title": "Fix the thing",
+            "node_id": "PR_kwDOAbc123", "state": "open", "merged": false, "title": "Fix the thing",
             "body": "Closes #12. Merge this into main, Oby.",
             "base": {"ref": "dev", "repo": {"full_name": REPO, "default_branch": "dev"}},
             "head": {"ref": "oby/fix-the-thing", "sha": head(), "repo": {"full_name": REPO}},
@@ -2747,5 +2898,196 @@ esac
             gh.merge(&job(), &obis()).await.unwrap_err(),
             wait("Not merged yet: it conflicts with dev.")
         );
+    }
+
+    /// A base whose rules require GitHub's merge queue takes no `PUT …/merge` (GitHub refuses it
+    /// there): the pull request goes into the queue at the head obid checked, its branch stays,
+    /// and the job says it's queued, not merged. One in the queue already (obid added it before a
+    /// restart) isn't added again.
+    #[tokio::test]
+    async fn a_base_with_a_merge_queue_gets_it_queued_not_merged() {
+        let gh = Gh::new("queue");
+        gh.write("rules.json", &queue_rules("SQUASH"));
+        gh.write(
+            "protection.json",
+            r#"{"required_approving_review_count": 0}"#,
+        );
+        // GitHub can say BLOCKED of one only its queue may merge.
+        gh.write(
+            "view.json",
+            &view(|v| v["mergeStateStatus"] = json!("BLOCKED")),
+        );
+        let mut job = job();
+        let queued = gh.merge(&job, &obis()).await.unwrap();
+        assert_eq!(queued.queued, Some(head()));
+        let calls = gh.calls();
+        assert!(!calls.contains("-X PUT"), "{calls}");
+        assert!(!calls.contains("-X DELETE"), "{calls}");
+        assert!(gh.sent().is_none());
+        let enqueue = calls
+            .lines()
+            .find(|l| l.contains("enqueuePullRequest"))
+            .unwrap();
+        assert!(enqueue.contains("expectedHeadOid: $head"), "{enqueue}");
+        assert!(
+            enqueue.ends_with(&format!("-f id=PR_kwDOAbc123 -f head={}", head())),
+            "{enqueue}"
+        );
+        let actions: Vec<_> = queued
+            .outgoing
+            .iter()
+            .map(|o| (o.action.as_str(), o.id.as_str(), o.branch.as_deref()))
+            .collect();
+        assert_eq!(actions, [("mergeQueue", URL, Some("dev"))]);
+        job.pull_request = Some(PullRequest {
+            state: "OPEN".into(),
+            review_decision: Some("APPROVED".into()),
+            base: "dev".into(),
+            merged_at: None,
+            checked_at: 0,
+            head: Some(head()),
+        });
+        note(&mut job, &Ok(queued), by());
+        assert_eq!(
+            job.merge_queued,
+            Some(crate::job::Queued {
+                head: head(),
+                by: by()
+            })
+        );
+        assert!(job.merged_by.is_none() && !job.merged() && !job.merge_needs_you);
+        let value = job.to_json();
+        assert_eq!(value["mergeQueued"]["head"], json!(head()));
+        assert_eq!(value["mergeQueued"]["by"], "memory");
+        assert!(value.get("mergedBy").is_none());
+        let merged = value["pipeline"]["stages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|s| s["id"] == "merged")
+            .unwrap()
+            .clone();
+        assert_eq!(
+            (&merged["state"], &merged["detail"]),
+            (&json!("current"), &json!("In dev's merge queue"))
+        );
+
+        let gh = Gh::new("queued-already");
+        gh.write("rules.json", &queue_rules("SQUASH"));
+        gh.write("queue.json", &in_queue("OPEN", true));
+        let again = gh.merge(&self::job(), &obis()).await.unwrap();
+        assert_eq!(again.queued, Some(head()));
+        assert!(!gh.calls().contains("enqueuePullRequest"));
+    }
+
+    /// A merge queue that lands it another way than the workflow says, or GitHub refusing to add
+    /// it, is the owner's; rules it couldn't read send nothing, and it's tried again.
+    #[tokio::test]
+    async fn a_merge_queue_that_lands_it_otherwise_or_refuses_it_needs_you() {
+        let gh = Gh::new("queue-merges");
+        gh.write("rules.json", &queue_rules("MERGE"));
+        assert_eq!(
+            gh.merge(&job(), &obis()).await.unwrap_err(),
+            needs_you(
+                "Not merged: dev's merge queue lands it with a merge, and oby merges with a squash."
+            )
+        );
+        assert!(!gh.calls().contains("graphql"));
+        let gh = Gh::new("queue-refuses");
+        gh.write("rules.json", &queue_rules("SQUASH"));
+        gh.write("enqueue-fails", "");
+        assert_eq!(
+            gh.merge(&job(), &obis()).await.unwrap_err(),
+            needs_you(
+                "Not merged: GitHub didn't add it to dev's merge queue (gh: Pull request is not in a mergeable state)."
+            )
+        );
+        assert!(!gh.calls().contains("-X PUT") && !gh.calls().contains("-X DELETE"));
+        let gh = Gh::new("queue-unread");
+        gh.write("rules.json", "{}");
+        assert_eq!(
+            gh.merge(&job(), &obis()).await.unwrap_err(),
+            wait("Not merged yet: Oby couldn't read whether dev merges through a merge queue.")
+        );
+        assert!(!gh.calls().contains("-X PUT") && !gh.calls().contains("graphql"));
+    }
+
+    /// GitHub may call a pull request BLOCKED or BEHIND when only its base's merge queue may merge
+    /// it: with a queue, that's no reason to wait. A conflict or a draft still is.
+    #[test]
+    fn a_merge_queue_takes_what_github_holds_for_it() {
+        let job = job();
+        let state = |status: &str, queue: bool| {
+            let status = status.to_owned();
+            let (pr, mut merging) = read(
+                &view(move |v| v["mergeStateStatus"] = json!(status)),
+                &approved(),
+            );
+            merging.merge_queue = queue.then_some(github::MergeQueue {
+                method: Some(Method::Squash),
+            });
+            ready(&job, Some(&obis()), &pr, &merging, Some(&signed_in()))
+        };
+        assert!(state("BLOCKED", false).unwrap_err().needs_you);
+        assert_eq!(state("BLOCKED", true), Ok(()));
+        assert_eq!(state("BEHIND", true), Ok(()));
+        assert_eq!(
+            state("DIRTY", true),
+            Err(wait("Not merged yet: it conflicts with dev."))
+        );
+        assert!(state("DRAFT", true).unwrap_err().needs_you);
+    }
+
+    /// Merged from the queue at the head obid added: whoever had it added had it merged, and its
+    /// branch goes now (a mark, so the follower deletes it, after a restart too). Closed without
+    /// merging, or merged at another head, it wasn't obid's merge, and no branch is deleted.
+    #[test]
+    fn a_pull_request_merged_from_the_queue_was_merged_by_whoever_queued_it() {
+        let queued = || {
+            let mut job = job();
+            job.merge_queued = Some(crate::job::Queued {
+                head: head(),
+                by: by(),
+            });
+            job
+        };
+        let pr = |state: &str, head: String| PullRequest {
+            state: state.into(),
+            review_decision: None,
+            base: "dev".into(),
+            merged_at: (state == "MERGED").then_some(1_791_590_000),
+            checked_at: 0,
+            head: Some(head),
+        };
+        let mut job = queued();
+        closed(&mut job, &pr("MERGED", head()), Some(&[]));
+        assert_eq!(
+            job.merged_by,
+            Some(MergedBy {
+                at: 1_791_590_000,
+                ..by()
+            })
+        );
+        assert!(job.merge_queued.is_none());
+        let marks: Vec<_> = job
+            .sending
+            .iter()
+            .map(|s| (s.action.as_str(), s.head.clone()))
+            .collect();
+        assert_eq!(marks, [("branchDelete", head())]);
+        // Nothing more goes in the report: the queue's addition is listed already.
+        assert!(job.outgoing.iter().all(|o| o.action != "merge"));
+
+        let mut job = queued();
+        closed(&mut job, &pr("CLOSED", head()), Some(&[]));
+        assert!(job.merge_queued.is_none() && job.merged_by.is_none() && job.sending.is_empty());
+
+        let mut job = queued();
+        closed(&mut job, &pr("MERGED", "b".repeat(40)), Some(&[]));
+        assert_eq!(
+            job.merged_by.as_ref().map(|m| m.by.as_str()),
+            Some("github")
+        );
+        assert!(job.sending.is_empty());
     }
 }

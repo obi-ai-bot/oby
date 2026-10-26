@@ -524,6 +524,14 @@ pub struct Job {
     /// Who had obid merge its pull request, and when; none until obid merged it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub merged_by: Option<MergedBy>,
+    /// obid added its pull request to its base's merge queue (crate::merge), and GitHub hasn't
+    /// merged it or taken it out yet; none otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub merge_queued: Option<Queued>,
+    /// The head GitHub took out of the merge queue without merging it: obid doesn't add it again
+    /// by itself (a new head may go). Never in the API's job.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub merge_dequeued: Option<String>,
     /// What obid is sending for its merge (crate::merge), one mark per kind (an approval, the
     /// merge, the branch's deletion), saved before it's sent and cleared once obid knows how it
     /// went: a restart in between reads GitHub to settle each. Never in the API's job.
@@ -544,6 +552,15 @@ pub struct Sending {
     /// For an approval: the reviewer account's login it goes as.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub login: Option<String>,
+}
+
+/// A job's pull request in its base's merge queue (`Job::merge_queued`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Queued {
+    /// The head obid added.
+    pub head: String,
+    /// Who had obid add it, and when: who had it merged, once GitHub merges it.
+    pub by: MergedBy,
 }
 
 /// Who had obid merge a job's pull request (crate::merge): the owner, with a tap, or the
@@ -744,6 +761,8 @@ impl Job {
             merge_error: None,
             merge_needs_you: false,
             merged_by: None,
+            merge_queued: None,
+            merge_dequeued: None,
             sending: Vec::new(),
         }
     }
@@ -1082,6 +1101,10 @@ impl Job {
             value["mergedBy"] = json!({"by": merged.by, "memory": merged.memory,
                                        "at": obi_protocol::time::format(merged.at)});
         }
+        if let Some(queued) = &self.merge_queued {
+            value["mergeQueued"] = json!({"head": queued.head, "by": queued.by.by,
+                                          "at": obi_protocol::time::format(queued.by.at)});
+        }
         if let Some(why) = &self.no_reviewer {
             value["noReviewer"] = json!(why);
         }
@@ -1359,11 +1382,15 @@ impl Job {
                 .as_ref()
                 .and_then(|pr| pr.review_decision.as_deref());
             let oby = self.current_review();
-            // The Merged stage while it's open: why the merge waits for the owner, else GitHub.
-            let merge_line = self
-                .merge_error
+            // The Merged stage while it's open: in the merge queue, why the merge waits for the
+            // owner, else GitHub.
+            let queued = self
+                .merge_queued
+                .as_ref()
+                .map(|_| format!("In {merge_base}'s merge queue"));
+            let merge_line = queued
                 .as_deref()
-                .filter(|_| self.merge_needs_you)
+                .or(self.merge_error.as_deref().filter(|_| self.merge_needs_you))
                 .unwrap_or(crate::publish::MERGE_ON_GITHUB);
             // Merged by a workflow the owner taught Oby: it says so (#854).
             let as_you_like = self

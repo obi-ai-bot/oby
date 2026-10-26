@@ -812,6 +812,15 @@ struct CheckTests {
         #expect(MacCheck.headBranch(view("open", "dev", Self.head), repo: "deskree-inc/oby") == "oby/fix")
         #expect(MacCheck.headBranch(view("open", "dev", Self.head), repo: "someone/fork") == nil)
         #expect(MacCheck.mismatch(Data("nope".utf8), check) != nil)
+
+        // dev's rules requiring GitHub's merge queue: GitHub refuses the REST merge, so it's obid's.
+        #expect(MacCheck.mergeQueued(Data(#"[{"type":"pull_request","parameters":{"required_approving_review_count":0}},{"type":"merge_queue","parameters":{"merge_method":"SQUASH"}}]"#.utf8)))
+        #expect(!MacCheck.mergeQueued(Data(#"[{"type":"deletion"}]"#.utf8)))
+        #expect(!MacCheck.mergeQueued(Data("[]".utf8)))
+        #expect(!MacCheck.mergeQueued(Data(#"{"message":"Not Found"}"#.utf8)))
+        #expect(MacCheck.MergeQueue(base: "dev").localizedDescription == "dev merges through GitHub's merge queue, and only obid adds pull requests to it. Turn obid on, or add it to the queue on GitHub.")
+        #expect(Outgoing(action: .mergeQueue, repo: "deskree-inc/oby", id: "https://github.com/deskree-inc/oby/pull/7", branch: "dev").line
+                == "Added https://github.com/deskree-inc/oby/pull/7 to dev's merge queue")
     }
 
     @Test func theSquashClosesNoIssueWhateverTheDescriptionSays() throws {

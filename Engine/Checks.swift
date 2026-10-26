@@ -329,10 +329,27 @@ nonisolated struct MacCheck: Codable, Equatable, Sendable {
         var errorDescription: String? { "it conflicts with \(base)." }
     }
 
+    /// dev's rules require GitHub's merge queue, which refuses the REST merge: only obid adds a pull
+    /// request to the queue and follows it there (core/crates/obid/src/merge.rs), so this runner
+    /// leaves it for obid, or the owner on GitHub.
+    struct MergeQueue: LocalizedError {
+        var base: String
+        var errorDescription: String? {
+            "\(base) merges through GitHub's merge queue, and only obid adds pull requests to it. Turn obid on, or add it to the queue on GitHub."
+        }
+    }
+
+    /// Whether a branch's rules (`GET repos/{o}/{r}/rules/branches/{b}`) require a merge queue.
+    static func mergeQueued(_ rules: Data) -> Bool {
+        guard let list = try? JSONSerialization.jsonObject(with: rules) as? [[String: Any]] else { return false }
+        return list.contains { $0["type"] as? String == "merge_queue" }
+    }
+
     /// Squash-merges the pull request into dev and deletes its branch, as the GitHub app (the
     /// owner's gh login without one), through GitHub's REST API: only while GitHub says it's open,
     /// into dev, with the checked commit as its head, and with Oby's own commit message (`squash`).
     /// Throws `Conflict` when GitHub says it conflicts with dev, before the merge or as the reason it failed,
+    /// `MergeQueue` when dev's rules require a merge queue (obid's to merge),
     /// and `XcodeCloud.Waiting` while Xcode Cloud hasn't passed on the checked commit.
     static func merge(_ job: Job, _ check: MacCheck) async throws {
         // Outside any checkout, so gh touches no local branch.
@@ -342,6 +359,8 @@ nonisolated struct MacCheck: Codable, Equatable, Sendable {
         let view = try await Shell.ok(["gh", "api", pull], in: away, env: env, as: .app)
         if let why = mismatch(Data(view.utf8), check) { throw Shell.Failure(message: why) }
         if conflicted(Data(view.utf8)) { throw Conflict(base: into) }
+        let rules = try await Shell.ok(["gh", "api", "repos/\(job.repo)/rules/branches/\(into)"], in: away, env: env, as: .app)
+        if mergeQueued(Data(rules.utf8)) { throw MergeQueue(base: into) }
         // Xcode Cloud passed on this very commit, whenever the pull request has its checks (#122).
         let cloud: XcodeCloud?
         do { cloud = try await XcodeCloud.read(job, head: check.head) } catch { throw XcodeCloud.Waiting(unread: true) }
@@ -1500,6 +1519,9 @@ extension Desk {
         if problem == nil {
             do {
                 try await mergePullRequest(latest, check)
+            } catch let queue as MacCheck.MergeQueue {
+                // Trying again changes nothing: obid, or the owner on GitHub, queues it.
+                problem = "Not merged: \(queue.localizedDescription)"
             } catch let conflict as MacCheck.Conflict {
                 // Trying the merge again changes nothing: the branch needs a rebase.
                 problem = "Not merged: \(conflict.localizedDescription)"

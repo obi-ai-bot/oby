@@ -17,6 +17,8 @@ nonisolated struct Outgoing: Codable, Equatable, Sendable {
         static let comment = Action(rawValue: "comment")
         static let checkRun = Action(rawValue: "checkRun")
         static let merge = Action(rawValue: "merge")
+        /// obid only: added to its base's merge queue, which merges it once its checks pass.
+        static let mergeQueue = Action(rawValue: "mergeQueue")
         static let buildTag = Action(rawValue: "buildTag")
         static let issue = Action(rawValue: "issue")
     }
@@ -39,6 +41,7 @@ nonisolated struct Outgoing: Codable, Equatable, Sendable {
         case .checkRun: "Posted the check \(id)"
         case .merge: "Squash-merged \(id) into \(MacCheck.into) and deleted \(branch ?? "its branch")"
         case .issue: "Filed issue \(id)"
+        case .mergeQueue: "Added \(id) to \(branch ?? "its base")'s merge queue"
         default: "\(action.rawValue) \(id)"
         }
     }

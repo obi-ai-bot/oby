@@ -385,12 +385,15 @@ struct VaultScanTests {
         static let pull = "repos/deskree-inc/oby/pulls/152"
         let title: String
         let gitleaks: Int32
+        /// dev's rules, as `GET …/rules/branches/dev` answers them.
+        let rules: String
         let calls = Mutex<[[String]]>([])
         let scanned = Mutex<[String]>([])
 
-        init(title: String, gitleaks: Int32 = 0) {
+        init(title: String, gitleaks: Int32 = 0, rules: String = "[]") {
             self.title = title
             self.gitleaks = gitleaks
+            self.rules = rules
         }
 
         var job: Job {
@@ -419,6 +422,7 @@ struct VaultScanTests {
                 let view = #"{"title":"\#(title)","state":"open","merged":false,"base":{"ref":"dev"},"head":{"sha":"\#(CheckTests.head)","ref":"oby/fix-151","repo":{"full_name":"deskree-inc/oby"}}}"#
                 let said: String = switch Array(arguments.prefix(3)) {
                 case ["gh", "api", Self.pull]: view
+                case ["gh", "api", "repos/deskree-inc/oby/rules/branches/dev"]: rules
                 case ["gh", "api", "\(Self.pull)/commits?per_page=100"]: #"[{"commit":{"message":"fix: the login\n\nChecked on the Mac"}}]"#
                 case ["gh", "api", "repos/deskree-inc/oby/commits/\(CheckTests.head)/check-runs?per_page=100"]: #"[{"check_runs":[]}]"#
                 case ["gh", "api", "-X"]: "{}"
@@ -474,6 +478,12 @@ struct VaultScanTests {
         for merging in [titled, leaked, broken] {
             #expect(!merging.calls.withLock { $0 }.contains { $0.contains("DELETE") })
         }
+
+        // dev requires GitHub's merge queue, which refuses the REST merge: nothing is sent, and
+        // obid adds it to the queue.
+        let queued = Merging(title: "fix: the login", rules: #"[{"type":"merge_queue","parameters":{"merge_method":"SQUASH"}}]"#)
+        #expect(await queued.merge() is MacCheck.MergeQueue)
+        #expect(queued.put == nil && !queued.calls.withLock { $0 }.contains { $0.contains("DELETE") })
     }
 
     /// Wherever a base64 run starts, the value's own characters are in it.

@@ -456,7 +456,10 @@ pub async fn view_merging(
             Ok(reviews) => {
                 merging.reviews = reviews;
                 match required_approvals(gh, repo, &pr.base).await {
-                    Ok(required) => merging.required_approvals = Some(required),
+                    Ok((required, queue)) => {
+                        merging.required_approvals = Some(required);
+                        merging.merge_queue = queue;
+                    }
                     Err(refused) => merging.rules_refused = refused,
                 }
                 Ok(merging)
@@ -484,18 +487,152 @@ async fn pr_view(gh: &Path, repo: &str, number: u64) -> Result<String, String> {
 /// required_pull_request_reviews`) ask for. An error when either can't be read
 /// ([`classic_reviews`]), and then nothing merges by Oby's own review: GitHub's words when it
 /// refused in a way that won't pass by itself ([`refused`]), none when it may (a rate limit, a 5xx,
-/// a timeout).
-pub async fn required_approvals(gh: &Path, repo: &str, base: &str) -> Result<u32, Option<String>> {
+/// a timeout). With it, the base's merge queue from the same rules ([`decode_merge_queue`]).
+pub async fn required_approvals(
+    gh: &Path,
+    repo: &str,
+    base: &str,
+) -> Result<(u32, Option<MergeQueue>), Option<String>> {
     if !is_repo(repo) || !crate::git::is_branch_name(base) {
         return Err(None);
     }
-    let rules = match output(gh, &["api", &format!("repos/{repo}/rules/branches/{base}")]).await {
-        Ok(text) => decode_rules(&text).ok_or(None)?,
-        Err((printed, said)) => return Err(refused(&printed, &said)),
-    };
+    let (rules, queue) =
+        match output(gh, &["api", &format!("repos/{repo}/rules/branches/{base}")]).await {
+            Ok(text) => (
+                decode_rules(&text).ok_or(None)?,
+                decode_merge_queue(&text).ok_or(None)?,
+            ),
+            Err((printed, said)) => return Err(refused(&printed, &said)),
+        };
     let path = format!("repos/{repo}/branches/{base}/protection/required_pull_request_reviews");
     let classic = classic_reviews(output(gh, &["api", &path]).await)?;
-    Ok(rules.max(classic))
+    Ok((rules.max(classic), queue))
+}
+
+/// A base branch that merges only through GitHub's merge queue (a ruleset's `merge_queue` rule):
+/// a pull request into it is added to the queue, never merged with `PUT …/pulls/{n}/merge`,
+/// which GitHub refuses there.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MergeQueue {
+    /// How the queue lands what it takes (its `merge_method`); none when its rule doesn't say.
+    pub method: Option<crate::memory::Method>,
+}
+
+/// The base's merge queue, from `GET …/rules/branches/{branch}`: the first `merge_queue` rule, or
+/// none when it has none. None at all when it isn't that list.
+pub fn decode_merge_queue(text: &str) -> Option<Option<MergeQueue>> {
+    let rules: Vec<Value> = serde_json::from_str(text).ok()?;
+    Some(
+        rules
+            .iter()
+            .find(|r| r["type"] == "merge_queue")
+            .map(|rule| MergeQueue {
+                method: match rule["parameters"]["merge_method"].as_str() {
+                    Some("SQUASH") => Some(crate::memory::Method::Squash),
+                    Some("MERGE") => Some(crate::memory::Method::Merge),
+                    Some("REBASE") => Some(crate::memory::Method::Rebase),
+                    _ => None,
+                },
+            }),
+    )
+}
+
+/// Whether `base` of `repo` merges through a merge queue, as its rules say right now
+/// ([`decode_merge_queue`]): what a merge reads right before it's sent. Why not, when they can't
+/// be read.
+pub async fn merge_queue(gh: &Path, repo: &str, base: &str) -> Result<Option<MergeQueue>, String> {
+    if !is_repo(repo) || !crate::git::is_branch_name(base) {
+        return Err("it isn't a branch of this repository".into());
+    }
+    let text = run(gh, &["api", &format!("repos/{repo}/rules/branches/{base}")]).await?;
+    decode_merge_queue(&text).ok_or_else(|| "gh said something else about its rules".into())
+}
+
+/// Where a pull request stands with its base's merge queue, from GraphQL (`state`,
+/// `isInMergeQueue`, `headRefOid`): typed status only.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InQueue {
+    /// `OPEN`, `CLOSED` or `MERGED`.
+    pub state: String,
+    /// In the queue now.
+    pub queued: bool,
+    pub head: Option<String>,
+}
+
+/// Where the pull request `number` of `repo` stands with the merge queue ([`decode_in_queue`]).
+pub async fn in_queue(gh: &Path, repo: &str, number: u64) -> Result<InQueue, String> {
+    let Some((owner, name)) = repo.split_once('/').filter(|_| is_repo(repo)) else {
+        return Err("it isn't one of this repository's".into());
+    };
+    let text = run(
+        gh,
+        &[
+            "api",
+            "graphql",
+            "-f",
+            "query=query($owner: String!, $name: String!, $number: Int!) { repository(owner: $owner, name: $name) { pullRequest(number: $number) { state isInMergeQueue headRefOid } } }",
+            "-f",
+            &format!("owner={owner}"),
+            "-f",
+            &format!("name={name}"),
+            "-F",
+            &format!("number={number}"),
+        ],
+    )
+    .await?;
+    decode_in_queue(&text).ok_or_else(|| "gh said something else about the merge queue".into())
+}
+
+/// [`InQueue`] from that query's answer; none when it isn't one.
+pub fn decode_in_queue(text: &str) -> Option<InQueue> {
+    let value: Value = serde_json::from_str(text).ok()?;
+    let pr = &value["data"]["repository"]["pullRequest"];
+    let state = pr["state"].as_str()?;
+    if !matches!(state, "OPEN" | "CLOSED" | "MERGED") {
+        return None;
+    }
+    Some(InQueue {
+        state: state.to_owned(),
+        queued: pr["isInMergeQueue"].as_bool()?,
+        head: pr["headRefOid"]
+            .as_str()
+            .filter(|h| crate::git::is_sha(h))
+            .map(str::to_owned),
+    })
+}
+
+/// Adds the pull request whose node id is `id` to its base's merge queue at `head`
+/// (`enqueuePullRequest` with `expectedHeadOid`, so GitHub refuses it if the head moved since).
+/// Ok once GitHub answers with its entry in the queue; else what it said.
+pub async fn enqueue(gh: &Path, id: &str, head: &str) -> Result<(), String> {
+    if id.is_empty()
+        || !id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'='))
+        || !crate::git::is_sha(head)
+    {
+        return Err("it isn't a pull request GitHub named".into());
+    }
+    let text = run(
+        gh,
+        &[
+            "api",
+            "graphql",
+            "-f",
+            "query=mutation($id: ID!, $head: GitObjectID!) { enqueuePullRequest(input: {pullRequestId: $id, expectedHeadOid: $head}) { mergeQueueEntry { state } } }",
+            "-f",
+            &format!("id={id}"),
+            "-f",
+            &format!("head={head}"),
+        ],
+    )
+    .await?;
+    let value: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
+    if value["data"]["enqueuePullRequest"]["mergeQueueEntry"].is_object() {
+        Ok(())
+    } else {
+        Err("GitHub didn't say it's in the queue".into())
+    }
 }
 
 /// GitHub's own words for a refusal that won't pass by itself: a 401, or a 403 that isn't a rate
@@ -659,6 +796,9 @@ pub struct Merging {
     /// Why GitHub refused to show those rules, in its words, when that won't pass by itself
     /// (an organization's SSO not authorized, a token without access): the owner can act on it.
     pub rules_refused: Option<String>,
+    /// Its base's merge queue, read with those rules; none when it has none, or they couldn't be
+    /// read.
+    pub merge_queue: Option<MergeQueue>,
 }
 
 /// [`Merging`] from `gh pr view --json` with [`FIELDS`], its reviews not yet read; none when it
@@ -697,6 +837,7 @@ pub fn decode_merging(text: &str) -> Option<Merging> {
         reviews: vec![],
         required_approvals: None,
         rules_refused: None,
+        merge_queue: None,
     })
 }
 
@@ -1082,6 +1223,64 @@ mod tests {
         );
         assert_eq!(
             decode_protection(r#"{"message": "Branch not protected"}"#),
+            None
+        );
+    }
+
+    /// A base's merge queue from its rules, and where a pull request stands with it, as GitHub
+    /// answers them.
+    #[test]
+    fn a_base_that_merges_through_its_merge_queue() {
+        use crate::memory::Method;
+        assert_eq!(decode_merge_queue("[]"), Some(None));
+        let rules = json!([
+            {"type": "pull_request", "ruleset_id": 2, "parameters": {"required_approving_review_count": 1}},
+            {"type": "merge_queue", "ruleset_id": 4, "parameters": {"merge_method": "SQUASH",
+              "grouping_strategy": "ALLGREEN", "max_entries_to_build": 5, "min_entries_to_merge": 1}},
+        ]);
+        assert_eq!(
+            decode_merge_queue(&rules.to_string()),
+            Some(Some(MergeQueue {
+                method: Some(Method::Squash)
+            }))
+        );
+        // Its approvals are read from the same rules as before.
+        assert_eq!(decode_rules(&rules.to_string()), Some(1));
+        let unsaid = json!([{"type": "merge_queue", "ruleset_id": 4}]);
+        assert_eq!(
+            decode_merge_queue(&unsaid.to_string()),
+            Some(Some(MergeQueue { method: None }))
+        );
+        assert_eq!(decode_merge_queue(r#"{"message": "Not Found"}"#), None);
+
+        let answer = |pr: Value| json!({"data": {"repository": {"pullRequest": pr}}}).to_string();
+        let head = "c".repeat(40);
+        assert_eq!(
+            decode_in_queue(&answer(
+                json!({"state": "OPEN", "isInMergeQueue": true, "headRefOid": head})
+            )),
+            Some(InQueue {
+                state: "OPEN".into(),
+                queued: true,
+                head: Some(head.clone()),
+            })
+        );
+        assert_eq!(
+            decode_in_queue(&answer(
+                json!({"state": "MERGED", "isInMergeQueue": false, "headRefOid": "not a sha"})
+            )),
+            Some(InQueue {
+                state: "MERGED".into(),
+                queued: false,
+                head: None,
+            })
+        );
+        assert_eq!(
+            decode_in_queue(&answer(json!({"state": "OPEN", "headRefOid": head}))),
+            None
+        );
+        assert_eq!(
+            decode_in_queue(r#"{"errors": [{"message": "Could not resolve"}]}"#),
             None
         );
     }
