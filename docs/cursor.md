@@ -58,6 +58,16 @@ Cursor, with `--sandbox disabled` and every permission rejected, wrote a file wi
   job runs (the SwiftPM and npm caches start empty in the account's home). Probe step 2b tests
   `XDG_CONFIG_HOME` + `CURSOR_CONFIG_DIR` without `HOME`; if that isolates too, `CursorStatus.environment`
   can drop `HOME`.
+- Probe step 7 (`scripts/cursor-probe.sh signed-in`), with `cursor-agent --sandbox disabled acp` on the
+  signed-in throwaway home and user hooks in `<home>/.cursor/hooks.json` and
+  `$CURSOR_CONFIG_DIR/hooks.json`, checks: whether a `preToolUse` hook that denies
+  `Write|StrReplace|Delete` stops an edit (the `tool_name` values it saw, and whether its `user_message`
+  reaches the model); whether `postToolUse`'s `additional_context` reaches the model; which keys the
+  `stop` payload carries (`input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_write_tokens`);
+  whether `permissions.deny: ["Write(**)"]` in `cli-config.json`, with no hooks, stops a write; and the
+  `configOptions` `session/new` gives with `clientCapabilities._meta.parameterizedModelPicker`, and
+  whether a reasoning (`thought_level`) option is among them. Its PASS, FAIL and UNKNOWN lines decide
+  the edit gate, token counts, steering and the effort setting for Cursor jobs.
 
 ## `CursorFacts` (Engine/Cursor.swift)
 
