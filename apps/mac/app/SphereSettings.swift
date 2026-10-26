@@ -25,6 +25,8 @@ struct SphereSettingsView: View {
     @State private var typed = ""
     /// Host your own: kept while Oby runs, so the token Deploy… made outlives this page.
     @State private var host = HostOwn.shared
+    /// The claim link opened, waiting for the owner to say claim it.
+    @State private var claiming: ClaimLink?
     private let feed: RunnerFeed
 
     init(feed: RunnerFeed) {
@@ -47,6 +49,28 @@ struct SphereSettingsView: View {
                 try? await sphere.refresh()
                 if sphere.joined { sphere.problem = "This Oby is in an Obysphere already: leave it first, at the bottom of this page." } else { open(opened) }
             }
+        }
+        // An oby://claim link opened (AppDelegate): asked once, then claimed and Create (`HostOwn.claim`).
+        .onChange(of: OpenedInvite.shared.claim, initial: true) { _, opened in
+            guard let opened else { return }
+            OpenedInvite.shared.claim = nil
+            Task {
+                try? await sphere.refresh()
+                if sphere.joined { sphere.problem = "This Oby is in an Obysphere already: leave it first, at the bottom of this page." } else { claiming = opened }
+            }
+        }
+        .alert("Claim the Obysphere at \(claiming?.host ?? "")?", isPresented: Binding(get: { claiming != nil }, set: { if !$0 { claiming = nil } }),
+               presenting: claiming) { link in
+            Button("Claim") {
+                Task {
+                    guard await host.claim(link) else { return }
+                    serverText = link.server.absoluteString
+                    creating = true
+                }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: { link in
+            Text("Oby makes its operator token, sends it to \(link.host) once with the link's code, keeps it in your Keychain under \(link.host), and makes it your Obysphere server. Claim it only if you just started that server.")
         }
         // While the page is open: the membership, the members and what waits, every 20 seconds.
         .task {
