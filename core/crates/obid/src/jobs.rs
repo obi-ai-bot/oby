@@ -5820,16 +5820,16 @@ impl Jobs {
             return Onto::Same;
         }
         // What it rewrites: recorded again after, only when all of it was in the record.
-        let rewrote: Vec<String> = self
-            .sandboxed_git(id, &["rev-list", &format!("{start}..HEAD")], None)
-            .await
-            .map(|listed| {
-                String::from_utf8_lossy(&listed)
-                    .lines()
-                    .map(str::to_owned)
-                    .collect()
-            })
-            .unwrap_or_else(|_| vec![String::new()]);
+        let rewrote: Vec<String> =
+            Box::pin(self.sandboxed_git(id, &["rev-list", &format!("{start}..HEAD")], None))
+                .await
+                .map(|listed| {
+                    String::from_utf8_lossy(&listed)
+                        .lines()
+                        .map(str::to_owned)
+                        .collect()
+                })
+                .unwrap_or_else(|_| vec![String::new()]);
         let (name, email) = &self.identity();
         let rebased = self
             .sandboxed_git(
@@ -5852,7 +5852,7 @@ impl Jobs {
             )
             .await;
         if rebased.is_ok() {
-            self.record_own(id, &now, &rewrote).await;
+            Box::pin(self.record_own(id, &now, &rewrote)).await;
             tracing::info!("job {id}: {base} moved, so its commits were rebased onto {now}");
             self.update(id, |job| {
                 job.start_commit = Some(now.clone());
@@ -5910,9 +5910,8 @@ impl Jobs {
         if changes.is_empty() {
             return Ok(());
         }
-        let head = self
-            .sandboxed_git(id, &["rev-parse", "--verify", "HEAD"], None)
-            .await?;
+        let head =
+            Box::pin(self.sandboxed_git(id, &["rev-parse", "--verify", "HEAD"], None)).await?;
         self.sandboxed_git(id, &["add", "--all"], None).await?;
         let (name, email) = &self.identity();
         self.sandboxed_git(
@@ -5934,8 +5933,7 @@ impl Jobs {
         )
         .await?;
         // What its agent left: the job's own work, as its turns' commits are.
-        self.record_own(id, String::from_utf8_lossy(&head).trim(), &[])
-            .await;
+        Box::pin(self.record_own(id, String::from_utf8_lossy(&head).trim(), &[])).await;
         Ok(())
     }
 
@@ -6842,19 +6840,19 @@ impl Jobs {
                 .get(id)
                 .is_some_and(|job| job.check_refuses_secrets().is_none());
         let before = match records {
-            true => self
-                .sandboxed_git(id, &["rev-parse", "--verify", "HEAD"], None)
+            true => Box::pin(self.sandboxed_git(id, &["rev-parse", "--verify", "HEAD"], None))
                 .await
                 .ok(),
             false => None,
         };
         let started = obi_protocol::time::now();
-        let turn = self
-            .unrecorded_turn(id, tool, launch, prompt, signal, gate, limit, ran_secs)
-            .await;
-        if let Some(before) = before {
-            self.record_turn(id, String::from_utf8_lossy(&before).trim(), started)
+        // Boxed: the turn's future is large, and one more level of it on the stack overflowed it
+        // (a guest's turn, crate::sphere::guest).
+        let turn =
+            Box::pin(self.unrecorded_turn(id, tool, launch, prompt, signal, gate, limit, ran_secs))
                 .await;
+        if let Some(before) = before {
+            Box::pin(self.record_turn(id, String::from_utf8_lossy(&before).trim(), started)).await;
         }
         turn
     }
@@ -7354,7 +7352,8 @@ impl Jobs {
         let round = self.get(id).map_or(1, |job| job.current_round());
         let marker = format!("obid-step-{}", random_check_id()?);
         // The secrets its repository declares on its base branch, for an owner's job only.
-        let mut declared = self.declared_secrets(id, &spec).await;
+        // Boxed, as each of the secrets' steps below: they'd grow every job's future on the stack.
+        let mut declared = Box::pin(self.declared_secrets(id, &spec)).await;
         let watch = Arc::new(Mutex::new(
             crate::facts::CheckWatch::new(marker, crate::facts::steps(command))
                 .redacting(declared.secrets()),
@@ -7393,7 +7392,7 @@ impl Jobs {
         let mut env = process::sandbox_env(&process::tools_path(), &spec.temp, &extra);
         declared.apply(&mut env);
         let secrets = declared.secrets();
-        let before = declared.before(&spec).await;
+        let before = Box::pin(declared.before(&spec)).await;
         let running = run_check(
             &argv,
             &env,
@@ -7413,7 +7412,7 @@ impl Jobs {
             }
         };
         // What it wrote, before the agent or anything else reads it.
-        let scrubbed = declared.scrub(&spec, before).await;
+        let scrubbed = Box::pin(declared.scrub(&spec, before)).await;
         declared.notes.extend(scrubbed.notes);
         if !scrubbed.stuck.is_empty() {
             let _ = std::fs::write(self.log_path(id, "check.log"), declared.noted(""));
