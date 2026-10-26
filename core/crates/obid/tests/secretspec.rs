@@ -156,15 +156,22 @@ fn add(config: &Path, name: &str, value: &str) {
     );
 }
 
-/// A stand-in `gh` in `folder/bin`: GitHub says `main` is the fixture's default branch, and
-/// nothing else.
+/// A stand-in `gh` in `folder/bin`: signed in as wellington, and GitHub says the fixture's `main`
+/// is under a ruleset that requires a pull request, which wellington can't bypass.
 fn github(folder: &Path) -> PathBuf {
     use std::os::unix::fs::PermissionsExt as _;
     let bin = folder.join("bin");
     std::fs::create_dir_all(&bin).unwrap();
     std::fs::write(
         bin.join("gh"),
-        "#!/bin/sh\ncase \"$1 $2\" in\n  \"api repos/obi-e2e/fixture-app\") echo '{\"default_branch\":\"main\"}' ;;\n  *) exit 1 ;;\nesac\n",
+        r#"#!/bin/sh
+case "$1 $2" in
+  "auth status") echo '{"hosts":{"github.com":[{"login":"wellington","active":true,"state":"success"}]}}' ;;
+  "api repos/obi-e2e/fixture-app/rules/branches/main") echo '[{"type":"pull_request","ruleset_id":7}]' ;;
+  "api repos/obi-e2e/fixture-app/rulesets/7") echo '{"id":7,"enforcement":"active","current_user_can_bypass":"never"}' ;;
+  *) exit 1 ;;
+esac
+"#,
     )
     .unwrap();
     std::fs::set_permissions(bin.join("gh"), std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -281,6 +288,44 @@ fn an_owners_check_gets_the_bases_values_and_nothing_leaves_it() {
         "{obid_log}"
     );
     holds_none(&obid_log, &fake(), "obid's log");
+}
+
+/// An owner's job whose agent cherry-picks a teammate's commit (the fixture's feature/average)
+/// is someone else's code from then on: its check gets nothing, and neither would a follow-up.
+#[test]
+fn a_cherry_picked_commit_gets_nothing() {
+    let folder = Folder::new("secretspec-cherry");
+    let remote = fixture(&folder.0.join("fixture"));
+    declare_on_main(&folder.0, &remote);
+    let config = config(&folder.0, &remote, &agent());
+    put_token(&config, TOKEN);
+    let path = folder.0.join("config.json");
+    std::fs::write(&path, config.to_string()).unwrap();
+    add(&path, "check.FAKE_CHECK_TOKEN", &fake());
+    let obid = start(&folder.0, &config, Some(&github(&folder.0)));
+    let answer = call(
+        &obid,
+        "POST",
+        "/v1/jobs",
+        Some(
+            &json!({"job": {"repo": "obi-e2e/fixture-app", "kind": "build",
+                              "task": "CHERRY", "check": "sh check.sh"}}),
+        ),
+    );
+    assert_eq!(answer.status, 201, "{}", answer.text);
+    let id = answer.body["id"].as_str().unwrap().to_owned();
+    call(&obid, "GET", &format!("/v1/jobs/{id}/wait"), None);
+    let log = std::fs::read_to_string(obid.home.join(format!("logs/{id}/check.log"))).unwrap();
+    assert!(
+        log.contains("obid gave this check none of its owner's secrets: its agent")
+            && (log.contains("made elsewhere") || log.contains("another branch already has")),
+        "{log}"
+    );
+    assert!(
+        log.contains("sha: e3b0c44298fc1c14"),
+        "an empty value's hash: {log}"
+    );
+    holds_none(&log, &fake(), "check.log");
 }
 
 /// (a) A review another Oby asked for: its check gets none of the owner's values, though the

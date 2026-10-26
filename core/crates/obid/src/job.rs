@@ -520,6 +520,14 @@ pub struct Job {
     /// follow-up never runs that code with the owner's values. Never in the API's job.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub foreign: Option<String>,
+    /// The commits obid saw this job make (crate::secretspec, "made"): its agent's turns' new
+    /// commits that passed its look (made then, by whoever made them, not a copy of one elsewhere),
+    /// its rebases of them and its "work left uncommitted" commit, recorded only while the job was
+    /// never foreign or untrusted. Kept in the job's file in obid's home, which no sandbox can
+    /// write. A check gets the owner's values only when every commit on its base is one of these
+    /// (or its follow-up chain's). Never in the API's job.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub made: Vec<String>,
     /// Why obid didn't merge its pull request, when only the owner can take it on from here
     /// (crate::merge); none otherwise.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -765,6 +773,7 @@ impl Job {
             routine: None,
             untrusted: false,
             foreign: None,
+            made: Vec::new(),
             ran_secs: None,
             budget_from: None,
             merge_error: None,

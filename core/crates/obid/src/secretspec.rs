@@ -17,13 +17,27 @@
 //!   stops the job. The values are in the vault, so `crate::secrets::known()` takes them out of
 //!   everything else obid sends too.
 //! - **Only the owner's own code gets values: an allowlist.** A check gets them only when its
-//!   base is the repository's default branch or one it protects, as GitHub says
-//!   ([`protected_base`]; never an `oby/` branch or the job's own), every commit between that base
-//!   and the job's HEAD was made in this job ([`made_here`]), and the job isn't another Oby's
+//!   base is a branch the repository lets in only through a reviewed pull request, for the login
+//!   Oby pushes as too, as GitHub says ([`protected_base`]; never an `oby/` branch or the job's
+//!   own); its worktree is exactly its HEAD ([`worktree_is_head`]); every commit between that base
+//!   and HEAD is in obid's own record of what the job made ([`on_record`]; `Job::made`, recorded
+//!   after each turn only for commits that pass [`new_commits`]); and the job isn't another Oby's
 //!   review, one whose agent ran on a teammate's Mac, a follow-up of a job that got none (carried
 //!   by `Job::foreign`) or untrusted. Otherwise it runs with none of the owner's values, whatever
 //!   `secretspec.toml` asks ([`Filled::refused`]). A received review is fetched into a clone of its
 //!   own, apart from the owner's.
+//!
+//! **The threat model.** The values protect against other people's code reaching the check:
+//! teammates', pull request authors', received work, and content that steered the agent. An agent
+//! that never read foreign input (a job that isn't untrusted) counts as the owner's own, as the
+//! owner running the tests on their own laptop would. What obid makes sure of is that foreign code
+//! can't get in without the job turning untrusted or foreign: a commit brought in from elsewhere
+//! (a cherry-pick, a reset or merge to another head, a fetch, `hash-object -w`, an alternates
+//! file) fails the turn's look and makes the job foreign; a branch started from (a reused name, a
+//! follow-up whose job is gone, a collaborator's push) and obid's rebase of it aren't in the
+//! record; files taken from elsewhere and left uncommitted aren't HEAD. What it can't see is an
+//! agent that writes foreign code out as its own new commit, having read it in the clone: that is
+//! content steering the agent, and the known limit until agents' reads are tracked.
 //!
 //! The redaction is exact-match: it catches a value a check prints by accident, in the encodings
 //! `crate::secrets` knows, not one a check's code turns into something else on purpose. That is
@@ -264,10 +278,12 @@ pub fn agent_written_base(base: &str, branch: &str) -> Option<String> {
         .then(|| format!("its base, {base}, is a branch an agent may have written"))
 }
 
-/// Whether GitHub says `base` is `repo`'s default branch or a branch it protects (branch
-/// protection, or a ruleset that limits pushing to it): code there got in only as the repository's
-/// rules let it. Why not, otherwise; what GitHub can't say is a no. Read from GitHub with obid's
-/// own `gh`, never from the job or its configuration.
+/// Whether GitHub says `base` is a branch nothing reaches but through a reviewed pull request,
+/// even for the login Oby pushes as (obid's `gh`): a ruleset with a `pull_request` rule that login
+/// can't bypass (`current_user_can_bypass` `never`), or classic protection that requires pull
+/// request reviews, holds for admins too (or the login isn't one), and doesn't let that login past
+/// it. Code there got in only through a pull request someone reviewed. Why not, otherwise; what
+/// GitHub can't say is a no. Read from GitHub, never from the job or its configuration.
 pub async fn protected_base(gh: &Path, repo: &str, base: &str) -> Result<(), String> {
     let ask = |path: String| async move {
         crate::github::output(gh, &["api", &path])
@@ -275,100 +291,261 @@ pub async fn protected_base(gh: &Path, repo: &str, base: &str) -> Result<(), Str
             .ok()
             .and_then(|said| serde_json::from_str::<serde_json::Value>(&said).ok())
     };
-    let not = format!("its base, {base}, isn't {repo}'s default branch or one it protects");
-    let Some(about) = ask(format!("repos/{repo}")).await else {
-        return Err(format!(
-            "GitHub didn't say whether its base, {base}, is one {repo} protects"
-        ));
-    };
-    if about["default_branch"] == base {
-        return Ok(());
+    let not = format!(
+        "its base, {base}, isn't a branch {repo} lets in only through a reviewed pull request, for the login Oby pushes as too"
+    );
+    let login = crate::github_login::read_status(gh)
+        .await
+        .user
+        .ok_or_else(|| {
+            format!("obid's gh isn't signed in to GitHub to ask whether {repo} protects {base}")
+        })?;
+    // Rulesets: a pull_request rule from one the login can't bypass.
+    if let Some(rules) = ask(format!("repos/{repo}/rules/branches/{base}")).await {
+        let sets: Vec<u64> = rules
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|rule| rule["type"] == "pull_request")
+            .filter_map(|rule| rule["ruleset_id"].as_u64())
+            .collect();
+        for id in sets {
+            if let Some(set) = ask(format!("repos/{repo}/rulesets/{id}")).await
+                && set["enforcement"] != "disabled"
+                && set["enforcement"] != "evaluate"
+                && set["current_user_can_bypass"] == "never"
+            {
+                return Ok(());
+            }
+        }
     }
-    if let Some(branch) = ask(format!("repos/{repo}/branches/{base}")).await
-        && branch["protected"] == true
-    {
-        return Ok(());
-    }
-    // A ruleset's rules on it: one that limits who changes it counts.
-    let limits = [
-        "pull_request",
-        "non_fast_forward",
-        "update",
-        "required_signatures",
-    ];
-    if let Some(rules) = ask(format!("repos/{repo}/rules/branches/{base}")).await
-        && rules.as_array().is_some_and(|rules| {
-            rules
-                .iter()
-                .any(|rule| limits.iter().any(|kind| rule["type"] == *kind))
-        })
-    {
-        return Ok(());
+    // Classic protection: required reviews, held for admins, with no allowance for the login.
+    if let Some(protection) = ask(format!("repos/{repo}/branches/{base}/protection")).await {
+        let reviews = &protection["required_pull_request_reviews"];
+        let allowed = reviews["bypass_pull_request_allowances"]["users"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .any(|user| {
+                user["login"]
+                    .as_str()
+                    .is_some_and(|l| l.eq_ignore_ascii_case(&login))
+            });
+        let admin = ask(format!("repos/{repo}"))
+            .await
+            .map(|r| r["permissions"]["admin"] == true);
+        let held = protection["enforce_admins"]["enabled"] == true || admin == Some(false);
+        if reviews.is_object() && !allowed && held {
+            return Ok(());
+        }
     }
     Err(not)
 }
 
-/// The most commits on a job's branch obid checks one by one.
+/// The most commits on a job's branch obid looks at one by one.
 const MOST_COMMITS: usize = 1000;
+/// The most commits on other branches whose changes a turn's new commits are compared with.
+const MOST_ELSEWHERE: usize = 2000;
+/// How far a new commit's times may be from its turn's.
+const SKEW: i64 = 300;
 
-/// Whether every commit between `base` (a commit) and the job's HEAD was made in this job: its
-/// object is in the job's own object folder, where everything the job commits goes (its agent's
-/// commits, obid's rebases and its "work left uncommitted" commit, all run with the job's git
-/// environment), and not only in the clone's. A commit the job started from (another job's
-/// branch, a pull request's head, a branch a teammate pushed) or merged in from the clone is
-/// there only, so it isn't. Why not, otherwise; what obid can't read is a no.
-pub async fn made_here(spec: &Spec, base: &str) -> Result<(), String> {
-    let env = git_env(spec);
-    let env: Vec<(&str, &str)> = env.iter().map(|(k, v)| (*k, v.as_str())).collect();
-    let range = format!("{base}..HEAD");
+/// The commits from `from` (a commit) to HEAD in `worktree`, newest first: none for none, an
+/// error past [`MOST_COMMITS`].
+async fn commits_since(
+    worktree: &Path,
+    env: &[(&str, &str)],
+    from: &str,
+) -> Result<Vec<String>, String> {
+    let range = format!("{from}..HEAD");
     let most = format!("--max-count={}", MOST_COMMITS + 1);
     let listed = crate::git::run(
-        &spec.worktree,
+        worktree,
         &[
             OsStr::new("rev-list"),
             OsStr::new(&most),
             OsStr::new(&range),
         ],
-        &env,
+        env,
     )
     .await
-    .map_err(|_| "obid couldn't list its commits on its base".to_owned())?;
-    let commits: Vec<&str> = listed.lines().filter(|l| !l.is_empty()).collect();
-    if commits.is_empty() {
-        return Ok(());
-    }
-    if commits.len() > MOST_COMMITS {
-        return Err(format!(
-            "it has more than {MOST_COMMITS} commits on its base"
-        ));
-    }
-    let Some(own) = objects_dir(spec) else {
-        return Err("its commits aren't ones it made".into());
-    };
-    // Only the job's own objects: no alternates.
-    let own = own.to_string_lossy().into_owned();
-    let input: String = commits.iter().map(|c| format!("{c}\n")).collect();
-    let said = crate::git::run_bytes(
-        &spec.worktree,
-        &[OsStr::new("cat-file"), OsStr::new("--batch-check")],
-        &[("GIT_OBJECT_DIRECTORY", own.as_str())],
-        Some(input.into_bytes()),
-    )
-    .await
-    .map_err(|_| "obid couldn't read its commits".to_owned())?;
-    let said = String::from_utf8_lossy(&said);
-    let made: HashSet<&str> = said
+    .map_err(|_| "obid couldn't list its commits".to_owned())?;
+    let commits: Vec<String> = listed
         .lines()
-        .filter(|line| !line.ends_with(" missing"))
-        .filter_map(|line| line.split(' ').next())
+        .filter(|l| !l.is_empty())
+        .map(str::to_owned)
         .collect();
-    match commits.iter().find(|c| !made.contains(**c)) {
+    if commits.len() > MOST_COMMITS {
+        return Err(format!("it has more than {MOST_COMMITS} commits"));
+    }
+    Ok(commits)
+}
+
+/// The patch ids (`git patch-id --stable`) of what `revs` lists, merges left out.
+async fn patch_ids(
+    worktree: &Path,
+    env: &[(&str, &str)],
+    revs: &[&str],
+) -> Result<HashSet<String>, String> {
+    let mut args: Vec<&OsStr> = ["log", "-p", "--no-merges", "--format=commit %H"]
+        .iter()
+        .map(OsStr::new)
+        .collect();
+    args.extend(revs.iter().map(OsStr::new));
+    let patches = crate::git::run_bytes(worktree, &args, env, None)
+        .await
+        .map_err(|_| "obid couldn't read the commits' changes".to_owned())?;
+    if patches.is_empty() {
+        return Ok(HashSet::new());
+    }
+    let ids = crate::git::run_bytes(
+        worktree,
+        &[OsStr::new("patch-id"), OsStr::new("--stable")],
+        env,
+        Some(patches),
+    )
+    .await
+    .map_err(|_| "obid couldn't read the commits' changes".to_owned())?;
+    Ok(String::from_utf8_lossy(&ids)
+        .lines()
+        .filter_map(|line| line.split(' ').next())
+        .map(str::to_owned)
+        .collect())
+}
+
+/// The commits one turn of a job added (from `before`, HEAD when the turn started at `started`,
+/// to HEAD now), for obid's record of what the job made: each must be made then (its author and
+/// committer the same, both at most [`SKEW`] seconds before the turn began), and none may carry
+/// the same change as a commit on another branch the clone has (`--remotes`, not on `base_ref`).
+/// What a cherry-pick, a fetch, a merge of another head, `hash-object -w` or a reset to one brings
+/// fails that. Why not, otherwise: the job is then someone else's code.
+pub async fn new_commits(
+    worktree: &Path,
+    env: &[(&str, &str)],
+    before: &str,
+    started: i64,
+    base_ref: &str,
+) -> Result<Vec<String>, String> {
+    let commits = commits_since(worktree, env, before).await?;
+    if commits.is_empty() {
+        return Ok(commits);
+    }
+    let range = format!("{before}..HEAD");
+    let said = crate::git::run(
+        worktree,
+        &[
+            OsStr::new("log"),
+            OsStr::new("--format=%H%x1f%an%x1f%ae%x1f%at%x1f%cn%x1f%ce%x1f%ct"),
+            OsStr::new(&range),
+        ],
+        env,
+    )
+    .await
+    .map_err(|_| "obid couldn't read its new commits".to_owned())?;
+    let now = obi_protocol::time::now();
+    for line in said.lines().filter(|l| !l.is_empty()) {
+        let fields: Vec<&str> = line.split('\u{1f}').collect();
+        let [sha, an, ae, at, cn, ce, ct] = fields[..] else {
+            return Err("obid couldn't read its new commits".into());
+        };
+        let at: i64 = at.parse().unwrap_or(0);
+        let ct: i64 = ct.parse().unwrap_or(0);
+        let fresh = |t: i64| t >= started - SKEW && t <= now + SKEW;
+        if an != cn || ae != ce || !fresh(at) || !fresh(ct) {
+            return Err(format!(
+                "its agent brought in commit {}, made elsewhere or before its turn (a cherry-pick, a fetch or a merge of another branch)",
+                &sha[..12.min(sha.len())]
+            ));
+        }
+    }
+    let ours = patch_ids(worktree, env, &[&range]).await?;
+    let most = format!("--max-count={MOST_ELSEWHERE}");
+    let not = format!("^{base_ref}");
+    let elsewhere = patch_ids(worktree, env, &[&most, "--remotes", &not]).await?;
+    if !ours.is_disjoint(&elsewhere) {
+        return Err(
+            "its agent committed a change another branch already has (a cherry-pick or a copy of it)"
+                .into(),
+        );
+    }
+    Ok(commits)
+}
+
+/// Whether every commit from `base` (a commit) to the job's HEAD is in `record`, obid's own record
+/// of what the job (and its follow-up chain) made. Why not, otherwise.
+pub async fn on_record(spec: &Spec, base: &str, record: &HashSet<String>) -> Result<(), String> {
+    let env = git_env(spec);
+    let env: Vec<(&str, &str)> = env.iter().map(|(k, v)| (*k, v.as_str())).collect();
+    let commits = commits_since(&spec.worktree, &env, base)
+        .await
+        .map_err(|why| format!("{why} on its base"))?;
+    match commits.iter().find(|c| !record.contains(*c)) {
         None => Ok(()),
         Some(commit) => Err(format!(
-            "commit {} on its branch wasn't made in this job",
+            "commit {} on its branch isn't one obid saw this job make",
             &commit[..12.min(commit.len())]
         )),
     }
+}
+
+/// Whether the job's worktree is exactly its HEAD: every file HEAD holds there with the same
+/// content (or link target), and no file outside what git ignores that HEAD doesn't hold. What its
+/// check runs is then only its commits. Why not, otherwise.
+pub async fn worktree_is_head(spec: &Spec) -> Result<(), String> {
+    let env = git_env(spec);
+    let env: Vec<(&str, &str)> = env.iter().map(|(k, v)| (*k, v.as_str())).collect();
+    let (held, same) = compared(spec, &env).await;
+    let held = held.ok_or("obid couldn't compare its files with its last commit")?;
+    if held.files.len() != same.len() {
+        return Err("files in its worktree differ from its last commit (uncommitted, or taken from elsewhere)".into());
+    }
+    for (target, link) in &held.links {
+        let blob = crate::git::run_bytes(
+            &spec.worktree,
+            &[
+                OsStr::new("cat-file"),
+                OsStr::new("blob"),
+                OsStr::new(target),
+            ],
+            &env,
+            None,
+        )
+        .await
+        .ok();
+        let now = std::fs::read_link(link).ok();
+        if blob.as_deref() != now.as_ref().map(|n| n.as_os_str().as_encoded_bytes()) {
+            return Err("a link in its worktree differs from its last commit".into());
+        }
+    }
+    // Every file git sees there (in its index, or not ignored) is one HEAD holds.
+    let listed = crate::git::run_bytes(
+        &spec.worktree,
+        &[
+            OsStr::new("ls-files"),
+            OsStr::new("--cached"),
+            OsStr::new("--others"),
+            OsStr::new("--exclude-standard"),
+            OsStr::new("-z"),
+        ],
+        &env,
+        None,
+    )
+    .await
+    .map_err(|_| "obid couldn't list the files in its worktree".to_owned())?;
+    let holds: HashSet<&PathBuf> = held
+        .files
+        .iter()
+        .chain(&held.links)
+        .map(|(_, p)| p)
+        .collect();
+    let extra = listed
+        .split(|&b| b == 0)
+        .filter(|p| !p.is_empty())
+        .map(|p| spec.worktree.join(String::from_utf8_lossy(p).as_ref()))
+        .any(|path| !holds.contains(&path));
+    if extra {
+        return Err("its worktree has files its commits don't hold".into());
+    }
+    Ok(())
 }
 
 /// What a check gets of the secrets its repository declares: the values to put in its environment,
@@ -784,6 +961,19 @@ fn git_env(spec: &Spec) -> Vec<(&'static str, String)> {
 /// index says (`--assume-unchanged`, a stat it was told to trust). Anything git can't answer for
 /// is left out, so it's read.
 async fn untouched(spec: &Spec, env: &[(&str, &str)]) -> HashSet<PathBuf> {
+    compared(spec, env).await.1
+}
+
+/// What HEAD's tree holds in the worktree: its files and its links, each `(blob, path)`.
+#[derive(Default)]
+struct Held {
+    files: Vec<(String, PathBuf)>,
+    links: Vec<(String, PathBuf)>,
+}
+
+/// HEAD's tree (none when git can't list it), and the files of it whose content in the worktree
+/// hashes to the blob HEAD holds for them.
+async fn compared(spec: &Spec, env: &[(&str, &str)]) -> (Option<Held>, HashSet<PathBuf>) {
     let Ok(tree) = crate::git::run_bytes(
         &spec.worktree,
         &[
@@ -797,10 +987,10 @@ async fn untouched(spec: &Spec, env: &[(&str, &str)]) -> HashSet<PathBuf> {
     )
     .await
     else {
-        return HashSet::new();
+        return (None, HashSet::new());
     };
     // `<mode> blob <sha>\t<path>`, each ended by a NUL.
-    let mut held: Vec<(String, PathBuf)> = Vec::new();
+    let mut held = Held::default();
     for entry in tree.split(|&b| b == 0).filter(|e| !e.is_empty()) {
         let entry = String::from_utf8_lossy(entry);
         let Some((meta, path)) = entry.split_once('\t') else {
@@ -811,15 +1001,25 @@ async fn untouched(spec: &Spec, env: &[(&str, &str)]) -> HashSet<PathBuf> {
             continue;
         };
         let full = spec.worktree.join(path);
-        let regular = std::fs::symlink_metadata(&full).is_ok_and(|m| m.is_file());
-        if matches!(mode, "100644" | "100755") && regular && !path.contains('\n') {
-            held.push((sha.to_owned(), full));
+        match mode {
+            "100644" | "100755" => held.files.push((sha.to_owned(), full)),
+            "120000" => held.links.push((sha.to_owned(), full)),
+            _ => {}
         }
     }
-    if held.is_empty() {
-        return HashSet::new();
+    // Only what is there as a regular file, under a name `--stdin-paths` can take.
+    let present: Vec<&(String, PathBuf)> = held
+        .files
+        .iter()
+        .filter(|(_, path)| {
+            std::fs::symlink_metadata(path).is_ok_and(|m| m.is_file())
+                && !path.to_string_lossy().contains('\n')
+        })
+        .collect();
+    if present.is_empty() {
+        return (Some(held), HashSet::new());
     }
-    let input: String = held
+    let input: String = present
         .iter()
         .map(|(_, path)| format!("{}\n", path.display()))
         .collect();
@@ -835,18 +1035,20 @@ async fn untouched(spec: &Spec, env: &[(&str, &str)]) -> HashSet<PathBuf> {
     )
     .await
     else {
-        return HashSet::new();
+        return (Some(held), HashSet::new());
     };
     let hashed = String::from_utf8_lossy(&hashed);
     let hashes: Vec<&str> = hashed.lines().collect();
-    if hashes.len() != held.len() {
-        return HashSet::new();
+    if hashes.len() != present.len() {
+        return (Some(held), HashSet::new());
     }
-    held.into_iter()
+    let same = present
+        .into_iter()
         .zip(hashes)
         .filter(|((sha, _), now)| sha == now)
-        .map(|((_, path), _)| path)
-        .collect()
+        .map(|((_, path), _)| path.clone())
+        .collect();
+    (Some(held), same)
 }
 
 /// Up to 10 of `paths`, and how many more.
@@ -1295,7 +1497,9 @@ required = false
     /// A stand-in `gh` in `dir`, answering `api <path>` from `answers` and failing the rest.
     fn fake_gh(dir: &Path, answers: &[(&str, &str)]) -> PathBuf {
         use std::os::unix::fs::PermissionsExt as _;
-        let mut script = String::from("#!/bin/sh\ncase \"$1 $2\" in\n");
+        let mut script = String::from(
+            "#!/bin/sh\ncase \"$1 $2\" in\n  \"auth status\") echo '{\"hosts\":{\"github.com\":[{\"login\":\"wellington\",\"active\":true,\"state\":\"success\"}]}}' ;;\n",
+        );
         for (path, json) in answers {
             script.push_str(&format!("  \"api {path}\") echo '{json}' ;;\n"));
         }
@@ -1306,58 +1510,86 @@ required = false
         gh
     }
 
-    /// Only a base GitHub says is the default branch, protected, or under a ruleset that limits
-    /// changing it counts: a branch an agent or a teammate pushed doesn't, nor one GitHub won't
-    /// say about.
+    /// Only a base nothing reaches but through a reviewed pull request counts, for the login Oby
+    /// pushes as too: a ruleset's `pull_request` rule it can't bypass, or classic protection with
+    /// required reviews that holds for it. Weaker rules, a ruleset it can bypass, a default branch
+    /// alone, and what GitHub won't say all don't.
     #[tokio::test]
-    async fn only_a_base_github_protects_counts() {
+    async fn only_a_base_reached_through_a_reviewed_pull_request_counts() {
         let dir = std::env::temp_dir().join(format!("obid-secretspec-gh-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let gh = fake_gh(
             &dir,
             &[
-                ("repos/o/r", r#"{"default_branch":"main"}"#),
                 (
-                    "repos/o/r/branches/release",
-                    r#"{"name":"release","protected":true}"#,
+                    "repos/o/r",
+                    r#"{"default_branch":"main","permissions":{"admin":true}}"#,
                 ),
                 (
-                    "repos/o/r/branches/dev",
-                    r#"{"name":"dev","protected":false}"#,
-                ),
-                (
-                    "repos/o/r/rules/branches/dev",
+                    "repos/o/r/rules/branches/main",
                     r#"[{"type":"pull_request","ruleset_id":1}]"#,
                 ),
                 (
-                    "repos/o/r/branches/teammate-fix",
-                    r#"{"name":"teammate-fix","protected":false}"#,
+                    "repos/o/r/rulesets/1",
+                    r#"{"id":1,"enforcement":"active","current_user_can_bypass":"never"}"#,
                 ),
                 (
-                    "repos/o/r/rules/branches/teammate-fix",
-                    r#"[{"type":"creation","ruleset_id":2}]"#,
+                    "repos/o/r/rules/branches/bypassed",
+                    r#"[{"type":"pull_request","ruleset_id":2}]"#,
+                ),
+                (
+                    "repos/o/r/rulesets/2",
+                    r#"{"id":2,"enforcement":"active","current_user_can_bypass":"always"}"#,
+                ),
+                (
+                    "repos/o/r/rules/branches/evaluated",
+                    r#"[{"type":"pull_request","ruleset_id":3}]"#,
+                ),
+                (
+                    "repos/o/r/rulesets/3",
+                    r#"{"id":3,"enforcement":"evaluate","current_user_can_bypass":"never"}"#,
+                ),
+                (
+                    "repos/o/r/rules/branches/weak",
+                    r#"[{"type":"non_fast_forward","ruleset_id":4},{"type":"required_signatures","ruleset_id":4}]"#,
+                ),
+                (
+                    "repos/o/r/rulesets/4",
+                    r#"{"id":4,"enforcement":"active","current_user_can_bypass":"never"}"#,
+                ),
+                (
+                    "repos/o/r/branches/release/protection",
+                    r#"{"required_pull_request_reviews":{"required_approving_review_count":1},"enforce_admins":{"enabled":true}}"#,
+                ),
+                (
+                    "repos/o/r/branches/admins-skip/protection",
+                    r#"{"required_pull_request_reviews":{"required_approving_review_count":1},"enforce_admins":{"enabled":false}}"#,
+                ),
+                (
+                    "repos/o/r/branches/allowed/protection",
+                    r#"{"required_pull_request_reviews":{"bypass_pull_request_allowances":{"users":[{"login":"Wellington"}]}},"enforce_admins":{"enabled":true}}"#,
+                ),
+                (
+                    "repos/o/r/branches/no-reviews/protection",
+                    r#"{"required_status_checks":{"strict":true},"enforce_admins":{"enabled":true}}"#,
                 ),
             ],
         );
         assert_eq!(protected_base(&gh, "o/r", "main").await, Ok(()));
         assert_eq!(protected_base(&gh, "o/r", "release").await, Ok(()));
-        assert_eq!(protected_base(&gh, "o/r", "dev").await, Ok(()));
-        // A branch someone pushed, with no rule that limits changing it.
-        assert!(
-            protected_base(&gh, "o/r", "teammate-fix")
-                .await
-                .unwrap_err()
-                .contains("isn't")
-        );
-        // One GitHub doesn't know, and a repository it won't answer for.
-        assert!(protected_base(&gh, "o/r", "stacked-on-x").await.is_err());
-        assert!(
-            protected_base(&gh, "o/other", "main")
-                .await
-                .unwrap_err()
-                .contains("didn't say")
-        );
+        for weak in [
+            "bypassed",
+            "evaluated",
+            "weak",
+            "admins-skip",
+            "allowed",
+            "no-reviews",
+            "teammate-fix",
+        ] {
+            assert!(protected_base(&gh, "o/r", weak).await.is_err(), "{weak}");
+        }
+        assert!(protected_base(&gh, "o/other", "main").await.is_err());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1398,62 +1630,180 @@ required = false
     const COMMIT: &str =
         "git -c user.name=T -c user.email=t@example.com -c commit.gpgsign=false commit -q";
 
-    /// Every commit between the base and HEAD must be one the job made: a job that starts from
-    /// anything but its base (a follow-up's branch whose job is gone, a branch name an earlier
-    /// teammate-run job left, a pull request a collaborator pushed to, a stacked pull request on a
-    /// teammate's branch) or merges a head in from the clone gets nothing.
-    #[tokio::test]
-    async fn only_commits_the_job_made_count() {
-        let dir = std::env::temp_dir().join(format!("obid-secretspec-made-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+    /// The fixture for the record's tests: an origin whose `main` is the base and whose other
+    /// branches were made long ago by someone else (`oby/fix-12`, an earlier teammate-run job's;
+    /// `teammate`, one commit on `main`), cloned; the clone, and the base's commit.
+    async fn record_fixture(dir: &Path) -> (PathBuf, String) {
+        let _ = std::fs::remove_dir_all(dir);
         let origin = dir.join("origin");
         std::fs::create_dir_all(&origin).unwrap();
         sh(
             &origin,
             &format!(
-                "git init -q -b main && echo a > a && git add a && {COMMIT} -m base && \
+                "export GIT_AUTHOR_DATE=2001-01-01T00:00:00 GIT_COMMITTER_DATE=2001-01-01T00:00:00 && \
+                 git init -q -b main && echo a > a && git add a && {COMMIT} -m base && \
                  git checkout -q -b oby/fix-12 && echo t > t && git add t && {COMMIT} -m 'a teammate-run job' && \
-                 git checkout -q -b teammate && echo u > u && git add u && {COMMIT} -m 'a teammate' && \
+                 git checkout -q main && git checkout -q -b teammate && echo u > u && git add u && {COMMIT} -m 'a teammate' && \
                  git checkout -q main"
             ),
         );
-        sh(&dir, "git clone -q origin clone");
+        sh(dir, "git clone -q origin clone");
         let clone = dir.join("clone");
+        // As obid's clones: a fetch doesn't look at the worktrees' own commits.
+        sh(
+            &clone,
+            "git config fetch.hideRefs worktrees/ && echo ignored.log >> .git/info/exclude",
+        );
         let base = crate::git::git(&clone, &["rev-parse", "refs/remotes/origin/main"])
             .await
             .unwrap();
+        (clone, base)
+    }
 
-        // Its own commits on its base: they count.
-        let own = job_worktree(&dir, "own", "origin/main");
-        assert_eq!(made_here(&own, &base).await, Ok(()));
-        as_job(&own, &format!("echo b > b && git add b && {COMMIT} -m own"));
-        assert_eq!(made_here(&own, &base).await, Ok(()));
+    fn env_of(spec: &Spec) -> Vec<(&'static str, String)> {
+        git_env(spec)
+    }
 
-        for (name, start) in [
-            // A follow-up's start_from whose job is gone, a reused oby/ branch name, a pull
-            // request a collaborator pushed to, a stacked one on a teammate's branch.
-            ("follow-up", "origin/oby/fix-12"),
-            ("reused", "origin/oby/fix-12"),
-            ("collaborator", "origin/teammate"),
+    /// What a turn adds goes in the record only when it was made then, by whoever committed it,
+    /// and isn't another branch's change: every way of bringing in someone else's commit makes
+    /// the job foreign instead.
+    #[tokio::test]
+    async fn a_turn_records_only_what_it_made() {
+        let dir = std::env::temp_dir().join(format!("obid-secretspec-turn-{}", std::process::id()));
+        let (_clone, base) = record_fixture(&dir).await;
+        let base_ref = "refs/remotes/origin/main";
+        let started = obi_protocol::time::now();
+        let turn = |spec: Spec, script: &'static str| async move {
+            let env = env_of(&spec);
+            let env: Vec<(&str, &str)> = env.iter().map(|(k, v)| (*k, v.as_str())).collect();
+            let before = crate::git::run(
+                &spec.worktree,
+                &[OsStr::new("rev-parse"), OsStr::new("HEAD")],
+                &env,
+            )
+            .await
+            .unwrap();
+            as_job(&spec, script);
+            new_commits(&spec.worktree, &env, &before, started, base_ref).await
+        };
+        // Its own commit: recorded.
+        let own = turn(job_worktree(&dir, "own", "origin/main"), "echo b > b && git add b && git -c user.name=T -c user.email=t@example.com -c commit.gpgsign=false commit -q -m own").await;
+        assert_eq!(own.map(|c| c.len()), Ok(1));
+        for (name, script, says) in [
+            (
+                "cherry-pick",
+                "git -c user.name=T -c user.email=t@example.com cherry-pick origin/teammate",
+                "made elsewhere",
+            ),
+            (
+                "reset-author",
+                "git -c user.name=T -c user.email=t@example.com cherry-pick origin/teammate && git -c user.name=T -c user.email=t@example.com commit -q --amend --reset-author --no-edit",
+                "another branch already has",
+            ),
+            (
+                "checkout",
+                "git checkout origin/teammate -- . && git -c user.name=T -c user.email=t@example.com -c commit.gpgsign=false commit -q -m mine",
+                "another branch already has",
+            ),
+            (
+                "merge",
+                "git -c user.name=T -c user.email=t@example.com merge -q --no-ff -m merge origin/teammate",
+                "made elsewhere",
+            ),
+            (
+                "reset",
+                "git reset -q --hard origin/teammate",
+                "made elsewhere",
+            ),
+            (
+                "hash-object",
+                "c=$(git cat-file commit origin/teammate | git hash-object -w -t commit --stdin) && git reset -q --hard $c",
+                "made elsewhere",
+            ),
+            (
+                "alternates",
+                "mkdir -p \"$GIT_OBJECT_DIRECTORY/info\" && echo \"$GIT_ALTERNATE_OBJECT_DIRECTORIES\" > \"$GIT_OBJECT_DIRECTORY/info/alternates\" && git reset -q --hard origin/oby/fix-12",
+                "made elsewhere",
+            ),
         ] {
-            let spec = job_worktree(&dir, name, start);
-            as_job(
-                &spec,
-                &format!("echo c > c && git add c && {COMMIT} -m mine"),
-            );
-            let why = made_here(&spec, &base).await.unwrap_err();
-            assert!(why.contains("wasn't made in this job"), "{name}: {why}");
+            let why = turn(job_worktree(&dir, name, "origin/main"), script)
+                .await
+                .unwrap_err();
+            assert!(why.contains(says), "{name}: {why}");
         }
+        let _ = base;
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
-        // A head merged in from the clone: the merge is the job's, what it brings isn't.
-        let merged = job_worktree(&dir, "merged", "origin/main");
-        as_job(&merged, "git merge -q --no-ff -m merge origin/teammate");
-        assert!(made_here(&merged, &base).await.is_err());
+    /// The check's code is only what obid recorded: a branch it started from (a reused name, a
+    /// follow-up whose job is gone, a collaborator's push) isn't, and obid's own rebase of one
+    /// doesn't make it so.
+    #[tokio::test]
+    async fn only_what_obid_recorded_counts() {
+        let dir = std::env::temp_dir().join(format!("obid-secretspec-rec-{}", std::process::id()));
+        let (clone, base) = record_fixture(&dir).await;
+        let own = job_worktree(&dir, "own", "origin/main");
+        as_job(&own, &format!("echo b > b && git add b && {COMMIT} -m own"));
+        let env = env_of(&own);
+        let env: Vec<(&str, &str)> = env.iter().map(|(k, v)| (*k, v.as_str())).collect();
+        let made = commits_since(&own.worktree, &env, &base).await.unwrap();
+        let record: HashSet<String> = made.iter().cloned().collect();
+        assert_eq!(on_record(&own, &base, &record).await, Ok(()));
+        assert!(on_record(&own, &base, &HashSet::new()).await.is_err());
 
-        // A job that doesn't commit has no commits of its own.
-        let mut none = job_worktree(&dir, "none", "origin/teammate");
-        none.commits = false;
-        assert!(made_here(&none, &base).await.is_err());
+        // A reused branch name: its old commits aren't in the record, and rebased onto the base
+        // as it is now they are new commits obid never recorded either.
+        let reused = job_worktree(&dir, "reused", "origin/oby/fix-12");
+        assert!(
+            on_record(&reused, &base, &record)
+                .await
+                .unwrap_err()
+                .contains("isn't one obid saw")
+        );
+        sh(
+            &dir.join("origin"),
+            &format!("echo m > m && git add m && {COMMIT} -m moved"),
+        );
+        sh(&clone, "git fetch -q origin");
+        let now = crate::git::git(&clone, &["rev-parse", "refs/remotes/origin/main"])
+            .await
+            .unwrap();
+        as_job(
+            &reused,
+            &format!(
+                "git -c user.name=T -c user.email=t@example.com rebase -q --onto {now} {base}"
+            ),
+        );
+        assert!(on_record(&reused, &now, &record).await.is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The worktree must be exactly HEAD: changed, removed or taken-from-elsewhere files, and files
+    /// HEAD doesn't hold, mean no values; what git ignores is fine.
+    #[tokio::test]
+    async fn the_worktree_must_be_its_head() {
+        let dir = std::env::temp_dir().join(format!("obid-secretspec-wt-{}", std::process::id()));
+        let (_clone, _base) = record_fixture(&dir).await;
+        let spec = job_worktree(&dir, "clean", "origin/main");
+        assert_eq!(worktree_is_head(&spec).await, Ok(()));
+        // What git ignores (a build's output) is fine.
+        std::fs::write(spec.worktree.join("ignored.log"), "x").unwrap();
+        assert_eq!(worktree_is_head(&spec).await, Ok(()));
+        for (name, script) in [
+            ("checkout", "git checkout -q origin/teammate -- ."),
+            ("changed", "echo z > a"),
+            (
+                "hidden",
+                "echo z > a && git update-index --assume-unchanged a",
+            ),
+            ("removed", "rm a"),
+            ("untracked", "echo new > new.txt"),
+            ("staged", "echo new > new.txt && git add new.txt"),
+        ] {
+            let spec = job_worktree(&dir, name, "origin/main");
+            as_job(&spec, script);
+            assert!(worktree_is_head(&spec).await.is_err(), "{name}");
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 

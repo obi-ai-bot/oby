@@ -8,7 +8,7 @@
 //! ([`Jobs::start_obi_review`]): a fresh worktree detached at the request's commit, the request
 //! quoted as data, the agent reading only, the check in the sandbox, a typed result body.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -5819,6 +5819,17 @@ impl Jobs {
         if self.uncommitted(id).await {
             return Onto::Same;
         }
+        // What it rewrites: recorded again after, only when all of it was in the record.
+        let rewrote: Vec<String> = self
+            .sandboxed_git(id, &["rev-list", &format!("{start}..HEAD")], None)
+            .await
+            .map(|listed| {
+                String::from_utf8_lossy(&listed)
+                    .lines()
+                    .map(str::to_owned)
+                    .collect()
+            })
+            .unwrap_or_else(|_| vec![String::new()]);
         let (name, email) = &self.identity();
         let rebased = self
             .sandboxed_git(
@@ -5841,6 +5852,7 @@ impl Jobs {
             )
             .await;
         if rebased.is_ok() {
+            self.record_own(id, &now, &rewrote).await;
             tracing::info!("job {id}: {base} moved, so its commits were rebased onto {now}");
             self.update(id, |job| {
                 job.start_commit = Some(now.clone());
@@ -5898,6 +5910,9 @@ impl Jobs {
         if changes.is_empty() {
             return Ok(());
         }
+        let head = self
+            .sandboxed_git(id, &["rev-parse", "--verify", "HEAD"], None)
+            .await?;
         self.sandboxed_git(id, &["add", "--all"], None).await?;
         let (name, email) = &self.identity();
         self.sandboxed_git(
@@ -5918,6 +5933,9 @@ impl Jobs {
             None,
         )
         .await?;
+        // What its agent left: the job's own work, as its turns' commits are.
+        self.record_own(id, String::from_utf8_lossy(&head).trim(), &[])
+            .await;
         Ok(())
     }
 
@@ -6817,6 +6835,43 @@ impl Jobs {
         limit: crate::conn::Limit,
         ran_secs: Option<&(dyn Fn() -> u64 + Sync)>,
     ) -> Result<agent::Turn, String> {
+        // What an owner's job's turn commits goes in obid's record of what it made, only while
+        // its check would get values (crate::secretspec).
+        let records = matches!(gate, Gate::Owner { .. })
+            && self
+                .get(id)
+                .is_some_and(|job| job.check_refuses_secrets().is_none());
+        let before = match records {
+            true => self
+                .sandboxed_git(id, &["rev-parse", "--verify", "HEAD"], None)
+                .await
+                .ok(),
+            false => None,
+        };
+        let started = obi_protocol::time::now();
+        let turn = self
+            .unrecorded_turn(id, tool, launch, prompt, signal, gate, limit, ran_secs)
+            .await;
+        if let Some(before) = before {
+            self.record_turn(id, String::from_utf8_lossy(&before).trim(), started)
+                .await;
+        }
+        turn
+    }
+
+    /// [`Jobs::turn`], without the record.
+    #[allow(clippy::too_many_arguments)]
+    async fn unrecorded_turn(
+        &self,
+        id: &str,
+        tool: Tool,
+        launch: Launch,
+        prompt: &str,
+        signal: &watch::Receiver<Signal>,
+        gate: Gate<'_>,
+        limit: crate::conn::Limit,
+        ran_secs: Option<&(dyn Fn() -> u64 + Sync)>,
+    ) -> Result<agent::Turn, String> {
         let prompt = &crate::vault::for_agent(prompt)?;
         let (obi_review, mcp_rules) = match gate {
             Gate::ObiReview => (true, &[][..]),
@@ -7380,10 +7435,12 @@ impl Jobs {
     }
 
     /// Why the code job `job`'s check runs isn't only its owner's own, so the check gets none of
-    /// the owner's secrets, or none. An allowlist: the check gets values only when its base is the
-    /// repository's default branch or one it protects, as GitHub says (never an `oby/` branch or
-    /// the job's own), and every commit between that base and the job's HEAD was made in this job
-    /// (crate::secretspec, `protected_base` and `made_here`). What can't be told is a no.
+    /// the owner's secrets, or none. An allowlist (crate::secretspec, "the threat model"): the
+    /// check gets values only when its base is a branch the repository lets in only through a
+    /// reviewed pull request, as GitHub says (never an `oby/` branch or the job's own); its
+    /// worktree is exactly its HEAD; and every commit between that base and HEAD is in obid's own
+    /// record of what this job, and the follow-ups it continues, made ([`Jobs::record_of`]). What
+    /// can't be told is a no.
     async fn code_refuses_secrets(
         &self,
         job: &Job,
@@ -7404,7 +7461,115 @@ impl Jobs {
         if let Err(why) = crate::secretspec::protected_base(&gh, &repo.repo, base).await {
             return Some(why);
         }
-        crate::secretspec::made_here(spec, base_commit).await.err()
+        if let Err(why) = crate::secretspec::worktree_is_head(spec).await {
+            return Some(why);
+        }
+        crate::secretspec::on_record(spec, base_commit, &self.record_of(job))
+            .await
+            .err()
+    }
+
+    /// obid's record of the commits `job` made, with those of the jobs it follows up while each
+    /// of them is one whose check would get values too ([`Job::made`]).
+    fn record_of(&self, job: &Job) -> HashSet<String> {
+        let mut record: HashSet<String> = job.made.iter().cloned().collect();
+        let mut of = job.follow_up_of.clone();
+        // A chain is short; this only stops a loop.
+        for _ in 0..64 {
+            let Some(earlier) = of.as_deref().and_then(|id| self.get(id)) else {
+                break;
+            };
+            if earlier.check_refuses_secrets().is_some() {
+                break;
+            }
+            record.extend(earlier.made.iter().cloned());
+            of = earlier.follow_up_of.clone();
+        }
+        record
+    }
+
+    /// The job's git environment for obid's own git calls in its worktree: its object folder and
+    /// the clone's as alternates, as its sandbox has them; none when it has no folder of its own.
+    async fn job_git_env(&self, id: &str) -> Vec<(&'static str, String)> {
+        let Ok((admin, common)) = self.own_git_dirs(id).await else {
+            return Vec::new();
+        };
+        let own = admin.join("objects");
+        if !own.is_dir() {
+            return Vec::new();
+        }
+        vec![
+            ("GIT_OBJECT_DIRECTORY", own.to_string_lossy().into_owned()),
+            (
+                "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+                common.join("objects").to_string_lossy().into_owned(),
+            ),
+        ]
+    }
+
+    /// After one of the owner's job's turns that began with HEAD at `before` at `started`: the
+    /// commits it added go in obid's record of what the job made, when they pass the look
+    /// (crate::secretspec, `new_commits`); when one doesn't, the job is someone else's code from
+    /// now on ([`Job::foreign`], carried to its follow-ups), and nothing of the turn is recorded.
+    async fn record_turn(&self, id: &str, before: &str, started: i64) {
+        let Some(job) = self.get(id) else { return };
+        let Some(repo) = self.repo(&job.repo) else {
+            return;
+        };
+        let base = job.base.clone().unwrap_or(repo.default_branch.clone());
+        let env = self.job_git_env(id).await;
+        let env: Vec<(&str, &str)> = env.iter().map(|(k, v)| (*k, v.as_str())).collect();
+        let base_ref = format!("refs/remotes/origin/{base}");
+        match crate::secretspec::new_commits(
+            &self.worktree_path(id),
+            &env,
+            before,
+            started,
+            &base_ref,
+        )
+        .await
+        {
+            Ok(new) if new.is_empty() => {}
+            Ok(new) => {
+                self.update(id, |job| job.made.extend(new));
+            }
+            Err(why) => {
+                tracing::info!(
+                    "job {id}: its check gets none of the owner's secrets from now on: {why}"
+                );
+                self.update(id, |job| {
+                    job.foreign.get_or_insert(why);
+                });
+            }
+        }
+    }
+
+    /// Adds to the record what obid itself committed for the job (a rebase of its commits, its
+    /// "work left uncommitted" commit): the commits from `from` to HEAD, only when the job's check
+    /// would get values and everything it rewrote (`rewrote`, none for a new commit) was recorded.
+    async fn record_own(&self, id: &str, from: &str, rewrote: &[String]) {
+        let Some(job) = self.get(id) else { return };
+        if job.check_refuses_secrets().is_some() {
+            return;
+        }
+        let record = self.record_of(&job);
+        if rewrote.iter().any(|c| !record.contains(c)) {
+            return;
+        }
+        let Ok(listed) = self
+            .sandboxed_git(id, &["rev-list", &format!("{from}..HEAD")], None)
+            .await
+        else {
+            return;
+        };
+        let new: Vec<String> = String::from_utf8_lossy(&listed)
+            .lines()
+            .filter(|l| !l.is_empty())
+            .map(str::to_owned)
+            .collect();
+        if !new.is_empty() {
+            self.update(id, |job| job.made.extend(new));
+        }
     }
 
     /// The secrets job `id`'s repository declares for its check in `secretspec.toml` on the job's
