@@ -31,8 +31,11 @@ struct Seen {
     saved: Vec<Value>,
     /// How its earlier sessions answer: "" as they are, "leaky" listing one whose id holds a key,
     /// "slow" listing four whose context takes 9 seconds each: each call within its own 10
-    /// seconds, all of them past the check's 30.
+    /// seconds, all of them past the check's 30. "flaky": its first `tools/list` answers 503.
+    /// "down": its MCP server refuses every token and its sign-in server answers 503.
     mode: &'static str,
+    /// The "flaky" 503 was sent.
+    flaked: bool,
 }
 
 /// A key the secret scan flags, put together here so this file holds none.
@@ -146,6 +149,9 @@ fn fake_tetrix() -> (String, Arc<Mutex<Seen>>) {
                     seen.challenge = query.get("code_challenge").cloned().unwrap_or_default();
                     reply(&mut stream, "200 OK", "text/html", "<p>Sign in</p>");
                 }
+                ("POST", "/auth/token") if seen.mode == "down" => {
+                    reply(&mut stream, "503 Service Unavailable", "application/json", "{}")
+                }
                 ("POST", "/auth/token") => {
                     let asked = form(&body);
                     let answer = match asked.get("grant_type").map(String::as_str) {
@@ -192,7 +198,10 @@ fn fake_tetrix() -> (String, Arc<Mutex<Seen>>) {
                 }
                 ("POST", "/auth/revoke") => reply(&mut stream, "200 OK", "application/json", "{}"),
                 ("POST", "/mcp") => {
-                    if seen.access.is_empty() || auth != format!("Bearer {}", seen.access) {
+                    if seen.access.is_empty()
+                        || auth != format!("Bearer {}", seen.access)
+                        || seen.mode == "down"
+                    {
                         reply(
                             &mut stream,
                             &format!("401 Unauthorized\r\nWWW-Authenticate: Bearer error=\"invalid_token\", resource_metadata=\"{origin}/meta/tetrix-resource\""),
@@ -202,6 +211,11 @@ fn fake_tetrix() -> (String, Arc<Mutex<Seen>>) {
                         continue;
                     }
                     let message: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
+                    if seen.mode == "flaky" && !seen.flaked && message["method"] == "tools/list" {
+                        seen.flaked = true;
+                        reply(&mut stream, "503 Service Unavailable", "text/plain", "busy");
+                        continue;
+                    }
                     let id = message["id"].clone();
                     let tool = message["params"]["name"].as_str().unwrap_or("").to_owned();
                     let leak = format!("seen with Bearer {}", seen.access);
@@ -696,6 +710,84 @@ fn obid_signs_in_to_tetrix_once_and_agents_use_it_without_its_login() {
             assert!(!text.contains(secret), "{secret} in {name}");
         }
     }
+}
+
+/// One Tetrix error never takes an agent's tools away: a listing that failed (here the context's
+/// first question's) is asked again at the next call. A Tetrix that stays unreachable is said, on
+/// the job, in its summary and in Settings: never silent, never an empty answer.
+#[test]
+fn a_tetrix_error_never_takes_the_tools_away_and_losing_it_is_said() {
+    let folder = Folder::new("tetrix-lost");
+    let remote = fixture(&folder.0.join("fixture"));
+    let (base, seen) = fake_tetrix();
+    let mut config = config(&folder.0, &remote, &fake_claude());
+    config["repos"][0]["check"] = Value::Null;
+    let obid = start(&folder.0, &config, None);
+    sign_in(&obid, &base);
+    let run = |task: &str| {
+        let made = call(
+            &obid,
+            "POST",
+            "/v1/jobs",
+            Some(&json!({"job": {"repo": "obi-e2e/fixture-app", "kind": "build", "task": task}})),
+        );
+        assert_eq!(made.status, 201, "{}", made.text);
+        let id = made.body["id"].as_str().unwrap().to_owned();
+        let job = call(&obid, "GET", &format!("/v1/jobs/{id}/wait"), None).body;
+        let worktree = obid.home.join("worktrees").join(&id);
+        let report: Value = serde_json::from_str(
+            &std::fs::read_to_string(worktree.join(".obi/report.json"))
+                .unwrap_or_else(|e| panic!("{e}: {job}")),
+        )
+        .unwrap();
+        (job, report, worktree)
+    };
+    let listed = |report: &Value| -> Vec<String> {
+        report["answers"]["tetrix"]["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["name"].as_str().unwrap().to_owned())
+            .collect()
+    };
+    let tools = [
+        "get_entity",
+        "repo_sessions",
+        "save_session",
+        "search_entities",
+        "session_context",
+        "session_digest",
+    ];
+
+    // Tetrix's first listing answers 503: the next question lists again, and the agent has
+    // every tool and uses them.
+    seen.lock().unwrap().mode = "flaky";
+    let (job, report, worktree) = run("REPORT TETRIX_CALL");
+    assert!(seen.lock().unwrap().flaked);
+    assert_eq!(listed(&report), tools, "{report}");
+    assert_eq!(job["tetrix"]["saved"], json!(["sess-agent-1"]), "{job}");
+    let context = std::fs::read_to_string(worktree.join(".obi/context/tetrix.md")).unwrap();
+    assert!(context.contains("Earlier work"), "{context}");
+    assert_eq!(job["tetrix"]["unreachable"], Value::Null, "{job}");
+
+    // Tetrix refuses the token and its sign-in server is down: the agent still lists its tools,
+    // and the job, its summary and Settings say Tetrix was lost.
+    seen.lock().unwrap().mode = "down";
+    let (job, report, _) = run("REPORT");
+    assert_eq!(listed(&report), tools, "{report}");
+    let lost = "Tetrix wasn't reachable, so this job ran without the graph: Tetrix's sign-in server answered HTTP 503.";
+    assert_eq!(job["tetrix"]["unreachable"], lost, "{job}");
+    assert!(
+        job["summary"].as_str().unwrap().contains(lost),
+        "{}",
+        job["summary"]
+    );
+    let status = call(&obid, "GET", "/v1/tetrix", None).body;
+    assert_eq!(status["connected"], true, "{status}");
+    assert_eq!(
+        status["error"],
+        "Oby couldn't refresh its Tetrix login: Tetrix's sign-in server answered HTTP 503. It tries again at the next call."
+    );
 }
 
 /// A stand-in `gh` in `folder/bin` that opens a pull request and keeps its description in

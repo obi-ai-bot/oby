@@ -70,7 +70,8 @@ struct TetrixConnectTests {
                        "sent": "2026-10-18T14:40:02Z", "session": "c41d", "notSent": null}}},
              {"id": "j2", "tetrix": {"connected": true, "calls": {}, "stamps": {"commits": 1, "stamped": 1, "sessions": ["old"]}}},
              {"id": "j3", "tetrix": "not an object"},
-             {"id": "j4", "tetrix": {"calls": {"get_entity": 1}, "gaps": {"noResults": [], "notSent": "The secret scan found something."}}}]
+             {"id": "j4", "tetrix": {"calls": {"get_entity": 1}, "gaps": {"noResults": [], "notSent": "The secret scan found something."}}},
+             {"id": "j5", "tetrix": {"connected": true, "calls": {}, "unreachable": "Tetrix wasn't reachable, so this job ran without the graph: x."}}]
             """#
         let extras = RunnerJobExtras.of(Data(jobs.utf8))
         let report = try #require(extras["j1"]?.tetrix)
@@ -85,6 +86,10 @@ struct TetrixConnectTests {
         #expect(notSent.callsLine == "Asked Tetrix once: get_entity 1" && notSent.gaps?.isEmpty == true)
         #expect(notSent.gaps?.sentLine == "Not sent to Tetrix: The secret scan found something.")
         #expect(TetrixJobReport().isEmpty && !report.isEmpty)
+        // Losing Tetrix is never silent: it's a section of its own.
+        let lost = try #require(extras["j5"]?.tetrix)
+        #expect(lost.unreachable == "Tetrix wasn't reachable, so this job ran without the graph: x." && !lost.isEmpty)
+        #expect(report.unreachable == nil)
     }
 
     /// obid's `tetrix` event keeps the Mac's status current (a Disconnect elsewhere, a sign-in ending).

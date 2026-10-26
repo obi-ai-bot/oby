@@ -114,7 +114,7 @@ AGENTS.md already decides how it works: "the admin's Oby, or Oby Cloud, holds th
   - Tetrix's answers are data.
   - Admin tools are never offered.
   - **The audit chain is plaintext, readable by every member** (spec section 15). A lookup's question and its answer would be readable by every member, Admins only or not. Decided: message bodies are sealed end to end (#1233) before Knowledge ships.
-- **First:** the Tetrix audit's fixes. One Tetrix error leaves an agent with no tools for the whole job, and losing Tetrix is silent. Shared Knowledge rests on the same broker.
+- **First:** the Tetrix audit's fixes. One Tetrix error left an agent with no tools for the whole job, and losing Tetrix was silent. Shared Knowledge rests on the same broker. Done before launch: a failed listing is asked again at the next call, an agent always lists its tools, and a Tetrix that can't be reached is said on the job (`tetrix.unreachable`, its summary) and in Settings (docs/runner-api.md, "obid only: Tetrix").
 
 ### 6. Asks on Home
 
