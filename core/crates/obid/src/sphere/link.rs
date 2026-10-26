@@ -3769,9 +3769,9 @@ impl Link {
                         state.decisions.clone()
                     };
                     self.save_decisions(&decisions);
-                    let next_to = Some((cid, expires_at.as_str()));
+                    let next_to = Some(expires_at.as_str());
                     return match self
-                        .post_approval(job, repo, pr, base, sha, until, next_to)
+                        .post_approval(cid, job, repo, pr, base, sha, until, next_to)
                         .await
                     {
                         Ok(()) => "approved",
@@ -3822,9 +3822,23 @@ impl Link {
         sha: &str,
         expires_at: &str,
     ) -> Result<(), String> {
-        use obi_protocol::host_approval::{Context, Input, Request, decide};
         let gh = crate::github::gh().ok_or("gh isn't installed")?;
         let (code_host, owner_login) = approval::code_host(&gh, repo, pr, base, sha).await?;
+        self.code_owners_decide(cid, repo, sha, expires_at, code_host, owner_login)
+    }
+
+    /// The spec's rule on what GitHub showed (`code_host`, read with `owner_login`'s `gh`), for
+    /// exchange `cid` under the owner's standing permission.
+    fn code_owners_decide(
+        &self,
+        cid: &str,
+        repo: &str,
+        sha: &str,
+        expires_at: &str,
+        code_host: obi_protocol::host_approval::CodeHost,
+        owner_login: String,
+    ) -> Result<(), String> {
+        use obi_protocol::host_approval::{Context, Input, Request, decide};
         let context = Context {
             now: time::format(time::now()),
             request: Request {
@@ -3842,6 +3856,34 @@ impl Link {
             code_host,
         };
         decide(&context, &input).map_err(|r| r.message)
+    }
+
+    /// Whether obid's approval of `sha` on pull request `pr` of `repo` still stands, read again
+    /// right after it was posted: the pull request is still the change reviewed, and, for one next
+    /// to code owners' (`next_to`, the request's expiry), theirs still hold.
+    #[allow(clippy::too_many_arguments)]
+    async fn recheck(
+        &self,
+        gh: &std::path::Path,
+        cid: &str,
+        repo: &str,
+        pr: u64,
+        base: &str,
+        sha: &str,
+        next_to: Option<&str>,
+    ) -> Result<(), Recheck> {
+        let view = approval::view(gh, repo, pr)
+            .await
+            .map_err(Recheck::Unread)?;
+        approval::as_reviewed(&view, repo, pr, base, sha).map_err(Recheck::Changed)?;
+        if let Some(expires_at) = next_to {
+            let (host, own) = approval::code_host(gh, repo, pr, base, sha)
+                .await
+                .map_err(Recheck::Unread)?;
+            self.code_owners_decide(cid, repo, sha, expires_at, host, own)
+                .map_err(Recheck::Changed)?;
+        }
+        Ok(())
     }
 
     /// The owner confirmed approving a teammate's pull request on GitHub for one exchange, `item`
@@ -3933,7 +3975,7 @@ impl Link {
             ));
         }
         let until = time::parse(&expires_at).unwrap_or(0);
-        self.post_approval(&job, &repo, pr, &base, &head, until, None)
+        self.post_approval(&cid, &job, &repo, pr, &base, &head, until, None)
             .await
             .map_err(|why| {
                 api(
@@ -3944,22 +3986,25 @@ impl Link {
     }
 
     /// Approves `sha` on pull request `pr` of `repo`, into `base`, on GitHub with the owner's own
-    /// `gh` ([`approval::post`]), while obid is still in its Sphere and before `until`, the
-    /// request's expiry, checked again right before GitHub is asked, and lists it in review job
-    /// `job`'s outgoing actions. Right after, it reads the pull request again: when its head moved,
-    /// or, for an approval next to code owners' (`next_to`: the exchange and its expiry), theirs no
-    /// longer hold ([`Link::code_owners_approved`]), obid dismisses its approval at once
-    /// ([`approval::dismiss`]) and says why.
+    /// `gh` ([`approval::post`]), for exchange `cid`, while obid is still in its Sphere and before
+    /// `until`, the request's expiry, checked again right before GitHub is asked, and lists it in
+    /// review job `job`'s outgoing actions. Right after, it reads the pull request again
+    /// ([`Link::recheck`]; once more when `gh` couldn't read it): when its head moved, or, for an
+    /// approval next to code owners' (`next_to`: the request's expiry), theirs no longer hold, or
+    /// it still can't be read, obid dismisses its approval at once ([`approval::dismiss`]) and says
+    /// why. One GitHub doesn't let it dismiss is the owner's to remove: an inbox item says so
+    /// ([`approval::dismissal_item`]).
     #[allow(clippy::too_many_arguments)]
     async fn post_approval(
         &self,
+        cid: &str,
         job: &str,
         repo: &str,
         pr: u64,
         base: &str,
         sha: &str,
         until: i64,
-        next_to: Option<(&str, &str)>,
+        next_to: Option<&str>,
     ) -> Result<(), String> {
         let gh = crate::github::gh().ok_or("gh isn't installed")?;
         let scratch = self
@@ -3972,16 +4017,15 @@ impl Link {
         let _ = std::fs::remove_dir_all(&scratch);
         let posted = posted?;
         self.jobs.approved_on_github(job, repo, &posted.url);
-        let mut holds = approval::still_as_reviewed(&gh, repo, pr, base, sha).await;
-        if holds.is_ok()
-            && let Some((cid, expires_at)) = next_to
-        {
-            holds = self
-                .code_owners_approved(cid, repo, pr, base, sha, expires_at)
-                .await;
+        let mut checked = self.recheck(&gh, cid, repo, pr, base, sha, next_to).await;
+        if let Err(Recheck::Unread(why)) = &checked {
+            tracing::info!("sphere: exchange {cid}: reading {repo}#{pr} again ({why})");
+            checked = self.recheck(&gh, cid, repo, pr, base, sha, next_to).await;
         }
-        let Err(why) = holds else {
-            return Ok(());
+        let why = match checked {
+            Ok(()) => return Ok(()),
+            Err(Recheck::Changed(why)) => why,
+            Err(Recheck::Unread(why)) => format!("obid couldn't read it again ({why})"),
         };
         let dismissed = match posted.id {
             Some(id) => approval::dismiss(&gh, repo, pr, id).await,
@@ -3996,11 +4040,14 @@ impl Link {
             }
             Err(failed) => {
                 tracing::error!(
-                    "sphere: obid approved {repo}#{pr} and couldn't dismiss it ({failed}) though {why}: dismiss {} on GitHub",
+                    "sphere: exchange {cid}: obid approved {repo}#{pr} and couldn't dismiss it ({failed}) though {why}: the owner removes {} on GitHub",
                     posted.url
                 );
+                let item = approval::dismissal_item(cid, job, repo, pr, &posted.url, time::now());
+                self.lock().inbox.insert(item.id.clone(), item.clone());
+                self.save_item(&item);
                 Err(format!(
-                    "{why} right after obid approved it, and obid couldn't dismiss its approval ({failed}): dismiss it on GitHub"
+                    "{why} right after obid approved it, and GitHub didn't let obid dismiss its approval: remove it on GitHub"
                 ))
             }
         }
@@ -5545,6 +5592,9 @@ impl Link {
                 drop(state);
                 self.save_item(&item);
                 let carried = match item.answer.as_deref() {
+                    // An approval obid couldn't dismiss: the owner removes it on GitHub; nothing
+                    // else is carried out.
+                    _ if approval::is_dismissal_item(&item) => return Ok(item.to_json()),
                     // Oby's review that couldn't run: Try again is its review's, never the job's.
                     Some(crate::job::TRY_AGAIN) if inbox::is_review_item(&item) => {
                         self.jobs.review_again(&item.job)
@@ -7147,6 +7197,14 @@ impl Link {
             .as_ref()
             .is_some_and(|m| m.accepts().iter().any(|a| a == "share_offer"))
     }
+}
+
+/// Why obid's approval on GitHub may not stand, read again right after it was posted.
+enum Recheck {
+    /// The pull request changed: its head, or the code owners' approvals next to it.
+    Changed(String),
+    /// `gh` couldn't read it.
+    Unread(String),
 }
 
 /// Why a Confirm without the owner's tap is refused (#776).

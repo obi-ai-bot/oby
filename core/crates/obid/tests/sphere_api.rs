@@ -481,6 +481,110 @@ async fn an_approved_review_is_approved_on_github_only_as_the_owner_allows() {
     assert_eq!(approvals().lines().count(), 1);
     pr_at(&head, "main");
 
+    // The owner's tap approves, and the pull request changes right after: obid reads it again and
+    // dismisses its approval at once. A dismissal GitHub refuses leaves the owner an inbox item to
+    // remove it on GitHub. A read that fails once is read again: the approval stands.
+    let dismissals = || std::fs::read_to_string(github.join("dismissals")).unwrap_or_default();
+    let moved_view = json!({"state": "OPEN", "headRefOid": "3".repeat(40), "baseRefName": "main",
+                            "url": "https://github.com/obi-e2e/fixture-app/pull/12"})
+    .to_string();
+    for case in ["head moved", "dismissal refused", "read fails once"] {
+        std::fs::create_dir_all(github.join("after-post")).unwrap();
+        if case == "read fails once" {
+            std::fs::write(github.join("after-post/flaky-view"), "").unwrap();
+        } else {
+            std::fs::write(github.join("after-post/view.json"), &moved_view).unwrap();
+        }
+        if case == "dismissal refused" {
+            std::fs::write(github.join("no-dismiss"), "").unwrap();
+        }
+        let tapped = ernesto.request("obi-wellington", "review_request", asking.clone(), 3600);
+        let tapped_cid = tapped["id"].as_str().unwrap().to_owned();
+        ernesto.send(&tapped).await;
+        let replies = ernesto.receive(2, 90).await;
+        assert_eq!(replies[1]["body"]["host_review"], "asked", "{case}");
+        let ask = tokio::task::block_in_place(|| wait_ask(&obid, &tapped_cid));
+        let answered = tokio::task::block_in_place(|| confirm(&obid, ask["id"].as_str().unwrap()));
+        let job = tokio::task::block_in_place(|| exchange(&obid, &tapped_cid))["job"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let outgoing = || {
+            let job = tokio::task::block_in_place(|| get(&obid, &format!("/v1/jobs/{job}")));
+            job["outgoing"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|o| o["action"].as_str().unwrap().to_owned())
+                .collect::<Vec<_>>()
+        };
+        let notice = format!("approval-dismissal-{tapped_cid}");
+        match case {
+            "head moved" => {
+                assert_eq!(answered.status, 502, "{}", answered.text);
+                assert!(
+                    answered.text.contains("so obid dismissed its approval"),
+                    "{}",
+                    answered.text
+                );
+                assert_eq!(dismissals().lines().count(), 1);
+                assert!(dismissals().contains("event=DISMISS"));
+                assert_eq!(
+                    outgoing(),
+                    ["pullRequestApproval", "pullRequestApprovalDismissal"]
+                );
+            }
+            "dismissal refused" => {
+                assert_eq!(answered.status, 502, "{}", answered.text);
+                assert!(
+                    answered.text.contains("remove it on GitHub"),
+                    "{}",
+                    answered.text
+                );
+                assert_eq!(dismissals().lines().count(), 1, "nothing more dismissed");
+                assert_eq!(outgoing(), ["pullRequestApproval"]);
+                let item = tokio::task::block_in_place(|| wait_for(&obid, &notice));
+                assert_eq!(item["kind"], "failed");
+                assert_eq!(
+                    item["title"],
+                    "Remove Oby's approval of obi-e2e/fixture-app pull request #12 on GitHub"
+                );
+                assert!(
+                    item["text"]
+                        .as_str()
+                        .unwrap()
+                        .contains("remove this approval on GitHub"),
+                    "{item}"
+                );
+                assert_eq!(item["options"], json!(["Dismiss"]));
+                let closed = tokio::task::block_in_place(|| answer(&obid, &item, "Dismiss"));
+                assert_eq!(closed["state"], "done", "{closed}");
+                std::fs::remove_file(github.join("no-dismiss")).unwrap();
+            }
+            _ => {
+                assert_eq!(answered.status, 200, "{}", answered.text);
+                assert_eq!(
+                    dismissals().lines().count(),
+                    1,
+                    "a passing error dismisses nothing"
+                );
+                assert_eq!(outgoing(), ["pullRequestApproval"]);
+                assert!(!github.join("flaky-view").exists(), "read twice");
+            }
+        }
+        tokio::task::block_in_place(|| {
+            let open = get(&obid, "/v1/inbox");
+            let shown = open
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|i| i["id"] == json!(notice));
+            assert!(!shown, "{case}: {open}");
+        });
+        pr_at(&head, "main");
+    }
+    assert_eq!(approvals().lines().count(), 4);
+
     // The standing permission, kept on the owner's tap.
     let proposed = tokio::task::block_in_place(|| {
         call(
@@ -513,7 +617,7 @@ async fn an_approved_review_is_approved_on_github_only_as_the_owner_allows() {
     let replies = ernesto.receive(2, 90).await;
     assert_eq!(replies[1]["body"], ruled("asked", &replies));
     tokio::task::block_in_place(|| wait_ask(&obid, alone["id"].as_str().unwrap()));
-    assert_eq!(approvals().lines().count(), 1);
+    assert_eq!(approvals().lines().count(), 4);
 
     // What GitHub shows, as its API answers: CODEOWNERS on the base branch (src/ is alice's, the
     // rest the reviewers team's), the changed files, the pull request, everyone's access.
@@ -641,7 +745,7 @@ async fn an_approved_review_is_approved_on_github_only_as_the_owner_allows() {
         ernesto.send(&short).await;
         let replies = ernesto.receive(2, 90).await;
         assert_eq!(replies[1]["body"], ruled("asked", &replies), "{case}");
-        assert_eq!(approvals().lines().count(), 1, "{case}");
+        assert_eq!(approvals().lines().count(), 4, "{case}");
         codeowners(OWNERS);
         access("bob", "write");
     }
@@ -655,7 +759,7 @@ async fn an_approved_review_is_approved_on_github_only_as_the_owner_allows() {
     ernesto.send(&next_to).await;
     let replies = ernesto.receive(2, 90).await;
     assert_eq!(replies[1]["body"], ruled("approved", &replies));
-    assert_eq!(approvals().lines().count(), 2);
+    assert_eq!(approvals().lines().count(), 5);
     tokio::task::block_in_place(|| {
         let open = get(&obid, "/v1/inbox");
         assert!(
@@ -675,17 +779,14 @@ async fn an_approved_review_is_approved_on_github_only_as_the_owner_allows() {
             .unwrap();
         assert_eq!(permission["uses"], 1);
     });
-    assert!(!github.join("dismissals").exists());
+    assert_eq!(dismissals().lines().count(), 1);
 
     // The pull request changes while obid approves (its head moves, or a code owner asks for
     // changes): obid dismisses its approval right after posting it, and says so.
-    let dismissals = || std::fs::read_to_string(github.join("dismissals")).unwrap_or_default();
-    let moved_view = json!({"state": "OPEN", "headRefOid": "3".repeat(40), "baseRefName": "main",
-                            "url": "https://github.com/obi-e2e/fixture-app/pull/12"});
     let mut changed = owners_approve.to_vec();
     changed.push(review("bob", "CHANGES_REQUESTED", &head, "Wait."));
     for (case, file, text) in [
-        ("head moved", "view.json", moved_view.to_string()),
+        ("head moved", "view.json", moved_view.clone()),
         ("changes requested", "reviews.json", reviews_json(&changed)),
     ] {
         std::fs::create_dir_all(github.join("after-post")).unwrap();
@@ -704,7 +805,7 @@ async fn an_approved_review_is_approved_on_github_only_as_the_owner_allows() {
             "{case}: {}",
             dismissals()
         );
-        assert_eq!(n, if case == "head moved" { 1 } else { 2 });
+        assert_eq!(n, if case == "head moved" { 2 } else { 3 });
         let job = tokio::task::block_in_place(|| exchange(&obid, &during_cid))["job"]
             .as_str()
             .unwrap()
@@ -724,7 +825,7 @@ async fn an_approved_review_is_approved_on_github_only_as_the_owner_allows() {
         pr_at(&head, "main");
         reviews(&owners_approve);
     }
-    assert_eq!(approvals().lines().count(), 4);
+    assert_eq!(approvals().lines().count(), 7);
 
     // The pull request moved on since the commit reviewed, goes into another branch than the one
     // the review compared it with, or the owner's login can't push there: nothing is approved.
@@ -744,7 +845,7 @@ async fn an_approved_review_is_approved_on_github_only_as_the_owner_allows() {
             replies[1]["body"]["host_review"], "unable",
             "{sha} {base} {push}"
         );
-        assert_eq!(approvals().lines().count(), 4);
+        assert_eq!(approvals().lines().count(), 7);
     }
 
     // A request that doesn't ask gets no host_review, and nothing is approved.
@@ -752,7 +853,7 @@ async fn an_approved_review_is_approved_on_github_only_as_the_owner_allows() {
     ernesto.send(&plain).await;
     let replies = ernesto.receive(2, 90).await;
     assert_eq!(replies[1]["body"]["host_review"], Value::Null);
-    assert_eq!(approvals().lines().count(), 4);
+    assert_eq!(approvals().lines().count(), 7);
 
     // The permission is asked for through the API, and kept only on the owner's tap; it's
     // forgotten like any decision.

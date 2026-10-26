@@ -245,7 +245,7 @@ pub struct Posted {
 }
 
 /// Whether pull request `number` of `repo` is, on GitHub now, still the change reviewed
-/// ([`as_reviewed`]): read with the owner's `gh`.
+/// ([`as_reviewed`]): read with the owner's `gh` ([`view`]).
 pub async fn still_as_reviewed(
     gh: &Path,
     repo: &str,
@@ -253,6 +253,12 @@ pub async fn still_as_reviewed(
     base: &str,
     sha: &str,
 ) -> Result<(), String> {
+    as_reviewed(&view(gh, repo, number).await?, repo, number, base, sha)
+}
+
+/// Pull request `number` of `repo` as GitHub shows it now, read with the owner's `gh` (`gh pr
+/// view --json state,headRefOid,baseRefName,url`), or why it couldn't be read.
+pub async fn view(gh: &Path, repo: &str, number: u64) -> Result<Value, String> {
     let n = number.to_string();
     let view = crate::github::run(
         gh,
@@ -267,12 +273,50 @@ pub async fn still_as_reviewed(
         ],
     )
     .await?;
-    let view: Value = serde_json::from_str(&view).map_err(|_| "gh's answer wasn't JSON")?;
-    as_reviewed(&view, repo, number, base, sha)
+    serde_json::from_str(&view).map_err(|_| "gh's answer wasn't JSON".into())
 }
 
 /// The words obid dismisses its own approval with: its own, carrying Oby's marker.
 pub const DISMISSAL: &str = "Dismissed by Oby: the pull request changed while Oby approved it, so this approval no longer stands.";
+
+/// The `failed` item that tells the owner obid's approval of pull request `number` of `repo`
+/// (`url`), for exchange `cid` and review job `job`, should not stand and that obid couldn't
+/// dismiss it: they remove it on GitHub. One per exchange; Dismiss only closes it.
+pub fn dismissal_item(cid: &str, job: &str, repo: &str, number: u64, url: &str, now: i64) -> Item {
+    Item {
+        id: format!("{DISMISSAL_ITEM}{cid}"),
+        kind: "failed".into(),
+        job: job.to_owned(),
+        title: format!("Remove Oby's approval of {repo} pull request #{number} on GitHub"),
+        text: format!(
+            "Oby approved {repo} pull request #{number} on GitHub, as you, and the pull request changed right after, so that approval shouldn't stand. GitHub didn't let Oby dismiss it: remove this approval on GitHub: {url}"
+        ),
+        options: vec![inbox::DISMISS.into()],
+        details: Some(vec![
+            "Closes this. Remove the approval on GitHub yourself.".into(),
+        ]),
+        recommended: None,
+        created: now,
+        done: None,
+        later: None,
+        answer: None,
+        obi: None,
+        plugin: None,
+        arrived: Some(inbox::arrival()),
+        confirm: None,
+        start: None,
+        github: None,
+        watch: None,
+    }
+}
+
+/// How a [`dismissal_item`]'s id starts.
+pub const DISMISSAL_ITEM: &str = "approval-dismissal-";
+
+/// Whether `item` is a [`dismissal_item`].
+pub fn is_dismissal_item(item: &Item) -> bool {
+    item.kind == "failed" && item.id.starts_with(DISMISSAL_ITEM)
+}
 
 /// Dismisses obid's own approving review `id` on pull request `number` of `repo`, as the owner.
 pub async fn dismiss(gh: &Path, repo: &str, number: u64, id: u64) -> Result<(), String> {
