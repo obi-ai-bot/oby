@@ -106,6 +106,14 @@ pub struct Kept {
     /// GitHub's rate limits met in a row.
     #[serde(default)]
     limits: u32,
+    /// No pass before then: GitHub's REST limit, met or nearly. obid's own: the feed reads
+    /// GitHub's GraphQL, with points of its own, and goes on.
+    #[serde(default)]
+    until: i64,
+    /// When each pull request's comments are read from, by its URL: kept, so the list read stays
+    /// the same when its first job is deleted.
+    #[serde(default)]
+    since: BTreeMap<String, i64>,
 }
 
 /// A review whose comments on lines obid still has to read, and how often it tried.
@@ -145,7 +153,8 @@ enum Read {
 }
 
 /// A read, GitHub's `X-Poll-Interval` (0 when it gave none), and, when GitHub's rate limit was
-/// met or few points are left, when reads may go on (its `Retry-After`, its reset).
+/// met or few points are left, when reads may go on: its `Retry-After`, else its reset once no
+/// point (or few) is left.
 #[derive(Debug, PartialEq)]
 struct Answer {
     read: Read,
@@ -212,10 +221,15 @@ fn answer(printed: &str, now: i64) -> Answer {
         }
         _ => Read::Failed(format!("GitHub answered {status}")),
     };
-    let low = number("x-ratelimit-remaining").is_some_and(|left| left < LOW_POINTS);
-    let until = (read == Read::Limited || low).then(|| {
-        (now + number("retry-after").unwrap_or(0)).max(number("x-ratelimit-reset").unwrap_or(0))
-    });
+    // GitHub's `Retry-After` when it gives one; its reset once no point is left, or few.
+    let (left, reset) = (number("x-ratelimit-remaining"), number("x-ratelimit-reset"));
+    let until = match (&read, number("retry-after")) {
+        (Read::Limited, Some(retry)) => Some(now + retry),
+        (Read::Limited, None) if left == Some(0) => Some(reset.unwrap_or(now)),
+        (Read::Limited, None) => Some(now),
+        _ if left.is_some_and(|left| left < LOW_POINTS) => Some(reset.unwrap_or(now)),
+        _ => None,
+    };
     Answer {
         read,
         poll: number("x-poll-interval").unwrap_or(0),
@@ -295,10 +309,9 @@ impl Found {
         every.max(self.poll)
     }
 
-    /// Until when every `gh` read of obid's waits (crate::github_work::wait_out): after the
-    /// `limits`-th rate limit in a row, the feed's backoff (3 minutes, doubling to 30) or GitHub's
-    /// `Retry-After` or reset, whichever is later; with few points left, their reset. None when
-    /// neither.
+    /// Until when the next pass waits: after the `limits`-th rate limit in a row, the feed's
+    /// backoff (3 minutes, doubling to 30) or GitHub's `Retry-After` or reset, whichever is later;
+    /// with few points left, their reset. None when neither.
     pub fn wait_out(&self, limits: u32, now: i64) -> Option<i64> {
         if self.limited {
             Some(
@@ -388,7 +401,8 @@ impl Kept {
         let mut got: Option<Vec<Value>> = None;
         for _ in 0..PAGES {
             let path = format!("{base}&page={page}");
-            if !now_anyway && !self.due(&path, now) {
+            // Named by an event, a settled list is read now, never a failing one.
+            if !self.due(&path, now) && (!now_anyway || self.fails.contains_key(&path)) {
                 break;
             }
             let Some(list) = self.ask(gh, &path, found, now, SETTLED).await else {
@@ -464,14 +478,14 @@ fn check_paths(repo: &str, head: &str) -> [String; 2] {
     ]
 }
 
-/// Where what people wrote on `pr` is read: its comments since its first job, and its reviews.
-fn word_paths(pr: &Watched) -> [String; 2] {
+/// Where what people wrote on `pr` is read: its comments since `since`, and its reviews.
+fn word_paths(pr: &Watched, since: i64) -> [String; 2] {
     [
         format!(
             "repos/{}/issues/{}/comments?per_page={PAGE}&since={}",
             pr.repo,
             pr.number,
-            time::format(pr.since)
+            time::format(since)
         ),
         format!(
             "repos/{}/pulls/{}/reviews?per_page={PAGE}",
@@ -534,6 +548,10 @@ pub async fn pass(
             });
         kept.notes = list.iter().map(key).collect();
     }
+    for pr in prs {
+        kept.since.entry(pr.url.clone()).or_insert(pr.since);
+    }
+    let since = |kept: &Kept, pr: &Watched| kept.since.get(&pr.url).copied().unwrap_or(pr.since);
     let read = &prs[..prs.len().min(WATCHED)];
     // The repositories' events name the pull requests people wrote on: those are read now.
     let mut named = BTreeSet::new();
@@ -586,7 +604,7 @@ pub async fn pass(
             }
         }
         let now_anyway = named.contains(&(pr.repo.clone(), pr.number));
-        let [comments, reviews] = word_paths(pr);
+        let [comments, reviews] = word_paths(pr, since(kept, pr));
         let mut said = Vec::new();
         if let Some(list) = kept
             .ask_list(gh, &comments, &mut found, now, now_anyway)
@@ -652,7 +670,7 @@ pub async fn pass(
     let live: Vec<String> = prs
         .iter()
         .flat_map(|pr| {
-            let mut live = word_paths(pr).to_vec();
+            let mut live = word_paths(pr, since(kept, pr)).to_vec();
             live.push(events_path(&pr.repo));
             if let Some(head) = &pr.head {
                 live.extend(check_paths(&pr.repo, head));
@@ -673,6 +691,8 @@ pub async fn pass(
         .filter_map(|pr| Some(red_id(pr, pr.head.as_deref()?)))
         .collect();
     kept.quiet.retain(|id| heads.contains(id));
+    kept.since
+        .retain(|url, _| prs.iter().any(|pr| pr.url == *url));
     if !found.stopped() {
         kept.began.get_or_insert(now);
     }
@@ -919,6 +939,11 @@ pub fn spawn(feed: Arc<Feed>, mut stopping: tokio::sync::watch::Receiver<bool>) 
 /// changed, and the offers reach the inbox. Answers how long to wait for the next.
 async fn tick(feed: &Feed, kept: &mut Kept) -> i64 {
     let every = every();
+    let now = time::now();
+    // GitHub's REST limit this met waits here; the feed's wait (crate::github_work) holds too.
+    if now < kept.until {
+        return every.max(kept.until - now);
+    }
     let (Some(login), Some(gh)) = (feed.login(), crate::github::gh()) else {
         return every;
     };
@@ -927,12 +952,9 @@ async fn tick(feed: &Feed, kept: &mut Kept) -> i64 {
     }
     let owner = crate::github_work::owner(&login).await;
     let prs = watched(&feed.jobs.list(usize::MAX));
-    let now = time::now();
     let found = pass(kept, &gh, &prs, owner.as_ref(), now).await;
     kept.limits = if found.limited { kept.limits + 1 } else { 0 };
-    if let Some(until) = found.wait_out(kept.limits, now) {
-        crate::github_work::wait_out(until);
-    }
+    kept.until = found.wait_out(kept.limits, now).unwrap_or(0);
     if found.feed {
         feed.wake();
     }
@@ -1282,11 +1304,11 @@ printf 'HTTP/2.0 200 OK\nEtag: %s\n' "$tag"; cat "$file.headers"; printf '\n'; c
     }
 
     fn comments_page(page: u32) -> String {
-        format!("{}&page={page}", word_paths(&pr())[0])
+        format!("{}&page={page}", word_paths(&pr(), 0)[0])
     }
 
     fn reviews_page() -> String {
-        format!("{}&page=1", word_paths(&pr())[1])
+        format!("{}&page=1", word_paths(&pr(), 0)[1])
     }
 
     /// Oby's pull request #7 with these comments and reviews, and no checks.
@@ -1405,6 +1427,15 @@ printf 'HTTP/2.0 200 OK\nEtag: %s\n' "$tag"; cat "$file.headers"; printf '\n'; c
             now,
         );
         assert!(matches!(refused.read, Read::Failed(_)) && refused.until.is_none());
+        // A secondary limit's Retry-After, not the hour's reset it gives too.
+        let secondary = answer(
+            "HTTP/2.0 403 Forbidden\nRetry-After: 60\nX-RateLimit-Remaining: 4000\nX-RateLimit-Reset: 1793030000\n\n{\"message\": \"You have exceeded a secondary rate limit.\"}",
+            now,
+        );
+        assert_eq!(
+            (secondary.read, secondary.until),
+            (Read::Limited, Some(now + 60))
+        );
         let low = answer(
             "HTTP/2.0 200 OK\nX-RateLimit-Remaining: 12\nX-RateLimit-Reset: 1793030000\n\n[]",
             now,
@@ -1605,6 +1636,27 @@ printf 'HTTP/2.0 200 OK\nEtag: %s\n' "$tag"; cat "$file.headers"; printf '\n'; c
         let found = pass(&mut kept, &stub.gh(), &[pr()], Some(&owner()), later + 800).await;
         assert!(found.offers.is_empty(), "{:?}", found.offers);
         assert!(stub.calls().iter().any(|c| c.contains("issues/7/comments")));
+        // Its first job deleted: its comments are still read from when that one was made.
+        let moved = Watched {
+            since: t0(),
+            ..pr()
+        };
+        let found = pass(
+            &mut kept,
+            &stub.gh(),
+            &[moved],
+            Some(&owner()),
+            later + 1200,
+        )
+        .await;
+        assert!(found.offers.is_empty(), "{:?}", found.offers);
+        let calls = stub.calls();
+        assert!(
+            calls
+                .iter()
+                .any(|c| c.contains("comments?per_page=100&since=1970-01-01T00:00:00Z")),
+            "{calls:?}"
+        );
     }
 
     /// The repository's events name the pull requests people wrote on: those are read at once,
@@ -1618,12 +1670,12 @@ printf 'HTTP/2.0 200 OK\nEtag: %s\n' "$tag"; cat "$file.headers"; printf '\n'; c
             ("j2".into(), 8, format!("https://github.com/{REPO}/pull/8"));
         other.head = None;
         stub.serve(
-            &format!("{}&page=1", word_paths(&other)[0]),
+            &format!("{}&page=1", word_paths(&other, 0)[0]),
             json!([]),
             "W/\"o\"",
         );
         stub.serve(
-            &format!("{}&page=1", word_paths(&other)[1]),
+            &format!("{}&page=1", word_paths(&other, 0)[1]),
             json!([]),
             "W/\"o\"",
         );
@@ -1664,6 +1716,21 @@ printf 'HTTP/2.0 200 OK\nEtag: %s\n' "$tag"; cat "$file.headers"; printf '\n'; c
         std::fs::write(stub.file(&events_path(REPO), "etag"), "W/\"e2\"").unwrap();
         pass(&mut kept, &stub.gh(), &prs, Some(&owner()), t0() + 120).await;
         assert!(!stub.calls().iter().any(|c| c.contains("/comments")));
+        // Named again while its comments fail: read once, then not before its backoff.
+        let named = |id: &str| json!([{"id": id, "type": "PullRequestReviewEvent", "payload": {"action": "created", "pull_request": {"number": 7}}}]);
+        stub.fail(&comments_page(1), "502 Bad Gateway", "");
+        stub.serve(&events_path(REPO), named("18240700001"), "W/\"e3\"");
+        pass(&mut kept, &stub.gh(), &prs, Some(&owner()), t0() + 180).await;
+        let read = |stub: &Stub| {
+            stub.calls()
+                .iter()
+                .filter(|c| c.contains("issues/7/comments"))
+                .count()
+        };
+        assert_eq!(read(&stub), 1);
+        stub.serve(&events_path(REPO), named("18240700002"), "W/\"e4\"");
+        pass(&mut kept, &stub.gh(), &prs, Some(&owner()), t0() + 240).await;
+        assert_eq!(read(&stub), 0, "failing: it waits");
     }
 
     /// A review whose comments on lines can't be read waits, and comes with them once they can.

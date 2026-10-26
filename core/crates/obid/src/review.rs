@@ -1187,6 +1187,10 @@ esac
         assert_eq!(reviews(&calls()), [review("owner", "APPROVE")]);
         let signed = format!("Oby's verdict: approved.\n\n{SIGNED}");
         assert_eq!(std::fs::read_to_string(&file).unwrap(), signed);
+        assert!(
+            crate::merge::APPROVAL.ends_with(SIGNED),
+            "signed as it's written"
+        );
 
         // The owner's own, no reviewer signed in: the owner's comment.
         std::fs::write(home.join("author"), "Octo-Cat").unwrap();
