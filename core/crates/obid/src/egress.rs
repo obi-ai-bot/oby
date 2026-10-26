@@ -505,7 +505,10 @@ impl Upstream {
             Some((login, at)) => {
                 let (user, password) = login.split_once(':').unwrap_or((login, ""));
                 let login = format!("{}:{}", unescaped(user), unescaped(password));
-                (Some(base64::engine::general_purpose::STANDARD.encode(login)), at)
+                (
+                    Some(base64::engine::general_purpose::STANDARD.encode(login)),
+                    at,
+                )
             }
             None => (None, rest),
         };
@@ -1121,7 +1124,11 @@ mod tests {
         // #1471's review: another scheme isn't followed (straight, as before); a login is
         // percent-decoded; `NO_PROXY=*` skips it for every host.
         for other in ["https://proxy.corp:443", "socks5://proxy.corp:1080"] {
-            assert_eq!(Upstream::from_url(other, std::iter::empty()), None, "{other}");
+            assert_eq!(
+                Upstream::from_url(other, std::iter::empty()),
+                None,
+                "{other}"
+            );
         }
         let up = Upstream::from_url("me%40corp:p%3Aw@proxy.corp:3128", std::iter::empty()).unwrap();
         assert_eq!(
