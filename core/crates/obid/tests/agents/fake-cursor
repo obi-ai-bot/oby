@@ -8,7 +8,8 @@
 // session's first prompt (the job's task):
 //   COMMIT: <file>   writes the file (no request), then asks to commit, and commits when allowed
 //   ASK: <command>   asks to run the command and says which option obid chose
-//   PLAN             in plan mode, sends its plan (`cursor/create_plan`) and says what came back
+//   PLAN             sends its plan (`cursor/create_plan`), a new one each time it's rejected (up
+//                    to three), and says what came back; its next prompt says those and its mode
 //   QUESTION         asks a question (`cursor/ask_question`) and says what came back
 //   FS               asks obid to read a file (`fs/read_text_file`) and says what came back
 //   ESCAPE           writes a file outside the worktree without asking, and says how that went
@@ -128,13 +129,20 @@ async function prompt(id, text) {
   }
   if (task.includes("PLAN")) {
     if (state.planned) {
-      say(`mode ${state.mode}: ${text}`);
+      say(`mode ${state.mode} after ${state.answers.join("; ")}: ${text}`);
       return answered(id);
     }
     state.planned = true;
+    state.answers = [];
     save();
-    const answer = await ask("cursor/create_plan", { sessionId: session, name: "The plan", overview: "Do it", plan: "1. Do it." });
-    say(`plan: ${answer?.outcome?.outcome} in mode ${state.mode}`);
+    // Sent back, it plans again, up to a third plan.
+    for (let n = 1; n <= 3; n++) {
+      const outcome = (await ask("cursor/create_plan", { sessionId: session, name: "The plan", overview: "Do it", plan: `${n}. Do it.` }))?.outcome;
+      state.answers.push(`${outcome?.outcome} in mode ${state.mode}${outcome?.reason ? ` (${outcome.reason})` : ""}`);
+      if (outcome?.outcome !== "rejected") break;
+    }
+    save();
+    say(`plan: ${state.answers.join("; ")}`);
     return answered(id);
   }
   if (task.includes("QUESTION")) {
