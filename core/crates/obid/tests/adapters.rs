@@ -589,21 +589,51 @@ fn cursor_hears_what_obid_declined_at_its_next_prompt() {
     assert_eq!(ended(&obid, &fine)["summary"], "answer: allow-once");
 }
 
-/// Plan mode: Cursor plans in its own plan mode; its plan is approved as Claude Code's
-/// `ExitPlanMode` is, and the same round goes on in its agent mode.
+/// Plan mode (#1008): Cursor's plan (`cursor/create_plan`) waits for the owner as Claude Code's
+/// `ExitPlanMode` does, a `plan` item in the inbox. Keep planning and the owner's words reach
+/// Cursor as `rejected`, still in its plan mode; Approve as `accepted`, and the same round goes on
+/// in its agent mode, the job in Ask.
 #[test]
-fn cursor_plans_then_goes_ahead() {
+fn a_cursor_plan_waits_for_the_owners_approval() {
     let folder = Folder::new("cursor-plan");
     let obid = obid(&folder, false);
     let id = dispatch(
         &obid,
         json!({"agent": "cursor", "task": "PLAN", "mode": "plan"}),
     );
+    let answer = |plan: &str, words: &str| {
+        let item = within(60, "the plan waits for the owner", || {
+            call(&obid, "GET", "/v1/inbox", None)
+                .body
+                .as_array()?
+                .iter()
+                .find(|i| i["job"] == id && i["done"].is_null() && i["details"][0] == plan)
+                .cloned()
+        });
+        assert_eq!(item["kind"], "plan", "{item}");
+        assert_eq!(item["options"], json!(["Approve", "Keep planning"]));
+        let job = call(&obid, "GET", &format!("/v1/jobs/{id}"), None).body;
+        assert_eq!(job["step"], "Waiting for your OK on the plan", "{job}");
+        assert_eq!(job["permission"]["title"], "Approve the plan?");
+        let answered = call(
+            &obid,
+            "POST",
+            &format!("/v1/inbox/{}/answer", item["id"].as_str().unwrap()),
+            Some(&json!({ "answer": words })),
+        );
+        assert_eq!(answered.status, 200, "{}", answered.text);
+    };
+    answer("1. Do it.", "Keep planning");
+    answer("2. Do it.", "Also test it");
+    answer("3. Do it.", "Approve");
     let job = ended(&obid, &id);
     assert_eq!(job["status"], "done", "{job}");
+    assert_eq!(job["mode"], "ask");
     assert_eq!(
         summary(&job),
-        "mode agent: Your plan is approved: carry it out now, then finish with a short summary."
+        "mode agent after rejected in mode plan (The owner didn't approve the plan yet: keep \
+         planning, then present it again.); rejected in mode plan (Also test it); accepted in \
+         mode plan: Your plan is approved: carry it out now, then finish with a short summary."
     );
 }
 

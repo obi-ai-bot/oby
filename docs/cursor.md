@@ -91,7 +91,7 @@ what the schema and Cursor's own ACP page show.
 
 | Method | Oby's answer |
 | --- | --- |
-| `cursor/create_plan` | The plan card (as `ExitPlanMode`). Approve: `{outcome: "accepted"}`, then Cursor's mode goes to `agent` and a prompt tells it to go ahead. Reject: `{outcome: "rejected", reason}`. |
+| `cursor/create_plan` | The plan card (as `ExitPlanMode`): in Plan mode it waits for the owner, a `plan` inbox item (#1008). Approve: `{outcome: "accepted"}`, then Cursor's mode goes to `agent` and a prompt tells it to go ahead. Keep planning, or the owner's words: `{outcome: "rejected", reason}`, and Cursor stays in `plan`. A job that only reads gets `rejected` without asking. |
 | `cursor/ask_question` | `{outcome: "skipped"}`: questions go to the user in the summary, as Codex's are refused. |
 | `cursor/update_todos`, `cursor/task` | Notifications: a step line for now (#381's activity list isn't in yet). |
 | any other request (`fs/*`, `terminal/*`) | A JSON-RPC error: Cursor never waits on Oby. |
