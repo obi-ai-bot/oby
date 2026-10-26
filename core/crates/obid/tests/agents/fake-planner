@@ -5,7 +5,7 @@
 # Its state is in its account's folder ($HOME/.fake-planner unboxed, else $HOME). Boxed (when the
 # brain may read its quoted file) it can write nothing that outlives the call (#655: never its
 # account's folder), so it asks the test's state server (support::planner_state), whose address
-# is in `fake-planner-url` in a folder above its working folder.
+# is in `fake-planner-url` in a folder above its working folder, or, on Linux, in $FAKE_PLANNER_URL.
 #   plans        a queue, one line per call, the first taken each time:
 #                  EXIT <code> <stderr…>   prints the words on stderr, nothing on stdout, exits
 #                  PRINT <text>            prints the text as it is, and exits 0
@@ -30,7 +30,11 @@ printf '%s\n' "$input" > "$HOME/plan-input"
 # the account's folder from obid's HOME (support::start, \`.fake-planner\`).
 url=""
 if [ ! -d "$HOME/.fake-planner" ]; then
+  # On Linux the box shows nothing above its working folder, so the test's wrapper names the
+  # server here instead (support::start_with).
+  url=${FAKE_PLANNER_URL:-}
   d=$(pwd)
+  [ -n "$url" ] && d=/
   while [ "$d" != / ]; do
     if [ -r "$d/fake-planner-url" ]; then url=$(cat "$d/fake-planner-url"); break; fi
     d=$(dirname "$d")
