@@ -36,13 +36,17 @@ struct PairingView: View {
                             Image(nsImage: image).interpolation(.none).resizable().frame(width: 180, height: 180)
                                 .accessibilityLabel("Pairing QR code")
                         }
-                        Text("Fallback code: \(invitation.code)").font(Tokens.font(Tokens.textLg).monospacedDigit()).textSelection(.enabled)
+                        // The iPhone takes it only for a Mac Bonjour finds (a full build's), never through the Sphere.
+                        if everything, !inSphere {
+                            Text("Fallback code: \(invitation.code)").font(Tokens.font(Tokens.textLg).monospacedDigit()).textSelection(.enabled)
+                        }
                     }
                 }
             }
             if !inSphere, let (title, about) = blocker {
                 // The buttons check again once it's fixed.
                 SetRow(title, about: about) {
+                    Button("Open Obysphere") { openSettings(.sphere) }.buttonStyle(.set)
                     if everything, remote != nil, routes.isEmpty {
                         Button("Allow Remote Access") { openSettings(.remote, spotlight: .remoteAccess) }
                             .buttonStyle(.set)
@@ -113,7 +117,7 @@ struct PairingView: View {
             return ("The gateway is public through Tailscale Funnel", "Turn Funnel off for it first: Oby never pairs a phone over the internet.")
         }
         guard routes.isEmpty else { return nil }
-        return ("No way to reach this Mac yet", "\(everything ? "Turn on Remote access, or publish" : "Publish") the gateway on your tailnet: \(PairingRoute.serveCommand(port: port))")
+        return ("No way to reach this Mac yet", "Join or host an Obysphere and your iPhone pairs through it, with nothing else to set up. Or \(everything ? "turn on Remote access, or publish" : "publish") the gateway on your tailnet: \(PairingRoute.serveCommand(port: port))")
     }
 
     /// The one the user picked while it's still there, else the first.

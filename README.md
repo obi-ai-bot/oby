@@ -54,6 +54,10 @@ Home opens with a first task in its box. Updating from 0.3.0, Oby shows only the
 1. [Download Oby](https://downloads.oby.deskree.com/Oby-0.4.1.dmg) and go through first launch (above).
 2. Open the team invite link you were sent and click **Open in Oby**: Settings › Obysphere opens on **Join Deskree**. Opened before or during first launch, it waits and opens when first launch closes. Without a link, paste it in Settings › Obysphere.
 
+## On your iPhone
+
+The iPhone app is in TestFlight for testers. With the Mac in an Obysphere (above, or host your own), open Settings › Runner › Pair a device on the Mac, then tap Connect in Oby on the iPhone and scan the code. The iPhone reaches the Mac through your Obysphere, sealed end to end with the Mac's key, with no Tailscale and no port to open.
+
 ## Build from source
 
 To build it yourself, you need macOS 26 or later and Xcode 27.
@@ -66,7 +70,7 @@ The Mac app runs Oby's server, `obid`, for you (Settings › Runner › This Mac
 ## Repository
 
 ```
-apps/        the Mac app (SwiftUI); the iPhone, Apple Watch, Android and web clients wait until it's right
+apps/        the Mac and iPhone apps (SwiftUI); the Apple Watch, Android and web clients wait until the Mac app is right
 core/        obid, Oby's server (Rust): plans, runs and tracks jobs
 character/   Oby, the 3D character (three.js)
 plugins/     optional context sources, such as Tetrix

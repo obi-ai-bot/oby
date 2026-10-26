@@ -4,7 +4,7 @@ import Testing
 @testable import Oby
 
 /// Routines on the iPhone (#395): a routine's run is a job with `routine`, under Routines on Home,
-/// and Settings › Routines lists obid's routines.
+/// and Settings › Routines lists obid's routines. The launch build hides Routines, as the Mac's does.
 @MainActor
 struct RoutinesTests {
     let job = #"{"id": "9f08fd10", "request": "Review the open PRs", "agent": "claude", "account": "default", "repo": "obi-ai-bot/obi", "branch": "oby/review-9f08fd10", "kind": "review", "task": "Review the open PRs", "status": "running", "step": "Working", "summary": "", "created": "2026-10-19T12:00:20Z", "routine": {"id": "a1b2c3d4", "name": "Review open PRs", "scheduled": "2026-10-19T12:00:00Z", "catchUp": false}}"#
@@ -12,9 +12,18 @@ struct RoutinesTests {
     @Test func aRoutinesRunGoesUnderRoutines() throws {
         let job = try Runner.decoder.decode(Job.self, from: Data(job.utf8))
         #expect(job.routine?.line == "From routine: Review open PRs")
-        let items = PhoneWork.items([job], since: .distantPast, seen: [])
+        let items = PhoneWork.items([job], since: .distantPast, seen: [], everything: true)
         #expect(items.map(\.type) == [.routines])
         #expect(WorkList.kinds(items).map(\.label) == ["Review PR", "Issues", "Tasks", "Routines"])
+    }
+
+    /// The launch build (`Launch`): no Routines chip, and a routine's run still shows, under Tasks.
+    @Test func theLaunchBuildPutsARoutinesRunUnderTasks() throws {
+        let job = try Runner.decoder.decode(Job.self, from: Data(job.utf8))
+        let items = PhoneWork.items([job], since: .distantPast, seen: [], everything: false)
+        #expect(items.map(\.type) == [.tasks])
+        #expect(WorkList.kinds(items, routines: false).map(\.label) == ["Review PR", "Issues", "Tasks"])
+        #expect(WorkList.kinds(items, routines: false).map(\.count) == [0, 0, 1])
     }
 
     @Test func routinesDecodeAsObidListsThem() throws {

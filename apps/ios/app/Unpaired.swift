@@ -50,10 +50,12 @@ enum UnpairedLine {
 }
 
 /// The camera on the Mac's QR code: pairing starts as soon as it's seen. The six digits, or an
-/// invitation pasted, are on ConnectScreen, one tap down.
+/// invitation pasted, are on ConnectScreen, one tap down; the launch build pairs by the QR code
+/// alone (ConnectScreen says why).
 private struct ScanSheet: View {
     @Environment(Phone.self) private var phone
     @Environment(\.dismiss) private var dismiss
+    @AppStorage(Launch.everythingKey) private var everything = false
     @State private var problem: String?
     /// The last code tried: the camera sees it many times a second.
     @State private var tried: String?
@@ -74,12 +76,14 @@ private struct ScanSheet: View {
                     Text(problem ?? "Point the camera at the code on your Mac.")
                         .font(Tokens.font(Tokens.textBase)).foregroundStyle(problem == nil ? Tokens.ink : Tokens.danger)
                         .multilineTextAlignment(.center)
-                    NavigationLink { ConnectScreen() } label: {
-                        Text("Use the six-digit code instead").frame(minHeight: 44).contentShape(Rectangle())
+                    if everything {
+                        NavigationLink { ConnectScreen() } label: {
+                            Text("Use the six-digit code instead").frame(minHeight: 44).contentShape(Rectangle())
+                        }
+                        .font(Tokens.font(Tokens.textBase, .medium))
                     }
-                    .font(Tokens.font(Tokens.textBase, .medium))
                 }
-                .padding(.top, 18).padding(.horizontal, 18).padding(.bottom, 6).frame(maxWidth: .infinity)
+                .padding(.top, 18).padding(.bottom, everything ? 0 : 12).padding(.horizontal, 18).padding(.bottom, 6).frame(maxWidth: .infinity)
                 .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
                 .padding(.horizontal, Tokens.gutter).padding(.bottom, 16)
             }

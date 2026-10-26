@@ -13,7 +13,7 @@ struct SettingsScreen: View {
     @State private var watchProblem: String?
     @State private var stopping = false
     @AppStorage(Appearance.key) private var appearance = Appearance.system
-    /// The launch build (`Launch`) hides Connectors (Tetrix) and Apple Watch without iPhone.
+    /// The launch build (`Launch`) hides Routines (unless obid keeps one) and Apple Watch without iPhone.
     @AppStorage(Launch.everythingKey) private var everything = false
 
     var body: some View {
@@ -27,10 +27,13 @@ struct SettingsScreen: View {
                     // The runner's "accounts" event brings a lifted reserve back.
                     PhoneAccountRow(account: account) { lift in _ = try await phone.runner.liftReserve(account.id, lift) }
                 }
-                if everything { connectors }
+                connectors
                 RunnerModelsSections(options: options, models: phone.models, save: phone.setModels)
                 PermissionsSection(runner: phone.runner, defaultMode: phone.defaultMode, setDefault: phone.setDefaultMode)
-                RoutinesSection(runner: phone.runner, changes: phone.routineChanges)
+                // As the Mac's launch build: shown while obid keeps one, so the owner can pause or delete it.
+                if everything || !phone.routines.isEmpty {
+                    RoutinesSection(runner: phone.runner, changes: phone.routineChanges)
+                }
                 NotificationsSection { UIApplication.shared.registerForRemoteNotifications() }
                 VoiceSection()
                 SetGroup("Appearance") {
@@ -65,8 +68,9 @@ struct SettingsScreen: View {
     }
 
     /// Sangam's Connectors, as far as the iPhone goes: Tetrix, which obid on the Mac holds once for
-    /// every agent. The iPhone can't start it: Tetrix's sign-in and its login stay on the Mac, so the
-    /// row says where to go. Connected once the Mac's accounts say their agents have it.
+    /// every agent (the launch build's too: Tetrix is core). The iPhone can't start it: Tetrix's
+    /// sign-in and its login stay on the Mac, so the row says where to go. Connected once the Mac's
+    /// accounts say their agents have it.
     private var connectors: some View {
         let connected = phone.accounts.contains { $0.tetrix == true }
         return SetGroup("Connectors", footer: connected ? nil : "Connect Tetrix on your Mac, in Settings › Connectors: one sign-in, for every agent. Its login stays there, never on this iPhone.") {
@@ -172,7 +176,6 @@ private struct PhoneAccountRow: View {
     let account: Account
     var lift: @MainActor (Bool) async throws -> Void
     @State private var problem: String?
-    @AppStorage(Launch.everythingKey) private var everything = false
 
     var body: some View {
         TimelineView(.periodic(from: .now, by: 60)) { context in
@@ -202,7 +205,7 @@ private struct PhoneAccountRow: View {
                             SetAbout(Usage.liftNote(usage))
                             if let problem { SetAbout(problem, color: Tokens.danger) }
                         }
-                        if everything, account.signedIn {
+                        if account.signedIn {
                             SetAbout(TetrixJobReport.accountLine(connected: account.tetrix == true, jobs: account.tetrixJobs ?? 0,
                                                                  used: account.tetrixUsed ?? 0, there: "on your Mac"),
                                      color: account.tetrix == true ? Tokens.muted : Tokens.needsInk)
