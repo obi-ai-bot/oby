@@ -1094,6 +1094,17 @@ fn the_plan_loop_answers_when_the_session_cant_run() {
         failed.text
     );
     assert_eq!(turns(&obid).len(), 2);
+
+    // More than the model can read at once: said plainly, after one try (its third run) and no
+    // plan loop, whose model would read the same words.
+    let long = said(&obid, json!({"said": "TOOLONG", "new": true}));
+    assert_eq!(
+        words(&long),
+        "That's more than Oby's model can read at once, so nothing was started. Attach long text as a file (+) instead, or send it in parts; if this conversation has grown long, start a new one.",
+        "{}",
+        long.text
+    );
+    assert_eq!(turns(&obid).len(), 3);
 }
 
 /// The one job `answer` started, after its turn read something untrusted: it runs in Sandbox mode

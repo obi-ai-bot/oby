@@ -314,6 +314,9 @@ async function act(words, prompt = "", before = resumed) {
     } else {
       say("answered");
     }
+  } else if (words.startsWith("TOOLONG")) {
+    // What Claude Code 2.1.302 ends with when the prompt doesn't fit its model.
+    emit({ type: "result", subtype: "success", is_error: true, num_turns: 1, result: "Prompt is too long", session_id: session });
   } else if (words.startsWith("FAIL")) {
     result("it broke", true);
   } else {

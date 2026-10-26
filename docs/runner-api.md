@@ -561,7 +561,7 @@ One turn of the conversation with Oby: words become work that starts, a question
 {"said": "Review oby PR #33"}
 ```
 
-`said` is the owner's words, 1 to 20,000 characters on obid (`422` otherwise); the jobs they start still take tasks of up to 2,000.
+`said` is the owner's words, not empty (`422`). On obid there's no length of its own, as in Claude Code: the request body is at most 2 MB (`413`), and words that, with the conversation, are more than the model can read at once (Claude Code's `Prompt is too long`) are answered, with no retry and no plan loop, `That's more than Oby's model can read at once, so nothing was started. Attach long text as a file (+) instead, or send it in parts; if this conversation has grown long, start a new one.` The jobs they start still take tasks of up to 2,000 characters.
 
 `attachments`, when present, is a list of file paths in the runner's own attachments folder (the Mac app saves what's attached on it in `attachments/mac` under obid's home, `~/Library/Application Support/Oby/Runner`). The runner resolves `..` and symlinks before accepting them; a path outside that folder returns `422` naming the refused file. Accepted paths are checked again before they are copied into the job's input folder, including jobs restored after a restart: `.oby/inputs` on the Swift runner and `.obi/inputs` on `obid`.
 
@@ -581,7 +581,7 @@ To answer the brain's question, send the original words with the answer:
 
 Bare cancel words ("never mind", "stop", "cancel", "forget it") never reach the brain. When a conversation turn is underway they request a boundary stop; otherwise the answer is `none` and nothing stops. Stopping coding work still takes a job's name or "stop everything".
 
-The conversation so far is the runner's own, the last 50 of the turns it keeps (`GET /v1/conversation`, below). An app that shows its own thread sends it instead, oldest first; `who` is `user` or `oby`, `text` 1 to 2,000 characters (20,000 on obid), at most 50 turns (`422` otherwise). Either way the new exchange joins the runner's conversation. On `obid`, which keeps many conversations, the request may name the one it joins (`conversation`, or `new`), and the answer says which it joined: obid only: conversations, below.
+The conversation so far is the runner's own, the last 50 of the turns it keeps (`GET /v1/conversation`, below). An app that shows its own thread sends it instead, oldest first; `who` is `user` or `oby`, `text` 1 to 2,000 characters (on obid, any length but empty), at most 50 turns (`422` otherwise). Either way the new exchange joins the runner's conversation. On `obid`, which keeps many conversations, the request may name the one it joins (`conversation`, or `new`), and the answer says which it joined: obid only: conversations, below.
 
 While a turn carries out actions, `GET /v1/events` sends a `step` event when each action starts and when it ends. Its `turn` is the user's turn id, `index` starts at 1, `action` is the plan action (including `research`), `text` is a short description, `state` is `running`, `done` or `failed`, and `at` is ISO 8601 time:
 

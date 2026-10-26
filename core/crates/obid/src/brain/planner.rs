@@ -742,6 +742,8 @@ pub struct Unanswered {
     pub brains: Vec<(String, bool)>,
     /// The Mac's 1-minute load average, when it was [`BUSY`].
     pub load: Option<f64>,
+    /// A brain found the prompt more than its model can read at once ([`super::too_long`]).
+    pub too_long: bool,
 }
 
 impl Unanswered {
@@ -917,6 +919,7 @@ impl Planner {
         let model = if deep { DEEP_MODEL } else { QUICK_MODEL };
         // Each brain asked that failed, and whether it took too long; and whether one sent a plan.
         let mut unanswered: Vec<(String, bool)> = vec![];
+        let mut too_long = false;
         let mut planned = false;
         // Whether a brain took too long only because the turn's own time ran out: then it's the
         // turn's budget that ended it (`budget_spent`), not the brain.
@@ -1000,6 +1003,7 @@ impl Planner {
                         // doesn't send the turn to rules.
                         refused.push(format!("{} failed: {why}", adapter.name()));
                         tracing::warn!("brain: {}", refused.last().unwrap_or(&String::new()));
+                        too_long |= super::too_long(&why);
                         failed = Some(slow);
                         if adapter.retries_itself() {
                             break;
@@ -1057,6 +1061,7 @@ impl Planner {
                 failed: Some(Unanswered {
                     brains: unanswered,
                     load,
+                    too_long,
                 }),
             };
         }
@@ -1596,12 +1601,14 @@ pub mod tests {
         let both = Unanswered {
             brains: vec![("claude".into(), true), ("codex".into(), true)],
             load: None,
+            too_long: false,
         };
         assert_eq!(both.why(), "Claude Code and Codex both took too long");
         assert_eq!(both.advice(), "Try again.");
         let mixed = Unanswered {
             brains: vec![("claude".into(), false), ("codex".into(), true)],
             load: Some(512.4),
+            too_long: false,
         };
         assert_eq!(mixed.why(), "Claude Code failed, then Codex took too long");
         assert_eq!(
