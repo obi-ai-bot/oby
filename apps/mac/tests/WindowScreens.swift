@@ -101,6 +101,34 @@ struct WindowScreens {
         try await shoot("mac-home", model: model(), state: ChatState(defaults: .scratch))
     }
 
+    /// Your name and picture: the sheet the account menu's name opens, then Home with them, the
+    /// picture at the icon strip's foot. On a profile of the test's own, never the Mac's.
+    @Test func yourNameAndPicture() async throws {
+        let before = Profile.shared
+        let file = URL(filePath: NSTemporaryDirectory()).appending(path: "profile-\(UUID().uuidString)")
+        defer { Profile.shared = before; try? FileManager.default.removeItem(at: file) }
+        Profile.shared = Profile(defaults: .scratch, file: file)
+        let picture = NSImage(size: NSSize(width: 256, height: 256), flipped: false) { rect in
+            NSGradient(colors: [.systemOrange, .systemPink, .systemPurple])?.draw(in: rect, angle: 60)
+            return true
+        }
+        try Profile.shared.save(name: "Dmytro Kovalenko", picture: picture)
+
+        let sheet = NSWindow(contentRect: .zero, styleMask: [.borderless], backing: .buffered, defer: false)
+        sheet.isReleasedWhenClosed = false
+        sheet.appearance = NSAppearance(named: .darkAqua)
+        let view = NSHostingView(rootView: ProfileSheet(close: {}))
+        sheet.contentView = view
+        sheet.setContentSize(view.fittingSize)
+        sheet.setFrameOrigin(NSPoint(x: 40, y: 40))
+        sheet.orderFrontRegardless()
+        try await Task.sleep(for: .milliseconds(800))
+        try await save("mac-profile-sheet", window: sheet)
+        sheet.close()
+
+        try await shoot("mac-profile-home", model: model(), state: ChatState(defaults: .scratch))
+    }
+
     @Test func homeWithThePanelClosed() async throws {
         try await shoot("mac-home-closed", model: model(), state: ChatState(defaults: .scratch), sidebar: false)
     }

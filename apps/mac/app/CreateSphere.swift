@@ -204,7 +204,7 @@ struct CreateSphereSheet: View {
 }
 
 /// Sangam's `.modal-field`: 44 tall, 12 round, `field` fill, a line that lights hovered or focused, red when it's wrong.
-private struct ModalField<Content: View>: View {
+struct ModalField<Content: View>: View {
     var bad = false
     @ViewBuilder let content: Content
     @State private var hovering = false
