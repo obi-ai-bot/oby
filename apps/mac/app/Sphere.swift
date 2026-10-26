@@ -161,7 +161,8 @@ nonisolated struct SphereServer: Sendable {
 
     /// One call, its answer as bytes: `body` with its content type, if any (a picture, say).
     func send(_ method: String, _ path: String, bearer: String? = nil, body: (Data, String)? = nil) async throws -> Data {
-        if let problem = Self.problem(base) { throw RunnerError(message: problem) }
+        // A claim may go to a Sphere on this Mac too (ClaimLink); nothing else does.
+        if let problem = Self.problem(base), path != "claim" || !ClaimLink.onThisMac(base) { throw RunnerError(message: problem) }
         var request = URLRequest(url: base.appending(path: "v0.1").appending(path: path))
         request.httpMethod = method
         request.timeoutInterval = 30
@@ -306,11 +307,43 @@ nonisolated struct InviteLink: Equatable, Sendable {
     }
 }
 
-/// The invite an `oby://join` link opened (AppDelegate), until Settings › Obysphere shows it.
+// MARK: The claim link
+
+/// A self-hosted Obysphere's claim link (obi-sphere's docs/self-host-docker.md, "The claim, for
+/// Oby"): its claim page's Open in Oby is `oby://claim/<host>#<code>`, the code after `#` only, so
+/// it never reached a server in a request. https only, but for a Sphere on this Mac (127.0.0.1,
+/// localhost), where one is tried out over plain http.
+nonisolated struct ClaimLink: Equatable, Sendable {
+    var server: URL
+    var code: String
+
+    /// The Sphere's address, as the question before claiming shows it.
+    var host: String { server.host() ?? server.absoluteString }
+
+    /// Nil for any other link, or a host that's neither a public https Obysphere's nor this Mac.
+    init?(opened url: URL) {
+        guard url.scheme == "oby", url.host() == "claim", url.query() == nil,
+              let code = url.fragment(percentEncoded: false), !code.isEmpty else { return nil }
+        let host = String(url.path(percentEncoded: true).dropFirst()).lowercased()
+        guard let name = host.wholeMatch(of: /([a-z0-9.-]+)(:[0-9]{1,5})?/)?.1 else { return nil }
+        let local = ["127.0.0.1", "localhost"].contains(name)
+        guard let server = URL(string: "\(local ? "http" : "https")://\(host)"), local || SphereServer.problem(server) == nil else { return nil }
+        (self.server, self.code) = (server, code)
+    }
+
+    /// `url` is a Sphere on this Mac, the only place a claim goes over plain http.
+    static func onThisMac(_ url: URL) -> Bool {
+        url.scheme == "http" && ["127.0.0.1", "localhost"].contains(url.host() ?? "")
+    }
+}
+
+/// The invite or claim link an `oby://` link opened (AppDelegate), until Settings › Obysphere shows it.
 @MainActor @Observable
 final class OpenedInvite {
     static let shared = OpenedInvite()
     var invite: InviteLink?
+    var claim: ClaimLink?
+    var waiting: Bool { invite != nil || claim != nil }
 }
 
 // MARK: Host your own
@@ -343,9 +376,45 @@ final class HostOwn {
     /// A new token, 32 random bytes in base64url (the server takes 32 characters or more), on this
     /// Mac's clipboard only; the page to open.
     func deploy() -> URL {
-        let token = SymmetricKey(size: .bits256).withUnsafeBytes { Data($0) }.base64url
+        let token = Self.newToken()
         made = (token, SphereSettingsView.copySecret(token, to: pasteboard))
         return Self.deployPage
+    }
+
+    static func newToken() -> String { SymmetricKey(size: .bits256).withUnsafeBytes { Data($0) }.base64url }
+
+    /// The owner said to claim `link`'s Obysphere: a new token goes there once, with the link's code
+    /// and never on the clipboard. On `{"claimed": true}` it's kept under that host as Use it keeps
+    /// Deploy…'s, and the address is the server, so Create may open (true). Anything else keeps
+    /// nothing. A Sphere on this Mac keeps its token, but isn't made the server: Oby makes
+    /// Obyspheres only on a public https address.
+    func claim(_ link: ClaimLink) async -> Bool {
+        let token = Self.newToken()
+        busy = true
+        defer { busy = false }
+        do {
+            let answer: [String: Any]
+            do {
+                answer = try await SphereServer(base: link.server).call("POST", "claim", json: ["code": link.code, "operator_token": token])
+            } catch let error as RunnerError {
+                let why = [401: "the claim code is wrong. Open the newest claim link in its log: a restart makes a new one.",
+                           400: "it refused the token Oby made. Update Oby or the server.",
+                           409: "it's claimed already. Its operator is the Oby that claimed it."][error.status ?? 0]
+                throw why.map { RunnerError(message: "\(link.host) isn't claimed: \($0)") } ?? error
+            }
+            guard answer["claimed"] as? Bool == true else { throw RunnerError(message: "\(link.host) answers, but not as an Obysphere.") }
+            try SphereModel.operatorToken.save(token, as: link.host)
+            guard SphereServer.problem(link.server) == nil else {
+                problem = "Claimed \(link.host): its token is in your Keychain. Oby makes Obyspheres only on a public https address."
+                return false
+            }
+            defaults.set(link.server.absoluteString, forKey: SphereModel.serverKey)
+            problem = nil
+            return true
+        } catch {
+            problem = error.localizedDescription
+            return false
+        }
     }
 
     /// Return or Check: `address` (https:// may be left out) is a public https address where an
