@@ -710,17 +710,19 @@ final class RunnerFeed {
 
     /// Send was pressed: the words show now. `Desk.ask` may first wait for the turn they replace to
     /// let go, and `plan` then takes this echo up. Words that only stop a turn never plan.
-    func echo(_ said: String) {
+    /// `jobs`: the tasks attached to them, whose cards show under them at once.
+    func echo(_ said: String, jobs: [String] = []) {
         let said = said.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !said.isEmpty, !Conversation.cancels(said) else { return }
-        echoes.append(Echo(turn: Turn(who: .user, text: said), conversation: conversations.shown))
+        echoes.append(Echo(turn: Turn(who: .user, text: said, jobs: jobs.isEmpty ? nil : jobs), conversation: conversations.shown))
     }
 
     /// The runner's brain's answer to the user's words, as the window's cards
     /// show it (`Desk.planElsewhere`): the drafts are its, and Dispatch sends them back to it.
     /// `conversation`: where words from an alert go (#863); nil for the window's. Tests give their own `runner`.
-    func plan(_ said: String, answer: (question: String, option: String)?, attachments: [String] = [], in conversation: String? = nil,
-              on given: Runner? = nil) async throws -> Desk.Talk {
+    /// `jobs`: the tasks attached to the words (Sangam's Attach tasks); Try again sends its echo's.
+    func plan(_ said: String, answer: (question: String, option: String)?, attachments: [String] = [], jobs: [String] = [],
+              in conversation: String? = nil, on given: Runner? = nil) async throws -> Desk.Talk {
         guard let runner = given ?? runner else { throw RunnerError(message: "The runner on this Mac isn't running yet.") }
         // Shown at once (or since Send), as obid will list them: an answer is its option.
         let text = answer?.option ?? said
@@ -729,10 +731,11 @@ final class RunnerFeed {
             echoes[made].sending = true
             echo = echoes[made].turn.id
         } else {
-            let made = Echo(turn: Turn(who: .user, text: text), conversation: conversation ?? conversations.shown, sending: true)
+            let made = Echo(turn: Turn(who: .user, text: text, jobs: jobs.isEmpty ? nil : jobs), conversation: conversation ?? conversations.shown, sending: true)
             echoes.append(made)
             echo = made.turn.id
         }
+        let jobs = echoes.first { $0.turn.id == echo }?.turn.jobs ?? []
         // In the conversation shown, or a new one (obid keeps many, #493); neither for one thread.
         let planned: PlannedTurn
         do {
@@ -740,7 +743,7 @@ final class RunnerFeed {
             let runsOn = conversation == nil ? runsOnNext : nil
             if conversation == nil { runsOnNext = nil }
             let target = conversation.map(PlanTarget.conversation) ?? conversations.target(said)
-            planned = try await runner.planned(said, answer: answer, attachments: attachments, in: target, id: echo, runsOn: runsOn)
+            planned = try await runner.planned(said, answer: answer, attachments: attachments, in: target, id: echo, runsOn: runsOn, jobs: jobs)
         } catch {
             // An alert's words went to a conversation of their own: the window's new one isn't theirs.
             if conversation == nil { conversations.failed() }

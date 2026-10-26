@@ -444,6 +444,7 @@ async fn supervise(shared: &Arc<Shared>, job: &Job) -> bool {
     let asked = Asked {
         said: &said,
         attachments: &[],
+        jobs: &[],
         conversation: &conversation,
         // No turn of the owner's: the jobs it starts are on Oby's answer.
         turn: "",
@@ -583,6 +584,7 @@ mod tests {
             conversation: "c1".into(),
             said: String::new(),
             attachments: vec![],
+            attached_jobs: vec![],
             runs_on: None,
             control: super::super::turn::Turns::default().begin("t1", "c1"),
             jobs: Mutex::new(vec![]),

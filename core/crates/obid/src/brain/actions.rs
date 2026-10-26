@@ -64,6 +64,8 @@ impl Talk {
 pub struct Asked<'a> {
     pub said: &'a str,
     pub attachments: &'a [String],
+    /// The jobs the owner attached to the words (Sangam's Attach tasks).
+    pub jobs: &'a [String],
     pub conversation: &'a str,
     /// The user's turn the words are, which the jobs started now name (`Job::turn`); empty for an
     /// event turn's, which no turn of the conversation holds.

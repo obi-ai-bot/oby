@@ -45,6 +45,8 @@ final class Tray {
     var macs: [RunnerMac] = []
     /// The shares of their API accounts teammates gave you (#809), for the usage panel.
     var shares: [RunnerShares.Share] = []
+    /// The tasks attached to the next words to Oby (Sangam's Attach tasks, #1173), by job id.
+    var tasks: [String] = []
     /// Why the last capture or paste didn't work, until one does.
     var problem: Problem?
     private(set) var capturing = false
@@ -81,6 +83,7 @@ final class Tray {
     /// The request went out: the chips go, and the files stay for its jobs.
     func clear() {
         items = []
+        tasks = []
         place = nil
         problem = nil
     }

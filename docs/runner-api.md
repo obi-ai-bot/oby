@@ -565,6 +565,8 @@ One turn of the conversation with Oby: words become work that starts, a question
 
 `runsOn` (obid only, #808), when present, is a teammate's Obi whose Mac the jobs these words start run on (the message box's "Run on another Mac"): an active member whose card takes `run_request`, else `422`; or `{"obi", "grant"}`, on a share of their API account they gave this owner ([obid only: sharing your usage](#obid-only-sharing-your-usage)). Each job it starts has that `runsOn` ([obid only: sharing this Mac](#obid-only-sharing-this-mac)).
 
+`jobs` (obid only, #1173), when present, is the jobs the owner attached to the words (Sangam's + › Attach tasks), by id: at most 20, each one this runner has, else `422` and the words go nowhere. They're kept on the owner's turn (its `jobs`, below), where the apps show their cards, and the conversation's agent reads that the owner attached them, by id, before the words, and looks each up with `oby_job`. An id grants nothing: the agent can read every job anyway, and what a job's agent wrote reaches it quoted.
+
 To answer the brain's question, send the original words with the answer:
 
 ```json
@@ -681,7 +683,7 @@ One thread for every device (#11): the conversation the runner keeps, which ever
  {"id": "9a4b5c60-…", "who": "oby", "text": "The route is in Runner/API.swift.", "at": "2026-10-11T09:12:04Z", "jobs": [], "details": "Read [Runner/API.swift](https://github.com/deskree-inc/oby/blob/<sha>/Runner/API.swift#L1)."}]
 ```
 
-- `who` is `user` or `oby`. `at` is when it was said. `jobs` is always a list: the jobs the turn started, by id, for a card under Oby's words, with Stop. Oby's reply to a plan carries the jobs it started (#269), as the Lead's does; `details`, when present on Oby's turn, is longer Markdown shown under the short reply and never spoken. `Start` on a proposed plan's inbox item adds an Oby turn carrying that job. On obid, a job that ends adds an Oby turn carrying it, with `"ended": true`, to the conversation that started it (obid only: conversations, below). Fetch one that isn't in `GET /v1/jobs` with `GET /v1/jobs/{id}`.
+- `who` is `user` or `oby`. `at` is when it was said. `jobs` is always a list: the jobs the turn started, by id, for a card under Oby's words, with Stop; on the owner's turn (obid only), the jobs they attached to it (`POST /v1/plans`'s `jobs`), for cards under their words. Oby's reply to a plan carries the jobs it started (#269), as the Lead's does; `details`, when present on Oby's turn, is longer Markdown shown under the short reply and never spoken. `Start` on a proposed plan's inbox item adds an Oby turn carrying that job. On obid, a job that ends adds an Oby turn carrying it, with `"ended": true`, to the conversation that started it (obid only: conversations, below). Fetch one that isn't in `GET /v1/jobs` with `GET /v1/jobs/{id}`.
 - `limit`: how many, 50 unless asked, 1 to 500. `before`: the `id` of the oldest turn you show, for the turns before it; leave it out for the latest. Fewer than `limit` turns means there are no older ones. `404` for an id that isn't in the thread (a turn pruned since).
 - A `turn` event (`GET /v1/events`, below) comes with every turn added, and again for a turn that changed (its `jobs`): replace the turn with that `id`, or add it in `at` order.
 

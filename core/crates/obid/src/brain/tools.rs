@@ -1552,6 +1552,7 @@ async fn dispatch(shared: &Arc<Shared>, session: &Session, args: Value) -> Resul
     let asked = Asked {
         said: &session.said,
         attachments: &session.attachments,
+        jobs: &session.attached_jobs,
         conversation: &session.conversation,
         turn: &session.control.turn,
         runs_on: session.runs_on.as_ref(),
