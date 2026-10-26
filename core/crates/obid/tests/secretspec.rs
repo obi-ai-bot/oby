@@ -60,6 +60,7 @@ fn holds_none(text: &str, value: &str, what: &str) {
 const CHECK: &str = r#"#!/bin/sh
 echo "sha: $(node -e "process.stdout.write(require('crypto').createHash('sha256').update(process.env.FAKE_CHECK_TOKEN||'').digest('hex').slice(0,16))")"
 echo "wider: ${WIDER_TOKEN:-unset}"
+echo "hidden: $(cat hidden.txt 2>/dev/null || echo none)"
 echo "plain: $FAKE_CHECK_TOKEN"
 echo "base64: $(printf '%s' "$FAKE_CHECK_TOKEN" | base64)"
 mkdir -p .obi
@@ -127,6 +128,8 @@ fn declare_on_main(folder: &Path, remote: &Path) {
         ],
     );
     git(&work, &["push", "-q", "origin", "HEAD:refs/heads/main"]);
+    // As GitHub's: the remote's HEAD is its default branch, which a clone takes alone.
+    git(remote, &["symbolic-ref", "HEAD", "refs/heads/main"]);
 }
 
 /// `obid vault --config <config> add <name>`, the value on stdin.
@@ -167,7 +170,7 @@ fn github(folder: &Path) -> PathBuf {
         r#"#!/bin/sh
 case "$1 $2" in
   "auth status") echo '{"hosts":{"github.com":[{"login":"wellington","active":true,"state":"success"}]}}' ;;
-  "api repos/obi-e2e/fixture-app/rules/branches/main") echo '[{"type":"pull_request","ruleset_id":7}]' ;;
+  "api repos/obi-e2e/fixture-app/rules/branches/main") echo '[{"type":"pull_request","ruleset_id":7,"parameters":{"required_approving_review_count":1}}]' ;;
   "api repos/obi-e2e/fixture-app/rulesets/7") echo '{"id":7,"enforcement":"active","current_user_can_bypass":"never"}' ;;
   *) exit 1 ;;
 esac
@@ -225,28 +228,26 @@ fn an_owners_check_gets_the_bases_values_and_nothing_leaves_it() {
         log.contains("plain: [check secret: FAKE_CHECK_TOKEN]"),
         "{log}"
     );
-    assert!(
-        log.lines().any(
-            |l| l.starts_with("obid: the check wrote a declared secret in ")
-                && l.contains(".obi/check-wrote.txt")
-                && l.contains("staged.txt")
-        ),
-        "{log}"
-    );
     holds_none(&log, &fake(), "check.log");
     holds_none(&job.to_string(), &fake(), "the job");
     let kept = std::fs::read_to_string(obid.home.join(format!("jobs/{id}.json"))).unwrap();
     holds_none(&kept, &fake(), "the job as kept");
-    let worktree = obid.home.join(format!("worktrees/{id}"));
-    let wrote = std::fs::read_to_string(worktree.join(".obi/check-wrote.txt")).unwrap();
-    assert_eq!(wrote, "token=[check secret: FAKE_CHECK_TOKEN]\n");
-    // What it staged in git, which obid can't read inside, is undone: the objects gone, the file
-    // unstaged and taken out like any other.
+    // It ran in a checkout of its own, made from the commit: not the file a .gitignore hides,
+    // not what a process the turn left behind wrote, and nothing it wrote reached the job.
+    assert!(log.contains("hidden: none"), "{log}");
+    assert!(!log.contains("SURVIVOR"), "{log}");
     assert!(log.contains("git add: done"), "{log}");
-    assert!(log.contains("obid: the check wrote to git"), "{log}");
+    let worktree = obid.home.join(format!("worktrees/{id}"));
+    assert!(!worktree.join(".obi/check-wrote.txt").exists());
+    assert!(!worktree.join("staged.txt").exists());
+    // The process the first turn left behind was ended with it, by its sandbox's watcher.
+    let check = std::fs::read_to_string(worktree.join("check.sh")).unwrap();
+    assert!(!check.contains("SURVIVOR"), "{check}");
     assert_eq!(
-        std::fs::read_to_string(worktree.join("staged.txt")).unwrap(),
-        "staged=[check secret: FAKE_CHECK_TOKEN]\n"
+        std::fs::read_dir(obid.home.join("checks"))
+            .map(|d| d.count())
+            .unwrap_or(0),
+        0
     );
     // Nothing the job's branch holds has a value: not its commits (obid's own "work left
     // uncommitted" one took the cleaned file), nor any object of the job's own.
@@ -290,11 +291,10 @@ fn an_owners_check_gets_the_bases_values_and_nothing_leaves_it() {
     holds_none(&obid_log, &fake(), "obid's log");
 }
 
-/// An owner's job whose agent cherry-picks a teammate's commit (the fixture's feature/average)
-/// is someone else's code from then on: its check gets nothing, and neither would a follow-up.
-#[test]
-fn a_cherry_picked_commit_gets_nothing() {
-    let folder = Folder::new("secretspec-cherry");
+/// Starts obid with the fixture, `main` declaring FAKE_CHECK_TOKEN, the fake value in the vault,
+/// and the stand-in gh; runs one job `job` to its end: obid, and the job's check log.
+fn run_one(name: &str, job: Value) -> (Folder, Obid, String) {
+    let folder = Folder::new(name);
     let remote = fixture(&folder.0.join("fixture"));
     declare_on_main(&folder.0, &remote);
     let config = config(&folder.0, &remote, &agent());
@@ -303,29 +303,76 @@ fn a_cherry_picked_commit_gets_nothing() {
     std::fs::write(&path, config.to_string()).unwrap();
     add(&path, "check.FAKE_CHECK_TOKEN", &fake());
     let obid = start(&folder.0, &config, Some(&github(&folder.0)));
-    let answer = call(
-        &obid,
-        "POST",
-        "/v1/jobs",
-        Some(
-            &json!({"job": {"repo": "obi-e2e/fixture-app", "kind": "build",
-                              "task": "CHERRY", "check": "sh check.sh"}}),
-        ),
-    );
+    let log = dispatch_and_log(&obid, job);
+    (folder, obid, log)
+}
+
+fn dispatch_and_log(obid: &Obid, job: Value) -> String {
+    let answer = call(obid, "POST", "/v1/jobs", Some(&json!({ "job": job })));
     assert_eq!(answer.status, 201, "{}", answer.text);
     let id = answer.body["id"].as_str().unwrap().to_owned();
-    call(&obid, "GET", &format!("/v1/jobs/{id}/wait"), None);
-    let log = std::fs::read_to_string(obid.home.join(format!("logs/{id}/check.log"))).unwrap();
+    call(obid, "GET", &format!("/v1/jobs/{id}/wait"), None);
+    std::fs::read_to_string(obid.home.join(format!("logs/{id}/check.log"))).unwrap_or_default()
+}
+
+/// A teammate's branch isn't in obid's clone to take: the clone holds only the default branch,
+/// so an agent's cherry-pick of one finds nothing.
+#[test]
+fn a_teammates_branch_isnt_in_the_clone_to_take() {
+    let (_folder, obid, log) = run_one(
+        "secretspec-cherry",
+        json!({"repo": "obi-e2e/fixture-app", "kind": "build", "task": "CHERRY", "check": "sh check.sh"}),
+    );
+    let clone = obid.home.join("clones/obi-e2e/fixture-app");
+    let refs = git(&clone, &["for-each-ref", "--format=%(refname)"]);
+    assert!(!refs.contains("feature/average"), "{refs}");
+    // Nothing came in, so the owner's own job's check still gets its value.
     assert!(
-        log.contains("obid gave this check none of its owner's secrets: its agent")
-            && (log.contains("made elsewhere") || log.contains("another branch already has")),
+        log.contains(&format!("sha: {}", fingerprint(&fake()))),
+        "{log}"
+    );
+    holds_none(&log, &fake(), "check.log");
+}
+
+/// An agent that reaches a code host through obid's proxy (here allowed, in Bypass) could have
+/// read anyone's code there: its check gets nothing from then on.
+#[test]
+fn an_agent_that_reaches_a_code_host_gets_nothing() {
+    let (_folder, _obid, log) = run_one(
+        "secretspec-fetch",
+        json!({"repo": "obi-e2e/fixture-app", "kind": "build", "task": "FETCH", "check": "sh check.sh", "mode": "bypass"}),
+    );
+    assert!(
+        log.contains(
+            "obid gave this check none of its owner's secrets: its agent reached code.example.test"
+        ),
         "{log}"
     );
     assert!(
         log.contains("sha: e3b0c44298fc1c14"),
         "an empty value's hash: {log}"
     );
-    holds_none(&log, &fake(), "check.log");
+}
+
+/// A job based on a branch obid didn't record anyone of the owner's making (a teammate's) brings
+/// that branch's commits into the clone: from then on no check in the repository gets values.
+#[test]
+fn a_clone_with_someone_elses_commits_gives_nothing() {
+    let (_folder, obid, _) = run_one(
+        "secretspec-taint",
+        json!({"repo": "obi-e2e/fixture-app", "kind": "build", "task": "Nothing to do here",
+               "base": "feature/average", "check": "true"}),
+    );
+    let log = dispatch_and_log(
+        &obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "build", "task": "Nothing to do here", "check": "sh check.sh"}),
+    );
+    assert!(
+        log.contains(
+            "holds someone else's commits (the branch feature/average, fetched as a job's base)"
+        ),
+        "{log}"
+    );
 }
 
 /// (a) A review another Oby asked for: its check gets none of the owner's values, though the

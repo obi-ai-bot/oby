@@ -704,6 +704,15 @@ async fn apply(
         ],
     )
     .await?;
+    // Commits made on a teammate's Mac are in the clone now: no check whose worktree reads it
+    // gets the owner's secrets (crate::secretspec).
+    if let Ok(common) = git(worktree, &["rev-parse", "--git-common-dir"]).await {
+        crate::git::taint(
+            &worktree.join(common),
+            "a job's commits came back from a teammate's Mac",
+        )
+        .await;
+    }
     let head = git(worktree, &["rev-parse", "FETCH_HEAD"]).await?;
     if git(worktree, &["merge-base", "--is-ancestor", snapshot, &head])
         .await

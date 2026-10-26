@@ -5784,6 +5784,13 @@ impl Jobs {
                 tracing::info!("job {id}: {base} didn't fetch, so it isn't rebased: {e}");
                 return Onto::Same;
             }
+            Box::pin(self.taint_unless_ours(
+                &clone,
+                &repo,
+                &tracking,
+                &format!("the branch {base}, fetched as a job's base"),
+            ))
+            .await;
         }
         let Ok(now) = git::git(
             &clone,
@@ -7295,6 +7302,9 @@ impl Jobs {
             .sandbox
             .as_ref()
             .map_err(|why| format!("obid can't run the check: {why}"))?;
+        // Whether the job's agent had a network of its own: every agent's way off a Mac is obid's
+        // egress proxy (`confines_egress`, as each launch sets `proxied`); elsewhere it isn't.
+        let raw_network = spec.network && !sandbox.confines_egress();
         let mut spec = spec.clone();
         spec.network = false;
         // An owner's job's tests may serve on 127.0.0.1, which its agent, run here, reaches
@@ -7353,7 +7363,29 @@ impl Jobs {
         let marker = format!("obid-step-{}", random_check_id()?);
         // The secrets its repository declares on its base branch, for an owner's job only.
         // Boxed, as each of the secrets' steps below: they'd grow every job's future on the stack.
-        let mut declared = Box::pin(self.declared_secrets(id, &spec)).await;
+        let (mut declared, gate) = Box::pin(self.declared_secrets(id, &spec, raw_network)).await;
+        // With values, the check runs in a checkout obid makes from the commit the gate passed,
+        // apart from everything the job's sandbox can write, and gone after it (crate::secretspec).
+        let mut fresh: Option<(Spec, PathBuf)> = None;
+        if let Some((base, head)) = gate.filter(|_| !declared.names().is_empty()) {
+            let at = self
+                .config
+                .home
+                .join("checks")
+                .join(format!("{id}-{}", random_check_id()?));
+            match Box::pin(crate::secretspec::fresh_checkout(&spec, &base, &head, &at)).await {
+                Ok(check) => fresh = Some((check, at)),
+                Err(why) => {
+                    declared = crate::secretspec::Filled::refused(format!(
+                        "obid gave this check none of its owner's secrets: {why}."
+                    ));
+                }
+            }
+        }
+        let spec = match &fresh {
+            Some((check, _)) => check.clone(),
+            None => spec,
+        };
         let watch = Arc::new(Mutex::new(
             crate::facts::CheckWatch::new(marker, crate::facts::steps(command))
                 .redacting(declared.secrets()),
@@ -7392,7 +7424,6 @@ impl Jobs {
         let mut env = process::sandbox_env(&process::tools_path(), &spec.temp, &extra);
         declared.apply(&mut env);
         let secrets = declared.secrets();
-        let before = Box::pin(declared.before(&spec)).await;
         let running = run_check(
             &argv,
             &env,
@@ -7411,20 +7442,11 @@ impl Jobs {
                 _ = tick.tick() => record(None),
             }
         };
-        // What it wrote, before the agent or anything else reads it.
-        let scrubbed = Box::pin(declared.scrub(&spec, before)).await;
-        declared.notes.extend(scrubbed.notes);
-        if !scrubbed.stuck.is_empty() {
-            let _ = std::fs::write(self.log_path(id, "check.log"), declared.noted(""));
-            return Err(format!(
-                "obid couldn't take a declared secret out of what the check wrote, or remove it ({}), so the job stopped before its agent read it.",
-                scrubbed
-                    .stuck
-                    .iter()
-                    .map(|p| p.display().to_string())
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ));
+        // What it wrote goes with its own checkout, which no job's sandbox ever reads.
+        if let Some((check, at)) = &fresh
+            && let Err(why) = Box::pin(crate::secretspec::remove_checkout(check, at)).await
+        {
+            tracing::warn!("job {id}: {why}");
         }
         record(Some(run.as_ref().is_ok_and(|run| run.passed)));
         let mut run = run.map_err(|e| format!("obid couldn't run the check: {e}"))?;
@@ -7433,22 +7455,35 @@ impl Jobs {
         Ok(run)
     }
 
-    /// Why the code job `job`'s check runs isn't only its owner's own, so the check gets none of
-    /// the owner's secrets, or none. An allowlist (crate::secretspec, "the threat model"): the
-    /// check gets values only when its base is a branch the repository lets in only through a
-    /// reviewed pull request, as GitHub says (never an `oby/` branch or the job's own); its
-    /// worktree is exactly its HEAD; and every commit between that base and HEAD is in obid's own
-    /// record of what this job, and the follow-ups it continues, made ([`Jobs::record_of`]). What
-    /// can't be told is a no.
+    /// Why the code job `job`'s check would run isn't only its owner's own, so the check gets none
+    /// of the owner's secrets, or none (crate::secretspec, "the threat model"). The check gets
+    /// values only on macOS, when the job's agent had no network of its own; when the clone holds
+    /// nothing but what obid knows is the owner's ([`crate::git::foreign_in`]); when the base is a
+    /// branch the repository lets in only through a reviewed pull request, as GitHub says (never an
+    /// `oby/` branch or the job's own); and when every commit between that base and `head` is in
+    /// obid's own record of what this job, and the follow-ups it continues, made
+    /// ([`Jobs::record_of`]). What can't be told is a no.
+    #[allow(clippy::too_many_arguments)]
     async fn code_refuses_secrets(
         &self,
         job: &Job,
         repo: &crate::config::Repo,
         base: &str,
         base_commit: &str,
+        head: &str,
         spec: &Spec,
+        raw_network: bool,
     ) -> Option<String> {
+        if let Some(why) = crate::secretspec::platform_refusal() {
+            return Some(why);
+        }
+        if raw_network {
+            return Some("its agent had a network of its own, past obid's egress proxy".into());
+        }
         if let Some(why) = crate::secretspec::agent_written_base(base, &job.branch) {
+            return Some(why);
+        }
+        if let Some(why) = git::foreign_in(&self.clone_for(job)).await {
             return Some(why);
         }
         let Some(gh) = crate::github::gh() else {
@@ -7460,12 +7495,61 @@ impl Jobs {
         if let Err(why) = crate::secretspec::protected_base(&gh, &repo.repo, base).await {
             return Some(why);
         }
-        if let Err(why) = crate::secretspec::worktree_is_head(spec).await {
-            return Some(why);
-        }
-        crate::secretspec::on_record(spec, base_commit, &self.record_of(job))
+        crate::secretspec::on_record(spec, base_commit, head, &self.record_of(job))
             .await
             .err()
+    }
+
+    /// Notes job `id` as someone else's code from now on ([`Job::foreign`]): its check, and its
+    /// follow-ups', get none of the owner's secrets. The first reason is kept.
+    pub(crate) fn mark_foreign(&self, id: &str, why: String) {
+        if self.get(id).is_some_and(|job| job.foreign.is_none()) {
+            tracing::info!(
+                "job {id}: its check gets none of the owner's secrets from now on: {why}"
+            );
+            self.update(id, |job| {
+                job.foreign.get_or_insert(why);
+            });
+        }
+    }
+
+    /// Every commit obid recorded any job making, of the jobs whose checks would get values.
+    fn all_recorded(&self) -> HashSet<String> {
+        let state = self.lock();
+        state
+            .jobs
+            .values()
+            .filter(|job| job.check_refuses_secrets().is_none())
+            .flat_map(|job| job.made.iter().cloned())
+            .collect()
+    }
+
+    /// After obid fetched `fetched` (a ref) into `clone` for a job: unless it's the repository's
+    /// default branch, or every commit it adds to it is one obid recorded a job of the owner's
+    /// making, the clone holds someone else's commits from now on ([`git::taint`]), named `what`.
+    async fn taint_unless_ours(
+        &self,
+        clone: &Path,
+        repo: &crate::config::Repo,
+        fetched: &str,
+        what: &str,
+    ) {
+        let default = format!("refs/remotes/origin/{}", repo.default_branch);
+        if fetched == default {
+            return;
+        }
+        let range = format!("{default}..{fetched}");
+        let theirs = match git::git(clone, &["rev-list", "--max-count=1001", &range]).await {
+            Ok(listed) => {
+                let recorded = self.all_recorded();
+                let listed: Vec<String> = listed.lines().map(str::to_owned).collect();
+                listed.len() > 1000 || listed.iter().any(|c| !recorded.contains(c))
+            }
+            Err(_) => true,
+        };
+        if theirs {
+            git::taint(clone, what).await;
+        }
     }
 
     /// obid's record of the commits `job` made, with those of the jobs it follows up while each
@@ -7576,40 +7660,65 @@ impl Jobs {
     /// (crate::secretspec): none when the base has no such file, and none unless the job and the
     /// code its check runs are its owner's own ([`Job::check_refuses_secrets`],
     /// [`Jobs::code_refuses_secrets`]).
-    async fn declared_secrets(&self, id: &str, spec: &Spec) -> crate::secretspec::Filled {
+    /// With them, the base's commit and the job's HEAD the gate passed: what the check's own
+    /// checkout is made from.
+    async fn declared_secrets(
+        &self,
+        id: &str,
+        spec: &Spec,
+        raw_network: bool,
+    ) -> (crate::secretspec::Filled, Option<(String, String)>) {
         use crate::secretspec::{FILE, Filled};
         let Some(job) = self.get(id) else {
-            return Filled::default();
+            return (Filled::default(), None);
         };
         let Some(repo) = self.repo(&job.repo) else {
-            return Filled::default();
+            return (Filled::default(), None);
         };
         let base = job.base.clone().unwrap_or(repo.default_branch.clone());
         let clone = self.clone_for(&job);
         let (base_commit, names) = match crate::secretspec::at_base(&clone, &base).await {
-            Ok((_, None)) => return Filled::default(),
+            Ok((_, None)) => return (Filled::default(), None),
             Ok((commit, Some(text))) => (commit, crate::secretspec::names(&text)),
             Err(why) => (String::new(), Err(why)),
         };
         let names = match names {
-            Ok(names) if names.is_empty() => return Filled::default(),
+            Ok(names) if names.is_empty() => return (Filled::default(), None),
             Ok(names) => names,
             Err(why) => {
-                return Filled::refused(format!("obid gave this check no secrets: {why}"));
+                return (
+                    Filled::refused(format!("obid gave this check no secrets: {why}")),
+                    None,
+                );
             }
         };
-        let refused = match job.check_refuses_secrets() {
-            Some(why) => Some(why),
-            None => {
-                self.code_refuses_secrets(&job, &repo, &base, &base_commit, spec)
-                    .await
+        // The commit the check runs, taken once, after the job's turn ended: its sandbox's watcher
+        // has killed what the turn started (crate::sandbox, `WATCHER`).
+        let head = crate::secretspec::head_of(spec).await;
+        let refused = match (job.check_refuses_secrets(), &head) {
+            (Some(why), _) => Some(why),
+            (None, Err(why)) => Some(why.clone()),
+            (None, Ok(head)) => {
+                Box::pin(self.code_refuses_secrets(
+                    &job,
+                    &repo,
+                    &base,
+                    &base_commit,
+                    head,
+                    spec,
+                    raw_network,
+                ))
+                .await
             }
         };
         if let Some(why) = refused {
-            return Filled::refused(format!(
-                "{FILE} on {base} declares {}; obid gave this check none of its owner's secrets: {why}.",
-                names.join(", ")
-            ));
+            return (
+                Filled::refused(format!(
+                    "{FILE} on {base} declares {}; obid gave this check none of its owner's secrets: {why}.",
+                    names.join(", ")
+                )),
+                None,
+            );
         }
         let filled = Filled::fill(&names, crate::vault::value);
         tracing::info!(
@@ -7617,7 +7726,7 @@ impl Jobs {
             filled.names().len(),
             names.len()
         );
-        filled
+        (filled, head.ok().map(|head| (base_commit, head)))
     }
 
     /// Where the clones for reviews other Obys ask for are kept: apart from the owner's, so what
@@ -8020,6 +8129,24 @@ impl Jobs {
             let clone = git::ensure_clone(&self.config.home, &repo.repo, &repo.remote, &refspecs)
                 .await
                 .map_err(|e| format!("Couldn't get {} ready: {e}", repo.repo))?;
+            // A branch or a pull request's head that isn't the owner's own makes the clone
+            // someone else's code for every check from now on (crate::secretspec).
+            Box::pin(self.taint_unless_ours(
+                &clone,
+                &repo,
+                &format!("refs/remotes/origin/{base}"),
+                &format!("the branch {base}, fetched as a job's base"),
+            ))
+            .await;
+            if let Some(pr) = job.pr {
+                Box::pin(self.taint_unless_ours(
+                    &clone,
+                    &repo,
+                    &format!("refs/remotes/origin/pr/{pr}"),
+                    &format!("pull request #{pr}'s head"),
+                ))
+                .await;
+            }
             // Oby's review of published work reads the very commit obid pushed, whatever its branch
             // has since.
             let pushed = job

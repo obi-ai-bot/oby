@@ -241,6 +241,26 @@ impl Egress {
         port: u16,
         jobs: &Jobs,
     ) -> Result<(), String> {
+        let decided = self.decide_site(token, job, host, port, jobs).await;
+        // What the agent read there could be anyone's code: from now on the job's check gets none
+        // of the owner's secrets (crate::secretspec).
+        if decided.is_ok() && crate::secretspec::site_is_foreign(host) {
+            jobs.mark_foreign(
+                job,
+                format!("its agent reached {}, beyond its tool's own services and the package registries", site(host, port)),
+            );
+        }
+        decided
+    }
+
+    async fn decide_site(
+        &self,
+        token: &str,
+        job: &str,
+        host: &str,
+        port: u16,
+        jobs: &Jobs,
+    ) -> Result<(), String> {
         // A deny rule holds whatever was decided before it was saved.
         if let Some(why) = jobs.denied_site(job, host, port) {
             return Err(why);

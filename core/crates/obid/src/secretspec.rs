@@ -9,43 +9,52 @@
 //! - **Only into the check.** The values go into the check process's environment ([`Filled::apply`])
 //!   and nowhere else: never an agent's environment, prompt, transcript, a message, the chain, a
 //!   log line or a pull request. Only names travel.
-//! - **Taken out at once.** Every value, plain and in every encoding `crate::secrets` knows, is taken
-//!   out of what the check printed before obid keeps or passes on any of it (its output, its
-//!   failing tests, its log, the agent's next prompt, the job's report), and out of the files it
-//!   wrote in the worktree, its git folder and the job's temporary folder ([`Filled::scrub`]),
-//!   failing closed: what obid can't take a value out of is removed, and what it can't remove
-//!   stops the job. The values are in the vault, so `crate::secrets::known()` takes them out of
+//! - **Taken out at once.** Every value, plain, JSON-escaped (`\"`, `\\`, `\/`, `\uXXXX`) and in
+//!   every encoding `crate::secrets` knows, is taken out of what the check printed before obid
+//!   keeps or passes on any of it (its output, its failing tests, its log, the agent's next prompt,
+//!   the job's report). The values are in the vault, so `crate::secrets::known()` takes them out of
 //!   everything else obid sends too.
-//! - **Only the owner's own code gets values: an allowlist.** A check gets them only when its
-//!   base is a branch the repository lets in only through a reviewed pull request, for the login
-//!   Oby pushes as too, as GitHub says ([`protected_base`]; never an `oby/` branch or the job's
-//!   own); its worktree is exactly its HEAD ([`worktree_is_head`]); every commit between that base
-//!   and HEAD is in obid's own record of what the job made ([`on_record`]; `Job::made`, recorded
-//!   after each turn only for commits that pass [`new_commits`]); and the job isn't another Oby's
-//!   review, one whose agent ran on a teammate's Mac, a follow-up of a job that got none (carried
-//!   by `Job::foreign`) or untrusted. Otherwise it runs with none of the owner's values, whatever
-//!   `secretspec.toml` asks ([`Filled::refused`]). A received review is fetched into a clone of its
-//!   own, apart from the owner's.
+//! - **In a checkout of its own.** A check that gets values runs in a checkout obid makes from the
+//!   commit the gate passed ([`fresh_checkout`]), with a temporary folder of its own, apart from
+//!   everything the job's sandbox can write, and removed after it: nothing the check writes ever
+//!   reaches the job, and nothing the job left outside its commits (a file left uncommitted or
+//!   hidden by a `.gitignore`, a rewrite after the gate) reaches the check.
 //!
 //! **The threat model.** The values protect against other people's code reaching the check:
 //! teammates', pull request authors', received work, and content that steered the agent. An agent
-//! that never read foreign input (a job that isn't untrusted) counts as the owner's own, as the
-//! owner running the tests on their own laptop would. What obid makes sure of is that foreign code
-//! can't get in without the job turning untrusted or foreign: a commit brought in from elsewhere
-//! (a cherry-pick, a reset or merge to another head, a fetch, `hash-object -w`, an alternates
-//! file) fails the turn's look and makes the job foreign; a branch started from (a reused name, a
-//! follow-up whose job is gone, a collaborator's push) and obid's rebase of it aren't in the
-//! record; files taken from elsewhere and left uncommitted aren't HEAD. What it can't see is an
-//! agent that writes foreign code out as its own new commit, having read it in the clone: that is
-//! content steering the agent, and the known limit until agents' reads are tracked.
+//! that never read foreign input counts as the owner's own, as the owner running the tests on their
+//! own laptop would. Commit metadata can't tell where a tree came from, so obid controls the
+//! inputs instead:
 //!
-//! The redaction is exact-match: it catches a value a check prints by accident, in the encodings
-//! `crate::secrets` knows, not one a check's code turns into something else on purpose. That is
-//! why only the owner's own jobs, on the owner's own code, get values at all.
+//! 1. **The check runs only the commit**, in its own checkout (above). The turn that made it is
+//!    over: on macOS its sandbox's watcher kills everything the turn started, a process that
+//!    called `setsid` included (`crate::sandbox`, `WATCHER`).
+//! 2. **Ref hygiene is the provenance.** obid's clone holds only the default branch
+//!    (`git clone --single-branch`, `crate::git::NARROW`). Anything else comes in only by obid's own
+//!    fetch (a job's base, a pull request's head, commits back from a teammate's Mac), and one
+//!    whose commits aren't all in obid's record of the owner's jobs marks the clone
+//!    (`crate::git::taint`): from then on no check whose worktree reads it gets values. A clone made
+//!    before clones were narrow gets none either. A review another Oby asks for is fetched into a
+//!    clone of its own. An agent can't fetch anything itself: it has no code host's login (an
+//!    empty `GH_CONFIG_DIR`, an invalid push URL), and on macOS its only way off the Mac is obid's
+//!    egress proxy, which lets its tool's own services through and decides every other site; one
+//!    it lets through beyond the package registries marks the job foreign ([`site_is_foreign`]).
+//! 3. **Linux gives no values** ([`platform_refusal`]): its agents still have a network of their
+//!    own until oby#616, so they could fetch anyone's code themselves.
+//! 4. **The base is reviewed**: a branch the repository lets in only through a pull request with an
+//!    approving review, for the login Oby pushes as too ([`protected_base`]).
+//! 5. **Defence in depth**: every commit between the base and the commit is in obid's own record of
+//!    what the job made ([`on_record`], `Job::made`, after each turn's [`new_commits`]), and the job
+//!    isn't another Oby's review, one whose agent ran on a teammate's Mac, a follow-up of one that
+//!    got none, or untrusted.
+//!
+//! What's left: an agent that writes out, as its own new commit, foreign code it read where obid
+//! can't see (its model's own knowledge, a package from a registry). That is content steering the
+//! agent, the known limit until agents' reads are tracked.
 
 use std::collections::HashSet;
 use std::ffi::{OsStr, OsString};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 
 use crate::sandbox::Spec;
@@ -62,10 +71,6 @@ pub const VAULT_PREFIX: &str = "check.";
 pub const MOST_NAMES: usize = 32;
 /// The largest `secretspec.toml` obid reads.
 const LARGEST: usize = 64 * 1024;
-/// The largest file [`Filled::scrub`] reads whole, as text it can take a value out of; a larger
-/// one is read through, and removed when it holds one.
-const LARGEST_SCRUBBED: u64 = 4 * 1024 * 1024;
-
 /// Names the check's environment already sets, or that change how it runs: never a declared one.
 const RESERVED: &[&str] = &[
     "PATH",
@@ -307,6 +312,12 @@ pub async fn protected_base(gh: &Path, repo: &str, base: &str) -> Result<(), Str
             .into_iter()
             .flatten()
             .filter(|rule| rule["type"] == "pull_request")
+            // Only one that needs someone's approval: a pull request with no review is a push.
+            .filter(|rule| {
+                rule["parameters"]["required_approving_review_count"]
+                    .as_u64()
+                    .is_some_and(|n| n >= 1)
+            })
             .filter_map(|rule| rule["ruleset_id"].as_u64())
             .collect();
         for id in sets {
@@ -322,7 +333,9 @@ pub async fn protected_base(gh: &Path, repo: &str, base: &str) -> Result<(), Str
     // Classic protection: required reviews, held for admins, with no allowance for the login.
     if let Some(protection) = ask(format!("repos/{repo}/branches/{base}/protection")).await {
         let reviews = &protection["required_pull_request_reviews"];
-        let allowed = reviews["bypass_pull_request_allowances"]["users"]
+        let allowances = &reviews["bypass_pull_request_allowances"];
+        // The login by name, or any team or app: obid can't tell whose a team or an app is.
+        let allowed = allowances["users"]
             .as_array()
             .into_iter()
             .flatten()
@@ -330,12 +343,18 @@ pub async fn protected_base(gh: &Path, repo: &str, base: &str) -> Result<(), Str
                 user["login"]
                     .as_str()
                     .is_some_and(|l| l.eq_ignore_ascii_case(&login))
-            });
+            })
+            || ["teams", "apps"]
+                .iter()
+                .any(|kind| allowances[*kind].as_array().is_some_and(|a| !a.is_empty()));
+        let reviewed = reviews["required_approving_review_count"]
+            .as_u64()
+            .is_some_and(|n| n >= 1);
         let admin = ask(format!("repos/{repo}"))
             .await
             .map(|r| r["permissions"]["admin"] == true);
         let held = protection["enforce_admins"]["enabled"] == true || admin == Some(false);
-        if reviews.is_object() && !allowed && held {
+        if reviews.is_object() && reviewed && !allowed && held {
             return Ok(());
         }
     }
@@ -356,7 +375,17 @@ async fn commits_since(
     env: &[(&str, &str)],
     from: &str,
 ) -> Result<Vec<String>, String> {
-    let range = format!("{from}..HEAD");
+    commits_between(worktree, env, from, "HEAD").await
+}
+
+/// The commits from `from` to `to`, newest first: none for none, an error past [`MOST_COMMITS`].
+async fn commits_between(
+    worktree: &Path,
+    env: &[(&str, &str)],
+    from: &str,
+    to: &str,
+) -> Result<Vec<String>, String> {
+    let range = format!("{from}..{to}");
     let most = format!("--max-count={}", MOST_COMMITS + 1);
     let listed = crate::git::run(
         worktree,
@@ -470,12 +499,17 @@ pub async fn new_commits(
     Ok(commits)
 }
 
-/// Whether every commit from `base` (a commit) to the job's HEAD is in `record`, obid's own record
+/// Whether every commit from `base` to `head` (commits) is in `record`, obid's own record
 /// of what the job (and its follow-up chain) made. Why not, otherwise.
-pub async fn on_record(spec: &Spec, base: &str, record: &HashSet<String>) -> Result<(), String> {
+pub async fn on_record(
+    spec: &Spec,
+    base: &str,
+    head: &str,
+    record: &HashSet<String>,
+) -> Result<(), String> {
     let env = git_env(spec);
     let env: Vec<(&str, &str)> = env.iter().map(|(k, v)| (*k, v.as_str())).collect();
-    let commits = commits_since(&spec.worktree, &env, base)
+    let commits = commits_between(&spec.worktree, &env, base, head)
         .await
         .map_err(|why| format!("{why} on its base"))?;
     match commits.iter().find(|c| !record.contains(*c)) {
@@ -487,65 +521,171 @@ pub async fn on_record(spec: &Spec, base: &str, record: &HashSet<String>) -> Res
     }
 }
 
-/// Whether the job's worktree is exactly its HEAD: every file HEAD holds there with the same
-/// content (or link target), and no file outside what git ignores that HEAD doesn't hold. What its
-/// check runs is then only its commits. Why not, otherwise.
-pub async fn worktree_is_head(spec: &Spec) -> Result<(), String> {
+/// The commit the job's worktree is at (its HEAD), read with the job's git environment.
+pub async fn head_of(spec: &Spec) -> Result<String, String> {
     let env = git_env(spec);
     let env: Vec<(&str, &str)> = env.iter().map(|(k, v)| (*k, v.as_str())).collect();
-    let (held, same) = compared(spec, &env).await;
-    let held = held.ok_or("obid couldn't compare its files with its last commit")?;
-    if held.files.len() != same.len() {
-        return Err("files in its worktree differ from its last commit (uncommitted, or taken from elsewhere)".into());
-    }
-    for (target, link) in &held.links {
-        let blob = crate::git::run_bytes(
-            &spec.worktree,
-            &[
-                OsStr::new("cat-file"),
-                OsStr::new("blob"),
-                OsStr::new(target),
-            ],
-            &env,
-            None,
-        )
-        .await
-        .ok();
-        let now = std::fs::read_link(link).ok();
-        if blob.as_deref() != now.as_ref().map(|n| n.as_os_str().as_encoded_bytes()) {
-            return Err("a link in its worktree differs from its last commit".into());
-        }
-    }
-    // Every file git sees there (in its index, or not ignored) is one HEAD holds.
-    let listed = crate::git::run_bytes(
+    let head = crate::git::run(
         &spec.worktree,
         &[
-            OsStr::new("ls-files"),
-            OsStr::new("--cached"),
-            OsStr::new("--others"),
-            OsStr::new("--exclude-standard"),
-            OsStr::new("-z"),
+            OsStr::new("rev-parse"),
+            OsStr::new("--verify"),
+            OsStr::new("HEAD^{commit}"),
         ],
         &env,
-        None,
     )
     .await
-    .map_err(|_| "obid couldn't list the files in its worktree".to_owned())?;
-    let holds: HashSet<&PathBuf> = held
-        .files
-        .iter()
-        .chain(&held.links)
-        .map(|(_, p)| p)
-        .collect();
-    let extra = listed
-        .split(|&b| b == 0)
-        .filter(|p| !p.is_empty())
-        .map(|p| spec.worktree.join(String::from_utf8_lossy(p).as_ref()))
-        .any(|path| !holds.contains(&path));
-    if extra {
-        return Err("its worktree has files its commits don't hold".into());
+    .map_err(|_| "obid couldn't read the commit its worktree is at".to_owned())?;
+    if crate::git::is_sha(&head) {
+        Ok(head)
+    } else {
+        Err("obid couldn't read the commit its worktree is at".into())
     }
-    Ok(())
+}
+
+/// Why this machine gives no check the owner's values, or none: on Linux a job's agent still has
+/// a network of its own until oby#616, so it could fetch anyone's code itself (oby-plan E1: macOS
+/// only until then).
+pub fn platform_refusal() -> Option<String> {
+    (!cfg!(target_os = "macos")).then(|| {
+        "on Linux a job's agent still has a network of its own until oby#616, so it could fetch anyone's code itself".into()
+    })
+}
+
+/// Whether an agent reaching `host` (not its tool's own: those never come here) makes its job
+/// someone else's code: anything but the package registries, which serve the dependencies the
+/// owner's own tests would install too. A code host, a pull request's page, a site with code on
+/// it: what the agent read there could be anyone's.
+pub fn site_is_foreign(host: &str) -> bool {
+    !crate::egress::REGISTRIES.contains(&host)
+}
+
+/// A checkout of commit `head` that obid makes for the check, apart from the job's: its worktree
+/// at `at/work`, its own git folder in the clone's `worktrees/`, its own temporary folder at
+/// `at/tmp`, none of them anywhere the job's sandbox can write. What the job's commits brought
+/// since `base` (a commit) is copied out of the job's own object folder into the checkout's, so
+/// nothing of the job's folders is read again. `agent` is the job's sandbox spec; the answer is the
+/// check's. What the job's worktree holds besides its commits (files left uncommitted, hidden by a
+/// `.gitignore`, rewritten after the gate) isn't in it.
+pub async fn fresh_checkout(
+    agent: &Spec,
+    base: &str,
+    head: &str,
+    at: &Path,
+) -> Result<Spec, String> {
+    let common = agent
+        .git_common
+        .clone()
+        .ok_or("the job's worktree has no clone obid knows")?;
+    let clone = common
+        .parent()
+        .ok_or("the job's clone has no folder")?
+        .to_path_buf();
+    let fail = |what: &str| format!("obid couldn't make the check's own checkout ({what})");
+    let _ = std::fs::remove_dir_all(at);
+    let temp = at.join("tmp");
+    let objects = at.join("objects");
+    std::fs::create_dir_all(objects.join("pack")).map_err(|_| fail("its folder"))?;
+    std::fs::create_dir_all(&temp).map_err(|_| fail("its folder"))?;
+    // The job's commits since the base, out of its own object folder, as one pack.
+    let env = git_env(agent);
+    let env: Vec<(&str, &str)> = env.iter().map(|(k, v)| (*k, v.as_str())).collect();
+    let pack = objects.join("pack/pack").to_string_lossy().into_owned();
+    crate::git::run_bytes(
+        &agent.worktree,
+        &[
+            OsStr::new("pack-objects"),
+            OsStr::new("--revs"),
+            OsStr::new("-q"),
+            OsStr::new(&pack),
+        ],
+        &env,
+        Some(format!("{head}\n^{base}\n").into_bytes()),
+    )
+    .await
+    .map_err(|_| fail("copying its commits"))?;
+    let objects_text = objects.to_string_lossy().into_owned();
+    let name = format!(
+        "check-{}",
+        at.file_name().unwrap_or_default().to_string_lossy()
+    );
+    // git names the checkout's git folder after its worktree's folder: one of obid's own.
+    let work = at.join(&name);
+    crate::git::run(
+        &clone,
+        &[
+            OsStr::new("worktree"),
+            OsStr::new("add"),
+            OsStr::new("--no-checkout"),
+            OsStr::new("--detach"),
+            work.as_os_str(),
+            OsStr::new(head),
+        ],
+        &[("GIT_ALTERNATE_OBJECT_DIRECTORIES", objects_text.as_str())],
+    )
+    .await
+    .map_err(|_| fail("its worktree"))?;
+    let admin = common.join("worktrees").join(&name);
+    if !admin.is_dir() {
+        return Err(fail("its git folder"));
+    }
+    std::fs::rename(&objects, admin.join("objects")).map_err(|_| fail("its objects"))?;
+    let check = Spec {
+        worktree: work,
+        git_admin: Some(admin),
+        git_common: Some(common),
+        commits: true,
+        temp,
+        accounts: Vec::new(),
+        frozen: Vec::new(),
+        ..agent.clone()
+    };
+    let env = git_env(&check);
+    let env: Vec<(&str, &str)> = env.iter().map(|(k, v)| (*k, v.as_str())).collect();
+    crate::git::run(
+        &check.worktree,
+        &[
+            OsStr::new("reset"),
+            OsStr::new("-q"),
+            OsStr::new("--hard"),
+            OsStr::new(head),
+        ],
+        &env,
+    )
+    .await
+    .map_err(|_| fail("its files"))?;
+    Ok(check)
+}
+
+/// Removes a checkout [`fresh_checkout`] made, and its folder `at`: what the check wrote goes with
+/// it. Why it couldn't, otherwise.
+pub async fn remove_checkout(check: &Spec, at: &Path) -> Result<(), String> {
+    if let Some(common) = &check.git_common
+        && let Some(clone) = common.parent()
+    {
+        let _ = crate::git::run(
+            clone,
+            &[
+                OsStr::new("worktree"),
+                OsStr::new("remove"),
+                OsStr::new("--force"),
+                check.worktree.as_os_str(),
+            ],
+            &[],
+        )
+        .await;
+        if let Some(admin) = &check.git_admin {
+            let _ = std::fs::remove_dir_all(admin);
+        }
+    }
+    let _ = std::fs::remove_dir_all(at);
+    match at.exists() {
+        false => Ok(()),
+        true => Err(format!(
+            "obid couldn't remove the check's own checkout ({})",
+            at.display()
+        )),
+    }
 }
 
 /// What a check gets of the secrets its repository declares: the values to put in its environment,
@@ -553,37 +693,9 @@ pub async fn worktree_is_head(spec: &Spec) -> Result<(), String> {
 #[derive(Default)]
 pub struct Filled {
     env: Vec<(String, String)>,
-    /// Every form a value can take in a file obid reads as bytes ([`forms`]).
-    forms: Vec<Vec<u8>>,
-    /// The forms, any of them, as one search.
-    found: Option<regex::bytes::Regex>,
     secrets: Arc<Secrets>,
     /// What obid says about it at the top of the check's output: names and reasons, never values.
     pub notes: Vec<String>,
-}
-
-/// What the job's git folder held before its check ran: what HEAD was, and its own objects. obid
-/// can't read inside a compressed object, so a check that wrote to git has that undone.
-pub struct Before {
-    head: Option<String>,
-    objects: HashSet<PathBuf>,
-}
-
-/// What [`Filled::scrub`] did, for the check's output: and what it couldn't take a value out of
-/// or remove, which stops the job before its agent reads it.
-#[derive(Default)]
-pub struct Scrubbed {
-    pub notes: Vec<String>,
-    pub stuck: Vec<PathBuf>,
-}
-
-/// What became of one file.
-#[derive(Debug, PartialEq, Eq)]
-enum Found {
-    Clean,
-    Cleaned,
-    Removed,
-    Stuck,
 }
 
 impl Filled {
@@ -619,47 +731,12 @@ impl Filled {
                         vec![value.as_bytes(), json.as_bytes(), json_slash.as_bytes()];
                     learned.extend(unicode.iter().map(|form| form.as_bytes()));
                     filled.secrets.learn_forms(name, &learned);
-                    filled.forms.extend(forms(&value));
                     filled.env.push((name.clone(), value));
                 }
                 Ok(None) => missing.push(name.as_str()),
                 Err(why) => {
                     return Filled::refused(format!(
                         "obid gave this check none of the secrets {FILE} declares: {why}"
-                    ));
-                }
-            }
-        }
-        filled.forms.sort();
-        filled.forms.dedup();
-        if !filled.forms.is_empty() {
-            let pattern = filled
-                .forms
-                .iter()
-                .map(|form| {
-                    // Each byte as itself: ASCII escaped, anything else as `\xHH`.
-                    form.iter()
-                        .map(|&b| {
-                            if b.is_ascii() {
-                                regex::escape(&(b as char).to_string())
-                            } else {
-                                format!("\\x{b:02x}")
-                            }
-                        })
-                        .collect::<String>()
-                })
-                .collect::<Vec<_>>()
-                .join("|");
-            match regex::bytes::RegexBuilder::new(&pattern)
-                .unicode(false)
-                .size_limit(64 << 20)
-                .build()
-            {
-                Ok(found) => filled.found = Some(found),
-                // What obid couldn't look for in files would go unseen: nothing, then.
-                Err(_) => {
-                    return Filled::refused(format!(
-                        "obid gave this check none of the secrets {FILE} declares: it couldn't make the search that takes them out of files."
                     ));
                 }
             }
@@ -712,7 +789,7 @@ impl Filled {
 
     /// `text` with its values taken out, plain and encoded.
     pub fn redact(&self, text: &str) -> String {
-        if self.forms.is_empty() {
+        if self.env.is_empty() {
             text.to_owned()
         } else {
             self.secrets.redact(text)
@@ -725,227 +802,6 @@ impl Filled {
         out.push_str(output);
         out
     }
-
-    /// What the job's git folder holds now, before the check runs: none when it gets no values.
-    pub async fn before(&self, spec: &Spec) -> Option<Before> {
-        if self.forms.is_empty() {
-            return None;
-        }
-        let env = git_env(spec);
-        let env: Vec<(&str, &str)> = env.iter().map(|(k, v)| (*k, v.as_str())).collect();
-        let head = crate::git::run(
-            &spec.worktree,
-            &[OsStr::new("rev-parse"), OsStr::new("HEAD")],
-            &env,
-        )
-        .await
-        .ok();
-        let mut objects = Vec::new();
-        if let Some(dir) = objects_dir(spec) {
-            files_under(&dir, &|_| false, &mut objects, &mut Vec::new());
-        }
-        Some(Before {
-            head,
-            objects: objects.into_iter().collect(),
-        })
-    }
-
-    /// Takes its values out of everything the check could have written, before the agent or
-    /// anything else reads it, failing closed:
-    ///
-    /// - git: a check that moved HEAD has it put back, and one that wrote objects (a commit, a
-    ///   staged file) has its index reset to HEAD and those objects removed, since obid can't read
-    ///   inside them; every other file of the job's git folder is read as below.
-    /// - the worktree, but for the files git tracks that the check didn't change, and the job's
-    ///   temporary folder, whole: never following a link, whatever a file's time says. A text file
-    ///   up to 4 MB has each copy, plain or encoded, replaced as [`Filled::redact`] does; any other
-    ///   file, of any size, is read through for every form a value takes ([`forms`]), and removed
-    ///   when it holds one, as is a file obid can't read or rewrite, or a link that names one.
-    ///
-    /// What can't be removed is `stuck`: the job stops before its agent reads it.
-    pub async fn scrub(&self, spec: &Spec, before: Option<Before>) -> Scrubbed {
-        let mut done = Scrubbed::default();
-        if self.forms.is_empty() {
-            return done;
-        }
-        let env = git_env(spec);
-        let env: Vec<(&str, &str)> = env.iter().map(|(k, v)| (*k, v.as_str())).collect();
-        let git = |args: &'static [&'static str]| {
-            let args: Vec<&OsStr> = args.iter().map(OsStr::new).collect();
-            let env = &env;
-            async move { crate::git::run(&spec.worktree, &args, env).await }
-        };
-        if let Some(before) = before {
-            let head = git(&["rev-parse", "HEAD"]).await.ok();
-            if let Some(was) = before
-                .head
-                .as_deref()
-                .filter(|was| head.as_deref() != Some(*was))
-            {
-                let args = [
-                    OsStr::new("reset"),
-                    OsStr::new("-q"),
-                    OsStr::new("--soft"),
-                    OsStr::new(was),
-                ];
-                let _ = crate::git::run(&spec.worktree, &args, &env).await;
-                done.notes
-                    .push("the check moved HEAD (a commit), so obid put it back.".into());
-            }
-            let mut now = Vec::new();
-            if let Some(dir) = objects_dir(spec) {
-                files_under(&dir, &|_| false, &mut now, &mut done.stuck);
-            }
-            let new: Vec<PathBuf> = now
-                .into_iter()
-                .filter(|path| !before.objects.contains(path))
-                .collect();
-            if !new.is_empty() {
-                let _ = git(&["reset", "-q"]).await;
-                for path in &new {
-                    if remove(path) == Found::Stuck {
-                        done.stuck.push(path.clone());
-                    }
-                }
-                done.notes.push(format!(
-                    "the check wrote to git ({} new object(s): a commit or a staged file), which obid can't read inside, so obid removed them and unstaged what it staged.",
-                    new.len()
-                ));
-            }
-        }
-        // The files whose content is exactly what HEAD holds: the repository's own, never read.
-        let untouched = untouched(spec, &env).await;
-        let mut files = Vec::new();
-        let mut unreadable = Vec::new();
-        let pointer = spec.worktree.join(".git");
-        files_under(
-            &spec.worktree,
-            &|path| path == pointer || untouched.contains(path),
-            &mut files,
-            &mut unreadable,
-        );
-        files_under(&spec.temp, &|_| false, &mut files, &mut unreadable);
-        if let Some(admin) = &spec.git_admin {
-            let objects = admin.join("objects");
-            files_under(admin, &|path| path == objects, &mut files, &mut unreadable);
-        }
-        // What obid couldn't look into may hold a value: the job stops before its agent reads it.
-        done.stuck.extend(unreadable);
-        let shown = |path: &Path| {
-            path.strip_prefix(&spec.worktree)
-                .or_else(|_| path.strip_prefix(&spec.temp))
-                .unwrap_or(path)
-                .display()
-                .to_string()
-        };
-        let mut cleaned = Vec::new();
-        let mut removed = Vec::new();
-        for path in files {
-            match self.check_file(&path) {
-                Found::Clean => {}
-                Found::Cleaned => cleaned.push(shown(&path)),
-                Found::Removed => removed.push(shown(&path)),
-                Found::Stuck => done.stuck.push(path),
-            }
-        }
-        if !cleaned.is_empty() {
-            done.notes.push(format!(
-                "the check wrote a declared secret in {}, so obid took it out.",
-                listed(&cleaned)
-            ));
-        }
-        if !removed.is_empty() {
-            done.notes.push(format!(
-                "obid removed {}: it held a declared secret obid couldn't take out, or obid couldn't read it.",
-                listed(&removed)
-            ));
-        }
-        done
-    }
-
-    /// Takes the values out of one file, or removes it.
-    fn check_file(&self, path: &Path) -> Found {
-        let Ok(meta) = std::fs::symlink_metadata(path) else {
-            return Found::Clean;
-        };
-        if meta.file_type().is_symlink() {
-            let target = std::fs::read_link(path).unwrap_or_default();
-            return if self.holds(target.as_os_str().as_encoded_bytes()) {
-                remove(path)
-            } else {
-                Found::Clean
-            };
-        }
-        if !meta.is_file() {
-            return Found::Clean;
-        }
-        if meta.len() > LARGEST_SCRUBBED {
-            return match self.holds_streamed(path) {
-                Some(false) => Found::Clean,
-                _ => remove(path),
-            };
-        }
-        let Ok(bytes) = std::fs::read(path) else {
-            return remove(path);
-        };
-        match std::str::from_utf8(&bytes) {
-            Ok(text) => {
-                let clean = self.secrets.redact(text);
-                if self.holds(clean.as_bytes()) {
-                    return remove(path);
-                }
-                if clean == text {
-                    return Found::Clean;
-                }
-                if std::fs::write(path, clean.as_bytes()).is_err() {
-                    return remove(path);
-                }
-                Found::Cleaned
-            }
-            Err(_) if self.holds(&bytes) => remove(path),
-            Err(_) => Found::Clean,
-        }
-    }
-
-    /// Whether `bytes` hold any form of a value.
-    fn holds(&self, bytes: &[u8]) -> bool {
-        self.found
-            .as_ref()
-            .is_some_and(|found| found.is_match(bytes))
-    }
-
-    /// Whether the file at `path` holds any form of a value, read through in pieces that overlap
-    /// by the longest form; none when it can't be read.
-    fn holds_streamed(&self, path: &Path) -> Option<bool> {
-        use std::io::Read as _;
-        let mut file = std::fs::File::open(path).ok()?;
-        let overlap = self.forms.iter().map(Vec::len).max().unwrap_or(0);
-        let mut buffer = Vec::with_capacity(PIECE + overlap);
-        let mut piece = vec![0u8; PIECE];
-        loop {
-            let n = file.read(&mut piece).ok()?;
-            if n == 0 {
-                return Some(false);
-            }
-            buffer.extend_from_slice(&piece[..n]);
-            if self.holds(&buffer) {
-                return Some(true);
-            }
-            let keep = buffer.len().min(overlap);
-            buffer.drain(..buffer.len() - keep);
-        }
-    }
-}
-
-/// How much of a large file is read at a time.
-const PIECE: usize = 8 * 1024 * 1024;
-
-/// The job's own object folder, when it commits.
-fn objects_dir(spec: &Spec) -> Option<PathBuf> {
-    spec.git_admin
-        .as_ref()
-        .filter(|_| spec.commits)
-        .map(|admin| admin.join("objects"))
 }
 
 /// The job's git environment as obid's own git calls take it.
@@ -954,175 +810,6 @@ fn git_env(spec: &Spec) -> Vec<(&'static str, String)> {
         .into_iter()
         .map(|(k, v)| (k, v.to_string_lossy().into_owned()))
         .collect()
-}
-
-/// The worktree's regular files whose content hashes to the blob HEAD holds for them (`git
-/// ls-tree` against `git hash-object --no-filters`): what the check didn't change, whatever git's
-/// index says (`--assume-unchanged`, a stat it was told to trust). Anything git can't answer for
-/// is left out, so it's read.
-async fn untouched(spec: &Spec, env: &[(&str, &str)]) -> HashSet<PathBuf> {
-    compared(spec, env).await.1
-}
-
-/// What HEAD's tree holds in the worktree: its files and its links, each `(blob, path)`.
-#[derive(Default)]
-struct Held {
-    files: Vec<(String, PathBuf)>,
-    links: Vec<(String, PathBuf)>,
-}
-
-/// HEAD's tree (none when git can't list it), and the files of it whose content in the worktree
-/// hashes to the blob HEAD holds for them.
-async fn compared(spec: &Spec, env: &[(&str, &str)]) -> (Option<Held>, HashSet<PathBuf>) {
-    let Ok(tree) = crate::git::run_bytes(
-        &spec.worktree,
-        &[
-            OsStr::new("ls-tree"),
-            OsStr::new("-r"),
-            OsStr::new("-z"),
-            OsStr::new("HEAD"),
-        ],
-        env,
-        None,
-    )
-    .await
-    else {
-        return (None, HashSet::new());
-    };
-    // `<mode> blob <sha>\t<path>`, each ended by a NUL.
-    let mut held = Held::default();
-    for entry in tree.split(|&b| b == 0).filter(|e| !e.is_empty()) {
-        let entry = String::from_utf8_lossy(entry);
-        let Some((meta, path)) = entry.split_once('\t') else {
-            continue;
-        };
-        let mut meta = meta.split(' ');
-        let (Some(mode), Some("blob"), Some(sha)) = (meta.next(), meta.next(), meta.next()) else {
-            continue;
-        };
-        let full = spec.worktree.join(path);
-        match mode {
-            "100644" | "100755" => held.files.push((sha.to_owned(), full)),
-            "120000" => held.links.push((sha.to_owned(), full)),
-            _ => {}
-        }
-    }
-    // Only what is there as a regular file, under a name `--stdin-paths` can take.
-    let present: Vec<&(String, PathBuf)> = held
-        .files
-        .iter()
-        .filter(|(_, path)| {
-            std::fs::symlink_metadata(path).is_ok_and(|m| m.is_file())
-                && !path.to_string_lossy().contains('\n')
-        })
-        .collect();
-    if present.is_empty() {
-        return (Some(held), HashSet::new());
-    }
-    let input: String = present
-        .iter()
-        .map(|(_, path)| format!("{}\n", path.display()))
-        .collect();
-    let Ok(hashed) = crate::git::run_bytes(
-        &spec.worktree,
-        &[
-            OsStr::new("hash-object"),
-            OsStr::new("--no-filters"),
-            OsStr::new("--stdin-paths"),
-        ],
-        env,
-        Some(input.into_bytes()),
-    )
-    .await
-    else {
-        return (Some(held), HashSet::new());
-    };
-    let hashed = String::from_utf8_lossy(&hashed);
-    let hashes: Vec<&str> = hashed.lines().collect();
-    if hashes.len() != present.len() {
-        return (Some(held), HashSet::new());
-    }
-    let same = present
-        .into_iter()
-        .zip(hashes)
-        .filter(|((sha, _), now)| sha == now)
-        .map(|((_, path), _)| path.clone())
-        .collect();
-    (Some(held), same)
-}
-
-/// Up to 10 of `paths`, and how many more.
-fn listed(paths: &[String]) -> String {
-    let mut text = paths
-        .iter()
-        .take(10)
-        .cloned()
-        .collect::<Vec<_>>()
-        .join(", ");
-    if paths.len() > 10 {
-        text.push_str(&format!(" and {} more", paths.len() - 10));
-    }
-    text
-}
-
-/// Every file and link under `root`, never following a link, but for what `skip` names. A folder
-/// it can't open is made openable (0700) and tried again; one it still can't open goes in
-/// `unreadable`, as what it can't tell the kind of does: nothing in it was read.
-fn files_under(
-    root: &Path,
-    skip: &dyn Fn(&Path) -> bool,
-    out: &mut Vec<PathBuf>,
-    unreadable: &mut Vec<PathBuf>,
-) {
-    use std::os::unix::fs::PermissionsExt as _;
-    let mut stack = vec![root.to_path_buf()];
-    while let Some(dir) = stack.pop() {
-        let entries = match std::fs::read_dir(&dir) {
-            Ok(entries) => entries,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(_) => {
-                let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
-                match std::fs::read_dir(&dir) {
-                    Ok(entries) => entries,
-                    Err(_) => {
-                        unreadable.push(dir);
-                        continue;
-                    }
-                }
-            }
-        };
-        for entry in entries {
-            let Ok(entry) = entry else {
-                unreadable.push(dir.clone());
-                continue;
-            };
-            let path = entry.path();
-            if skip(&path) {
-                continue;
-            }
-            match entry.file_type() {
-                Ok(kind) if kind.is_dir() => stack.push(path),
-                Ok(_) => out.push(path),
-                Err(_) => unreadable.push(path),
-            }
-        }
-    }
-}
-
-/// Removes `path`, making it writable first when it isn't.
-fn remove(path: &Path) -> Found {
-    use std::os::unix::fs::PermissionsExt as _;
-    if std::fs::remove_file(path).is_ok() {
-        return Found::Removed;
-    }
-    if let Some(dir) = path.parent() {
-        let _ = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700));
-    }
-    if std::fs::remove_file(path).is_ok() {
-        Found::Removed
-    } else {
-        Found::Stuck
-    }
 }
 
 /// `value` with `\uXXXX` escapes as JSON encoders write them: every character escaped, every
@@ -1193,58 +880,10 @@ fn json_forms(value: &str) -> (String, String) {
     (json, slash)
 }
 
-/// Every form `value` takes in a file, as bytes: itself, JSON-escaped, hex, URL-encoded, and the
-/// middle of its base64 (standard and URL-safe) at each of the three offsets a longer run can put
-/// it at. Forms shorter than [`crate::secrets::SHORTEST`] are left out.
-fn forms(value: &str) -> Vec<Vec<u8>> {
-    use base64::Engine as _;
-    let bytes = value.as_bytes();
-    let (json, json_slash) = json_forms(value);
-    let mut forms: Vec<Vec<u8>> = vec![
-        bytes.to_vec(),
-        json.into_bytes(),
-        json_slash.into_bytes(),
-        hex::encode(bytes).into_bytes(),
-        hex::encode_upper(bytes).into_bytes(),
-    ];
-    forms.extend(unicode_forms(value).into_iter().map(String::into_bytes));
-    let percent: String = bytes.iter().map(|b| format!("%{b:02X}")).collect();
-    let url: String = bytes
-        .iter()
-        .map(|&b| match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
-                (b as char).to_string()
-            }
-            _ => format!("%{b:02X}"),
-        })
-        .collect();
-    for text in [percent, url] {
-        forms.push(text.to_ascii_lowercase().into_bytes());
-        forms.push(text.into_bytes());
-    }
-    for engine in [
-        &base64::engine::general_purpose::STANDARD,
-        &base64::engine::general_purpose::URL_SAFE,
-    ] {
-        for offset in 0..3usize {
-            let mut padded = vec![0u8; offset];
-            padded.extend_from_slice(bytes);
-            let encoded = engine.encode(&padded);
-            // The characters the zeros before it, or the end, also make are left off.
-            let from = [0, 2, 3][offset];
-            let to = encoded.len().saturating_sub(4);
-            if to > from {
-                forms.push(encoded.as_bytes()[from..to].to_vec());
-            }
-        }
-    }
-    forms.retain(|form| form.len() >= crate::secrets::SHORTEST);
-    forms
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     /// Obviously fake: what the tests put where the owner's vault would be.
     const FAKE: &str = "fake-check-value/Z9q2+not=real";
@@ -1367,123 +1006,34 @@ required = false
         assert!(ok, "{script}");
     }
 
-    /// Whatever its time says, every file the check could have written is read: a copy that kept
-    /// an old time (`cp -p`), a large file, one that isn't text, a link, JSON's escaped form. What
-    /// can't be taken out goes; what git tracks and the check didn't change is left alone.
-    #[tokio::test]
-    async fn the_scrub_reads_everything_the_check_could_write_and_fails_closed() {
-        use base64::Engine as _;
-        let dir = std::env::temp_dir().join(format!("obid-secretspec-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        let work = dir.join("work");
-        let temp = dir.join("tmp");
-        std::fs::create_dir_all(&work).unwrap();
-        std::fs::create_dir_all(temp.join("cache")).unwrap();
-        sh(
-            &work,
-            &format!(
-                "git init -q && printf 'repo {FAKE}' > tracked.txt && printf 'x' > edited.txt && git add . && \
-                 git -c user.name=T -c user.email=t@example.com -c commit.gpgsign=false commit -q -m one"
-            ),
-        );
-        // What the check writes.
-        std::fs::write(work.join("edited.txt"), format!("now {FAKE}\n")).unwrap();
-        std::fs::create_dir_all(work.join("logs")).unwrap();
-        std::fs::write(work.join("logs/old.log"), format!("token={FAKE}\n")).unwrap();
-        sh(&work, "touch -t 200101010000 logs/old.log");
-        let escaped = serde_json::to_string(FAKE).unwrap().replace('/', "\\/");
-        std::fs::write(work.join("snapshot.json"), format!("{{\"t\": {escaped}}}")).unwrap();
-        let mut binary = vec![0xff, 0xfe, 0x00];
-        binary.extend_from_slice(FAKE.as_bytes());
-        std::fs::write(work.join("blob.bin"), &binary).unwrap();
-        let mut big = vec![b'a'; 5 * 1024 * 1024];
-        big.extend_from_slice(
-            base64::engine::general_purpose::STANDARD
-                .encode(format!("x{FAKE}"))
-                .as_bytes(),
-        );
-        big.push(0xff);
-        std::fs::write(work.join("bundle.js"), &big).unwrap();
-        std::fs::write(work.join("big-clean.js"), vec![b'a'; 5 * 1024 * 1024]).unwrap();
-        std::os::unix::fs::symlink(format!("/tmp/{FAKE}"), work.join("link")).unwrap();
-        std::fs::write(temp.join("cache/t"), FAKE).unwrap();
-
-        let filled = Filled::fill(&["TOKEN".into()], |_| Ok(Some(FAKE.to_owned())));
-        let spec = Spec {
-            worktree: work.clone(),
-            temp: temp.clone(),
-            ..Spec::default()
-        };
-        let scrubbed = filled.scrub(&spec, filled.before(&spec).await).await;
-        assert!(scrubbed.stuck.is_empty());
-        let notes = scrubbed.notes.join("\n");
-        for cleaned in ["edited.txt", "logs/old.log", "snapshot.json", "cache/t"] {
-            let text = std::fs::read_to_string(if cleaned == "cache/t" {
-                temp.join(cleaned)
-            } else {
-                work.join(cleaned)
-            })
-            .unwrap();
-            assert!(text.contains("[check secret: TOKEN]"), "{cleaned}: {text}");
-            assert!(notes.contains(cleaned), "{notes}");
-        }
-        for removed in ["blob.bin", "bundle.js", "link"] {
-            assert!(
-                std::fs::symlink_metadata(work.join(removed)).is_err(),
-                "{removed}"
-            );
-            assert!(notes.contains(removed), "{notes}");
-        }
-        // The repository's own file, and a large one with nothing in it, are as they were.
-        assert_eq!(
-            std::fs::read_to_string(work.join("tracked.txt")).unwrap(),
-            format!("repo {FAKE}")
-        );
-        assert!(work.join("big-clean.js").exists());
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
+    /// JSON's escaped forms of a value are taken out of what a check prints too: `\/`, and
+    /// `\uXXXX` for every character or every one but letters and digits, in either case.
     #[test]
-    fn every_form_is_looked_for_in_bytes() {
-        use base64::Engine as _;
+    fn json_escaped_forms_are_taken_out() {
         let filled = Filled::fill(&["TOKEN".into()], |_| Ok(Some(FAKE.to_owned())));
-        for form in [
-            FAKE.to_owned(),
-            FAKE.replace('/', "\\/"),
-            hex::encode(FAKE),
-            hex::encode_upper(FAKE),
-            base64::engine::general_purpose::STANDARD.encode(FAKE),
-            base64::engine::general_purpose::STANDARD.encode(format!("ab{FAKE}")),
-            base64::engine::general_purpose::URL_SAFE.encode(format!("a{FAKE}")),
-            FAKE.bytes().map(|b| format!("%{b:02x}")).collect(),
-            FAKE.chars()
-                .map(|c| format!("\\u{:04x}", c as u32))
-                .collect(),
-            FAKE.chars()
-                .map(|c| format!("\\u{:04X}", c as u32))
-                .collect(),
-            FAKE.chars()
-                .map(|c| {
-                    if c.is_ascii_alphanumeric() {
-                        c.to_string()
-                    } else {
-                        format!("\\u{:04x}", c as u32)
-                    }
-                })
-                .collect(),
-        ] {
-            assert!(filled.holds(form.as_bytes()), "{form}");
-        }
-        assert!(!filled.holds(b"nothing of it here at all"));
-        // JSON's escaped forms are taken out of text too.
-        let clean = filled.redact(&format!("{{\"t\": \"{}\"}}", FAKE.replace('/', "\\/")));
-        assert!(!clean.contains("Z9q2"), "{clean}");
         let every: String = FAKE
             .chars()
             .map(|c| format!("\\u{:04x}", c as u32))
             .collect();
-        let clean = filled.redact(&format!("{{\"t\": \"{every}\"}}"));
-        assert!(clean.contains("[check secret: TOKEN]"), "{clean}");
+        let upper: String = FAKE
+            .chars()
+            .map(|c| format!("\\u{:04X}", c as u32))
+            .collect();
+        let some: String = FAKE
+            .chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() {
+                    c.to_string()
+                } else {
+                    format!("\\u{:04x}", c as u32)
+                }
+            })
+            .collect();
+        for form in [FAKE.replace('/', "\\/"), every, upper, some] {
+            let clean = filled.redact(&format!("{{\"t\": \"{form}\"}}"));
+            assert!(clean.contains("[check secret: TOKEN]"), "{form}: {clean}");
+            assert!(!clean.contains("Z9q2"), "{form}: {clean}");
+        }
     }
 
     #[test]
@@ -1528,7 +1078,7 @@ required = false
                 ),
                 (
                     "repos/o/r/rules/branches/main",
-                    r#"[{"type":"pull_request","ruleset_id":1}]"#,
+                    r#"[{"type":"pull_request","ruleset_id":1,"parameters":{"required_approving_review_count":1}}]"#,
                 ),
                 (
                     "repos/o/r/rulesets/1",
@@ -1536,7 +1086,7 @@ required = false
                 ),
                 (
                     "repos/o/r/rules/branches/bypassed",
-                    r#"[{"type":"pull_request","ruleset_id":2}]"#,
+                    r#"[{"type":"pull_request","ruleset_id":2,"parameters":{"required_approving_review_count":1}}]"#,
                 ),
                 (
                     "repos/o/r/rulesets/2",
@@ -1544,7 +1094,7 @@ required = false
                 ),
                 (
                     "repos/o/r/rules/branches/evaluated",
-                    r#"[{"type":"pull_request","ruleset_id":3}]"#,
+                    r#"[{"type":"pull_request","ruleset_id":3,"parameters":{"required_approving_review_count":1}}]"#,
                 ),
                 (
                     "repos/o/r/rulesets/3",
@@ -1568,7 +1118,23 @@ required = false
                 ),
                 (
                     "repos/o/r/branches/allowed/protection",
-                    r#"{"required_pull_request_reviews":{"bypass_pull_request_allowances":{"users":[{"login":"Wellington"}]}},"enforce_admins":{"enabled":true}}"#,
+                    r#"{"required_pull_request_reviews":{"required_approving_review_count":1,"bypass_pull_request_allowances":{"users":[{"login":"Wellington"}]}},"enforce_admins":{"enabled":true}}"#,
+                ),
+                (
+                    "repos/o/r/branches/team-allowed/protection",
+                    r#"{"required_pull_request_reviews":{"required_approving_review_count":1,"bypass_pull_request_allowances":{"teams":[{"slug":"core"}]}},"enforce_admins":{"enabled":true}}"#,
+                ),
+                (
+                    "repos/o/r/branches/app-allowed/protection",
+                    r#"{"required_pull_request_reviews":{"required_approving_review_count":1,"bypass_pull_request_allowances":{"apps":[{"slug":"a-bot"}]}},"enforce_admins":{"enabled":true}}"#,
+                ),
+                (
+                    "repos/o/r/branches/no-approvals/protection",
+                    r#"{"required_pull_request_reviews":{"required_approving_review_count":0},"enforce_admins":{"enabled":true}}"#,
+                ),
+                (
+                    "repos/o/r/rules/branches/unreviewed",
+                    r#"[{"type":"pull_request","ruleset_id":1,"parameters":{"required_approving_review_count":0}}]"#,
                 ),
                 (
                     "repos/o/r/branches/no-reviews/protection",
@@ -1584,6 +1150,10 @@ required = false
             "weak",
             "admins-skip",
             "allowed",
+            "team-allowed",
+            "app-allowed",
+            "no-approvals",
+            "unreviewed",
             "no-reviews",
             "teammate-fix",
         ] {
@@ -1748,14 +1318,18 @@ required = false
         let env: Vec<(&str, &str)> = env.iter().map(|(k, v)| (*k, v.as_str())).collect();
         let made = commits_since(&own.worktree, &env, &base).await.unwrap();
         let record: HashSet<String> = made.iter().cloned().collect();
-        assert_eq!(on_record(&own, &base, &record).await, Ok(()));
-        assert!(on_record(&own, &base, &HashSet::new()).await.is_err());
+        assert_eq!(on_record(&own, &base, "HEAD", &record).await, Ok(()));
+        assert!(
+            on_record(&own, &base, "HEAD", &HashSet::new())
+                .await
+                .is_err()
+        );
 
         // A reused branch name: its old commits aren't in the record, and rebased onto the base
         // as it is now they are new commits obid never recorded either.
         let reused = job_worktree(&dir, "reused", "origin/oby/fix-12");
         assert!(
-            on_record(&reused, &base, &record)
+            on_record(&reused, &base, "HEAD", &record)
                 .await
                 .unwrap_err()
                 .contains("isn't one obid saw")
@@ -1774,101 +1348,129 @@ required = false
                 "git -c user.name=T -c user.email=t@example.com rebase -q --onto {now} {base}"
             ),
         );
-        assert!(on_record(&reused, &now, &record).await.is_err());
+        assert!(on_record(&reused, &now, "HEAD", &record).await.is_err());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// The worktree must be exactly HEAD: changed, removed or taken-from-elsewhere files, and files
-    /// HEAD doesn't hold, mean no values; what git ignores is fine.
+    /// obid's clones hold only their default branch, and say when obid fetched someone else's
+    /// commits into them: a teammate's branch on the remote isn't in a new clone at all (its ref
+    /// nor its commits), a clone made before is someone else's, and a taint stays.
     #[tokio::test]
-    async fn the_worktree_must_be_its_head() {
-        let dir = std::env::temp_dir().join(format!("obid-secretspec-wt-{}", std::process::id()));
-        let (_clone, _base) = record_fixture(&dir).await;
-        let spec = job_worktree(&dir, "clean", "origin/main");
-        assert_eq!(worktree_is_head(&spec).await, Ok(()));
-        // What git ignores (a build's output) is fine.
-        std::fs::write(spec.worktree.join("ignored.log"), "x").unwrap();
-        assert_eq!(worktree_is_head(&spec).await, Ok(()));
-        for (name, script) in [
-            ("checkout", "git checkout -q origin/teammate -- ."),
-            ("changed", "echo z > a"),
-            (
-                "hidden",
-                "echo z > a && git update-index --assume-unchanged a",
-            ),
-            ("removed", "rm a"),
-            ("untracked", "echo new > new.txt"),
-            ("staged", "echo new > new.txt && git add new.txt"),
-        ] {
-            let spec = job_worktree(&dir, name, "origin/main");
-            as_job(&spec, script);
-            assert!(worktree_is_head(&spec).await.is_err(), "{name}");
-        }
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    /// What the scrub can't look into isn't passed over: a folder it can't open, made so again
-    /// when it can, and a tracked file git was told not to look at (`--assume-unchanged`).
-    #[tokio::test]
-    async fn what_the_scrub_cant_see_isnt_passed_over() {
-        use std::os::unix::fs::PermissionsExt as _;
+    async fn a_clone_holds_only_what_obid_knows_is_the_owners() {
         let dir =
-            std::env::temp_dir().join(format!("obid-secretspec-hidden-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        let work = dir.join("work");
-        std::fs::create_dir_all(&work).unwrap();
-        sh(
-            &work,
-            &format!("git init -q && echo x > tracked.txt && git add . && {COMMIT} -m one"),
+            std::env::temp_dir().join(format!("obid-secretspec-clone-{}", std::process::id()));
+        let (wide, _base) = record_fixture(&dir).await;
+        assert!(
+            crate::git::foreign_in(&wide)
+                .await
+                .unwrap()
+                .contains("made before")
         );
-        // A tracked file the check changed and told git to ignore.
-        std::fs::write(work.join("tracked.txt"), format!("{FAKE}\n")).unwrap();
-        sh(&work, "git update-index --assume-unchanged tracked.txt");
-        // A folder it closed.
-        std::fs::create_dir_all(work.join("closed")).unwrap();
-        std::fs::write(work.join("closed/log"), FAKE).unwrap();
-        std::fs::set_permissions(work.join("closed"), std::fs::Permissions::from_mode(0o000))
+        let remote = format!("file://{}", dir.join("origin").display());
+        let home = dir.join("home");
+        let clone = crate::git::ensure_clone(&home, "o/r", &remote, &[])
+            .await
             .unwrap();
-        let filled = Filled::fill(&["TOKEN".into()], |_| Ok(Some(FAKE.to_owned())));
-        let spec = Spec {
-            worktree: work.clone(),
-            temp: dir.join("tmp"),
-            ..Spec::default()
-        };
-        let scrubbed = filled.scrub(&spec, None).await;
-        assert!(scrubbed.stuck.is_empty(), "{:?}", scrubbed.stuck);
+        assert_eq!(crate::git::foreign_in(&clone).await, None);
+        let teammate = crate::git::git(&dir.join("origin"), &["rev-parse", "refs/heads/teammate"])
+            .await
+            .unwrap();
         assert!(
-            std::fs::read_to_string(work.join("tracked.txt"))
-                .unwrap()
-                .contains("[check secret: TOKEN]")
+            crate::git::git(
+                &clone,
+                &[
+                    "rev-parse",
+                    "--verify",
+                    "--quiet",
+                    "refs/remotes/origin/teammate"
+                ]
+            )
+            .await
+            .is_err()
         );
         assert!(
-            std::fs::read_to_string(work.join("closed/log"))
-                .unwrap()
-                .contains("[check secret: TOKEN]")
+            crate::git::git(&clone, &["cat-file", "-e", &teammate])
+                .await
+                .is_err()
+        );
+        crate::git::taint(&clone, "pull request #9's head").await;
+        crate::git::taint(&clone, "a later one").await;
+        let why = crate::git::foreign_in(&clone).await.unwrap();
+        assert!(
+            why.contains("pull request #9's head") && !why.contains("later"),
+            "{why}"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// A folder obid can't open at all is stuck: the job stops before its agent reads it.
-    #[test]
-    fn a_folder_obid_cant_open_is_stuck() {
-        let mut files = Vec::new();
-        let mut unreadable = Vec::new();
-        let missing =
-            std::env::temp_dir().join(format!("obid-secretspec-none-{}", std::process::id()));
-        files_under(&missing, &|_| false, &mut files, &mut unreadable);
-        assert!(
-            files.is_empty() && unreadable.is_empty(),
-            "a folder that isn't there is nothing"
+    /// The check's own checkout is HEAD's commits and nothing else of the job's: not a file left
+    /// uncommitted, not one a `.gitignore` hides, not what a process the turn left behind writes
+    /// into the job's worktree after the gate; and it's gone after.
+    #[tokio::test]
+    async fn the_checks_own_checkout_is_only_its_commits() {
+        let dir =
+            std::env::temp_dir().join(format!("obid-secretspec-fresh-{}", std::process::id()));
+        let (_clone, base) = record_fixture(&dir).await;
+        let job = job_worktree(&dir, "job", "origin/main");
+        as_job(
+            &job,
+            &format!(
+                "echo hidden.txt > .gitignore && echo 'echo committed' > run.sh && git add .gitignore run.sh && {COMMIT} -m mine && \
+                 echo SECRET-HIDDEN > hidden.txt && echo LEFT > left.txt"
+            ),
         );
-        // A path that isn't a folder at all can't be opened as one, whatever its mode.
-        let file =
-            std::env::temp_dir().join(format!("obid-secretspec-file-{}", std::process::id()));
-        std::fs::write(&file, "x").unwrap();
-        files_under(&file, &|_| false, &mut files, &mut unreadable);
-        assert_eq!(unreadable, std::slice::from_ref(&file));
-        let _ = std::fs::remove_file(&file);
+        let head = head_of(&job).await.unwrap();
+        let at = dir.join("checks/job-1");
+        let check = fresh_checkout(&job, &base, &head, &at).await.unwrap();
+        // After the gate: what a survivor would write into the job's worktree.
+        std::fs::write(job.worktree.join("run.sh"), "echo REWRITTEN\n").unwrap();
+        assert!(!check.worktree.starts_with(&job.worktree) && !check.temp.starts_with(&job.temp));
+        assert_eq!(
+            std::fs::read_to_string(check.worktree.join("run.sh")).unwrap(),
+            "echo committed\n"
+        );
+        assert!(!check.worktree.join("hidden.txt").exists());
+        assert!(!check.worktree.join("left.txt").exists());
+        assert_eq!(head_of(&check).await.unwrap(), head);
+        // Its git reads none of the job's own objects.
+        assert!(
+            !std::fs::read_to_string(
+                check
+                    .git_admin
+                    .as_ref()
+                    .unwrap()
+                    .join("objects/info/alternates")
+            )
+            .is_ok_and(|a| a.contains("job"))
+        );
+        remove_checkout(&check, &at).await.unwrap();
+        assert!(!at.exists() && !check.git_admin.unwrap().exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Only macOS gives checks values, until oby#616 takes a Linux agent's own network away.
+    #[test]
+    fn linux_gives_no_values() {
+        assert_eq!(platform_refusal().is_some(), !cfg!(target_os = "macos"));
+        if let Some(why) = platform_refusal() {
+            assert!(why.contains("oby#616"), "{why}");
+        }
+    }
+
+    /// Reaching a code host or any site but the package registries makes the job someone else's.
+    #[test]
+    fn a_site_beyond_the_registries_is_foreign() {
+        for host in [
+            "github.com",
+            "codeload.github.com",
+            "gitlab.com",
+            "example.com",
+        ] {
+            assert!(site_is_foreign(host), "{host}");
+        }
+        for host in ["registry.npmjs.org", "crates.io", "pypi.org"] {
+            assert!(!site_is_foreign(host), "{host}");
+        }
     }
 
     #[test]
