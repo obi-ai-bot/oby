@@ -114,11 +114,16 @@ nonisolated enum AskKind {
         case "audit": "Issue audit"
         case "failure": "Oby failure"
         case RunnerConfirm.kind: "Confirm it?"
+        // What a teammate's Oby asks (obid's `obiRequest`).
+        case "review_request": "Review request"
+        case "host_approval": "Approve on GitHub?"
         default: "Failed"
         }
     }
 
-    static func failed(_ kind: String) -> Bool { !["question", "agentQuestion", "permission", "review", "limit", "start", "github", "audit", RunnerConfirm.kind].contains(kind) }
+    static func failed(_ kind: String) -> Bool {
+        !["question", "agentQuestion", "permission", "review", "limit", "start", "github", "audit", RunnerConfirm.kind, "review_request", "host_approval"].contains(kind)
+    }
 }
 
 /// A task's card under the answer that started it (Sangam's ThreadTask): where it stands, then

@@ -399,6 +399,10 @@ private struct HomeView: View {
     @State private var text = ""
     @State private var typing = false
     @State private var height: CGFloat = 600
+    /// A card asked for words (a teammate's Oby's question, say): the box answers it, not Oby.
+    @State private var replyTarget: ConversationPage.ReplyTarget?
+    @State private var sendingAnswer = false
+    @State private var sendProblem: String?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var work: [WorkList.Item<SidebarSections.JobRow>] { model.work(state) }
@@ -460,7 +464,11 @@ private struct HomeView: View {
                     .foregroundStyle(running + needs + memory == 0 ? Tokens.text : Tokens.muted)
                 // What waits on you, under the line that counts it (the demo's AskStack).
                 if !away {
-                    HomeDecisions(model: model, height: height, onOpen: { state.trail.start(.job(id: $0)) })
+                    HomeDecisions(model: model, height: height, onOpen: { state.trail.start(.job(id: $0)) }, onTell: { entry in
+                        replyTarget = .init(title: entry.item.title, send: { value in try await model.feed.settle(entry.item.id, answer: value) })
+                        sendProblem = nil
+                        typing = true
+                    })
                         .frame(maxWidth: Tokens.homeBox - 2 * Tokens.gutter)
                 }
                 if !groups.isEmpty {
@@ -479,23 +487,48 @@ private struct HomeView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
-    /// Asking Oby: the conversation opens on it.
+    /// Asking Oby: the conversation opens on it. Or, while a card waits for words, its answer.
     private var box: some View {
-        MessageBox(text: $text, focused: $typing, tray: model.tray,
-                   placeholder: HomeLine.placeholder(fullName: NSFullUserName()),
-                   maximumHeight: height * 0.5, focusRequest: state.homeFocusRequest,
-                   onSend: ask, onScreenshot: screenshot, onStop: { false }, usage: model.usageRows,
+        VStack(alignment: .leading, spacing: 6) {
+            if let replyTarget {
+                ReplyLine(title: replyTarget.title, sending: sendingAnswer) { self.replyTarget = nil; sendProblem = nil }
+            }
+            if let sendProblem {
+                Text(sendProblem).font(Tokens.font(Tokens.textSm)).foregroundStyle(Tokens.danger).padding(.horizontal, 12)
+            }
+            MessageBox(text: $text, focused: $typing, tray: model.tray,
+                       placeholder: replyTarget == nil ? HomeLine.placeholder(fullName: NSFullUserName()) : "Your answer…",
+                       maximumHeight: height * 0.5, focusRequest: state.homeFocusRequest,
+                       onSend: ask, onScreenshot: screenshot, onStop: { false }, usage: model.usageRows,
                        voice: model.voice, talkKeyListening: model.listening)
-            .keepsDraft($text, as: Drafts.home)
-            .frame(maxWidth: Tokens.homeBox - 2 * Tokens.gutter)
-            .padding(.horizontal, Tokens.gutter).padding(.bottom, Tokens.gutter)
+                .disabled(sendingAnswer)
+                .keepsDraft($text, as: Drafts.home)
+        }
+        .frame(maxWidth: Tokens.homeBox - 2 * Tokens.gutter)
+        .padding(.horizontal, Tokens.gutter).padding(.bottom, Tokens.gutter)
     }
 
     private func back() { withAnimation(reduceMotion ? nil : Tokens.warm) { state.trail.back() } }
 
-    /// Asked in Home's box: it goes to Oby, and the conversation opens on it.
+    /// Asked in Home's box: it goes to Oby, and the conversation opens on it. While a card waits
+    /// for words, they answer it instead (one message, at most 2,000 characters), and Home stays.
     private func ask() {
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        if let target = replyTarget {
+            let value = text
+            if value.trimmingCharacters(in: .whitespacesAndNewlines).count > ChatSend.most { sendProblem = ChatSend.tooLong; return }
+            sendingAnswer = true
+            sendProblem = nil
+            Task {
+                defer { sendingAnswer = false }
+                do {
+                    try await target.send(value)
+                    if text == value { text = "" }
+                    replyTarget = nil
+                } catch { sendProblem = error.localizedDescription }
+            }
+            return
+        }
         // Home's box starts a conversation of its own (obid keeps many, #493).
         model.feed.conversations.startNew()
         model.sendChat(text)
@@ -551,6 +584,8 @@ private struct HomeDecisions: View {
     /// Home's height: the top card gets what Oby's stage and the box leave.
     let height: CGFloat
     let onOpen: (_ job: String) -> Void
+    /// A card that takes words was asked to be answered in them: Home's box answers it.
+    var onTell: (IslandInbox.Entry) -> Void = { _ in }
     @State private var content: CGFloat = 0
     /// The card on top, and where it was: gone, the one that took its place.
     @State private var at = HomeStack.Place()
@@ -569,7 +604,7 @@ private struct HomeDecisions: View {
 
     /// The inbox's decisions that wait now, here and on the runner, the oldest first.
     static func entries(_ model: IslandModel, now: Date) -> [IslandInbox.Entry] {
-        IslandInbox.entries(feed: model.feed, now: now).filter(\.item.isDecision)
+        IslandInbox.entries(feed: model.feed, now: now).filter { $0.item.decides(model.feed.inboxWords[$0.item.id]) }
     }
 
     /// A runner's permission it only names in its job (an older runner's, #134).
@@ -660,7 +695,8 @@ private struct HomeDecisions: View {
     @ViewBuilder private func card(_ card: Card, head: AnyView) -> some View {
         switch card {
         case .decision(let entry):
-            InlineDecision(entry: entry, feed: model.feed, keyboardEnabled: true, focusRequest: focusRequest, onOpen: onOpen, head: head)
+            InlineDecision(entry: entry, feed: model.feed, keyboardEnabled: true, focusRequest: focusRequest, onOpen: onOpen,
+                           onTell: { onTell(entry) }, head: head)
         case .permission(let record):
             InlinePermission(record: record, feed: model.feed, keyboardEnabled: true, focusRequest: focusRequest, head: head)
         }

@@ -123,9 +123,12 @@ struct SharingTests {
         #expect(read.kind == .start)
         #expect(read.options == ["Allow", "Allow Sangam from now on", "Decline"])
         #expect(read.line(now: read.created).hasPrefix("Start it? · Sangam asks to use this Mac"))
-        // A review request stays out of the inbox cards (Settings › Obysphere answers it).
+        // A review request is a card too, by its own name (docs/obysphere.md part 6); a type Home
+        // doesn't know yet stays out.
         let review = Data(String(decoding: item, as: UTF8.self).replacingOccurrences(of: #""type": "run_request""#, with: #""type": "review_request""#).utf8)
-        #expect(InboxItem.runner(review) == nil)
+        #expect(InboxItem.runner(review)?.shownKind(try? Runner.decoder.decode(InboxWords.self, from: review)) == "review_request")
+        let handoff = Data(String(decoding: item, as: UTF8.self).replacingOccurrences(of: #""type": "run_request""#, with: #""type": "handoff""#).utf8)
+        #expect(InboxItem.runner(handoff) == nil)
     }
 
     // MARK: Sharing your usage (#809)
