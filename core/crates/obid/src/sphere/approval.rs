@@ -72,7 +72,7 @@ pub fn item(
         "",
         title.clone(),
         format!(
-            "Your Oby's review of {repo} pull request #{pr} at {short} passed. {from_owner}'s Obi ({from}) asks you to approve it on GitHub, as you, so it can merge. Your Confirm approves this commit only, for this request."
+            "Your Oby's review of {repo} pull request #{pr} at {short} passed. {from_owner}'s Oby ({from}) asks you to approve it on GitHub, as you, so it can merge. Your Confirm approves this commit only, for this request."
         ),
         inbox::Confirmed {
             action: inbox::action::APPROVE_ON_HOST.into(),

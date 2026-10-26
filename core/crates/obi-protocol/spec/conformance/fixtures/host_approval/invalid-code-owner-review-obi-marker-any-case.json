@@ -1,7 +1,7 @@
 {
   "case": "host_approval",
   "name": "invalid-code-owner-review-obi-marker-any-case",
-  "description": "The Obi's marker counts in any case (`BY OBY:`).",
+  "description": "The Oby's marker counts in any case (`BY OBY:`).",
   "expect": "reject",
   "reason": "no_code_owner_approval",
   "context": {

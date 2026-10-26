@@ -1,7 +1,7 @@
 {
   "case": "host_approval",
   "name": "invalid-code-owner-review-by-an-obi",
-  "description": "The approval on src/ carries an Obi's marker (`by Oby:`), though a person's account posted it.",
+  "description": "The approval on src/ carries an Oby's marker (`by Oby:`), though a person's account posted it.",
   "expect": "reject",
   "reason": "no_code_owner_approval",
   "context": {

@@ -390,7 +390,7 @@ async fn an_approved_review_is_approved_on_github_only_as_the_owner_allows() {
     );
     assert_eq!(
         ask["text"],
-        "Your Oby's review of obi-e2e/fixture-app pull request #12 at 6d20146 passed. ernesto's Obi (obi-ernesto) asks you to approve it on GitHub, as you, so it can merge. Your Confirm approves this commit only, for this request."
+        "Your Oby's review of obi-e2e/fixture-app pull request #12 at 6d20146 passed. ernesto's Oby (obi-ernesto) asks you to approve it on GitHub, as you, so it can merge. Your Confirm approves this commit only, for this request."
     );
     assert_eq!(ask["options"], json!(["Confirm", "Cancel"]));
     assert_eq!(ask["confirm"]["action"], "approve_on_host");

@@ -1,5 +1,5 @@
 //! Approving on the code host (spec `protocol.md` section 11, "Approving on the code host"): whether
-//! a receiving Obi may post its approving review of a `review_request`'s `head_sha` now. It may
+//! a receiving Oby may post its approving review of a `review_request`'s `head_sha` now. It may
 //! with its owner's confirmation of that exchange at that commit, from the owner's own device,
 //! fresh and used once; or, under its owner's standing permission, next to approvals of that commit
 //! by people who between them own every changed file (the repository's `CODEOWNERS`). Otherwise it
@@ -18,8 +18,8 @@ use crate::Rejection;
 pub const CONFIRMATION_FRESH: i64 = 120;
 pub const CONFIRMATION_AHEAD: i64 = 30;
 
-/// What every review an Obi posts on the code host carries, matched without regard to case: a
-/// review whose body has it is an Obi's, whoever's account posted it.
+/// What every review an Oby posts on the code host carries, matched without regard to case: a
+/// review whose body has it is an Oby's, whoever's account posted it.
 pub const OBI_REVIEW_MARKER: &str = "by oby:";
 
 /// The code host's access levels that let an approval count: write or more.
@@ -71,7 +71,7 @@ pub struct Review {
     /// `User`, or `Bot` for an account the code host marks as one.
     #[serde(default)]
     pub account_type: String,
-    /// Its words: one with [`OBI_REVIEW_MARKER`] is an Obi's.
+    /// Its words: one with [`OBI_REVIEW_MARKER`] is an Oby's.
     #[serde(default)]
     pub body: String,
     /// `APPROVED`, `CHANGES_REQUESTED`, `COMMENTED` or `DISMISSED`.
@@ -180,7 +180,7 @@ pub fn code_owners_approved(host: &CodeHost, repo: &str, head: &str, own_login: 
     })
 }
 
-/// Whether a review is a person's: not an account the code host marks as a bot, and no Obi's
+/// Whether a review is a person's: not an account the code host marks as a bot, and no Oby's
 /// marker in its words.
 pub fn by_a_person(review: &Review) -> bool {
     review.account_type != "Bot" && !review.body.to_lowercase().contains(OBI_REVIEW_MARKER)

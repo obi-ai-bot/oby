@@ -1,7 +1,7 @@
 {
   "case": "host_approval",
   "name": "invalid-code-owner-review-obi-verdict",
-  "description": "An Obi's verdict, signed with its marker at the end, posted from a person's account in the owners' team.",
+  "description": "An Oby's verdict, signed with its marker at the end, posted from a person's account in the owners' team.",
   "expect": "reject",
   "reason": "no_code_owner_approval",
   "context": {
