@@ -8,7 +8,7 @@
 //! event when it starts and when it ends; Stop finishes the action under way and starts nothing
 //! more.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -40,8 +40,8 @@ pub struct Control {
     /// Stop (`POST /v1/conversation/stop`, or a bare "stop"): finish the action under way, then
     /// answer with what was done.
     stopped: AtomicBool,
-    /// Cancel (`POST /v1/plans/cancel`, or new words in the same conversation): nothing more
-    /// happens for it, and its answer is `none`.
+    /// Cancel (`POST /v1/plans/cancel`, or the owner's words where obid's own turn is under
+    /// way): nothing more happens for it, and its answer is `none`.
     cancelled: AtomicBool,
 }
 
@@ -71,17 +71,94 @@ pub struct Carried {
 /// The most conversations whose last research is kept.
 const CARRIED: usize = 20;
 
+/// The owner's words in a conversation, kept until a turn answers them.
+#[derive(Debug, Clone)]
+pub struct Words {
+    /// The user's turn they are.
+    pub turn: String,
+    pub said: String,
+    pub attachments: Vec<String>,
+    pub runs_on: Option<crate::job::RunsOn>,
+}
+
+/// What the owner's next turn in a conversation answers ([`Turns::wait_turn`]): every word said
+/// there since the turn before, as one. It holds the conversation until it's dropped, so words
+/// said meanwhile wait for it.
+pub struct Next {
+    /// The latest words' turn, the words one after another, every attachment, and the latest
+    /// Mac picked to run on.
+    pub words: Words,
+    /// The user's turns it answers, oldest first.
+    pub turns: Vec<String>,
+    _held: tokio::sync::OwnedMutexGuard<()>,
+}
+
 /// The turns under way.
 #[derive(Debug, Default)]
 pub struct Turns {
     underway: Mutex<Vec<Arc<Control>>>,
     // ponytail: in memory, so a restart forgets it; "continue" then looks things up again.
     carried: Mutex<Vec<(String, Carried)>>,
+    /// The owner's words no turn has taken yet, each with its conversation, in the order they came.
+    waiting: Mutex<Vec<(String, Words)>>,
+    /// One lock per conversation, held by the owner's turn there until it ends: one answer at a
+    /// time in a conversation (docs/mac-design.md 1.6).
+    owners: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
 }
 
 impl Turns {
     fn lock(&self) -> std::sync::MutexGuard<'_, Vec<Arc<Control>>> {
         self.underway.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn waiting(&self) -> std::sync::MutexGuard<'_, Vec<(String, Words)>> {
+        self.waiting.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Waits for the owner's turn under way in `conversation` to end, then takes every word said
+    /// there that no turn took yet, `words` last: the next turn answers them all at once. None
+    /// when later words came meanwhile (their turn answers these with theirs) or a cancel dropped
+    /// them: nothing answers them on their own.
+    pub async fn wait_turn(&self, conversation: &str, words: Words) -> Option<Next> {
+        let turn = words.turn.clone();
+        self.waiting().push((conversation.to_owned(), words));
+        let lock = self
+            .owners
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .entry(conversation.to_owned())
+            .or_default()
+            .clone();
+        // Fair: the words take the conversation in the order they came.
+        let held = lock.lock_owned().await;
+        let mut waiting = self.waiting();
+        if waiting
+            .iter()
+            .rev()
+            .find(|(c, _)| c == conversation)
+            .is_none_or(|(_, w)| w.turn != turn)
+        {
+            return None;
+        }
+        let (taken, kept): (Vec<_>, Vec<_>) = std::mem::take(&mut *waiting)
+            .into_iter()
+            .partition(|(c, _)| c == conversation);
+        *waiting = kept;
+        let taken: Vec<Words> = taken.into_iter().map(|(_, w)| w).collect();
+        Some(Next {
+            words: Words {
+                turn,
+                said: taken
+                    .iter()
+                    .map(|w| w.said.as_str())
+                    .collect::<Vec<_>>()
+                    .join("\n\n"),
+                attachments: taken.iter().flat_map(|w| w.attachments.clone()).collect(),
+                runs_on: taken.iter().rev().find_map(|w| w.runs_on.clone()),
+            },
+            turns: taken.into_iter().map(|w| w.turn).collect(),
+            _held: held,
+        })
     }
 
     /// Keeps what `conversation`'s turn looked up, or forgets it when it looked nothing up.
@@ -105,8 +182,9 @@ impl Turns {
             .map(|(_, carried)| carried.clone())
     }
 
-    /// A new turn in `conversation`: it replaces the one under way there, whose plan, when it
-    /// comes, does nothing.
+    /// A new turn in `conversation`: one obid started there by itself (a supervisor's) is
+    /// cancelled, and its plan, when it comes, does nothing. The owner's turn under way there is
+    /// never one: their next words wait for it ([`Turns::wait_turn`]).
     pub fn begin(&self, turn: &str, conversation: &str) -> Arc<Control> {
         let control = Arc::new(Control {
             turn: turn.into(),
@@ -159,8 +237,11 @@ impl Turns {
         self.mark(conversation, |c| c.stopped.store(true, Ordering::SeqCst))
     }
 
-    /// Drops the turns under way (in `conversation`, or all): their plans do nothing.
+    /// Drops the turns under way (in `conversation`, or all): their plans do nothing; and the
+    /// owner's words waiting there: no turn answers them.
     pub fn cancel(&self, conversation: Option<&str>) -> bool {
+        self.waiting()
+            .retain(|(c, _)| conversation.is_some_and(|id| c != id));
         self.mark(conversation, |c| c.cancelled.store(true, Ordering::SeqCst))
     }
 
@@ -393,7 +474,7 @@ pub enum End {
     BudgetSpent,
     /// Stop: the action under way finished, and nothing more started.
     Stopped,
-    /// Cancelled, or replaced by new words: nothing more happens, and the answer is none.
+    /// Cancelled: nothing more happens, and the answer is none.
     Cancelled,
     /// The brain couldn't plan, and rules stood in.
     BrainFailed,
@@ -1572,8 +1653,73 @@ mod tests {
         );
     }
 
+    /// Words said while the owner's turn is under way wait for it to end; the next turn answers
+    /// every one of them at once, as the latest's. Cancel drops what waits, and another
+    /// conversation never waits.
+    #[tokio::test]
+    async fn words_wait_for_the_turn_under_way_and_are_answered_together() {
+        let turns = Arc::new(Turns::default());
+        let words = |turn: &str| Words {
+            turn: turn.into(),
+            said: format!("said {turn}"),
+            attachments: vec![format!("{turn}.png")],
+            runs_on: (turn == "t2").then(|| crate::job::RunsOn {
+                obi: "dima".into(),
+                owner: "Dima".into(),
+                grant: None,
+            }),
+        };
+        let wait = |turn: &'static str| {
+            let turns = turns.clone();
+            tokio::spawn(async move {
+                turns
+                    .wait_turn("c1", words(turn))
+                    .await
+                    .map(|next| (next.turns, next.words))
+            })
+        };
+        let waiting = |n: usize| {
+            let turns = turns.clone();
+            async move {
+                while turns.waiting().len() < n {
+                    tokio::task::yield_now().await;
+                }
+            }
+        };
+        let first = turns.wait_turn("c1", words("t1")).await.unwrap();
+        assert_eq!(first.turns, ["t1"]);
+        assert_eq!(first.words.said, "said t1");
+        drop(turns.wait_turn("c2", words("t9")).await.unwrap());
+        let second = wait("t2");
+        waiting(1).await;
+        let third = wait("t3");
+        waiting(2).await;
+        drop(first);
+        assert!(
+            second.await.unwrap().is_none(),
+            "the latest words answer it"
+        );
+        let (answered, next) = third.await.unwrap().unwrap();
+        assert_eq!(answered, ["t2", "t3"]);
+        assert_eq!(next.turn, "t3");
+        assert_eq!(next.said, "said t2\n\nsaid t3");
+        assert_eq!(next.attachments, ["t2.png", "t3.png"]);
+        assert_eq!(next.runs_on.unwrap().obi, "dima");
+        let held = turns.wait_turn("c1", words("t4")).await.unwrap();
+        let dropped = wait("t5");
+        waiting(1).await;
+        turns.cancel(Some("c2"));
+        assert_eq!(turns.waiting().len(), 1, "another conversation's cancel");
+        turns.cancel(Some("c1"));
+        drop(held);
+        assert!(dropped.await.unwrap().is_none(), "cancelled");
+        assert!(turns.waiting().is_empty());
+    }
+
+    /// A turn begun cancels the one under way in its conversation (obid's own: the owner's words
+    /// wait for theirs), never another conversation's; Stop reaches only its own.
     #[test]
-    fn a_new_turn_replaces_the_one_under_way_in_its_conversation_only() {
+    fn a_turn_begun_cancels_the_one_under_way_in_its_conversation_only() {
         let turns = Turns::default();
         let first = turns.begin("t1", "c1");
         let other = turns.begin("t2", "c2");

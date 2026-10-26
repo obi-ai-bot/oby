@@ -1158,11 +1158,13 @@ fn a_cancelled_turn_stops_nothing() {
     );
 }
 
-/// ConversationTests.aReplacedTurnStopsNothing: new words in the same conversation replace the
-/// turn under way; its plan does nothing, and the new one answers.
+/// One answer at a time in a conversation (docs/mac-design.md 1.6): words said while the brain
+/// thinks wait for that turn, which goes on to do what it planned and answer; then a turn answers
+/// them, with that answer in its briefing. (ConversationTests.aReplacedTurnStopsNothing, where the
+/// Swift runner's new words replace the turn, is obid's no more.)
 #[test]
-fn a_replaced_turn_stops_nothing() {
-    let folder = Folder::new("brain-replaced");
+fn words_said_during_a_turn_wait_their_turn() {
+    let folder = Folder::new("brain-words-wait");
     let obid = started(&folder);
     let id = running(&obid, "Vault secrets")["id"]
         .as_str()
@@ -1172,7 +1174,8 @@ fn a_replaced_turn_stops_nothing() {
         &obid,
         &[
             format!("SLEEP 1 {}", stop_plan(&[&id])),
-            reply("Still running."),
+            reply(""),
+            reply("It's stopped."),
         ],
     );
     let (first, second) = std::thread::scope(|scope| {
@@ -1183,10 +1186,14 @@ fn a_replaced_turn_stops_nothing() {
         let second = said(&obid, "how is it going?");
         (asking.join().unwrap(), second)
     });
-    assert_eq!(second["text"], "Still running.");
-    assert_eq!(first["kind"], "none", "{first}");
-    let job = call(&obid, "GET", &format!("/v1/jobs/{id}"), None).body;
-    assert_eq!(job["status"], "running");
+    assert_eq!(first["text"], "Stopped Vault secrets.", "{first}");
+    assert_eq!(second["text"], "It's stopped.");
+    assert_eq!(ends(&obid), ["answered", "answered"]);
+    assert!(read(calls(&obid)[2].join("input")).contains("Oby: Stopped Vault secrets."));
+    within(30, "the job stops", || {
+        let job = call(&obid, "GET", &format!("/v1/jobs/{id}"), None).body;
+        (job["status"] == "stopped").then_some(())
+    });
 }
 
 /// ConversationTests.neverMindAndStopEndTheTurnAndStopNoJob: a bare "never mind" or "stop" never

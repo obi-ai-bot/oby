@@ -1061,7 +1061,7 @@ async fn session(
     // scrubs and relaunches in the same room (N9).
     let busy = shared.harness.busy(&control.conversation);
     let _held = busy.lock().await;
-    // Replaced or stopped while it waited for the one before: nothing more for it.
+    // Cancelled or stopped while it waited for the one before: nothing more for it.
     if !control.live() {
         return Err("the turn was cancelled before it started".into());
     }

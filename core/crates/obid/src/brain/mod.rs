@@ -167,23 +167,41 @@ pub async fn plan(State(shared): State<Arc<Shared>>, body: Bytes) -> Result<Resp
         )
             .into_response());
     }
-    let given = turns.unwrap_or(begun.before);
-    let control = shared.turns.begin(&begun.turn, &begun.conversation);
+    let words = turn::Words {
+        turn: begun.turn,
+        said,
+        attachments,
+        runs_on,
+    };
     // The turn goes on by itself: a client that stops waiting can't be told from a slow one, so
     // what the plan does still happens, and is kept (docs/runner-api.md, `POST /v1/plans`).
     let turn = tokio::spawn(async move {
         let conversation = begun.conversation;
+        // One answer at a time in a conversation: words said while Oby answers wait for that turn
+        // to end, and the next turn answers all that came meanwhile, as the latest's. The others',
+        // and words a cancel dropped, answer nothing.
+        let Some(next) = shared.turns.wait_turn(&conversation, words).await else {
+            if let Some(since) = back {
+                recap::keep(shared.clone(), since, now);
+            }
+            return respond(&shared, &conversation, Talk::None, None, None, vec![]);
+        };
+        let said = &next.words.said;
+        // The conversation as it is now, Oby's answer to the turn they waited for included.
+        let given =
+            turns.unwrap_or_else(|| shared.conversations.turns_but(&conversation, &next.turns));
+        let control = shared.turns.begin(&next.words.turn, &conversation);
         let asked = Asked {
-            said: &said,
-            attachments: &attachments,
+            said,
+            attachments: &next.words.attachments,
             conversation: &conversation,
             turn: &control.turn,
-            runs_on: runs_on.as_ref(),
+            runs_on: next.words.runs_on.as_ref(),
         };
         // The recap is written while the brain thinks; a background call is bounded and
         // tried once, and when it fails the answer is the same as without it.
         let (answered, recap) = tokio::join!(
-            harness::run(&shared, &said, &given, &asked, &control),
+            harness::run(&shared, said, &given, &asked, &control),
             recap::back(&shared, back, now)
         );
         shared.turns.end(&control);
@@ -230,8 +248,8 @@ fn underway(shared: &Shared, body: &Bytes) -> Result<Option<String>, ApiError> {
 }
 
 /// `POST /v1/conversation/stop`: the turn under way in one conversation ends after the action
-/// it's doing, and its `POST /v1/plans` answers with what it did. Turns in other conversations
-/// go on.
+/// it's doing, and its `POST /v1/plans` answers with what it did. Words said meanwhile then get
+/// their turn. Turns in other conversations go on.
 pub async fn stop(State(shared): State<Arc<Shared>>, body: Bytes) -> Result<Response, ApiError> {
     if let Some(id) = underway(&shared, &body)? {
         shared.turns.stop(Some(&id));
@@ -240,7 +258,8 @@ pub async fn stop(State(shared): State<Arc<Shared>>, body: Bytes) -> Result<Resp
 }
 
 /// `POST /v1/plans/cancel`: the turn under way in one conversation is dropped: what its plan
-/// would do doesn't happen, and its answer is `none`. What it did already stays done.
+/// would do doesn't happen, and its answer is `none`, as is the answer to words waiting for it.
+/// What it did already stays done.
 pub async fn cancel(State(shared): State<Arc<Shared>>, body: Bytes) -> Result<Response, ApiError> {
     if let Some(id) = underway(&shared, &body)? {
         shared.turns.cancel(Some(&id));
