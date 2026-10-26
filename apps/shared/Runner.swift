@@ -432,6 +432,14 @@ extension InboxItem {
             object["kind"] = Kind.start.rawValue
             return (try? JSONSerialization.data(withJSONObject: object)).flatMap { try? Runner.decoder.decode(InboxItem.self, from: $0) }
         }
+        // What a teammate's Oby asks (docs/obysphere.md, part 6): a question takes the owner's own
+        // words, as Engine's `question` does; a review, or an approval on GitHub, takes obid's own
+        // answers, as a `start` does. `InboxWords.obi` says what it really is.
+        if object["kind"] as? String == "obiRequest", let type = (object["obi"] as? [String: Any])?["type"] as? String,
+           type == "question" || ObiAsk.named.contains(type) {
+            object["kind"] = (type == "question" ? Kind.question : Kind.start).rawValue
+            return (try? JSONSerialization.data(withJSONObject: object)).flatMap { try? Runner.decoder.decode(InboxItem.self, from: $0) }
+        }
         // A teammate used the share of an API account you gave them (#809): Sangam's "Sangam used
         // the share of Deskree API", an Out of usage card with its own answers.
         if object["kind"] as? String == "obiRequest", (object["obi"] as? [String: Any])?["type"] as? String == "share_used" {
@@ -450,6 +458,10 @@ extension InboxItem {
         }
         return list.compactMap { (try? JSONSerialization.data(withJSONObject: $0)).flatMap(runner) }
     }
+
+    /// Whether Home asks the owner about it: a decision, or what another Oby asks, whose answers
+    /// are obid's own (Engine's kinds don't list them).
+    nonisolated func decides(_ words: InboxWords?) -> Bool { isDecision || words?.obi != nil }
 }
 #endif
 
@@ -458,7 +470,9 @@ extension InboxItem {
     /// both read the same. Engine has no `confirm` kind (obid only, #546): on the Mac, `words`
     /// (`InboxWords.confirm`) says an item is one.
     nonisolated func shownKind(_ words: InboxWords? = nil) -> String {
-        words?.confirm != nil ? RunnerConfirm.kind : "\(kind)"
+        if words?.confirm != nil { return RunnerConfirm.kind }
+        if let type = words?.obi?.type, ObiAsk.named.contains(type) { return type }
+        return "\(kind)"
     }
 
     /// "Failed · Mac runner notifications · waiting 3m": what kind of item, its job, how long it waited.
@@ -472,6 +486,8 @@ extension InboxItem {
         case "failure": "Oby failure"
         case "start": "Start it?"
         case "permission": "Permission"
+        case "review_request": "Review request"
+        case "host_approval": "Approve on GitHub?"
         case RunnerConfirm.kind: "Confirm it?"
         default: "Failed"
         }

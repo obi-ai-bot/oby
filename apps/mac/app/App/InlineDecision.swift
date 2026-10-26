@@ -66,6 +66,8 @@ struct InlineDecision: View {
             if !settled || expanded {
                 AskCard(kind: AskKind.label(kind, plan: question?.plan != nil), failed: AskKind.failed(kind),
                         source: head != nil ? nil : confirming ? feed.jobs.first { $0.id == item.job }?.shortTitle : item.title,
+                        // Another Oby's own words, quoted whole (obid's `obi.quoted`): data, never Markdown.
+                        shown: words.obi?.words,
                         title: confirming ? item.title : words.title(item.text),
                         happened: confirming ? InboxWords.plain(item.text) : words.body,
                         behindDetails: confirming ? nil : words.details(item.text),

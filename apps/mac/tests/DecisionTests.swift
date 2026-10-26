@@ -93,6 +93,36 @@ struct DecisionTests {
         #expect(decoded.id == "confirm-0a1b2c3d4e5f" && carried?.confirm?.action == "always_allow")
     }
 
+    /// What a teammate's Oby asks (obid's `obiRequest`, docs/obysphere.md part 6) waits on Home with
+    /// obid's own answers: a question as a question, which the owner's words answer; a review, or
+    /// an approval on GitHub, by its own name. Their own words are quoted whole, never buttons.
+    @Test func teammatesAsksReachHome() throws {
+        let question = #"{"id": "obi-q1", "kind": "obiRequest", "job": "", "title": "Question from ernesto", "text": "ernesto's Obi (obi-ernesto) asks a question, quoted below. Answer it in your own words, or say no.", "options": ["Decline", "Decline, and remember for this repo"], "details": ["Say no this time.", "Say no, and say no to every question from ernesto from now on without asking."], "recommended": null, "created": "2026-10-25T10:00:00Z", "done": null, "later": null, "answer": null, "obi": {"correlationId": "q1", "from": "obi-ernesto", "fromOwner": "ernesto", "type": "question", "about": null, "repos": [], "expiresAt": "2026-10-26T10:00:00Z", "quoted": {"text": "Is the retry jitter fix safe to ship today?", "choices": ["Yes", "Not yet"]}}}"#
+        let review = #"{"id": "obi-r1", "kind": "obiRequest", "job": "", "title": "Review request from ernesto", "text": "ernesto's Obi (obi-ernesto) asks for a review of deskree-inc/oby pull request #412: fix/jitter into dev at 6d20146.", "options": ["Accept", "Accept, and remember for this repo", "Decline", "Decline, and remember for this repo"], "details": ["Review it this time.", "Review it, and review ernesto's requests on deskree-inc/oby from now on without asking.", "Say no this time.", "Say no, and say no to ernesto's requests on deskree-inc/oby from now on without asking."], "recommended": null, "created": "2026-10-25T10:01:00Z", "done": null, "later": null, "answer": null, "obi": {"correlationId": "r1", "from": "obi-ernesto", "fromOwner": "ernesto", "type": "review_request", "repo": "deskree-inc/oby", "headSha": "6d20146f366b9fac8907b5066c30ee39aaec09b3", "expiresAt": "2026-10-26T10:00:00Z", "acceptance": [], "quoted": {"goal": "Review the retry jitter fix", "summary": "The jitter now caps at 2 s.", "acceptance": []}}}"#
+        let approval = #"{"id": "obi-approve-r1", "kind": "obiRequest", "job": "", "title": "Approve ernesto's pull request on GitHub?", "text": "Your Oby's review of deskree-inc/oby pull request #412 at 6d20146 passed.", "options": ["Accept", "Accept, and remember for this repo", "Decline"], "details": null, "recommended": null, "created": "2026-10-25T10:02:00Z", "done": null, "later": null, "answer": null, "obi": {"correlationId": "r1", "from": "obi-ernesto", "fromOwner": "ernesto", "type": "host_approval", "repo": "deskree-inc/oby", "pr": 412}}"#
+        let data = Data("[\(question), \(review), \(approval)]".utf8)
+        let items = try InboxItem.runnerList(data)
+        #expect(items.map(\.id) == ["obi-q1", "obi-r1", "obi-approve-r1"])
+        let words = InboxWords.of(data)
+        let (q, r, a) = (items[0], items[1], items[2])
+        #expect(q.kind == .question && q.kind.takesWords && q.shownKind(words[q.id]) == "question")
+        #expect(r.kind == .start && r.shownKind(words[r.id]) == "review_request" && AskKind.label("review_request") == "Review request")
+        #expect(a.shownKind(words[a.id]) == "host_approval" && AskKind.label("host_approval") == "Approve on GitHub?")
+        #expect(!AskKind.failed("review_request") && !AskKind.failed("host_approval"))
+        #expect(r.line(now: r.created, words: words[r.id]).hasPrefix("Review request · Review request from ernesto"))
+        // Engine alone doesn't call a review's Accept a decision; Home asks about every one, by its words.
+        #expect(!r.isDecision && items.allSatisfy { $0.decides(words[$0.id]) })
+        // Their words, whole, a question's choices included, and never made buttons.
+        #expect(words[q.id]?.obi?.words == "Is the retry jitter fix safe to ship today?\n\nTheir choices: Yes · Not yet")
+        #expect(CardOption.inbox(q.options, kind: q.shownKind(words[q.id]), words: words[q.id], details: q.details).map(\.label)
+                == ["Decline", "Decline, and remember for this repo"])
+        #expect(words[r.id]?.obi?.words == "Review the retry jitter fix\n\nThe jitter now caps at 2 s.")
+        #expect(words[a.id]?.obi != nil && words[a.id]?.obi?.words == nil)
+        // A quoted field that can't be read is left out, not the rest.
+        let odd = try Runner.decoder.decode(InboxWords.self, from: Data(#"{"obi": {"type": "question", "quoted": {"text": "Still here?", "choices": 5}}}"#.utf8))
+        #expect(odd.obi?.words == "Still here?")
+    }
+
     /// The words a confirm item would send for the user are data, quoted apart from its title.
     @Test func confirmWordsAreQuotedData() throws {
         let answer = Self.confirm.replacingOccurrences(of: #"{"action": "always_allow", "target": "9f08fd10", "payload": {"permission": "p1"}}"#,

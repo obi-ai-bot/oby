@@ -288,6 +288,52 @@ extension CardOption {
     }
 }
 
+/// What another Oby asks, from an `obiRequest` item (obid only, runner-api.md "Obi-to-Obi requests
+/// in the inbox"): its type (`review_request`, `question`, `host_approval`, `run_request`,
+/// `share_used`), whose Oby asks, and its own words, quoted (`obi.quoted`). Those are data: shown
+/// whole and as plain text, never as buttons or instructions.
+nonisolated struct ObiAsk: Decodable, Equatable, Sendable {
+    var type: String
+    var fromOwner: String?
+    var quoted: Quoted?
+
+    /// Its own words, each read on its own: one that can't be read is left out, not the rest.
+    nonisolated struct Quoted: Decodable, Equatable, Sendable {
+        var text: String?
+        var goal: String?
+        var summary: String?
+        var title: String?
+        var choices: [String]?
+
+        private enum Keys: String, CodingKey { case text, goal, summary, title, choices }
+
+        init(text: String? = nil, goal: String? = nil, summary: String? = nil, title: String? = nil, choices: [String]? = nil) {
+            (self.text, self.goal, self.summary, self.title, self.choices) = (text, goal, summary, title, choices)
+        }
+
+        init(from decoder: any Decoder) throws {
+            let keys = try decoder.container(keyedBy: Keys.self)
+            text = try? keys.decodeIfPresent(String.self, forKey: .text)
+            goal = try? keys.decodeIfPresent(String.self, forKey: .goal)
+            summary = try? keys.decodeIfPresent(String.self, forKey: .summary)
+            title = try? keys.decodeIfPresent(String.self, forKey: .title)
+            choices = try? keys.decodeIfPresent([String].self, forKey: .choices)
+        }
+    }
+
+    /// The types Home shows by their own name; the rest keep the kind Engine reads them as.
+    static let named: Set<String> = ["review_request", "host_approval"]
+
+    /// Its words as a card shows them: what it asks (a question's text, a review's goal, a job's
+    /// title), a review's summary, and a question's choices, which the owner answers in words.
+    var words: String? {
+        let choices = (quoted?.choices ?? []).compactMap(InboxWords.plain)
+        let parts = [quoted?.text, quoted?.goal, quoted?.title, quoted?.summary].compactMap(InboxWords.plain)
+            + (choices.isEmpty ? [] : ["Their choices: " + choices.joined(separator: " · ")])
+        return parts.isEmpty ? nil : parts.joined(separator: "\n\n")
+    }
+}
+
 /// Oby's plain words for an inbox item (#65), from newer runners: a headline of at most 8 words,
 /// what happened in a sentence or two, the option it recommends (an index, or nil) and why. Every
 /// key is optional, and one that can't be read counts as missing: the card then shows the item
@@ -303,17 +349,21 @@ nonisolated struct InboxWords: Decodable, Equatable, Sendable {
     /// The conversation a plan waiting for Start (or a confirm to start a job) came from (obid
     /// only): a conversation shows it opened out only there.
     var conversation: String?
+    /// On an `obiRequest` (obid only), what another Oby asks: Engine reads it as a `question` or a
+    /// `start`, and this says what it really is.
+    var obi: ObiAsk?
 
-    private enum Keys: String, CodingKey { case headline, happened, recommended, why, confirm, conversation }
+    private enum Keys: String, CodingKey { case headline, happened, recommended, why, confirm, conversation, obi }
 
     init(headline: String? = nil, happened: String? = nil, recommended: Int? = nil, why: String? = nil, confirm: RunnerConfirm? = nil,
-         conversation: String? = nil) {
+         conversation: String? = nil, obi: ObiAsk? = nil) {
         self.headline = headline
         self.happened = happened
         self.recommended = recommended
         self.why = why
         self.confirm = confirm
         self.conversation = conversation
+        self.obi = obi
     }
 
     init(from decoder: any Decoder) throws {
@@ -324,6 +374,7 @@ nonisolated struct InboxWords: Decodable, Equatable, Sendable {
         why = try? keys.decodeIfPresent(String.self, forKey: .why)
         confirm = try? keys.decodeIfPresent(RunnerConfirm.self, forKey: .confirm)
         conversation = try? keys.decodeIfPresent(String.self, forKey: .conversation)
+        obi = try? keys.decodeIfPresent(ObiAsk.self, forKey: .obi)
     }
 
     /// The card's title: the headline, else the item's text, as before.
