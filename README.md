@@ -19,7 +19,7 @@
 </p>
 
 > [!NOTE]
-> Oby 0.4.2 is out: [download it](https://downloads.oby.deskree.com/Oby-0.4.2.dmg) for macOS 26 or later. It updates itself. It runs on the Mac only, hands work to Claude Code, Codex and Cursor, connects to GitHub and Tetrix, and asks your teammates' Obys for reviews through your Obysphere.
+> Oby 0.4.3 is out: [download it](https://downloads.oby.deskree.com/Oby-0.4.3.dmg) for macOS 26 or later. It updates itself. It runs on the Mac only, hands work to Claude Code, Codex and Cursor, connects to GitHub and Tetrix, and asks your teammates' Obys for reviews through your Obysphere.
 
 ## What it does
 
