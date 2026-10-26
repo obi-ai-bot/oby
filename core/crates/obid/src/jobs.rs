@@ -659,6 +659,9 @@ struct State {
     /// When obid last tried to read each published pull request, and which one: an unavailable
     /// GitHub isn't asked again on every pass.
     followed: HashMap<String, (String, i64)>,
+    /// The jobs whose pull request is read at the follower's next pass, however fresh its last
+    /// read: GitHub said something changed on it ([`Jobs::follow_now`]).
+    follow_due: std::collections::HashSet<String>,
     /// The accounts being signed in or removed (crate::accounts): no job is dispatched to them or
     /// starts on them meanwhile ([`Jobs::begin_change`]).
     changing: std::collections::HashSet<String>,
@@ -935,6 +938,7 @@ impl Jobs {
                 apple_logs: HashMap::new(),
                 publishing: std::collections::HashSet::new(),
                 followed: HashMap::new(),
+                follow_due: std::collections::HashSet::new(),
                 changing: std::collections::HashSet::new(),
             }),
             changed: Notify::new(),
@@ -9686,12 +9690,20 @@ impl Jobs {
         }
     }
 
+    /// Reads job `id`'s pull request now, however fresh its last read: GitHub said something
+    /// changed on it, its checks or its reviews (crate::github_events).
+    pub fn follow_now(&self, id: &str) {
+        self.lock().follow_due.insert(id.to_owned());
+        self.follow.notify_one();
+    }
+
     /// One pass: every published pull request that's open (or not read yet), unless it was read,
-    /// or tried, in the last three minutes.
+    /// or tried, in the last three minutes, or GitHub said it changed ([`Self::follow_now`]).
     async fn read_pull_requests(&self) {
         let now = obi_protocol::time::now();
         let due: Vec<Job> = {
-            let state = self.lock();
+            let mut state = self.lock();
+            let woken = std::mem::take(&mut state.follow_due);
             state
                 .jobs
                 .values()
@@ -9715,7 +9727,7 @@ impl Jobs {
                         .pull_request
                         .as_ref()
                         .is_some_and(|pr| fresh(pr.checked_at));
-                    !tried && !read
+                    woken.contains(&job.id) || (!tried && !read)
                 })
                 .cloned()
                 .collect()

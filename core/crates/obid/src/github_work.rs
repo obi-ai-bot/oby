@@ -757,9 +757,9 @@ struct Seen {
 
 /// The feed: what obid last read, and the reads.
 pub struct Feed {
-    config: Config,
-    jobs: Arc<Jobs>,
-    link: Arc<crate::sphere::Link>,
+    pub(crate) config: Config,
+    pub(crate) jobs: Arc<Jobs>,
+    pub(crate) link: Arc<crate::sphere::Link>,
     events: Events,
     state: Mutex<Seen>,
     /// One read at a time.
@@ -798,6 +798,11 @@ impl Feed {
         self.woken.notify_one();
     }
 
+    /// gh's GitHub login at the last read, or none while it isn't signed in.
+    pub fn login(&self) -> Option<String> {
+        self.lock().kept.login.clone()
+    }
+
     fn lock(&self) -> MutexGuard<'_, Seen> {
         self.state.lock().unwrap_or_else(|e| e.into_inner())
     }
@@ -807,8 +812,10 @@ impl Feed {
         self.config.repos.find(repo).is_some()
     }
 
-    /// Reads every [`EVERY`] seconds (or once a rate limit's wait is over) until obid stops.
+    /// Reads every [`EVERY`] seconds (or once a rate limit's wait is over) until obid stops, and
+    /// sooner when GitHub's events say so (crate::github_events).
     pub fn spawn(self: &Arc<Self>, mut stopping: tokio::sync::watch::Receiver<bool>) {
+        crate::github_events::spawn(self.clone(), stopping.clone());
         let feed = self.clone();
         tokio::spawn(async move {
             loop {
