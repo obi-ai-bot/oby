@@ -815,7 +815,7 @@ fn forms(value: &str) -> Vec<Vec<u8>> {
             let from = [0, 2, 3][offset];
             let to = encoded.len().saturating_sub(4);
             if to > from {
-                forms.push(encoded[from..to].as_bytes().to_vec());
+                forms.push(encoded.as_bytes()[from..to].to_vec());
             }
         }
     }
