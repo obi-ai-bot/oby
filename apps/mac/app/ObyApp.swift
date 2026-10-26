@@ -99,8 +99,8 @@ nonisolated enum ProblemReport {
 final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
     let island = IslandController()
     lazy var firstLaunch = FirstLaunch(island: island) { [unowned self] in
-        // An oby://join link opened before or during first launch: its page, filled in, instead of Home.
-        if OpenedInvite.shared.invite != nil { chat.showSettings(.sphere) } else { chat.show(job: nil) }
+        // An oby://join or oby://claim link opened before or during first launch: its page instead of Home.
+        if OpenedInvite.shared.waiting { chat.showSettings(.sphere) } else { chat.show(job: nil) }
     }
     /// The Oby window: the conversation, Agents and Live (#11).
     lazy var chat = ChatWindow(island: island)
@@ -147,8 +147,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         launched = true
         Task {
             if !FirstLaunch.done, await firstLaunch.start() { return }
-            if OpenedInvite.shared.invite != nil {
-                // Opened by an oby://join link that came before this: its page instead of Home.
+            if OpenedInvite.shared.waiting {
+                // Opened by an oby://join or oby://claim link that came before this: its page instead of Home.
                 chat.showSettings(.sphere)
             } else if !launchedAtLogin {
                 chat.show(home: true)
@@ -167,7 +167,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         if alert.runModal() == .alertFirstButtonReturn { NSApp.terminate(nil) }
     }
 
-    /// Whether launching finished: an oby://join link before then waits for it.
+    /// Whether launching finished: an oby://join or oby://claim link before then waits for it.
     private var launched = false
 
     /// Whether macOS started Oby as a login item (Settings › General › Open at login). Read before
@@ -238,11 +238,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
 
     /// `oby://join/<host>#…`, an Obysphere's join page's Open in Oby: Settings › Obysphere on the Join
-    /// screen for that link, where you choose to join. Any other oby:// link does nothing. The link's
-    /// secret is after the #: nothing here logs it.
+    /// screen for that link, where you choose to join. `oby://claim/<host>#…`, a self-hosted one's
+    /// claim page's: Settings › Obysphere, which asks before claiming it. Any other oby:// link does
+    /// nothing. The links' secrets are after the #: nothing here logs them.
     func application(_ application: NSApplication, open urls: [URL]) {
-        guard let invite = urls.lazy.compactMap(InviteLink.init(opened:)).first else { return }
-        OpenedInvite.shared.invite = invite
+        let invite = urls.lazy.compactMap(InviteLink.init(opened:)).first
+        let claim = urls.lazy.compactMap(ClaimLink.init(opened:)).first
+        guard invite != nil || claim != nil else { return }
+        if let invite { OpenedInvite.shared.invite = invite }
+        if let claim { OpenedInvite.shared.claim = claim }
         // During first launch, or while an update's waits to start, it waits for it.
         if launched && !firstLaunch.isOpen && !firstLaunch.starting { chat.showSettings(.sphere) }
     }
