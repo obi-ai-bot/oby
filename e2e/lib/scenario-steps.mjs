@@ -249,7 +249,7 @@ async function step1(ctx) {
   await within(60, async () => {
     if (ctx.sphereProcess && (ctx.sphereProcess.exitCode !== null || ctx.sphereProcess.spawnError)) throw new Error(`the Sphere exited (${ctx.sphereProcess.spawnError?.message ?? ctx.sphereProcess.exitCode}); see R/harness/sphere.log`);
     const r = await sphere(ctx, "/health", { timeoutMs: 2000 });
-    return r.status === 200 && same(r.body, { ok: true, protocol: "obi/0.1" }) ? r : undefined;
+    return r.status === 200 && r.body?.ok === true && r.body?.protocol === "obi/0.1" ? r : undefined;
   }, (_, e) => `GET /v0.1/health didn't answer 200 {"ok": true, "protocol": "obi/0.1"}${e ? ` (${e.message})` : ""}`);
 
   // 1.2 The Sphere "e2e", wellington its admin.

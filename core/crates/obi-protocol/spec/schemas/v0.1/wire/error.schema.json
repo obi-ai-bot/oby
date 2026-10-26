@@ -30,6 +30,7 @@
             "policy_denied",
             "unknown_recipient",
             "recipient_revoked",
+            "not_sealed",
             "bad_reply",
             "unauthorized",
             "insufficient_scope",

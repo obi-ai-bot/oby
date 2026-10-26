@@ -3,6 +3,8 @@
 //!
 //! - `keys/obi.key` (0600): the Obi key's 32-byte seed, hex. It never leaves obid: no answer, event,
 //!   log or agent ever sees it, and the job sandbox hides `home` from agents.
+//! - `keys/seal.key` (0600): the seal key's 32 private bytes, hex, kept the same way: the X25519 key
+//!   other Obis seal this Obi's words for (spec protocol.md section 9.1), its public half in the card.
 //! - `sphere/membership.json` (0600): the Sphere, the Obi's id and its owner-signed card.
 //! - `sphere/delegation.jwt` (0600): the owner's delegation, never shown again once kept.
 //! - `owner` (0600): the owner id obid joined a Sphere as. It outlives a leave, so obid joins again
@@ -11,6 +13,7 @@
 use std::path::{Path, PathBuf};
 
 use obi_protocol::keys::Keypair;
+use obi_protocol::seal::SealKey;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -56,6 +59,7 @@ impl Membership {
 /// Where the key and the membership are kept.
 pub struct Files {
     key: PathBuf,
+    seal: PathBuf,
     membership: PathBuf,
     delegation: PathBuf,
     owner: PathBuf,
@@ -65,6 +69,7 @@ impl Files {
     pub fn new(home: &Path) -> Files {
         Files {
             key: home.join("keys").join("obi.key"),
+            seal: home.join("keys").join("seal.key"),
             membership: home.join("sphere").join("membership.json"),
             delegation: home.join("sphere").join("delegation.jwt"),
             owner: home.join("owner"),
@@ -73,28 +78,29 @@ impl Files {
 
     /// The Obi key, when it has been made.
     pub fn load_key(&self) -> std::io::Result<Option<Keypair>> {
-        match std::fs::read_to_string(&self.key) {
-            Ok(text) => {
-                let bytes = hex::decode(text.trim())
-                    .ok()
-                    .and_then(|b| <[u8; 32]>::try_from(b).ok())
-                    .ok_or_else(|| {
-                        std::io::Error::other(format!("{} isn't a key", self.key.display()))
-                    })?;
-                Ok(Some(Keypair::from_seed(&bytes)))
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(e) => Err(e),
-        }
+        Ok(read_32(&self.key)?.map(|seed| Keypair::from_seed(&seed)))
     }
 
     /// Makes the Obi key and keeps it (0600, in a 0700 folder).
     pub fn make_key(&self) -> std::io::Result<Keypair> {
         let mut seed = [0u8; 32];
         getrandom::fill(&mut seed).map_err(|e| std::io::Error::other(e.to_string()))?;
-        store::make_private_dir(self.key.parent().expect("the key has a folder"))?;
-        store::write_private(&self.key, hex::encode(seed).as_bytes())?;
+        write_32(&self.key, &seed)?;
         Ok(Keypair::from_seed(&seed))
+    }
+
+    /// The seal key, when it has been made.
+    pub fn load_seal_key(&self) -> std::io::Result<Option<SealKey>> {
+        read_32(&self.seal)?
+            .map(|private| SealKey::from_private(private).map_err(std::io::Error::other))
+            .transpose()
+    }
+
+    /// Makes the seal key and keeps it beside the Obi key.
+    pub fn make_seal_key(&self) -> std::io::Result<SealKey> {
+        let key = SealKey::generate().map_err(std::io::Error::other)?;
+        write_32(&self.seal, key.private_bytes())?;
+        Ok(key)
     }
 
     pub fn load_membership(&self) -> Option<Membership> {
@@ -132,6 +138,7 @@ impl Files {
         gone(std::fs::remove_dir_all(
             self.membership.parent().expect("a folder"),
         ))?;
+        gone(std::fs::remove_file(&self.seal))?;
         gone(std::fs::remove_file(&self.key))
     }
 
@@ -147,6 +154,25 @@ impl Files {
     }
 }
 
+/// 32 bytes kept as hex, when the file is there.
+fn read_32(path: &Path) -> std::io::Result<Option<[u8; 32]>> {
+    match std::fs::read_to_string(path) {
+        Ok(text) => hex::decode(text.trim())
+            .ok()
+            .and_then(|b| <[u8; 32]>::try_from(b).ok())
+            .map(Some)
+            .ok_or_else(|| std::io::Error::other(format!("{} isn't a key", path.display()))),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e),
+    }
+}
+
+/// Keeps 32 bytes as hex (0600, in a 0700 folder).
+fn write_32(path: &Path, bytes: &[u8; 32]) -> std::io::Result<()> {
+    store::make_private_dir(path.parent().expect("a key has a folder"))?;
+    store::write_private(path, hex::encode(bytes).as_bytes())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -159,14 +185,22 @@ mod tests {
         let key = files.make_key().unwrap();
         let again = files.load_key().unwrap().unwrap();
         assert_eq!(key.key_id(), again.key_id());
+        assert!(files.load_seal_key().unwrap().is_none());
+        let seal = files.make_seal_key().unwrap();
+        assert_eq!(
+            files.load_seal_key().unwrap().unwrap().key_id(),
+            seal.key_id()
+        );
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let mode = std::fs::metadata(home.join("keys/obi.key"))
-                .unwrap()
-                .permissions()
-                .mode();
-            assert_eq!(mode & 0o777, 0o600);
+            for file in ["keys/obi.key", "keys/seal.key"] {
+                let mode = std::fs::metadata(home.join(file))
+                    .unwrap()
+                    .permissions()
+                    .mode();
+                assert_eq!(mode & 0o777, 0o600, "{file}");
+            }
             let mode = std::fs::metadata(home.join("keys"))
                 .unwrap()
                 .permissions()

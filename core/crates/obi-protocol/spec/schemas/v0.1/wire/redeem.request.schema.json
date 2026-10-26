@@ -22,6 +22,10 @@
     },
     "card": {
       "$ref": "../agent-card.schema.json"
+    },
+    "signin": {
+      "description": "Needed for an invitation with a `domain`: a sign-in from that Workspace, started for `owner_key`.",
+      "$ref": "../common.schema.json#/$defs/signin"
     }
   }
 }

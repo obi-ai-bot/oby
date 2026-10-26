@@ -1,10 +1,13 @@
 //! Envelopes: signing them, and what a receiver checks before it acts on one (protocol.md,
 //! "Signing" and section 10, "Verifying a message").
 
+use std::collections::HashMap;
+
 use serde_json::{Map, Value};
 
 use crate::jcs::{self, JcsError};
 use crate::keys::{self, Keypair};
+use crate::seal::{self, SealKey};
 use crate::{
     CLOCK_SKEW_SECONDS, ENVELOPE_SIGNING_PREFIX, Keys, MAX_ENVELOPE_BYTES, MAX_LIFETIME_SECONDS,
     REPLY_TYPES, REQUEST_TYPES, Rejection, keys_from_value, schema, severity_rank, time,
@@ -42,6 +45,12 @@ pub struct Context {
     /// The message's audit seq, when it came in a delivery.
     pub seq: Option<u64>,
     pub seen_ids: Vec<String>,
+    /// The receiver's own seal keys, by `seal_key_id`, for check 11 (protocol.md section 9.1).
+    /// `None` for a checker that holds none and opens nothing, which skips check 11: the Sphere,
+    /// or a sender checking its own message.
+    pub seal_keys: Option<HashMap<String, SealKey>>,
+    /// Whether the sender's trusted card has a seal key (check 11, `not_sealed`).
+    pub sender_seals: bool,
 }
 
 impl Context {
@@ -66,6 +75,23 @@ impl Context {
                         .collect()
                 })
                 .unwrap_or_default(),
+            // A case is judged by its receiver: with its seal keys, none when it has none.
+            seal_keys: Some(
+                value
+                    .get("seal_keys")
+                    .and_then(Value::as_object)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|(id, private)| {
+                        let bytes = private.as_str().and_then(keys::from_b64url)?;
+                        Some((
+                            id.clone(),
+                            SealKey::from_private(bytes.try_into().ok()?).ok()?,
+                        ))
+                    })
+                    .collect(),
+            ),
+            sender_seals: value.get("sender_seals").and_then(Value::as_bool) == Some(true),
         }
     }
 }
@@ -230,8 +256,15 @@ pub fn result_problems(body: &Value) -> Vec<String> {
 
 /// Whether the message may be acted on, as the Obi `context.receiver` in `context.sphere` judges
 /// it at `context.now` (protocol.md section 10, in its order): size, schema, the checks across
-/// fields, the Sphere, the recipient, the key, the signature, expiry, clock skew, a replay.
+/// fields, the Sphere, the recipient, the key, the signature, expiry, clock skew, a replay, and its
+/// words opening (check 11, with `context.seal_keys`).
 pub fn verify(envelope: &Value, context: &Context) -> Result<(), Rejection> {
+    verify_and_open(envelope, context).map(|_| ())
+}
+
+/// [`verify`], with a sealed message's body opened: `None` for one in the clear, or when the
+/// context holds no seal keys.
+pub fn verify_and_open(envelope: &Value, context: &Context) -> Result<Option<Value>, Rejection> {
     let size = jcs::canonical_bytes(envelope)
         .map_err(|e| Rejection::new("invalid_envelope", e.to_string()))?
         .len();
@@ -241,7 +274,16 @@ pub fn verify(envelope: &Value, context: &Context) -> Result<(), Rejection> {
             format!("{size} bytes canonical, the most is {MAX_ENVELOPE_BYTES}"),
         ));
     }
-    let errors = schema::errors("envelope", envelope, 5);
+    let sealed = envelope.get("seal").is_some();
+    let errors = schema::errors(
+        if sealed {
+            "sealed/envelope"
+        } else {
+            "envelope"
+        },
+        envelope,
+        5,
+    );
     if !errors.is_empty() {
         return Err(Rejection::new("invalid_envelope", errors.join("; ")));
     }
@@ -324,7 +366,10 @@ pub fn verify(envelope: &Value, context: &Context) -> Result<(), Rejection> {
     if context.seen_ids.iter().any(|seen| seen == id) {
         return Err(Rejection::new("duplicate", format!("{id} was seen before")));
     }
-    Ok(())
+    match &context.seal_keys {
+        Some(own) => seal::check(envelope, own, context.sender_seals),
+        None => Ok(None),
+    }
 }
 
 #[cfg(test)]

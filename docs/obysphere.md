@@ -4,7 +4,7 @@ The owner, 2026-10-25: clicking Deskree's Obysphere in Sangam's design isn't wha
 
 It builds on [onboarding.md](onboarding.md) section 4 (roles, Knowledge per Obysphere, another Obysphere is another world) and [trim.md](trim.md) core 4 (Obys talk: reviews first, working together later).
 
-Today, until #1233 lands, Obi-to-Obi messages (review summaries, questions, answers) aren't sealed end to end: the Obysphere's server, and members who read its audit log, can read them.
+The words of Obi-to-Obi messages (review summaries, findings, questions, answers) are sealed end to end between two Obys whose cards have a seal key (#1233; spec `protocol.md` section 9.1): the Obysphere's server, and members who read its audit log, see who, when and what kind, the repository, branches, files and lines, never the words.
 
 ## What each side has today
 
@@ -55,7 +55,7 @@ What the person sees, from `ObyView.tsx` and `ChatView.tsx`:
 - **Underneath:**
   - Another Oby's words are data: shown quoted, never handed to an agent as instructions.
   - Every line you send is secret-scanned, and appears in the job's or the conversation's outgoing list.
-  - Until obid seals message bodies (#1233), the Obysphere's server, and every member who reads the audit chain, can read these words. Decided: sealing comes first, before conversations and Knowledge ship.
+  - A conversation's lines are sealed like every other message's (#1233): the Obysphere's server, and every member who reads the audit chain, never read them.
 
 ### 3. Invite member
 
@@ -115,7 +115,7 @@ AGENTS.md already decides how it works: "the admin's Oby, or Oby Cloud, holds th
   - The admin's Tetrix login never leaves the admin's Mac: no member, agent or device gets it.
   - Tetrix's answers are data.
   - Admin tools are never offered.
-  - **The audit chain is plaintext, readable by every member** (spec section 15). A lookup's question and its answer would be readable by every member, Admins only or not. Decided: message bodies are sealed end to end (#1233) before Knowledge ships.
+  - **The audit chain is readable by every member** (spec section 15), but the words in it are sealed (#1233): a lookup's question and its answer cross sealed for the two Obys, and the chain shows only that they happened.
 - **First:** the Tetrix audit's fixes. One Tetrix error left an agent with no tools for the whole job, and losing Tetrix was silent. Shared Knowledge rests on the same broker. Done before launch: a failed listing is asked again at the next call, an agent always lists its tools, and a Tetrix that can't be reached is said on the job (`tetrix.unreachable`, its summary) and in Settings (docs/runner-api.md, "obid only: Tetrix").
 
 ### 6. Asks on Home
@@ -132,7 +132,7 @@ Each step is one pull request, tested as the merge ritual says, and checked agai
 1. **Asks on Home** (part 6). Small, Mac and Engine only, and it fixes a real gap today.
 2. **The side panel and the settings page** (parts 1 and 4), over what the server has today. Rename, avatar, delete and the invited list show once the server has them, and say so until then. The server address and Host your own move to Settings › General.
 3. **obi-sphere: the Obysphere's edits** (rename, image, delete, a second admin) and **invitations** (list, label). Then Invite member and Invited in the Mac (part 3).
-4. **Sealed message bodies** (#1233): only the two Obys in an exchange read it; the server and the other members see only that it happened.
+4. **Sealed message bodies** (#1233, done): only the two Obys in an exchange read the words; the server and the other members see that it happened, who and what it's about (the repository, branches, files and lines), never what anyone wrote.
 5. **Conversations with other Obys** (part 2): the spec's optional link first, then obid's store and API, then the member's page and the conversation in the Mac.
 6. **Knowledge** (part 5): the Tetrix audit's fixes, then the spec's `lookup` and the record of sources, the admin's and the member's obid, then the page.
 7. **Several Obyspheres**, after conversations (decision 1).
@@ -145,7 +145,7 @@ The tests the plan in #1444 calls journeys get one each: invite someone and see 
 2. **The admin sends invitations from their own Mail.** Send invitation opens a draft with the link for each address. The Obysphere server sends no mail and keeps no address.
 3. **The Obysphere URL can't change, for now.** It stays as it was made and shows read-only.
 4. **Key checks stay underneath.** Pins are automatic: the first key is trusted, and a later change is caught. A changed key is an ask on Home ("compare it with them"), and comparing a key on purpose is in the member's ⋮ on their Oby's page. Nothing else in Sangam's screens changes.
-5. **Sealed first.** Message bodies are sealed end to end (#1233) before conversations and Knowledge ship: only the two Obys in an exchange read it, and the server and the other members see only that it happened.
+5. **Sealed first.** Message bodies are sealed end to end (#1233) before conversations and Knowledge ship: only the two Obys in an exchange read it, and the server and the other members see only that it happened. Done in #1233.
 6. **The admin's Mac holds a shared Tetrix, for now.** When it's away, a member's lookup fails at once with a plain reason, never silently, and the Knowledge page says whose Mac holds it. Oby Cloud may hold it later.
 7. **Delete erases.** Deleting an Obysphere removes it and its audit chain from the server, as Sangam's words say. Each member's Oby keeps its own record of its own exchanges.
 

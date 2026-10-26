@@ -176,6 +176,10 @@
             "card_seq",
             "issued_at"
           ],
+          "dependentRequired": {
+            "seal_key_id": ["seal_public_key"],
+            "seal_public_key": ["seal_key_id"]
+          },
           "properties": {
             "protocol": {
               "$ref": "common.schema.json#/$defs/protocol"
@@ -200,6 +204,14 @@
             "public_key": {
               "$ref": "common.schema.json#/$defs/public_key",
               "description": "The Obi's Ed25519 public key."
+            },
+            "seal_key_id": {
+              "$ref": "common.schema.json#/$defs/seal_key_id",
+              "description": "The id of the X25519 key other Obis seal this Obi's words for (spec/protocol.md section 9.1). With seal_public_key, or neither."
+            },
+            "seal_public_key": {
+              "$ref": "common.schema.json#/$defs/x25519_public_key",
+              "description": "The Obi's seal key: an X25519 public key it made for sealing, apart from its signing key."
             },
             "accepts": {
               "type": "array",

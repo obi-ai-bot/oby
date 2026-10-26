@@ -14,6 +14,7 @@ name = "obi-conformance"
 path = "src/bin/obi-conformance.rs"
 
 [dependencies]
+aws-lc-rs = { version = "1.18.2", default-features = false, features = ["aws-lc-sys"] }
 base64.workspace = true
 ed25519-dalek.workspace = true
 jsonschema.workspace = true

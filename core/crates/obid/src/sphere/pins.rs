@@ -5,9 +5,12 @@
 //! trusted only when it verifies with the owner key pinned here. A changed key is never followed by
 //! itself: that member isn't trusted until this owner has compared the new key's fingerprint with
 //! that person and accepted it. It also keeps the highest `card_seq` trusted for each Obi, and
-//! refuses a lower one: a Sphere can't serve an older card whose key was rotated away.
+//! refuses a lower one: a Sphere can't serve an older card whose key was rotated away. And it keeps
+//! which Obis seal (spec protocol.md section 9.1), for good: once a trusted card had a seal key, or
+//! the Sphere said an Obi seals, obid never sends that Obi words in the clear again, whatever card
+//! or key list the Sphere serves later.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
@@ -48,6 +51,8 @@ struct Kept {
     /// Every Obi key a trusted card signed, by Obi and key id: the only older keys obid takes from
     /// the directory (to check old chain entries), whatever the Sphere lists.
     keys: BTreeMap<String, BTreeMap<String, String>>,
+    /// The Obis known to seal.
+    seals: BTreeSet<String>,
 }
 
 pub struct Pins {
@@ -156,6 +161,21 @@ impl Pins {
         let copy = kept.clone();
         drop(kept);
         self.save(&copy);
+    }
+
+    /// Keeps that `obi` seals.
+    pub fn mark_seals(&self, obi: &str) {
+        let mut kept = self.pins.lock().unwrap();
+        if kept.seals.insert(obi.to_owned()) {
+            let copy = kept.clone();
+            drop(kept);
+            self.save(&copy);
+        }
+    }
+
+    /// Whether `obi` is known to seal: what obid sends it goes sealed, or waits.
+    pub fn seals(&self, obi: &str) -> bool {
+        self.pins.lock().unwrap().seals.contains(obi)
     }
 
     /// Whether a card obid trusted once signed `obi`'s key `id`, `public_key`.

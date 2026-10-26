@@ -9,11 +9,14 @@ rm -rf "$here/spec/schemas" "$here/spec/conformance"
 mkdir -p "$here/spec/conformance"
 cp -R "$src/schemas" "$here/spec/schemas"
 cp -R "$src/conformance/fixtures" "$here/spec/conformance/fixtures"
-# The agent-card cases are made by the tests (spec/README.md): not copied.
-rm -rf "$here/spec/conformance/fixtures/card"
+# The agent-card cases are made by the tests (spec/README.md): not copied. Nor are the wire cases:
+# they judge the Sphere's own API bodies, which obid doesn't check (conformance/README.md, --kinds).
+rm -rf "$here/spec/conformance/fixtures/card" "$here/spec/conformance/fixtures/wire"
 cp "$src/conformance/jcs-vectors.json" "$here/spec/conformance/"
 # The job channel's known answers (protocol.md section 13), once the spec has them.
 [ ! -f "$src/conformance/channel-vectors.json" ] || cp "$src/conformance/channel-vectors.json" "$here/spec/conformance/"
+# Sealing's known answers (protocol.md section 9.1).
+cp "$src/conformance/seal-vectors.json" "$here/spec/conformance/"
 commit=$(git -C "$OBI_SPHERE_DIR" rev-parse HEAD 2>/dev/null || echo unknown)
 sed -i.bak "s/^Copied from obi-sphere commit \`[0-9a-f]*\`/Copied from obi-sphere commit \`$commit\`/" "$here/spec/README.md"
 rm -f "$here/spec/README.md.bak"

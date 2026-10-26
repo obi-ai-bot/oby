@@ -1363,6 +1363,7 @@ async fn a_member_whose_owner_key_changes_isnt_trusted_until_the_owner_accepts_i
             accepts: &accepts,
             card_seq: 2,
             issued_at: &issued_at,
+            seal: None,
         });
         let signed = obi_protocol::card::sign(&unsigned, &mallory).unwrap();
         let member = state
@@ -1530,4 +1531,573 @@ async fn an_older_key_the_sphere_adds_signs_nothing() {
         assert_eq!(get(&obid, "/v1/inbox"), json!([]));
         assert_eq!(get(&obid, "/v1/obid/sphere/exchanges"), json!([]));
     });
+}
+
+// ---------------------------------------------------------------------------------------------
+// Sealed words (spec protocol.md section 9.1; docs/runner-api.md, "obid only: Obi-to-Obi
+// exchanges", "Sealed words"): between two Obis whose cards have a seal key, the Sphere relays and
+// keeps none of what anyone wrote.
+
+/// obid A, which takes reviews and questions, and obi-ernesto, whose card has a seal key; then A's
+/// owner signs a card with A's seal key, as the Mac app does when obid asks for one.
+async fn sealing_setup(folder: &Folder) -> (FakeSphere, Obid, TestObi) {
+    let sphere = FakeSphere::start().await;
+    let remote = fixture(&folder.0.join("fixture"));
+    let obid = start(&folder.0, &config(&folder.0, &remote, &stub_agent()), None);
+    let owner = Owner::new("wellington");
+    tokio::task::block_in_place(|| {
+        join_a_accepting(&obid, &sphere, &owner, &["review_request", "question"])
+    });
+    let ernesto = TestObi::join_sealing(&sphere, "obi-ernesto", "ernesto").await;
+    let sealing = tokio::task::block_in_place(|| seal_card(&obid, &sphere, &owner));
+    assert_eq!(sealing, "on");
+    (sphere, obid, ernesto)
+}
+
+/// Everything the fake Sphere keeps of what it relayed: its audit chain and its queue.
+fn kept_by_the_sphere(sphere: &FakeSphere) -> String {
+    let state = sphere.lock();
+    let queued: Vec<&Value> = state.queue.iter().map(|d| &d.4).collect();
+    format!("{} {}", json!(state.entries), json!(queued))
+}
+
+/// ernesto's owner signs it a new card (one `card_seq` up) with the seal key `key`, issued a while
+/// ago (as [`seal_card`]'s).
+fn give_seal_key(sphere: &FakeSphere, ernesto: &TestObi, key: &obi_protocol::seal::SealKey) {
+    let mut state = sphere.lock();
+    let member = state
+        .members
+        .iter_mut()
+        .find(|m| m["obi"] == "obi-ernesto")
+        .unwrap();
+    let mut card = member["card"].clone();
+    let params = &mut card["capabilities"]["extensions"][0]["params"];
+    params["card_seq"] = json!(params["card_seq"].as_u64().unwrap() + 1);
+    params["seal_key_id"] = json!(key.key_id());
+    params["seal_public_key"] = json!(key.public_key());
+    params["issued_at"] = json!(obi_protocol::time::format(obi_protocol::time::now() - 1000));
+    card.as_object_mut().unwrap().remove("signatures");
+    member["card"] =
+        obi_protocol::card::sign(card.as_object().unwrap(), &ernesto.owner.key).unwrap();
+}
+
+/// obid reads the directory now: `POST /v1/obid/sphere/card` does, as the Mac app's call does.
+fn read_directory_now(obid: &Obid, sphere: &FakeSphere) -> Value {
+    let made = call(
+        obid,
+        "POST",
+        "/v1/obid/sphere/card",
+        Some(
+            &json!({"url": sphere.url, "sphere": SPHERE, "obiId": "obi-wellington",
+                     "name": "Wellington's Obi", "ownerKey": Owner::new("wellington").key.public_key(),
+                     "accepts": ["review_request", "question"]}),
+        ),
+    );
+    assert_eq!(made.status, 200, "{}", made.text);
+    made.body["card"].clone()
+}
+
+/// The sends the fake Sphere answered for `from`, by type: `(type, status)`.
+fn sends_of(sphere: &FakeSphere, from: &str) -> Vec<(String, u16)> {
+    sphere
+        .lock()
+        .sends
+        .iter()
+        .filter(|(sender, _, _)| sender == from)
+        .map(|(_, body, status)| {
+            let body: Value = serde_json::from_str(body).unwrap_or_default();
+            (body["type"].as_str().unwrap_or("").to_owned(), *status)
+        })
+        .collect()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn words_between_two_sealing_obis_cross_the_sphere_sealed_and_their_owners_read_them() {
+    let folder = Folder::new("sealed");
+    let (sphere, obid, ernesto) = sealing_setup(&folder).await;
+    let own_seal = sphere
+        .seal_key_of("obi-wellington")
+        .expect("obid's card has its seal key");
+    let me = tokio::task::block_in_place(|| get(&obid, "/v1/obid/sphere"));
+    assert_eq!(me["sealing"], "on");
+    assert_eq!(me["sealKeyId"], obi_protocol::seal::key_id_of(&own_seal));
+    assert_eq!(me["card"]["version"], "0.2.0");
+
+    // In the clear, between two Obis that seal: the Sphere refuses it.
+    let plain = ernesto.request("obi-wellington", "review_request", brief(), 3600);
+    let refused = ernesto
+        .client
+        .send(&ernesto.token, &plain)
+        .await
+        .unwrap_err();
+    assert_eq!(refused.code(), Some("not_sealed"));
+
+    // Sealed for obid's key: obid opens it, and its owner sees the words as before.
+    let request = ernesto.sealed_request("obi-wellington", "review_request", brief(), &own_seal);
+    assert!(!request.to_string().contains(CANARY));
+    ernesto.send(&request).await;
+    let cid = request["id"].as_str().unwrap().to_owned();
+    let item = tokio::task::block_in_place(|| wait_item(&obid));
+    assert_eq!(item["obi"]["quoted"]["goal"], brief()["goal"]);
+    assert_eq!(item["obi"]["quoted"]["summary"], brief()["summary"]);
+    let incoming = tokio::task::block_in_place(|| exchange(&obid, &cid));
+    let kept = &incoming["messages"][0]["envelope"];
+    assert_eq!(kept["body"], brief(), "the words, opened");
+    assert_eq!(kept["sealed"], request["body"], "and the body as signed");
+    assert_eq!(kept["seal"], request["seal"]);
+
+    // obid's reply goes sealed for ernesto's key.
+    tokio::task::block_in_place(|| answer(&obid, &item, "Decline"));
+    let decline = ernesto.receive_reply_to(&request, 20).await;
+    assert_eq!(decline["type"], "decline");
+    assert_eq!(
+        decline["seal"]["key_id"],
+        ernesto.seal.as_ref().unwrap().key_id()
+    );
+    assert_eq!(ernesto.open(&decline)["reason"], "owner_declined");
+
+    // A question answered in words: they go back sealed, and only ernesto reads them.
+    let question = ernesto.sealed_request(
+        "obi-wellington",
+        "question",
+        json!({"text": "Is #251 landing Thursday?"}),
+        &own_seal,
+    );
+    ernesto.send(&question).await;
+    let asked = tokio::task::block_in_place(|| {
+        wait_for(&obid, &format!("obi-{}", question["id"].as_str().unwrap()))
+    });
+    assert_eq!(asked["obi"]["quoted"]["text"], "Is #251 landing Thursday?");
+    tokio::task::block_in_place(|| answer(&obid, &asked, "Yes,\nfrom Monday."));
+    let answered = ernesto.receive_reply_to(&question, 20).await;
+    assert_eq!(answered["type"], "answer");
+    assert!(!answered.to_string().contains("from Monday"));
+    assert_eq!(ernesto.open(&answered)["text"], "Yes,\nfrom Monday.");
+
+    // obid's own request too, after the secret scan: ernesto opens it to the words obid sent.
+    let sent = tokio::task::block_in_place(|| {
+        call(
+            &obid,
+            "POST",
+            "/v1/obid/sphere/requests",
+            Some(
+                &json!({"to": "obi-ernesto", "type": "review_request", "body": brief(), "expiresIn": 3600}),
+            ),
+        )
+    });
+    assert_eq!(sent.status, 202, "{}", sent.text);
+    assert_eq!(sent.body["messages"][0]["envelope"]["body"], brief());
+    let outgoing = ernesto.receive(1, 20).await;
+    assert!(outgoing[0]["seal"].is_object());
+    assert_eq!(ernesto.open(&outgoing[0]), brief());
+
+    // The Sphere kept none of the words, and the seal key is nowhere it shouldn't be.
+    let kept = kept_by_the_sphere(&sphere);
+    assert!(!kept.contains(CANARY) && !kept.contains("from Monday") && !kept.contains("#251"));
+    let seal_key = std::fs::read_to_string(obid.home.join("keys/seal.key")).unwrap();
+    let seal_key = seal_key.trim();
+    use std::os::unix::fs::PermissionsExt;
+    let mode = std::fs::metadata(obid.home.join("keys/seal.key"))
+        .unwrap()
+        .permissions()
+        .mode();
+    assert_eq!(mode & 0o777, 0o600);
+    let shown = tokio::task::block_in_place(|| {
+        [
+            "/v1/obid/sphere",
+            "/v1/obid/sphere/exchanges",
+            "/v1/inbox?done=true",
+        ]
+        .map(|target| call(&obid, "GET", target, None).text)
+        .join(" ")
+    });
+    let private = obi_protocol::keys::b64url(hex::decode(seal_key).unwrap());
+    for form in [seal_key, private.as_str()] {
+        assert!(!shown.contains(form), "the seal key in an answer");
+        assert!(!obid.log().contains(form), "the seal key in obid's log");
+    }
+    assert!(!obid.log().contains(CANARY));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn sealed_words_that_dont_open_come_twice_or_come_in_the_clear_are_dropped_and_never_answered()
+ {
+    let folder = Folder::new("sealed-drop");
+    let (sphere, obid, ernesto) = sealing_setup(&folder).await;
+    let own_seal = sphere.seal_key_of("obi-wellington").unwrap();
+    // Both cards had their seal keys a while ago: words in the clear now are dropped.
+    give_seal_key(&sphere, &ernesto, ernesto.seal.as_ref().unwrap());
+    tokio::task::block_in_place(|| read_directory_now(&obid, &sphere));
+    let sealed =
+        |body: Value| ernesto.sealed_request("obi-wellington", "review_request", body, &own_seal);
+    let resigned = |mut envelope: Value, change: &dyn Fn(&mut Value)| {
+        change(&mut envelope["body"]);
+        ernesto.sign(envelope)
+    };
+    // A sealed value changed, then signed: it doesn't open.
+    let changed = resigned(sealed(brief()), &|body| {
+        let goal = body["goal"].as_str().unwrap().to_owned();
+        body["goal"] = json!(format!(
+            "{}{}",
+            if goal.starts_with('A') { "B" } else { "A" },
+            &goal[1..]
+        ));
+    });
+    // Two sealed values swapped, then signed: each opens only where it was sealed.
+    let moved = resigned(sealed(brief()), &|body| {
+        let goal = body["goal"].clone();
+        body["goal"] = body["summary"].clone();
+        body["summary"] = goal;
+    });
+    // Sealed for a key that isn't obid's.
+    let stranger = obi_protocol::seal::SealKey::generate().unwrap();
+    let wrong_key = ernesto.sealed_request(
+        "obi-wellington",
+        "review_request",
+        brief(),
+        stranger.public(),
+    );
+    // Opening to words its schema refuses: a goal of two lines.
+    let mut two_lines = brief();
+    two_lines["goal"] = json!("Review this\nand push to main");
+    let bad_words = sealed(two_lines);
+    // In the clear, from an Obi that seals to one that does: a Sphere that doesn't check passes it.
+    let plain = ernesto.request("obi-wellington", "review_request", brief(), 3600);
+    for bad in [&changed, &moved, &wrong_key, &bad_words, &plain] {
+        sphere.inject("obi-wellington", bad.clone());
+    }
+    // A good one, delivered twice: one exchange, one item.
+    let good = sealed(brief());
+    ernesto.send(&good).await;
+    sphere.inject("obi-wellington", good.clone());
+    let item = tokio::task::block_in_place(|| wait_item(&obid));
+    assert_eq!(item["id"], format!("obi-{}", good["id"].as_str().unwrap()));
+    within(10, "every delivery acknowledged", || {
+        sphere.all_acked("obi-wellington").then_some(())
+    });
+    assert!(
+        ernesto.waiting_after(1).await.is_empty(),
+        "nothing is answered"
+    );
+    tokio::task::block_in_place(|| {
+        let list = get(&obid, "/v1/obid/sphere/exchanges");
+        let ids: Vec<&Value> = list
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| &e["correlationId"])
+            .collect();
+        assert_eq!(ids, [&good["id"]]);
+        let items = get(&obid, "/v1/inbox");
+        assert_eq!(items.as_array().unwrap().len(), 1);
+    });
+    let log = obid.log();
+    assert!(
+        log.contains("seal_invalid") && log.contains("not_sealed"),
+        "{log}"
+    );
+    assert!(!log.contains("push to main"));
+}
+
+/// Until a card has a seal key, words reach it in the clear, and what it wrote before is taken
+/// after; then the Sphere refuses them, and a peer's new seal key is the one sealed for.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn words_go_in_the_clear_until_both_cards_have_a_seal_key_and_follow_a_new_one() {
+    let folder = Folder::new("sealed-card");
+    let sphere = FakeSphere::start().await;
+    let remote = fixture(&folder.0.join("fixture"));
+    let obid = start(&folder.0, &config(&folder.0, &remote, &stub_agent()), None);
+    let owner = Owner::new("wellington");
+    tokio::task::block_in_place(|| join_a(&obid, &sphere, &owner));
+    let ernesto = TestObi::join_sealing(&sphere, "obi-ernesto", "ernesto").await;
+    // A joining Obi's card has no seal key: obid asks its owner for one once it can.
+    let me = tokio::task::block_in_place(|| get(&obid, "/v1/obid/sphere"));
+    assert!(
+        me["card"]["capabilities"]["extensions"][0]["params"]
+            .get("seal_key_id")
+            .is_none()
+    );
+    // Written before obid's card had a seal key, and delivered after.
+    let mut early = ernesto.request("obi-wellington", "review_request", brief(), 3600);
+    early["created_at"] = json!(obi_protocol::time::format(obi_protocol::time::now() - 10));
+    let early = ernesto.sign(early);
+    // Its card has no seal key yet: words reach it in the clear, and it takes them.
+    let plain = ernesto.request("obi-wellington", "review_request", brief(), 3600);
+    ernesto.send(&plain).await;
+    let item = tokio::task::block_in_place(|| wait_item(&obid));
+    assert_eq!(item["obi"]["quoted"]["goal"], brief()["goal"]);
+    // What obid sends ernesto, whose card has one, goes sealed all the same.
+    tokio::task::block_in_place(|| answer(&obid, &item, "Decline"));
+    let decline = ernesto.receive_reply_to(&plain, 20).await;
+    assert!(decline["seal"].is_object());
+
+    // The owner signs a new card with obid's seal key: sealing is on, and words in the clear stop.
+    let sealing = tokio::task::block_in_place(|| seal_card(&obid, &sphere, &owner));
+    assert_eq!(sealing, "on");
+    let own_seal = sphere.seal_key_of("obi-wellington").unwrap();
+    let sealed_from = sphere.recorded().len();
+    let again = ernesto.request("obi-wellington", "review_request", brief(), 3600);
+    let refused = ernesto
+        .client
+        .send(&ernesto.token, &again)
+        .await
+        .unwrap_err();
+    assert_eq!(refused.code(), Some("not_sealed"));
+    // What ernesto wrote before obid's card had a seal key is still taken.
+    sphere.inject("obi-wellington", early.clone());
+    tokio::task::block_in_place(|| {
+        wait_for(&obid, &format!("obi-{}", early["id"].as_str().unwrap()))
+    });
+    let sealed = ernesto.sealed_request("obi-wellington", "review_request", brief(), &own_seal);
+    ernesto.send(&sealed).await;
+    tokio::task::block_in_place(|| {
+        wait_for(&obid, &format!("obi-{}", sealed["id"].as_str().unwrap()))
+    });
+
+    // ernesto's owner signs it a card with a new seal key: obid seals for that one from then on.
+    let new_seal = obi_protocol::seal::SealKey::generate().unwrap();
+    give_seal_key(&sphere, &ernesto, &new_seal);
+    let sent = tokio::task::block_in_place(|| {
+        call(
+            &obid,
+            "POST",
+            "/v1/obid/sphere/requests",
+            Some(
+                &json!({"to": "obi-ernesto", "type": "review_request", "body": brief(), "expiresIn": 3600}),
+            ),
+        )
+    });
+    assert_eq!(sent.status, 202, "{}", sent.text);
+    let request = ernesto.receive(1, 20).await.remove(0);
+    assert_eq!(request["seal"]["key_id"], new_seal.key_id());
+    assert_eq!(
+        obi_protocol::seal::open(&request, &new_seal).unwrap(),
+        brief()
+    );
+    let old = obi_protocol::seal::open(&request, ernesto.seal.as_ref().unwrap());
+    assert_eq!(
+        old.unwrap_err().code,
+        "seal_invalid",
+        "the old key opens nothing new"
+    );
+    // Since both cards have a seal key, the chain keeps none of the words.
+    let since = sphere.recorded().split_off(sealed_from);
+    assert_eq!(since.len(), 2);
+    assert!(!json!(since).to_string().contains(CANARY));
+}
+
+/// obid puts its seal key in a card only once its Sphere says it takes one and every other active
+/// member's obid reads one (identity.md section 2): an obid from before refuses such a card, and
+/// that member would vanish for its teammates. A card from before 0.2.0 is signed again first, to
+/// say obid reads one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_seal_key_waits_for_a_sphere_and_a_team_that_read_one() {
+    let folder = Folder::new("sealed-wait");
+    let sphere = FakeSphere::start().await;
+    sphere.lock().predates_sealing = true;
+    let remote = fixture(&folder.0.join("fixture"));
+    let obid = start(&folder.0, &config(&folder.0, &remote, &stub_agent()), None);
+    let owner = Owner::new("wellington");
+    let params = |card: &Value| card["capabilities"]["extensions"][0]["params"].clone();
+    tokio::task::block_in_place(|| {
+        // A card an obid from before signed: version 0.1.0.
+        assert_eq!(call(&obid, "POST", "/v1/obid/sphere/key", None).status, 200);
+        let mut card = read_directory_now(&obid, &sphere);
+        assert!(
+            params(&card).get("seal_key_id").is_none(),
+            "a joining card has none"
+        );
+        card["version"] = json!("0.1.0");
+        let signed = obi_protocol::card::sign(card.as_object().unwrap(), &owner.key).unwrap();
+        let (id, secret) = sphere.invite("wellington", "obi-wellington");
+        let joined = call(
+            &obid,
+            "POST",
+            "/v1/obid/sphere/join",
+            Some(
+                &json!({"url": sphere.url, "sphere": SPHERE, "invitation": {"id": id, "secret": secret},
+                         "card": signed, "delegation": owner.delegation("obi-wellington", OBI_SCOPES)}),
+            ),
+        );
+        assert_eq!(joined.status, 200, "{}", joined.text);
+        assert_eq!(
+            joined.body["sealing"], "card_needed",
+            "to say obid reads seal keys"
+        );
+        // The new card says 0.2.0, without a seal key: the Sphere doesn't take one yet.
+        assert_eq!(seal_card(&obid, &sphere, &owner), "waiting");
+        let me = get(&obid, "/v1/obid/sphere");
+        assert_eq!(me["card"]["version"], "0.2.0");
+        assert!(params(&me["card"]).get("seal_key_id").is_none());
+    });
+    // The Sphere takes them now, but sangam's Obi is from before: still no seal key.
+    sphere.lock().predates_sealing = false;
+    let _sangam = TestObi::join_old(&sphere, "obi-sangam", "sangam").await;
+    tokio::task::block_in_place(|| {
+        assert!(
+            params(&read_directory_now(&obid, &sphere))
+                .get("seal_key_id")
+                .is_none()
+        );
+        assert_eq!(get(&obid, "/v1/obid/sphere")["sealing"], "waiting");
+    });
+    // sangam's Obi updates (a card saying 0.2.0): obid asks for a card with its seal key.
+    {
+        let mut state = sphere.lock();
+        let member = state
+            .members
+            .iter_mut()
+            .find(|m| m["obi"] == "obi-sangam")
+            .unwrap();
+        let mut card = member["card"].clone();
+        card["version"] = json!("0.2.0");
+        card["capabilities"]["extensions"][0]["params"]["card_seq"] = json!(2);
+        card.as_object_mut().unwrap().remove("signatures");
+        member["card"] =
+            obi_protocol::card::sign(card.as_object().unwrap(), &Owner::new("sangam").key).unwrap();
+    }
+    tokio::task::block_in_place(|| {
+        assert!(
+            params(&read_directory_now(&obid, &sphere))
+                .get("seal_key_id")
+                .is_some()
+        );
+        assert_eq!(seal_card(&obid, &sphere, &owner), "on");
+    });
+    // Published once, it stays: an old Obi joining later doesn't take it out of the next card.
+    let _ana = TestObi::join_old(&sphere, "obi-ana", "ana").await;
+    tokio::task::block_in_place(|| {
+        let card = read_directory_now(&obid, &sphere);
+        assert!(params(&card).get("seal_key_id").is_some());
+        assert_eq!(get(&obid, "/v1/obid/sphere")["sealing"], "on");
+    });
+}
+
+/// An Obi whose card has no seal key yet may still seal what it sends: its reply goes in the clear,
+/// never held for a seal key it doesn't have.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_obi_without_a_seal_key_gets_its_reply_to_a_sealed_request() {
+    let folder = Folder::new("sealed-keyless");
+    let sphere = FakeSphere::start().await;
+    let remote = fixture(&folder.0.join("fixture"));
+    let obid = start(&folder.0, &config(&folder.0, &remote, &stub_agent()), None);
+    let owner = Owner::new("wellington");
+    tokio::task::block_in_place(|| join_a(&obid, &sphere, &owner));
+    let ernesto = TestObi::join(&sphere, "obi-ernesto", "ernesto").await;
+    let sealing = tokio::task::block_in_place(|| seal_card(&obid, &sphere, &owner));
+    assert_eq!(sealing, "on");
+    let own_seal = sphere.seal_key_of("obi-wellington").unwrap();
+    let request = ernesto.sealed_request("obi-wellington", "review_request", brief(), &own_seal);
+    ernesto.send(&request).await;
+    let item = tokio::task::block_in_place(|| wait_item(&obid));
+    assert_eq!(item["obi"]["quoted"]["goal"], brief()["goal"]);
+    tokio::task::block_in_place(|| answer(&obid, &item, "Decline"));
+    let decline = ernesto.receive_reply_to(&request, 20).await;
+    assert!(decline.get("seal").is_none());
+    assert_eq!(decline["body"]["reason"], "owner_declined");
+}
+
+/// A peer known to seal gets nothing in the clear, whatever key list the Sphere serves: the reply
+/// waits for a seal key obid trusts, and goes sealed once there is one again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_peer_that_seals_gets_nothing_in_the_clear_whatever_the_sphere_lists() {
+    let folder = Folder::new("sealed-downgrade");
+    let (sphere, obid, ernesto) = sealing_setup(&folder).await;
+    let own_seal = sphere.seal_key_of("obi-wellington").unwrap();
+    let request = ernesto.sealed_request("obi-wellington", "review_request", brief(), &own_seal);
+    ernesto.send(&request).await;
+    let item = tokio::task::block_in_place(|| wait_item(&obid));
+    // The Sphere lists a current key for ernesto that its card doesn't sign: obid leaves ernesto
+    // out of the directory it uses, and with it ernesto's seal key.
+    let mallory = obi_protocol::keys::Keypair::from_seed_string("a Sphere operator's own Obi key");
+    let listed = {
+        let mut state = sphere.lock();
+        let member = state
+            .members
+            .iter_mut()
+            .find(|m| m["obi"] == "obi-ernesto")
+            .unwrap();
+        let listed = member["keys"].clone();
+        member["keys"] = json!([{"key_id": mallory.key_id(), "public_key": mallory.public_key(),
+                                 "valid_from_seq": 1, "valid_until_seq": null}]);
+        listed
+    };
+    tokio::task::block_in_place(|| {
+        read_directory_now(&obid, &sphere);
+        answer(&obid, &item, "Decline");
+    });
+    let cid = request["id"].as_str().unwrap();
+    within(20, "the reply waiting for a seal key", || {
+        let e = tokio::task::block_in_place(|| exchange(&obid, cid));
+        e["error"]
+            .as_str()
+            .is_some_and(|why| why.contains("seal key"))
+            .then_some(())
+    });
+    assert!(
+        ernesto.waiting_after(2).await.is_empty(),
+        "nothing in the clear"
+    );
+    assert!(
+        sends_of(&sphere, "obi-wellington")
+            .iter()
+            .all(|(kind, _)| kind != "decline")
+    );
+    // Its card's key listed again: the reply goes, sealed.
+    sphere
+        .lock()
+        .members
+        .iter_mut()
+        .find(|m| m["obi"] == "obi-ernesto")
+        .unwrap()["keys"] = listed;
+    let decline = ernesto.receive_reply_to(&request, 60).await;
+    assert_eq!(ernesto.open(&decline)["reason"], "owner_declined");
+}
+
+/// A reply sealed for a key the peer's card no longer has is sealed again for its new one, once the
+/// Sphere refuses it; one whose answer was lost goes again as it was, whatever key appeared since.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_reply_is_sealed_again_only_when_the_sphere_kept_nothing() {
+    let folder = Folder::new("sealed-again");
+    let (sphere, obid, ernesto) = sealing_setup(&folder).await;
+    let own_seal = sphere.seal_key_of("obi-wellington").unwrap();
+    // ernesto's card gains a new seal key while obid's directory still has the old one.
+    let request = ernesto.sealed_request("obi-wellington", "review_request", brief(), &own_seal);
+    ernesto.send(&request).await;
+    let item = tokio::task::block_in_place(|| wait_item(&obid));
+    let second = obi_protocol::seal::SealKey::generate().unwrap();
+    give_seal_key(&sphere, &ernesto, &second);
+    tokio::task::block_in_place(|| answer(&obid, &item, "Decline"));
+    let decline = ernesto.receive_reply_to(&request, 30).await;
+    assert_eq!(decline["seal"]["key_id"], second.key_id());
+    assert_eq!(
+        obi_protocol::seal::open(&decline, &second).unwrap()["reason"],
+        "owner_declined"
+    );
+    assert!(
+        sends_of(&sphere, "obi-wellington").contains(&("decline".into(), 400)),
+        "the Sphere refused the one sealed for the old key first"
+    );
+
+    // The answer to the next reply is lost after the Sphere kept it, and ernesto's card gains a
+    // third seal key meanwhile: the reply goes again as it was, and the Sphere takes it as a retry.
+    let request = ernesto.sealed_request("obi-wellington", "review_request", brief(), &own_seal);
+    ernesto.send(&request).await;
+    let cid = request["id"].as_str().unwrap().to_owned();
+    let item = tokio::task::block_in_place(|| wait_for(&obid, &format!("obi-{cid}")));
+    let lost = sphere.lose_next_answer("decline");
+    tokio::task::block_in_place(|| answer(&obid, &item, "Decline"));
+    let decline = ernesto.receive_reply_to(&request, 20).await;
+    let third = obi_protocol::seal::SealKey::generate().unwrap();
+    give_seal_key(&sphere, &ernesto, &third);
+    tokio::task::block_in_place(|| read_directory_now(&obid, &sphere));
+    lost.notify_one();
+    let done = within(30, "the decline listed as sent", || {
+        let e = tokio::task::block_in_place(|| exchange(&obid, &cid));
+        (e["messages"].as_array().unwrap().len() == 2).then_some(e)
+    });
+    assert_eq!(done["error"], Value::Null);
+    assert_eq!(done["messages"][1]["envelope"]["id"], decline["id"]);
+    assert_eq!(decline["seal"]["key_id"], second.key_id());
+    assert!(!sends_of(&sphere, "obi-wellington").contains(&("decline".into(), 409)));
 }

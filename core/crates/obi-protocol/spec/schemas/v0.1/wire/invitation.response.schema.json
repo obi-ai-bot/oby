@@ -2,14 +2,13 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/obi-ai-bot/obi-sphere/raw/main/spec/schemas/v0.1/wire/invitation.response.schema.json",
   "title": "POST /v0.1/spheres/{sphere}/invitations answer",
-  "description": "The invitation. `secret` is shown once; the Sphere keeps only its SHA-256.",
+  "description": "The invitation. `owner` and `obi` are there exactly when it is named; `max_uses` is 1 for a named one. `secret` is shown once; the Sphere keeps only its SHA-256.",
   "type": "object",
   "additionalProperties": false,
   "required": [
     "invitation_id",
     "sphere",
-    "owner",
-    "obi",
+    "max_uses",
     "secret",
     "expires_at"
   ],
@@ -26,6 +25,11 @@
     "obi": {
       "$ref": "../common.schema.json#/$defs/obi_id"
     },
+    "max_uses": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000
+    },
     "secret": {
       "type": "string",
       "minLength": 43,
@@ -34,6 +38,23 @@
     },
     "expires_at": {
       "$ref": "../common.schema.json#/$defs/timestamp"
+    },
+    "domain": {
+      "$ref": "../common.schema.json#/$defs/domain"
+    },
+    "label": {
+      "$ref": "../common.schema.json#/$defs/line_text",
+      "x-obi-text": "data",
+      "minLength": 1,
+      "maxLength": 100
     }
+  },
+  "dependentRequired": {
+    "owner": [
+      "obi"
+    ],
+    "obi": [
+      "owner"
+    ]
   }
 }
