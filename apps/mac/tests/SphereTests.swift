@@ -21,6 +21,20 @@ struct SphereTests {
         #expect(SphereModel.Invitation(id: "i4", label: nil, email: nil, maxUses: 1000, uses: 0, domain: "deskree.com").shown == "Anyone at deskree.com")
     }
 
+    /// The kept team link stays only while the Obysphere still lists its invitation as usable: one it
+    /// no longer has (cancelled, used up, expired) is dropped, so Make a link shows again. When the
+    /// list is unknown (not an admin, an older server), the link is kept.
+    @Test func aTeamLinkTheObysphereNoLongerHasIsDropped() {
+        let link = InviteLink(server: URL(string: "https://obysphere.deskree.com")!, sphere: "deskree", name: "Deskree", by: "wellprado",
+                              id: "team-1", secret: "s3cret", domain: "deskree.com")
+        let team = SphereModel.Invitation(id: "team-1", label: "Team link", email: nil, maxUses: 1000, uses: 2, domain: "deskree.com")
+        let other = SphereModel.Invitation(id: "mail-1", label: "Invited by email", email: nil, maxUses: 1, uses: 0, domain: "deskree.com")
+        #expect(SphereModel.usable(link, among: [other, team]) == link)
+        #expect(SphereModel.usable(link, among: [other]) == nil)
+        #expect(SphereModel.usable(link, among: []) == nil)
+        #expect(SphereModel.usable(link, among: nil) == link)
+    }
+
     /// A picture the Obysphere keeps: any image, cut square from its middle, 256 pixels a side, PNG.
     @Test func aPictureIsASquarePNG() throws {
         let wide = NSImage(size: NSSize(width: 600, height: 300), flipped: false) { rect in
