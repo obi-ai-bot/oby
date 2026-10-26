@@ -1552,19 +1552,14 @@ fn the_toolsearch_step_is_hidden() {
     }
 }
 
-/// A turn that was replaced while it waited for the one before it (one turn per conversation at a
-/// time) exits as soon as it gets its turn, without starting: no `thinking` for it, and the latest
-/// answers. Event-driven: the third words go in as soon as the second's turn is seen, which is when
-/// the first is cancelled; the first then holds the lock for at least obid's 400 ms stop grace, so
-/// the second is still waiting when the third replaces it.
-#[test]
-fn a_turn_replaced_while_it_waits_never_starts() {
-    let (_folder, obid) = obid("harness-cancel-waiting", true);
-    let first = said(&obid, json!({"said": "SAY hi", "new": true}));
-    let conversation = first.body["conversation"].as_str().unwrap().to_owned();
-    let events = follow_events(&obid);
-    let mut seen: Vec<(String, Value)> = vec![];
-    let mut until = |what: &str, done: &dyn Fn(&str, &Value) -> bool| loop {
+/// Every event of `events`, kept in `seen`, until one `done` says is it.
+fn until(
+    events: &Receiver<(String, Value)>,
+    seen: &mut Vec<(String, Value)>,
+    what: &str,
+    done: impl Fn(&str, &Value) -> bool,
+) {
+    loop {
         let (name, data) = events
             .recv_timeout(Duration::from_secs(30))
             .unwrap_or_else(|_| panic!("no {what}: {seen:?}"));
@@ -1573,50 +1568,124 @@ fn a_turn_replaced_while_it_waits_never_starts() {
         if hit {
             return;
         }
-    };
-    std::thread::scope(|scope| {
-        let slow = scope.spawn(|| {
-            said(
-                &obid,
-                json!({"said": "LINGER 5000", "conversation": conversation}),
-            )
-        });
-        // The first is running its agent.
-        until("the first's agent", &|n, d| {
+    }
+}
+
+/// The owner's `words` joined their conversation.
+fn user(words: &'static str) -> impl Fn(&str, &Value) -> bool {
+    move |n, d| n == "turn" && d["who"] == "user" && d["text"] == words
+}
+
+/// One answer at a time in a conversation (docs/mac-design.md 1.6): words said while Oby answers
+/// wait for that turn, which goes on to its own answer; then one turn answers all of them, as the
+/// latest words', with the conversation as it is now. The earlier words' request answers nothing,
+/// and no turn starts for them alone.
+#[test]
+fn words_said_while_oby_answers_wait_their_turn() {
+    let (_folder, obid) = obid("harness-words-wait", true);
+    let first = said(&obid, json!({"said": "SAY hi", "new": true}));
+    let conversation = first.body["conversation"].as_str().unwrap().to_owned();
+    let events = follow_events(&obid);
+    let mut seen: Vec<(String, Value)> = vec![];
+    let to = |words: &str| json!({"said": words, "conversation": conversation});
+    let (slow, second, third) = std::thread::scope(|scope| {
+        let slow = scope.spawn(|| said(&obid, to("LINGER 2000")));
+        until(&events, &mut seen, "the first's agent", |n, d| {
             n == "thinking" && d["state"] == "running"
         });
-        let waiting = scope.spawn(|| {
-            said(
-                &obid,
-                json!({"said": "SAY second", "conversation": conversation}),
-            )
-        });
-        // The second began: the first is cancelled now, and still holds the lock.
-        until("the second's turn", &|n, d| {
-            n == "turn" && d["who"] == "user" && d["text"] == "SAY second"
-        });
-        let latest = said(
-            &obid,
-            json!({"said": "SAY third", "conversation": conversation}),
-        );
-        assert_eq!(latest.body["text"], "third", "{}", latest.text);
-        let _ = slow.join();
-        let _ = waiting.join();
+        let second = scope.spawn(|| said(&obid, to("SAY second")));
+        until(&events, &mut seen, "the second words", user("SAY second"));
+        let third = scope.spawn(|| said(&obid, to("SAY third")));
+        until(&events, &mut seen, "the third words", user("SAY third"));
+        (
+            slow.join().unwrap(),
+            second.join().unwrap(),
+            third.join().unwrap(),
+        )
     });
-    until("the third's answer", &|n, d| {
-        n == "turn" && d["who"] == "oby" && d["text"] == "third"
-    });
+    assert_eq!(slow.body["text"], "waited", "{}", slow.text);
+    assert_eq!(second.body["kind"], "none", "{}", second.text);
+    assert_eq!(second.body["conversation"], conversation.as_str());
+    assert_eq!(third.body["text"], "third", "{}", third.text);
+    // One turn for both, after the first's: the session heard them one after the other.
+    let prompts: Vec<Value> = turns(&obid).iter().map(|t| t["prompt"].clone()).collect();
+    assert_eq!(
+        prompts,
+        ["SAY hi", "LINGER 2000", "SAY second\n\nSAY third"],
+        "{prompts:?}"
+    );
+    let kept: Vec<(String, String)> = call(
+        &obid,
+        "GET",
+        &format!("/v1/conversation?id={conversation}"),
+        None,
+    )
+    .body
+    .as_array()
+    .unwrap()
+    .iter()
+    .map(|t| {
+        (
+            t["who"].as_str().unwrap().into(),
+            t["text"].as_str().unwrap().into(),
+        )
+    })
+    .collect();
+    let in_order = [
+        ("user", "SAY hi"),
+        ("oby", "hi"),
+        ("user", "LINGER 2000"),
+        ("user", "SAY second"),
+        ("user", "SAY third"),
+        ("oby", "waited"),
+        ("oby", "third"),
+    ]
+    .map(|(who, text)| (who.to_owned(), text.to_owned()));
+    assert_eq!(kept, in_order);
     let second = seen
         .iter()
-        .find(|(n, d)| n == "turn" && d["who"] == "user" && d["text"] == "SAY second")
+        .find(|(n, d)| user("SAY second")(n, d))
         .map(|(_, d)| d["id"].clone())
         .unwrap();
     assert!(
         !seen
             .iter()
-            .any(|(n, d)| (n == "thinking" || n == "reply") && d["turn"] == second),
-        "the replaced turn started: {seen:?}"
+            .any(|(n, d)| n == "thinking" && d["turn"] == second),
+        "a turn started for the second words alone: {seen:?}"
     );
+}
+
+/// Stop still interrupts the turn under way, at once; the words said while it ran then get their
+/// own turn.
+#[test]
+fn stop_interrupts_the_turn_and_the_words_waiting_get_theirs() {
+    let (_folder, obid) = obid("harness-stop-then-words", true);
+    let first = said(&obid, json!({"said": "SAY hi", "new": true}));
+    let conversation = first.body["conversation"].as_str().unwrap().to_owned();
+    let events = follow_events(&obid);
+    let mut seen: Vec<(String, Value)> = vec![];
+    let to = |words: &str| json!({"said": words, "conversation": conversation});
+    let started = Instant::now();
+    let next = std::thread::scope(|scope| {
+        let slow = scope.spawn(|| said(&obid, to("LINGER 30000")));
+        until(&events, &mut seen, "the first's agent", |n, d| {
+            n == "thinking" && d["state"] == "running"
+        });
+        let next = scope.spawn(|| said(&obid, to("SAY next")));
+        until(&events, &mut seen, "the next words", user("SAY next"));
+        let stopped = call(
+            &obid,
+            "POST",
+            "/v1/conversation/stop",
+            Some(&json!({"conversation": conversation})),
+        );
+        assert_eq!(stopped.body, json!({"stopped": true}));
+        assert_ne!(slow.join().unwrap().body["text"], "waited");
+        next.join().unwrap()
+    });
+    assert_eq!(next.body["text"], "next", "{}", next.text);
+    assert!(started.elapsed() < Duration::from_secs(25), "Stop ended it");
+    assert_eq!(turns(&obid).last().unwrap()["prompt"], "SAY next");
 }
 
 /// The owner's attachments reach the session: copied into its room as
