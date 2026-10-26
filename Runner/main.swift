@@ -108,7 +108,9 @@ desk.loadSettingOptions = {
     let perModel = ["codex": Dictionary(uniqueKeysWithValues: codex.map { ($0.id, $0.efforts) })]
     return (models, efforts, perModel)
 }
-desk.issueSync.enabled = true
+// Issue sync stays off: Oby writes issues only in its private findings ledger, which is obid's
+// (Engine/IssueWrites.swift), so the runner labels, claims and edits no issue.
+desk.issueSync.enabled = desk.writesIssues
 // Every failure is recorded, studied and acted on (Engine/Failures.swift).
 desk.failureLog.enabled = true
 // Macs that follow the runner take its merge checks (Engine/Checks.swift), and the Apple checks

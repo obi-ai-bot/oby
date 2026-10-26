@@ -141,15 +141,21 @@ fn publishes(command: &str) -> bool {
     false
 }
 
-/// A direct REST write to a code host: `curl -X PUT https://api.github.com/…/merge`.
+/// A direct REST write to a code host: `curl -X PUT https://api.github.com/…/merge`, and one
+/// that only sends a body (`curl -d …` is a POST), as an agent would open an issue with.
 fn posts_to_a_code_host(flat: &str, words: &[&str]) -> bool {
-    let client = words.iter().any(|w| {
-        matches!(
-            w.rsplit('/').next().unwrap_or(w),
-            "curl" | "wget" | "httpie" | "xh"
-        )
-    });
-    if !client {
+    let client = |w: &&str| w.rsplit('/').next().unwrap_or(w).to_owned();
+    let clients: Vec<String> = words
+        .iter()
+        .map(client)
+        .filter(|w| {
+            matches!(
+                w.as_str(),
+                "curl" | "wget" | "httpie" | "http" | "https" | "xh"
+            )
+        })
+        .collect();
+    if clients.is_empty() {
         return false;
     }
     let lower = flat.to_ascii_lowercase();
@@ -164,17 +170,36 @@ fn posts_to_a_code_host(flat: &str, words: &[&str]) -> bool {
     if !host {
         return false;
     }
+    let writes = |m: &str| {
+        matches!(
+            m.to_ascii_lowercase().as_str(),
+            "put" | "post" | "patch" | "delete"
+        )
+    };
     let method = words.windows(2).any(|pair| {
         (pair[0].eq_ignore_ascii_case("-X") || pair[0].eq_ignore_ascii_case("--request"))
-            && matches!(
-                pair[1].to_ascii_lowercase().as_str(),
-                "put" | "post" | "patch" | "delete"
-            )
+            && writes(pair[1])
+    }) || words.iter().any(|w| {
+        let w = w.to_ascii_lowercase();
+        w.strip_prefix("-x").is_some_and(writes)
+            || w.strip_prefix("--request=").is_some_and(writes)
+            || w.strip_prefix("--method=").is_some_and(writes)
     });
-    method || lower.contains("merge")
+    // A body makes curl POST and wget too; httpie and xh take the method as a word.
+    let body = words.iter().any(|w| {
+        w.starts_with("-d")
+            || w.starts_with("--data")
+            || w.starts_with("--json")
+            || w.starts_with("--form")
+            || w.starts_with("--post-")
+            || w.starts_with("--upload-file")
+            || matches!(*w, "-F" | "-T")
+    });
+    let httpie =
+        clients.iter().any(|c| c != "curl" && c != "wget") && words.iter().any(|w| writes(w));
+    method || body || httpie || lower.contains("merge")
 }
 
-/// `path` with `.` and `..` taken out, without touching the disk.
 fn normalized(path: &Path) -> PathBuf {
     let mut out = PathBuf::new();
     for component in path.components() {
@@ -823,6 +848,37 @@ mod tests {
                     Answer::Deny(_)
                 ),
                 "{rules:?}"
+            );
+        }
+    }
+
+    /// Every way the fixture lists of writing an issue from inside a job (D3: agents out of public
+    /// Issues) is denied in every mode, before any rule of the job's: obid writes issues only in
+    /// its private ledger (crate::ledger), never through an agent.
+    #[test]
+    fn an_agent_can_write_no_issue() {
+        let fixture: Value =
+            serde_json::from_str(include_str!("../tests/fixtures/agent-issue-writes.json"))
+                .unwrap();
+        let worktree = Path::new("/tmp/obid-job/worktree");
+        let attempts = fixture["attempts"].as_array().unwrap();
+        assert!(attempts.len() >= 10);
+        for attempt in attempts {
+            let tool = attempt["tool"].as_str().unwrap();
+            let denial = fixed_denial(tool, &attempt["input"], worktree, &[]);
+            assert!(denial.is_some(), "not denied: {attempt}");
+        }
+        // Reading issues is still fine.
+        for command in [
+            "gh issue view 12 -R obi-ai-bot/oby",
+            "gh issue list -R obi-ai-bot/oby --label bug",
+            "curl -s https://api.github.com/repos/obi-ai-bot/oby/issues",
+        ] {
+            let input = serde_json::json!({"command": command});
+            assert_eq!(
+                fixed_denial("Bash", &input, worktree, &[]),
+                None,
+                "{command}"
             );
         }
     }

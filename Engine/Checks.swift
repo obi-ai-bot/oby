@@ -1534,7 +1534,8 @@ extension Desk {
         merged.mergeError = nil
         // Replacing it closes the `oby-failure` issues it fixes (`Failures.observe`): GitHub won't, on dev.
         replace(merged)
-        if let findings = merged.review?.followUps, !findings.isEmpty, merged.review?.followUpIssue == nil {
+        // Without issue writes they stay in the job's report ("Follow-ups from Oby's review:").
+        if writesIssues, let findings = merged.review?.followUps, !findings.isEmpty, merged.review?.followUpIssue == nil {
             do {
                 let url = try await fileReviewFollowUps(merged, findings)
                 guard var latest = self.job(id), var review = latest.review else { return }

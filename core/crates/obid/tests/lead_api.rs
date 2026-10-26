@@ -1,5 +1,5 @@
 //! The Lead (#589): "work on the roadmap" reads the board with obid's own gh, leaves out what
-//! obid says it must, and starts the rest, claiming each issue.
+//! obid says it must, and starts the rest. It claims no issue outside a findings ledger.
 mod support;
 
 use std::path::{Path, PathBuf};
@@ -168,17 +168,9 @@ fn the_roadmap_starts_its_workable_issues_once_and_claims_each() {
         assert_eq!(job["check"], "node --test");
         assert_eq!(job["rounds"], 4);
     }
-    // Each issue is claimed as issue sync does: the label and the hidden line, no comment.
-    let claims = edits(&dir);
-    assert_eq!(claims.len(), 3, "{claims:?}");
-    for (claim, job) in claims.iter().zip(&started) {
-        let id = job["id"].as_str().unwrap();
-        let issue = job["issue"].as_u64().unwrap();
-        assert_eq!(
-            claim,
-            &format!("{issue} {REPO} status:in-progress <!-- oby-claim: job {id} -->")
-        );
-    }
+    // No issue is claimed: obid writes issues only in a findings ledger (crate::ledger), and this
+    // obid has none, so the work repository gets no label, no claim line and no comment.
+    assert_eq!(edits(&dir), Vec::<String>::new());
     // The Lead thinks with Sonnet and reads with Read alone, boxed, the board and the verdicts
     // inside the turn's fence.
     let args = std::fs::read_to_string(calls(&obid)[0].join("args")).unwrap();
@@ -200,7 +192,8 @@ fn the_roadmap_starts_its_workable_issues_once_and_claims_each() {
     assert_eq!(turns.len(), 1);
     assert_eq!(turns[0]["kind"], "lead");
     assert_eq!(turns[0]["started"].as_array().unwrap().len(), 3);
-    assert_eq!(turns[0]["claimed"].as_array().unwrap().len(), 3);
+    assert_eq!(turns[0]["claimed"], json!([]));
+    assert_eq!(turns[0]["refused"], json!([]));
     assert_eq!(turns[0]["skipped"][0]["reason"], "blocked");
 
     let again = said(&obid, "work on the roadmap");
@@ -217,7 +210,7 @@ fn the_roadmap_starts_its_workable_issues_once_and_claims_each() {
         1,
         "no model is asked when nothing is workable"
     );
-    assert_eq!(edits(&dir).len(), 3);
+    assert_eq!(edits(&dir).len(), 0);
 }
 
 /// An issue with an open pull request, `oby:skip` or another assignee is never started, even when
@@ -261,7 +254,8 @@ fn skipped_issues_are_never_started() {
     // The second call heard why the first plan was refused.
     let input = std::fs::read_to_string(calls(&obid)[1].join("input")).unwrap();
     assert!(input.contains("Your last plan was refused:"), "{input}");
-    assert_eq!(edits(&dir).len(), 1);
+    // No ledger: the started issue isn't claimed on the work repository.
+    assert_eq!(edits(&dir).len(), 0);
 }
 
 /// A board that can't be read is said in one line and recorded, and no model is asked.

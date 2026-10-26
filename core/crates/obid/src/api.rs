@@ -76,6 +76,9 @@ pub struct Shared {
     pub stopping: tokio::sync::watch::Receiver<bool>,
     /// The Cloudflare Tunnel phones reach this Mac through from anywhere (crate::tunnel, #896).
     pub tunnel: Arc<crate::tunnel::Tunnel>,
+    /// The findings ledger, when `config.json` names one (crate::ledger): the only place obid
+    /// writes issues.
+    pub ledger: Option<Arc<crate::ledger::Ledger>>,
 }
 
 /// What `status.cleanup` says: the job worktrees' folder and the disk space it took when last

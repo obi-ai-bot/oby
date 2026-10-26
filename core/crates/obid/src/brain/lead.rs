@@ -1181,7 +1181,8 @@ async fn start(
     for job in &started {
         let key = format!("{}#{}", job.repo, job.issue.unwrap_or_default());
         match claim(shared, job).await {
-            Ok(()) => turn.claimed.push(key),
+            Ok(true) => turn.claimed.push(key),
+            Ok(false) => {}
             Err(why) => turn.refused.push(format!("{key} not claimed: {why}")),
         }
     }
@@ -1256,48 +1257,23 @@ pub fn claimed(body: &str, id: &str) -> String {
     }
 }
 
-/// Claims the job's issue as issue sync does, with obid's own `gh`: `status:in-progress` and the
-/// hidden claim line at the end of its body, after the secret scan. No comment, no assignee: those
-/// email the owner (#162). Nothing is sent when the scan finds something or can't run.
-async fn claim(shared: &Shared, job: &Job) -> Result<(), String> {
+/// Claims the job's issue as issue sync does: `status:in-progress` and the hidden claim line at
+/// the end of its body, after the secret scan. Only an issue in the findings ledger, through the
+/// Ledger App (crate::ledger): an issue anywhere else, a public repository's above all, gets
+/// nothing, and the answer is false. No comment, no assignee: those email the owner (#162).
+async fn claim(shared: &Shared, job: &Job) -> Result<bool, String> {
     let issue = job.issue.ok_or("the job has no issue")?;
-    let gh = crate::github::gh().ok_or("gh isn't installed on the runner")?;
-    let body = crate::github::issue_body(&gh, &job.repo, issue)
-        .await
-        .ok_or("its body couldn't be read")?;
-    let body = claimed(&body, &job.id);
-    let scratch = shared
-        .config
-        .home
-        .join("plans")
-        .join(format!("claim-{}", job.id));
-    crate::store::make_private_dir(&scratch).map_err(|e| format!("no scratch folder: {e}"))?;
-    let verdict = crate::scan::scan(&[("issue body".into(), body.clone())], &scratch).await;
-    let _ = std::fs::remove_dir_all(&scratch);
-    match verdict {
-        crate::scan::Verdict::Clean => {}
-        crate::scan::Verdict::Found(_) => return Err("the secret scan found something".into()),
-        crate::scan::Verdict::CouldNotRun(why) => {
-            return Err(format!("the secret scan couldn't run ({why})"));
-        }
+    let Some(ledger) = shared.ledger.as_ref() else {
+        return Ok(false);
+    };
+    if !crate::ledger::may_write_issue(Some(ledger.settings()), &job.repo) {
+        return Ok(false);
     }
-    let number = issue.to_string();
-    crate::github::run(
-        &gh,
-        &[
-            "issue",
-            "edit",
-            &number,
-            "-R",
-            &job.repo,
-            "--add-label",
-            "status:in-progress",
-            "--body",
-            &body,
-        ],
-    )
-    .await
-    .map(|_| ())
+    ledger
+        .claim(&job.repo, issue, &job.id)
+        .await
+        .map(|()| true)
+        .map_err(|e| e.to_string())
 }
 
 #[cfg(test)]

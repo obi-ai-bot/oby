@@ -57,6 +57,7 @@ pub fn is_forbidden(name: &str) -> bool {
         || name == "GITHUB_TOKEN"
         || name == crate::token::ENV
         || name.starts_with("OBY_GITHUB_APP")
+        || name.starts_with(crate::ledger::VARIABLE_PREFIX)
 }
 
 /// The [`KEPT`] variables `get` has (obid's own environment): what every process obid starts
@@ -586,5 +587,35 @@ mod claude_tmpdir_tests {
                 .any(|(k, v)| k == "xcrun_db" && Path::new(v) == temp.join("xcrun_db")),
             "{env:?}"
         );
+    }
+}
+
+#[cfg(test)]
+mod issue_credential_tests {
+    use super::*;
+
+    /// A job can't write an issue with a credential either (tests/fixtures/agent-issue-writes.json):
+    /// its environment has an empty GitHub CLI configuration and none of obid's GitHub or Ledger
+    /// App variables, whatever obid's own environment or the account's extras held.
+    #[test]
+    fn no_credential_to_write_an_issue() {
+        let temp = Path::new("/tmp/obid-job/temp");
+        let extra = [
+            ("GH_TOKEN", OsString::from("ghp_x")),
+            ("GITHUB_TOKEN", OsString::from("ghs_x")),
+            ("OBY_GITHUB_APP_KEY", OsString::from("/k.pem")),
+            ("OBY_LEDGER_APP_KEY", OsString::from("/ledger.pem")),
+            ("OBY_LEDGER_TOKEN", OsString::from("ghs_ledger")),
+        ];
+        let env = sandbox_env(OsStr::new("/usr/bin"), temp, &extra);
+        for (name, _) in &extra {
+            assert!(
+                env.iter().all(|(n, _)| n != OsStr::new(name)),
+                "{name} reached the job"
+            );
+            assert!(is_forbidden(name), "{name}");
+        }
+        let gh = env.iter().find(|(n, _)| n == "GH_CONFIG_DIR").unwrap();
+        assert_eq!(gh.1, temp.join(".config/gh-none").into_os_string());
     }
 }

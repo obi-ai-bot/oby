@@ -312,6 +312,7 @@ final class API {
             throw APIError(.notFound, "There's no proposed issue with that index.")
         }
         guard report.proposals[position].filed == nil else { throw APIError(.conflict, "This issue was already filed.") }
+        guard desk.writesIssues else { throw APIError(.conflict, IssueWrites.off) }
         let proposal = report.proposals[position]
         do {
             let findings = try await Publish.scan(texts: [("issue title", proposal.title), ("issue body", proposal.filedBody)])

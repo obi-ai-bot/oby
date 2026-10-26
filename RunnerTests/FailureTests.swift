@@ -124,6 +124,8 @@ struct FailureTests {
         log.source = { nil }
         log.worktree = { _ in nil }
         log.enabled = true
+        // These tests are of the `oby-failure` issues themselves, which no Desk files by default.
+        desk.writesIssues = true
     }
 
     /// A job of Oby's that ended done just now, on a pull request Oby opened.
@@ -246,6 +248,7 @@ struct FailureTests {
         let store = JobStore(url: test.folder.appending(path: "restart.sqlite"))
         store.save(test.job("restarted") { $0.status = .running; $0.finished = nil })
         let restarted = Desk(accounts: AccountStore(root: test.folder), store: store)
+        restarted.writesIssues = true
         restarted.failureLog.enabled = true
         restarted.failureLog.sweep()
         #expect(store.failures().map(\.trigger) == [.interrupted])
@@ -336,6 +339,7 @@ struct FailureTests {
         let store = JobStore(url: test.folder.appending(path: "follow.sqlite"))
         store.save(published("followed") { _ in })
         let desk = Desk(accounts: AccountStore(root: test.folder), store: store)
+        desk.writesIssues = true
         desk.failureLog.enabled = true
         let follower = PullRequests(desk: desk)
         follower.read = { _ in Data(#"{"state":"MERGED","reviewDecision":"","baseRefName":"dev","mergedAt":"2026-10-11T09:00:00Z","headRefOid":"\#(CheckTests.head)"}"#.utf8) }
@@ -675,6 +679,7 @@ struct FailureTests {
         store.save(FailureTests.fixer("fixer", issue: 200, pr: 81, open: true))
         let restarted = Desk(accounts: AccountStore(root: other.folder), store: store)
         restarted.vault = other.desk.vault
+        restarted.writesIssues = true
         let again = restarted.failureLog
         again.makeAdapter = { [postMortems = other.postMortems] _, _, _ in postMortems }
         again.gh = other.github.run

@@ -1087,6 +1087,7 @@ final class Failures {
     /// commit: never a comment, which would email the owner (#198). Feature issues keep their own lifecycle. Their records are against the fix now, and their inbox items
     /// done. True once there's nothing left to do.
     private func closeIssues(of job: Job, pr: Int) async -> Bool {
+        guard desk?.writesIssues == true else { return true }
         do {
             let view = try await gh(["pr", "view", "\(pr)", "-R", Self.repo, "--json", "body,mergeCommit"])
             let info = (try? JSONSerialization.jsonObject(with: Data(view.utf8))) as? [String: Any] ?? [:]
@@ -1229,6 +1230,7 @@ final class Failures {
     /// `oby-failure` issue, up to date, or opens it: never a comment, an assignee or a mention, which
     /// would email the owner (#198). An issue Oby didn't file keeps its own body. Returns its URL.
     private func file(_ record: FailureRecord, _ postMortem: PostMortem, signature: String, issue: Int?, seen: Int) async throws -> String {
+        guard desk?.writesIssues == true else { throw Shell.Failure(message: IssueWrites.off) }
         let marker = "oby-failure-signature: \(signature)"
         if !labeled {
             _ = try? await gh(["label", "create", Self.label, "-R", Self.repo, "--color", "B60205", "--force",

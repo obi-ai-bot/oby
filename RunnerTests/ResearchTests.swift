@@ -317,6 +317,7 @@ struct ResearchTests {
         let claude = try accounts.add(agent: "claude", name: "Default", payer: "Test")
         accounts.setLabel("Max", for: claude.id)
         let desk = Desk(accounts: accounts, store: JobStore(url: folder.appending(path: "oby.sqlite")))
+        desk.writesIssues = true
         desk.repos = ["deskree-inc/oby"]
         desk.prepare = { $0 }
         desk.makeAgent = { _, _, _ in ConversationTests.IdleAgent() }
@@ -374,10 +375,46 @@ struct ResearchTests {
         #expect(started?.task == "Work on #1000: Add migration guide")
     }
 
+    /// A Desk writes no issue unless a test turns it on: a proposal isn't filed, and issue sync is
+    /// off. Oby writes issues only in obid's private findings ledger (Engine/IssueWrites.swift).
+    @Test @MainActor func aDeskFilesNoIssueByDefault() async throws {
+        let folder = try temporaryFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let desk = Desk(accounts: AccountStore(root: folder), store: JobStore(url: folder.appending(path: "oby.sqlite")))
+        #expect(!desk.writesIssues)
+        #expect(!desk.issueSync.enabled)
+        var research = job
+        research.id = "no-issue-writes"
+        research.kind = .research
+        research.status = .done
+        desk.store.save(research)
+        desk.store.save(ResearchReport(job: research.id, commit: "abc123", markdown: "# Answer", created: .now,
+                                       proposals: [ProposedIssue(index: 0, repo: research.repo, title: "Write docs", body: "What", labels: [], filed: nil, filedAt: nil)]))
+        let api = API(desk: desk, devices: Devices(file: folder.appending(path: "devices.json")))
+        let app = Application(router: api.router(owner: "well@example.com"))
+        actor Calls { var any = 0; func saw() { any += 1 }; func count() -> Int { any } }
+        let calls = Calls()
+        try await Shell.$stand.withValue(Shell.Stand(run: { _, _ in
+            await calls.saw()
+            return Shell.Output(status: 0, out: Data("https://github.com/deskree-inc/oby/issues/1".utf8), err: "")
+        })) {
+            try await app.test(.router) { client in
+                try await client.execute(uri: "/v1/jobs/no-issue-writes/proposals/0/file", method: .post,
+                                         headers: [.tailscaleUserLogin: "well@example.com"], body: ByteBuffer(string: #"{"start":false}"#)) { response in
+                    #expect(response.status == .conflict)
+                    #expect(String(buffer: response.body).contains("findings ledger"))
+                }
+            }
+        }
+        #expect(await calls.count() == 0)
+        #expect(desk.store.report(research.id)?.proposals.first?.filed == nil)
+    }
+
     @Test @MainActor func aMissingScannerFilesNothing() async throws {
         let folder = try temporaryFolder()
         defer { try? FileManager.default.removeItem(at: folder) }
         let desk = Desk(accounts: AccountStore(root: folder), store: JobStore(url: folder.appending(path: "oby.sqlite")))
+        desk.writesIssues = true
         var research = job
         research.id = "no-scanner"
         research.kind = .research
@@ -409,6 +446,7 @@ struct ResearchTests {
         let folder = try temporaryFolder()
         defer { try? FileManager.default.removeItem(at: folder) }
         let desk = Desk(accounts: AccountStore(root: folder), store: JobStore(url: folder.appending(path: "oby.sqlite")))
+        desk.writesIssues = true
         var research = job
         research.id = "secret-proposal"
         research.kind = .research

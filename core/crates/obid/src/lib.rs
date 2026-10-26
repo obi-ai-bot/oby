@@ -36,6 +36,7 @@ pub mod github_login;
 pub mod github_work;
 pub mod job;
 pub mod jobs;
+pub mod ledger;
 pub mod limits;
 pub mod logs;
 pub mod memory;
@@ -401,6 +402,13 @@ pub async fn serve(
         vault::shared().expect("the vault is installed first"),
         events.clone(),
     );
+    // The findings ledger, the only place obid writes issues (crate::ledger); none without one.
+    let ledger = config.ledger.clone().and_then(|settings| {
+        ledger::Ledger::open(&config.home, settings)
+            .inspect_err(|why| tracing::warn!("no findings ledger: {why}"))
+            .ok()
+            .map(Arc::new)
+    });
     let shared = Arc::new(api::Shared {
         config,
         token,
@@ -429,6 +437,7 @@ pub async fn serve(
         push: pushes,
         stopping: stopping_rx.clone(),
         tunnel: tunnel.clone(),
+        ledger,
     });
     let app = api::router(shared.clone());
 
@@ -475,6 +484,23 @@ pub async fn serve(
     repos::spawn(shared.clone());
     // Job alerts to Android phones through FCM (crate::push).
     push::spawn(shared.clone());
+    // Expired findings close in the ledger, a few times a day (crate::ledger).
+    if let Some(ledger) = shared.ledger.clone() {
+        let mut stopping = stopping_rx.clone();
+        tokio::spawn(async move {
+            let mut every = tokio::time::interval(std::time::Duration::from_secs(6 * 3600));
+            loop {
+                tokio::select! {
+                    _ = every.tick() => {
+                        if let Err(why) = ledger.sweep().await {
+                            tracing::warn!("the ledger's sweep: {why}");
+                        }
+                    }
+                    _ = stopping.changed() => return,
+                }
+            }
+        });
+    }
     // The worktrees' cleanup pass, in the background: never before the first answer.
     tokio::spawn(keep_worktrees_clean(shared.clone(), cancelled.clone()));
     // The machine's memory and each running job's, while jobs run or wait for it (crate::meter).

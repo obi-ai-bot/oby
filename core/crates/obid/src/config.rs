@@ -119,6 +119,10 @@ struct File {
     /// How conversations run (crate::brain::harness): `{"agent", "model", "budget"}`.
     #[serde(default)]
     conversation: Option<ConversationSetting>,
+    /// The findings ledger (crate::ledger): the private repository obid writes issues in, and
+    /// its Ledger App. Left out, obid writes no issue anywhere.
+    #[serde(default)]
+    ledger: Option<crate::ledger::Settings>,
 }
 
 /// `conversation` as written.
@@ -294,6 +298,9 @@ pub struct Config {
     /// (crate::push); Deskree's, `https://oby-control.deskree.com`, when left out. An iPhone's
     /// registration with any other is refused.
     pub push_relay: String,
+    /// `ledger`: the private repository obid writes issues in, and its Ledger App
+    /// (crate::ledger); none when left out, and then obid writes no issue.
+    pub ledger: Option<crate::ledger::Settings>,
 }
 
 /// Where the plug-ins obid ships are when the configuration doesn't say: the `plugins/` folder
@@ -612,6 +619,13 @@ impl Config {
                 "conversation.model is {model:?}: it is one of the agent's model names, like {CONVERSATION_MODEL}."
             ));
         }
+        if let Some(problem) = file
+            .ledger
+            .as_ref()
+            .and_then(crate::ledger::Settings::problem)
+        {
+            return invalid(problem);
+        }
         let budget = setting.and_then(|c| c.budget).unwrap_or(600);
         if !(10..=3600).contains(&budget) {
             return invalid(format!(
@@ -645,6 +659,7 @@ impl Config {
             guest_request_every: file.guest_request_every,
             guest_model_api: file.guest_model_api,
             push_relay,
+            ledger: file.ledger,
             conversation: Conversation {
                 harness,
                 agent,
@@ -1258,6 +1273,34 @@ mod tests {
             ("git@github.com:o/r.git/", Some(RemoteKind::Ssh)),
         ] {
             assert_eq!(remote_kind(remote), kind, "{remote}");
+        }
+    }
+
+    /// `ledger` names the private repository obid writes issues in; left out, there's none, and
+    /// settings that won't do keep obid from starting.
+    #[test]
+    fn the_ledger_is_configured_or_absent() {
+        let base = r#""home": "/tmp/obid-home", "owner": "o", "listen": "127.0.0.1:7777""#;
+        assert_eq!(Config::parse(&format!("{{{base}}}")).unwrap().ledger, None);
+        let config = Config::parse(&format!(
+            r#"{{{base}, "ledger": {{"repo": "acme/work", "appId": "123", "installation": 9, "mostPerJob": 3}}}}"#
+        ))
+        .unwrap();
+        let ledger = config.ledger.unwrap();
+        assert_eq!(ledger.repo, "acme/work");
+        assert_eq!(ledger.installation, Some(9));
+        assert_eq!(ledger.most_per_job, 3);
+        assert_eq!(ledger.key, None);
+        for bad in [
+            r#"{"repo": "work", "appId": "1"}"#,
+            r#"{"repo": "acme/work", "appId": "1", "mostPerJob": 0}"#,
+            r#"{"repo": "acme/work", "appId": "1", "key": "key.pem"}"#,
+            r#"{"repo": "acme/work"}"#,
+        ] {
+            assert!(
+                Config::parse(&format!(r#"{{{base}, "ledger": {bad}}}"#)).is_err(),
+                "{bad}"
+            );
         }
     }
 

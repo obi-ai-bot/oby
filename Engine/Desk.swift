@@ -421,6 +421,10 @@ final class Desk {
     @ObservationIgnored var postCheck: (_ author: Job, _ run: CheckRun) async throws -> URL = CheckRun.post
     @ObservationIgnored var scanForMerge: (_ job: Job, _ head: String) async throws -> [Publish.Finding] = MacCheck.scan
     @ObservationIgnored var mergePullRequest: (_ job: Job, _ check: MacCheck) async throws -> Void = MacCheck.merge
+    /// Whether this Desk writes GitHub issues: issue sync, `oby-failure` issues, review follow-ups
+    /// and research proposals. Off: Oby writes issues only in obid's private findings ledger
+    /// (Engine/IssueWrites.swift); only tests of those writers turn it on.
+    @ObservationIgnored var writesIssues = false
     /// Files accumulated review follow-ups once the pull request has merged. Tests replace it with
     /// a recorder; production uses GitHub with a stable marker to recover across restarts.
     @ObservationIgnored var fileReviewFollowUps: (_ job: Job, _ findings: [String]) async throws -> String = MacCheck.fileReviewFollowUps

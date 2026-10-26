@@ -90,6 +90,8 @@ struct CheckTests {
             made.followUpIssues.append((job, findings))
             return "https://github.com/deskree-inc/oby/issues/900"
         }
+        // These tests are of the runner's follow-up issue itself, which no Desk files by default.
+        desk.writesIssues = true
         desk.onCheckChange = { [made] in made.events.append($0) }
         // A rebase is reviewed again unless a test says its patch is the same (#237).
         desk.samePatch = { _, _, _, _ in false }

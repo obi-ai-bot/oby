@@ -144,7 +144,7 @@ Also from #546, with no Swift test of their own: the brain reads the last 50 tur
 | LeadTests.swiftChecksEveryLeadPlan | brain/lead.rs `obid_checks_every_lead_plan` |  |
 | LeadTests.aBriefBecomesAJobWithSwiftsTaskBranchAndLoop | brain/lead.rs `a_brief_becomes_a_task_with_its_files_and_scope` | 4 rounds and the check: lead_api.rs `the_roadmap_starts_its_workable_issues_once_and_claims_each`; the branch is obid's own |
 | LeadTests.vagueRequestsGoToTheLeadAndNamedWorkToTheBrain | brain/lead.rs `vague_requests_go_to_the_lead_and_named_work_to_the_brain` |  |
-| LeadTests.theLeadStartsJobsRightAwayClaimsEachIssueAndIsLogged | lead_api.rs `the_roadmap_starts_its_workable_issues_once_and_claims_each` | the claim is issue sync's label and hidden line, never a comment (#162) |
+| LeadTests.theLeadStartsJobsRightAwayClaimsEachIssueAndIsLogged | lead_api.rs `the_roadmap_starts_its_workable_issues_once_and_claims_each` | the claim is issue sync's label and hidden line, never a comment (#162), and only on an issue in the findings ledger: without one, nothing is claimed (src/ledger.rs `a_claim_writes_only_in_the_ledger`) |
 | LeadTests.theSameRequestTwiceStartsNothingNew | lead_api.rs `the_roadmap_starts_its_workable_issues_once_and_claims_each` | nothing workable asks no model |
 | LeadTests.aBoardThatCantBeReadIsSaidAndLogged | lead_api.rs `a_board_that_cant_be_read_is_said_and_recorded` |  |
 | LeadTests.leadTurnsAndBrainTurnsShareTheTableAndStayApart | lead_api.rs `the_roadmap_starts_its_workable_issues_once_and_claims_each` | kept apart in `home/lead-turns.jsonl`, `kind` `lead` |
