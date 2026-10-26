@@ -662,13 +662,7 @@ struct State {
     /// The accounts being signed in or removed (crate::accounts): no job is dispatched to them or
     /// starts on them meanwhile ([`Jobs::begin_change`]).
     changing: std::collections::HashSet<String>,
-    /// What each job's agent may reach through obid's egress proxy, by site, once decided, and
-    /// held while it's asked about ([`Jobs::may_reach`]): until the job's worker ends.
-    reached: HashMap<String, HashMap<String, Reached>>,
 }
-
-/// A site's answer for a job ([`State::reached`]): none until decided.
-type Reached = Arc<tokio::sync::Mutex<Option<Result<(), String>>>>;
 
 /// An account being signed in or removed ([`Jobs::begin_change`]), until this is dropped.
 pub struct Changing {
@@ -763,6 +757,10 @@ pub struct Jobs {
     /// (a conversation's waiting Claude Code, crate::brain::harness).
     short_of_memory: std::sync::OnceLock<Box<dyn Fn() + Send + Sync>>,
 }
+
+/// The most sites one job's agent waits for the owner's answer about at once, through obid's
+/// egress proxy ([`Jobs::ask_about`]): more would flood the inbox.
+const MOST_SITES_ASKED: usize = 3;
 
 /// How often the meter reads while jobs run or wait for memory ([`Jobs::meter`]).
 const METER_TICK: Duration = Duration::from_secs(5);
@@ -944,7 +942,6 @@ impl Jobs {
                 publishing: std::collections::HashSet::new(),
                 followed: HashMap::new(),
                 changing: std::collections::HashSet::new(),
-                reached: HashMap::new(),
             }),
             changed: Notify::new(),
             transcripts,
@@ -1011,6 +1008,12 @@ impl Jobs {
 
     pub fn use_tetrix(&self, tetrix: Arc<crate::tetrix::Tetrix>) {
         let _ = self.tetrix.set(tetrix);
+    }
+
+    /// Whether this machine's job sandbox holds an agent to obid's egress proxy
+    /// ([`Sandbox::confines_egress`]).
+    pub fn confines_egress(&self) -> bool {
+        self.sandbox.as_ref().is_ok_and(Sandbox::confines_egress)
     }
 
     pub fn use_egress(&self, egress: Arc<crate::egress::Egress>) {
@@ -3530,7 +3533,6 @@ impl Jobs {
                     let mut state = jobs.lock();
                     state.workers.remove(&id);
                     state.wrapping.remove(&id);
-                    state.reached.remove(&id);
                 }
                 // Once its slot is back: a reading under way can't measure it again ([`Jobs::record`]).
                 jobs.metered(&id);
@@ -4269,6 +4271,10 @@ impl Jobs {
             return Some(Err(e));
         }
         *kept = changed;
+        // What the rule let agents reach is decided again (crate::egress).
+        if let Some(egress) = self.egress.get() {
+            egress.forget(None);
+        }
         Some(Ok(kept.rules.clone()))
     }
 
@@ -4296,6 +4302,9 @@ impl Jobs {
                 return;
             }
             *kept = changed;
+        }
+        if let Some(egress) = self.egress.get() {
+            egress.forget(None);
         }
         let waiting: Vec<String> = self.lock().asks.keys().cloned().collect();
         for id in waiting {
@@ -4477,7 +4486,6 @@ impl Jobs {
         match verdict {
             permissions::Verdict::Allow => {
                 self.answered(id, &call, worktree, None);
-                self.let_through(id, &call, &bounds);
                 Ruling::Now(Answer::Allow)
             }
             permissions::Verdict::Deny(why) => {
@@ -4485,8 +4493,15 @@ impl Jobs {
                 Ruling::Now(Answer::Deny(why))
             }
             permissions::Verdict::Ask => {
-                let permission =
+                let mut permission =
                     permissions::card(&call, &permissions::new_id(), &job.repo, &bounds);
+                let sites = self.sites_opened(&call, &bounds);
+                if !sites.is_empty() {
+                    permission.detail.push_str(&format!(
+                        "\n\nAllowing it lets this job reach {} until it ends.",
+                        sites.join(", ")
+                    ));
+                }
                 let (reply, answer) = tokio::sync::oneshot::channel();
                 let first = {
                     let mut state = self.lock();
@@ -4508,82 +4523,88 @@ impl Jobs {
         }
     }
 
-    /// Whether job `id`'s agent may reach `host` on `port` through obid's egress proxy
-    /// (crate::egress, #616), and else why not. Its tool's own services go through, telemetry to
-    /// anyone else doesn't, and another Obi's review reaches nothing more (it only reads, and
-    /// never asks). Any other site is decided once for the job, as a fetch from it
-    /// (`WebFetch(domain:<site>)`): a package registry goes through in Sandbox mode
-    /// ([`crate::egress::REGISTRIES`]); else the repository's rules and the job's mode answer, or
-    /// the owner's card does: Allow lets it through until the job ends, Always allow saves the
-    /// rule too. Connections to a site being asked about wait for that one answer.
-    pub(crate) async fn may_reach(&self, id: &str, host: &str, port: u16) -> Result<(), String> {
-        let job = self.get(id).ok_or("The job is gone.")?;
-        if Tool::from_id(&job.agent).is_some_and(|tool| crate::egress::tools_own(tool, host)) {
-            return Ok(());
-        }
-        let site = crate::egress::site(host, port);
-        if crate::egress::telemetry(host) || job.obi.is_some() {
-            return Err(format!("This job doesn't reach {site}."));
-        }
-        let gate = self
-            .lock()
-            .reached
-            .entry(id.to_owned())
-            .or_default()
-            .entry(site.clone())
-            .or_default()
-            .clone();
-        let mut known = gate.lock().await;
-        if let Some(known) = &*known {
-            return known.clone();
-        }
-        let url = format!("https://{site}/");
-        let worktree = self.worktree_path(id);
-        let decided = if port == 443
-            && Self::mode_of(&job) == Mode::Sandbox
-            && crate::egress::REGISTRIES.contains(&host)
-        {
-            self.answered(
-                id,
-                &Call::new("WebFetch", &json!({"url": url})),
-                &worktree,
-                None,
-            );
-            Ok(())
-        } else {
-            let answer = match self.rule_on(id, "WebFetch", &json!({"url": url}), &worktree) {
-                Ruling::Now(answer) => answer,
-                Ruling::Ask(answer) => answer
-                    .await
-                    .unwrap_or_else(|_| Answer::Deny(format!("Nobody let it reach {site}."))),
-            };
-            match answer {
-                Answer::Allow | Answer::AllowWith(_) => Ok(()),
-                Answer::Deny(why) => Err(why),
-            }
+    /// What job `id`'s agent reaches through obid's egress proxy (crate::egress, #616) without
+    /// a decision of its own: its tool's own services on 443 go through; telemetry to anyone
+    /// else, and anything more for another Obi's review (it only reads, and never asks), don't.
+    /// None for a site the job decides ([`Jobs::ask_about`]).
+    pub(crate) fn reach_now(&self, id: &str, host: &str, port: u16) -> Option<Result<(), String>> {
+        let Some(job) = self.get(id) else {
+            return Some(Err("The job is gone.".into()));
         };
-        *known = Some(decided.clone());
-        decided
+        if Tool::from_id(&job.agent)
+            .is_some_and(|tool| crate::egress::tools_own(tool, host, port))
+        {
+            return Some(Ok(()));
+        }
+        (crate::egress::telemetry(host) || job.obi.is_some()).then(|| {
+            Err(format!(
+                "This job doesn't reach {}.",
+                crate::egress::site(host, port)
+            ))
+        })
     }
 
-    /// The sites a network call just allowed names ([`crate::egress::sites_named`]): the proxy
-    /// lets the job's agent reach them without asking again, until the job ends. Only for a call
-    /// that reaches the network as obid reads it, which is asked about or covered by a rule the
-    /// owner saved (or Bypass): an `echo https://…` that went through by itself opens nothing.
-    fn let_through(&self, id: &str, call: &Call, bounds: &permissions::Bounds) {
-        if permissions::reach(call, bounds) != Some(permissions::Reach::Network) {
-            return;
+    /// How job `id` decides a site its agent wants to reach (`host` on `port`), once for its
+    /// worker (crate::egress keeps the answer): as a fetch from it (`WebFetch` of
+    /// `https://<site>/`). A package registry goes through in Sandbox mode
+    /// ([`crate::egress::REGISTRIES`]); else the repository's rules and the job's mode answer, or
+    /// the owner's card does (Allow for the rest of the job, Always allow saving the rule too). At
+    /// most [`MOST_SITES_ASKED`] wait for the owner at once: another is refused this once.
+    pub(crate) fn ask_about(&self, id: &str, host: &str, port: u16) -> crate::egress::Asked {
+        use crate::egress::Asked;
+        let Some(job) = self.get(id) else {
+            return Asked::Now(Err("The job is gone.".into()));
+        };
+        let site = crate::egress::site(host, port);
+        let input = json!({"url": format!("https://{site}/")});
+        let call = Call::new("WebFetch", &input);
+        let worktree = self.worktree_path(id);
+        let mode = Self::mode_of(&job);
+        if port == 443 && mode == Mode::Sandbox && crate::egress::REGISTRIES.contains(&host) {
+            self.answered(id, &call, &worktree, None);
+            return Asked::Now(Ok(()));
         }
-        let mut state = self.lock();
-        let sites = state.reached.entry(id.to_owned()).or_default();
-        for site in crate::egress::sites_named(call) {
-            // One being asked about now is the card's to settle.
-            if let Ok(mut known) = sites.entry(site).or_default().try_lock()
-                && known.is_none()
-            {
-                *known = Some(Ok(()));
-            }
+        let bounds = self.bounds(&job, &worktree);
+        let asking = || {
+            self.lock().asks.get(id).map_or(0, |asks| {
+                asks.iter().filter(|a| a.call.tool == "WebFetch").count()
+            })
+        };
+        if permissions::decide(&call, mode, &self.rules_for(&job.repo), &bounds)
+            == permissions::Verdict::Ask
+            && asking() >= MOST_SITES_ASKED
+        {
+            return Asked::Busy(format!(
+                "Other sites are waiting for the owner: ask for {site} again once they answer."
+            ));
         }
+        match self.rule_on(id, "WebFetch", &input, &worktree) {
+            Ruling::Now(Answer::Allow | Answer::AllowWith(_)) => Asked::Now(Ok(())),
+            Ruling::Now(Answer::Deny(why)) => Asked::Now(Err(why)),
+            Ruling::Ask(answer) => Asked::Card(answer),
+        }
+    }
+
+    /// The sites the owner's yes to `call` lets the job's agent reach through the egress proxy
+    /// until the job ends, as its card says: a fetch's site, and the `http(s)://` addresses of
+    /// the commands in it that reach the network as obid reads them (not a comment's, nor an
+    /// `echo`'s). None where agents aren't proxied.
+    fn sites_opened(&self, call: &Call, bounds: &permissions::Bounds) -> Vec<String> {
+        if self.egress.get().is_none()
+            || permissions::reach(call, bounds) != Some(permissions::Reach::Network)
+        {
+            return Vec::new();
+        }
+        let words = match call.tool.as_str() {
+            "WebFetch" => call.url.iter().cloned().collect(),
+            "Bash" => call
+                .command
+                .as_deref()
+                .map(|command| permissions::network_words(command, bounds))
+                .unwrap_or_default(),
+            _ => Vec::new(),
+        };
+        crate::egress::sites_named(&words)
     }
 
     /// Keeps on the job a permission obid answered by its own rules, `refused` with the words the
@@ -4696,10 +4717,7 @@ impl Jobs {
         });
         for (ask, answer) in answered {
             let refused = match &answer {
-                Answer::Allow | Answer::AllowWith(_) => {
-                    self.let_through(id, &ask.call, &bounds);
-                    None
-                }
+                Answer::Allow | Answer::AllowWith(_) => None,
                 Answer::Deny(why) => Some(why.as_str()),
             };
             self.answered(id, &ask.call, &worktree, refused);
@@ -4818,9 +4836,12 @@ impl Jobs {
                     .push(words.to_owned());
             });
         }
-        if matches!(answer, Answer::Allow) {
+        // The owner's own yes opens the sites it names (a rule's or a mode's never does).
+        if matches!(answer, Answer::Allow)
+            && let Some(egress) = self.egress.get()
+        {
             let bounds = self.bounds(&job, &self.worktree_path(id));
-            self.let_through(id, &ask.call, &bounds);
+            egress.let_through(id, &self.sites_opened(&ask.call, &bounds));
         }
         let _ = ask.reply.send(answer);
         if decision == Decision::Always
@@ -5053,6 +5074,10 @@ impl Jobs {
                 job.mode = Some(mode.as_str().to_owned());
             }
         })?;
+        // What the old mode let its agent reach is decided again (crate::egress).
+        if let Some(egress) = self.egress.get() {
+            egress.forget(Some(id));
+        }
         self.reconsider(id);
         self.get(id)
     }

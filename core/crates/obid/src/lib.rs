@@ -121,6 +121,21 @@ pub enum StartError {
     },
 }
 
+/// As many open files as this Mac lets obid have: each tunnel of the egress proxy holds two, and
+/// macOS starts a process with 256 (#1471's review). macOS refuses more than `OPEN_MAX` (10240)
+/// when the hard limit is unlimited.
+fn raise_open_files() {
+    use nix::sys::resource::{Resource, getrlimit, setrlimit};
+    let Ok((soft, hard)) = getrlimit(Resource::RLIMIT_NOFILE) else {
+        return;
+    };
+    for want in [hard, hard.min(10240)] {
+        if want <= soft || setrlimit(Resource::RLIMIT_NOFILE, want, hard).is_ok() {
+            return;
+        }
+    }
+}
+
 /// Makes `home` if it isn't there yet, and keeps it its owner's alone (0700): it holds the API
 /// token, the Obi key, clones and the database. A home that is there already with group or
 /// world access is tightened to 0700, the way `home/api-token` is to 0600.
@@ -324,14 +339,17 @@ pub async fn serve(
         }
     })?;
     jobs.set_api_address(bound);
-    // A job's agent's only way off the Mac (crate::egress, #616).
-    let egress = egress::Egress::start(&jobs)
-        .await
-        .map_err(|source| StartError::Listen {
-            address: SocketAddr::from(([127, 0, 0, 1], 0)),
-            source,
-        })?;
-    jobs.use_egress(egress);
+    // A job's agent's only way off the Mac, where the box holds it to that (crate::egress, #616).
+    if jobs.confines_egress() {
+        raise_open_files();
+        let egress = egress::Egress::start(&jobs)
+            .await
+            .map_err(|source| StartError::Listen {
+                address: SocketAddr::from(([127, 0, 0, 1], 0)),
+                source,
+            })?;
+        jobs.use_egress(egress);
+    }
     stopwatch.lap("jobs");
     let (stopping_tx, stopping_rx) = tokio::sync::watch::channel(false);
     let link = sphere::Link::open(
