@@ -1,7 +1,10 @@
 # Security scans, report-only: SAST (Semgrep), dependencies + IaC misconfig (Trivy) and secrets
-# (TruffleHog) on every pull request, every push to dev and main, and weekly on dev for newly
-# disclosed CVEs. Findings never fail a check; a scanner that did not run does (the "did not run"
-# steps), so a green check means the scan really happened.
+# (TruffleHog) in the merge queue, on every push to dev and main, and weekly on dev for newly
+# disclosed CVEs. Pull requests run them too until the repository variable TWO_STEP_CI is 'true'
+# (two-step CI, oby-plan#2: set together with the merge queue); from then on a ready PR skips them
+# green unless it carries the `full-ci` label, and the queue runs them once on the merged result.
+# Findings never fail a check; a scanner that did not run does (the "did not run" steps), so a
+# green check means the scan really happened.
 #
 # This repository is public, so everything a run writes is public: the job summaries and the
 # artifacts. Semgrep and Trivy report code locations (Trivy masks any secret it prints), and
@@ -20,6 +23,7 @@ on:
     # opened/synchronize/reopened stay explicit. Not `labeled`: a run started by any other label
     # would post skipped checks over real ones; `full-ci` takes effect on the next push.
     types: [opened, synchronize, reopened, ready_for_review]
+  merge_group:
   push:
     branches: [dev, main]
   schedule:
@@ -36,9 +40,10 @@ concurrency:
 jobs:
   sast:
     name: SAST — Semgrep
-    # Draft PRs skip unless labelled full-ci. A skipped job still reports this check (as passing),
-    # so a required check never waits on "Expected"; ready_for_review runs it.
-    if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft || contains(github.event.pull_request.labels.*.name, 'full-ci') }}
+    # Pull requests skip unless labelled full-ci: drafts always (D1, oby-plan#1), ready PRs while
+    # TWO_STEP_CI is 'true' (two-step CI, oby-plan#2). A skipped job still reports this check (as
+    # passing), so a required check never waits on "Expected"; the merge queue runs it in full.
+    if: ${{ github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci') || (!github.event.pull_request.draft && vars.TWO_STEP_CI != 'true') }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -76,8 +81,8 @@ jobs:
 
   sca-iac:
     name: SCA + IaC — Trivy
-    # Draft PRs skip unless labelled full-ci (see sast).
-    if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft || contains(github.event.pull_request.labels.*.name, 'full-ci') }}
+    # The same pull-request skip as sast.
+    if: ${{ github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci') || (!github.event.pull_request.draft && vars.TWO_STEP_CI != 'true') }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -112,8 +117,8 @@ jobs:
 
   secrets:
     name: Secrets — TruffleHog
-    # Draft PRs skip unless labelled full-ci (see sast).
-    if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft || contains(github.event.pull_request.labels.*.name, 'full-ci') }}
+    # The same pull-request skip as sast.
+    if: ${{ github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci') || (!github.event.pull_request.draft && vars.TWO_STEP_CI != 'true') }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
