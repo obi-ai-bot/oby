@@ -403,6 +403,9 @@ enum End {
     /// Its account hit its usage limit and another of the tool has room: the run starts again,
     /// there ([`Jobs::move_on`]).
     MovedOn,
+    /// Its agent asked the owner with `oby_ask_owner` and ended its turn: the job waits for the
+    /// answer with no agent ([`Jobs::wait_for_answer`]).
+    Asked(permissions::QuestionCall),
 }
 
 impl From<String> for End {
@@ -646,6 +649,9 @@ struct State {
     told_late: std::collections::HashSet<String>,
     /// Each job's prompts waiting for the owner, the one shown first.
     asks: HashMap<String, VecDeque<Ask>>,
+    /// What each job's agent asked the owner with `oby_ask_owner` in its turn under way: asked once
+    /// the turn ends ([`End::Asked`]).
+    asked: HashMap<String, permissions::QuestionCall>,
     /// Failing Apple-check output is transient and only included in the asking job's response.
     apple_logs: HashMap<String, String>,
     /// The jobs publishing now: one publish at a time per job.
@@ -925,6 +931,7 @@ impl Jobs {
                 wrapping: std::collections::HashSet::new(),
                 told_late: std::collections::HashSet::new(),
                 asks: HashMap::new(),
+                asked: HashMap::new(),
                 apple_logs: HashMap::new(),
                 publishing: std::collections::HashSet::new(),
                 followed: HashMap::new(),
@@ -1076,6 +1083,12 @@ impl Jobs {
     /// in the job's private MCP config.
     fn connection_mcp(&self, id: &str) -> Option<(String, String)> {
         self.connections.get()?.open_job(id)
+    }
+
+    /// Oby's own MCP server for job `id`, whatever it's connected to: where a Codex or Cursor
+    /// agent asks the owner (`oby_ask_owner`).
+    fn ask_mcp(&self, id: &str) -> Option<(String, String)> {
+        Some(self.connections.get()?.open_ask(id))
     }
 
     /// The line that tells job `id`'s agent what the fences around its connected apps' results
@@ -4511,6 +4524,7 @@ impl Jobs {
                         .then(|| permissions::QuestionCall {
                             questions: a.call.questions.clone(),
                             answers: a.answers.clone(),
+                            ended_turn: false,
                         });
                     (a.permission.clone(), call)
                 })
@@ -4892,6 +4906,40 @@ impl Jobs {
         Some(Ok(self.get(id).unwrap_or(job)))
     }
 
+    /// Job `id`'s agent asks the owner with `oby_ask_owner` (a Codex or Cursor job): what the tool
+    /// answers at once. The question is asked once its turn ends ([`End::Asked`]); it can only ask,
+    /// never answer or allow anything. A second one in the same turn takes the first's place.
+    pub fn ask_owner(&self, id: &str, arguments: &Value) -> Result<&'static str, String> {
+        let job = self.get(id).ok_or("The job is gone.")?;
+        if !asks_through_oby(&job) {
+            return Err(permissions::NO_ONE_TO_ASK.into());
+        }
+        let call = permissions::ask_owner_call(arguments).ok_or(
+            "Ask one question, its whole text in `question` (up to 1,000 characters), with `options` (each a `label`, and a `description` if it helps) when there are a few clear choices.",
+        )?;
+        self.lock().asked.insert(id.to_owned(), call);
+        Ok(
+            "Asked the owner. End your turn now with a one-line summary; Oby will resume this session with the answer.",
+        )
+    }
+
+    /// The job waits for the owner's answer to what its agent asked with `oby_ask_owner`, as a
+    /// question a restart kept does (#858): `running` with its question and no agent, in the
+    /// inbox, until the answer picks its session up ([`Jobs::answer_kept_question`]).
+    fn wait_for_answer(&self, id: &str, call: permissions::QuestionCall) {
+        let Some(job) = self.get(id).filter(|j| j.status == Status::Running) else {
+            return;
+        };
+        let permission = permissions::question_card(&call.questions, &permissions::new_id(), 0);
+        // The inbox has it before the job shows it, as [`Jobs::show`] does.
+        self.note(PermissionNote::Waiting(Box::new(job), permission.clone()));
+        self.update(id, |job| {
+            job.permission = Some(permission);
+            job.question_call = Some(call);
+            job.step = "Waiting for your answer".into();
+        });
+    }
+
     /// Changes how much the job asks, from now on: the prompts waiting now that the new mode
     /// allows are answered. A finished job keeps the mode for when it runs again. A review job stays
     /// in Plan.
@@ -4909,7 +4957,12 @@ impl Jobs {
     /// question a restart kept among them. obid shutting down (`shutdown`) keeps the question the
     /// job shows, and its inbox item, for the next start to keep waiting (#858).
     fn drop_asks(&self, id: &str, shutdown: bool) {
-        let dropped = self.lock().asks.remove(id).unwrap_or_default();
+        let dropped = {
+            let mut state = self.lock();
+            // What its agent asked with `oby_ask_owner` in a turn that didn't end well goes too.
+            state.asked.remove(id);
+            state.asks.remove(id).unwrap_or_default()
+        };
         let shown = self.get(id).and_then(|j| j.permission);
         let kept = shown.as_ref().filter(|p| shutdown && p.is_question());
         let mut settled: Vec<&str> = dropped.iter().map(|a| a.permission.id.as_str()).collect();
@@ -5844,9 +5897,12 @@ impl Jobs {
                 while matches!(outcome, Err(End::MovedOn)) && *signal.borrow() == Signal::Run {
                     outcome = self.run_owner_job(id, &signal).await;
                 }
+                // Waiting for the owner's answer isn't an end either: kept as a shutdown keeps it.
+                let paused =
+                    *signal.borrow() == Signal::Shutdown || matches!(outcome, Err(End::Asked(_)));
                 // A job that ends any other way than done (failed, stopped) shows what it made
                 // too; done published them before it ended. A shutdown isn't an end.
-                if *signal.borrow() != Signal::Shutdown {
+                if !paused {
                     self.publish_artifacts(id).await;
                 }
                 // Ended without commits to publish, what it left uncommitted is kept as a `wip:`
@@ -5863,7 +5919,7 @@ impl Jobs {
                         .unwrap_or_default(),
                     Err(_) => String::new(),
                 };
-                if *signal.borrow() != Signal::Shutdown
+                if !paused
                     && !keeps_none
                     && let Err(e) = self.keep_wip(id).await
                 {
@@ -5918,6 +5974,7 @@ impl Jobs {
             self.update(id, |job| job.crash_resumes.clear());
         }
         let stopped = *signal.borrow() != Signal::Run;
+        let asked = matches!(outcome, Err(End::Asked(_)));
         match outcome {
             // The owner stopped it: its exchange gets a failed result. A shutdown leaves it be.
             _ if stopped => {
@@ -5926,6 +5983,8 @@ impl Jobs {
                 }
             }
             Ok(()) => {}
+            // Last, once nothing of its run can take the question down again.
+            Err(End::Asked(call)) => self.wait_for_answer(id, call),
             Err(end) => {
                 let review = self.get(id).and_then(|j| {
                     let body: ReviewRequest =
@@ -5944,8 +6003,9 @@ impl Jobs {
                             next,
                             resumes,
                         } => (reason.clone(), *next, *resumes),
-                        // Only a stop or a shutdown ends a run that moved on: handled above.
-                        End::MovedOn => (
+                        // Only a stop or a shutdown ends a run that moved on, and one that asked
+                        // waits: both handled above.
+                        End::MovedOn | End::Asked(_) => (
                             "It stopped while moving to another account.".into(),
                             Some(crate::job::TRY_AGAIN),
                             None,
@@ -5987,8 +6047,8 @@ impl Jobs {
             }
         }
         // Oby's review of published work ended: its verdict goes to the job it read. A shutdown
-        // isn't an end: it runs again once obid starts.
-        if *signal.borrow() != Signal::Shutdown {
+        // isn't an end: it runs again once obid starts, nor is a question it waits on.
+        if *signal.borrow() != Signal::Shutdown && !asked {
             self.reviewed(id);
         }
     }
@@ -6754,12 +6814,13 @@ impl Jobs {
                         plan,
                         plan_mode: "plan".into(),
                         agent_mode: "agent".into(),
-                        // Oby's Tetrix server, the only one Cursor gets (crate::tetrix).
-                        mcp: self
-                            .tetrix_mcp(&job)
-                            .map(|(url, token)| vec![json!({"type": "http", "name": "tetrix", "url": url,
-                                "headers": [{"name": "Authorization", "value": format!("Bearer {token}")}]})])
-                            .unwrap_or_default(),
+                        // Oby's Tetrix server (crate::tetrix) and, for the owner's job, Oby's own
+                        // with only `oby_ask_owner`: the only ones Cursor gets.
+                        mcp: [("tetrix", self.tetrix_mcp(&job)), ("oby", (!obi_review).then(|| self.ask_mcp(id)).flatten())]
+                            .into_iter()
+                            .filter_map(|(name, server)| server.map(|(url, token)| json!({"type": "http", "name": name, "url": url,
+                                "headers": [{"name": "Authorization", "value": format!("Bearer {token}")}]})))
+                            .collect(),
                     };
                     acp::run_turn(
                         launch,
@@ -7914,14 +7975,20 @@ impl Jobs {
                     .into_iter()
                     .filter(|s| tetrix.is_none() || s.plugin.as_str() != "tetrix")
                     .collect();
-                let broker = if tool == Tool::Cursor {
-                    None
-                } else {
-                    self.connection_mcp(id)
+                // Oby's own server, where Codex and Cursor ask the owner (`oby_ask_owner`) whatever
+                // they're connected to. Cursor gets no connected app on it, only that tool.
+                let broker = match tool {
+                    Tool::Claude => self.connection_mcp(id),
+                    Tool::Codex => self.connection_mcp(id).or_else(|| self.ask_mcp(id)),
+                    Tool::Cursor => self.ask_mcp(id),
                 };
                 let mut mcp_rules = crate::plugins::rules(&servers);
-                if broker.is_some() && tool != Tool::Cursor {
-                    mcp_rules.push(crate::connections::BROKER_RULE.into());
+                if broker.is_some() {
+                    mcp_rules.push(if tool == Tool::Cursor {
+                        format!("mcp__oby__{}", permissions::ASK_OWNER)
+                    } else {
+                        crate::connections::BROKER_RULE.into()
+                    });
                 }
                 if tetrix.is_some() {
                     self.tetrix_used(id, |_| {});
@@ -8227,6 +8294,11 @@ impl Jobs {
                 });
                 noted = false;
                 self.note_diff(id, &start_commit, round).await;
+                // It asked the owner (`oby_ask_owner`) and ended its turn: it waits for the answer,
+                // which starts its next turn, the owner's words that came meanwhile with it.
+                if let Some(call) = self.lock().asked.remove(id) {
+                    return Err(End::Asked(call));
+                }
                 // Words the owner sent while it worked: the agent hears them now, in another turn of
                 // this round, before the check.
                 let words = self.take_heard(id);
@@ -12189,6 +12261,12 @@ async fn count_commits(worktree: &Path, start_commit: &str, head: &str) -> u64 {
     .unwrap_or(0)
 }
 
+/// Whether `job`'s agent asks the owner with `oby_ask_owner`: an owner's Codex or Cursor job.
+/// Claude Code asks with its own AskUserQuestion, and another Obi's job has nobody to ask.
+pub fn asks_through_oby(job: &Job) -> bool {
+    job.obi.is_none() && matches!(Tool::from_id(&job.agent), Some(Tool::Codex | Tool::Cursor))
+}
+
 /// The agent's question `job` shows, kept with its call (#858): what a restart keeps waiting.
 fn kept_question(job: &Job) -> Option<&Permission> {
     job.permission
@@ -12728,6 +12806,10 @@ fn owner_prompt(job: &Job) -> String {
     lines.push("Change files with Edit or Write, never a script (sed -i, python -c, a heredoc into a file), and run commands from this worktree's root without cd, naming paths instead (`cargo test --manifest-path core/Cargo.toml`), and keep scratch files in your own $TMPDIR, never /tmp: obid can't see what a script writes or where a cd leads, and /tmp is outside the worktree, so each of these stops the job until the user says yes.".into());
     if job.kind == "review" {
         lines.push("Your summary is the review, posted on the pull request once the user approves it. End it with a line that is exactly `VERDICT: APPROVE` when the change can merge as it is, or `VERDICT: REQUEST CHANGES` when something must change first.".into());
+    }
+    // Claude Code asks with its own AskUserQuestion (#858).
+    if asks_through_oby(job) {
+        lines.push(format!("Only when you truly can't go on without the user (a choice only they can make, or something only they know), ask them with the `{}` tool of the MCP server `oby`: one question, with options when there are a few clear choices. Then end your turn with a one-line summary: Oby resumes this session with their answer. Decide everything else yourself, and say in your summary what you chose and why.", permissions::ASK_OWNER));
     }
     lines.push(
         "Finish with a short summary. Its first line is one sentence the user will see.".into(),

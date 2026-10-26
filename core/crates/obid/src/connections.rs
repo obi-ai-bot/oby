@@ -397,6 +397,15 @@ impl Connections {
         ))
     }
 
+    /// The broker for job `id` with no connected app needed: where a Codex or Cursor agent asks the
+    /// owner (`oby_ask_owner`). Only what the job started with is listed besides, as ever.
+    pub fn open_ask(&self, id: &str) -> (String, String) {
+        (
+            format!("{}/v1/agent/mcp/{id}", self.api_url),
+            self.job_token(id),
+        )
+    }
+
     /// Oby's Tetrix server for job `id` (crate::tetrix), with the job's token: the broker's, so it
     /// dies with the job the same way.
     pub fn open_tetrix(&self, id: &str) -> (String, String) {
@@ -534,7 +543,7 @@ impl Connections {
                     .get("protocolVersion")
                     .and_then(Value::as_str)
                     .unwrap_or("");
-                json!({"protocolVersion": if MCP_VERSIONS.contains(&asked) { asked } else { MCP_VERSIONS[0] }, "capabilities":{"tools":{"listChanged":false}}, "serverInfo":{"name":"oby","version":crate::api::API_VERSION}, "instructions":"Your user's connected apps, through Oby: Oby holds each login and you get results only. Tools are named <connection>_<tool>. Read-only tools work; tools that act as the user are refused for now."})
+                json!({"protocolVersion": if MCP_VERSIONS.contains(&asked) { asked } else { MCP_VERSIONS[0] }, "capabilities":{"tools":{"listChanged":false}}, "serverInfo":{"name":"oby","version":crate::api::API_VERSION}, "instructions":"Your user's connected apps, through Oby: Oby holds each login and you get results only. Tools are named <connection>_<tool>. Read-only tools work; tools that act as the user are refused for now. oby_ask_owner, when listed, asks your user a question."})
             }
             "ping" => json!({}),
             "tools/list" => json!({"tools": self.tools(id).await}),
@@ -560,6 +569,16 @@ impl Connections {
 
     async fn tools(&self, id: &str) -> Vec<Value> {
         let mut out = Vec::new();
+        if self.asks_through_oby(id) {
+            out.push(json!({"name": crate::permissions::ASK_OWNER,
+                "description": "Ask your user one question and wait for their answer: only when you truly can't go on without them (a choice only they can make, or something only they know). It returns at once: then end your turn with a one-line summary, and Oby resumes this session with their answer (one of your options, or their own words).",
+                "inputSchema": {"type": "object", "required": ["question"], "properties": {
+                    "question": {"type": "string", "description": "The whole question, up to 1,000 characters."},
+                    "options": {"type": "array", "description": "A few clear choices, when there are some (up to 8). The user may answer in their own words instead.",
+                        "items": {"type": "object", "required": ["label"], "properties": {
+                            "label": {"type": "string"}, "description": {"type": "string"}}}}}},
+                "annotations": {"readOnlyHint": true}}));
+        }
         for c in self.usable(id) {
             if c.api.is_some() {
                 out.extend(api_tools(&c));
@@ -873,7 +892,25 @@ impl Connections {
         Ok(req)
     }
 
+    /// Whether job `id`'s agent asks the owner here ([`crate::jobs::asks_through_oby`]).
+    fn asks_through_oby(&self, id: &str) -> bool {
+        self.jobs
+            .upgrade()
+            .and_then(|jobs| jobs.get(id))
+            .is_some_and(|job| crate::jobs::asks_through_oby(&job))
+    }
+
     async fn call(&self, id: &str, name: &str, args: Value) -> Value {
+        // The question raised for the owner, nothing more: its words never answer or allow anything.
+        if name == crate::permissions::ASK_OWNER && self.asks_through_oby(id) {
+            let Some(jobs) = self.jobs.upgrade() else {
+                return failure("The job is gone.");
+            };
+            return match jobs.ask_owner(id, &args) {
+                Ok(text) => json!({"content": [{"type": "text", "text": text}]}),
+                Err(why) => failure(why),
+            };
+        }
         let Some(c) = self
             .usable(id)
             .into_iter()

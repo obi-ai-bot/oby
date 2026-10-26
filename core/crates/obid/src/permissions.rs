@@ -108,6 +108,11 @@ pub struct Call {
 /// Claude Code's tool for asking the user a question with options (#858).
 pub const ASK_USER_QUESTION: &str = "AskUserQuestion";
 
+/// Oby's tool for asking the owner, on a job's `oby` MCP server: Codex and Cursor jobs ask with
+/// it, as Claude Code's do with AskUserQuestion. It returns at once, and the job waits for the
+/// answer once the agent's turn ends.
+pub const ASK_OWNER: &str = "oby_ask_owner";
+
 /// The card a Cursor job waits on before it starts with its repository's hooks
 /// (`Jobs::allow_repository_hooks`); its rule, `RepositoryHooks(<digest>)`, is those very hooks.
 pub const REPOSITORY_HOOKS: &str = "RepositoryHooks";
@@ -257,15 +262,34 @@ pub struct QuestionCall {
     pub questions: Vec<Question>,
     #[serde(default)]
     pub answers: Vec<String>,
+    /// Asked with `oby_ask_owner`, its turn ended since: no call of the agent's waits for it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub ended_turn: bool,
+}
+
+/// The question an `oby_ask_owner` call asks (`question`, and `options` with a `label` and an
+/// optional `description` each), cut as an AskUserQuestion's is; none without one.
+pub fn ask_owner_call(arguments: &Value) -> Option<QuestionCall> {
+    let input = json!({"questions": [{"question": arguments.get("question"),
+                                      "options": arguments.get("options")}]});
+    let questions = questions_of(&input);
+    (!questions.is_empty()).then_some(QuestionCall {
+        questions,
+        answers: Vec::new(),
+        ended_turn: true,
+    })
 }
 
 /// What the agent hears, picking its session up, when the owner answers (or, `declined`, doesn't)
-/// a question a restart kept (#858): its call got no reply, so it's told what it asked and what
-/// the owner said, each quoted as JSON.
+/// a question a restart kept (#858), or one it asked with `oby_ask_owner`: no call got the reply,
+/// so it's told what it asked and what the owner said, each quoted as JSON.
 pub fn answered_later(call: &QuestionCall, declined: bool) -> String {
-    let mut lines = vec![
-        "obid restarted while your AskUserQuestion call waited for the owner, so it got no reply. You asked:".to_owned(),
-    ];
+    let mut lines = vec![if call.ended_turn {
+        "You asked the owner with oby_ask_owner and ended your turn. You asked:"
+    } else {
+        "obid restarted while your AskUserQuestion call waited for the owner, so it got no reply. You asked:"
+    }
+    .to_owned()];
     for (i, q) in call.questions.iter().enumerate() {
         let said = match call.answers.get(i) {
             Some(answer) => format!("the owner answered {}", json!(answer)),
@@ -3514,6 +3538,35 @@ mod tests {
         for mode in Mode::ALL {
             assert_eq!(decide_in(&single, mode, &[]), Verdict::Ask, "{mode:?}");
         }
+    }
+
+    /// `oby_ask_owner` asks one question, cut as an AskUserQuestion's is, and the answer reaches
+    /// the agent's next turn.
+    #[test]
+    fn oby_ask_owner_asks_one_question_and_is_answered_later() {
+        let call = ask_owner_call(&json!({"question": "Which store?", "options": [
+            {"label": "SQLite"}, {"label": "Postgres", "description": "A server"}, {"label": 7}]}))
+        .unwrap();
+        assert!(call.ended_turn);
+        assert_eq!(call.questions.len(), 1);
+        assert_eq!(call.questions[0].question, "Which store?");
+        assert_eq!(call.questions[0].options.len(), 2);
+        assert_eq!(call.questions[0].options[1].description, "A server");
+        assert!(ask_owner_call(&json!({"options": [{"label": "SQLite"}]})).is_none());
+        assert!(ask_owner_call(&json!({"question": "x".repeat(1001)})).is_none());
+        let answered = QuestionCall {
+            answers: vec!["Use a JSON file".into()],
+            ..call
+        };
+        assert_eq!(
+            answered_later(&answered, false),
+            "You asked the owner with oby_ask_owner and ended your turn. You asked:\n- \"Which store?\": the owner answered \"Use a JSON file\"\nCarry on with these answers, then finish with a short summary as asked."
+        );
+        // Kept on the job: what a restart's question is, unless it says otherwise.
+        let kept: QuestionCall =
+            serde_json::from_value(json!({"questions": [], "answers": []})).unwrap();
+        assert!(!kept.ended_turn);
+        assert!(answered_later(&kept, true).starts_with("obid restarted"));
     }
 
     /// #858: the owner's answer as Claude Code takes it: an option's label in its own case, several
