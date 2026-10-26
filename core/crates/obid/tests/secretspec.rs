@@ -156,6 +156,21 @@ fn add(config: &Path, name: &str, value: &str) {
     );
 }
 
+/// A stand-in `gh` in `folder/bin`: GitHub says `main` is the fixture's default branch, and
+/// nothing else.
+fn github(folder: &Path) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt as _;
+    let bin = folder.join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    std::fs::write(
+        bin.join("gh"),
+        "#!/bin/sh\ncase \"$1 $2\" in\n  \"api repos/obi-e2e/fixture-app\") echo '{\"default_branch\":\"main\"}' ;;\n  *) exit 1 ;;\nesac\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(bin.join("gh"), std::fs::Permissions::from_mode(0o755)).unwrap();
+    bin
+}
+
 fn agent() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/agents/secretspec-claude")
 }
@@ -174,7 +189,7 @@ fn an_owners_check_gets_the_bases_values_and_nothing_leaves_it() {
     std::fs::write(&path, config.to_string()).unwrap();
     add(&path, "check.FAKE_CHECK_TOKEN", &fake());
     add(&path, "check.WIDER_TOKEN", &wider());
-    let obid = start(&folder.0, &config, None);
+    let obid = start(&folder.0, &config, Some(&github(&folder.0)));
 
     let answer = call(
         &obid,
@@ -325,6 +340,12 @@ async fn a_received_reviews_check_gets_nothing() {
         "{log}"
     );
     holds_none(&log, &fake(), "the review's check.log");
+    // What it fetched is in a clone of its own, which no owner's job's worktree reads.
+    assert!(
+        home.join("received/clones/obi-e2e/fixture-app/.git")
+            .is_dir()
+    );
+    assert!(!home.join("clones/obi-e2e/fixture-app").exists());
 
     // (a) Telling the ended review something ("fix the lint") starts a follow-up that runs the
     // same code: it gets nothing either, and neither does a follow-up of that.

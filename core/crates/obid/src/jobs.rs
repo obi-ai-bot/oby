@@ -1416,7 +1416,7 @@ impl Jobs {
             if still_settled(&job.id).is_none() {
                 continue;
             }
-            let clone = git::clone_path(&self.config.home, &job.repo);
+            let clone = self.clone_for(&job);
             // Its HOME first: once the worktree is gone, so is what its runs kept there.
             let _ = std::fs::remove_dir_all(self.temp_path(&job.id));
             remove_worktree(&clone, &self.worktree_path(&job.id)).await;
@@ -1516,7 +1516,7 @@ impl Jobs {
         {
             return None;
         }
-        let clone = git::clone_path(&self.config.home, &job.repo);
+        let clone = self.clone_for(job);
         match git::git(
             &clone,
             &[
@@ -5358,7 +5358,7 @@ impl Jobs {
         if let Err(e) = self.store.remove(id) {
             tracing::error!("can't forget job {id}: {e}");
         }
-        let clone = git::clone_path(&self.config.home, &job.repo);
+        let clone = self.clone_for(&job);
         remove_worktree(&clone, &self.worktree_path(id)).await;
         let _ = std::fs::remove_dir_all(self.temp_path(id));
         let _ = std::fs::remove_dir_all(self.login_path(id));
@@ -5651,9 +5651,7 @@ impl Jobs {
         let (admin, common) = git::worktree_dirs(&worktree)
             .await
             .map_err(|e| e.to_string())?;
-        let ours = git::clone_path(&self.config.home, &job.repo)
-            .join(".git")
-            .canonicalize();
+        let ours = self.clone_for(&job).join(".git").canonicalize();
         let this = worktree.join(".git").canonicalize();
         match (admin.canonicalize(), common.canonicalize(), ours, this) {
             (Ok(admin), Ok(common), Ok(ours), Ok(this))
@@ -7301,7 +7299,7 @@ impl Jobs {
         let round = self.get(id).map_or(1, |job| job.current_round());
         let marker = format!("obid-step-{}", random_check_id()?);
         // The secrets its repository declares on its base branch, for an owner's job only.
-        let mut declared = self.declared_secrets(id).await;
+        let mut declared = self.declared_secrets(id, &spec).await;
         let watch = Arc::new(Mutex::new(
             crate::facts::CheckWatch::new(marker, crate::facts::steps(command))
                 .redacting(declared.secrets()),
@@ -7381,39 +7379,40 @@ impl Jobs {
         Ok(run)
     }
 
-    /// Why the code job `job` checks out isn't only its owner's own, so its check gets none of the
-    /// owner's secrets, or none: a base an agent may have written (a job's own `oby/` branch, or
-    /// the job's branch itself), or a pull request that isn't the owner's own from a branch of
-    /// `repo` itself (a fork's, a teammate's), whose code it runs or builds on. What GitHub can't
-    /// say counts as not the owner's.
+    /// Why the code job `job`'s check runs isn't only its owner's own, so the check gets none of
+    /// the owner's secrets, or none. An allowlist: the check gets values only when its base is the
+    /// repository's default branch or one it protects, as GitHub says (never an `oby/` branch or
+    /// the job's own), and every commit between that base and the job's HEAD was made in this job
+    /// (crate::secretspec, `protected_base` and `made_here`). What can't be told is a no.
     async fn code_refuses_secrets(
         &self,
         job: &Job,
         repo: &crate::config::Repo,
         base: &str,
+        base_commit: &str,
+        spec: &Spec,
     ) -> Option<String> {
         if let Some(why) = crate::secretspec::agent_written_base(base, &job.branch) {
             return Some(why);
         }
-        // A job about a pull request runs its code, or code built on it (a follow-up's branch):
-        // only the owner's own pull request from a branch of this repository gets values.
-        let pr = job.pr?;
         let Some(gh) = crate::github::gh() else {
             return Some(format!(
-                "it runs pull request #{pr}'s code, and obid can't ask GitHub whose it is"
+                "obid has no gh to ask GitHub whether its base, {base}, is one {} protects",
+                repo.repo
             ));
         };
-        match crate::secretspec::owners_own_pr(&gh, &repo.repo, pr).await {
-            Ok(()) => None,
-            Err(why) => Some(format!("it runs pull request #{pr}'s code, {why}")),
+        if let Err(why) = crate::secretspec::protected_base(&gh, &repo.repo, base).await {
+            return Some(why);
         }
+        crate::secretspec::made_here(spec, base_commit).await.err()
     }
 
     /// The secrets job `id`'s repository declares for its check in `secretspec.toml` on the job's
     /// base branch, as obid's clone has it, with their values from the owner's vault
-    /// (crate::secretspec): none for a job another Oby asked for or one that ran on a teammate's
-    /// Mac, nor when the base has no such file.
-    async fn declared_secrets(&self, id: &str) -> crate::secretspec::Filled {
+    /// (crate::secretspec): none when the base has no such file, and none unless the job and the
+    /// code its check runs are its owner's own ([`Job::check_refuses_secrets`],
+    /// [`Jobs::code_refuses_secrets`]).
+    async fn declared_secrets(&self, id: &str, spec: &Spec) -> crate::secretspec::Filled {
         use crate::secretspec::{FILE, Filled};
         let Some(job) = self.get(id) else {
             return Filled::default();
@@ -7422,11 +7421,11 @@ impl Jobs {
             return Filled::default();
         };
         let base = job.base.clone().unwrap_or(repo.default_branch.clone());
-        let clone = git::clone_path(&self.config.home, &repo.repo);
-        let names = match crate::secretspec::at_base(&clone, &base).await {
-            Ok(None) => return Filled::default(),
-            Ok(Some(text)) => crate::secretspec::names(&text),
-            Err(why) => Err(why),
+        let clone = self.clone_for(&job);
+        let (base_commit, names) = match crate::secretspec::at_base(&clone, &base).await {
+            Ok((_, None)) => return Filled::default(),
+            Ok((commit, Some(text))) => (commit, crate::secretspec::names(&text)),
+            Err(why) => (String::new(), Err(why)),
         };
         let names = match names {
             Ok(names) if names.is_empty() => return Filled::default(),
@@ -7437,7 +7436,10 @@ impl Jobs {
         };
         let refused = match job.check_refuses_secrets() {
             Some(why) => Some(why),
-            None => self.code_refuses_secrets(&job, &repo, &base).await,
+            None => {
+                self.code_refuses_secrets(&job, &repo, &base, &base_commit, spec)
+                    .await
+            }
         };
         if let Some(why) = refused {
             return Filled::refused(format!(
@@ -7452,6 +7454,23 @@ impl Jobs {
             names.len()
         );
         filled
+    }
+
+    /// Where the clones for reviews other Obys ask for are kept: apart from the owner's, so what
+    /// they fetch is never in a clone an owner's job's worktree reads (every sandbox hides obid's
+    /// home but the paths its own job needs).
+    fn received_home(&self) -> PathBuf {
+        self.config.home.join("received")
+    }
+
+    /// The clone `job`'s worktree belongs to: the received one for a review another Oby asked
+    /// for, else the owner's.
+    fn clone_for(&self, job: &Job) -> PathBuf {
+        if job.obi.is_some() {
+            git::clone_path(&self.received_home(), &job.repo)
+        } else {
+            git::clone_path(&self.config.home, &job.repo)
+        }
     }
 
     /// A review another Obi asked for, steps 2 to 7 (runner-api.md, "obid only: Obi-to-Obi review
@@ -7495,7 +7514,9 @@ impl Jobs {
             "+refs/heads/{0}:refs/remotes/origin/{0}",
             request.head_branch
         );
-        let clone = git::ensure_clone(&self.config.home, &repo.repo, &repo.remote, &[head_ref])
+        // A clone of its own, apart from the owner's: no owner's job's worktree sees what another
+        // Oby asked to have reviewed (crate::secretspec).
+        let clone = git::ensure_clone(&self.received_home(), &repo.repo, &repo.remote, &[head_ref])
             .await
             .map_err(|e| {
                 format!(

@@ -217,7 +217,9 @@ async fn the_stub_agent_reviews_the_fixture_in_the_sandbox() {
     assert_eq!(beside, vec![job.id.clone()]);
     // Nothing pushed: the remote's refs are as they were. The clone can't push at all.
     assert_eq!(git(&remote, &["for-each-ref"]), refs_before);
-    let clone = home.join("clones/obi-e2e/fixture-app");
+    // A clone of its own (crate::secretspec): the owner's jobs' clone never has what it fetched.
+    let clone = home.join("received/clones/obi-e2e/fixture-app");
+    assert!(!home.join("clones/obi-e2e/fixture-app").exists());
     assert_eq!(
         git(&clone, &["config", "remote.origin.pushurl"]),
         obid::git::NO_PUSH_URL

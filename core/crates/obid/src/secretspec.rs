@@ -16,12 +16,14 @@
 //!   failing closed: what obid can't take a value out of is removed, and what it can't remove
 //!   stops the job. The values are in the vault, so `crate::secrets::known()` takes them out of
 //!   everything else obid sends too.
-//! - **Someone else's code gets nothing.** Whose code runs decides, not only who asked: another
-//!   Oby's review, a job whose agent ran on a teammate's Mac, a follow-up of either (carried by
-//!   `Job::foreign`), a job whose conversation read something Oby didn't write, one about a pull
-//!   request that isn't the owner's own from a branch of the repository itself, and one whose
-//!   base an agent may have written (an `oby/` branch, or its own branch) all run their check
-//!   with none of the owner's values, whatever `secretspec.toml` asks ([`Filled::refused`]).
+//! - **Only the owner's own code gets values: an allowlist.** A check gets them only when its
+//!   base is the repository's default branch or one it protects, as GitHub says
+//!   ([`protected_base`]; never an `oby/` branch or the job's own), every commit between that base
+//!   and the job's HEAD was made in this job ([`made_here`]), and the job isn't another Oby's
+//!   review, one whose agent ran on a teammate's Mac, a follow-up of a job that got none (carried
+//!   by `Job::foreign`) or untrusted. Otherwise it runs with none of the owner's values, whatever
+//!   `secretspec.toml` asks ([`Filled::refused`]). A received review is fetched into a clone of its
+//!   own, apart from the owner's.
 //!
 //! The redaction is exact-match: it catches a value a check prints by accident, in the encodings
 //! `crate::secrets` knows, not one a check's code turns into something else on purpose. That is
@@ -215,10 +217,10 @@ fn bare_or_quoted(key: &str) -> Option<String> {
     fits.then(|| unquoted.to_owned())
 }
 
-/// `secretspec.toml` as `base` has it in obid's clone of a repository: none when the base has no
-/// such file. Read from `refs/remotes/origin/<base>` in `clone`, which only obid writes (the clone's
-/// git folder is read-only in every sandbox), never from a worktree.
-pub async fn at_base(clone: &Path, base: &str) -> Result<Option<String>, String> {
+/// The commit `base` is at in obid's clone of a repository, and `secretspec.toml` as it has it
+/// there: none when it has no such file. Read from `refs/remotes/origin/<base>` in `clone`, which
+/// only obid writes (the clone's git folder is read-only in every sandbox), never from a worktree.
+pub async fn at_base(clone: &Path, base: &str) -> Result<(String, Option<String>), String> {
     if !crate::git::is_branch_name(base) {
         return Err(format!("{base:?} isn't a branch obid reads {FILE} from."));
     }
@@ -237,7 +239,7 @@ pub async fn at_base(clone: &Path, base: &str) -> Result<Option<String>, String>
     match crate::git::git(clone, &["cat-file", "-t", &path]).await {
         Ok(kind) if kind == "blob" => {}
         Ok(_) => return Err(format!("{FILE} on {base} isn't a file.")),
-        Err(_) => return Ok(None),
+        Err(_) => return Ok((commit, None)),
     }
     let bytes = crate::git::run_bytes(
         clone,
@@ -251,9 +253,8 @@ pub async fn at_base(clone: &Path, base: &str) -> Result<Option<String>, String>
     )
     .await
     .map_err(|e| format!("obid couldn't read {FILE} on {base}: {e}"))?;
-    String::from_utf8(bytes)
-        .map(Some)
-        .map_err(|_| format!("{FILE} on {base} isn't UTF-8."))
+    let text = String::from_utf8(bytes).map_err(|_| format!("{FILE} on {base} isn't UTF-8."))?;
+    Ok((commit, Some(text)))
 }
 
 /// Why `base` may hold what an agent wrote, so a check on it gets no values, or none: a branch
@@ -263,39 +264,111 @@ pub fn agent_written_base(base: &str, branch: &str) -> Option<String> {
         .then(|| format!("its base, {base}, is a branch an agent may have written"))
 }
 
-/// Whether pull request `pr` of `repo` is its owner's own: opened by the login obid's `gh` is
-/// signed in as, from a branch of `repo` itself, not a fork. Why not, otherwise; what GitHub can't
-/// say is a no.
-pub async fn owners_own_pr(gh: &Path, repo: &str, pr: u64) -> Result<(), String> {
-    let owner = crate::github_login::read_status(gh)
-        .await
-        .user
-        .ok_or("and obid's gh isn't signed in to GitHub to say whose it is")?;
-    let number = pr.to_string();
-    let said = crate::github::output(
-        gh,
+/// Whether GitHub says `base` is `repo`'s default branch or a branch it protects (branch
+/// protection, or a ruleset that limits pushing to it): code there got in only as the repository's
+/// rules let it. Why not, otherwise; what GitHub can't say is a no. Read from GitHub with obid's
+/// own `gh`, never from the job or its configuration.
+pub async fn protected_base(gh: &Path, repo: &str, base: &str) -> Result<(), String> {
+    let ask = |path: String| async move {
+        crate::github::output(gh, &["api", &path])
+            .await
+            .ok()
+            .and_then(|said| serde_json::from_str::<serde_json::Value>(&said).ok())
+    };
+    let not = format!("its base, {base}, isn't {repo}'s default branch or one it protects");
+    let Some(about) = ask(format!("repos/{repo}")).await else {
+        return Err(format!(
+            "GitHub didn't say whether its base, {base}, is one {repo} protects"
+        ));
+    };
+    if about["default_branch"] == base {
+        return Ok(());
+    }
+    if let Some(branch) = ask(format!("repos/{repo}/branches/{base}")).await
+        && branch["protected"] == true
+    {
+        return Ok(());
+    }
+    // A ruleset's rules on it: one that limits who changes it counts.
+    let limits = [
+        "pull_request",
+        "non_fast_forward",
+        "update",
+        "required_signatures",
+    ];
+    if let Some(rules) = ask(format!("repos/{repo}/rules/branches/{base}")).await
+        && rules.as_array().is_some_and(|rules| {
+            rules
+                .iter()
+                .any(|rule| limits.iter().any(|kind| rule["type"] == *kind))
+        })
+    {
+        return Ok(());
+    }
+    Err(not)
+}
+
+/// The most commits on a job's branch obid checks one by one.
+const MOST_COMMITS: usize = 1000;
+
+/// Whether every commit between `base` (a commit) and the job's HEAD was made in this job: its
+/// object is in the job's own object folder, where everything the job commits goes (its agent's
+/// commits, obid's rebases and its "work left uncommitted" commit, all run with the job's git
+/// environment), and not only in the clone's. A commit the job started from (another job's
+/// branch, a pull request's head, a branch a teammate pushed) or merged in from the clone is
+/// there only, so it isn't. Why not, otherwise; what obid can't read is a no.
+pub async fn made_here(spec: &Spec, base: &str) -> Result<(), String> {
+    let env = git_env(spec);
+    let env: Vec<(&str, &str)> = env.iter().map(|(k, v)| (*k, v.as_str())).collect();
+    let range = format!("{base}..HEAD");
+    let most = format!("--max-count={}", MOST_COMMITS + 1);
+    let listed = crate::git::run(
+        &spec.worktree,
         &[
-            "pr",
-            "view",
-            &number,
-            "-R",
-            repo,
-            "--json",
-            "author,isCrossRepository",
+            OsStr::new("rev-list"),
+            OsStr::new(&most),
+            OsStr::new(&range),
         ],
+        &env,
     )
     .await
-    .map_err(|_| "and GitHub didn't say whose it is".to_owned())?;
-    let answer: serde_json::Value =
-        serde_json::from_str(&said).map_err(|_| "and GitHub didn't say whose it is".to_owned())?;
-    if answer["isCrossRepository"] != false {
-        return Err("which comes from another repository (a fork)".into());
+    .map_err(|_| "obid couldn't list its commits on its base".to_owned())?;
+    let commits: Vec<&str> = listed.lines().filter(|l| !l.is_empty()).collect();
+    if commits.is_empty() {
+        return Ok(());
     }
-    let author = answer["author"]["login"].as_str().unwrap_or_default();
-    if answer["author"]["is_bot"] == true || !author.eq_ignore_ascii_case(&owner) {
-        return Err("which someone else opened".into());
+    if commits.len() > MOST_COMMITS {
+        return Err(format!(
+            "it has more than {MOST_COMMITS} commits on its base"
+        ));
     }
-    Ok(())
+    let Some(own) = objects_dir(spec) else {
+        return Err("its commits aren't ones it made".into());
+    };
+    // Only the job's own objects: no alternates.
+    let own = own.to_string_lossy().into_owned();
+    let input: String = commits.iter().map(|c| format!("{c}\n")).collect();
+    let said = crate::git::run_bytes(
+        &spec.worktree,
+        &[OsStr::new("cat-file"), OsStr::new("--batch-check")],
+        &[("GIT_OBJECT_DIRECTORY", own.as_str())],
+        Some(input.into_bytes()),
+    )
+    .await
+    .map_err(|_| "obid couldn't read its commits".to_owned())?;
+    let said = String::from_utf8_lossy(&said);
+    let made: HashSet<&str> = said
+        .lines()
+        .filter(|line| !line.ends_with(" missing"))
+        .filter_map(|line| line.split(' ').next())
+        .collect();
+    match commits.iter().find(|c| !made.contains(**c)) {
+        None => Ok(()),
+        Some(commit) => Err(format!(
+            "commit {} on its branch wasn't made in this job",
+            &commit[..12.min(commit.len())]
+        )),
+    }
 }
 
 /// What a check gets of the secrets its repository declares: the values to put in its environment,
@@ -364,10 +437,11 @@ impl Filled {
                 }
                 Ok(Some(value)) => {
                     let (json, json_slash) = json_forms(&value);
-                    filled.secrets.learn_forms(
-                        name,
-                        &[value.as_bytes(), json.as_bytes(), json_slash.as_bytes()],
-                    );
+                    let unicode = unicode_forms(&value);
+                    let mut learned: Vec<&[u8]> =
+                        vec![value.as_bytes(), json.as_bytes(), json_slash.as_bytes()];
+                    learned.extend(unicode.iter().map(|form| form.as_bytes()));
+                    filled.secrets.learn_forms(name, &learned);
                     filled.forms.extend(forms(&value));
                     filled.env.push((name.clone(), value));
                 }
@@ -491,7 +565,7 @@ impl Filled {
         .ok();
         let mut objects = Vec::new();
         if let Some(dir) = objects_dir(spec) {
-            files_under(&dir, &|_| false, &mut objects);
+            files_under(&dir, &|_| false, &mut objects, &mut Vec::new());
         }
         Some(Before {
             head,
@@ -543,7 +617,7 @@ impl Filled {
             }
             let mut now = Vec::new();
             if let Some(dir) = objects_dir(spec) {
-                files_under(&dir, &|_| false, &mut now);
+                files_under(&dir, &|_| false, &mut now, &mut done.stuck);
             }
             let new: Vec<PathBuf> = now
                 .into_iter()
@@ -562,25 +636,24 @@ impl Filled {
                 ));
             }
         }
-        // The files git tracks that the check didn't change: the repository's own, never read.
-        let tracked = lines(git(&["ls-files", "-z"]).await.ok());
-        let changed = lines(git(&["ls-files", "-m", "-z"]).await.ok());
-        let untouched: HashSet<PathBuf> = tracked
-            .difference(&changed)
-            .map(|path| spec.worktree.join(path))
-            .collect();
+        // The files whose content is exactly what HEAD holds: the repository's own, never read.
+        let untouched = untouched(spec, &env).await;
         let mut files = Vec::new();
+        let mut unreadable = Vec::new();
         let pointer = spec.worktree.join(".git");
         files_under(
             &spec.worktree,
             &|path| path == pointer || untouched.contains(path),
             &mut files,
+            &mut unreadable,
         );
-        files_under(&spec.temp, &|_| false, &mut files);
+        files_under(&spec.temp, &|_| false, &mut files, &mut unreadable);
         if let Some(admin) = &spec.git_admin {
             let objects = admin.join("objects");
-            files_under(admin, &|path| path == objects, &mut files);
+            files_under(admin, &|path| path == objects, &mut files, &mut unreadable);
         }
+        // What obid couldn't look into may hold a value: the job stops before its agent reads it.
+        done.stuck.extend(unreadable);
         let shown = |path: &Path| {
             path.strip_prefix(&spec.worktree)
                 .or_else(|_| path.strip_prefix(&spec.temp))
@@ -706,13 +779,73 @@ fn git_env(spec: &Spec) -> Vec<(&'static str, String)> {
         .collect()
 }
 
-/// The paths in `git ls-files -z`'s answer.
-fn lines(answer: Option<String>) -> HashSet<PathBuf> {
-    answer
-        .unwrap_or_default()
-        .split('\0')
-        .filter(|l| !l.is_empty())
-        .map(PathBuf::from)
+/// The worktree's regular files whose content hashes to the blob HEAD holds for them (`git
+/// ls-tree` against `git hash-object --no-filters`): what the check didn't change, whatever git's
+/// index says (`--assume-unchanged`, a stat it was told to trust). Anything git can't answer for
+/// is left out, so it's read.
+async fn untouched(spec: &Spec, env: &[(&str, &str)]) -> HashSet<PathBuf> {
+    let Ok(tree) = crate::git::run_bytes(
+        &spec.worktree,
+        &[
+            OsStr::new("ls-tree"),
+            OsStr::new("-r"),
+            OsStr::new("-z"),
+            OsStr::new("HEAD"),
+        ],
+        env,
+        None,
+    )
+    .await
+    else {
+        return HashSet::new();
+    };
+    // `<mode> blob <sha>\t<path>`, each ended by a NUL.
+    let mut held: Vec<(String, PathBuf)> = Vec::new();
+    for entry in tree.split(|&b| b == 0).filter(|e| !e.is_empty()) {
+        let entry = String::from_utf8_lossy(entry);
+        let Some((meta, path)) = entry.split_once('\t') else {
+            continue;
+        };
+        let mut meta = meta.split(' ');
+        let (Some(mode), Some("blob"), Some(sha)) = (meta.next(), meta.next(), meta.next()) else {
+            continue;
+        };
+        let full = spec.worktree.join(path);
+        let regular = std::fs::symlink_metadata(&full).is_ok_and(|m| m.is_file());
+        if matches!(mode, "100644" | "100755") && regular && !path.contains('\n') {
+            held.push((sha.to_owned(), full));
+        }
+    }
+    if held.is_empty() {
+        return HashSet::new();
+    }
+    let input: String = held
+        .iter()
+        .map(|(_, path)| format!("{}\n", path.display()))
+        .collect();
+    let Ok(hashed) = crate::git::run_bytes(
+        &spec.worktree,
+        &[
+            OsStr::new("hash-object"),
+            OsStr::new("--no-filters"),
+            OsStr::new("--stdin-paths"),
+        ],
+        env,
+        Some(input.into_bytes()),
+    )
+    .await
+    else {
+        return HashSet::new();
+    };
+    let hashed = String::from_utf8_lossy(&hashed);
+    let hashes: Vec<&str> = hashed.lines().collect();
+    if hashes.len() != held.len() {
+        return HashSet::new();
+    }
+    held.into_iter()
+        .zip(hashes)
+        .filter(|((sha, _), now)| sha == now)
+        .map(|((_, path), _)| path)
         .collect()
 }
 
@@ -730,14 +863,37 @@ fn listed(paths: &[String]) -> String {
     text
 }
 
-/// Every file and link under `root`, never following a link, but for what `skip` names.
-fn files_under(root: &Path, skip: &dyn Fn(&Path) -> bool, out: &mut Vec<PathBuf>) {
+/// Every file and link under `root`, never following a link, but for what `skip` names. A folder
+/// it can't open is made openable (0700) and tried again; one it still can't open goes in
+/// `unreadable`, as what it can't tell the kind of does: nothing in it was read.
+fn files_under(
+    root: &Path,
+    skip: &dyn Fn(&Path) -> bool,
+    out: &mut Vec<PathBuf>,
+    unreadable: &mut Vec<PathBuf>,
+) {
+    use std::os::unix::fs::PermissionsExt as _;
     let mut stack = vec![root.to_path_buf()];
     while let Some(dir) = stack.pop() {
-        let Ok(entries) = std::fs::read_dir(&dir) else {
-            continue;
+        let entries = match std::fs::read_dir(&dir) {
+            Ok(entries) => entries,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(_) => {
+                let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
+                match std::fs::read_dir(&dir) {
+                    Ok(entries) => entries,
+                    Err(_) => {
+                        unreadable.push(dir);
+                        continue;
+                    }
+                }
+            }
         };
-        for entry in entries.flatten() {
+        for entry in entries {
+            let Ok(entry) = entry else {
+                unreadable.push(dir.clone());
+                continue;
+            };
             let path = entry.path();
             if skip(&path) {
                 continue;
@@ -745,7 +901,7 @@ fn files_under(root: &Path, skip: &dyn Fn(&Path) -> bool, out: &mut Vec<PathBuf>
             match entry.file_type() {
                 Ok(kind) if kind.is_dir() => stack.push(path),
                 Ok(_) => out.push(path),
-                Err(_) => {}
+                Err(_) => unreadable.push(path),
             }
         }
     }
@@ -765,6 +921,66 @@ fn remove(path: &Path) -> Found {
     } else {
         Found::Stuck
     }
+}
+
+/// `value` with `\uXXXX` escapes as JSON encoders write them: every character escaped, every
+/// character but ASCII letters and digits, and HTML-safe JSON (`<`, `>`, `&`, `'` and anything
+/// past ASCII escaped, `/` as it is and as `\/`); each with lower- and upper-case hex.
+fn unicode_forms(value: &str) -> Vec<String> {
+    let escape = |c: char| -> String {
+        let mut units = [0u16; 2];
+        c.encode_utf16(&mut units)
+            .iter()
+            .map(|u| format!("\\u{u:04x}"))
+            .collect()
+    };
+    let (json, _) = json_forms(value);
+    let every: String = value.chars().map(escape).collect();
+    let not_alnum: String = value
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() {
+                c.to_string()
+            } else {
+                escape(c)
+            }
+        })
+        .collect();
+    let html: String = json
+        .chars()
+        .map(|c| {
+            if matches!(c, '<' | '>' | '&' | '\'') || !c.is_ascii() {
+                escape(c)
+            } else {
+                c.to_string()
+            }
+        })
+        .collect();
+    let mut forms = Vec::new();
+    for form in [every, not_alnum, html.clone(), html.replace('/', "\\/")] {
+        // Upper-case hex: only the four digits after each `\u`.
+        let upper = upper_escapes(&form);
+        forms.push(form);
+        forms.push(upper);
+    }
+    forms.sort();
+    forms.dedup();
+    forms.retain(|form| form.as_str() != value);
+    forms
+}
+
+/// `text` with the hex of each `\uXXXX` in upper case.
+fn upper_escapes(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(at) = rest.find("\\u") {
+        out.push_str(&rest[..at + 2]);
+        let hex: String = rest[at + 2..].chars().take(4).collect();
+        out.push_str(&hex.to_ascii_uppercase());
+        rest = &rest[at + 2 + hex.len()..];
+    }
+    out.push_str(rest);
+    out
 }
 
 /// `value` as JSON writes it inside a string, and with `/` written `\/` as some encoders do.
@@ -789,6 +1005,7 @@ fn forms(value: &str) -> Vec<Vec<u8>> {
         hex::encode(bytes).into_bytes(),
         hex::encode_upper(bytes).into_bytes(),
     ];
+    forms.extend(unicode_forms(value).into_iter().map(String::into_bytes));
     let percent: String = bytes.iter().map(|b| format!("%{b:02X}")).collect();
     let url: String = bytes
         .iter()
@@ -1037,13 +1254,34 @@ required = false
             base64::engine::general_purpose::STANDARD.encode(format!("ab{FAKE}")),
             base64::engine::general_purpose::URL_SAFE.encode(format!("a{FAKE}")),
             FAKE.bytes().map(|b| format!("%{b:02x}")).collect(),
+            FAKE.chars()
+                .map(|c| format!("\\u{:04x}", c as u32))
+                .collect(),
+            FAKE.chars()
+                .map(|c| format!("\\u{:04X}", c as u32))
+                .collect(),
+            FAKE.chars()
+                .map(|c| {
+                    if c.is_ascii_alphanumeric() {
+                        c.to_string()
+                    } else {
+                        format!("\\u{:04x}", c as u32)
+                    }
+                })
+                .collect(),
         ] {
             assert!(filled.holds(form.as_bytes()), "{form}");
         }
         assert!(!filled.holds(b"nothing of it here at all"));
-        // JSON's escaped form is taken out of text too.
+        // JSON's escaped forms are taken out of text too.
         let clean = filled.redact(&format!("{{\"t\": \"{}\"}}", FAKE.replace('/', "\\/")));
         assert!(!clean.contains("Z9q2"), "{clean}");
+        let every: String = FAKE
+            .chars()
+            .map(|c| format!("\\u{:04x}", c as u32))
+            .collect();
+        let clean = filled.redact(&format!("{{\"t\": \"{every}\"}}"));
+        assert!(clean.contains("[check secret: TOKEN]"), "{clean}");
     }
 
     #[test]
@@ -1054,54 +1292,233 @@ required = false
         assert_eq!(agent_written_base("dev", "feature/x"), None);
     }
 
-    /// Only the owner's own pull request from a branch of the repository itself counts as the
-    /// owner's code: a fork's, a teammate's, or one GitHub won't say about doesn't.
-    #[tokio::test]
-    async fn only_the_owners_own_pull_request_is_the_owners_code() {
+    /// A stand-in `gh` in `dir`, answering `api <path>` from `answers` and failing the rest.
+    fn fake_gh(dir: &Path, answers: &[(&str, &str)]) -> PathBuf {
         use std::os::unix::fs::PermissionsExt as _;
+        let mut script = String::from("#!/bin/sh\ncase \"$1 $2\" in\n");
+        for (path, json) in answers {
+            script.push_str(&format!("  \"api {path}\") echo '{json}' ;;\n"));
+        }
+        script.push_str("  *) echo 'Not Found (HTTP 404)' >&2; exit 1 ;;\nesac\n");
+        let gh = dir.join("gh");
+        std::fs::write(&gh, script).unwrap();
+        std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755)).unwrap();
+        gh
+    }
+
+    /// Only a base GitHub says is the default branch, protected, or under a ruleset that limits
+    /// changing it counts: a branch an agent or a teammate pushed doesn't, nor one GitHub won't
+    /// say about.
+    #[tokio::test]
+    async fn only_a_base_github_protects_counts() {
         let dir = std::env::temp_dir().join(format!("obid-secretspec-gh-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        let gh = dir.join("gh");
-        std::fs::write(
-            &gh,
-            r#"#!/bin/sh
-case "$1 $2" in
-  "auth status") echo '{"hosts":{"github.com":[{"login":"wellington","active":true,"state":"success"}]}}' ;;
-  "pr view") case "$3" in
-    1) echo '{"author":{"login":"Wellington"},"isCrossRepository":false}' ;;
-    2) echo '{"author":{"login":"wellington"},"isCrossRepository":true}' ;;
-    3) echo '{"author":{"login":"ernesto"},"isCrossRepository":false}' ;;
-    4) echo '{"author":{"login":"wellington"}}' ;;
-    *) echo 'no such pull request' >&2; exit 1 ;;
-  esac ;;
-  *) exit 1 ;;
-esac
-"#,
-        )
-        .unwrap();
-        std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755)).unwrap();
-        assert_eq!(owners_own_pr(&gh, "o/r", 1).await, Ok(()));
+        let gh = fake_gh(
+            &dir,
+            &[
+                ("repos/o/r", r#"{"default_branch":"main"}"#),
+                (
+                    "repos/o/r/branches/release",
+                    r#"{"name":"release","protected":true}"#,
+                ),
+                (
+                    "repos/o/r/branches/dev",
+                    r#"{"name":"dev","protected":false}"#,
+                ),
+                (
+                    "repos/o/r/rules/branches/dev",
+                    r#"[{"type":"pull_request","ruleset_id":1}]"#,
+                ),
+                (
+                    "repos/o/r/branches/teammate-fix",
+                    r#"{"name":"teammate-fix","protected":false}"#,
+                ),
+                (
+                    "repos/o/r/rules/branches/teammate-fix",
+                    r#"[{"type":"creation","ruleset_id":2}]"#,
+                ),
+            ],
+        );
+        assert_eq!(protected_base(&gh, "o/r", "main").await, Ok(()));
+        assert_eq!(protected_base(&gh, "o/r", "release").await, Ok(()));
+        assert_eq!(protected_base(&gh, "o/r", "dev").await, Ok(()));
+        // A branch someone pushed, with no rule that limits changing it.
         assert!(
-            owners_own_pr(&gh, "o/r", 2)
+            protected_base(&gh, "o/r", "teammate-fix")
                 .await
                 .unwrap_err()
-                .contains("fork")
+                .contains("isn't")
         );
+        // One GitHub doesn't know, and a repository it won't answer for.
+        assert!(protected_base(&gh, "o/r", "stacked-on-x").await.is_err());
         assert!(
-            owners_own_pr(&gh, "o/r", 3)
-                .await
-                .unwrap_err()
-                .contains("someone else")
-        );
-        assert!(owners_own_pr(&gh, "o/r", 4).await.is_err());
-        assert!(
-            owners_own_pr(&gh, "o/r", 5)
+            protected_base(&gh, "o/other", "main")
                 .await
                 .unwrap_err()
                 .contains("didn't say")
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A clone of `origin` and a worktree of it at `start`, committing to an object folder of its
+    /// own as a job's does: its sandbox spec.
+    fn job_worktree(dir: &Path, name: &str, start: &str) -> Spec {
+        let clone = dir.join("clone");
+        let worktree = dir.join(name);
+        sh(
+            &clone,
+            &format!(
+                "git worktree add -q --detach {} {start}",
+                worktree.display()
+            ),
+        );
+        let admin = clone.join(".git/worktrees").join(name);
+        std::fs::create_dir_all(admin.join("objects")).unwrap();
+        Spec {
+            worktree,
+            git_admin: Some(admin),
+            git_common: Some(clone.join(".git")),
+            commits: true,
+            temp: dir.join(format!("{name}-tmp")),
+            ..Spec::default()
+        }
+    }
+
+    /// `script` in the worktree with the job's git environment, as its agent runs git.
+    fn as_job(spec: &Spec, script: &str) {
+        let mut command = std::process::Command::new("/bin/sh");
+        command.args(["-c", script]).current_dir(&spec.worktree);
+        for (k, v) in spec.git_env() {
+            command.env(k, v);
+        }
+        assert!(command.status().unwrap().success(), "{script}");
+    }
+
+    const COMMIT: &str =
+        "git -c user.name=T -c user.email=t@example.com -c commit.gpgsign=false commit -q";
+
+    /// Every commit between the base and HEAD must be one the job made: a job that starts from
+    /// anything but its base (a follow-up's branch whose job is gone, a branch name an earlier
+    /// teammate-run job left, a pull request a collaborator pushed to, a stacked pull request on a
+    /// teammate's branch) or merges a head in from the clone gets nothing.
+    #[tokio::test]
+    async fn only_commits_the_job_made_count() {
+        let dir = std::env::temp_dir().join(format!("obid-secretspec-made-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let origin = dir.join("origin");
+        std::fs::create_dir_all(&origin).unwrap();
+        sh(
+            &origin,
+            &format!(
+                "git init -q -b main && echo a > a && git add a && {COMMIT} -m base && \
+                 git checkout -q -b oby/fix-12 && echo t > t && git add t && {COMMIT} -m 'a teammate-run job' && \
+                 git checkout -q -b teammate && echo u > u && git add u && {COMMIT} -m 'a teammate' && \
+                 git checkout -q main"
+            ),
+        );
+        sh(&dir, "git clone -q origin clone");
+        let clone = dir.join("clone");
+        let base = crate::git::git(&clone, &["rev-parse", "refs/remotes/origin/main"])
+            .await
+            .unwrap();
+
+        // Its own commits on its base: they count.
+        let own = job_worktree(&dir, "own", "origin/main");
+        assert_eq!(made_here(&own, &base).await, Ok(()));
+        as_job(&own, &format!("echo b > b && git add b && {COMMIT} -m own"));
+        assert_eq!(made_here(&own, &base).await, Ok(()));
+
+        for (name, start) in [
+            // A follow-up's start_from whose job is gone, a reused oby/ branch name, a pull
+            // request a collaborator pushed to, a stacked one on a teammate's branch.
+            ("follow-up", "origin/oby/fix-12"),
+            ("reused", "origin/oby/fix-12"),
+            ("collaborator", "origin/teammate"),
+        ] {
+            let spec = job_worktree(&dir, name, start);
+            as_job(
+                &spec,
+                &format!("echo c > c && git add c && {COMMIT} -m mine"),
+            );
+            let why = made_here(&spec, &base).await.unwrap_err();
+            assert!(why.contains("wasn't made in this job"), "{name}: {why}");
+        }
+
+        // A head merged in from the clone: the merge is the job's, what it brings isn't.
+        let merged = job_worktree(&dir, "merged", "origin/main");
+        as_job(&merged, "git merge -q --no-ff -m merge origin/teammate");
+        assert!(made_here(&merged, &base).await.is_err());
+
+        // A job that doesn't commit has no commits of its own.
+        let mut none = job_worktree(&dir, "none", "origin/teammate");
+        none.commits = false;
+        assert!(made_here(&none, &base).await.is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// What the scrub can't look into isn't passed over: a folder it can't open, made so again
+    /// when it can, and a tracked file git was told not to look at (`--assume-unchanged`).
+    #[tokio::test]
+    async fn what_the_scrub_cant_see_isnt_passed_over() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir =
+            std::env::temp_dir().join(format!("obid-secretspec-hidden-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let work = dir.join("work");
+        std::fs::create_dir_all(&work).unwrap();
+        sh(
+            &work,
+            &format!("git init -q && echo x > tracked.txt && git add . && {COMMIT} -m one"),
+        );
+        // A tracked file the check changed and told git to ignore.
+        std::fs::write(work.join("tracked.txt"), format!("{FAKE}\n")).unwrap();
+        sh(&work, "git update-index --assume-unchanged tracked.txt");
+        // A folder it closed.
+        std::fs::create_dir_all(work.join("closed")).unwrap();
+        std::fs::write(work.join("closed/log"), FAKE).unwrap();
+        std::fs::set_permissions(work.join("closed"), std::fs::Permissions::from_mode(0o000))
+            .unwrap();
+        let filled = Filled::fill(&["TOKEN".into()], |_| Ok(Some(FAKE.to_owned())));
+        let spec = Spec {
+            worktree: work.clone(),
+            temp: dir.join("tmp"),
+            ..Spec::default()
+        };
+        let scrubbed = filled.scrub(&spec, None).await;
+        assert!(scrubbed.stuck.is_empty(), "{:?}", scrubbed.stuck);
+        assert!(
+            std::fs::read_to_string(work.join("tracked.txt"))
+                .unwrap()
+                .contains("[check secret: TOKEN]")
+        );
+        assert!(
+            std::fs::read_to_string(work.join("closed/log"))
+                .unwrap()
+                .contains("[check secret: TOKEN]")
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A folder obid can't open at all is stuck: the job stops before its agent reads it.
+    #[test]
+    fn a_folder_obid_cant_open_is_stuck() {
+        let mut files = Vec::new();
+        let mut unreadable = Vec::new();
+        let missing =
+            std::env::temp_dir().join(format!("obid-secretspec-none-{}", std::process::id()));
+        files_under(&missing, &|_| false, &mut files, &mut unreadable);
+        assert!(
+            files.is_empty() && unreadable.is_empty(),
+            "a folder that isn't there is nothing"
+        );
+        // A path that isn't a folder at all can't be opened as one, whatever its mode.
+        let file =
+            std::env::temp_dir().join(format!("obid-secretspec-file-{}", std::process::id()));
+        std::fs::write(&file, "x").unwrap();
+        files_under(&file, &|_| false, &mut files, &mut unreadable);
+        assert_eq!(unreadable, std::slice::from_ref(&file));
+        let _ = std::fs::remove_file(&file);
     }
 
     #[test]
