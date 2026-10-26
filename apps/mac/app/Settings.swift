@@ -563,14 +563,9 @@ struct AccountsSettingsView: View {
         }
     }
 
-    /// The tool's own login on obid: its page opens in the browser, and the sheet waits for it.
+    /// The tool's own login on obid: its sheet shows at once, opens its page in the browser and waits for it.
     private func signIn(_ account: Account) {
-        Task {
-            do {
-                signingIn = try await ShownAccountSignIn.start(account, on: feed)
-                problem = nil
-            } catch { problem = error.localizedDescription }
-        }
+        signingIn = ShownAccountSignIn(account: account)
     }
 }
 

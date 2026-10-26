@@ -108,6 +108,18 @@ fn plans_map_replies_questions_none_and_dispatched_jobs() {
     let obid = start(&folder.0, &config, Some(planner().parent().unwrap()));
     let post = |said: &str| call(&obid, "POST", "/v1/plans", Some(&json!({"said": said})));
 
+    // A pasted brief past 2,000 characters reaches Oby; past 20,000 it goes nowhere.
+    assert_eq!(post(&"x".repeat(5000)).status, 200);
+    let refused = post(&"x".repeat(20_001));
+    assert_eq!(refused.status, 422, "{}", refused.text);
+    assert!(
+        refused
+            .text
+            .contains("A message is 1 to 20,000 characters."),
+        "{}",
+        refused.text
+    );
+
     let reply = post("a normal reply");
     assert_eq!(reply.status, 200, "{}", reply.text);
     let conversation = reply.body["conversation"].clone();

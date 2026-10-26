@@ -77,10 +77,10 @@ pub async fn plan(State(shared): State<Arc<Shared>>, body: Bytes) -> Result<Resp
     let req: Request = serde_json::from_slice(&body)
         .map_err(|_| ApiError::new(StatusCode::BAD_REQUEST, "That isn't a plan request."))?;
     let words = req.said.trim();
-    if words.is_empty() || words.chars().count() > 2000 {
+    if words.is_empty() || words.chars().count() > LONGEST_MESSAGE {
         return Err(ApiError::new(
             StatusCode::UNPROCESSABLE_ENTITY,
-            "said is 1 to 2,000 characters.",
+            "A message is 1 to 20,000 characters.",
         ));
     }
     let id = req.id.clone();
@@ -644,11 +644,11 @@ fn validate_turns(input: Option<Vec<InputTurn>>) -> Result<Option<Vec<Turn>>, Ap
     for t in turns {
         if !["user", "oby"].contains(&t.who.as_str())
             || t.text.trim().is_empty()
-            || t.text.chars().count() > 2000
+            || t.text.chars().count() > LONGEST_MESSAGE
         {
             return Err(ApiError::new(
                 StatusCode::UNPROCESSABLE_ENTITY,
-                "Each turn needs who user or oby and 1 to 2,000 characters of text.",
+                "Each turn needs who user or oby and 1 to 20,000 characters of text.",
             ));
         }
         out.push(Turn {
@@ -667,6 +667,9 @@ fn validate_turns(input: Option<Vec<InputTurn>>) -> Result<Option<Vec<Turn>>, Ap
 }
 /// The most jobs one message attaches.
 const ATTACHED_JOBS: usize = 20;
+/// The longest message to Oby, in characters: a pasted brief fits; the jobs it starts still take
+/// tasks of up to 2,000.
+const LONGEST_MESSAGE: usize = 20_000;
 
 /// The jobs the owner attached to their words, each once: only jobs obid has, which Oby's tools
 /// read anyway (`oby_job`), so an id grants nothing.

@@ -11634,8 +11634,9 @@ pub fn keep_keychain_logins() {
 /// folder a job can write: its config folder is `scratch`, a new empty one of obid's (Claude Code
 /// applies a `.claude.json`'s `env` from its config folder whatever `--setting-sources` says), and
 /// `storage` reaches it only as `CLAUDE_SECURESTORAGE_CONFIG_DIR`, which names the Keychain item.
-/// `PATH` is the system's folders only (it runs `security`), and obid's Claude Code and Anthropic
-/// variables are left out.
+/// `PATH` is the system's folders first (it runs `security`), then only what the binary needs to
+/// start, as its sign-in's ([`crate::accounts::login_path`]: a Claude Code installed with npm is a
+/// `node` script), and obid's Claude Code and Anthropic variables are left out.
 fn refresh_command(bin: &Path, storage: Option<&Path>, scratch: &Path, home: &Path) -> Command {
     use std::os::unix::process::CommandExt;
     let mut command = Command::new(bin);
@@ -11655,7 +11656,7 @@ fn refresh_command(bin: &Path, storage: Option<&Path>, scratch: &Path, home: &Pa
         .current_dir(scratch)
         .env_clear()
         .envs(process::kept(|name| std::env::var_os(name)))
-        .env("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")
+        .env("PATH", crate::accounts::login_path(bin))
         .env("HOME", home)
         .env("TMPDIR", scratch)
         .env("CLAUDE_CONFIG_DIR", scratch)
@@ -11699,24 +11700,38 @@ fn refresh_claude_login(bin: &Path, config_dir: Option<&Path>) -> bool {
     if builder.create(&scratch).is_err() {
         return false;
     }
-    let worked = refresh_command(bin, config_dir, &scratch, &home)
+    let ended = refresh_command(bin, config_dir, &scratch, &home)
         .spawn()
-        .is_ok_and(|mut child| {
+        .map(|mut child| {
             let give_up_at = std::time::Instant::now() + Duration::from_secs(60);
             loop {
                 match child.try_wait() {
-                    Ok(Some(status)) => break status.success(),
+                    Ok(Some(status)) => break Some(status),
                     Ok(None) if std::time::Instant::now() < give_up_at => {
                         std::thread::sleep(Duration::from_millis(50))
                     }
                     _ => {
                         process::signal_group(child.id(), nix::sys::signal::Signal::SIGKILL);
                         let _ = child.wait();
-                        break false;
+                        break None;
                     }
                 }
             }
         });
+    let worked = matches!(ended, Ok(Some(status)) if status.success());
+    // Only how it ended, never what it said: enough to tell a binary that can't start (127) from
+    // a login that's really gone.
+    if !worked {
+        let how = match &ended {
+            Ok(Some(status)) => status.to_string(),
+            Ok(None) => "it didn't end within 60 seconds".into(),
+            Err(e) => e.to_string(),
+        };
+        tracing::warn!(
+            "Claude Code ({}) didn't refresh its login: {how}",
+            bin.display()
+        );
+    }
     let _ = std::fs::remove_dir_all(&scratch);
     worked
 }
