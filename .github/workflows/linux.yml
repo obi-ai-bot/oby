@@ -1,0 +1,205 @@
+# Linux CI: what this repository's own checks already run, on GitHub's standard Ubuntu runners.
+#
+#   Rust (core)        scripts/oby-check.sh's core/ part, for the whole workspace: cargo fmt --check,
+#                      clippy -D warnings on every target, cargo test (obid's sandbox tests included)
+#   Secret scan        scripts/oby-check.sh's gitleaks, with .gitleaks.toml, over what was pushed
+#   Control plane      cloud/control-plane: pnpm test (vitest inside Miniflare) and pnpm check
+#   E2E (stub agents)  make e2e: headless, stub agents, no credentials, against oby-sphere's dev
+#
+# The Apple apps (xcodebuild) and swift test are the Mac check's (AGENTS.md, "Build and run").
+#
+# A draft pull request runs the workflow but skips its jobs (a skipped job reports success under
+# the same name), unless it has the `full-ci` label: that takes effect on the next push after
+# labelling. Marking it ready for review runs everything on the same head.
+name: Linux
+
+on:
+  pull_request:
+    # Listing types replaces the default (opened, synchronize, reopened), so those stay explicit;
+    # ready_for_review runs a draft that turned ready on the same head. No `labeled`: a run started
+    # by another label would skip and post a success over a failed check on that head.
+    types: [opened, synchronize, reopened, ready_for_review]
+  push:
+    branches: [dev, main]
+
+# A newer push to the same pull request cancels the run it supersedes; pushes to dev and main
+# each run to the end.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  # Rust's 1.97 channel (its latest patch release), so a new stable's lints don't fail a change
+  # that didn't touch them. Bump it on purpose. core/Cargo.toml's rust-version is the floor.
+  RUSTUP_TOOLCHAIN: "1.97"
+  WRANGLER_SEND_METRICS: "false"
+
+jobs:
+  rust:
+    name: Rust (core)
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft || contains(github.event.pull_request.labels.*.name, 'full-ci')
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Rust toolchain
+        run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --component rustfmt,clippy
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: core
+
+      # obid's job sandbox on Linux is bubblewrap (with slirp4netns for an agent's network), and
+      # tests/sandbox.rs, the plug-in tests and the job tests make one. Ubuntu 24.04's AppArmor
+      # refuses unprivileged user namespaces by default, which bubblewrap needs: this throwaway
+      # runner allows them. The last line proves bubblewrap works here, so a sandbox test that
+      # fails is the sandbox's failure, not the runner's.
+      - name: bubblewrap for obid's job sandbox
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq bubblewrap slirp4netns
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          bwrap --ro-bind / / --unshare-all --die-with-parent true
+
+      - name: cargo fmt --check
+        run: cargo fmt --manifest-path core/Cargo.toml --all -- --check
+
+      - name: cargo clippy -D warnings
+        run: cargo clippy --manifest-path core/Cargo.toml --workspace --all-targets --locked -- -D warnings
+
+      - name: cargo test
+        run: cargo test --manifest-path core/Cargo.toml --workspace --locked
+
+  secrets:
+    name: Secret scan (gitleaks)
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft || contains(github.event.pull_request.labels.*.name, 'full-ci')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GITLEAKS_VERSION: 8.30.1
+      GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Install gitleaks
+        run: |
+          archive="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          curl -fsSLo "$RUNNER_TEMP/$archive" "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/$archive"
+          echo "$GITLEAKS_SHA256  $RUNNER_TEMP/$archive" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/$archive" -C "$RUNNER_TEMP" gitleaks
+          echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
+
+      # The commits this run brings, as scripts/oby-check.sh scans a change's (with .gitleaks.toml
+      # and .gitleaksignore): a pull request's from its merge base with the base branch, a push's
+      # from the commit it replaced. Older history isn't rescanned here.
+      - name: gitleaks over the new commits
+        env:
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          if git cat-file -e "$BASE^{commit}" 2>/dev/null; then
+            range="$(git merge-base "$BASE" "$HEAD")..$HEAD"
+          else
+            echo "No earlier commit to start from (${BASE:-none}): scanning $HEAD alone."
+            range="-1 $HEAD"
+          fi
+          echo "Scanning $range"
+          gitleaks git . "--log-opts=$range" --config .gitleaks.toml --no-banner --redact
+
+  control-plane:
+    name: Control plane
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft || contains(github.event.pull_request.labels.*.name, 'full-ci')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: cloud/control-plane
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # cloud/control-plane/package.json names no packageManager: the same pnpm as oby-sphere's.
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          version: 11.23.0
+
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: cloud/control-plane/pnpm-lock.yaml
+
+      - name: pnpm install
+        run: pnpm install --frozen-lockfile
+
+      - name: pnpm test
+        run: pnpm test
+
+      - name: pnpm check
+        run: pnpm check
+
+  e2e:
+    name: E2E (stub agents)
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft || contains(github.event.pull_request.labels.*.name, 'full-ci')
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      OBI_SPHERE_DIR: ${{ github.workspace }}/oby-sphere
+    defaults:
+      run:
+        working-directory: oby
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: oby
+          persist-credentials: false
+
+      # The Sphere side of the scenario: oby-sphere's dev, which is public (no token).
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: obi-ai-bot/oby-sphere
+          ref: dev
+          path: oby-sphere
+          persist-credentials: false
+
+      - name: Rust toolchain
+        run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: oby/core
+
+      # obid runs each job's agent (here the stub) in its bubblewrap sandbox: see the Rust job.
+      - name: bubblewrap for obid's job sandbox
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq bubblewrap slirp4netns
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          bwrap --ro-bind / / --unshare-all --die-with-parent true
+
+      # pnpm's version comes from oby-sphere's server/package.json (packageManager).
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          package_json_file: oby-sphere/server/package.json
+
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: |
+            oby-sphere/server/pnpm-lock.yaml
+            oby-sphere/spec/pnpm-lock.yaml
+
+      - name: make e2e
+        run: make e2e
