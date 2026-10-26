@@ -1,6 +1,6 @@
 # The Obysphere in the Mac app, as Sangam designed it: the plan
 
-The owner, 2026-10-25: clicking Deskree's Obysphere in Sangam's design isn't what the Mac app does today. Sangam's design leads (AGENTS.md), so the Mac app changes to match it, with the rules kept underneath. This is the plan for all of it: the side panel, a page for each member's Oby, inviting, the Obysphere's settings, and Knowledge, with what obid and the Obysphere server need for each. Nothing here is built yet.
+The owner, 2026-10-25: clicking Deskree's Obysphere in Sangam's design isn't what the Mac app does today. Sangam's design leads (AGENTS.md), so the Mac app changes to match it, with the rules kept underneath. This is the plan for all of it: the side panel, a page for each member's Oby, inviting, the Obysphere's settings, and Knowledge, with what obid and the Obysphere server need for each. The owner decided its open questions the same day ("Decided", at the end). Step 1 is #1448; nothing else is built yet.
 
 It builds on [onboarding.md](onboarding.md) section 4 (roles, Knowledge per Obysphere, another Obysphere is another world) and [trim.md](trim.md) core 4 (Obys talk: reviews first, working together later).
 
@@ -53,7 +53,7 @@ What the person sees, from `ObyView.tsx` and `ChatView.tsx`:
 - **Underneath:**
   - Another Oby's words are data: shown quoted, never handed to an agent as instructions.
   - Every line you send is secret-scanned, and appears in the job's or the conversation's outgoing list.
-  - Until obid seals message bodies (#1233), the Obysphere's server, and every member who reads the audit chain, can read these words. That should be said where you write them, and part 5 depends on it.
+  - Until obid seals message bodies (#1233), the Obysphere's server, and every member who reads the audit chain, can read these words. Decided: sealing comes first, before conversations and Knowledge ship.
 
 ### 3. Invite member
 
@@ -64,7 +64,7 @@ What the person sees, from `InviteModal.tsx`:
 
 - **obi-sphere:** `GET /v0.1/spheres/{id}/invitations` for the admin (pending invitations: id, created, expires, uses, domain, and a label the admin gave it), and a `label` on an invitation (the email, for the admin's own list; the server never mails it).
 - **obid or the Mac:** one named invitation per email (one use), labelled with the address. Cancel withdraws it. Resend withdraws it and makes a new one (the server keeps only the link's hash, so the old link can't be sent again).
-- **Sending the email:** see decision 2.
+- **Sending the email (decided):** the admin sends it from their own Mail. Send invitation opens a draft with the link for each address, as Create does today. The server never sends mail and never keeps the address.
 - **Underneath:** the link keeps its secret after `#`, as today, so a shorter `deskree.obysphere.com/join/abc123` (the design's mock) isn't possible as it is. The dialog shows the real link.
 
 ### 4. The Obysphere's settings
@@ -76,13 +76,13 @@ What the person sees, from `SphereSettings.tsx`: "Deskree settings", with:
 
 - **obi-sphere:**
   - `PATCH /v0.1/spheres/{id}` (name, image; admin only), with the image kept small in the database (a square PNG or JPEG of at most 256 KB). Today the logo lives on the creator's Mac only.
-  - `DELETE /v0.1/spheres/{id}`: every token revoked, every delivery dropped, every member revoked, then the Obysphere gone. What happens to its audit chain is decision 5.
+  - `DELETE /v0.1/spheres/{id}`: every token revoked, every delivery dropped, every member revoked, then the Obysphere gone. Its audit chain goes too (decided: each member's Oby keeps its own record of its own exchanges).
   - A second admin: onboarding.md already decided admins make other admins ("Make admin"), and the server has one `admin_owner` today.
 - **Mac:** the page, opened from ⋮ › Settings. App-wide things move out of it:
   - **The server address and Host your own:** to Settings › General, under Obysphere, since the design has no screen for them.
   - **"Asked of your Oby":** to Home's card stack (part 6).
-- **The URL:** the id is signed into every message and token (`aud: obi-sphere:<id>`), so changing it isn't a rename. See decision 3.
-- **Underneath, the key checks:** comparing a member's key, and accepting a new one, aren't in the design. Pins stay automatic (the first key is trusted, a later change is caught). A changed key becomes an ask on Home ("Ernesto's Oby has a new key: compare it with him"), and comparing one stays on the member's page ⋮. See decision 4.
+- **The URL:** the id is signed into every message and token (`aud: obi-sphere:<id>`), so changing it isn't a rename. Decided: it stays as it was made, shown read-only, for now.
+- **Underneath, the key checks:** comparing a member's key, and accepting a new one, aren't in the design. Pins stay automatic (the first key is trusted, a later change is caught). A changed key becomes an ask on Home ("Ernesto's Oby has a new key: compare it with him"), and comparing one stays on the member's page ⋮. Decided as written.
 
 ### 5. Knowledge
 
@@ -107,13 +107,13 @@ AGENTS.md already decides how it works: "the admin's Oby, or Oby Cloud, holds th
   - It answers each `lookup` itself, without the owner, when the record allows it: the asker may use the source, the tool is on, and it isn't an admin tool. The call goes through the same allowlist, secret scan and scrubbing as this Mac's own agents' calls (`tetrix.rs`). Only the content goes back.
   - Each lookup is listed in `connectionUses`.
 - **obid on a member's Mac:** its Tetrix broker offers the Obysphere's tools to its agents next to its own. Each call becomes a `lookup` to the admin's Oby: its arguments are secret-scanned first, it's listed in the job's `outgoing`, and it waits for the answer. With "Ask first", the member is asked on Home before each lookup.
-- **When the admin's Mac is away:** the lookup fails at once with a plain reason ("Deskree's Tetrix is on Doti's Mac, which isn't reachable"). It's never silent, and never an empty answer. This is the Tetrix audit's "losing Tetrix is silent", fixed for shared sources from the start. Oby Cloud holding it instead is decision 6.
+- **When the admin's Mac is away:** the lookup fails at once with a plain reason ("Deskree's Tetrix is on Doti's Mac, which isn't reachable"). It's never silent, and never an empty answer. This is the Tetrix audit's "losing Tetrix is silent", fixed for shared sources from the start. Decided: the admin's Mac holds it for now, and the Knowledge page says whose Mac; Oby Cloud may hold it later.
 - **Mac:** the Knowledge page and the Add source dialog (Tetrix first; a custom MCP server after, through the generic broker in `connections.rs`).
 - **Underneath:**
   - The admin's Tetrix login never leaves the admin's Mac: no member, agent or device gets it.
   - Tetrix's answers are data.
   - Admin tools are never offered.
-  - **The audit chain is plaintext, readable by every member** (spec section 15). A lookup's question and its answer would be readable by every member, Admins only or not. Decision 5.
+  - **The audit chain is plaintext, readable by every member** (spec section 15). A lookup's question and its answer would be readable by every member, Admins only or not. Decided: message bodies are sealed end to end (#1233) before Knowledge ships.
 - **First:** the Tetrix audit's fixes. One Tetrix error leaves an agent with no tools for the whole job, and losing Tetrix is silent. Shared Knowledge rests on the same broker.
 
 ### 6. Asks on Home
@@ -130,24 +130,26 @@ Each step is one pull request, tested as the merge ritual says, and checked agai
 1. **Asks on Home** (part 6). Small, Mac and Engine only, and it fixes a real gap today.
 2. **The side panel and the settings page** (parts 1 and 4), over what the server has today. Rename, avatar, delete and the invited list show once the server has them, and say so until then. The server address and Host your own move to Settings › General.
 3. **obi-sphere: the Obysphere's edits** (rename, image, delete, a second admin) and **invitations** (list, label). Then Invite member and Invited in the Mac (part 3).
-4. **Conversations with other Obys** (part 2): the spec's optional link first, then obid's store and API, then the member's page and the conversation in the Mac.
-5. **Knowledge** (part 5): the Tetrix audit's fixes, then the spec's `lookup` and the record of sources, the admin's and the member's obid, then the page. It waits on decision 5.
+4. **Sealed message bodies** (#1233): only the two Obys in an exchange read it; the server and the other members see only that it happened.
+5. **Conversations with other Obys** (part 2): the spec's optional link first, then obid's store and API, then the member's page and the conversation in the Mac.
+6. **Knowledge** (part 5): the Tetrix audit's fixes, then the spec's `lookup` and the record of sources, the admin's and the member's obid, then the page.
+7. **Several Obyspheres**, after conversations (decision 1).
 
 The tests the plan in #1444 calls journeys get one each: invite someone and see them join (J6), a conversation with a teammate's Oby, and a member's agent looking something up in the admin's Tetrix (J7).
 
-## Decisions for the owner
+## Decided (the owner, 2026-10-25)
 
-1. **One Obysphere or several.** The design's strip holds several, and onboarding.md says another Obysphere is another world. obid joins one today, so several means a membership per Obysphere in obid. Recommended: one now, several after part 4.
-2. **Who sends an invitation's email.** Either Oby opens a Mail draft for each Send, as Create does today (one more click in Mail), or the Obysphere server sends it through an email provider, which every self-hoster then needs to set up. Recommended: the Mail draft now. The server never keeps the address either way.
-3. **The Obysphere URL.** Its id is signed into every message and token, so a new one can't simply replace it. Either the URL stays fixed once made and shows read-only, or a new URL is an alias that new invite links use, with the id kept underneath. Recommended: read-only now.
-4. **Key checks.** A changed key as an ask on Home, and comparing a key from the member's page ⋮: not in the design, but the protection needs a place. Recommended as written in part 4.
-5. **What other members can read.** Until message bodies are sealed (#1233), the server and every member reading the audit chain see conversations' words and lookups' results. Either seal them first (before parts 4 and 5), or keep lookups out of the audit chain (a spec change), or say it plainly and go ahead. Recommended: seal first, at least for lookups.
-6. **When the admin's Mac is away.** A shared Tetrix works only while the admin's Mac is reachable, or Oby Cloud holds the connection instead. Recommended: the admin's Mac now, saying so on the Knowledge page.
-7. **Delete and its audit chain.** Deleting an Obysphere either erases its chain ("erases everything its Obys shared", the design's words) or keeps it for its members. Recommended: erase, as the design says.
+1. **One Obysphere now, several later.** obid keeps one membership until conversations work; then a membership per Obysphere, and a tile for each in the strip.
+2. **The admin sends invitations from their own Mail.** Send invitation opens a draft with the link for each address. The Obysphere server sends no mail and keeps no address.
+3. **The Obysphere URL can't change, for now.** It stays as it was made and shows read-only.
+4. **Key checks stay underneath.** Pins are automatic: the first key is trusted, and a later change is caught. A changed key is an ask on Home ("compare it with them"), and comparing a key on purpose is in the member's ⋮ on their Oby's page. Nothing else in Sangam's screens changes.
+5. **Sealed first.** Message bodies are sealed end to end (#1233) before conversations and Knowledge ship: only the two Obys in an exchange read it, and the server and the other members see only that it happened.
+6. **The admin's Mac holds a shared Tetrix, for now.** When it's away, a member's lookup fails at once with a plain reason, never silently, and the Knowledge page says whose Mac holds it. Oby Cloud may hold it later.
+7. **Delete erases.** Deleting an Obysphere removes it and its audit chain from the server, as Sangam's words say. Each member's Oby keeps its own record of its own exchanges.
 
 ## Not in this plan
 
-- Several Obyspheres at once (decision 1).
+- Several Obyspheres at once (decided: after conversations).
 - Custom MCP servers in Knowledge after Tetrix.
 - The iPhone (it waits for the Mac, trim.md).
 - Who may see an Oby's presence. Neither the design nor the protocol has any.
