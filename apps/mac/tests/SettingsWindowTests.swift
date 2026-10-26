@@ -21,6 +21,10 @@ struct SettingsWindowTests {
         #expect(RunnerSettingsView.showsChecks(everything: false, merge: false, apple: true))
         #expect(RunnerSettingsView.showsChecks(everything: false, merge: true, apple: false))
         #expect(RunnerSettingsView.showsChecks(everything: true, merge: false, apple: false))
+        // Routines (cut, docs/trim.md): hidden unless asked for, or while obid keeps one, so the owner can pause or delete it.
+        #expect(!RunnerSettingsView.showsRoutines(everything: false, routines: 0))
+        #expect(RunnerSettingsView.showsRoutines(everything: false, routines: 1))
+        #expect(RunnerSettingsView.showsRoutines(everything: true, routines: 0))
         #expect(SettingsPage.shown(everything: false, remoteOn: true).contains(.remote))
         #expect(!SettingsPage.shown(everything: false, remoteOn: true).contains(.sharing))
         #expect(SettingsPage.shown(everything: false, sharingOn: true).contains(.sharing))
