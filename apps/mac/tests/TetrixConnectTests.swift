@@ -108,6 +108,12 @@ struct TetrixConnectTests {
         #expect(TetrixJobReport.accountLine(connected: true, jobs: 1, used: 0, there: "in Connectors") == "Tetrix: used in 0 of 1 job")
         #expect(TetrixJobReport.accountLine(connected: true, jobs: 0, used: 0, there: "in Connectors") == "Tetrix: connected")
         #expect(TetrixJobReport.accountLine(connected: false, jobs: 3, used: 3, there: "on your Mac") == "Tetrix: not connected: connect it on your Mac")
+        // Settings › Accounts: under every signed-in account, the launch build's too (Tetrix is core).
+        var account = AccountState(account: Account(id: "personal", agent: "claude", name: "Personal", payer: "", home: nil), label: nil,
+                                   tetrix: true, tetrixJobs: 12, tetrixUsed: 9, runnerSignedIn: true)
+        #expect(account.tetrixLine == "Tetrix: used in 9 of 12 jobs")
+        account.runnerSignedIn = false
+        #expect(account.tetrixLine == nil)
     }
 
     /// The fake obid: the Mac asks for the status, starts a preset's sign-in by its id and another

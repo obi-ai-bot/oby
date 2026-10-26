@@ -36,6 +36,9 @@ struct ObyApp: App {
                     .disabled(app.island.model.updater.waiting)
             }
             Button("Check for Updates…") { app.island.updater.check() }
+            Button("Report a Problem…") {
+                NSWorkspace.shared.open(ProblemReport.url(version: Updater.version, macOS: ProcessInfo.processInfo.operatingSystemVersionString))
+            }
             Divider()
             Button("Quit Oby") { NSApp.terminate(nil) }
                 .keyboardShortcut("q")
@@ -78,6 +81,18 @@ struct MenuBarLabel: View {
         if working > 0 { parts.append("\(working) working") }
         if needsYou > 0 { parts.append(needsYou == 1 ? "1 needs you" : "\(needsYou) need you") }
         return parts.isEmpty ? "Oby" : "Oby: " + parts.joined(separator: ", ")
+    }
+}
+
+/// Report a Problem… (the menu bar menu): GitHub's new-issue page for Oby, its title and body filled
+/// in. The body names Oby's version and build and the macOS version, and nothing else: no logs,
+/// paths or accounts.
+nonisolated enum ProblemReport {
+    static func url(version: String, macOS: String) -> URL {
+        var parts = URLComponents(string: "https://github.com/obi-ai-bot/oby/issues/new")!
+        parts.queryItems = [URLQueryItem(name: "title", value: "Problem with Oby"),
+                            URLQueryItem(name: "body", value: "What happened, and what you expected:\n\n\n---\nOby \(version)\nmacOS \(macOS)")]
+        return parts.url!
     }
 }
 

@@ -451,9 +451,9 @@ private struct HomeView: View {
 
     /// Oby, a little above the middle (as a face at eye level), what's going on under it, the stack
     /// of what waits on you, and the chips: every kind of work, always, in Home's order (Sangam,
-    /// mac-design B7), whatever the side panel groups by.
+    /// mac-design B7), whatever the side panel groups by; Routines only with `Launch.everything`.
     private var stage: some View {
-        let groups = WorkList.kinds(work)
+        let groups = WorkList.kinds(work, routines: Launch.everything)
         // A task waiting for memory is active, but not running: the line says it apart.
         let memory = work.count { $0.job.job.waitsForMemory }
         let running = work.count { $0.status == .running && !$0.job.job.waitsForMemory }, needs = work.count { $0.status == .needs }

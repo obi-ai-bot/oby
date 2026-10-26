@@ -98,12 +98,16 @@ struct RunnerSettingsView: View {
     @AppStorage(MacChecks.appleSetting) private var runAppleChecks = true
     @State private var watches: [PairedWatch] = []
     @State private var watchProblem: String?
-    /// The launch build (`Launch`) hides a remote runner and Apple Watch without iPhone.
+    /// The launch build (`Launch`) hides a remote runner, Routines, Apple Watch without iPhone and Pair a device.
     @AppStorage(Launch.everythingKey) private var everything = false
 
     /// Checks on this Mac: off by default and hidden in the launch build (AGENTS.md, `Launch`), except
     /// while one of its switches is on, so the owner can always turn it off.
     nonisolated static func showsChecks(everything: Bool, merge: Bool, apple: Bool) -> Bool { everything || merge || apple }
+
+    /// Routines: cut from the launch build (docs/trim.md, batch 2), except while obid keeps one, so
+    /// the owner can always pause or delete it.
+    nonisolated static func showsRoutines(everything: Bool, routines: Int) -> Bool { everything || routines > 0 }
 
     /// This Mac or a remote runner, and its URL: in the launch build, only on a Mac that already
     /// has a remote runner's address, so it can come back to This Mac. Otherwise This Mac is the
@@ -164,7 +168,9 @@ struct RunnerSettingsView: View {
         }
         // As on the iPhone (apps/shared/PermissionsSection.swift).
         PermissionsSection(runner: feed.runner, defaultMode: feed.defaultMode, setDefault: feed.setDefaultMode)
-        RoutinesSection(runner: feed.runner, changes: feed.routineChanges)
+        if Self.showsRoutines(everything: everything, routines: feed.routines.count) {
+            RoutinesSection(runner: feed.runner, changes: feed.routineChanges)
+        }
         if Self.showsChecks(everything: everything, merge: runMergeChecks, apple: runAppleChecks) {
             SetGroup("Checks on this Mac") {
                 SetRow("Run merge checks on this Mac", about: "When Oby’s review approves a pull request, this Mac runs its tests and builds the Mac and iPhone apps, one at a time, before Oby merges it into dev.") {
@@ -200,16 +206,17 @@ struct RunnerSettingsView: View {
                 }
             }
         }
-        PairingView(feed: feed, remote: remote)
-            .onAppear { loginItem.refresh() }
-            // Back from approving the login item in System Settings.
-            .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in loginItem.refresh() }
-            // Once the runner answers, and again after it comes back.
-            .task(id: feed.connection) {
-                guard everything, feed.connection == .live, let runner = feed.runner else { return }
-                // A runner older than the Watch API has no list: then there's nothing to show.
-                watches = (try? await runner.watches()) ?? []
-            }
+        .onAppear { loginItem.refresh() }
+        // Back from approving the login item in System Settings.
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in loginItem.refresh() }
+        // Once the runner answers, and again after it comes back.
+        .task(id: feed.connection) {
+            guard everything, feed.connection == .live, let runner = feed.runner else { return }
+            // A runner older than the Watch API has no list: then there's nothing to show.
+            watches = (try? await runner.watches()) ?? []
+        }
+        // The iPhone is parked, and pairing needs a route on the tailnet: the launch build hides it.
+        if everything { PairingView(feed: feed, remote: remote) }
     }
 
     private func remove(_ watch: PairedWatch) {
@@ -567,6 +574,14 @@ struct AccountsSettingsView: View {
     }
 }
 
+extension AccountState {
+    /// One Tetrix for every agent (Connectors, the launch build's too: Tetrix is core): how much a
+    /// signed-in account's jobs used it, or where to connect it.
+    nonisolated var tetrixLine: String? {
+        signedIn ? TetrixJobReport.accountLine(connected: tetrix == true, jobs: tetrixJobs, used: tetrixUsed, there: "in Connectors") : nil
+    }
+}
+
 /// One account as Sangam's usage row (`.set-usage`, docs/mac-design.md B2): its tool's mark, its name,
 /// who pays and when its week resets, a meter of its week; the 5-hour window past 80%, its reserve,
 /// "Full until" and Tetrix as lines under it; "N% used" and its buttons at the top right.
@@ -576,8 +591,6 @@ struct AccountUsageRow<Buttons: View>: View {
     var payer = ""
     var lift: @MainActor @Sendable (Bool) async throws -> Void
     @ViewBuilder var buttons: Buttons
-    /// The launch build's Connectors has no Tetrix (`Launch`): then neither has this row.
-    @AppStorage(Launch.everythingKey) private var everything = false
 
     var body: some View {
         TimelineView(.periodic(from: .now, by: 60)) { context in
@@ -607,10 +620,8 @@ struct AccountUsageRow<Buttons: View>: View {
                         if state.isFull(at: now), let until = state.fullUntil {
                             SetAbout("Full until \(Limits.clock(until))", color: Tokens.needs)
                         }
-                        // One Tetrix for every agent (Connectors): how much its jobs used it, or where to connect it.
-                        if everything, state.signedIn {
-                            SetAbout(TetrixJobReport.accountLine(connected: state.tetrix == true, jobs: state.tetrixJobs, used: state.tetrixUsed, there: "in Connectors"),
-                                     color: state.tetrix == true ? Tokens.muted : Tokens.needs)
+                        if let line = state.tetrixLine {
+                            SetAbout(line, color: state.tetrix == true ? Tokens.muted : Tokens.needs)
                         }
                     }
                 }

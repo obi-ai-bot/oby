@@ -31,8 +31,10 @@ nonisolated enum SidebarSections {
     /// for a job (only obid's jobs carry `obi.fromOwner`, docs/runner-api.md), so there's no
     /// requester to group by rather than one made up.
     /// `routines`: the runner's jobs that are a routine's run (obid's `routine`, #395), which go
-    /// under Routines.
-    static func work(_ jobs: [Job], since: Date, seen: Set<String>, routines: Set<String> = []) -> [WorkList.Item<JobRow>] {
+    /// under Routines; the launch build hides Routines (`Launch`, docs/trim.md), so there they go
+    /// under Tasks.
+    static func work(_ jobs: [Job], since: Date, seen: Set<String>, routines: Set<String> = [],
+                     everything: Bool = Launch.everything) -> [WorkList.Item<JobRow>] {
         jobs.map { JobRow(job: $0) }
             .sorted {
                 let left = $0.job.finished ?? $0.job.created, right = $1.job.finished ?? $1.job.created
@@ -42,7 +44,8 @@ nonisolated enum SidebarSections {
                 let job = row.job
                 let status: WorkStatus = job.needsYou || job.waitsForAnswer || job.waitsForPermission ? .needs : job.isActive ? .running : .done
                 let routine = routines.contains(job.id)
-                return WorkList.Item(id: row.id, job: row, type: .of(review: job.kind == .review, issue: job.issue, requester: nil, routine: routine),
+                let type: WorkType = routine && !everything ? .tasks : .of(review: job.kind == .review, issue: job.issue, requester: nil, routine: routine)
+                return WorkList.Item(id: row.id, job: row, type: type,
                                      status: status, queued: job.status == .queued, fresh: job.created > since && !seen.contains(row.id))
             }
     }

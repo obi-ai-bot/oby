@@ -298,10 +298,11 @@ nonisolated enum WorkList {
     }
 
     /// Home's chips (Sangam's Home.tsx, docs/oby-ux.md row 3): every kind of work, always, in Home's
-    /// order, whatever's in it; a teammate's once their Oby has asked for something.
-    static func kinds<J>(_ items: [Item<J>]) -> [Group<J>] {
+    /// order, whatever's in it; a teammate's once their Oby has asked for something. `routines` false:
+    /// no Routines, as the Mac's launch build has it (`Launch`, docs/trim.md).
+    static func kinds<J>(_ items: [Item<J>], routines: Bool = true) -> [Group<J>] {
         let held = groups(items, by: .type)
-        let always: [WorkType] = [.review, .issues, .tasks, .routines]
+        let always: [WorkType] = routines ? [.review, .issues, .tasks, .routines] : [.review, .issues, .tasks]
         let kinds = Set(always + held.compactMap(\.type)).sorted { $0.order < $1.order }
         return kinds.map { kind in
             held.first { $0.type == kind }
