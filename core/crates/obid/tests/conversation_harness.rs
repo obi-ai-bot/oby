@@ -293,6 +293,12 @@ fn a_conversation_gets_the_owner_s_memories_in_its_room() {
 /// A conversation's Claude Code waits for its next turn (docs/fast-replies.md): the turn after
 /// goes to the same process, with only the owner's words, and it ends when the conversation goes.
 #[test]
+// The stand-in records its own pid. On Linux bubblewrap gives the agent a PID namespace of its own
+// (--unshare-pid), so that pid means nothing outside it and these pid checks can't hold there.
+#[cfg_attr(
+    target_os = "linux",
+    ignore = "pid checks: the agent runs in bubblewrap's own PID namespace"
+)]
 fn the_next_turn_goes_to_the_waiting_claude_code() {
     let (_folder, obid) = obid("harness-warm", true);
     let first = said(&obid, json!({"said": "HELLO", "new": true}));
@@ -335,6 +341,12 @@ fn the_next_turn_goes_to_the_waiting_claude_code() {
 /// fast-replies.md): it connects to Oby's tools but can call none before its turn, and the new
 /// conversation's first turn goes to it.
 #[test]
+// The stand-in records its own pid. On Linux bubblewrap gives the agent a PID namespace of its own
+// (--unshare-pid), so that pid means nothing outside it and these pid checks can't hold there.
+#[cfg_attr(
+    target_os = "linux",
+    ignore = "pid checks: the agent runs in bubblewrap's own PID namespace"
+)]
 fn a_new_conversation_finds_its_claude_code_started() {
     let (_folder, obid) = obid_env(
         "harness-prestart",
@@ -430,6 +442,12 @@ fn a_new_conversation_finds_its_claude_code_started() {
 /// A waiting Claude Code that wrote a line while it waited isn't given the next turn (the line
 /// would be taken for the turn's): a new one answers it.
 #[test]
+// The stand-in records its own pid. On Linux bubblewrap gives the agent a PID namespace of its own
+// (--unshare-pid), so that pid means nothing outside it and these pid checks can't hold there.
+#[cfg_attr(
+    target_os = "linux",
+    ignore = "pid checks: the agent runs in bubblewrap's own PID namespace"
+)]
 fn a_claude_code_that_wrote_while_it_waited_starts_anew() {
     let (_folder, obid) = obid("harness-warm-stray", true);
     let first = said(&obid, json!({"said": "SAYLATE early", "new": true}));
@@ -492,6 +510,12 @@ fn ends_soon(pid: &str) -> bool {
 
 /// A turn stopped or out of time keeps no Claude Code waiting: the next starts a new one.
 #[test]
+// The stand-in records its own pid. On Linux bubblewrap gives the agent a PID namespace of its own
+// (--unshare-pid), so that pid means nothing outside it and these pid checks can't hold there.
+#[cfg_attr(
+    target_os = "linux",
+    ignore = "pid checks: the agent runs in bubblewrap's own PID namespace"
+)]
 fn nothing_waits_after_a_stop_or_the_budget() {
     let (_folder, obid) = obid_with(
         "harness-warm-ends",
@@ -551,6 +575,12 @@ fn nothing_waits_after_a_stop_or_the_budget() {
 
 /// obid's stop ends every waiting Claude Code.
 #[test]
+// The stand-in records its own pid. On Linux bubblewrap gives the agent a PID namespace of its own
+// (--unshare-pid), so that pid means nothing outside it and these pid checks can't hold there.
+#[cfg_attr(
+    target_os = "linux",
+    ignore = "pid checks: the agent runs in bubblewrap's own PID namespace"
+)]
 fn obids_stop_ends_the_waiting_claude_code() {
     let (_folder, mut obid) = obid("harness-warm-stop", true);
     said(&obid, json!({"said": "SAY hi", "new": true}));
@@ -1008,10 +1038,12 @@ fn the_room_cannot_write_outside_itself() {
     let (_folder, obid) = obid("harness-room", true);
     // What other processes leave in /tmp, the test's own folder (under /var/folders) and the
     // account's shared folder are none of the room's business.
-    let probe = PathBuf::from(format!(
-        "/private/tmp/obid-harness-probe-{}",
-        std::process::id()
-    ));
+    let tmp = if cfg!(target_os = "macos") {
+        "/private/tmp"
+    } else {
+        "/tmp"
+    };
+    let probe = PathBuf::from(format!("{tmp}/obid-harness-probe-{}", std::process::id()));
     std::fs::write(&probe, "someone else's").unwrap();
     let answer = said(
         &obid,
