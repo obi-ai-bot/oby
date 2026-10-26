@@ -44,13 +44,6 @@ jobs:
     if: github.event_name != 'pull_request' || !github.event.pull_request.draft || contains(github.event.pull_request.labels.*.name, 'full-ci')
     runs-on: ubuntu-latest
     timeout-minutes: 60
-    env:
-      # obid's test suites that fail on Linux today (first run on GitHub's Ubuntu runners). They run
-      # in their own step below, which reports but doesn't fail the check. Take a suite out of this
-      # list in the change that makes it pass on Linux.
-      LINUX_KNOWN_FAILING: >-
-        conversations_api lead_api orchestrator_api plans_api plugins_api sandbox sharing
-        supervisor tetrix_api triage_api
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -94,92 +87,9 @@ jobs:
       - name: cargo clippy -D warnings
         run: cargo clippy --manifest-path core/Cargo.toml --workspace --all-targets --locked -- -D warnings
 
-      # Every crate and every obid test suite but LINUX_KNOWN_FAILING, --no-fail-fast so each reports.
       - name: cargo test
-        run: |
-          set -euo pipefail
-          other=()
-          for f in core/crates/obid/tests/*.rs; do
-            n=$(basename "$f" .rs)
-            case " $LINUX_KNOWN_FAILING " in *" $n "*) ;; *) other+=(--test "$n") ;; esac
-          done
-          cargo test --manifest-path core/Cargo.toml --workspace --exclude obid --locked --no-fail-fast
-          cargo test --manifest-path core/Cargo.toml -p obid --lib --bins "${other[@]}" --locked --no-fail-fast
-
-      # Known to fail on Linux, so it runs and reports but doesn't fail the check. Causes seen:
-      #   conversations_api, lead_api, orchestrator_api, plans_api: the brain's stand-in runs boxed
-      #     and its files are under the test's temp folder (/tmp on Linux), which obid's Linux box
-      #     mounts empty, so obid answers its fallback ("Fine."). macOS's /var/folders is readable.
-      #   sandbox: an owner's check's loopback (an_owners_check_keeps_loopback_and_nothing_more).
-      #   sharing, plugins_api, supervisor, tetrix_api, triage_api: not diagnosed yet.
-      # Fixing them is Oby's own work in core/.
-      - name: cargo test (suites known to fail on Linux)
-        continue-on-error: true
-        run: |
-          args=()
-          for n in $LINUX_KNOWN_FAILING; do args+=(--test "$n"); done
-          cargo test --manifest-path core/Cargo.toml -p obid "${args[@]}" --locked --no-fail-fast
-
-  # TEMPORARY, while LINUX_KNOWN_FAILING is worked down: only those suites, with their test folders
-  # kept and uploaded (test data only: fake tokens, a fixture repository). Removed with the list.
-  known-failing:
-    name: Linux known failing (temporary)
-    if: github.event_name != 'pull_request' || !github.event.pull_request.draft || contains(github.event.pull_request.labels.*.name, 'full-ci')
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
-    env:
-      LINUX_KNOWN_FAILING: >-
-        conversations_api lead_api orchestrator_api plans_api plugins_api sandbox sharing
-        supervisor tetrix_api triage_api
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - name: Rust toolchain
-        run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-        with:
-          workspaces: core
-      - name: bubblewrap for obid's job sandbox
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq bubblewrap slirp4netns
-          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
-      - name: Install gitleaks
-        env:
-          GITLEAKS_VERSION: 8.30.1
-          GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
-        run: |
-          archive="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
-          curl -fsSLo "$RUNNER_TEMP/$archive" "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/$archive"
-          echo "$GITLEAKS_SHA256  $RUNNER_TEMP/$archive" | sha256sum -c -
-          mkdir -p "$RUNNER_TEMP/gitleaks"
-          tar -xzf "$RUNNER_TEMP/$archive" -C "$RUNNER_TEMP/gitleaks" gitleaks
-          echo "$RUNNER_TEMP/gitleaks" >> "$GITHUB_PATH"
-      - name: The known-failing suites
-        env:
-          OBID_TEST_KEEP: "1"
-        run: |
-          args=()
-          for n in $LINUX_KNOWN_FAILING; do args+=(--test "$n"); done
-          cargo test --manifest-path core/Cargo.toml -p obid "${args[@]}" --locked --no-fail-fast 2>&1 | tee "$RUNNER_TEMP/tests.log"
-      - name: Collect the kept folders' logs
-        if: always()
-        run: |
-          mkdir -p "$RUNNER_TEMP/kept"
-          cp "$RUNNER_TEMP/tests.log" "$RUNNER_TEMP/kept/" 2>/dev/null || true
-          for d in /tmp/obid-sphere-*; do
-            [ -d "$d" ] || continue
-            n=$(basename "$d"); mkdir -p "$RUNNER_TEMP/kept/$n"
-            find "$d" -maxdepth 3 \( -name '*.stderr' -o -name '*.log' -o -name '*.jsonl' -o -name 'args' -o -name 'pwd' \) -size -2M \
-              -exec cp --parents {} "$RUNNER_TEMP/kept/$n/" \; 2>/dev/null || true
-          done
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        if: always()
-        with:
-          name: known-failing-logs
-          path: ${{ runner.temp }}/kept
-          retention-days: 3
+        # --no-fail-fast: every test binary runs and reports, not only up to the first that fails.
+        run: cargo test --manifest-path core/Cargo.toml --workspace --locked --no-fail-fast
 
   secrets:
     name: Secret scan (gitleaks)
