@@ -108,6 +108,10 @@ pub struct Call {
 /// Claude Code's tool for asking the user a question with options (#858).
 pub const ASK_USER_QUESTION: &str = "AskUserQuestion";
 
+/// The card a Cursor job waits on before it starts with its repository's hooks
+/// (`Jobs::allow_repository_hooks`); its rule, `RepositoryHooks(<digest>)`, is those very hooks.
+pub const REPOSITORY_HOOKS: &str = "RepositoryHooks";
+
 /// One question of an `AskUserQuestion` call, as the agent wrote it: data for the owner to read,
 /// cut to the sizes below, never instructions.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -1970,6 +1974,11 @@ pub fn decide(call: &Call, mode: Mode, rules: &[Rule], bounds: &Bounds) -> Verdi
     if call.tool == ASK_USER_QUESTION {
         return Verdict::Ask;
     }
+    // A repository's hooks run outside obid's prompts: no mode answers for the owner (its saved
+    // rule is checked before the card is made, never here).
+    if call.tool == REPOSITORY_HOOKS {
+        return Verdict::Ask;
+    }
     let edit = EDITS.contains(&call.tool.as_str());
     if mode == Mode::Plan && edit {
         return Verdict::Deny(PLAN_ONLY.into());
@@ -2467,6 +2476,26 @@ mod tests {
 
     fn decide_in(call: &Call, mode: Mode, rules: &[Rule]) -> Verdict {
         decide(call, mode, rules, &Bounds::of(Path::new(WORKTREE)))
+    }
+
+    /// A repository's hooks wait for the owner in every mode, and no saved rule answers them here.
+    #[test]
+    fn a_repositorys_hooks_ask_in_every_mode() {
+        let call = Call {
+            tool: REPOSITORY_HOOKS.into(),
+            command: Some(".cursor/hooks.json (stop): ./x.sh".into()),
+            ..Call::default()
+        };
+        let saved = [rule("RepositoryHooks(0123456789abcdef)", "allow")];
+        for mode in [
+            Mode::Ask,
+            Mode::AcceptEdits,
+            Mode::Plan,
+            Mode::Bypass,
+            Mode::Sandbox,
+        ] {
+            assert_eq!(decide_in(&call, mode, &saved), Verdict::Ask, "{mode:?}");
+        }
     }
 
     /// PermissionTests.eachModeAllowsOrAsks.
