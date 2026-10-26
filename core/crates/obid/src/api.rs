@@ -441,6 +441,10 @@ async fn gate(State(shared): State<Arc<Shared>>, request: Request, next: Next) -
                 })
         }) {
             Ok(())
+        } else if agent_mcp.is_some() && agent_gateway_request(request.uri(), request.headers()) {
+            // The gateway's host is admitted for this route, so what's missing is the token: 401,
+            // as on loopback, not the host's 403.
+            Err(ApiError::new(StatusCode::UNAUTHORIZED, NO_TOKEN))
         } else {
             Err(error)
         }
