@@ -5,6 +5,19 @@ the generic client in `Engine/ACP.swift` and Cursor's launch in `Engine/Cursor.s
 is what Oby relies on, and what the probe proved. Run the probe with
 `scripts/cursor-probe.sh offline` and `scripts/cursor-probe.sh signed-in`.
 
+## Cursor today
+
+What a Cursor job does in the launch build, on obid:
+
+- Its file edits can't be gated yet ("Edits are not gated", below), so Ask mode behaves as Accept
+  edits on Cursor.
+- It shows no usage meter: Cursor reports no usage, so routing gives it work last
+  (docs/runner-api.md, "Routing").
+- It doesn't review: Oby's review of a finished job never runs on Cursor.
+- Its questions reach the owner and wait for the answer (#1456), its Plan mode waits for the
+  owner's OK (#1452), and a repository's hooks ask before Cursor starts (#1454, "A repository's
+  hooks", below).
+
 ## Probe results
 
 Both halves of `scripts/cursor-probe.sh` were run by the user on tetrix-lab on 2026-10-14, with

@@ -19,23 +19,23 @@
 </p>
 
 > [!NOTE]
-> Oby 0.3.0 is out: [download it](https://downloads.oby.deskree.com/Oby-0.3.0.dmg) for macOS 26 or later. It updates itself. The launch build below (GitHub and Slack, the iPhone through your Obysphere) comes with the next release.
+> Oby 0.3.0 is out: [download it](https://downloads.oby.deskree.com/Oby-0.3.0.dmg) for macOS 26 or later. It updates itself. It runs on the Mac only, hands work to Claude Code, Codex and Cursor, connects to GitHub and Tetrix, and asks your teammates' Obys for reviews through your Obysphere.
 
 ## What it does
 
 - **Delegates your coding work.** Ask for a review, a fix for failing CI, or release notes. Oby picks the agent, account and repository, and gives every job its own branch.
-- **Uses the plans you already have.** Claude Code, Codex and Cursor sign in through their own tools. Oby never sees your passwords and shows how much of each plan is left.
+- **Uses the plans you already have.** Claude Code, Codex and Cursor sign in through their own tools. Oby never sees your passwords and shows how much of each Claude Code and Codex plan is left.
+- **Cursor today.** Its file edits can't be gated yet, so Ask mode works as Accept edits on Cursor. It shows no usage meter, and Oby's review of a finished job never runs on it. Its questions reach you (#1456), its Plan mode waits for your OK (#1452), and a repository's hooks ask before they run (#1454). More in [docs/cursor.md](docs/cursor.md).
 - **Keeps the work moving.** It follows each job, nudges it when it stalls, and opens the pull request once checks pass and the secret scan is clean.
 - **Only interrupts you for decisions.** When something needs you, you get the finding, the evidence and a clear next step.
-- **Works with your team.** Everyone has their own Oby. Your team's Obysphere is a server you host yourself, free on Cloudflare from one Deploy to Cloudflare button ([obi-sphere](https://github.com/obi-ai-bot/obi-sphere)). Obys ask each other for reviews there.
-- **Reaches your Mac from your iPhone.** Through your Obysphere, sealed end to end: the Sphere passes frames it can't open. obid's side is done; the iPhone's, and the Mac's pairing screen for it, are in progress.
-- **Connects to GitHub and Slack.** It follows your pull requests and issues, and can tell a pull request's author on Slack when a review is in.
+- **Works with your team.** Everyone has their own Oby. Your team's Obysphere is a server you host yourself, free on Cloudflare from one Deploy to Cloudflare button ([obi-sphere](https://github.com/obi-ai-bot/obi-sphere)). Obys ask each other for reviews there. Until #1233 lands, what Obys send each other (review summaries, questions, answers) isn't sealed end to end: the Obysphere's server, and members who read its audit log, can read it.
+- **Connects to GitHub and Tetrix.** It follows your pull requests and issues on GitHub, and every agent gets Tetrix's graph through the one sign-in you make in Oby.
 
 ## You stay in control
 
-- Oby opens the pull request and leaves the merge to you. It never pushes to or force-pushes `main` or your default branch. Merging a repository's own way, once Oby has asked "Can I remember that?" and you said yes, comes later.
+- Oby merges a pull request the way it learned for that repository, once it asked "Can I remember that?" and you said yes. Until it has learned one, it asks "Ready to merge?" and leaves the pull request open. It never pushes to or force-pushes `main` or your default branch, and never merges into `main`.
 - Nothing goes out until the job's check passes and the secret scan is clean. A review goes out as you only after your Approve.
-- Approvals (publishing by hand, a Confirm, a Disconnect) are a click in Oby on your Mac or iPhone, with no Touch ID, Face ID or password; whatever waits on you notifies on the Mac and shows on Home.
+- Approvals (publishing by hand, a Confirm, a Disconnect) are a click in Oby on your Mac, with no Touch ID, Face ID or password; whatever waits on you notifies on the Mac and shows on Home.
 - Every job has safety limits on time and tokens, and **⌃⌥⌘.** stops them all.
 - No usage data leaves your Mac unless you turn it on.
 
@@ -55,7 +55,7 @@ The Mac app runs Oby's server, `obid`, for you (Settings › Runner › This Mac
 ## Repository
 
 ```
-apps/        the Mac app (SwiftUI), plus iPhone, Apple Watch, Android and web clients
+apps/        the Mac app (SwiftUI); the iPhone, Apple Watch, Android and web clients wait until it's right
 core/        obid, Oby's server (Rust): plans, runs and tracks jobs
 character/   Oby, the 3D character (three.js)
 plugins/     optional context sources, such as Tetrix

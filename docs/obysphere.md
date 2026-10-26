@@ -4,6 +4,8 @@ The owner, 2026-10-25: clicking Deskree's Obysphere in Sangam's design isn't wha
 
 It builds on [onboarding.md](onboarding.md) section 4 (roles, Knowledge per Obysphere, another Obysphere is another world) and [trim.md](trim.md) core 4 (Obys talk: reviews first, working together later).
 
+Today, until #1233 lands, Obi-to-Obi messages (review summaries, questions, answers) aren't sealed end to end: the Obysphere's server, and members who read its audit log, can read them.
+
 ## What each side has today
 
 | Sangam's design (`design/app/src/renderer/src/`) | The Mac app | obid | The Obysphere server (obi-sphere) |
