@@ -11,6 +11,11 @@ nonisolated enum WindowStep: Hashable, Sendable {
     case session(id: String)
     case talk
     case settings(SettingsPage)
+    /// An Obysphere's settings, from its ⋮ in the side panel (Sangam's SphereSettings.tsx), named
+    /// for the trail ("Deskree settings").
+    case sphereSettings(name: String)
+    /// What an Obysphere's Obys look things up in (Sangam's KnowledgeView.tsx).
+    case knowledge(name: String, admin: Bool)
 }
 
 /// Settings' pages, in the side panel's Settings section in this order (Sangam's SettingsView.tsx
@@ -50,7 +55,7 @@ nonisolated enum SettingsPage: String, CaseIterable, Hashable, Sendable {
 }
 
 /// The launch build (AGENTS.md, the owner's decision of 2026-10-23): Mac share, Runner share, Remote
-/// access and every connector but GitHub and Slack are hidden on the Mac and the iPhone, not deleted.
+/// access and every connector but GitHub and Tetrix are hidden on the Mac and the iPhone, not deleted.
 /// `showEverything`, a default with no UI, shows them on Deskree's own Macs:
 /// `defaults write com.deskree.oby showEverything -bool YES`, then relaunch Oby. It's for Macs only:
 /// an iPhone has no way to set it, so it always shows the launch build (a debug run can pass

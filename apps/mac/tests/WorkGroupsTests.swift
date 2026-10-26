@@ -175,4 +175,17 @@ struct WorkGroupsTests {
         #expect(chips.map(\.fresh) == [true, false, true])
         #expect(chips.map { $0.needs > 0 } == [false, true, true])
     }
+
+    /// The launch build hides Routines (`Launch`, docs/trim.md): no Routines chip, and a routine's run
+    /// still shows, under Tasks. `showEverything` brings Sangam's Routines back.
+    @Test func theLaunchBuildPutsARoutinesRunUnderTasks() {
+        let run = job("rt", kind: .review)
+        let launch = SidebarSections.work([run], since: now, seen: [], routines: ["rt"], everything: false)
+        #expect(launch.map(\.type) == [.tasks])
+        #expect(WorkList.kinds(launch, routines: false).map(\.label) == ["Review PR", "Issues", "Tasks"])
+        #expect(WorkList.kinds(launch, routines: false).map(\.count) == [0, 0, 1])
+        let everything = SidebarSections.work([run], since: now, seen: [], routines: ["rt"], everything: true)
+        #expect(everything.map(\.type) == [.routines])
+        #expect(WorkList.kinds(everything).map(\.label) == ["Review PR", "Issues", "Tasks", "Routines"])
+    }
 }

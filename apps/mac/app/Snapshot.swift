@@ -56,6 +56,8 @@ final class Tray {
         // ponytail: a job copies its attachments when its worktree is ready, so they're kept a day
         // rather than tracked (the clipboard can hold secrets); a plan dispatched later than that
         // goes without them.
+        // Where older builds kept them, which nothing reads any more (#891).
+        try? FileManager.default.removeItem(at: LocalRunner.appRoot.appending(path: "attachments", directoryHint: .isDirectory))
         let old = Date.now.addingTimeInterval(-24 * 3600)
         let files = (try? FileManager.default.contentsOfDirectory(at: Self.folder, includingPropertiesForKeys: [.contentModificationDateKey])) ?? []
         for file in files where ((try? file.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate ?? .now) < old {
@@ -136,7 +138,7 @@ final class Tray {
         panel.allowsMultipleSelection = true
         guard panel.runModal() == .OK else { return }
         do {
-            try FileManager.default.createDirectory(at: Self.folder, withIntermediateDirectories: true)
+            try FileManager.default.createDirectory(at: Self.folder, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
             for source in panel.urls {
                 let target = Self.folder.appending(path: "\(UUID().uuidString)-\(source.lastPathComponent)")
                 try FileManager.default.copyItem(at: source, to: target)
@@ -154,7 +156,7 @@ final class Tray {
     }
 
     private func add(_ kind: Attachment.Kind, data: Data, extension ext: String) throws {
-        try FileManager.default.createDirectory(at: Self.folder, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: Self.folder, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         let name = kind == .screenshot ? "screenshot" : "clipboard"
         let file = Self.folder.appending(path: "\(name)-\(UUID().uuidString.prefix(6).lowercased()).\(ext)")
         try data.write(to: file)
@@ -317,53 +319,5 @@ private final class SelectionView: NSView {
         NSColor.black.withAlphaComponent(0.7).setFill()
         NSBezierPath(roundedRect: box, xRadius: 12, yRadius: 12).fill()
         hint.draw(at: CGPoint(x: box.minX + 16, y: box.minY + 10), withAttributes: attributes)
-    }
-}
-
-/// The chips, each with a way to take it off, and why the last capture didn't work: without Screen
-/// Recording, how to turn it on.
-struct TrayRow: View {
-    let tray: Tray
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            if !tray.items.isEmpty {
-                HStack(spacing: 8) {
-                    ForEach(tray.items) { item in
-                        HStack(spacing: 6) {
-                            Image(systemName: item.icon)
-                            Text(item.label)
-                            Button { tray.remove(item) } label: { Image(systemName: "xmark").font(.system(size: 9, weight: .bold)) }
-                                .buttonStyle(.plain)
-                                .accessibilityLabel("Remove \(item.label)")
-                        }
-                        .font(.system(size: 12, weight: .semibold))
-                        .padding(.horizontal, 10).frame(height: 26)
-                        .background(.white.opacity(0.12), in: Capsule())
-                    }
-                }
-            }
-            switch tray.problem {
-            case .screenRecording:
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("Oby needs Screen Recording to see your screen. In System Settings › Privacy & Security › Screen & System Audio Recording, turn on Oby, then click the camera again. macOS may ask you to reopen Oby first.")
-                        .font(.system(size: 12)).foregroundStyle(.orange)
-                        .fixedSize(horizontal: false, vertical: true)
-                    Button("Open System Settings") {
-                        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture") {
-                            _ = NSWorkspace.shared.open(url)
-                        }
-                    }
-                    .font(.system(size: 12, weight: .semibold))
-                    .buttonStyle(.plain)
-                    .padding(.horizontal, 10).frame(height: 24)
-                    .background(.white.opacity(0.12), in: Capsule())
-                }
-            case .other(let problem):
-                Text(problem).font(.system(size: 12)).foregroundStyle(.red).lineLimit(2)
-            case nil:
-                EmptyView()
-            }
-        }
     }
 }

@@ -555,8 +555,8 @@ fn cursors_keychain_login_runs_from_a_copy_of_only_what_calls_the_api() {
 }
 
 /// obid's fixed denials hold for Cursor: a push is `reject_once`, and the next round's prompt
-/// starts with what obid declined and why, since ACP's answer carries no words. Cursor's question
-/// is skipped, a request for obid's files is refused, and a fine command is allowed once.
+/// starts with what obid declined and why, since ACP's answer carries no words. A request for
+/// obid's files is refused, and a fine command is allowed once.
 #[test]
 fn cursor_hears_what_obid_declined_at_its_next_prompt() {
     let folder = Folder::new("cursor-declines");
@@ -565,7 +565,6 @@ fn cursor_hears_what_obid_declined_at_its_next_prompt() {
         &obid,
         json!({"agent": "cursor", "task": "TWICE", "rounds": 2, "check": "test -f .obi/twice"}),
     );
-    let question = dispatch(&obid, json!({"agent": "cursor", "task": "QUESTION"}));
     let fs = dispatch(&obid, json!({"agent": "cursor", "task": "FS"}));
     let fine = dispatch(
         &obid,
@@ -584,26 +583,213 @@ fn cursor_hears_what_obid_declined_at_its_next_prompt() {
             .starts_with("heard: obid declined git push: obid publishes the job's work itself."),
         "{job}"
     );
-    assert_eq!(ended(&obid, &question)["summary"], "question: skipped");
     assert_eq!(ended(&obid, &fs)["summary"], "fs: error -32601");
     assert_eq!(ended(&obid, &fine)["summary"], "answer: allow-once");
 }
 
-/// Plan mode: Cursor plans in its own plan mode; its plan is approved as Claude Code's
-/// `ExitPlanMode` is, and the same round goes on in its agent mode.
+/// Job `id` once its agent's question waits for the owner (#858): the job's `permission`, with its
+/// `question`, and an `agentQuestion` inbox item.
+fn question_waits(obid: &Obid, id: &str) -> Value {
+    let job = within(60, "the question waits for the owner", || {
+        let job = call(obid, "GET", &format!("/v1/jobs/{id}"), None).body;
+        job["permission"]["question"].is_object().then_some(job)
+    });
+    let item = format!(
+        "{id}-permission-{}",
+        job["permission"]["id"].as_str().unwrap()
+    );
+    let items = call(obid, "GET", "/v1/inbox", None).body;
+    assert!(
+        items
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|i| i["id"] == item && i["kind"] == "agentQuestion"),
+        "{items}"
+    );
+    job
+}
+
+/// The owner answers job `id`'s waiting question with `answer`: an option's label or their words.
+fn answer_question(obid: &Obid, id: &str, job: &Value, answer: &str) {
+    let answered = call(
+        obid,
+        "POST",
+        &format!("/v1/jobs/{id}/permission"),
+        Some(&json!({"id": job["permission"]["id"], "answer": answer})),
+    );
+    assert_eq!(answered.status, 200, "{}", answered.text);
+}
+
+/// Cursor's own question (`cursor/ask_question`) waits for the owner as Claude Code's
+/// AskUserQuestion does (#858): an option goes back as its id; the owner's own words, which
+/// Cursor's answer can't carry, go back as `skipped` with the words and come as the next prompt.
 #[test]
-fn cursor_plans_then_goes_ahead() {
+fn cursors_question_waits_for_the_owners_answer() {
+    let folder = Folder::new("cursor-question");
+    let obid = obid(&folder, false);
+    let picked = dispatch(&obid, json!({"agent": "cursor", "task": "QUESTION"}));
+    let words = dispatch(&obid, json!({"agent": "cursor", "task": "QUESTION"}));
+    let job = question_waits(&obid, &picked);
+    assert_eq!(job["permission"]["question"]["question"], "Which?", "{job}");
+    assert_eq!(
+        job["permission"]["question"]["header"], "Need input",
+        "{job}"
+    );
+    answer_question(&obid, &picked, &job, "b");
+    let job = question_waits(&obid, &words);
+    answer_question(&obid, &words, &job, "Neither: use C");
+
+    let job = ended(&obid, &picked);
+    assert_eq!(job["status"], "done", "{job}");
+    assert_eq!(
+        summary(&job),
+        r#"question: answered [{"questionId":"q","selectedOptionIds":["b"]}]"#
+    );
+    let job = ended(&obid, &words);
+    assert_eq!(
+        summary(&job),
+        r#"heard: The owner answered your question in their own words: "Neither: use C". Carry on with that, then finish with a short summary. after question: skipped "Neither: use C""#
+    );
+}
+
+/// A Cursor job asks the owner with Oby's `oby_ask_owner`, on the `oby` server obid gives it
+/// with that tool alone: the tool answers at once, the turn ends, and the job waits `running`
+/// with no agent, its question asked as Claude Code's AskUserQuestion is (#858). The owner's own
+/// words, through the inbox item, pick the same session up, quoted.
+#[test]
+fn a_cursor_job_asks_the_owner_and_resumes_with_the_answer() {
+    let folder = Folder::new("cursor-asks");
+    let obid = obid(&folder, false);
+    let id = dispatch(&obid, json!({"agent": "cursor", "task": "ASK OWNER"}));
+    let job = question_waits(&obid, &id);
+    assert_eq!(job["status"], "running", "{job}");
+    assert_eq!(job["step"], "Waiting for your answer", "{job}");
+    assert_eq!(job["permission"]["tool"], "AskUserQuestion", "{job}");
+    assert_eq!(job["permission"]["question"]["question"], "Which store?");
+    assert!(
+        summary(&job)
+            .starts_with("listed: oby_ask_owner\nAsked: Asked the owner. End your turn now"),
+        "{job}"
+    );
+    let item = format!(
+        "{id}-permission-{}",
+        job["permission"]["id"].as_str().unwrap()
+    );
+    let answered = call(
+        &obid,
+        "POST",
+        &format!("/v1/inbox/{item}/answer"),
+        Some(&json!({"answer": "Use a JSON file"})),
+    );
+    assert_eq!(answered.status, 200, "{}", answered.text);
+
+    let job = ended(&obid, &id);
+    assert_eq!(job["status"], "done", "{job}");
+    assert!(
+        summary(&job).starts_with(
+            "heard: You asked the owner with oby_ask_owner and ended your turn. You asked:\n- \"Which store?\": the owner answered \"Use a JSON file\"\nCarry on with these answers"
+        ),
+        "{job}"
+    );
+}
+
+/// A Codex job asks the owner with Oby's `oby_ask_owner` (approved as Oby's own tool, with no
+/// connected app), waits with no agent, and the owner's option picks its thread up.
+#[test]
+fn a_codex_job_asks_the_owner_and_resumes_with_the_answer() {
+    let folder = Folder::new("codex-asks");
+    let obid = obid(&folder, false);
+    let id = dispatch(&obid, json!({"agent": "codex", "task": "ASK OWNER"}));
+    let job = question_waits(&obid, &id);
+    assert_eq!(job["status"], "running", "{job}");
+    assert!(
+        summary(&job).starts_with("Asked: Asked the owner. End your turn now"),
+        "{job}"
+    );
+    let options = &job["permission"]["question"]["options"];
+    assert_eq!(
+        options[1],
+        json!({"label": "Postgres", "description": "A server"})
+    );
+    answer_question(&obid, &id, &job, "postgres");
+
+    let job = ended(&obid, &id);
+    assert_eq!(job["status"], "done", "{job}");
+    assert!(
+        summary(&job).contains("- \"Which store?\": the owner answered \"Postgres\""),
+        "{job}"
+    );
+}
+
+/// Codex's own question (`item/tool/requestUserInput`) waits for the owner as Claude Code's
+/// AskUserQuestion does (#858), the answer going back by the question's id; a secret is never
+/// asked.
+#[test]
+fn codexs_own_question_waits_for_the_owners_answer() {
+    let folder = Folder::new("codex-question");
+    let obid = obid(&folder, false);
+    let id = dispatch(&obid, json!({"agent": "codex", "task": "QUESTION"}));
+    let secret = dispatch(&obid, json!({"agent": "codex", "task": "QUESTION SECRET"}));
+    let job = question_waits(&obid, &id);
+    assert_eq!(job["permission"]["question"]["header"], "Store", "{job}");
+    answer_question(&obid, &id, &job, "sqlite");
+    assert_eq!(
+        summary(&ended(&obid, &id)),
+        r#"question: {"answers":{"store":{"answers":["SQLite"]}}}"#
+    );
+    let job = ended(&obid, &secret);
+    assert!(
+        summary(&job).contains("obid never collects a secret for an agent"),
+        "{job}"
+    );
+}
+
+/// Plan mode (#1008): Cursor's plan (`cursor/create_plan`) waits for the owner as Claude Code's
+/// `ExitPlanMode` does, a `plan` item in the inbox. Keep planning and the owner's words reach
+/// Cursor as `rejected`, still in its plan mode; Approve as `accepted`, and the same round goes on
+/// in its agent mode, the job in Ask.
+#[test]
+fn a_cursor_plan_waits_for_the_owners_approval() {
     let folder = Folder::new("cursor-plan");
     let obid = obid(&folder, false);
     let id = dispatch(
         &obid,
         json!({"agent": "cursor", "task": "PLAN", "mode": "plan"}),
     );
+    let answer = |plan: &str, words: &str| {
+        let item = within(60, "the plan waits for the owner", || {
+            call(&obid, "GET", "/v1/inbox", None)
+                .body
+                .as_array()?
+                .iter()
+                .find(|i| i["job"] == id && i["done"].is_null() && i["details"][0] == plan)
+                .cloned()
+        });
+        assert_eq!(item["kind"], "plan", "{item}");
+        assert_eq!(item["options"], json!(["Approve", "Keep planning"]));
+        let job = call(&obid, "GET", &format!("/v1/jobs/{id}"), None).body;
+        assert_eq!(job["step"], "Waiting for your OK on the plan", "{job}");
+        assert_eq!(job["permission"]["title"], "Approve the plan?");
+        let answered = call(
+            &obid,
+            "POST",
+            &format!("/v1/inbox/{}/answer", item["id"].as_str().unwrap()),
+            Some(&json!({ "answer": words })),
+        );
+        assert_eq!(answered.status, 200, "{}", answered.text);
+    };
+    answer("1. Do it.", "Keep planning");
+    answer("2. Do it.", "Also test it");
+    answer("3. Do it.", "Approve");
     let job = ended(&obid, &id);
     assert_eq!(job["status"], "done", "{job}");
+    assert_eq!(job["mode"], "ask");
     assert_eq!(
         summary(&job),
-        "mode agent: Your plan is approved: carry it out now, then finish with a short summary."
+        "mode agent after rejected in mode plan (The owner didn't approve the plan yet: keep \
+         planning, then present it again.); rejected in mode plan (Also test it); accepted in \
+         mode plan: Your plan is approved: carry it out now, then finish with a short summary."
     );
 }
 
@@ -656,6 +842,121 @@ fn the_sandbox_holds_what_the_tools_dont_ask_about() {
         assert!(summary(&job).starts_with("escape: E"), "{job}");
     }
     assert!(!obid.home.join("worktrees/escaped.txt").exists());
+}
+
+/// A repository's hooks, which Cursor runs itself outside obid's prompts (its `.cursor/hooks.json`,
+/// and Claude Code's settings, which it loads too): Cursor doesn't start until the owner says yes.
+/// A no starts nothing and names Claude Code and Codex; Always is remembered for those very hooks
+/// in that repository, and a changed hook asks again.
+#[test]
+fn cursor_asks_you_before_it_runs_a_repositorys_hooks() {
+    let folder = Folder::new("cursor-hooks");
+    let (obid, remote) = obid_and_remote(&folder, false);
+    let work = folder.0.join("work");
+    git(
+        &folder.0,
+        &[
+            "clone",
+            "-q",
+            remote.to_str().unwrap(),
+            work.to_str().unwrap(),
+        ],
+    );
+    let push = |file: &str, text: &str| {
+        std::fs::create_dir_all(work.join(file).parent().unwrap()).unwrap();
+        std::fs::write(work.join(file), text).unwrap();
+        git(&work, &["add", file]);
+        git(
+            &work,
+            &[
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@example.com",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-q",
+                "-m",
+                "hooks",
+            ],
+        );
+        git(&work, &["push", "-q", "origin", "HEAD:main"]);
+    };
+    let card = |id: &str| {
+        within(60, "the hooks wait for the owner", || {
+            let job = call(&obid, "GET", &format!("/v1/jobs/{id}"), None).body;
+            (job["permission"]["tool"] == "RepositoryHooks").then_some(job)
+        })
+    };
+    let answer = |id: &str, job: &Value, decision: &str| {
+        let answered = call(
+            &obid,
+            "POST",
+            &format!("/v1/jobs/{id}/permission"),
+            Some(&json!({"id": job["permission"]["id"], "decision": decision})),
+        );
+        assert_eq!(answered.status, 200, "{}", answered.text);
+    };
+    push(
+        ".cursor/hooks.json",
+        r#"{"version": 1, "hooks": {"afterFileEdit": [{"command": "./format.sh"}]}}"#,
+    );
+
+    // A no: Cursor never started.
+    let id = dispatch(&obid, json!({"agent": "cursor", "task": "anything"}));
+    let job = card(&id);
+    assert_eq!(
+        job["permission"]["title"],
+        "Let Cursor run this repository's hooks: ./format.sh"
+    );
+    assert_eq!(
+        job["permission"]["detail"],
+        ".cursor/hooks.json (afterFileEdit): ./format.sh"
+    );
+    assert!(job["session"].is_null(), "{job}");
+    answer(&id, &job, "deny");
+    let job = ended(&obid, &id);
+    assert_eq!(job["status"], "failed", "{job}");
+    assert!(
+        summary(&job).starts_with(
+            "Cursor didn't start: you said no to this repository's hooks, which Cursor runs itself"
+        ) && summary(&job).contains("Claude Code and Codex jobs don't run them"),
+        "{job}"
+    );
+
+    // Always: it runs, and the next job on the same hooks doesn't ask.
+    let id = dispatch(&obid, json!({"agent": "cursor", "task": "anything"}));
+    answer(&id, &card(&id), "always");
+    assert_eq!(ended(&obid, &id)["status"], "done");
+    let rules = call(&obid, "GET", "/v1/permissions/rules", None).body;
+    assert!(
+        rules
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r["repo"] == "obi-e2e/fixture-app"
+                && r["rule"].as_str().unwrap().starts_with("RepositoryHooks(")),
+        "{rules}"
+    );
+    let id = dispatch(&obid, json!({"agent": "cursor", "task": "anything"}));
+    let job = ended(&obid, &id);
+    assert_eq!(job["status"], "done", "{job}");
+    assert_eq!(summary(&job), "Nothing to do.");
+
+    // A hook added in Claude Code's settings changes the set: it asks again.
+    push(
+        ".claude/settings.json",
+        r#"{"hooks": {"Stop": [{"hooks": [{"type": "command", "command": "./notify.sh"}]}]}}"#,
+    );
+    let id = dispatch(&obid, json!({"agent": "cursor", "task": "anything"}));
+    let job = card(&id);
+    assert_eq!(
+        job["permission"]["detail"],
+        ".cursor/hooks.json (afterFileEdit): ./format.sh\n.claude/settings.json (Stop): ./notify.sh"
+    );
+    answer(&id, &job, "allow");
+    assert_eq!(ended(&obid, &id)["status"], "done");
 }
 
 /// A repository whose `.cursor/cli.json` lets commands through without asking: Cursor doesn't

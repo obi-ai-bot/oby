@@ -5,8 +5,13 @@
 #                                       runs: no login, no network call that needs one.
 #   scripts/cursor-probe.sh signed-in   Two throwaway account homes you sign in to (two different
 #                                       Cursor accounts), then status, models, an edit and a command,
-#                                       MCP through `mcpServers`, `session/load`. It never reads a
-#                                       token file: it only stats files and asks Cursor for `status`.
+#                                       MCP through `mcpServers`, `session/load`, and whether a
+#                                       repository's hooks fire under `acp` (with and without
+#                                       `--trust`). Then, launched as obid launches it, user hooks as an edit gate
+#                                       (`preToolUse` deny), `postToolUse` context and the `stop`
+#                                       payload's token counts, a `Write(**)` deny alone, and the
+#                                       parameterized model picker. It never reads a token file: it only
+#                                       stats files and asks Cursor for `status`.
 #
 # Both print a redacted report (emails, tokens and your home folder are masked) to paste into
 # docs/cursor.md and the pull request. Nothing is written outside the temporary folder it makes
@@ -109,8 +114,9 @@ class Acp:
         else:
             self._send({"id": request["id"], "error": {"code": -32601, "message": "not supported"}})
 
-    def initialize(self):
-        return self.call("initialize", {"protocolVersion": 1, "clientCapabilities": {}, "clientInfo": {"name": "oby-probe", "version": "0"}})
+    def initialize(self, capabilities=None):
+        return self.call("initialize", {"protocolVersion": 1, "clientCapabilities": capabilities or {},
+                                        "clientInfo": {"name": "oby-probe", "version": "0"}})
 
     def close(self):
         try:
@@ -197,6 +203,236 @@ class Stub(http.server.BaseHTTPRequestHandler):
 def identity(env):
     code, text = run(["status"], env)
     return code, text
+
+
+TOKEN_KEYS = ("input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens")
+MARKER = "PROBE-MARKER-7d1"
+DENIED = "probe denied"
+EDITS = ("edit", "delete", "move")
+
+
+def turn(acp, sid, text, timeout=120):
+    """One prompt, every permission rejected: (the agent's words, permission kinds, tool-call kinds)."""
+    before = len(acp.seen)
+    acp.call("session/prompt", {"sessionId": sid, "prompt": [{"type": "text", "text": text}]}, timeout=timeout)
+    words, asked, tools = "", [], []
+    for method, params in acp.seen[before:]:
+        params = params or {}
+        update = params.get("update") or {}
+        if method == "session/request_permission":
+            asked.append((params.get("toolCall") or {}).get("kind"))
+        elif update.get("sessionUpdate") == "agent_message_chunk":
+            words += (update.get("content") or {}).get("text", "")
+        elif update.get("sessionUpdate") == "tool_call":
+            tools.append(update.get("kind"))
+    return words, asked, tools
+
+
+def gist(words):
+    return " ".join(words.split())[:300] or "(nothing)"
+
+
+def write_cli_config(config, deny):
+    """As obid's `rewrite_config` (acp.rs): an empty allowlist, Cursor's own keys kept; `deny` added."""
+    path = os.path.join(config, "cli-config.json")
+    try:
+        with open(path) as f:
+            settings = json.load(f)
+    except (OSError, ValueError):
+        settings = {}
+    settings = settings if isinstance(settings, dict) else {}
+    settings["permissions"] = {"allow": [], "deny": deny}
+    settings["approvalMode"] = "allowlist"
+    with open(path, "w") as f:
+        json.dump(settings, f)
+
+
+def user_hooks(folder, home, config):
+    """The probe's user hooks, in `<home>/.cursor/hooks.json` and, in case `CURSOR_CONFIG_DIR` stands in
+    for `~/.cursor`, in `<CURSOR_CONFIG_DIR>/hooks.json` (in obid, where the two are one folder:
+    `<home>/hooks.json`). Each hook saves its stdin as `hook-log/<event>.<file>.<random>` in the
+    throwaway folder, then prints `answer-<event>.json`: no JSON on the command line, in case Cursor
+    runs it without a shell."""
+    script = os.path.join(folder, "log-hook.sh")
+    with open(script, "w") as f:
+        f.write('#!/bin/sh\nd="$(dirname "$0")"\nmkdir -p "$d/hook-log"\n'
+                'cat > "$(mktemp "$d/hook-log/$1.$2.XXXXXX")"\ncat "$d/answer-$1.json"\n')
+    os.chmod(script, 0o755)
+    answers = {"preToolUse": {"permission": "deny", "user_message": DENIED},
+               "postToolUse": {"additional_context": MARKER}, "stop": {}, "afterAgentResponse": {}}
+    for event, answer in answers.items():
+        with open(os.path.join(folder, f"answer-{event}.json"), "w") as f:
+            json.dump(answer, f)
+    files = {"dotcursor": os.path.join(home, ".cursor", "hooks.json"), "configdir": os.path.join(config, "hooks.json")}
+    for where, path in files.items():
+        hooks = {event: [{"command": f"{script} {event} {where}", "timeout": 30}] for event in answers}
+        hooks["preToolUse"][0].update(matcher="Write|StrReplace|Delete", failClosed=True)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as f:
+            json.dump({"version": 1, "hooks": hooks}, f)
+    return list(files.values())
+
+
+def hook_calls(folder):
+    """Every logged hook call: (event, which hooks.json, payload, or None when it isn't JSON)."""
+    log = os.path.join(folder, "hook-log")
+    calls = []
+    for name in sorted(os.listdir(log)) if os.path.isdir(log) else []:
+        event, where, _ = name.split(".", 2)
+        try:
+            with open(os.path.join(log, name)) as f:
+                calls.append((event, where, json.load(f)))
+        except ValueError:
+            calls.append((event, where, None))
+    return calls
+
+
+def key_paths(payload, prefix=""):
+    """Every key of a JSON object, nested ones as `a.b`, with its value."""
+    found = {}
+    for key, value in payload.items() if isinstance(payload, dict) else ():
+        found[prefix + key] = value
+        found.update(key_paths(value, prefix + key + "."))
+    return found
+
+
+def payload_keys(label, payloads):
+    """Says the keys a hook's payloads carry and the token counts among them (numbers only)."""
+    paths = {}
+    for payload in payloads:
+        paths.update(key_paths(payload))
+    tokens = {k: v for k, v in paths.items() if k.rsplit(".", 1)[-1] in TOKEN_KEYS
+              and isinstance(v, (int, float)) and not isinstance(v, bool)}
+    say(f"{label} payload keys: {', '.join(sorted(paths)) or 'none'}")
+    say(f"{label} token counts: {', '.join(f'{k}={v}' for k, v in sorted(tokens.items())) or 'none'}")
+    return {k.rsplit(".", 1)[-1] for k in tokens}
+
+
+def failed(label, session):
+    return f"{label}: UNKNOWN (session/new failed: {(session.get('error') or {}).get('message')})"
+
+
+def check_hooks(env, repo, folder):
+    """7a to 7c, in one session with the user hooks in place."""
+    acp = Acp(env, repo)
+    acp.initialize()
+    session = acp.call("session/new", {"cwd": repo, "mcpServers": []})
+    sid = session.get("result", {}).get("sessionId")
+    if not sid:
+        acp.close()
+        return [failed(label, session) for label in ("7a preToolUse deny stops an edit", "7a user_message reaches the model",
+                                                     "7b postToolUse additional_context reaches the model", "7c stop token counts")]
+    _, asked, tools = turn(acp, sid, "Create a file named denied.txt containing the word hello. Use your file edit tool, nothing else.")
+    quote, _, _ = turn(acp, sid, "Was your last file write blocked? Quote word for word any message you were given about it, or say NONE.")
+    read, _, _ = turn(acp, sid, "Read README.md with your read tool and tell me its first line.")
+    told, _, _ = turn(acp, sid, "Did any extra context come with a tool result in this conversation? Repeat it word for word, or say NONE.")
+    acp.close()
+    time.sleep(2)  # a hook may still be writing its log
+    calls = hook_calls(folder)
+    pre = [p for e, _, p in calls if e == "preToolUse"]
+    post = [p for e, _, p in calls if e == "postToolUse"]
+    stops = [p for e, _, p in calls if e == "stop"]
+    names = lambda payloads: sorted({str(p.get("tool_name")) for p in payloads if isinstance(p, dict)}) or "none"
+    written = os.path.exists(os.path.join(repo, "denied.txt"))
+    say("hooks fired from: " + (", ".join(sorted({w for _, w, _ in calls})) or "none")
+        + " (dotcursor = <home>/.cursor/hooks.json, configdir = $CURSOR_CONFIG_DIR/hooks.json)")
+    say(f"write: permission requests {asked or 'none'}; tool calls {tools or 'none'}; denied.txt written: {written}")
+    say(f"preToolUse calls: {len(pre)}; tool_name values: {names(pre)}")
+    say(f"the model's quote of what it was told: {gist(quote)}")
+    say(f"postToolUse calls: {len(post)}; tool_name values: {names(post)}")
+    say(f"marker in the model's words: after the read {MARKER in read}, when asked {MARKER in told}")
+    tokens = payload_keys("stop", stops)
+    payload_keys("afterAgentResponse", [p for e, _, p in calls if e == "afterAgentResponse"])
+    if written:
+        deny = "FAIL (denied.txt was written)"
+    elif any(k in EDITS for k in asked):
+        deny = "UNKNOWN (Cursor asked for the edit and the probe said no)"
+    else:
+        deny = "PASS" if pre else "UNKNOWN (preToolUse never fired)"
+    reached = "UNKNOWN (preToolUse never fired)" if not pre else "PASS" if DENIED in quote.lower() else "FAIL"
+    context = "PASS" if MARKER in read + told else "FAIL" if post else "UNKNOWN (postToolUse never fired)"
+    missing = [k for k in TOKEN_KEYS if k not in tokens]
+    counts = "UNKNOWN (stop never fired)" if not stops else f"FAIL (missing {', '.join(missing)})" if missing else "PASS"
+    return [f"7a preToolUse deny stops an edit: {deny} (tool_name: {names(pre)})",
+            f"7a user_message reaches the model: {reached}",
+            f"7b postToolUse additional_context reaches the model: {context}",
+            f"7c stop token counts: {counts}"]
+
+
+def check_write_deny(env, repo, config):
+    """7d: no hooks, `permissions.deny: ["Write(**)"]` in the home's cli-config.json."""
+    write_cli_config(config, ["Write(**)"])
+    acp = Acp(env, repo)
+    acp.initialize()
+    session = acp.call("session/new", {"cwd": repo, "mcpServers": []})
+    sid = session.get("result", {}).get("sessionId")
+    if not sid:
+        acp.close()
+        return failed("7d Write(**) deny alone stops a write", session)
+    words, asked, tools = turn(acp, sid, "Create a file named deny-rule.txt containing the word hello. Use your file edit tool, nothing else.")
+    acp.close()
+    written = os.path.exists(os.path.join(repo, "deny-rule.txt"))
+    say(f"write: permission requests {asked or 'none'}; tool calls {tools or 'none'}; deny-rule.txt written: {written}")
+    say(f"the model's words: {gist(words)}")
+    verdict = ("FAIL (deny-rule.txt was written)" if written
+               else "UNKNOWN (Cursor asked for the edit and the probe said no)" if any(k in EDITS for k in asked) else "PASS")
+    return f"7d Write(**) deny alone stops a write: {verdict}"
+
+
+def check_picker(env, repo):
+    """7e: `initialize` with `_meta.parameterizedModelPicker`, then `session/new`'s configOptions."""
+    acp = Acp(env, repo)
+    acp.initialize({"_meta": {"parameterizedModelPicker": True}})
+    session = acp.call("session/new", {"cwd": repo, "mcpServers": []})
+    acp.close()
+    result = session.get("result")
+    if not result:
+        return failed("7e effort option with the parameterized picker", session)
+    say("session/new result keys: " + ", ".join(sorted(result)))
+    if isinstance(result.get("_meta"), dict):
+        say("session/new _meta keys: " + ", ".join(sorted(result["_meta"])))
+    options = [o for o in result.get("configOptions") or [] if isinstance(o, dict)]
+    metas = []
+    for option in options:
+        items = [i for i in option.get("options") or [] if isinstance(i, dict)]
+        values = [v for i in items for v in (i.get("options") or [i]) if isinstance(v, dict)]
+        say(f"- {option.get('id')}: category {option.get('category')}, type {option.get('type')}, current {option.get('currentValue')}")
+        say("  values: " + (", ".join(str(v.get("value")) for v in values) or "none"))
+        meta = next((v["_meta"] for v in values if v.get("_meta")), option.get("_meta"))
+        if meta:
+            metas.append(json.dumps(meta))
+            say("  first _meta: " + metas[-1][:600])
+    effort = [str(o.get("id")) for o in options
+              if re.search(r"(?i)thought|reasoning|effort", " ".join(str(o.get(k, "")) for k in ("id", "category", "name")))]
+    in_meta = any(re.search(r"(?i)thought|reasoning|effort", m) for m in metas)
+    verdict = (f"PASS (option {', '.join(effort)})" if effort else "PASS (in the model's _meta)" if in_meta
+               else "FAIL (options: " + (", ".join(str(o.get("id")) for o in options) or "none") + ")")
+    return f"7e effort option with the parameterized picker: {verdict}"
+
+
+def hooks_and_picker(folder, env, home, config):
+    """Step 7, launched as obid launches Cursor (`cursor-agent --sandbox disabled acp`), on account A's
+    signed-in throwaway home (its own HOME, XDG_CONFIG_HOME and CURSOR_CONFIG_DIR, as in steps 3 to 6;
+    obid uses one folder for all three), in a repository of its own."""
+    repo = os.path.join(folder, "hooks-user-repo")
+    os.makedirs(repo)
+    subprocess.run(["git", "init", "-q", repo], check=False)
+    with open(os.path.join(repo, "README.md"), "w") as f:
+        f.write("probe\n")
+    write_cli_config(config, [])
+    files = user_hooks(folder, home, config)
+    say("### 7a-7c. User hooks: preToolUse deny on Write|StrReplace|Delete, postToolUse context, stop payload")
+    results = check_hooks(env, repo, folder)
+    for path in files:
+        os.remove(path)
+    say()
+    say("### 7d. No hooks, permissions.deny: [\"Write(**)\"]")
+    results.append(check_write_deny(env, repo, config))
+    say()
+    say("### 7e. The parameterized model picker")
+    results.append(check_picker(env, repo))
+    say()
+    return results
 
 
 def signed_in():
@@ -311,12 +547,73 @@ def signed_in():
         say("session/load: " + json.dumps(loaded.get("error") or "ok"))
         again.close()
     say()
+    say("## 6. A repository's hooks under acp (docs/cursor.md, \"A repository's hooks\")")
+    # A repository with Cursor's own hooks and Claude Code's (which Cursor loads as third-party
+    # hooks); each hook only appends its name to hooks-fired in the throwaway folder.
+    hooks_repo = os.path.join(folder, "hooks-repo")
+    os.makedirs(os.path.join(hooks_repo, ".cursor"))
+    os.makedirs(os.path.join(hooks_repo, ".claude"))
+    subprocess.run(["git", "init", "-q", hooks_repo], check=False)
+    with open(os.path.join(hooks_repo, "README.md"), "w") as f:
+        f.write("probe\n")
+    fired = os.path.join(folder, "hooks-fired")
+    script = os.path.join(folder, "hook.sh")
+    with open(script, "w") as f:
+        f.write('#!/bin/sh\necho "$1" >> "$(dirname "$0")/hooks-fired"\ncat >/dev/null\necho "{}"\n')
+    os.chmod(script, 0o755)
+    events = ["sessionStart", "beforeSubmitPrompt", "preToolUse", "beforeShellExecution",
+              "beforeReadFile", "afterFileEdit", "stop"]
+    with open(os.path.join(hooks_repo, ".cursor/hooks.json"), "w") as f:
+        json.dump({"version": 1, "hooks": {e: [{"command": f"{script} cursor:{e}"}] for e in events}}, f)
+    claude = {e: [{"hooks": [{"type": "command", "command": f"{script} claude:{e}"}]}]
+              for e in ("SessionStart", "UserPromptSubmit", "Stop")}
+    claude["PreToolUse"] = [{"matcher": "*", "hooks": [{"type": "command", "command": f"{script} claude:PreToolUse"}]}]
+    with open(os.path.join(hooks_repo, ".claude/settings.json"), "w") as f:
+        json.dump({"hooks": claude}, f)
+
+    def hooks_fired(label, args):
+        if os.path.exists(fired):
+            os.remove(fired)
+        acp = Acp(env, hooks_repo, args=args)
+        acp.initialize()
+        session = acp.call("session/new", {"cwd": hooks_repo, "mcpServers": []})
+        sid = session.get("result", {}).get("sessionId")
+        if sid:
+            acp.call("session/prompt", {"sessionId": sid, "prompt": [{"type": "text", "text":
+                     "Read README.md, then run the shell command `echo hooks` and tell me its output."}]}, timeout=120)
+        acp.close()
+        time.sleep(2)
+        seen = open(fired).read().split() if os.path.exists(fired) else []
+        started = "started" if sid else "did NOT start: " + json.dumps(session.get("error"))
+        say(f"{label}: session {started}; hooks fired: {', '.join(seen) or 'none'}")
+        return seen
+
+    plain = hooks_fired("as obid runs it (--sandbox disabled acp)", ("--sandbox", "disabled"))
+    trusted = hooks_fired("with --trust (--sandbox disabled --trust acp)", ("--sandbox", "disabled", "--trust"))
+    code, text = run(["--help"], env)
+    switches = [l.strip() for l in text.splitlines() if re.search(r"(?i)hook|third|trust|import|project", l)]
+    say("--help lines about hooks, trust or project configs: " + ("; ".join(switches) or "none"))
+    cli_config = os.path.join(config, "cli-config.json")
+    try:
+        with open(cli_config) as f:
+            say("cli-config.json keys (names only): " + ", ".join(sorted(json.load(f))))
+    except (OSError, ValueError) as e:
+        say(f"cli-config.json keys: unreadable ({e.__class__.__name__})")
+    say()
+    say("## 7. User hooks, a Write(**) deny and the parameterized model picker")
+    step7 = hooks_and_picker(folder, env, home, config)
     say("## Summary for CursorFacts (Engine/Cursor.swift)")
     say(f"separateLogins = {str(different).lower()}")
     say(f"editsAsk = {str(bool(asked.get('edit'))).lower()}")
     say(f"honoursMcpServers = {str(bool(facts.get('honoursMcpServers'))).lower()}")
     say(f"modelOption = {str(facts['modelOption']).lower()}")
     say(f"(loadSession = {facts['loadSession']}, mcp http = {facts['mcpHttp']}; commands asked: {asked.get('command')})")
+    say(f"projectHooksFire = {str(any(s.startswith('cursor:') for s in plain)).lower()} "
+        f"(with --trust: {str(any(s.startswith('cursor:') for s in trusted)).lower()})")
+    say(f"thirdPartyHooksFire = {str(any(s.startswith('claude:') for s in plain)).lower()} "
+        f"(with --trust: {str(any(s.startswith('claude:') for s in trusted)).lower()})")
+    for line in step7:
+        say(line)
     say(f"(throwaway folder {folder}: delete it when done)")
     return 0
 

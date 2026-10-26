@@ -871,7 +871,9 @@ fn owners_call(item: &Item, words: &str, job: Option<&Job>) -> Owners {
         // A review the listener started: Approve posts on GitHub, which only the owner does.
         "listen" => Owners::Refuse("only you can approve or dismiss it, in your inbox.".into()),
         // A merge card: merging is the owner's tap, or the workflow they taught Oby (#853).
-        "merge" => Owners::Refuse("only you can merge it, in your inbox.".into()),
+        "merge" => {
+            Owners::Refuse("only you can merge it, or ask a teammate, in your inbox.".into())
+        }
         // A job's plan is the owner's to approve or send back, either way (#609).
         "plan" => Owners::Refuse(
             "it's a job's plan: only you can approve it or send it back, in your inbox.".into(),
@@ -929,11 +931,6 @@ fn owners_call(item: &Item, words: &str, job: Option<&Job>) -> Owners {
                 },
             )
         }
-        // "…, and from now on for <project>" saves a standing rule (#1314): it widens what Oby
-        // does with no tap, so only the owner's Confirm carries it out.
-        "pluginEvent" if words.starts_with(crate::rules::FROM_NOW_ON) => Owners::Refuse(
-            "a standing rule is the owner's to ask for: answer Look into it, and propose the rule with oby_rule.".into(),
-        ),
         "permission" => Owners::No,
         // Dismissing an event is one-off; starting its work (Look into it, Fix it) is the owner's
         // to confirm, as a GitHub offer's is (#1124).
@@ -1388,7 +1385,7 @@ mod tests {
         for words in ["Merge", "Merge, and remember", "Leave it open"] {
             assert_eq!(
                 owners_call(&card, words, None),
-                Owners::Refuse("only you can merge it, in your inbox.".into()),
+                Owners::Refuse("only you can merge it, or ask a teammate, in your inbox.".into()),
                 "{words}"
             );
         }
@@ -1422,21 +1419,6 @@ mod tests {
         }
         let event = item("pluginEvent", "ev-x-1", "Build failed", &["Dismiss"]);
         assert_eq!(owners_call(&event, "Dismiss", None), Owners::No);
-        // A standing rule is never the brain's to ask for (#1314): it proposes one with oby_rule.
-        let rule = item(
-            "pluginEvent",
-            "ev-x-3",
-            "Alert: api (critical)",
-            &[
-                "Look into it",
-                "Look into it, and from now on for api",
-                "Dismiss",
-            ],
-        );
-        assert!(matches!(
-            owners_call(&rule, "Look into it, and from now on for api", None),
-            Owners::Refuse(_)
-        ));
         // Starting an event's work is never one-off: the owner confirms it.
         let offer = item(
             "pluginEvent",

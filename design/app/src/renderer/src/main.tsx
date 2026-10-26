@@ -1,7 +1,9 @@
+import { useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import './tokens.css';
 import './app.css';
 import Home from './Home';
+import Welcome from './Welcome';
 
 // Line the title bar up with the traffic lights, where macOS actually put them
 const chrome = window.app?.chrome;
@@ -11,4 +13,17 @@ if (chrome) {
   root.setProperty('--after-lights', `${Math.round(chrome.lightsRight + 10)}px`);
 }
 
-createRoot(document.getElementById('root')!).render(<Home />);
+// the first launch shows Welcome once; ?welcome shows it again
+function App() {
+  const [welcome, setWelcome] = useState(() => {
+    if (new URLSearchParams(location.search).has('welcome')) return true;
+    try { return !localStorage.getItem('oby.welcomed'); } catch { return true; }
+  });
+  const done = () => {
+    try { localStorage.setItem('oby.welcomed', '1'); } catch { /* shown again next time, that's all */ }
+    setWelcome(false);
+  };
+  return welcome ? <Welcome onDone={done} /> : <Home />;
+}
+
+createRoot(document.getElementById('root')!).render(<App />);

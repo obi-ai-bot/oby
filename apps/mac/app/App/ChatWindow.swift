@@ -3,7 +3,7 @@ import SwiftUI
 import WebKit
 
 /// The side panel's sections, picked by the icons on its left and the account menu (Sangam's Sidebar.tsx).
-nonisolated enum PanelSection: Sendable { case home, conversations, settings }
+nonisolated enum PanelSection: Sendable { case home, conversations, settings, sphere }
 
 /// Opens a Settings page in the window: the message box's usage panel asks for Accounts. Equal while
 /// it opens on the same window's state, so views reading it don't redraw on every update.
@@ -274,6 +274,8 @@ final class ChatState {
     var more: Set<String> = []
     /// What the side panel lists: Home's work, or (with obid's conversations, #493) the conversations.
     var section = PanelSection.home
+    /// Moves on when this Oby joined, made or left its Obysphere: the strip reads its tile again.
+    var sphereChanged = 0
     /// The setting the Settings page showing points at (`SettingsSpotlight`).
     var spotlight: SettingsSpotlight?
 
@@ -388,8 +390,8 @@ struct ChatView: View {
     }
 }
 
-/// Home (Sangam's Home.tsx): the title bar and its trail, Oby's stage with what's running and the
-/// chips under it, what waits on you (the owner's decision of 2026-10-24), the message box at the
+/// Home (Sangam's Home.tsx): the title bar and its trail, Oby's stage with what's running, what
+/// waits on you (the owner's decision of 2026-10-24) and the chips under it, the message box at the
 /// foot, and the pages that open over it.
 private struct HomeView: View {
     let model: IslandModel
@@ -399,6 +401,10 @@ private struct HomeView: View {
     @State private var text = ""
     @State private var typing = false
     @State private var height: CGFloat = 600
+    /// A card asked for words (a teammate's Oby's question, say): the box answers it, not Oby.
+    @State private var replyTarget: ConversationPage.ReplyTarget?
+    @State private var sendingAnswer = false
+    @State private var sendProblem: String?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var work: [WorkList.Item<SidebarSections.JobRow>] { model.work(state) }
@@ -412,10 +418,9 @@ private struct HomeView: View {
                 VStack(spacing: 0) {
                     stage
                         .opacity(away ? 0 : 1).scaleEffect(away && !reduceMotion ? 0.98 : 1)
-                    if !away {
-                        HomeDecisions(model: model, height: height, onOpen: { state.trail.start(.job(id: $0)) })
-                            .frame(maxWidth: Tokens.homeBox - 2 * Tokens.gutter)
-                            .padding(.horizontal, Tokens.gutter).padding(.bottom, 12)
+                    if !away && model.feed.local {
+                        EngineDownLine(feed: model.feed).frame(maxWidth: Tokens.homeBox - 2 * Tokens.gutter)
+                            .padding(.horizontal, Tokens.gutter).padding(.bottom, 8)
                     }
                     if model.listening && !away {
                         ListeningLine(voice: model.voice).frame(maxWidth: Tokens.homeBox - 2 * Tokens.gutter)
@@ -444,11 +449,11 @@ private struct HomeView: View {
         .onChange(of: away) { if away { typing = false } }
     }
 
-    /// Oby, a little above the middle (as a face at eye level), what's going on under it, and the
-    /// chips: every kind of work, always, in Home's order (Sangam, mac-design B7), whatever the side
-    /// panel groups by.
+    /// Oby, a little above the middle (as a face at eye level), what's going on under it, the stack
+    /// of what waits on you, and the chips: every kind of work, always, in Home's order (Sangam,
+    /// mac-design B7), whatever the side panel groups by; Routines only with `Launch.everything`.
     private var stage: some View {
-        let groups = WorkList.kinds(work)
+        let groups = WorkList.kinds(work, routines: Launch.everything)
         // A task waiting for memory is active, but not running: the line says it apart.
         let memory = work.count { $0.job.job.waitsForMemory }
         let running = work.count { $0.status == .running && !$0.job.job.waitsForMemory }, needs = work.count { $0.status == .needs }
@@ -459,6 +464,15 @@ private struct HomeView: View {
                 Text(HomeLine.attention(running: running, needs: needs, memory: memory))
                     .font(Tokens.font(Tokens.textBase))
                     .foregroundStyle(running + needs + memory == 0 ? Tokens.text : Tokens.muted)
+                // What waits on you, under the line that counts it (the demo's AskStack).
+                if !away {
+                    HomeDecisions(model: model, height: height, onOpen: { state.trail.start(.job(id: $0)) }, onTell: { entry in
+                        replyTarget = .init(title: entry.item.title, send: { value in try await model.feed.settle(entry.item.id, answer: value) })
+                        sendProblem = nil
+                        typing = true
+                    })
+                        .frame(maxWidth: Tokens.homeBox - 2 * Tokens.gutter)
+                }
                 if !groups.isEmpty {
                     CenteredFlow(spacing: 8) {
                         ForEach(groups) { group in
@@ -475,23 +489,48 @@ private struct HomeView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
-    /// Asking Oby: the conversation opens on it.
+    /// Asking Oby: the conversation opens on it. Or, while a card waits for words, its answer.
     private var box: some View {
-        MessageBox(text: $text, focused: $typing, tray: model.tray,
-                   placeholder: HomeLine.placeholder(fullName: NSFullUserName()),
-                   maximumHeight: height * 0.5, focusRequest: state.homeFocusRequest,
-                   onSend: ask, onScreenshot: screenshot, onStop: { false }, usage: model.usageRows,
+        VStack(alignment: .leading, spacing: 6) {
+            if let replyTarget {
+                ReplyLine(title: replyTarget.title, sending: sendingAnswer) { self.replyTarget = nil; sendProblem = nil }
+            }
+            if let sendProblem {
+                Text(sendProblem).font(Tokens.font(Tokens.textSm)).foregroundStyle(Tokens.danger).padding(.horizontal, 12)
+            }
+            MessageBox(text: $text, focused: $typing, tray: model.tray,
+                       placeholder: replyTarget == nil ? HomeLine.placeholder(fullName: NSFullUserName()) : "Your answer…",
+                       maximumHeight: height * 0.5, focusRequest: state.homeFocusRequest,
+                       onSend: ask, onScreenshot: screenshot, onStop: { false }, usage: model.usageRows,
                        voice: model.voice, talkKeyListening: model.listening)
-            .keepsDraft($text, as: Drafts.home)
-            .frame(maxWidth: Tokens.homeBox - 2 * Tokens.gutter)
-            .padding(.horizontal, Tokens.gutter).padding(.bottom, Tokens.gutter)
+                .disabled(sendingAnswer)
+                .keepsDraft($text, as: Drafts.home)
+        }
+        .frame(maxWidth: Tokens.homeBox - 2 * Tokens.gutter)
+        .padding(.horizontal, Tokens.gutter).padding(.bottom, Tokens.gutter)
     }
 
     private func back() { withAnimation(reduceMotion ? nil : Tokens.warm) { state.trail.back() } }
 
-    /// Asked in Home's box: it goes to Oby, and the conversation opens on it.
+    /// Asked in Home's box: it goes to Oby, and the conversation opens on it. While a card waits
+    /// for words, they answer it instead (one message, at most 2,000 characters), and Home stays.
     private func ask() {
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        if let target = replyTarget {
+            let value = text
+            if value.trimmingCharacters(in: .whitespacesAndNewlines).count > ChatSend.most { sendProblem = ChatSend.tooLong; return }
+            sendingAnswer = true
+            sendProblem = nil
+            Task {
+                defer { sendingAnswer = false }
+                do {
+                    try await target.send(value)
+                    if text == value { text = "" }
+                    replyTarget = nil
+                } catch { sendProblem = error.localizedDescription }
+            }
+            return
+        }
         // Home's box starts a conversation of its own (obid keeps many, #493).
         model.feed.conversations.startNew()
         model.sendChat(text)
@@ -531,23 +570,39 @@ private struct HomeView: View {
                 .takesKeys()
         case .settings(let page):
             SettingsPane(model: model, page: page)
+        case .sphereSettings(let name):
+            SphereSettingsPane(model: model, name: name)
+        case .knowledge(let name, let admin):
+            KnowledgePane(name: name, admin: admin).takesKeys()
         }
     }
 }
 
-/// Everything waiting on the owner, in one place on Home (the owner's decision of 2026-10-24): each
-/// permission, Confirm, question and Start as the conversation's own card (Sangam's AskBlock), the
-/// oldest first, answered right here (Allow, Always allow, Deny, Confirm…) without opening its task.
-/// It hugs its cards, scrolling past what fits between Oby and the message box.
+/// Everything waiting on the owner, in one place on Home (the owner's decisions of 2026-10-24 and
+/// 2026-10-25, Sangam's AskStack): a stack of cards, the oldest on top. The top card is the whole
+/// decision, the conversation's own card answered right here (Allow, Always allow, Deny, Confirm…),
+/// under a head with its task, where it is in the stack ("2/5") between the arrows that go round it,
+/// and Open task; the next two peek out under it. ← and → go round too while the card has the
+/// keyboard. Answered (once the runner confirms), it lifts away and the one after takes its place;
+/// put off with Later, it leaves until it's due again. A card too tall for what's left scrolls.
 private struct HomeDecisions: View {
     let model: IslandModel
-    /// Home's height: the cards get what Oby's stage and the box leave.
+    /// Home's height: the top card gets what Oby's stage and the box leave.
     let height: CGFloat
     let onOpen: (_ job: String) -> Void
+    /// A card that takes words was asked to be answered in them: Home's box answers it.
+    var onTell: (IslandInbox.Entry) -> Void = { _ in }
     @State private var content: CGFloat = 0
+    /// The card on top, and where it was: gone, the one that took its place.
+    @State private var at = HomeStack.Place()
+    /// How the top card leaves: lifted when answered, sunk the way you went when you go round.
+    @State private var exit = HomeStack.Exit.lift
+    /// Gives the top card the keyboard (its 1 to 4, Return and Esc, and the arrows here).
+    @State private var focusRequest = 0
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    /// What the title bar, Oby's stage (smaller while something waits) and the message box need,
-    /// measured on macOS 27.
+    /// What the title bar, Oby's stage (smaller while something waits), its line and chips, and the
+    /// message box need, measured on macOS 27.
     // ponytail: a measured reserve; measure the stage and the box if either changes size.
     private static let reserve: CGFloat = 400
     /// At least one card's head and buttons, however small the window.
@@ -555,7 +610,7 @@ private struct HomeDecisions: View {
 
     /// The inbox's decisions that wait now, here and on the runner, the oldest first.
     static func entries(_ model: IslandModel, now: Date) -> [IslandInbox.Entry] {
-        IslandInbox.entries(feed: model.feed, now: now).filter(\.item.isDecision)
+        IslandInbox.entries(feed: model.feed, now: now).filter { $0.item.decides(model.feed.inboxWords[$0.item.id]) }
     }
 
     /// A runner's permission it only names in its job (an older runner's, #134).
@@ -568,29 +623,201 @@ private struct HomeDecisions: View {
         !entries(model, now: now).isEmpty || !permissions(model, now: now).isEmpty
     }
 
+    /// One card of the stack: an inbox decision, or an older runner's permission after them.
+    private enum Card: Identifiable {
+        case decision(IslandInbox.Entry)
+        case permission(RunnerFeed.PermissionRecord)
+        /// A teammate's Oby whose key changed (docs/obysphere.md part 4).
+        case key(SphereModel.Pin)
+
+        var id: String {
+            switch self {
+            case .decision(let entry): entry.id
+            case .permission(let record): "permission/" + record.id
+            case .key(let pin): "key/" + pin.owner
+            }
+        }
+        var job: String {
+            switch self {
+            case .decision(let entry): entry.item.job
+            case .permission(let record): record.job
+            case .key: ""
+            }
+        }
+        var title: String {
+            switch self {
+            case .decision(let entry): entry.item.title
+            case .permission(let record): record.permission.title
+            case .key(let pin): KeyChangeCard.title(pin)
+            }
+        }
+    }
+
+    /// Teammates' Obys whose key changed (obid's pins), and those put off with Later until then.
+    @State private var keys: [SphereModel.Pin] = []
+    @State private var keysLater: [String: Date] = [:]
+
     var body: some View {
         // Every half minute: what was put off comes back.
         TimelineView(.periodic(from: .now, by: 30)) { context in
-            let entries = Self.entries(model, now: context.date)
-            let permissions = Self.permissions(model, now: context.date)
-            if !entries.isEmpty || !permissions.isEmpty {
-                ScrollView {
-                    VStack(spacing: 12) {
-                        ForEach(entries) { entry in
-                            InlineDecision(entry: entry, feed: model.feed, onOpen: onOpen)
-                        }
-                        ForEach(permissions) { record in
-                            InlinePermission(record: record, feed: model.feed)
-                        }
-                    }
-                    .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { content = $0 }
-                }
-                .scrollIndicators(.automatic)
-                .frame(height: min(content, max(Self.least, height - Self.reserve)))
-                .accessibilityElement(children: .contain)
-                .accessibilityLabel("Needs you")
+            let cards = Self.entries(model, now: context.date).map(Card.decision)
+                + Self.permissions(model, now: context.date).map(Card.permission)
+                + keys.filter { keysLater[$0.owner].map { $0 <= context.date } ?? true }.map(Card.key)
+            if !cards.isEmpty { stack(cards) }
+        }
+        // obid's own record, read every half minute: nothing goes to the Obysphere for it.
+        .task(id: model.feed.runner != nil) {
+            while !Task.isCancelled {
+                keys = await KeyChangeCard.changed(model.feed)
+                try? await Task.sleep(for: .seconds(30))
             }
         }
+    }
+
+    private func stack(_ cards: [Card]) -> some View {
+        let index = HomeStack.index(of: at, in: cards.map(\.id))
+        let top = cards[index]
+        let peeks = min(2, cards.count - 1)
+        return ZStack {
+            ScrollView {
+                card(top, head: head(top, index: index, cards: cards))
+                    .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { content = $0 }
+            }
+            .scrollIndicators(.automatic)
+            .frame(height: min(content, max(Self.least, height - Self.reserve)))
+            .id(top.id)
+            .transition(reduceMotion ? .opacity : .asymmetric(insertion: HomeStack.Exit.rise, removal: exit.transition))
+        }
+        // The next two, a step further back each, peeking out under it.
+        .background(alignment: .bottom) {
+            ZStack {
+                ForEach(Array((1...2).reversed().filter { $0 <= peeks }), id: \.self) { depth in
+                    RoundedRectangle(cornerRadius: Tokens.askRadius, style: .continuous)
+                        .fill(Tokens.chip.mix(with: Tokens.bg, by: 0.25 * Double(depth) - 0.1))
+                        .scaleEffect(1 - 0.05 * CGFloat(depth), anchor: .bottom)
+                        .offset(y: 8 * CGFloat(depth))
+                }
+            }
+            .accessibilityHidden(true)
+        }
+        .padding(.bottom, 8 * CGFloat(peeks))
+        .animation(reduceMotion ? .easeOut(duration: 0.2) : Tokens.settle, value: top.id)
+        .animation(reduceMotion ? nil : Tokens.warm, value: peeks)
+        // Kept in step with the list: a card coming back above it moves its place, not the card.
+        .onChange(of: HomeStack.Place(id: top.id, index: index), initial: true) { _, place in at = place }
+        .onKeyPress(keys: [.leftArrow, .rightArrow], phases: .down) { press in
+            // (an arrow key comes with the numeric pad's and the function key's flags)
+            guard press.modifiers.isDisjoint(with: [.command, .option, .control, .shift]), cards.count > 1 else { return .ignored }
+            go(press.key == .rightArrow ? 1 : -1, from: index, in: cards)
+            return .handled
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Needs you")
+    }
+
+    @ViewBuilder private func card(_ card: Card, head: AnyView) -> some View {
+        switch card {
+        case .decision(let entry):
+            InlineDecision(entry: entry, feed: model.feed, keyboardEnabled: true, focusRequest: focusRequest, onOpen: onOpen,
+                           onTell: { onTell(entry) }, head: head)
+        case .permission(let record):
+            InlinePermission(record: record, feed: model.feed, keyboardEnabled: true, focusRequest: focusRequest, head: head)
+        case .key(let pin):
+            KeyChangeCard(pin: pin, feed: model.feed, head: head, keyboardEnabled: true, focusRequest: focusRequest,
+                          onLater: { keysLater[pin.owner] = .now.addingTimeInterval(3600) },
+                          onDone: { keys.removeAll { $0.owner == pin.owner } })
+        }
+    }
+
+    /// The card's head (the demo's `tc-head`): its task's agent and name, where it is in the stack
+    /// between the arrows that go round it (none with only one), and the way to the task's page.
+    private func head(_ card: Card, index: Int, cards: [Card]) -> AnyView {
+        let job = card.job.isEmpty ? nil : model.feed.jobs.first { $0.id == card.job }
+        let many = cards.count > 1
+        return AnyView(HStack(spacing: 10) {
+            if let job {
+                AgentMark(agent: job.agent).font(Tokens.font(13, .semibold)).frame(width: 16).foregroundStyle(Tokens.muted)
+            } else {
+                ObyMark(size: 16)
+            }
+            Text(job?.heading ?? card.title).font(Tokens.font(Tokens.textLg, .semibold)).foregroundStyle(Tokens.ink).fadeOut()
+            HStack(spacing: 2) {
+                if many {
+                    IconButton(symbol: "chevron.left", size: 24) { go(-1, from: index, in: cards) }
+                        .help("Previous (←)").accessibilityLabel("Previous")
+                }
+                Text("\(index + 1)/\(cards.count)").font(Tokens.font(Tokens.textSm)).monospacedDigit()
+                    .foregroundStyle(Tokens.text).frame(minWidth: 28)
+                    .accessibilityLabel("\(index + 1) of \(cards.count)")
+                if many {
+                    IconButton(symbol: "chevron.right", size: 24) { go(1, from: index, in: cards) }
+                        .help("Next (→)").accessibilityLabel("Next")
+                }
+            }
+            .padding(.vertical, -2)
+            if !card.job.isEmpty {
+                Button { onOpen(card.job) } label: {
+                    HStack(spacing: 2) {
+                        Text("Open task")
+                        Image(systemName: "chevron.right").font(Tokens.font(9, .semibold))
+                    }
+                    .font(Tokens.font(Tokens.textMd)).foregroundStyle(Tokens.muted).contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+        })
+    }
+
+    /// Round the stack by one: the card on top sinks back the way you went (set a moment before it
+    /// goes, so it leaves that way), the next comes up and takes the keyboard.
+    private func go(_ step: Int, from index: Int, in cards: [Card]) {
+        let next = HomeStack.step(index, by: step, count: cards.count)
+        guard next != index else { return }
+        exit = step > 0 ? .next : .prev
+        DispatchQueue.main.async {
+            at = HomeStack.Place(id: cards[next].id, index: next)
+            // once the new card is there, so its own focus follows the request
+            DispatchQueue.main.async { focusRequest += 1 }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { exit = .lift }
+        }
+    }
+}
+
+/// Where Home's stack of decisions is (HomeDecisions), and how its cards come and go.
+enum HomeStack {
+    /// The card on top and its place in the stack.
+    struct Place: Equatable {
+        var id = ""
+        var index = 0
+    }
+
+    /// The top card's place: the same card while it waits; gone (answered, put off), the one that
+    /// took its place, round to the first after the last.
+    static func index(of place: Place, in ids: [String]) -> Int {
+        guard !ids.isEmpty else { return 0 }
+        return ids.firstIndex(of: place.id) ?? place.index % ids.count
+    }
+
+    /// One step round the stack, either way, wrapping at both ends.
+    static func step(_ index: Int, by step: Int, count: Int) -> Int {
+        count > 0 ? ((index + step) % count + count) % count : 0
+    }
+
+    /// How the top card leaves: answered, it lifts off; gone round, it sinks back, drifting the way
+    /// you went (the demo's ask-out, ask-next, ask-prev).
+    enum Exit {
+        case lift, next, prev
+
+        var transition: AnyTransition {
+            switch self {
+            case .lift: .offset(y: -16).combined(with: .scale(scale: 0.98)).combined(with: .opacity)
+            case .next: .offset(x: -16, y: 10).combined(with: .scale(scale: 0.95, anchor: .bottom)).combined(with: .opacity)
+            case .prev: .offset(x: 16, y: 10).combined(with: .scale(scale: 0.95, anchor: .bottom)).combined(with: .opacity)
+            }
+        }
+
+        /// The next card comes up from where it peeked.
+        static let rise: AnyTransition = .offset(y: 8).combined(with: .scale(scale: 0.95, anchor: .bottom)).combined(with: .opacity)
     }
 }
 
@@ -819,6 +1046,8 @@ enum WindowLabels {
         case .group(let kind): kind.label
         case .archived: "Archived"
         case .settings(let page): page.label
+        case .sphereSettings(let name): "\(name) settings"
+        case .knowledge: "Knowledge"
         case .talk: model.feed.conversationsOn ? model.feed.conversations.shownTitle : "Oby"
         case .job(let id):
             model.feed.jobs.first { $0.id == id }?.heading ?? "Task"
@@ -855,45 +1084,6 @@ struct EyeLevel: Layout {
         let room = max(0, bounds.height - size.height)
         view.place(at: CGPoint(x: bounds.midX, y: bounds.minY + room / 2.6 + size.height / 2), anchor: .center,
                    proposal: ProposedViewSize(width: bounds.width, height: size.height))
-    }
-}
-
-/// The bubble hugs its text while its row fills the column; long text gets at most 75%.
-struct MessageBubbleLayout: Layout {
-    var trailing: Bool
-    private func content(_ width: CGFloat, subviews: Subviews) -> CGSize {
-        subviews[0].sizeThatFits(ProposedViewSize(width: min(width * 0.75, OBYStyle.threadWidth * 0.75), height: nil))
-    }
-    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
-        let width = proposal.width ?? OBYStyle.threadWidth
-        return CGSize(width: width, height: content(width, subviews: subviews).height)
-    }
-    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
-        let size = content(bounds.width, subviews: subviews)
-        subviews[0].place(at: CGPoint(x: trailing ? bounds.maxX - size.width : bounds.minX, y: bounds.minY),
-                          proposal: ProposedViewSize(size))
-    }
-}
-
-struct ThinkingLine: View {
-    /// Steps of the runner's turn run: "Working" instead of "Thinking" (#304).
-    var working = false
-    /// Why Stop didn't go through, or nil.
-    var problem: String? = nil
-    let onStop: () -> Void
-    var body: some View {
-        HStack(spacing: OBYStyle.Space.sm) {
-            HStack(spacing: OBYStyle.Space.xs) {
-                ForEach(0..<3) { _ in Circle().fill(OBYStyle.tertiary).frame(width: 4, height: 4) }
-            }.accessibilityHidden(true)
-            Text(working ? "Working" : "Thinking").font(OBYStyle.small).foregroundStyle(OBYStyle.tertiary)
-            StopButton(action: onStop)
-            if let problem {
-                Text(problem).font(OBYStyle.caption).foregroundStyle(.orange)
-            }
-            Spacer()
-        }
-        .padding(.vertical, OBYStyle.Space.sm)
     }
 }
 

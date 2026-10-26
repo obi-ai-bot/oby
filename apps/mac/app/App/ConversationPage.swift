@@ -129,7 +129,7 @@ struct ConversationPage: View {
                                 MessageRow(row: row, first: index == 0, now: context.date,
                                            jobs: ThreadTaskLine.cards(under: row.turn, in: turns, jobs: all, startedBy: startedBy),
                                            followUps: { conversation.endedTurn(row.turn) ? [] : ThreadTaskLine.attached(to: $0, in: all, shown: shown) },
-                                           account: { LiveView.account(of: $0, feed: feed) },
+                                           account: { JobSummary.account(of: $0, feed: feed) },
                                            steps: conversation.steps(under: row.turn, in: turns),
                                            arrived: conversation.arrived[row.turn.id],
                                            streamed: conversation.streamed(under: row.turn, in: turns),
@@ -206,15 +206,7 @@ struct ConversationPage: View {
     private var composer: some View {
         VStack(alignment: .leading, spacing: 6) {
             if let replyTarget {
-                HStack(spacing: 6) {
-                    if sendingAnswer { ProgressView().controlSize(.mini).accessibilityLabel("Sending answer") }
-                    Text("Replying to \(replyTarget.title)").font(Tokens.font(Tokens.textSm)).foregroundStyle(Tokens.muted).fadeOut()
-                    Button { self.replyTarget = nil; sendProblem = nil } label: {
-                        Image(systemName: "xmark").font(Tokens.font(10, .semibold)).foregroundStyle(Tokens.muted)
-                    }
-                    .buttonStyle(.plain).disabled(sendingAnswer).accessibilityLabel("Cancel reply")
-                }
-                .padding(.horizontal, 12)
+                ReplyLine(title: replyTarget.title, sending: sendingAnswer) { self.replyTarget = nil; sendProblem = nil }
             }
             if let sendProblem {
                 HStack(spacing: 8) {
@@ -476,5 +468,24 @@ private struct BrainQuestion: View {
         }
         .padding(.horizontal, 16).padding(.top, 14).padding(.bottom, 12)
         .background(Tokens.chip, in: RoundedRectangle(cornerRadius: Tokens.askRadius, style: .continuous))
+    }
+}
+
+/// Over a message box that answers a card in words: "Replying to …", and an × that lets it go.
+struct ReplyLine: View {
+    let title: String
+    let sending: Bool
+    let onCancel: () -> Void
+
+    var body: some View {
+        HStack(spacing: 6) {
+            if sending { ProgressView().controlSize(.mini).accessibilityLabel("Sending answer") }
+            Text("Replying to \(title)").font(Tokens.font(Tokens.textSm)).foregroundStyle(Tokens.muted).fadeOut()
+            Button(action: onCancel) {
+                Image(systemName: "xmark").font(Tokens.font(10, .semibold)).foregroundStyle(Tokens.muted)
+            }
+            .buttonStyle(.plain).disabled(sending).accessibilityLabel("Cancel reply")
+        }
+        .padding(.horizontal, 12)
     }
 }

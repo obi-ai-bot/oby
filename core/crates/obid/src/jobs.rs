@@ -403,6 +403,9 @@ enum End {
     /// Its account hit its usage limit and another of the tool has room: the run starts again,
     /// there ([`Jobs::move_on`]).
     MovedOn,
+    /// Its agent asked the owner with `oby_ask_owner` and ended its turn: the job waits for the
+    /// answer with no agent ([`Jobs::wait_for_answer`]).
+    Asked(permissions::QuestionCall),
 }
 
 impl From<String> for End {
@@ -499,9 +502,6 @@ pub struct NewJob {
     /// The routine whose run it is (crate::routines).
     #[serde(default)]
     pub routine: Option<crate::job::RoutineMark>,
-    /// The standing rule that started it (crate::rules). Never from the API.
-    #[serde(skip)]
-    pub rule: Option<crate::job::RuleMark>,
     /// Its conversation had read something untrusted ([`Job::untrusted`]).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub untrusted: bool,
@@ -514,6 +514,10 @@ pub struct NewJob {
     /// once the job is made, seen by no other job before. Never from the API, never kept.
     #[serde(skip)]
     pub adding: Option<Repo>,
+    /// The owner's words its first prompt ends with: those the job it follows up never heard
+    /// (#930), each as the owner sent it. Never from the API.
+    #[serde(skip)]
+    pub heard: Vec<String>,
 }
 
 /// Who tells a job something, which decides what words for one that ended do (the owner's
@@ -534,6 +538,23 @@ impl Source {
     /// The owner's own words.
     pub fn owners(self) -> bool {
         matches!(self, Source::Owner | Source::Confirmed)
+    }
+}
+
+/// What a job waiting for an account with room says (#872).
+fn room_step(wait: &Waiting) -> String {
+    format!(
+        "Waiting for {}. Use one anyway to start it now; otherwise it starts when an account has room.",
+        wait.text
+    )
+}
+
+/// A job waiting for room goes to `tool`: a model of another tool's gives way to the new tool's
+/// own, as a move's does.
+fn on_tool(job: &mut Job, tool: Tool) {
+    if job.agent != tool.id() {
+        job.agent = tool.id().into();
+        job.model = None;
     }
 }
 
@@ -621,8 +642,16 @@ struct State {
     workers: HashMap<String, watch::Sender<Signal>>,
     /// The jobs whose agent had its last turn: they take no more words until they end.
     wrapping: std::collections::HashSet<String>,
+    /// The jobs that kept the owner's words while they wrapped up (#930): if one ends with them
+    /// unheard, they start its follow-up ([`Jobs::left_words`]). Never a job whose words came
+    /// before it started, nor a follow-up carrying them: one that fails before it hears them
+    /// starts no follow-up of its own.
+    told_late: std::collections::HashSet<String>,
     /// Each job's prompts waiting for the owner, the one shown first.
     asks: HashMap<String, VecDeque<Ask>>,
+    /// What each job's agent asked the owner with `oby_ask_owner` in its turn under way: asked once
+    /// the turn ends ([`End::Asked`]).
+    asked: HashMap<String, permissions::QuestionCall>,
     /// Failing Apple-check output is transient and only included in the asking job's response.
     apple_logs: HashMap<String, String>,
     /// The jobs publishing now: one publish at a time per job.
@@ -678,7 +707,8 @@ pub struct Jobs {
     /// How many jobs run at once (Settings, `home/settings.json`).
     max_running: std::sync::atomic::AtomicUsize,
     shutting_down: std::sync::atomic::AtomicBool,
-    identity: (String, String),
+    /// Who jobs' commits are by ([`commit_identity`], [`Jobs::identity`]).
+    identity: Mutex<(String, String)>,
     /// One check at a time, whatever the job ([`Jobs::check`]).
     checking: tokio::sync::Semaphore,
     /// One preparation at a time per repository (Engine/Desk.swift, `setups`): its clone is
@@ -701,8 +731,6 @@ pub struct Jobs {
     routines: std::sync::OnceLock<Arc<crate::routines::Routines>>,
     /// Oby's Tetrix login: every owner's job's agent gets Tetrix through obid (crate::tetrix).
     tetrix: std::sync::OnceLock<Arc<crate::tetrix::Tetrix>>,
-    /// Oby's Slack login: a posted review's author is told with it (crate::listen::tell_author).
-    slack: std::sync::OnceLock<Arc<crate::slack::Slack>>,
     /// Where a job's `.obi/artifacts/` is published when it ends.
     artifacts: std::sync::OnceLock<Arc<crate::artifacts::Artifacts>>,
     /// Loopback endpoint given to agents for `oby-check apple`.
@@ -891,7 +919,8 @@ impl Jobs {
             })
         });
         let usage = crate::usage::Usages::open(&config.home);
-        Ok(Arc::new(Jobs {
+        let github = identity.1.ends_with(NO_EMAIL);
+        let made = Arc::new(Jobs {
             config,
             store,
             events,
@@ -900,7 +929,9 @@ impl Jobs {
                 jobs,
                 workers: HashMap::new(),
                 wrapping: std::collections::HashSet::new(),
+                told_late: std::collections::HashSet::new(),
                 asks: HashMap::new(),
+                asked: HashMap::new(),
                 apple_logs: HashMap::new(),
                 publishing: std::collections::HashSet::new(),
                 followed: HashMap::new(),
@@ -910,7 +941,7 @@ impl Jobs {
             transcripts,
             max_running: std::sync::atomic::AtomicUsize::new(max_running),
             shutting_down: std::sync::atomic::AtomicBool::new(false),
-            identity,
+            identity: Mutex::new(identity),
             checking: tokio::sync::Semaphore::new(1),
             preparing: Mutex::new(HashMap::new()),
             review_hook: std::sync::OnceLock::new(),
@@ -922,7 +953,6 @@ impl Jobs {
             connections: std::sync::OnceLock::new(),
             routines: std::sync::OnceLock::new(),
             tetrix: std::sync::OnceLock::new(),
-            slack: std::sync::OnceLock::new(),
             artifacts: std::sync::OnceLock::new(),
             api_url: Mutex::new(api_url),
             approvals,
@@ -934,7 +964,19 @@ impl Jobs {
             measured: Mutex::new(Measured::default()),
             metering: Notify::new(),
             short_of_memory: std::sync::OnceLock::new(),
-        }))
+        });
+        if github && let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            runtime.spawn(github_email(Arc::downgrade(&made)));
+        }
+        Ok(made)
+    }
+
+    /// Who jobs' commits are by now: name and email.
+    fn identity(&self) -> (String, String) {
+        self.identity
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     /// What obid lets go of when a job starts waiting for memory (once; a second call changes
@@ -978,23 +1020,6 @@ impl Jobs {
     pub fn tetrix_used(&self, id: &str, change: impl FnOnce(&mut crate::tetrix::Use)) {
         self.update(id, |job| {
             change(job.tetrix.get_or_insert_with(Default::default))
-        });
-    }
-
-    pub fn use_slack(&self, slack: Arc<crate::slack::Slack>) {
-        let _ = self.slack.set(slack);
-    }
-
-    pub fn slack(&self) -> Option<Arc<crate::slack::Slack>> {
-        self.slack.get().cloned()
-    }
-
-    /// The Slack message the owner sent `user` (a Slack user id) for job `id`, in its outgoing
-    /// actions.
-    pub fn sent_on_slack(&self, id: &str, user: &str) {
-        self.update(id, |job| {
-            let sent = crate::publish::Outgoing::new("slackMessage", &job.repo, user, None);
-            job.outgoing.push(sent);
         });
     }
 
@@ -1058,6 +1083,12 @@ impl Jobs {
     /// in the job's private MCP config.
     fn connection_mcp(&self, id: &str) -> Option<(String, String)> {
         self.connections.get()?.open_job(id)
+    }
+
+    /// Oby's own MCP server for job `id`, whatever it's connected to: where a Codex or Cursor
+    /// agent asks the owner (`oby_ask_owner`).
+    fn ask_mcp(&self, id: &str) -> Option<(String, String)> {
+        Some(self.connections.get()?.open_ask(id))
     }
 
     /// The line that tells job `id`'s agent what the fences around its connected apps' results
@@ -1184,6 +1215,13 @@ impl Jobs {
                 return;
             }
             let now = obi_protocol::time::now();
+            // A week's reset ends a reserve: a job waiting for room looks again (#872).
+            let for_room = self.lock().jobs.values().any(|j| {
+                j.status == Status::Queued && j.waiting.as_ref().is_some_and(Waiting::for_room)
+            });
+            if for_room {
+                self.schedule();
+            }
             let due: Vec<String> = self
                 .lock()
                 .jobs
@@ -2909,7 +2947,16 @@ impl Jobs {
     fn vetted(
         &self,
         new: &NewJob,
-    ) -> Result<(Repo, Tool, crate::config::Account, Option<Vec<String>>), Refused> {
+    ) -> Result<
+        (
+            Repo,
+            Tool,
+            crate::config::Account,
+            Option<Vec<String>>,
+            Option<Waiting>,
+        ),
+        Refused,
+    > {
         let repo = self
             .repo(&new.repo)
             .or_else(|| new.adding.clone().filter(|a| a.repo == new.repo))
@@ -2929,7 +2976,20 @@ impl Jobs {
         {
             return Err(Refused("title is one line of 1 to 60 characters.".into()));
         }
-        let (tool, account) = self.pick(new.agent.as_deref(), new.account.as_deref())?;
+        let named = new
+            .account
+            .as_deref()
+            .is_some_and(|a| !a.trim().is_empty() && !a.trim().eq_ignore_ascii_case("auto"));
+        // Held back by weekly reserves alone, it waits for one to be lifted, or for room (#872).
+        let (tool, account, waiting) = match self.pick(new.agent.as_deref(), new.account.as_deref())
+        {
+            Ok((tool, account)) => (tool, account, None),
+            Err(refused) if !named => match self.in_reserve(new.agent.as_deref()) {
+                Some(held) => held,
+                None => return Err(refused),
+            },
+            Err(refused) => return Err(refused),
+        };
         if let Some(rounds) = new.rounds
             && !(1..=10).contains(&rounds)
         {
@@ -2964,11 +3024,138 @@ impl Jobs {
                 tool.name()
             )));
         }
-        Ok((repo, tool, account, files))
+        Ok((repo, tool, account, files, waiting))
+    }
+
+    /// When no account has room only because of weekly reserves (#872): the first of those of
+    /// `agent`'s tool (any tool for none or `auto`), signed in and under 95% of both windows, and
+    /// what the job waits for, naming every one of them for the apps' "Use … anyway".
+    fn in_reserve(
+        &self,
+        agent: Option<&str>,
+    ) -> Option<(Tool, crate::config::Account, Option<Waiting>)> {
+        let asked = agent
+            .map(str::trim)
+            .filter(|a| !a.is_empty() && !a.eq_ignore_ascii_case("auto"));
+        let tools: Vec<Tool> = match asked {
+            None => Tool::ALL.to_vec(),
+            Some(id) => vec![Tool::from_id(id)?],
+        };
+        let home = login_home();
+        let now = obi_protocol::time::now();
+        let held: Vec<(Tool, crate::config::Account)> = tools
+            .into_iter()
+            .filter(|t| self.agent_config(*t).is_some())
+            .flat_map(|tool| self.accounts(tool).into_iter().map(move |a| (tool, a)))
+            .filter(|(tool, a)| {
+                !self.being_changed(&a.id)
+                    && signed_in(*tool, a, home.as_deref())
+                    && self.usage.get(&a.id).only_reserved(now)
+            })
+            .collect();
+        let (tool, first) = held.first().cloned()?;
+        let names: Vec<&str> = held.iter().map(|(_, a)| a.name.as_str()).collect();
+        let line = match names.as_slice() {
+            [one] => format!("{one} is in its weekly reserve"),
+            [rest @ .., last] => {
+                format!("{} and {last} are in their weekly reserve", rest.join(", "))
+            }
+            [] => unreachable!(),
+        };
+        Some((
+            tool,
+            first,
+            Some(Waiting {
+                kind: "limit".into(),
+                text: format!("an account with room: {line}"),
+                reserved: Some(held.iter().map(|(_, a)| a.id.clone()).collect()),
+                tool: asked.map(str::to_owned),
+            }),
+        ))
+    }
+
+    /// Jobs waiting for an account with room (#872) that has one now take it: an account in
+    /// their list whose reserve the owner lifted (Use anyway), else the first of their tool with
+    /// room. Then they wait for a slot like any queued job.
+    fn room_for_waiting(&self) {
+        let waiting: Vec<Job> = self
+            .lock()
+            .jobs
+            .values()
+            .filter(|j| {
+                j.status == Status::Queued && j.waiting.as_ref().is_some_and(Waiting::for_room)
+            })
+            .cloned()
+            .collect();
+        for job in waiting {
+            let listed = job
+                .waiting
+                .as_ref()
+                .and_then(|w| w.reserved.clone())
+                .unwrap_or_default();
+            let lifted = listed.iter().find_map(|id| {
+                Tool::ALL.into_iter().find_map(|tool| {
+                    self.accounts(tool)
+                        .into_iter()
+                        .find(|a| &a.id == id && self.has_room(id))
+                        .map(|a| (tool, a))
+                })
+            });
+            // The tool it asked for, else any: never narrowed by where it waits now.
+            let asked = job.waiting.as_ref().and_then(|w| w.tool.clone());
+            let Some((tool, account)) = lifted.or_else(|| self.pick(asked.as_deref(), None).ok())
+            else {
+                // Still waiting: what holds it as it is now, on the first account that does (the
+                // one Start now lifts).
+                if let Some((tool, first, Some(now))) = self.in_reserve(asked.as_deref())
+                    && (job.waiting.as_ref() != Some(&now) || job.account != first.id)
+                {
+                    self.update(&job.id, |job| {
+                        on_tool(job, tool);
+                        job.account = first.id.clone();
+                        job.step = room_step(&now);
+                        job.waiting = Some(now);
+                    });
+                }
+                continue;
+            };
+            let on = format!("{} · {}", tool.name(), account.name);
+            self.update(&job.id, |job| {
+                on_tool(job, tool);
+                job.account = account.id.clone();
+                job.waiting = None;
+                job.step = "Starting".into();
+                job.changed(format!("Started when an account had room: {on}"));
+            });
+        }
+    }
+
+    /// The owner lifted an account's weekly reserve (`POST /v1/accounts/{id}/reserve`): a job
+    /// waiting for room may start on it now (#872).
+    pub fn reserve_changed(self: &Arc<Self>) {
+        self.schedule();
+    }
+
+    /// `POST /v1/jobs/{id}/start` (the apps' Start now, #872): a job waiting for an account with
+    /// room starts on its own account, the first of those its weekly reserve held back, that
+    /// reserve lifted as Use anyway lifts it. obid makes no other job wait to start.
+    pub fn start_now(self: &Arc<Self>, id: &str) -> Option<Result<Job, Refused>> {
+        let job = self.get(id)?;
+        if job.status != Status::Queued || !job.waiting.as_ref().is_some_and(Waiting::for_room) {
+            return Some(Err(Refused(
+                "It isn't waiting to start: obid starts every other job as soon as it can.".into(),
+            )));
+        }
+        if let Err(e) = self.usage.lift(&job.account, true) {
+            return Some(Err(Refused(format!("obid couldn't lift its reserve: {e}"))));
+        }
+        self.usage_changed.notify_one();
+        self.schedule();
+        self.get(id).map(Ok)
     }
 
     pub fn create(self: &Arc<Self>, new: NewJob) -> Result<Job, Refused> {
-        let (repo, tool, account, files) = self.vetted(&new)?;
+        let (repo, tool, account, files, waiting) = self.vetted(&new)?;
         // Whoever asks (the API, the brain), whatever agent was named or is the default.
         if new.runs_on.is_some() && tool != Tool::Claude {
             return Err(Refused(GUEST_ONLY_CLAUDE.into()));
@@ -3009,6 +3196,7 @@ impl Jobs {
             .brief
             .filter(|b| !b.findings.is_empty() || b.done.is_some());
         job.earlier = new.earlier.filter(|_| new.follow_up_of.is_some());
+        job.heard = new.heard.clone();
         job.start_from = new
             .start_from
             .filter(|b| new.follow_up_of.is_some() && git::is_branch_name(b));
@@ -3018,9 +3206,6 @@ impl Jobs {
         // A follow-up of a rule's job is the rule's too (#1314): never Bypass. A Start item's job
         // never carries `rule` (it's never from the API): found here. So is an untrusted one's.
         let of = job.follow_up_of.as_deref().and_then(|of| self.get(of));
-        job.rule = new
-            .rule
-            .or_else(|| of.as_ref().and_then(|of| of.rule.clone()));
         job.untrusted = new.untrusted || of.as_ref().is_some_and(|of| of.untrusted);
         // An account the owner named keeps the job past its limit (#871); a follow-up's is its
         // job's.
@@ -3037,9 +3222,8 @@ impl Jobs {
             let mode = new
                 .mode
                 .unwrap_or_else(|| self.default_mode().as_str().to_owned());
-            // An alert's text led a rule's job, with no tap, or text Oby didn't write led its
-            // conversation: never Bypass, whatever the default.
-            if (job.rule.is_some() || job.untrusted) && mode == Mode::Bypass.as_str() {
+            // Text Oby didn't write led its conversation: never Bypass, whatever the default.
+            if job.untrusted && mode == Mode::Bypass.as_str() {
                 Mode::Sandbox.as_str().to_owned()
             } else {
                 mode
@@ -3061,6 +3245,10 @@ impl Jobs {
         };
         job.phase = Some(Phase::Prepare);
         job.step = format!("Getting {} ready", job.repo_name());
+        if let Some(wait) = waiting {
+            job.step = room_step(&wait);
+            job.waiting = Some(wait);
+        }
         // A follow-up starts only when nothing else moves its branch: checked and taken under one
         // lock (insert takes the same job again).
         if job.follow_up_of.is_some() {
@@ -3170,6 +3358,7 @@ impl Jobs {
         {
             return;
         }
+        self.room_for_waiting();
         let queued = self
             .lock()
             .jobs
@@ -3189,10 +3378,12 @@ impl Jobs {
                 .filter_map(|id| state.jobs.get(id))
                 .map(|job| Load::of(&state.jobs, job, &held))
                 .collect();
+            // One waiting for an account with room takes no slot ([`Jobs::room_for_waiting`]).
             let mut queued: Vec<(i64, String)> = state
                 .jobs
                 .values()
                 .filter(|j| j.status == Status::Queued && !state.workers.contains_key(&j.id))
+                .filter(|j| !j.waiting.as_ref().is_some_and(Waiting::for_room))
                 .map(|j| (j.created, j.id.clone()))
                 .collect();
             queued.sort();
@@ -3253,6 +3444,8 @@ impl Jobs {
             let wait = Waiting {
                 kind: kind.into(),
                 text: text.into(),
+                reserved: None,
+                tool: None,
             };
             let said = self
                 .lock()
@@ -3338,6 +3531,8 @@ impl Jobs {
                             tokio::spawn(async move { jobs.review_ended(&id, false).await }).await;
                     }
                 }
+                // Once it has ended, a panic's `failed` too.
+                jobs.left_words(&id);
                 jobs.changed.notify_waiters();
                 jobs.cleaning.notify_one();
                 jobs.schedule();
@@ -3541,12 +3736,20 @@ impl Jobs {
             if source != Source::Event
                 && let Some(next) = self.following(id)
             {
-                return Some(
-                    self.message_as(&next.id, text, source, &[], answers)?
-                        .map_err(|why| {
-                            Refused(format!("{} ({}): {}", next.short_title(), next.id, why.0))
-                        }),
-                );
+                let sent = self
+                    .message_as(&next.id, text, source, &[], answers)?
+                    .map_err(|why| {
+                        Refused(format!("{} ({}): {}", next.short_title(), next.id, why.0))
+                    });
+                // A Confirm of the words it never heard (#930, [`Jobs::unheard`]): the rest of
+                // them follow, so none is lost or heard twice.
+                if sent.is_ok()
+                    && source == Source::Confirmed
+                    && job.heard.first().map(String::as_str) == Some(text)
+                {
+                    self.pass_on_heard(id, text, &next.id);
+                }
+                return Some(sent);
             }
             return Some(match source {
                 // Past its safety limit, a follow-up would start its counters again.
@@ -3554,10 +3757,23 @@ impl Jobs {
                     "It stopped at its safety limit: carrying it on waits for your Confirm, which takes words only. Send them without the files.".into(),
                 )),
                 Source::Owner if past_safety(&job) => Err(self.confirm_past_safety(&job, text)),
-                Source::Owner | Source::Confirmed => self.create(NewJob {
-                    attachments: (!attachments.is_empty()).then(|| attachments.to_vec()),
-                    ..follow_up(&job, text)
-                }),
+                // It takes the owner's words the first job never heard (#930): they came while
+                // it wrapped up, and `text` may be the first of them ([`Jobs::left_words`]).
+                Source::Owner | Source::Confirmed => {
+                    let mut unheard = job.heard.clone();
+                    if unheard.first().map(String::as_str) == Some(text) {
+                        unheard.remove(0);
+                    }
+                    let made = self.create(NewJob {
+                        attachments: (!attachments.is_empty()).then(|| attachments.to_vec()),
+                        heard: unheard,
+                        ..follow_up(&job, text)
+                    });
+                    if made.is_ok() && !job.heard.is_empty() {
+                        self.take_heard(id);
+                    }
+                    made
+                }
                 Source::Untrusted | Source::Event => Err(Refused(
                     "It ended, so these words would start a follow-up: only the owner's own words start one, where Oby read nothing untrusted.".into(),
                 )),
@@ -3615,24 +3831,39 @@ impl Jobs {
         }
         let heard = |job: &mut Job| hear(job, text);
         if job.status.is_active() {
-            // Checked and changed under one lock: a worker wrapping up takes no more words.
+            // Checked and changed under one lock. A job at work hears them as its next turn; one
+            // not started yet with its first prompt, its step still saying what it waits for; one
+            // wrapping up keeps the owner's own words for a round obid opens, else they start its
+            // follow-up once it ends (#930, `Jobs::left_words`).
             let taken = {
                 let mut state = self.lock();
-                let working = state.workers.contains_key(id) && !state.wrapping.contains(id);
+                let worker = state.workers.contains_key(id);
+                let wrapping = state.wrapping.contains(id);
                 let job = state.jobs.get_mut(id)?;
-                if working && job.status == Status::Running && job.phase == Some(Phase::Work) {
+                let starting = job.status == Status::Queued || job.phase == Some(Phase::Prepare);
+                if worker
+                    && !wrapping
+                    && job.status == Status::Running
+                    && job.phase == Some(Phase::Work)
+                {
                     heard(job);
                     Some(job.clone())
+                } else if starting || (worker && source.owners()) {
+                    job.notes.get_or_insert_with(Vec::new).push(text.to_owned());
+                    job.heard.push(text.to_owned());
+                    let job = job.clone();
+                    if !starting {
+                        state.told_late.insert(id.to_owned());
+                    }
+                    Some(job)
                 } else {
                     None
                 }
             };
             let Some(job) = taken else {
-                return Some(Err(Refused(if job.status == Status::Queued {
-                    format!("{tool} hasn't started yet. Tell it again in a moment.")
-                } else {
-                    format!("{tool} is wrapping up. Tell it again once it's done.")
-                })));
+                return Some(Err(Refused(format!(
+                    "{tool} is wrapping up: only the owner's own words wait for it now."
+                ))));
             };
             if let Err(e) = self.store.save(&job) {
                 tracing::error!("can't keep job {id}: {e}");
@@ -3711,6 +3942,117 @@ impl Jobs {
         self.changed.notify_waiters();
         self.schedule();
         Some(Ok(resumed))
+    }
+
+    /// A round obid opens after the agent's last turn (a rebase, the commit, the decision check,
+    /// the scan's fix) takes words again, and `message` ends with the owner's words that came
+    /// while the job wrapped up (#930).
+    fn reopened(&self, id: &str, message: String) -> String {
+        self.lock().wrapping.remove(id);
+        let words = self.take_heard(id);
+        if words.is_empty() {
+            message
+        } else {
+            format!("{message}\n\n{}", words.join("\n\n"))
+        }
+    }
+
+    /// Its worker ended with the owner's words still unheard, words that came while it wrapped
+    /// up (#930): they start its follow-up, as if the owner sent them now, one by one, so each is
+    /// within the 2,000 characters it was sent in. The first starts it and takes the rest along
+    /// (`message_as`); with a follow-up working, each goes to that one. Taken off the job only once
+    /// heard; refused (another job on its branch, its safety limit), they stay with it and a
+    /// Confirm item in the inbox tries again. A job the owner stopped drops them (its notes keep
+    /// them).
+    fn left_words(self: &Arc<Self>, id: &str) {
+        if !self.lock().told_late.remove(id) {
+            return;
+        }
+        let Some(job) = self.get(id) else {
+            return;
+        };
+        if job.status.is_active() || job.obi.is_some() {
+            return;
+        }
+        if job.status == Status::Stopped {
+            self.take_heard(id);
+            return;
+        }
+        while let Some(first) = self.get(id).and_then(|j| j.heard.first().cloned()) {
+            match self.message(id, &first, Source::Owner) {
+                Some(Ok(_)) => {
+                    let still = self
+                        .get(id)
+                        .is_some_and(|j| j.heard.first() == Some(&first));
+                    if still {
+                        self.update(id, |job| {
+                            job.heard.remove(0);
+                        });
+                    }
+                }
+                Some(Err(why)) => {
+                    self.unheard(&job, &first, &why.0);
+                    return;
+                }
+                None => return,
+            }
+        }
+    }
+
+    /// The first of the words job `id` never heard, `first`, went to its working follow-up `next`
+    /// on the owner's Confirm: it leaves `id`, and the rest go to `next` one by one, each leaving
+    /// `id` once heard. A refusal keeps the rest with `id` and asks again ([`Jobs::unheard`]).
+    fn pass_on_heard(self: &Arc<Self>, id: &str, first: &str, next: &str) {
+        let take = |words: &str| {
+            self.update(id, |job| {
+                if job.heard.first().map(String::as_str) == Some(words) {
+                    job.heard.remove(0);
+                }
+            });
+        };
+        take(first);
+        while let Some(words) = self.get(id).and_then(|j| j.heard.first().cloned()) {
+            match self.message_as(next, &words, Source::Confirmed, &[], true) {
+                Some(Ok(_)) => take(&words),
+                Some(Err(why)) => {
+                    if let Some(job) = self.get(id) {
+                        self.unheard(&job, &words, &why.0);
+                    }
+                    return;
+                }
+                None => return,
+            }
+        }
+    }
+
+    /// The owner's words a job that ended never heard couldn't start its follow-up: a Confirm
+    /// item tries again with them (`message_job`), unless its safety limit's already does. They
+    /// stay with the job meanwhile, and its next follow-up takes them.
+    fn unheard(&self, job: &Job, words: &str, why: &str) {
+        tracing::info!(
+            "job {}: the owner's words after it ended started nothing yet: {why}",
+            job.id
+        );
+        if past_safety(job) {
+            return;
+        }
+        let Some(hook) = self.confirm_hook.get() else {
+            return;
+        };
+        let name = job.short_title();
+        hook(crate::sphere::inbox::confirm_item(
+            &job.id,
+            format!("Start a follow-up of {name}"),
+            format!(
+                "{name} ended before it heard what you told it, and that couldn't start its follow-up: {why} Your words are kept with it. Confirm tries again with them."
+            ),
+            crate::sphere::inbox::Confirmed {
+                action: crate::sphere::inbox::action::MESSAGE_JOB.into(),
+                target: job.id.clone(),
+                payload: json!({"words": words}),
+            },
+            obi_protocol::time::now(),
+        ));
     }
 
     /// The owner's words the agent hasn't heard yet, taken: what its next turn hears.
@@ -3797,6 +4139,76 @@ impl Jobs {
         ))
     }
 
+    /// The first job in a GitHub repository with no check offers one (#1062), once per repository
+    /// (`checksOffered` in `home/settings.json`), whatever the answer: a `confirm` item whose
+    /// command obid guessed from the files at `commit` in its own clone
+    /// (crate::repos::guess_check). Confirm keeps it on the repository (`set_check`), for the jobs
+    /// after this one; this one goes on with none, its pull request saying so.
+    async fn offer_check(&self, job: &Job, clone: &Path, commit: &str) {
+        let Some(hook) = self.confirm_hook.get() else {
+            return;
+        };
+        let same = |r: &String| r.eq_ignore_ascii_case(&job.repo);
+        if job.check.is_some()
+            || job.review_of.is_some()
+            || job.runs_on.is_some()
+            || self
+                .repo(&job.repo)
+                .is_none_or(|r| r.check.is_some() || !crate::github::is_remote(&r.remote))
+            || crate::settings::load(&self.config.home)
+                .checks_offered
+                .iter()
+                .any(same)
+        {
+            return;
+        }
+        let Ok(listed) = git::git(clone, &["ls-tree", "--name-only", commit]).await else {
+            return;
+        };
+        let names: Vec<String> = listed.lines().map(str::to_owned).collect();
+        let mut texts = Vec::new();
+        for name in ["Makefile", "package.json"] {
+            if names.iter().any(|n| n == name)
+                && let Ok(text) = git::git(clone, &["show", &format!("{commit}:{name}")]).await
+            {
+                texts.push((name, text));
+            }
+        }
+        let read = |name: &str| {
+            texts
+                .iter()
+                .find(|(n, _)| *n == name)
+                .map(|(_, t)| t.clone())
+        };
+        let Some(check) = crate::repos::guess_check(&names, read) else {
+            return;
+        };
+        let first = crate::settings::update(&self.config.home, |settings| {
+            let first = !settings.checks_offered.iter().any(same);
+            if first {
+                settings.checks_offered.push(job.repo.clone());
+            }
+            first
+        });
+        if !matches!(first, Ok(true)) {
+            return;
+        }
+        let repo = &job.repo;
+        hook(crate::sphere::inbox::confirm_item(
+            &job.id,
+            format!("Use `{check}` as the check for {repo}"),
+            format!(
+                "Can I use `{check}` as the check for {repo}? It has none, so its pull requests go out after the secret scan alone. With `{check}` as its check, every job there runs it in its box, with no network, before anything goes out. It's kept only if you confirm."
+            ),
+            crate::sphere::inbox::Confirmed {
+                action: crate::sphere::inbox::action::SET_CHECK.into(),
+                target: repo.clone(),
+                payload: json!({"check": check}),
+            },
+            obi_protocol::time::now(),
+        ));
+    }
+
     fn note(&self, note: PermissionNote) {
         if let Some(hook) = self.permission_hook.get() {
             hook(note);
@@ -3873,6 +4285,91 @@ impl Jobs {
         }
     }
 
+    /// A Cursor job starts with its repository's hooks ([`acp::cursor::repository_hooks`]) only on
+    /// the owner's yes, which Cursor would otherwise run as its own children, outside obid's
+    /// prompts: a card like any permission's, allowed once, or always for these very hooks in this
+    /// repository (the rule `RepositoryHooks(<digest>)`: a changed hook asks again). A no starts
+    /// nothing, and says Claude Code and Codex don't run them; a stop ends the wait.
+    async fn allow_repository_hooks(
+        &self,
+        id: &str,
+        repo: &str,
+        hooks: &[String],
+        signal: &watch::Receiver<Signal>,
+    ) -> Result<(), End> {
+        let detail = hooks.join("\n");
+        let digest = hex::encode(obi_protocol::keys::sha256(detail.as_bytes()));
+        let rule = format!("{}({})", permissions::REPOSITORY_HOOKS, &digest[..16]);
+        if self
+            .rules_for(repo)
+            .iter()
+            .any(|r| r.rule == rule && r.decision == "allow")
+        {
+            return Ok(());
+        }
+        let runs = hooks
+            .iter()
+            .map(|h| h.split_once(": ").map_or(h.as_str(), |(_, run)| run))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let title = format!("Let Cursor run this repository's hooks: {runs}");
+        let permission = Permission {
+            id: permissions::new_id(),
+            tool: permissions::REPOSITORY_HOOKS.into(),
+            title: if title.chars().count() > 120 {
+                format!("{}…", title.chars().take(119).collect::<String>())
+            } else {
+                title
+            },
+            detail: detail.chars().take(2000).collect(),
+            rule: Some(rule),
+            always: Some(format!(
+                "Yes, and don't ask again for these hooks in {repo}"
+            )),
+            why: Some("Cursor runs a repository's hooks itself, outside obid's prompts.".into()),
+            question: None,
+        };
+        let call = Call {
+            tool: permissions::REPOSITORY_HOOKS.into(),
+            command: Some(detail),
+            ..Call::default()
+        };
+        let (reply, mut answer) = tokio::sync::oneshot::channel();
+        let first = {
+            let mut state = self.lock();
+            let asks = state.asks.entry(id.to_owned()).or_default();
+            asks.push_back(Ask {
+                call,
+                permission,
+                reply,
+                input: Value::Null,
+                answers: Vec::new(),
+            });
+            asks.len() == 1
+        };
+        if first {
+            self.show(id, None);
+        }
+        let mut signal = signal.clone();
+        let answer = loop {
+            if *signal.borrow() != Signal::Run {
+                return Err(End::Failed("It stopped before Cursor started.".into()));
+            }
+            tokio::select! {
+                answer = &mut answer => break answer,
+                changed = signal.changed() => if changed.is_err() {
+                    return Err(End::Failed("It stopped before Cursor started.".into()));
+                },
+            }
+        };
+        match answer {
+            Ok(Answer::Allow | Answer::AllowWith(_)) => Ok(()),
+            _ => Err(End::Failed(
+                "Cursor didn't start: you said no to this repository's hooks, which Cursor runs itself, outside obid's prompts. Claude Code and Codex jobs don't run them: move it to one of them, or start it again and allow them.".into(),
+            )),
+        }
+    }
+
     /// The rules for one repository.
     fn rules_for(&self, repo: &str) -> Vec<Rule> {
         self.kept()
@@ -3943,11 +4440,9 @@ impl Jobs {
             self.answered(id, &call, worktree, Some(&why));
             return Ruling::Now(Answer::Deny(why));
         }
-        // Claude Code's plan in Plan mode waits for the owner's own answer (#609). Codex ends its
-        // turn with its plan, and Cursor's goes on as it did.
-        let plan = call.tool == "ExitPlanMode"
-            && mode == Mode::Plan
-            && Tool::from_id(&job.agent) == Some(Tool::Claude);
+        // A plan in Plan mode waits for the owner's own answer (#609): Claude Code's ExitPlanMode
+        // and Cursor's create_plan alike (#1008). Codex ends its turn with its plan.
+        let plan = call.tool == "ExitPlanMode" && mode == Mode::Plan;
         // The agent's question waits for the owner's own answer in every mode, Bypass too (#858):
         // no mode or rule can answer it for them.
         let question = call.tool == permissions::ASK_USER_QUESTION;
@@ -4029,6 +4524,7 @@ impl Jobs {
                         .then(|| permissions::QuestionCall {
                             questions: a.call.questions.clone(),
                             answers: a.answers.clone(),
+                            ended_turn: false,
                         });
                     (a.permission.clone(), call)
                 })
@@ -4410,6 +4906,40 @@ impl Jobs {
         Some(Ok(self.get(id).unwrap_or(job)))
     }
 
+    /// Job `id`'s agent asks the owner with `oby_ask_owner` (a Codex or Cursor job): what the tool
+    /// answers at once. The question is asked once its turn ends ([`End::Asked`]); it can only ask,
+    /// never answer or allow anything. A second one in the same turn takes the first's place.
+    pub fn ask_owner(&self, id: &str, arguments: &Value) -> Result<&'static str, String> {
+        let job = self.get(id).ok_or("The job is gone.")?;
+        if !asks_through_oby(&job) {
+            return Err(permissions::NO_ONE_TO_ASK.into());
+        }
+        let call = permissions::ask_owner_call(arguments).ok_or(
+            "Ask one question, its whole text in `question` (up to 1,000 characters), with `options` (each a `label`, and a `description` if it helps) when there are a few clear choices.",
+        )?;
+        self.lock().asked.insert(id.to_owned(), call);
+        Ok(
+            "Asked the owner. End your turn now with a one-line summary; Oby will resume this session with the answer.",
+        )
+    }
+
+    /// The job waits for the owner's answer to what its agent asked with `oby_ask_owner`, as a
+    /// question a restart kept does (#858): `running` with its question and no agent, in the
+    /// inbox, until the answer picks its session up ([`Jobs::answer_kept_question`]).
+    fn wait_for_answer(&self, id: &str, call: permissions::QuestionCall) {
+        let Some(job) = self.get(id).filter(|j| j.status == Status::Running) else {
+            return;
+        };
+        let permission = permissions::question_card(&call.questions, &permissions::new_id(), 0);
+        // The inbox has it before the job shows it, as [`Jobs::show`] does.
+        self.note(PermissionNote::Waiting(Box::new(job), permission.clone()));
+        self.update(id, |job| {
+            job.permission = Some(permission);
+            job.question_call = Some(call);
+            job.step = "Waiting for your answer".into();
+        });
+    }
+
     /// Changes how much the job asks, from now on: the prompts waiting now that the new mode
     /// allows are answered. A finished job keeps the mode for when it runs again. A review job stays
     /// in Plan.
@@ -4427,7 +4957,12 @@ impl Jobs {
     /// question a restart kept among them. obid shutting down (`shutdown`) keeps the question the
     /// job shows, and its inbox item, for the next start to keep waiting (#858).
     fn drop_asks(&self, id: &str, shutdown: bool) {
-        let dropped = self.lock().asks.remove(id).unwrap_or_default();
+        let dropped = {
+            let mut state = self.lock();
+            // What its agent asked with `oby_ask_owner` in a turn that didn't end well goes too.
+            state.asked.remove(id);
+            state.asks.remove(id).unwrap_or_default()
+        };
         let shown = self.get(id).and_then(|j| j.permission);
         let kept = shown.as_ref().filter(|p| shutdown && p.is_question());
         let mut settled: Vec<&str> = dropped.iter().map(|a| a.permission.id.as_str()).collect();
@@ -5086,7 +5621,7 @@ impl Jobs {
         if self.uncommitted(id).await {
             return Onto::Same;
         }
-        let (name, email) = &self.identity;
+        let (name, email) = &self.identity();
         let rebased = self
             .sandboxed_git(
                 id,
@@ -5166,7 +5701,7 @@ impl Jobs {
             return Ok(());
         }
         self.sandboxed_git(id, &["add", "--all"], None).await?;
-        let (name, email) = &self.identity;
+        let (name, email) = &self.identity();
         self.sandboxed_git(
             id,
             &[
@@ -5362,9 +5897,12 @@ impl Jobs {
                 while matches!(outcome, Err(End::MovedOn)) && *signal.borrow() == Signal::Run {
                     outcome = self.run_owner_job(id, &signal).await;
                 }
+                // Waiting for the owner's answer isn't an end either: kept as a shutdown keeps it.
+                let paused =
+                    *signal.borrow() == Signal::Shutdown || matches!(outcome, Err(End::Asked(_)));
                 // A job that ends any other way than done (failed, stopped) shows what it made
                 // too; done published them before it ended. A shutdown isn't an end.
-                if *signal.borrow() != Signal::Shutdown {
+                if !paused {
                     self.publish_artifacts(id).await;
                 }
                 // Ended without commits to publish, what it left uncommitted is kept as a `wip:`
@@ -5381,7 +5919,7 @@ impl Jobs {
                         .unwrap_or_default(),
                     Err(_) => String::new(),
                 };
-                if *signal.borrow() != Signal::Shutdown
+                if !paused
                     && !keeps_none
                     && let Err(e) = self.keep_wip(id).await
                 {
@@ -5436,6 +5974,7 @@ impl Jobs {
             self.update(id, |job| job.crash_resumes.clear());
         }
         let stopped = *signal.borrow() != Signal::Run;
+        let asked = matches!(outcome, Err(End::Asked(_)));
         match outcome {
             // The owner stopped it: its exchange gets a failed result. A shutdown leaves it be.
             _ if stopped => {
@@ -5444,6 +5983,8 @@ impl Jobs {
                 }
             }
             Ok(()) => {}
+            // Last, once nothing of its run can take the question down again.
+            Err(End::Asked(call)) => self.wait_for_answer(id, call),
             Err(end) => {
                 let review = self.get(id).and_then(|j| {
                     let body: ReviewRequest =
@@ -5462,8 +6003,9 @@ impl Jobs {
                             next,
                             resumes,
                         } => (reason.clone(), *next, *resumes),
-                        // Only a stop or a shutdown ends a run that moved on: handled above.
-                        End::MovedOn => (
+                        // Only a stop or a shutdown ends a run that moved on, and one that asked
+                        // waits: both handled above.
+                        End::MovedOn | End::Asked(_) => (
                             "It stopped while moving to another account.".into(),
                             Some(crate::job::TRY_AGAIN),
                             None,
@@ -5505,8 +6047,8 @@ impl Jobs {
             }
         }
         // Oby's review of published work ended: its verdict goes to the job it read. A shutdown
-        // isn't an end: it runs again once obid starts.
-        if *signal.borrow() != Signal::Shutdown {
+        // isn't an end: it runs again once obid starts, nor is a question it waits on.
+        if *signal.borrow() != Signal::Shutdown && !asked {
             self.reviewed(id);
         }
     }
@@ -5691,7 +6233,7 @@ impl Jobs {
             }
         }
         if COMMITTING.contains(&job.kind.as_str()) || job.obi.is_none() {
-            let (name, email) = &self.identity;
+            let (name, email) = &self.identity();
             for key in ["GIT_AUTHOR_NAME", "GIT_COMMITTER_NAME"] {
                 extra.push((key, name.into()));
             }
@@ -6272,12 +6814,13 @@ impl Jobs {
                         plan,
                         plan_mode: "plan".into(),
                         agent_mode: "agent".into(),
-                        // Oby's Tetrix server, the only one Cursor gets (crate::tetrix).
-                        mcp: self
-                            .tetrix_mcp(&job)
-                            .map(|(url, token)| vec![json!({"type": "http", "name": "tetrix", "url": url,
-                                "headers": [{"name": "Authorization", "value": format!("Bearer {token}")}]})])
-                            .unwrap_or_default(),
+                        // Oby's Tetrix server (crate::tetrix) and, for the owner's job, Oby's own
+                        // with only `oby_ask_owner`: the only ones Cursor gets.
+                        mcp: [("tetrix", self.tetrix_mcp(&job)), ("oby", (!obi_review).then(|| self.ask_mcp(id)).flatten())]
+                            .into_iter()
+                            .filter_map(|(name, server)| server.map(|(url, token)| json!({"type": "http", "name": name, "url": url,
+                                "headers": [{"name": "Authorization", "value": format!("Bearer {token}")}]})))
+                            .collect(),
                     };
                     acp::run_turn(
                         launch,
@@ -7037,6 +7580,7 @@ impl Jobs {
         // Where its branch was when this run started: a job whose own publish failed is tried
         // again by itself only when this run made new commits (runner-api.md, "Job").
         let clone = git::clone_path(&self.config.home, &repo.repo);
+        self.offer_check(&job, &clone, &start_commit).await;
         let before_head = git::git(
             &clone,
             &[
@@ -7096,8 +7640,13 @@ impl Jobs {
         }
         // Oby's review of published work reads what its author was asked and the repository's
         // rules as the base has them, quoted (crate::review): never the rules the change itself
-        // writes, which its author could steer the review with.
-        if job.review_of.is_some() {
+        // writes, which its author could steer the review with. A Claude Code job gets the rules
+        // too (#612): under `--setting-sources ""`, which keeps the repository's settings out,
+        // Claude Code loads no CLAUDE.md (measured with 2.1.302). Codex and Cursor read the
+        // worktree's own rules files themselves.
+        let reviews = job.review_of.is_some();
+        let mut rules_quoted = false;
+        if reviews || job.agent == Tool::Claude.id() {
             let mut files = Vec::new();
             for name in ["AGENTS.md", "CLAUDE.md"] {
                 let blob = format!("refs/remotes/origin/{base}:{name}");
@@ -7106,15 +7655,22 @@ impl Jobs {
                     git::git(&clone, &["cat-file", "blob", &blob]).await.ok(),
                 ));
             }
-            let inputs = crate::obi_dir::folder(&worktree, "inputs")
-                .map_err(|e| format!("obid can't make .obi/inputs: {e}"))?;
-            for (file, text) in [
-                (review::ASKED_FILE, review::asked(&job.task, &job.request)),
-                (review::RULES_FILE, review::base_rules(&base, &files)),
-            ] {
-                let text = crate::secrets::known().redact(&crate::vault::for_agent(&text)?);
-                crate::obi_dir::write_new(&inputs, file, text.as_bytes())
-                    .map_err(|e| format!("obid couldn't quote {file} for the review: {e}"))?;
+            rules_quoted = !reviews && files.iter().any(|(_, text)| text.is_some());
+            let mut quoted = Vec::new();
+            if reviews {
+                quoted.push((review::ASKED_FILE, review::asked(&job.task, &job.request)));
+            }
+            if reviews || rules_quoted {
+                quoted.push((review::RULES_FILE, review::base_rules(&base, &files)));
+            }
+            if !quoted.is_empty() {
+                let inputs = crate::obi_dir::folder(&worktree, "inputs")
+                    .map_err(|e| format!("obid can't make .obi/inputs: {e}"))?;
+                for (file, text) in quoted {
+                    let text = crate::secrets::known().redact(&crate::vault::for_agent(&text)?);
+                    crate::obi_dir::write_new(&inputs, file, text.as_bytes())
+                        .map_err(|e| format!("obid couldn't quote {file} for the agent: {e}"))?;
+                }
             }
         }
         let (admin, common) = self.own_git_dirs(id).await?;
@@ -7159,6 +7715,11 @@ impl Jobs {
                     allowed.join(", ")
                 ).into());
             }
+            let hooks = acp::cursor::repository_hooks(&worktree);
+            if !hooks.is_empty() {
+                self.allow_repository_hooks(id, &job.repo, &hooks, signal)
+                    .await?;
+            }
         }
 
         let words = self.take_heard(id);
@@ -7183,6 +7744,26 @@ impl Jobs {
             }
         } else {
             let mut message = owner_prompt(&job);
+            if rules_quoted {
+                message = format!("{message}\n\n{}", review::rules_line(&base));
+            }
+            // The owner's memories about them and the job's repository, quoted (#378). Never on a
+            // teammate's Mac: only the job's code goes there, never its inputs.
+            if job.runs_on.is_none()
+                && let Some(text) =
+                    crate::memory::for_agent(&self.config.home, &[job.repo.as_str()]).await?
+            {
+                let written = crate::obi_dir::folder(&worktree, "inputs").and_then(|dir| {
+                    crate::obi_dir::write_new(&dir, crate::memory::FILE, text.as_bytes())
+                });
+                match written {
+                    Ok(_) => {
+                        let path = format!(".obi/inputs/{}", crate::memory::FILE);
+                        message = format!("{message}\n\n{}", crate::memory::prompt_line(&path));
+                    }
+                    Err(e) => tracing::warn!("job {id}: the owner's memories weren't quoted: {e}"),
+                }
+            }
             let purpose = if job.kind == "review" {
                 obi_plugin_api::Purpose::Review
             } else if Self::mode_of(&job) == Mode::Plan {
@@ -7411,14 +7992,20 @@ impl Jobs {
                     .into_iter()
                     .filter(|s| tetrix.is_none() || s.plugin.as_str() != "tetrix")
                     .collect();
-                let broker = if tool == Tool::Cursor {
-                    None
-                } else {
-                    self.connection_mcp(id)
+                // Oby's own server, where Codex and Cursor ask the owner (`oby_ask_owner`) whatever
+                // they're connected to. Cursor gets no connected app on it, only that tool.
+                let broker = match tool {
+                    Tool::Claude => self.connection_mcp(id),
+                    Tool::Codex => self.connection_mcp(id).or_else(|| self.ask_mcp(id)),
+                    Tool::Cursor => self.ask_mcp(id),
                 };
                 let mut mcp_rules = crate::plugins::rules(&servers);
-                if broker.is_some() && tool != Tool::Cursor {
-                    mcp_rules.push(crate::connections::BROKER_RULE.into());
+                if broker.is_some() {
+                    mcp_rules.push(if tool == Tool::Cursor {
+                        format!("mcp__oby__{}", permissions::ASK_OWNER)
+                    } else {
+                        crate::connections::BROKER_RULE.into()
+                    });
                 }
                 if tetrix.is_some() {
                     self.tetrix_used(id, |_| {});
@@ -7631,6 +8218,20 @@ impl Jobs {
                     } else {
                         first
                     };
+                    // OpenAI refused the Codex login, as Codex itself says (never the agent's own
+                    // words): no run on it starts again until the owner signs in, and the job says
+                    // so in words they can act on.
+                    if tool == Tool::Codex
+                        && let Some(error) = codex_error(&reason).filter(|e| codex_login_refused(e))
+                    {
+                        let login = self.login_path(id);
+                        let copy = match account.config_dir {
+                            Some(_) => login.join("auth.json"),
+                            None => login.join(".codex/auth.json"),
+                        };
+                        end_codex_login(&copy, &account.name);
+                        reason = format!("{} (Codex said: {error})", codex_ended(&account.name));
+                    }
                     // A usage limit, a login, a crash: what's done is kept, and Try again picks the
                     // session up (after the reset, the sign-in). Past a usage limit's reset, obid
                     // tries again by itself; a reset already gone by is a stale one, and arms
@@ -7710,6 +8311,11 @@ impl Jobs {
                 });
                 noted = false;
                 self.note_diff(id, &start_commit, round).await;
+                // It asked the owner (`oby_ask_owner`) and ended its turn: it waits for the answer,
+                // which starts its next turn, the owner's words that came meanwhile with it.
+                if let Some(call) = self.lock().asked.remove(id) {
+                    return Err(End::Asked(call));
+                }
                 // Words the owner sent while it worked: the agent hears them now, in another turn of
                 // this round, before the check.
                 let words = self.take_heard(id);
@@ -7761,7 +8367,7 @@ impl Jobs {
                             message = rebase_prompt(&job, &start_commit, &files);
                             // Its reply leaves the job's summary to the work's.
                             noted = true;
-                            self.lock().wrapping.remove(id);
+                            message = self.reopened(id, message);
                             opening = Some(format!(
                                 "Oby told {} to rebase onto the moved base",
                                 tool.name()
@@ -7837,7 +8443,7 @@ impl Jobs {
                         rebase_round = true;
                         message = rebase_prompt(&job, &start_commit, &files);
                         noted = true;
-                        self.lock().wrapping.remove(id);
+                        message = self.reopened(id, message);
                         opening = Some(format!(
                             "Oby told {} to rebase onto the moved base",
                             tool.name()
@@ -7866,7 +8472,7 @@ impl Jobs {
                 opening = Some(format!("Oby told {} to commit its work", tool.name()));
                 // Its reply leaves the job's summary to the work's.
                 noted = true;
-                self.lock().wrapping.remove(id);
+                message = self.reopened(id, message);
                 continue 'rounds;
             }
             self.teammates_ended(id, &worktree, &start_commit).await;
@@ -7952,7 +8558,7 @@ impl Jobs {
                     });
                 } else {
                     message = crate::decisions::prompt(&conflicts);
-                    self.lock().wrapping.remove(id);
+                    message = self.reopened(id, message);
                     self.update(id, |job| {
                         job.phase = Some(Phase::Work);
                         job.publish_step = None;
@@ -8058,7 +8664,7 @@ impl Jobs {
                             .unwrap_or_else(|| repo.default_branch.clone());
                         message = crate::publish::fix_prompt(&found, &base);
                         blocked_before = Some(found);
-                        self.lock().wrapping.remove(id);
+                        message = self.reopened(id, message);
                         self.update(id, |job| {
                             job.phase = Some(Phase::Work);
                             job.publish_step = None;
@@ -8391,7 +8997,7 @@ impl Jobs {
         if job.summary.trim().is_empty() {
             return;
         }
-        let (verdict, summary) = crate::listen::decided(job.summary.trim());
+        let (verdict, summary) = crate::review::decided(job.summary.trim());
         let Some(link) = self.link.get().and_then(std::sync::Weak::upgrade) else {
             return;
         };
@@ -8408,9 +9014,15 @@ impl Jobs {
 
     /// Who reviews `author`'s published work (docs/runner-api.md, "Oby's review"): an account of
     /// another tool first, then another of its own, else the author's own in a session of the
-    /// review's own; always one signed in, not being changed and with room, and never Cursor.
-    /// `Err` says why none fits: the review waits for one.
+    /// review's own; always one signed in, not being changed and with room, and never Cursor, nor
+    /// one whose review of this head couldn't give a verdict. `Err` says why none fits: the review
+    /// waits for one.
     fn reviewer(&self, author: &Job) -> Result<(Tool, crate::config::Account), String> {
+        let failed: Vec<&str> = author
+            .review_failed_here()
+            .into_iter()
+            .flat_map(|f| f.reviews.iter().map(|(_, on)| on.as_str()))
+            .collect();
         let home = login_home();
         let now = obi_protocol::time::now();
         let own = Tool::from_id(&author.agent);
@@ -8423,7 +9035,10 @@ impl Jobs {
         let mut held = Vec::new();
         for tool in tools {
             for account in self.accounts(tool) {
-                if self.being_changed(&account.id) || !signed_in(tool, &account, home.as_deref()) {
+                if self.being_changed(&account.id)
+                    || !signed_in(tool, &account, home.as_deref())
+                    || failed.contains(&reviewed_on(tool.id(), &account.id).as_str())
+                {
                     continue;
                 }
                 if let Some(why) = self.usage.get(&account.id).held(now) {
@@ -8498,6 +9113,35 @@ impl Jobs {
             job.review_error = None;
             job.no_reviewer = None;
         });
+        self.review_items(id, None);
+    }
+
+    /// The owner's Try again on Oby's review that no reviewer could give (its `failed` inbox item,
+    /// [`crate::sphere::inbox::review_item`]): the head's review starts again, on the first
+    /// reviewer that may take it, with one more to fall back on. `None` for a job obid doesn't
+    /// have; `Err` when its review isn't waiting for the owner.
+    pub fn review_again(self: &Arc<Self>, id: &str) -> Option<Result<Job, Refused>> {
+        let job = self.get(id)?;
+        if !job.review_needs_you() || job.current_review().is_some() {
+            return Some(Err(Refused(
+                "Oby's review of it isn't waiting for you.".into(),
+            )));
+        }
+        self.update(id, |job| {
+            job.review_failed = None;
+            job.review_error = None;
+        });
+        self.start_review(id);
+        self.schedule();
+        self.get(id).map(Ok)
+    }
+
+    /// The job `id`'s inbox item about Oby's review that couldn't run: `item` when there is one,
+    /// and its other open ones done, with no answer.
+    fn review_items(&self, id: &str, item: Option<crate::sphere::inbox::Item>) {
+        if let Some(link) = self.link.get().and_then(std::sync::Weak::upgrade) {
+            link.review_items(id, item);
+        }
     }
 
     /// Oby's reviews left hanging, settled on each pass of [`Jobs::follow_pull_requests`] (so
@@ -8579,8 +9223,69 @@ impl Jobs {
             (Status::Done, None) => Some("it gave no verdict".to_owned()),
             (Status::Done, Some(_)) => None,
             (Status::Stopped, _) => Some("it was stopped".to_owned()),
-            (status, _) => Some(review.reason.unwrap_or_else(|| status.as_str().to_owned())),
+            (status, _) => Some(
+                review
+                    .reason
+                    .clone()
+                    .unwrap_or_else(|| status.as_str().to_owned()),
+            ),
         };
+        // It ended before a verdict (a login refused, the tool crashing): on the next reviewer
+        // that may take it, once; then the owner's, in one item. Never one the owner let go.
+        let recorded = author
+            .review_failed_here()
+            .is_some_and(|f| f.reviews.iter().any(|(job, _)| job == id));
+        if matches!(review.status, Status::Failed | Status::Interrupted)
+            && (review.dismissed.is_none() || recorded)
+        {
+            let mut failed =
+                author
+                    .review_failed_here()
+                    .cloned()
+                    .unwrap_or_else(|| crate::job::ReviewFailed {
+                        commit: head.clone().unwrap_or_default(),
+                        reviews: Vec::new(),
+                        needs_you: false,
+                    });
+            if !recorded {
+                failed
+                    .reviews
+                    .push((id.to_owned(), reviewed_on(&review.agent, &review.account)));
+            }
+            let mut tried = author.clone();
+            tried.review_failed = Some(failed.clone());
+            let retry =
+                !failed.needs_you && failed.reviews.len() < 2 && self.reviewer(&tried).is_ok();
+            failed.needs_you = !retry;
+            let why = why.unwrap_or_default();
+            let number = author
+                .published
+                .as_deref()
+                .and_then(|url| crate::github::pull_request_number(url, &author.repo))
+                .map_or("its pull request".to_owned(), |n| format!("#{n}"));
+            let error = (!retry).then(|| format!("{}{number}: {why}", crate::job::COULDNT_REVIEW));
+            let author = self.update(&of, |job| {
+                job.reviewing = None;
+                job.review_failed = Some(failed);
+                job.review_error = error.clone();
+            });
+            // Its end is its author's to tell: the review job itself needs no one.
+            self.update(id, |review| {
+                review.dismissed.get_or_insert_with(obi_protocol::time::now);
+            });
+            if retry {
+                tracing::info!(
+                    "job {of}: its review {id} ended before a verdict ({why}): another reviewer takes it"
+                );
+                self.start_review(&of);
+            } else if let (Some(author), Some(error)) = (author, error) {
+                self.review_items(
+                    &of,
+                    Some(crate::sphere::inbox::review_item(&author, id, &error)),
+                );
+            }
+            return;
+        }
         let Some((approved, text)) = verdict.filter(|_| why.is_none()) else {
             self.update(&of, |job| {
                 job.reviewing = None;
@@ -8625,8 +9330,10 @@ impl Jobs {
             && !carried
             && !past_safety(&author))
         .then(|| self.quote_review(&of, round, &by, &text));
+        self.review_items(&of, None);
         self.update(&of, |job| {
             job.reviewing = None;
+            job.review_failed = None;
             job.review_error = match &quoted {
                 Some(Err(why)) => Some(format!(
                     "Oby's review asks for changes, and obid couldn't hand them to the agent: {why}"
@@ -9201,14 +9908,20 @@ impl Jobs {
         };
         let card = if let Some(why) = stop {
             Some(crate::merge::stopped_card(&job, &head, &why))
-        } else if required && workflow.is_none() {
-            // A repository Oby hasn't learned asks its owner first: no teammate is asked to
-            // review it before the owner said how it merges.
-            Some(crate::merge::stopped_card(
-                &job,
-                &head,
-                crate::merge::REQUIRES_PERSON,
-            ))
+        } else if required
+            && workflow.is_none()
+            && !crate::memory::teammate_reviews(&home, &job.repo)
+        {
+            // A repository Oby hasn't learned asks its owner first, once for that head: a
+            // teammate's Oby reviews it only after their yes, which Oby remembers for the
+            // repository (the owner's decision of 2026-10-25), and then without asking again. How
+            // it merges stays theirs to say: "Ready to merge?" still asks. Out of an Obysphere, no
+            // teammate's Oby can: the owner hears what to do instead.
+            Some(if link.as_ref().is_some_and(|l| l.in_sphere()) {
+                crate::merge::teammate_card(&job, &head)
+            } else {
+                crate::merge::stopped_card(&job, &head, &crate::merge::no_sphere(&job.repo))
+            })
         } else if by_teammate || required {
             let goal = job.short_title();
             let change = crate::sphere::approval::Change {
@@ -9381,6 +10094,84 @@ impl Jobs {
         });
     }
 
+    /// Each repository obid works in, with its default branch: what a workflow memory is checked
+    /// against.
+    fn repo_branches(&self) -> Vec<(String, String)> {
+        self.config
+            .repos
+            .get()
+            .iter()
+            .map(|r| (r.repo.clone(), r.default_branch.clone()))
+            .collect()
+    }
+
+    /// The owner's Ask a teammate, and remember, on the job `id`'s card about `head` (crate::merge,
+    /// `teammate_card`; the owner's decision of 2026-10-25): their yes to "Can I remember that?" is
+    /// about who reviews, never how it merges. Oby keeps a `review` memory for the repository
+    /// (`memory::remember_review`), or, where the owner taught it a workflow since, changes only
+    /// that workflow's review to a teammate's Oby; then a teammate's Oby is asked right away
+    /// (`Link::ask_teammate`). What came of the ask, in Oby's words; why not, otherwise: nothing
+    /// was asked, nor remembered.
+    pub async fn ask_teammate_and_remember(&self, id: &str, head: &str) -> Result<String, String> {
+        let job = self.get(id).ok_or("There's no such job.")?;
+        // Only a job Oby still carries, at the head Oby pushed (crate::merge::ready's own rule).
+        if !carries(&job) || job.pushed_head() != Some(head) {
+            return Err("It isn't one Oby carries on at that commit any more.".into());
+        }
+        let gh = crate::github::gh().ok_or("GitHub's CLI (gh) isn't installed.")?;
+        let number = job
+            .published
+            .as_deref()
+            .and_then(|url| crate::github::pull_request_number(url, &job.repo))
+            .ok_or("The job has no pull request of its own.")?;
+        let link = self
+            .link
+            .get()
+            .and_then(std::sync::Weak::upgrade)
+            .ok_or("Oby isn't in an Obysphere.")?;
+        let home = self.config.home.clone();
+        let (pr, _) =
+            crate::github::view_merging(&gh, &job.repo, number, obi_protocol::time::now()).await?;
+        if !pr.is_open() || pr.head.as_deref() != Some(head) {
+            return Err("It moved on since: a new card comes if it still needs a teammate.".into());
+        }
+        let name = job.repo.rsplit('/').next().unwrap_or(&job.repo).to_owned();
+        let from = format!("You asked a teammate's Oby to review {name}#{number}");
+        let remembered = match crate::memory::workflow(&home, &job.repo).and_then(|m| m.workflow) {
+            Some(mut learned) => {
+                learned.review = crate::memory::Approval::Teammate;
+                crate::memory::remember_workflow(
+                    &home,
+                    &job.repo,
+                    learned,
+                    &from,
+                    &self.repo_branches(),
+                )
+                .await
+            }
+            None => {
+                crate::memory::remember_review(&home, &job.repo, &from, &self.repo_branches()).await
+            }
+        };
+        remembered.map_err(|why| {
+            tracing::warn!("job {id}: the teammate review wasn't remembered: {why:?}");
+            "Oby couldn't remember it: try again.".to_owned()
+        })?;
+        let goal = job.short_title();
+        let change = crate::sphere::approval::Change {
+            repo: &job.repo,
+            pr: number,
+            base: &pr.base,
+            head_branch: &job.branch,
+            head,
+            goal: &goal,
+        };
+        Ok(match link.ask_teammate(&change).await {
+            crate::sphere::approval::Teammate::Waiting(said)
+            | crate::sphere::approval::Teammate::NeedsYou(said) => said,
+        })
+    }
+
     /// The owner's Merge, or Merge and remember, on the job `id`'s "Ready to merge?" card about
     /// `head` (crate::sphere::link): GitHub is read again, the pull request must still be at that
     /// head and hold by the workflow the card proposes (or the one the owner taught Oby since),
@@ -9433,17 +10224,16 @@ impl Jobs {
             tracing::info!("job {id}: sent {} {} {}", sent.action, sent.repo, sent.id);
         }
         if remember && learned.is_none() {
-            let repos: Vec<(String, String)> = self
-                .config
-                .repos
-                .get()
-                .iter()
-                .map(|r| (r.repo.clone(), r.default_branch.clone()))
-                .collect();
             let name = job.repo.rsplit('/').next().unwrap_or(&job.repo).to_owned();
             let from = format!("You merged {name}#{number} this way");
-            if let Err(why) =
-                crate::memory::remember_workflow(&home, &job.repo, workflow, &from, &repos).await
+            if let Err(why) = crate::memory::remember_workflow(
+                &home,
+                &job.repo,
+                workflow,
+                &from,
+                &self.repo_branches(),
+            )
+            .await
             {
                 tracing::warn!("job {id}: merged, but its workflow wasn't remembered: {why:?}");
                 return Ok(Some(
@@ -9826,8 +10616,9 @@ pub(crate) fn login_note(
     account: &crate::config::Account,
     home: Option<&Path>,
 ) -> Option<&'static str> {
-    login_problem(tool, account, home).map(|_| match tool {
+    login_problem(tool, account, home).map(|why| match tool {
         Tool::Cursor => "Run cursor-agent once",
+        _ if why.contains(CODEX_SIGN_IN) => "Run codex login",
         _ => "Run codex once",
     })
 }
@@ -10744,6 +11535,11 @@ fn learn_claude_tokens(bytes: &[u8], service: &str) {
     }
 }
 
+/// How a review's account is named in its author's `review_failed`: its tool and account id.
+fn reviewed_on(tool: &str, account: &str) -> String {
+    format!("{tool}:{account}")
+}
+
 /// Codex's `auth.json` as obid copies it, jobs' and conversations' alike: all of it but the
 /// refresh token, which the provider rotates, so a refresh inside a copy would sign the owner's own
 /// Codex out (as #651 for Claude). `tokens.refresh_token` is kept as an empty string: codex-cli
@@ -10799,6 +11595,9 @@ pub(crate) fn codex_copy_ready(copy: &Path, account: &str) -> Result<(), String>
         return Ok(());
     };
     let login: Value = serde_json::from_slice(&bytes).unwrap_or_default();
+    if codex_credential(&login).is_some_and(|c| ended_codex().lock().unwrap().contains(&c)) {
+        return Err(codex_ended(account));
+    }
     let ready = match login["tokens"]["access_token"].as_str() {
         None => login.is_object(),
         Some(token) => jwt_ends(token).is_some_and(|ends| ends > now_ms() / 1000 + 5 * 60),
@@ -10806,6 +11605,80 @@ pub(crate) fn codex_copy_ready(copy: &Path, account: &str) -> Result<(), String>
     ready.then_some(()).ok_or_else(|| {
         format!("The Mac's Codex login for {account} needs refreshing: run codex once.")
     })
+}
+
+/// What a Codex login OpenAI refused needs: a new sign-in, which only the owner can do.
+const CODEX_SIGN_IN: &str = "run codex login";
+
+/// Why a run on a Codex login OpenAI refused doesn't start ([`end_codex_login`]).
+fn codex_ended(account: &str) -> String {
+    format!("The Mac's Codex login for {account} has ended: {CODEX_SIGN_IN}.")
+}
+
+/// The Codex logins OpenAI refused, by their credential ([`codex_credential`]): never signed in
+/// again until the login changes (a new `codex login` holds another token). A copy can't refresh,
+/// and its token's `exp` still says it's good: OpenAI ends a session early (its refresh token
+/// invalidated, `token_revoked`), as it did the owner's on 2026-10-21.
+/// ponytail: in memory, so after a restart a dead login is tried once more; keep it on disk if
+/// that run costs too much.
+fn ended_codex() -> &'static Mutex<std::collections::HashSet<u64>> {
+    static ENDED: std::sync::OnceLock<Mutex<std::collections::HashSet<u64>>> =
+        std::sync::OnceLock::new();
+    ENDED.get_or_init(Default::default)
+}
+
+/// A Codex login's credential (its ChatGPT access token, else its API key), hashed: what obid
+/// keeps of one OpenAI refused, never the token.
+fn codex_credential(login: &Value) -> Option<u64> {
+    use std::hash::{Hash, Hasher};
+    let token = login["tokens"]["access_token"]
+        .as_str()
+        .or(login["OPENAI_API_KEY"].as_str())
+        .filter(|t| !t.is_empty())?;
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    token.hash(&mut hasher);
+    Some(hasher.finish())
+}
+
+/// Codex's own words in a failed Codex run's `reason` (crate::codex): its turn's error (`Codex hit
+/// an error: …`, when the agent said nothing that turn) or a request it refused (`Codex couldn't
+/// …: …`). `None` when the reason is the agent's own last message, which may say anything.
+fn codex_error(reason: &str) -> Option<&str> {
+    reason
+        .strip_prefix("Codex hit an error: ")
+        .or_else(|| reason.starts_with("Codex couldn't ").then_some(reason))
+}
+
+/// Whether a Codex run's error says OpenAI refused its login: codex-cli 0.162.1's
+/// `workspace routing discovery unauthorized (401)` (`account/read`, `thread/start`), a `401
+/// Unauthorized` from the API, or the session ended (`token_revoked`, `refresh_token_invalidated`).
+/// A run on a copy can't refresh, so trying again changes nothing until the owner signs in.
+fn codex_login_refused(error: &str) -> bool {
+    let error = error.to_lowercase();
+    [
+        "unauthorized (401)",
+        "401 unauthorized",
+        "token_revoked",
+        "refresh_token_invalidated",
+        "invalidated oauth token",
+        "your session has ended",
+    ]
+    .iter()
+    .any(|w| error.contains(w))
+}
+
+/// Remembers that OpenAI refused the Codex login a run used (`copy`, the run's `auth.json`), the
+/// one of `account`: it isn't [`signed_in`] again (no review, failover or routing picks it) until
+/// the account's login holds another token, as when the owner signed in again meanwhile.
+fn end_codex_login(copy: &Path, account: &str) {
+    let credential = std::fs::read(copy)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+        .and_then(|login| codex_credential(&login));
+    if let Some(credential) = credential {
+        tracing::warn!("OpenAI refused Codex account {account}'s login");
+        ended_codex().lock().unwrap().insert(credential);
+    }
 }
 
 /// When a JWT ends (its `exp`, seconds since 1970), if it says.
@@ -11250,8 +12123,11 @@ pub fn person_homes() -> Vec<PathBuf> {
     homes
 }
 
+/// The end of the email commits get with no git email and no GitHub login.
+const NO_EMAIL: &str = "@users.noreply.obi.invalid";
+
 /// Who commits made in a job are by: the person's git identity as obid's own git sees it, else
-/// the owner.
+/// the owner (and [`github_email`] once gh is signed in).
 fn commit_identity(owner: &str) -> (String, String) {
     let read = |key: &str| {
         std::process::Command::new("git")
@@ -11265,8 +12141,42 @@ fn commit_identity(owner: &str) -> (String, String) {
     };
     (
         read("user.name").unwrap_or_else(|| owner.to_owned()),
-        read("user.email").unwrap_or_else(|| format!("{owner}@users.noreply.obi.invalid")),
+        read("user.email").unwrap_or_else(|| format!("{owner}{NO_EMAIL}")),
     )
+}
+
+/// With no git email, the GitHub login's noreply address (`gh api user`), so commits link to the
+/// person and org rules or CLA bots take them: now, then once a minute until gh is signed in
+/// (first launch signs it in after obid starts).
+// ponytail: polls gh; a hook on obid's own GitHub sign-in would be exact, but misses `gh auth login`.
+async fn github_email(jobs: std::sync::Weak<Jobs>) {
+    const NOREPLY: &str = r#""\(.id)+\(.login)@users.noreply.github.com""#;
+    while jobs.strong_count() > 0 {
+        if let Some(gh) = crate::github::gh()
+            && let Ok(said) = crate::github::run(&gh, &["api", "user", "--jq", NOREPLY]).await
+            && let Some(email) = noreply(&said)
+        {
+            if let Some(jobs) = jobs.upgrade() {
+                jobs.identity.lock().unwrap_or_else(|e| e.into_inner()).1 = email;
+            }
+            return;
+        }
+        tokio::time::sleep(Duration::from_secs(60)).await;
+    }
+}
+
+/// `said` when it's a GitHub noreply address, `<id>+<login>@users.noreply.github.com`.
+fn noreply(said: &str) -> Option<String> {
+    let (id, rest) = said.trim().split_once('+')?;
+    let login = rest.strip_suffix("@users.noreply.github.com")?;
+    (!id.is_empty()
+        && id.bytes().all(|b| b.is_ascii_digit())
+        && !login.is_empty()
+        && login.len() <= 39
+        && login
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-'))
+    .then(|| said.trim().to_owned())
 }
 
 /// A folder of the job's own, 0700.
@@ -11366,6 +12276,12 @@ async fn count_commits(worktree: &Path, start_commit: &str, head: &str) -> u64 {
     .ok()
     .and_then(|n| n.parse::<u64>().ok())
     .unwrap_or(0)
+}
+
+/// Whether `job`'s agent asks the owner with `oby_ask_owner`: an owner's Codex or Cursor job.
+/// Claude Code asks with its own AskUserQuestion, and another Obi's job has nobody to ask.
+pub fn asks_through_oby(job: &Job) -> bool {
+    job.obi.is_none() && matches!(Tool::from_id(&job.agent), Some(Tool::Codex | Tool::Cursor))
 }
 
 /// The agent's question `job` shows, kept with its call (#858): what a restart keeps waiting.
@@ -11908,6 +12824,10 @@ fn owner_prompt(job: &Job) -> String {
     if job.kind == "review" {
         lines.push("Your summary is the review, posted on the pull request once the user approves it. End it with a line that is exactly `VERDICT: APPROVE` when the change can merge as it is, or `VERDICT: REQUEST CHANGES` when something must change first.".into());
     }
+    // Claude Code asks with its own AskUserQuestion (#858).
+    if asks_through_oby(job) {
+        lines.push(format!("Only when you truly can't go on without the user (a choice only they can make, or something only they know), ask them with the `{}` tool of the MCP server `oby`: one question, with options when there are a few clear choices. Then end your turn with a one-line summary: Oby resumes this session with their answer. Decide everything else yourself, and say in your summary what you chose and why.", permissions::ASK_OWNER));
+    }
     lines.push(
         "Finish with a short summary. Its first line is one sentence the user will see.".into(),
     );
@@ -12224,7 +13144,7 @@ fn tail_chars(text: &str, limit: usize) -> String {
 
 /// The inbox item for the owner's finished review. `clean` keeps the summary, which is what
 /// Approve posts; otherwise the item shows nothing and only Dismiss.
-fn owner_review_item(
+pub fn owner_review_item(
     job_id: &str,
     repo: &str,
     number: u64,
@@ -12240,7 +13160,7 @@ fn owner_review_item(
                 "Post this review on pull request #{number} in {repo} as you? Approve posts the review shown here with Oby's verdict, from your GitHub login."
             ),
             vec![
-                crate::listen::APPROVE.to_owned(),
+                crate::review::APPROVE.to_owned(),
                 crate::sphere::inbox::DISMISS.to_owned(),
             ],
             vec![
@@ -12320,6 +13240,24 @@ mod tests {
         );
         assert_eq!(held.options, ["Dismiss"]);
         assert!(held.watch.as_ref().unwrap()["review"].is_null());
+    }
+
+    /// Only a GitHub noreply address from `gh api user` becomes the commits' email.
+    #[test]
+    fn only_a_github_noreply_address_is_the_commit_email() {
+        assert_eq!(
+            super::noreply("583231+octocat@users.noreply.github.com\n").as_deref(),
+            Some("583231+octocat@users.noreply.github.com")
+        );
+        for not in [
+            "octocat@users.noreply.github.com",
+            "x+octocat@users.noreply.github.com",
+            "1+octo cat@users.noreply.github.com",
+            "1+octocat@example.com",
+            "",
+        ] {
+            assert_eq!(super::noreply(not), None, "{not}");
+        }
     }
 
     /// The same failing call 5 times is a loop, whatever is read in between or however its
@@ -13418,6 +14356,72 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// A Codex login OpenAI refused (codex-cli 0.162.1's `workspace routing discovery unauthorized
+    /// (401)`, though its token's `exp` is days away) isn't signed in any more, and a copy of it
+    /// doesn't run, until the owner signs in again: then the new token is signed in.
+    #[test]
+    fn a_codex_login_openai_refused_is_signed_out_until_a_new_sign_in() {
+        let dir = std::env::temp_dir().join(format!("obid-codex-ended-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let account = crate::config::Account {
+            id: "codex".into(),
+            name: "Codex".into(),
+            config_dir: Some(dir.clone()),
+            payer: None,
+        };
+        let write = |token: &str| {
+            let login =
+                json!({"tokens": {"access_token": token, "refresh_token": "", "account_id": "a"}});
+            std::fs::write(dir.join("auth.json"), login.to_string()).unwrap();
+        };
+        let refused = codex_access(3 * 86400);
+        write(&refused);
+        assert!(signed_in(Tool::Codex, &account, None));
+        // Only Codex's own words about the run (its turn's error, a request it refused), never
+        // the agent's last message: one fixing an auth bug may well say "401 Unauthorized".
+        let refusal = |reason: &str| codex_error(reason).is_some_and(codex_login_refused);
+        for reason in [
+            "Codex hit an error: workspace routing discovery unauthorized (401)",
+            "Codex couldn't start a thread: workspace routing discovery unauthorized (401)",
+            "Codex hit an error: unexpected status 401 Unauthorized: Encountered invalidated oauth token for user",
+            r#"Codex hit an error: Failed to refresh token: {"error_code": "refresh_token_invalidated"}"#,
+        ] {
+            assert!(refusal(reason), "{reason}");
+        }
+        for reason in [
+            "Codex hit an error: You've hit your usage limit.",
+            "Codex hit an error: stream disconnected before completion",
+            "The endpoint returns 401 Unauthorized when the token is stale; I fixed the header.",
+            "workspace routing discovery unauthorized (401)",
+        ] {
+            assert!(!refusal(reason), "{reason}");
+        }
+        end_codex_login(&dir.join("auth.json"), "Codex");
+        assert!(!signed_in(Tool::Codex, &account, None));
+        let ended = Err("The Mac's Codex login for Codex has ended: run codex login.".to_owned());
+        assert_eq!(codex_copy_ready(&dir.join("auth.json"), "Codex"), ended);
+        assert_eq!(
+            login_note(Tool::Codex, &account, None),
+            Some("Run codex login")
+        );
+        // Signed in again: another token, which runs.
+        write(&format!("{refused}x"));
+        assert!(signed_in(Tool::Codex, &account, None));
+        assert_eq!(login_note(Tool::Codex, &account, None), None);
+        // A run's copy refused after the owner signed in again meanwhile: what's ended is that
+        // copy's login, never the new one.
+        let copy = dir.join("copy.json");
+        std::fs::write(
+            &copy,
+            json!({"tokens": {"access_token": codex_access(86400)}}).to_string(),
+        )
+        .unwrap();
+        end_codex_login(&copy, "Codex");
+        assert!(signed_in(Tool::Codex, &account, None));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// A login copied from a file isn't one the keeper writes again: only a copy made from the
     /// Keychain is (#651's review).
     #[test]
@@ -13965,6 +14969,99 @@ mod tests {
         (root, clone, base, jobs)
     }
 
+    /// A job waiting for room (#872) keeps saying what holds it as the accounts change, on the
+    /// first of them, and taking another tool's account it drops a model of its first tool's.
+    #[tokio::test]
+    async fn a_job_waiting_for_room_follows_the_reserves() {
+        let root = std::env::temp_dir().join(format!("obid-wait-room-{}", uuid::Uuid::new_v4()));
+        let (claude, codex) = (root.join("accounts/c"), root.join("accounts/x"));
+        std::fs::create_dir_all(&claude).unwrap();
+        std::fs::create_dir_all(&codex).unwrap();
+        std::fs::write(claude.join(".credentials.json"), "{}").unwrap();
+        std::fs::write(codex.join("auth.json"), "{}").unwrap();
+        let config = crate::config::Config::parse(
+            &json!({"listen": "127.0.0.1:0", "home": root.join("home"), "owner": "o",
+                "repos": [{"repo": "o/r", "remote": "https://example.com/o/r.git"}],
+                "agents": {"claude": {"bin": "/usr/bin/true", "accounts": [{"id": "c", "name": "Claude one", "configDir": claude}]},
+                           "codex": {"bin": "/usr/bin/true", "accounts": [{"id": "x", "name": "Codex one", "configDir": codex}]}}})
+            .to_string(),
+        )
+        .unwrap();
+        let jobs = Jobs::open(
+            config,
+            crate::events::Events::new(),
+            Err("no sandbox".into()),
+        )
+        .unwrap();
+        let now = obi_protocol::time::now();
+        let reserved = crate::usage::Usage {
+            five_hour: Some(0.1),
+            seven_day: Some(0.85),
+            five_hour_resets: Some(now + 3600),
+            seven_day_resets: Some(now + 86_400),
+            ..Default::default()
+        };
+        jobs.usage.record("c", &reserved);
+        jobs.usage.record("x", &reserved);
+        let made = jobs
+            .create(NewJob {
+                repo: "o/r".into(),
+                kind: "fix".into(),
+                task: "Fix it".into(),
+                model: Some("opus".into()),
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(
+            (made.agent.as_str(), made.account.as_str()),
+            ("claude", "c")
+        );
+        let wait = made.waiting.clone().unwrap();
+        assert_eq!(wait.reserved, Some(vec!["c".into(), "x".into()]));
+        assert_eq!(
+            wait.text,
+            "an account with room: Claude one and Codex one are in their weekly reserve"
+        );
+
+        // Claude's fills: only Codex's reserve holds it now, and it waits on that one.
+        jobs.mark_full("c", None, now);
+        jobs.room_for_waiting();
+        let job = jobs.get(&made.id).unwrap();
+        let wait = job.waiting.clone().unwrap();
+        assert_eq!(wait.reserved, Some(vec!["x".into()]));
+        assert_eq!(
+            wait.text,
+            "an account with room: Codex one is in its weekly reserve"
+        );
+        assert_eq!(job.step, room_step(&wait));
+        assert_eq!((job.agent.as_str(), job.account.as_str()), ("codex", "x"));
+        assert_eq!(job.model, None);
+
+        assert_eq!(wait.tool, None);
+
+        // Claude's account has room again: waiting on Codex's reserve never narrowed it to Codex,
+        // so it starts there (Use anyway: jobs_api's the_api_lifts_and_restores_the_reserve).
+        let room = crate::usage::Usage {
+            five_hour: Some(0.1),
+            seven_day: Some(0.2),
+            full_until: Some(now - 1),
+            ..Default::default()
+        };
+        jobs.usage.record("c", &room);
+        jobs.room_for_waiting();
+        let job = jobs.get(&made.id).unwrap();
+        assert_eq!(job.waiting, None);
+        assert_eq!((job.agent.as_str(), job.account.as_str()), ("claude", "c"));
+        assert!(
+            job.changes
+                .iter()
+                .any(|c| c.what == "Started when an account had room: Claude Code · Claude one"),
+            "{:?}",
+            job.changes
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// The accounts Oby thinks with, best first (#874): those with room, then those held only by
     /// their weekly reserve, then the rest, the least of their 5-hour window first; never one
     /// marked full or signed out. A job whose account filled goes on on the first with room whose
@@ -14032,6 +15129,89 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// The first job in a GitHub repository with no check offers the check obid guessed, once:
+    /// never again there, whatever the answer, and never where there's a check (#1062).
+    #[tokio::test]
+    async fn a_repository_with_no_check_is_offered_one_once() {
+        let root = std::env::temp_dir().join(format!("obid-offer-{}", uuid::Uuid::new_v4()));
+        let home = root.join("home");
+        let clone = root.join("clone");
+        std::fs::create_dir_all(&clone).unwrap();
+        std::fs::write(
+            clone.join("package.json"),
+            r#"{"scripts": {"test": "vitest"}}"#,
+        )
+        .unwrap();
+        std::fs::write(clone.join("pnpm-lock.yaml"), "").unwrap();
+        let git = |args: &[&str]| {
+            let done = std::process::Command::new("git")
+                .args([
+                    "-c",
+                    "user.name=t",
+                    "-c",
+                    "user.email=t@t",
+                    "-c",
+                    "commit.gpgsign=false",
+                ])
+                .args(args)
+                .current_dir(&clone)
+                .output()
+                .unwrap();
+            assert!(done.status.success(), "{done:?}");
+            String::from_utf8(done.stdout).unwrap().trim().to_owned()
+        };
+        git(&["init", "-q"]);
+        git(&["add", "."]);
+        git(&["commit", "-qm", "init"]);
+        let commit = git(&["rev-parse", "HEAD"]);
+        let config = crate::config::Config::parse(
+            &json!({"listen": "127.0.0.1:0", "home": home, "owner": "o", "repos": [
+                {"repo": "o/app", "remote": "https://github.com/o/app.git"},
+                {"repo": "o/checked", "remote": "https://github.com/o/checked.git", "check": "make"},
+                {"repo": "o/local", "remote": "https://example.com/o/local.git"}]})
+            .to_string(),
+        )
+        .unwrap();
+        let jobs = Jobs::open(
+            config,
+            crate::events::Events::new(),
+            Err("no sandbox".into()),
+        )
+        .unwrap();
+        let items = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let kept = items.clone();
+        jobs.on_confirm(Arc::new(move |item| kept.lock().unwrap().push(item)));
+        let job = |repo: &str| {
+            let mut job = Job::new(
+                "ffff0001".into(),
+                repo.into(),
+                "fix".into(),
+                "Fix it".into(),
+                "claude".into(),
+                "c".into(),
+            );
+            job.check = jobs.repo(repo).and_then(|r| r.check);
+            job
+        };
+        for repo in ["o/checked", "o/local", "o/app", "O/App"] {
+            jobs.offer_check(&job(repo), &clone, &commit).await;
+        }
+        let items = items.lock().unwrap().clone();
+        assert_eq!(items.len(), 1, "{items:?}");
+        assert_eq!(items[0].title, "Use `pnpm test` as the check for o/app");
+        assert!(
+            items[0]
+                .text
+                .starts_with("Can I use `pnpm test` as the check for o/app?")
+        );
+        let confirmed = items[0].confirm.as_deref().unwrap();
+        assert_eq!(confirmed.action, crate::sphere::inbox::action::SET_CHECK);
+        assert_eq!(confirmed.target, "o/app");
+        assert_eq!(confirmed.payload, json!({"check": "pnpm test"}));
+        assert_eq!(crate::settings::load(&home).checks_offered, ["o/app"]);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// A Jobs over `home` with `jobs` kept there before it opens, for the crash and claim tests.
     fn jobs_with_kept(home: &Path, jobs: &[&Job]) -> Arc<Jobs> {
         std::fs::create_dir_all(home.join("jobs")).unwrap();
@@ -14054,6 +15234,101 @@ mod tests {
             Err("no sandbox".into()),
         )
         .unwrap()
+    }
+
+    /// The owner's words that came while a job wrapped up, left unheard when it ended, start its
+    /// follow-up one by one, each within its own 2,000 characters: the first is its task, the
+    /// rest its first prompt's end. Refused, they stay with the job and a Confirm item tries
+    /// again (#930's review).
+    #[tokio::test]
+    async fn words_a_job_never_heard_start_its_follow_up() {
+        let root = std::env::temp_dir().join(format!("obid-unheard-{}", uuid::Uuid::new_v4()));
+        let account = root.join("accounts/c");
+        std::fs::create_dir_all(&account).unwrap();
+        std::fs::write(account.join(".credentials.json"), "{}").unwrap();
+        let config = crate::config::Config::parse(
+            &json!({"listen": "127.0.0.1:0", "home": root.join("home"), "owner": "o",
+                "repos": [{"repo": "o/r", "remote": "https://example.com/o/r.git"}],
+                "agents": {"claude": {"bin": "/usr/bin/true",
+                                      "accounts": [{"id": "c", "name": "C", "configDir": account}]}}})
+            .to_string(),
+        )
+        .unwrap();
+        let jobs = Jobs::open(
+            config,
+            crate::events::Events::new(),
+            Err("no sandbox".into()),
+        )
+        .unwrap();
+        let items = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let kept = items.clone();
+        jobs.on_confirm(Arc::new(move |item| kept.lock().unwrap().push(item)));
+        let ended = |id: &str, branch: &str| {
+            let mut job = Job::new(
+                id.into(),
+                "o/r".into(),
+                "fix".into(),
+                "Fix it".into(),
+                "claude".into(),
+                "c".into(),
+            );
+            job.status = Status::Done;
+            job.branch = branch.into();
+            job.heard = vec!["a".repeat(1200), "b".repeat(1200)];
+            jobs.insert(job);
+            jobs.lock().told_late.insert(id.into());
+        };
+        ended("eeee0001", "oby/fix-eeee0001");
+        jobs.left_words("eeee0001");
+        let follow = jobs
+            .lock()
+            .jobs
+            .values()
+            .find(|j| j.follow_up_of.as_deref() == Some("eeee0001"))
+            .cloned()
+            .expect("a follow-up");
+        assert_eq!(follow.task, "a".repeat(1200));
+        assert_eq!(follow.heard, ["b".repeat(1200)]);
+        assert!(jobs.get("eeee0001").unwrap().heard.is_empty());
+        assert!(items.lock().unwrap().is_empty());
+
+        // Its follow-up, working already, can't take them now: refused, kept, asked.
+        ended("eeee0002", "oby/fix-eeee0002");
+        let mut busy = Job::new(
+            "eeee0003".into(),
+            "o/r".into(),
+            "fix".into(),
+            "Other".into(),
+            "claude".into(),
+            "c".into(),
+        );
+        busy.status = Status::Running;
+        busy.follow_up_of = Some("eeee0002".into());
+        busy.branch = "oby/fix-eeee0002".into();
+        jobs.insert(busy);
+        jobs.left_words("eeee0002");
+        assert_eq!(jobs.get("eeee0002").unwrap().heard.len(), 2);
+        let items = items.lock().unwrap().clone();
+        assert_eq!(items.len(), 1, "{items:?}");
+        let confirmed = items[0].confirm.as_deref().unwrap();
+        assert_eq!(confirmed.action, crate::sphere::inbox::action::MESSAGE_JOB);
+        assert_eq!(confirmed.target, "eeee0002");
+        assert_eq!(confirmed.payload, json!({"words": "a".repeat(1200)}));
+        // Only once per ending: a second call does nothing.
+        jobs.left_words("eeee0002");
+        assert_eq!(jobs.get("eeee0002").unwrap().heard.len(), 2);
+
+        // The Confirm, once its follow-up can take words (a queued one does): both go on to it,
+        // and none stays with the first job to be heard twice.
+        jobs.update("eeee0003", |job| job.status = Status::Queued);
+        let sent = jobs.message("eeee0002", &"a".repeat(1200), Source::Confirmed);
+        assert!(matches!(sent, Some(Ok(_))), "{sent:?}");
+        assert_eq!(
+            jobs.get("eeee0003").unwrap().heard,
+            ["a".repeat(1200), "b".repeat(1200)]
+        );
+        assert!(jobs.get("eeee0002").unwrap().heard.is_empty());
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// A publish dropped part way (a Publish by hand whose request went) leaves no claim on
@@ -15240,9 +16515,9 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// #609: Claude Code's plan in Plan mode waits for the owner: a new mode or the brain's words
-    /// don't settle it, Keep planning sends it back and Approve goes on in Ask mode. Cursor's plan
-    /// goes on as before.
+    /// #609: a plan in Plan mode waits for the owner, Cursor's as Claude Code's (#1008): a new mode
+    /// or the brain's words don't settle it, Keep planning sends it back and Approve goes on in Ask
+    /// mode. A job that only reads gets no card, on either.
     #[tokio::test]
     async fn a_plan_in_plan_mode_waits_for_the_owner() {
         let root = std::env::temp_dir().join(format!("obid-plan-{}", std::process::id()));
@@ -15263,6 +16538,7 @@ mod tests {
             ("j", "claude", "fix"),
             ("c", "cursor", "fix"),
             ("r", "claude", "review"),
+            ("cr", "cursor", "review"),
         ] {
             let mut job = Job::new(
                 id.into(),
@@ -15280,13 +16556,18 @@ mod tests {
         let plan = |id: &str, text: &str| {
             jobs.rule_on(id, "ExitPlanMode", &json!({"plan": text}), &worktree)
         };
-        assert!(matches!(plan("c", "1. Fix"), Ruling::Now(Answer::Allow)));
-        // A job that only reads never leaves Plan: its plan is declined, never the owner's card.
-        let Ruling::Now(Answer::Deny(why)) = plan("r", "1. Report") else {
-            panic!("a review's plan wasn't declined");
+        let Ruling::Ask(_cursor) = plan("c", "1. Fix") else {
+            panic!("Cursor's plan went through by itself");
         };
-        assert!(why.contains("only reads"), "{why}");
-        assert!(jobs.get("r").unwrap().permission.is_none());
+        assert!(jobs.get("c").unwrap().permission.unwrap().is_plan());
+        // A job that only reads never leaves Plan: its plan is declined, never the owner's card.
+        for id in ["r", "cr"] {
+            let Ruling::Now(Answer::Deny(why)) = plan(id, "1. Report") else {
+                panic!("a review's plan wasn't declined");
+            };
+            assert!(why.contains("only reads"), "{why}");
+            assert!(jobs.get(id).unwrap().permission.is_none());
+        }
         let Ruling::Ask(sent_back) = plan("j", "1. Fix") else {
             panic!("the plan went through by itself");
         };

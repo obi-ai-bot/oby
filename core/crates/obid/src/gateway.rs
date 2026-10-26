@@ -607,11 +607,10 @@ struct Through {
     api: Router,
 }
 
-/// The gateway's router: redeeming, hooks' deliveries, and every allowed route forwarded to `api`.
+/// The gateway's router: redeeming, and every allowed route forwarded to `api`.
 pub fn router(shared: Arc<Shared>, api: Router) -> Router {
     Router::new()
         .route("/v1/pairing", post(redeem))
-        .route("/v1/hooks/{id}/deliver", post(deliver))
         .fallback(forward)
         .with_state(Through { shared, api })
 }
@@ -662,24 +661,6 @@ async fn redeem(State(through): State<Through>, request: Request) -> Response {
         Ok(redeemed) => axum::Json(redeemed).into_response(),
         Err((status, message)) => error(status, message),
     }
-}
-
-/// `POST /v1/hooks/{id}/deliver`, on the gateway only and with no device token: a webhook the
-/// control plane passes on (crate::hooks), which makes every check itself.
-async fn deliver(
-    State(through): State<Through>,
-    axum::extract::Path(id): axum::extract::Path<String>,
-    request: Request,
-) -> Response {
-    // Webhooks come from the control plane, never from a phone's relay.
-    if request.extensions().get::<Relayed>().is_some() {
-        return error(
-            StatusCode::NOT_FOUND,
-            "That route isn't available through the gateway.",
-        );
-    }
-    let (parts, body) = request.into_parts();
-    crate::hooks::deliver(&through.shared, &id, parts.headers, body).await
 }
 
 /// Every other request: an allowed route with a paired device's token goes to the API, as obid's
@@ -991,7 +972,7 @@ mod tests {
         );
         assert!(!allows(&Method::GET, "/v1/slack"));
         assert!(!allows(&Method::PATCH, "/v1/slack"));
-        // Sentry's login and its projects are the Mac's alone (crate::sentry).
+        // Sentry's and the hooks' routes are gone (docs/trim.md): never through the gateway.
         assert!(!allows(&Method::GET, "/v1/sentry"));
         assert!(!allows(&Method::PUT, "/v1/sentry"));
         assert!(!allows(&Method::PATCH, "/v1/sentry/projects/api"));

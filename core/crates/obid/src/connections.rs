@@ -231,7 +231,9 @@ pub struct Connections {
 struct Upstream {
     session: Option<String>,
     version: Option<String>,
-    tools: HashMap<String, Value>,
+    /// What a whole listing gave; none until one came back, so a listing that failed or was cut
+    /// off by its caller's timeout is asked again, never kept as no tools for the rest of the job.
+    tools: Option<HashMap<String, Value>>,
 }
 
 impl Connections {
@@ -395,6 +397,15 @@ impl Connections {
         ))
     }
 
+    /// The broker for job `id` with no connected app needed: where a Codex or Cursor agent asks the
+    /// owner (`oby_ask_owner`). Only what the job started with is listed besides, as ever.
+    pub fn open_ask(&self, id: &str) -> (String, String) {
+        (
+            format!("{}/v1/agent/mcp/{id}", self.api_url),
+            self.job_token(id),
+        )
+    }
+
     /// Oby's Tetrix server for job `id` (crate::tetrix), with the job's token: the broker's, so it
     /// dies with the job the same way.
     pub fn open_tetrix(&self, id: &str) -> (String, String) {
@@ -532,7 +543,7 @@ impl Connections {
                     .get("protocolVersion")
                     .and_then(Value::as_str)
                     .unwrap_or("");
-                json!({"protocolVersion": if MCP_VERSIONS.contains(&asked) { asked } else { MCP_VERSIONS[0] }, "capabilities":{"tools":{"listChanged":false}}, "serverInfo":{"name":"oby","version":crate::api::API_VERSION}, "instructions":"Your user's connected apps, through Oby: Oby holds each login and you get results only. Tools are named <connection>_<tool>. Read-only tools work; tools that act as the user are refused for now."})
+                json!({"protocolVersion": if MCP_VERSIONS.contains(&asked) { asked } else { MCP_VERSIONS[0] }, "capabilities":{"tools":{"listChanged":false}}, "serverInfo":{"name":"oby","version":crate::api::API_VERSION}, "instructions":"Your user's connected apps, through Oby: Oby holds each login and you get results only. Tools are named <connection>_<tool>. Read-only tools work; tools that act as the user are refused for now. oby_ask_owner, when listed, asks your user a question."})
             }
             "ping" => json!({}),
             "tools/list" => json!({"tools": self.tools(id).await}),
@@ -558,6 +569,16 @@ impl Connections {
 
     async fn tools(&self, id: &str) -> Vec<Value> {
         let mut out = Vec::new();
+        if self.asks_through_oby(id) {
+            out.push(json!({"name": crate::permissions::ASK_OWNER,
+                "description": "Ask your user one question and wait for their answer: only when you truly can't go on without them (a choice only they can make, or something only they know). It returns at once: then end your turn with a one-line summary, and Oby resumes this session with their answer (one of your options, or their own words).",
+                "inputSchema": {"type": "object", "required": ["question"], "properties": {
+                    "question": {"type": "string", "description": "The whole question, up to 1,000 characters."},
+                    "options": {"type": "array", "description": "A few clear choices, when there are some (up to 8). The user may answer in their own words instead.",
+                        "items": {"type": "object", "required": ["label"], "properties": {
+                            "label": {"type": "string"}, "description": {"type": "string"}}}}}},
+                "annotations": {"readOnlyHint": true}}));
+        }
         for c in self.usable(id) {
             if c.api.is_some() {
                 out.extend(api_tools(&c));
@@ -603,15 +624,17 @@ impl Connections {
         again: bool,
     ) -> Result<HashMap<String, Value>, String> {
         let key = format!("{job}/{}", c.name);
-        let state = self.upstreams.lock().await;
-        let initialized = state.get(&key).is_some_and(|u| u.version.is_some());
-        let cached = state.get(&key).map(|u| u.tools.clone());
-        drop(state);
-        if initialized && !again {
-            return Ok(cached.unwrap_or_default());
-        }
-        if !initialized {
-            self.initialize_upstream(job, c).await?;
+        let listed = self
+            .upstreams
+            .lock()
+            .await
+            .get(&key)
+            .and_then(|u| u.tools.clone());
+        match listed {
+            Some(tools) if !again => return Ok(tools),
+            Some(_) => {}
+            // Never listed whole: a new session, in case the last one stopped halfway.
+            None => self.initialize_upstream(job, c).await?,
         }
         let mut tools = HashMap::new();
         let mut cursor: Option<String> = None;
@@ -651,13 +674,20 @@ impl Connections {
                 break;
             }
         }
-        self.upstreams.lock().await.entry(key).or_default().tools = tools.clone();
+        self.upstreams.lock().await.entry(key).or_default().tools = Some(tools.clone());
         Ok(tools)
     }
 
     async fn initialize_upstream(&self, job: &str, c: &Connection) -> Result<(), String> {
         let key = format!("{job}/{}", c.name);
-        self.upstreams.lock().await.remove(&key);
+        // A new session keeps what the last whole listing gave: it's the same server, so a session
+        // it expired never costs the job its tools, or another session to list them again.
+        let tools = self
+            .upstreams
+            .lock()
+            .await
+            .remove(&key)
+            .and_then(|u| u.tools);
         let init = self
             .send_mcp(
                 job,
@@ -672,7 +702,12 @@ impl Connections {
             .and_then(Value::as_str)
             .unwrap_or(MCP_VERSIONS[0])
             .to_owned();
-        self.upstreams.lock().await.entry(key).or_default().version = Some(version);
+        {
+            let mut upstreams = self.upstreams.lock().await;
+            let upstream = upstreams.entry(key).or_default();
+            upstream.version = Some(version);
+            upstream.tools = tools;
+        }
         self.send_mcp(
             job,
             c,
@@ -857,7 +892,25 @@ impl Connections {
         Ok(req)
     }
 
+    /// Whether job `id`'s agent asks the owner here ([`crate::jobs::asks_through_oby`]).
+    fn asks_through_oby(&self, id: &str) -> bool {
+        self.jobs
+            .upgrade()
+            .and_then(|jobs| jobs.get(id))
+            .is_some_and(|job| crate::jobs::asks_through_oby(&job))
+    }
+
     async fn call(&self, id: &str, name: &str, args: Value) -> Value {
+        // The question raised for the owner, nothing more: its words never answer or allow anything.
+        if name == crate::permissions::ASK_OWNER && self.asks_through_oby(id) {
+            let Some(jobs) = self.jobs.upgrade() else {
+                return failure("The job is gone.");
+            };
+            return match jobs.ask_owner(id, &args) {
+                Ok(text) => json!({"content": [{"type": "text", "text": text}]}),
+                Err(why) => failure(why),
+            };
+        }
         let Some(c) = self
             .usable(id)
             .into_iter()

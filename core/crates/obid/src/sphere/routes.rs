@@ -40,7 +40,18 @@ fn limit(text: Option<&str>, default: usize, max: usize) -> Result<usize, ApiErr
 
 /// `GET /v1/obid/sphere`.
 pub async fn membership(State(shared): State<Arc<Shared>>) -> Response {
+    // Until obid joins, the owner it would join as may be the GitHub login (Link::adopt_github_owner).
+    if !shared.link.has_membership()
+        && let Some(user) = shared.github.owner_user().await
+    {
+        shared.link.adopt_github_owner(&user);
+    }
     json(StatusCode::OK, shared.link.membership_json())
+}
+
+/// `DELETE /v1/obid/sphere`.
+pub async fn leave(State(shared): State<Arc<Shared>>) -> Result<Response, ApiError> {
+    Ok(json(StatusCode::OK, shared.link.leave().await?))
 }
 
 /// `GET /v1/obid/sphere/pins`.
@@ -175,7 +186,7 @@ pub async fn answer(
     // A phone (through the gateway) can't Approve a channel listener's review, which it doesn't
     // show yet: by the item itself, found by its decoded id, so no spelling of the path gets by.
     if device.is_some()
-        && let Some(why) = crate::listen::phone_refuses(shared.link.item(&id).as_ref(), &body)
+        && let Some(why) = crate::review::phone_refuses(shared.link.item(&id).as_ref(), &body)
     {
         return Err(ApiError::new(StatusCode::FORBIDDEN, why));
     }

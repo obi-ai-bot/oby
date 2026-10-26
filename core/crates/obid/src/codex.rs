@@ -460,8 +460,9 @@ impl<D: Fn(&str, &Value) -> Ruling, E: FnMut(Event)> Run<D, E> {
         self.ended = Some((why, true));
     }
 
-    /// obid's answer to an approval: the fixed denials, then the job's own rule. Anything else
-    /// Codex asks (questions, forms, logins) is refused, so it never waits on obid.
+    /// obid's answer to an approval: the fixed denials, then the job's own rule. Its questions go to
+    /// the owner as Claude Code's AskUserQuestion does. Anything else Codex asks (forms, logins) is
+    /// refused, so it never waits on obid.
     async fn answer(&mut self, id: Value, request: &Value) {
         let params = &request["params"];
         let calls: Vec<(String, Value)> = match request["method"].as_str() {
@@ -547,6 +548,7 @@ impl<D: Fn(&str, &Value) -> Ruling, E: FnMut(Event)> Run<D, E> {
                     .reply(&id, json!({"action": action, "content": {}}))
                     .await;
             }
+            Some("item/tool/requestUserInput") => return self.ask_owner(&id, params).await,
             _ => return self.conn.refuse(&id).await,
         };
         for (tool, input) in &calls {
@@ -559,6 +561,56 @@ impl<D: Fn(&str, &Value) -> Ruling, E: FnMut(Event)> Run<D, E> {
             }
         }
         self.conn.reply(&id, json!({"decision": "accept"})).await;
+    }
+
+    /// Codex's questions (`request_user_input`) as Claude Code's AskUserQuestion (#858): the owner's
+    /// answer to each, an option's label or their own words, goes back by the question's id. A
+    /// secret is never asked: obid never collects one for an agent.
+    async fn ask_owner(&mut self, id: &Value, params: &Value) {
+        let questions = params["questions"].as_array().cloned().unwrap_or_default();
+        let answer = if questions.iter().any(|q| q["isSecret"] == json!(true)) {
+            Answer::Deny(
+                "obid never collects a secret for an agent. Say in your summary what you need."
+                    .into(),
+            )
+        } else {
+            let asked: Vec<Value> = questions
+                .iter()
+                .map(|q| json!({"question": q["question"], "header": q["header"], "options": q["options"]}))
+                .collect();
+            let ruling = (self.decide)(
+                crate::permissions::ASK_USER_QUESTION,
+                &json!({ "questions": asked }),
+            );
+            match self.conn.settle(ruling).await {
+                Ok(answer) => answer,
+                Err(_) => return,
+            }
+        };
+        let given = match &answer {
+            Answer::AllowWith(given) => given["answers"].clone(),
+            Answer::Allow => Value::Null,
+            Answer::Deny(why) => {
+                (self.on_event)(Event::Denied(why.clone()));
+                Value::Null
+            }
+        };
+        // Declined, each question hears why, which is all its answer can carry.
+        let why = match &answer {
+            Answer::Deny(why) => why.as_str(),
+            _ => crate::permissions::QUESTION_DECLINED,
+        };
+        let answers: serde_json::Map<String, Value> = questions
+            .iter()
+            .filter_map(|q| {
+                let said = q["question"]
+                    .as_str()
+                    .and_then(|text| given[text].as_str())
+                    .unwrap_or(why);
+                Some((q["id"].as_str()?.to_owned(), json!({ "answers": [said] })))
+            })
+            .collect();
+        self.conn.reply(id, json!({ "answers": answers })).await;
     }
 
     /// Declines, and since the decision has no room for a reason, tells the turn why.

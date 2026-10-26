@@ -19,6 +19,17 @@ struct UpdaterTests {
         #expect(Updater.version != "unknown version")
     }
 
+    /// Report a Problem… (the menu bar menu): GitHub's new-issue page for Oby, its body naming Oby's
+    /// version and build and the macOS version, and nothing else.
+    @Test func reportAProblemOpensANewIssueWithOnlyTheVersions() throws {
+        let url = ProblemReport.url(version: "0.3.0 (458)", macOS: "Version 26.1 (Build 25B78)")
+        let parts = try #require(URLComponents(url: url, resolvingAgainstBaseURL: false))
+        #expect(parts.scheme == "https" && parts.host == "github.com" && parts.path == "/obi-ai-bot/oby/issues/new")
+        #expect(parts.queryItems?.map(\.name) == ["title", "body"])
+        #expect(parts.queryItems?.first?.value == "Problem with Oby")
+        #expect(parts.queryItems?.last?.value == "What happened, and what you expected:\n\n\n---\nOby 0.3.0 (458)\nmacOS Version 26.1 (Build 25B78)")
+    }
+
     @Test func pillShowsOnlyWhenAnUpdateIsStaged() {
         #expect(Updater.pill(nil, waiting: false) == nil)
         #expect(Updater.pill(nil, waiting: true) == nil)

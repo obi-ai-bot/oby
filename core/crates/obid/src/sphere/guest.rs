@@ -671,11 +671,7 @@ async fn author_of(link: &Link, worktree: &Path) -> Value {
     let email = git(worktree, &["config", "user.email"])
         .await
         .unwrap_or_default();
-    let name = if name.is_empty() {
-        link.owner().to_owned()
-    } else {
-        name
-    };
+    let name = if name.is_empty() { link.owner() } else { name };
     let email = if email.is_empty() {
         "oby@users.noreply.github.com".into()
     } else {

@@ -89,8 +89,8 @@ obid's `POST /v1/plans` is the Swift brain now (Engine/Brain.swift, `Briefing`, 
 | ConversationTests.theBrainReadsTheConversationAndMayStopOneJob | plans_api.rs `the_brain_reads_the_conversation_and_may_stop_one_job` | the quoted file, boxed Read and `--max-turns 6` too (#535) |
 | ConversationTests.stopEverythingReachesTheRunner | plans_api.rs `stop_everything_stops_running_and_queued_jobs` | its "stop everything" half: obid has no other runner to reach |
 | ConversationTests.aCancelledTurnStopsNothing | plans_api.rs `a_cancelled_turn_stops_nothing` | through `POST /v1/plans/cancel` |
-| ConversationTests.aReplacedTurnStopsNothing | plans_api.rs `a_replaced_turn_stops_nothing` |  |
-| ConversationTests.aNewMessageReplacesTheTurnUnderWay | plans_api.rs `a_replaced_turn_stops_nothing` | new words in the same conversation |
+| ConversationTests.aReplacedTurnStopsNothing | plans_api.rs `words_said_during_a_turn_wait_their_turn` | obid differs: new words wait their turn (docs/mac-design.md 1.6), so the turn under way does what it planned |
+| ConversationTests.aNewMessageReplacesTheTurnUnderWay | plans_api.rs `words_said_during_a_turn_wait_their_turn` | obid differs: new words in the same conversation wait for the turn under way |
 | ConversationTests.neverMindAndStopEndTheTurnAndStopNoJob | plans_api.rs `never_mind_and_stop_end_the_turn_and_stop_no_job` |  |
 | ConversationTests.reviewingAnObyAuthoredPullRequestAgainNamesItsAuthorJob | brain/plan.rs `reviewing_an_oby_authored_pull_request_again_names_its_author_job` |  |
 | ConversationTests.theReplyNeverContradictsTheHeaderAboutRunningJobs | plans_api.rs `the_reply_never_contradicts_the_header_about_running_jobs`; brain/briefing.rs `only_saying_nothing_runs_contradicts_the_header` |  |

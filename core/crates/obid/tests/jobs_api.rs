@@ -2197,6 +2197,146 @@ fn a_failure_the_task_asked_for_ends_the_rounds() {
     );
 }
 
+/// Claude Code loads no CLAUDE.md under obid's `--setting-sources ""` (measured with 2.1.302,
+/// #612): a Claude Code job's first prompt points at the repository's rules as its base has them,
+/// quoted in `.obi/inputs/base-rules.md`. A repository with none gets neither.
+#[test]
+fn a_claude_job_is_given_the_repositorys_rules() {
+    let folder = Folder::new("rules");
+    let remote = fixture(&folder.0.join("fixture"));
+    let obid = start(&folder.0, &config(&folder.0, &remote));
+    let research = |obid: &Obid| {
+        let id = post_job(
+            obid,
+            json!({"repo": "obi-e2e/fixture-app", "kind": "research", "task": "KEEP PROMPTS"}),
+        )
+        .body["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        assert_eq!(wait(obid, &id)["status"], "done");
+        let quoted = obid
+            .home
+            .join("worktrees")
+            .join(&id)
+            .join(".obi/inputs/base-rules.md");
+        (prompts(obid, &id), std::fs::read_to_string(quoted).ok())
+    };
+    let (asked, quoted) = research(&obid);
+    assert!(!asked[0].contains("base-rules.md"), "{asked:?}");
+    assert_eq!(quoted, None);
+
+    move_main(
+        &folder.0,
+        &remote,
+        "CLAUDE.md",
+        "End every commit message with CANARY.\n",
+        false,
+    );
+    let (asked, quoted) = research(&obid);
+    assert!(
+        asked[0].contains("are quoted in .obi/inputs/base-rules.md: read it before you start"),
+        "{asked:?}"
+    );
+    let quoted = quoted.expect("the rules are quoted");
+    assert!(
+        quoted.contains("## CLAUDE.md\n\nEnd every commit message with CANARY.\n"),
+        "{quoted}"
+    );
+    assert!(quoted.contains("(main has no AGENTS.md.)"), "{quoted}");
+}
+
+/// An owner's job gets the owner's memories about them and its repository quoted in
+/// `.obi/inputs/memories.md` (#378), its first prompt naming the file as wishes, never permission:
+/// never another repository's, and never one the secret scan flags.
+#[test]
+fn an_owner_s_job_is_given_the_owner_s_memories() {
+    let folder = Folder::new("memories");
+    let remote = fixture(&folder.0.join("fixture"));
+    let obid = start(&folder.0, &config(&folder.0, &remote));
+    let put = |repo: Option<&str>, id: &str, created: &str, text: &str| {
+        let dir = match repo {
+            Some(repo) => obid.home.join("memory/repos").join(repo),
+            None => obid.home.join("memory/user"),
+        };
+        std::fs::create_dir_all(&dir).unwrap();
+        let (scope, repo) = match repo {
+            Some(repo) => ("project", format!("repo: {repo}\n")),
+            None => ("user", String::new()),
+        };
+        std::fs::write(
+            dir.join(format!("{id}.md")),
+            format!("---\nid: {id}\nscope: {scope}\n{repo}kind: instruction\nsource: found\ntitle: A memory\nfrom: You said it in 2 conversations\ncreated: {created}\nupdated: {created}\nused: 0\n---\n{text}\n"),
+        )
+        .unwrap();
+    };
+    put(
+        None,
+        "m0000000a",
+        "2026-10-22T10:00:00Z",
+        "Write tests with every fix.",
+    );
+    put(
+        Some("obi-e2e/fixture-app"),
+        "m0000000b",
+        "2026-10-21T10:00:00Z",
+        "Keep fixture commits small.",
+    );
+    put(
+        Some("obi-e2e/other"),
+        "m0000000c",
+        "2026-10-21T10:00:00Z",
+        "Only other's rule.",
+    );
+    // Built here, so no token sits in the repository: written straight to disk, past the save's
+    // own scan, and the oldest, so the scan's drop of the one after it takes nothing else.
+    let token = format!("ghp_{}", "Zq9Xw2Lm7Rt4".repeat(3));
+    put(
+        None,
+        "m0000000d",
+        "2026-10-20T10:00:00Z",
+        &format!("Use {token} for GitHub."),
+    );
+
+    let id = post_job(
+        &obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "research", "task": "KEEP PROMPTS"}),
+    )
+    .body["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert_eq!(wait(&obid, &id)["status"], "done");
+    let asked = prompts(&obid, &id);
+    assert!(
+        asked[0].contains("is quoted in .obi/inputs/memories.md: follow it where it fits the task")
+            && asked[0].contains("never permission"),
+        "{asked:?}"
+    );
+    let quoted = std::fs::read_to_string(
+        obid.home
+            .join("worktrees")
+            .join(&id)
+            .join(".obi/inputs/memories.md"),
+    )
+    .expect("the memories are quoted");
+    assert!(
+        quoted.contains("## About the owner · instruction"),
+        "{quoted}"
+    );
+    assert!(quoted.contains("Write tests with every fix."), "{quoted}");
+    assert!(
+        quoted.contains("## About obi-e2e/fixture-app · instruction"),
+        "{quoted}"
+    );
+    assert!(quoted.contains("Keep fixture commits small."), "{quoted}");
+    assert!(!quoted.contains("Only other's rule."), "{quoted}");
+    assert!(
+        !quoted.contains(&token) && !quoted.contains("for GitHub"),
+        "{quoted}"
+    );
+}
+
 /// The prompts the stand-in agent got in the job's worktree (`KEEP PROMPTS`), oldest first.
 fn prompts(obid: &Obid, id: &str) -> Vec<String> {
     let log = obid
@@ -2210,6 +2350,62 @@ fn prompts(obid: &Obid, id: &str) -> Vec<String> {
         .filter(|p| !p.is_empty())
         .map(str::to_owned)
         .collect()
+}
+
+/// Words for a job that hasn't started are kept for its first prompt, its step still saying what
+/// it waits for; the owner's words while its check runs are its next turn (#930). Never "Tell it
+/// again in a moment".
+#[test]
+fn words_wait_for_a_job_that_isnt_at_work() {
+    let folder = Folder::new("words-wait");
+    let remote = fixture(&folder.0.join("fixture"));
+    let obid = start(&folder.0, &config(&folder.0, &remote));
+    let one = request(
+        &obid,
+        "PUT",
+        "/v1/settings/jobs",
+        Some(&json!({"maxRunning": 1}).to_string()),
+    );
+    assert_eq!(one.status, 200, "{}", one.text);
+    let new = |job: Value| post_job(&obid, job).body["id"].as_str().unwrap().to_owned();
+    let tell = |id: &str, text: &str| {
+        request(
+            &obid,
+            "POST",
+            &format!("/v1/jobs/{id}/messages"),
+            Some(&json!({ "text": text }).to_string()),
+        )
+    };
+    let busy = new(json!({"repo": "obi-e2e/fixture-app", "kind": "research", "task": "SLEEP"}));
+    beat(&obid, &busy);
+    let queued =
+        new(json!({"repo": "obi-e2e/fixture-app", "kind": "research", "task": "KEEP PROMPTS"}));
+    let waiting = until(&obid, &queued, |j| j["status"] == "queued");
+    let told = tell(&queued, "Also read the README first.");
+    assert_eq!(told.status, 200, "{}", told.text);
+    assert_eq!(told.body["status"], "queued");
+    assert_eq!(told.body["step"], waiting["step"], "{}", told.text);
+    assert_eq!(
+        request(&obid, "POST", &format!("/v1/jobs/{busy}/stop"), None).status,
+        200
+    );
+    assert_eq!(wait(&obid, &queued)["status"], "done");
+    let asked = prompts(&obid, &queued);
+    assert_eq!(asked.len(), 1, "{asked:?}");
+    assert!(
+        asked[0].ends_with("Also read the README first.\n"),
+        "{asked:?}"
+    );
+
+    let checked = new(json!({"repo": "obi-e2e/fixture-app", "kind": "research",
+                             "task": "KEEP PROMPTS", "check": "sleep 3"}));
+    until(&obid, &checked, |j| j["step"] == "Running sleep 3");
+    let told = tell(&checked, "One more thing: list the tests too.");
+    assert_eq!(told.status, 200, "{}", told.text);
+    assert_eq!(wait(&obid, &checked)["status"], "done");
+    let asked = prompts(&obid, &checked);
+    assert_eq!(asked.len(), 2, "{asked:?}");
+    assert_eq!(asked[1], "One more thing: list the tests too.\n");
 }
 
 /// #958: a fix, build or test with a check gets 3 rounds when nobody named a number, however it
@@ -2536,6 +2732,28 @@ fn permission_prompts_are_answered_by_the_rules() {
         assert_eq!(job["status"], "done", "{job}");
         assert_eq!(job["summary"], expect, "{ask}");
     }
+}
+
+/// A control request of a kind obid doesn't know (a newer Claude Code's) gets an error, never
+/// silence, which would hang the job; the agent's next request is answered as usual (#1095).
+#[test]
+fn an_unknown_control_request_is_refused_and_the_job_goes_on() {
+    let folder = Folder::new("unknown-request");
+    let remote = fixture(&folder.0.join("fixture"));
+    let obid = start(&folder.0, &config(&folder.0, &remote));
+    let ask = json!({"tool": "Read", "input": {"file_path": "src/greet.js"}});
+    let id = post_job(
+        &obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "research",
+               "task": format!("UNKNOWN REQUEST ASK: {ask}")}),
+    )
+    .body["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let job = wait(&obid, &id);
+    assert_eq!(job["status"], "done", "{job}");
+    assert_eq!(job["summary"], "answer: allow unknown: error", "{job}");
 }
 
 /// What a job's agent asks, one after another, as a job's task (the stand-in's `ASKS:`).
@@ -3591,19 +3809,32 @@ fn the_api_lifts_and_restores_the_reserve() {
     assert_eq!(stub["reserved"], true);
     assert!(stub["fullUntil"].is_null());
 
-    // In its reserve, it takes only a job sent to it by name.
-    let refused = post_job(&obid, job("Nothing to do".into()));
-    assert_eq!(refused.status, 422, "{}", refused.text);
-    assert!(
-        refused
-            .text
-            .contains("Stub is in its weekly reserve (82% of its week used)"),
-        "{}",
-        refused.text
-    );
+    // In its reserve, it runs only a job sent to it by name; another waits, queued, taking no
+    // slot, with "Use Stub anyway" on it (#872), never refused.
     let mut named = job("Nothing to do".into());
     named["account"] = json!("stub");
     assert_eq!(post_job(&obid, named.clone()).status, 201);
+    let held = |obid: &Obid| {
+        let waits = post_job(obid, job("Nothing to do".into()));
+        assert_eq!(waits.status, 201, "{}", waits.text);
+        let id = waits.body["id"].as_str().unwrap().to_owned();
+        std::thread::sleep(Duration::from_millis(300));
+        let job = request(obid, "GET", &format!("/v1/jobs/{id}"), None).body;
+        assert_eq!(job["status"], "queued", "{job}");
+        assert_eq!(
+            job["waiting"],
+            json!({"kind": "limit", "text": "an account with room: Stub is in its weekly reserve", "reserved": ["stub"]})
+        );
+        assert_eq!(job["startWhen"], json!([{"room": true, "agent": "claude"}]));
+        assert!(
+            job["step"].as_str().unwrap().starts_with(
+                "Waiting for an account with room: Stub is in its weekly reserve. Use one anyway"
+            ),
+            "{job}"
+        );
+        id
+    };
+    let waiting = held(&obid);
 
     let lift =
         |obid: &Obid, body: &str| request(obid, "POST", "/v1/accounts/stub/reserve", Some(body));
@@ -3613,6 +3844,18 @@ fn the_api_lifts_and_restores_the_reserve() {
     assert_eq!(
         lifted.body["reserveLiftedUntil"],
         obi_protocol::time::format(reset)
+    );
+    // Use anyway: the waiting job starts there by itself.
+    let started = wait(&obid, &waiting);
+    assert_eq!(started["status"], "done", "{started}");
+    assert!(started["waiting"].is_null());
+    assert!(
+        started["changes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|c| c["what"] == "Started when an account had room: Claude Code · Stub"),
+        "{started}"
     );
     assert_eq!(post_job(&obid, job("Nothing to do".into())).status, 201);
 
@@ -3627,7 +3870,14 @@ fn the_api_lifts_and_restores_the_reserve() {
     assert_eq!(restored.status, 200, "{}", restored.text);
     assert_eq!(restored.body["reserved"], true);
     assert!(restored.body["reserveLiftedUntil"].is_null());
-    assert_eq!(post_job(&obid, job("Nothing to do".into())).status, 422);
+    // Start now (the apps' button on a job waiting to start) lifts its account's reserve.
+    let waiting = held(&obid);
+    let now = request(&obid, "POST", &format!("/v1/jobs/{waiting}/start"), None);
+    assert_eq!(now.status, 200, "{}", now.text);
+    assert_eq!(wait(&obid, &waiting)["status"], "done");
+    assert_eq!(status(&obid)["reserved"], false);
+    let again = request(&obid, "POST", &format!("/v1/jobs/{waiting}/start"), None);
+    assert_eq!(again.status, 409, "{}", again.text);
 
     let nobody = request(
         &obid,

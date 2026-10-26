@@ -6,23 +6,58 @@ import SwiftUI
 /// signed in through each tool's own login, and the repositories are the ones its gh can push to.
 /// Every step can be skipped, closing the window skips the rest, and the menu shows it again.
 final class FirstLaunch: NSObject, NSWindowDelegate {
-    static let doneKey = "firstLaunchDone"
+    static let doneKey = "firstLaunchOnObidDone"
+    /// Set by the first launch before obid's (0.3.0 and earlier): someone updating sees this one
+    /// once too, from the first step still to do.
+    static let olderDoneKey = "firstLaunchDone"
     static var done: Bool { UserDefaults.standard.bool(forKey: doneKey) }
 
     private let island: IslandController
+    /// What opens once it's closed: Home, or an invite's page.
+    private let closed: () -> Void
     private var window: NSWindow?
 
-    init(island: IslandController) { self.island = island }
+    init(island: IslandController, closed: @escaping () -> Void) {
+        self.island = island
+        self.closed = closed
+    }
 
     var isOpen: Bool { window?.isVisible ?? false }
+    /// An update's first launch is waiting for obid to say which steps are left: an invite opened
+    /// meanwhile waits too.
+    private(set) var starting = false
 
-    func show() {
+    /// Not done yet (launch): a new install sees every step. Someone updating from an older first
+    /// launch sees only the steps still to do, once obid answers (a few seconds at most), and none
+    /// when everything's set: then it's done without showing. Whether it showed.
+    func start() async -> Bool {
+        guard UserDefaults.standard.bool(forKey: Self.olderDoneKey) else {
+            show()
+            return true
+        }
+        starting = true
+        defer { starting = false }
+        let feed = island.feed
+        for _ in 0..<20 where feed.connection != .live { try? await Task.sleep(for: .milliseconds(250)) }
+        let gitHub = feed.connection == .live ? try? await feed.runner?.gitHubLogin() : nil
+        guard let step = FirstLaunchSteps.firstToDo(accessibility: AXIsProcessTrusted(), accounts: feed.accounts,
+                                                    gitHub: gitHub?.signedIn == true) else {
+            UserDefaults.standard.set(true, forKey: Self.doneKey)
+            return false
+        }
+        // A login the owner removed stays removed: an update's first launch lists none by itself.
+        show(from: step, adoptsLogins: false)
+        return true
+    }
+
+    func show(from step: FirstLaunchView.Step = .hello, adoptsLogins: Bool = true) {
         NSApp.activate()
         if let window {
             window.makeKeyAndOrderFront(nil)
             return
         }
-        let view = FirstLaunchView(voice: island.model.voice, feed: island.feed, onDone: { [weak self] in self?.window?.close() })
+        let view = FirstLaunchView(voice: island.model.voice, feed: island.feed, step: step, adoptsLogins: adoptsLogins,
+                                   onDone: { [weak self] in self?.window?.close() })
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 640, height: 580),
                               styleMask: [.titled, .closable, .fullSizeContentView], backing: .buffered, defer: false)
         window.titlebarAppearsTransparent = true
@@ -37,11 +72,11 @@ final class FirstLaunch: NSObject, NSWindowDelegate {
         self.window = window
     }
 
-    /// Finished, skipped or closed: it doesn't come back by itself, and Oby's window opens on Home.
+    /// Finished, skipped or closed: it doesn't come back by itself, and Oby's window opens (`closed`).
     func windowWillClose(_ notification: Notification) {
         UserDefaults.standard.set(true, forKey: Self.doneKey)
         window = nil
-        island.openWindow(nil)
+        closed()
     }
 }
 
@@ -74,6 +109,15 @@ nonisolated enum FirstLaunchSteps {
         return .connect
     }
 
+    /// Where an older first launch's update starts (`FirstLaunch.start`): hello is skipped, and so is
+    /// each step already done (Accessibility allowed, an agent signed in on obid, GitHub signed in).
+    /// Nil: nothing left.
+    static func firstToDo(accessibility: Bool, accounts: [AccountState], gitHub: Bool) -> FirstLaunchView.Step? {
+        if !accessibility { return .talk }
+        if !accounts.contains(where: \.signedIn) { return .agents }
+        return gitHub ? nil : .github
+    }
+
     /// The tools' own logins already on this Mac that obid offers (`availableLogins`) for tools it has
     /// no account for: listed without a click. A tool with accounts keeps them as they are, so routing
     /// never moves to a login the owner didn't pick.
@@ -86,11 +130,12 @@ nonisolated enum FirstLaunchSteps {
 
     /// What the steps that need obid say while it doesn't answer: why, when the login item can't
     /// start it (Oby isn't in Applications, macOS waits for an OK, registering failed).
-    static func waiting(inApplications: Bool, needsApproval: Bool, problem: String?) -> String {
+    static func waiting(inApplications: Bool, needsApproval: Bool, problem: String?,
+                        otherwise: String = "Waiting for Oby’s engine on this Mac…") -> String {
         if !inApplications { return RunnerLoginItem.moveToApplications }
         if needsApproval { return "Oby’s engine waits for your OK in System Settings › General › Login Items." }
         if let problem { return "Oby’s engine couldn’t start: \(problem)" }
-        return "Waiting for Oby’s engine on this Mac…"
+        return otherwise
     }
 
     /// "12 repositories ready".
@@ -126,6 +171,9 @@ struct FirstLaunchView: View {
     let voice: Voice
     let feed: RunnerFeed
     let onDone: () -> Void
+    /// Whether the logins obid offers become its accounts without a click: not on an update's first
+    /// launch, where a tool with no account may be one whose login the owner removed.
+    let adoptsLogins: Bool
 
     @State private var permissions = Permissions()
     @State private var tools = Tools()
@@ -144,12 +192,15 @@ struct FirstLaunchView: View {
     @State private var gitHub: GitHubLogin?
     @State private var gitHubSignIn: GitHubSignIn?
     @State private var repos: [RunnerRepo]?
+    /// Install was clicked on Apple's command-line tools: macOS's installer is under way.
+    @State private var installingCommandLineTools = false
 
     /// `step`, `gitHub` and `repos`: where it starts, for its pictures (apps/mac/tests/WindowScreens.swift).
     init(voice: Voice, feed: RunnerFeed, step: Step = .hello, gitHub: GitHubLogin? = nil, repos: [RunnerRepo]? = nil,
-         onDone: @escaping () -> Void) {
+         adoptsLogins: Bool = true, onDone: @escaping () -> Void) {
         self.voice = voice
         self.feed = feed
+        self.adoptsLogins = adoptsLogins
         self.onDone = onDone
         _step = State(initialValue: step)
         _gitHub = State(initialValue: gitHub)
@@ -184,11 +235,11 @@ struct FirstLaunchView: View {
             }
         }
         .task(id: step) {
-            if step == .agents { await tools.refresh() }
+            if step == .agents { await tools.refresh(); await watchLogins() }
             if step == .github { await watchGitHub() }
         }
-        // Once obid answers, the logins it found on this Mac become its accounts.
-        .task(id: engine) { await adopt() }
+        // Once obid answers, and whenever it finds another, the logins on this Mac become its accounts.
+        .task(id: engine ? feed.availableLogins.map(\.agent) : []) { await adopt() }
         // Back from a tool's page or Terminal.
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             if step == .agents { Task { await tools.refresh() } }
@@ -251,6 +302,7 @@ struct FirstLaunchView: View {
                 waiting
             }
             VStack(spacing: 10) {
+                commandLineToolsRow
                 ForEach(Tools.all, id: \.self) { toolRow($0) }
             }
             caption("One is enough to start. A second login of the same tool, like a work account, goes in Settings › Accounts.")
@@ -369,13 +421,32 @@ struct FirstLaunchView: View {
         .background(.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 12))
     }
 
+    /// git comes with them: without, a brand-new Mac's first job can't clone, and macOS's own dialog
+    /// would pop up out of nowhere when something first runs git.
+    private var commandLineToolsRow: some View {
+        let line = tools.commandLineTools ? "Installed"
+            : installingCommandLineTools ? "Installing. Oby looks again when macOS’s installer is done."
+            : "Git and the tools your agents’ jobs need. macOS installs them in a few minutes."
+        return card(symbol: "hammer", "Apple’s command-line tools", lines: [line]) {
+            if tools.commandLineTools {
+                Label("Installed", systemImage: "checkmark.circle.fill").font(.system(size: 13)).foregroundStyle(.green)
+            } else {
+                Button("Install") {
+                    installingCommandLineTools = true
+                    Task { await Tools.installCommandLineTools() }
+                }
+            }
+        }
+    }
+
     private func toolRow(_ agent: String) -> some View {
         let row = FirstLaunchSteps.agent(agent, installed: tools.installed.contains(agent), cursorHasACP: tools.cursorHasACP,
                                          engine: engine, accounts: feed.accounts)
         let tool = Job.agentNames[agent] ?? agent
         let line: String = switch row {
         case .connected(let names): names.joined(separator: ", ")
-        case .missing: agent == "cursor" ? "Install the Cursor CLI: `\(Tools.installCursor)`, and Oby finds it." : "Not installed. Install \(tool), and Oby finds it."
+        case .missing: Tools.install[agent].map { "Not installed. Run `\($0)` in Terminal\(Tools.needs[agent].map { " (it needs \($0))" } ?? ""), and Oby finds it." }
+            ?? "Not installed. Install \(tool), and Oby finds it."
         case .outdated: "Update the Cursor CLI: `\(Tools.updateCursor)`. Oby needs its `acp` command."
         case .waiting: "Found on this Mac."
         case .signIn(let account): "\(account.name): signed out"
@@ -387,10 +458,10 @@ struct FirstLaunchView: View {
                 Label("Connected", systemImage: "checkmark.circle.fill").font(.system(size: 13)).foregroundStyle(.green)
             case .missing, .outdated:
                 // Installing is never automatic: the command is for the user to run.
-                if agent == "cursor" {
+                if let command = row == .missing ? Tools.install[agent] : Tools.updateCursor {
                     Button("Copy Command") {
                         NSPasteboard.general.clearContents()
-                        NSPasteboard.general.setString(row == .missing ? Tools.installCursor : Tools.updateCursor, forType: .string)
+                        NSPasteboard.general.setString(command, forType: .string)
                     }
                 }
             case .waiting:
@@ -427,10 +498,20 @@ struct FirstLaunchView: View {
     }
 
     private func adopt() async {
-        guard engine, let runner = feed.runner else { return }
+        guard adoptsLogins, engine, let runner = feed.runner else { return }
         for agent in FirstLaunchSteps.adopt(feed.availableLogins, accounts: feed.accounts) {
             // obid's `accounts` event brings it to the row.
             _ = try? await runner.restoreDefaultLogin(agent: agent)
+        }
+    }
+
+    /// While the agents step shows: obid's accounts and the logins it finds, every few seconds, so a
+    /// tool installed and signed in meanwhile (in Terminal, or its own app) reads Connected.
+    private func watchLogins() async {
+        while !Task.isCancelled {
+            try? await Task.sleep(for: .seconds(3))
+            await feed.refreshAccounts()
+            if !tools.commandLineTools { await tools.refreshCommandLineTools() }
         }
     }
 

@@ -126,6 +126,9 @@ pub struct Tetrix {
     sign_in: Mutex<Option<Arc<SignIn>>>,
     /// Held while the login changes, so one refresh runs at a time.
     changing: tokio::sync::Mutex<()>,
+    /// The tools agents may call, as Tetrix last listed them for any job: what an agent gets
+    /// while Tetrix doesn't answer.
+    known: Mutex<Vec<Value>>,
 }
 
 /// A sign-in under way: what its callback needs to finish it.
@@ -312,6 +315,7 @@ impl Tetrix {
             http,
             sign_in: Mutex::new(None),
             changing: tokio::sync::Mutex::new(()),
+            known: Mutex::new(Vec::new()),
         })
     }
 
@@ -887,7 +891,14 @@ impl Tetrix {
                 Err(SIGNED_OUT.into())
             }
             Err(TokenError::Other(_)) if stale.is_none() && alive => Ok(current),
-            Err(TokenError::Other(why)) => Err(why),
+            Err(TokenError::Other(why)) => {
+                // Never silent: Settings shows it until a refresh or a sign-in works.
+                self.set_error(format!(
+                    "Oby couldn't refresh its Tetrix login: {}. It tries again at the next call.",
+                    why.trim_end_matches('.')
+                ));
+                Err(why)
+            }
         }
     }
 
@@ -966,7 +977,20 @@ impl Tetrix {
             .map(|(_, tool)| tool)
             .collect();
         tools.sort_by(|a, b| a["name"].as_str().cmp(&b["name"].as_str()));
+        *self.known.lock().unwrap_or_else(|e| e.into_inner()) = tools.clone();
         Ok(tools)
+    }
+
+    /// What an agent lists while Tetrix doesn't answer: Tetrix's last listing, else the tools'
+    /// names alone. Never none: each call asks Tetrix again.
+    fn known(&self) -> Vec<Value> {
+        let known = self.known.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        if !known.is_empty() {
+            return known;
+        }
+        TOOLS.iter().map(|name| json!({"name": name, "inputSchema": {"type": "object"},
+            "description": format!("Tetrix's {name}, through Oby. Tetrix didn't answer when Oby listed its tools; a call asks it again.")}))
+            .collect()
     }
 
     /// Calls Tetrix's `tool` for `job`, with Oby's login (refreshed once on a `401`).
@@ -1020,13 +1044,15 @@ impl Tetrix {
                     "instructions": INSTRUCTIONS})
             }
             "ping" => json!({}),
-            "tools/list" => match self.tools(connections, job).await {
-                Ok(tools) => json!({"tools": tools}),
-                Err(e) => {
-                    return Some(connections.clean(json!({"jsonrpc": "2.0", "id": rpc_id,
-                        "error": {"code": -32603, "message": format!("Oby couldn't reach Tetrix: {e}")}})));
-                }
-            },
+            // An agent lists its tools once, as it starts: Tetrix not answering then never leaves
+            // it without them for the rest of the job.
+            "tools/list" => {
+                let listed = self.tools(connections, job).await;
+                shared.jobs.tetrix_used(job, |seen| {
+                    seen.tried(listed.as_ref().err().map(String::as_str))
+                });
+                json!({"tools": listed.unwrap_or_else(|_| self.known())})
+            }
             "tools/call" => {
                 let tool = params["name"].as_str().unwrap_or("");
                 let arguments = params
@@ -1078,7 +1104,13 @@ impl Tetrix {
                     {
                         shared.jobs.sent_to_tetrix(job, &session);
                     }
-                    answer.unwrap_or_else(|e| failure(format!("Oby couldn't reach Tetrix: {e}")))
+                    answer.unwrap_or_else(|e| {
+                        failure(if answered(&e) {
+                            e
+                        } else {
+                            format!("Oby couldn't reach Tetrix: {e} Ask again later: each call tries Tetrix again.")
+                        })
+                    })
                 }
             }
             _ => {
@@ -1114,6 +1146,7 @@ impl Tetrix {
             ));
         }
         let mut items = Vec::new();
+        let mut missed = 0;
         for (tool, arguments) in asks {
             // The query holds the job's title: through the secret scan, like every call.
             if let Err(why) = scanned(&arguments, &self.scratch).await {
@@ -1132,6 +1165,16 @@ impl Tetrix {
                 answer.as_ref().map_err(String::as_str),
                 false,
             );
+            // One miss is asked past (the next question tries again); two in a row, and the agent
+            // starts now rather than after every other question's wait.
+            missed = if seen.unreachable.is_some() {
+                missed + 1
+            } else {
+                0
+            };
+            if missed == 2 {
+                break;
+            }
             if let Ok(answer) = &answer
                 && answer["isError"] != true
                 && !text_of(answer).trim().is_empty()
@@ -1586,6 +1629,16 @@ pub struct Use {
     pub decisions: Option<crate::decisions::Decisions>,
     /// Paths and names Tetrix's answers held, for `unknownFiles`. Never in the API.
     pub named: BTreeSet<String>,
+    /// Tetrix answered the job at least once (the agent or obid's own questions). Never in the
+    /// API.
+    pub reached: bool,
+    /// Why Tetrix couldn't be reached the last time the job tried, until it answers again.
+    pub unreachable: Option<String>,
+}
+
+/// Whether a failed call's error came from Tetrix itself (it was reached), not from getting there.
+fn answered(error: &str) -> bool {
+    error.starts_with("Tetrix said") || error.starts_with("Tetrix has no tool")
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -1666,6 +1719,7 @@ impl Use {
         if agent {
             *self.calls.entry(tool.to_owned()).or_default() += 1;
         }
+        self.tried(answer.err());
         let asked = ["query", "id", "entity_id", "natural_key", "name"]
             .iter()
             .find_map(|k| arguments[*k].as_str())
@@ -1707,9 +1761,35 @@ impl Use {
         }
     }
 
+    /// A try to reach Tetrix: why it didn't answer, or none when it did.
+    fn tried(&mut self, error: Option<&str>) {
+        match error.filter(|e| !answered(e)) {
+            Some(why) => self.unreachable = Some(cut(why)),
+            None => {
+                self.reached = true;
+                self.unreachable = None;
+            }
+        }
+    }
+
+    /// The job's record while Tetrix couldn't be reached, in plain words.
+    fn lost(&self) -> Option<String> {
+        let why = self.unreachable.as_deref()?.trim_end_matches('.');
+        Some(if self.reached {
+            format!("Tetrix stopped answering during this job: {why}.")
+        } else {
+            format!("Tetrix wasn't reachable, so this job ran without the graph: {why}.")
+        })
+    }
+
     /// What obid's own questions (a job's context) taught, added to this.
     pub fn absorb(&mut self, other: Use) {
         self.context |= other.context;
+        // The latest try says whether Tetrix can be reached now.
+        if other.reached || other.unreachable.is_some() {
+            self.unreachable = other.unreachable;
+        }
+        self.reached |= other.reached;
         for asked in &other.gaps.no_results {
             push(&mut self.gaps.no_results, asked);
         }
@@ -1735,7 +1815,7 @@ impl Use {
             "gaps": if self.ended { json!({"noResults": gaps.no_results, "missing": gaps.missing,
                 "unknownFiles": gaps.unknown_files, "failed": gaps.failed, "sent": gaps.sent,
                 "session": gaps.session, "notSent": gaps.not_sent}) } else { Value::Null },
-            "decisions": self.decisions})
+            "decisions": self.decisions, "unreachable": self.lost()})
     }
 
     /// Whether the agent called Tetrix at all.
@@ -1744,23 +1824,27 @@ impl Use {
     }
 
     /// The summary's last lines: `Tetrix: 4 calls (search_entities 2, …). Session saved. 2 of 2
-    /// commits stamped Tetrix-Session (8f2a…).`, then where the graph fell short.
+    /// commits stamped Tetrix-Session (8f2a…).`, then where the graph fell short. When Tetrix
+    /// couldn't be reached at the job's last try, it says so after the calls.
     pub fn line(&self) -> String {
         let total: u32 = self.calls.values().sum();
-        let mut line = if total == 0 {
-            "Tetrix: connected, but the agent didn't use it.".to_owned()
-        } else {
-            let mut calls: Vec<(&String, &u32)> = self.calls.iter().collect();
-            calls.sort_by(|a, b| b.1.cmp(a.1).then(a.0.cmp(b.0)));
-            format!(
-                "Tetrix: {total} call{} ({}).",
-                if total == 1 { "" } else { "s" },
-                calls
-                    .iter()
-                    .map(|(tool, n)| format!("{tool} {n}"))
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            )
+        let mut line = match (total, self.lost()) {
+            (0, Some(lost)) => lost,
+            (0, None) => "Tetrix: connected, but the agent didn't use it.".to_owned(),
+            (_, lost) => {
+                let mut calls: Vec<(&String, &u32)> = self.calls.iter().collect();
+                calls.sort_by(|a, b| b.1.cmp(a.1).then(a.0.cmp(b.0)));
+                format!(
+                    "Tetrix: {total} call{} ({}).{}",
+                    if total == 1 { "" } else { "s" },
+                    calls
+                        .iter()
+                        .map(|(tool, n)| format!("{tool} {n}"))
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                    lost.map(|lost| format!(" {lost}")).unwrap_or_default()
+                )
+            }
         };
         line.push_str(if self.saved.is_empty() {
             " No session saved."

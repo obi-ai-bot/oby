@@ -526,6 +526,9 @@ main() {
     [[ "$built" == "$version ($build)" ]] || die "the app says $built, not $version ($build)"
     check_universal "$app/Contents/MacOS/$(plutil -extract CFBundleExecutable raw -o - "$app/Contents/Info.plist")"
     check_universal "$app/Contents/Helpers/obid"
+    # obid publishes nothing without gitleaks (#1026): the app's own, pinned, that runs.
+    check_universal "$app/Contents/MacOS/gitleaks"
+    [[ "$("$app/Contents/MacOS/gitleaks" version 2>&1)" == 8.30.1 ]] || die "Contents/MacOS/gitleaks doesn't run as gitleaks 8.30.1"
     # What the launch build leaves out (AGENTS.md, "The launch build"): in a full build, and only there.
     local kind="the launch build" part
     if $full_build; then

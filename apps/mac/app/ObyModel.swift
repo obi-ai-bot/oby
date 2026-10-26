@@ -75,22 +75,20 @@ final class IslandModel {
     }
 
     /// Your words go to the runner's brain (`RunnerFeed.plan`), and Oby thinks until it answers. A
-    /// bare "never mind", "stop" or "cancel" only ends the turn under way; any other words replace
-    /// it, the runner told first so the old plan starts nothing. `spoken`: you talked, so the talk
-    /// key's pill shows the reply. `attachments` go to the jobs the words start.
+    /// bare "never mind", "stop" or "cancel" only ends the turn under way; any other words wait their
+    /// turn (Sangam's design: the runner answers them once the turn under way ends), and the latest
+    /// words' answer is the one shown. `spoken`: you talked, so the talk key's pill shows the reply.
+    /// `attachments` go to the jobs the words start.
     func ask(_ words: String, spoken: Bool = false, attachments: [String] = []) {
         let said = words.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !said.isEmpty else { return }
         if Conversation.cancels(said) { return cancel() }
-        let replacing = planning, stopped = cancelling
+        let stopped = cancelling
         asking += 1
         let mine = asking
         talk = .thinking(said)
         planning = Task {
             await stopped?.value
-            if replacing != nil { await feed.cancelPlan(on: plansOn) }
-            replacing?.cancel()
-            _ = await replacing?.result
             var result: Desk.Talk
             do { result = try await feed.plan(said, answer: nil, attachments: attachments, on: plansOn) } catch { result = .reply(error.localizedDescription) }
             guard asking == mine else { return }

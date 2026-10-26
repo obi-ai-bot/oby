@@ -70,9 +70,6 @@ pub mod action {
     pub const START: &str = "start";
     /// Answer any other item: `target` the item, `payload` `{"answer": "…"}`.
     pub const ANSWER_ITEM: &str = "answer_item";
-    /// Save a standing rule the conversation proposed (crate::rules, #1314): `target` the
-    /// conversation, `payload` `{"rule": <the rule, as GET /v1/obid/decisions keeps it>}`.
-    pub const REMEMBER_RULE: &str = "remember_rule";
     /// Keeps the owner's standing permission to approve a teammate's pull requests on a repository
     /// on GitHub when Oby's review passes (crate::sphere::approval): `target` the item it was
     /// asked from, `payload` `{"fromOwner", "repo"}` (`repo` may be `*`).
@@ -103,6 +100,9 @@ pub mod action {
     /// Change a job's mode, tool or account (`oby_change_job`): `target` the job, `payload`
     /// `{"mode": "…"}`, `{"agent": "…", "account": "…"}` or both.
     pub const CHANGE_JOB: &str = "change_job";
+    /// Make a check Oby guessed the check of a repository that has none (#1062): `target` the
+    /// repository, `payload` `{"check": "<command>"}`.
+    pub const SET_CHECK: &str = "set_check";
 }
 
 /// A `confirm` item: `title` says exactly what `Confirm` does, `confirmed` is what obid carries
@@ -915,32 +915,28 @@ pub fn crash_item(job: &crate::job::Job, now: i64) -> Item {
     }
 }
 
-/// A `watch` item's id: `watch-` and 16 hex characters of its notice's key.
-pub fn watch_item_id(key: &str) -> String {
-    format!(
-        "watch-{}",
-        &hex::encode(obi_protocol::keys::sha256(key.as_bytes()))[..16]
-    )
+/// Whether `item` is a [`review_item`]: Oby's review that no reviewer could give, the owner's.
+pub fn is_review_item(item: &Item) -> bool {
+    item.kind == "failed" && item.id.contains("-review-")
 }
 
-/// The `watch` item telling the owner what `person` said or did (crate::watch): obid's own words
-/// from the notice's typed fields; what they wrote, the title and the model's topic quoted under
-/// `watch.quoted`, for the card only.
-pub fn watch_item(kind: &str, person: &str, notice: &crate::watch::Notice, now: i64) -> Item {
-    let title = match notice.source.as_str() {
-        "slack" => format!("{person} on Slack, in {}", notice.place),
-        _ => format!("{person} on {}", notice.place),
-    };
+/// The `failed` item on a job whose head no reviewer could review (`reviewNeedsYou`): one per give
+/// up (its id names the last review that ended before a verdict), saying why (`error`, its
+/// `reviewError`). Try again starts the review again (`Jobs::review_again`). Merging without
+/// Oby's review isn't offered: no workflow merges without a review (AGENTS.md).
+pub fn review_item(job: &crate::job::Job, review: &str, error: &str) -> Item {
     Item {
-        id: format!("{kind}-{}", &watch_item_id(&notice.key)["watch-".len()..]),
-        kind: kind.into(),
-        job: String::new(),
-        title: title.chars().take(80).collect(),
-        text: format!("{person} {}.", notice.what),
-        options: vec![DISMISS.into()],
-        details: Some(vec!["Mark it read.".into()]),
+        id: format!("{}-review-{review}", job.id),
+        kind: "failed".into(),
+        job: job.id.clone(),
+        title: job.short_title(),
+        text: error.to_owned(),
+        options: vec![crate::job::TRY_AGAIN.into()],
+        details: Some(vec![
+            "Asks Oby to review it again, on the first reviewer that can.".into(),
+        ]),
         recommended: None,
-        created: now,
+        created: time::now(),
         done: None,
         later: None,
         answer: None,
@@ -950,11 +946,16 @@ pub fn watch_item(kind: &str, person: &str, notice: &crate::watch::Notice, now: 
         confirm: None,
         start: None,
         github: None,
-        watch: Some(Box::new(json!({
-            "source": notice.source, "place": notice.place, "url": notice.url, "at": notice.at,
-            "quoted": {"text": notice.quoted, "title": notice.title, "topic": notice.topic},
-        }))),
+        watch: None,
     }
+}
+
+/// A `watch` item's id: `watch-` and 16 hex characters of its notice's key.
+pub fn watch_item_id(key: &str) -> String {
+    format!(
+        "watch-{}",
+        &hex::encode(obi_protocol::keys::sha256(key.as_bytes()))[..16]
+    )
 }
 
 /// A permission item's id: `<job>-permission-<permission>`.

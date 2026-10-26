@@ -219,6 +219,28 @@ pub fn user_message(text: &str) -> Value {
     json!({"type": "user", "message": {"role": "user", "content": text}})
 }
 
+/// A control request's kind as obid names it (letters, digits and `_`, at most 64), logged once
+/// per kind while obid runs: what the request carries is never logged.
+fn unknown_request(subtype: &str) -> String {
+    static SEEN: std::sync::Mutex<std::collections::BTreeSet<String>> =
+        std::sync::Mutex::new(std::collections::BTreeSet::new());
+    let kind: String = subtype
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '_')
+        .take(64)
+        .collect();
+    let first = SEEN
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(kind.clone());
+    if first {
+        tracing::warn!(
+            "Claude Code sent a control request obid doesn't know ({kind:?}): answered with an error"
+        );
+    }
+    kind
+}
+
 /// Claude Code's answer to a `can_use_tool` prompt about `input`: an allow carries the input it
 /// runs with, the agent's own or the one obid gives (an `AskUserQuestion` with its `answers`).
 fn permission_response(answer: Answer, input: Value) -> Value {
@@ -287,7 +309,16 @@ pub async fn turn_on(
             Some("control_request") => {
                 let request = &message["request"];
                 let id = message.get("request_id").cloned().unwrap_or(Value::Null);
-                if request.get("subtype").and_then(Value::as_str) != Some("can_use_tool") {
+                let subtype = request.get("subtype").and_then(Value::as_str).unwrap_or("");
+                if subtype != "can_use_tool" {
+                    // One this obid doesn't know (a newer Claude Code's) is answered all the same,
+                    // with an error, which refuses it: never left waiting, which would hang the
+                    // job (#1095). The turn goes on.
+                    let kind = unknown_request(subtype);
+                    conn.send(&json!({"type": "control_response",
+                                      "response": {"subtype": "error", "request_id": id,
+                                                   "error": format!("obid doesn't handle {kind} requests")}}))
+                        .await;
                     continue;
                 }
                 let tool = request

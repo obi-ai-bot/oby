@@ -39,24 +39,6 @@ nonisolated struct Connector: Identifiable, Equatable, Sendable {
         case disconnect(String)
         /// gh's own sign-in on the runner (`POST /v1/github/sign-in`): GitHub's page and its code.
         case signInGitHub
-        /// Asks for the Slack app's two tokens and gives them to obid (`PUT /v1/slack`).
-        case connectSlack
-        /// `DELETE /v1/slack`: obid forgets the Slack tokens.
-        case disconnectSlack
-        /// `PATCH /v1/watch`: the watcher's Slack message on, or back to a dry run.
-        case setWatchLive(Bool)
-        /// `PATCH /v1/slack`: whether a posted review's author is told on Slack.
-        case setTellAuthors(Bool)
-        /// Asks for Sentry's address, the organization and a token, and gives them to obid (`PUT /v1/sentry`).
-        case connectSentry
-        /// `DELETE /v1/sentry`: obid forgets the Sentry token.
-        case disconnectSentry
-        /// Which projects are followed, and the repository each is looked into in (`PATCH /v1/sentry/projects/{slug}`).
-        case sentryProjects
-        /// Makes the hook a monitoring tool sends its alerts to (#1311), for obid's `source`.
-        case connectAlerts(String)
-        /// Removes that hook, at obid and at the control plane.
-        case disconnectAlerts(String)
     }
 
     /// How to disconnect a connected one, or connect an available one.
@@ -118,10 +100,9 @@ nonisolated enum Connectors {
                         ("codex", "ChatGPT", "Run jobs in Codex, ask ChatGPT", "openai"),
                         ("cursor", "Cursor", "Run jobs in Cursor", "cursor")]
 
-    /// The design's services Oby can't connect yet (Deskree Ops #502, Slack #26, Gmail #501, Google
-    /// Meet #503, Zoom #504): id, name, line and mark.
+    /// The design's services Oby can't connect yet (Deskree Ops #502, Gmail #501, Google Meet #503,
+    /// Zoom #504): id, name, line and mark.
     static let coming = [("deskree", "Deskree Ops", "Projects, deploys and incidents", "deskree"),
-                         ("slack", "Slack", SlackStatus.about, "slack"),
                          ("gmail", "Gmail", "Read and manage your email", "gmail"),
                          ("meet", "Google Meet", "Join meetings and keep the notes", "meet"),
                          ("zoom", "Zoom", "Join meetings and keep the notes", "zoom")]
@@ -142,13 +123,6 @@ nonisolated enum Connectors {
         var connections: [ConnectedApp]?
         /// obid's Tetrix, held once for every agent (`GET /v1/tetrix`); nil from a runner that doesn't hold one.
         var tetrix: TetrixStatus? = nil
-        /// obid's Slack (`GET /v1/slack`) and its watcher (`GET /v1/watch`); nil from a runner without them.
-        var slack: SlackStatus? = nil
-        var watch: WatchStatus? = nil
-        /// obid's Sentry (`GET /v1/sentry`); nil from a runner without it.
-        var sentry: SentryStatus? = nil
-        /// obid's hooks (`GET /v1/hooks`); nil from a runner without them.
-        var hooks: [Runner.HookRow]? = nil
     }
 
     /// One of the page's groups, with its title.
@@ -165,14 +139,6 @@ nonisolated enum Connectors {
         var gitHub: GitHubLogin?
         /// obid's Tetrix (`GET /v1/tetrix`); nil from a runner that doesn't hold one.
         var tetrix: TetrixStatus?
-        /// obid's Slack and its watcher; nil from a runner without them.
-        var slack: SlackStatus?
-        var watch: WatchStatus?
-        /// obid's Sentry; nil from a runner without it.
-        var sentry: SentryStatus?
-        /// obid's hooks, and its repositories a hook's alerts may be about; nil from a runner without them.
-        var hooks: [Runner.HookRow]?
-        var repos: [String] = []
         /// Why a list couldn't be read: a timeout, a 500, a 401. Only a 404 means the runner has
         /// none to list; anything else is said, never shown as an empty list.
         var problems: [String] = []
@@ -198,28 +164,6 @@ nonisolated enum Connectors {
         } catch {
             lists.problems.append("Couldn't read Tetrix on \(name): \(error.localizedDescription)")
         }
-        // Only a 404 means obid has no Slack (the row stays "Coming soon"); anything else is said.
-        do {
-            lists.slack = try await runner.slack()
-        } catch {
-            lists.problems.append("Couldn't read Slack on \(name): \(error.localizedDescription)")
-        }
-        do {
-            lists.watch = try await runner.watch()
-        } catch {
-            lists.problems.append("Couldn't read the watcher on \(name): \(error.localizedDescription)")
-        }
-        do {
-            lists.sentry = try await runner.sentry()
-        } catch {
-            lists.problems.append("Couldn't read Sentry on \(name): \(error.localizedDescription)")
-        }
-        do {
-            lists.hooks = try await runner.hooksIfAny()
-            if lists.hooks != nil { lists.repos = try await runner.repos() }
-        } catch {
-            lists.problems.append("Couldn't read the alerting hooks on \(name): \(error.localizedDescription)")
-        }
         return lists
     }
 
@@ -241,15 +185,7 @@ nonisolated enum Connectors {
             accounts.map { tool(agent, name: name, about: about, brand: brand, accounts: $0) }
                 ?? untilRunner(id: agent, name: name, about: about, brand: brand, runner: nil)
         }
-        list += soon.dropFirst().map { coming in
-            guard coming.id == "slack", let runner, let status = runner.slack else { return coming }
-            return slack(status, watch: runner.watch, place: runner.name, local: runner.local)
-        }
-        // Not in the design's list: the owner's decision of 2026-10-23 (#1117), monitoring tools as rows of their own.
-        if let runner, let status = runner.sentry { list.append(sentry(status, place: runner.name, local: runner.local)) }
-        if let runner, let hooks = runner.hooks {
-            list += AlertingTool.all.map { tool in alerting(tool, hook: hooks.first { $0.source == tool.source }, place: runner.name, local: runner.local) }
-        }
+        list += soon.dropFirst()
         if let runner {
             list += (runner.plugins ?? []).filter { $0.id != "tetrix" }.map { plugin($0, place: runner.name) }
             list += (runner.connections ?? []).map { connection($0, place: runner.name) }
@@ -257,9 +193,10 @@ nonisolated enum Connectors {
         return list
     }
 
-    /// What the page lists: the launch build has GitHub and Slack only (`Launch`).
+    /// What the page lists: the launch build has GitHub and Tetrix only (`Launch`; Slack is cut, the
+    /// owner's decision of 2026-10-25, and Tetrix is core).
     static func shown(_ list: [Connector], everything: Bool) -> [Connector] {
-        everything ? list : list.filter { ["github", "slack"].contains($0.id) }
+        everything ? list : list.filter { ["github", "tetrix"].contains($0.id) }
     }
 
     /// The page's groups, as the design has them: Connected, then Available (everything else, what it
@@ -299,80 +236,24 @@ nonisolated enum Connectors {
         }
         let there = local ? nil : Connector.Way.steps("Connect or disconnect it on \(place) itself, with Oby there: Tetrix's sign-in comes back to that machine.")
         switch status.state {
-        case .connected:
+        case .connected(let server):
+            // A refresh obid couldn't do: it still holds the login and tries again at each call.
+            guard status.error == nil else {
+                return row(.broken, there ?? .button("Reconnect", .connectTetrix(server)), local ? .button("Disconnect…", .disconnectTetrix) : nil)
+            }
             return row(.connected, there ?? .button("Disconnect…", .disconnectTetrix), nil)
         case .signingIn:
             return row(.unconfirmed, there ?? .button("Open the Page Again", .reopenTetrixSignIn), local ? .button("Cancel", .cancelTetrixSignIn) : nil)
         case .available:
+            // Signed out by Tetrix: Reconnect signs in to the same one again.
+            if status.error != nil, let server = status.server {
+                return row(.broken, there ?? .button("Reconnect", .connectTetrix(server)), local ? .button("Another Tetrix…", .connectOtherTetrix) : nil)
+            }
             let first = status.presets.first
             return row(status.error == nil ? .available : .broken,
                        there ?? first.map { .button("Connect", .connectTetrix($0)) } ?? .button("Connect…", .connectOtherTetrix),
                        local && first != nil ? .button("Another Tetrix…", .connectOtherTetrix) : nil)
         }
-    }
-
-    /// Slack, held by obid for its watcher with the owner's own Slack app's tokens, pasted once.
-    /// Only obid on this Mac gets buttons, as for Tetrix. Connected, the watcher's Slack message is
-    /// turned on or back to a dry run here, and telling a posted review's author on or off.
-    static func slack(_ status: SlackStatus, watch: WatchStatus?, place: String, local: Bool) -> Connector {
-        let how = [status.how, watch?.line].compactMap { $0 }.joined(separator: "\n")
-        let row = { (state: Connector.State, way: Connector.Way?, also: Connector.Way?) in
-            Connector(id: "slack", name: "Slack", about: SlackStatus.about, place: place, how: how, state: state,
-                      way: way, also: also, more: local && status.connected
-                          ? .button(status.tellAuthors ? "Reviews: Don't Tell Authors" : "Reviews: Tell Authors on Slack",
-                                    .setTellAuthors(!status.tellAuthors))
-                          : nil,
-                      brand: "slack")
-        }
-        guard local else {
-            return row(status.connected ? .connected : .available,
-                       .steps("Connect or disconnect it on \(place) itself, with Oby there."), nil)
-        }
-        if status.connected {
-            let live = watch?.rules.map { rules in
-                Connector.Way.button(rules.live ? "Watcher: Dry Run Only" : "Watcher: Send Slack Messages", .setWatchLive(!rules.live))
-            }
-            return row(.connected, .button("Disconnect…", .disconnectSlack), live)
-        }
-        return row(status.error == nil ? .available : .broken, .button("Connect…", .connectSlack), nil)
-    }
-
-    /// Sentry, held by obid with a token that only reads, pasted once. Only obid on this Mac gets
-    /// buttons, as for Slack. Connected, Projects… picks what's followed and where it's looked into.
-    static func sentry(_ status: SentryStatus, place: String, local: Bool) -> Connector {
-        let row = { (state: Connector.State, way: Connector.Way?, also: Connector.Way?) in
-            Connector(id: "sentry", name: "Sentry", about: SentryStatus.about, place: place, how: status.how, state: state,
-                      way: way, also: also, symbol: "exclamationmark.triangle")
-        }
-        guard local else {
-            return row(status.connected ? .connected : .available, .steps("Connect or disconnect it on \(place) itself, with Oby there."), nil)
-        }
-        if status.connected {
-            return row(.connected, .button("Disconnect…", .disconnectSentry), .button("Projects…", .sentryProjects))
-        }
-        return row(status.error == nil ? .available : .broken, .button("Connect…", .connectSentry), nil)
-    }
-
-    /// A monitoring tool that sends alerts to a hook of obid's (#1311): connected while the hook is
-    /// there, saying what its last delivery came to. Only obid on this Mac gets buttons: the hook's
-    /// address is made with this Mac's key, and deliveries come through its tunnel.
-    static func alerting(_ tool: AlertingTool, hook: Runner.HookRow?, place: String, local: Bool) -> Connector {
-        let refused = ["bad signature", "too many", "unreadable"].contains(hook?.lastDelivery?.result ?? "")
-        var last = hook?.lastDelivery.map { "Last delivery: \($0.result)." } ?? "No delivery yet."
-        // PagerDuty turns a webhook off after it keeps failing (#1312).
-        if refused && tool.secretFromTool { last += " \(tool.name) may have turned this webhook off: check its secret." }
-        let setUp = tool.secretFromTool
-            ? "Sends its incidents to Oby: you paste Oby's address into \(tool.name), and the secret it shows back into Oby, once. Needs Remote access on."
-            : "Sends its alerts to Oby: you paste an address and a secret into \(tool.name) once. Needs Remote access on."
-        let how = hook.map { "Sends critical and error alerts to Oby, looked into in \($0.repo ?? "its repository"). \(last)" } ?? setUp
-        let row = { (state: Connector.State, way: Connector.Way?) in
-            Connector(id: tool.id, name: tool.name, about: tool.about, place: place, how: how, state: state, way: way, symbol: tool.symbol)
-        }
-        guard local else { return row(hook == nil ? .available : .connected, .steps("Connect or disconnect it on \(place) itself, with Oby there.")) }
-        if let hook {
-            return row(refused ? .broken : .connected, .button("Disconnect…", .disconnectAlerts(hook.id)))
-        }
-        return row(.available, .button("Connect…", .connectAlerts(tool.source)))
     }
 
     /// A plug-in obid found (docs/ARCHITECTURE.md, "Plug-ins"). Ready is connected, failed needs

@@ -36,6 +36,9 @@ struct ObyApp: App {
                     .disabled(app.island.model.updater.waiting)
             }
             Button("Check for Updates…") { app.island.updater.check() }
+            Button("Report a Problem…") {
+                NSWorkspace.shared.open(ProblemReport.url(version: Updater.version, macOS: ProcessInfo.processInfo.operatingSystemVersionString))
+            }
             Divider()
             Button("Quit Oby") { NSApp.terminate(nil) }
                 .keyboardShortcut("q")
@@ -81,9 +84,24 @@ struct MenuBarLabel: View {
     }
 }
 
+/// Report a Problem… (the menu bar menu): GitHub's new-issue page for Oby, its title and body filled
+/// in. The body names Oby's version and build and the macOS version, and nothing else: no logs,
+/// paths or accounts.
+nonisolated enum ProblemReport {
+    static func url(version: String, macOS: String) -> URL {
+        var parts = URLComponents(string: "https://github.com/obi-ai-bot/oby/issues/new")!
+        parts.queryItems = [URLQueryItem(name: "title", value: "Problem with Oby"),
+                            URLQueryItem(name: "body", value: "What happened, and what you expected:\n\n\n---\nOby \(version)\nmacOS \(macOS)")]
+        return parts.url!
+    }
+}
+
 final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
     let island = IslandController()
-    lazy var firstLaunch = FirstLaunch(island: island)
+    lazy var firstLaunch = FirstLaunch(island: island) { [unowned self] in
+        // An oby://join link opened before or during first launch: its page, filled in, instead of Home.
+        if OpenedInvite.shared.invite != nil { chat.showSettings(.sphere) } else { chat.show(job: nil) }
+    }
     /// The Oby window: the conversation, Agents and Live (#11).
     lazy var chat = ChatWindow(island: island)
 
@@ -127,13 +145,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         // Opened by hand (Finder, Spotlight, the Dock, `open`), Oby comes up in front with its window, as
         // any Mac app does; started at login, it waits in the menu bar.
         launched = true
-        if !FirstLaunch.done {
-            firstLaunch.show()
-        } else if OpenedInvite.shared.invite != nil {
-            // Opened by an oby://join link that came before this: its page instead of Home.
-            chat.showSettings(.sphere)
-        } else if !launchedAtLogin {
-            chat.show(home: true)
+        Task {
+            if !FirstLaunch.done, await firstLaunch.start() { return }
+            if OpenedInvite.shared.invite != nil {
+                // Opened by an oby://join link that came before this: its page instead of Home.
+                chat.showSettings(.sphere)
+            } else if !launchedAtLogin {
+                chat.show(home: true)
+            }
         }
     }
 
@@ -224,7 +243,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     func application(_ application: NSApplication, open urls: [URL]) {
         guard let invite = urls.lazy.compactMap(InviteLink.init(opened:)).first else { return }
         OpenedInvite.shared.invite = invite
-        if launched { chat.showSettings(.sphere) }
+        // During first launch, or while an update's waits to start, it waits for it.
+        if launched && !firstLaunch.isOpen && !firstLaunch.starting { chat.showSettings(.sphere) }
     }
 
     /// Clicking Oby's Dock icon, or opening it again (Spotlight, Finder, `open`), while it runs opens its window.

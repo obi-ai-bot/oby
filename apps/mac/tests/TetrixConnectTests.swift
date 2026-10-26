@@ -70,7 +70,8 @@ struct TetrixConnectTests {
                        "sent": "2026-10-18T14:40:02Z", "session": "c41d", "notSent": null}}},
              {"id": "j2", "tetrix": {"connected": true, "calls": {}, "stamps": {"commits": 1, "stamped": 1, "sessions": ["old"]}}},
              {"id": "j3", "tetrix": "not an object"},
-             {"id": "j4", "tetrix": {"calls": {"get_entity": 1}, "gaps": {"noResults": [], "notSent": "The secret scan found something."}}}]
+             {"id": "j4", "tetrix": {"calls": {"get_entity": 1}, "gaps": {"noResults": [], "notSent": "The secret scan found something."}}},
+             {"id": "j5", "tetrix": {"connected": true, "calls": {}, "unreachable": "Tetrix wasn't reachable, so this job ran without the graph: x."}}]
             """#
         let extras = RunnerJobExtras.of(Data(jobs.utf8))
         let report = try #require(extras["j1"]?.tetrix)
@@ -85,6 +86,10 @@ struct TetrixConnectTests {
         #expect(notSent.callsLine == "Asked Tetrix once: get_entity 1" && notSent.gaps?.isEmpty == true)
         #expect(notSent.gaps?.sentLine == "Not sent to Tetrix: The secret scan found something.")
         #expect(TetrixJobReport().isEmpty && !report.isEmpty)
+        // Losing Tetrix is never silent: it's a section of its own.
+        let lost = try #require(extras["j5"]?.tetrix)
+        #expect(lost.unreachable == "Tetrix wasn't reachable, so this job ran without the graph: x." && !lost.isEmpty)
+        #expect(report.unreachable == nil)
     }
 
     /// obid's `tetrix` event keeps the Mac's status current (a Disconnect elsewhere, a sign-in ending).
@@ -103,6 +108,12 @@ struct TetrixConnectTests {
         #expect(TetrixJobReport.accountLine(connected: true, jobs: 1, used: 0, there: "in Connectors") == "Tetrix: used in 0 of 1 job")
         #expect(TetrixJobReport.accountLine(connected: true, jobs: 0, used: 0, there: "in Connectors") == "Tetrix: connected")
         #expect(TetrixJobReport.accountLine(connected: false, jobs: 3, used: 3, there: "on your Mac") == "Tetrix: not connected: connect it on your Mac")
+        // Settings › Accounts: under every signed-in account, the launch build's too (Tetrix is core).
+        var account = AccountState(account: Account(id: "personal", agent: "claude", name: "Personal", payer: "", home: nil), label: nil,
+                                   tetrix: true, tetrixJobs: 12, tetrixUsed: 9, runnerSignedIn: true)
+        #expect(account.tetrixLine == "Tetrix: used in 9 of 12 jobs")
+        account.runnerSignedIn = false
+        #expect(account.tetrixLine == nil)
     }
 
     /// The fake obid: the Mac asks for the status, starts a preset's sign-in by its id and another

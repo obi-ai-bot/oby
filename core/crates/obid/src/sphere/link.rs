@@ -285,10 +285,12 @@ pub struct Link {
     /// Teammates' jobs on this Mac (crate::sphere::hosting).
     pub(super) hosting: super::hosting::Hosting,
     setup: super::hosting::Setup,
-    /// Sentry, when obid has it (crate::sentry): what a Sentry offer's start reads.
-    sentry: std::sync::OnceLock<Arc<crate::sentry::Sentry>>,
     /// The phone relay (crate::relay): told at once when this Obi's membership is revoked.
     relay: std::sync::OnceLock<Arc<crate::relay::Relay>>,
+    /// Who obid acts for in its Sphere ([`Link::owner`]).
+    owner: Mutex<String>,
+    /// The runner status loop, started at the first follow only.
+    status_kept: std::sync::Once,
 }
 
 fn api(status: StatusCode, message: impl Into<String>) -> ApiError {
@@ -302,6 +304,17 @@ fn from_client(error: &ClientError) -> ApiError {
         ClientError::Unreachable(_) => api(StatusCode::GATEWAY_TIMEOUT, error.to_string()),
         _ => api(StatusCode::BAD_GATEWAY, error.to_string()),
     }
+}
+
+/// What the app needs of the delegation obid holds to sign the next one before it ends (#1215): its
+/// scope and when it ends. Never the JWT itself.
+fn delegation_json(delegation: &str) -> Value {
+    let claims = obi_protocol::jwt::parse(delegation).map(|p| p.claims);
+    let claims = claims.as_ref();
+    json!({
+        "scope": claims.and_then(|c| c["scope"].as_str()),
+        "expiresAt": claims.and_then(|c| c["exp"].as_i64()).map(time::format),
+    })
 }
 
 fn new_uuid() -> String {
@@ -484,6 +497,21 @@ impl Link {
         let client = membership
             .as_ref()
             .and_then(|m| Client::new(&m.url, &m.sphere).ok());
+        // The owner it joined as (an Oby that joined before `home/owner` existed keeps it now), else
+        // the one it joined a Sphere as before it left, else config's.
+        let joined_as = membership
+            .as_ref()
+            .and_then(|m| obi_protocol::card::params(&m.card)?.get("owner")?.as_str())
+            .map(str::to_owned);
+        if let Some(owner) = &joined_as
+            && files.load_owner().is_none()
+            && let Err(e) = files.save_owner(owner)
+        {
+            tracing::error!("can't keep the owner obid joined as: {e}");
+        }
+        let owner = joined_as
+            .or_else(|| files.load_owner())
+            .unwrap_or_else(|| config.owner.clone());
         let state = State {
             key,
             membership,
@@ -529,8 +557,9 @@ impl Link {
             stopping,
             hosting: super::hosting::Hosting::default(),
             setup: super::hosting::Setup::from(&setup_config),
-            sentry: std::sync::OnceLock::new(),
             relay: std::sync::OnceLock::new(),
+            owner: Mutex::new(owner),
+            status_kept: std::sync::Once::new(),
         });
         // The inbox hears of the permissions jobs wait on. Jobs tells it with none of its own
         // locks held, and never while this Link's state is locked (only `start_obi_review` is
@@ -698,15 +727,14 @@ impl Link {
         self.add_event_item(self.plugin_event_offer(&event));
     }
 
-    /// The item [`Self::plugin_event`] keeps for `event`, an offer on one of obid's repositories;
-    /// crate::rules applies standing rules before it's kept.
+    /// The item [`Self::plugin_event`] keeps for `event`, an offer on one of obid's repositories.
     pub fn plugin_event_offer(&self, event: &obi_plugin_api::PluginEvent) -> Item {
         let repo = &event.event.subject.repo;
         let known = self.config.repos.get().iter().any(|r| &r.repo == repo);
         inbox::plugin_event_item(event, known, time::now())
     }
 
-    /// A `pluginEvent` item from a plug-in or from one of obid's own sources (crate::sentry): kept
+    /// A `pluginEvent` item from a plug-in: kept
     /// unless an item with its id is there already, open or done; past
     /// [`inbox::MAX_OPEN_EVENTS`] open items of its source (`plugin.id`), the oldest open one is
     /// settled by itself, with no answer.
@@ -783,11 +811,6 @@ impl Link {
         }
     }
 
-    /// Sentry's offers start with what it reads then (crate::sentry::Sentry::quote).
-    pub fn use_sentry(&self, sentry: Arc<crate::sentry::Sentry>) {
-        let _ = self.sentry.set(sentry);
-    }
-
     pub fn use_relay(&self, relay: Arc<crate::relay::Relay>) {
         let _ = self.relay.set(relay);
     }
@@ -831,118 +854,8 @@ impl Link {
         }
     }
 
-    /// What the watcher saw (crate::watch): a `watch` item for each notice that never had one,
-    /// open or done.
-    pub fn watch_notices(&self, person: &str, notices: &[crate::watch::Notice]) {
-        let now = time::now();
-        let mut changed = Vec::new();
-        {
-            let mut state = self.lock();
-            for notice in notices {
-                let item = inbox::watch_item("watch", person, notice, now);
-                if !state.inbox.contains_key(&item.id) {
-                    state.inbox.insert(item.id.clone(), item.clone());
-                    changed.push(item);
-                }
-            }
-        }
-        for item in &changed {
-            self.save_item(item);
-        }
-    }
-
-    /// After the owner's review was posted: its author is told on Slack, in the background
-    /// (crate::listen::tell_author), and what was sent is in the job's `outgoing`.
-    fn tell_author(self: &Arc<Self>, review: &Item) {
-        let Some(slack) = self.jobs.slack().filter(|s| s.tells_authors()) else {
-            return;
-        };
-        let pr = review.watch.as_deref().map(|w| &w["pr"]);
-        let (Some(repo), Some(number)) = (
-            pr.and_then(|p| p["repo"].as_str()).map(str::to_owned),
-            pr.and_then(|p| p["number"].as_u64()),
-        ) else {
-            return;
-        };
-        let verdict = review
-            .watch
-            .as_deref()
-            .and_then(|w| w["verdict"].as_str())
-            .unwrap_or("comment")
-            .to_owned();
-        let link = self.clone();
-        let job = review.job.clone();
-        tokio::spawn(async move {
-            let author = crate::listen::pr_author(&repo, number).await;
-            match crate::listen::tell_author(&slack, &job, &repo, number, &verdict, author).await {
-                Some(crate::listen::Told::Sent(person)) => {
-                    link.jobs.sent_on_slack(&job, &person.id)
-                }
-                Some(crate::listen::Told::Ask(item)) => link.add_items(vec![*item]),
-                None => {}
-            }
-        });
-    }
-
-    /// Send, or Send and Remember (`answer`), on a review's author's item claimed as done: Oby's
-    /// message to the person it names, as the owner; Send and Remember also keeps who they are.
-    async fn send_to_author(&self, open: Item, answer: &str) -> Result<Value, ApiError> {
-        let watch = open.watch.as_deref().cloned().unwrap_or_default();
-        let (person, pr) = (&watch["slack"], &watch["pr"]);
-        let named = (
-            person["user"].as_str(),
-            person["name"].as_str(),
-            person["login"].as_str(),
-            pr["repo"].as_str(),
-            pr["number"].as_u64(),
-        );
-        let sent = match (named, self.jobs.slack()) {
-            ((Some(user), Some(name), Some(login), Some(repo), Some(number)), Some(slack)) => slack
-                .send_as_owner(
-                    user,
-                    &crate::slack::review_message(
-                        repo,
-                        number,
-                        watch["verdict"].as_str().unwrap_or("comment"),
-                    ),
-                )
-                .await
-                .map(|_| {
-                    let person = crate::slack::Person {
-                        id: user.to_owned(),
-                        name: name.to_owned(),
-                    };
-                    if answer == crate::listen::SEND_AND_REMEMBER
-                        && let Err(why) = slack.remember(login, person)
-                    {
-                        tracing::warn!("{why}");
-                    }
-                    user.to_owned()
-                }),
-            (_, None) => Err(crate::slack::NOT_CONNECTED.to_owned()),
-            _ => Err("the item names nobody to send it to".to_owned()),
-        };
-        match sent {
-            Ok(user) => {
-                self.jobs.sent_on_slack(&open.job, &user);
-                let mut item = open;
-                item.done = Some(time::now());
-                item.answer = Some(answer.to_owned());
-                self.lock().inbox.insert(item.id.clone(), item.clone());
-                self.save_item(&item);
-                Ok(item.to_json())
-            }
-            Err(why) => {
-                self.lock().inbox.insert(open.id.clone(), open.clone());
-                Err(api(
-                    StatusCode::BAD_GATEWAY,
-                    format!("Nothing was sent: {why}."),
-                ))
-            }
-        }
-    }
-
-    /// Items obid made (crate::listen): each one that never was in the inbox, open or done.
+    /// Items obid made (the owner's reviews ready to post, crate::jobs): each one that never was in
+    /// the inbox, open or done.
     pub fn add_items(&self, items: Vec<Item>) {
         let mut changed = Vec::new();
         {
@@ -967,6 +880,30 @@ impl Link {
             .inbox
             .values()
             .filter(|i| i.kind == "limit" && i.job == job && i.done.is_none())
+            .map(|i| i.id.clone())
+            .collect();
+        for id in stale {
+            self.settle(&id);
+        }
+        if let Some(item) = item {
+            self.add_items(vec![item]);
+        }
+    }
+
+    /// The job `job`'s item about Oby's review that couldn't run now (`inbox::review_item`): `item`,
+    /// when there is one, added, and the job's other open ones done, with no answer.
+    pub fn review_items(&self, job: &str, item: Option<Item>) {
+        let keep = item.as_ref().map(|i| i.id.clone());
+        let stale: Vec<String> = self
+            .lock()
+            .inbox
+            .values()
+            .filter(|i| {
+                inbox::is_review_item(i)
+                    && i.job == job
+                    && i.done.is_none()
+                    && Some(&i.id) != keep.as_ref()
+            })
             .map(|i| i.id.clone())
             .collect();
         for id in stale {
@@ -1015,8 +952,10 @@ impl Link {
 
     /// `POST /v1/inbox/{id}/answer` on a `merge` card (crate::merge): Merge, or Merge and
     /// remember, merges it (`Jobs::merge_by_owner`), the item claimed (done) first so a second tap
-    /// merges nothing, and open again when it didn't merge; Leave it open, Dismiss or done settle
-    /// it, and nothing is sent; later puts it off.
+    /// merges nothing, and open again when it didn't merge; Ask a teammate, and remember, saves
+    /// the repository's workflow and asks a teammate's Oby (`Jobs::ask_teammate_and_remember`),
+    /// claimed the same way, its outcome the answer's `note`; Leave it open, Not now, Dismiss or
+    /// done settle it, and nothing is sent; later puts it off.
     async fn answer_merge(
         &self,
         mut item: Item,
@@ -1029,6 +968,7 @@ impl Link {
             self.save_item(&item);
             return Ok(item.to_json());
         }
+        let asking = answer.as_deref() == Some(crate::merge::ASK_TEAMMATE);
         let merging = matches!(
             answer.as_deref(),
             Some(crate::merge::MERGE | crate::merge::MERGE_AND_REMEMBER)
@@ -1037,7 +977,7 @@ impl Link {
             && !item.options.contains(answer)
         {
             // Unclaim: the answer isn't one of its options.
-            if merging {
+            if merging || asking {
                 self.lock().inbox.insert(item.id.clone(), item.clone());
             }
             return Err(api(
@@ -1045,12 +985,24 @@ impl Link {
                 format!("The answer is one of: {}.", item.options.join("; ")),
             ));
         }
-        if merging {
+        if merging || asking {
             let head = crate::merge::item_head(&item.id)
                 .unwrap_or_default()
                 .to_owned();
-            let remember = answer.as_deref() == Some(crate::merge::MERGE_AND_REMEMBER);
-            let merged = self.jobs.merge_by_owner(&item.job, &head, remember).await;
+            let merged = if asking {
+                // The owner's yes: remembered for the repository, then a teammate's Oby is asked.
+                self.jobs
+                    .ask_teammate_and_remember(&item.job, &head)
+                    .await
+                    .map(Some)
+                    .map_err(|why| format!("Nothing was asked: {why}"))
+            } else {
+                let remember = answer.as_deref() == Some(crate::merge::MERGE_AND_REMEMBER);
+                self.jobs
+                    .merge_by_owner(&item.job, &head, remember)
+                    .await
+                    .map_err(|why| format!("Not merged: {why}"))
+            };
             if let Err(why) = &merged {
                 // Open again, unless it was settled meanwhile.
                 let open = {
@@ -1067,9 +1019,10 @@ impl Link {
                 if open {
                     self.save_item(&item);
                 }
-                return Err(api(StatusCode::CONFLICT, format!("Not merged: {why}")));
+                return Err(api(StatusCode::CONFLICT, why.clone()));
             }
-            // Merged: done, whatever came after it (a workflow it couldn't remember is `note`).
+            // Merged, or a teammate asked: done, whatever came after it (a workflow it couldn't
+            // remember, or what came of the ask, is `note`).
             if let Ok(Some(note)) = merged {
                 item.done = Some(time::now());
                 item.answer = answer;
@@ -1208,137 +1161,18 @@ impl Link {
     /// `Fix it`), which `answer` claimed: starts the work (crate::event_work); what couldn't start
     /// leaves the item open again. Nothing is sent anywhere.
     async fn answer_plugin_offer(&self, mut item: Item, answer: String) -> Result<Value, ApiError> {
-        let sentry = self.sentry.get().map(Arc::as_ref);
-        match crate::event_work::start(&self.jobs, &self.config, sentry, &item, None).await {
+        match crate::event_work::start(&self.jobs, &self.config, &item).await {
             Ok(job) => item.job = job.id,
             Err(why) => {
                 self.lock().inbox.insert(item.id.clone(), item.clone());
                 return Err(why);
             }
         }
-        // "…, and from now on for <project>" (#1314): this one is looked into now; the standing
-        // rule waits for the owner's own tap on a `confirm` item (#776), since it starts work with
-        // none. An API token alone (an agent, an MCP client) never saves one.
-        if answer.starts_with(crate::rules::FROM_NOW_ON)
-            && let Some(rule) = crate::rules::rule_from(&item, None)
-        {
-            let words = crate::rules::words(&rule);
-            self.add_confirm(inbox::confirm_item(
-                &item.job,
-                format!("From now on, {words}"),
-                format!(
-                    "You asked Oby to look into these from now on, with no tap: an investigate job each time, which publishes by itself once its checks pass and the secret scan is clean, one at a time and at most {} a day. It's saved only if you confirm.",
-                    crate::rules::DAILY
-                ),
-                inbox::Confirmed {
-                    action: inbox::action::REMEMBER_RULE.into(),
-                    target: item.id.clone(),
-                    payload: json!({ "rule": rule }),
-                },
-                time::now(),
-            ));
-        }
         item.done = Some(time::now());
         item.answer = Some(answer);
         self.lock().inbox.insert(item.id.clone(), item.clone());
         self.save_item(&item);
         Ok(item.to_json())
-    }
-
-    /// At startup: a rule's claimed offer whose job never started (obid stopped in between) is an
-    /// offer again (#1314).
-    pub fn reopen_claims(&self) {
-        let claimed: Vec<String> = self
-            .lock()
-            .inbox
-            .values()
-            .filter(|i| {
-                i.kind == "pluginEvent"
-                    && i.job.is_empty()
-                    && i.answer.as_deref() == Some(crate::rules::STARTING_ANSWER)
-            })
-            .map(|i| i.id.clone())
-            .collect();
-        for id in claimed {
-            self.change_item(&id, |item| {
-                item.done = None;
-                item.answer = None;
-            });
-        }
-    }
-
-    /// The standing rule (#1314) that covers an event offer's `plugin`, if one does.
-    pub fn rule_for(&self, plugin: &Value) -> Option<Decision> {
-        decisions::covering_event(&self.lock().decisions, plugin).cloned()
-    }
-
-    /// Keeps a standing rule, in place of one for the same source, project and repository.
-    pub fn remember_rule(&self, rule: Decision) {
-        let kept = {
-            let mut state = self.lock();
-            state.decisions.retain(|d| {
-                !(d.kind == rule.kind
-                    && d.source == rule.source
-                    && d.project == rule.project
-                    && d.repo == rule.repo)
-            });
-            state.decisions.push(rule);
-            state.decisions.clone()
-        };
-        self.save_decisions(&kept);
-    }
-
-    /// The standing rules for events (#1314), as `GET /v1/obid/decisions` lists them.
-    pub fn rules(&self) -> Vec<Decision> {
-        self.lock()
-            .decisions
-            .iter()
-            .filter(|d| {
-                matches!(
-                    d.kind.as_str(),
-                    decisions::EVENT_ALERT | decisions::EVENT_DEPLOY
-                )
-            })
-            .cloned()
-            .collect()
-    }
-
-    /// Forgets a standing rule for events; false when there's no such rule.
-    pub fn forget_event_rule(&self, id: &str) -> bool {
-        let kept = {
-            let mut state = self.lock();
-            let before = state.decisions.len();
-            state.decisions.retain(|d| {
-                !(d.id == id
-                    && matches!(
-                        d.kind.as_str(),
-                        decisions::EVENT_ALERT | decisions::EVENT_DEPLOY
-                    ))
-            });
-            if state.decisions.len() == before {
-                return false;
-            }
-            state.decisions.clone()
-        };
-        self.save_decisions(&kept);
-        true
-    }
-
-    /// Counts a rule's start, and keeps where it reports (`conversation`, once it has one).
-    pub fn rule_started(&self, id: &str, conversation: Option<String>) {
-        let kept = {
-            let mut state = self.lock();
-            let Some(rule) = state.decisions.iter_mut().find(|d| d.id == id) else {
-                return;
-            };
-            rule.uses += 1;
-            rule.last_used = Some(time::now());
-            if conversation.is_some() {
-                rule.conversation = conversation;
-            }
-            state.decisions.clone()
-        };
-        self.save_decisions(&kept);
     }
 
     /// Changes an inbox item as `change` does, keeps it and says so.
@@ -1575,14 +1409,71 @@ impl Link {
             "url": joined.map(|m| &m.url),
             "sphere": joined.map(|m| &m.sphere),
             "obiId": joined.map(|m| &m.obi_id),
-            "owner": self.config.owner,
+            "owner": self.owner(),
             "keyId": key.map(|k| k.key_id()),
             "publicKey": key.map(|k| k.public_key()),
             "card": joined.map(|m| &m.card),
+            "delegation": state.delegation.as_deref().map(delegation_json),
             "tokenExpiresAt": state.token.as_ref().map(|t| time::format(t.1)),
             "lastPoll": state.last_poll.map(time::format),
             "lastError": state.last_error,
         })
+    }
+
+    /// Whether obid keeps a membership, joined or revoked.
+    pub fn has_membership(&self) -> bool {
+        self.lock().membership.is_some()
+    }
+
+    /// `DELETE /v1/obid/sphere`: obid leaves its Sphere, joined or revoked, so it can join another
+    /// or the same one again (#1214). The app revokes the Obi there first, when the Sphere answers:
+    /// that takes the owner's own token, which obid never holds. What's open is settled as at a
+    /// revoke, and `home/sphere` goes (the membership, the delegation, what obid saw of the chain,
+    /// the owner keys it pinned), and the Obi key with it: a Sphere never takes a key twice, so the
+    /// next join makes a new one. The exchanges and the inbox stay.
+    pub async fn leave(&self) -> Result<Value, ApiError> {
+        let _one = self.joining.lock().await;
+        // No send under way, and nothing left to send: an exchange's waiting replies were for this
+        // Sphere, never the next one's.
+        let _sending = self.sending.lock().await;
+        if self.has_membership() {
+            self.settle_on_revoke();
+        }
+        let waiting: Vec<String> = self
+            .lock()
+            .exchanges
+            .values()
+            .filter(|e| !e.outbox.is_empty())
+            .map(|e| e.correlation_id.clone())
+            .collect();
+        for cid in waiting {
+            self.update_exchange(&cid, |e| e.outbox.clear());
+        }
+        self.files.forget().map_err(|e| {
+            api(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("obid couldn't forget its Obysphere: {e}"),
+            )
+        })?;
+        {
+            let mut state = self.lock();
+            state.key = None;
+            state.membership = None;
+            state.delegation = None;
+            state.client = None;
+            state.token = None;
+            state.directory = Directory::default();
+            state.directory_read = 0;
+            state.last_poll = None;
+            state.last_error = None;
+        }
+        *self.chain.lock().unwrap_or_else(|e| e.into_inner()) = ChainKept::default();
+        self.pins.forget_all();
+        // The phone relay's socket stops serving phones now.
+        if let Some(relay) = self.relay.get() {
+            relay.wake();
+        }
+        Ok(self.membership_json())
     }
 
     /// `POST /v1/obid/sphere/key`: the Obi key, made the first time.
@@ -1710,11 +1601,12 @@ impl Link {
         }
         let (key_id, public_key, issued_at) =
             (key.key_id(), key.public_key(), time::format(time::now()));
+        let owner = self.owner();
         let unsigned = obi_protocol::identity::unsigned_card(&obi_protocol::identity::CardFields {
             sphere_url: url,
             sphere,
             obi_id,
-            owner: &self.config.owner,
+            owner: &owner,
             owner_key,
             name,
             description,
@@ -1823,11 +1715,11 @@ impl Link {
                 param("sphere")
             )));
         }
-        if param("owner") != self.config.owner {
+        let owner = self.owner();
+        if param("owner") != owner {
             return Err(invalid(format!(
-                "The card's owner is {}, not obid's owner {}.",
+                "The card's owner is {}, not obid's owner {owner}.",
                 param("owner"),
-                self.config.owner
             )));
         }
         let obi_id = param("obi_id").to_owned();
@@ -1840,7 +1732,7 @@ impl Link {
             &delegation,
             &obi_protocol::identity::DelegationCheck {
                 owner_key: &owner_key,
-                owner: &self.config.owner,
+                owner: &owner,
                 sphere: &sphere,
                 obi_id: &obi_id,
                 now,
@@ -1866,7 +1758,8 @@ impl Link {
         let kept = self
             .files
             .save_membership(&membership)
-            .and_then(|()| self.files.save_delegation(&delegation));
+            .and_then(|()| self.files.save_delegation(&delegation))
+            .and_then(|()| self.files.save_owner(&owner));
         {
             let mut state = self.lock();
             state.membership = Some(membership);
@@ -1943,6 +1836,14 @@ impl Link {
         let state = self.lock();
         state.membership.as_ref().filter(|m| m.state == "joined")?;
         state.client.clone()
+    }
+
+    /// Whether obid is a member of an Obysphere now (`joined`).
+    pub fn in_sphere(&self) -> bool {
+        self.lock()
+            .membership
+            .as_ref()
+            .is_some_and(|m| m.state == "joined")
     }
 
     /// An access token for the phone relay's calls and socket, and when it ends (Unix seconds).
@@ -2122,12 +2023,17 @@ impl Link {
         if self.following.swap(true, Ordering::SeqCst) {
             return;
         }
-        self.keep_runner_status();
+        self.status_kept.call_once(|| self.keep_runner_status());
         let link = self.clone();
         tokio::spawn(async move {
             tokio::select! {
                 () = link.clone().run_follower() => {}
-                () = stopped(link.stopping.clone()) => {}
+                () = stopped(link.stopping.clone()) => return,
+            }
+            // Left or revoked: a later join follows again, also one that came while this ended.
+            link.following.store(false, Ordering::SeqCst);
+            if link.is_joined() {
+                link.follow();
             }
         });
     }
@@ -3821,9 +3727,10 @@ impl Link {
                 .filter(|m| m.state == "joined")
                 .map(|m| m.obi_id.clone())
             else {
-                return Teammate::NeedsYou(
-                    "Oby isn't in an Obysphere, so no teammate's Oby can approve it.".into(),
-                );
+                return Teammate::NeedsYou(format!(
+                    "Oby isn't in an Obysphere, so no teammate's Oby can approve it. {}",
+                    approval::instead(change.repo, true)
+                ));
             };
             let mut asked = Vec::new();
             for e in approval::requests(
@@ -3883,14 +3790,16 @@ impl Link {
                     (obi, owner)
                 }
                 None if asked.is_empty() => {
-                    return Teammate::NeedsYou(
-                        "No teammate's Oby in the Obysphere takes reviews.".into(),
-                    );
+                    return Teammate::NeedsYou(format!(
+                        "No teammate's Oby in the Obysphere takes reviews. {}",
+                        approval::instead(change.repo, false)
+                    ));
                 }
                 None => {
-                    return Teammate::NeedsYou(
-                        "No teammate's Oby could approve it on GitHub.".into(),
-                    );
+                    return Teammate::NeedsYou(format!(
+                        "No teammate's Oby could approve it on GitHub. {}",
+                        approval::instead(change.repo, false)
+                    ));
                 }
             }
         };
@@ -4235,27 +4144,6 @@ impl Link {
                 self.save_decisions(&kept);
                 Ok(())
             }
-            inbox::action::REMEMBER_RULE => {
-                let rule: Decision = serde_json::from_value(confirmed.payload["rule"].clone())
-                    .map_err(|_| api(StatusCode::CONFLICT, "That rule's plan was lost."))?;
-                let known = self.config.repos.get().iter().any(|r| r.repo == rule.repo);
-                if !known
-                    || !matches!(
-                        rule.kind.as_str(),
-                        decisions::EVENT_ALERT | decisions::EVENT_DEPLOY
-                    )
-                {
-                    return Err(api(StatusCode::CONFLICT, "That rule isn't one Oby keeps."));
-                }
-                self.remember_rule(Decision {
-                    id: decisions::new_id(),
-                    created: time::now(),
-                    uses: 0,
-                    last_used: None,
-                    ..rule
-                });
-                Ok(())
-            }
             inbox::action::CREATE_ROUTINE => {
                 let draft: crate::routines::Draft =
                     serde_json::from_value(confirmed.payload["routine"].clone())
@@ -4401,6 +4289,17 @@ impl Link {
                     }
                 }
                 Ok(())
+            }
+            // The check Oby offered for a repository with none (#1062), kept on the owner's tap.
+            inbox::action::SET_CHECK => {
+                let check = confirmed.payload["check"].as_str().unwrap_or("");
+                if check.trim().is_empty() || check.contains('\n') || check.chars().count() > 200 {
+                    return Err(api(StatusCode::CONFLICT, "That check's plan was lost."));
+                }
+                self.config
+                    .repos
+                    .set_check(target, check)
+                    .map_err(|why| api(StatusCode::CONFLICT, why))
             }
             // The ones that answer an inbox item, as the owner would have.
             inbox::action::ACCEPT
@@ -4758,7 +4657,7 @@ impl Link {
                 Given::Later(_) => {}
             }
         }
-        // A listener's review (crate::listen): Approve posts it on GitHub, with no lock held. The
+        // The owner's review (crate::review): Approve posts it on GitHub, with no lock held. The
         // answer claims it first, and the claim (`watch.posting`) is on disk before gh is asked, so
         // a second Approve, or one after obid stopped mid-post, never posts it twice; when nothing
         // was posted it's open again.
@@ -4770,11 +4669,11 @@ impl Link {
                 .filter(|i| {
                     i.done.is_none()
                         && i.kind == "listen"
-                        && i.options.iter().any(|o| o == crate::listen::APPROVE)
+                        && i.options.iter().any(|o| o == crate::review::APPROVE)
                 })
                 .cloned();
             match (item, &given) {
-                (Some(item), Given::Answer(a)) if a == crate::listen::APPROVE => {
+                (Some(item), Given::Answer(a)) if a == crate::review::APPROVE => {
                     if item
                         .watch
                         .as_deref()
@@ -4805,14 +4704,13 @@ impl Link {
                     format!("Nothing was posted: obid couldn't keep the claim ({why})."),
                 ));
             }
-            return match crate::listen::post_review_with_gh(&self.config.home, &claimed).await {
+            return match crate::review::post_review_with_gh(&self.config.home, &claimed).await {
                 Ok(()) => {
                     let mut item = claimed;
                     item.done = Some(time::now());
-                    item.answer = Some(crate::listen::APPROVE.into());
+                    item.answer = Some(crate::review::APPROVE.into());
                     self.lock().inbox.insert(item.id.clone(), item.clone());
                     self.save_item(&item);
-                    self.tell_author(&item);
                     Ok(item.to_json())
                 }
                 Err(why) => {
@@ -4835,8 +4733,9 @@ impl Link {
                 }
             };
         }
-        // A merge card (crate::merge): Merge, or Merge and remember, claims the item under the
-        // lock (done), then merges with no lock held, as Approve does above.
+        // A merge card (crate::merge): Merge, Merge and remember, or Ask a teammate and remember,
+        // claims the item under the lock (done), then acts with no lock held, as Approve does
+        // above.
         let merge = {
             let mut state = self.lock();
             let item = state
@@ -4846,7 +4745,9 @@ impl Link {
                 .cloned();
             if item.is_some()
                 && matches!(&given, Given::Answer(a)
-                    if a == crate::merge::MERGE || a == crate::merge::MERGE_AND_REMEMBER)
+                    if a == crate::merge::MERGE
+                        || a == crate::merge::MERGE_AND_REMEMBER
+                        || a == crate::merge::ASK_TEAMMATE)
                 && let Some(kept) = state.inbox.get_mut(id)
             {
                 kept.done = Some(time::now());
@@ -4859,33 +4760,6 @@ impl Link {
                 Given::Done => self.answer_merge(item, None, None).await,
                 Given::Later(at) => self.answer_merge(item, None, Some(at)).await,
             };
-        }
-        // A review's author on Slack (crate::listen::tell_author): Send, or Send and Remember,
-        // claims the item under the lock (done), then sends as the owner with no lock held; a send
-        // that fails leaves it open again.
-        let telling = {
-            let mut state = self.lock();
-            let sending = matches!(&given, Given::Answer(a)
-                if a == crate::listen::SEND || a == crate::listen::SEND_AND_REMEMBER);
-            let item = state
-                .inbox
-                .get(id)
-                .filter(|i| {
-                    sending
-                        && i.done.is_none()
-                        && i.kind == "listen"
-                        && i.options.iter().any(|o| o == crate::listen::SEND)
-                })
-                .cloned();
-            if item.is_some()
-                && let Some(kept) = state.inbox.get_mut(id)
-            {
-                kept.done = Some(time::now());
-            }
-            item
-        };
-        if let (Some(open), Given::Answer(answer)) = (telling, &given) {
-            return self.send_to_author(open, answer).await;
         }
         // An offer of GitHub work: its start reads GitHub first, with no lock held, so its start
         // answer claims the item under the lock (done), as Start does: nothing settles it
@@ -4916,8 +4790,7 @@ impl Link {
                     i.done.is_none()
                         && i.kind == "pluginEvent"
                         && i.options.len() > 1
-                        && matches!(&given, Given::Answer(a) if i.options.first() == Some(a)
-                            || (a.starts_with(crate::rules::FROM_NOW_ON) && i.options.contains(a)))
+                        && matches!(&given, Given::Answer(a) if i.options.first() == Some(a))
                 })
                 .cloned();
             if item.is_some()
@@ -5025,6 +4898,10 @@ impl Link {
                 drop(state);
                 self.save_item(&item);
                 let carried = match item.answer.as_deref() {
+                    // Oby's review that couldn't run: Try again is its review's, never the job's.
+                    Some(crate::job::TRY_AGAIN) if inbox::is_review_item(&item) => {
+                        self.jobs.review_again(&item.job)
+                    }
                     Some(crate::job::TRY_AGAIN) => self.jobs.message(
                         &item.job,
                         crate::brain::actions::TRY_AGAIN,
@@ -5216,7 +5093,6 @@ impl Link {
                     inbox_item: item.id.clone(),
                     uses: 0,
                     last_used: None,
-                    ..Decision::default()
                 };
                 state.decisions.retain(|d| {
                     !(d.kind == decision.kind
@@ -5362,7 +5238,6 @@ impl Link {
                             inbox_item: item.id.clone(),
                             uses: 0,
                             last_used: None,
-                            ..Decision::default()
                         });
                     }
                     decisions = Some(state.decisions.clone());
@@ -5477,8 +5352,32 @@ impl Link {
         &self.config.home
     }
 
-    pub(super) fn owner(&self) -> &str {
-        &self.config.owner
+    /// Who obid acts for in its Sphere: the owner it joined as while it keeps a membership, else
+    /// config's `owner`, or the GitHub login it adopted ([`Link::adopt_github_owner`]).
+    pub(crate) fn owner(&self) -> String {
+        self.owner.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    /// Until obid first joins a Sphere, its owner becomes `github`, the login gh is signed in as,
+    /// when config's `owner` is still the Mac's login name obid wrote at its first start (#1214): a
+    /// Sphere binds one owner key per owner id, and two people's Macs often share a login name
+    /// (or have one that isn't an id, `john.doe`). An owner the person set themselves stays, and so
+    /// does the one obid ever joined as (`home/owner`, kept after a leave): the Sphere would refuse
+    /// that person's rejoin under another id ("this account joined as another owner").
+    pub fn adopt_github_owner(&self, github: &str) {
+        let github = github.to_ascii_lowercase();
+        let login = nix::unistd::User::from_uid(nix::unistd::getuid())
+            .ok()
+            .flatten()
+            .map(|user| user.name);
+        if self.lock().membership.is_some()
+            || self.files.load_owner().is_some()
+            || login.as_deref() != Some(self.config.owner.as_str())
+            || !is_slug(&github)
+        {
+            return;
+        }
+        *self.owner.lock().unwrap_or_else(|e| e.into_inner()) = github;
     }
 
     pub(super) fn model_api_base(&self) -> Option<String> {
@@ -6014,6 +5913,7 @@ impl Link {
                     .map(str::to_owned)
             })
             .unwrap_or_default();
+        let owner = self.owner();
         let mut card = None;
         if let Some(new) = map.get("card") {
             obi_protocol::card::verify(
@@ -6029,7 +5929,7 @@ impl Link {
             if param("key_id") != key.key_id()
                 || param("obi_id") != membership.obi_id
                 || param("sphere") != membership.sphere
-                || param("owner") != self.config.owner
+                || param("owner") != owner
             {
                 return Err(invalid(
                     "The card isn't for this Obi, its key, Sphere and owner.".into(),
@@ -6051,7 +5951,7 @@ impl Link {
                     d,
                     &obi_protocol::identity::DelegationCheck {
                         owner_key: &owner_key,
-                        owner: &self.config.owner,
+                        owner: &owner,
                         sphere: &membership.sphere,
                         obi_id: &membership.obi_id,
                         now,
@@ -6214,7 +6114,7 @@ impl Link {
         body["label"] = json!(label);
         body["agent"] = json!("claude");
         let account = body["account"].as_str().unwrap_or("").to_owned();
-        if body["who"] == self.config.owner {
+        if body["who"] == self.owner() {
             return Err(api(
                 StatusCode::UNPROCESSABLE_ENTITY,
                 "A share is for someone else.",
@@ -6446,7 +6346,7 @@ impl Link {
             .filter(|g| g.account.as_deref() == Some(account))
             .map(|g| g.id.clone())
             .collect();
-        let owner = self.config.owner.clone();
+        let owner = self.owner();
         for id in ids {
             self.count_use(&id, &owner, micros);
         }
@@ -6454,7 +6354,7 @@ impl Link {
 
     /// "Sangam used the share of Deskree API": once a period for each person and share.
     fn share_used_item(&self, grant: &super::shares::Grant, owner: &str, now: i64) {
-        if owner == self.config.owner {
+        if owner == self.owner() {
             return;
         }
         let name = super::hosting::person(owner);
@@ -6791,7 +6691,7 @@ mod tests {
         assert_eq!(
             link.ask_teammate(&change).await,
             Teammate::NeedsYou(
-                "Oby isn't in an Obysphere, so no teammate's Oby can approve it.".into()
+                "Oby isn't in an Obysphere, so no teammate's Oby can approve it. Invite a teammate who can push to acme/app to an Obysphere with you, or get their approval on GitHub yourself.".into()
             )
         );
         let member = |owner: &str| Member {
@@ -6826,7 +6726,7 @@ mod tests {
         }
         assert_eq!(
             link.ask_teammate(&change).await,
-            Teammate::NeedsYou("No teammate's Oby in the Obysphere takes reviews.".into()),
+            Teammate::NeedsYou("No teammate's Oby in the Obysphere takes reviews. Invite a teammate who can push to acme/app to your Obysphere, or get their approval on GitHub yourself.".into()),
             "never itself"
         );
         let set = |e: Exchange| {
@@ -6855,7 +6755,7 @@ mod tests {
         ));
         assert_eq!(
             link.ask_teammate(&change).await,
-            Teammate::NeedsYou("No teammate's Oby could approve it on GitHub.".into()),
+            Teammate::NeedsYou("No teammate's Oby could approve it on GitHub. Invite a teammate who can push to acme/app to your Obysphere, or get their approval on GitHub yourself.".into()),
             "zoe couldn't, and nobody else can"
         );
         let _ = std::fs::remove_dir_all(&home);
@@ -6962,6 +6862,29 @@ mod tests {
         }
     }
 
+    /// The app reads the delegation's scope and end, to sign the next before it ends (#1215); never
+    /// the JWT.
+    #[tokio::test]
+    async fn the_membership_says_when_the_delegation_ends() {
+        let (link, home, _stop) = sender_link("delegation-ends", Some("joined"));
+        assert!(link.membership_json()["delegation"].is_null());
+        let key = Keypair::from_seed(&[7; 32]);
+        let jwt = obi_protocol::jwt::sign(
+            &json!({"scope": "receive reply", "exp": 1_900_000_000}),
+            &key,
+        )
+        .ok()
+        .unwrap();
+        link.lock().delegation = Some(jwt.clone());
+        let shown = link.membership_json();
+        assert_eq!(
+            shown["delegation"],
+            json!({"scope": "receive reply", "expiresAt": time::format(1_900_000_000)})
+        );
+        assert!(!shown.to_string().contains(&jwt));
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
     /// Out of a Sphere, start() leaves the sender and the clock off; with a membership, joined or
     /// revoked, start() starts them.
     #[tokio::test]
@@ -6980,6 +6903,103 @@ mod tests {
             );
             let _ = std::fs::remove_dir_all(&home);
         }
+    }
+
+    /// Leaving forgets the Sphere, revoked or not: its folder and the Obi key go, the next key is a
+    /// new one, and nothing refuses a join any more (#1214).
+    #[tokio::test]
+    async fn leaving_forgets_the_sphere_and_the_obi_key() {
+        let (link, home, _stop) = sender_link("leave", Some("revoked"));
+        let before = link.make_key().await.ok().unwrap()["keyId"].clone();
+        ChainKept::default().save(&home);
+        assert!(home.join("sphere/membership.json").is_file());
+        assert!(home.join("keys/obi.key").is_file());
+
+        let mut exchange = Exchange::new(
+            "outgoing",
+            json!({"correlation_id": "c-waiting", "type": "question"}),
+            "obi-ernesto".into(),
+            None,
+        );
+        exchange.outbox.push(json!({"id": "m-1"}));
+        link.lock().exchanges.insert("c-waiting".into(), exchange);
+
+        let left = link.leave().await.ok().unwrap();
+        assert_eq!(left["state"], "none");
+        // What waited to go to that Sphere never goes to the next.
+        assert!(link.lock().exchanges["c-waiting"].outbox.is_empty());
+        assert!(!link.has_membership());
+        assert!(!home.join("sphere").exists());
+        assert!(!home.join("keys/obi.key").exists());
+        assert_ne!(link.make_key().await.ok().unwrap()["keyId"], before);
+        // Again, with nothing to leave: the same answer.
+        assert_eq!(link.leave().await.ok().unwrap()["state"], "none");
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// Until obid joins, the owner it would join as is the GitHub login when config's owner is
+    /// still the Mac's login name; an owner set by hand stays, and so does the one it joined as.
+    #[tokio::test]
+    async fn until_it_joins_the_owner_is_the_github_login() {
+        let login = nix::unistd::User::from_uid(nix::unistd::getuid())
+            .unwrap()
+            .unwrap()
+            .name;
+        let home = std::env::temp_dir().join(format!("obid-link-owner-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        let config = Config::parse(
+            &json!({"listen": "127.0.0.1:0", "home": home, "owner": login}).to_string(),
+        )
+        .unwrap();
+        let events = Events::new();
+        let jobs = Jobs::open(config.clone(), events.clone(), Err("no sandbox".into())).unwrap();
+        let (_stop, stopping) = watch::channel(false);
+        let link = Link::open(config, jobs, events, stopping).unwrap();
+        link.adopt_github_owner("not_a_slug");
+        assert_eq!(link.owner(), login);
+        link.adopt_github_owner("WellPrado");
+        assert_eq!(link.owner(), "wellprado");
+        assert_eq!(link.membership_json()["owner"], "wellprado");
+        let _ = std::fs::remove_dir_all(&home);
+
+        // An owner set by hand ("wellington", not the login name) stays.
+        let (link, home, _stop) = sender_link("owner-set", None);
+        link.adopt_github_owner("wellprado");
+        assert_eq!(link.owner(), "wellington");
+        let _ = std::fs::remove_dir_all(&home);
+
+        // A membership kept: the owner its card names, whatever config says; kept in `home/owner`,
+        // and still the owner after a leave, and after a restart (#1214).
+        let home = std::env::temp_dir().join(format!("obid-link-owner-in-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        let mut kept = membership("joined");
+        kept.card = json!({"capabilities": {"extensions": [{"params": {"owner": "carol"}}]}});
+        Files::new(&home).save_membership(&kept).unwrap();
+        let config = Config::parse(
+            &json!({"listen": "127.0.0.1:0", "home": home, "owner": login}).to_string(),
+        )
+        .unwrap();
+        let events = Events::new();
+        let jobs = Jobs::open(config.clone(), events.clone(), Err("no sandbox".into())).unwrap();
+        let (_stop, stopping) = watch::channel(false);
+        let link = Link::open(config, jobs, events, stopping).unwrap();
+        link.adopt_github_owner("wellprado");
+        assert_eq!(link.owner(), "carol");
+        assert_eq!(Files::new(&home).load_owner().as_deref(), Some("carol"));
+        link.leave().await.ok().unwrap();
+        link.adopt_github_owner("wellprado");
+        assert_eq!(link.owner(), "carol");
+        let config = Config::parse(
+            &json!({"listen": "127.0.0.1:0", "home": home, "owner": login}).to_string(),
+        )
+        .unwrap();
+        let events = Events::new();
+        let jobs = Jobs::open(config.clone(), events.clone(), Err("no sandbox".into())).unwrap();
+        let (_stop, stopping) = watch::channel(false);
+        let again = Link::open(config, jobs, events, stopping).unwrap();
+        again.adopt_github_owner("wellprado");
+        assert_eq!(again.owner(), "carol");
+        let _ = std::fs::remove_dir_all(&home);
     }
 
     /// A review request from obi-ernesto, `cid` its id, expiring at `expires_at`.

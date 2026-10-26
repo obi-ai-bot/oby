@@ -101,8 +101,7 @@ struct ChatWindowTests {
 
     @Test func composerEscapeUsesTheSameExitHandlerAsTheWindow() async throws {
         var exits = 0
-        let root = ChatComposer(text: .constant(""), focused: .constant(true), tray: Tray(),
-                                onSend: {}, onScreenshot: {}, onStop: { exits += 1; return true })
+        let root = ComposerEditor(text: .constant(""), focused: .constant(true), onSend: {}, onStop: { exits += 1; return true })
             .onExitCommand { exits += 1 }
         let window = offscreenWindow(size: NSSize(width: 500, height: 100), root: root)
         window.makeKey()
@@ -265,6 +264,23 @@ struct ChatWindowTests {
         second.later = now + 3600
         feed.apply(second)
         #expect(IslandInbox.entries(feed: feed, now: now + 120).count == 1)
+    }
+
+    @Test func homeStackKeepsItsPlaceAndGoesRound() {
+        let place = HomeStack.Place(id: "b", index: 1)
+        #expect(HomeStack.index(of: place, in: ["a", "b", "c"]) == 1)
+        // Answered or put off: the one after takes its place, "2/3" becoming "2/2".
+        #expect(HomeStack.index(of: place, in: ["a", "c"]) == 1)
+        // The last one gone: round to the first.
+        #expect(HomeStack.index(of: HomeStack.Place(id: "c", index: 2), in: ["a", "b"]) == 0)
+        // One coming back above it moves its place, not the card on top.
+        #expect(HomeStack.index(of: place, in: ["z", "a", "b"]) == 2)
+        #expect(HomeStack.index(of: HomeStack.Place(), in: ["a"]) == 0)
+        // Previous and next wrap at both ends; with one card they stay put.
+        #expect(HomeStack.step(0, by: -1, count: 3) == 2)
+        #expect(HomeStack.step(2, by: 1, count: 3) == 0)
+        #expect(HomeStack.step(1, by: 1, count: 3) == 2)
+        #expect(HomeStack.step(0, by: 1, count: 1) == 0)
     }
 
     @Test func returnNeverTakesADestructiveRecommendation() {

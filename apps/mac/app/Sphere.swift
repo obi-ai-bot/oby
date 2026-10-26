@@ -147,19 +147,28 @@ nonisolated struct SphereServer: Sendable {
 
     func call(_ method: String, _ path: String, bearer: String? = nil, json: Any? = nil,
               form: [String: String]? = nil) async throws -> [String: Any] {
+        var body: (Data, String)?
+        if let json {
+            body = (try JSONSerialization.data(withJSONObject: json), "application/json")
+        } else if let form {
+            let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-._~"))
+            body = (Data(form.map { "\($0)=\($1.addingPercentEncoding(withAllowedCharacters: allowed) ?? "")" }.joined(separator: "&").utf8),
+                    "application/x-www-form-urlencoded")
+        }
+        let data = try await send(method, path, bearer: bearer, body: body)
+        return (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] ?? [:]
+    }
+
+    /// One call, its answer as bytes: `body` with its content type, if any (a picture, say).
+    func send(_ method: String, _ path: String, bearer: String? = nil, body: (Data, String)? = nil) async throws -> Data {
         if let problem = Self.problem(base) { throw RunnerError(message: problem) }
         var request = URLRequest(url: base.appending(path: "v0.1").appending(path: path))
         request.httpMethod = method
         request.timeoutInterval = 30
         if let bearer { request.setValue("Bearer \(bearer)", forHTTPHeaderField: "Authorization") }
-        if let json {
-            request.httpBody = try JSONSerialization.data(withJSONObject: json)
-            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        } else if let form {
-            let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-._~"))
-            request.httpBody = Data(form.map { "\($0)=\($1.addingPercentEncoding(withAllowedCharacters: allowed) ?? "")" }
-                .joined(separator: "&").utf8)
-            request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
+        if let (data, type) = body {
+            request.httpBody = data
+            request.setValue(type, forHTTPHeaderField: "Content-Type")
         }
         let data: Data, response: URLResponse
         do {
@@ -167,16 +176,20 @@ nonisolated struct SphereServer: Sendable {
         } catch {
             throw RunnerError(message: "The Obysphere at \(base.host() ?? base.absoluteString) can't be reached: \(error.localizedDescription)")
         }
-        let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] ?? [:]
         let status = (response as? HTTPURLResponse)?.statusCode ?? 0
         guard (200..<300).contains(status) else {
             // The Sphere's error, or the token endpoint's OAuth one.
+            let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] ?? [:]
             let error = object["error"] as? [String: Any]
             let code = error?["code"] as? String ?? object["error"] as? String ?? "\(status)"
             let message = error?["message"] as? String ?? object["error_description"] as? String ?? ""
+            // A server from before a route (obi-sphere#27, say): not a refusal, an update to make.
+            if status == 404, message == "no such endpoint" {
+                throw RunnerError(message: "\(base.host() ?? "This Obysphere server") doesn’t do that yet: its operator has to update it.", status: status)
+            }
             throw RunnerError(message: "The Obysphere refused it: \(code)\(message.isEmpty ? "" : ": \(message)")", status: status)
         }
-        return object
+        return data
     }
 
     /// Signs the owner in with Google for `key` (spec sphere-api.md section 3.1): the Sphere's
@@ -403,8 +416,9 @@ final class HostOwn {
 // MARK: The model
 
 /// This Mac's place in its Obysphere: what obid says of its membership, the Sphere's name and
-/// members as the owner reads them, the requests from other Obys waiting for the owner, and what
-/// the owner does there (create it, invite, join, ask for a review, answer).
+/// members as the owner reads them, and what the owner does there (create it, invite, join, leave).
+/// What other Obys ask waits on Home (docs/obysphere.md, part 6). Oby asks a teammate's Oby for a
+/// review by itself (obid's merge follower), never from here (the owner's decision of 2026-10-25).
 @MainActor @Observable
 final class SphereModel {
     /// `GET /v1/obid/sphere`.
@@ -415,6 +429,9 @@ final class SphereModel {
         var obiId: String?
         var owner: String
         var lastError: String?
+        /// The delegation obid holds: its scope, and when it ends (never the JWT).
+        var delegation: Delegation?
+        struct Delegation: Decodable, Equatable { var scope: String?; var expiresAt: Date? }
     }
 
     /// One entry of the Sphere's directory.
@@ -434,6 +451,32 @@ final class SphereModel {
     }
 
     /// An owner key obid pinned (docs/runner-api.md, "Pinned owner keys").
+    /// An invitation that can still be used (`GET …/invitations`), with the address it went to when
+    /// this Mac sent it: the Obysphere keeps no address, so this Mac's own record says it.
+    struct Invitation: Identifiable, Equatable {
+        var id: String
+        var label: String?
+        var email: String?
+        var maxUses: Int
+        var uses: Int
+        var domain: String?
+
+        /// What its row says: the address, else its label, else what kind of link it is.
+        var shown: String {
+            email ?? label ?? (domain.map { "Anyone at \($0)" } ?? (maxUses > 1 ? "A link for \(maxUses) people" : "A link for one person"))
+        }
+    }
+
+    /// The addresses this Mac sent invitations to, by invitation id: this admin's own record, never
+    /// sent anywhere (the owner's decision of 2026-10-25, docs/obysphere.md decision 2).
+    static let invitedFile = Workspace.root.appending(path: "sphere-invited.json")
+    static func invited() -> [String: String] {
+        (try? JSONDecoder().decode([String: String].self, from: Data(contentsOf: invitedFile))) ?? [:]
+    }
+    static func keepInvited(_ record: [String: String]) {
+        try? JSONEncoder().encode(record).write(to: invitedFile, options: [.atomic])
+    }
+
     struct Pin: Decodable, Equatable {
         var owner: String
         var fingerprint: String
@@ -441,18 +484,6 @@ final class SphereModel {
         var verified: Bool?
     }
 
-    /// An `obiRequest` inbox item (docs/runner-api.md, "Obi-to-Obi requests in the inbox"). Its
-    /// title and text are obid's own words from typed fields; `quoted` is the other Oby's text,
-    /// shown whole and as text only.
-    struct Request: Identifiable, Equatable {
-        var id: String
-        var title: String
-        var text: String
-        var options: [String]
-        var details: [String]
-        var quoted: [(String, String)]
-        static func == (a: Request, b: Request) -> Bool { a.id == b.id && a.options == b.options }
-    }
 
     /// The Obysphere server this Oby makes Obyspheres on and trusts links from: Settings ›
     /// Obysphere's Server, else the app's ObySphereURL (OBY_SPHERE_URL in apps/config/Signing.xcconfig,
@@ -475,10 +506,18 @@ final class SphereModel {
     private(set) var membership: Membership?
     private(set) var name: String?
     private(set) var admin = false
+    /// Its admin, by owner id (one per Obysphere today, sphere-api.md section 3).
+    private(set) var adminOwner: String?
+    /// Everyone who administers it (sphere.schema.json `admins`); on a server from before
+    /// obi-sphere#27, which has no such list, the one who made it.
+    private(set) var admins: [String] = []
+    /// The server says `admins`: it renames, keeps a picture, lists invitations and deletes (obi-sphere#27).
+    private(set) var current = false
+    /// Its invitations that can still be used, for an admin on a current server; nil otherwise.
+    private(set) var invitations: [Invitation]?
     private(set) var members: [Member] = []
     /// Your owner key's fingerprint, for the others to compare.
     private(set) var ownFingerprint: String?
-    private(set) var requests: [Request] = []
     var problem: String?
     var busy = false
 
@@ -487,6 +526,14 @@ final class SphereModel {
     var joined: Bool { membership?.state == "joined" }
     /// Who this Mac's Oby acts for (obid's `owner`).
     var owner: String? { membership?.owner }
+    /// How many are in it, you included (Sangam's "9 members").
+    var memberCount: Int { members.count + 1 }
+    /// Where it is, as Create showed it: "deskree on obysphere.deskree.com". It can't change (the
+    /// owner's decision of 2026-10-25, docs/obysphere.md).
+    var address: String? {
+        guard let sphere = membership?.sphere, let host = server?.base.host() else { return nil }
+        return "\(sphere) on \(host)"
+    }
     /// The operator token's keychain item, on the Mac that deployed the Obysphere server (obi-sphere's
     /// scripts/deploy.mjs), its account the server's host: a token only ever goes to the server it was
     /// made for. Every other Mac creates an Obysphere by signing in with Google, when the server lets
@@ -522,7 +569,7 @@ final class SphereModel {
         }
     }
 
-    /// obid's membership, then the Sphere's name and members and the waiting requests.
+    /// obid's membership, then the Sphere's name, its admin and its members.
     func refresh() async throws {
         let runner = try runner()
         membership = try await runner.call("GET", "v1/obid/sphere")
@@ -531,10 +578,16 @@ final class SphereModel {
         let token = try await server.ownerToken(owner: owner, sphere: sphere, key: try OwnerKey.of(owner), scope: "directory:read")
         let about = try await server.call("GET", "spheres/\(sphere)", bearer: token)
         name = about["name"] as? String
-        admin = about["admin_owner"] as? String == owner
+        adminOwner = about["admin_owner"] as? String
+        current = about["admins"] is [String]
+        admins = about["admins"] as? [String] ?? adminOwner.map { [$0] } ?? []
+        admin = admins.contains(owner)
+        await keepPicture(server, sphere, token, sha: about["image_sha256"] as? String)
+        invitations = admin && current ? try? await listInvitations(server, sphere) : nil
         let list = try await server.call("GET", "spheres/\(sphere)/members", bearer: token)["members"] as? [[String: Any]] ?? []
+        // A removed member drops off the list (Sangam's Members).
         members = list.compactMap { entry in
-            guard let obi = entry["obi"] as? String, obi != membership?.obiId else { return nil }
+            guard let obi = entry["obi"] as? String, obi != membership?.obiId, entry["status"] as? String == "active" else { return nil }
             let params = ((entry["card"] as? [String: Any])?["capabilities"] as? [String: Any])
                 .flatMap { ($0["extensions"] as? [[String: Any]])?.first?["params"] as? [String: Any] }
             return Member(obi: obi, owner: entry["owner"] as? String ?? "", name: (entry["card"] as? [String: Any])?["name"] as? String ?? obi,
@@ -549,39 +602,18 @@ final class SphereModel {
             members[index].verified = pin?.verified ?? false
         }
         ownFingerprint = try? OwnerKey.of(owner).keyId
-        let inbox = (try JSONSerialization.jsonObject(with: try await runner.send("GET", "v1/inbox"))) as? [[String: Any]] ?? []
-        requests = inbox.compactMap(Self.request)
-    }
-
-    /// An open `obiRequest` item as the owner sees it, or nil for any other.
-    nonisolated static func request(_ item: [String: Any]) -> Request? {
-        guard item["kind"] as? String == "obiRequest", item["done"] == nil || item["done"] is NSNull,
-              let id = item["id"] as? String else { return nil }
-        let quoted = (item["obi"] as? [String: Any])?["quoted"] as? [String: Any] ?? [:]
-        var lines: [(String, String)] = []
-        for key in ["goal", "summary", "text"] {
-            if let text = quoted[key] as? String { lines.append((key.capitalized, text)) }
-        }
-        for (index, condition) in (quoted["acceptance"] as? [[String: Any]] ?? []).enumerated() {
-            for key in ["note", "text"] {
-                if let text = condition[key] as? String { lines.append(("Condition \(index + 1)", text)) }
-            }
-        }
-        for choice in quoted["choices"] as? [String] ?? [] { lines.append(("Choice", choice)) }
-        return Request(id: id, title: item["title"] as? String ?? "", text: item["text"] as? String ?? "",
-                       options: item["options"] as? [String] ?? [], details: item["details"] as? [String] ?? [], quoted: lines)
     }
 
     // MARK: Admin
 
     /// What creating made: the link for everyone at `domain`, and the one mailed to the people invited.
-    struct Created { var team: InviteLink?; var mailed: InviteLink? }
+    struct Created { var team: InviteLink?; var mailed: [(email: String, link: InviteLink)] = [] }
 
     /// Creates the Obysphere with this Mac's owner as its admin (sphere-api.md section 3), lets
     /// everyone ask everyone for reviews and questions (section 5), and joins this Mac's Oby. It
     /// creates with the operator token when this Mac has it, else by signing in with Google. Then a
-    /// link for everyone at `domain` (the Sphere checks each one's Workspace), and one for the
-    /// `emails` invited, which Mail opens a message with for the owner to send.
+    /// link for everyone at `domain` (the Sphere checks each one's Workspace), and one for each of
+    /// the `emails` invited, which Mail opens a message with for the owner to send.
     func create(id sphere: String, name: String, emails: [String] = [], domain: String? = nil, on url: URL? = SphereModel.server) async throws -> Created {
         guard let url else { throw RunnerError(message: "Set the Obysphere server first, in Settings › Obysphere.") }
         let runner = try runner()
@@ -621,38 +653,198 @@ final class SphereModel {
         ])
         let mine = try await invitation(server: server, token: token, sphere: sphere, name: name, by: owner, for: owner)
         try await join(mine)
+        // Read it first: whether the server takes labels, and that this Oby is its admin.
+        try await refresh()
         var created = Created()
         if let domain {
             // A Sphere server without sign-in can't limit a link to a domain: no team link then.
-            created.team = try? await invitation(server: server, token: token, sphere: sphere, name: name, by: owner, domain: domain)
+            created.team = try? await invitation(server: server, token: token, sphere: sphere, name: name, by: owner, domain: domain, label: "Team link")
             if let team = created.team { try? Self.teamLinks.save(team.link, as: sphere) }
         }
         if !emails.isEmpty {
             // The Sphere is made and joined by now: a failed invite mustn't undo that in the sheet.
-            created.mailed = try? await invitation(server: server, token: token, sphere: sphere, name: name, by: owner, uses: emails.count)
+            created.mailed = (try? await invite(emails, domain: nil)) ?? []
         }
         try await refresh()
         return created
     }
 
     /// A link for anyone at `domain` (with a sign-in) for 30 days, or else one for up to 50 people
-    /// for 7 days (sphere-api.md section 4, open invitations), kept for Settings to copy again.
+    /// for 7 days (sphere-api.md section 4, open invitations), kept for Settings to copy again. The
+    /// link made before is cancelled: one team link at a time (#1217).
     func makeTeamLink(domain: String?) async throws -> InviteLink {
-        guard let server, let owner, let sphere = membership?.sphere else { throw RunnerError(message: "This Oby isn't in an Obysphere.") }
-        let token = try await server.ownerToken(owner: owner, sphere: sphere, key: try OwnerKey.of(owner), scope: "admin")
-        let link = try await invitation(server: server, token: token, sphere: sphere, name: name ?? sphere, by: owner, uses: domain == nil ? 50 : 1000, domain: domain)
+        let (server, owner, sphere, token) = try await adminToken()
+        let link = try await invitation(server: server, token: token, sphere: sphere, name: name ?? sphere, by: owner, uses: domain == nil ? 50 : 1000, domain: domain,
+                                        label: "Team link")
+        if let old = teamLink { try? await withdraw(old, server: server, sphere: sphere, token: token) }
         try? Self.teamLinks.save(link.link, as: sphere)
         teamLink = link
         return link
     }
 
+    /// A link of its own for each of `emails`, used once, for 7 days (30, limited to `domain`): the
+    /// admin sends each from their own Mail (the owner's decision of 2026-10-25). The Obysphere
+    /// keeps no address: this Mac remembers which address each went to, for Invited.
+    func invite(_ emails: [String], domain: String?) async throws -> [(email: String, link: InviteLink)] {
+        let (server, owner, sphere, token) = try await adminToken()
+        var made: [(email: String, link: InviteLink)] = []
+        var record = Self.invited()
+        for email in emails {
+            let link = try await invitation(server: server, token: token, sphere: sphere, name: name ?? sphere, by: owner, uses: 1, domain: domain,
+                                            label: "Invited by email")
+            record[link.id] = email
+            made.append((email, link))
+        }
+        Self.keepInvited(record)
+        try? await refresh()
+        return made
+    }
+
+    /// Withdraws `invitation` (sphere-api.md section 4): its link joins no one from now on.
+    func cancel(_ invitation: Invitation) async throws {
+        let (server, _, sphere, token) = try await adminToken()
+        do {
+            _ = try await server.call("DELETE", "spheres/\(sphere)/invitations/\(invitation.id)", bearer: token)
+        } catch let error as RunnerError where error.status == 404 {}
+        var record = Self.invited()
+        record[invitation.id] = nil
+        Self.keepInvited(record)
+        try await refresh()
+    }
+
+    /// Sends `invitation` again: the Obysphere keeps only its link's hash, so it's withdrawn and made
+    /// anew, and Mail opens the new one to the same address. Only for one this Mac sent.
+    func resend(_ invitation: Invitation) async throws {
+        guard let email = invitation.email else { return }
+        try await cancel(invitation)
+        for made in try await invite([email], domain: invitation.domain) { Self.mail(made.link, to: [made.email]) }
+    }
+
+    /// Those that can still be used, with this Mac's addresses; addresses for any gone are forgotten.
+    private func listInvitations(_ server: SphereServer, _ sphere: String) async throws -> [Invitation] {
+        let (_, _, _, token) = try await adminToken()
+        let list = try await server.call("GET", "spheres/\(sphere)/invitations", bearer: token)["invitations"] as? [[String: Any]] ?? []
+        let record = Self.invited()
+        let found = list.compactMap { entry -> Invitation? in
+            guard let id = entry["invitation_id"] as? String else { return nil }
+            return Invitation(id: id, label: entry["label"] as? String, email: record[id], maxUses: entry["max_uses"] as? Int ?? 1,
+                              uses: entry["uses"] as? Int ?? 0, domain: entry["domain"] as? String)
+        }
+        let kept = record.filter { id, _ in found.contains { $0.id == id } }
+        if kept.count != record.count { Self.keepInvited(kept) }
+        return found
+    }
+
+    // MARK: Its name, picture, admins, and deleting it (obi-sphere#27)
+
+    /// Renames it: everyone sees the new name; its address stays.
+    func rename(_ name: String) async throws {
+        let (server, _, sphere, token) = try await adminToken()
+        _ = try await server.call("PATCH", "spheres/\(sphere)", bearer: token, json: ["name": name])
+        try await refresh()
+    }
+
+    /// `image` cut to a square from its middle, 256 pixels a side, as a PNG: what the Obysphere keeps.
+    nonisolated static func picture(_ image: NSImage) -> Data? {
+        guard let cg = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else { return nil }
+        let side = min(cg.width, cg.height)
+        guard let square = cg.cropping(to: CGRect(x: (cg.width - side) / 2, y: (cg.height - side) / 2, width: side, height: side)),
+              let context = CGContext(data: nil, width: 256, height: 256, bitsPerComponent: 8, bytesPerRow: 0,
+                                      space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
+        context.interpolationQuality = .high
+        context.draw(square, in: CGRect(x: 0, y: 0, width: 256, height: 256))
+        return context.makeImage().flatMap { NSBitmapImageRep(cgImage: $0).representation(using: .png, properties: [:]) }
+    }
+
+    /// Gives it `image` as its picture, for everyone in it.
+    func setPicture(_ image: NSImage) async throws {
+        guard let png = Self.picture(image) else { throw RunnerError(message: "That image can't be read.") }
+        let (server, _, sphere, token) = try await adminToken()
+        _ = try await server.send("PUT", "spheres/\(sphere)/image", bearer: token, body: (png, "image/png"))
+        try await refresh()
+    }
+
+    func removePicture() async throws {
+        let (server, _, sphere, token) = try await adminToken()
+        _ = try await server.call("DELETE", "spheres/\(sphere)/image", bearer: token)
+        try await refresh()
+    }
+
+    /// Its picture as the strip's tile on this Mac, fetched again only when its hash changes, and
+    /// gone once it has none. A logo kept here before the Obysphere kept pictures stays until then.
+    private func keepPicture(_ server: SphereServer, _ sphere: String, _ token: String, sha: String?) async {
+        // A server that keeps no pictures says nothing about this Mac's logo: it stays.
+        guard current else { return }
+        let had = try? String(contentsOf: SphereTile.shaFile, encoding: .utf8)
+        guard sha != had else { return }
+        if let sha {
+            guard let data = try? await server.send("GET", "spheres/\(sphere)/image", bearer: token), let image = NSImage(data: data) else { return }
+            SphereTile.keep(image)
+            try? sha.write(to: SphereTile.shaFile, atomically: true, encoding: .utf8)
+        } else {
+            SphereTile.forget()
+        }
+    }
+
+    /// Makes `owner` an admin, or takes it away (at least one stays: the Obysphere refuses the last).
+    func setAdmin(_ owner: String, _ on: Bool) async throws {
+        let (server, _, sphere, token) = try await adminToken()
+        _ = try await server.call(on ? "PUT" : "DELETE", "spheres/\(sphere)/admins/\(owner)", bearer: token)
+        try await refresh()
+    }
+
+    /// Deletes it for everyone (the owner's decision of 2026-10-25: its audit chain goes too), then
+    /// this Mac's Oby leaves it, as everyone else's does when the Obysphere answers that it's gone.
+    func deleteSphere() async throws {
+        let (server, _, sphere, token) = try await adminToken()
+        _ = try await server.send("DELETE", "spheres/\(sphere)", bearer: token)
+        _ = try await runner().send("DELETE", "v1/obid/sphere")
+        try? Self.teamLinks.remove(sphere)
+        Self.keepInvited([:])
+        SphereTile.forget()
+        (name, admin, adminOwner, admins, invitations, members, teamLink) = (nil, false, nil, [], nil, [], nil)
+        try await refresh()
+    }
+
+    /// Cancels the team link (sphere-api.md section 4, withdraw): it joins no one from now on (#1217).
+    func cancelTeamLink() async throws {
+        guard let link = teamLink else { return }
+        let (server, _, sphere, token) = try await adminToken()
+        try await withdraw(link, server: server, sphere: sphere, token: token)
+        try? Self.teamLinks.remove(sphere)
+        teamLink = nil
+    }
+
+    /// Takes `member`'s Oby out of the Obysphere (sphere-api.md section 4, revoke): its tokens stop
+    /// working, what waits for it is dropped, and its own Oby learns it within a minute (#1217).
+    func remove(_ member: Member) async throws {
+        let (server, _, sphere, token) = try await adminToken()
+        _ = try await server.call("DELETE", "spheres/\(sphere)/members/\(member.obi)", bearer: token)
+        try await refresh()
+    }
+
+    /// The admin's own token, with the Sphere it's for.
+    private func adminToken() async throws -> (SphereServer, String, String, String) {
+        guard let server, let owner, let sphere = membership?.sphere else { throw RunnerError(message: "This Oby isn't in an Obysphere.") }
+        return (server, owner, sphere, try await server.ownerToken(owner: owner, sphere: sphere, key: try OwnerKey.of(owner), scope: "admin"))
+    }
+
+    /// Withdraws `link`; one the Sphere no longer has is gone already.
+    private func withdraw(_ link: InviteLink, server: SphereServer, sphere: String, token: String) async throws {
+        do {
+            _ = try await server.call("DELETE", "spheres/\(sphere)/invitations/\(link.id)", bearer: token)
+        } catch let error as RunnerError where error.status == 404 {}
+    }
+
     /// A named invitation `for` one owner, used once in 7 days; else an open one for `uses` Obis,
     /// for 30 days when it's limited to `domain`, else 7.
     private func invitation(server: SphereServer, token: String, sphere: String, name: String, by: String,
-                            for person: String? = nil, uses: Int = 1000, domain: String? = nil) async throws -> InviteLink {
+                            for person: String? = nil, uses: Int = 1000, domain: String? = nil, label: String? = nil) async throws -> InviteLink {
         var body: [String: Any] = ["expires_in": domain == nil ? 604_800 : 2_592_000]
         if let person { (body["owner"], body["obi"]) = (person, "obi-\(person)") } else { body["max_uses"] = min(max(uses, 1), 1000) }
         if let domain { body["domain"] = domain }
+        // An older server refuses a label it doesn't know.
+        if let label, current { body["label"] = label }
         let made = try await server.call("POST", "spheres/\(sphere)/invitations", bearer: token, json: body)
         guard let id = made["invitation_id"] as? String, let secret = made["secret"] as? String else {
             throw RunnerError(message: "The Obysphere's invitation came without its secret.")
@@ -696,30 +888,97 @@ final class SphereModel {
 
     /// Joins with `invite` (docs/runner-api.md, `POST /v1/obid/sphere/join`): obid's key, its card
     /// signed here with the owner key, and the owner's delegation to it; first a sign-in with Google
-    /// when the link is for one Workspace's people.
+    /// when the link is for one Workspace's people. A membership that was revoked is left first.
     func join(_ invite: InviteLink) async throws {
         let runner = try runner()
         let membership: Membership = try await runner.call("GET", "v1/obid/sphere")
-        if let mismatch = invite.mismatch(owner: membership.owner) { throw RunnerError(message: mismatch) }
-        let key = try OwnerKey.of(membership.owner)
+        let owner = membership.owner
+        if let mismatch = invite.mismatch(owner: owner) { throw RunnerError(message: mismatch) }
+        if membership.state == "revoked" { _ = try await runner.send("DELETE", "v1/obid/sphere") }
+        let key = try OwnerKey.of(owner)
         let url = invite.server.absoluteString.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        let obi = invite.obi ?? "obi-\(membership.owner)"
         var invitation: [String: Any] = ["id": invite.id, "secret": invite.secret]
         if invite.owner == nil, try await preview(invite).domain != nil {
             invitation["signin"] = try await SphereServer(base: invite.server).signIn(key: key)
         }
         _ = try await runner.send("POST", "v1/obid/sphere/key")
-        let made = try await raw(runner, "POST", "v1/obid/sphere/card", [
-            "url": url, "sphere": invite.sphere, "obiId": obi, "name": "\(membership.owner)'s Oby",
-            "ownerKey": key.publicKey, "accepts": Self.accepts,
-        ])
-        guard let card = made["card"] as? [String: Any] else { throw RunnerError(message: "obid made no card.") }
-        _ = try await raw(runner, "POST", "v1/obid/sphere/join", [
-            "url": url, "sphere": invite.sphere, "invitation": invitation,
-            "card": try key.sign(card: card),
-            "delegation": try key.assertion(owner: membership.owner, sphere: invite.sphere, scope: Self.obiScopes, mayAct: obi),
-        ])
+        // A named invitation's Obi id is its own; else obi-<owner>, then -2, -3… while the Sphere has
+        // had one by that id (it never takes one twice: a reinstall, a second Mac, a leave, #1214).
+        let ids = invite.obi.map { [$0] } ?? Self.obiIds(owner: owner)
+        for obi in ids {
+            do {
+                let made = try await raw(runner, "POST", "v1/obid/sphere/card", [
+                    "url": url, "sphere": invite.sphere, "obiId": obi, "name": "\(owner)'s Oby",
+                    "ownerKey": key.publicKey, "accepts": Self.accepts,
+                ])
+                guard let card = made["card"] as? [String: Any] else { throw RunnerError(message: "obid made no card.") }
+                _ = try await raw(runner, "POST", "v1/obid/sphere/join", [
+                    "url": url, "sphere": invite.sphere, "invitation": invitation,
+                    "card": try key.sign(card: card),
+                    "delegation": try key.assertion(owner: owner, sphere: invite.sphere, scope: Self.obiScopes, mayAct: obi),
+                ])
+                break
+            } catch let error as RunnerError where error.message.contains(Self.idTaken) && obi != ids.last {
+                continue
+            } catch let error as RunnerError {
+                throw Self.joinProblem(error, owner: owner, sphere: invite.name) ?? error
+            }
+        }
         try await refresh()
+    }
+
+    /// The Obi ids an open invitation's join tries, in order.
+    nonisolated static func obiIds(owner: String) -> [String] { ["obi-\(owner)"] + (2...9).map { "obi-\(owner)-\($0)" } }
+    /// What the Sphere says of an Obi id it had before (sphere-api.md section 4, redeem).
+    nonisolated static let idTaken = "Obi ids are never reused"
+
+    /// The Sphere's refusal of a join in plain words, with what to do (#1214), or nil for one shown as it is.
+    nonisolated static func joinProblem(_ error: RunnerError, owner: String, sphere: String) -> RunnerError? {
+        let said = error.message
+        let words: String? = if said.contains("the owner already has another bound key") {
+            "\(sphere) already has \(owner) with another Mac's key (another Mac, or Oby before a reinstall). For now you're in an Obysphere from one Mac: join from that one."
+        } else if said.contains("the owner is bound to another account") {
+            "\(sphere) knows \(owner) by another Google account: sign in with that one."
+        } else if said.contains("this account joined as another owner") {
+            "That Google account is in \(sphere) as someone else. Sign in with your own work account."
+        } else if let domain = said.firstMatch(of: /this invitation is for (\S+) accounts/)?.1 {
+            "This link is for people at \(domain): sign in with your \(domain) Google account."
+        } else if said.contains("invitation_invalid") {
+            "This link has expired, was used up or was cancelled. Ask whoever sent it for a new one."
+        } else if said.contains(idTaken) {
+            "\(sphere) has had Obys called obi-\(owner) to obi-\(owner)-9 already. Ask its admin for a link made for you."
+        } else {
+            nil
+        }
+        return words.map { RunnerError(message: $0, status: error.status) }
+    }
+
+    /// Leaves the Obysphere (docs/runner-api.md, `DELETE /v1/obid/sphere`), so this Mac can join
+    /// another or this one again (#1214). This Mac's Oby is removed there first, with the owner's own
+    /// token, which obid never holds; then obid forgets the Sphere and its Obi key.
+    /// When the Sphere can't be told, this Mac leaves all the same, and says so: the Sphere still
+    /// lists this Oby until its admin removes it.
+    func leave() async throws {
+        let runner = try runner()
+        let membership: Membership = try await runner.call("GET", "v1/obid/sphere")
+        var untold: Error?
+        if membership.state == "joined", let url = membership.url.flatMap(URL.init(string:)),
+           let sphere = membership.sphere, let obi = membership.obiId {
+            let server = SphereServer(base: url)
+            do {
+                let token = try await server.ownerToken(owner: membership.owner, sphere: sphere,
+                                                        key: try OwnerKey.of(membership.owner), scope: "directory:read")
+                _ = try await server.call("DELETE", "spheres/\(sphere)/members/\(obi)", bearer: token)
+            } catch {
+                untold = error
+            }
+        }
+        _ = try await runner.send("DELETE", "v1/obid/sphere")
+        (name, admin, adminOwner, admins, invitations, members, teamLink) = (nil, false, nil, [], nil, [], nil)
+        try await refresh()
+        if let untold {
+            throw RunnerError(message: "This Mac left \(membership.sphere ?? "the Obysphere"), but the Obysphere couldn't be told (\(untold.localizedDescription)): it still lists your Oby until its admin removes it.")
+        }
     }
 
     /// A new card and delegation for this Mac's Oby (docs/runner-api.md, `PUT /v1/obid/sphere/membership`):
@@ -743,24 +1002,6 @@ final class SphereModel {
         try await refresh()
     }
 
-    /// Asks `member`'s Oby to review `job`'s pull request at the commit GitHub has as its head
-    /// (docs/runner-api.md, `POST /v1/obid/sphere/requests`; the spec's review_request).
-    func askForReview(_ member: Member, of job: Job) async throws {
-        guard let pr = PublishedLink.url(job.published).flatMap({ Int($0.lastPathComponent) }),
-              let head = job.pullRequest?.head, let base = job.pullRequest?.base else {
-            throw RunnerError(message: "That job's pull request isn't read from GitHub yet: try again in a moment.")
-        }
-        var body: [String: Any] = [
-            "goal": String((job.title ?? job.task).prefix(200)).replacingOccurrences(of: "\n", with: " "),
-            "repo": job.repo, "pr": pr, "base_branch": base, "head_branch": job.branch, "head_sha": head,
-            "acceptance": [["kind": "tests_pass"], ["kind": "no_blocker_findings"]],
-        ]
-        if !job.summary.isEmpty { body["summary"] = String(job.summary.prefix(2000)) }
-        _ = try await raw(try runner(), "POST", "v1/obid/sphere/requests",
-                          ["to": member.obi, "type": "review_request", "body": body, "expiresIn": 86_400])
-    }
-
-    /// Answers a request with one of its options (`POST /v1/inbox/{id}/answer`).
     /// You compared `member`'s new key with them: obid trusts it from now on.
     /// Accepts their changed key, or verifies the one pinned: only after you compared it with them.
     func acceptKey(_ member: Member) async throws {
@@ -769,9 +1010,34 @@ final class SphereModel {
         try await refresh()
     }
 
-    func answer(_ request: Request, _ option: String) async throws {
-        _ = try await raw(try runner(), "POST", "v1/inbox/\(request.id)/answer", ["answer": option])
-        try await refresh()
+    /// A new delegation with the scope of the one obid holds (`PUT /v1/obid/sphere/membership`), when
+    /// that one ends within `within`: a delegation lasts exactly 30 days, and nothing else renews it
+    /// while sharing is hidden, so every member would drop out on day 30, and their iPhone's relay
+    /// with them (#1215). Answers whether it signed one.
+    @discardableResult
+    func renewDelegation(within: TimeInterval, now: Date = .now) async throws -> Bool {
+        let runner = try runner()
+        let membership: Membership = try await runner.call("GET", "v1/obid/sphere")
+        guard membership.state == "joined", let sphere = membership.sphere, let obi = membership.obiId,
+              let held = membership.delegation, let scope = held.scope,
+              (held.expiresAt ?? now).timeIntervalSince(now) <= within else { return false }
+        let key = try OwnerKey.of(membership.owner)
+        _ = try await raw(runner, "PUT", "v1/obid/sphere/membership", [
+            "delegation": try key.assertion(owner: membership.owner, sphere: sphere, scope: scope, mayAct: obi, now: now),
+        ])
+        return true
+    }
+
+    /// Keeps this Mac's Oby in its Obysphere past 30 days (#1215): a new delegation at launch, once
+    /// obid answers, then every 6 hours once 5 or fewer days are left.
+    static func keepRenewing(feed: RunnerFeed) async {
+        let sphere = SphereModel(feed: feed)
+        var launched = false
+        while !Task.isCancelled {
+            if (try? await sphere.renewDelegation(within: launched ? 5 * 86_400 : .infinity)) != nil { launched = true }
+            // ponytail: polls; 60 s until obid first answers, then 6 h, about 20 tries in the last 5 days.
+            try? await Task.sleep(for: .seconds(launched ? 6 * 3600 : 60))
+        }
     }
 
     /// The runner's call with a JSON body the protocol shapes (snake_case inside), unchanged.

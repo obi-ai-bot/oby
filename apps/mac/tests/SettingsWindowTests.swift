@@ -11,7 +11,7 @@ struct SettingsWindowTests {
     }
 
     /// The launch build (AGENTS.md, 2026-10-23) hides Sharing, Remote access, Vault and every connector
-    /// but GitHub and Slack; `showEverything` brings them back, and a page whose switch is on stays, so
+    /// but GitHub and Tetrix (Slack is cut, 2026-10-25); `showEverything` brings them back, and a page whose switch is on stays, so
     /// the owner can turn it off.
     @Test func theLaunchBuildHidesSharingRemoteAndMostConnectors() {
         #expect(SettingsPage.shown(everything: false).map(\.label) == ["General", "Runner", "Accounts", "Models", "Connectors", "Memory", "Obysphere", "About"])
@@ -21,11 +21,15 @@ struct SettingsWindowTests {
         #expect(RunnerSettingsView.showsChecks(everything: false, merge: false, apple: true))
         #expect(RunnerSettingsView.showsChecks(everything: false, merge: true, apple: false))
         #expect(RunnerSettingsView.showsChecks(everything: true, merge: false, apple: false))
+        // Routines (cut, docs/trim.md): hidden unless asked for, or while obid keeps one, so the owner can pause or delete it.
+        #expect(!RunnerSettingsView.showsRoutines(everything: false, routines: 0))
+        #expect(RunnerSettingsView.showsRoutines(everything: false, routines: 1))
+        #expect(RunnerSettingsView.showsRoutines(everything: true, routines: 0))
         #expect(SettingsPage.shown(everything: false, remoteOn: true).contains(.remote))
         #expect(!SettingsPage.shown(everything: false, remoteOn: true).contains(.sharing))
         #expect(SettingsPage.shown(everything: false, sharingOn: true).contains(.sharing))
         let all = Connectors.list(accounts: [], runner: nil)
-        #expect(Connectors.shown(all, everything: false).map(\.name) == ["GitHub", "Slack"])
+        #expect(Connectors.shown(all, everything: false).map(\.name) == ["Tetrix", "GitHub"])
         #expect(Connectors.shown(all, everything: true) == all)
     }
 

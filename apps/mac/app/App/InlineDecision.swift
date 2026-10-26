@@ -9,6 +9,9 @@ struct InlineDecision: View {
     var focusRequest = 0
     var onOpen: (_ job: String) -> Void = { _ in }
     var onTell: (() -> Void)? = nil
+    /// Over the card, a line apart (Home's stack: its task, where it is, Open task); the card then
+    /// leaves out the job and Open task it would show itself.
+    var head: AnyView? = nil
     @State private var expanded = false
     @State private var busy = false
     @State private var problem: String?
@@ -56,12 +59,15 @@ struct InlineDecision: View {
     /// happened, the command or plan it's about, the choices; answered, one line that opens it again.
     private var card: some View {
         VStack(alignment: .leading, spacing: 0) {
+            if let head { CardHead(head: head) }
             if let receipt = Self.receipt(item, permission: permission) {
                 Receipt(text: receipt, expanded: $expanded)
             }
             if !settled || expanded {
                 AskCard(kind: AskKind.label(kind, plan: question?.plan != nil), failed: AskKind.failed(kind),
-                        source: confirming ? feed.jobs.first { $0.id == item.job }?.shortTitle : item.title,
+                        source: head != nil ? nil : confirming ? feed.jobs.first { $0.id == item.job }?.shortTitle : item.title,
+                        // Another Oby's own words, quoted whole (obid's `obi.quoted`): data, never Markdown.
+                        shown: words.obi?.words,
                         title: confirming ? item.title : words.title(item.text),
                         happened: confirming ? InboxWords.plain(item.text) : words.body,
                         behindDetails: confirming ? nil : words.details(item.text),
@@ -74,7 +80,7 @@ struct InlineDecision: View {
                         onHint: item.kind.takesWords ? onTell : nil,
                         onChoose: { answer($0.answer) },
                         onLater: settled ? nil : { answer(later: .now.addingTimeInterval(3600)) },
-                        onOpen: item.job.isEmpty ? nil : { onOpen(item.job) })
+                        onOpen: item.job.isEmpty || head != nil ? nil : { onOpen(item.job) })
                     .padding(.top, settled ? 12 : 0)
             }
             if let problem { Text(problem).font(Tokens.font(Tokens.textSm)).foregroundStyle(Tokens.danger).padding(.top, 8) }
@@ -100,6 +106,17 @@ struct InlineDecision: View {
                 try await feed.settle(item.id, answer: value, later: later)
             } catch { problem = error.localizedDescription }
         }
+    }
+}
+
+/// A card's head over its decision (Sangam's `tc-head` over `tc-ask`): 12 points above the line
+/// between them, 12 below it.
+struct CardHead: View {
+    let head: AnyView
+
+    var body: some View {
+        head
+        Rectangle().fill(Tokens.divider).frame(height: 1).padding(.vertical, 12)
     }
 }
 

@@ -1,9 +1,11 @@
 import AppKit
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// Settings › Obysphere: this Mac's Oby in its Obysphere (onboarding.md section 4). The server it
 /// uses; join with an invite link ("Join Deskree"), or create one (the strip's +); once in, who else
-/// is in it, the team link (an admin's), asking another Oby for a review, and what other Obys asked.
+/// is in it, the team link (an admin's), and what other Obys asked. Oby asks a teammate's Oby for a
+/// review by itself, as the repository's workflow says (the owner's decision of 2026-10-25).
 // ponytail: one page until Sangam's Obysphere screens (Sidebar.tsx, SphereSettings.tsx) are ported.
 struct SphereSettingsView: View {
     @State private var sphere: SphereModel
@@ -13,14 +15,14 @@ struct SphereSettingsView: View {
     @State private var trusted = false
     @State private var creating = false
     @State private var serverText = UserDefaults.standard.string(forKey: SphereModel.serverKey) ?? ""
-    @State private var email: String?
-    @State private var anyone = true
-    @State private var copied = false
-    @State private var asked: SphereModel.Member.ID?
     /// The member whose key you're about to accept, once you've compared it with them.
     @State private var comparing: SphereModel.Member?
-    @State private var job: Job.ID?
-    @State private var sent: String?
+    @State private var leaving = false
+    @State private var nameText = ""
+    @State private var saved = false
+    @State private var deleting = false
+    /// The name typed to confirm Delete.
+    @State private var typed = ""
     /// Host your own: kept while Oby runs, so the token Deploy… made outlives this page.
     @State private var host = HostOwn.shared
     private let feed: RunnerFeed
@@ -43,7 +45,7 @@ struct SphereSettingsView: View {
             Task {
                 // The membership first: on a page just opened it isn't read yet.
                 try? await sphere.refresh()
-                if sphere.joined { sphere.problem = "This Oby is in an Obysphere already." } else { open(opened) }
+                if sphere.joined { sphere.problem = "This Oby is in an Obysphere already: leave it first, at the bottom of this page." } else { open(opened) }
             }
         }
         // While the page is open: the membership, the members and what waits, every 20 seconds.
@@ -58,6 +60,11 @@ struct SphereSettingsView: View {
     // MARK: Not in one yet
 
     @ViewBuilder private var notJoined: some View {
+        if let removed = sphere.membership.flatMap({ $0.state == "revoked" ? $0.sphere ?? "your Obysphere" : nil }) {
+            SetGroup("Removed from \(removed)", footer: "Its admin removed this Oby. Leave it to join another Obysphere, or this one again with a new link.") {
+                SetRow("") { Button("Leave \(removed)") { sphere.run { try await sphere.leave() } }.buttonStyle(.set) }
+            }
+        }
         if let invite {
             // "Join Deskree" (onboarding.md section 4).
             // The name and who sent it are only what the link says; the server is what joining trusts.
@@ -214,27 +221,74 @@ struct SphereSettingsView: View {
         if let new = member.changedTo {
             return "\(who) · their key changed to \(new). Your Oby doesn't trust them until you compare it with \(member.owner), in person or by phone, and accept it."
         }
-        return member.fingerprint.map { "\(who) · key \($0)\(member.verified ? "" : " · unverified")" } ?? who
+        return member.fingerprint.map { "\(who) · key \($0)\(member.verified ? "" : " · not compared yet")" } ?? who
+    }
+
+    /// Why a key reads "not compared yet", while one does: it works as it is, and comparing makes sure.
+    static func compareNote(_ members: [SphereModel.Member]) -> String? {
+        guard members.contains(where: { !$0.verified && $0.fingerprint != nil && $0.changedTo == nil }) else { return nil }
+        return "Oby trusts each teammate’s key from when it first saw it, and that’s enough to work together. To be sure it’s really them, Verify key and compare it with them in person or by phone."
     }
 
     // MARK: In one
 
     @ViewBuilder private var joined: some View {
         let name = sphere.name ?? sphere.membership?.sphere ?? "Obysphere"
-        SetGroup(name, footer: sphere.membership?.lastError.map { "Last problem with the Obysphere: \($0)" }, problem: sphere.problem) {
-            SetRow("You", about: [sphere.admin ? "Admin" : "Member", sphere.ownFingerprint.map { "your key \($0)" }].compactMap(\.self).joined(separator: " · ")) {
-                SetCode(sphere.owner ?? "")
-            }
-            if sphere.members.isEmpty { SetRow("No one else has joined yet", quiet: true) }
-            ForEach(sphere.members) { member in
-                SetRow(member.name, about: Self.memberAbout(member)) {
-                    if member.changedTo != nil {
-                        Button("Accept new key") { comparing = member }.buttonStyle(.set)
-                    } else if !member.verified && member.fingerprint != nil {
-                        Button("Verify key") { comparing = member }.buttonStyle(.set)
-                    } else {
-                        SetCode(member.obi)
+        // Its picture, name and address (Sangam's first group): an admin changes the first two, each
+        // kept as it's made; its address stays as it was made (the owner's decision of 2026-10-25).
+        // A server from before obi-sphere#27 keeps neither.
+        let editable = sphere.admin && sphere.current
+        SetGroup(footer: !sphere.admin ? "Only its admins can change these."
+                         : editable ? "Its address stays as it was made."
+                         : "A new picture and name come once its Obysphere server is updated. Its address stays as it was made.",
+                 problem: sphere.problem) {
+            SetRow("Avatar", about: sphere.admin ? "A square image, at least 128px" : nil) {
+                if editable {
+                    Button(action: pickPicture) { SphereTile(name: name, image: SphereTile.kept, size: 40) }
+                        .buttonStyle(.plain).help("Change its picture").accessibilityLabel("Change its picture")
+                    if SphereTile.kept != nil {
+                        Button("Remove") { sphere.run { try await sphere.removePicture() } }.buttonStyle(.set)
                     }
+                } else {
+                    SphereTile(name: name, image: SphereTile.kept, size: 40)
+                }
+            }
+            SetRow("Name", about: saved ? "Saved" : nil) {
+                if editable {
+                    SetField("Name", text: $nameText, prompt: name, width: 220).onSubmit(rename)
+                } else {
+                    Text(name).font(Tokens.font(Tokens.textBase)).foregroundStyle(Tokens.text)
+                }
+            }
+            // Under its label, where a long address wraps.
+            if let address = sphere.address { SetRow("Obysphere URL", about: address) }
+        }
+        .onChange(of: sphere.name, initial: true) { nameText = sphere.name ?? "" }
+        // Everyone in it, you first; an admin removes the others. Keys stay underneath (the owner's
+        // decision of 2026-10-25): a changed one asks on Home, and here; comparing one on purpose
+        // comes with the member's own page (docs/obysphere.md, step 5).
+        SetGroup("Members · \(sphere.memberCount)",
+                 footer: sphere.membership?.lastError.map { "Last problem with the Obysphere: \($0)" } ?? Self.compareNote(sphere.members)) {
+            SetRow("\(NSFullUserName()) (you)", about: [sphere.owner, sphere.ownFingerprint.map { "your key \($0)" }].compactMap(\.self).joined(separator: " · ")) {
+                role(sphere.owner ?? "", you: true)
+            }
+            ForEach(sphere.members) { member in
+                SetRow(SpherePanel.shown(member.owner), about: Self.memberAbout(member)) {
+                    if member.changedTo != nil {
+                        Button("Compare new key") { comparing = member }.buttonStyle(.set)
+                    } else {
+                        role(member.owner, you: false)
+                    }
+                    if sphere.admin {
+                        Button("Remove", role: .destructive) { sphere.run { try await sphere.remove(member) } }.buttonStyle(.set)
+                    }
+                }
+            }
+            // Who hasn't joined yet: an admin cancels their invite (Sangam's "Invited").
+            ForEach(sphere.invitations ?? []) { invitation in
+                SetRow(invitation.shown) {
+                    Text("Invited").font(Tokens.font(Tokens.textMd)).foregroundStyle(Tokens.muted)
+                    Button("Cancel invite") { sphere.run { try await sphere.cancel(invitation) } }.buttonStyle(.set)
                 }
             }
         }
@@ -251,88 +305,75 @@ struct SphereSettingsView: View {
         } message: {
             Text("\(comparing?.changedTo ?? comparing?.fingerprint ?? "")\n\nCompare it with \(comparing?.owner ?? "them") in person or by phone, every character. Your Oby trusts their Oby with this key.")
         }
-        if !sphere.requests.isEmpty {
-            SetGroup("Asked of your Oby") {
-                ForEach(sphere.requests) { request in requestRow(request) }
+        // Last, set apart: an admin deletes it, anyone else leaves (Sangam's design), its name typed
+        // to confirm a delete, so it isn't done by a slip.
+        if sphere.admin {
+            SetGroup {
+                SetRow("Delete Obysphere", about: "Deletes \(name) for all \(sphere.memberCount) members. You can’t undo this."
+                       + (sphere.current ? "" : " It comes once its Obysphere server is updated.")) {
+                    Button("Delete", role: .destructive) { typed = ""; deleting = true }.buttonStyle(.set).disabled(!sphere.current)
+                }
+            }
+            .alert("Delete \(name)?", isPresented: $deleting) {
+                TextField("Type \(name) to confirm", text: $typed)
+                Button("Delete Obysphere", role: .destructive) {
+                    guard typed == name else { return }
+                    sphere.run { try await sphere.deleteSphere() }
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("This deletes \(name) for all \(sphere.memberCount) members, cancels open invites and erases everything its Obys shared. You can’t undo this. Type its name to confirm.")
             }
         }
-        if sphere.admin { inviting(name) }
-        asking
-    }
-
-    private func inviting(_ name: String) -> some View {
-        let domain = CreateSphereSheet.workDomain(email)
-        return SetGroup("Invite", footer: domain != nil && anyone
-                            ? "One link for everyone at \(domain!): \(SphereModel.server?.host() ?? "the server") has each one sign in with Google, for 30 days. A new link stops none of the old ones."
-                            : "One link for your team, up to 50 people, for 7 days. Anyone who has it can join: send it only to them.") {
-            if let domain {
-                SetRow("Anyone with @\(domain) can join") { Toggle("Anyone with @\(domain) can join", isOn: $anyone).toggleStyle(.set) }
-            }
-            if let link = sphere.teamLink {
-                // The secret after the # only through Copy, which conceals it.
-                SetRow { SetCode(link.link.components(separatedBy: "#")[0] + "#…") } control: {
-                    Button(copied ? "Copied" : "Copy") {
-                        Self.copySecret(link.link)
-                        copied = true
-                    }
-                    .buttonStyle(.set)
+        if !sphere.admin {
+            SetGroup {
+                SetRow("Leave \(name)", about: "You’ll lose access until someone invites you back.") {
+                    Button("Leave", role: .destructive) { leaving = true }.buttonStyle(.set)
                 }
             }
-            SetRow("") {
-                Button(sphere.teamLink == nil ? "Make a link" : "Make a new link") {
-                    sphere.run { _ = try await sphere.makeTeamLink(domain: anyone ? domain : nil); copied = false }
-                }
-                .buttonStyle(.set)
-            }
-        }
-        .task { email = await CreateSphereSheet.ownEmail() }
-    }
-
-    /// Your jobs with an open pull request whose head GitHub has: what another Oby can review.
-    private var reviewable: [Job] {
-        feed.jobs.filter { PublishedLink.url($0.published) != nil && $0.pullRequest?.state == .open && $0.pullRequest?.head != nil }
-    }
-
-    private var asking: some View {
-        let members = sphere.members.filter { $0.active && $0.accepts.contains("review_request") }
-        return SetGroup("Ask for a review", footer: sent ?? "Their Oby asks them first, then reviews the pull request at its latest commit and answers here and on the job.") {
-            SetRow("Who") {
-                SetSelect("Who", selection: $asked, options: [(nil, "Choose")] + members.map { (Optional($0.id), $0.name) })
-            }
-            SetRow("Pull request") {
-                SetSelect("Pull request", selection: $job, options: [(nil, "Choose")] + reviewable.map { (Optional($0.id), $0.title ?? $0.task) })
-            }
-            SetRow("") {
-                Button("Ask for a review") {
-                    guard let member = members.first(where: { $0.id == asked }), let job = reviewable.first(where: { $0.id == job }) else { return }
-                    sphere.run {
-                        try await sphere.askForReview(member, of: job)
-                        sent = "Asked \(member.name) to review \(job.title ?? job.task)."
-                    }
-                }
-                .buttonStyle(.set).disabled(asked == nil || job == nil)
+            .confirmationDialog("Leave \(name)?", isPresented: $leaving, titleVisibility: .visible) {
+                Button("Leave", role: .destructive) { sphere.run { try await sphere.leave() } }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("You’ll lose access to \(name) and everything its Obys share. To come back, someone has to invite you again.")
             }
         }
     }
 
-    /// What another Oby asks: obid's words from typed fields, then the other Oby's own text,
-    /// quoted, then the four answers.
-    private func requestRow(_ request: SphereModel.Request) -> some View {
-        SetRow(about: request.text) {
-            VStack(alignment: .leading, spacing: 6) {
-                Text(verbatim: request.title)
-                ForEach(Array(request.quoted.enumerated()), id: \.offset) { _, line in
-                    Text(verbatim: "\(line.0): “\(line.1)”").font(Tokens.font(Tokens.textSm)).foregroundStyle(Tokens.muted)
-                        .textSelection(.enabled)
+    /// Someone's role: an admin, or a member; another admin makes them one or takes it away, at
+    /// least one always (the server refuses the last).
+    @ViewBuilder private func role(_ owner: String, you: Bool) -> some View {
+        let isAdmin = sphere.admins.contains(owner)
+        let label = Text(isAdmin ? "Admin" : "Member").font(Tokens.font(Tokens.textMd)).foregroundStyle(Tokens.muted)
+        if sphere.admin && sphere.current && !(you && sphere.admins.count < 2) {
+            Menu {
+                Button(isAdmin ? (you ? "Stop being an admin" : "Remove as admin") : "Make admin") {
+                    sphere.run { try await sphere.setAdmin(owner, !isAdmin) }
                 }
-                HStack {
-                    ForEach(Array(request.options.enumerated()), id: \.offset) { index, option in
-                        Button(option) { sphere.run { try await sphere.answer(request, option) } }
-                            .buttonStyle(.set)
-                            .help(request.details.indices.contains(index) ? request.details[index] : option)
-                    }
-                }
-            }
+            } label: { label }
+                .menuStyle(.button).buttonStyle(.plain).fixedSize()
+        } else {
+            label
+        }
+    }
+
+    /// Its picture, from an image the admin picks: cut square and sent for everyone.
+    private func pickPicture() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.image]
+        guard panel.runModal() == .OK, let url = panel.url, let image = NSImage(contentsOf: url) else { return }
+        sphere.run { try await sphere.setPicture(image) }
+    }
+
+    /// Its new name, kept as soon as it's given (Return), and "Saved" under it for a moment.
+    private func rename() {
+        let name = nameText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty, name.count <= 100, name != sphere.name else { nameText = sphere.name ?? ""; return }
+        sphere.run {
+            try await sphere.rename(name)
+            saved = true
+            try? await Task.sleep(for: .seconds(2))
+            saved = false
         }
     }
 }

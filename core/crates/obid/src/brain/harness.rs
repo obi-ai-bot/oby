@@ -1061,7 +1061,7 @@ async fn session(
     // scrubs and relaunches in the same room (N9).
     let busy = shared.harness.busy(&control.conversation);
     let _held = busy.lock().await;
-    // Replaced or stopped while it waited for the one before: nothing more for it.
+    // Cancelled or stopped while it waited for the one before: nothing more for it.
     if !control.live() {
         return Err("the turn was cancelled before it started".into());
     }
@@ -1226,6 +1226,31 @@ async fn attempts(
         &session.attachments,
         &session.nonce,
     )?;
+    // The owner's memories about them and the repositories here, quoted in the room afresh each
+    // turn (#378); with none to give, an earlier turn's file goes. The agent writes in its room:
+    // never through a link it left there.
+    let names: Vec<String> = shared
+        .config
+        .repos
+        .get()
+        .iter()
+        .map(|r| r.repo.clone())
+        .collect();
+    let repos: Vec<&str> = names.iter().map(String::as_str).collect();
+    let memories = place.room.join(crate::memory::FILE);
+    match crate::memory::for_agent(&shared.config.home, &repos).await? {
+        Some(text) => {
+            if let Err(e) = crate::jobs::write_login(&memories, text.as_bytes()) {
+                tracing::warn!(
+                    "conversation {}: the owner's memories weren't quoted: {e}",
+                    control.conversation
+                );
+            }
+        }
+        None => {
+            let _ = std::fs::remove_file(&memories);
+        }
+    }
     // The owner's attachments are untrusted input: a turn with any taints, so work it dispatches
     // waits for the owner (P2, #374).
     if !session.attachments.is_empty() {
@@ -1642,6 +1667,11 @@ pub(super) fn orientation(shared: &Shared) -> String {
         .map(|r| r.repo)
         .collect();
     let mut orientation = ORIENTATION.to_owned();
+    // Always said, so it never changes the flags a waiting Claude Code was started with.
+    orientation += &format!(
+        "\n\n{} It's there only when there's something to follow.",
+        crate::memory::prompt_line(&format!("{} in your room", crate::memory::FILE))
+    );
     if !repos.is_empty() {
         orientation += &format!("\n\nThe owner's repositories: {}.", repos.join(", "));
     }

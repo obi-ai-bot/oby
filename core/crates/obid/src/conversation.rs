@@ -250,8 +250,6 @@ pub struct Begun {
     pub conversation: String,
     /// The user's turn: what the turn's step events name (#546).
     pub turn: String,
-    /// Its turns before them, oldest first.
-    pub before: Vec<Turn>,
     /// True when the words started it.
     pub started: bool,
     /// The turn's id was there already: the same words sent again (an app's Try again after an
@@ -439,7 +437,6 @@ impl Conversations {
             return Ok(Begun {
                 conversation: thread.id.clone(),
                 turn: id.to_owned(),
-                before: vec![],
                 started: false,
                 repeated: true,
             });
@@ -467,7 +464,6 @@ impl Conversations {
             });
             threads.len() - 1
         });
-        let before = threads[index].turns.clone();
         let added = self.add(
             &mut threads,
             index,
@@ -495,7 +491,6 @@ impl Conversations {
         Ok(Begun {
             conversation,
             turn,
-            before,
             started: found.is_none(),
             repeated: false,
         })
@@ -587,6 +582,22 @@ impl Conversations {
             .take(limit)
             .map(|(t, turn)| (t.id.clone(), t.title.clone(), turn.text.clone()))
             .collect()
+    }
+
+    /// The conversation `id`'s turns but `except`, oldest first (none once it's gone): what a turn
+    /// reads, the owner's words it answers left out.
+    pub fn turns_but(&self, id: &str, except: &[String]) -> Vec<Turn> {
+        self.lock()
+            .iter()
+            .find(|t| t.id == id)
+            .map(|t| {
+                t.turns
+                    .iter()
+                    .filter(|turn| !except.contains(&turn.id))
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     /// Whether the conversation `id` is kept.

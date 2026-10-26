@@ -48,12 +48,12 @@ struct ConnectorsTests {
         #expect(Connectors.list(accounts: [], runner: nil).first { $0.id == "claude" }?.how == "No Claude Code account yet")
     }
 
-    /// The design's ten services, in its order, each with its own mark; then what the runner adds.
+    /// The design's nine services, in its order, each with its own mark; then what the runner adds.
     @Test func theDesignsServicesInItsOrder() {
         let mail = ConnectedApp(name: "mail", mcp: "https://mcp.example.com/mcp", api: nil, secret: "mail-token", header: nil, secretSaved: true, lastUsed: nil)
         let list = Connectors.list(accounts: [personal], runner: lab(connections: [mail]))
-        #expect(list.map(\.name) == ["Deskree Ops", "Tetrix", "GitHub", "Claude", "ChatGPT", "Cursor", "Slack", "Gmail", "Google Meet", "Zoom", "mail"])
-        #expect(list.prefix(10).map(\.brand) == ["deskree", "tetrix", "github", "claude", "openai", "cursor", "slack", "gmail", "meet", "zoom"])
+        #expect(list.map(\.name) == ["Deskree Ops", "Tetrix", "GitHub", "Claude", "ChatGPT", "Cursor", "Gmail", "Google Meet", "Zoom", "mail"])
+        #expect(list.prefix(9).map(\.brand) == ["deskree", "tetrix", "github", "claude", "openai", "cursor", "gmail", "meet", "zoom"])
         #expect(list.last?.brand == nil && list.last?.symbol == "link")
     }
 
@@ -97,39 +97,18 @@ struct ConnectorsTests {
         let failed = Connectors.tetrix(TetrixStatus(presets: [dogfood], error: "Tetrix refused the sign-in."), place: "This Mac", local: true)
         #expect(failed.state == .broken && failed.how == "Tetrix refused the sign-in.")
         #expect(Connectors.tetrix(TetrixStatus(), place: "This Mac", local: true).way == .button("Connect…", .connectOtherTetrix))
-    }
 
-    /// Slack, held by obid for its watcher with the owner's own app's tokens: a real row once obid
-    /// says it holds Slack, Connect… asking for the two tokens, and the watcher's Slack message
-    /// switched here.
-    @Test func slackOnceObidHoldsIt() throws {
-        var runner = Connectors.RunnerState(name: "This Mac", local: true, accounts: [])
-        #expect(try #require(Connectors.list(accounts: [], runner: runner).first { $0.id == "slack" }).soon, "coming until obid says")
-        runner.slack = SlackStatus()
-        let first = try #require(Connectors.list(accounts: [], runner: runner).first { $0.id == "slack" })
-        #expect(!first.soon && first.state == .available && first.brand == "slack")
-        #expect(first.way == .button("Connect…", .connectSlack) && first.also == nil)
-
-        let refused = Connectors.slack(SlackStatus(error: "Slack refused Oby's tokens: paste new ones in Settings › Connectors › Slack."),
-                                       watch: nil, place: "This Mac", local: true)
-        #expect(refused.state == .broken && refused.how.hasPrefix("Slack refused"))
-
-        let dry = WatchStatus(rules: .init(name: "Dmitry watcher", live: false, enabled: true))
-        let on = Connectors.slack(SlackStatus(connected: true, team: "Deskree"), watch: dry, place: "This Mac", local: true)
-        #expect(on.state == .connected && on.way == .button("Disconnect…", .disconnectSlack))
-        #expect(on.also == .button("Watcher: Send Slack Messages", .setWatchLive(true)))
-        #expect(on.how.hasSuffix("Dmitry watcher: a dry run, it tells you in Oby and only writes down the Slack message."))
-        #expect(on.more == .button("Reviews: Tell Authors on Slack", .setTellAuthors(true)))
-        let telling = Connectors.slack(SlackStatus(connected: true, tellAuthors: true), watch: nil, place: "This Mac", local: true)
-        #expect(telling.more == .button("Reviews: Don't Tell Authors", .setTellAuthors(false)))
-        #expect(telling.how.contains("to the author of a pull request once your review of it is posted"))
-        #expect(first.more == nil, "only once connected")
-        let live = WatchStatus(rules: .init(name: "Dmitry watcher", live: true, enabled: true))
-        #expect(Connectors.slack(SlackStatus(connected: true), watch: live, place: "This Mac", local: true).also
-                == .button("Watcher: Dry Run Only", .setWatchLive(false)))
-
-        let remote = Connectors.slack(SlackStatus(), watch: nil, place: "tetrix-lab", local: false)
-        #expect(remote.also == nil && remote.more == nil && remote.way == .steps("Connect or disconnect it on tetrix-lab itself, with Oby there."))
+        // A login obid couldn't refresh needs attention, with Reconnect, while it's still held; one
+        // Tetrix signed out reconnects to the same Tetrix.
+        let refresh = "Oby couldn't refresh its Tetrix login: Tetrix's sign-in server answered HTTP 503. It tries again at the next call."
+        let stale = Connectors.tetrix(TetrixStatus(connected: true, url: dogfood.url, preset: "dogfood", presets: [dogfood], error: refresh),
+                                      place: "This Mac", local: true)
+        #expect(stale.state == .broken && stale.how == refresh)
+        #expect(stale.way == .button("Reconnect", .connectTetrix(dogfood)) && stale.also == .button("Disconnect…", .disconnectTetrix))
+        let out = Connectors.tetrix(TetrixStatus(url: dogfood.url, preset: "dogfood", presets: [dogfood], error: "Tetrix signed Oby out: sign in again."),
+                                    place: "This Mac", local: true)
+        #expect(out.state == .broken && out.how == "Tetrix signed Oby out: sign in again.")
+        #expect(out.way == .button("Reconnect", .connectTetrix(dogfood)) && out.also == .button("Another Tetrix…", .connectOtherTetrix))
     }
 
     /// Connect takes only what looks like each kind of token.
@@ -262,7 +241,7 @@ struct ConnectorsTests {
             let row = try #require(silent.first { $0.id == id })
             #expect(!row.connected && row.way == .steps("Shows here once Oby's runner answers (Settings › Runner)."))
         }
-        #expect(list.count == 10)
+        #expect(list.count == 9)
         #expect(Connectors.list(accounts: [], runner: lab(github: nil)).first { $0.id == "github" }?.way
                 == .steps("tetrix-lab doesn't say: it needs a newer runner."))
     }
@@ -272,9 +251,9 @@ struct ConnectorsTests {
     @Test func servicesNotYetConnectableAreComing() {
         let everything = Connectors.list(accounts: [personal, deskree, cursor], runner: lab())
         let coming = everything.filter(\.soon)
-        #expect(coming.map(\.name) == ["Deskree Ops", "Slack", "Gmail", "Google Meet", "Zoom"])
+        #expect(coming.map(\.name) == ["Deskree Ops", "Gmail", "Google Meet", "Zoom"])
         #expect(coming.allSatisfy { $0.state == .available && $0.way == nil && $0.also == nil })
-        #expect(coming.map(\.about) == ["Projects, deploys and incidents", "Read and send messages", "Read and manage your email",
+        #expect(coming.map(\.about) == ["Projects, deploys and incidents", "Read and manage your email",
                                         "Join meetings and keep the notes", "Join meetings and keep the notes"])
     }
 
@@ -290,7 +269,7 @@ struct ConnectorsTests {
         #expect(all.map(\.title) == ["Connected", "Available"])
         #expect(all.map(\.items.count).reduce(0, +) == list.count)
         #expect(ids(all, "Connected") == ["github", "claude", "codex"])
-        #expect(ids(all, "Available") == ["deskree", "tetrix", "cursor", "slack", "gmail", "meet", "zoom"])
+        #expect(ids(all, "Available") == ["deskree", "tetrix", "cursor", "gmail", "meet", "zoom"])
         #expect(Connectors.groups(list, query: "nothing like it").isEmpty)
         // Where a row is isn't shown, so it isn't searched: "mac" isn't in every row.
         #expect(Connectors.groups(list, query: "this mac").isEmpty && Connectors.groups(list, query: "tetrix-lab").isEmpty)
@@ -376,113 +355,7 @@ struct ConnectorsTests {
         #expect(lists.plugins == nil && lists.connections == nil)
         #expect(lists.problems == ["Couldn't read the plug-ins on tetrix-lab: The runner didn't let this device in.",
                                    "Couldn't read the connections on tetrix-lab: The runner couldn't read connections.json.",
-                                   "Couldn't read Tetrix on tetrix-lab: The runner didn't let this device in.",
-                                   "Couldn't read Slack on tetrix-lab: The runner didn't let this device in.",
-                                   "Couldn't read the watcher on tetrix-lab: The runner didn't let this device in.",
-                                   "Couldn't read Sentry on tetrix-lab: The runner didn't let this device in.",
-                                   "Couldn't read the alerting hooks on tetrix-lab: The runner didn't let this device in."])
-    }
-
-    /// Sentry is a row of its own once obid has it (the owner's decision of 2026-10-23, #1117):
-    /// Connect… asks for its address, the organization and a token; connected, Disconnect… and
-    /// Projects…; a remote runner's is done there.
-    @Test func sentryOnceObidHoldsIt() throws {
-        var runner = Connectors.RunnerState(name: "This Mac", local: true, accounts: [])
-        #expect(!Connectors.list(accounts: [], runner: runner).contains { $0.id == "sentry" }, "no row until obid says")
-        runner.sentry = SentryStatus()
-        let first = try #require(Connectors.list(accounts: [], runner: runner).first { $0.id == "sentry" })
-        #expect(first.state == .available && first.way == .button("Connect…", .connectSentry) && first.brand == nil)
-        #expect(first.about == "Errors in your projects")
-        let refused = Connectors.sentry(SentryStatus(error: "Sentry refused Oby's token: paste a new one in Settings › Connectors › Sentry."),
-                                        place: "This Mac", local: true)
-        #expect(refused.state == .broken && refused.how.hasPrefix("Sentry refused"))
-        let on = Connectors.sentry(SentryStatus(connected: true, org: "acme",
-                                                projects: [.init(slug: "api", name: "API", follow: true, repo: "obi-ai-bot/obi"),
-                                                           .init(slug: "web", name: "Web", follow: false, repo: nil)]),
-                                   place: "This Mac", local: true)
-        #expect(on.state == .connected && on.way == .button("Disconnect…", .disconnectSentry) && on.also == .button("Projects…", .sentryProjects))
-        #expect(on.how.contains("Following API (obi-ai-bot/obi).") && !on.how.contains("Web"))
-        let remote = Connectors.sentry(SentryStatus(), place: "tetrix-lab", local: false)
-        #expect(remote.way == .steps("Connect or disconnect it on tetrix-lab itself, with Oby there.") && remote.also == nil)
-        // Connect… takes only what looks like Sentry's address, an organization's slug and a token.
-        #expect(SentryStatus.isURL("https://sentry.io") && SentryStatus.isURL("https://de.sentry.io/"))
-        #expect(!SentryStatus.isURL("http://sentry.io") && !SentryStatus.isURL("https://sentry.io/acme") && !SentryStatus.isURL("https://me@sentry.io"))
-        #expect(SentryStatus.isOrg("acme-1") && !SentryStatus.isOrg("Acme") && !SentryStatus.isOrg(""))
-        #expect(SentryStatus.isToken("sntryu_" + "4f1c9a7e2b8d4c6fa0e3b5d7") && !SentryStatus.isToken("short"))
-        #expect(!SentryStatus.isToken("has a space in it and is long enough"))
-    }
-
-    /// Prometheus and Grafana are rows of their own once obid has hooks (#1311): Connect… makes the
-    /// hook; connected, Disconnect… removes it, and a refused delivery needs attention.
-    @Test func alertingToolsOnceObidHasHooks() throws {
-        var runner = Connectors.RunnerState(name: "This Mac", local: true, accounts: [])
-        #expect(!Connectors.list(accounts: [], runner: runner).contains { $0.id == "prometheus" }, "no rows until obid has hooks")
-        runner.hooks = []
-        let list = Connectors.list(accounts: [], runner: runner)
-        let prometheus = try #require(list.first { $0.id == "prometheus" })
-        #expect(prometheus.name == "Prometheus" && prometheus.about == "Alerts from Alertmanager" && prometheus.way == .button("Connect…", .connectAlerts("alertmanager")))
-        #expect(prometheus.brand == nil && prometheus.symbol == "flame" && prometheus.how.contains("Remote access"))
-        #expect(list.first { $0.id == "grafana" }?.way == .button("Connect…", .connectAlerts("grafana")))
-        let hook = Runner.HookRow(id: "abcdefghij0123456789abcdefghij01", name: "prometheus", source: "alertmanager", repo: "obi-ai-bot/obi",
-                                  url: "https://oby-control.test/h/abcdefghij0123456789abcdefghij01",
-                                  lastDelivery: .init(at: .now, result: "accepted"))
-        runner.hooks = [hook]
-        let on = try #require(Connectors.list(accounts: [], runner: runner).first { $0.id == "prometheus" })
-        #expect(on.state == .connected && on.way == .button("Disconnect…", .disconnectAlerts(hook.id)))
-        #expect(on.how.contains("obi-ai-bot/obi") && on.how.contains("Last delivery: accepted."))
-        var refused = hook
-        refused.lastDelivery?.result = "bad signature"
-        #expect(Connectors.alerting(AlertingTool.all[0], hook: refused, place: "This Mac", local: true).state == .broken)
-        let remote = Connectors.alerting(AlertingTool.all[1], hook: nil, place: "tetrix-lab", local: false)
-        #expect(remote.way == .steps("Connect or disconnect it on tetrix-lab itself, with Oby there."))
-        // What to paste where: the address and the secret, in each tool's own words.
-        let steps = AlertingTool.all[0].steps(url: "https://oby-control.test/h/x", secret: "s3cret")
-        #expect(steps.contains("url: https://oby-control.test/h/x") && steps.contains("X-Oby-Token:") && steps.contains(#"secrets: ["s3cret"]"#))
-        #expect(AlertingTool.all[1].steps(url: "u", secret: "s").contains("X-Grafana-Alerting-Timestamp"))
-        #expect(AlertingTool.all[0].steps(url: "u", secret: "s", label: "job").contains("the alert's job label"))
-        // PagerDuty (#1312): its own secret, pasted back after the address; no project label.
-        let pagerDuty = try #require(AlertingTool.all.first { $0.id == "pagerduty" })
-        #expect(pagerDuty.secretFromTool && !pagerDuty.asksLabel && !AlertingTool.all[0].secretFromTool)
-        #expect(pagerDuty.steps(url: "https://oby-control.test/h/x", secret: "").contains("incident.triggered, incident.reopened and incident.resolved"))
-        #expect(list.first { $0.id == "pagerduty" }?.way == .button("Connect…", .connectAlerts("pagerduty")))
-        // Datadog (#1313): Oby's payload and the token in a hidden variable; the project is the service tag.
-        let datadog = try #require(AlertingTool.all.first { $0.id == "datadog" })
-        #expect(!datadog.secretFromTool && !datadog.asksLabel)
-        let dd = datadog.steps(url: "https://oby-control.test/h/x", secret: "s3cret")
-        #expect(dd.contains(#""oby": 1"#) && dd.contains(#"{"X-Oby-Token": "$OBY_TOKEN"}"#) && dd.contains("s3cret"))
-        #expect(list.first { $0.id == "datadog" }?.way == .button("Connect…", .connectAlerts("datadog")))
-    }
-
-    /// The Mac reads obid's Sentry, connects it and follows a project as obid answers; a repository
-    /// taken off is sent as null.
-    @Test func sentryConnectsAndListsItsProjects() async throws {
-        let obid = RunnerStub { request in
-            switch (request.method, request.path) {
-            case ("GET", "/v1/sentry"):
-                (200, #"{"connected": false, "projects": [], "repos": ["obi-ai-bot/obi"], "error": null}"#)
-            case ("PUT", "/v1/sentry"):
-                (200, #"{"connected": true, "url": "https://sentry.io", "org": "acme", "user": "me@example.com", "projects": [{"slug": "api", "name": "API", "follow": false, "repo": null}], "repos": ["obi-ai-bot/obi"], "error": null}"#)
-            case ("PATCH", "/v1/sentry/projects/api"):
-                (200, #"{"connected": true, "org": "acme", "projects": [{"slug": "api", "name": "API", "follow": true, "repo": "obi-ai-bot/obi"}], "repos": ["obi-ai-bot/obi"]}"#)
-            default: (404, "")
-            }
-        }
-        let lists = await Connectors.lists(from: obid.runner, name: "This Mac")
-        #expect(lists.sentry?.connected == false && lists.sentry?.repos == ["obi-ai-bot/obi"] && lists.problems.isEmpty)
-        let connected = try await obid.runner.connectSentry(url: "https://sentry.io", org: "acme", token: "sntryu_test")
-        #expect(connected.connected && connected.projects.map(\.slug) == ["api"] && connected.org == "acme")
-        let put = try #require(obid.requests.last?.json)
-        #expect(put["url"] as? String == "https://sentry.io" && put["org"] as? String == "acme" && put["token"] as? String == "sntryu_test")
-        let followed = try await obid.runner.setSentryProject("api", .follow(true))
-        #expect(followed.projects.first?.follow == true && followed.projects.first?.repo == "obi-ai-bot/obi")
-        #expect(obid.requests.last?.json?.keys.sorted() == ["follow"], "only the field that changed")
-        _ = try await obid.runner.setSentryProject("api", .repo(nil))
-        let off = try #require(obid.requests.last?.json)
-        #expect(off.keys.sorted() == ["repo"] && off["repo"] is NSNull, "a repository taken off is sent as null")
-        // A runner without Sentry (404) has no row, and says nothing's wrong.
-        let old = RunnerStub { _ in (404, "") }
-        let oldLists = await Connectors.lists(from: old.runner, name: "tetrix-lab")
-        #expect(oldLists.sentry == nil && !oldLists.problems.contains { $0.contains("Sentry") })
+                                   "Couldn't read Tetrix on tetrix-lab: The runner didn't let this device in."])
     }
 
     /// Disconnecting a runner's connection signs the runner's own sentence, under the connection

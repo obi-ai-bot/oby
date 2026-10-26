@@ -408,6 +408,15 @@ struct WindowScreens {
         try await save("mac-obid-\(screen)", window: window)
     }
 
+    /// Home when Oby's engine on this Mac doesn't answer: why, Open Login Items Settings, Try Again.
+    @Test func homeEngineDown() async throws {
+        let model = IslandModel(feed: RunnerFeed(), availability: MacAvailability())
+        model.feed.stageDown()
+        EngineDownLine.after = .zero
+        defer { EngineDownLine.after = .seconds(5) }
+        try await shoot("mac-home-engine-down", model: model, state: ChatState(defaults: .scratch))
+    }
+
     /// First launch on obid (#893, docs/onboarding.md): each step over made-up accounts and
     /// repositories staged on the feed, no runner asked, then Home with the first task in its box.
     /// The agents step reads which tools this Mac really has.
@@ -454,7 +463,7 @@ struct WindowScreens {
     @Test(arguments: ["connectors-ready", "connectors-on", "accounts", "task"])
     func tetrix(_ screen: String) async throws {
         let suite = try #require(UserDefaults(suiteName: "oby-screens-\(UUID().uuidString)"))
-        // The launch build hides Tetrix (`Launch`).
+        // Tetrix's page with everything on (`Launch`), for its other rows.
         suite.set(true, forKey: Launch.everythingKey)
         suite.set(true, forKey: "ObySidebarOpen")
         suite.set(Double(Tokens.sidebar), forKey: "ObySidebarWidth")
@@ -499,7 +508,7 @@ struct WindowScreens {
     /// connected. Made up, no runner asked.
     @Test func connectors() async throws {
         let suite = try #require(UserDefaults(suiteName: "oby-screens-\(UUID().uuidString)"))
-        // Every row, as the launch build hides all but GitHub and Slack (`Launch`).
+        // Every row, as the launch build hides all but GitHub and Tetrix (`Launch`).
         suite.set(true, forKey: Launch.everythingKey)
         suite.set(true, forKey: "ObySidebarOpen")
         suite.set(Double(Tokens.sidebar), forKey: "ObySidebarWidth")

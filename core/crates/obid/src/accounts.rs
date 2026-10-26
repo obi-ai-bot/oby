@@ -467,18 +467,7 @@ pub fn adopt_own_logins(agents: &Live, obid_home: &Path) {
     let first = [FILE, "jobs"]
         .iter()
         .all(|name| std::fs::symlink_metadata(obid_home.join(name)).is_err());
-    let home = crate::jobs::login_home();
-    let now = agents.get();
-    let found: Vec<Tool> = Tool::ALL
-        .into_iter()
-        .filter(|tool| {
-            let bin = agent_of(&now, *tool)
-                .as_ref()
-                .map_or(default_bin(*tool), |a| a.bin.as_str());
-            crate::process::resolve_bin(bin).is_some()
-                && crate::jobs::has_login(*tool, &own_login(*tool), home.as_deref())
-        })
-        .collect();
+    let found = own_logins(agents);
     agents.write().found = found.clone();
     if !first {
         return;
@@ -489,6 +478,45 @@ pub fn adopt_own_logins(agents: &Live, obid_home: &Path) {
             tool.name()
         );
     }
+}
+
+/// The tools whose CLI is on this Mac with their own login there.
+fn own_logins(agents: &Live) -> Vec<Tool> {
+    let home = crate::jobs::login_home();
+    let now = agents.get();
+    Tool::ALL
+        .into_iter()
+        .filter(|tool| {
+            let bin = agent_of(&now, *tool)
+                .as_ref()
+                .map_or(default_bin(*tool), |a| a.bin.as_str());
+            crate::process::resolve_bin(bin).is_some()
+                && crate::jobs::has_login(*tool, &own_login(*tool), home.as_deref())
+        })
+        .collect()
+}
+
+/// Looks again for the tools' own logins (`GET /v1/status`): one installed or signed in after obid
+/// started, as on a fresh Mac's first launch, is offered ([`Live::available`]) without a restart.
+/// With `claudeKeychain` or `cursorKeychain` left out and off, a login now only in the Keychain
+/// turns its copy on, as it would have at start.
+pub fn refind_own_logins(agents: &Live) {
+    static KEEPER: std::sync::Once = std::sync::Once::new();
+    if crate::jobs::keychain_auto() && !crate::jobs::keychain_on() && crate::jobs::keychain_wanted()
+    {
+        crate::jobs::use_keychain(true, true);
+        KEEPER.call_once(crate::jobs::keep_keychain_logins);
+        tracing::info!("claudeKeychain on by itself: Claude Code's login is only in the Keychain");
+    }
+    if crate::jobs::cursor_keychain_auto()
+        && !crate::jobs::cursor_keychain_on()
+        && crate::jobs::cursor_keychain_wanted()
+    {
+        crate::jobs::use_cursor_keychain(true, true);
+        tracing::info!("cursorKeychain on by itself: Cursor's login is only in the Keychain");
+    }
+    let found = own_logins(agents);
+    agents.write().found = found;
 }
 
 /// Whether `tool`'s own login can be listed: it isn't (by its id, as an empty list stands for it,
@@ -854,6 +882,7 @@ pub async fn reserve(
         .usage
         .lift(&id, lift)
         .map_err(|e| unkept(Path::new("usage.json"), e))?;
+    shared.jobs.reserve_changed();
     send_accounts(&shared).await;
     Ok(answer(
         StatusCode::OK,

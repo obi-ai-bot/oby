@@ -70,16 +70,6 @@ pub struct Shared {
     pub pages: crate::web::Sessions,
     /// What GitHub wants from the owner (crate::github_work).
     pub github_work: Arc<crate::github_work::Feed>,
-    /// Oby's Slack login (crate::slack).
-    pub slack: Arc<crate::slack::Slack>,
-    /// Oby's Sentry login (crate::sentry).
-    pub sentry: Arc<crate::sentry::Sentry>,
-    /// The webhooks outside systems send through the control plane (crate::hooks).
-    pub hooks: Arc<crate::hooks::Hooks>,
-    /// The watcher: one person's words about what the owner watches, told to them (crate::watch).
-    pub watch: Arc<crate::watch::Watch>,
-    /// The Slack channels the owner picked, heard through Socket Mode (crate::listen).
-    pub listen: Arc<crate::listen::Listen>,
     /// The phones' FCM tokens and the job alerts sent to them (crate::push).
     pub push: crate::push::Push,
     /// True once obid is stopping: streams end.
@@ -183,6 +173,7 @@ pub fn router(shared: Arc<Shared>) -> Router {
             get(crate::routes::transcript_entry),
         )
         .route("/v1/jobs/{id}/stop", post(crate::routes::stop))
+        .route("/v1/jobs/{id}/start", post(crate::routes::start))
         .route("/v1/jobs/{id}/dismiss", post(crate::routes::dismiss))
         .route("/v1/jobs/{id}/messages", post(crate::routes::message))
         .route("/v1/jobs/{id}/permission", post(crate::routes::permission))
@@ -213,11 +204,6 @@ pub fn router(shared: Arc<Shared>) -> Router {
         .route("/v1/notifications", post(crate::push::register))
         .merge(crate::connections::router())
         .merge(crate::tetrix::router())
-        .merge(crate::slack::router())
-        .merge(crate::sentry::router())
-        .merge(crate::hooks::router())
-        .merge(crate::watch::router())
-        .merge(crate::listen::router())
         .route("/v1/checks/next", get(crate::routes::next_check))
         .route("/v1/checks/{id}/bundle", get(crate::routes::check_bundle))
         .route("/v1/checks/{id}/result", post(crate::routes::check_result))
@@ -272,7 +258,10 @@ pub fn router(shared: Arc<Shared>) -> Router {
         .route("/v1/failures/{id}", get(crate::failures::get_route))
         .route("/v1/failures/{id}/fix", post(crate::failures::fix_route))
         .route("/v1/inbox/{id}/answer", post(crate::sphere::routes::answer))
-        .route("/v1/obid/sphere", get(crate::sphere::routes::membership))
+        .route(
+            "/v1/obid/sphere",
+            get(crate::sphere::routes::membership).delete(crate::sphere::routes::leave),
+        )
         .route("/v1/obid/sphere/pins", get(crate::sphere::routes::pins))
         .route(
             "/v1/obid/sphere/pins/{owner}",
@@ -805,6 +794,9 @@ pub fn account_json(
 }
 
 async fn status(State(shared): State<Arc<Shared>>) -> Result<axum::Json<Status>, ApiError> {
+    // A tool installed or signed in since obid started (first launch on a fresh Mac) shows up here.
+    let agents = shared.config.agents.clone();
+    let _ = tokio::task::spawn_blocking(move || crate::accounts::refind_own_logins(&agents)).await;
     let accounts = crate::accounts::list_now(&shared).await;
     let cleaned = shared.jobs.cleaned();
     Ok(axum::Json(Status {

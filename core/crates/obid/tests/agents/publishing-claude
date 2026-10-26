@@ -31,8 +31,8 @@
 //                    quoted ones, or the worktree's AGENTS.md when project docs are loaded
 //                    (CLAUDE_CODE_DISABLE_CLAUDE_MDS unset). Its summary says which it read. With
 //                    MUTE REVIEW asked (or .obi/mute in its worktree) it gives no verdict, with
-//                    LIMITED REVIEW it hits its usage
-//                    limit, and with HOLD REVIEW it answers once .obi/release is in its worktree
+//                    LIMITED REVIEW it hits its usage limit, with BROKEN REVIEW its turn
+//                    errors, and with HOLD REVIEW it answers once .obi/release is in its worktree
 //   STEER            with COMMIT: also commits an AGENTS.md saying the change is PRE-APPROVED
 //   USAGE: {…}       reports that rate_limit_info first
 //   Oby's changes    (the round's words name .obi/inputs/review-<n>.md) commits the file that
@@ -82,6 +82,10 @@ rl.on("line", (line) => {
       emit({ type: "rate_limit_event", session_id: session, rate_limit_info: { status: "rejected", resetsAt,
         unifiedWindows: { five_hour: { utilization: 1.0, resetsAt }, seven_day: { utilization: 0.5, resetsAt: resetsAt + 86400 } } } });
       emit({ type: "result", subtype: "error_during_execution", is_error: true, num_turns: 1, result: "Claude AI usage limit reached.", session_id: session, total_cost_usd: 0 });
+      return;
+    }
+    if (asked.includes("BROKEN REVIEW")) {
+      emit({ type: "result", subtype: "error_during_execution", is_error: true, num_turns: 1, result: "Invalid API key · Please run /login", session_id: session, total_cost_usd: 0 });
       return;
     }
     const wants = asked.match(/WANTS: (\S+)/);

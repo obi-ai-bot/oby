@@ -8,6 +8,10 @@
 //   ASK: <command>   asks to run the command and says what obid answered, and what it heard after
 //   OUTSIDE          asks to write a file outside the worktree
 //   UNKNOWN          sends a request obid doesn't know and says what came back
+//   QUESTION         asks its own question (`item/tool/requestUserInput`; a secret one with
+//                    SECRET) and says what came back
+//   ASK OWNER        asks the owner with Oby's `oby_ask_owner` (approved first, as Codex does),
+//                    then ends its turn; resumed, says what it heard
 //   ESCAPE           writes a file outside the worktree without asking, and says how that went
 //   SLEEP            beats: writes a growing count to .obi/beat every 50 ms until it is ended
 //   FAIL             the turn fails with the API's error inside its message
@@ -24,6 +28,8 @@
 //                    ALWAYS that it's waiting again
 //   TOKENS           its thread uses 1000 input tokens (600 of them cached) and 100 output tokens
 //                    more, reported in `thread/tokenUsage/updated` twice
+//   Oby's review     (its prompt names .obi/inputs/asked.md) of work asked with CODEX REFUSED: the
+//                    turn fails as codex-cli 0.162.1's does on a login OpenAI ended
 // It answers `account/read` (once the turn starts) as a ChatGPT (plan) login, or an API key's when
 // the task says APIKEY.
 //   a brain's prompt answers one plan: a reply "From Codex.", with work.md's first line; one
@@ -43,7 +49,8 @@ if (process.argv[2] === "login") {
   await (await import(new URL("./fake-login.mjs", import.meta.url))).login("codex");
 }
 
-if (process.argv[2] !== "app-server") {
+// Codex's own `-c` settings may come first (Oby's review's, before `app-server`).
+if (!process.argv.slice(2).includes("app-server")) {
   process.stderr.write("fake-codex: run as `fake-codex app-server`\n");
   process.exit(2);
 }
@@ -67,6 +74,13 @@ let thread = null;
 let state = null;
 
 const save = () => writeFileSync(join(threads, `${thread}.json`), JSON.stringify(state));
+const setting = (key) => {
+  const argv = process.argv.slice(2);
+  for (let at = 0; at < argv.length - 1; at++) {
+    if (argv[at] === "-c" && argv[at + 1].startsWith(`${key}=`)) return JSON.parse(argv[at + 1].slice(key.length + 1));
+  }
+  return null;
+};
 const item = (type, fields) => ({ type, id: randomUUID(), ...fields });
 const complete = (turnId, text, status = "completed", error = null) =>
   send({ method: "turn/completed", params: { threadId: thread, turn: { id: turnId, status, error, items: text == null ? [] : [{ type: "agentMessage", id: "m1", text }] } } });
@@ -76,6 +90,9 @@ async function runTurn(turnId, prompt) {
   if (state.sandbox !== "danger-full-access" || state.approvalPolicy !== "untrusted")
     return complete(turnId, null, "failed", { message: `started with ${state.sandbox} / ${state.approvalPolicy}` });
   const task = state.task;
+  const asked = ".obi/inputs/asked.md";
+  if (task.includes(asked) && existsSync(asked) && readFileSync(asked, "utf8").includes("CODEX REFUSED"))
+    return complete(turnId, null, "failed", { message: "workspace routing discovery unauthorized (401)" });
   // Oby's brain (`CodexBrain`): one plan, read from work.md when there is one.
   if (task.includes("Return exactly one JSON object matching this JSON schema")) {
     // Words with STALL in them: it never answers, as a Codex on a Mac too busy to think.
@@ -122,11 +139,32 @@ async function runTurn(turnId, prompt) {
     return complete(turnId, `answer: ${answer.decision}${steered.length ? `\nheard: ${steered.join(" | ")}` : ""}`);
   }
   if (task.includes("UNKNOWN")) {
-    const id = nextId++;
-    const answered = new Promise((done) => waiting.set(id, done));
-    send({ id, method: "item/tool/requestUserInput", params: { threadId: thread, turnId, questions: [] } });
-    const answer = await answered;
+    const answer = await ask("item/tool/call", { threadId: thread, turnId, callId: "t1", tool: "made_up", arguments: {} });
     return complete(turnId, `unknown: ${JSON.stringify(answer)}`);
+  }
+  if (task.includes("QUESTION")) {
+    const answer = await ask("item/tool/requestUserInput", { threadId: thread, turnId, itemId: "u1", isBlocking: true,
+      questions: [{ id: "store", header: "Store", question: "Which store?", isOther: true, isSecret: task.includes("SECRET"),
+        options: [{ label: "SQLite", description: "One file" }, { label: "Postgres", description: "A server" }] }] });
+    return complete(turnId, `question: ${JSON.stringify(answer)}`);
+  }
+  if (task.includes("ASK OWNER")) {
+    if (state.asked) return complete(turnId, `heard: ${prompt}`);
+    state.asked = true;
+    save();
+    const args = { question: "Which store?", options: [{ label: "SQLite" }, { label: "Postgres", description: "A server" }] };
+    const item = { type: "mcpToolCall", id: randomUUID(), server: "oby", tool: "oby_ask_owner", arguments: args, status: "inProgress" };
+    send({ method: "item/started", params: { threadId: thread, turnId, item } });
+    const approved = await ask("mcpServer/elicitation/request", { threadId: thread, turnId, serverName: "oby", mode: "form",
+      _meta: { codex_approval_kind: "mcp_tool_call", tool_params: args }, message: `Allow the oby MCP server to run tool "oby_ask_owner"?`, requestedSchema: { type: "object", properties: {} } });
+    if (approved.action !== "accept") return complete(turnId, `ask: ${approved.action}`);
+    const post = (method, params) => fetch(setting("mcp_servers.oby.url"), { method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${process.env[setting("mcp_servers.oby.bearer_token_env_var")]}` },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }) }).then((r) => r.json());
+    const listed = await post("tools/list", {});
+    if (!listed.result.tools.some((t) => t.name === "oby_ask_owner")) return complete(turnId, `no oby_ask_owner in ${JSON.stringify(listed)}`);
+    const answer = await post("tools/call", { name: "oby_ask_owner", arguments: args });
+    return complete(turnId, `Asked: ${answer.result.content[0].text}`);
   }
   if (task.includes("SLEEP")) {
     mkdirSync(".obi", { recursive: true });

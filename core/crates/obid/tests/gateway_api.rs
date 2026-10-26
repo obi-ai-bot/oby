@@ -726,7 +726,7 @@ fn revoking_a_device_drops_its_iphone_relay_registration() {
     assert!(!obid.log().contains(&signs), "{}", obid.log());
 }
 
-/// A channel listener's review waiting for Approve, in obid's home before it starts.
+/// The owner's review waiting for Approve, in obid's home before it starts.
 fn seed_listener_review(config: &Value) {
     let config = obid::config::Config::parse(&config.to_string()).unwrap();
     tokio::runtime::Runtime::new().unwrap().block_on(async {
@@ -735,20 +735,22 @@ fn seed_listener_review(config: &Value) {
             .unwrap();
         let (_stop, stopping) = tokio::sync::watch::channel(false);
         let link = obid::sphere::Link::open(config, jobs, events, stopping).unwrap();
-        let notice = obid::watch::Notice {
-            key: "review:obi-ai-bot/obi#835".into(),
-            source: "slack".into(),
-            ..Default::default()
-        };
-        let mut item = obid::sphere::inbox::watch_item("listen", "", &notice, 1_792_501_200);
+        let mut item = obid::jobs::owner_review_item(
+            "job1",
+            "obi-ai-bot/obi",
+            835,
+            "0123456789abcdef0123456789abcdef01234567",
+            "Looks right.",
+            "approve",
+            true,
+        );
         item.id = "listen-review-0123456789abcdef".into();
-        item.options = vec!["Approve".into(), "Dismiss".into()];
         link.add_items(vec![item]);
     });
 }
 
-/// A phone can't Approve a channel listener's review, which it doesn't show yet, however the
-/// item's id is spelled in the path; its Dismiss goes through.
+/// A phone can't Approve posting the owner's review, which it doesn't show yet, however the item's
+/// id is spelled in the path; its Dismiss goes through.
 #[test]
 fn a_phone_cant_approve_a_listeners_review() {
     let folder = Folder::new("gateway-listen-approve");

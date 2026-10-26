@@ -21,6 +21,22 @@ struct BundledGitHubCLITests {
         #expect(version.out.contains("gh version 2.102.0"), Comment(rawValue: version.out))
     }
 
+    /// gitleaks ships inside Oby.app too (apps/mac/app/Tools/bundle-gitleaks.sh, #1026): obid
+    /// publishes nothing without it (core/crates/obid/src/scan.rs, gitleaks_bin).
+    @Test func gitleaksIsBundledSignedAndRuns() throws {
+        let binary = try #require(Bundle.main.url(forAuxiliaryExecutable: "gitleaks"))
+        #expect(binary.path.hasSuffix("/Contents/MacOS/gitleaks"))
+        let verified = try run("/usr/bin/codesign", ["--verify", "--strict", "--verbose=2", binary.path])
+        #expect(verified.status == 0, Comment(rawValue: "codesign --verify: \(verified.err)"))
+        let details = try run("/usr/bin/codesign", ["-d", "-vv", binary.path])
+        let directory = details.err.split(separator: "\n").first { $0.hasPrefix("CodeDirectory") } ?? ""
+        #expect(directory.contains("runtime"), Comment(rawValue: "no hardened runtime: \(details.err)"))
+        let slices = try run("/usr/bin/lipo", ["-archs", binary.path])
+        #expect(slices.out.contains("arm64") && slices.out.contains("x86_64"), Comment(rawValue: slices.out))
+        let version = try run(binary.path, ["version"])
+        #expect(version.status == 0 && version.out.contains("8.30.1"), Comment(rawValue: version.out + version.err))
+    }
+
     private func run(_ tool: String, _ arguments: [String]) throws -> (status: Int32, out: String, err: String) {
         let process = Process()
         process.executableURL = URL(filePath: tool)

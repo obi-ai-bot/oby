@@ -31,8 +31,10 @@ nonisolated enum SidebarSections {
     /// for a job (only obid's jobs carry `obi.fromOwner`, docs/runner-api.md), so there's no
     /// requester to group by rather than one made up.
     /// `routines`: the runner's jobs that are a routine's run (obid's `routine`, #395), which go
-    /// under Routines.
-    static func work(_ jobs: [Job], since: Date, seen: Set<String>, routines: Set<String> = []) -> [WorkList.Item<JobRow>] {
+    /// under Routines; the launch build hides Routines (`Launch`, docs/trim.md), so there they go
+    /// under Tasks.
+    static func work(_ jobs: [Job], since: Date, seen: Set<String>, routines: Set<String> = [],
+                     everything: Bool = Launch.everything) -> [WorkList.Item<JobRow>] {
         jobs.map { JobRow(job: $0) }
             .sorted {
                 let left = $0.job.finished ?? $0.job.created, right = $1.job.finished ?? $1.job.created
@@ -42,7 +44,8 @@ nonisolated enum SidebarSections {
                 let job = row.job
                 let status: WorkStatus = job.needsYou || job.waitsForAnswer || job.waitsForPermission ? .needs : job.isActive ? .running : .done
                 let routine = routines.contains(job.id)
-                return WorkList.Item(id: row.id, job: row, type: .of(review: job.kind == .review, issue: job.issue, requester: nil, routine: routine),
+                let type: WorkType = routine && !everything ? .tasks : .of(review: job.kind == .review, issue: job.issue, requester: nil, routine: routine)
+                return WorkList.Item(id: row.id, job: row, type: type,
                                      status: status, queued: job.status == .queued, fresh: job.created > since && !seen.contains(row.id))
             }
     }
@@ -115,7 +118,7 @@ struct SidebarView: View {
     var body: some View {
         HStack(spacing: 0) {
             IconStrip(model: model, state: state, work: work)
-            content
+            if state.section == .sphere { SpherePanel(model: model, state: state) } else { content }
         }
         .frame(width: width)
         .frame(maxHeight: .infinity)
@@ -432,10 +435,18 @@ private struct IconStrip: View {
             Tokens.edge.frame(width: 20, height: 1).accessibilityHidden(true)
             // ponytail: one Obysphere, since obid joins one; Sangam's strip lists several and keeps the + under them.
             if let sphere {
-                Button { withAnimation(Tokens.warm) { state.openSettings(.sphere) } } label: {
+                // The panel goes to the Obysphere (Sangam's), ringed while it shows.
+                Button { withAnimation(Tokens.warm) { state.section = .sphere } } label: {
                     SphereTile(name: sphere, image: SphereTile.kept).frame(width: 32, height: 32).contentShape(Rectangle())
+                        .overlay {
+                            if state.section == .sphere {
+                                RoundedRectangle(cornerRadius: Tokens.iconRadius + 3, style: .continuous)
+                                    .strokeBorder(Tokens.ink.opacity(0.7), lineWidth: 1.5).padding(-4)
+                            }
+                        }
                 }
                 .buttonStyle(.plain).help(sphere).accessibilityLabel(sphere)
+                .accessibilityAddTraits(state.section == .sphere ? .isSelected : [])
             } else {
                 RailButton(symbol: "plus", label: "Create an Obysphere", on: false) { creating = true }
             }
@@ -445,11 +456,12 @@ private struct IconStrip: View {
         .sheet(isPresented: $creating) {
             CreateSphereSheet(feed: model.feed, done: { _ in
                 creating = false
-                withAnimation(Tokens.warm) { state.openSettings(.sphere) }
+                state.sphereChanged += 1
+                withAnimation(Tokens.warm) { state.section = .sphere }
             }, close: { creating = false })
         }
-        // Read when Oby's engine is up, and again once one is made.
-        .task(id: "\(model.feed.runner != nil) \(creating)") {
+        // Read when Oby's engine is up, and again once one is made, joined or left.
+        .task(id: "\(model.feed.runner != nil) \(creating) \(state.sphereChanged)") {
             let read = SphereModel(feed: model.feed)
             try? await read.refresh()
             // Joined shows its tile even when the Sphere itself doesn't answer, so the + never offers a second one.

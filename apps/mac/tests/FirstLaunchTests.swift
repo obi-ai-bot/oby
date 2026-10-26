@@ -29,6 +29,17 @@ struct FirstLaunchTests {
         #expect(FirstLaunchSteps.agent("cursor", installed: true, cursorHasACP: false, engine: true, accounts: []) == .outdated)
     }
 
+    /// Someone updating from the first launch before obid's sees only what's still to do, once.
+    @Test func anUpdateStartsAtTheFirstStepStillToDo() {
+        let signedIn = [account("default", "claude", "Personal", signedIn: true)]
+        #expect(FirstLaunchSteps.firstToDo(accessibility: false, accounts: signedIn, gitHub: true) == .talk)
+        #expect(FirstLaunchSteps.firstToDo(accessibility: true, accounts: [account("default", "claude", "Personal", signedIn: false)],
+                                           gitHub: true) == .agents)
+        #expect(FirstLaunchSteps.firstToDo(accessibility: true, accounts: signedIn, gitHub: false) == .github)
+        #expect(FirstLaunchSteps.firstToDo(accessibility: true, accounts: signedIn, gitHub: true) == nil)
+        #expect(FirstLaunch.doneKey != FirstLaunch.olderDoneKey)
+    }
+
     @Test func theStepWaitsUntilObidAnswers() {
         #expect(FirstLaunchSteps.agent("claude", installed: true, engine: false, accounts: []) == .waiting)
         #expect(FirstLaunchSteps.agent("claude", installed: true, engine: false,

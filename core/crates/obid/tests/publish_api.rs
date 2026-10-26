@@ -1494,7 +1494,9 @@ fn a_moved_env_and_a_key_from_a_side_branch_are_found() {
     }
 }
 
-/// The jobs reviewing job `id`'s published work, oldest first.
+/// The jobs reviewing job `id`'s published work, oldest first by `created`, which is in whole
+/// seconds: reviews created in the same second come in any order (by their random ids), so tell
+/// those apart by their agent.
 fn reviews_of(obid: &Obid, id: &str) -> Vec<Value> {
     let jobs = call(obid, "GET", "/v1/jobs", None).body;
     let mut reviews: Vec<Value> = jobs
@@ -1793,6 +1795,171 @@ fn a_review_with_no_verdict_or_cut_off_by_a_restart_settles() {
     let again = review_of(&obid, &id, 1);
     assert_ne!(again["id"], review.as_str());
     assert_eq!(settled(&obid)["reviewError"], none);
+}
+
+/// obid with the fixture repository, the publishing stand-in on Claude Code's account `stub`, and
+/// a Codex account `codex` (an API key's login) on the stand-in Codex: Oby's review of Claude
+/// Code's work goes to Codex first.
+fn obid_with_codex(folder: &Folder, path_first: &Path) -> Obid {
+    let remote = fixture(&folder.0.join("fixture"));
+    let mut config = config(&folder.0, &remote, &agent());
+    sign_in(folder, "stub");
+    let codex = folder.0.join("home/accounts/codex");
+    std::fs::create_dir_all(&codex).unwrap();
+    std::fs::write(
+        codex.join("auth.json"),
+        json!({"OPENAI_API_KEY": "sk-stub"}).to_string(),
+    )
+    .unwrap();
+    config["agents"]["codex"] = json!({
+        "bin": Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/agents/fake-codex"),
+        "accounts": [{"id": "codex", "name": "Codex", "configDir": codex}],
+    });
+    start(&folder.0, &config, Some(path_first))
+}
+
+/// Job `id`'s open inbox items about Oby's review that couldn't run.
+fn review_items(obid: &Obid, id: &str) -> Vec<Value> {
+    call(obid, "GET", "/v1/inbox", None)
+        .body
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|i| i["job"] == id && i["kind"] == "failed" && i["done"].is_null())
+        .cloned()
+        .collect()
+}
+
+/// A review that ends before its verdict (here Codex's login refused, as codex-cli 0.162.1 says it:
+/// `workspace routing discovery unauthorized (401)`) goes to the next reviewer that may take it, the
+/// other tool, by itself: its verdict lands, nothing waits for the owner, and the failed review job
+/// asks no one either.
+#[test]
+fn a_failed_reviewer_falls_back_to_the_other_tool() {
+    let folder = Folder::new("publish-review-fallback");
+    let bin = fake_gh(&folder.0);
+    let obid = obid_with_codex(&folder, &bin);
+    let id = dispatch(
+        &obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "build", "task": "COMMIT: hello.txt CODEX REFUSED",
+               "check": "test -f hello.txt", "account": "stub"}),
+    );
+    let job = reviewed(&obid, &id, 1);
+    assert_eq!(
+        job["review"]["verdict"],
+        "approved",
+        "{job}\n{}",
+        obid.log()
+    );
+    assert_eq!(job["review"]["agent"], "claude");
+    assert_eq!(job["reviewError"], Value::Null);
+    assert_eq!(job["reviewNeedsYou"], false);
+    // Codex's first: Claude Code's verdict landed, so Codex's review, which ended without one, came
+    // before it. Told apart by agent: Codex fails fast, and both can be created in one second.
+    let reviews = reviews_of(&obid, &id);
+    assert_eq!(reviews.len(), 2, "{reviews:?}");
+    let by = |agent: &str| {
+        reviews
+            .iter()
+            .find(|r| r["agent"] == agent)
+            .unwrap_or_else(|| panic!("no {agent} review: {reviews:?}"))
+    };
+    let (codex, claude) = (by("codex"), by("claude"));
+    assert_eq!(codex["account"], "codex");
+    assert!(
+        matches!(codex["status"].as_str(), Some("failed" | "interrupted")),
+        "{codex}"
+    );
+    assert!(
+        codex["reason"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("workspace routing discovery unauthorized (401)"),
+        "{codex}"
+    );
+    assert!(
+        codex["dismissed"].is_string(),
+        "its end is its author's: {codex}"
+    );
+    assert_eq!(claude["id"], job["review"]["job"]);
+    assert!(review_items(&obid, &id).is_empty());
+}
+
+/// When no reviewer can give a verdict (Codex's login refused, then Claude Code's turn erring), the
+/// job waits for the owner in one item, `Oby couldn't review #7: …`, with Try again (no workflow
+/// merges without a review): `reviewNeedsYou`, and nothing more starts by itself. Try again runs
+/// the review again, with one more reviewer to fall back on, and a second give-up is one item again.
+#[test]
+fn every_reviewer_failing_waits_for_the_owner_in_one_item() {
+    let folder = Folder::new("publish-review-none");
+    let bin = fake_gh(&folder.0);
+    let obid = obid_with_codex(&folder, &bin);
+    let id = dispatch(
+        &obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "build",
+               "task": "COMMIT: hello.txt CODEX REFUSED BROKEN REVIEW",
+               "check": "test -f hello.txt", "account": "stub"}),
+    );
+    // Settled once its item is in the inbox too: the job says it needs the owner a moment (two
+    // writes to disk) before its item is added (`Jobs::reviewed`).
+    let waits = |reviews: usize| {
+        within(120, "the review waits for the owner", || {
+            let job = call(&obid, "GET", &format!("/v1/jobs/{id}"), None).body;
+            let items = review_items(&obid, &id);
+            (job["reviewNeedsYou"] == true
+                && reviews_of(&obid, &id).len() == reviews
+                && !items.is_empty())
+            .then_some((job, items))
+        })
+    };
+    let (job, items) = waits(2);
+    let error = job["reviewError"].as_str().unwrap_or_default();
+    assert!(
+        error.starts_with("Oby couldn't review #7: ") && error.contains("Invalid API key"),
+        "{job}\n{}",
+        obid.log()
+    );
+    assert_eq!(job["status"], "done");
+    assert_eq!(job["review"], Value::Null);
+    assert_eq!(
+        stage(&job, "review")["detail"],
+        format!("Waiting for review · {error}")
+    );
+    let reviews = reviews_of(&obid, &id);
+    let mut agents: Vec<&str> = reviews.iter().filter_map(|r| r["agent"].as_str()).collect();
+    agents.sort_unstable();
+    assert_eq!(agents, ["claude", "codex"], "{reviews:?}");
+    assert_eq!(items.len(), 1, "{items:?}");
+    // Codex's first, then Claude Code's: the item names the review that gave up last, and its
+    // error is Claude Code's (above). Not by `created`: both can be created in one second.
+    let claude = reviews.iter().find(|r| r["agent"] == "claude").unwrap();
+    assert_eq!(
+        items[0]["id"],
+        format!("{id}-review-{}", claude["id"].as_str().unwrap())
+    );
+    assert_eq!(items[0]["text"], error);
+    assert_eq!(items[0]["options"], json!(["Try again"]));
+    // Never a loop: nothing more starts by itself.
+    std::thread::sleep(std::time::Duration::from_secs(2));
+    assert_eq!(reviews_of(&obid, &id).len(), 2);
+    assert_eq!(review_items(&obid, &id).len(), 1);
+    // Try again: the review again, then the owner's again, in one new item. Codex's 401 ended its
+    // login (#1423), so it isn't tried again until the owner signs in: Claude Code alone takes it.
+    let tried = call(
+        &obid,
+        "POST",
+        &format!("/v1/inbox/{}/answer", items[0]["id"].as_str().unwrap()),
+        Some(&json!({"answer": "Try again"})),
+    );
+    assert_eq!(tried.status, 200, "{}", tried.text);
+    let (job, again) = waits(3);
+    assert_eq!(job["reviewNeedsYou"], true);
+    // Created at least two seconds after the others: last by `created`.
+    assert_eq!(reviews_of(&obid, &id)[2]["agent"], "claude");
+    assert_eq!(again.len(), 1, "{again:?}");
+    assert_ne!(again[0]["id"], items[0]["id"]);
+    std::thread::sleep(std::time::Duration::from_secs(2));
+    assert_eq!(reviews_of(&obid, &id).len(), 3);
 }
 
 /// A round Oby's review asked for that pushes nothing new leaves the changes on the pull request's

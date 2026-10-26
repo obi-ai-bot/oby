@@ -69,13 +69,8 @@ final class RunnerFeed {
     /// obid's Tetrix, held once for every agent: read on connecting, then kept by its `tetrix`
     /// event and by Settings › Connectors' own reads; nil from a runner that doesn't hold one.
     var tetrix: TetrixStatus?
-    /// obid's Slack and its watcher (Settings › Connectors), read there and kept by their events.
-    var slack: SlackStatus?
-    /// obid's Sentry as its last `sentry` event said (Settings › Connectors keeps the repositories).
-    var sentry: SentryStatus?
-    var watch: WatchStatus?
-    /// The watcher's and the channel listener's items waiting in the inbox (Engine's inbox doesn't
-    /// know their kinds), oldest first.
+    /// The owner's reviews ready to post (`listen` items), and older watcher items, waiting in the
+    /// inbox (Engine's inbox doesn't know their kinds), oldest first.
     private(set) var notices: [WatchNotice] = []
     /// What each job carries that Engine's Job doesn't read yet (its mode, the permission it waits
     /// on, its question's recommended option and plan), by job id.
@@ -147,11 +142,7 @@ final class RunnerFeed {
     /// window hides the jobs that finished by then, the runner's and this Mac's alike.
     private(set) var clearedAt: Date?
     /// How the line to the runner is: Settings › Runner says it.
-    private(set) var connection = RunnerConnection.connecting {
-        didSet { if connection == .live && oldValue != .live { onLive() } }
-    }
-    /// The runner answers again (or for the first time): kept hook deliveries go to it (#1315).
-    @ObservationIgnored var onLive: () -> Void = {}
+    private(set) var connection = RunnerConnection.connecting
     /// The runner didn't answer the last try; the feed keeps trying.
     var down: Bool { if case .offline = connection { true } else { false } }
     /// The model and effort the runner's jobs use, as it last said (Settings › Models).
@@ -277,6 +268,14 @@ final class RunnerFeed {
         conversation.lookUp = { [weak self] id in try await self?.runner?.artifact(id) }
     }
 
+    /// Reads the accounts and the logins obid finds on this Mac again (`GET /v1/status`, which looks
+    /// again for logins made since it started): first launch's agents step, while it shows.
+    func refreshAccounts() async {
+        guard connection == .live, let runner, let status = try? await runner.status() else { return }
+        accounts = status.accounts
+        availableLogins = status.availableLogins ?? []
+    }
+
     #if DEBUG
     /// What Settings' pictures show (apps/mac/tests/WindowScreens.swift): the runner on this Mac with
     /// made-up accounts and models, and no runner asked.
@@ -287,6 +286,12 @@ final class RunnerFeed {
         self.models = models
         stagedOptions = options
         connection = .live
+    }
+
+    /// The runner on this Mac not answering (Home's `EngineDownLine` picture).
+    func stageDown() {
+        local = true
+        connection = .offline("The runner on this Mac hasn't started yet.")
     }
 
     /// Following `runner`, past its first lists: what changes from here alerts (the alert tests).
@@ -367,8 +372,6 @@ final class RunnerFeed {
         accounts = []
         availableLogins = []
         tetrix = nil
-        slack = nil
-        watch = nil
         models = nil
         accountFailover = nil
         extras = [:]
@@ -514,9 +517,8 @@ final class RunnerFeed {
                     case .check(let check): if check.state == .queued { checks.look(runner) }
                     case .tetrix(let status): tetrix = status
                     case .watchNotice(let notice): take(notice)
-                    case .slack(let status): slack = status
-                    case .sentry(let status): sentry = status
-                    case .watch(let status): watch = status
+                    case .slack, .watch: break  // Slack and its watcher are cut (docs/trim.md)
+                    case .sentry: break  // Sentry is cut (docs/trim.md)
                     case .cleanup(let measured): cleanup = measured
                     // obid names each turn's, step's and word's conversation: the window shows one (#493).
                     case .turn(let turn, let extras):

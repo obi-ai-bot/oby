@@ -231,6 +231,8 @@ struct LocalRunnerTests {
         let app = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appending(path: "Oby")
         #expect(LocalRunner.home.path.hasPrefix(app.path + "/"))
         #expect(LocalRunner.home.lastPathComponent == "Runner")
+        // The tray's files are the only ones obid takes (#891), in a folder of their own there.
+        #expect(LocalRunner.attachments.path.hasPrefix(LocalRunner.home.path + "/attachments/"))
         #expect(LocalRunner.url.absoluteString == "http://127.0.0.1:7777")
     }
 }
