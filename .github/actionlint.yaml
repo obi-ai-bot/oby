@@ -1,0 +1,5 @@
+self-hosted-runner:
+  # Deskree's DigitalOcean runners for Oby (one fresh droplet per job).
+  labels:
+    - do-oby
+    - do-oby-publish

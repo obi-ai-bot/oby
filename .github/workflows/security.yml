@@ -1,4 +1,4 @@
-# Security scans, report-only: SAST (Semgrep), dependencies + IaC misconfig (Trivy) and secrets
+# Security scans on Deskree's DigitalOcean runners for Oby, report-only: SAST (Semgrep), dependencies + IaC misconfig (Trivy) and secrets
 # (TruffleHog) on every pull request, every push to dev and main, and weekly on dev for newly
 # disclosed CVEs. Findings never fail a check; a scanner that did not run does (the "did not run"
 # steps), so a green check means the scan really happened.
@@ -39,7 +39,9 @@ jobs:
     # Draft PRs skip unless labelled full-ci. A skipped job still reports this check (as passing),
     # so a required check never waits on "Expected"; ready_for_review runs it.
     if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft || contains(github.event.pull_request.labels.*.name, 'full-ci') }}
-    runs-on: ubuntu-latest
+    # Deskree's DigitalOcean pool for Oby: one fresh droplet per job, destroyed after it (never
+    # Tetrix's boxes). A fork PR's run waits for a maintainer's approval before it gets one.
+    runs-on: [self-hosted, linux, do-oby]
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -78,7 +80,9 @@ jobs:
     name: SCA + IaC — Trivy
     # Draft PRs skip unless labelled full-ci (see sast).
     if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft || contains(github.event.pull_request.labels.*.name, 'full-ci') }}
-    runs-on: ubuntu-latest
+    # Deskree's DigitalOcean pool for Oby: one fresh droplet per job, destroyed after it (never
+    # Tetrix's boxes). A fork PR's run waits for a maintainer's approval before it gets one.
+    runs-on: [self-hosted, linux, do-oby]
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -114,7 +118,9 @@ jobs:
     name: Secrets — TruffleHog
     # Draft PRs skip unless labelled full-ci (see sast).
     if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft || contains(github.event.pull_request.labels.*.name, 'full-ci') }}
-    runs-on: ubuntu-latest
+    # Deskree's DigitalOcean pool for Oby: one fresh droplet per job, destroyed after it (never
+    # Tetrix's boxes). A fork PR's run waits for a maintainer's approval before it gets one.
+    runs-on: [self-hosted, linux, do-oby]
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -165,7 +171,9 @@ jobs:
     # register. The environment's branch rule (dev only) keeps the token from any other ref.
     if: ${{ always() && github.event_name != 'pull_request' && github.ref == 'refs/heads/dev' }}
     environment: scan-publish
-    runs-on: ubuntu-latest
+    # Its own label and runner group, which admits only this workflow at refs/heads/dev: a branch
+    # or PR that edits this file can't reach the runner that sees the token.
+    runs-on: [self-hosted, linux, do-oby-publish]
     timeout-minutes: 5
     steps:
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
