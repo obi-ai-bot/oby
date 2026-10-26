@@ -207,6 +207,19 @@ struct SphereScreens {
         try await save(settings(SphereSettingsView(feed: feed)), as: "sphere-host-your-own-confirm")
     }
 
+    /// Settings › Runner's Pair a device while obid is in an Obysphere: no Tailscale asked for, the
+    /// phone pairs through the Sphere's relay (#1377).
+    @Test func pairingInAnObysphere() async throws {
+        let obid = RunnerStub { request in
+            request.path == "/v1/obid/sphere"
+                ? (200, #"{"state": "joined", "owner": "wellington", "url": "https://obysphere.deskree.com", "sphere": "deskree", "obiId": "obi-wellington"}"#)
+                : (404, "{}")
+        }
+        let feed = RunnerFeed()
+        feed.stageAlerts(following: obid.runner)
+        try await save(settings(VStack(spacing: 24) { PairingView(feed: feed, remote: nil) }), as: "pairing-in-an-obysphere")
+    }
+
     private func settings(_ page: some View) -> some View {
         page.environment(\.settingsCards, true).padding(24).frame(width: Tokens.column + 48).background(Tokens.bg)
     }

@@ -6,8 +6,9 @@ import SwiftUI
 /// with the runner's own token (`POST /v1/pairing/invite`), which only this app holds: a phone
 /// reaching the gateway can redeem an invitation but can't mint one, and nothing on this Mac can
 /// read a file for it. The QR contains the gateway URL, the link JSON, and the one-time secret.
-/// The URL is a route a phone can reach the gateway by (`PairingRoute`): Remote access's hostname,
-/// or the gateway as `tailscale serve` publishes it on the tailnet.
+/// In an Obysphere the phone pairs through its relay, sealed, and needs no route (docs/runner-api.md,
+/// "obid only: the phone relay"); else the URL is a route a phone can reach the gateway by
+/// (`PairingRoute`): Remote access's hostname, or the gateway as `tailscale serve` publishes it on the tailnet.
 struct PairingView: View {
     let feed: RunnerFeed
     let remote: RemoteAccess?
@@ -15,8 +16,10 @@ struct PairingView: View {
     /// The launch build hides Remote access (`Launch`): then nothing here offers it.
     @AppStorage(Launch.everythingKey) private var everything = false
     @State private var invitation: GatewayInvitation?
-    /// The route the invitation was made for, shown with its QR.
-    @State private var invited: PairingRoute?
+    /// How the invitation's phone reaches this Mac, shown with its QR.
+    @State private var invited: String?
+    /// obid is in an Obysphere: every invitation goes through its relay.
+    @State private var inSphere = false
     /// What the tailnet offers, and the gateway's port (nil: obid has no gateway); nil until looked for once.
     @State private var tailnet: (PairingRoute.Tailnet, port: Int?)?
     @State private var chosen: PairingRoute?
@@ -27,41 +30,45 @@ struct PairingView: View {
     var body: some View {
         SetGroup("Pair a device", problem: problem) {
             if let invitation, let invited {
-                SetRow(about: "\(invited.label). Valid for two minutes. The code is single-use.") {
+                SetRow(about: "\(invited). Valid for two minutes. The code is single-use.") {
                     VStack(alignment: .leading, spacing: 8) {
                         if let image = Self.qr(invitation.qrText) {
                             Image(nsImage: image).interpolation(.none).resizable().frame(width: 180, height: 180)
                                 .accessibilityLabel("Pairing QR code")
                         }
-                        Text("Fallback code: \(invitation.code)").font(Tokens.font(Tokens.textLg).monospacedDigit()).textSelection(.enabled)
+                        // The iPhone takes it only for a Mac Bonjour finds (a full build's), never through the Sphere.
+                        if everything, !inSphere {
+                            Text("Fallback code: \(invitation.code)").font(Tokens.font(Tokens.textLg).monospacedDigit()).textSelection(.enabled)
+                        }
                     }
                 }
             }
-            if let (title, about) = blocker {
+            if !inSphere, let (title, about) = blocker {
                 // The buttons check again once it's fixed.
                 SetRow(title, about: about) {
+                    Button("Open Obysphere") { openSettings(.sphere) }.buttonStyle(.set)
                     if everything, remote != nil, routes.isEmpty {
                         Button("Allow Remote Access") { openSettings(.remote, spotlight: .remoteAccess) }
                             .buttonStyle(.set)
                     }
-                    Button("Check again") { Task { await findTailscale() } }
+                    Button("Check again") { Task { await findRoutes() } }
                         .buttonStyle(.set)
                 }
             }
-            if tailnet == nil || !routes.isEmpty {
-                if routes.count > 1 {
+            if inSphere || tailnet == nil || !routes.isEmpty {
+                if !inSphere, routes.count > 1 {
                     SetRow("Pair over") {
                         SetSelect("Pair over", selection: Binding { route } set: { chosen = $0 },
                                   options: routes.map { (Optional($0), $0.name) })
                     }
                 }
-                SetRow(routes.count == 1 ? route?.label ?? "" : "") {
+                SetRow(inSphere ? "Through your Obysphere" : routes.count == 1 ? route?.label ?? "" : "") {
                     Button(busy ? "Creating…" : invitation == nil ? "Pair a device" : "Create new invitation") {
                         openSettings.clear(.pairDevice)
                         Task { await create() }
                     }
                     .buttonStyle(.set)
-                    .disabled(busy || route == nil)
+                    .disabled(busy || !inSphere && route == nil)
                 }
                 .spotlit(openSettings.spotlight == .pairDevice, id: .pairDevice)
             }
@@ -81,10 +88,10 @@ struct PairingView: View {
             }
         }
         .task { await loadDevices() }
-        .task { await findTailscale() }
+        .task { await findRoutes() }
         // Back from Terminal, where `tailscale serve` may have just been run.
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
-            Task { await findTailscale() }
+            Task { await findRoutes() }
         }
     }
 
@@ -110,13 +117,14 @@ struct PairingView: View {
             return ("The gateway is public through Tailscale Funnel", "Turn Funnel off for it first: Oby never pairs a phone over the internet.")
         }
         guard routes.isEmpty else { return nil }
-        return ("No way to reach this Mac yet", "\(everything ? "Turn on Remote access, or publish" : "Publish") the gateway on your tailnet: \(PairingRoute.serveCommand(port: port))")
+        return ("No way to reach this Mac yet", "Join or host an Obysphere and your iPhone pairs through it, with nothing else to set up. Or \(everything ? "turn on Remote access, or publish" : "publish") the gateway on your tailnet: \(PairingRoute.serveCommand(port: port))")
     }
 
     /// The one the user picked while it's still there, else the first.
     private var route: PairingRoute? { chosen.flatMap { routes.contains($0) ? $0 : nil } ?? routes.first }
 
-    private func findTailscale() async {
+    private func findRoutes() async {
+        inSphere = await Self.inSphere(feed.runner)
         if let port = PairingRoute.gatewayPort() {
             tailnet = (await PairingRoute.tailnet(port: port), port)
         } else {
@@ -129,20 +137,16 @@ struct PairingView: View {
         defer { busy = false }
         do {
             let name = Host.current().localizedName ?? "Mac"
-            guard let route else {
+            let route = inSphere ? nil : route
+            guard inSphere || route != nil else {
                 throw RunnerError(message: "\(everything ? "Turn on Remote access, or publish" : "Publish") the gateway on your tailnet before creating a pairing QR code.")
             }
-            var request = try runnerRequest(path: "v1/pairing/invite", method: "POST")
+            let runner = try localRunner()
             // The owner's click, signed by this Mac's key: the phone it pairs may add its own key.
             let approval = try await feed.device.approveInvite(with: try feed.acting())
-            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-            request.httpBody = try JSONEncoder().encode(Invite(name: name, hostname: route.hostname, url: "https://\(route.hostname)", approval: approval))
-            let (data, response) = try await URLSession.shared.data(for: request)
-            // obid's own line when it refuses (an approval that doesn't hold, no Obysphere yet).
-            try Runner.check(response, data)
-            guard let http = response as? HTTPURLResponse, http.statusCode == 200 else { throw RunnerError(message: "The runner refused to create a pairing invitation.") }
-            invitation = try PairingPayloadDecoder.decodeInvitation(data)
-            invited = route
+            let made = try await Self.invite(runner, name: name, route: route, approval: approval)
+            invitation = made
+            invited = route?.label ?? "Through your Obysphere: \(URL(string: made.url)?.host() ?? made.url)"
             problem = nil
         } catch { problem = error.localizedDescription }
     }
@@ -150,13 +154,31 @@ struct PairingView: View {
     /// A request to the runner on this Mac, with its keychain token (Engine/LocalRunner.swift):
     /// pairing lives on the loopback API, which answers only that token.
     private func runnerRequest(path: String, method: String = "GET") throws -> URLRequest {
-        guard feed.local, let runner = feed.runner else {
-            throw RunnerError(message: "Pairing needs the runner on this Mac: turn on Settings › Runner › This Mac first.")
-        }
+        let runner = try localRunner()
         var request = URLRequest(url: runner.base.appending(path: path))
         request.httpMethod = method
         if let token = runner.token { request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
         return request
+    }
+
+    private func localRunner() throws -> Runner {
+        guard feed.local, let runner = feed.runner else {
+            throw RunnerError(message: "Pairing needs the runner on this Mac: turn on Settings › Runner › This Mac first.")
+        }
+        return runner
+    }
+
+    /// Whether obid is in an Obysphere (`GET /v1/obid/sphere`), where every invitation pairs through its relay.
+    static func inSphere(_ runner: Runner?) async -> Bool {
+        let membership: SphereModel.Membership? = try? await runner?.call("GET", "v1/obid/sphere")
+        return membership?.state == "joined"
+    }
+
+    /// `POST /v1/pairing/invite`, for `route`; with none, only the name, and obid pairs the phone
+    /// through its Obysphere (or says to join one first). obid's own line when it refuses.
+    static func invite(_ runner: Runner, name: String, route: PairingRoute?, approval: Approval) async throws -> GatewayInvitation {
+        let invite = Invite(name: name, hostname: route?.hostname, url: route.map { "https://\($0.hostname)" }, approval: approval)
+        return try PairingPayloadDecoder.decodeInvitation(try await runner.send("POST", "v1/pairing/invite", body: invite))
     }
 
     private func loadDevices() async {
@@ -195,7 +217,7 @@ struct PairingView: View {
         return image
     }
 
-    private struct Invite: Encodable { var name: String; var hostname: String; var url: String; var approval: Approval }
+    private struct Invite: Encodable { var name: String; var hostname: String?; var url: String?; var approval: Approval }
 }
 
 /// A way a phone reaches this Mac's gateway over HTTPS, as an invitation advertises it: its

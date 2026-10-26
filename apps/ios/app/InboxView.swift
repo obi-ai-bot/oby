@@ -12,6 +12,8 @@ struct InboxDecision: View {
     var openTask = false
     /// A card of its own; off inside a task's card, which is one already.
     var inset = true
+    /// Over the decision, above a line (Home's stack: its task and where it is in the stack), naming the task.
+    var head: AnyView? = nil
     @State private var busy = false
     @State private var problem: String?
     @State private var words = ""
@@ -25,8 +27,12 @@ struct InboxDecision: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
+            if let head {
+                head
+                Rectangle().fill(Tokens.divider).frame(height: 1).padding(.vertical, 12)
+            }
             AskCard(kind: AskKind.label(item.kind, plan: job?.question?.plan != nil), failed: AskKind.failed(item.kind),
-                    source: openTask ? job?.heading : nil,
+                    source: openTask && head == nil ? job?.heading : nil,
                     title: confirming ? item.title : item.words.title(item.text),
                     happened: confirming ? InboxWords.plain(item.text) : item.words.body,
                     behindDetails: confirming ? nil : item.words.details(item.text),

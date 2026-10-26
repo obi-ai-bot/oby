@@ -1,7 +1,7 @@
 # Remote access: reach your Mac from anywhere (#285)
 
 > [!NOTE]
-> **Hidden at launch** (the owner's decision of 2026-10-23, AGENTS.md "The launch build"): Settings › Remote access isn't shown on the Mac or the iPhone, and the iPhone reaches the Mac through the user's own Obysphere instead, sealed end to end ([runner-api.md](runner-api.md), "obid only: the phone relay": obid's side is on `dev`, the iPhone's is in progress). Its code still builds and its tests still pass. Deskree's own Macs show it with a full build ([release.md](release.md), "Full builds": the launch build has no `cloudflared`) and `defaults write com.deskree.oby showEverything -bool YES`, then a relaunch. [Pushes](#pushes), the sealed push relay in the same Worker, isn't hidden.
+> **Hidden at launch** (the owner's decision of 2026-10-23, AGENTS.md "The launch build"): Settings › Remote access isn't shown on the Mac or the iPhone, and the iPhone reaches the Mac through the user's own Obysphere instead, sealed end to end ([runner-api.md](runner-api.md), "obid only: the phone relay"; obid's side #1368, the iPhone's #1377, and the Mac's Pair a device makes a relay QR with no tailnet route, [onboarding.md](onboarding.md) steps 8–12). Its code still builds and its tests still pass. Deskree's own Macs show it with a full build ([release.md](release.md), "Full builds": the launch build has no `cloudflared`) and `defaults write com.deskree.oby showEverything -bool YES`, then a relaunch. [Pushes](#pushes), the sealed push relay in the same Worker, isn't hidden.
 
 Outside the home network, the iPhone reaches the Mac with no port forwarding, no VPN app and no Tailscale account: an Oby control plane on Cloudflare gives each installation its own Cloudflare Tunnel, obid on the Mac runs `cloudflared` outbound as its own child (#896, so it outlives the window app), and the iPhone talks HTTPS to an opaque hostname. The pattern is OpenMausBot's `cloudflare/control-plane`.
 
@@ -206,7 +206,7 @@ Rotating the APNs key changes nothing on the phones: make a new key, put the thr
 
 ## On the iPhone
 
-Settings › Your Mac (`apps/ios/app/ConnectScreen.swift`) links the Mac: its name (as Sharing settings call it) and its hostname. Pairing by QR code comes with the gateway (#284) and carries the same two fields (`MacLink`'s JSON, `{"name", "hostname"}`); until then they're typed. Linked, the iPhone talks to the Mac instead of the runner's address:
+Settings › Your Mac (`apps/ios/app/ConnectScreen.swift`) links the Mac: its name (as Sharing settings call it) and its hostname, from the Mac's pairing QR code (`MacLink`'s JSON, `{"name", "hostname"}`, and `relay` when it came through an Obysphere). A Mac paired through its Obysphere, the launch build's only way, is reached through the Sphere's relay alone, sealed end to end, at home and away: no Bonjour, no tunnel ([runner-api.md](runner-api.md), "obid only: the phone relay"). A Mac paired over a direct route (a full build, with `showEverything`) is reached this way instead:
 
 - **At home,** it looks for the Mac's gateway with Bonjour (`_oby._tcp`, the service named after the Mac), resolves its address and talks to it on the local network. `apps/ios/app/Info.plist` declares the service and the local-network use.
 - **Away,** it goes through the tunnel, `https://<hostname>`.

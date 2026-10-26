@@ -9,7 +9,7 @@ The owner's decision of 2026-10-25: Oby had become a patchwork, so the Mac app a
 
 Under all four, **Tetrix**: Oby exists to promote it. Every agent gets Tetrix's graph through Oby's one connection, and that path has to be flawless.
 
-The Mac app comes first. The iPhone matters, but it waits, untouched, until the Mac app is right.
+The Mac app comes first. The iPhone waited, untouched, until the Mac app was right; since Oby 0.4.1 (2026-10-26) it's back, showing what the Mac's launch build shows and pairing through the Obysphere.
 
 What's cut leaves the code, not the history: it stays in git, and Sangam's design keeps the picture for when it comes back.
 
@@ -23,7 +23,7 @@ What's cut leaves the code, not the history: it stays in git, and Sangam's desig
 - The Obysphere: `sphere/link`, `exchange`, `inbox`, `decisions`, `membership`, `pins`, `routes`, `approval`, `answering`, `sharing` (the rules for answering other Obys, not compute sharing), `channel` and `sealed`.
 - The conversation as a Claude Code (or Codex) session with an `oby` MCP server: `brain/harness`, `harness_codex`, `tools`, `actions`, `plan` (its checks). This already exists; only the plan loop around it goes.
 - The Mac app's window, side panel, tasks, conversations, decisions, accounts, models, Tetrix, Obysphere, first launch, updates.
-- Parked, not cut and not worked on: the iPhone and Watch apps and what serves them (`relay`, `push`, `gateway`, `devices`, `approval`, `PairingView`). #1421 waits with them.
+- The iPhone app and what serves it (`relay`, `push`, `gateway`, `devices`, `approval`, `PairingView`): back after 0.4.1, pairing through the Obysphere with no Tailscale (#1421's work), hiding what the Mac's launch build hides. The Watch app stays parked, not cut and not worked on.
 
 ## Batches
 
@@ -48,7 +48,7 @@ About 45k of obid's 131k source lines, and about 33k lines of Swift, leave.
 ## Decided
 
 - **Tetrix stays** and has to be flawless: it's why Oby exists (the owner, 2026-10-25).
-- **The iPhone waits** until the Mac app is right; its code stays as it is (the owner, 2026-10-25).
+- **The iPhone waited** until the Mac app was right (the owner, 2026-10-25); after 0.4.1 it's back, as the Mac's launch build (the owner, 2026-10-26).
 - **Slack goes:** GitHub is the only outside connection, and Obys do the talking (the owner, 2026-10-25).
 
 ## Still open

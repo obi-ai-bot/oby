@@ -10,15 +10,19 @@ nonisolated enum PhoneWork {
     /// Latest first (by when it finished, else when it was made). New: made after `since` (this
     /// launch) and not opened since (`seen`). Needs you: a decision is open on it, its own or one
     /// of `inbox` (what waits now, `InboxItem.waiting`), whatever its agent is doing (Sangam's
-    /// tasks.ts). No teammates yet: the runner doesn't say who asked.
-    static func items(_ jobs: [Job], inbox: [InboxItem] = [], since: Date, seen: Set<String>) -> [WorkList.Item<Job>] {
+    /// tasks.ts). No teammates yet: the runner doesn't say who asked. The launch build hides Routines
+    /// (`Launch`, docs/trim.md), so there a routine's run goes under Tasks, as on the Mac.
+    static func items(_ jobs: [Job], inbox: [InboxItem] = [], since: Date, seen: Set<String>,
+                      everything: Bool = Launch.everything) -> [WorkList.Item<Job>] {
         let asked = Set(inbox.map(\.job))
         return jobs.enumerated()
             .sorted { ($0.element.finished ?? $0.element.created, -$0.offset) > ($1.element.finished ?? $1.element.created, -$1.offset) }
             .map { _, job in
                 let decides = job.needsYou || job.waitsForAnswer || job.waitsForPermission || asked.contains(job.id)
                 let status: WorkStatus = decides ? .needs : job.isActive ? .running : .done
-                return WorkList.Item(id: job.id, job: job, type: .of(review: job.kind == "review", issue: job.issue, requester: nil, routine: job.routine != nil),
+                let type: WorkType = job.routine != nil && !everything ? .tasks
+                    : .of(review: job.kind == "review", issue: job.issue, requester: nil, routine: job.routine != nil)
+                return WorkList.Item(id: job.id, job: job, type: type,
                                      status: status, queued: job.status == .queued, fresh: job.created > since && !seen.contains(job.id))
             }
     }
@@ -390,7 +394,7 @@ final class Phone {
         restoreQueuedMessages(for: offlineQueueTarget)
         #if DEBUG
         if let sample = GitHubWork.sample { gitHubWork = sample }
-        if SampleTasks.on { jobs = SampleTasks.jobs; conversations = SampleTasks.conversations; accounts = SampleTasks.accounts; loaded = true; SampleTasks.talk(self) }
+        if SampleTasks.on { jobs = SampleTasks.jobs; self.inbox = SampleTasks.inbox; conversations = SampleTasks.conversations; accounts = SampleTasks.accounts; loaded = true; SampleTasks.talk(self) }
         // `-ObySampleUnreachable YES`: the Mac out of reach since 40 minutes ago, for the notice's screenshots.
         if UserDefaults.standard.bool(forKey: "ObySampleUnreachable") { self.connection = .offline(""); self.lastSeen = .now.addingTimeInterval(-2400) }
         #endif
