@@ -1064,6 +1064,16 @@ impl Jobs {
         });
     }
 
+    /// Review job `id`'s approval on GitHub (`url`), dismissed again right after it was posted,
+    /// in its outgoing actions (crate::sphere::approval::dismiss).
+    pub fn dismissed_on_github(&self, id: &str, repo: &str, url: &str) {
+        self.update(id, |job| {
+            let sent =
+                crate::publish::Outgoing::new("pullRequestApprovalDismissal", repo, url, None);
+            job.outgoing.push(sent);
+        });
+    }
+
     /// The session job `id`'s agent saved in Tetrix, in its outgoing actions.
     pub fn sent_to_tetrix(&self, id: &str, session: &str) {
         self.update(id, |job| {

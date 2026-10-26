@@ -13,13 +13,25 @@ use serde_json::Value;
 
 use crate::Rejection;
 
-/// How long an owner's confirmation of one exchange stays fresh, either way of the receiver's clock.
+/// How long an owner's confirmation of one exchange stays fresh: signed at most this long before
+/// the receiver checks it, and at most [`CONFIRMATION_AHEAD`] after (a device clock running ahead).
 pub const CONFIRMATION_FRESH: i64 = 120;
+pub const CONFIRMATION_AHEAD: i64 = 30;
+
+/// What every review an Obi posts on the code host carries, matched without regard to case: a
+/// review whose body has it is an Obi's, whoever's account posted it.
+pub const OBI_REVIEW_MARKER: &str = "by oby:";
+
+/// The code host's access levels that let an approval count: write or more.
+pub const WRITE_ACCESS: [&str; 3] = ["admin", "maintain", "write"];
 
 /// The request being answered, as the decision reads it.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct Request {
     pub correlation_id: String,
+    /// `owner/name`: a team in `CODEOWNERS` counts only of the repository's own organization.
+    #[serde(default)]
+    pub repo: String,
     pub head_sha: String,
     /// ISO 8601, as the envelope's.
     pub expires_at: String,
@@ -52,12 +64,16 @@ pub struct Confirmation {
     pub used_before: bool,
 }
 
-/// One review of the pull request, as the code host shows it.
+/// One review of the pull request, as the code host lists it.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct Review {
     pub login: String,
-    /// `human`, `bot` (the code host marks the account as one) or `obi` (an Obi's fixed words).
-    pub kind: String,
+    /// `User`, or `Bot` for an account the code host marks as one.
+    #[serde(default)]
+    pub account_type: String,
+    /// Its words: one with [`OBI_REVIEW_MARKER`] is an Obi's.
+    #[serde(default)]
+    pub body: String,
     /// `APPROVED`, `CHANGES_REQUESTED`, `COMMENTED` or `DISMISSED`.
     pub state: String,
     pub commit_id: String,
@@ -77,6 +93,10 @@ pub struct CodeHost {
     /// The members of each team `CODEOWNERS` names (`org/team`).
     #[serde(default)]
     pub teams: BTreeMap<String, Vec<String>>,
+    /// Each approver's access to the repository (`admin`, `maintain`, `write`, `triage`, `read`,
+    /// `none`): one it doesn't list counts as none.
+    #[serde(default)]
+    pub permissions: BTreeMap<String, String>,
 }
 
 /// A case's `input`.
@@ -107,7 +127,7 @@ pub fn decide(context: &Context, input: &Input) -> Result<(), Rejection> {
             && c.correlation_id == request.correlation_id
             && c.head_sha == request.head_sha
             && crate::time::parse(&c.signed_at)
-                .is_some_and(|at| (now - at).abs() <= CONFIRMATION_FRESH)
+                .is_some_and(|at| now - at <= CONFIRMATION_FRESH && at - now <= CONFIRMATION_AHEAD)
     });
     if confirmed {
         return Ok(());
@@ -118,7 +138,12 @@ pub fn decide(context: &Context, input: &Input) -> Result<(), Rejection> {
             "its owner didn't confirm this exchange at this commit on their own device",
         ));
     }
-    if !code_owners_approved(&input.code_host, &request.head_sha, &context.owner_login) {
+    if !code_owners_approved(
+        &input.code_host,
+        &request.repo,
+        &request.head_sha,
+        &context.owner_login,
+    ) {
         return Err(Rejection::new(
             "no_code_owner_approval",
             "no person who owns every changed file approved this commit",
@@ -135,29 +160,42 @@ pub fn verify(input: &Value, context: &Value) -> Result<(), Rejection> {
     decide(&context, &input)
 }
 
-/// Whether people who between them own every changed file approved `head`: each changed file has
-/// owners, and one of them has an approval that counts ([`counting_approvers`]).
-pub fn code_owners_approved(host: &CodeHost, head: &str, own_login: &str) -> bool {
+/// Whether people who between them own every changed file of `repo` approved `head`: each changed
+/// file has owners, and one of them has an approval that counts ([`counting_approvers`]).
+pub fn code_owners_approved(host: &CodeHost, repo: &str, head: &str, own_login: &str) -> bool {
     let Some(rules) = host.codeowners.as_deref().and_then(parse_codeowners) else {
         return false;
     };
     if host.changed_files.is_empty() || !host.files_complete {
         return false;
     }
-    let approvers = counting_approvers(&host.reviews, head, own_login);
+    let org = repo.split('/').next().unwrap_or("").to_lowercase();
+    let approvers = counting_approvers(&host.reviews, head, own_login, &host.permissions);
     host.changed_files.iter().all(|file| {
         let owners = owners_of(&rules, file);
         !owners.is_empty()
             && approvers
                 .iter()
-                .any(|login| owners.iter().any(|o| is_owner(o, login, &host.teams)))
+                .any(|login| owners.iter().any(|o| is_owner(o, login, &host.teams, &org)))
     })
 }
 
+/// Whether a review is a person's: not an account the code host marks as a bot, and no Obi's
+/// marker in its words.
+pub fn by_a_person(review: &Review) -> bool {
+    review.account_type != "Bot" && !review.body.to_lowercase().contains(OBI_REVIEW_MARKER)
+}
+
 /// The logins (lower case) whose approval of `head` counts: each person's last approving,
-/// changes-requesting or dismissed review decides; only a person's (`kind` human), and never the
-/// receiver's own owner's, whose login the receiver posts with.
-pub fn counting_approvers(reviews: &[Review], head: &str, own_login: &str) -> Vec<String> {
+/// changes-requesting or dismissed review decides; only a person's ([`by_a_person`]) with write
+/// access or more (`permissions`), and never the receiver's own owner's, whose login the receiver
+/// posts with.
+pub fn counting_approvers(
+    reviews: &[Review],
+    head: &str,
+    own_login: &str,
+    permissions: &BTreeMap<String, String>,
+) -> Vec<String> {
     let mut last: BTreeMap<String, &Review> = BTreeMap::new();
     for review in reviews {
         if matches!(
@@ -168,25 +206,38 @@ pub fn counting_approvers(reviews: &[Review], head: &str, own_login: &str) -> Ve
         }
     }
     let own = own_login.to_lowercase();
+    let can_write = |login: &str| {
+        permissions
+            .iter()
+            .find(|(l, _)| l.to_lowercase() == login)
+            .is_some_and(|(_, access)| WRITE_ACCESS.contains(&access.as_str()))
+    };
     last.into_iter()
         .filter(|(login, r)| {
-            r.state == "APPROVED" && r.commit_id == head && r.kind == "human" && *login != own
+            r.state == "APPROVED"
+                && r.commit_id == head
+                && by_a_person(r)
+                && *login != own
+                && can_write(login)
         })
         .map(|(login, _)| login)
         .collect()
 }
 
-fn is_owner(owner: &str, login: &str, teams: &BTreeMap<String, Vec<String>>) -> bool {
+/// Whether `owner` (`@login` or `@org/team`) names `login`: a team only of the repository's own
+/// organization, `org`, with `login` among its members.
+fn is_owner(owner: &str, login: &str, teams: &BTreeMap<String, Vec<String>>, org: &str) -> bool {
     let Some(name) = owner.strip_prefix('@').map(str::to_lowercase) else {
         return false;
     };
-    if !name.contains('/') {
+    let Some((team_org, _)) = name.split_once('/') else {
         return name == login;
-    }
-    teams
-        .iter()
-        .find(|(team, _)| team.to_lowercase() == name)
-        .is_some_and(|(_, members)| members.iter().any(|m| m.to_lowercase() == login))
+    };
+    team_org == org
+        && teams
+            .iter()
+            .find(|(team, _)| team.to_lowercase() == name)
+            .is_some_and(|(_, members)| members.iter().any(|m| m.to_lowercase() == login))
 }
 
 /// One `CODEOWNERS` line: its pattern and its owners.

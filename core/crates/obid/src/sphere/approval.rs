@@ -33,13 +33,11 @@ pub fn asked(body: &Value) -> bool {
     body["approve_on_host"] == true && body["pr"].as_u64().is_some()
 }
 
-/// How every review obid posts starts: an approval with these words is an Oby's, not a person's.
-pub const WORDS_START: &str = "Approved by Oby:";
-
-/// The words of the review obid posts: its own, the commit only.
+/// The words of the review obid posts: its own, the commit only, with Oby's marker
+/// (`obi_protocol::host_approval::OBI_REVIEW_MARKER`), so no other Oby counts it as a person's.
 pub fn words(sha: &str) -> String {
     format!(
-        "{WORDS_START} its review of {} passed.",
+        "Approved by Oby: its review of {} passed.",
         &sha[..sha.len().min(12)]
     )
 }
@@ -189,7 +187,7 @@ pub fn as_reviewed(
 /// still the change reviewed ([`as_reviewed`], into `base`), and when the owner's login can push to
 /// `repo` (an approval without that wouldn't count). The words pass the secret scan first and are
 /// written in `scratch`. `still` says, right before GitHub is asked, whether the approval may still
-/// go (obid in its Sphere, the request unexpired). Its URL, or why it wasn't posted.
+/// go (obid in its Sphere, the request unexpired). The review posted, or why it wasn't.
 pub async fn post(
     gh: &Path,
     scratch: &Path,
@@ -198,7 +196,7 @@ pub async fn post(
     base: &str,
     sha: &str,
     still: impl Fn() -> bool,
-) -> Result<String, String> {
+) -> Result<Posted, String> {
     let words = words(sha);
     crate::store::make_private_dir(scratch)
         .map_err(|e| format!("the secret scan couldn't run (its folder: {e})"))?;
@@ -209,22 +207,7 @@ pub async fn post(
             return Err(format!("the secret scan couldn't run ({why})"));
         }
     }
-    let n = number.to_string();
-    let view = crate::github::run(
-        gh,
-        &[
-            "pr",
-            "view",
-            &n,
-            "-R",
-            repo,
-            "--json",
-            "state,headRefOid,baseRefName,url",
-        ],
-    )
-    .await?;
-    let view: Value = serde_json::from_str(&view).map_err(|_| "gh's answer wasn't JSON")?;
-    as_reviewed(&view, repo, number, base, sha)?;
+    still_as_reviewed(gh, repo, number, base, sha).await?;
     if !crate::github::can_push(gh, None, repo).await? {
         return Err(format!(
             "your GitHub login can't push to {repo}, so its approval wouldn't count"
@@ -242,24 +225,103 @@ pub async fn post(
         .await
         .map_err(|(_, why)| why)?;
     let posted: Value = serde_json::from_str(&text).unwrap_or_default();
-    Ok(posted["html_url"]
-        .as_str()
-        .filter(|u| u.starts_with("https://"))
-        .map_or_else(
-            || format!("https://github.com/{repo}/pull/{number}"),
-            str::to_owned,
-        ))
+    Ok(Posted {
+        url: posted["html_url"]
+            .as_str()
+            .filter(|u| u.starts_with("https://"))
+            .map_or_else(
+                || format!("https://github.com/{repo}/pull/{number}"),
+                str::to_owned,
+            ),
+        id: posted["id"].as_u64(),
+    })
+}
+
+/// An approving review obid posted: its URL, and its id, to dismiss it by.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Posted {
+    pub url: String,
+    pub id: Option<u64>,
+}
+
+/// Whether pull request `number` of `repo` is, on GitHub now, still the change reviewed
+/// ([`as_reviewed`]): read with the owner's `gh`.
+pub async fn still_as_reviewed(
+    gh: &Path,
+    repo: &str,
+    number: u64,
+    base: &str,
+    sha: &str,
+) -> Result<(), String> {
+    let n = number.to_string();
+    let view = crate::github::run(
+        gh,
+        &[
+            "pr",
+            "view",
+            &n,
+            "-R",
+            repo,
+            "--json",
+            "state,headRefOid,baseRefName,url",
+        ],
+    )
+    .await?;
+    let view: Value = serde_json::from_str(&view).map_err(|_| "gh's answer wasn't JSON")?;
+    as_reviewed(&view, repo, number, base, sha)
+}
+
+/// The words obid dismisses its own approval with: its own, carrying Oby's marker.
+pub const DISMISSAL: &str = "Dismissed by Oby: the pull request changed while Oby approved it, so this approval no longer stands.";
+
+/// Dismisses obid's own approving review `id` on pull request `number` of `repo`, as the owner.
+pub async fn dismiss(gh: &Path, repo: &str, number: u64, id: u64) -> Result<(), String> {
+    if !crate::github::is_repo(repo) {
+        return Err(format!("{repo} isn't a repository name"));
+    }
+    let path = format!("repos/{repo}/pulls/{number}/reviews/{id}/dismissals");
+    let message = format!("message={DISMISSAL}");
+    crate::github::run(
+        gh,
+        &[
+            "api",
+            "-X",
+            "PUT",
+            &path,
+            "-f",
+            &message,
+            "-f",
+            "event=DISMISS",
+        ],
+    )
+    .await
+    .map(|_| ())
 }
 
 /// Where GitHub keeps a repository's code owners, in the order it looks.
 pub const CODEOWNERS_PATHS: [&str; 3] = [".github/CODEOWNERS", "CODEOWNERS", "docs/CODEOWNERS"];
 
+/// The values of `gh api --paginate`'s answer, the pages' arrays run together: each page is one
+/// JSON array, written one after another.
+fn pages(text: &str) -> Result<Vec<Value>, String> {
+    let mut items = Vec::new();
+    for page in serde_json::Deserializer::from_str(text).into_iter::<Value>() {
+        match page.map_err(|_| "gh's answer wasn't JSON")? {
+            Value::Array(page) => items.extend(page),
+            _ => return Err("gh's answer wasn't a list".into()),
+        }
+    }
+    Ok(items)
+}
+
 /// What GitHub shows, with the owner's own `gh`, about whether the people who own every file of
 /// pull request `number` of `repo` approved `head` (spec `protocol.md` section 11, "Who counts as
 /// a code owner"): the `CODEOWNERS` file on `base`, every changed path (a renamed file's old one
-/// too) and whether that's all of them, the reviews in order, and, for those that may count, the
-/// teams the file names that they're in. With the owner's own login, which counts for nobody. Why
-/// it couldn't read it, else: then no code owner's approval counts.
+/// too) and whether that's all of them, the reviews in order as GitHub lists them, and, for the
+/// people whose approval may count, their access to `repo` and the teams the file names that
+/// they're in. With the owner's own login, which counts for nobody. Read raw, so what counts is
+/// decided by `obi_protocol::host_approval` alone. Why it couldn't read it, else: then no code
+/// owner's approval counts.
 pub async fn code_host(
     gh: &Path,
     repo: &str,
@@ -300,62 +362,57 @@ pub async fn code_host(
     };
     let pr = format!("repos/{repo}/pulls/{number}");
     let files = format!("{pr}/files");
-    let listed = crate::github::run(
-        gh,
-        &[
-            "api",
-            &files,
-            "--paginate",
-            "--jq",
-            ".[] | {f: .filename, p: .previous_filename}",
-        ],
-    )
-    .await?;
-    let mut entries = 0;
-    for line in listed.lines().filter(|l| !l.trim().is_empty()) {
-        let file: Value =
-            serde_json::from_str(line).map_err(|_| "gh's list of files wasn't JSON")?;
-        entries += 1;
-        for key in ["f", "p"] {
+    let files = pages(&crate::github::run(gh, &["api", &files, "--paginate"]).await?)?;
+    for file in &files {
+        for key in ["filename", "previous_filename"] {
             if let Some(path) = file[key].as_str() {
                 host.changed_files.push(path.to_owned());
             }
         }
     }
-    let changed = crate::github::run(gh, &["api", &pr, "--jq", ".changed_files"]).await?;
-    host.files_complete = changed.trim().parse::<usize>().is_ok_and(|n| n == entries);
+    let pull: Value = serde_json::from_str(&crate::github::run(gh, &["api", &pr]).await?)
+        .map_err(|_| "gh's answer wasn't JSON")?;
+    host.files_complete = pull["changed_files"]
+        .as_u64()
+        .is_some_and(|n| n == files.len() as u64);
     let reviews = format!("{pr}/reviews");
-    let jq = format!(
-        ".[] | {{login: .user.login, type: .user.type, state: .state, commit_id: .commit_id, obi: ((.body // \"\") | startswith(\"{WORDS_START}\"))}}"
-    );
-    let listed = crate::github::run(gh, &["api", &reviews, "--paginate", "--jq", &jq]).await?;
-    for line in listed.lines().filter(|l| !l.trim().is_empty()) {
-        let review: Value =
-            serde_json::from_str(line).map_err(|_| "gh's list of reviews wasn't JSON")?;
-        let Some(login) = review["login"].as_str() else {
+    for review in pages(&crate::github::run(gh, &["api", &reviews, "--paginate"]).await?)? {
+        // A review by an account since deleted has no user: it counts for nobody.
+        let Some(login) = review["user"]["login"].as_str() else {
             continue;
         };
-        let kind = if review["type"] == "Bot" {
-            "bot"
-        } else if review["obi"] == true {
-            "obi"
-        } else {
-            "human"
-        };
+        let text = |v: &Value| v.as_str().unwrap_or("").to_owned();
         host.reviews.push(Review {
             login: login.to_owned(),
-            kind: kind.into(),
-            state: review["state"].as_str().unwrap_or("").to_owned(),
-            commit_id: review["commit_id"].as_str().unwrap_or("").to_owned(),
+            account_type: text(&review["user"]["type"]),
+            body: text(&review["body"]),
+            state: text(&review["state"]),
+            commit_id: text(&review["commit_id"]),
         });
     }
-    // Who's in the teams the file names: asked only for the people whose approval may count.
-    let approvers = counting_approvers(&host.reviews, head, &own);
+    // The people whose approval may count, as if each could write: their access and teams are
+    // asked for them alone.
+    let anyone = host
+        .reviews
+        .iter()
+        .map(|r| (r.login.clone(), "write".to_owned()))
+        .collect();
+    let candidates = counting_approvers(&host.reviews, head, &own, &anyone);
     let named = |s: &str| {
         !s.is_empty()
             && s.chars()
                 .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
     };
+    for login in candidates.iter().filter(|l| named(l)) {
+        let path = format!("repos/{repo}/collaborators/{login}/permission");
+        // GitHub answers 404 for someone who isn't a collaborator: no access.
+        if let Ok(said) = crate::github::run(gh, &["api", &path]).await {
+            let said: Value = serde_json::from_str(&said).unwrap_or_default();
+            if let Some(access) = said["permission"].as_str() {
+                host.permissions.insert(login.clone(), access.to_owned());
+            }
+        }
+    }
     let mut teams: Vec<&str> = rules
         .iter()
         .flatten()
@@ -369,12 +426,14 @@ pub async fn code_host(
         let Some((org, slug)) = team.split_once('/').filter(|(o, t)| named(o) && named(t)) else {
             continue;
         };
-        for login in approvers.iter().filter(|l| named(l)) {
+        for login in candidates.iter().filter(|l| named(l)) {
             let path = format!("orgs/{org}/teams/{slug}/memberships/{login}");
-            if crate::github::run(gh, &["api", &path, "--jq", ".state"])
-                .await
-                .is_ok_and(|state| state.trim() == "active")
-            {
+            let said = crate::github::run(gh, &["api", &path]).await;
+            let state = said
+                .ok()
+                .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+                .and_then(|v| v["state"].as_str().map(str::to_owned));
+            if state.as_deref() == Some("active") {
                 host.teams
                     .entry(team.to_owned())
                     .or_default()
@@ -579,6 +638,33 @@ mod tests {
             words(SHA),
             "Approved by Oby: its review of 6d20146f366b passed."
         );
+    }
+
+    #[test]
+    fn every_word_obid_posts_on_github_carries_obys_marker() {
+        use obi_protocol::host_approval::OBI_REVIEW_MARKER;
+        for posted in [
+            words(SHA),
+            DISMISSAL.to_owned(),
+            crate::review::SIGNED.to_owned(),
+            crate::merge::APPROVAL.to_owned(),
+        ] {
+            assert!(
+                posted.to_lowercase().contains(OBI_REVIEW_MARKER),
+                "{posted}"
+            );
+        }
+        assert_eq!(crate::github_work::OBY_SIGNS, OBI_REVIEW_MARKER);
+    }
+
+    #[test]
+    fn paginated_answers_run_together() {
+        assert_eq!(
+            pages("[{\"a\":1}][{\"a\":2}]\n[]").unwrap(),
+            [json!({"a": 1}), json!({"a": 2})]
+        );
+        assert!(pages("{\"a\":1}").is_err());
+        assert!(pages("[1").is_err());
     }
 
     #[test]

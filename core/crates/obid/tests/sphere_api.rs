@@ -321,6 +321,11 @@ fn wait_for(obid: &Obid, id: &str) -> Value {
     })
 }
 
+/// The words obid's reviewer account approves with (crate::merge::APPROVAL), as GitHub shows them.
+fn crate_approval() -> &'static str {
+    "Oby reviewed this commit and approves it. Its review is in Oby, on the job that opened this.\n\nby Oby: Oby wrote this review."
+}
+
 /// The open ask to approve exchange `cid`'s pull request on GitHub, once it is there.
 fn wait_ask(obid: &Obid, cid: &str) -> Value {
     wait_for(obid, &format!("obi-approve-{cid}"))
@@ -510,58 +515,141 @@ async fn an_approved_review_is_approved_on_github_only_as_the_owner_allows() {
     tokio::task::block_in_place(|| wait_ask(&obid, alone["id"].as_str().unwrap()));
     assert_eq!(approvals().lines().count(), 1);
 
-    // CODEOWNERS on the base branch: src/ is alice's, the rest the reviewers team's.
-    std::fs::write(
-        github.join("contents/.github/CODEOWNERS"),
-        "* @obi-e2e/reviewers\n/src/ @alice\n",
-    )
-    .unwrap();
-    std::fs::write(github.join("teams/obi-e2e-reviewers"), "bob\nwellington\n").unwrap();
-    std::fs::write(
-        github.join("files"),
-        "{\"f\":\"src/average.js\",\"p\":null}\n{\"f\":\"test/average.test.js\",\"p\":null}\n",
-    )
-    .unwrap();
-    let review = |login: &str, state: &str, sha: &str| {
-        json!({"login": login, "type": "User", "state": state, "commit_id": sha, "obi": false})
-            .to_string()
+    // What GitHub shows, as its API answers: CODEOWNERS on the base branch (src/ is alice's, the
+    // rest the reviewers team's), the changed files, the pull request, everyone's access.
+    let codeowners = |text: &str| {
+        std::fs::write(github.join("contents/.github/CODEOWNERS"), text).unwrap();
     };
-    let reviews = |lines: &[String]| {
-        std::fs::write(github.join("reviews"), lines.join("\n") + "\n").unwrap();
+    const OWNERS: &str = "* @obi-e2e/reviewers\n/src/ @alice\n";
+    codeowners(OWNERS);
+    std::fs::write(github.join("teams/obi-e2e-reviewers"), "bob\nwellington\n").unwrap();
+    std::fs::write(github.join("teams/other-org-reviewers"), "bob\n").unwrap();
+    std::fs::write(
+        github.join("files.json"),
+        json!([{"filename": "src/average.js", "status": "modified"},
+               {"filename": "test/average.test.js", "status": "modified"}])
+        .to_string(),
+    )
+    .unwrap();
+    std::fs::write(
+        github.join("pull.json"),
+        json!({"number": 12, "changed_files": 2}).to_string(),
+    )
+    .unwrap();
+    std::fs::create_dir_all(github.join("permissions")).unwrap();
+    let access = |login: &str, permission: &str| {
+        std::fs::write(
+            github.join(format!("permissions/{login}")),
+            json!({"permission": permission, "role_name": permission, "user": {"login": login}})
+                .to_string(),
+        )
+        .unwrap();
+    };
+    for login in ["alice", "bob", "wellington"] {
+        access(login, "write");
+    }
+    let review = |login: &str, state: &str, sha: &str, body: &str| {
+        json!({"id": 7, "user": {"login": login, "type": "User"}, "body": body, "state": state,
+               "commit_id": sha, "submitted_at": "2026-10-26T12:00:00Z"})
+    };
+    let approves = |login: &str| review(login, "APPROVED", &head, "Looks good.");
+    // In two pages, as `gh api --paginate` writes them.
+    let reviews_json = |list: &[Value]| {
+        let (first, second) = list.split_at(list.len() / 2);
+        format!("{}{}", json!(first), json!(second))
+    };
+    let reviews = |list: &[Value]| {
+        std::fs::write(github.join("reviews.json"), reviews_json(list)).unwrap();
     };
     let older = "2".repeat(40);
+    let mut bot = approves("bob");
+    bot["user"]["type"] = json!("Bot");
     // Not enough to stand next to: alice approved an older commit; the owner's own login counts
-    // for nobody (it's the one obid posts with); an Oby's approval isn't a person's.
-    let obi_words = json!({"login": "bob", "type": "User", "state": "APPROVED", "commit_id": head, "obi": true}).to_string();
-    for lines in [
-        vec![
-            review("alice", "APPROVED", &older),
-            review("bob", "APPROVED", &head),
-        ],
-        vec![
-            review("alice", "APPROVED", &head),
-            review("wellington", "APPROVED", &head),
-        ],
-        vec![review("alice", "APPROVED", &head), obi_words],
-        vec![
-            review("alice", "APPROVED", &head),
-            review("bob", "APPROVED", &head),
-            review("alice", "CHANGES_REQUESTED", &head),
-        ],
-    ] {
-        reviews(&lines);
+    // for nobody (it's the one obid posts with); an Oby's approval from a person's account, in
+    // the reviewer account's words or as an Oby verdict, isn't a person's; nor is a bot's; alice
+    // asked for changes after; bob can only read the repository; the owners' team is another
+    // organization's.
+    // What it is, the reviews, CODEOWNERS, and one approver's access changed for it.
+    type Short<'a> = (&'a str, Vec<Value>, &'a str, Option<(&'a str, &'a str)>);
+    let short: Vec<Short> = vec![
+        (
+            "older commit",
+            vec![review("alice", "APPROVED", &older, "ok"), approves("bob")],
+            OWNERS,
+            None,
+        ),
+        (
+            "own login",
+            vec![approves("alice"), approves("wellington")],
+            OWNERS,
+            None,
+        ),
+        (
+            "reviewer account",
+            vec![
+                approves("alice"),
+                review("bob", "APPROVED", &head, crate_approval()),
+            ],
+            OWNERS,
+            None,
+        ),
+        (
+            "Oby's verdict",
+            vec![
+                approves("alice"),
+                review(
+                    "bob",
+                    "APPROVED",
+                    &head,
+                    "Oby's verdict: approved.\n\nNo findings.\n\nby Oby: Oby wrote this review.",
+                ),
+            ],
+            OWNERS,
+            None,
+        ),
+        ("bot", vec![approves("alice"), bot], OWNERS, None),
+        (
+            "changes after",
+            vec![
+                approves("alice"),
+                approves("bob"),
+                review("alice", "CHANGES_REQUESTED", &head, "Wait."),
+            ],
+            OWNERS,
+            None,
+        ),
+        (
+            "read access",
+            vec![approves("alice"), approves("bob")],
+            OWNERS,
+            Some(("bob", "read")),
+        ),
+        (
+            "other org",
+            vec![approves("alice"), approves("bob")],
+            "* @other-org/reviewers\n/src/ @alice\n",
+            None,
+        ),
+    ];
+    for (case, list, owners, limited) in short {
+        reviews(&list);
+        codeowners(owners);
+        if let Some((login, permission)) = limited {
+            access(login, permission);
+        }
         let short = request();
         ernesto.send(&short).await;
         let replies = ernesto.receive(2, 90).await;
-        assert_eq!(replies[1]["body"], ruled("asked", &replies), "{lines:?}");
-        assert_eq!(approvals().lines().count(), 1, "{lines:?}");
+        assert_eq!(replies[1]["body"], ruled("asked", &replies), "{case}");
+        assert_eq!(approvals().lines().count(), 1, "{case}");
+        codeowners(OWNERS);
+        access("bob", "write");
     }
-    // The owners of every changed file approved this commit: obid's approval stands next to
-    // theirs, by itself, under the standing permission.
-    reviews(&[
-        review("alice", "APPROVED", &head),
-        review("bob", "APPROVED", &head),
-    ]);
+    // The owners of every changed file approved this commit (their logins and team in any case):
+    // obid's approval stands next to theirs, by itself, under the standing permission.
+    codeowners("* @OBI-E2E/Reviewers\n/src/ @Alice\n");
+    let owners_approve = [approves("ALICE"), approves("Bob")];
+    reviews(&owners_approve);
     let next_to = request();
     let next_cid = next_to["id"].as_str().unwrap().to_owned();
     ernesto.send(&next_to).await;
@@ -587,6 +675,56 @@ async fn an_approved_review_is_approved_on_github_only_as_the_owner_allows() {
             .unwrap();
         assert_eq!(permission["uses"], 1);
     });
+    assert!(!github.join("dismissals").exists());
+
+    // The pull request changes while obid approves (its head moves, or a code owner asks for
+    // changes): obid dismisses its approval right after posting it, and says so.
+    let dismissals = || std::fs::read_to_string(github.join("dismissals")).unwrap_or_default();
+    let moved_view = json!({"state": "OPEN", "headRefOid": "3".repeat(40), "baseRefName": "main",
+                            "url": "https://github.com/obi-e2e/fixture-app/pull/12"});
+    let mut changed = owners_approve.to_vec();
+    changed.push(review("bob", "CHANGES_REQUESTED", &head, "Wait."));
+    for (case, file, text) in [
+        ("head moved", "view.json", moved_view.to_string()),
+        ("changes requested", "reviews.json", reviews_json(&changed)),
+    ] {
+        std::fs::create_dir_all(github.join("after-post")).unwrap();
+        std::fs::write(github.join("after-post").join(file), text).unwrap();
+        let during = request();
+        let during_cid = during["id"].as_str().unwrap().to_owned();
+        ernesto.send(&during).await;
+        let replies = ernesto.receive(2, 90).await;
+        assert_eq!(replies[1]["body"], ruled("unable", &replies), "{case}");
+        let n = dismissals().lines().count();
+        assert!(
+            dismissals().lines().last().is_some_and(|l| l.starts_with(
+                "api -X PUT repos/obi-e2e/fixture-app/pulls/12/reviews/1/dismissals "
+            ) && l.contains("event=DISMISS")
+                && l.contains("Dismissed by Oby:")),
+            "{case}: {}",
+            dismissals()
+        );
+        assert_eq!(n, if case == "head moved" { 1 } else { 2 });
+        let job = tokio::task::block_in_place(|| exchange(&obid, &during_cid))["job"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let job = tokio::task::block_in_place(|| get(&obid, &format!("/v1/jobs/{job}")));
+        let actions: Vec<&str> = job["outgoing"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|o| o["action"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            actions,
+            ["pullRequestApproval", "pullRequestApprovalDismissal"],
+            "{case}"
+        );
+        pr_at(&head, "main");
+        reviews(&owners_approve);
+    }
+    assert_eq!(approvals().lines().count(), 4);
 
     // The pull request moved on since the commit reviewed, goes into another branch than the one
     // the review compared it with, or the owner's login can't push there: nothing is approved.
@@ -606,7 +744,7 @@ async fn an_approved_review_is_approved_on_github_only_as_the_owner_allows() {
             replies[1]["body"]["host_review"], "unable",
             "{sha} {base} {push}"
         );
-        assert_eq!(approvals().lines().count(), 2);
+        assert_eq!(approvals().lines().count(), 4);
     }
 
     // A request that doesn't ask gets no host_review, and nothing is approved.
@@ -614,7 +752,7 @@ async fn an_approved_review_is_approved_on_github_only_as_the_owner_allows() {
     ernesto.send(&plain).await;
     let replies = ernesto.receive(2, 90).await;
     assert_eq!(replies[1]["body"]["host_review"], Value::Null);
-    assert_eq!(approvals().lines().count(), 2);
+    assert_eq!(approvals().lines().count(), 4);
 
     // The permission is asked for through the API, and kept only on the owner's tap; it's
     // forgotten like any decision.

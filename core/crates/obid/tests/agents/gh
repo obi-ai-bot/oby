@@ -24,12 +24,16 @@
 #   no-push     when it exists, `gh api repos/<repo> --jq .permissions.push` says false (else true)
 #   contents/<path>   what `gh api repos/<repo>/contents/<path>` answers (a CODEOWNERS file); without
 #               it, GitHub's 404
-#   files, reviews    what `gh api repos/<repo>/pulls/<n>/files` and `…/reviews` answer (after
-#               gh's --jq: one JSON object a line); without them, nothing
-#   changed     what `gh api repos/<repo>/pulls/<n> --jq .changed_files` answers (else the lines
-#               of files)
-#   teams/<org>-<team>   the team's members, a login a line: `gh api orgs/<org>/teams/<team>/
-#               memberships/<login>` says active for them, else GitHub's 404
+#   files.json, reviews.json, pull.json   what `gh api repos/<repo>/pulls/<n>/files`, `…/reviews`
+#               (--paginate: one JSON array a page, run together) and `…/pulls/<n>` answer, as
+#               GitHub does; without them, `[]` and `{}`
+#   permissions/<login>   what `gh api repos/<repo>/collaborators/<login>/permission` answers
+#               (login in lower case); without it, GitHub's 404
+#   teams/<org>-<team>   the team's members, a login a line, any case: `gh api orgs/<org>/teams/
+#               <team>/memberships/<login>` answers an active membership for them, else 404
+#   after-post/   when it exists, its files replace those above right after a review is posted
+#               (the pull request changing while obid approves)
+#   dismissals  one line per `gh api -X PUT …/dismissals`: its arguments
 work="$HOME/github"
 if [ -d "$work" ]; then
   echo "$1 $2" >> "$work/calls"
@@ -56,21 +60,25 @@ if [ -d "$work" ]; then
           f="$work/contents/${2#*/contents/}"
           if [ -f "$f" ]; then cat "$f"; exit 0; fi
           echo "gh: Not Found (HTTP 404)" >&2; exit 1 ;;
-        */pulls/*/files) cat "$work/files" 2>/dev/null; exit 0 ;;
-        */pulls/*/reviews) cat "$work/reviews" 2>/dev/null; exit 0 ;;
-        */pulls/*)
-          if [ -f "$work/changed" ]; then cat "$work/changed"
-          elif [ -f "$work/files" ]; then grep -c . "$work/files"
-          else echo 0; fi
-          exit 0 ;;
+        */pulls/*/files) cat "$work/files.json" 2>/dev/null || echo '[]'; exit 0 ;;
+        */pulls/*/reviews) cat "$work/reviews.json" 2>/dev/null || echo '[]'; exit 0 ;;
+        */pulls/*) cat "$work/pull.json" 2>/dev/null || echo '{}'; exit 0 ;;
+        */collaborators/*/permission)
+          login=$(echo "${2%/permission}" | sed 's#.*/##' | tr '[:upper:]' '[:lower:]')
+          if [ -f "$work/permissions/$login" ]; then cat "$work/permissions/$login"; exit 0; fi
+          echo "gh: Not Found (HTTP 404)" >&2; exit 1 ;;
       esac
       if [ -f "$work/no-push" ]; then echo false; else echo true; fi
       exit 0 ;;
     "api orgs/"*)
       rest=${2#orgs/}; org=${rest%%/*}; team=${rest#*/teams/}; team=${team%%/*}; login=${2##*/}
-      if grep -qx "$login" "$work/teams/$org-$team" 2>/dev/null; then echo active; exit 0; fi
+      if grep -qix "$login" "$work/teams/$org-$team" 2>/dev/null; then
+        echo '{"state":"active","role":"member","url":"https://api.github.com/'"$2"'"}'; exit 0
+      fi
       echo "gh: Not Found (HTTP 404)" >&2; exit 1 ;;
     "api -X")
+      if [ "$3" = PUT ]; then echo "$*" >> "$work/dismissals"; echo '{"id":1,"state":"DISMISSED"}'; exit 0; fi
+      if [ -d "$work/after-post" ]; then cp "$work/after-post/"* "$work/"; rm -rf "$work/after-post"; fi
       body=""
       for arg in "$@"; do case "$arg" in body=@*) body=$(cat "${arg#body=@}") ;; esac; done
       echo "$* | $body" >> "$work/approvals"

@@ -41,6 +41,13 @@
           "bob",
           "wellington"
         ]
+      },
+      "permissions": {
+        "alice": "write",
+        "bob": "maintain",
+        "carol": "write",
+        "dana": "admin",
+        "wellington": "write"
       }
     }
   }

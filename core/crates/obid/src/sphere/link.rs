@@ -3769,11 +3769,12 @@ impl Link {
                         state.decisions.clone()
                     };
                     self.save_decisions(&decisions);
-                    return match self.post_approval(repo, pr, base, sha, until).await {
-                        Ok(url) => {
-                            self.jobs.approved_on_github(job, repo, &url);
-                            "approved"
-                        }
+                    let next_to = Some((cid, expires_at.as_str()));
+                    return match self
+                        .post_approval(job, repo, pr, base, sha, until, next_to)
+                        .await
+                    {
+                        Ok(()) => "approved",
                         Err(why) => {
                             tracing::warn!(
                                 "sphere: exchange {cid}: obid didn't approve {repo}#{pr}: {why}"
@@ -3828,6 +3829,7 @@ impl Link {
             now: time::format(time::now()),
             request: Request {
                 correlation_id: cid.to_owned(),
+                repo: repo.to_owned(),
                 head_sha: sha.to_owned(),
                 expires_at: expires_at.to_owned(),
             },
@@ -3896,6 +3898,7 @@ impl Link {
             now: time::format(time::now()),
             request: Request {
                 correlation_id: cid.clone(),
+                repo: repo.clone(),
                 head_sha: head.clone(),
                 expires_at: expires_at.clone(),
             },
@@ -3930,29 +3933,34 @@ impl Link {
             ));
         }
         let until = time::parse(&expires_at).unwrap_or(0);
-        match self.post_approval(&repo, pr, &base, &head, until).await {
-            Ok(url) => {
-                self.jobs.approved_on_github(&job, &repo, &url);
-                Ok(())
-            }
-            Err(why) => Err(api(
-                StatusCode::BAD_GATEWAY,
-                format!("Nothing was approved: {why}."),
-            )),
-        }
+        self.post_approval(&job, &repo, pr, &base, &head, until, None)
+            .await
+            .map_err(|why| {
+                api(
+                    StatusCode::BAD_GATEWAY,
+                    format!("No approval stands: {why}."),
+                )
+            })
     }
 
     /// Approves `sha` on pull request `pr` of `repo`, into `base`, on GitHub with the owner's own
     /// `gh` ([`approval::post`]), while obid is still in its Sphere and before `until`, the
-    /// request's expiry, checked again right before GitHub is asked: its URL.
+    /// request's expiry, checked again right before GitHub is asked, and lists it in review job
+    /// `job`'s outgoing actions. Right after, it reads the pull request again: when its head moved,
+    /// or, for an approval next to code owners' (`next_to`: the exchange and its expiry), theirs no
+    /// longer hold ([`Link::code_owners_approved`]), obid dismisses its approval at once
+    /// ([`approval::dismiss`]) and says why.
+    #[allow(clippy::too_many_arguments)]
     async fn post_approval(
         &self,
+        job: &str,
         repo: &str,
         pr: u64,
         base: &str,
         sha: &str,
         until: i64,
-    ) -> Result<String, String> {
+        next_to: Option<(&str, &str)>,
+    ) -> Result<(), String> {
         let gh = crate::github::gh().ok_or("gh isn't installed")?;
         let scratch = self
             .config
@@ -3962,7 +3970,40 @@ impl Link {
         let still = || self.is_joined() && time::now() < until;
         let posted = approval::post(&gh, &scratch, repo, pr, base, sha, still).await;
         let _ = std::fs::remove_dir_all(&scratch);
-        posted
+        let posted = posted?;
+        self.jobs.approved_on_github(job, repo, &posted.url);
+        let mut holds = approval::still_as_reviewed(&gh, repo, pr, base, sha).await;
+        if holds.is_ok()
+            && let Some((cid, expires_at)) = next_to
+        {
+            holds = self
+                .code_owners_approved(cid, repo, pr, base, sha, expires_at)
+                .await;
+        }
+        let Err(why) = holds else {
+            return Ok(());
+        };
+        let dismissed = match posted.id {
+            Some(id) => approval::dismiss(&gh, repo, pr, id).await,
+            None => Err("GitHub didn't say which review it was".into()),
+        };
+        match dismissed {
+            Ok(()) => {
+                self.jobs.dismissed_on_github(job, repo, &posted.url);
+                Err(format!(
+                    "{why} right after obid approved it, so obid dismissed its approval"
+                ))
+            }
+            Err(failed) => {
+                tracing::error!(
+                    "sphere: obid approved {repo}#{pr} and couldn't dismiss it ({failed}) though {why}: dismiss {} on GitHub",
+                    posted.url
+                );
+                Err(format!(
+                    "{why} right after obid approved it, and obid couldn't dismiss its approval ({failed}): dismiss it on GitHub"
+                ))
+            }
+        }
     }
 
     /// Settles the open asks to approve a teammate's pull request on GitHub ([`approval::item`],
