@@ -87,9 +87,27 @@ jobs:
       - name: cargo clippy -D warnings
         run: cargo clippy --manifest-path core/Cargo.toml --workspace --all-targets --locked -- -D warnings
 
+      # The tests keep obid's home and the stand-in agents' files in the temp folder. On Linux
+      # obid's box mounts an empty /tmp and hides home, so a boxed stand-in (the brain) would find
+      # nothing there; under /opt, one of the system folders the box binds read-only, it does.
+      # macOS's temp folder (/var/folders) is readable from its box, so this is Linux only.
+      - name: A temp folder the box can see
+        run: |
+          sudo install -d -o "$(id -u)" -g "$(id -g)" /opt/obid-tests
+          echo "TMPDIR=/opt/obid-tests" >> "$GITHUB_ENV"
+
       - name: cargo test
         # --no-fail-fast: every test binary runs and reports, not only up to the first that fails.
         run: cargo test --manifest-path core/Cargo.toml --workspace --locked --no-fail-fast
+
+      # On a failure, one boxed-brain test again with its folder kept, and what obid logged.
+      - name: obid's log for one boxed-brain test
+        if: failure()
+        env:
+          OBID_TEST_KEEP: "1"
+        run: |
+          cargo test --manifest-path core/Cargo.toml -p obid --locked --test plans_api a_brain_that_may_read_is_boxed -- --exact || true
+          for f in "$TMPDIR"/obid-sphere-*/obid.stderr; do echo "== $f"; tail -n 60 "$f"; done
 
   secrets:
     name: Secret scan (gitleaks)
