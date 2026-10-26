@@ -180,8 +180,12 @@ struct CreateSphereSheet: View {
             do {
                 try await sphere.refresh()
                 let made = try await sphere.create(id: id, name: name, emails: invited, domain: anyone ? domain : nil)
-                if let image { SphereTile.keep(image) }
-                if let mailed = made.mailed { SphereModel.mail(mailed, to: invited) }
+                // Its picture for everyone, where the server keeps one; on this Mac's tile at least.
+                if let image {
+                    SphereTile.keep(image)
+                    try? await sphere.setPicture(image)
+                }
+                for mailed in made.mailed { SphereModel.mail(mailed.link, to: [mailed.email]) }
                 done(id)
             } catch let error as RunnerError where error.status == 409 && error.message.contains("is taken") {
                 taken = id
@@ -322,12 +326,26 @@ struct SphereTile: View {
         .overlay(shape.strokeBorder(Color.white.opacity(0.2), lineWidth: 1))
     }
 
-    /// This Mac's copy of its Obysphere's logo: the Sphere keeps no images yet, so only you see it.
-    // ponytail: one Obysphere per Oby (obid joins one), so one file; a logo the Sphere shares needs a spec change.
+    /// This Mac's copy of its Obysphere's picture, the one the Obysphere keeps (obi-sphere#27), or a
+    /// logo chosen at Create on a server from before it; `shaFile`, the hash of the one fetched.
+    // ponytail: one Obysphere per Oby (obid joins one), so one file.
     static let file = Workspace.root.appending(path: "sphere-logo.png")
+    static let shaFile = Workspace.root.appending(path: "sphere-logo.sha256")
     static func keep(_ image: NSImage) {
         guard let tiff = image.tiffRepresentation, let png = NSBitmapImageRep(data: tiff)?.representation(using: .png, properties: [:]) else { return }
         try? png.write(to: file)
+        changes.count += 1
     }
-    static var kept: NSImage? { NSImage(contentsOf: file) }
+    static func forget() {
+        try? FileManager.default.removeItem(at: file)
+        try? FileManager.default.removeItem(at: shaFile)
+        changes.count += 1
+    }
+    /// Moves on whenever the file changes, so every tile that reads `kept` draws again.
+    @MainActor @Observable final class Changes { var count = 0 }
+    @MainActor static let changes = Changes()
+    @MainActor static var kept: NSImage? {
+        _ = changes.count
+        return NSImage(contentsOf: file)
+    }
 }

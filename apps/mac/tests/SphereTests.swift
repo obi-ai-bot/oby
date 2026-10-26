@@ -12,6 +12,28 @@ import Testing
 struct SphereTests {
     /// The side panel's count under an Obysphere's name, you included (Sangam's "9 members"), and the
     /// card a teammate's changed key brings to Home.
+    /// An invitation's row: the address this Mac sent it to, else its label, else what the link is.
+    @Test func anInvitationShowsItsAddressOrWhatItIs() {
+        let one = SphereModel.Invitation(id: "i1", label: "Invited by email", email: "sangam@deskree.com", maxUses: 1, uses: 0, domain: nil)
+        #expect(one.shown == "sangam@deskree.com")
+        #expect(SphereModel.Invitation(id: "i2", label: "Team link", email: nil, maxUses: 50, uses: 3, domain: nil).shown == "Team link")
+        #expect(SphereModel.Invitation(id: "i3", label: nil, email: nil, maxUses: 50, uses: 0, domain: nil).shown == "A link for 50 people")
+        #expect(SphereModel.Invitation(id: "i4", label: nil, email: nil, maxUses: 1000, uses: 0, domain: "deskree.com").shown == "Anyone at deskree.com")
+    }
+
+    /// A picture the Obysphere keeps: any image, cut square from its middle, 256 pixels a side, PNG.
+    @Test func aPictureIsASquarePNG() throws {
+        let wide = NSImage(size: NSSize(width: 600, height: 300), flipped: false) { rect in
+            NSColor.systemOrange.setFill()
+            rect.fill()
+            return true
+        }
+        let png = try #require(SphereModel.picture(wide))
+        #expect(png.prefix(8) == Data([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]))
+        let rep = try #require(NSBitmapImageRep(data: png))
+        #expect(rep.pixelsWide == 256 && rep.pixelsHigh == 256)
+    }
+
     @Test func thePanelCountsYouAndAChangedKeyAsks() {
         #expect(SpherePanel.count(1) == "1 member")
         #expect(SpherePanel.count(9) == "9 members")
