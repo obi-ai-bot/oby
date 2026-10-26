@@ -83,6 +83,9 @@ pub fn verify(card: &Value, context: &Context) -> Result<(), Rejection> {
     if owner_key == public_key {
         return invalid("the Obi's key must not be its owner's key");
     }
+    if params.contains_key("seal_public_key") && crate::seal::card_key(params).is_none() {
+        return invalid("seal_key_id does not match seal_public_key");
+    }
     let mut skills: Vec<&str> = card["skills"]
         .as_array()
         .into_iter()

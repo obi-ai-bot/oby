@@ -23,6 +23,7 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use obi_protocol::keys::Keypair;
+use obi_protocol::seal::SealKey;
 use obi_protocol::{DirectoryKey, Keys, card, chain, envelope, jwt, time};
 use serde_json::{Map, Value, json};
 
@@ -709,6 +710,8 @@ pub struct TestObi {
     pub id: String,
     pub owner: Owner,
     pub key: Keypair,
+    /// Its seal key, when its card has one (protocol.md section 9.1).
+    pub seal: Option<SealKey>,
     pub client: obi_protocol::client::Client,
     pub token: String,
 }
@@ -725,6 +728,25 @@ impl TestObi {
         id: &str,
         owner: &str,
         accepts: &[&str],
+    ) -> TestObi {
+        TestObi::join_with(sphere, id, owner, accepts, None).await
+    }
+
+    /// [`TestObi::join`], an Obi whose card has a seal key: what's sent to it is sealed for it.
+    pub async fn join_sealing(sphere: &FakeSphere, id: &str, owner: &str) -> TestObi {
+        let seal = SealKey::from_private(obi_protocol::keys::sha256(format!(
+            "obid sphere test seal key {id}"
+        )))
+        .unwrap();
+        TestObi::join_with(sphere, id, owner, &["review_request"], Some(seal)).await
+    }
+
+    async fn join_with(
+        sphere: &FakeSphere,
+        id: &str,
+        owner: &str,
+        accepts: &[&str],
+        seal: Option<SealKey>,
     ) -> TestObi {
         let owner = Owner::new(owner);
         let key = Keypair::from_seed_string(&format!("obid sphere test obi {id}"));
@@ -746,6 +768,11 @@ impl TestObi {
             accepts: &accepts,
             card_seq: 1,
             issued_at: &issued_at,
+            seal: seal
+                .as_ref()
+                .map(|s| (s.key_id(), s.public_key()))
+                .as_ref()
+                .map(|(id, public)| (id.as_str(), public.as_str())),
         });
         let signed = card::sign(&unsigned, &owner.key).unwrap();
         let client = obi_protocol::client::Client::new(&sphere.url, SPHERE).unwrap();
@@ -771,9 +798,27 @@ impl TestObi {
             id: id.into(),
             owner,
             key,
+            seal,
             client,
             token,
         }
+    }
+
+    /// A request to `to` sealed for `seal_key` (`to`'s, from its card), then signed.
+    pub fn sealed_request(&self, to: &str, kind: &str, body: Value, seal_key: &[u8; 32]) -> Value {
+        let id = uuid::Uuid::new_v4().to_string();
+        let now = time::now();
+        let mut unsigned = json!({"protocol": "obi/0.1", "id": id, "type": kind, "from": self.id, "to": to,
+                                  "sphere": SPHERE, "correlation_id": id, "created_at": time::format(now),
+                                  "expires_at": time::format(now + 3600), "key_id": self.key.key_id(),
+                                  "body": body});
+        obi_protocol::seal::seal(unsigned.as_object_mut().unwrap(), seal_key).unwrap();
+        self.sign(unsigned)
+    }
+
+    /// A sealed message's words, opened with this Obi's seal key.
+    pub fn open(&self, envelope: &Value) -> Value {
+        obi_protocol::seal::open(envelope, self.seal.as_ref().unwrap()).unwrap()
     }
 
     /// A signed request to `to`, expiring `expires_in` seconds from now.
@@ -957,6 +1002,10 @@ impl FakeSphere {
                 axum::routing::put(put_runner).delete(delete_runner),
             )
             .route(
+                "/v0.1/spheres/{sphere}/members/{obi}/card",
+                axum::routing::put(put_card),
+            )
+            .route(
                 "/v0.1/relay/{relay}",
                 axum::routing::put(put_relay).get(relay_socket),
             )
@@ -1033,6 +1082,13 @@ impl FakeSphere {
             .iter()
             .map(|e| e["envelope"].clone())
             .collect()
+    }
+
+    /// `obi`'s seal key, from its card in the directory.
+    pub fn seal_key_of(&self, obi: &str) -> Option<[u8; 32]> {
+        let state = self.lock();
+        let member = state.members.iter().find(|m| m["obi"] == obi)?;
+        obi_protocol::seal::card_key(card::params(&member["card"])?)
     }
 
     /// Whether every delivery queued for `obi` has been acknowledged.
@@ -1226,6 +1282,34 @@ async fn audit(
         )
     });
     axum::Json(json!({"sphere": SPHERE, "entries": entries, "head": head})).into_response()
+}
+
+/// `PUT …/members/{obi}/card`: the Obi's new card, with the same key (identity.md section 3), from
+/// its own token; answers the member.
+async fn put_card(
+    State(state): State<Arc<Mutex<SphereState>>>,
+    UrlPath((_, obi)): UrlPath<(String, String)>,
+    headers: HeaderMap,
+    axum::Json(body): axum::Json<Value>,
+) -> Response {
+    let mut state = state.lock().unwrap();
+    if bearer(&state, &headers).as_deref() != Some(obi.as_str()) {
+        return sphere_error(StatusCode::FORBIDDEN, "forbidden", "not this Obi");
+    }
+    let new = &body["card"];
+    if let Err(r) = card::verify(new, &card::Context::default()) {
+        return sphere_error(StatusCode::BAD_REQUEST, "card_invalid", &r.message);
+    }
+    let Some(member) = state.members.iter_mut().find(|m| m["obi"] == obi.as_str()) else {
+        return sphere_error(StatusCode::NOT_FOUND, "not_found", "no such member");
+    };
+    let same_key = card::params(new).map(|p| &p["key_id"])
+        == card::params(&member["card"]).map(|p| &p["key_id"]);
+    if !same_key {
+        return sphere_error(StatusCode::BAD_REQUEST, "card_invalid", "another key");
+    }
+    member["card"] = new.clone();
+    axum::Json(member.clone()).into_response()
 }
 
 /// `PUT …/members/{obi}/runner`: kept as put, shown to every member (the Sphere's own tests check
@@ -1690,6 +1774,8 @@ fn record(state: &Mutex<SphereState>, headers: &HeaderMap, body: &[u8]) -> Respo
         keys: keys(&state),
         seq: None,
         seen_ids: Vec::new(),
+        seal_keys: None,
+        sender_seals: false,
     };
     if let Err(r) = envelope::verify(&env, &context) {
         return answer(
@@ -1707,6 +1793,35 @@ fn record(state: &Mutex<SphereState>, headers: &HeaderMap, body: &[u8]) -> Respo
                 "forbidden",
                 "from isn't the token's actor",
             ),
+        );
+    }
+    // Check 11's seal rules (sphere-api.md 6.1): sealed for the receiver's current seal key; never
+    // in the clear between two Obis that both seal.
+    let seal_key_id = |obi: &Value| {
+        state
+            .members
+            .iter()
+            .find(|m| &m["obi"] == obi)
+            .and_then(|m| card::params(&m["card"]))
+            .and_then(|p| p.get("seal_key_id").cloned())
+    };
+    let (to_seal, from_seal) = (seal_key_id(&env["to"]), seal_key_id(&env["from"]));
+    if env.get("seal").is_some() && to_seal.as_ref() != Some(&env["seal"]["key_id"]) {
+        return answer(
+            &mut state,
+            StatusCode::BAD_REQUEST,
+            sphere_error(
+                StatusCode::BAD_REQUEST,
+                "invalid_envelope",
+                "sealed for another key",
+            ),
+        );
+    }
+    if env.get("seal").is_none() && to_seal.is_some() && from_seal.is_some() {
+        return answer(
+            &mut state,
+            StatusCode::BAD_REQUEST,
+            sphere_error(StatusCode::BAD_REQUEST, "not_sealed", "both seal"),
         );
     }
     let kind = env["type"].as_str().unwrap_or("");

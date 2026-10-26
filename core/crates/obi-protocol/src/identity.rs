@@ -57,11 +57,13 @@ pub struct CardFields<'a> {
     pub accepts: &'a [String],
     pub card_seq: u64,
     pub issued_at: &'a str,
+    /// The Obi's seal key, its id and public key (protocol.md section 9.1), when it has one.
+    pub seal: Option<(&'a str, &'a str)>,
 }
 
 /// The agent card without signatures (identity.md 2): what the owner signs.
 pub fn unsigned_card(fields: &CardFields<'_>) -> Map<String, Value> {
-    let params = json!({
+    let mut params = json!({
         "protocol": PROTOCOL,
         "sphere": fields.sphere,
         "obi_id": fields.obi_id,
@@ -73,6 +75,10 @@ pub fn unsigned_card(fields: &CardFields<'_>) -> Map<String, Value> {
         "card_seq": fields.card_seq,
         "issued_at": fields.issued_at,
     });
+    if let Some((seal_key_id, seal_public_key)) = fields.seal {
+        params["seal_key_id"] = json!(seal_key_id);
+        params["seal_public_key"] = json!(seal_public_key);
+    }
     let card = json!({
         "protocolVersion": A2A_PROTOCOL_VERSION,
         "name": fields.name,
@@ -234,6 +240,7 @@ mod tests {
             accepts: &accepts,
             card_seq: 1,
             issued_at: "2026-10-14T12:00:00Z",
+            seal: None,
         });
         assert!(unsigned_card_problems(&unsigned).is_empty());
         assert_eq!(

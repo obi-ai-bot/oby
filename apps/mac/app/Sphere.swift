@@ -432,6 +432,10 @@ final class SphereModel {
         /// The delegation obid holds: its scope, and when it ends (never the JWT).
         var delegation: Delegation?
         struct Delegation: Decodable, Equatable { var scope: String?; var expiresAt: Date? }
+        /// `on` once obid's card carries its seal key, `card_needed` until this Mac signs one that
+        /// does (#1233), and the request types the card accepts.
+        var sealing: String?
+        var accepts: [String]?
     }
 
     /// One entry of the Sphere's directory.
@@ -1028,13 +1032,34 @@ final class SphereModel {
         return true
     }
 
+    /// A new card with obid's seal key, once, when the card obid holds has none (#1233): the same
+    /// `accepts`, signed with this Mac's owner key, so teammates' Obys seal what they send this one.
+    /// Answers whether it signed one.
+    @discardableResult
+    func sealCard() async throws -> Bool {
+        let runner = try runner()
+        let membership: Membership = try await runner.call("GET", "v1/obid/sphere")
+        guard membership.state == "joined", membership.sealing == "card_needed", let url = membership.url,
+              let sphere = membership.sphere, let obi = membership.obiId else { return false }
+        let key = try OwnerKey.of(membership.owner)
+        let made = try await raw(runner, "POST", "v1/obid/sphere/card", [
+            "url": url, "sphere": sphere, "obiId": obi, "name": "\(membership.owner)'s Oby",
+            "ownerKey": key.publicKey, "accepts": membership.accepts ?? Self.accepts,
+        ])
+        guard let card = made["card"] as? [String: Any] else { throw RunnerError(message: "obid made no card.") }
+        _ = try await raw(runner, "PUT", "v1/obid/sphere/membership", ["card": try key.sign(card: card)])
+        return true
+    }
+
     /// Keeps this Mac's Oby in its Obysphere past 30 days (#1215): a new delegation at launch, once
-    /// obid answers, then every 6 hours once 5 or fewer days are left.
+    /// obid answers, then every 6 hours once 5 or fewer days are left. A card without obid's seal
+    /// key is signed again the same way (#1233).
     static func keepRenewing(feed: RunnerFeed) async {
         let sphere = SphereModel(feed: feed)
         var launched = false
         while !Task.isCancelled {
             if (try? await sphere.renewDelegation(within: launched ? 5 * 86_400 : .infinity)) != nil { launched = true }
+            _ = try? await sphere.sealCard()
             // ponytail: polls; 60 s until obid first answers, then 6 h, about 20 tries in the last 5 days.
             try? await Task.sleep(for: .seconds(launched ? 6 * 3600 : 60))
         }

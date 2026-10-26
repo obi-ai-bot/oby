@@ -179,6 +179,74 @@ pub const SCHEMAS: &[(&str, &str)] = &[
         include_str!("../spec/schemas/v0.1/channel-hello.schema.json"),
     ),
     (
+        "sealed/common",
+        include_str!("../spec/schemas/v0.1/sealed/common.schema.json"),
+    ),
+    (
+        "sealed/envelope",
+        include_str!("../spec/schemas/v0.1/sealed/envelope.schema.json"),
+    ),
+    (
+        "sealed/actions/accept",
+        include_str!("../spec/schemas/v0.1/sealed/actions/accept.schema.json"),
+    ),
+    (
+        "sealed/actions/answer",
+        include_str!("../spec/schemas/v0.1/sealed/actions/answer.schema.json"),
+    ),
+    (
+        "sealed/actions/decline",
+        include_str!("../spec/schemas/v0.1/sealed/actions/decline.schema.json"),
+    ),
+    (
+        "sealed/actions/handoff",
+        include_str!("../spec/schemas/v0.1/sealed/actions/handoff.schema.json"),
+    ),
+    (
+        "sealed/actions/question",
+        include_str!("../spec/schemas/v0.1/sealed/actions/question.schema.json"),
+    ),
+    (
+        "sealed/actions/result",
+        include_str!("../spec/schemas/v0.1/sealed/actions/result.schema.json"),
+    ),
+    (
+        "sealed/actions/review_request",
+        include_str!("../spec/schemas/v0.1/sealed/actions/review_request.schema.json"),
+    ),
+    (
+        "sealed/actions/run_cancel",
+        include_str!("../spec/schemas/v0.1/sealed/actions/run_cancel.schema.json"),
+    ),
+    (
+        "sealed/actions/run_progress",
+        include_str!("../spec/schemas/v0.1/sealed/actions/run_progress.schema.json"),
+    ),
+    (
+        "sealed/actions/run_request",
+        include_str!("../spec/schemas/v0.1/sealed/actions/run_request.schema.json"),
+    ),
+    (
+        "sealed/actions/run_return",
+        include_str!("../spec/schemas/v0.1/sealed/actions/run_return.schema.json"),
+    ),
+    (
+        "sealed/actions/share_offer",
+        include_str!("../spec/schemas/v0.1/sealed/actions/share_offer.schema.json"),
+    ),
+    (
+        "sealed/actions/share_revoke",
+        include_str!("../spec/schemas/v0.1/sealed/actions/share_revoke.schema.json"),
+    ),
+    (
+        "sealed/actions/share_status",
+        include_str!("../spec/schemas/v0.1/sealed/actions/share_status.schema.json"),
+    ),
+    (
+        "sealed/actions/status",
+        include_str!("../spec/schemas/v0.1/sealed/actions/status.schema.json"),
+    ),
+    (
         "wire/token.response",
         include_str!("../spec/schemas/v0.1/wire/token.response.schema.json"),
     ),

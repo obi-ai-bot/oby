@@ -193,6 +193,40 @@ fn card_cases() -> Vec<(String, Value)> {
         Some("card_invalid"),
         &context,
     );
+    // A card with the key other Obis seal its words for (protocol.md section 9.1).
+    let seal_key = |label: &str| {
+        let seed = obi_protocol::keys::sha256(format!("obi-conformance-seal-{label}-x25519"));
+        obi_protocol::seal::SealKey::from_private(seed).unwrap()
+    };
+    let (sa, sb) = (seal_key("obi-a"), seal_key("obi-b"));
+    let with_seal = |params: Value| {
+        let mut card = card_for("obi-a", "owner-a", &a, &oa);
+        for (k, v) in params.as_object().unwrap() {
+            card["capabilities"]["extensions"][0]["params"][k] = v.clone();
+        }
+        sign(&card, &oa, &oa.key_id())
+    };
+    add(
+        "valid-card-with-seal-key",
+        with_seal(json!({"seal_key_id": sa.key_id(), "seal_public_key": sa.public_key()})),
+        "accept",
+        None,
+        &context,
+    );
+    add(
+        "invalid-card-seal-key-id-mismatch",
+        with_seal(json!({"seal_key_id": sb.key_id(), "seal_public_key": sa.public_key()})),
+        "reject",
+        Some("card_invalid"),
+        &context,
+    );
+    add(
+        "invalid-card-seal-key-without-id",
+        with_seal(json!({"seal_public_key": sa.public_key()})),
+        "reject",
+        Some("card_invalid"),
+        &context,
+    );
     cases
 }
 
@@ -316,11 +350,14 @@ fn the_copy_matches_obi_sphere_when_given_one() {
             .into_iter()
             .map(|p| p.strip_prefix(spec().join(mine)).unwrap().to_path_buf())
             .collect();
-        // The card cases are made here, not copied: compared below.
+        // The card cases are made here, not copied: compared below. The wire cases aren't obid's.
         let their_files: Vec<PathBuf> = files(&theirs.join(source))
             .into_iter()
             .map(|p| p.strip_prefix(theirs.join(source)).unwrap().to_path_buf())
-            .filter(|p| !p.starts_with("card"))
+            .filter(|p| {
+                source != "conformance/fixtures"
+                    || !(p.starts_with("card") || p.starts_with("wire"))
+            })
             .collect();
         if mine_files != their_files {
             differ.push(format!("{mine}: the files listed differ"));
@@ -334,9 +371,13 @@ fn the_copy_matches_obi_sphere_when_given_one() {
             }
         }
     }
-    let file = "conformance/jcs-vectors.json";
-    if std::fs::read(spec().join(file)).unwrap() != std::fs::read(theirs.join(file)).unwrap() {
-        differ.push(file.to_owned());
+    for file in [
+        "conformance/jcs-vectors.json",
+        "conformance/seal-vectors.json",
+    ] {
+        if std::fs::read(spec().join(file)).unwrap() != std::fs::read(theirs.join(file)).unwrap() {
+            differ.push(file.to_owned());
+        }
     }
     // The test keys derive from their seed strings as the spec's keys.json says.
     let keys: Value = serde_json::from_str(

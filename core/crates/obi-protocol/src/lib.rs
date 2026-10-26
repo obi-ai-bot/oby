@@ -14,6 +14,7 @@ pub mod jcs;
 pub mod jwt;
 pub mod keys;
 pub mod schema;
+pub mod seal;
 pub mod time;
 pub mod types;
 

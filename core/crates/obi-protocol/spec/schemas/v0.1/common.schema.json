@@ -30,7 +30,7 @@
       "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$"
     },
     "obi_id": {
-      "description": "An Obi's id, unique within its Sphere. Chosen when the Obi is invited.",
+      "description": "An Obi's id, unique within its Sphere and never reused. Chosen by the admin for a named invitation, or by the Obi's own card for an open one.",
       "$ref": "#/$defs/slug"
     },
     "owner_id": {
@@ -55,6 +55,23 @@
       "maxLength": 43,
       "pattern": "^[A-Za-z0-9_-]{43}$"
     },
+    "domain": {
+      "description": "A domain name, lower case: what a Google Workspace calls itself (its `hd` claim), like `example.com`.",
+      "type": "string",
+      "minLength": 4,
+      "maxLength": 253,
+      "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$"
+    },
+    "signin": {
+      "description": "A sign-in the Sphere finished with its identity provider (spec/sphere-api.md section 3.1): its `state`, and the one-time `code` the provider's callback gave the browser.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state", "code"],
+      "properties": {
+        "state": { "type": "string", "minLength": 43, "maxLength": 43, "pattern": "^[A-Za-z0-9_-]{43}$" },
+        "code": { "type": "string", "minLength": 43, "maxLength": 43, "pattern": "^[A-Za-z0-9_-]{43}$" }
+      }
+    },
     "key_id": {
       "description": "`ed25519:` followed by base64url (no padding) of SHA-256 over the 32 raw public key bytes.",
       "type": "string",
@@ -68,6 +85,36 @@
       "minLength": 86,
       "maxLength": 86,
       "pattern": "^[A-Za-z0-9_-]{86}$"
+    },
+    "seal_key_id": {
+      "description": "`x25519:` followed by base64url (no padding) of SHA-256 over the 32 raw bytes of an Obi's seal key (spec/identity.md section 2).",
+      "type": "string",
+      "minLength": 50,
+      "maxLength": 50,
+      "pattern": "^x25519:[A-Za-z0-9_-]{43}$"
+    },
+    "x25519_public_key": {
+      "description": "An X25519 public key: the 32 raw bytes, base64url without padding.",
+      "type": "string",
+      "minLength": 43,
+      "maxLength": 43,
+      "pattern": "^[A-Za-z0-9_-]{43}$"
+    },
+    "seal": {
+      "description": "How an envelope's words are sealed for its recipient (spec/protocol.md section 9.1): the suite, the recipient's seal key, and the sender's new X25519 key for this envelope.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["suite", "key_id", "enc"],
+      "properties": {
+        "suite": { "const": "x25519-hkdf-sha256-chacha20poly1305" },
+        "key_id": { "$ref": "#/$defs/seal_key_id" },
+        "enc": { "$ref": "#/$defs/x25519_public_key" }
+      }
+    },
+    "sealed_text": {
+      "description": "One text value sealed for the envelope's recipient: its ChaCha20-Poly1305 ciphertext and tag, base64url without padding (spec/protocol.md section 9.1). Only the sealed schemas (sealed/) use it, and each use sets its minLength and maxLength from the plain field's.",
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]+$"
     },
     "hash": {
       "description": "A SHA-256 digest in lower-case hex.",

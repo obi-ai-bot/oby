@@ -374,6 +374,36 @@ struct SphereTests {
         #expect((claims["may_act"] as? [String: String])?["sub"] == "obi-\(owner)")
     }
 
+    /// A card without obid's seal key is signed again once, with the accepts it has (#1233); one that
+    /// has it, never.
+    @MainActor @Test func aCardWithoutASealKeyIsSignedAgainOnce() async throws {
+        let owner = "tester-\(UUID().uuidString.lowercased().prefix(8))"
+        defer { try? OwnerKey.store.remove(owner) }
+        func obid(sealing: String) -> (RunnerStub, SphereModel) {
+            let stub = RunnerStub { request in
+                switch (request.method, request.path) {
+                case ("GET", "/v1/obid/sphere"):
+                    (200, #"{"state": "joined", "owner": "\#(owner)", "url": "https://obysphere.example", "sphere": "acme", "obiId": "obi-\#(owner)", "sealing": "\#(sealing)", "accepts": ["review_request", "question"]}"#)
+                case ("POST", "/v1/obid/sphere/card"): (200, #"{"card": {"name": "a card"}}"#)
+                case ("PUT", "/v1/obid/sphere/membership"): (200, "{}")
+                default: (404, "{}")
+                }
+            }
+            let feed = RunnerFeed()
+            feed.stageAlerts(following: stub.runner)
+            return (stub, SphereModel(feed: feed))
+        }
+        let (needed, sphere) = obid(sealing: "card_needed")
+        #expect(try await sphere.sealCard())
+        let made = try #require(needed.requests.first { $0.method == "POST" })
+        #expect(made.json?["accepts"] as? [String] == ["review_request", "question"])
+        let put = try #require(needed.requests.last)
+        #expect(put.method == "PUT" && put.json?["card"] != nil && put.json?["delegation"] == nil)
+        let (on, sealed) = obid(sealing: "on")
+        #expect(try await !sealed.sealCard())
+        #expect(on.requests.allSatisfy { $0.method == "GET" })
+    }
+
     /// The Join screen asks a server Oby doesn't know nothing until "I trust" is ticked.
     @MainActor @Test func anUnknownServersPreviewWaitsForTrust() async throws {
         let server = RunnerStub { request in
