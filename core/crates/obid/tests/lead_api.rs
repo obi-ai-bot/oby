@@ -102,8 +102,9 @@ fn edits(dir: &Path) -> Vec<String> {
         .collect()
 }
 
+/// The owner's words, typed in Oby's app (signed, as the apps sign them).
 fn said(obid: &Obid, words: &str) -> Value {
-    let answer = call(obid, "POST", "/v1/plans", Some(&json!({"said": words})));
+    let answer = call_typed(obid, "POST", "/v1/plans", &json!({"said": words}));
     assert_eq!(answer.status, 200, "{}", answer.text);
     answer.body
 }
@@ -160,6 +161,15 @@ fn the_roadmap_starts_its_workable_issues_once_and_claims_each() {
         "{text}"
     );
     assert!(text.contains("Skipped #4 (blocked)."), "{text}");
+    // The board is anyone's words: what the Lead starts from it gets none of the owner's secrets
+    // (crate::secretspec).
+    assert!(
+        obid.log().contains(
+            "the roadmap board, which the Lead read: what it starts gets no declared secrets"
+        ),
+        "{}",
+        obid.log()
+    );
     let started: Vec<&Value> = answer["jobs"].as_array().unwrap().iter().collect();
     assert_eq!(started.len(), 3);
     for (job, issue) in started.iter().zip([1, 2, 3]) {

@@ -24,7 +24,9 @@ this user's: the pid of its own agent, its session job, the Swift Oby's or
 install.sh's (`lsof` lists only this user's processes). 7777 is shared by every
 user on the Mac, so another user's obid, or any other program (an agent's, from
 its sandbox, included), gets nothing, and the window says the port is taken. The
-packaged app also quits when it's opened with a DevTools port or pipe, unless an
+packaged app quits when it's opened with a switch that runs another program as one
+of its processes (`--browser-subprocess-path`, `--renderer-cmd-prefix`,
+`--gpu-launcher`, `--utility-cmd-prefix`), and with a DevTools port or pipe unless an
 admin allowed that on the Mac with a root-owned
 `/Library/Application Support/Oby/allow-devtools-port` (the VM test does). When its own can't start, the
 window says why: not in Applications (it offers to move itself there), waiting
@@ -79,11 +81,10 @@ src/main/       the window (opens at 994×670, at least 420×520) and the cursor
                 device.ts: this Mac's device key (safeStorage), which signs a Confirm
 src/preload/    window.app: the traffic lights' position, full screen, the cursor feed,
                 and obid (a call, and the event stream)
-src/renderer/   the screens; tokens.css holds the shared look
+src/renderer/   the screens; tokens.css holds the shared look. The icons are apps/icon's:
+                the Dock's AppIcon.icon, the favicons exports/web (vite's publicDir)
 native/         window-style: makes the window macOS's toolbar window type
-build/          the app icon: icon.png, icon.icns, and make-icon.py that draws them
-                (from oby-head.png: Oby's head, rising from the icon's bottom edge);
-                obid's launch agent and the entitlements; helpers/, what helpers.sh stages
+build/          obid's launch agent and the entitlements; helpers/, what helpers.sh stages
 scripts/        helpers.sh and package.sh: the signed, notarized app; vm-test.sh (with
                 cdp.mjs): the clean-install test in a macOS 26 VM (Tart)
 ```

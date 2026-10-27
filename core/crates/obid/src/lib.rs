@@ -52,6 +52,7 @@ pub mod routines;
 pub mod sandbox;
 pub mod scan;
 pub mod secrets;
+pub mod secretspec;
 pub mod settings;
 pub mod sphere;
 pub mod store;
@@ -367,7 +368,6 @@ pub async fn serve(
             source,
         }
     })?;
-    jobs.set_api_address(bound);
     // Jobs started its agents' egress proxy (crate::egress, #616), whose tunnels hold two files each.
     if jobs.confines_egress() {
         raise_open_files();

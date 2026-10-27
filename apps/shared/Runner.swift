@@ -1088,6 +1088,12 @@ nonisolated struct Runner: Sendable {
     /// An iPhone paired through the Mac's Obysphere (#1278) sends every request sealed through it,
     /// never over HTTP.
     var relay: PhoneRelay?
+    /// Signs a request (every one but a read) as words the owner typed in this app
+    /// (`DeviceKey.signWords`): given its method, its path and its body (empty when it has none),
+    /// the `X-Oby-Words` header, or nil until this device's key is registered. Without it, nothing the app sends counts as the owner's own words for the
+    /// secrets a check declares (docs/runner-api.md).
+    typealias SignsWords = @Sendable (_ method: String, _ path: String, _ body: Data) -> String?
+    var signsWords: SignsWords?
 
     init(base: URL, token: String? = nil, refused: String? = nil, relay: PhoneRelay? = nil) {
         self.base = base
@@ -1587,7 +1593,9 @@ nonisolated struct Runner: Sendable {
         struct Answer: Decodable { var check: MacCheck? }
         let name = mac.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? ""
         let kinds = [merge ? "merge" : nil, apple ? "apple" : nil].compactMap { $0 }.joined(separator: ",")
-        let answer: Answer = try await call("GET", "v1/checks/next?mac=\(name)&kinds=\(kinds)")
+        // Signed: what this Mac reports reaches the job's agent, so the runner binds the check to
+        // this app (docs/runner-api.md, "Words the owner typed").
+        let answer: Answer = try await call("GET", "v1/checks/next?mac=\(name)&kinds=\(kinds)", signs: true)
         return answer.check
     }
 
@@ -1792,14 +1800,16 @@ nonisolated struct Runner: Sendable {
     private static func hex(_ token: Data) -> String { token.map { String(format: "%02x", $0) }.joined() }
     #endif
 
-    func call<Answer: Decodable>(_ method: String, _ path: String, body: (any Encodable)? = nil, timeout: TimeInterval = 45) async throws -> Answer {
-        try Self.decoder.decode(Answer.self, from: try await send(method, path, body: body, timeout: timeout))
+    func call<Answer: Decodable>(_ method: String, _ path: String, body: (any Encodable)? = nil, timeout: TimeInterval = 45, signs: Bool = false) async throws -> Answer {
+        try Self.decoder.decode(Answer.self, from: try await send(method, path, body: body, timeout: timeout, signs: signs))
     }
 
     /// The answer's body, unread: for a call whose answer says nothing the app needs.
     @discardableResult
     /// `json`, when given, is the body as it is (an Obi-to-Obi object keeps its snake_case keys).
-    func send(_ method: String, _ path: String, body: (any Encodable)? = nil, json: Data? = nil, timeout: TimeInterval = 45) async throws -> Data {
+    /// `signs`: a read signed too, as a write is: one that takes something (a check, `nextCheck`).
+    func send(_ method: String, _ path: String, body: (any Encodable)? = nil, json: Data? = nil, timeout: TimeInterval = 45,
+              signs: Bool = false) async throws -> Data {
         var request = URLRequest(url: URL(string: path, relativeTo: base.appending(path: "/"))!)
         request.httpMethod = method
         request.timeoutInterval = timeout
@@ -1807,6 +1817,14 @@ nonisolated struct Runner: Sendable {
         if let body = try json ?? body.map({ try Self.encoder.encode($0) }) {
             request.httpBody = body
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        }
+        // Everything but a read, a body or none (Remember has none): the path as the runner reads
+        // it, without the query.
+        if signs || (method != "GET" && method != "HEAD") {
+            let route = "/" + (path.split(separator: "?", maxSplits: 1).first.map(String.init) ?? path)
+            if let signed = signsWords?(method, route, request.httpBody ?? Data()) {
+                request.setValue(signed, forHTTPHeaderField: "X-Oby-Words")
+            }
         }
         let (data, response) = try await fetch(signed(request))
         try Self.check(response, data, refused: refused)

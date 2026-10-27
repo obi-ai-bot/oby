@@ -497,12 +497,62 @@ pub fn call(obid: &Obid, method: &str, target: &str, body: Option<&Value>) -> An
     call_with_token(obid, TOKEN, method, target, body)
 }
 
+/// Words the owner typed in Oby's apps: `body` to `target`, signed by the test owner's device as
+/// the apps sign them (`X-Oby-Words`, crate::approval::WORDS).
+pub fn call_typed(obid: &Obid, method: &str, target: &str, body: &Value) -> Answer {
+    call_signed(obid, method, target, Some(body))
+}
+
+/// [`call_typed`] with no body when `body` is none (a GET that takes something, as a Mac's check).
+/// Signed to the millisecond, as the apps sign.
+pub fn call_signed(obid: &Obid, method: &str, target: &str, body: Option<&Value>) -> Answer {
+    let text = body.map(Value::to_string).unwrap_or_default();
+    let millis = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .subsec_millis();
+    let whole = time::format(time::now());
+    let signed_at = format!("{}.{millis:03}Z", &whole[..19]);
+    let path = target.split('?').next().unwrap_or(target);
+    let digest = hex::encode(obi_protocol::keys::sha256(text.as_bytes()));
+    let signed = owner_signs(
+        obid,
+        &format!("oby-words\n{method}\n{path}\n{digest}\n{signed_at}"),
+        &signed_at,
+    );
+    let header = format!(
+        "{} {signed_at} {}",
+        signed["device"].as_str().unwrap(),
+        signed["signature"].as_str().unwrap()
+    );
+    call_with_headers(
+        obid,
+        TOKEN,
+        method,
+        target,
+        body,
+        &[("X-Oby-Words", &header)],
+    )
+}
+
 pub fn call_with_token(
     obid: &Obid,
     token: &str,
     method: &str,
     target: &str,
     body: Option<&Value>,
+) -> Answer {
+    call_with_headers(obid, token, method, target, body, &[])
+}
+
+/// [`call_with_token`], with `headers` too.
+pub fn call_with_headers(
+    obid: &Obid,
+    token: &str,
+    method: &str,
+    target: &str,
+    body: Option<&Value>,
+    headers: &[(&str, &str)],
 ) -> Answer {
     let body = body.map(Value::to_string);
     let mut stream = TcpStream::connect(("127.0.0.1", obid.port)).unwrap();
@@ -512,6 +562,9 @@ pub fn call_with_token(
     let mut text = format!(
         "{method} {target} HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer {token}\r\nConnection: close\r\n"
     );
+    for (name, value) in headers {
+        text.push_str(&format!("{name}: {value}\r\n"));
+    }
     match &body {
         Some(body) => text.push_str(&format!(
             "Content-Type: application/json\r\nContent-Length: {}\r\n",

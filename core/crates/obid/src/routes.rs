@@ -213,6 +213,8 @@ pub async fn archive(
 pub async fn rename(
     State(shared): State<Arc<Shared>>,
     Path(id): Path<String>,
+    uri: axum::http::Uri,
+    headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, ApiError> {
     let bad = || {
@@ -246,6 +248,13 @@ pub async fn rename(
     }
     if map.get("runsOn").is_some_and(|place| !place.is_null()) {
         return Err(ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, ELSEWHERE));
+    }
+    // Its title is what Oby's conversations read of it (`oby_jobs`, how it ended): one no app of
+    // the owner's signed isn't the owner's own words (crate::secretspec), from before it lands.
+    if title.is_some() && !typed_by_owner(&shared, "PATCH", &uri, &headers, &body) {
+        shared
+            .jobs
+            .unvet(&id, "a title no app of the owner's signed");
     }
     let job = match title {
         Some(title) => shared.jobs.rename(&id, title),
@@ -356,9 +365,52 @@ pub async fn events(
     )
 }
 
+/// Whether the request carries words the owner typed in Oby's apps: signed by a registered
+/// device's key ([`crate::approval::WORDS`]). Anything else that holds obid's token (oby-mcp, a
+/// script, an agent, an older app) doesn't, whatever it sends (crate::secretspec).
+pub fn typed_by_owner(
+    shared: &Shared,
+    method: &str,
+    uri: &axum::http::Uri,
+    headers: &HeaderMap,
+    body: &[u8],
+) -> bool {
+    signed_by(shared, method, uri, headers, body).is_some()
+}
+
+/// The registered device whose app signed the request ([`typed_by_owner`]), or none.
+pub fn signed_by(
+    shared: &Shared,
+    method: &str,
+    uri: &axum::http::Uri,
+    headers: &HeaderMap,
+    body: &[u8],
+) -> Option<String> {
+    let path = uri.path();
+    let header = headers
+        .get(crate::approval::WORDS)
+        .and_then(|v| v.to_str().ok())?;
+    let checked = shared.jobs.approvals().check_words(
+        header,
+        method,
+        path,
+        body,
+        |device| shared.devices.public_key(device),
+        obi_protocol::time::now(),
+    );
+    if let Err(why) = &checked {
+        tracing::info!("{method} {path}: not words the owner typed in Oby's apps: {why}");
+    }
+    checked
+        .ok()
+        .and_then(|()| header.split(' ').next().map(str::to_owned))
+}
+
 /// `POST /v1/jobs`: a job described whole (`{"job": {"repo", "kind", "task", …}}`).
 pub async fn dispatch(
     State(shared): State<Arc<Shared>>,
+    uri: axum::http::Uri,
+    headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, ApiError> {
     let value: Value = serde_json::from_slice(&body)
@@ -384,7 +436,9 @@ pub async fn dispatch(
             "A job needs repo, kind and task.",
         ));
     }
-    let new = new_job(job).map_err(|why| ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, why))?;
+    let mut new =
+        new_job(job).map_err(|why| ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, why))?;
+    new.vetted = typed_by_owner(&shared, "POST", &uri, &headers, &body);
     if job.get("runsOn").is_some_and(|place| !place.is_null()) {
         return Err(ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, ELSEWHERE));
     }
@@ -464,6 +518,9 @@ fn new_job(job: &Map<String, Value>) -> Result<NewJob, String> {
         start_from: None,
         routine: None,
         untrusted: false,
+        // Set by `dispatch` only for words an app of the owner's signed (crate::secretspec).
+        vetted: false,
+        foreign: None,
         split: false,
         adding: None,
         heard: Vec::new(),
@@ -563,147 +620,6 @@ fn refused(refused: crate::devices::Refused) -> ApiError {
     }
 }
 
-/// `GET /v1/checks/next?mac=…&kinds=…`: Apple checks first, then the oldest queued merge check
-/// of a kind this Mac takes, or `{"check": null}` when none waits. Merge checks are persisted on
-/// jobs; publishing/review creates their queue in a later port.
-#[derive(serde::Deserialize)]
-pub struct CheckQuery {
-    mac: Option<String>,
-    kinds: Option<String>,
-}
-
-pub async fn next_check(
-    State(shared): State<Arc<Shared>>,
-    Query(query): Query<CheckQuery>,
-) -> Result<Response, ApiError> {
-    let kinds = query.kinds.as_deref().unwrap_or("merge");
-    let kinds: Vec<&str> = kinds.split(',').collect();
-    if kinds.is_empty() || kinds.iter().any(|kind| !matches!(*kind, "merge" | "apple")) {
-        return Err(ApiError::new(
-            StatusCode::UNPROCESSABLE_ENTITY,
-            "kinds lists merge, apple or both.",
-        ));
-    }
-    if query
-        .mac
-        .as_ref()
-        .is_some_and(|mac| mac.chars().count() > 100)
-    {
-        return Err(ApiError::new(
-            StatusCode::UNPROCESSABLE_ENTITY,
-            "mac is a name of up to 100 characters.",
-        ));
-    }
-    let mac = query.mac.as_deref().unwrap_or("a Mac");
-    let check = shared
-        .jobs
-        .held_mac_check(mac)
-        .or_else(|| {
-            if kinds.contains(&"apple") {
-                shared.jobs.next_apple_check(mac)
-            } else {
-                None
-            }
-        })
-        .or_else(|| {
-            kinds
-                .contains(&"merge")
-                .then(|| shared.jobs.next_merge_check(mac))
-                .flatten()
-        });
-    Ok(json(StatusCode::OK, json!({"check": check})))
-}
-
-/// `GET /v1/checks/{id}/bundle`: the commits in the job's worktree for the Mac that took it.
-pub async fn check_bundle(
-    State(shared): State<Arc<Shared>>,
-    Path(id): Path<String>,
-) -> Result<Response, ApiError> {
-    let data = shared
-        .jobs
-        .apple_check_bundle(&id)
-        .map_err(check_api_error)?;
-    Ok((
-        StatusCode::OK,
-        [(header::CONTENT_TYPE, "application/octet-stream")],
-        data,
-    )
-        .into_response())
-}
-
-/// `POST /v1/checks/{id}/result`: a Mac's bounded report.
-pub async fn check_result(
-    State(shared): State<Arc<Shared>>,
-    Path(id): Path<String>,
-    body: Bytes,
-) -> Result<Response, ApiError> {
-    let report: Value = serde_json::from_slice(&body)
-        .map_err(|_| ApiError::new(StatusCode::BAD_REQUEST, "That isn't JSON."))?;
-    let Some((_, check, _)) = shared.jobs.find_check(&id) else {
-        return Err(check_api_error(crate::jobs::CheckResultError::Missing));
-    };
-    let mac = check["mac"].as_str().unwrap_or("").to_owned();
-    let check = shared
-        .jobs
-        .end_mac_check(&id, &mac, report)
-        .map_err(check_api_error)?;
-    Ok(json(StatusCode::OK, json!({"check": check})))
-}
-
-/// `POST` asks for the current committed head; `GET` reports the job's latest one.
-pub async fn apple_check(
-    State(shared): State<Arc<Shared>>,
-    headers: HeaderMap,
-    method: axum::http::Method,
-) -> Result<Response, ApiError> {
-    let token = headers
-        .get(header::AUTHORIZATION)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.strip_prefix("Bearer "))
-        .unwrap_or("")
-        .trim();
-    let job_id = shared
-        .jobs
-        .apple_job_for_token(token)
-        .ok_or_else(|| ApiError::new(StatusCode::UNAUTHORIZED, crate::api::NO_TOKEN))?;
-    let answer = if method == axum::http::Method::POST {
-        shared.jobs.ask_apple_check(&job_id).map_err(|why| {
-            let status =
-                if why.contains("running") || why.contains("commit") || why.contains("20 Apple") {
-                    StatusCode::CONFLICT
-                } else {
-                    StatusCode::NOT_FOUND
-                };
-            ApiError::new(status, why)
-        })?;
-        shared
-            .jobs
-            .apple_check_answer(&job_id)
-            .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "No Apple check."))?
-    } else {
-        shared
-            .jobs
-            .apple_check_answer(&job_id)
-            .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "No Apple check."))?
-    };
-    Ok(json(StatusCode::OK, answer))
-}
-
-fn check_api_error(error: crate::jobs::CheckResultError) -> ApiError {
-    match error {
-        crate::jobs::CheckResultError::Missing => {
-            ApiError::new(StatusCode::NOT_FOUND, "There's no such check.")
-        }
-        crate::jobs::CheckResultError::Conflict => ApiError::new(
-            StatusCode::CONFLICT,
-            "The check hasn't been taken by a Mac or already has its result.",
-        ),
-        crate::jobs::CheckResultError::BadRequest => {
-            ApiError::new(StatusCode::BAD_REQUEST, "The check result is malformed.")
-        }
-    }
-}
-
 /// The jobs' settings as `GET` and `PUT /v1/settings/jobs` answer them.
 fn job_settings_json(shared: &Shared) -> Value {
     json!({"maxRunning": shared.jobs.max_running(), "accountFailover": shared.jobs.account_failover()})
@@ -775,6 +691,8 @@ pub async fn set_job_settings(
 pub async fn message(
     State(shared): State<Arc<Shared>>,
     Path(id): Path<String>,
+    uri: axum::http::Uri,
+    headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, ApiError> {
     if shared.jobs.get(&id).is_none() {
@@ -812,6 +730,17 @@ pub async fn message(
         }
         Some(Ok(job)) => job,
     };
+    // Words no app of the owner's signed: the job that heard them (or the follow-up they started)
+    // is no longer the owner's own words alone (crate::secretspec).
+    let typed = typed_by_owner(&shared, "POST", &uri, &headers, &body);
+    let job = if typed {
+        job
+    } else {
+        shared
+            .jobs
+            .unvet(&job.id, "words no app of the owner's signed reached it")
+            .unwrap_or(job)
+    };
     // Said on the task's page (Sangam's TaskView): the words and Oby's answer go on the end of the
     // job's conversation, which the app opens, as if said there.
     if let Some((first, conversation)) = first
@@ -820,12 +749,26 @@ pub async fn message(
     {
         let said = shared
             .conversations
-            .append(&conversation, "user", text.trim().to_owned(), vec![])
+            .append(
+                &conversation,
+                "user",
+                text.trim().to_owned(),
+                vec![],
+                (!typed).then(|| "words no app of the owner's signed".to_owned()),
+            )
             .and_then(|_| {
                 let line = crate::brain::actions::told_line(&shared, &first, &job);
-                shared
-                    .conversations
-                    .append(&conversation, "oby", line, vec![job.id.clone()])
+                // It names the job: on obid's allowlist only as the job's own words are.
+                let foreign = first
+                    .check_refuses_secrets()
+                    .map(|why| format!("the title of job {}, which {why}", first.id));
+                shared.conversations.append(
+                    &conversation,
+                    "oby",
+                    line,
+                    vec![job.id.clone()],
+                    foreign,
+                )
             });
         if let Err(e) = said {
             tracing::info!("words for job {id}; conversation {conversation} wasn't told: {e:?}");
@@ -904,11 +847,15 @@ pub async fn publish(
 pub async fn permission(
     State(shared): State<Arc<Shared>>,
     Path(id): Path<String>,
+    uri: axum::http::Uri,
+    headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, ApiError> {
     if shared.jobs.get(&id).is_none() {
         return Err(ApiError::new(StatusCode::NOT_FOUND, NO_JOB));
     }
+    // An answer's words, or a no's, that no app of the owner's signed (crate::secretspec).
+    let unsigned = || !typed_by_owner(&shared, "POST", &uri, &headers, &body);
     let value: Value = serde_json::from_slice(&body)
         .map_err(|_| ApiError::new(StatusCode::BAD_REQUEST, "That isn't JSON."))?;
     let shape = "The body is {\"id\", \"decision\": \"allow\" | \"always\" | \"deny\", \"message\"}, or {\"id\", \"answer\"} for a question.";
@@ -920,6 +867,11 @@ pub async fn permission(
     let answered = match value.get("answer") {
         None | Some(Value::Null) => None,
         Some(Value::String(answer)) if value.get("decision").is_none() => {
+            if unsigned() {
+                shared
+                    .jobs
+                    .unvet(&id, "an answer no app of the owner's signed reached it");
+            }
             Some(shared.jobs.answer_question(&id, permission, answer))
         }
         Some(_) => return Err(ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, shape)),
@@ -946,6 +898,11 @@ pub async fn permission(
         Some(Value::String(text)) => Some(text.as_str()),
         Some(_) => return Err(ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, shape)),
     };
+    if message.is_some_and(|m| !m.trim().is_empty()) && unsigned() {
+        shared
+            .jobs
+            .unvet(&id, "words no app of the owner's signed reached it");
+    }
     match shared
         .jobs
         .answer_permission(&id, permission, decision, message)

@@ -1249,6 +1249,11 @@ async fn attempts(
     let memories = place.room.join(crate::memory::FILE);
     match crate::memory::for_agent(&shared.config.home, &repos).await? {
         Some(text) => {
+            // In its room, read as its own (crate::secretspec): a memory found in words that
+            // weren't the owner's alone marks the conversation.
+            if let Some(why) = crate::memory::foreign_among(&shared.config.home, &repos) {
+                shared.conversations.mark(&control.conversation, why);
+            }
             if let Err(e) = crate::jobs::write_login(&memories, text.as_bytes()) {
                 tracing::warn!(
                     "conversation {}: the owner's memories weren't quoted: {e}",
@@ -1768,6 +1773,16 @@ async fn one(
                 if taints(&name, &input, &bounds, &place.repos) {
                     session.taint();
                 }
+                // Fail closed for the owner's secrets (crate::secretspec): a call obid doesn't know
+                // keeps what the conversation read the owner's own marks it. Oby's own tools are
+                // judged where they answer (super::tools).
+                if !name.starts_with("mcp__oby__")
+                    && !known_safe(&name, &input, &bounds, &place.repos)
+                {
+                    shared
+                        .conversations
+                        .mark(&control.conversation, format!("its Oby used {name}"));
+                }
                 let index = steps.len() + 1;
                 let line = (
                     index,
@@ -1921,6 +1936,18 @@ fn placed(text: &str, homes: &[(String, &'static str)]) -> String {
     homes.iter().fold(text.to_owned(), |text, (home, with)| {
         text.replace(home.as_str(), with)
     })
+}
+
+/// Whether a call of Claude Code's or Codex's own tools reads only what's on obid's allowlist
+/// (crate::secretspec): a read or search of the room but its repositories and attachments, a
+/// change to the room's files, its own to-do list. Anything else (the web, a helper, a command, a
+/// tool added later) isn't.
+fn known_safe(tool: &str, input: &Value, bounds: &Bounds, repos: &Path) -> bool {
+    match tool {
+        "Read" | "Grep" | "Glob" | "LS" | "NotebookRead" => !taints(tool, input, bounds, repos),
+        "Write" | "Edit" | "MultiEdit" | "NotebookEdit" | "TodoWrite" => true,
+        _ => false,
+    }
 }
 
 /// Whether the tool call makes the turn consume something untrusted: a web search or fetch, or a
@@ -2938,6 +2965,41 @@ mod tests {
             Answer::Allow
         );
         assert!(web.load(Ordering::SeqCst));
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// For the owner's secrets only what obid knows stays on its allowlist (crate::secretspec): a
+    /// read of the room, a change to its files, its own list. The repositories' checkouts, the web,
+    /// a helper, a command and a tool added later don't.
+    #[test]
+    fn only_tools_obid_knows_keep_the_conversation_the_owners() {
+        let home = std::env::temp_dir().join(format!("obid-known-{}", std::process::id()));
+        let place = Place::of(&home, "c1");
+        std::fs::create_dir_all(place.repos.join("o/n")).unwrap();
+        std::fs::write(place.room.join("notes.md"), "mine").unwrap();
+        let bounds = Bounds {
+            worktree: place.room.clone(),
+            temp: Some(place.temp.clone()),
+            home: Some(place.temp.clone()),
+            logins: vec![],
+            git: Vec::new(),
+        };
+        let safe = |tool: &str, input: Value| known_safe(tool, &input, &bounds, &place.repos);
+        assert!(safe("Read", json!({"file_path": "notes.md"})));
+        assert!(safe("Write", json!({"file_path": "notes.md"})));
+        assert!(safe("TodoWrite", json!({})));
+        assert!(!safe("Read", json!({"file_path": "repos/o/n/f.rs"})));
+        for tool in [
+            "WebSearch",
+            "WebFetch",
+            "Task",
+            "Agent",
+            "Bash",
+            "Tool",
+            "SomeToolAddedLater",
+        ] {
+            assert!(!safe(tool, json!({})), "{tool}");
+        }
         let _ = std::fs::remove_dir_all(&home);
     }
 

@@ -12,10 +12,9 @@ import Formatted from './Formatted';
 import { tokenize } from './textTokens';
 import { AGENTS, convoTitle, threadOf, type Message } from './mock';
 import { markSeen, tell, useTasks, type Task } from './tasks';
-import { obys, tellChat, useChats, type Chat } from './chats';
+import { obys, ofObid, tellChat, useChats, type Chat } from './chats';
 import SetupCard from './SetupCard';
 import { WELCOME, typedFirst } from './onboarding';
-import { onObid } from './lean';
 import { openConversation } from './live';
 
 // how long the way out takes (the sink animation in app.css)
@@ -97,7 +96,7 @@ export default function ChatView({ id, kind = 'task', leaving, covered = false, 
   const talking = head >= 0 ? (thread.slice(head).find((m) => (m as Message).streaming) as Message | undefined) : undefined;
 
   // opened, it's seen; it opens at the latest message, and anything new scrolls into view
-  useEffect(() => { if (kind === 'task') markSeen(id); if (kind === 'peer') markRead(id); if (kind === 'oby' && onObid) void openConversation(id); }, [id, kind]);
+  useEffect(() => { if (kind === 'task') markSeen(id); if (kind === 'peer') markRead(id); if (kind === 'oby' && ofObid(id)) void openConversation(id); }, [id, kind]);
   const first = useRef(true);
   useLayoutEffect(() => {
     const l = list.current;

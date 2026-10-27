@@ -1086,6 +1086,7 @@ mod tests {
             ended: false,
             artifacts: vec![],
             routine: None,
+            asked: None,
         };
         Briefing {
             turns: vec![turn("user", "how is it going?"), turn("oby", "Fine.")],
@@ -1493,6 +1494,7 @@ mod tests {
                 ended: false,
                 artifacts: vec![],
                 routine: None,
+                asked: None,
             })
             .collect();
         let text = briefing.text();

@@ -1152,21 +1152,25 @@ async fn start(
                 ));
                 continue;
             }
-            let new = NewJob {
-                repo: brief.repo.clone(),
-                kind: brief.kind.clone(),
-                task: task(brief),
-                title: Some(brief.title.clone()),
-                request: Some(said.to_owned()),
-                issue: Some(issue),
-                rounds: Some(ROUNDS),
-                check: Some(brief.check.clone()),
-                files: Some(brief.files.clone()),
-                conversation: Some(asked.conversation.to_owned()),
-                // Started by these words: its card shows under them as it starts.
-                turn: (!asked.turn.is_empty()).then(|| asked.turn.to_owned()),
-                ..NewJob::default()
-            };
+            let new = super::written_in(
+                shared,
+                asked.conversation,
+                NewJob {
+                    repo: brief.repo.clone(),
+                    kind: brief.kind.clone(),
+                    task: task(brief),
+                    title: Some(brief.title.clone()),
+                    request: Some(said.to_owned()),
+                    issue: Some(issue),
+                    rounds: Some(ROUNDS),
+                    check: Some(brief.check.clone()),
+                    files: Some(brief.files.clone()),
+                    conversation: Some(asked.conversation.to_owned()),
+                    // Started by these words: its card shows under them as it starts.
+                    turn: (!asked.turn.is_empty()).then(|| asked.turn.to_owned()),
+                    ..NewJob::default()
+                },
+            );
             match shared.jobs.create(new) {
                 Ok(job) => started.push(job),
                 Err(refused) => {

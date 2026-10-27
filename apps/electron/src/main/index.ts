@@ -14,10 +14,12 @@ type Chrome = { lightsLeft: number; lightsTop: number; lightsCenterY: number; li
 // The page holds obid's API and signs Confirms with this Mac's device key: a packaged app takes no
 // DevTools port or pipe from whoever opens it (the fuses don't cover them), unless an admin allowed
 // it on this Mac with a root-owned file nobody else may write (scripts/vm-test.sh makes one with
-// sudo in its VM).
+// sudo in its VM). Nor, ever, another program run as one of its own processes.
 const ALLOW_DEVTOOLS = '/Library/Application Support/Oby/allow-devtools-port';
 const rootOnly = (path: string) => { const s = lstatSync(path); return s.uid === 0 && !s.isSymbolicLink() && !(s.mode & 0o022); };
-if (app.isPackaged && ['remote-debugging-port', 'remote-debugging-pipe'].some((s) => app.commandLine.hasSwitch(s))) {
+const given = (switches: string[]) => switches.some((s) => app.commandLine.hasSwitch(s));
+if (app.isPackaged && given(['browser-subprocess-path', 'renderer-cmd-prefix', 'gpu-launcher', 'utility-cmd-prefix'])) app.exit(1);
+if (app.isPackaged && given(['remote-debugging-port', 'remote-debugging-pipe'])) {
   let allowed = false;
   try { allowed = rootOnly(dirname(ALLOW_DEVTOOLS)) && rootOnly(ALLOW_DEVTOOLS); } catch { /* not there */ }
   if (!allowed) app.exit(1);
@@ -130,8 +132,8 @@ function createWindow() {
 }
 
 app.whenReady().then(() => {
-  // the Dock icon while developing (a packaged app takes build/icon.icns)
-  if (process.platform === 'darwin' && !app.isPackaged) app.dock?.setIcon(join(__dirname, '../../build/icon.png'));
+  // the Dock icon while developing (a packaged app takes apps/icon/AppIcon.icon, electron-builder.yml)
+  if (process.platform === 'darwin' && !app.isPackaged) app.dock?.setIcon(join(__dirname, '../../../icon/exports/oby-1024.png'));
   startObid();
   createWindow();
   app.on('activate', () => { if (!win) createWindow(); });
