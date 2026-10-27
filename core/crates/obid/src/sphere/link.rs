@@ -4031,7 +4031,8 @@ impl Link {
         if to == joined.obi_id {
             return Err(invalid("An Obi doesn't ask itself.".into()));
         }
-        self.send_checked(&joined, to, kind, action, Expiry::In(expires_in))
+        self.scan_outgoing(&action).await?;
+        self.send_scanned(&joined, to, kind, action, Expiry::In(expires_in))
             .await
     }
 
@@ -4047,21 +4048,6 @@ impl Link {
             .clone()
             .filter(|m| m.state == "joined")
             .ok_or_else(|| api(StatusCode::CONFLICT, "obid hasn't joined a Sphere."))
-    }
-
-    /// Sends one request that matches the spec's schema for `kind`, to another Obi: every text field
-    /// scanned for secrets ([`Link::scan_outgoing`]), then sent as [`Link::send_scanned`] sends it
-    /// (`POST /v1/obid/sphere/requests`). Answers the exchange.
-    pub(crate) async fn send_checked(
-        &self,
-        joined: &Membership,
-        to: String,
-        kind: String,
-        action: Value,
-        expiry: Expiry,
-    ) -> Result<Value, ApiError> {
-        self.scan_outgoing(&action).await?;
-        self.send_scanned(joined, to, kind, action, expiry).await
     }
 
     /// Scans every text field of an action going out for secrets, before anything is signed or sent
@@ -4094,20 +4080,21 @@ impl Link {
         Ok(())
     }
 
-    /// Checks, before any of them is sent to, that every one of `to` is an active member whose card
-    /// accepts `kind` and whose seal key obid trusts when it seals, that none is this Obi's owner's,
-    /// and that no two share an owner (the Council's rules I2 and I3): `422` (or `409` for a seal
+    /// The Council's seats, checked before any request is sent (crate::sphere::council): each an
+    /// active member whose card accepts `review_request` and whose seal key obid trusts when it seals,
+    /// none this Obi's owner's, and no two with one owner (rules I2 and I3). `422` (or `409` for a seal
     /// key obid doesn't trust) with nothing sent. Reads the directory first.
-    pub(crate) async fn check_recipients(&self, to: &[String], kind: &str) -> Result<(), ApiError> {
+    pub(crate) async fn check_seats(&self, seats: &[String]) -> Result<(), ApiError> {
         if let Err(e) = self.read_directory().await {
             self.note_error(&e);
             return Err(from_client(&e));
         }
+        let kind = "review_request".to_owned();
         let mine = self.owner();
         let state = self.lock();
         let mut owners = HashSet::new();
-        for obi in to {
-            let invalid = |m: String| api(StatusCode::UNPROCESSABLE_ENTITY, m);
+        let invalid = |m: String| api(StatusCode::UNPROCESSABLE_ENTITY, m);
+        for obi in seats {
             let member = state
                 .directory
                 .members
@@ -4118,7 +4105,7 @@ impl Link {
                     "{obi} has been revoked: nothing was sent."
                 )));
             }
-            if !member.accepts.iter().any(|a| a == kind) {
+            if !member.accepts.contains(&kind) {
                 return Err(invalid(format!(
                     "{obi}'s card doesn't accept {kind}: nothing was sent."
                 )));
@@ -4143,6 +4130,33 @@ impl Link {
             }
         }
         Ok(())
+    }
+
+    /// The outgoing `review_request` exchange to `to` for `repo` (ignoring ASCII case) at `head_sha`,
+    /// expiring at `expires_at`, when obid sent one: the Council's convener answers it again rather
+    /// than send a seat a second request for one motion (its deadline says which motion).
+    pub(crate) fn sent_review(
+        &self,
+        to: &str,
+        repo: &str,
+        head_sha: &str,
+        expires_at: i64,
+    ) -> Option<Value> {
+        let at = time::format(expires_at);
+        self.lock()
+            .exchanges
+            .values()
+            .find(|x| {
+                x.direction == "outgoing"
+                    && x.kind == "review_request"
+                    && x.peer == to
+                    && x.request["expires_at"] == at.as_str()
+                    && x.request["body"]["head_sha"] == head_sha
+                    && x.request["body"]["repo"]
+                        .as_str()
+                        .is_some_and(|r| r.eq_ignore_ascii_case(repo))
+            })
+            .map(Exchange::to_json)
     }
 
     /// Sends one request already scanned ([`Link::scan_outgoing`]): sealed for the receiver when its

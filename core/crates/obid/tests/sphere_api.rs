@@ -2537,11 +2537,42 @@ async fn the_council_convener_sends_one_review_request_per_seat() {
     assert_eq!(sealed["body"], brief());
     assert_ne!(exchanges[0], exchanges[1], "each seat its own exchange");
 
-    // Every seat is checked before any is sent: one that isn't a member stops the call.
+    // The same call again sends nothing: each seat's request for this motion is answered as it was.
+    let again =
+        convene(json!({"seats": ["obi-ernesto", "obi-maria"], "review": brief(), "expiresAt": at}));
+    assert_eq!(again.status, 202, "{}", again.text);
+    let again_ids: Vec<&str> = again.body["seats"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["exchange"]["correlationId"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        again_ids,
+        exchanges.iter().map(String::as_str).collect::<Vec<_>>(),
+        "the same exchanges"
+    );
+
+    // Every seat is checked before any is sent: one that isn't a member stops the call, and so do
+    // two seats with one owner (rule I3).
     let unknown = convene(
         json!({"seats": ["obi-ernesto", "obi-nobody"], "review": brief(), "expiresAt": at}),
     );
     assert_eq!(unknown.status, 422, "{}", unknown.text);
+    let _maria_again = TestObi::join(&sphere, "obi-maria-2", "maria").await;
+    let later = obi_protocol::time::format(obi_protocol::time::now() + 7300);
+    let one_owner = convene(
+        json!({"seats": ["obi-ernesto", "obi-maria-2", "obi-maria"], "review": brief(), "expiresAt": later}),
+    );
+    assert_eq!(one_owner.status, 422, "{}", one_owner.text);
+    assert!(one_owner.text.contains("same owner"), "{}", one_owner.text);
+
+    // When every seat's send fails on the way (the Obysphere refusing), the call fails with the first
+    // seat's error and keeps nothing.
+    sphere.lock().deny_requests = true;
+    let denied = convene(json!({"seats": ["obi-ernesto"], "review": brief(), "expiresAt": later}));
+    assert_eq!(denied.status, 502, "{}", denied.text);
+    sphere.lock().deny_requests = false;
 
     let mut asks_host = brief();
     asks_host["pr"] = json!(7);
