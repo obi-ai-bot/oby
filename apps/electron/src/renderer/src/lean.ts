@@ -6,6 +6,7 @@
 export const everything = new URLSearchParams(location.search).has('everything');
 // In the Mac app (window.app), without ?everything, what's shown is obid's (live.ts); in a browser,
 // or with it, the mock's.
-export const onObid = !everything && !!window.app?.obid;
+// A dev scenario (?dev=, dev/ControlCenter.tsx) plays on the mock, never on the real obid.
+export const onObid = !everything && !!window.app?.obid && !(import.meta.env.DEV && new URLSearchParams(location.search).has('dev'));
 // ?welcome: set up again (onboarding.ts)
 export const welcome = new URLSearchParams(location.search).has('welcome');

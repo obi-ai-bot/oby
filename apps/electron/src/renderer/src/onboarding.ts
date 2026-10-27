@@ -39,6 +39,8 @@ let setup: Setup = {
 const listeners = new Set<() => void>();
 const set = (fn: (s: Setup) => Partial<Setup>) => { setup = { ...setup, ...fn(setup) }; listeners.forEach((l) => l()); };
 const subscribe = (l: () => void) => { listeners.add(l); return () => { listeners.delete(l); }; };
+// dev only (dev/ControlCenter.tsx): setting up as it stands, changed, and watched
+export const dev = import.meta.env.DEV ? { get: () => setup, set, subscribe } : undefined;
 // On obid, a tool is in once one of its accounts is signed in, as obid says
 const signedIn = (a: Agent) => !!liveState().status?.accounts.some((x) => x.agent === a && x.signedIn);
 export function useSetup(): Setup {
