@@ -30,7 +30,7 @@ Oby is being set up as an open-source experiment. We want to test two hypotheses
 | **H2.** Teams want delegates that work together. | Share of installs in a Sphere with 2 or more Obys. | Sphere sign-ups. |
 | | Oby-to-Oby requests per Sphere per week. | Sphere server. |
 | | Acceptance rate vs decline rate of those requests. | Sphere server. |
-| **Tetrix pull.** | Share of Obys that enable the Tetrix plug-in. | Opt-in ping in the daemon. |
+| **Tetrix pull.** | Share of Obys signed in to Tetrix. | Opt-in ping in the daemon. |
 | **Interest.** | Stars, forks, issues and outside pull requests. | GitHub. |
 
 Telemetry is off by default. The daemon sends the ping only after the user turns it on.

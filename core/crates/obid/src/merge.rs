@@ -475,6 +475,17 @@ fn asked_for_changes(pr: &PullRequest, merging: &Merging) -> bool {
             .any(|r| r.state == "CHANGES_REQUESTED")
 }
 
+/// Why only the owner can settle the job's own pull request now: a review asks for changes, or
+/// its checks failed on GitHub. Nothing of Oby's answers either any more, so they ask the owner
+/// whatever the workflow, learned or not (a pull request into main, where none can be proposed,
+/// included), and before a teammate's Oby is asked to review a red head.
+pub fn owner_must_settle(pr: &PullRequest, merging: &Merging) -> Option<&'static str> {
+    if asked_for_changes(pr, merging) {
+        return Some("Not merged yet: a review asks for changes.");
+    }
+    (merging.checks == Some("FAILURE")).then_some("Not merged yet: its checks failed on GitHub.")
+}
+
 /// The rules about the pull request itself, before anyone's review or any check: a workflow that
 /// names its base (never main, master or trunk), the job's own open pull request at the commit
 /// obid pushed last, scanned clean. The workflow and that head, or why not.

@@ -98,6 +98,10 @@ struct File {
     /// cursor_keychain_login); left out, obid decides when it starts (crate::jobs::cursor_keychain_wanted).
     #[serde(default)]
     cursor_keychain: Option<bool>,
+    /// The Claude Code accounts whose jobs run in Claude Code's own sandbox with their own folder
+    /// (crate::jobs, `own_sandbox`); left out, none.
+    #[serde(default)]
+    claude_own_sandbox: Vec<String>,
     /// The control plane the iPhone's pushes go through (crate::push).
     #[serde(default)]
     push_relay: Option<String>,
@@ -256,6 +260,11 @@ pub struct Config {
     /// `claude_keychain`: `None` when it's left out, and then obid turns it on by itself on macOS when
     /// Cursor's own login is only in the Keychain (crate::jobs::cursor_keychain_wanted).
     pub cursor_keychain: Option<bool>,
+    /// `claudeOwnSandbox`: the Claude Code accounts (by id) whose jobs run unboxed by obid, with the
+    /// account's own folder and login, their shell in Claude Code's own sandbox and their tools kept
+    /// out of obid's home and the person's (the owner's decision of 2026-10-26; crate::jobs,
+    /// `own_sandbox`). Every other account's jobs stay in obid's box with a copy of the login.
+    pub claude_own_sandbox: Vec<String>,
     /// How conversations run.
     pub conversation: Conversation,
     /// `pushRelay`: the control plane the iPhone's sealed pushes go through, as its origin
@@ -554,6 +563,7 @@ impl Config {
             claude_keychain: file.claude_keychain,
             ignored: file.ignored.into_keys().chain(inside).collect(),
             cursor_keychain: file.cursor_keychain,
+            claude_own_sandbox: file.claude_own_sandbox,
             push_relay,
             conversation: Conversation {
                 harness,
@@ -876,6 +886,12 @@ mod tests {
         assert_eq!(
             parse(serde_json::json!({"claudeKeychain": false})),
             Some(false)
+        );
+        let own = |extra| Config::parse(&with(extra)).unwrap().claude_own_sandbox;
+        assert!(own(serde_json::json!({})).is_empty());
+        assert_eq!(
+            own(serde_json::json!({"claudeOwnSandbox": ["default"]})),
+            ["default"]
         );
         let cursor = |extra| Config::parse(&with(extra)).unwrap().cursor_keychain;
         assert_eq!(cursor(serde_json::json!({})), None);

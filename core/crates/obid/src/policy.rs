@@ -363,6 +363,25 @@ pub fn fixed_denial(tool: &str, input: &Value, worktree: &Path, mcp: &[String]) 
     None
 }
 
+/// Whether a call of `tool` names a path outside `worktree`, links followed: a file's path, a
+/// search's folder (Grep's and Glob's `path`), or an absolute Glob pattern's fixed part, before its
+/// first wildcard. A job in Claude Code's own sandbox is refused those whatever its mode (crate::jobs,
+/// `own_sandbox`): its tools run outside any sandbox, where a boxed job's would read only what the
+/// box shows.
+pub fn names_outside(tool: &str, input: &Value, worktree: &Path) -> bool {
+    let pattern = input
+        .get("pattern")
+        .and_then(Value::as_str)
+        .filter(|pattern| tool == "Glob" && pattern.starts_with('/'))
+        .and_then(|pattern| pattern.split(['*', '?', '[', '{']).next());
+    let real = real_worktree(worktree);
+    ["file_path", "notebook_path", "path"]
+        .iter()
+        .filter_map(|key| input.get(*key).and_then(Value::as_str))
+        .chain(pattern)
+        .any(|path| !inside(path, worktree, &real))
+}
+
 /// What obid answers for a job of `kind`, and whether it is a review another Obi asked for; `mcp`
 /// is the job's MCP permission rules ([`fixed_denial`]).
 pub fn decide(
@@ -394,6 +413,31 @@ pub fn decide(
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// A search outside the worktree names a path outside it, as a read does: Grep's and Glob's
+    /// folder, and an absolute Glob pattern; inside it, or relative, it doesn't.
+    #[test]
+    fn searches_stay_inside_the_worktree() {
+        let worktree =
+            std::env::temp_dir().join(format!("obid-policy-search-{}", std::process::id()));
+        std::fs::create_dir_all(worktree.join("src")).unwrap();
+        let denied = |tool: &str, input: Value| names_outside(tool, &input, &worktree);
+        assert!(denied(
+            "Grep",
+            json!({"pattern": "token", "path": "/Users"})
+        ));
+        assert!(denied("Grep", json!({"pattern": "token", "path": "../.."})));
+        assert!(denied("Glob", json!({"pattern": "*.json", "path": "/"})));
+        assert!(denied(
+            "Glob",
+            json!({"pattern": "/Users/*/Library/**/api-token"})
+        ));
+        assert!(!denied("Grep", json!({"pattern": "token", "path": "src"})));
+        assert!(!denied("Glob", json!({"pattern": "**/*.rs"})));
+        let inner = format!("{}/src/*.rs", worktree.display());
+        assert!(!denied("Glob", json!({"pattern": inner})));
+        let _ = std::fs::remove_dir_all(&worktree);
+    }
 
     #[test]
     fn publishing_commands_are_refused() {

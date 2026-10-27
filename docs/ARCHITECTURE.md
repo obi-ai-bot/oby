@@ -102,6 +102,8 @@ Removed on 2026-10-27 (the strip to a dispatcher): obid has no plug-in host, no 
 
 ## 6. Phase 1: workstreams and who edits what
 
+_History: this is how phase 1 was split. The plug-in boundary's workstream below (its crates, `plugins/`, `GET` and `PUT /v1/obid/plugins`) was removed with plug-ins on 2026-10-27 (section 5)._
+
 Four workstreams run in parallel and don't talk to each other. Each edits only what it owns; anything two of them share changes through the lead, in its own pull request, before either relies on the change. Every pull request goes into `dev`, and none merges another's.
 
 | Workstream | Owns (may edit) | Must not touch |

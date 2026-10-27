@@ -1476,6 +1476,9 @@ pub struct Bounds {
     pub temp: Option<PathBuf>,
     pub home: Option<PathBuf>,
     pub logins: Vec<PathBuf>,
+    /// The variables that pin git in the worktree to the job's git folders (crate::jobs,
+    /// `git_folders`), for what obid asks git mid-turn; none outside a job.
+    pub git: Vec<(&'static str, String)>,
 }
 
 impl Bounds {
@@ -1618,9 +1621,7 @@ fn committed(path: &str, bounds: &Bounds) -> bool {
     if !crate::policy::path_inside(path, &bounds.worktree) {
         return false;
     }
-    std::process::Command::new("git")
-        .arg("-C")
-        .arg(&bounds.worktree)
+    crate::git::command(&bounds.worktree, &bounds.git)
         .args(["ls-files", "--error-unmatch", "--"])
         .arg(path)
         .stdout(std::process::Stdio::null())
@@ -3057,6 +3058,7 @@ mod tests {
             temp: Some(temp.clone()),
             home: Some(temp.clone()),
             logins: vec![account, temp.join(".claude"), temp.join(".codex")],
+            git: Vec::new(),
         };
         (root, bounds)
     }
