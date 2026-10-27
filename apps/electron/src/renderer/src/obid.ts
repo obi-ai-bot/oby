@@ -115,6 +115,9 @@ export type Status = {
 // check: the one its jobs run (none: null); noCheck: the owner said No check (#1062)
 export type Repo = { repo: string; defaultBranch: string; listed: boolean; check?: string | null; noCheck?: boolean };
 
+// A rule Always allow saved (or a deny), for a repository or `conversations` ("GET /v1/permissions/rules")
+export type SavedRule = { id: string; rule: string; repo: string; decision: 'allow' | 'deny' };
+
 // A sign-in under way: the page to open, and the code to type there (Codex's, GitHub's) or, with
 // pasteCode, the code that page shows, to send back (Claude Code's)
 export type SignIn = { account?: string; url: string; userCode?: string | null; pasteCode?: boolean; expiresAt?: string };
@@ -212,6 +215,11 @@ export const api = {
   plan: (said: string, answer: { question: string; option: string } | undefined, where: { conversation: string } | { new: true }) =>
     call<PlanAnswer>('POST', '/v1/plans', { said, ...(answer ? { answer } : {}), ...where }),
   repos: () => call<{ repos: Repo[] }>('GET', '/v1/repos'),
+  // Settings › Permissions: the mode new jobs get, and the rules Always allow saved
+  permissions: () => call<{ mode: string }>('GET', '/v1/settings/permissions'),
+  setPermissions: (mode: string) => call<{ mode: string }>('PUT', '/v1/settings/permissions', { mode }),
+  rules: () => call<SavedRule[]>('GET', '/v1/permissions/rules'),
+  forgetRule: (r: string) => call<SavedRule[]>('DELETE', `/v1/permissions/rules/${id(r)}`),
   // obid only: the owner's own check for a repository, or null to start over: obid asks for it
   // (ask, a set_check confirm item) unless there's nothing to keep
   changeCheck: (repo: string, check: string | null) =>
