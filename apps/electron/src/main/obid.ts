@@ -47,10 +47,12 @@ function reason(error?: unknown): string {
   return cause?.message ?? (error instanceof Error ? error.message : String(error));
 }
 
-// Who listens on 127.0.0.1:7777: an obid of this user's ('mine'), something else ('foreign': every
-// user on the Mac shares the port, so another user's obid, or any other program), or nothing. lsof
-// lists only this user's processes. Only 'mine' gets the token, and this app stands down only for
-// it. ponytail: a 'mine' holds 10 s, or until a call fails; checking at every call would run lsof
+// Who listens on 127.0.0.1:7777: launchd's obid of this user's ('mine': this app's agent or its
+// session job, the Swift Oby's or install.sh's), something else ('foreign': every user on the Mac
+// shares the port, so another user's obid, or any other program, an agent's from its sandbox
+// included, whatever it's named), or nothing. lsof lists only this user's processes. Only 'mine'
+// gets the token, and this app stands down only for it. In development an obid run by hand counts
+// too. ponytail: a 'mine' holds 10 s, or until a call fails; checking at every call would run lsof
 // for each of the page's calls.
 const TAKEN = 'Something other than your Oby engine answers on 127.0.0.1:7777 (another user’s Oby on this Mac, or another program), so Oby sends it nothing. Quit it, or log that user out, and open Oby again.';
 let mineUntil = 0;
@@ -60,11 +62,13 @@ async function listener(): Promise<'mine' | 'foreign' | 'none'> {
   try {
     pids = (await run('/usr/sbin/lsof', ['-nP', '-a', '-iTCP@127.0.0.1:7777', '-sTCP:LISTEN', '-t'])).stdout.split('\n').filter(Boolean);
   } catch { /* exit 1: no process of this user's listens there */ }
+  if (!pids.length) return await answers() ? 'foreign' : 'none';
+  const launchds = await Promise.all([LABEL, SESSION, ...Object.keys(OTHERS)].map(async (label) => field(await launchd(label), 'pid')));
   for (const pid of pids) {
-    const name = await run('/bin/ps', ['-o', 'comm=', '-p', pid]).then((r) => basename(r.stdout.trim()), () => '');
-    if (name === 'obid') { mineUntil = Date.now() + 10_000; return 'mine'; }
+    const byHand = !app.isPackaged && await run('/bin/ps', ['-o', 'comm=', '-p', pid]).then((r) => basename(r.stdout.trim()) === 'obid', () => false);
+    if (launchds.includes(pid) || byHand) { mineUntil = Date.now() + 10_000; return 'mine'; }
   }
-  return pids.length || await answers() ? 'foreign' : 'none';
+  return 'foreign';
 }
 
 // What a call or the stream came back with: obid's status and body, or (status 0) why it didn't answer
@@ -233,8 +237,9 @@ export async function startObid() {
       const printed = await launchd(label);
       if (!printed) continue;
       if (status() === 'enabled' || status() === 'requires-approval') register(false);
+      await run('/bin/launchctl', ['bootout', `${domain()}/${SESSION}`]).catch(() => {});
       const exit = field(printed, 'last exit code');
-      problem = who === 'mine' ? null : `Oby’s engine on this Mac is ${whose}’s, and it isn’t running (launchd says ${exit ? `its last exit code was ${exit}` : `it’s ${field(printed, 'state') ?? 'not running'}`}). Start it there, or remove it, and open this app again.`;
+      problem = field(printed, 'state') === 'running' ? null : `Oby’s engine on this Mac is ${whose}’s, and it isn’t running (launchd says ${exit ? `its last exit code was ${exit}` : `it’s ${field(printed, 'state') ?? 'not running'}`}). Start it there, or remove it, and open this app again.`;
       return;
     }
     if (who === 'mine') {

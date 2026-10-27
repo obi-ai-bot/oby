@@ -19,10 +19,14 @@ item. Both obids use the same configuration, home and port. While launchd has
 the Swift Oby's login item (or install.sh's agent), this app registers none of
 its own and uses that obid; it registers its own only when no other is
 registered, so two agents never fight for 7777 at login. Before it adopts an obid
-or sends it the token, it checks that what listens on 7777 is an obid of this
-user's (`lsof` lists only this user's processes): 7777 is shared by every user
-on the Mac, so another user's obid, or any other program, gets nothing, and the
-window says the port is taken. When its own can't start, the
+or sends it the token, it checks that what listens on 7777 is launchd's obid of
+this user's: the pid of its own agent, its session job, the Swift Oby's or
+install.sh's (`lsof` lists only this user's processes). 7777 is shared by every
+user on the Mac, so another user's obid, or any other program (an agent's, from
+its sandbox, included), gets nothing, and the window says the port is taken. The
+packaged app also quits when it's opened with a DevTools port or pipe, unless an
+admin allowed that on the Mac with a root-owned
+`/Library/Application Support/Oby/allow-devtools-port` (the VM test does). When its own can't start, the
 window says why: not in Applications (it offers to move itself there), waiting
 for approval in System Settings › General › Login Items (it opens that page),
 obid's `last-start-error`, else launchd's last exit code and the end of

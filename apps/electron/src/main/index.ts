@@ -1,6 +1,7 @@
 import { app, BrowserWindow, ipcMain, screen, shell } from 'electron';
 import { createRequire } from 'node:module';
-import { join } from 'node:path';
+import { lstatSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { bridge, startObid, stopFollowing, type Trusted } from './obid';
 import { confirming } from './device';
 
@@ -9,6 +10,18 @@ import { confirming } from './device';
 // its own frame.
 
 type Chrome = { lightsLeft: number; lightsTop: number; lightsCenterY: number; lightsRight: number };
+
+// The page holds obid's API and signs Confirms with this Mac's device key: a packaged app takes no
+// DevTools port or pipe from whoever opens it (the fuses don't cover them), unless an admin allowed
+// it on this Mac with a root-owned file nobody else may write (scripts/vm-test.sh makes one with
+// sudo in its VM).
+const ALLOW_DEVTOOLS = '/Library/Application Support/Oby/allow-devtools-port';
+const rootOnly = (path: string) => { const s = lstatSync(path); return s.uid === 0 && !s.isSymbolicLink() && !(s.mode & 0o022); };
+if (app.isPackaged && ['remote-debugging-port', 'remote-debugging-pipe'].some((s) => app.commandLine.hasSwitch(s))) {
+  let allowed = false;
+  try { allowed = rootOnly(dirname(ALLOW_DEVTOOLS)) && rootOnly(ALLOW_DEVTOOLS); } catch { /* not there */ }
+  if (!allowed) app.exit(1);
+}
 
 // macOS: the native module that gives the window Safari's window type (round
 // macOS 26 corners, traffic lights placed by macOS). Built by `npm run build:native`.

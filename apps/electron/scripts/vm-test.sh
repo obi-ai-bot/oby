@@ -7,8 +7,10 @@
 #   2. `oby-test`: a fresh clone of it, 4 GB of memory, no window, the DMG's folder shared read-only,
 #      reached over SSH as its logged-in user (admin; a throwaway key added with its password);
 #   3. in the VM: the DMG mounted, the app copied into Applications as a drag does, and opened;
-#   4. the checks: with another program on 7777, Oby says the port is taken, registers nothing and
-#      sends that program nothing (no token); then, with 7777 free, obid starts by itself and
+#   4. the checks: opened with a DevTools port and no root-owned file allowing it, Oby quits (the
+#      rest of the test makes that file with sudo, to read the page); with another program on
+#      7777, Oby says the port is taken, registers nothing and sends that program nothing (no
+#      token); then, with 7777 free, obid starts by itself and
 #      /v1/status answers with obid's token; the window shows Oby's conversation and no engine error
 #      (its text, read over Chromium's DevTools port through the SSH connection, and a picture of it
 #      in dist/vm-test.png); obid still answers after Oby quits; after a restart of the VM, launchd
@@ -79,6 +81,13 @@ in_vm "mnt=\$(hdiutil attach -nobrowse -noautoopen -readonly '/Volumes/My Shared
 in_vm "lsof -nP -iTCP:7777 -sTCP:LISTEN" > /dev/null 2>&1 && die "something already listens on 7777 in the clean VM"
 ssh "${ssh_to[@]}" -N -L 9339:127.0.0.1:9333 "admin@$ip" &
 tunnel=$!
+
+say "No DevTools port unless an admin allows it"
+in_vm "open -a '/Applications/$name.app' --args --remote-debugging-port=9333; sleep 5; pgrep -x '$name'" > /dev/null \
+  && die "the app runs with a DevTools port and no file allowing it"
+echo "    it quits when opened with one"
+# The rest of this test reads the page over that port: the root-owned file that allows it
+in_vm "sudo -n mkdir -p '/Library/Application Support/Oby' && sudo -n touch '/Library/Application Support/Oby/allow-devtools-port'"
 
 say "Another program on 7777: Oby sends it nothing and registers nothing"
 in_vm "nohup nc -l 127.0.0.1 7777 > /tmp/foreign.txt 2>&1 < /dev/null &"
