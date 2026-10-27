@@ -1,4 +1,5 @@
 import { BRANDS, type Brand } from './brands';
+import { onObid } from './lean';
 
 // Mock data until the app talks to Oby's engine. The shapes follow the Mac
 // app on dev (Engine/Jobs.swift Job, Engine/Conversation.swift Turn,
@@ -691,8 +692,10 @@ export function convoTitle(j: Job) {
 // The Obysphere: the other Obys in your workspace (whose they are), and your conversations with them, each about a task. who: 'you',
 // or the owner of the Oby that said it; with: the Obys in it (more than one: a
 // group); task: the task a message is about, shown as its card under it.
+// On obid (lean.ts), none of these three: obid has no Obysphere members, shared Macs or shared
+// usage to list yet (all hidden for launch), so the screens show none rather than the demo's.
 export type Peer = { name: string };
-export const OBYS: Peer[] = [
+export const OBYS: Peer[] = onObid ? [] : [
   { name: 'Wellington' },
   { name: 'Ernesto' },
   { name: 'Dima' },
@@ -710,7 +713,7 @@ export const OBYS: Peer[] = [
 // accounts: your login stays on this Mac, and their Mac reaches your AI
 // account only through your Oby, while the job runs.
 export type Place = { name: string; owner?: string; about: string; free: boolean };
-export const PLACES: Place[] = [
+export const PLACES: Place[] = onObid ? [] : [
   { name: 'This Mac', about: 'Room for 2 jobs', free: true },
   { name: 'Wellington’s Mac', owner: 'Wellington', about: 'Free now · room for 1 job', free: true },
   { name: 'Ernesto’s Mac', owner: 'Ernesto', about: 'Busy', free: false },
@@ -720,7 +723,7 @@ export const PLACES: Place[] = [
 // is yours (%), and how much of it you've used. Jobs on it run on their Mac:
 // its key never leaves it.
 export type Share = { owner: string; agent: Agent; account: string; share: number; used: number; resets: string };
-export const SHARED_WITH_ME: Share[] = [
+export const SHARED_WITH_ME: Share[] = onObid ? [] : [
   { owner: 'Wellington', agent: 'claude', account: 'Deskree API', share: 30, used: 12, resets: 'Resets on the 1st' },
 ];
 

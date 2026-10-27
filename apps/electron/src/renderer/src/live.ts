@@ -28,11 +28,14 @@ type Live = {
   // ('new:1'); obid's id for it, once known, maps onto that one (alias), so its page stays open
   starting: { id: string; said: string } | null;
   alias: Record<string, string>;
+  // decisions answered here, by job: what was asked, the pick, and the inbox item it settles.
+  // The cards keep showing it answered (as the mock's do), and the stack lets it go.
+  answered: Record<string, { ask: Ask; option: string; item?: string }>;
 };
 
 let state: Live = {
   connection: 'connecting', problem: null, status: null, jobs: {}, firstJobs: new Set(), seen: new Set(), inbox: [],
-  conversations: [], turns: {}, loaded: new Set(), working: {}, words: {}, waiting: {}, starting: null, alias: {},
+  conversations: [], turns: {}, loaded: new Set(), working: {}, words: {}, waiting: {}, starting: null, alias: {}, answered: {},
 };
 const listeners = new Set<() => void>();
 const set = (patch: Partial<Live>) => { state = { ...state, ...patch }; publish(); listeners.forEach((l) => l()); };
@@ -75,10 +78,17 @@ function chatsOf(s: Live): Chat[] {
   return [{ ...shown, id: st.id, said: shown.said.length ? shown.said : [{ who: 'you', text: st.said, ago: 0 }], typing: true, step: shown.step ?? 'Thinking' }, ...chats];
 }
 
-// What a job needs from you: its open inbox items, the first shown (a permission's command as its
-// detail); or, failed or interrupted and not let go, letting it go
+// The decision a job's card shows, of its open inbox items: what its agent waits on first (a
+// permission or a question), else the oldest (an offer like a check to keep). The card holds one.
+const itemOf = (s: Live, job: string) => {
+  const items = s.inbox.filter((i) => i.job === job);
+  return items.find((i) => i.kind === 'permission' || i.kind === 'question') ?? items[0];
+};
+
+// What a job needs from you: that decision (a permission's command as its detail); or, failed or
+// interrupted and not let go, letting it go
 function askOf(s: Live, j: Job): Ask | undefined {
-  const item = s.inbox.find((i) => i.job === j.id);
+  const item = itemOf(s, j.id);
   if (item) {
     return {
       kind: item.kind as AskKind, headline: item.headline ?? item.title, text: item.headline ? item.text : '', options: item.options,
@@ -91,7 +101,10 @@ function askOf(s: Live, j: Job): Ask | undefined {
 }
 
 function taskOf(s: Live, j: Job): Task {
-  const ask = askOf(s, j);
+  // answered here: answered until obid asks something else
+  const now = askOf(s, j), was = s.answered[j.id];
+  const answer = was && (!now || itemOf(s, j.id)?.id === was.item) ? was.option : undefined;
+  const ask = answer ? was!.ask : now;
   const job: JobView = {
     id: j.id, type: j.kind === 'review' ? 'review' : j.issue != null ? 'issues' : 'tasks', title: j.title, request: j.request,
     agent: j.agent, account: s.status?.accounts.find((a) => a.id === j.account)?.name ?? j.account,
@@ -104,8 +117,8 @@ function taskOf(s: Live, j: Job): Task {
   };
   return {
     id: j.id, type: job.type, title: j.title, brand: AGENTS[j.agent]?.brand ?? AGENTS.claude.brand, job,
-    status: ask ? 'needs' : j.status === 'queued' || j.status === 'running' ? 'running' : 'done',
-    fresh: !s.firstJobs.has(j.id) && !s.seen.has(j.id),
+    status: (now && !answer) || answer === 'Later' ? 'needs' : j.status === 'queued' || j.status === 'running' ? 'running' : 'done',
+    fresh: !s.firstJobs.has(j.id) && !s.seen.has(j.id), answer,
   };
 }
 const tasksOf = (s: Live) => Object.values(s.jobs).sort((a, b) => b.created.localeCompare(a.created)).map((j) => taskOf(s, j));
@@ -327,7 +340,8 @@ export async function stopJob(id: string) {
 // (#776), which this app can't make yet.
 const DECISIONS: Record<string, 'allow' | 'always' | 'deny'> = { Allow: 'allow', 'Always allow': 'always', Deny: 'deny' };
 export async function answerJob(id: string, option: string) {
-  const j = state.jobs[id], item = state.inbox.find((i) => i.job === id);
+  const j = state.jobs[id], item = itemOf(state, id), ask = j && askOf(state, j);
+  if (ask) set({ answered: { ...state.answered, [id]: { ask, option, item: item?.id } } });
   try {
     if (item?.kind === 'confirm' && option === 'Confirm') throw new Error('This app can’t sign a Confirm yet: confirm it in Oby on your iPhone.');
     if (item?.kind === 'permission' && j?.permission && DECISIONS[option]) {
@@ -342,6 +356,8 @@ export async function answerJob(id: string, option: string) {
       set({ jobs: { ...state.jobs, [next.id]: next } });
     }
   } catch (e) {
+    // not taken: it's still yours to answer
+    set({ answered: without(state.answered, id) });
     say(e);
   }
 }
