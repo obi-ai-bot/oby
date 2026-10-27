@@ -439,7 +439,6 @@ else
     "claude": {"bin": "claude", "accounts": [{"id": "default", "name": "Default", "configDir": null}]}$codex
   },
   "bundledPlugins": "$prefix/share/plugins",
-  "web": "$prefix/share/web",
   "telemetry": false
 }
 EOF

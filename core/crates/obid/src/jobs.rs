@@ -662,9 +662,6 @@ struct State {
     /// When obid last tried to read each published pull request, and which one: an unavailable
     /// GitHub isn't asked again on every pass.
     followed: HashMap<String, (String, i64)>,
-    /// The jobs whose pull request is read at the follower's next pass, however fresh its last
-    /// read: GitHub said something changed on it ([`Jobs::follow_now`]).
-    follow_due: std::collections::HashSet<String>,
     /// The accounts being signed in or removed (crate::accounts): no job is dispatched to them or
     /// starts on them meanwhile ([`Jobs::begin_change`]).
     changing: std::collections::HashSet<String>,
@@ -947,7 +944,6 @@ impl Jobs {
                 apple_logs: HashMap::new(),
                 publishing: std::collections::HashSet::new(),
                 followed: HashMap::new(),
-                follow_due: std::collections::HashSet::new(),
                 changing: std::collections::HashSet::new(),
             }),
             changed: Notify::new(),
@@ -9916,26 +9912,12 @@ impl Jobs {
         }
     }
 
-    /// Reads job `id`'s pull request now, however fresh its last read: GitHub said something
-    /// changed on it, its checks or its reviews (crate::github_events).
-    pub fn follow_now(&self, id: &str) {
-        self.lock().follow_due.insert(id.to_owned());
-        self.follow.notify_one();
-    }
-
-    /// A job as it is, for other modules' tests.
-    #[cfg(test)]
-    pub(crate) fn put(&self, job: Job) {
-        self.lock().jobs.insert(job.id.clone(), job);
-    }
-
     /// One pass: every published pull request that's open (or not read yet), unless it was read,
-    /// or tried, in the last three minutes, or GitHub said it changed ([`Self::follow_now`]).
+    /// or tried, in the last three minutes.
     async fn read_pull_requests(&self) {
         let now = obi_protocol::time::now();
         let due: Vec<Job> = {
-            let mut state = self.lock();
-            let woken = std::mem::take(&mut state.follow_due);
+            let state = self.lock();
             state
                 .jobs
                 .values()
@@ -9959,7 +9941,7 @@ impl Jobs {
                         .pull_request
                         .as_ref()
                         .is_some_and(|pr| fresh(pr.checked_at));
-                    woken.contains(&job.id) || (!tried && !read)
+                    !tried && !read
                 })
                 .cloned()
                 .collect()
@@ -15171,59 +15153,6 @@ mod tests {
             (next.branch, next.start_from),
             (None, Some("oby/fix-j".into()))
         );
-    }
-
-    /// A pull request read a moment ago waits for the follower's next interval, unless GitHub's
-    /// events said it changed (crate::github_events): then the next pass reads it.
-    #[tokio::test]
-    async fn a_pull_request_github_says_changed_is_read_now() {
-        let root = std::env::temp_dir().join(format!("obid-follow-now-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
-        let config = crate::config::Config::parse(
-            &serde_json::json!({"listen": "127.0.0.1:0", "home": root.join("home"), "owner": "o",
-                "repos": [{"repo": "o/r", "remote": "https://example.com/o/r.git"}]})
-            .to_string(),
-        )
-        .unwrap();
-        let jobs = Jobs::open(
-            config,
-            crate::events::Events::new(),
-            Err("no sandbox".into()),
-        )
-        .unwrap();
-        let mut job = Job::new(
-            "j".into(),
-            "o/r".into(),
-            "fix".into(),
-            "Fix it".into(),
-            "claude".into(),
-            "a".into(),
-        );
-        job.status = Status::Done;
-        // Not one of o/r's: a read fails before asking gh anything, and says so on the job.
-        job.published = Some("https://github.com/elsewhere/r/pull/1".into());
-        job.pull_request = Some(crate::github::PullRequest {
-            state: "OPEN".into(),
-            review_decision: None,
-            base: "main".into(),
-            merged_at: None,
-            checked_at: obi_protocol::time::now(),
-            head: None,
-        });
-        jobs.put(job);
-        jobs.read_pull_requests().await;
-        assert_eq!(
-            jobs.get("j").unwrap().pull_request_error,
-            None,
-            "read a moment ago"
-        );
-        jobs.follow_now("j");
-        jobs.read_pull_requests().await;
-        assert!(
-            jobs.get("j").unwrap().pull_request_error.is_some(),
-            "read now"
-        );
-        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// Only the owner's own words start a follow-up: an event turn's, and an owner's turn that

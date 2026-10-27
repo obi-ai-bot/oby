@@ -1007,11 +1007,7 @@ impl Link {
             let mut state = self.lock();
             if let Some(live) = live {
                 for item in state.inbox.values_mut() {
-                    if item.kind == "github"
-                        && item.done.is_none()
-                        && !crate::github_events::ours(item)
-                        && !live.contains(&item.id)
-                    {
+                    if item.kind == "github" && item.done.is_none() && !live.contains(&item.id) {
                         item.done = Some(now);
                         changed.push(item.clone());
                     }
@@ -1022,44 +1018,6 @@ impl Link {
                 if !state.inbox.contains_key(&item.id) {
                     state.inbox.insert(item.id.clone(), item.clone());
                     changed.push(item);
-                }
-            }
-        }
-        for item in &changed {
-            self.save_item(item);
-        }
-    }
-
-    /// What GitHub's events found on Oby's own pull requests (crate::github_events): each open
-    /// offer about one that `stands` says doesn't stand any more is done by itself, with no
-    /// answer; each of `offers` that never was in the inbox is added, or, for comments on a pull
-    /// request whose offer is still open, joins that one.
-    pub fn github_events(&self, offers: Vec<Item>, stands: impl Fn(&Item) -> bool) {
-        let now = time::now();
-        let mut changed = Vec::new();
-        {
-            let mut state = self.lock();
-            for item in state.inbox.values_mut() {
-                if item.done.is_none() && crate::github_events::ours(item) && !stands(item) {
-                    item.done = Some(now);
-                    changed.push(item.clone());
-                }
-            }
-            for offer in offers {
-                let mut joined = false;
-                for open in state.inbox.values_mut().filter(|i| i.done.is_none()) {
-                    let before = open.github.clone();
-                    if crate::github_events::join(open, &offer) {
-                        joined = true;
-                        if open.github != before {
-                            changed.push(open.clone());
-                        }
-                        break;
-                    }
-                }
-                if !joined && !state.inbox.contains_key(&offer.id) {
-                    state.inbox.insert(offer.id.clone(), offer.clone());
-                    changed.push(offer);
                 }
             }
         }
@@ -1273,9 +1231,7 @@ impl Link {
     }
 
     /// `POST /v1/inbox/{id}/answer` on a `github` item: `Review it`, `Fix it` or `Fix CI` starts the
-    /// work as `POST /v1/github/work/{id}/start` does, and on an offer about Oby's own pull request
-    /// `Address it` or `Fix CI` starts its job's follow-up (crate::github_events::start); an error
-    /// leaves the item open. `Dismiss` or
+    /// work as `POST /v1/github/work/{id}/start` does; an error leaves the item open. `Dismiss` or
     /// done settle it, later puts it off. Nothing is sent to GitHub. A review in a repository obid
     /// doesn't work in yet waits for the owner's signed Confirm instead, which adds it (#776,
     /// #1118): an API token alone (an agent, oby-mcp) never widens what obid clones.
@@ -1296,16 +1252,7 @@ impl Link {
                         format!("The answer is {start} or {}.", inbox::DISMISS),
                     ));
                 }
-                if *answer == start && crate::github_events::ours(&item) {
-                    // A follow-up of Oby's own pull request's job.
-                    match crate::github_events::start(&self.jobs, &self.config, &item).await {
-                        Ok(job) => item.job = job.id,
-                        Err(why) => {
-                            self.lock().inbox.insert(item.id.clone(), item.clone());
-                            return Err(why);
-                        }
-                    }
-                } else if *answer == start {
+                if *answer == start {
                     let work = item.github.as_deref().cloned().unwrap_or_default();
                     let list = work["list"].as_str().unwrap_or_default();
                     let repo = work["repo"].as_str().unwrap_or_default();

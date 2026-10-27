@@ -476,7 +476,7 @@ impl Artifacts {
         if !kept.files.iter().any(|f| f == path) {
             return None;
         }
-        let file = crate::web::inside(&self.version_path(id, version), path)?;
+        let file = inside(&self.version_path(id, version), path)?;
         let bytes = std::fs::read(&file).ok()?;
         Some((file, bytes))
     }
@@ -893,7 +893,7 @@ pub async fn file(
     let headers = response.headers_mut();
     headers.insert(
         header::CONTENT_TYPE,
-        HeaderValue::from_static(crate::web::type_of(&file)),
+        HeaderValue::from_static(type_of(&file)),
     );
     headers.insert(
         header::CONTENT_SECURITY_POLICY,
@@ -1000,6 +1000,42 @@ pub fn title_of(entry: &str) -> String {
         .take(TITLE)
         .collect();
     clean_title(&title).unwrap_or_else(|| "Artifact".into())
+}
+
+/// `relative` under `root`, when it names a file there by plain names only.
+fn inside(root: &Path, relative: &str) -> Option<PathBuf> {
+    let plain = |part: &str| {
+        !part.is_empty() && !part.starts_with('.') && !part.contains(['\\', '\0', ':'])
+    };
+    if !relative.split('/').all(plain) {
+        return None;
+    }
+    let root = root.canonicalize().ok()?;
+    let path = root.join(relative).canonicalize().ok()?;
+    (path.starts_with(&root) && path.is_file()).then_some(path)
+}
+
+/// The media type for a file, by its extension.
+fn type_of(path: &Path) -> &'static str {
+    match path.extension().and_then(|e| e.to_str()).unwrap_or("") {
+        "html" | "htm" => "text/html; charset=utf-8",
+        "js" | "mjs" => "text/javascript; charset=utf-8",
+        "css" => "text/css; charset=utf-8",
+        "json" | "map" => "application/json",
+        "svg" => "image/svg+xml",
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "ico" => "image/x-icon",
+        "woff" => "font/woff",
+        "woff2" => "font/woff2",
+        "txt" => "text/plain; charset=utf-8",
+        "md" | "markdown" => "text/markdown; charset=utf-8",
+        "csv" => "text/csv; charset=utf-8",
+        "pdf" => "application/pdf",
+        _ => "application/octet-stream",
+    }
 }
 
 #[cfg(test)]

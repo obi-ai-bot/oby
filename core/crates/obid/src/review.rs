@@ -580,7 +580,7 @@ pub(crate) async fn post_with(
 
 /// What every review obid posts on GitHub ends with, unless it's signed already: under whoever's
 /// login, its words are Oby's or a model's, never the owner's own (crate::github_work, "by Oby:";
-/// crate::github_events reads reviews on Oby's own pull requests).
+/// jobs.rs follows reviews on Oby's own pull requests).
 pub const SIGNED: &str = "by Oby: Oby wrote this review.";
 
 /// Posts the review in `file` on pull request `number` of `repo`, as the reviewer whose settings
