@@ -625,9 +625,6 @@ pub const DISMISS: &str = "Dismiss";
 pub const REVIEW_IT: &str = "Review it";
 pub const FIX_IT: &str = "Fix it";
 pub const FIX_CI: &str = "Fix CI";
-/// The answer that starts a follow-up addressing comments on Oby's own pull request
-/// (crate::github_events).
-pub const ADDRESS_IT: &str = "Address it";
 
 /// A `github` item's id: `github-` and the feed item's; for the owner's own pull request,
 /// `github-ci-`, its id and its head's first 12 characters, so each red head gets an offer.

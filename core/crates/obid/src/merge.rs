@@ -233,7 +233,8 @@ pub fn ready(
         return Err(wait("Not merged yet: GitHub didn't say who opened it."));
     };
     if asked_for_changes(pr, merging) {
-        return Err(wait("Not merged yet: a review asks for changes."));
+        // Nothing of Oby's answers a review on its own pull request any more: the owner is asked.
+        return Err(needs_you("Not merged yet: a review asks for changes."));
     }
     let Some(reviewers) = reviewers else {
         return Err(unread_reviewers());
@@ -293,7 +294,10 @@ pub fn ready(
                 "Not merged yet: GitHub didn't say how its checks went.",
             ));
         }
-        Some("FAILURE") => return Err(wait("Not merged yet: its checks failed on GitHub.")),
+        // Nor red checks: the owner is asked.
+        Some("FAILURE") => {
+            return Err(needs_you("Not merged yet: its checks failed on GitHub."));
+        }
         Some("SUCCESS") => {}
         Some("NONE") if workflow.checks == Checks::Mac => {}
         Some("NONE") => {
@@ -1755,27 +1759,34 @@ mod tests {
             reviewer("APPROVED", &head),
             rest(2, REVIEWER, "User", "DISMISSED", &head, "COLLABORATOR"),
         ]);
-        // Anyone's change request stops it, and a later comment doesn't hide it.
-        let asked = "Not merged yet: a review asks for changes.";
+        // Anyone's change request stops it, and a later comment doesn't hide it: the owner is
+        // asked, since nothing of Oby's answers it on its own pull request.
         assert_eq!(
-            waits(vec![
-                reviewer("APPROVED", &head),
-                rest(2, "joe_corp", "User", "CHANGES_REQUESTED", &older, "NONE"),
-                rest(3, "joe_corp", "User", "COMMENTED", &head, "NONE"),
-            ]),
-            asked
+            with(
+                &obis,
+                &view(|_| {}),
+                vec![
+                    reviewer("APPROVED", &head),
+                    rest(2, "joe_corp", "User", "CHANGES_REQUESTED", &older, "NONE"),
+                    rest(3, "joe_corp", "User", "COMMENTED", &head, "NONE"),
+                ],
+                Some(&signed_in)
+            ),
+            Err(needs_you("Not merged yet: a review asks for changes."))
         );
-        for decision in ["CHANGES_REQUESTED", "REVIEW_REQUIRED"] {
+        for (decision, asks) in [("CHANGES_REQUESTED", true), ("REVIEW_REQUIRED", false)] {
             let text = view(|v| v["reviewDecision"] = json!(decision));
-            assert!(
-                !with(
+            assert_eq!(
+                with(
                     &obis,
                     &text,
                     vec![reviewer("APPROVED", &head)],
                     Some(&signed_in)
                 )
                 .unwrap_err()
-                .needs_you
+                .needs_you,
+                asks,
+                "{decision}"
             );
         }
         // An author GitHub didn't name: nobody can tell whose approval it is.
@@ -1920,8 +1931,6 @@ mod tests {
         let none = view(|v| v["statusCheckRollup"] = json!([]));
         let unsaid = view(|v| v["statusCheckRollup"] = json!(null));
         for (text, why) in [
-            (&red, "Not merged yet: its checks failed on GitHub."),
-            (&errored, "Not merged yet: its checks failed on GitHub."),
             (&pending, "Not merged yet: its checks are still running."),
             (&expected, "Not merged yet: its checks are still running."),
             (
@@ -1930,6 +1939,13 @@ mod tests {
             ),
         ] {
             assert_eq!(check(&job, Some(&obis()), text), Err(wait(why)));
+        }
+        // Red checks need the owner: nothing of Oby's fixes them on its own pull request.
+        for text in [&red, &errored] {
+            assert_eq!(
+                check(&job, Some(&obis()), text),
+                Err(needs_you("Not merged yet: its checks failed on GitHub."))
+            );
         }
         // No GitHub checks is green for the Mac's workflow, never for GitHub's.
         assert_eq!(check(&job, Some(&obis()), &none), Ok(()));
@@ -2246,7 +2262,7 @@ esac
         );
         assert_eq!(
             gh.merge(&job(), &obis()).await.unwrap_err(),
-            wait("Not merged yet: a review asks for changes.")
+            needs_you("Not merged yet: a review asks for changes.")
         );
         assert_eq!(gh.calls().matches("/reviews?").count(), 2);
         assert!(!gh.calls().contains("-X PUT"));
@@ -2655,11 +2671,12 @@ esac
                 view(|v| v["baseRefName"] = json!("main")),
                 true,
             ),
+            // Red checks need the owner: nothing of Oby's fixes its own pull request's.
             (
                 "red",
                 "view.json",
                 view(|v| v["statusCheckRollup"][0]["conclusion"] = json!("FAILURE")),
-                false,
+                true,
             ),
             ("unapproved", "reviews.json", pages(vec![]), false),
             // Someone without write access approving it changes nothing.

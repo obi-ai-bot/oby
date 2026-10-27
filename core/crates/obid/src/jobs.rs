@@ -82,7 +82,7 @@ const TIDY_EVERY: Duration = Duration::from_secs(24 * 60 * 60);
 /// How long a job that ended keeps its worktree unless it's put away (docs/runner-api.md, `cleanup`).
 const SETTLE_AFTER: i64 = 24 * 60 * 60;
 /// The agent's MCP configuration (`--mcp-config`), in the job's own folder (its `HOME`), written
-/// before each turn: the `agent-mcp` plug-ins' servers.
+/// before each turn: Oby's own servers (Tetrix, the broker).
 pub const MCP_CONFIG_FILE: &str = "obi-mcp.json";
 /// The kinds whose work is commits: one that ends with none committed says so.
 const COMMITTING: [&str; 3] = ["build", "fix", "test"];
@@ -433,9 +433,9 @@ impl End {
 /// Which of obid's rules a turn's permission prompts meet.
 #[derive(Clone, Copy)]
 enum Gate<'a> {
-    /// A review another Obi asked for: it only reads, and has no plug-in's MCP server.
+    /// A review another Obi asked for: it only reads, and has no MCP server.
     ObiReview,
-    /// The owner's own job, with its MCP permission rules (`crate::plugins::rules`).
+    /// The owner's own job, with its MCP permission rules (Tetrix's tools, the broker's).
     Owner { mcp: &'a [String] },
 }
 
@@ -7443,7 +7443,7 @@ impl Jobs {
             job.phase = Some(Phase::Work);
             job.step = "Reviewing".into();
         });
-        // A review another Obi asked for only reads: no plug-in's MCP server.
+        // A review another Obi asked for only reads: no MCP server.
         let turn = self
             .turn(
                 id,
@@ -7783,7 +7783,7 @@ impl Jobs {
         let words = self.take_heard(id);
         // A restart cut it short while it ran its check or published ("After any restart"): it
         // picks up there (below), and builds no prompt it won't send (nor asks Tetrix or the
-        // plug-ins for one). Words the owner sent meanwhile are its next turn instead.
+        // teammates for one). Words the owner sent meanwhile are its next turn instead.
         let cut = self.get(id).and_then(|j| j.cut);
         if cut.is_some() {
             self.update(id, |job| job.cut = None);
@@ -8022,11 +8022,10 @@ impl Jobs {
                 if let Some(session) = &job.session {
                     flags.extend(["--resume".into(), session.into()]);
                 }
-                // The ready agent-mcp plug-ins' servers, from a file in the job's own folder, and
-                // one permission rule per tool each allows, each its own argument (last, since
-                // --allowedTools takes every argument after it).
-                // Signed in to Tetrix, obid's own Tetrix server replaces the plug-in's: the same
-                // name, the same tools, Oby's login (crate::tetrix).
+                // Oby's own servers, from a file in the job's own folder, and one permission rule
+                // per tool each allows, each its own argument (last, since --allowedTools takes
+                // every argument after it). Signed in to Tetrix, obid's own Tetrix server, with
+                // Oby's login (crate::tetrix).
                 let tetrix = self.tetrix_mcp(&job);
                 // Oby's own server, where Codex and Cursor ask the owner (`oby_ask_owner`) whatever
                 // they're connected to. Cursor gets no connected app on it, only that tool.
@@ -10049,7 +10048,11 @@ impl Jobs {
                                 reviewers.as_ref(),
                             ) {
                                 Ok(()) => Some(crate::merge::ready_card(&job, number, &head, &w)),
-                                Err(blocked) if refused.as_ref() == Some(&blocked) => {
+                                // What only the owner can settle (red checks, a change request)
+                                // asks them here too.
+                                Err(blocked)
+                                    if blocked.needs_you || refused.as_ref() == Some(&blocked) =>
+                                {
                                     Some(crate::merge::stopped_card(&job, &head, &blocked.why))
                                 }
                                 Err(_) => None,

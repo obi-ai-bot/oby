@@ -197,6 +197,11 @@ fn a_login_made_after_start_is_offered_without_a_restart() {
     std::fs::write(bin.join("codex"), "#!/bin/sh\nexit 0\n").unwrap();
     std::fs::set_permissions(bin.join("codex"), std::fs::Permissions::from_mode(0o755)).unwrap();
     codex_login(&folder.0.join("env-home"), 3600);
+    // obid looks again at most every 2 seconds (accounts::LOOK_EVERY).
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while offered(&obid).is_empty() && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
     assert_eq!(offered(&obid), [("codex".into(), "codex".into())]);
 }
 

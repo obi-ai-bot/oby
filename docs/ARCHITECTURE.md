@@ -20,7 +20,6 @@ obi/
 │   ├── watch/       Swift thin client
 │   └── android/     Kotlin thin client, later
 ├── character/       The three.js mascot, unchanged
-├── plugins/         Context providers and event sources, each optional; Tetrix is one of them
 ├── mcp/             The Oby MCP server
 ├── e2e/             The end-to-end scenario: SCENARIO.md, the harness, the stub agent, fixtures
 ├── docs/            Documentation
@@ -71,8 +70,6 @@ Where today's folders go. Moves happen in the restructure workstream (section 6)
 |---|---|---|
 | `core/crates/obid/` | The daemon: configuration, the runner API and event stream, jobs, worktrees and sandbox, agent adapters (Claude Code stream-json first, then Codex app-server, then ACP), the planner, decision memory, the inbox, the publish gate (secret scan), the merge (by the owner's learned workflow, or their tap), the vault, accounts and usage. | Rust core |
 | `core/crates/obi-protocol/` | Obi-to-Obi protocol v0.1: types, canonical JSON, Ed25519 signing and checks, the agent card, the token exchange, the Sphere client. Tested against obi-sphere's conformance suite (`--impl`). | Rust core |
-| `core/crates/obi-plugin-api/` | The plug-in types, traits and wire protocol (section 5). | Plug-in boundary |
-| `core/crates/obi-plugin-host/` | Finds, starts, sandboxes and talks to plug-ins; what `obid` calls. | Plug-in boundary |
 
 How the engine's parts are split into modules inside `obid` is the Rust core's choice. What `obid` does is fixed by runner-api.md and by the Swift engine it is ported from, minus what this document removes.
 

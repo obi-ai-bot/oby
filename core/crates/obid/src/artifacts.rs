@@ -1695,4 +1695,43 @@ mod tests {
             Ok(vec!["a.md".to_owned()])
         );
     }
+
+    /// What a published artifact serves is only plain names inside its version's folder: no
+    /// `..`, hidden files, other separators, absolute paths, or a link out of it.
+    #[test]
+    fn only_plain_names_inside_the_root() {
+        let root =
+            std::env::temp_dir().join(format!("obid-artifacts-inside-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("dist/assets")).unwrap();
+        std::fs::write(root.join("dist/index.html"), "page").unwrap();
+        std::fs::write(root.join("dist/assets/app.js"), "js").unwrap();
+        std::fs::write(root.join("dist/.hidden"), "no").unwrap();
+        std::fs::write(root.join("secret"), "no").unwrap();
+        let dist = root.join("dist");
+        assert!(inside(&dist, "index.html").is_some());
+        assert!(inside(&dist, "assets/app.js").is_some());
+        for wrong in [
+            "",
+            "assets",
+            "assets/",
+            "../secret",
+            "assets/../../secret",
+            ".hidden",
+            "./index.html",
+            "assets//app.js",
+            "assets\\app.js",
+            "/etc/passwd",
+            "C:/x",
+            "missing.js",
+        ] {
+            assert!(inside(&dist, wrong).is_none(), "{wrong:?}");
+        }
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(root.join("secret"), dist.join("out.txt")).unwrap();
+            assert!(inside(&dist, "out.txt").is_none(), "a link out of the root");
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }

@@ -50,10 +50,8 @@ chmod 755 "$helpers/obid"
 cp "$SRCROOT/mac/app/Tools/com.deskree.oby.obid.plist" "$agents/com.deskree.oby.obid.plist"
 cp "$root/Runner/com.deskree.oby.runner.plist" "$agents/com.deskree.oby.runner.plist"
 
+# obid has no plug-ins any more (the strip to a dispatcher): an older build's folder goes.
 rm -rf "$resources/plugins" "$resources/web"
-# Only the plug-ins' files the repository tracks: nothing a checkout happens to hold (a local
-# secret, a build folder) is signed into the app.
-git -C "$root" ls-files -z -- plugins | rsync -a --from0 --files-from=- "$root/" "$resources/"
 # The web app obid serves at /app/, only in a full build (OBY_FULL_BUILD=1, docs/release.md; the
 # launch build leaves it out, AGENTS.md, "The launch build"): a full release builds it, a full debug
 # build when it isn't built yet, and either fails if it can't. Without it obid answers 404 there.
