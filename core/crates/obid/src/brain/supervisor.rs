@@ -186,8 +186,8 @@ pub fn allowed(
 pub fn refused(session: &Session, tool: &str, args: &serde_json::Value) -> Option<&'static str> {
     let watch = session.supervising.as_ref()?;
     match tool {
-        "oby_jobs" | "oby_conversations" | "oby_inbox" | "oby_archive_job" | "oby_read"
-        | "oby_search" | "oby_list" | "oby_tasks" => {
+        "oby_jobs" | "oby_conversations" | "oby_inbox" | "oby_github" | "oby_archive_job"
+        | "oby_read" | "oby_search" | "oby_list" | "oby_tasks" => {
             Some("A turn nobody watches reads only its own job and archives nothing.")
         }
         // The conversation's shell (super::shell) runs commands in the room: never unattended.
@@ -616,6 +616,7 @@ mod tests {
             "oby_jobs",
             "oby_conversations",
             "oby_inbox",
+            "oby_github",
             "oby_archive_job",
             "oby_read",
             "oby_search",
