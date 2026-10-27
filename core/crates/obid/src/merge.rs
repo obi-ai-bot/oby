@@ -483,8 +483,7 @@ pub fn owner_must_settle(pr: &PullRequest, merging: &Merging) -> Option<&'static
     if asked_for_changes(pr, merging) {
         return Some("Not merged yet: a review asks for changes.");
     }
-    (merging.checks == Some("FAILURE"))
-        .then_some("Not merged yet: its checks failed on GitHub.")
+    (merging.checks == Some("FAILURE")).then_some("Not merged yet: its checks failed on GitHub.")
 }
 
 /// The rules about the pull request itself, before anyone's review or any check: a workflow that
