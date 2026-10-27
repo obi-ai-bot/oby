@@ -10218,6 +10218,8 @@ impl Jobs {
             ),
             _ => (false, false),
         };
+        let stop =
+            stop.or_else(|| crate::merge::owner_must_settle(pr, &merging).map(str::to_owned));
         let card = if let Some(why) = stop {
             Some(crate::merge::stopped_card(&job, &head, &why))
         } else if required
