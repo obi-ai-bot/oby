@@ -25,7 +25,7 @@ fn answerer() -> PathBuf {
 async fn setup(folder: &Folder) -> (FakeSphere, Obid, TestObi) {
     let sphere = FakeSphere::start().await;
     let remote = fixture(&folder.0.join("fixture"));
-    let obid = start(&folder.0, &config(&folder.0, &remote, &answerer()), None);
+    let obid = start_teamwork(&folder.0, &config(&folder.0, &remote, &answerer()), None);
     let wellington = Owner::new("wellington");
     let joined = tokio::task::block_in_place(|| {
         join_a_accepting(&obid, &sphere, &wellington, &["review_request", "question"])
@@ -550,7 +550,7 @@ async fn self_answers_count_across_a_restart() {
     let status = obid.stop();
     assert!(status.success(), "obid exited {status}");
     let remote = folder.0.join("fixture/remote.git");
-    let obid = start(&folder.0, &config(&folder.0, &remote, &answerer()), None);
+    let obid = start_teamwork(&folder.0, &config(&folder.0, &remote, &answerer()), None);
 
     // The limit is spent still: no model run, the owner is asked.
     let second = ernesto.request(

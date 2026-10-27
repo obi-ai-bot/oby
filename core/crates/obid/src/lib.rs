@@ -484,8 +484,14 @@ pub async fn serve(
     relay::spawn(shared.clone(), gateway::router(shared.clone(), app.clone()));
     // Jobs that were queued or running when obid last stopped carry on, and so does its Sphere.
     jobs.resume();
-    link.start();
-    github.spawn(stopping_rx.clone());
+    // Oby-to-Oby work and the GitHub feed only when the owner turned teamwork on (crate::settings).
+    let teamwork = settings::load(&shared.config.home).teamwork;
+    if teamwork {
+        link.start();
+    }
+    if teamwork {
+        github.spawn(stopping_rx.clone());
+    }
     // GitHub's repositories gh can push to, now and every hour (crate::repos).
     repos::spawn(shared.clone());
     // Job alerts to Android phones through FCM (crate::push).

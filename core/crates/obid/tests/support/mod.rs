@@ -203,6 +203,20 @@ pub fn stub_agent() -> PathBuf {
     obi().join("e2e/stub-agent/stub-agent")
 }
 
+/// `config`, with teamwork turned on in its home (crate::settings): the Sphere's follower and
+/// sender, the GitHub feed, teammates and Tetrix's decision check, which are off by default.
+pub fn with_teamwork(config: Value) -> Value {
+    let home = Path::new(config["home"].as_str().unwrap());
+    std::fs::create_dir_all(home).unwrap();
+    std::fs::write(home.join("settings.json"), r#"{"teamwork": true}"#).unwrap();
+    config
+}
+
+/// [`start`], with teamwork on ([`with_teamwork`]).
+pub fn start_teamwork(folder: &Path, config: &Value, path_first: Option<&Path>) -> Obid {
+    start(folder, &with_teamwork(config.clone()), path_first)
+}
+
 /// Starts obid with `config`, `PATH` the test's own with `path_first` before it.
 pub fn start(folder: &Path, config: &Value, path_first: Option<&Path>) -> Obid {
     start_with(folder, config, path_first, &[])

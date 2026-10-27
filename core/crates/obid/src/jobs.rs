@@ -8195,7 +8195,11 @@ impl Jobs {
             repo.pull_requests
                 .unwrap_or_else(|| crate::github::is_remote(&repo.remote))
         });
-        if job.obi.is_some() || job.kind == "review" || !on_github {
+        if job.obi.is_some()
+            || job.kind == "review"
+            || !on_github
+            || !crate::settings::load(&self.config.home).teamwork
+        {
             return None;
         }
         let skip: Vec<String> = self
@@ -8307,7 +8311,11 @@ impl Jobs {
         let (Some(seen), Some(repo)) = (job.tetrix.clone(), self.repo(&job.repo)) else {
             return Vec::new();
         };
-        if !tetrix.connected() || start.is_empty() {
+        // Tetrix's decision check is one of teamwork's extras (crate::settings), off by default.
+        if !tetrix.connected()
+            || start.is_empty()
+            || !crate::settings::load(&self.config.home).teamwork
+        {
             return Vec::new();
         }
         let clone = git::clone_path(&self.config.home, &repo.repo);
