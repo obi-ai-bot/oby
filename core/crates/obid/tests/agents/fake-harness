@@ -12,6 +12,10 @@
 //   REPEAT <n> OBY <tool> <json>  calls it n times and says what the last call answered; with
 //                  " THEN <words>" after the json, does <words> next instead of saying it
 //   TOOLS          says "tools: <the oby tools, by name>"
+//   MCP <server> <method or tool> <json>  sends that server of its --mcp-config the method
+//                  (initialize, tools/list) or a call of the tool, and says "mcp: <its result or
+//                  error, as JSON>", or "mcp: no <server>" when it has none; the answer as it
+//                  came is kept in mcp-answer.json in its room
 //   WEB <words>    searches the web (a tool call obid isn't asked about), then does <words>
 //   CURL <words>   asks to run curl, then does <words>
 //   ESCAPE <file>  tries to write outside its room, into repos/ and the account's own folder, to
@@ -93,16 +97,19 @@ const use = (id, name, input) =>
 const used = (id, content, error = false) =>
   emit({ type: "user", session_id: session, message: { role: "user", content: [{ type: "tool_result", tool_use_id: id, content, is_error: error }] } });
 
-async function oby(tool, args) {
+async function mcp(name, tool, args) {
   const config = JSON.parse(readFileSync(flag("--mcp-config"), "utf8"));
-  const server = config.mcpServers.oby;
+  const server = config.mcpServers[name];
+  if (!server) return null;
+  const method = tool.includes("/") || tool === "initialize" ? tool : "tools/call";
   const answer = await fetch(server.url, {
     method: "POST",
     headers: { "content-type": "application/json", accept: "application/json, text/event-stream", ...server.headers },
-    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: tool === "tools/list" ? "tools/list" : "tools/call", params: tool === "tools/list" ? {} : { name: tool, arguments: args } }),
+    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params: method === "tools/call" ? { name: tool, arguments: args } : args ?? {} }),
   });
   return answer.json();
 }
+const oby = (tool, args) => mcp("oby", tool, args);
 
 const tries = (f) => {
   try {
@@ -269,6 +276,11 @@ async function act(words, prompt = "", before = resumed) {
     for (let i = 0; i < Number(times); i++) answer = await oby(tool, JSON.parse(rest.join(" ")));
     if (then) return act(then, prompt);
     say(`oby: ${answer.result?.isError ? "refused: " : ""}${answer.result?.content?.[0]?.text}`);
+  } else if (words.startsWith("MCP ")) {
+    const [, name, tool, ...rest] = words.split(" ");
+    const answer = await mcp(name, tool, JSON.parse(rest.join(" ") || "{}"));
+    writeFileSync("mcp-answer.json", JSON.stringify(answer));
+    say(`mcp: ${answer === null ? `no ${name}` : JSON.stringify(answer.result ?? answer.error)}`);
   } else if (words.startsWith("OBY ")) {
     const [, tool, ...rest] = words.split(" ");
     use("t1", `mcp__oby__${tool}`, JSON.parse(rest.join(" ")));

@@ -1072,3 +1072,126 @@ fn a_change_against_an_earlier_decision_gets_one_round_and_never_blocks() {
         "{job}"
     );
 }
+
+/// A conversation's turn asks Tetrix through obid's server, as a job's agent does
+/// (docs/runner-api.md, "obid only: Tetrix"): only while Oby is signed in, with the turn's token,
+/// the reads only, every answer quoted and without Oby's login, and the turn then counts as having
+/// read something untrusted. Between turns the token lists, and calls nothing.
+#[test]
+fn a_conversation_asks_tetrix_for_reads_with_its_turns_token() {
+    let folder = Folder::new("tetrix-conversation");
+    let remote = fixture(&folder.0.join("fixture"));
+    let (base, seen) = fake_tetrix();
+    let harness = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/agents/fake-harness");
+    let mut config = config(&folder.0, &remote, &harness);
+    config["conversation"] = json!({"agent": "claude"});
+    let account = folder.0.join("home/accounts/stub");
+    std::fs::create_dir_all(&account).unwrap();
+    std::fs::write(account.join(".credentials.json"), "{}").unwrap();
+    let obid = start(&folder.0, &config, None);
+    let say = |body: Value| {
+        let answer = call(&obid, "POST", "/v1/plans", Some(&body));
+        assert_eq!(answer.status, 200, "{}", answer.text);
+        answer.body["text"].as_str().unwrap_or_default().to_owned()
+    };
+
+    // Signed out: no tetrix server, and the orientation says nothing of it.
+    let first = call(
+        &obid,
+        "POST",
+        "/v1/plans",
+        Some(&json!({"said": "MCP tetrix tools/list {}", "new": true})),
+    );
+    assert_eq!(first.body["text"], "mcp: no tetrix", "{}", first.text);
+    let conversation = first.body["conversation"].as_str().unwrap().to_owned();
+    let place = obid.home.join("conversations").join(&conversation);
+    let last_turn = || -> Value {
+        let turns = std::fs::read_to_string(place.join("config/turns.jsonl")).unwrap();
+        serde_json::from_str(turns.lines().last().unwrap()).unwrap()
+    };
+    let oriented = |turn: &Value| turn["argv"].to_string().contains("the MCP server tetrix");
+    let signed_out = last_turn();
+    assert!(!oriented(&signed_out));
+
+    sign_in(&obid, &base);
+
+    // Signed in: the Claude Code waiting from the turn before has neither, so the next turn starts
+    // one that has both, with the reads only.
+    let listed = say(json!({"said": "MCP tetrix tools/list {}", "conversation": conversation}));
+    for read in [
+        "search_entities",
+        "get_entity",
+        "repo_sessions",
+        "session_digest",
+    ] {
+        assert!(listed.contains(&format!("\"{read}\"")), "{listed}");
+    }
+    for never in ["save_session", "resume_session", "admin_wipe_graph"] {
+        assert!(!listed.contains(never), "{listed}");
+    }
+    let signed_in = last_turn();
+    assert!(oriented(&signed_in));
+    assert_ne!(signed_in["id"], signed_out["id"]);
+    let kept = || -> Value {
+        serde_json::from_slice(&std::fs::read(place.join("session.json")).unwrap()).unwrap()
+    };
+    assert_eq!(kept()["web"], false, "listing reads nothing of anyone's");
+
+    // An answer comes quoted, with Oby's login (which the fake puts in it) taken out of what the
+    // session itself got.
+    let found = say(
+        json!({"said": r#"MCP tetrix search_entities {"query": "greeting"}"#, "conversation": conversation}),
+    );
+    assert!(found.contains("<<<quoted-"), "{found}");
+    assert!(
+        found.contains("obi-e2e/fixture-app#src/index.js"),
+        "{found}"
+    );
+    let got = std::fs::read_to_string(place.join("room/mcp-answer.json")).unwrap();
+    assert!(got.contains("seen with Bearer"), "{got}");
+    for login in [ACCESS_1, ACCESS_2] {
+        assert!(!got.contains(login), "{got}");
+    }
+    assert_eq!(kept()["web"], true, "Tetrix's answers are anyone's words");
+
+    // A write, and what agents never get, never reach Tetrix.
+    for tool in ["save_session", "resume_session"] {
+        let refused =
+            say(json!({"said": format!("MCP tetrix {tool} {{}}"), "conversation": conversation}));
+        assert!(
+            refused.contains(&format!("Oby doesn't let agents call Tetrix's {tool}")),
+            "{refused}"
+        );
+    }
+    let seen = seen.lock().unwrap();
+    assert!(seen.saved.is_empty());
+    assert!(!seen.requests.iter().any(|r| r.3.contains("resume_session")));
+    drop(seen);
+
+    // Between turns its token lists and calls nothing; any other token is refused.
+    let mcp: Value =
+        serde_json::from_slice(&std::fs::read(place.join("home/oby-mcp.json")).unwrap()).unwrap();
+    let server = &mcp["mcpServers"]["tetrix"];
+    let url = server["url"].as_str().unwrap();
+    let path = &url[url.find("/v1/").unwrap()..];
+    let token = server["headers"]["Authorization"]
+        .as_str()
+        .unwrap()
+        .strip_prefix("Bearer ")
+        .unwrap();
+    let rpc = |token: &str, method: &str| {
+        call_with_token(
+            &obid,
+            token,
+            "POST",
+            path,
+            Some(&json!({"jsonrpc": "2.0", "id": 1, "method": method,
+                         "params": {"name": "search_entities", "arguments": {"query": "x"}}})),
+        )
+    };
+    let between = rpc(token, "tools/list");
+    assert!(between.text.contains("search_entities"), "{}", between.text);
+    let called = rpc(token, "tools/call");
+    assert_eq!(called.body["error"]["code"], -32600, "{}", called.text);
+    assert_eq!(rpc("not-the-turns-token", "tools/list").status, 401);
+}
