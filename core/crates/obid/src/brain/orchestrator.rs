@@ -687,7 +687,6 @@ async fn run(shared: &Arc<Shared>, batch: Vec<Event>, ledger: Arc<Mutex<Ledger>>
         jobs: &[],
         conversation: CONVERSATION,
         turn: "",
-        runs_on: None,
     };
     let answered = super::turn::run_event(shared, &orchestration, &asked, &control).await;
     shared.turns.end(&control);
