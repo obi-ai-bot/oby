@@ -172,8 +172,10 @@ pub enum Approval {
     Person,
 }
 
-/// The checks that pass on the head before the merge: the owner's Mac's (`macCheck`), or GitHub's.
-/// There's no "none": nothing merges without a check that passed on that very commit.
+/// The checks that pass on the head before the merge: the owner's Mac's, or GitHub's. There's no
+/// "none": nothing merges without a check that passed on that very commit. Nothing runs the Mac's
+/// by itself since obid's Mac checks went (2026-10-27), so a `mac` workflow's merge asks the owner
+/// (crate::merge, `mac_checks`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Checks {

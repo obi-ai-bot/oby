@@ -200,13 +200,6 @@ pub fn router(shared: Arc<Shared>) -> Router {
         .route("/v1/notifications", post(crate::push::register))
         .merge(crate::connections::router())
         .merge(crate::tetrix::router())
-        .route("/v1/checks/next", get(crate::routes::next_check))
-        .route("/v1/checks/{id}/bundle", get(crate::routes::check_bundle))
-        .route("/v1/checks/{id}/result", post(crate::routes::check_result))
-        .route(
-            "/v1/agent/apple-check",
-            get(crate::routes::apple_check).post(crate::routes::apple_check),
-        )
         .route(
             "/v1/settings/jobs",
             get(crate::routes::job_settings).put(crate::routes::set_job_settings),
@@ -371,15 +364,14 @@ pub const NO_TOKEN: &str = "This runner answers only requests with its API token
 /// without the token is `401`, so they are `401` without it and `404` with it. Every `/v1` answer is `Cache-Control: no-store` (unless it says otherwise) and `nosniff`.
 async fn gate(State(shared): State<Arc<Shared>>, request: Request, next: Next) -> Response {
     let api = request.uri().path().starts_with("/v1/");
-    let agent_check = request.uri().path() == "/v1/agent/apple-check";
     let path = request.uri().path();
     let agent_mcp = path
         .strip_prefix("/v1/agent/mcp/")
         .or_else(|| path.strip_prefix("/v1/agent/tetrix/"))
         .filter(|id| !id.is_empty() && !id.contains('/'));
     // On Linux an agent reaches obid at slirp4netns's host alias: admitted for the agent's own
-    // routes only, its broker's and its job's Apple check (oby-check apple), each with its token.
-    let agent_route = agent_check || agent_mcp.is_some();
+    // routes only, its broker's and Tetrix's, each with its token.
+    let agent_route = agent_mcp.is_some();
     let via_gateway = agent_route && agent_gateway_request(request.uri(), request.headers());
     let admitted = admit(request.uri(), request.headers(), &shared.token).or_else(|error| {
         if !agent_route || (!loopback_request(request.uri(), request.headers()) && !via_gateway) {
@@ -391,12 +383,11 @@ async fn gate(State(shared): State<Arc<Shared>>, request: Request, next: Next) -
             _ => None,
         };
         if given.is_some_and(|token| {
-            (agent_check && shared.jobs.is_apple_check_token(token))
-                || agent_mcp.is_some_and(|id| {
-                    shared.connections.allows(id, token)
-                        || shared.harness.session(id, token).is_some()
-                        || shared.harness.waiting_with(id, token)
-                })
+            agent_mcp.is_some_and(|id| {
+                shared.connections.allows(id, token)
+                    || shared.harness.session(id, token).is_some()
+                    || shared.harness.waiting_with(id, token)
+            })
         }) {
             Ok(())
         } else if via_gateway {
@@ -425,7 +416,7 @@ async fn gate(State(shared): State<Arc<Shared>>, request: Request, next: Next) -
 }
 
 /// On Linux, sandboxed agents reach the host through slirp4netns at 10.0.2.2. Admit that fixed
-/// host only for the agent's own routes (its job-token MCP route and its job's Apple check); normal
+/// host only for the agent's own routes (its job-token MCP route and Tetrix's); normal
 /// app API requests still require a loopback Host.
 fn agent_gateway_request(uri: &axum::http::Uri, headers: &HeaderMap) -> bool {
     cfg!(target_os = "linux") && gateway_host(uri, headers)

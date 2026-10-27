@@ -307,20 +307,6 @@ pub fn ready(
         }
         Some(_) => return Err(wait("Not merged yet: its checks are still running.")),
     }
-    if workflow.checks == Checks::Mac {
-        let check = job.mac_check.as_ref().filter(|c| c["head"] == head);
-        match check.and_then(|c| c["state"].as_str()) {
-            Some("passed") => {}
-            Some("failed") => {
-                return Err(wait("Not merged yet: the Mac check failed on its head."));
-            }
-            _ => {
-                return Err(wait(
-                    "Not merged yet: it waits for a Mac check of its head.",
-                ));
-            }
-        }
-    }
     let conflict = || wait(format!("Not merged yet: it conflicts with {base}."));
     match merging.mergeable.as_deref() {
         Some("MERGEABLE") => {}
@@ -332,7 +318,7 @@ pub fn ready(
         }
     }
     match merging.merge_state.as_deref() {
-        Some("CLEAN" | "HAS_HOOKS") => Ok(()),
+        Some("CLEAN" | "HAS_HOOKS") => mac_checks(job, workflow),
         Some("DIRTY") => Err(conflict()),
         Some("BEHIND") => Err(wait(format!(
             "Not merged yet: it's behind {base}, so it needs a rebase first."
@@ -345,6 +331,25 @@ pub fn ready(
             "Not merged yet: GitHub doesn't say it merges cleanly.",
         )),
     }
+}
+
+/// `mac` (this repository's remembered workflow) never merges by itself since the Mac app's Mac
+/// checks went with the strip to a dispatcher: the job's own check runs boxed and skips the suites
+/// only a Mac runs unboxed (MacTests, `swift test`; scripts/oby-check.sh), and nothing else runs
+/// them on the pushed head. Once everything else holds, the owner is asked, and so is a job with no
+/// check at all, whatever the workflow: nothing merges without a check that passed on its head.
+fn mac_checks(job: &Job, workflow: &Workflow) -> Result<(), Blocked> {
+    if job.check.is_none() && workflow.checks == Checks::Mac {
+        return Err(needs_you(
+            "Not merged: no check ran on its head (this repository has none), so it's yours to merge.",
+        ));
+    }
+    if workflow.checks == Checks::Mac {
+        return Err(needs_you(
+            "Not merged: the Mac's own checks (MacTests, swift test) don't run by themselves any more, so it's yours to merge.",
+        ));
+    }
+    Ok(())
 }
 
 /// The approval the merge waits on, and who gives it by the workflow: Oby's reviewer account
@@ -1326,12 +1331,12 @@ mod tests {
             method: Method::Squash,
             rebase_first: false,
             review: Approval::Reviewer,
-            checks: Checks::Mac,
+            checks: Checks::Github,
         }
     }
 
-    /// A done job whose pull request obid published at `head()`, scanned clean, its Mac check
-    /// passed on that head.
+    /// A done job whose pull request obid published at `head()`, scanned clean, its check passed
+    /// on that head.
     fn job() -> Job {
         let mut job = Job::new(
             "j1".into(),
@@ -1358,9 +1363,6 @@ mod tests {
             clean: Some(true),
             ..Default::default()
         });
-        job.mac_check = Some(
-            json!({"id": "c1", "kind": "merge", "state": "passed", "head": head(), "pr": 7, "round": 1}),
-        );
         job
     }
 
@@ -1556,9 +1558,7 @@ mod tests {
     #[test]
     fn only_the_head_obid_pushed_and_scanned() {
         let moved = view(|v| v["headRefOid"] = json!("b".repeat(40)));
-        let mut job = job();
-        // The Mac check of that head too, so only the head's owner is wrong.
-        job.mac_check.as_mut().unwrap()["head"] = json!("b".repeat(40));
+        let job = job();
         let refused = check(&job, Some(&obis()), &moved).unwrap_err();
         assert_eq!(
             refused,
@@ -1958,40 +1958,45 @@ mod tests {
                 Err(needs_you("Not merged yet: its checks failed on GitHub."))
             );
         }
-        // No GitHub checks is green for the Mac's workflow, never for GitHub's.
-        assert_eq!(check(&job, Some(&obis()), &none), Ok(()));
-        let mut github = obis();
-        github.checks = Checks::Github;
+        // GitHub's workflow waits for GitHub's checks; green, it merges.
         assert_eq!(
-            check(&job, Some(&github), &none),
+            check(&job, Some(&obis()), &none),
             Err(wait(
                 "Not merged yet: GitHub has no checks on its head yet."
             ))
         );
-        assert_eq!(check(&job, Some(&github), &view(|_| {})), Ok(()));
-        // The Mac's check, on that very head.
-        let mut older = job.clone();
-        older.mac_check.as_mut().unwrap()["head"] = json!("c".repeat(40));
-        let mut failed = job.clone();
-        failed.mac_check.as_mut().unwrap()["state"] = json!("failed");
-        let mut queued = job.clone();
-        queued.mac_check.as_mut().unwrap()["state"] = json!("queued");
-        let mut unchecked = job.clone();
-        unchecked.mac_check = None;
-        for job in [older, queued, unchecked] {
+        assert_eq!(check(&job, Some(&obis()), &view(|_| {})), Ok(()));
+        // The Mac's workflow never merges by itself: nothing runs the Mac's own checks (MacTests,
+        // swift test) on the pushed head, so once everything else holds, the owner is asked; with
+        // no check at all, too.
+        let mut mac = obis();
+        mac.checks = Checks::Mac;
+        let mut checked = job.clone();
+        checked.check = Some("scripts/oby-check.sh".into());
+        for text in [&none, &view(|_| {})] {
             assert_eq!(
-                check(&job, Some(&obis()), &view(|_| {})),
-                Err(wait(
-                    "Not merged yet: it waits for a Mac check of its head."
+                check(&checked, Some(&mac), text),
+                Err(needs_you(
+                    "Not merged: the Mac's own checks (MacTests, swift test) don't run by themselves any more, so it's yours to merge."
                 ))
             );
         }
+        let mut unchecked = job.clone();
+        unchecked.check = None;
         assert_eq!(
-            check(&failed, Some(&obis()), &view(|_| {})),
-            Err(wait("Not merged yet: the Mac check failed on its head."))
+            check(&unchecked, Some(&mac), &none),
+            Err(needs_you(
+                "Not merged: no check ran on its head (this repository has none), so it's yours to merge."
+            ))
         );
-        // With GitHub's checks in its workflow, its Mac check doesn't matter.
-        assert_eq!(check(&failed, Some(&github), &view(|_| {})), Ok(()));
+        let mut found = job.clone();
+        found.scan.as_mut().unwrap().clean = Some(false);
+        assert_eq!(
+            check(&found, Some(&obis()), &view(|_| {})),
+            Err(needs_you(
+                "Not merged: the secret scan of its head wasn't clean."
+            ))
+        );
     }
 
     /// GitHub says it merges cleanly: never a conflict, a branch behind its base or one GitHub's
