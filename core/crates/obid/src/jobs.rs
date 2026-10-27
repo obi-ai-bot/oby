@@ -435,8 +435,10 @@ impl End {
 enum Gate<'a> {
     /// A review another Obi asked for: it only reads, and has no MCP server.
     ObiReview,
-    /// The owner's own job, with its MCP permission rules (Tetrix's tools, the broker's).
-    Owner { mcp: &'a [String] },
+    /// The owner's own job, with its MCP permission rules (Tetrix's tools, the broker's), and
+    /// whether a call that waits for the owner past `parkAfter` parks it ([`Jobs::park`]): never in
+    /// a stall's handoff turn, whose end needs the owner anyway.
+    Owner { mcp: &'a [String], park: bool },
 }
 
 /// One boxed run that isn't a job's ([`Jobs::brain_launch`], [`Jobs::conversation_launch`]).
@@ -612,6 +614,9 @@ struct Ask {
     /// Told when the owner answers it themselves, before `reply` (the egress proxy keeps only
     /// their answers past a change of mode or rules); a change of them settles it untold.
     owner: Option<tokio::sync::oneshot::Sender<()>>,
+    /// Since when the agent's call waits on it, which parks the job past `parkAfter`
+    /// ([`Jobs::park`]); none for what isn't a call of the agent's (a site, a repository's hooks).
+    since: Option<std::time::Instant>,
 }
 
 /// Why words that aren't the owner's own don't answer the agent's question (#858).
@@ -658,6 +663,9 @@ struct State {
     told_late: std::collections::HashSet<String>,
     /// Each job's prompts waiting for the owner, the one shown first.
     asks: HashMap<String, VecDeque<Ask>>,
+    /// The prompts a parked job's agent waited on ([`Jobs::park`]), held unanswered until its
+    /// worker ends ([`Jobs::drop_asks`]): let go before, the agent would hear a no.
+    held: HashMap<String, Vec<Ask>>,
     /// What each job's agent asked the owner with `oby_ask_owner` in its turn under way: asked once
     /// the turn ends ([`End::Asked`]).
     asked: HashMap<String, permissions::QuestionCall>,
@@ -978,6 +986,7 @@ impl Jobs {
                 wrapping: std::collections::HashSet::new(),
                 told_late: std::collections::HashSet::new(),
                 asks: HashMap::new(),
+                held: HashMap::new(),
                 asked: HashMap::new(),
                 publishing: std::collections::HashSet::new(),
                 followed: HashMap::new(),
@@ -4003,6 +4012,7 @@ impl Jobs {
                 input: Value::Null,
                 answers: Vec::new(),
                 owner: None,
+                since: None,
             });
             asks.len() == 1
         };
@@ -4092,6 +4102,23 @@ impl Jobs {
         };
         let call = Call::new(tool, input);
         let bounds = self.bounds(&job, worktree);
+        // The owner allowed this call while the job was parked for it: its resumed agent's same
+        // call goes through, once, as their own yes ([`Jobs::answer_parked`]).
+        let allowed = self
+            .lock()
+            .jobs
+            .get_mut(id)
+            .and_then(|j| j.parked.as_mut())
+            .filter(|p| p.lets_through(tool, input))
+            .map(|p| p.allowed = false)
+            .is_some();
+        if allowed {
+            self.update(id, |_| {});
+            if let Some(egress) = self.egress.get() {
+                egress.let_through(id, &self.sites_opened(&call, &bounds));
+            }
+            return Ruling::Now(Answer::Allow);
+        }
         let mode = Self::mode_of(&job);
         // A job that only reads (#630) never leaves Plan mode, so its plan is no question for
         // the owner: it reports what it found instead.
@@ -4168,6 +4195,7 @@ impl Jobs {
                 reply,
                 input: input.clone(),
                 answers: Vec::new(),
+                since: owner.is_none().then(std::time::Instant::now),
                 owner,
             });
             asks.len() == 1
@@ -4333,6 +4361,7 @@ impl Jobs {
                             questions: a.call.questions.clone(),
                             answers: a.answers.clone(),
                             ended_turn: false,
+                            parked: false,
                         });
                     (a.permission.clone(), call)
                 })
@@ -4437,6 +4466,9 @@ impl Jobs {
                 "Tell the agent something of up to 2,000 characters.".into(),
             ));
         }
+        if let Some(answered) = self.answer_parked(id, permission, decision, words) {
+            return answered;
+        }
         let asked = self.lock().asks.get(id).is_some_and(|asks| {
             asks.front()
                 .is_some_and(|a| a.permission.id == permission && a.permission.is_question())
@@ -4489,29 +4521,11 @@ impl Jobs {
             asks.pop_front().expect("one waits")
         };
         let plan = ask.permission.is_plan();
-        let question = ask.permission.is_question();
-        let said = match decision {
-            Decision::Allow if plan => permissions::APPROVE.to_owned(),
-            Decision::Allow => permissions::ALLOW.to_owned(),
-            Decision::Always => permissions::ALWAYS_ALLOW.to_owned(),
-            Decision::Deny if plan => words.unwrap_or(permissions::KEEP_PLANNING).to_owned(),
-            Decision::Deny => words.unwrap_or(permissions::DENY).to_owned(),
-        };
-        let answer = match decision {
-            Decision::Deny if plan => {
-                Answer::Deny(words.unwrap_or(permissions::PLAN_SENT_BACK).to_owned())
-            }
-            Decision::Deny if question => {
-                Answer::Deny(words.unwrap_or(permissions::QUESTION_DECLINED).to_owned())
-            }
-            Decision::Deny => Answer::Deny(words.unwrap_or(permissions::SAID_NO).to_owned()),
-            _ => Answer::Allow,
-        };
+        let (said, answer) = owners_answer(&ask.permission, decision, words);
         // An approved plan goes on in the default mode, before the agent's next call is judged.
         if plan && matches!(answer, Answer::Allow) {
             self.update(id, |job| job.mode = Some(Mode::Ask.as_str().to_owned()));
         }
-        let title = ask.permission.title.clone();
         // Its item settles, and its words are noted, before the agent hears the answer (and asks
         // its next).
         self.note(PermissionNote::Settled {
@@ -4542,21 +4556,150 @@ impl Jobs {
         {
             self.save_rule(rule, &job.repo);
         }
-        self.show(
-            id,
-            Some(if plan && decision == Decision::Deny {
-                "Planning again".to_owned()
-            } else if question {
-                "You didn't answer its question".to_owned()
-            } else if plan {
-                "Plan approved".to_owned()
-            } else if decision == Decision::Deny {
-                format!("You said no: {title}")
-            } else {
-                format!("Allowed: {title}")
-            }),
-        );
+        self.show(id, Some(answered_step(&ask.permission, decision)));
         Ok(self.get(id).unwrap_or(job))
+    }
+
+    /// The owner answers the call job `id` was parked for ([`Jobs::park`]), its card `permission`:
+    /// the card settles, and the job is queued again, its session picked up with the answer
+    /// ([`permissions::after_park`]); an allow lets the resumed agent's same call through once
+    /// ([`Jobs::rule_on`]), an always saves its rule too. `None` when no call of the job's is
+    /// parked on that card (a parked question is a kept one: [`Jobs::answer_kept_question`]).
+    fn answer_parked(
+        self: &Arc<Self>,
+        id: &str,
+        permission: &str,
+        decision: Decision,
+        words: Option<&str>,
+    ) -> Option<Result<Job, PermissionRefused>> {
+        let (card, said) = {
+            let mut state = self.lock();
+            let job = state
+                .jobs
+                .get_mut(id)
+                .filter(|j| j.status == Status::Running)?;
+            let card = job.permission.clone().filter(|p| p.id == permission)?;
+            let parked = job.parked.as_mut().filter(|p| !p.answered)?;
+            if decision == Decision::Always && card.rule.is_none() {
+                return Some(Err(PermissionRefused::Refused(
+                    "This one has no rule to save: allow it once instead.".into(),
+                )));
+            }
+            let (said, answer) = owners_answer(&card, decision, words);
+            job.heard.push(permissions::after_park(parked, &answer));
+            // Kept until its run ends: that run must pick its session up (`acp::Options`), and
+            // an allow lets the same call through once.
+            parked.answered = true;
+            parked.allowed = matches!(answer, Answer::Allow);
+            // An approved plan goes on in the default mode, as a live one does.
+            if parked.allowed && card.is_plan() {
+                job.mode = Some(Mode::Ask.as_str().to_owned());
+            }
+            if let Some(words) = words {
+                job.notes
+                    .get_or_insert_with(Vec::new)
+                    .push(words.to_owned());
+            }
+            job.permission = None;
+            job.status = Status::Queued;
+            job.phase = Some(Phase::Prepare);
+            job.step = answered_step(&card, decision);
+            (card, said)
+        };
+        let job = self.update(id, |_| {})?;
+        self.note(PermissionNote::Settled {
+            job: id.to_owned(),
+            permission: permission.to_owned(),
+            answer: Some(said),
+        });
+        if decision == Decision::Always
+            && let Some(rule) = &card.rule
+        {
+            self.save_rule(rule, &job.repo);
+        }
+        self.schedule();
+        Some(Ok(self.get(id).unwrap_or(job)))
+    }
+
+    /// Parks job `id` once its agent's call has waited for the owner for `parkAfter`, so an
+    /// unanswered card holds no slot (docs/runner-api.md, "Parked"): the call becomes the card the
+    /// job keeps showing, `running` with no agent (a question's as a restart keeps it, #858; a
+    /// permission's or plan's in `parked`), its inbox item stays open, and the job's other waits
+    /// go. Its worker ends the agent as a shutdown does, its session kept, and gives its slot
+    /// back. The owner's answer queues it again ([`Jobs::answer_parked`],
+    /// [`Jobs::answer_kept_question`]). Nothing is answered for them.
+    fn park(&self, id: &str) {
+        let (card, shown, others) = {
+            let mut state = self.lock();
+            let due = state.asks.get(id).and_then(|asks| {
+                asks.iter().position(|a| {
+                    a.since
+                        .is_some_and(|since| since.elapsed() >= self.config.park_after)
+                })
+            });
+            let Some(due) = due else { return };
+            let Some(worker) = state.workers.get(id) else {
+                return;
+            };
+            let _ = worker.send(Signal::Shutdown);
+            let mut asks = state.asks.remove(id).unwrap_or_default();
+            let ask = asks.remove(due).expect("it waits");
+            let others: Vec<String> = asks.iter().map(|a| a.permission.id.clone()).collect();
+            let call = ask.call.clone();
+            let (card, input, answers) = (
+                ask.permission.clone(),
+                ask.input.clone(),
+                ask.answers.clone(),
+            );
+            // Every reply stays open until the worker ends: the agent's wait ends on its stop,
+            // never on a no.
+            state
+                .held
+                .insert(id.to_owned(), asks.into_iter().chain([ask]).collect());
+            let Some(job) = state.jobs.get_mut(id) else {
+                return;
+            };
+            let shown = job.permission.as_ref().map(|p| p.id.clone());
+            if card.is_question() {
+                job.question_call = Some(permissions::QuestionCall {
+                    questions: call.questions,
+                    answers,
+                    ended_turn: false,
+                    parked: true,
+                });
+            } else {
+                job.parked = Some(permissions::Parked {
+                    tool: call.tool,
+                    input,
+                    answered: false,
+                    allowed: false,
+                });
+            }
+            job.permission = Some(card.clone());
+            job.changed(format!(
+                "Parked by obid: its agent waited {} for your answer, so obid ended it to free its slot. Your answer picks its session up.",
+                spell(self.config.park_after)
+            ));
+            (card, shown, others)
+        };
+        // What the agent would reach on the way out waits on no card of the job's.
+        if let Some(egress) = self.egress.get() {
+            egress.close(id);
+        }
+        for permission in others {
+            self.note(PermissionNote::Settled {
+                job: id.to_owned(),
+                permission,
+                answer: None,
+            });
+        }
+        let Some(job) = self.update(id, |_| {}) else {
+            return;
+        };
+        if shown.as_deref() != Some(card.id.as_str()) {
+            self.note(PermissionNote::Waiting(Box::new(job), card));
+        }
+        tracing::info!("job {id}: parked: its agent's call waited for the owner");
     }
 
     /// The owner answers the agent's waiting question (`AskUserQuestion`, #858): one of its
@@ -4777,16 +4920,27 @@ impl Jobs {
 
     /// The job's waiting prompts go: nobody will answer them (it was stopped, or ended), a
     /// question a restart kept among them. obid shutting down (`shutdown`) keeps the question the
-    /// job shows, and its inbox item, for the next start to keep waiting (#858).
+    /// job shows, and its inbox item, for the next start to keep waiting (#858), and so does a
+    /// worker ending for [`Jobs::park`] with the call it parked the job for.
     fn drop_asks(&self, id: &str, shutdown: bool) {
         let dropped = {
             let mut state = self.lock();
             // What its agent asked with `oby_ask_owner` in a turn that didn't end well goes too.
             state.asked.remove(id);
+            // A parked job's agent ended: what it waited on goes, settled already or kept.
+            state.held.remove(id);
             state.asks.remove(id).unwrap_or_default()
         };
-        let shown = self.get(id).and_then(|j| j.permission);
-        let kept = shown.as_ref().filter(|p| shutdown && p.is_question());
+        let job = self.get(id);
+        let shown = job.as_ref().and_then(|j| j.permission.clone());
+        // The call obid parked the job for waits with no agent, as a question does (`Jobs::park`).
+        let parked = job
+            .as_ref()
+            .and_then(|j| j.parked.as_ref())
+            .is_some_and(|p| !p.answered);
+        let kept = shown
+            .as_ref()
+            .filter(|p| shutdown && (p.is_question() || parked));
         let mut settled: Vec<&str> = dropped.iter().map(|a| a.permission.id.as_str()).collect();
         // A question a restart kept has no ask of its own.
         if let Some(p) = &shown
@@ -4804,10 +4958,15 @@ impl Jobs {
                 answer: None,
             });
         }
-        if shown.is_some() && kept.is_none() {
+        // It ended (a shutdown isn't an end): a parked call the owner answered goes.
+        let ended = !shutdown && job.is_some_and(|j| j.parked.is_some());
+        if shown.is_some() && kept.is_none() || ended {
             self.update(id, |job| {
                 job.permission = None;
                 job.question_call = None;
+                if !shutdown {
+                    job.parked = None;
+                }
             });
         }
     }
@@ -6534,9 +6693,9 @@ impl Jobs {
         ran_secs: Option<&(dyn Fn() -> u64 + Sync)>,
     ) -> Result<agent::Turn, String> {
         let prompt = &crate::vault::for_agent(prompt)?;
-        let (obi_review, mcp_rules) = match gate {
-            Gate::ObiReview => (true, &[][..]),
-            Gate::Owner { mcp } => (false, mcp),
+        let (obi_review, mcp_rules, parks) = match gate {
+            Gate::ObiReview => (true, &[][..], false),
+            Gate::Owner { mcp, park } => (false, mcp, park),
         };
         let worktree = launch.cwd.clone();
         let job = self.get(id).ok_or("the job is gone")?;
@@ -6733,6 +6892,8 @@ impl Jobs {
                         tool: tool.name().into(),
                         account,
                         resume: job.session.clone(),
+                        // The answer to a call it was parked for goes to its own session only.
+                        resume_only: job.parked.as_ref().is_some_and(|p| p.answered),
                         model: job.model.clone(),
                         plan,
                         plan_mode: "plan".into(),
@@ -6762,7 +6923,13 @@ impl Jobs {
         let ran = loop {
             tokio::select! {
                 ran = &mut run => break ran,
-                () = tokio::time::sleep(ACTIVITY_EVERY) => self.glanced(id),
+                () = tokio::time::sleep(ACTIVITY_EVERY) => {
+                    self.glanced(id);
+                    // A call of its agent's that waits for the owner past `parkAfter` parks it.
+                    if parks {
+                        self.park(id);
+                    }
+                }
             }
         };
         self.transcribed(id, self.transcripts.end_turn(id));
@@ -6816,7 +6983,7 @@ impl Jobs {
                         launch,
                         &prompt,
                         signal,
-                        Gate::Owner { mcp },
+                        Gate::Owner { mcp, park: false },
                         crate::conn::Limit {
                             most: HANDOFF_LIMIT,
                             quiet: Some(self.config.stall_after),
@@ -8600,7 +8767,10 @@ impl Jobs {
                         launch,
                         &message,
                         signal,
-                        Gate::Owner { mcp: &mcp_rules },
+                        Gate::Owner {
+                            mcp: &mcp_rules,
+                            park: true,
+                        },
                         crate::conn::Limit {
                             most: left,
                             quiet: Some(self.config.stall_after),
@@ -13042,28 +13212,76 @@ pub fn asks_through_oby(job: &Job) -> bool {
     job.obi.is_none() && matches!(Tool::from_id(&job.agent), Some(Tool::Codex | Tool::Cursor))
 }
 
+/// The owner's `decision` on `permission`, with their `words`: what its inbox item says they
+/// answered, and what the agent hears.
+fn owners_answer(
+    permission: &Permission,
+    decision: Decision,
+    words: Option<&str>,
+) -> (String, Answer) {
+    let plan = permission.is_plan();
+    let said = match decision {
+        Decision::Allow if plan => permissions::APPROVE.to_owned(),
+        Decision::Allow => permissions::ALLOW.to_owned(),
+        Decision::Always => permissions::ALWAYS_ALLOW.to_owned(),
+        Decision::Deny if plan => words.unwrap_or(permissions::KEEP_PLANNING).to_owned(),
+        Decision::Deny => words.unwrap_or(permissions::DENY).to_owned(),
+    };
+    let answer = match decision {
+        Decision::Deny if plan => {
+            Answer::Deny(words.unwrap_or(permissions::PLAN_SENT_BACK).to_owned())
+        }
+        Decision::Deny if permission.is_question() => {
+            Answer::Deny(words.unwrap_or(permissions::QUESTION_DECLINED).to_owned())
+        }
+        Decision::Deny => Answer::Deny(words.unwrap_or(permissions::SAID_NO).to_owned()),
+        _ => Answer::Allow,
+    };
+    (said, answer)
+}
+
+/// What a job's step says once the owner answered `permission` with `decision`.
+fn answered_step(permission: &Permission, decision: Decision) -> String {
+    let title = &permission.title;
+    if permission.is_plan() && decision == Decision::Deny {
+        "Planning again".to_owned()
+    } else if permission.is_question() {
+        "You didn't answer its question".to_owned()
+    } else if permission.is_plan() {
+        "Plan approved".to_owned()
+    } else if decision == Decision::Deny {
+        format!("You said no: {title}")
+    } else {
+        format!("Allowed: {title}")
+    }
+}
+
 /// Whether job `id`'s question waits with no agent on it (#858): no live agent's prompt waits, and
-/// no run of its is under way but the one that asked with `oby_ask_owner` and ended its turn. That
-/// run shows the question before its worker lets go (closing its connections takes a moment), yet
-/// nothing of it waits on the answer, and the run the answer queues starts only once it's gone
-/// ([`Jobs::schedule`] passes over a job with a worker).
+/// no run of its is under way but the one that asked with `oby_ask_owner` and ended its turn, or
+/// the one obid parked the job for ([`Jobs::park`]). That run shows the question before its worker
+/// lets go (closing its connections takes a moment), yet nothing of it waits on the answer, and
+/// the run the answer queues starts only once it's gone ([`Jobs::schedule`] passes over a job with
+/// a worker).
 fn waits_with_no_agent(state: &State, id: &str) -> bool {
     if state.asks.get(id).is_some_and(|a| !a.is_empty()) {
         return false;
     }
     !state.workers.contains_key(id)
-        || state
-            .jobs
-            .get(id)
-            .and_then(|j| j.question_call.as_ref())
-            .is_some_and(|call| call.ended_turn)
+        || state.jobs.get(id).is_some_and(|j| {
+            j.parked.as_ref().is_some_and(|p| !p.answered)
+                || j.question_call
+                    .as_ref()
+                    .is_some_and(|call| call.ended_turn || call.parked)
+        })
 }
 
-/// The agent's question `job` shows, kept with its call (#858): what a restart keeps waiting.
+/// What `job` shows that a restart keeps waiting: the agent's question, kept with its call
+/// (#858), or the call obid parked the job for ([`Jobs::park`]).
 fn kept_question(job: &Job) -> Option<&Permission> {
-    job.permission
-        .as_ref()
-        .filter(|p| p.is_question() && job.question_call.is_some())
+    job.permission.as_ref().filter(|p| {
+        (p.is_question() && job.question_call.is_some())
+            || job.parked.as_ref().is_some_and(|parked| !parked.answered)
+    })
 }
 
 /// Codex's settings for a run of Oby's review of published work: no `AGENTS.md`, and no
@@ -16913,6 +17131,97 @@ mod tests {
         jobs.schedule();
         assert_eq!(jobs.get("eeee0004").unwrap().status, Status::Queued);
         assert_eq!(jobs.lock().workers.len(), 1);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A call that waits for the owner past `parkAfter` parks its job ([`Jobs::park`]): its worker
+    /// is told to end the agent, the card stays, and the agent's wait never ends on a no: its reply
+    /// stays open until the worker ends. An allow that comes while the worker still winds down
+    /// queues the job, whose next run waits for that worker to go and lets its agent's same call
+    /// through once.
+    #[tokio::test]
+    async fn a_parked_call_hears_no_no_and_takes_its_answer_while_its_run_winds_down() {
+        use tokio::sync::oneshot::error::TryRecvError;
+        let root = std::env::temp_dir().join(format!("obid-parked-{}", uuid::Uuid::new_v4()));
+        let config = crate::config::Config::parse(
+            &json!({"listen": "127.0.0.1:0", "home": root.join("home"), "owner": "o",
+                "parkAfter": 1, "repos": [{"repo": "o/r", "remote": "https://example.com/o/r.git"}]})
+            .to_string(),
+        )
+        .unwrap();
+        let jobs = Jobs::open(
+            config,
+            crate::events::Events::new(),
+            Err("no sandbox".into()),
+        )
+        .unwrap();
+        let mut job = Job::new(
+            "p".into(),
+            "o/r".into(),
+            "fix".into(),
+            "Fix it".into(),
+            "claude".into(),
+            "a".into(),
+        );
+        job.status = Status::Running;
+        job.mode = Some("ask".into());
+        jobs.lock().jobs.insert("p".into(), job);
+        let (sender, worker) = watch::channel(Signal::Run);
+        jobs.lock().workers.insert("p".into(), sender);
+        let worktree = root.join("worktree");
+        let input = json!({"command": "npm install left-pad", "description": "Install it"});
+        let Ruling::Ask(mut reply) = jobs.rule_on("p", "Bash", &input, &worktree) else {
+            panic!("it didn't ask the owner");
+        };
+        let card = jobs.get("p").unwrap().permission.unwrap();
+        jobs.park("p");
+        assert_eq!(*worker.borrow(), Signal::Run, "parked before parkAfter");
+
+        for ask in jobs.lock().asks.get_mut("p").unwrap() {
+            ask.since = Some(std::time::Instant::now() - Duration::from_secs(2));
+        }
+        jobs.park("p");
+        assert_eq!(*worker.borrow(), Signal::Shutdown);
+        assert!(matches!(reply.try_recv(), Err(TryRecvError::Empty)));
+        let parked = jobs.get("p").unwrap();
+        assert_eq!(parked.status, Status::Running);
+        assert_eq!(parked.permission.as_ref(), Some(&card));
+        assert!(
+            parked
+                .changes
+                .iter()
+                .any(|c| c.what.starts_with("Parked by obid"))
+        );
+
+        let job = jobs
+            .answer_permission("p", &card.id, Decision::Allow, None)
+            .unwrap();
+        assert_eq!(job.status, Status::Queued);
+        assert!(job.permission.is_none());
+        assert!(
+            job.heard[0].contains("you may now run it"),
+            "{:?}",
+            job.heard
+        );
+        jobs.schedule();
+        assert_eq!(jobs.get("p").unwrap().status, Status::Queued);
+        assert_eq!(jobs.lock().workers.len(), 1);
+
+        // Its worker ends, as `work` ends it: only now does the agent's wait let go.
+        jobs.drop_asks("p", true);
+        assert!(matches!(reply.try_recv(), Err(TryRecvError::Closed)));
+        let parked = jobs.get("p").unwrap().parked.unwrap();
+        assert!(parked.answered && parked.allowed);
+        jobs.lock().workers.remove("p");
+        let again = json!({"command": "npm install left-pad"});
+        assert!(matches!(
+            jobs.rule_on("p", "Bash", &again, &worktree),
+            Ruling::Now(Answer::Allow)
+        ));
+        assert!(matches!(
+            jobs.rule_on("p", "Bash", &again, &worktree),
+            Ruling::Ask(_)
+        ));
         let _ = std::fs::remove_dir_all(&root);
     }
 

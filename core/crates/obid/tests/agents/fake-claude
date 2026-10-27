@@ -8,7 +8,8 @@
 //   COMMIT WHEN TOLD told by obid to commit what it left uncommitted, commits it all and ends the
 //                    turn with "Committed the draft." (without it, that turn is "Nothing to do.")
 //   KEEP PROMPTS     from now on appends every prompt it gets to .obi/prompts.log, each ended by a
-//                    line "<<<end of prompt>>>"
+//                    line "<<<end of prompt>>>", and every answer to its permission prompts to
+//                    .obi/answers.log, one per line
 //   SLEEP            beats: writes a growing count to .obi/beat every 50 ms until it is ended
 //   HOG: <mb> <s>    holds <mb> MB of random bytes, as a build does, for <s> seconds, then
 //                    ends the turn with "Held." (scripts measuring memory admission)
@@ -28,6 +29,9 @@
 //                    next (counted in .obi/usage-turn)
 //   ASK: <json>      asks obid's permission for {"tool", "input"} and answers with what obid said
 //                    (an AskUserQuestion's with " answers: <its updatedInput's answers>")
+//   obid's word that it paused it  (a call of its waited for the owner past parkAfter, and its
+//                    session is picked up with the answer): allowed, it makes the same call again
+//                    and answers as ASK does; otherwise ends the turn with "heard: <the prompt>"
 //   UNKNOWN REQUEST  with ASK: first sends a control request of a kind no Claude Code has, waits
 //                    for its answer, then asks; the result ends with " unknown: <the answer's subtype>"
 //   ASKS: <json>     asks for each of a list of {"tool", "input"} in turn, then ends the turn with
@@ -200,6 +204,7 @@ rl.on("line", (line) => {
   if (message.type === "control_response" && asked) {
     const answer = message.response?.response ?? {};
     asked = null;
+    if (existsSync(".obi/keep-prompts")) appendFileSync(".obi/answers.log", `${answer.behavior}\n`);
     if (listing) {
       said.push(answer.behavior === "deny" ? `deny: ${answer.message}` : answer.behavior);
       if (queue.length) return askNext();
@@ -539,6 +544,11 @@ rl.on("line", (line) => {
     said.length = 0;
     listing = true;
     askNext();
+  } else if (prompt.startsWith("obid paused you")) {
+    const retry = prompt.match(/got no reply:\n(\w+) (\{.*\})\nThe owner allowed it/);
+    if (!retry) return result(`heard: ${prompt}`);
+    asked = retry[1];
+    emit({ type: "control_request", request_id: "r1", request: { subtype: "can_use_tool", tool_name: retry[1], input: JSON.parse(retry[2]) } });
   } else if (ask) {
     const { tool, input } = JSON.parse(ask[1]);
     asked = tool;

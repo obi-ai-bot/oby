@@ -32,6 +32,9 @@ pub struct Options {
     pub account: String,
     /// The session to pick up again (the job's `session`), or `None` for a new one.
     pub resume: Option<String>,
+    /// Only that session will do (a job parked for the owner's answer, crate::jobs): a tool that
+    /// can't load sessions fails the turn rather than start a new one that doesn't know the task.
+    pub resume_only: bool,
     /// The job's own model, or `None` for the tool's.
     pub model: Option<String>,
     /// The job is in Plan mode: the tool's plan mode, else its agent mode.
@@ -611,6 +614,11 @@ impl<D: Fn(&str, &Value) -> Ruling, E: FnMut(Event)> Run<D, E> {
                 "session/load",
                 json!({"sessionId": session, "cwd": cwd, "mcpServers": servers}),
             ),
+            Some(_) if self.options.resume_only => {
+                return Err(Stop::Failed(format!(
+                    "{tool} can't load its session, so obid couldn't pick it up with your answer, and didn't start a new one that wouldn't know the task. Try again starts it in a new session."
+                )));
+            }
             _ => ("session/new", json!({"cwd": cwd, "mcpServers": servers})),
         };
         let answer = match self.call(method, params).await? {

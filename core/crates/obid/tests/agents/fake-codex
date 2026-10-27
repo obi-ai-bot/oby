@@ -5,7 +5,11 @@
 // does comes from the thread's first prompt (the job's task):
 //   COMMIT: <file>   asks to write the file (a file change), writes it, asks to commit, commits
 //   SNEAK: <file>    writes the file and commits it without asking (Plan mode or not)
-//   ASK: <command>   asks to run the command and says what obid answered, and what it heard after
+//   ASK: <command>   asks to run the command and says what obid answered, and what it heard after;
+//                    every answer goes to .obi/answers.log, one per line
+//   obid's word that it paused it  (a call of its waited for the owner past parkAfter, and its
+//                    thread is resumed with the answer): allowed, the turn goes on with the task
+//                    (and its call again); otherwise says what it heard
 //   OUTSIDE          asks to write a file outside the worktree
 //   UNKNOWN          sends a request obid doesn't know and says what came back
 //   QUESTION         asks its own question (`item/tool/requestUserInput`; a secret one with
@@ -39,7 +43,7 @@
 // obid's token, and when obid starts a thread anywhere but in a sandbox it has to ask about.
 
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { randomUUID } from "node:crypto";
@@ -90,6 +94,7 @@ async function runTurn(turnId, prompt) {
   if (state.sandbox !== "danger-full-access" || state.approvalPolicy !== "untrusted")
     return complete(turnId, null, "failed", { message: `started with ${state.sandbox} / ${state.approvalPolicy}` });
   const task = state.task;
+  if (prompt.includes("obid paused you") && !prompt.includes("The owner allowed it")) return complete(turnId, `heard: ${prompt}`);
   const asked = ".obi/inputs/asked.md";
   if (task.includes(asked) && existsSync(asked) && readFileSync(asked, "utf8").includes("CODEX REFUSED"))
     return complete(turnId, null, "failed", { message: "workspace routing discovery unauthorized (401)" });
@@ -127,6 +132,8 @@ async function runTurn(turnId, prompt) {
   }
   if (command) {
     const answer = await ask("item/commandExecution/requestApproval", { threadId: thread, turnId, itemId: "c1", command: command[1] });
+    mkdirSync(".obi", { recursive: true });
+    appendFileSync(".obi/answers.log", `${answer.decision}\n`);
     if (answer.decision === "decline") await new Promise((r) => setTimeout(r, 300));
     return complete(turnId, `answer: ${answer.decision}${steered.length ? `\nheard: ${steered.join(" | ")}` : ""}`);
   }

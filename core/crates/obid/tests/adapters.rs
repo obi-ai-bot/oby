@@ -28,8 +28,16 @@ fn obid(folder: &Folder, signed_out: bool) -> Obid {
 
 /// [`obid`], and the fixture's bare remote.
 fn obid_and_remote(folder: &Folder, signed_out: bool) -> (Obid, PathBuf) {
+    obid_with(folder, signed_out, json!({}))
+}
+
+/// [`obid_and_remote`], with `more` in its configuration.
+fn obid_with(folder: &Folder, signed_out: bool, more: Value) -> (Obid, PathBuf) {
     let remote = fixture(&folder.0.join("fixture"));
     let mut config = config(&folder.0, &remote, &agents().join("fake-claude"));
+    for (key, value) in more.as_object().unwrap() {
+        config[key] = value.clone();
+    }
     let accounts = folder.0.join("home/accounts");
     config["agents"] = json!({
         "codex": {"bin": agents().join("fake-codex"),
@@ -1105,6 +1113,127 @@ fn codex_and_cursor_ask_the_owner_in_ask_mode() {
     answer(&cursor, "deny");
     assert_eq!(summary(&ended(&obid, &codex)), "answer: accept");
     assert_eq!(summary(&ended(&obid, &cursor)), "answer: reject-once");
+}
+
+/// Codex's and Cursor's approvals and questions park their jobs as Claude Code's do
+/// (docs/runner-api.md, "Parked"): past `parkAfter` the agent ends, its thread or session kept,
+/// having heard no answer, and the job keeps its card. An allow picks it up and its same call goes
+/// through (Codex's `accept`, Cursor's `allow-once`); a no or a question's answer picks it up told
+/// them. A Cursor that can't load its session fails the job rather than start a new one.
+#[test]
+fn codex_and_cursor_park_and_resume_with_the_answer() {
+    let folder = Folder::new("park-tools");
+    let (obid, _) = obid_with(&folder, false, json!({"parkAfter": 1}));
+    let jobs: Vec<(String, Value)> = [
+        ("codex", "ASK: node --test", json!({"decision": "allow"})),
+        (
+            "codex",
+            "ASK: node --test",
+            json!({"decision": "deny", "message": "Not here."}),
+        ),
+        ("codex", "QUESTION", json!({"answer": "SQLite"})),
+        ("cursor", "ASK: node --test", json!({"decision": "allow"})),
+        (
+            "cursor",
+            "ASK: node --test",
+            json!({"decision": "deny", "message": "Not here."}),
+        ),
+        ("cursor", "QUESTION", json!({"answer": "A"})),
+        (
+            "cursor",
+            "ASK: node --test NO LOAD",
+            json!({"decision": "allow"}),
+        ),
+    ]
+    .into_iter()
+    .map(|(agent, task, answer)| {
+        let id = dispatch(&obid, json!({"agent": agent, "task": task, "mode": "ask"}));
+        (id, answer)
+    })
+    .collect();
+    let worktree = |id: &str| obid.home.join("worktrees").join(id);
+    for (id, answer) in &jobs {
+        let job = within(60, "the job parks", || {
+            let job = call(&obid, "GET", &format!("/v1/jobs/{id}"), None).body;
+            let parked = job["changes"].as_array().is_some_and(|c| {
+                c.iter().any(|c| {
+                    c["what"]
+                        .as_str()
+                        .is_some_and(|w| w.starts_with("Parked by obid"))
+                })
+            });
+            parked.then_some(job)
+        });
+        assert_eq!(job["status"], "running", "{job}");
+        if job["task"].as_str().unwrap().contains("NO LOAD") {
+            std::fs::create_dir_all(worktree(id).join(".obi")).unwrap();
+            std::fs::write(worktree(id).join(".obi/no-load"), "").unwrap();
+        }
+        let mut answer = answer.clone();
+        answer["id"] = job["permission"]["id"].clone();
+        let answered = call(
+            &obid,
+            "POST",
+            &format!("/v1/jobs/{id}/permission"),
+            Some(&answer),
+        );
+        assert_eq!(answered.status, 200, "{}", answered.text);
+    }
+    let said: Vec<(Value, String)> = jobs
+        .iter()
+        .map(|(id, _)| {
+            let answers = std::fs::read_to_string(worktree(id).join(".obi/answers.log"));
+            (ended(&obid, id), answers.unwrap_or_default())
+        })
+        .collect();
+    let [
+        codex_yes,
+        codex_no,
+        codex_asked,
+        cursor_yes,
+        cursor_no,
+        cursor_asked,
+        unloaded,
+    ] = &said[..]
+    else {
+        panic!("{said:?}");
+    };
+    // The parked runs heard nothing: only the resumed runs' answers are there.
+    assert_eq!(summary(&codex_yes.0), "answer: accept", "{}", codex_yes.0);
+    assert_eq!(codex_yes.1, "accept\n");
+    assert_eq!(
+        summary(&cursor_yes.0),
+        "answer: allow-once",
+        "{}",
+        cursor_yes.0
+    );
+    assert_eq!(cursor_yes.1, "allow-once\n");
+    for (job, answers) in [codex_no, cursor_no] {
+        assert!(
+            summary(job).starts_with("heard: obid paused you")
+                && summary(job).ends_with("The owner said no: Not here."),
+            "{job}"
+        );
+        assert_eq!(answers, "", "{job}");
+    }
+    for (job, _) in [codex_asked, cursor_asked] {
+        assert!(
+            summary(job).starts_with(
+                "heard: obid paused you while your AskUserQuestion call waited for the owner"
+            ),
+            "{job}"
+        );
+    }
+    assert_eq!(unloaded.0["status"], "interrupted", "{}", unloaded.0);
+    assert!(
+        unloaded.0["reason"]
+            .as_str()
+            .unwrap()
+            .starts_with("Cursor can't load its session"),
+        "{}",
+        unloaded.0
+    );
+    assert_eq!(unloaded.1, "", "{}", unloaded.0);
 }
 
 /// Codex wraps each command in `/bin/zsh -lc "…"` (#634): the card asks about the command out of

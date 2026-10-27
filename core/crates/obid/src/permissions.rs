@@ -265,6 +265,73 @@ pub struct QuestionCall {
     /// Asked with `oby_ask_owner`, its turn ended since: no call of the agent's waits for it.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub ended_turn: bool,
+    /// obid parked its job for it (crate::jobs, `parkAfter`): its agent ended, so no call of the
+    /// agent's waits for it either.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub parked: bool,
+}
+
+/// A permission or plan call whose job obid parked while it waited for the owner (crate::jobs,
+/// `parkAfter`), kept on the job until the run its answer starts ends: its agent ended, so that
+/// run picks its session up and hears it ([`after_park`]).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Parked {
+    pub tool: String,
+    pub input: Value,
+    /// The owner answered it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub answered: bool,
+    /// They allowed it, and the resumed agent hasn't made the same call again yet
+    /// ([`Parked::lets_through`]).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub allowed: bool,
+}
+
+impl Parked {
+    /// Whether the owner's allow lets the resumed agent's `tool` call with `input` through, once:
+    /// the same call as obid judges calls (the same command, files, address or plan), or, for a
+    /// call that names none of those (an MCP tool's, a search's, a subagent's), the very same input.
+    pub fn lets_through(&self, tool: &str, input: &Value) -> bool {
+        let (was, now) = (Call::new(&self.tool, &self.input), Call::new(tool, input));
+        let named = was.command.is_some()
+            || !was.paths.is_empty()
+            || was.url.is_some()
+            || was.plan.is_some();
+        self.allowed && was == now && (named || self.input == *input)
+    }
+}
+
+/// The most of a parked call's input [`after_park`] quotes, in characters.
+const QUOTED_CALL: usize = 4_000;
+
+/// What the agent hears, its session picked up, when the owner answers a call obid parked its job
+/// for: no call got the reply, so it's told the call (its input quoted as JSON, at most
+/// [`QUOTED_CALL`] characters of it) and the answer.
+pub fn after_park(parked: &Parked, answer: &crate::agent::Answer) -> String {
+    use crate::agent::Answer;
+    if parked.tool == "ExitPlanMode" {
+        let paused = "obid paused you while your plan waited for the owner's OK, so ExitPlanMode got no reply.";
+        return match answer {
+            Answer::Deny(why) => format!("{paused} The owner sent it back: {why}"),
+            _ => format!("{paused} The owner approved it: carry it out now."),
+        };
+    }
+    // A file's whole content (a Write's) is cut: the agent's own session holds the whole call.
+    let mut input = json!(parked.input).to_string();
+    if let Some((at, _)) = input.char_indices().nth(QUOTED_CALL) {
+        input.truncate(at);
+        input.push_str("… (cut here: your session holds the whole call)");
+    }
+    let paused = format!(
+        "obid paused you while this call of yours waited for the owner, so it got no reply:\n{} {input}",
+        parked.tool,
+    );
+    match answer {
+        Answer::Deny(why) => format!("{paused}\nThe owner said no: {why}"),
+        _ => format!(
+            "{paused}\nThe owner allowed it: you may now run it. Make that same call again, exactly as it was, then carry on."
+        ),
+    }
 }
 
 /// The question an `oby_ask_owner` call asks (`question`, and `options` with a `label` and an
@@ -277,6 +344,7 @@ pub fn ask_owner_call(arguments: &Value) -> Option<QuestionCall> {
         questions,
         answers: Vec::new(),
         ended_turn: true,
+        parked: false,
     })
 }
 
@@ -286,6 +354,8 @@ pub fn ask_owner_call(arguments: &Value) -> Option<QuestionCall> {
 pub fn answered_later(call: &QuestionCall, declined: bool) -> String {
     let mut lines = vec![if call.ended_turn {
         "You asked the owner with oby_ask_owner and ended your turn. You asked:"
+    } else if call.parked {
+        "obid paused you while your AskUserQuestion call waited for the owner, so it got no reply. You asked:"
     } else {
         "obid restarted while your AskUserQuestion call waited for the owner, so it got no reply. You asked:"
     }
@@ -3623,6 +3693,97 @@ mod tests {
             serde_json::from_value(json!({"questions": [], "answers": []})).unwrap();
         assert!(!kept.ended_turn);
         assert!(answered_later(&kept, true).starts_with("obid restarted"));
+        let parked = QuestionCall {
+            parked: true,
+            ..kept
+        };
+        assert!(answered_later(&parked, true).starts_with("obid paused you"));
+    }
+
+    /// A call obid parked its job for: the resumed agent hears the call and the owner's answer.
+    #[test]
+    fn a_parked_call_is_told_its_answer() {
+        use crate::agent::Answer;
+        let run = Parked {
+            tool: "Bash".into(),
+            input: json!({"command": "npm test"}),
+            answered: false,
+            allowed: false,
+        };
+        assert_eq!(
+            after_park(&run, &Answer::Allow),
+            "obid paused you while this call of yours waited for the owner, so it got no reply:\nBash {\"command\":\"npm test\"}\nThe owner allowed it: you may now run it. Make that same call again, exactly as it was, then carry on."
+        );
+        assert!(
+            after_park(&run, &Answer::Deny("Not on main.".into()))
+                .ends_with("\nThe owner said no: Not on main.")
+        );
+        let write = Parked {
+            tool: "Write".into(),
+            input: json!({"file_path": "big.txt", "content": "x".repeat(10_000)}),
+            answered: false,
+            allowed: false,
+        };
+        let told = after_park(&write, &Answer::Allow);
+        assert!(told.len() < 4_500, "{}", told.len());
+        assert!(
+            told.contains("… (cut here: your session holds the whole call)\nThe owner allowed it")
+        );
+        let plan = Parked {
+            tool: "ExitPlanMode".into(),
+            input: json!({"plan": "1. Fix"}),
+            answered: false,
+            allowed: false,
+        };
+        assert!(
+            after_park(&plan, &Answer::Allow).ends_with("The owner approved it: carry it out now.")
+        );
+        assert!(
+            after_park(&plan, &Answer::Deny("Smaller.".into()))
+                .ends_with("The owner sent it back: Smaller.")
+        );
+    }
+
+    /// The owner's allow of a parked call lets the resumed agent's same call through: the same
+    /// command, files, address or plan; a call that names none of those, only with the very same
+    /// input. Nothing before the owner allowed it.
+    #[test]
+    fn a_parked_allow_lets_the_same_call_through() {
+        let allowed = |tool: &str, input: Value| Parked {
+            tool: tool.into(),
+            input,
+            answered: true,
+            allowed: true,
+        };
+        let bash = allowed(
+            "Bash",
+            json!({"command": "npm test", "description": "Run it"}),
+        );
+        assert!(bash.lets_through(
+            "Bash",
+            &json!({"command": "npm test", "description": "Again"})
+        ));
+        assert!(!bash.lets_through("Bash", &json!({"command": "npm test -- --all"})));
+        assert!(!bash.lets_through("Edit", &json!({"command": "npm test"})));
+        let edit = allowed(
+            "Edit",
+            json!({"file_path": "a.rs", "old_string": "x", "new_string": "y"}),
+        );
+        assert!(edit.lets_through(
+            "Edit",
+            &json!({"file_path": "a.rs", "old_string": "x", "new_string": "z"})
+        ));
+        assert!(!edit.lets_through("Edit", &json!({"file_path": "b.rs"})));
+        let mcp = allowed("mcp__tetrix__search_entities", json!({"query": "jobs"}));
+        assert!(mcp.lets_through("mcp__tetrix__search_entities", &json!({"query": "jobs"})));
+        assert!(!mcp.lets_through("mcp__tetrix__search_entities", &json!({"query": "secrets"})));
+        let search = allowed("Grep", json!({"pattern": "TODO", "path": "/etc"}));
+        assert!(!search.lets_through("Grep", &json!({"pattern": "password", "path": "/etc"})));
+        let unanswered = Parked {
+            allowed: false,
+            ..bash.clone()
+        };
+        assert!(!unanswered.lets_through("Bash", &json!({"command": "npm test"})));
     }
 
     /// #858: the owner's answer as Claude Code takes it: an option's label in its own case, several

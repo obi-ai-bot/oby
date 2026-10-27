@@ -350,6 +350,11 @@ pub struct Job {
     /// what a restart keeps. Never in the API's job.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub question_call: Option<crate::permissions::QuestionCall>,
+    /// The permission or plan call `permission` asks about, when obid parked the job for it
+    /// (crate::jobs, `parkAfter`): what the answer's pick-up tells the agent, and, allowed, lets
+    /// through once. Never in the API's job.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parked: Option<crate::permissions::Parked>,
     /// The latest Mac checks, kept on the job and sent on its JSON/event (`runner-api.md`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mac_check: Option<Value>,
@@ -742,6 +747,7 @@ impl Job {
             obi_request: None,
             permission: None,
             question_call: None,
+            parked: None,
             mac_check: None,
             apple_check: None,
             apple_ran: None,
