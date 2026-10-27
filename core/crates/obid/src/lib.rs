@@ -693,7 +693,7 @@ impl Stopwatch {
 
 /// What answers on obid's address from the moment it listens (docs/runner-api.md, "obid only:
 /// starting"): the API once `serve` has opened everything; before that, a call the API's gate
-/// would refuse gets its `401` or `403` at once, `GET /v1/status` answers `503` with `starting`
+/// would refuse gets its `401` or `403` at once (an agent's own routes wait for the gate), `GET /v1/status` answers `503` with `starting`
 /// (the steps done, the one under way), and every other call waits for the API. A start that
 /// fails, or a stop while starting, answers the calls that waited `503`.
 #[derive(Clone)]
@@ -733,18 +733,29 @@ impl Door {
         let now = opening.borrow().clone();
         let api = match now {
             Some(Ok(api)) => api,
-            Some(Err(why)) => return closed(why),
-            // The start failed: `serve` returned without opening.
-            None if opening.has_changed().is_err() => return closed(DIDNT_START),
-            None => {
-                // Nothing waits without the token, from a name other than loopback's.
-                if let Err(error) = api::admit(request.uri(), request.headers(), &door.token) {
+            _ => {
+                // Nothing waits, or hears how the start went, without the token from loopback;
+                // but an agent's own routes, whose tokens the API's gate checks once it's open: a
+                // resumed job's agent may call them before then.
+                let path = request.uri().path();
+                let agent_route = ["/v1/agent/mcp/", "/v1/agent/tetrix/"]
+                    .iter()
+                    .any(|prefix| path.starts_with(prefix));
+                if !agent_route
+                    && let Err(error) = api::admit(request.uri(), request.headers(), &door.token)
+                {
                     return sealed(error.into_response());
                 }
-                if request.method() == axum::http::Method::GET
-                    && request.uri().path() == "/v1/status"
-                {
-                    return door.starting();
+                match now {
+                    Some(Err(why)) => return closed(why),
+                    // The start failed: `serve` returned without opening.
+                    _ if opening.has_changed().is_err() => return closed(DIDNT_START),
+                    _ if request.method() == axum::http::Method::GET
+                        && request.uri().path() == "/v1/status" =>
+                    {
+                        return door.starting();
+                    }
+                    _ => {}
                 }
                 let opened = opening.wait_for(Option::is_some).await.map(|o| o.clone());
                 match opened {

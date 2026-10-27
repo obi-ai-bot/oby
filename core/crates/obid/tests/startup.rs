@@ -278,3 +278,38 @@ async fn a_failed_start_answers_what_the_door_held() {
         Err(obid::StartError::Jobs { .. })
     ));
 }
+
+/// An agent's own routes (its MCP server, Tetrix's) wait for the API while obid starts, rather
+/// than be refused: a job resumed at the start may call them before obid opens, and the API's
+/// gate checks their tokens then.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_agent_route_waits_for_the_api() {
+    let folder = Folder::new("door-agent");
+    fill_worktrees(&folder.0.join("home"), 50, 400);
+    let port = free_port();
+    let mut config = config(&folder.0);
+    config.listen = format!("127.0.0.1:{port}").parse().unwrap();
+    let token = "t".repeat(64);
+    let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+    let serving = tokio::spawn(obid::serve(
+        config,
+        token.clone(),
+        async move {
+            let _ = stopped.await;
+        },
+        |_| {},
+    ));
+    let client = reqwest::Client::new();
+    assert_eq!(first_status(&client, port, &token).await.status(), 503);
+    let agent = client
+        .post(format!("http://127.0.0.1:{port}/v1/agent/mcp/job-1"))
+        .bearer_auth("not-a-broker-token")
+        .send()
+        .await
+        .unwrap();
+    // Answered by the API's gate, so only once obid is open.
+    assert_eq!(agent.status(), 401);
+    assert_eq!(first_status(&client, port, &token).await.status(), 200);
+    let _ = stop.send(());
+    assert!(serving.await.unwrap().is_ok());
+}
