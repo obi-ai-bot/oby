@@ -147,16 +147,16 @@ pub async fn run_turn(
     Ok(turn)
 }
 
-/// The account's usage as `account/rateLimits/read` answers it, from a server started for that
-/// alone: no thread, no turn, so the read costs the account nothing. `None` when it doesn't say;
-/// the server ends with the answer, or at `limit`.
-pub async fn read_usage(
-    launch: &Launch,
-    limit: Duration,
-) -> std::io::Result<Option<crate::usage::Usage>> {
+/// What `account/rateLimits/read` says of the account, from a server started for that alone: no
+/// thread, no turn, so the read costs the account nothing. The server ends with the answer, or at
+/// `limit`; why there's none, when it ends without one.
+pub async fn read_usage(launch: &Launch, limit: Duration) -> Result<crate::usage::Asked, String> {
+    use crate::usage::Asked;
     // Kept until the read ends: a stop channel whose sender is gone stops the server.
     let (_run, stop) = watch::channel(process::Signal::Run);
-    let mut conn = Conn::spawn(launch, limit, stop, false).await?;
+    let mut conn = Conn::spawn(launch, limit, stop, false)
+        .await
+        .map_err(|e| format!("Codex didn't start: {e}"))?;
     let version = env!("CARGO_PKG_VERSION");
     let started = conn
         .request(
@@ -165,12 +165,14 @@ pub async fn read_usage(
         )
         .await;
     let mut asked = None;
-    let usage = loop {
+    let answer = loop {
         let Ok(message) = conn.next().await else {
-            break None;
+            break Err("Codex ended without answering.".into());
         };
         if let Some(read) = asked.and_then(|id| conn::answer_to(&message, id)) {
-            break read.ok().and_then(|read| crate::usage::codex_read(&read));
+            break read
+                .map(|read| crate::usage::codex_read(&read).map_or(Asked::Silent, Asked::Said))
+                .map_err(|e| format!("Codex didn't say: {}", e.message));
         }
         if asked.is_none() && conn::answer_to(&message, started).is_some() {
             conn.notify("initialized", None).await;
@@ -181,7 +183,7 @@ pub async fn read_usage(
     };
     // With no more input, it exits.
     conn.finish().await;
-    Ok(usage)
+    answer
 }
 
 /// Why a turn's steps stopped early.

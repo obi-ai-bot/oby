@@ -340,6 +340,8 @@ pub async fn events(
     device: Option<axum::Extension<crate::gateway::PairedDevice>>,
 ) -> Sse<impl Stream<Item = Result<SseEvent, Infallible>>> {
     let following = device.map(|_| shared.push.followed());
+    // An app opened: the accounts' usage, if stale, is asked of their tools (crate::jobs).
+    shared.jobs.want_usage();
     let receiver = shared.events.subscribe();
     let transcripts = shared.events.subscribe_transcripts();
     let stream = stream::select(

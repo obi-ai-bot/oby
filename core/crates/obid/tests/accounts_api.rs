@@ -1039,3 +1039,48 @@ fn an_added_claude_accounts_login_is_kept_fresh() {
         "the Mac's own Claude Code refreshed the account's item"
     );
 }
+
+/// An app's look (`GET /v1/status`) asks each signed-in Claude Code account's usage of Claude
+/// Code's own `/usage` (the stand-in's), which reaches the Account; the read's folder, with its
+/// login copy, is gone after. With `OBID_USAGE_READS=off`, nothing is read.
+#[test]
+fn an_apps_look_reads_each_accounts_usage() {
+    for on in [true, false] {
+        let folder = Folder::new(if on { "usage-read" } else { "usage-off" });
+        let mut config = config(
+            &folder.0,
+            &folder.0.join("remote.git"),
+            &agent("fake-claude"),
+        );
+        config["claudeKeychain"] = json!(false);
+        let stub = folder.0.join("home/accounts/stub");
+        std::fs::create_dir_all(&stub).unwrap();
+        let ends = (obi_protocol::time::now() + 10 * 86_400) * 1000;
+        let login = json!({"claudeAiOauth": {"accessToken": "tok-stub-plain-test-login", "expiresAt": ends}});
+        std::fs::write(stub.join(".credentials.json"), login.to_string()).unwrap();
+        let reads = if on { "on" } else { "off" };
+        let obid = start_with(&folder.0, &config, None, &[("OBID_USAGE_READS", reads)]);
+        let stub = || account(&obid, "stub").unwrap();
+        if on {
+            let read = within(20, "the account's usage", || {
+                Some(stub()).filter(|a| !a["sevenDay"].is_null())
+            });
+            assert_eq!(
+                (&read["fiveHour"], &read["sevenDay"]),
+                (&json!(0.33), &json!(0.44))
+            );
+            assert!(read["sevenDayResets"].is_string(), "{read}");
+            assert!(read["fullUntil"].is_null(), "{read}");
+        } else {
+            std::thread::sleep(Duration::from_secs(3));
+            assert!(stub()["sevenDay"].is_null());
+        }
+        let plans = folder.0.join("home/plans");
+        within(5, "the read's folder removed", || {
+            plans
+                .read_dir()
+                .map_or(true, |mut d| d.next().is_none())
+                .then_some(())
+        });
+    }
+}

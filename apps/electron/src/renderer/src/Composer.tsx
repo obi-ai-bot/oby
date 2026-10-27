@@ -10,7 +10,7 @@ import { useClicksEverywhere } from './Menu';
 import { useTasks, type Task } from './tasks';
 import { BrandMark } from './brands';
 import { fullness, useAccounts } from './SettingsView';
-import { useRepos } from './live';
+import { lookAtUsage, useRepos } from './live';
 import { useScrollThumb } from './useScrollThumb';
 
 // What a message carries besides its words: files or photos (a photo with a
@@ -474,6 +474,7 @@ function UsagePanel({ onClose, onBlur }: { onClose: () => void; onBlur: (e: Reac
   const [accounts] = useAccounts();
   const close = useRef(onClose);
   close.current = onClose;
+  useEffect(lookAtUsage, []);
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') { e.stopImmediatePropagation(); close.current(); } };
     addEventListener('keydown', onKey, true);

@@ -503,8 +503,6 @@ pub async fn serve(
     // The machine's memory and each running job's, while jobs run or wait for it (crate::meter).
     // A job that waits for memory first gets what conversations' waiting Claude Codes hold.
     tokio::spawn(jobs.clone().meter(stopping_rx.clone()));
-    // Each account's usage, asked of its tool now and every 10 minutes (crate::jobs).
-    tokio::spawn(jobs.clone().read_usages(stopping_rx.clone()));
     {
         let shared = Arc::downgrade(&shared);
         jobs.on_short_of_memory(Box::new(move || {

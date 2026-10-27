@@ -752,6 +752,8 @@ pub struct Jobs {
     pub usage: crate::usage::Usages,
     /// Told when an account's usage changed: the `accounts` event goes out (crate::lib).
     pub usage_changed: Notify,
+    /// The usage reads an app's look starts ([`Jobs::want_usage`]).
+    usage_reads: Mutex<UsageReads>,
     /// What the meter last read: the machine's memory, and each running job's ([`Jobs::meter`]).
     measured: Mutex<Measured>,
     /// Wakes the meter: a job started, or waits for memory.
@@ -767,12 +769,32 @@ const MOST_SITES_ASKED: usize = 3;
 
 /// How often the meter reads while jobs run or wait for memory ([`Jobs::meter`]).
 const METER_TICK: Duration = Duration::from_secs(5);
-/// How often each account's usage is asked of its tool ([`Jobs::read_usages`]); a running job's
-/// own reports come between.
-// ponytail: a fixed tick; read on demand (the apps' usage panel opening) if 10 minutes is stale.
+/// How often at most each account's usage is asked of its tool ([`Jobs::want_usage`]); a running
+/// job's own reports come between.
 const USAGE_EVERY: Duration = Duration::from_secs(600);
 /// How long one account's usage read may take: Claude Code's took 4 seconds.
 const USAGE_READ_LIMIT: Duration = Duration::from_secs(30);
+
+/// The usage reads ([`Jobs::want_usage`]).
+#[derive(Default)]
+struct UsageReads {
+    /// When each account was last asked.
+    asked: HashMap<String, std::time::Instant>,
+    /// Accounts not asked again until obid restarts: their tool said no usage, or asked a model.
+    // ponytail: until a restart; forget one when it signs in again if a login's kind changes.
+    never: HashSet<String>,
+    /// Reads are under way.
+    reading: bool,
+}
+
+/// A usage read's folder, removed however the read ends, its login copy with it.
+struct ReadFolder(PathBuf);
+
+impl Drop for ReadFolder {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
 /// What a job's agent, or a check, may hold at once until obid has measured 3 like it: about one
 /// cold Rust build.
 pub const DEFAULT_BUDGET: u64 = 1536 * 1024 * 1024;
@@ -967,6 +989,7 @@ impl Jobs {
             cleaned: Mutex::new(Cleaned::default()),
             usage,
             usage_changed: Notify::new(),
+            usage_reads: Mutex::default(),
             measured: Mutex::new(Measured::default()),
             metering: Notify::new(),
             short_of_memory: std::sync::OnceLock::new(),
@@ -1680,68 +1703,98 @@ impl Jobs {
         }
     }
 
-    /// Each signed-in Claude Code and Codex account's usage, asked of its tool when obid starts
-    /// and every [`USAGE_EVERY`] after, so the apps show it before any job runs on it: Claude
-    /// Code's own `/usage` and Codex's `account/rateLimits/read`, neither of which asks a model.
-    /// Cursor's CLI reports no usage. `OBID_USAGE_READS=off` (obid's tests set it) reads none.
-    pub async fn read_usages(self: Arc<Self>, mut stopping: watch::Receiver<bool>) {
+    /// An app looks at the accounts (`GET /v1/status`, its event stream opening): each signed-in
+    /// Claude Code and Codex account not asked in the last [`USAGE_EVERY`] is asked of its tool
+    /// now, one after another in the background, so the apps show its usage before any job runs
+    /// on it: Claude Code's own `/usage` and Codex's `account/rateLimits/read`, neither asking a
+    /// model. While no app looks, nothing is read: a running job reports its own. Cursor's CLI
+    /// reports no usage. `OBID_USAGE_READS=off` (obid's tests set it) reads none.
+    pub fn want_usage(self: &Arc<Self>) {
         if std::env::var_os("OBID_USAGE_READS").is_some_and(|v| v == "off") {
             return;
         }
-        loop {
-            let home = login_home();
-            for tool in [Tool::Claude, Tool::Codex] {
-                for account in self.accounts(tool) {
-                    if *stopping.borrow() {
-                        return;
-                    }
-                    if self.being_changed(&account.id)
-                        || !signed_in(tool, &account, home.as_deref())
-                    {
-                        continue;
-                    }
-                    match self.read_usage(tool, &account).await {
-                        Ok(Some(usage)) => {
-                            let (was, now) = self.usage.record(&account.id, &usage);
-                            self.share_rise(&account.id, &was, &now);
-                            self.usage_changed.notify_one();
-                        }
-                        Ok(None) => tracing::info!(
-                            "{} account {}: it said nothing of its usage",
-                            tool.name(),
-                            account.id
-                        ),
-                        Err(why) => tracing::info!(
-                            "{} account {}: its usage wasn't read: {why}",
-                            tool.name(),
-                            account.id
-                        ),
-                    }
+        if std::mem::replace(&mut self.usage_reads().reading, true) {
+            return;
+        }
+        let jobs = self.clone();
+        tokio::spawn(async move {
+            jobs.read_due_usages().await;
+            jobs.usage_reads().reading = false;
+        });
+    }
+
+    fn usage_reads(&self) -> std::sync::MutexGuard<'_, UsageReads> {
+        self.usage_reads.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// [`Jobs::want_usage`]'s reads.
+    async fn read_due_usages(&self) {
+        use crate::usage::Asked;
+        let home = login_home();
+        for tool in [Tool::Claude, Tool::Codex] {
+            for account in self.accounts(tool) {
+                let id = account.id.clone();
+                let due = {
+                    let reads = self.usage_reads();
+                    !reads.never.contains(&id)
+                        && reads
+                            .asked
+                            .get(&id)
+                            .is_none_or(|at| at.elapsed() >= USAGE_EVERY)
+                };
+                if !due || self.being_changed(&id) || !signed_in(tool, &account, home.as_deref()) {
+                    continue;
                 }
-            }
-            tokio::select! {
-                () = tokio::time::sleep(USAGE_EVERY) => {}
-                _ = stopping.changed() => return,
+                self.usage_reads()
+                    .asked
+                    .insert(id.clone(), std::time::Instant::now());
+                let name = tool.name();
+                match self.read_usage(tool, &account).await {
+                    // Not for an account removed or being changed meanwhile: its usage is forgotten.
+                    Ok(Asked::Said(usage))
+                        if !self.being_changed(&id)
+                            && self.accounts(tool).iter().any(|a| a.id == id) =>
+                    {
+                        let (was, now) = self.usage.record(&id, &usage);
+                        self.share_rise(&id, &was, &now);
+                        self.usage_changed.notify_one();
+                    }
+                    Ok(Asked::Said(_)) => {}
+                    Ok(Asked::Silent) => {
+                        self.usage_reads().never.insert(id.clone());
+                        tracing::info!(
+                            "{name} account {id} reports no usage: not asked again until obid restarts"
+                        );
+                    }
+                    Ok(Asked::ModelRan) => {
+                        self.usage_reads().never.insert(id.clone());
+                        tracing::warn!(
+                            "{name} account {id}: /usage asked a model, so this Claude Code has no /usage of its own: not asked again until obid restarts"
+                        );
+                    }
+                    Err(why) => tracing::info!("{name} account {id}: usage not read: {why}"),
+                }
             }
         }
     }
 
-    /// One account's usage, from its tool boxed as the brain's run is: in a folder of its own in
-    /// `home/plans` with its own copy of the account's login, the folder removed after.
+    /// One account's usage, from its tool boxed as the brain's run is, in a folder of its own in
+    /// `home/plans` with its own copy of the account's login, removed however the read ends. It
+    /// never refreshes a login: a Claude Code copy that ends within 5 minutes isn't read with
+    /// (a run would refresh it, rotating the Mac's own away), and the Keychain keeper doesn't
+    /// count a read as the login's use (`claude_login_ready` isn't asked).
     async fn read_usage(
         &self,
         tool: Tool,
         account: &crate::config::Account,
-    ) -> Result<Option<crate::usage::Usage>, String> {
-        if tool == Tool::Claude {
-            self.claude_login_ready(Some(account)).await?;
-        }
-        let dir = self
-            .config
-            .home
-            .join("plans")
-            .join(uuid::Uuid::new_v4().to_string());
-        let temp = dir.join("home");
+    ) -> Result<crate::usage::Asked, String> {
+        let dir = ReadFolder(
+            self.config
+                .home
+                .join("plans")
+                .join(uuid::Uuid::new_v4().to_string()),
+        );
+        let temp = dir.0.join("home");
         store::make_private_dir(&temp)
             .map_err(|e| format!("obid can't make the read's folder: {e}"))?;
         let flags = match tool {
@@ -1749,27 +1802,25 @@ impl Jobs {
             // No plug-in sync, as a job's Codex (`launch`).
             _ => vec!["-c".into(), "features.plugins=false".into()],
         };
+        let login = dir.0.join("login");
         let launch = self.boxed_launch(Boxed {
             tool,
             account,
-            dir: &dir,
+            dir: &dir.0,
             temp: &temp,
-            login: &dir.join("login"),
+            login: &login,
             frozen: Vec::new(),
             flags,
-            stderr: dir.join("stderr.log"),
+            stderr: dir.0.join("stderr.log"),
             confined: false,
-        });
-        let read = match launch {
-            Ok(launch) => match tool {
-                Tool::Claude => agent::read_usage(&launch, USAGE_READ_LIMIT).await,
-                _ => codex::read_usage(&launch, USAGE_READ_LIMIT).await,
+        })?;
+        match tool {
+            Tool::Claude if !login_copy_lasts(&login) => {
+                Err("its login ends within 5 minutes: read once it's refreshed".into())
             }
-            .map_err(|e| format!("{} didn't start: {e}", tool.name())),
-            Err(why) => Err(why),
-        };
-        let _ = std::fs::remove_dir_all(&dir);
-        read
+            Tool::Claude => agent::read_usage(&launch, USAGE_READ_LIMIT).await,
+            _ => codex::read_usage(&launch, USAGE_READ_LIMIT).await,
+        }
     }
 
     /// One reading: the machine, and each running job's processes, those running in its worktree.

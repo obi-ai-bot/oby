@@ -146,9 +146,15 @@ function publish() {
     return {
       id: a.id, agent: a.agent, name: a.name, payer: a.payer ?? 'You', used: used == null ? null : Math.round(used * 100),
       resets: !a.signedIn ? 'Not signed in' : a.agent === 'cursor' ? 'Cursor doesn’t report usage' : used == null ? 'No use reported yet'
-        : a.sevenDayResets ? `Resets ${new Date(a.sevenDayResets).toLocaleDateString([], { weekday: 'long' })}` : '',
+        : a.sevenDayResets ? `Resets ${new Date(a.sevenDayResets).toLocaleDateString([], { weekday: 'long' })}` : 'No reset reported',
     };
   }));
+}
+
+// the usage panel opened: obid asks the tools for usage it hasn't read in 10 minutes, which comes
+// in an `accounts` event a few seconds later
+export function lookAtUsage() {
+  if (state.connection === 'live') void api.status().then((status) => set({ status }), () => {});
 }
 
 // --- events
