@@ -789,6 +789,7 @@ impl Place {
                 self.temp.join(".claude"),
                 self.temp.join(".claude.json"),
             ],
+            git: Vec::new(),
         }
     }
 
@@ -2882,6 +2883,7 @@ mod tests {
             temp: Some(place.temp.clone()),
             home: Some(place.temp.clone()),
             logins: vec![],
+            git: Vec::new(),
         };
         let web = AtomicBool::new(false);
         let taint = || web.store(true, Ordering::SeqCst);
@@ -2956,6 +2958,7 @@ mod tests {
             temp: Some(place.temp.clone()),
             home: Some(place.temp.clone()),
             logins: vec![],
+            git: Vec::new(),
         };
         let read = |path: std::path::PathBuf| {
             taints("Read", &json!({ "file_path": path }), &bounds, &place.repos)

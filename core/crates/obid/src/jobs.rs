@@ -2088,14 +2088,8 @@ impl Jobs {
             return Err("Oby checks only a job that's running.".into());
         }
         let worktree = self.worktree_path(id);
-        let output = Command::new("git")
-            .args([
-                "-C",
-                worktree.to_string_lossy().as_ref(),
-                "rev-parse",
-                "--verify",
-                "HEAD",
-            ])
+        let output = git::command(&worktree, &self.made_git_folders(&job))
+            .args(["rev-parse", "--verify", "HEAD"])
             .output()
             .map_err(|_| {
                 "Oby can't tell which commit the worktree is on. Commit your changes first."
@@ -2520,6 +2514,11 @@ impl Jobs {
             return Err(CheckResultError::Conflict);
         }
         let worktree = self.worktree_path(&job_id);
+        let Some(job) = self.get(&job_id) else {
+            return Err(CheckResultError::Missing);
+        };
+        let folders = self.made_git_folders(&job);
+        let git = || git::command(&worktree, &folders);
         let mut bytes = [0u8; 8];
         getrandom::fill(&mut bytes).map_err(|_| CheckResultError::Conflict)?;
         let file = std::env::temp_dir().join(format!("obid-check-{}.bundle", hex::encode(bytes)));
@@ -2529,67 +2528,32 @@ impl Jobs {
             .as_str()
             .map(|base| format!("refs/remotes/origin/{base}"));
         if let Some(base_ref) = &base_ref
-            && Command::new("git")
-                .args([
-                    "-C",
-                    worktree.to_string_lossy().as_ref(),
-                    "merge-base",
-                    "--is-ancestor",
-                    head,
-                    base_ref,
-                ])
+            && git()
+                .args(["merge-base", "--is-ancestor", head, base_ref])
                 .status()
                 .is_ok_and(|s| s.success())
         {
             return Ok(Vec::new());
         }
-        let update = Command::new("git")
-            .args([
-                "-C",
-                worktree.to_string_lossy().as_ref(),
-                "update-ref",
-                &reference,
-                head,
-            ])
-            .status();
+        let update = git().args(["update-ref", &reference, head]).status();
         if !update.is_ok_and(|s| s.success()) {
             return Err(CheckResultError::Conflict);
         }
-        let mut command = Command::new("git");
+        let mut command = git();
         command
-            .args([
-                "-C",
-                worktree.to_string_lossy().as_ref(),
-                "bundle",
-                "create",
-            ])
+            .args(["bundle", "create"])
             .arg(&file)
             .arg(&reference);
         if let Some(base_ref) = base_ref.filter(|base_ref| {
-            Command::new("git")
-                .args([
-                    "-C",
-                    worktree.to_string_lossy().as_ref(),
-                    "rev-parse",
-                    "--verify",
-                    "--quiet",
-                    base_ref,
-                ])
+            git()
+                .args(["rev-parse", "--verify", "--quiet", base_ref])
                 .status()
                 .is_ok_and(|s| s.success())
         }) {
             command.arg(format!("^{base_ref}"));
         }
         let status = command.status();
-        let _ = Command::new("git")
-            .args([
-                "-C",
-                worktree.to_string_lossy().as_ref(),
-                "update-ref",
-                "-d",
-                &reference,
-            ])
-            .status();
+        let _ = git().args(["update-ref", "-d", &reference]).status();
         if !status.is_ok_and(|s| s.success()) {
             let _ = std::fs::remove_file(&file);
             return Err(CheckResultError::Conflict);
@@ -4480,6 +4444,7 @@ impl Jobs {
             temp: Some(temp),
             home: Some(home),
             logins,
+            git: self.made_git_folders(job),
         }
     }
 
@@ -5684,6 +5649,16 @@ impl Jobs {
             }
             _ => Err(NOT_OUR_GIT.into()),
         }
+    }
+
+    /// The job's git folders where obid makes them (`clone/.git/worktrees/<id>`, beside `git
+    /// worktree add home/worktrees/<id>`, and `clone/.git`), as the variables that pin a git call in
+    /// its worktree there ([`git_folders`]): for calls that can't wait on [`Jobs::own_git_dirs`].
+    /// No pointer is read at all; folders that aren't the job's make the call fail.
+    fn made_git_folders(&self, job: &Job) -> Vec<(&'static str, String)> {
+        let common = git::clone_path(&self.config.home, &job.repo).join(".git");
+        let admin = common.join("worktrees").join(&job.id);
+        git_folders(&admin, &common, &self.worktree_path(&job.id))
     }
 
     /// [`Jobs::own_git_dirs`] as the variables that pin obid's own git calls in the worktree there
@@ -11025,6 +11000,9 @@ fn own_sandbox_env(
     let storage = account.config_dir.clone().unwrap_or_default();
     let env: Vec<(&'static str, OsString)> = vec![
         ("HOME", login.as_os_str().to_owned()),
+        // Where CoreFoundation and `security` look too: never the job's temporary folder, which
+        // its commands write (`env.sh` gives them that one).
+        ("CFFIXED_USER_HOME", login.as_os_str().to_owned()),
         ("CLAUDE_ENV_FILE", login.join("env.sh").into_os_string()),
         ("CLAUDE_CONFIG_DIR", folder.clone().into_os_string()),
         ("CLAUDE_SECURESTORAGE_CONFIG_DIR", storage.into_os_string()),
@@ -11059,12 +11037,32 @@ fn own_sandbox_env(
         .and_then(|()| link_keychains(login, &home))
         .map_err(|e| format!("obid can't show Claude Code its Keychain: {e}"))?;
     let temp = shell_quoted(&spec.temp.to_string_lossy());
-    std::fs::write(
-        login.join("env.sh"),
-        format!("export HOME={temp}\nexport CFFIXED_USER_HOME={temp}\n"),
+    write_fresh(
+        &login.join("env.sh"),
+        format!("export HOME={temp}\nexport CFFIXED_USER_HOME={temp}\n").as_bytes(),
     )
     .map_err(|e| format!("obid can't give Claude Code's commands their HOME: {e}"))?;
     Ok(env)
+}
+
+/// `bytes` in a new file at `path` (0600), whatever was there gone first and never followed: Claude
+/// Code lets its commands write `CLAUDE_ENV_FILE`, so one could have left a link to a file of the
+/// person's in its place. `create_new` (`O_EXCL`) fails on a link rather than write through it.
+fn write_fresh(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+    match std::fs::symlink_metadata(path) {
+        Ok(meta) if meta.is_dir() => std::fs::remove_dir_all(path)?,
+        Ok(_) => std::fs::remove_file(path)?,
+        Err(_) => {}
+    }
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(path)?
+        .write_all(bytes)
 }
 
 /// `text` in single quotes for `sh`, a quote in it closed, escaped and opened again.
@@ -11099,7 +11097,7 @@ fn link_keychains(at: &Path, home: &Path) -> std::io::Result<()> {
 /// only where the box would ([`Spec::writable`]), and never the git pointers ([`Spec::pointers`]) or
 /// what Claude Code keeps in `login` (its `Library` with the Keychains link, and `env.sh`, which
 /// Claude Code lets its commands write whatever the settings say: obid writes it again every turn,
-/// and what it sets reaches only them). Its Read and Edit tools ask before going outside the
+/// never through a link, [`write_fresh`], and what it sets reaches only them). Its Read and Edit tools ask before going outside the
 /// worktree, which obid refuses in this mode (`policy::names_outside`), and are denied the pointers
 /// and those outright. obid still answers each of its commands (`autoAllowBashIfSandboxed` off). A
 /// path the settings can't name stops the run.
@@ -13823,6 +13821,9 @@ mod tests {
         let login = home.join("logins/job");
         std::fs::create_dir_all(&login).unwrap();
         std::os::unix::fs::symlink(root.join("elsewhere"), login.join("Library")).unwrap();
+        // And an env.sh a command swapped for a link to a file of the person's: not written through.
+        std::fs::write(root.join("elsewhere/profile"), "theirs").unwrap();
+        std::os::unix::fs::symlink(root.join("elsewhere/profile"), login.join("env.sh")).unwrap();
         let spec = super::Spec {
             worktree: worktree.clone(),
             git_admin: Some(admin.clone()),
@@ -13864,6 +13865,16 @@ mod tests {
             root.join("account").to_str()
         );
         assert_eq!(get("HOME").as_deref(), login.to_str());
+        assert_eq!(get("CFFIXED_USER_HOME").as_deref(), login.to_str());
+        assert_eq!(
+            std::fs::read_to_string(root.join("elsewhere/profile")).unwrap(),
+            "theirs"
+        );
+        assert!(
+            std::fs::symlink_metadata(login.join("env.sh"))
+                .unwrap()
+                .is_file()
+        );
         assert_eq!(
             get("CLAUDE_ENV_FILE").as_deref(),
             login.join("env.sh").to_str()
@@ -14086,6 +14097,7 @@ mod tests {
             "printf '/tmp\\n' > \"$GIT_DIR/gitdir\" 2>/dev/null; echo gitdir:$?".into(),
             format!("ln -sfn /tmp {:?} 2>/dev/null; echo keychains-link:$?", login.join("Library/Keychains")),
             format!("mv {:?} {:?} 2>/dev/null; echo claude-library:$?", login.join("Library"), login.join("Moved")),
+            format!("ln -sfn /tmp/obid-probe-env {:?} 2>/dev/null; echo env-link:$?", login.join("env.sh")),
             "mkdir -p \"$HOME/Library/Caches/go-build\" && echo caches:ok".into(),
         ];
         // One script the model runs as it is, so no probe depends on its choosing to run it.
@@ -14186,6 +14198,7 @@ mod tests {
             ("gitdir:", "gitdir:0"),
             ("keychains-link:", "keychains-link:0"),
             ("claude-library:", "claude-library:0"),
+            ("env-link:", "env-link:0"),
         ] {
             assert!(results.contains(said), "{said} didn't run: {results}");
             assert!(!results.contains(never), "{never}: {results}");
