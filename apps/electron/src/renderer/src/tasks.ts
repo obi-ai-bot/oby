@@ -148,14 +148,22 @@ export function relay(id: string, text: string): { line: string; start?: () => s
 // Picked an answer to its decision: it shows as your reply, and Oby confirms.
 // Nothing's left for you to decide, so it no longer needs you: the agent goes
 // on (done, it stays done). Later keeps it needing you, only put off.
-export function answer(id: string, option: string) {
-  if (onObid) return void live.answerJob(id, option);
+// words: what the owner typed for an Edit (a check's command)
+export function answer(id: string, option: string, words?: string) {
+  if (onObid) return void live.answerJob(id, option, words);
   const k = tasks.find((x) => x.id === id);
   if (!k) return;
   update(id, () => ({ answer: option, status: option === 'Later' ? k.status : k.job.status === 'done' ? 'done' : 'running' }));
   say(id, { who: 'you', text: option, ago: 0 });
   const agent = AGENTS[k.job.agent].name;
   reply(id, () => (option === 'Later' ? 'Okay, it’ll wait. I’ll bring it back up in an hour.' : `Got it. ${agent} will go with that.`));
+}
+
+// Change check on a task's page: its repository's check, or none to start over (on obid the
+// owner's tap keeps it, live.changeCheck); on the mock, its tasks there show it at once
+export function changeCheck(repo: string, check: string | null) {
+  if (onObid) return void live.changeCheck(repo, check);
+  for (const k of tasks.filter((x) => x.job.repo === repo)) update(k.id, () => ({ job: { ...k.job, check: check ?? undefined, repoCheck: check } }));
 }
 
 // Stopped by you: it ends where it was, with nothing left to decide, and moves to Done

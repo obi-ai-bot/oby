@@ -1384,7 +1384,7 @@ impl Link {
     }
 
     /// An item as the API shows it: with its `triage`.
-    fn shown(&self, item: &Item) -> Value {
+    pub fn shown(&self, item: &Item) -> Value {
         let mut shown = item.to_json();
         shown["triage"] = self.triage_of(item).into();
         shown
@@ -4469,23 +4469,58 @@ impl Link {
         item
     }
 
-    /// [`Link::add_confirm`], unless a `confirm` item for the same job and action is still open:
-    /// that one stands, so a caller asking again and again adds nothing (crate::jobs,
-    /// `confirm_past_safety`).
+    /// [`Link::add_confirm`], unless a `confirm` item with the same action and target is still
+    /// open: that one stands, so a caller asking again and again adds nothing (crate::jobs:
+    /// `confirm_past_safety`'s job, `offer_check`'s repository).
     pub fn add_confirm_once(&self, item: Item) -> Item {
-        let action = |i: &Item| i.confirm.as_ref().map(|c| c.action.clone());
+        let what = |i: &Item| {
+            i.confirm
+                .as_ref()
+                .map(|c| (c.action.clone(), c.target.clone()))
+        };
         {
-            let state = self.lock();
-            if let Some(open) = state.inbox.values().find(|i| {
-                i.kind == "confirm"
-                    && i.done.is_none()
-                    && i.job == item.job
-                    && action(i) == action(&item)
-            }) {
+            let mut state = self.lock();
+            if let Some(open) = state
+                .inbox
+                .values()
+                .find(|i| i.kind == "confirm" && i.done.is_none() && what(i) == what(&item))
+            {
                 return open.clone();
             }
+            state.inbox.insert(item.id.clone(), item.clone());
         }
-        self.add_confirm(item)
+        self.save_item(&item);
+        item
+    }
+
+    /// [`Link::add_confirm`] in place of every open `confirm` item with the same action and
+    /// target, which are done unanswered: the owner asked for this one (`POST /v1/repos/check`),
+    /// so only it stands.
+    pub fn add_confirm_instead(&self, item: Item) -> Item {
+        let what = |i: &Item| {
+            i.confirm
+                .as_ref()
+                .map(|c| (c.action.clone(), c.target.clone()))
+        };
+        let closed: Vec<Item> = {
+            let mut state = self.lock();
+            let now = time::now();
+            let closed = state
+                .inbox
+                .values_mut()
+                .filter(|i| i.kind == "confirm" && i.done.is_none() && what(i) == what(&item))
+                .map(|i| {
+                    i.done = Some(now);
+                    i.clone()
+                })
+                .collect();
+            state.inbox.insert(item.id.clone(), item.clone());
+            closed
+        };
+        for old in closed.iter().chain([&item]) {
+            self.save_item(old);
+        }
+        item
     }
 
     /// `POST /v1/inbox/{id}/answer` on a `confirm` item: `Confirm` carries out what its title
@@ -4506,6 +4541,23 @@ impl Link {
                         StatusCode::UNPROCESSABLE_ENTITY,
                         format!("The answer is {} or {}.", inbox::CONFIRM, inbox::CANCEL),
                     ));
+                }
+                // Cancel on Oby's ask for a repository's check (#1062): with none kept there, it's
+                // No check, remembered, so Oby never asks about it again; with one, that stays.
+                if answer == inbox::CANCEL
+                    && let Some(repo) = item
+                        .confirm
+                        .as_ref()
+                        .filter(|c| c.action == inbox::action::SET_CHECK)
+                        .map(|c| c.target.clone())
+                    && self
+                        .config
+                        .repos
+                        .find(&repo)
+                        .is_some_and(|r| r.check.is_none())
+                    && let Err(e) = crate::settings::no_check(&self.config.home, &repo, true)
+                {
+                    tracing::warn!("No check for {repo} isn't remembered: {e}");
                 }
                 if answer == inbox::CONFIRM {
                     let done = match item.confirm.clone() {
@@ -4807,16 +4859,33 @@ impl Link {
                 }
                 Ok(())
             }
-            // The check Oby offered for a repository with none (#1062), kept on the owner's tap.
+            // A repository's check Oby asked about (#1062), kept on the owner's tap: the command
+            // made its check, or with none the one it had (`was`) taken out. Either way Oby may
+            // ask there again, and No check is forgotten.
             inbox::action::SET_CHECK => {
-                let check = confirmed.payload["check"].as_str().unwrap_or("");
-                if check.trim().is_empty() || check.contains('\n') || check.chars().count() > 200 {
-                    return Err(api(StatusCode::CONFLICT, "That check's plan was lost."));
+                let payload = &confirmed.payload;
+                let check = match &payload["check"] {
+                    Value::String(check) if crate::brain::plan::is_check(check) => {
+                        Some(check.as_str())
+                    }
+                    Value::Null => None,
+                    _ => return Err(api(StatusCode::CONFLICT, "That check's plan was lost.")),
+                };
+                let now = self.config.repos.find(target).and_then(|r| r.check);
+                if check.is_none() && now.as_deref() != payload["was"].as_str() {
+                    return Err(api(
+                        StatusCode::CONFLICT,
+                        format!("{target}'s check changed since Oby asked: ask again."),
+                    ));
                 }
                 self.config
                     .repos
                     .set_check(target, check)
-                    .map_err(|why| api(StatusCode::CONFLICT, why))
+                    .map_err(|why| api(StatusCode::CONFLICT, why))?;
+                if let Err(e) = crate::settings::no_check(&self.config.home, target, false) {
+                    tracing::warn!("No check for {target} isn't forgotten: {e}");
+                }
+                Ok(())
             }
             // The ones that answer an inbox item, as the owner would have.
             inbox::action::ACCEPT

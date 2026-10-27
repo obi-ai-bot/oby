@@ -288,6 +288,10 @@ pub struct Job {
     pub rounds: Option<u32>,
     pub round: Option<u32>,
     pub check: Option<String>,
+    /// Whether Oby asked the owner for its repository's check when it started with none (#1062):
+    /// it went on without one, and its pull request says so. Kept in its file, never in the API.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub check_asked: bool,
     pub model: Option<String>,
     pub effort: Option<String>,
     pub notes: Option<Vec<String>>,
@@ -714,6 +718,7 @@ impl Job {
             rounds: None,
             round: None,
             check: None,
+            check_asked: false,
             model: None,
             effort: None,
             notes: None,

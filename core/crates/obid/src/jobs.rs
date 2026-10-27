@@ -3801,11 +3801,14 @@ impl Jobs {
         ))
     }
 
-    /// The first job in a GitHub repository with no check offers one (#1062), once per repository
-    /// (`checksOffered` in `home/settings.json`), whatever the answer: a `confirm` item whose
-    /// command obid guessed from the files at `commit` in its own clone
-    /// (crate::repos::guess_check). Confirm keeps it on the repository (`set_check`), for the jobs
-    /// after this one; this one goes on with none, its pull request saying so.
+    /// A job in a GitHub repository with no check asks the owner for one (#1062), until they answer:
+    /// a `confirm` item (crate::sphere::inbox::check_item) whose command obid guessed from the files
+    /// at `commit` in its own clone (crate::repos::guess_check), one open per repository (the inbox
+    /// keeps the first). Use it keeps it on the repository (`set_check`) and Edit the owner's own
+    /// command, for the jobs that start after; No check is remembered (`noCheck` in
+    /// `home/settings.json`), so it never asks there again. This job never waits for the answer:
+    /// it goes on with none, and its pull request says Oby asked (`check_asked`). Never for a
+    /// guess whose tool isn't on the `PATH` jobs run with (crate::repos::runs_here).
     async fn offer_check(&self, job: &Job, clone: &Path, commit: &str) {
         let Some(hook) = self.confirm_hook.get() else {
             return;
@@ -3817,7 +3820,7 @@ impl Jobs {
                 .repo(&job.repo)
                 .is_none_or(|r| r.check.is_some() || !crate::github::is_remote(&r.remote))
             || crate::settings::load(&self.config.home)
-                .checks_offered
+                .no_check
                 .iter()
                 .any(same)
         {
@@ -3828,7 +3831,7 @@ impl Jobs {
         };
         let names: Vec<String> = listed.lines().map(str::to_owned).collect();
         let mut texts = Vec::new();
-        for name in ["Makefile", "package.json"] {
+        for name in ["Makefile", "package.json", "pyproject.toml"] {
             if names.iter().any(|n| n == name)
                 && let Ok(text) = git::git(clone, &["show", &format!("{commit}:{name}")]).await
             {
@@ -3841,33 +3844,20 @@ impl Jobs {
                 .find(|(n, _)| *n == name)
                 .map(|(_, t)| t.clone())
         };
-        let Some(check) = crate::repos::guess_check(&names, read) else {
+        // A tool that isn't where jobs look for it would fail every job there: no guess then.
+        let Some(check) = crate::repos::guess_check(&names, read)
+            .filter(|check| crate::repos::runs_here(check, &process::tools_path()))
+        else {
             return;
         };
-        let first = crate::settings::update(&self.config.home, |settings| {
-            let first = !settings.checks_offered.iter().any(same);
-            if first {
-                settings.checks_offered.push(job.repo.clone());
-            }
-            first
-        });
-        if !matches!(first, Ok(true)) {
-            return;
-        }
-        let repo = &job.repo;
-        hook(crate::sphere::inbox::confirm_item(
+        hook(crate::sphere::inbox::check_item(
             &job.id,
-            format!("Use `{check}` as the check for {repo}"),
-            format!(
-                "Can I use `{check}` as the check for {repo}? It has none, so its pull requests go out after the secret scan alone. With `{check}` as its check, every job there runs it in its box, with no network, before anything goes out. It's kept only if you confirm."
-            ),
-            crate::sphere::inbox::Confirmed {
-                action: crate::sphere::inbox::action::SET_CHECK.into(),
-                target: repo.clone(),
-                payload: json!({"check": check}),
-            },
+            &job.repo,
+            Some(&check),
+            None,
             obi_protocol::time::now(),
         ));
+        self.update(&job.id, |job| job.check_asked = true);
     }
 
     fn note(&self, note: PermissionNote) {
@@ -16519,20 +16509,17 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// The first job in a GitHub repository with no check offers the check obid guessed, once:
-    /// never again there, whatever the answer, and never where there's a check (#1062).
+    /// A job in a GitHub repository with no check asks for the check obid guessed from the files
+    /// at its start commit (here a Makefile's `test` target): never where there's a check, nor
+    /// where the owner said No check (#1062). Each such job asks; the inbox keeps one open per
+    /// repository (tests/repo_check.rs).
     #[tokio::test]
-    async fn a_repository_with_no_check_is_offered_one_once() {
+    async fn a_repository_with_no_check_is_asked_for_one() {
         let root = std::env::temp_dir().join(format!("obid-offer-{}", uuid::Uuid::new_v4()));
         let home = root.join("home");
         let clone = root.join("clone");
         std::fs::create_dir_all(&clone).unwrap();
-        std::fs::write(
-            clone.join("package.json"),
-            r#"{"scripts": {"test": "vitest"}}"#,
-        )
-        .unwrap();
-        std::fs::write(clone.join("pnpm-lock.yaml"), "").unwrap();
+        std::fs::write(clone.join("Makefile"), "test:\n\ttrue\n").unwrap();
         let git = |args: &[&str]| {
             let done = std::process::Command::new("git")
                 .args([
@@ -16558,10 +16545,13 @@ mod tests {
             &json!({"listen": "127.0.0.1:0", "home": home, "owner": "o", "repos": [
                 {"repo": "o/app", "remote": "https://github.com/o/app.git"},
                 {"repo": "o/checked", "remote": "https://github.com/o/checked.git", "check": "make"},
+                {"repo": "o/declined", "remote": "https://github.com/o/declined.git"},
                 {"repo": "o/local", "remote": "https://example.com/o/local.git"}]})
             .to_string(),
         )
         .unwrap();
+        std::fs::create_dir_all(&home).unwrap();
+        crate::settings::no_check(&home, "O/Declined", true).unwrap();
         let jobs = Jobs::open(
             config,
             crate::events::Events::new(),
@@ -16583,22 +16573,44 @@ mod tests {
             job.check = jobs.repo(repo).and_then(|r| r.check);
             job
         };
-        for repo in ["o/checked", "o/local", "o/app", "O/App"] {
+        for repo in ["o/checked", "o/declined", "o/local", "o/app", "o/app"] {
             jobs.offer_check(&job(repo), &clone, &commit).await;
         }
         let items = items.lock().unwrap().clone();
-        assert_eq!(items.len(), 1, "{items:?}");
-        assert_eq!(items[0].title, "Use `pnpm test` as the check for o/app");
-        assert!(
-            items[0]
-                .text
-                .starts_with("Can I use `pnpm test` as the check for o/app?")
+        assert_eq!(items.len(), 2, "{items:?}");
+        // Asked again by the second job: the inbox keeps the open one (Link::add_confirm_once).
+        let again = crate::sphere::inbox::Item {
+            id: items[0].id.clone(),
+            created: items[0].created,
+            arrived: items[0].arrived,
+            ..items[1].clone()
+        };
+        assert_eq!(items[0], again);
+        assert_eq!(
+            items[0].title,
+            "Use `make test` as o/app's check before publishing?"
+        );
+        assert_eq!(items[0].job, "ffff0001");
+        assert_eq!(
+            items[0].details.as_deref().unwrap(),
+            [
+                "Every later job in o/app runs `make test` before it publishes.",
+                "o/app keeps no check, and Oby doesn't ask again."
+            ]
         );
         let confirmed = items[0].confirm.as_deref().unwrap();
         assert_eq!(confirmed.action, crate::sphere::inbox::action::SET_CHECK);
         assert_eq!(confirmed.target, "o/app");
-        assert_eq!(confirmed.payload, json!({"check": "pnpm test"}));
-        assert_eq!(crate::settings::load(&home).checks_offered, ["o/app"]);
+        assert_eq!(
+            confirmed.payload,
+            json!({"check": "make test", "was": null})
+        );
+        assert!(
+            items[0]
+                .text
+                .ends_with("No check keeps none, and Oby won't ask again.")
+        );
+        assert_eq!(crate::settings::load(&home).no_check, ["O/Declined"]);
         let _ = std::fs::remove_dir_all(&root);
     }
 

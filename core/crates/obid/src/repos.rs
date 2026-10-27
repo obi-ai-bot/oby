@@ -131,19 +131,19 @@ impl Repos {
         }
     }
 
-    /// Makes `check` the check of `name` (a listed repository, or one of GitHub's, listed now), the
-    /// owner's Confirm of Oby's offer (#1062): kept in the configuration file's entry, so later
-    /// jobs there run it.
-    pub fn set_check(&self, name: &str, check: &str) -> Result<(), String> {
+    /// Makes `check` the check of `name` (a listed repository, or one of GitHub's, listed now), or
+    /// takes its check out with none: the owner's Confirm of Oby's ask (#1062), kept in the
+    /// configuration file's entry, so later jobs there run it.
+    pub fn set_check(&self, name: &str, check: Option<&str>) -> Result<(), String> {
         let repo = self
             .find(name)
             .ok_or_else(|| format!("{name} isn't a repository obid knows."))?;
         let file = {
             let mut state = self.write();
             match state.listed.iter_mut().find(|r| same(&r.repo, name)) {
-                Some(listed) => listed.check = Some(check.to_owned()),
+                Some(listed) => listed.check = check.map(str::to_owned),
                 None => state.listed.push(Repo {
-                    check: Some(check.to_owned()),
+                    check: check.map(str::to_owned),
                     ..repo.clone()
                 }),
             }
@@ -201,9 +201,9 @@ impl PartialEq for Repos {
 impl Eq for Repos {}
 
 /// `repo` added to the `repos` of the configuration at `file`, with `check` as its check when
-/// given, written through a temporary file (0600). ponytail: rewritten as a JSON value, so the
-/// file's keys come out sorted; a text edit if that ever matters to someone.
-fn add_to_file(file: &Path, repo: &Repo, check: Option<&str>) -> Result<(), String> {
+/// given (`Some(None)` takes it out), written through a temporary file (0600). ponytail: rewritten
+/// as a JSON value, so the file's keys come out sorted; a text edit if that ever matters to someone.
+fn add_to_file(file: &Path, repo: &Repo, check: Option<Option<&str>>) -> Result<(), String> {
     let unkept =
         |e: &dyn std::fmt::Display| format!("{} isn't in {} yet: {e}", repo.repo, file.display());
     let text = std::fs::read(file).map_err(|e| unkept(&e))?;
@@ -226,8 +226,14 @@ fn add_to_file(file: &Path, repo: &Repo, check: Option<&str>) -> Result<(), Stri
                           "defaultBranch": repo.default_branch}));
         repos.len() - 1
     });
-    if let (Some(check), Some(entry)) = (check, repos[at].as_object_mut()) {
-        entry.insert("check".into(), json!(check));
+    match (check, repos[at].as_object_mut()) {
+        (Some(Some(check)), Some(entry)) => {
+            entry.insert("check".into(), json!(check));
+        }
+        (Some(None), Some(entry)) => {
+            entry.remove("check");
+        }
+        _ => {}
     }
     let mut text = serde_json::to_vec_pretty(&config).map_err(|e| unkept(&e))?;
     text.push(b'\n');
@@ -235,9 +241,10 @@ fn add_to_file(file: &Path, repo: &Repo, check: Option<&str>) -> Result<(), Stri
 }
 
 /// The check Oby offers for a repository with none (#1062), from the names of the files at its
-/// root and the text of two of them (`read`: its `Makefile`, its `package.json`), only to see
-/// whether they have a test. The command is always one of obid's own, never words from the
-/// repository. ponytail: the usual root files only; more tools when owners say a guess missed.
+/// root and the text of three of them (`read`: its `Makefile`, its `package.json`, its
+/// `pyproject.toml`), only to see whether they have a test and which tool runs it. The command is
+/// always one of obid's own, never words from the repository. ponytail: the usual root files only;
+/// more tools when owners say a guess missed.
 pub fn guess_check(names: &[String], read: impl Fn(&str) -> Option<String>) -> Option<String> {
     let has = |name: &str| names.iter().any(|n| n == name);
     let make_test = |text: String| {
@@ -252,38 +259,74 @@ pub fn guess_check(names: &[String], read: impl Fn(&str) -> Option<String>) -> O
         return Some("make test".into());
     }
     if has("package.json") {
-        let scripts = read("package.json")
+        let package = read("package.json")
             .and_then(|text| serde_json::from_str::<Value>(&text).ok())
-            .map(|package| package["scripts"].clone())
             .unwrap_or_default();
-        let runner = if has("pnpm-lock.yaml") {
-            "pnpm"
-        } else if has("yarn.lock") {
-            "yarn"
-        } else {
-            "npm"
+        let scripts = &package["scripts"];
+        // The tool the repository names (Corepack's `packageManager`), else its lockfile's.
+        let runner = match package["packageManager"]
+            .as_str()
+            .and_then(|named| named.split('@').next())
+        {
+            Some("pnpm") => "pnpm",
+            Some("yarn") => "yarn",
+            Some("bun") => "bun",
+            Some("npm") => "npm",
+            _ if has("pnpm-lock.yaml") => "pnpm",
+            _ if has("yarn.lock") => "yarn",
+            _ if has("bun.lock") || has("bun.lockb") => "bun",
+            _ => "npm",
         };
         // npm init's own placeholder fails on purpose.
         if scripts["test"]
             .as_str()
             .is_some_and(|test| !test.contains("no test specified"))
         {
-            return Some(format!("{runner} test"));
+            // `bun test` is Bun's own test runner, not the script.
+            return Some(match runner {
+                "bun" => "bun run test".into(),
+                runner => format!("{runner} test"),
+            });
         }
         if scripts["lint"].is_string() {
             return Some(format!("{runner} run lint"));
         }
     }
+    // pytest only where the repository uses it (one that collects no tests fails), and only through
+    // the tool that keeps its environment: the check's `python3` never sees a `.venv` the agent made.
+    let uses_pytest = has("pytest.ini")
+        || has("conftest.py")
+        || (has("pyproject.toml") && read("pyproject.toml").is_some_and(|t| t.contains("pytest")));
+    let pytest = if !uses_pytest {
+        None
+    } else if has("uv.lock") {
+        Some("uv run pytest")
+    } else if has("poetry.lock") {
+        Some("poetry run pytest")
+    } else {
+        None
+    };
     let by_file = [
         ("Cargo.toml", "cargo test"),
         ("go.mod", "go test ./..."),
-        ("pyproject.toml", "pytest"),
         ("Package.swift", "swift test"),
+        ("gradlew", "./gradlew test"),
+        ("pom.xml", "mvn test"),
     ];
     by_file
         .iter()
         .find(|(file, _)| has(file))
-        .map(|(_, check)| (*check).to_owned())
+        .map(|(_, check)| *check)
+        .or(pytest)
+        .map(str::to_owned)
+}
+
+/// Whether the tool `check` starts with is on the `PATH` (`path`) jobs and checks run with, or is
+/// the repository's own (`./gradlew`): one that isn't fails every job with "command not found".
+pub fn runs_here(check: &str, path: &std::ffi::OsStr) -> bool {
+    let tool = check.split_whitespace().next().unwrap_or("");
+    tool.contains('/')
+        || std::env::split_paths(path).any(|dir| crate::sandbox::is_executable(&dir.join(tool)))
 }
 
 /// The repositories gh's `api` printed (`owner/name`, a tab, the default branch, a line each), as
@@ -359,7 +402,8 @@ pub fn spawn(shared: Arc<Shared>) {
 /// can push to, newest push first.
 pub async fn list(State(shared): State<Arc<Shared>>) -> Result<Response, ApiError> {
     let repos = &shared.config.repos;
-    let entry = |r: Repo, listed: bool| json!({"repo": r.repo, "defaultBranch": r.default_branch, "listed": listed});
+    let no_check = crate::settings::load(&shared.config.home).no_check;
+    let entry = |r: Repo, listed: bool| entry(&r, listed, &no_check);
     let all: Vec<Value> = repos
         .get()
         .into_iter()
@@ -367,6 +411,71 @@ pub async fn list(State(shared): State<Arc<Shared>>) -> Result<Response, ApiErro
         .chain(repos.github().into_iter().map(|r| entry(r, false)))
         .collect();
     Ok(axum::Json(json!({ "repos": all })).into_response())
+}
+
+/// A repository as `GET /v1/repos` lists it: its check (#1062) and whether the owner said No check.
+fn entry(r: &Repo, listed: bool, no_check: &[String]) -> Value {
+    json!({"repo": r.repo, "defaultBranch": r.default_branch, "listed": listed, "check": r.check,
+           "noCheck": no_check.iter().any(|n| same(n, &r.repo))})
+}
+
+/// `POST /v1/repos/check` (#1062): the owner changes a repository's check, `{"repo", "check"}`. A
+/// command opens Oby's ask for it (crate::sphere::inbox::check_item), in place of any open one, and
+/// answers it: only the owner's signed Confirm of that item keeps it, as when Oby asks. `null`
+/// starts over: a check kept there is taken out the same way, on a Confirm; with none, No check is
+/// forgotten at once, and the next job there asks again. Answers the repository as listed, and
+/// the ask (`null` when there's none).
+pub async fn change_check(
+    State(shared): State<Arc<Shared>>,
+    body: axum::body::Bytes,
+) -> Result<Response, ApiError> {
+    use axum::http::StatusCode;
+    let refused = |why: String| ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, why);
+    let body: Value = serde_json::from_slice(&body)
+        .map_err(|_| refused("The body is {\"repo\", \"check\"}.".into()))?;
+    let name = body["repo"].as_str().unwrap_or_default();
+    let repo = shared
+        .config
+        .repos
+        .find(name)
+        .ok_or_else(|| refused(format!("{name} isn't a repository obid knows.")))?;
+    let check = match body.get("check") {
+        Some(Value::String(check)) if crate::brain::plan::is_check(check) => Some(check.trim()),
+        Some(Value::Null) => None,
+        _ => {
+            return Err(refused(
+                "check is one line of up to 200 characters, or null to start over.".into(),
+            ));
+        }
+    };
+    let ask = match (check, repo.check.as_deref()) {
+        (None, None) => {
+            crate::settings::no_check(&shared.config.home, &repo.repo, false)
+                .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+            None
+        }
+        (check, current) => Some(shared.link.add_confirm_instead(
+            crate::sphere::inbox::check_item(
+                "",
+                &repo.repo,
+                check,
+                current,
+                obi_protocol::time::now(),
+            ),
+        )),
+    };
+    let no_check = crate::settings::load(&shared.config.home).no_check;
+    let listed = repos_listed(&shared.config.repos, &repo.repo);
+    Ok(axum::Json(json!({
+        "repo": entry(&repo, listed, &no_check),
+        "ask": ask.map(|item| shared.link.shown(&item)),
+    }))
+    .into_response())
+}
+
+/// Whether `name` is one of the configuration's repositories (else one of GitHub's).
+fn repos_listed(repos: &Repos, name: &str) -> bool {
+    repos.get().iter().any(|r| same(&r.repo, name))
 }
 
 #[cfg(test)]
@@ -425,14 +534,17 @@ mod tests {
 
     #[test]
     fn a_check_is_guessed_from_the_repositorys_own_files() {
-        let guess = |names: &[&str], make: &str, package: &str| {
+        let guess_with = |names: &[&str], make: &str, package: &str, pyproject: &str| {
             let names: Vec<String> = names.iter().map(|n| (*n).to_owned()).collect();
             guess_check(&names, |name| match name {
                 "Makefile" => Some(make.to_owned()),
                 "package.json" => Some(package.to_owned()),
+                "pyproject.toml" => Some(pyproject.to_owned()),
                 _ => None,
             })
         };
+        let guess =
+            |names: &[&str], make: &str, package: &str| guess_with(names, make, package, "");
         let none = guess(&["README.md", "src"], "", "");
         assert_eq!(none, None);
         let make = "build:\n\tcc x.c\ntest lint: build\n\t./run";
@@ -462,15 +574,75 @@ mod tests {
             Some("npm test")
         );
         assert_eq!(guess(&["package.json"], "", "{"), None);
-        assert_eq!(guess(&["go.mod"], "", "").as_deref(), Some("go test ./..."));
+        // The tool package.json names wins over a lockfile; Bun runs the script, not its own runner.
+        let named = |tool: &str| {
+            format!(r#"{{"packageManager": "{tool}@9.1.0", "scripts": {{"test": "vitest"}}}}"#)
+        };
         assert_eq!(
-            guess(&["pyproject.toml"], "", "").as_deref(),
-            Some("pytest")
+            guess(&["package.json", "yarn.lock"], "", &named("pnpm")).as_deref(),
+            Some("pnpm test")
+        );
+        assert_eq!(
+            guess(&["package.json"], "", &named("evil; rm -rf /")).as_deref(),
+            Some("npm test")
+        );
+        assert_eq!(
+            guess(&["package.json", "bun.lockb"], "", tested).as_deref(),
+            Some("bun run test")
+        );
+        assert_eq!(guess(&["go.mod"], "", "").as_deref(), Some("go test ./..."));
+        // pytest only where the repository uses it, through the tool that keeps its environment:
+        // a pip project's `.venv` is nowhere the check's `python3` looks.
+        let pytested = "[tool.pytest.ini_options]\ntestpaths = [\"tests\"]\n";
+        assert_eq!(
+            guess_with(&["pyproject.toml"], "", "", "[project]\nname = \"x\"\n"),
+            None
+        );
+        assert_eq!(guess_with(&["pyproject.toml"], "", "", pytested), None);
+        assert_eq!(guess(&["conftest.py", "requirements.txt"], "", ""), None);
+        assert_eq!(
+            guess_with(&["pyproject.toml", "uv.lock"], "", "", pytested).as_deref(),
+            Some("uv run pytest")
+        );
+        assert_eq!(
+            guess(&["conftest.py", "poetry.lock"], "", "").as_deref(),
+            Some("poetry run pytest")
         );
         assert_eq!(
             guess(&["Package.swift"], "", "").as_deref(),
             Some("swift test")
         );
+        assert_eq!(
+            guess(&["gradlew", "build.gradle"], "", "").as_deref(),
+            Some("./gradlew test")
+        );
+        assert_eq!(guess(&["pom.xml"], "", "").as_deref(), Some("mvn test"));
+    }
+
+    /// A guess runs only with a tool on the jobs' `PATH`, or the repository's own; a check is one
+    /// line with no control character.
+    #[test]
+    fn a_guess_needs_its_tool_where_jobs_look() {
+        let dir = std::env::temp_dir().join(format!("obid-runs-here-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let tool = dir.join("uv");
+        std::fs::write(&tool, "#!/bin/sh\n").unwrap();
+        let path = std::ffi::OsString::from(format!("/nowhere:{}", dir.display()));
+        assert!(!runs_here("uv run pytest", &path));
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&tool, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(runs_here("uv run pytest", &path));
+        assert!(!runs_here("poetry run pytest", &path));
+        assert!(runs_here("./gradlew test", &path));
+        let _ = std::fs::remove_dir_all(&dir);
+        use crate::brain::plan::is_check;
+        assert!(is_check("cargo test -p obid"));
+        assert!(!is_check("  "));
+        assert!(!is_check("make\nrm -rf ~"));
+        assert!(!is_check("make test\0"));
+        assert!(!is_check("make \u{1b}[2Jtest"));
+        assert!(!is_check(&"x".repeat(201)));
     }
 
     /// The owner's Confirm of an offered check (#1062) sets it on the listed entry, or lists one of
@@ -490,9 +662,9 @@ mod tests {
         }]);
         repos.open(&file);
         repos.write().github = vec![repo("octo/app")];
-        repos.set_check("O/Old", "cargo test").unwrap();
-        repos.set_check("octo/app", "pnpm test").unwrap();
-        assert!(repos.set_check("octo/none", "make test").is_err());
+        repos.set_check("O/Old", Some("cargo test")).unwrap();
+        repos.set_check("octo/app", Some("pnpm test")).unwrap();
+        assert!(repos.set_check("octo/none", Some("make test")).is_err());
         assert_eq!(
             repos.find("o/old").unwrap().check.as_deref(),
             Some("cargo test")
@@ -509,6 +681,14 @@ mod tests {
                 {"repo": "o/old", "remote": "https://x/o/old.git", "defaultBranch": "dev", "check": "cargo test"},
                 {"repo": "octo/app", "remote": "https://github.com/octo/app.git", "defaultBranch": "main", "check": "pnpm test"},
             ])
+        );
+        // Taken out, on the owner's Confirm: the entry stays, with no check.
+        repos.set_check("octo/app", None).unwrap();
+        assert_eq!(repos.find("octo/app").unwrap().check, None);
+        let after: Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+        assert_eq!(
+            after["repos"][1],
+            json!({"repo": "octo/app", "remote": "https://github.com/octo/app.git", "defaultBranch": "main"})
         );
         let _ = std::fs::remove_dir_all(&dir);
     }

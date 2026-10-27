@@ -95,6 +95,7 @@ export type Job = {
   branch: string;
   base: string;
   check?: string;      // "Done when": the command that has to pass
+  repoCheck?: string | null;  // obid only: its repository's check now, which Change check starts from
   status: JobStatus;
   step: string;        // the live line, e.g. "Running swift test"
   waiting?: Waiting;   // why a queued job hasn't started, as the runner says it (#238)
