@@ -1,11 +1,12 @@
-import { useEffect, useState, type ReactNode } from 'react';
-import { Check } from 'lucide-react';
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode, type Ref } from 'react';
+import { Check, MousePointer2 } from 'lucide-react';
 import { ChatsCircleIcon, PlusIcon } from '@phosphor-icons/react';
 import Oby from './Oby';
 import { BRANDS, BrandMark } from './brands';
 import { ObyFace, OwnerAvatar } from './ObyFace';
 import SphereTile from './SphereTile';
-import { SUFFIX } from './spheres';
+import { SUFFIX, slugOf } from './spheres';
+import { clock } from './stream';
 import { AGENTS, PEER_CONVOS, type Agent } from './mock';
 
 // First launch: what Oby found signed in on this Mac, then four short scenes of
@@ -26,7 +27,7 @@ function useBeat(last: number, ms: number, loop = true, on = true) {
   return beat;
 }
 // reduced motion: scenes show their last frame, nothing timed
-const still = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
+export const still = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
 
 const Dot = ({ state }: { state: 'working' | 'needs' }) => <span className="status"><span className={`status-dot is-${state}`} /></span>;
 
@@ -161,8 +162,9 @@ export const SAMPLE_TALK: Record<string, { title: string; talk: Line[] }> = {
   Wellington: { title: 'Status bar states for the island', talk: peerTalk('p1') },
 };
 // onEnd: once its last line is in (not looping)
-export function Sphere({ talk = TALK, peer = 'Ernesto', loop = true, onEnd }: { talk?: Line[]; peer?: string; loop?: boolean; onEnd?: () => void } = {}) {
-  const calm = still();
+// skip: straight to its end (played already)
+export function Sphere({ talk = TALK, peer = 'Ernesto', loop = true, skip = false, onEnd }: { talk?: Line[]; peer?: string; loop?: boolean; skip?: boolean; onEnd?: () => void } = {}) {
+  const calm = still() || skip;
   const beat = useBeat(talk.length, 1100, loop, !calm);
   const b = calm ? talk.length : beat, ended = b >= talk.length;
   useEffect(() => { if (ended) onEnd?.(); }, [ended]);
@@ -181,44 +183,107 @@ export function Sphere({ talk = TALK, peer = 'Ernesto', loop = true, onEnd }: { 
 
 // Show me (the Obysphere tour): making one with the +, then joining one from a
 // teammate's invite link, drawn small with Sangam's own pieces (never the real
-// side panel or dialog, which stay as they are). Its two frames side by side
-export function SphereHowTo() {
+// side panel or dialog, which stay as they are). It plays once, a beat every
+// 100ms, as MausBot's reel does (a pointer, typing, click ripples), then holds
+// its last frame; with reduced motion, its two frames side by side, nothing
+// timed. skip: straight to its end; onEnd: once it's there
+const HOW_LAST = 98;
+const CLICKS = [15, 37, 69, 81];  // on the +, Create, the link, Join
+const TEAM = 'My team';
+const HOW_LABEL = 'Example: making an Obysphere with the + and a name, then joining one from a teammate’s invite link';
+export function SphereHowTo({ skip = false, onEnd }: { skip?: boolean; onEnd?: () => void }) {
+  const calm = still();
+  const beat = useBeat(HOW_LAST, 100 / clock.speed, false, !calm && !skip);
+  const b = calm || skip ? HOW_LAST : beat, join = b >= 56;
+  useEffect(() => { if (b >= HOW_LAST) onEnd?.(); }, [b >= HOW_LAST]);
+  // where the pointer is, by beat, measured, so it lands on its target however wide the column
+  // is; it glides only while it shows, so it appears at the stage's centre
+  const target = b < 4 || (b >= 56 && b < 62) ? 'centre' : b < 30 ? 'plus' : b < 56 ? 'create' : b < 75 ? 'link' : 'join';
+  const shown = (b >= 3 && b < 53) || (b >= 61 && b < HOW_LAST);
+  const stage = useRef<HTMLDivElement>(null), refs = { plus: useRef<HTMLSpanElement>(null), create: useRef<HTMLSpanElement>(null), link: useRef<HTMLSpanElement>(null), join: useRef<HTMLSpanElement>(null) };
+  const [at, setAt] = useState({ x: 0, y: 0 });
+  useLayoutEffect(() => {
+    const box = stage.current?.getBoundingClientRect(), el = target !== 'centre' ? refs[target].current : null;
+    if (!box) return;
+    const r = el?.getBoundingClientRect() ?? box;
+    setAt({ x: r.left + r.width / 2 - box.left, y: r.top + r.height / 2 - box.top });
+  }, [target]);
+  if (calm) return <HowStill />;
+  const typed = TEAM.slice(0, Math.max(0, b - 19));
+  const caption = b < 43 ? 'Make one' : b < 56 ? 'Made. You’re its admin, and you invite the rest.' : b < 92 ? 'Or join one' : 'In. Your Oby can now ask theirs.';
   return (
-    <div className="how" role="img" aria-label="Example: making an Obysphere with the + and a name, then joining one from a teammate’s invite link">
-      <figure className="how-frame">
-        <div className="how-stage">
-          <span className="how-rail">
-            <span className="rail-button"><ChatsCircleIcon size={20} /></span>
-            <span className="rail-sep" />
-            <span className="rail-button is-on"><SphereTile name="My team" /></span>
-            <span className="rail-button"><PlusIcon size={20} /></span>
-          </span>
-          <div className="modal how-card">
-            <h2 className="how-title">Create an Obysphere</h2>
-            <span className="modal-label">Name</span>
-            <span className="modal-field how-field">My team</span>
-            <span className="modal-label sphere-label">Obysphere URL</span>
-            <span className="modal-field how-field">my-team<span className="sphere-suffix">{SUFFIX}</span></span>
-            <p className="sphere-note is-ok"><Check size={13} strokeWidth={2} />Available</p>
-            <span className="modal-primary how-create">Create Obysphere</span>
-          </div>
-        </div>
-        <figcaption>Make one: + → name it → Create Obysphere</figcaption>
-      </figure>
-      <figure className="how-frame">
-        <div className="how-stage is-join">
-          <p className="how-invite"><OwnerAvatar name="Wellington" size={22} /><span>Join us on Oby: <span className="tok-url">deskree.obysphere.com/join/k3f9q2</span></span></p>
-          <div className="setup-row">
-            <SphereTile name="Deskree" brand={BRANDS.deskree} />
-            <span className="wl-two"><span className="wl-name">Join Deskree</span><span className="wl-sub">deskree.obysphere.com · 5 members</span></span>
-            <span className="wl-ready"><Check size={14} strokeWidth={2} />Joined</span>
-          </div>
-        </div>
-        <figcaption>Or join one: open the invite link → Join</figcaption>
-      </figure>
+    <div ref={stage} className="how-scene" role="img" aria-label={HOW_LABEL}>
+      <MiniRail plusRef={refs.plus} hover={b >= 11 && b < 17}
+        tile={!join && b >= 40 ? <SphereTile key="mine" name={TEAM} /> : join && b >= 88 ? <SphereTile key="deskree" name="Deskree" brand={BRANDS.deskree} /> : undefined} />
+      <div key={join ? 'join' : 'make'} className="how-area">
+        <p key={caption} className="how-caption">{caption}</p>
+        {!join ? b >= 17 && b < 40 && <CreateCard name={typed} typing={b < 27} ok={b >= 27} pressed={b === 37} going={b >= 39} buttonRef={refs.create} />
+          : <>
+            <Invite linkRef={refs.link} />
+            {b >= 71 && <JoinRow state={b < 81 ? 'join' : b < 88 ? 'joining' : 'joined'} buttonRef={refs.join} />}
+          </>}
+      </div>
+      {CLICKS.filter((c) => b >= c && b < c + 9).map((c) => <span key={c} className="how-ripple" style={{ left: at.x, top: at.y }} />)}
+      <span className={`how-pointer${shown ? ' is-on' : ''}${CLICKS.includes(b) ? ' is-pressing' : ''}`} style={{ transform: `translate(${at.x - 3}px, ${at.y - 3}px)` }}>
+        <MousePointer2 size={16} strokeWidth={1.6} fill="currentColor" />
+      </span>
     </div>
   );
 }
+// its two frames, as they end
+const HowStill = () => (
+  <div className="how" role="img" aria-label={HOW_LABEL}>
+    <figure className="how-frame">
+      <div className="how-stage">
+        <MiniRail tile={<SphereTile name={TEAM} />} />
+        <CreateCard name={TEAM} ok />
+      </div>
+      <figcaption>Make one: + → name it → Create Obysphere</figcaption>
+    </figure>
+    <figure className="how-frame">
+      <div className="how-stage is-join">
+        <Invite />
+        <JoinRow state="joined" />
+      </div>
+      <figcaption>Or join one: open the invite link → Join</figcaption>
+    </figure>
+  </div>
+);
+// the side panel's icon strip, small: Conversations, the line, an Obysphere, the +
+const MiniRail = ({ tile, plusRef, hover = false }: { tile?: ReactNode; plusRef?: Ref<HTMLSpanElement>; hover?: boolean }) => (
+  <span className="how-rail">
+    <span className="rail-button"><ChatsCircleIcon size={20} /></span>
+    <span className="rail-sep" />
+    {tile && <span className="rail-button is-on how-pop">{tile}</span>}
+    <span ref={plusRef} className={`rail-button${hover ? ' is-hover is-tip' : ''}`} data-tip="Create an Obysphere"><PlusIcon size={20} /></span>
+  </span>
+);
+// CreateSphereModal's card, without its logo and invites
+const CreateCard = ({ name, typing = false, ok = false, pressed = false, going = false, buttonRef }: { name: string; typing?: boolean; ok?: boolean; pressed?: boolean; going?: boolean; buttonRef?: Ref<HTMLSpanElement> }) => (
+  <div className={`modal how-card${going ? ' is-going' : ''}`}>
+    <h2 className="how-title">Create an Obysphere</h2>
+    <span className="modal-label">Name</span>
+    <span className="modal-field how-field">{name}{typing && <span className="how-caret" />}</span>
+    <span className="modal-label sphere-label">Obysphere URL</span>
+    <span className="modal-field how-field">{slugOf(name)}<span className="sphere-suffix">{SUFFIX}</span></span>
+    <p className={`sphere-note${ok ? ' is-ok' : ''}`}>{ok ? <><Check size={13} strokeWidth={2} />Available</> : 'Letters, numbers and hyphens'}</p>
+    <span ref={buttonRef} className={`modal-primary how-create${pressed ? ' is-pressed' : ''}`}>Create Obysphere</span>
+  </div>
+);
+// a teammate's invite, as InviteModal's link reads
+const Invite = ({ linkRef }: { linkRef?: Ref<HTMLSpanElement> }) => (
+  <p className="how-invite"><OwnerAvatar name="Wellington" size={22} /><span>Join us on Oby: <span ref={linkRef} className="tok-url">deskree.obysphere.com/join/k3f9q2</span></span></p>
+);
+// the Mac's Join screen, in a row
+const JoinRow = ({ state, buttonRef }: { state: 'join' | 'joining' | 'joined'; buttonRef?: Ref<HTMLSpanElement> }) => (
+  <div className="setup-row how-pop">
+    <SphereTile name="Deskree" brand={BRANDS.deskree} />
+    <span className="wl-two"><span className="wl-name">Join Deskree</span><span className="wl-sub">deskree.obysphere.com · 5 members</span></span>
+    {state === 'join' ? <span ref={buttonRef} className="modal-primary">Join</span>
+      : state === 'joining' ? <span className="wl-sub msg-step">Joining…</span>
+      : <span className="wl-ready"><Check size={14} strokeWidth={2} />Joined</span>}
+  </div>
+);
 
 const SCENES: { title: string; line: string; body: () => ReactNode }[] = [
   { title: 'Hi, I’m Oby.', line: 'I hand your coding work to the agents you already use. Here’s what’s signed in on this Mac.', body: Found },

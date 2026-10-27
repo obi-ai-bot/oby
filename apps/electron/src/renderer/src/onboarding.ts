@@ -287,6 +287,9 @@ async function putAway(line: string) {
   await sayOby(WELCOME, { text: line });
 }
 
+// Show me's scene played to its end (or was skipped): the tour goes on by itself a moment later
+export const sceneDone = () => void wait(1200).then(() => { if (setup.at === 'showme') pick('Continue', true); });
+
 // A click on the sample in the side panel (Sidebar.tsx): the same as its pick in
 // the chat. Sangam (no conversation yet) and Invite member (off in a sample) get
 // a line, and the tour waits on. aside: that line landing, when clicks wait

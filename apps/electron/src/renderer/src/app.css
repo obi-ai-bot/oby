@@ -1797,6 +1797,25 @@ button.sphere-logo-badge:hover { color: var(--ink); background: #3a3a39; }
 .how-stage.is-join { flex-direction: column; justify-content: center; gap: 12px; }
 .how-invite { margin: 0; display: flex; align-items: flex-start; gap: 8px; color: var(--text); font-size: var(--text-md); line-height: 1.4; }
 .how-invite > span, .how .wl-sub { min-width: 0; overflow-wrap: anywhere; }
+/* Show me, playing: one stage, the strip at its left; a pointer that lives only in it, gliding to
+   what it clicks, a ripple where it does */
+.how-scene { position: relative; height: 250px; display: flex; gap: 12px; padding: 12px; border: 1px solid var(--line); border-radius: 14px; background: var(--chip); overflow: hidden; pointer-events: none; animation: msg-in 360ms var(--warm) both; }
+.how-area { flex: 1; min-width: 0; display: flex; flex-direction: column; align-items: flex-start; gap: 10px; animation: fade-in var(--fade) both; }
+.how-area .setup-row { align-self: stretch; }
+.how-caption { margin: 0; color: var(--muted); font-size: var(--text-sm); animation: wl-rise 420ms var(--warm) both; }
+.how-scene .how-card { animation: modal-in 200ms var(--warm) both; }
+.how-scene .how-card.is-going { animation: fade-out 200ms var(--ease-in) both; }
+.how-create.is-pressed { opacity: 0.85; }
+.how-caret { display: inline-block; width: 1px; height: 1.1em; margin-left: 1px; background: var(--ink); animation: caret-blink 1s step-end infinite; }
+.how-pop { animation: wl-pop 360ms var(--spring) both; }
+.how-rail .rail-button.is-hover { color: var(--text); background: var(--hover); }
+.how-rail .rail-button.is-tip::after { opacity: 1; transform: translate(0, -50%); transition-delay: 0ms; }
+.how-pointer { position: absolute; left: 0; top: 0; z-index: 3; color: #fff; filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.6)); opacity: 0; transition: opacity var(--fade); }
+.how-pointer.is-on { opacity: 1; transition: transform 700ms var(--warm), opacity var(--fade); }
+.how-pointer > svg { display: block; transform-origin: 3px 3px; transition: transform 120ms var(--warm); }
+.how-pointer.is-pressing > svg { transform: scale(0.9); }
+.how-ripple { position: absolute; z-index: 2; width: 28px; height: 28px; margin: -14px 0 0 -14px; border-radius: 50%; box-shadow: 0 0 0 1.5px rgba(255, 255, 255, 0.5); animation: how-ripple 900ms var(--warm) both; }
+@keyframes how-ripple { from { opacity: 1; transform: scale(0.4); } to { opacity: 0; transform: scale(1.6); } }
 @media (prefers-reduced-motion: reduce) {
   .rail-button.is-sample, .rail-button.is-sample::before, .status-dot.is-new.is-calling, .sidebar-new.is-calling::after, .setup-gone { animation: none !important; }
   .rail-button.is-sample.is-calling { box-shadow: 0 0 0 1.5px rgba(10, 132, 255, 0.6); }

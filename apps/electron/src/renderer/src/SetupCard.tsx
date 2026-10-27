@@ -4,9 +4,9 @@ import { BRANDS, BrandMark, type Brand } from './brands';
 import SphereTile from './SphereTile';
 import { SAMPLE, memberCount } from './spheres';
 import { tetrixFor } from './knowledge';
-import { SAMPLE_TALK, Sphere, SphereHowTo } from './Welcome';
+import { SAMPLE_TALK, Sphere, SphereHowTo, still } from './Welcome';
 import { AGENTS, type Agent, type SetupStep } from './mock';
-import { FIRST_TASK, accountOf, connectTetrix, pick, sendAgentCode, signInAgent, signInGitHub, useSetup, type Code } from './onboarding';
+import { FIRST_TASK, accountOf, connectTetrix, pick, sceneDone, sendAgentCode, signInAgent, signInGitHub, useSetup, type Code } from './onboarding';
 import { onObid } from './lean';
 import { useLive } from './live';
 
@@ -22,8 +22,12 @@ export default function SetupCard({ step }: { step: SetupStep }) {
   const repos = useLive().repos.length;
   const waiting = s.at === step;
   const mark = (brand: Brand) => <BrandMark brand={brand} size={22} />;
-  // a sample conversation: what to click next shows once its last line is in
-  const [heard, setHeard] = useState(false);
+  // a scene played to its end (Show me, a sample conversation): what to click next shows then.
+  // Kept apart from the card, which the conversation may draw again, so it doesn't play twice
+  const [heard, setHeard] = useState(() => PLAYED.has(step));
+  const ended = () => { PLAYED.add(step); setHeard(true); setReplaying(false); };
+  // Show me: Replay plays it again (a new key) without moving the tour; Skip goes to its end
+  const [run, setRun] = useState(0), [skipped, setSkipped] = useState(false), [replaying, setReplaying] = useState(false);
   // (picks come in under the conversation's end, so they're brought into view)
   const end = useRef<HTMLDivElement>(null);
   useEffect(() => { if (waiting) end.current?.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); }, [waiting, heard]);
@@ -60,8 +64,18 @@ export default function SetupCard({ step }: { step: SetupStep }) {
   } else if (step === 'sphere') {
     picks = [{ label: 'Show me', ok: true }, { label: 'Skip', quiet: true }];
   } else if (step === 'showme') {
-    body = <><p className="setup-label">Example</p><SphereHowTo /></>;
-    picks = [{ label: 'Continue', ok: true }];
+    // it goes on by itself once played; with reduced motion, its frames wait for Continue
+    const calm = still();
+    body = <>
+      <p className="setup-label">Example</p>
+      <SphereHowTo key={run} skip={skipped || (heard && !replaying)} onEnd={() => { ended(); sceneDone(); }} />
+      {!calm && <div className="tc-options">
+        {heard && !replaying
+          ? <button className="tc-option is-quiet" onClick={() => { setRun(run + 1); setSkipped(false); setReplaying(true); }}>Replay</button>
+          : <button className="tc-option is-quiet" onClick={() => setSkipped(true)}>Skip</button>}
+      </div>}
+    </>;
+    if (calm) picks = [{ label: 'Continue', ok: true }];
   } else if (step === 'sample') {
     rows = <Row mark={<span className="is-sample"><SphereTile name={SAMPLE.name} brand={SAMPLE.brand} /></span>} name={SAMPLE.name} state="out"
       sub={`Sample · ${memberCount(SAMPLE)} members`} act={waiting ? 'Take a look' : undefined} onAct={() => pick('Take a look')} />;
@@ -69,7 +83,7 @@ export default function SetupCard({ step }: { step: SetupStep }) {
     picks = [{ label: 'Not now', quiet: true }];
   } else if (step.startsWith('convo:')) {
     const who = step.slice(6), { title, talk } = SAMPLE_TALK[who];
-    body = <><p className="setup-label">Sample conversation · {title}</p><Sphere talk={talk} peer={who} loop={false} onEnd={() => setHeard(true)} /></>;
+    body = <><p className="setup-label">Sample conversation · {title}</p><Sphere talk={talk} peer={who} loop={false} skip={heard} onEnd={ended} /></>;
     if (heard) {
       cue = CUES[s.call ?? ''] ?? '';
       picks = [{ label: s.call === 'Knowledge' ? 'Knowledge' : `${s.call}’s`, ok: true }, { label: 'Done looking', quiet: true }];
@@ -88,7 +102,7 @@ export default function SetupCard({ step }: { step: SetupStep }) {
       {rows && <ul className="setup-rows">{rows}</ul>}
       {body}
       {waiting && cue && <p className="setup-label setup-cue">{cue}</p>}
-      {waiting && (
+      {waiting && picks.length > 0 && (
         <div ref={end} className="tc-options">
           {picks.map((p) => (
             <button key={p.label} className={`tc-option${p.quiet ? ' is-quiet' : p.ok !== undefined ? ' is-primary' : ''}`} disabled={p.ok === false} onClick={() => pick(p.label)}>{p.label}</button>
@@ -99,6 +113,7 @@ export default function SetupCard({ step }: { step: SetupStep }) {
   );
 }
 
+const PLAYED = new Set<SetupStep>();
 // the tour's cards with the sample in them; and what to click next, under a sample conversation
 const SAMPLE_STEPS = ['showme', 'sample', 'convo:', 'knowledge'];
 const CUES: Record<string, string> = {
