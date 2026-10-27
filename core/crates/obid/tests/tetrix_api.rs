@@ -1306,14 +1306,18 @@ fn a_turn_nobody_watches_gets_no_tetrix() {
 
 /// Signing in to another Tetrix whose sign-in server is another one takes back the login it
 /// replaces there, as a sign-out does. Signing in again on the same sign-in server doesn't: there
-/// the old and new logins can share one session, and revoking the old would end the new.
+/// the old and new logins can share one session, and revoking the old would end the new. Both
+/// fakes hand out the same tokens, so the old login is refreshed first: what the old server takes
+/// back must be its second refresh token, read before the new login was kept.
 #[test]
 fn switching_tetrix_servers_takes_back_the_old_login() {
     let folder = Folder::new("tetrix-switch");
     let remote = fixture(&folder.0.join("fixture"));
     let (old, old_seen) = fake_tetrix();
     let (new, new_seen) = fake_tetrix();
-    let obid = start(&folder.0, &config(&folder.0, &remote, &fake_claude()), None);
+    let mut config = config(&folder.0, &remote, &fake_claude());
+    config["repos"][0]["check"] = Value::Null;
+    let obid = start(&folder.0, &config, None);
     let revoked = |seen: &Arc<Mutex<Seen>>| -> Vec<std::collections::HashMap<String, String>> {
         seen.lock()
             .unwrap()
@@ -1323,13 +1327,31 @@ fn switching_tetrix_servers_takes_back_the_old_login() {
             .map(|r| form(&r.3))
             .collect()
     };
+    // A job, to its end: obid asks Tetrix about it with its own login first, and a first access
+    // token (30 seconds) is refreshed then.
+    let job = || {
+        let made = call(
+            &obid,
+            "POST",
+            "/v1/jobs",
+            Some(
+                &json!({"job": {"repo": "obi-e2e/fixture-app", "kind": "build", "task": "REPORT"}}),
+            ),
+        );
+        assert_eq!(made.status, 201, "{}", made.text);
+        let id = made.body["id"].as_str().unwrap().to_owned();
+        call(&obid, "GET", &format!("/v1/jobs/{id}/wait"), None);
+    };
 
     sign_in(&obid, &old);
     // Again on the same sign-in server: nothing taken back.
     sign_in(&obid, &old);
     std::thread::sleep(std::time::Duration::from_millis(500));
     assert!(revoked(&old_seen).is_empty());
+    job();
+    assert_eq!(old_seen.lock().unwrap().refresh, REFRESH_2);
 
+    // The new server's first login is REFRESH_1: the old one's is REFRESH_2 now.
     sign_in(&obid, &new);
     let status = call(&obid, "GET", "/v1/tetrix", None).body;
     assert_eq!(status["connected"], true);
@@ -1339,10 +1361,18 @@ fn switching_tetrix_servers_takes_back_the_old_login() {
         Some(revoked(&old_seen)).filter(|r| !r.is_empty())
     });
     assert_eq!(taken_back.len(), 1, "{taken_back:?}");
-    assert_eq!(taken_back[0]["token"], REFRESH_1);
+    assert_eq!(taken_back[0]["token"], REFRESH_2);
     assert_eq!(taken_back[0]["token_type_hint"], "refresh_token");
     assert_eq!(taken_back[0]["client_id"], "oby-dynamic-1");
-    // The new login is kept, and its server is asked to take back nothing.
     assert!(revoked(&new_seen).is_empty());
-    assert!(!obid.log().contains(REFRESH_1));
+    // The new login is the one kept: the next job refreshes it at the new server, which takes
+    // only the refresh token it gave (REFRESH_1), and Oby stays signed in there.
+    job();
+    assert_eq!(new_seen.lock().unwrap().refresh, REFRESH_2);
+    let status = call(&obid, "GET", "/v1/tetrix", None).body;
+    assert_eq!(status["connected"], true, "{status}");
+    assert_eq!(status["url"], format!("{new}/mcp"));
+    for secret in [REFRESH_1, REFRESH_2] {
+        assert!(!obid.log().contains(secret), "{secret} in the log");
+    }
 }
