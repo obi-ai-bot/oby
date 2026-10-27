@@ -256,8 +256,9 @@ export function connect() {
     ({ status, text, why }) => {
       if (status === 401) return down(mine, 'obid refused this Mac’s token (api-token).');
       if (!status) return down(mine, text, why);
-      // obid's own words ("Oby’s engine didn’t start."), and with `starting` (a 503 while it
-      // opens, core's Door) no problem yet
+      // obid's own words ("Oby’s engine didn’t start.", a failed start's answer to the held
+      // stream). `starting` is only GET /v1/status's 503 while obid opens (core's Door): taken as
+      // no problem yet, should the stream ever get it
       let said: { error?: unknown; starting?: unknown } | null = null;
       try { said = JSON.parse(text); } catch { /* not obid's JSON */ }
       down(mine, typeof said?.error === 'string' ? said.error : `obid answered ${status}.`, said?.starting ? 'waiting' : undefined);
