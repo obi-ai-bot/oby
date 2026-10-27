@@ -572,15 +572,12 @@ fn a_supervisor_turn_is_a_fresh_session_that_cant_list_jobs() {
     let tools = argv[argv.iter().position(|a| *a == "--tools").unwrap() + 1];
     assert_eq!(tools, "TodoWrite");
     assert!(theirs[0]["resumed"].is_null());
-    // Not the owner's Claude Code, which was waiting for the conversation's next turn. Not on
-    // Linux: there each runs in bubblewrap's own PID namespace (--unshare-pid), where both pids
-    // are the namespace's and can be equal; the fresh session's argv above shows it either way.
-    if !cfg!(target_os = "linux") {
-        assert!(
-            mine.iter().all(|r| r["pid"] != theirs[0]["pid"]),
-            "{records:?}"
-        );
-    }
+    // Not the owner's Claude Code, which was waiting for the conversation's next turn (the
+    // stand-in's own id: on Linux its pid is its PID namespace's).
+    assert!(
+        mine.iter().all(|r| r["id"] != theirs[0]["id"]),
+        "{records:?}"
+    );
 }
 
 /// A supervisor turn gets no conversation shell: nobody watches it, so it runs no commands.
