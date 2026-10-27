@@ -103,6 +103,10 @@ pub const SCHEMAS: &[(&str, &str)] = &[
         include_str!("../spec/schemas/v0.1/wire/health.response.schema.json"),
     ),
     (
+        "wire/features.response",
+        include_str!("../spec/schemas/v0.1/wire/features.response.schema.json"),
+    ),
+    (
         "wire/invitation.request",
         include_str!("../spec/schemas/v0.1/wire/invitation.request.schema.json"),
     ),

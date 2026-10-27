@@ -1129,6 +1129,7 @@ impl FakeSphere {
             )
             .route("/v0.1/oauth/token", post(token))
             .route("/v0.1/health", get(health))
+            .route("/v0.1/features", get(features))
             .route("/v0.1/spheres/{sphere}/members", get(members))
             .route("/v0.1/spheres/{sphere}/messages", post(send))
             .route("/v0.1/spheres/{sphere}/deliveries", get(deliveries))
@@ -1391,17 +1392,23 @@ async fn token(
         .into_response()
 }
 
-/// `GET /v0.1/health`: `seal: true` but for a Sphere from before sealing, and `features` with
-/// `card_runtime` for one that takes it.
+/// `GET /v0.1/health`: `seal: true` but for a Sphere from before sealing.
 async fn health(State(state): State<Arc<Mutex<SphereState>>>) -> Response {
     let mut health = json!({"ok": true, "protocol": "obi/0.1"});
     if !state.lock().unwrap().predates_sealing {
         health["seal"] = json!(true);
     }
-    if state.lock().unwrap().takes_card_runtime {
-        health["features"] = json!(["card_runtime"]);
-    }
+
     axum::Json(health).into_response()
+}
+
+/// `GET /v0.1/features`: `card_runtime` for a Sphere that takes it; `404` from one from before.
+async fn features(State(state): State<Arc<Mutex<SphereState>>>) -> Response {
+    if state.lock().unwrap().takes_card_runtime {
+        axum::Json(json!({"features": ["card_runtime"]})).into_response()
+    } else {
+        sphere_error(StatusCode::NOT_FOUND, "not_found", "no such endpoint")
+    }
 }
 
 async fn members(State(state): State<Arc<Mutex<SphereState>>>, headers: HeaderMap) -> Response {

@@ -19,16 +19,6 @@
     "seal": {
       "const": true,
       "description": "This Sphere takes sealed messages and cards with a seal key (spec/protocol.md section 9.1). A Sphere that predates sealing leaves it out, and refuses both."
-    },
-    "features": {
-      "type": "array",
-      "minItems": 1,
-      "maxItems": 64,
-      "uniqueItems": true,
-      "items": {
-        "$ref": "../common.schema.json#/$defs/feature_id"
-      },
-      "description": "The additions to obi/0.1 this Obysphere takes, sorted (spec/README.md, 'Versions'). A client ignores an id it doesn't know. An Obysphere that predates features leaves it out."
     }
   }
 }

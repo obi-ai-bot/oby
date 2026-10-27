@@ -85,6 +85,18 @@ pub fn lists_feature(params: &Map<String, Value>, feature: &str) -> bool {
         .is_some_and(|f| f.iter().any(|x| x == feature))
 }
 
+/// Whether a card says its agent takes `card_runtime` (identity.md section 2.3, "Publishing a card
+/// with an addition"): its `features` lists it, or its `version`'s build metadata (after the first
+/// `+`, split at `.`) has `card-runtime`, as a card that can't carry `features` yet says it.
+pub fn takes_card_runtime(card: &Value) -> bool {
+    let listed = crate::card::params(card).is_some_and(|p| lists_feature(p, CARD_RUNTIME));
+    let tagged = card["version"]
+        .as_str()
+        .and_then(|v| v.split_once('+'))
+        .is_some_and(|(_, build)| build.split('.').any(|part| part == "card-runtime"));
+    listed || tagged
+}
+
 /// The agent card without signatures (identity.md 2): what the owner signs.
 pub fn unsigned_card(fields: &CardFields<'_>) -> Map<String, Value> {
     let mut params = json!({
@@ -322,6 +334,7 @@ mod tests {
         let signed = card::sign(&unsigned, &owner).unwrap();
         let params = card::params(&signed).unwrap();
         assert!(lists_feature(params, CARD_RUNTIME));
+        assert!(takes_card_runtime(&signed));
         assert_eq!(params["runtime"], json!({"id": "oby", "version": "0.3.0"}));
         assert_eq!(params["vendors"], json!(["anthropic"]));
         let context = card::Context {
@@ -341,6 +354,22 @@ mod tests {
             card::params(&card::sign(&unsigned_card(&fields(None)), &owner).unwrap()).unwrap(),
             CARD_RUNTIME
         ));
+        // A card that can't list features yet says it in its version's build metadata.
+        let mut tagged = unsigned_card(&fields(None));
+        assert!(!takes_card_runtime(&Value::Object(tagged.clone())));
+        for (version, takes) in [
+            ("0.3.0+card-runtime", true),
+            ("1.4.0+build.7.card-runtime", true),
+            ("0.3.0-card-runtime", false),
+            ("0.3.0", false),
+        ] {
+            tagged["version"] = json!(version);
+            assert_eq!(
+                takes_card_runtime(&Value::Object(tagged.clone())),
+                takes,
+                "{version}"
+            );
+        }
     }
 
     fn delegation(owner: &Keypair, claims: Value) -> String {

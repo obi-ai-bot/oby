@@ -320,6 +320,65 @@ fn card_cases() -> Vec<(String, Value)> {
     for (name, card) in refused {
         add(name, card, "reject", Some("card_invalid"), &context);
     }
+    // The bounds (common.schema.json): 16 vendors, 64 features, 64-character ids, a version
+    // without spaces; and a card from before features that says it takes card_runtime.
+    let ids = |n: usize, prefix: &str| -> Value {
+        json!(
+            (0..n)
+                .map(|i| format!("{prefix}{i:02}"))
+                .collect::<Vec<_>>()
+        )
+    };
+    let mut many_features = vec![json!("card_runtime")];
+    many_features.extend(ids(64, "feature_").as_array().unwrap().iter().cloned());
+    let bounds: [(&str, Value, bool); 6] = [
+        (
+            "valid-card-sixteen-vendors",
+            with_runtime(json!({"vendors": ids(16, "vendor-")})),
+            true,
+        ),
+        (
+            "invalid-card-seventeen-vendors",
+            with_runtime(json!({"vendors": ids(17, "vendor-")})),
+            false,
+        ),
+        (
+            "invalid-card-sixty-five-features",
+            with_runtime(json!({"features": many_features})),
+            false,
+        ),
+        (
+            "valid-card-runtime-id-sixty-four",
+            with_runtime(json!({"runtime": {"id": "a".repeat(64), "version": "1.0.0"}})),
+            true,
+        ),
+        (
+            "invalid-card-runtime-id-sixty-five",
+            with_runtime(json!({"runtime": {"id": "a".repeat(65), "version": "1.0.0"}})),
+            false,
+        ),
+        (
+            "invalid-card-runtime-version-with-a-space",
+            with_runtime(json!({"runtime": {"id": "claude", "version": "2.1.0 beta"}})),
+            false,
+        ),
+    ];
+    for (name, card, valid) in bounds {
+        if valid {
+            add(name, card, "accept", None, &context);
+        } else {
+            add(name, card, "reject", Some("card_invalid"), &context);
+        }
+    }
+    let mut tagged = card_for("obi-a", "owner-a", &a, &oa);
+    tagged["version"] = json!("1.4.0+card-runtime");
+    add(
+        "valid-card-version-says-card-runtime",
+        sign(&tagged, &oa, &oa.key_id()),
+        "accept",
+        None,
+        &context,
+    );
     let mut vendors_changed = with_seal(runtime.clone());
     vendors_changed["capabilities"]["extensions"][0]["params"]["vendors"] =
         json!(["anthropic", "openai"]);
