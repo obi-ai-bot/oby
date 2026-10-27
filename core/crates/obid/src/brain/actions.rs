@@ -222,12 +222,11 @@ pub async fn offer(
                     .unwrap_or_else(|| super::briefing::line(&d.task, 60)),
             );
             // obid's own words for the job it keeps, then the task it planned (as #374's Start
-            // item had them); the card lists `what`.
-            let text = format!(
-                "Start {what}?\n\nThe task Oby planned:\n{}",
-                known.redact(d.task.trim()),
-            );
-            let offer = serde_json::json!({"id": offer, "what": what});
+            // item had them); the card shows both, and whether something untrusted came first.
+            let task = known.redact(d.task.trim());
+            let text = format!("Start {what}?\n\nThe task Oby planned:\n{task}");
+            let offer = serde_json::json!({"id": offer, "what": what, "task": task,
+                                           "untrusted": new.untrusted});
             shared
                 .link
                 .propose(&new, title, text, asked.conversation, offer)

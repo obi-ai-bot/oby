@@ -1665,12 +1665,9 @@ fn asked(session: &Session) -> Asked<'_> {
 /// oby_offer: the job planned and checked as oby_dispatch's, offered instead of started
 /// (actions::offer): a `start` item in this conversation that only the owner's own Start, Dispatch
 /// on its card, starts. Every offer of one turn is on one card: the turn's. It counts toward the
-/// turn's dispatches; a turn nobody watches offers nothing.
+/// turn's dispatches; a turn nobody watches offers nothing (super::supervisor::refused).
 async fn offer(shared: &Arc<Shared>, session: &Session, args: Value) -> Result<String, String> {
     capped(&session.dispatched, "starts or offers jobs")?;
-    if session.supervising.is_some() {
-        return Err(UNWATCHED_START.into());
-    }
     let mut plan = Plan::of(Action::Dispatch, "");
     plan.dispatches = vec![planned(parse(args)?)?];
     problems(shared, session, &plan)?;

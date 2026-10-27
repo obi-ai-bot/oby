@@ -766,6 +766,8 @@ fn oby_offer_starts_nothing_until_the_owners_start() {
                 .starts_with("build fixture-app (Greeting), on "),
             "{item}"
         );
+        assert_eq!(item["offer"]["task"], "Add a greeting", "{item}");
+        assert_eq!(item["offer"]["untrusted"], false, "{item}");
         assert_eq!(item["options"], json!(["Start", "Cancel"]), "{item}");
     }
     let (first, second) = (
@@ -802,16 +804,43 @@ fn oby_offer_starts_nothing_until_the_owners_start() {
     assert_eq!(job.body["turn"], user, "{}", job.text);
     assert_eq!(job.body["title"], "Greeting", "{}", job.text);
     assert_eq!(job.body["untrusted"], Value::Null, "{}", job.text);
-    let skipped = call(
-        &obid,
-        "POST",
-        &format!("/v1/inbox/{second}/answer"),
-        Some(&json!({"answer": "Cancel"})),
-    );
+    // Once started, a second Start or a Later finds it done: nothing reopens it or starts again.
+    let answer = |item: &str, body: Value| {
+        call(
+            &obid,
+            "POST",
+            &format!("/v1/inbox/{item}/answer"),
+            Some(&body),
+        )
+    };
+    let again = answer(first, json!({"answer": "Start"}));
+    assert_eq!(again.status, 409, "{}", again.text);
+    let later = answer(first, json!({"later": "2099-01-01T00:00:00Z"}));
+    assert_eq!(later.status, 409, "{}", later.text);
+    assert!(starts().iter().all(|i| i["id"] != first));
+    // Later puts the other off and starts nothing; Cancel then closes it.
+    let put_off = answer(second, json!({"later": "2099-01-01T00:00:00Z"}));
+    assert_eq!(put_off.body["state"], "later", "{}", put_off.text);
+    let skipped = answer(second, json!({"answer": "Cancel"}));
     assert_eq!(skipped.body["state"], "done", "{}", skipped.text);
     assert_eq!(skipped.body["job"], "", "{}", skipped.text);
     let jobs = call(&obid, "GET", "/v1/jobs", None);
     assert_eq!(jobs.body.as_array().map_or(0, Vec::len), 1, "{}", jobs.text);
+
+    // Offers count toward the turn's ten, as dispatches do.
+    let capped = said(
+        &obid,
+        json!({"said": r#"REPEAT 11 OBY oby_offer {"repo": "obi-e2e/nowhere", "task": "x"}"#,
+               "conversation": conversation}),
+    );
+    assert!(
+        capped.body["text"]
+            .as_str()
+            .unwrap()
+            .contains("starts or offers jobs at most 10 times in one turn"),
+        "{}",
+        capped.text
+    );
 
     // Bypass is the owner's own Confirm, never an offer.
     let bypass = said(
@@ -835,6 +864,7 @@ fn oby_offer_starts_nothing_until_the_owners_start() {
         json!({"said": format!("WEB {offer}"), "conversation": conversation}),
     );
     let item = starts().pop().expect("the untrusted turn's offer");
+    assert_eq!(item["offer"]["untrusted"], true, "{item}");
     let started = call(
         &obid,
         "POST",
@@ -844,6 +874,32 @@ fn oby_offer_starts_nothing_until_the_owners_start() {
     let id = started.body["job"].as_str().unwrap();
     let job = call(&obid, "GET", &format!("/v1/jobs/{id}"), None);
     assert_eq!(job.body["untrusted"], true, "{}", job.text);
+
+    // A deleted conversation's offers close: nothing starts from it any more.
+    let elsewhere = said(&obid, json!({"said": offer, "new": true}));
+    let elsewhere = elsewhere.body["conversation"].as_str().unwrap().to_owned();
+    assert_eq!(starts().len(), 1);
+    let deleted = call(
+        &obid,
+        "DELETE",
+        &format!("/v1/conversations/{elsewhere}"),
+        None,
+    );
+    assert_eq!(deleted.status, 204, "{}", deleted.text);
+    assert!(starts().is_empty());
+    let done = call(&obid, "GET", "/v1/inbox?state=done", None);
+    assert!(
+        done.body.as_array().unwrap().iter().any(|i| {
+            i["conversation"] == elsewhere.as_str()
+                && i["options"] == json!([])
+                && i["text"]
+                    .as_str()
+                    .unwrap()
+                    .starts_with("Closed by Oby: the conversation it was offered in was deleted.")
+        }),
+        "{}",
+        done.text
+    );
 }
 
 /// The check the owner named ("Check: …") goes on the job exactly, so obid runs it before it
