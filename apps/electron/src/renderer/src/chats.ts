@@ -43,6 +43,42 @@ const seeded: Chat[] = LOG.flatMap((t, i) => {
 // nothing started (most of what you ask it is like this; a task is the exception)
 const H = 60, D = 24 * H;
 const PAST: [title: string, asked: string, answer: string, ago: number][] = [
+  // Oby writes GitHub's Markdown (Said): every kind it uses, in one answer
+  ['Cursor usage in Oby', 'can Oby show Cursor’s usage? research it', `I researched Cursor’s usage data. The design is open as https://github.com/obi-ai-bot/oby/pull/1531, and #130 tracks it.
+Committed \`de87563\`, with *no code changes* and ~~no scraping~~.
+
+### What Cursor offers
+
+**Admin API (official)**
+- It has \`POST /teams/spend\` and \`POST /teams/daily-usage-data\`.
+  - Auth is HTTP Basic with the API key as the username.
+  - Data refreshes **hourly**, at about 20 requests a minute.
+- Dashboard routes such as \`/api/dashboard/get-current-period-usage\` are unofficial.
+
+**Proposed approach**
+1. **Admin API provider.** A Cursor provider in core/crates/obid/src/usage.rs.
+2. **Poll hourly and cache.**
+   1. Poll \`spend\` once an hour.
+   2. Keep the last answer.
+3. **Show it** next to the other agents’ usage.
+
+| Source | Official | Refresh |
+| --- | :---: | ---: |
+| Admin API | yes | hourly |
+| Dashboard | no | live |
+
+\`\`\`ts
+const spend = await fetch('https://api.cursor.com/teams/spend', { method: 'POST' });
+\`\`\`
+
+> Cursor staff: the Admin API is for Enterprise teams.
+
+- [x] Read Cursor’s docs
+- [ ] Confirm your plan
+
+A raw <b>tag</b> and <script>alert(1)</script> stay text.
+
+Sources: [Cursor forum](https://forum.cursor.com/t/how-to-get-cost-and-usage-data-using-cursor-api/172967), [an http link](http://example.com)`, 1 * D + 2 * H],
   ['Who owns the Vault migration?', 'who owns the vault migration now that Ernesto moved teams?', 'Dima took it over on Monday. Ernesto is still the reviewer for anything touching Engine/Vault.swift.', 2 * D + 3 * H],
   ['Why is oberon’s build slow', 'why did oberon’s build go from 4 to 11 minutes?', 'The Swift package cache stopped hitting after the runner image update on the 3rd. Daniel has a fix in review (#412); it brings the build back to about 5 minutes.', 2 * D + 6 * H],
   ['Standup notes for Wellington', 'what did I tell Wellington I’d do this week?', 'Three things: review the notch PR (#33, done), send the 0.9 release checklist (not yet), and pair on the settings layout Thursday.', 3 * D + 2 * H],

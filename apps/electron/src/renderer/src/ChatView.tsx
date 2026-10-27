@@ -9,7 +9,7 @@ import { AskBlock, resultLine } from './TaskCard';
 import { useScrollThumb } from './useScrollThumb';
 import Composer, { typingIn } from './Composer';
 import Formatted from './Formatted';
-import { tokenize } from './textTokens';
+import Said from './Said';
 import { AGENTS, convoTitle, threadOf, type Message } from './mock';
 import { markSeen, tell, useTasks, type Task } from './tasks';
 import { obys, ofObid, tellChat, useChats, type Chat } from './chats';
@@ -275,21 +275,6 @@ function Attached({ files = [] }: { files?: { name: string; preview?: string }[]
     </div>
   );
 }
-
-// What Oby said: paragraphs (a blank line between), and lines starting "- " as a list,
-// with links, references, paths and `code` set apart as in the message box.
-// Each word its own span, so a word coming in can fade in (see .is-streaming)
-function Said({ text }: { text: string }) {
-  return text.split(/\n{2,}/).map((b) => b.trimEnd()).filter(Boolean).map((block, i) => {
-    const lines = block.split('\n');
-    return lines.every((l) => l.startsWith('- '))
-      ? <ul key={i}>{lines.map((l, k) => <li key={k}>{words(l.slice(2))}</li>)}</ul>
-      : <p key={i}>{words(block)}</p>;
-  });
-}
-// links, references, paths and `code` set apart as in the message box (Formatted)
-const words = (s: string) => tokenize(s).map((r, i) => (r.kind ? <span key={i} className={`tok tok-${r.kind}`}>{split(r.text)}</span> : split(r.text, i)));
-const split = (s: string, at = 0) => s.split(/(\s+)/).map((w, k) => (!w || /\s/.test(w) ? w : <span key={`${at}.${k}`} className="w">{w}</span>));
 
 // Oby's face over what it says. live (while it writes): the face melts into
 // bouncing dots; once its words are in, they run back together into the face

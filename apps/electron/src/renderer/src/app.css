@@ -734,15 +734,31 @@ button.crumb:hover { color: var(--ink); background: var(--hover); }
 .msg.is-oby.is-mine, .msg.is-oby.is-mine .msg-end { align-items: flex-end; }
 .msg.is-oby.is-mine .msg-bubble { width: auto; max-width: 80%; }
 /* its paragraphs and lists: 8px apart, the list's dots in the margin of its words */
-.msg.is-oby .msg-bubble > :is(p, ul) { margin: 0; }
-.msg.is-oby .msg-bubble > :is(p, ul) + :is(p, ul) { margin-top: 8px; }
+.msg.is-oby .msg-bubble > * { margin: 0; }
+.msg.is-oby .msg-bubble > * + * { margin-top: 8px; }
 .msg.is-oby .msg-bubble > ul { padding-left: 18px; list-style: disc; }
 .msg.is-oby .msg-bubble li + li { margin-top: 2px; }
+/* The rest of Oby's Markdown (Said), where Sangam's design is silent: kept plain, with his tokens.
+   Numbered and nested lists as the dotted one; headings at the words' size, bold; code blocks as
+   a session's (.ss-code); quotes as another Oby's (.msg-quote); tables with --line rules */
+:is(.msg-bubble, .msg-quote) :is(ul, ol) { margin: 0; padding-left: 18px; }
+:is(.msg-bubble, .msg-quote) li > :is(ul, ol, p, pre) { margin: 2px 0 0; }
+:is(.msg-bubble, .msg-quote) li > p:first-child { margin: 0; }
+:is(.msg-bubble, .msg-quote) :is(h3, h4, h5, h6) { font-size: inherit; font-weight: 600; color: var(--ink); }
+:is(.msg-bubble, .msg-quote) li:has(> input[type="checkbox"]) { list-style: none; }
+:is(.msg-bubble, .msg-quote) li > input[type="checkbox"] { margin: 0 6px 0 0; vertical-align: -2px; }
+:is(.msg-bubble, .msg-quote) hr { height: 1px; border: 0; background: var(--line); }
+.msg-bubble a.tok-url { text-decoration: none; }
+.msg-bubble a.tok-url:hover { text-decoration: underline; }
+.md-table { max-width: 100%; overflow-x: auto; }
+.md-table table { border-collapse: collapse; }
+.md-table :is(th, td) { padding: 4px 10px; border: 1px solid var(--line); text-align: left; vertical-align: top; }
+.md-table th { font-weight: 600; color: var(--ink); }
 /* another Oby's answer to what Oby asked, quoted in Oby's turn: a 3px line down
    its left, rounded at both ends, 16px from the words */
 .msg-quote { position: relative; width: 100%; margin: 0; padding: 2px 0 2px 19px; display: flex; flex-direction: column; gap: 8px; color: var(--text); font-size: var(--text-base); line-height: 20px; }
 .msg-quote::before { content: ''; position: absolute; top: 0; bottom: 0; left: 0; width: 3px; border-radius: 1.5px; background: var(--line); }
-.msg-quote > p, .msg-quote > ul { margin: 0; }
+.msg-quote > * { margin: 0; }
 /* Oby's words coming in: each new word fades in over 240ms */
 .is-streaming .w { animation: word-in 240ms ease-out both; }
 @keyframes word-in { from { opacity: 0; } }

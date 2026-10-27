@@ -21,6 +21,7 @@ import { lastAgo, renameChat, useChats, type Chat } from './chats';
 import { everything } from './lean';
 import { WELCOME, sampleDid, sampleOut, useSetup } from './onboarding';
 import { SAMPLE_TALK } from './Welcome';
+import { plain } from './Said';
 
 type Section = 'home' | 'conversations' | 'obysphere' | 'settings';
 type StripIcon = (p: { size?: number; weight?: 'regular' | 'fill' }) => React.ReactNode;
@@ -48,7 +49,8 @@ const convoAbout = (c: Chat) => {
   if (!c.said.length && c.about !== undefined) return c.about;
   const n = c.said.flatMap((m) => m.jobs ?? []).length;
   if (n) return `Started ${n} task${n === 1 ? '' : 's'}`;
-  return [...c.said].reverse().find((m) => m.who === 'oby' && m.text)?.text ?? 'Oby is on it';
+  const said = [...c.said].reverse().find((m) => m.who === 'oby' && m.text)?.text;
+  return said ? plain(said) : 'Oby is on it';
 };
 
 // The side panel, in two columns: icons on the far left pick a section
