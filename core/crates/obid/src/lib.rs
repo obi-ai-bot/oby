@@ -367,7 +367,6 @@ pub async fn serve(
             source,
         }
     })?;
-    jobs.set_api_address(bound);
     // Jobs started its agents' egress proxy (crate::egress, #616), whose tunnels hold two files each.
     if jobs.confines_egress() {
         raise_open_files();
