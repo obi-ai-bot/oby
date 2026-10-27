@@ -6,6 +6,7 @@ import { FIRST_TASK, WELCOME, pick, signInGitHub, dev as setupDev, type Setup } 
 import { addTask, stop, useTasks, dev as tasksDev, type Task } from '../tasks';
 import { sayOby, useChats, dev as chatsDev } from '../chats';
 import { onObid } from '../lean';
+import { dev as faceDev } from '../ObyFaceLive';
 import { clock } from '../stream';
 
 // The control center (dev builds only: main.tsx imports it behind import.meta.env.DEV), as
@@ -169,6 +170,11 @@ function addDecision(k: AskKind, n: number) {
 }
 
 // --- Oby's face. ponytail: looking and the cheer come when the face has them
+// The balloon and the spin, to compare: ObyFaceLive's, read as Oby next talks; kept across scenarios
+faceDev.balloon = (store('oby.dev.balloon') as typeof faceDev.balloon) || 'gx';
+faceDev.fullSpin = store('oby.dev.spin') === '1';
+const setBalloon = (v: typeof faceDev.balloon) => { faceDev.balloon = v; store('oby.dev.balloon', v); changed(); };
+const setSpin = (full: boolean) => { faceDev.fullSpin = full; store('oby.dev.spin', full ? '1' : ''); changed(); };
 const SAMPLE = 'You’re set. What should I work on first? Pick one, or tell me in your own words.';
 
 // --- the panel
@@ -291,6 +297,12 @@ function ControlCenter() {
               <button type="button" className={talk?.typing ? 'is-on' : ''} disabled={!talk} onClick={() => ch.patch(talk!.id, (c) => ({ typing: !c.typing, step: c.typing ? undefined : 'Thinking' }))}>thinking</button>
               <button type="button" disabled={!talk} onClick={() => void sayOby(talk!.id, { text: SAMPLE })}>talking</button>
             </span>
+            <div className="cc-kv">
+              <span>Balloon</span>
+              <Seg label="Balloon" options={[['Q*bert', 'gx'], ['dots', 'dots'], ['off', 'off']]} on={faceDev.balloon} set={setBalloon} />
+              <span>From dots</span>
+              <Seg label="From dots" options={[['quick return', 'quick'], ['full spin', 'spin']]} on={faceDev.fullSpin ? 'spin' : 'quick'} set={(v) => setSpin(v === 'spin')} />
+            </div>
           </section>
         </>}
 
