@@ -4068,7 +4068,7 @@ impl Link {
     /// (#478): `422` for a finding, or a scanner that can't run.
     pub(crate) async fn scan_outgoing(&self, action: &Value) -> Result<(), ApiError> {
         let invalid = |m: String| api(StatusCode::UNPROCESSABLE_ENTITY, m);
-        let texts = every_text(&action);
+        let texts = every_text(action);
         let scratch = self.config.home.join("tmp");
         std::fs::create_dir_all(&scratch).map_err(|e| {
             api(
