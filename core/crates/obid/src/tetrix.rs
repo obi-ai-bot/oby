@@ -1315,13 +1315,15 @@ impl Tetrix {
 
     /// When `job` ends: its commits' stamps, the files no answer named, and its gaps sent to
     /// Tetrix as a session of Oby's own (after the secret scan passes on exactly what goes).
-    /// Gives the job's `tetrix` as it ends, and the outgoing action when something was sent.
+    /// Gives the job's `tetrix` as it ends, and the outgoing action when something was sent. git
+    /// reads `worktree` pinned to the job's git folders (`folders`, crate::jobs, `git_folders`).
     pub async fn job_ended(
         &self,
         connections: &Connections,
         job: &crate::job::Job,
         seen: &Use,
         worktree: &Path,
+        folders: &[(&'static str, String)],
         start: &str,
     ) -> (Use, Option<crate::publish::Outgoing>) {
         let mut seen = seen.clone();
@@ -1330,10 +1332,10 @@ impl Tetrix {
             (String::new(), String::new())
         } else {
             (
-                crate::git::git(worktree, &["log", "--format=%B%x1e", &range])
+                crate::git::pinned(worktree, folders, &["log", "--format=%B%x1e", &range])
                     .await
                     .unwrap_or_default(),
-                crate::git::git(worktree, &["diff", "--name-only", &range])
+                crate::git::pinned(worktree, folders, &["diff", "--name-only", &range])
                     .await
                     .unwrap_or_default(),
             )
