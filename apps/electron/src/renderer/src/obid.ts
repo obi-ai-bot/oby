@@ -167,9 +167,11 @@ export const api = {
     call<PlanAnswer>('POST', '/v1/plans', { said, ...(answer ? { answer } : {}), ...where }),
   repos: () => call<{ repos: Repo[] }>('GET', '/v1/repos'),
   // obid only: accounts, and signing them in with the tool's own login
-  addAccount: (body: { agent: Agent; default: true } | { agent: Agent; name: string }) => call<Account>('POST', '/v1/accounts', body),
+  addAccount: (body: { agent: Agent; default: true } | { agent: Agent; name: string; payer?: string }) => call<Account>('POST', '/v1/accounts', body),
+  removeAccount: (a: string) => call<null>('DELETE', `/v1/accounts/${id(a)}`),
   signIn: (a: string) => call<SignIn>('GET', `/v1/accounts/${id(a)}/sign-in`),
   signInCode: (a: string, code: string) => call<Account>('POST', `/v1/accounts/${id(a)}/sign-in`, { code }),
+  endSignIn: (a: string) => call<null>('DELETE', `/v1/accounts/${id(a)}/sign-in`),
   // obid only: GitHub's sign-in (gh's device flow), and Tetrix's
   github: () => call<{ gh: boolean; signedIn: boolean; user: string | null }>('GET', '/v1/github'),
   githubSignIn: () => call<SignIn>('POST', '/v1/github/sign-in'),

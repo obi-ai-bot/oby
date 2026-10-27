@@ -139,7 +139,7 @@ const Row = ({ mark, name, sub, state, act, onAct, children }: { mark: ReactNode
 );
 
 // Claude Code's sign-in ends on a page that shows a code: pasted here, it goes to its login (obid's)
-function PasteCode({ onCode }: { onCode: (code: string) => void }) {
+export function PasteCode({ onCode }: { onCode: (code: string) => void }) {
   const [code, setCode] = useState('');
   return (
     <form className="setup-code" onSubmit={(e) => { e.preventDefault(); onCode(code); }}>
