@@ -253,7 +253,15 @@ export function connect() {
       // obid follows the stream before it answers anything else: fetch once its first text came
       if (first) { first = false; void sync(mine, pending, () => { syncing = false; }); }
     },
-    ({ status, text, why }) => down(mine, status === 401 ? 'obid refused this Mac’s token (api-token).' : status ? `obid answered ${status}.` : text, why),
+    ({ status, text, why }) => {
+      if (status === 401) return down(mine, 'obid refused this Mac’s token (api-token).');
+      if (!status) return down(mine, text, why);
+      // obid's own words ("Oby’s engine didn’t start."), and with `starting` (a 503 while it
+      // opens, core's Door) no problem yet
+      let said: { error?: unknown; starting?: unknown } | null = null;
+      try { said = JSON.parse(text); } catch { /* not obid's JSON */ }
+      down(mine, typeof said?.error === 'string' ? said.error : `obid answered ${status}.`, said?.starting ? 'waiting' : undefined);
+    },
   );
 }
 
