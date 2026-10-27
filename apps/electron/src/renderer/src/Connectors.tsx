@@ -74,8 +74,8 @@ function Live() {
   const [github, setGitHub] = useState<GitHub | null>(null);
   const [tetrix, setTetrix] = useState<Tetrix | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
-  // the connector whose sign-in is on its way (gh takes a few seconds to give its code)
-  const [busy, setBusy] = useState<'GitHub' | 'Tetrix' | null>(null);
+  // each connector's sign-in on its way, apart (gh takes a few seconds to give its code)
+  const [busy, setBusy] = useState({ GitHub: false, Tetrix: false });
   // the Tetrix picked below, while it isn't the one Oby uses (null: that one)
   const [draft, setDraft] = useState<{ pick: string; url: string } | null>(null);
   const repos = useLive().repos.length;
@@ -91,8 +91,8 @@ function Live() {
   }, [signingIn]);
   // only a sign-in's own click clears its busy: a Cancel never puts back a Connect still on its way
   const act = (f: () => Promise<unknown>, signIn?: 'GitHub' | 'Tetrix') => () => {
-    if (signIn) setBusy(signIn);
-    void f().catch(say).then(read).finally(() => { if (signIn) setBusy(null); });
+    if (signIn) setBusy((b) => ({ ...b, [signIn]: true }));
+    void f().catch(say).then(read).finally(() => { if (signIn) setBusy((b) => ({ ...b, [signIn]: false })); });
   };
   // a sign-in's page, in the person's browser (main opens https only)
   const open = (page: { url: string }) => window.app?.openExternal(page.url);
@@ -106,7 +106,7 @@ function Live() {
 
   const g = github, t = tetrix;
   const gitHub: Connector = { name: 'GitHub', brand: BRANDS.github, connected: g.signedIn, about: 'Repos, pull requests and checks', control: null };
-  if (g.signIn || busy === 'GitHub') {
+  if (g.signIn || busy.GitHub) {
     gitHub.about = `Finish in your browser${at(g.signIn?.url)}${g.signIn?.userCode ? ` · enter ${g.signIn.userCode}` : ''}`;
     gitHub.control = waiting(!!g.signIn && api.githubCancel);
   } else if (g.signedIn) {
@@ -129,7 +129,7 @@ function Live() {
   const connect = (label: string) => <button className="set-button" disabled={!chosen} onClick={chosen ? act(async () => open(await api.tetrixSignIn(chosen)), 'Tetrix') : undefined}>{label}</button>;
   const tetrixRow: Connector = { name: 'Tetrix', brand: BRANDS.tetrix, connected: t.connected, about: t.error ?? 'Project knowledge and blast radius', control: null };
   const disconnect = <button className="set-button is-danger" onClick={act(api.tetrixDisconnect)}>Disconnect</button>;
-  const settled = !t.signIn && busy !== 'Tetrix';
+  const settled = !t.signIn && !busy.Tetrix;
   if (!settled) {
     tetrixRow.about = `Finish in your browser${at(t.signIn?.server)}`;
     tetrixRow.control = waiting(!!t.signIn && api.tetrixCancel);
