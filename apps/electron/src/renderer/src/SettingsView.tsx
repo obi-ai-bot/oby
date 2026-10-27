@@ -1,12 +1,12 @@
 import { useEffect, useState, useSyncExternalStore } from 'react';
-import { Check, Search } from 'lucide-react';
-import { BRANDS, BrandMark, type Brand } from './brands';
+import { BrandMark } from './brands';
 import { useScrollThumb } from './useScrollThumb';
 import { AGENTS, type Agent } from './mock';
 import { OwnerAvatar } from './ObyFace';
 import { useSpheres } from './spheres';
 import { onObid } from './lean';
 import { ApiError, api, type SignIn, type Status } from './obid';
+import Connectors from './Connectors';
 
 // how long the way out takes (the sink animation in app.css)
 const LEAVE_MS = 220;
@@ -33,7 +33,7 @@ export const settingsLabel = (id: string) => SETTINGS_PAGES.find((p) => p.id ===
 const values = new Map<string, unknown>();
 const listeners = new Set<() => void>();
 const subscribe = (l: () => void) => { listeners.add(l); return () => { listeners.delete(l); }; };
-function useSetting<T>(key: string, initial: T): [T, (v: T) => void] {
+export function useSetting<T>(key: string, initial: T): [T, (v: T) => void] {
   const value = useSyncExternalStore(
     subscribe,
     () => (values.has(key) ? values.get(key) : initial) as T,
@@ -537,36 +537,6 @@ function Vault() {
   </>;
 }
 
-// Connectors: what's connected, then what's available, with a search over both
-function Connectors() {
-  const [connected, setConnected] = useSetting('connected', CONNECTORS.filter((c) => c.connected).map((c) => c.name));
-  const [query, setQuery] = useState('');
-  const q = query.trim().toLowerCase();
-  const shown = CONNECTORS.filter((c) => !q || `${c.name} ${c.about}`.toLowerCase().includes(q));
-  const groups = [
-    { title: 'Connected', items: shown.filter((c) => connected.includes(c.name)) },
-    { title: 'Available', items: shown.filter((c) => !connected.includes(c.name)) },
-  ].filter((g) => g.items.length);
-  return <>
-    <label className="archive-search set-search rise" style={{ '--i': 1 } as React.CSSProperties}>
-      <Search size={16} strokeWidth={1.6} />
-      <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search connectors" aria-label="Search connectors" />
-    </label>
-    {groups.map((g, k) => (
-      <Group key={g.title} i={2 + k} title={g.title}>
-        {g.items.map((c) => (
-          <Row key={c.name} label={<span className="set-connector"><BrandMark brand={c.brand} /><span className="set-label">{c.name}<span className="set-about">{c.about}</span></span></span>}>
-            {connected.includes(c.name)
-              ? <span className="set-value"><Check size={14} strokeWidth={1.8} />Connected</span>
-              : <button className="set-button" onClick={() => setConnected([...connected, c.name])}>Connect</button>}
-          </Row>
-        ))}
-      </Group>
-    ))}
-    {!groups.length && <p className="group-empty">No connector matches “{query.trim()}”</p>}
-  </>;
-}
-
 function About() {
   const [checked, setChecked] = useState(false);
   return <>
@@ -578,20 +548,6 @@ function About() {
 }
 
 const PAGES: Record<string, () => React.ReactNode> = { general: General, runner: Runner, sharing: Sharing, remote: Remote, accounts: Accounts, models: Models, connectors: Connectors, vault: Vault, about: About };
-
-// The services Oby reaches (placeholders until these are real)
-const CONNECTORS: { name: string; about: string; brand: Brand; connected: boolean }[] = [
-  { name: 'Deskree Ops', about: 'Projects, deploys and incidents', brand: BRANDS.deskree, connected: true },
-  { name: 'Tetrix', about: 'Project knowledge and blast radius', brand: BRANDS.tetrix, connected: true },
-  { name: 'GitHub', about: 'Repos, pull requests and checks', brand: BRANDS.github, connected: true },
-  { name: 'Claude', about: 'Run jobs in Claude Code', brand: BRANDS.claude, connected: true },
-  { name: 'ChatGPT', about: 'Run jobs in Codex, ask ChatGPT', brand: BRANDS.openai, connected: true },
-  { name: 'Cursor', about: 'Run jobs in Cursor', brand: BRANDS.cursor, connected: false },
-  { name: 'Slack', about: 'Read and send messages', brand: BRANDS.slack, connected: true },
-  { name: 'Gmail', about: 'Read and manage your email', brand: BRANDS.gmail, connected: false },
-  { name: 'Google Meet', about: 'Join meetings and keep the notes', brand: BRANDS.meet, connected: true },
-  { name: 'Zoom', about: 'Join meetings and keep the notes', brand: BRANDS.zoom, connected: false },
-];
 
 // The default mode, with what it lets the agent do under it
 function ModeRow({ mode, setMode }: { mode: string; setMode: (m: string) => void }) {
@@ -664,7 +620,7 @@ export function Segmented({ value, options, onChange, label }: { value: string; 
   );
 }
 
-function TextField({ value, onChange, placeholder, label, secret = false }: { value: string; onChange: (v: string) => void; placeholder: string; label: string; secret?: boolean }) {
+export function TextField({ value, onChange, placeholder, label, secret = false }: { value: string; onChange: (v: string) => void; placeholder: string; label: string; secret?: boolean }) {
   return <input className="set-field" type={secret ? 'password' : 'text'} value={value} onChange={(e) => onChange(e.target.value)} placeholder={placeholder} aria-label={label} spellCheck={false} />;
 }
 
