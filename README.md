@@ -19,7 +19,7 @@
 </p>
 
 > [!NOTE]
-> Oby 0.4.4 is out: [download it](https://downloads.oby.deskree.com/Oby-0.4.4.dmg) for macOS 26 or later. It updates itself. It runs on the Mac only, hands work to Claude Code, Codex and Cursor, connects to GitHub and Tetrix, and asks your teammates' Obys for reviews through your Obysphere.
+> Oby 0.4.5 is out: [download it](https://downloads.oby.deskree.com/Oby-0.4.5.dmg) for macOS 26 or later. It updates itself. It runs on the Mac only, hands work to Claude Code, Codex and Cursor, connects to GitHub and Tetrix, and asks your teammates' Obys for reviews through your Obysphere.
 
 ## What it does
 
@@ -41,7 +41,7 @@
 
 ## Install
 
-[Download Oby](https://downloads.oby.deskree.com/Oby-0.4.4.dmg), move it to Applications and open it. Its engine, `obid`, starts on this Mac by itself, and first launch takes a few minutes:
+[Download Oby](https://downloads.oby.deskree.com/Oby-0.4.5.dmg), move it to Applications and open it. Its engine, `obid`, starts on this Mac by itself, and first launch takes a few minutes:
 
 1. **Hello**, then **hold fn to talk** (Oby asks for Accessibility, so it notices fn in any app).
 2. **Your agents.** Apple's command-line tools (git comes with them): Install runs macOS's own installer. Then Claude Code, Codex and Cursor: logins already on your Mac show Connected by themselves. A tool that isn't installed has Copy Command (Codex's needs Node.js first: nodejs.org, or `brew install node`); run it in Terminal, sign in there, and its row turns Connected without restarting anything. Connect signs in a tool that's installed but signed out, through its own login. One agent is enough.
@@ -51,7 +51,7 @@ Home opens with a first task in its box. Updating from 0.3.0, Oby shows only the
 
 ## Joining Deskree
 
-1. [Download Oby](https://downloads.oby.deskree.com/Oby-0.4.4.dmg) and go through first launch (above).
+1. [Download Oby](https://downloads.oby.deskree.com/Oby-0.4.5.dmg) and go through first launch (above).
 2. Open the team invite link you were sent and click **Open in Oby**: Settings › Obysphere opens on **Join Deskree**. Opened before or during first launch, it waits and opens when first launch closes. Without a link, paste it in Settings › Obysphere.
 
 ## On your iPhone
