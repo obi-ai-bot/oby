@@ -11284,9 +11284,29 @@ fn security_limit(value: bool) -> Duration {
     Duration::from_secs(if value { 60 } else { 5 })
 }
 
-/// Whether Claude Code keeps a login for `config_dir` in the Keychain (macOS only).
+/// Whether Claude Code keeps a login for `config_dir` in the Keychain (macOS only). An item
+/// found is taken as there for [`crate::accounts::LOOK_EVERY`]: `GET /v1/status` asks twice per
+/// account (its label and `signedIn`), and each `security` takes 50 ms to most of a second. An
+/// item not found is asked for again every time, so a sign-in shows at once.
 fn keychain_has(config_dir: Option<&Path>) -> bool {
-    keychain(config_dir, false).is_some()
+    static SEEN: Mutex<Vec<(Option<PathBuf>, std::time::Instant)>> = Mutex::new(Vec::new());
+    let fresh = |seen: &[(Option<PathBuf>, std::time::Instant)]| {
+        seen.iter().any(|(dir, at)| {
+            dir.as_deref() == config_dir && at.elapsed() < crate::accounts::LOOK_EVERY
+        })
+    };
+    if fresh(&SEEN.lock().unwrap_or_else(|e| e.into_inner())) {
+        return true;
+    }
+    // ponytail: two callers at once may both ask security; the cache only saves the next ones.
+    let has = keychain(config_dir, false).is_some();
+    let mut seen = SEEN.lock().unwrap_or_else(|e| e.into_inner());
+    seen.retain(|(dir, _)| dir.as_deref() != config_dir);
+    if !has {
+        return false;
+    }
+    seen.push((config_dir.map(Path::to_path_buf), std::time::Instant::now()));
+    true
 }
 
 /// Claude Code's own login for `config_dir` from the macOS Keychain, the owner's decision of
@@ -11411,11 +11431,24 @@ fn cursor_keychain_live() -> bool {
 }
 
 /// Whether Cursor's own login is in the Keychain, while the copy is on.
+/// An item found is taken as there for [`crate::accounts::LOOK_EVERY`], as [`keychain_has`]'s.
 fn cursor_keychain_has() -> bool {
-    cursor_keychain_on()
-        && CURSOR_ITEMS
-            .iter()
-            .any(|(_, service)| cursor_keychain_item(service, false).is_some())
+    static FOUND: Mutex<Option<std::time::Instant>> = Mutex::new(None);
+    if !cursor_keychain_on() {
+        return false;
+    }
+    if FOUND
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .is_some_and(|at| at.elapsed() < crate::accounts::LOOK_EVERY)
+    {
+        return true;
+    }
+    let has = CURSOR_ITEMS
+        .iter()
+        .any(|(_, service)| cursor_keychain_item(service, false).is_some());
+    *FOUND.lock().unwrap_or_else(|e| e.into_inner()) = has.then(std::time::Instant::now);
+    has
 }
 
 /// Cursor's own login from the macOS Keychain, while the copy is on: as the login file a run's copy
