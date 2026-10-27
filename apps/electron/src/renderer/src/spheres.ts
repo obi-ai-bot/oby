@@ -8,9 +8,10 @@ import { OBYS } from './mock';
 // made an admin of it (only people invited in can leave). members: the Obys in
 // it besides yours (by their owner's name); invited: addresses asked in that
 // haven't joined yet. domain: anyone with an address there can join by its link.
+// sample: the one Oby shows while setting up (SAMPLE), never one you're in
 export type Sphere = {
   id: string; name: string; slug: string; brand?: Brand; image?: string;
-  admin: boolean; members: string[]; invited: string[]; domain?: string;
+  admin: boolean; members: string[]; invited: string[]; domain?: string; sample?: true;
 };
 // you (until there's sign-in)
 export const ME = { name: 'Doti', email: 'doti@deskree.com' };
@@ -20,6 +21,16 @@ export const urlOf = (s: Sphere) => `${s.slug}${SUFFIX}`;
 let spheres: Sphere[] = [
   { id: 'deskree', name: 'Deskree', slug: 'deskree', brand: BRANDS.deskree, admin: true, members: OBYS.map((o) => o.name), invited: [], domain: 'deskree.com' },
 ];
+// A sample to look around in while setting up (onboarding.ts's Obysphere tour): shown, never
+// kept. It's outside the store, so nothing that lists your Obyspheres (Settings, Knowledge, Home)
+// sees it; only the side panel adds it, while the tour has it out
+export const SAMPLE: Sphere = {
+  id: 'sample', name: 'Deskree', slug: 'deskree', brand: BRANDS.deskree, admin: false,
+  members: ['Wellington', 'Ernesto', 'Dima', 'Sangam'], invited: ['ana@deskree.com'], domain: 'deskree.com', sample: true,
+};
+// ponytail: the + makes one in the lean build too (the plan's decision 1, the owner's to confirm);
+// it adds to this mock only, until making one reaches the Obysphere
+export const CAN_CREATE = true;
 const listeners = new Set<() => void>();
 const set = (next: Sphere[]) => { spheres = next; listeners.forEach((l) => l()); };
 const subscribe = (l: () => void) => { listeners.add(l); return () => { listeners.delete(l); }; };

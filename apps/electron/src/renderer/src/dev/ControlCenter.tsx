@@ -39,7 +39,11 @@ function setMode(m: Mode) {
 const stepOn = () => { held.shift()?.go(); changed(); };
 
 // --- scenarios
-const DEFAULT: Record<SetupStep, string> = { agents: 'Continue', github: 'Continue', extras: 'Skip for now', first: FIRST_TASK };
+const DEFAULT: Record<SetupStep, string> = {
+  agents: 'Continue', github: 'Continue', extras: 'Skip for now', first: FIRST_TASK,
+  // the Obysphere tour (onboarding.ts)
+  sphere: 'Skip', showme: 'Continue', sample: 'Not now', 'convo:Ernesto': 'Done looking', 'convo:Dima': 'Done looking', 'convo:Wellington': 'Done looking', knowledge: 'Continue',
+};
 type Scenario = { id: string; label: string; to?: SetupStep | 'task'; go?: Partial<Record<SetupStep, string>>; then?: () => void; href?: string };
 const first = () => tk.get().at(-1);
 const SCENARIOS: Scenario[] = [
@@ -50,8 +54,8 @@ const SCENARIOS: Scenario[] = [
   { id: 'github', label: 'GitHub', to: 'github' },
   { id: 'github-code', label: 'GitHub’s code', to: 'github', then: () => setGitHub('code') },
   { id: 'github-skipped', label: 'GitHub skipped', to: 'extras', go: { github: 'Not now' } },
-  { id: 'extras', label: 'Tetrix and Obysphere', to: 'extras' },
-  { id: 'extras-connected', label: 'Both connected', to: 'extras', then: () => ob.set(() => ({ tetrix: 'in', sphere: 'in' })) },
+  { id: 'extras', label: 'Tetrix', to: 'extras' },
+  { id: 'extras-connected', label: 'Tetrix connected', to: 'extras', then: () => ob.set(() => ({ tetrix: 'in' })) },
   { id: 'first-task', label: 'First task', to: 'first' },
   { id: 'task-running', label: 'Task running', to: 'task', then: () => setStage(first()!, 1) },
   { id: 'every-decision', label: 'Every decision', to: 'task', then: () => KINDS.forEach((k) => addDecision(k, 1)) },
@@ -244,7 +248,7 @@ function ControlCenter() {
             ])}
             <span>GitHub</span><Seg label="GitHub" options={pills('out', 'waiting', 'code', 'in')} on={githubState(s)} set={setGitHub} />
             <span>Tetrix</span><Seg label="Tetrix" options={pills('out', 'waiting', 'in')} on={s.tetrix} set={(tetrix) => ob.set(() => ({ tetrix }))} />
-            <span>Obysphere</span><Seg label="Obysphere" options={pills('out', 'waiting', 'in')} on={s.sphere} set={(sphere) => ob.set(() => ({ sphere }))} />
+            <span>Obysphere</span><Seg label="Obysphere" options={pills('off', 'explain', 'showme', 'sample', 'inside', 'leaving', 'gone')} on={s.sphere} set={(sphere) => ob.set(() => ({ sphere }))} />
           </div>
         </section>
 

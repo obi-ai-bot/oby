@@ -1,23 +1,32 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import { Check } from 'lucide-react';
+import { ChatsCircleIcon, PlusIcon } from '@phosphor-icons/react';
 import Oby from './Oby';
-import { BrandMark } from './brands';
+import { BRANDS, BrandMark } from './brands';
 import { ObyFace, OwnerAvatar } from './ObyFace';
-import { AGENTS, type Agent } from './mock';
+import SphereTile from './SphereTile';
+import { SUFFIX } from './spheres';
+import { AGENTS, PEER_CONVOS, type Agent } from './mock';
 
 // First launch: what Oby found signed in on this Mac, then four short scenes of
 // what it does with them. Each scene plays as beats; the ones that tell a
 // story start over after a pause, the ones you act in wait for you.
 
-// a beat every `ms`, up to `last`; looping, it holds a few beats and starts over
-function useBeat(last: number, ms: number, loop = true) {
+// a beat every `ms`, up to `last`; looping, it holds a few beats and starts over.
+// It stops at its end when it doesn't loop, and while off: a scene left in a
+// conversation costs nothing
+function useBeat(last: number, ms: number, loop = true, on = true) {
   const [beat, setBeat] = useState(0);
+  const run = on && (loop || beat < last);
   useEffect(() => {
+    if (!run) return;
     const t = setInterval(() => setBeat((b) => (b < last ? b + 1 : loop && b < last + 4 ? b + 1 : loop ? 0 : b)), ms);
     return () => clearInterval(t);
-  }, [last, ms, loop]);
+  }, [last, ms, loop, run]);
   return beat;
 }
+// reduced motion: scenes show their last frame, nothing timed
+const still = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
 
 const Dot = ({ state }: { state: 'working' | 'needs' }) => <span className="status"><span className={`status-dot is-${state}`} /></span>;
 
@@ -134,24 +143,79 @@ function Autonomy() {
   );
 }
 
-// 5. Obys ask each other for reviews; a person steps in only where GitHub needs one
-const TALK: { peer?: boolean; text: string }[] = [
+// 5. Obys ask each other for reviews; a person steps in only where GitHub needs one.
+// A line is your Oby's, the other Oby's (peer), or yours, the person's (you)
+type Line = { peer?: boolean; you?: boolean; text: string };
+const TALK: Line[] = [
   { text: 'Can you review #418 in tetrix-ee?' },
   { peer: true, text: 'On it. Reviewing with Codex.' },
   { peer: true, text: 'Nothing to fix. Ernesto approved it.' },
   { text: 'Thanks. Merged into dev.' },
 ];
-function Sphere() {
-  const beat = useBeat(TALK.length, 1100);
+// The sample Obysphere's conversations (onboarding.ts's tour), one per teammate:
+// this scene's, and two of the demo's own (mock.ts), word for word
+const peerTalk = (id: string): Line[] => PEER_CONVOS.find((c) => c.id === id)!.messages.map((m) => ({ peer: m.who !== 'oby' && m.who !== 'you', you: m.who === 'you', text: m.text }));
+export const SAMPLE_TALK: Record<string, { title: string; talk: Line[] }> = {
+  Ernesto: { title: 'Review of #418', talk: TALK },
+  Dima: { title: 'Shared graph fixture', talk: peerTalk('p12') },
+  Wellington: { title: 'Status bar states for the island', talk: peerTalk('p1') },
+};
+// onEnd: once its last line is in (not looping)
+export function Sphere({ talk = TALK, peer = 'Ernesto', loop = true, onEnd }: { talk?: Line[]; peer?: string; loop?: boolean; onEnd?: () => void } = {}) {
+  const calm = still();
+  const beat = useBeat(talk.length, 1100, loop, !calm);
+  const b = calm ? talk.length : beat, ended = b >= talk.length;
+  useEffect(() => { if (ended) onEnd?.(); }, [ended]);
   return (
     <div className="wl-talk">
       <div className="wl-talk-head">
         <span><ObyFace size={22} />Your Oby</span>
-        <span>Ernesto’s Oby<OwnerAvatar name="Ernesto" size={22} /></span>
+        <span>{peer}’s Oby<OwnerAvatar name={peer} size={22} /></span>
       </div>
       <div className="wl-msgs">
-        {TALK.map((m, i) => <span key={m.text} className={`wl-bubble${m.peer ? ' is-peer' : ''}${beat > i ? ' is-in' : ''}`}>{m.text}</span>)}
+        {talk.map((m, i) => <span key={m.text} className={`wl-bubble${m.peer ? ' is-peer' : ''}${m.you ? ' is-you' : ''}${b > i ? ' is-in' : ''}`}>{m.you && <b>You</b>}{m.text}</span>)}
       </div>
+    </div>
+  );
+}
+
+// Show me (the Obysphere tour): making one with the +, then joining one from a
+// teammate's invite link, drawn small with Sangam's own pieces (never the real
+// side panel or dialog, which stay as they are). Its two frames side by side
+export function SphereHowTo() {
+  return (
+    <div className="how" role="img" aria-label="Example: making an Obysphere with the + and a name, then joining one from a teammate’s invite link">
+      <figure className="how-frame">
+        <div className="how-stage">
+          <span className="how-rail">
+            <span className="rail-button"><ChatsCircleIcon size={20} /></span>
+            <span className="rail-sep" />
+            <span className="rail-button is-on"><SphereTile name="My team" /></span>
+            <span className="rail-button"><PlusIcon size={20} /></span>
+          </span>
+          <div className="modal how-card">
+            <h2 className="how-title">Create an Obysphere</h2>
+            <span className="modal-label">Name</span>
+            <span className="modal-field how-field">My team</span>
+            <span className="modal-label sphere-label">Obysphere URL</span>
+            <span className="modal-field how-field">my-team<span className="sphere-suffix">{SUFFIX}</span></span>
+            <p className="sphere-note is-ok"><Check size={13} strokeWidth={2} />Available</p>
+            <span className="modal-primary how-create">Create Obysphere</span>
+          </div>
+        </div>
+        <figcaption>Make one: + → name it → Create Obysphere</figcaption>
+      </figure>
+      <figure className="how-frame">
+        <div className="how-stage is-join">
+          <p className="how-invite"><OwnerAvatar name="Wellington" size={22} /><span>Join us on Oby: <span className="tok-url">deskree.obysphere.com/join/k3f9q2</span></span></p>
+          <div className="setup-row">
+            <SphereTile name="Deskree" brand={BRANDS.deskree} />
+            <span className="wl-two"><span className="wl-name">Join Deskree</span><span className="wl-sub">deskree.obysphere.com · 5 members</span></span>
+            <span className="wl-ready"><Check size={14} strokeWidth={2} />Joined</span>
+          </div>
+        </div>
+        <figcaption>Or join one: open the invite link → Join</figcaption>
+      </figure>
     </div>
   );
 }

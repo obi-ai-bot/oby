@@ -1759,3 +1759,47 @@ button.sphere-logo-badge:hover { color: var(--ink); background: #3a3a39; }
   color: var(--text); font-size: var(--text-md); line-height: 20px; text-align: center; white-space: pre-line;
 }
 .connection.is-down { color: var(--ink); border-color: color-mix(in srgb, var(--over) 45%, transparent); }
+
+/* ==== The Obysphere tour (onboarding.ts, SetupCard, Sidebar, Welcome's SphereHowTo) ==== */
+/* the sample in the icon strip: a dashed edge; it pops in, calls (three ripples, then its blue
+   dot pulses until it's opened), and shrinks away when it's put away (removed on a 220ms timer) */
+.rail-button.is-sample { animation: wl-pop 360ms var(--spring) both; }
+.rail-button.is-sample .sphere-tile::after, .is-sample > .sphere-tile::after { box-shadow: none; border: 1px dashed rgba(255, 255, 255, 0.35); }
+.rail-button.is-sample.is-calling { animation: wl-pop 360ms var(--spring) both, sample-call 1600ms var(--warm) 200ms 3; }
+.rail-button.is-sample.is-calling::before { animation: pulse-slow 1.6s ease-in-out 5s infinite; }
+.rail-button.is-sample.is-leaving { animation: wl-pop 220ms var(--ease-in) reverse both; }
+@keyframes sample-call { from { box-shadow: 0 0 0 0 rgba(10, 132, 255, 0.55); } to { box-shadow: 0 0 0 10px rgba(10, 132, 255, 0); } }
+/* its section: a Sample tag by the name; what the tour calls next pulses */
+.sidebar-sample { margin-left: 8px; padding: 2px 7px; border-radius: var(--radius-pill); background: var(--chip); color: var(--muted); font-size: var(--text-sm); font-weight: 500; vertical-align: 2px; }
+.status-dot.is-new.is-calling { animation: pulse-slow 1.6s ease-in-out infinite; }
+.sidebar-new.is-calling::after { content: ''; flex: none; width: 5px; height: 5px; border-radius: 50%; background: var(--unread); animation: pulse-slow 1.6s ease-in-out infinite; }
+/* in the chat: a card's small label (Example, Sample conversation · …), what to click next, and
+   a card once the sample's put away */
+.setup-label { margin: 0 0 8px; color: var(--muted); font-size: var(--text-sm); }
+.setup-cue { margin: 12px 0 0; }
+.setup-gone { margin: 0; animation: fade-in var(--fade) both; }
+/* Sangam's two-Obys scene in a card: the column's width, lines that wrap, and yours (the person's) */
+.setup .wl-talk { width: 100%; }
+.setup .wl-bubble { max-width: 80%; white-space: normal; line-height: 1.4; }
+.wl-bubble.is-you { background: none; box-shadow: inset 0 0 0 1px var(--line); }
+.wl-bubble.is-you b { margin-right: 6px; font-weight: 600; }
+/* Show me: making one, then joining one, as two small frames (stacked when narrow); nothing in
+   them takes a click */
+.how { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 10px; pointer-events: none; }
+.how-frame { margin: 0; display: flex; flex-direction: column; gap: 8px; }
+.how-frame figcaption { color: var(--muted); font-size: var(--text-sm); text-align: center; }
+.how-stage { height: 196px; display: flex; gap: 10px; padding: 10px; border: 1px solid var(--line); border-radius: 14px; background: var(--chip); overflow: hidden; }
+.how-rail { flex: none; display: flex; flex-direction: column; align-items: center; gap: 10px; padding-right: 10px; box-shadow: 1px 0 rgba(255, 255, 255, 0.08); }
+.how-card { zoom: 0.6; flex: none; width: 300px; max-height: none; padding: 16px; overflow: visible; box-shadow: none; animation: none; }
+.how-title { margin: 0 0 14px; color: var(--ink); font-size: 17px; font-weight: 600; }
+.how-field { display: flex; align-items: center; }
+.how-create { width: fit-content; margin-top: 12px; }
+.how-stage.is-join { flex-direction: column; justify-content: center; gap: 12px; }
+.how-invite { margin: 0; display: flex; align-items: flex-start; gap: 8px; color: var(--text); font-size: var(--text-md); line-height: 1.4; }
+.how-invite > span, .how .wl-sub { min-width: 0; overflow-wrap: anywhere; }
+@media (prefers-reduced-motion: reduce) {
+  .rail-button.is-sample, .rail-button.is-sample::before, .status-dot.is-new.is-calling, .sidebar-new.is-calling::after, .setup-gone { animation: none !important; }
+  .rail-button.is-sample.is-calling { box-shadow: 0 0 0 1.5px rgba(10, 132, 255, 0.6); }
+  .setup .wl-bubble { transition: none; }
+}
+/* ==== end of the Obysphere tour ==== */
