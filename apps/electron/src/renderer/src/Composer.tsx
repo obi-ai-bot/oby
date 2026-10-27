@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { ArrowUp, Check, ChevronLeft, File, Gauge, Laptop, ListChecks, Plus, Search, Settings, X } from 'lucide-react';
+import { ArrowUp, Check, ChevronLeft, File, FolderGit2, Gauge, Laptop, ListChecks, Plus, Search, Settings, X } from 'lucide-react';
 import { ObyIcon, OwnerAvatar } from './ObyFace';
 import { AGENTS, OBYS, PLACES, SHARED_WITH_ME, type Attachments } from './mock';
 
@@ -10,14 +10,16 @@ import { useClicksEverywhere } from './Menu';
 import { useTasks, type Task } from './tasks';
 import { BrandMark } from './brands';
 import { fullness, useAccounts } from './SettingsView';
+import { useRepos } from './live';
 import { useScrollThumb } from './useScrollThumb';
 
 // What a message carries besides its words: files or photos (a photo with a
 // small preview of itself), tasks attached. (Other Obys are brought in by name,
 // in the words: @Wellington.) place: the Mac it runs on, when not this one
-// (one at a time: picking another replaces it).
-type Attached = { kind: 'file'; name: string; preview?: string } | { kind: 'task'; id: string } | { kind: 'place'; name: string };
-type View = 'root' | 'oby' | 'task' | 'where' | 'usage';
+// (one at a time: picking another replaces it). repo: the repository the work is
+// in (obid's), one at a time too.
+type Attached = { kind: 'file'; name: string; preview?: string } | { kind: 'task'; id: string } | { kind: 'place'; name: string } | { kind: 'repo'; name: string };
+type View = 'root' | 'oby' | 'task' | 'where' | 'repo' | 'usage';
 const same = (a: Attached, b: Attached) =>
   a.kind === 'task' ? b.kind === 'task' && a.id === b.id : a.kind === b.kind && a.name === (b as { name: string }).name;
 const keyOf = (a: Attached) => (a.kind === 'task' ? `task:${a.id}` : `${a.kind}:${a.name}`);
@@ -37,11 +39,15 @@ const keyOf = (a: Attached) => (a.kind === 'task' ? `task:${a.id}` : `${a.kind}:
 // the Obys over the box, narrowing as you type (arrows move, Enter or Tab
 // picks, Esc closes it). The text grows with what you type; the up arrow sends (lit once
 // there's something to send), as does Enter; Shift+Enter starts a new line.
-export default function Composer({ placeholder, label, onSend, home = false, hidden = false, autoFocus = !home, className = '', style }: {
+export default function Composer({ placeholder, label, onSend, home = false, hidden = false, autoFocus = !home, className = '', style, repos: withRepos = false, conversation }: {
   placeholder: string;
   label: string;
   onSend: (text: string, attached: Attachments) => void;  // its words, and what went with them
   home?: boolean;    // Home's: 480px wide, steps aside (hidden) while a page is open over it
+  // words to Oby (Home's, a conversation's): the repository the work is in, as a tag, the
+  // conversation's last one until another is picked or it's taken out (+ › Choose a repository)
+  repos?: boolean;
+  conversation?: string;
   hidden?: boolean;
   autoFocus?: boolean;  // focused on opening (a conversation's is; Home's and a task page's aren't)
   className?: string;  // a page's own spacing around it
@@ -54,6 +60,10 @@ export default function Composer({ placeholder, label, onSend, home = false, hid
   const [stacked, setStacked] = useState(false);
   const [view, setView] = useState<View | null>(null);
   const [attached, setAttached] = useState<Attached[]>([]);
+  const { repos, last } = useRepos(conversation);
+  // undefined: the conversation's last; null: none (taken out)
+  const [repoPick, setRepoPick] = useState<string | null>();
+  const repo = withRepos && repos.length ? (repoPick === undefined ? last : repoPick ?? undefined) : undefined;
   // the Obys named in the words so far
   const [named, setNamed] = useState<string[]>([]);
   // an @ being typed: what's after it (null: none), the Oby lit in the list,
@@ -102,6 +112,8 @@ export default function Composer({ placeholder, label, onSend, home = false, hid
     setHiddenAbove(t.scrollTop > 0);
   }, [attached.length]);
   const add = (...picked: Attached[]) => {
+    const r = picked.find((a) => a.kind === 'repo');
+    if (r) { setRepoPick(r.name); picked = picked.filter((a) => a !== r); }
     const place = picked.some((a) => a.kind === 'place');
     setAttached((all) => [...all.filter((x) => !place || x.kind !== 'place'), ...picked.filter((a) => !(a.kind === 'place' && !a.name) && !all.some((x) => same(x, a)))]);
     setView(null);
@@ -137,6 +149,7 @@ export default function Composer({ placeholder, label, onSend, home = false, hid
         obys: mentioned(b.text()),
         jobs: attached.flatMap((a) => (a.kind === 'task' ? [a.id] : [])),
         on: attached.find((a) => a.kind === 'place')?.name,
+        repo,
       });
       b.clear();
       setFilled(false);
@@ -176,7 +189,8 @@ export default function Composer({ placeholder, label, onSend, home = false, hid
             onFiles={() => { closePanel(); files.current?.click(); }}
             onPick={add}
             onPickOby={pickOby}
-            isPicked={(a) => attached.some((x) => same(x, a))}
+            repos={withRepos ? repos : []}
+            isPicked={(a) => (a.kind === 'repo' ? a.name === repo : attached.some((x) => same(x, a)))}
             isNamed={(name) => named.includes(name)}
           />
         )}
@@ -201,8 +215,15 @@ export default function Composer({ placeholder, label, onSend, home = false, hid
           </div>
         )}
         <div className="composer-grid">
-          {attached.length > 0 && (
+          {(attached.length > 0 || repo) && (
             <div ref={tagRow} className={`composer-tags${hiddenAbove ? ' is-scrolled' : ''}`} onScroll={(e) => setHiddenAbove(e.currentTarget.scrollTop > 0)}>
+              {repo && (
+                <span className="composer-tag">
+                  <FolderGit2 size={13} strokeWidth={1.8} />
+                  <span className="composer-tag-text">{repo}</span>
+                  <button type="button" aria-label="Remove" onClick={() => setRepoPick(null)}><X size={12} strokeWidth={2} /></button>
+                </span>
+              )}
               {attached.map((a) => {
                 const t = a.kind === 'task' ? tasks.find((x) => x.id === a.id) : undefined;
                 return (
@@ -275,8 +296,9 @@ export default function Composer({ placeholder, label, onSend, home = false, hid
 // The +'s panel over the box, as wide as it. First the three things you can
 // add; Obys and tasks then turn it into a search with a list under it (back
 // at its left returns to the three). Esc steps back, then closes.
-function AddPanel({ view, tasks, onView, onBlur, onFiles, onPick, onPickOby, isPicked, isNamed }: {
+function AddPanel({ view, tasks, repos, onView, onBlur, onFiles, onPick, onPickOby, isPicked, isNamed }: {
   view: View;
+  repos: string[];   // where the work can be (obid's), none where it can't be picked
   onBlur: (e: React.FocusEvent) => void;
   tasks: Task[];
   onView: (v: View | null) => void;
@@ -324,6 +346,7 @@ function AddPanel({ view, tasks, onView, onBlur, onFiles, onPick, onPickOby, isP
         <button type="button" role="menuitem" tabIndex={-1} data-view="task" onClick={() => onView('task')}><ListChecks size={16} strokeWidth={1.6} />Attach tasks</button>
         {/* Sharing (a preview): run it on a teammate's Mac that's free, with your own accounts */}
         {PLACES.length > 0 && <button type="button" role="menuitem" tabIndex={-1} data-view="where" onClick={() => onView('where')}><Laptop size={16} strokeWidth={1.6} />Run on another Mac</button>}
+        {repos.length > 0 && <button type="button" role="menuitem" tabIndex={-1} data-view="repo" onClick={() => onView('repo')}><FolderGit2 size={16} strokeWidth={1.6} />Choose a repository</button>}
       </div>
     );
   }
@@ -332,13 +355,15 @@ function AddPanel({ view, tasks, onView, onBlur, onFiles, onPick, onPickOby, isP
   const obys = obysFor(q);
   const found = tasks.filter((t) => `${t.who ?? ''} ${t.title}`.toLowerCase().includes(q));
   const places = PLACES.filter((p) => p.name.toLowerCase().includes(q));
+  const inRepos = repos.filter((r) => r.toLowerCase().includes(q));
   // Enter takes the first match (a Mac: the first that's free)
   const pickFirst = () => {
     if (view === 'oby') return obys[0] && onPickOby(obys[0].name);
     if (view === 'where') { const p = places.find((x) => x.free); return p && onPick({ kind: 'place', name: p.name }); }
+    if (view === 'repo') return inRepos[0] && onPick({ kind: 'repo', name: inRepos[0] });
     return found[0] && onPick({ kind: 'task', id: found[0].id });
   };
-  const hint = { oby: 'Search Obys', task: 'Search tasks', where: 'Search Macs' }[view as 'oby' | 'task' | 'where'];
+  const hint = { oby: 'Search Obys', task: 'Search tasks', where: 'Search Macs', repo: 'Search repositories' }[view as 'oby' | 'task' | 'where' | 'repo'];
   return (
     <div className="add-panel is-search" onBlur={onBlur}>
       <div className="add-search">
@@ -384,8 +409,18 @@ function AddPanel({ view, tasks, onView, onBlur, onFiles, onPick, onPickOby, isP
             </button>
           );
         })}
+        {view === 'repo' && inRepos.map((name) => {
+          const a: Attached = { kind: 'repo', name };
+          return (
+            <button type="button" role="option" aria-selected={isPicked(a)} key={name} onClick={() => onPick(a)}>
+              <FolderGit2 size={16} strokeWidth={1.6} />
+              <span className="add-item-text">{name}</span>
+              {isPicked(a) && <Check size={14} strokeWidth={1.8} className="add-check" />}
+            </button>
+          );
+        })}
         {view === 'where' && <p className="add-note">Your job runs there with your own accounts: your logins stay on this Mac.</p>}
-        {((view === 'oby' && !obys.length) || (view === 'task' && !found.length) || (view === 'where' && !places.length)) && <p className="add-empty">Nothing matches “{query.trim()}”</p>}
+        {((view === 'oby' && !obys.length) || (view === 'task' && !found.length) || (view === 'where' && !places.length) || (view === 'repo' && !inRepos.length)) && <p className="add-empty">Nothing matches “{query.trim()}”</p>}
       </div>
       <div {...thumbProps} />
     </div>

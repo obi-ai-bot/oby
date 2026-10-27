@@ -113,7 +113,7 @@ export const deleteChat = (id: string) => {
 let made = 0;
 export function askOby(text: string, att?: Attachments) {
   // ponytail: words only to obid; attachments wait for its uploads (POST /v1/attachments)
-  if (onObid) return live.ask(text);
+  if (onObid) return live.ask(text, undefined, att?.repo);
   const t = text.trim();
   if (!t && !hasAttachments(att)) return;
   const id = `c${++made}`;
@@ -124,7 +124,7 @@ export function askOby(text: string, att?: Attachments) {
 // a reply in a conversation: Oby takes its next turn on it. Oby was waiting on
 // you: its question goes into the conversation, your words under it as the answer
 export function tellChat(id: string, text: string, att?: Attachments) {
-  if (onObid) return void live.ask(text, id);
+  if (onObid) return void live.ask(text, id, att?.repo);
   const t = text.trim();
   if (!t && !hasAttachments(att)) return;
   update(id, (c) => ({

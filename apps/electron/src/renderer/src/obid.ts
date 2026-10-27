@@ -80,6 +80,10 @@ export type Status = {
   running: number;
 };
 
+// obid only: "GET /v1/repos", the repositories a job may start in: the listed ones first, then
+// GitHub's (newest push first)
+export type Repo = { repo: string; defaultBranch: string; listed: boolean };
+
 // "POST /v1/plans"
 export type Question = { text: string; options: string[]; recommended: number | null };
 export type PlanAnswer = (
@@ -152,6 +156,7 @@ export const api = {
   // words to Oby: in a conversation, or starting a new one
   plan: (said: string, answer: { question: string; option: string } | undefined, where: { conversation: string } | { new: true }) =>
     call<PlanAnswer>('POST', '/v1/plans', { said, ...(answer ? { answer } : {}), ...where }),
+  repos: () => call<{ repos: Repo[] }>('GET', '/v1/repos'),
   conversations: (opts: { after?: string; limit?: number } = {}) => call<Conversation[]>('GET', `/v1/conversations${q(opts)}`),
   editConversation: (c: string, change: { title?: string; pinned?: boolean }) => call<Conversation>('PATCH', `/v1/conversations/${id(c)}`, change),
   deleteConversation: (c: string) => call<null>('DELETE', `/v1/conversations/${id(c)}`),
