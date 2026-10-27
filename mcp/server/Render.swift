@@ -235,4 +235,76 @@ enum Render {
         }
         return text
     }
+
+    // MARK: The Obysphere
+
+    /// Teammates' Obys, one a line. Their ids and owners' names are the Sphere's, so they're quoted.
+    static func members(_ members: [JSON]) -> String {
+        guard !members.isEmpty else { return "No teammate's Oby is in this Obysphere yet." }
+        let rows = members.map { member in
+            var parts = [member["obi"]?.string ?? "?", "owner \(member["owner"]?.string ?? "?")"]
+            let accepts = member["accepts"]?.array?.compactMap(\.string) ?? []
+            parts.append(accepts.isEmpty ? "takes nothing" : "takes " + accepts.joined(separator: ", "))
+            parts.append(member["sealed"]?.bool == true ? "sealed" : "not sealed")
+            parts.append(member["verified"]?.bool == true ? "key compared" : "key not compared")
+            return parts.joined(separator: " · ")
+        }
+        return "\(members.count) \(members.count == 1 ? "teammate's Oby" : "teammates' Obys").\n"
+            + quoted("The members (id · owner · what it takes · sealed · owner's key)", rows.joined(separator: "\n"))
+    }
+
+    /// One exchange a line, for lists.
+    static func exchangeRow(_ exchange: JSON) -> String {
+        [exchange["correlationId"]?.string ?? "?", exchange["direction"]?.string ?? "?", exchange["type"]?.string ?? "?",
+         "\(exchange["peer"]?.string ?? "?") (\(exchange["peerOwner"]?.string ?? "?"))", exchange["state"]?.string ?? "?",
+         exchange["updated"]?.string ?? ""].filter { !$0.isEmpty }.joined(separator: " · ")
+    }
+
+    static func exchanges(_ exchanges: [JSON]) -> String {
+        guard !exchanges.isEmpty else { return "No exchanges with teammates' Obys yet." }
+        return "\(exchanges.count) \(exchanges.count == 1 ? "exchange" : "exchanges"), latest first.\n"
+            + quoted("The exchanges (id · direction · type · peer · state · updated)", exchanges.map(exchangeRow).joined(separator: "\n"))
+    }
+
+    /// One exchange: its state, its messages' types, and what came back. Everything in it was
+    /// written, at least in part, by a teammate's Oby, so all of it is quoted.
+    static func exchange(_ exchange: JSON) -> String {
+        var lines = Lines()
+        lines.add("id", exchange["correlationId"])
+        lines.add("direction", exchange["direction"])
+        lines.add("type", exchange["type"])
+        lines.add("peer", "\(exchange["peer"]?.string ?? "?") (owner \(exchange["peerOwner"]?.string ?? "?"))")
+        lines.add("state", exchange["state"])
+        lines.add("job", exchange["job"])
+        lines.add("error", exchange["error"])
+        if let messages = exchange["messages"]?.array, !messages.isEmpty {
+            lines.add("messages", messages.map { message in
+                [message["seq"]?.int.map { "#\($0)" }, message["direction"]?.string, message["envelope"]?["type"]?.string, message["at"]?.string]
+                    .compactMap { $0 }.joined(separator: " · ")
+            }.joined(separator: "\n"))
+        }
+        if let result = exchange["result"], !result.isNull {
+            lines.add("outcome", result["outcome"])
+            lines.add("summary", result["summary"])
+            lines.add("answer", result["text"])
+            if let acceptance = result["acceptance"]?.array, !acceptance.isEmpty {
+                lines.add("acceptance", acceptance.map { condition in
+                    "\(condition["kind"]?.string ?? "?"): " + (condition["met"]?.bool == true ? "met" : "not met")
+                }.joined(separator: "\n"))
+            }
+            if let findings = result["findings"]?.array, !findings.isEmpty {
+                lines.add("findings", findings.map { finding in
+                    var place = finding["file"]?.string ?? ""
+                    if let line = finding["line"]?.int { place += ":\(line)" }
+                    var text = [finding["severity"]?.string, place.isEmpty ? nil : place, finding["title"]?.string]
+                        .compactMap { $0 }.joined(separator: " · ")
+                    if let detail = finding["detail"]?.string { text += "\n  " + detail }
+                    return text
+                }.joined(separator: "\n"))
+            }
+        }
+        lines.add("created", exchange["created"])
+        lines.add("updated", exchange["updated"])
+        return quoted("Exchange \(exchange["correlationId"]?.string ?? "")", lines.text)
+    }
 }

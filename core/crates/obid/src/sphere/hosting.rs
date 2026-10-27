@@ -446,6 +446,8 @@ fn job_size<'a>(mac: &Mac, request: &'a Value) -> &'a str {
 }
 
 /// Whether `home`'s disk has room for a job's whole disk and 5 GB more.
+// The cast is a no-op on Linux, where fsblkcnt_t is u64; macOS's is u32.
+#[allow(clippy::unnecessary_cast)]
 fn room_for(home: &Path, size: Size) -> bool {
     nix::sys::statvfs::statvfs(home).is_ok_and(|s| {
         (s.blocks_available() as u64).saturating_mul(s.fragment_size()) >= (size.disk_gib + 5) << 30
@@ -456,7 +458,10 @@ fn room_for(home: &Path, size: Size) -> bool {
 /// disk and console, and every socket folder of this home's.
 pub fn clean_leftovers(home: &Path) {
     let _ = std::fs::remove_dir_all(home.join("g"));
-    if let Ok(dir) = vm::sockets_base(home) {
+    // Only when the user's sockets folder is already there: starting up never makes it.
+    if vm::sockets_user_dir().exists()
+        && let Ok(dir) = vm::sockets_base(home)
+    {
         let _ = std::fs::remove_dir_all(dir);
     }
 }

@@ -317,10 +317,10 @@ fn the_next_turn_goes_to_the_waiting_claude_code() {
     );
     let recorded = turns(&obid);
     assert_eq!(recorded.len(), 2, "{recorded:?}");
-    assert_eq!(recorded[0]["pid"], recorded[1]["pid"], "{recorded:?}");
+    assert_eq!(recorded[0]["id"], recorded[1]["id"], "{recorded:?}");
     assert_eq!(recorded[1]["prompt"], "REMEMBER");
-    let pid = recorded[0]["pid"].to_string();
-    assert!(alive(&pid), "it waits for the next turn");
+    let waiting = recorded[0].clone();
+    assert!(alive(&waiting), "it waits for the next turn");
     let gone = call(
         &obid,
         "DELETE",
@@ -328,7 +328,7 @@ fn the_next_turn_goes_to_the_waiting_claude_code() {
         None,
     );
     assert_eq!(gone.status, 204, "{}", gone.text);
-    assert!(ends_soon(&pid), "it ends with its conversation");
+    assert!(ends_soon(&waiting), "it ends with its conversation");
 }
 
 /// After the owner's turn, the next new conversation's Claude Code starts and waits (docs/
@@ -361,8 +361,7 @@ fn a_new_conversation_finds_its_claude_code_started() {
         std::thread::sleep(Duration::from_millis(100));
     }
     let (next, record) = started().expect("the next conversation's Claude Code started");
-    let pid = record["pid"].to_string();
-    assert!(alive(&pid));
+    assert!(alive(&record));
     assert_eq!(
         std::fs::read_to_string(conversations.join("next-id")).unwrap(),
         next
@@ -419,7 +418,7 @@ fn a_new_conversation_finds_its_claude_code_started() {
     assert!(!second.body["text"].as_str().unwrap().contains("refused"));
     let recorded = recorded(&conversations.join(format!("{next}/config/turns.jsonl")));
     assert_eq!(recorded.len(), 1, "{recorded:?}");
-    assert_eq!(recorded[0]["pid"].to_string(), pid);
+    assert_eq!(recorded[0]["id"], record["id"]);
     assert!(
         !conversations.join("next-id").exists() || {
             std::fs::read_to_string(conversations.join("next-id")).unwrap() != next
@@ -442,8 +441,8 @@ fn a_claude_code_that_wrote_while_it_waited_starts_anew() {
     assert_eq!(next.body["text"], "later", "{}", next.text);
     let recorded = turns(&obid);
     assert_eq!(recorded.len(), 2, "{recorded:?}");
-    assert_ne!(recorded[0]["pid"], recorded[1]["pid"]);
-    assert!(ends_soon(&recorded[0]["pid"].to_string()));
+    assert_ne!(recorded[0]["id"], recorded[1]["id"]);
+    assert!(ends_soon(&recorded[0]));
 }
 
 /// A login copy a crash left in a conversation's folder is gone once obid has started.
@@ -471,23 +470,24 @@ fn login_copies_left_in_conversations_go_at_start() {
     }
 }
 
-/// Whether the process `pid` runs.
-fn alive(pid: &str) -> bool {
-    std::process::Command::new("kill")
-        .args(["-0", pid])
-        .stderr(std::process::Stdio::null())
-        .status()
-        .unwrap()
-        .success()
+/// Whether the stand-in that wrote `record` (a turn or its start) still runs: while it does, it
+/// rewrites `alive-<id>` in its config folder every 100 ms. Not its pid: under bubblewrap's
+/// --unshare-pid on Linux that's the namespace's, which nothing outside can look up.
+fn alive(record: &Value) -> bool {
+    let beat = Path::new(record["config"].as_str().unwrap())
+        .join(format!("alive-{}", record["id"].as_str().unwrap()));
+    std::fs::metadata(beat)
+        .and_then(|m| m.modified())
+        .is_ok_and(|at| at.elapsed().is_ok_and(|e| e < Duration::from_secs(3)))
 }
 
-/// Whether the process `pid` ends within 15 seconds.
-fn ends_soon(pid: &str) -> bool {
+/// Whether the stand-in that wrote `record` ends within 15 seconds.
+fn ends_soon(record: &Value) -> bool {
     let give_up_at = Instant::now() + Duration::from_secs(15);
-    while alive(pid) && Instant::now() < give_up_at {
+    while alive(record) && Instant::now() < give_up_at {
         std::thread::sleep(Duration::from_millis(100));
     }
-    !alive(pid)
+    !alive(record)
 }
 
 /// A turn stopped or out of time keeps no Claude Code waiting: the next starts a new one.
@@ -500,7 +500,8 @@ fn nothing_waits_after_a_stop_or_the_budget() {
     );
     let first = said(&obid, json!({"said": "SAY hi", "new": true}));
     let conversation = first.body["conversation"].as_str().unwrap().to_owned();
-    let pid = |n: usize| turns(&obid)[n]["pid"].to_string();
+    let turn = |n: usize| turns(&obid)[n].clone();
+    let id = |n: usize| turn(n)["id"].clone();
     let late = said(
         &obid,
         json!({"said": "LINGER 15000", "conversation": conversation}),
@@ -513,13 +514,13 @@ fn nothing_waits_after_a_stop_or_the_budget() {
         "{}",
         late.text
     );
-    assert_eq!(pid(0), pid(1), "the turn went to the waiting one");
-    assert!(ends_soon(&pid(1)), "the budget ended it");
+    assert_eq!(id(0), id(1), "the turn went to the waiting one");
+    assert!(ends_soon(&turn(1)), "the budget ended it");
     said(
         &obid,
         json!({"said": "SAY again", "conversation": conversation}),
     );
-    assert_ne!(pid(2), pid(1));
+    assert_ne!(id(2), id(1));
     std::thread::scope(|scope| {
         let slow = scope.spawn(|| {
             said(
@@ -540,13 +541,13 @@ fn nothing_waits_after_a_stop_or_the_budget() {
         assert_eq!(stopped.status, 200, "{}", stopped.text);
         slow.join().unwrap();
     });
-    assert_eq!(pid(3), pid(2));
-    assert!(ends_soon(&pid(3)), "the stop ended it");
+    assert_eq!(id(3), id(2));
+    assert!(ends_soon(&turn(3)), "the stop ended it");
     said(
         &obid,
         json!({"said": "SAY last", "conversation": conversation}),
     );
-    assert_ne!(pid(4), pid(3));
+    assert_ne!(id(4), id(3));
 }
 
 /// obid's stop ends every waiting Claude Code.
@@ -554,10 +555,10 @@ fn nothing_waits_after_a_stop_or_the_budget() {
 fn obids_stop_ends_the_waiting_claude_code() {
     let (_folder, mut obid) = obid("harness-warm-stop", true);
     said(&obid, json!({"said": "SAY hi", "new": true}));
-    let pid = turns(&obid)[0]["pid"].to_string();
-    assert!(alive(&pid));
+    let waiting = turns(&obid)[0].clone();
+    assert!(alive(&waiting));
     obid.stop();
-    assert!(ends_soon(&pid));
+    assert!(ends_soon(&waiting));
 }
 
 /// A new room takes the spare tree obid keeps ready (a rename, nothing extracted while the turn
@@ -1008,10 +1009,12 @@ fn the_room_cannot_write_outside_itself() {
     let (_folder, obid) = obid("harness-room", true);
     // What other processes leave in /tmp, the test's own folder (under /var/folders) and the
     // account's shared folder are none of the room's business.
-    let probe = PathBuf::from(format!(
-        "/private/tmp/obid-harness-probe-{}",
-        std::process::id()
-    ));
+    let tmp = if cfg!(target_os = "macos") {
+        "/private/tmp"
+    } else {
+        "/tmp"
+    };
+    let probe = PathBuf::from(format!("{tmp}/obid-harness-probe-{}", std::process::id()));
     std::fs::write(&probe, "someone else's").unwrap();
     let answer = said(
         &obid,
@@ -1537,7 +1540,7 @@ fn the_taint_lasts_across_resumed_turns() {
     );
     let recorded = turns(&obid);
     assert_eq!(
-        recorded[0]["pid"], recorded[1]["pid"],
+        recorded[0]["id"], recorded[1]["id"],
         "the later turn went to the waiting Claude Code, and the taint with it"
     );
     started_untrusted(&obid, &answer);

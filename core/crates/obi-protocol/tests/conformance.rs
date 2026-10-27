@@ -270,7 +270,7 @@ fn every_case_is_judged_as_the_spec_says() {
         }
     }
     assert!(wrong.is_empty(), "{}", wrong.join("\n"));
-    for kind in ["envelope", "card", "audit"] {
+    for kind in ["envelope", "card", "audit", "host_approval"] {
         assert!(kinds.get(kind).copied().unwrap_or(0) > 0, "no {kind} cases");
     }
 }
