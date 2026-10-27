@@ -218,12 +218,8 @@ fn the_mac_app_follows_obid_and_lists_its_jobs() {
         next(&lines, "job ", 30, &mut seen),
         format!("job {id} done heading=Job progress screen")
     );
-    // The Mac's merge checks (none waits on obid) and its publishing key, registered with
-    // pairing naming it, as the app names it on the owner's click.
-    assert_eq!(
-        next(&lines, "checks-next ", 30, &mut seen),
-        "checks-next 200"
-    );
+    // The Mac's publishing key, registered with pairing naming it, as the app names it on the
+    // owner's click.
     assert_eq!(next(&lines, "devices ", 30, &mut seen), "devices 200");
     assert!(
         !obid.home.join("pairing").exists(),

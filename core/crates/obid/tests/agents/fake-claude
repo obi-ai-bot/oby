@@ -487,14 +487,6 @@ rl.on("line", (line) => {
     setTimeout(() => result(`Held ${held.length} MB.`), Number(seconds) * 1000);
   } else if (prompt.includes("SLEEP")) {
     mkdirSync(".obi", { recursive: true });
-    writeFileSync(".obi/apple-check-env.json", JSON.stringify({ url: process.env.OBY_CHECK_URL, token: process.env.OBY_CHECK_TOKEN }));
-    // APPLECHECK: asks for the job's Apple check from inside its box, as `oby-check apple` does.
-    if (prompt.includes("APPLECHECK") && process.env.OBY_CHECK_URL) {
-      fetch(`${process.env.OBY_CHECK_URL}/v1/agent/apple-check`, {
-        method: "POST", headers: { Authorization: `Bearer ${process.env.OBY_CHECK_TOKEN}` }, body: "{}",
-      }).then(r => r.text().then(body => ({ status: r.status, body })), e => ({ status: 0, body: String(e) }))
-        .then(seen => writeFileSync(".obi/apple-check-asked.json", JSON.stringify(seen)));
-    }
     let beats = 0;
     writeFileSync(".obi/beat", String(beats));
     setInterval(() => writeFileSync(".obi/beat", String(++beats)), 50);

@@ -71,9 +71,8 @@ do {
                 let one = try await runner.job(first.id)
                 say("job \(one.id) \(one.status.rawValue) heading=\(one.heading)")
             }
-            // What RunnerFeed starts once it's live, whose failures it only logs: the Mac's merge
-            // checks (MacChecks.look) and its publishing key (MacDevice.register).
-            say("checks-next \(await answered { _ = try await runner.nextCheck(mac: "Test Mac") })")
+            // What RunnerFeed starts once it's live, whose failures it only logs: the Mac's
+            // publishing key (MacDevice.register). obid has no Mac checks (MacChecks.look).
             // A P-256 key as DeviceKey.publicKey() gives it (X9.63), made here: no Secure Enclave.
             let deviceKey = P256.Signing.PrivateKey().publicKey.x963Representation
             // MacDevice.enroll: a key obid doesn't know yet is named in its pairing file first,
