@@ -1175,7 +1175,8 @@ impl FakeSphere {
     }
 
     /// Neither records nor delivers the next send of type `kind`, and answers it `202` with the
-    /// receipt of the chain's last entry: another envelope's id, seq and hash.
+    /// receipt of the chain's last entry: another envelope's id, seq and hash. The chain needs an
+    /// entry by then (with none, the send is answered `500`).
     pub fn answer_next_with_last(&self, kind: &str) {
         self.lock().answer_with_last = Some(kind.to_owned());
     }
@@ -2012,7 +2013,17 @@ fn record(state: &Mutex<SphereState>, headers: &HeaderMap, body: &[u8]) -> Respo
         .take_if(|named| *named == kind)
         .is_some()
     {
-        let last = state.entries.last().cloned().unwrap();
+        let Some(last) = state.entries.last().cloned() else {
+            return answer(
+                &mut state,
+                StatusCode::INTERNAL_SERVER_ERROR,
+                sphere_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "internal",
+                    "no entry to answer with",
+                ),
+            );
+        };
         let receipt = json!({"id": last["envelope"]["id"], "seq": last["seq"],
                              "entry_hash": last["hash"], "recorded_at": last["recorded_at"]});
         return answer(

@@ -386,11 +386,16 @@ impl Client {
             .call(|| self.http.post(&url).bearer_auth(token).json(envelope))
             .await?;
         let body = Client::expect(status, body, &[200, 202], "wire/send.response")?;
+        Client::receipt(envelope, body)
+    }
+
+    /// The receipt in a send's answer, `body`, when it names `envelope`.
+    fn receipt(envelope: &Value, body: Value) -> Result<Sent, ClientError> {
         let sent: Sent =
             serde_json::from_value(body).map_err(|e| ClientError::Protocol(e.to_string()))?;
         if envelope["id"].as_str() != Some(sent.id.as_str()) {
             return Err(ClientError::Protocol(
-                "the send's receipt names another envelope than the one sent".into(),
+                "the send's receipt names an envelope other than the one sent".into(),
             ));
         }
         Ok(sent)
@@ -464,62 +469,22 @@ mod tests {
         assert_eq!(e.code(), Some("http_502"));
     }
 
-    /// A Sphere on loopback that answers one call with `202` and `body`: its base URL.
-    async fn answering_once(body: Value) -> String {
-        use tokio::io::{AsyncReadExt, AsyncWriteExt};
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let base = format!("http://{}", listener.local_addr().unwrap());
-        tokio::spawn(async move {
-            let (mut socket, _) = listener.accept().await.unwrap();
-            let mut request = Vec::new();
-            let mut chunk = [0u8; 4096];
-            // The headers, then as much body as they say.
-            loop {
-                let n = socket.read(&mut chunk).await.unwrap();
-                request.extend_from_slice(&chunk[..n]);
-                let text = String::from_utf8_lossy(&request).to_lowercase();
-                if let Some(end) = text.find("\r\n\r\n") {
-                    let length: usize = text
-                        .lines()
-                        .find_map(|l| l.strip_prefix("content-length:"))
-                        .and_then(|l| l.trim().parse().ok())
-                        .unwrap_or(0);
-                    if n == 0 || request.len() >= end + 4 + length {
-                        break;
-                    }
-                }
-            }
-            let body = body.to_string();
-            let answer = format!(
-                "HTTP/1.1 202 Accepted\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                body.len()
-            );
-            socket.write_all(answer.as_bytes()).await.unwrap();
-        });
-        base
-    }
-
     /// A send's receipt is taken only when it names the envelope sent.
-    #[tokio::test]
-    async fn a_receipt_names_the_envelope_sent() {
+    #[test]
+    fn a_receipt_names_the_envelope_sent() {
         let sent = "0b6f2a4e-8c1d-4e3f-9a5b-7c2d1e0f3a4b";
-        let other = "5d3c1b2a-6e4f-4a7b-8c9d-0e1f2a3b4c5d";
-        for (named, taken) in [(sent, true), (other, false)] {
-            let receipt = json!({"id": named, "seq": 4, "entry_hash": "ab".repeat(32),
-                                 "recorded_at": "2026-10-27T09:00:00Z"});
-            let base = answering_once(receipt).await;
-            let client = Client::new(&base, "s").unwrap();
-            let answer = client.send("token", &json!({"id": sent})).await;
-            if taken {
-                assert_eq!(answer.unwrap().id, sent);
-            } else {
-                assert_eq!(
-                    answer,
-                    Err(ClientError::Protocol(
-                        "the send's receipt names another envelope than the one sent".into()
-                    ))
-                );
-            }
-        }
+        let envelope = json!({"id": sent});
+        let receipt = |id: &str| {
+            json!({"id": id, "seq": 4, "entry_hash": "ab".repeat(32),
+                   "recorded_at": "2026-10-27T09:00:00Z"})
+        };
+        assert_eq!(Client::receipt(&envelope, receipt(sent)).unwrap().id, sent);
+        assert_eq!(
+            Client::receipt(&envelope, receipt("5d3c1b2a-6e4f-4a7b-8c9d-0e1f2a3b4c5d")),
+            Err(ClientError::Protocol(
+                "the send's receipt names an envelope other than the one sent".into()
+            ))
+        );
+        assert!(Client::receipt(&json!({}), receipt(sent)).is_err());
     }
 }

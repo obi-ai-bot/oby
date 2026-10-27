@@ -1917,7 +1917,7 @@ async fn a_send_is_taken_only_when_its_receipt_names_it() {
     assert!(
         refused
             .text
-            .contains("the send's receipt names another envelope than the one sent"),
+            .contains("the send's receipt names an envelope other than the one sent"),
         "{}",
         refused.text
     );
