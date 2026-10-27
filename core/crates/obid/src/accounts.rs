@@ -474,7 +474,12 @@ pub fn adopt_own_logins(agents: &Live, obid_home: &Path) {
         .iter()
         .all(|name| std::fs::symlink_metadata(obid_home.join(name)).is_err());
     let found = own_logins(agents);
-    agents.write().found = found.clone();
+    {
+        // A look, as refind_own_logins's: the first status after a start doesn't ask again.
+        let mut inner = agents.write();
+        inner.found = found.clone();
+        inner.looked = Some(std::time::Instant::now());
+    }
     if !first {
         return;
     }

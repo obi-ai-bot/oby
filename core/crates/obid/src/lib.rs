@@ -254,6 +254,25 @@ pub async fn serve(
 ) -> Result<(), StartError> {
     redacted_panics();
     let mut stopwatch = Stopwatch::new();
+    // What obid asks the system while it starts, at once and side by side: the Keychain's items,
+    // the vault's store and the sandbox's self-check don't wait on each other or on the worktrees.
+    let claude_probe = config
+        .claude_keychain
+        .is_none()
+        .then(|| tokio::task::spawn_blocking(jobs::keychain_wanted));
+    let cursor_probe = config
+        .cursor_keychain
+        .is_none()
+        .then(|| tokio::task::spawn_blocking(jobs::cursor_keychain_wanted));
+    let vault_probe = {
+        let (home, location) = (config.home.clone(), config.vault.clone());
+        tokio::task::spawn_blocking(move || vault::install(&home, &location))
+    };
+    let sandbox_probe = tokio::task::spawn_blocking(|| {
+        std::env::current_exe()
+            .map_err(|e| format!("obid can't find its own executable: {e}"))
+            .and_then(|obid| sandbox::Sandbox::detect(&obid))
+    });
     let address = config.listen;
     let listener = tokio::net::TcpListener::bind(address)
         .await
@@ -283,6 +302,18 @@ pub async fn serve(
         None => (None, None),
     };
     stopwatch.lap("listen");
+    // The API answers from now on: `GET /v1/status` says obid is starting, and how far it got,
+    // and every other call waits until it's ready (Door).
+    let (stopping_tx, stopping_rx) = tokio::sync::watch::channel(false);
+    let (opened, door) = Door::open(token.clone(), &stopwatch);
+    let server = tokio::spawn(
+        axum::serve(listener, door)
+            .with_graceful_shutdown(async move {
+                stop.await;
+                let _ = stopping_tx.send(true);
+            })
+            .into_future(),
+    );
     let host = gethostname::gethostname().to_string_lossy().into_owned();
     let cleanup = Arc::new(api::Cleanup::unmeasured(&config.home));
     let cancelled = Arc::new(AtomicBool::new(false));
@@ -292,12 +323,13 @@ pub async fn serve(
         let (cleanup, cancelled) = (cleanup.clone(), cancelled.clone());
         tokio::task::spawn_blocking(move || cleanup.remeasure_unless(&cancelled))
     };
-    let mut stop = Box::pin(stop);
+    let mut stopped = stopping_rx.clone();
     let measured = tokio::select! {
         // A stop that is there already wins over a measurement that is done too.
         biased;
-        () = &mut stop => {
+        _ = stopped.wait_for(|stopped| *stopped) => {
             tracing::info!("stopped while starting");
+            server.abort();
             return Ok(());
         }
         // A few worktrees are measured before the first answer; the owner's 20 GB took 4 to 28
@@ -309,7 +341,10 @@ pub async fn serve(
     secrets::known().learn("api-token", &token);
     // claudeKeychain as the owner set it; left out, on by itself on macOS when Claude Code's default
     // login is only in the Keychain (the owner's decision of 2026-10-18).
-    let keychain = config.claude_keychain.unwrap_or_else(jobs::keychain_wanted);
+    let keychain = match claude_probe {
+        Some(probe) => probe.await.unwrap_or(false),
+        None => config.claude_keychain.unwrap_or(false),
+    };
     jobs::use_keychain(keychain, config.claude_keychain.is_none());
     if keychain {
         if config.claude_keychain.is_none() {
@@ -321,14 +356,16 @@ pub async fn serve(
     }
     // cursorKeychain the same way: left out, on by itself on macOS when Cursor's own login is only
     // in the Keychain, where cursor-agent keeps it by default.
-    let cursor = config
-        .cursor_keychain
-        .unwrap_or_else(jobs::cursor_keychain_wanted);
+    let cursor = match cursor_probe {
+        Some(probe) => probe.await.unwrap_or(false),
+        None => config.cursor_keychain.unwrap_or(false),
+    };
     jobs::use_cursor_keychain(cursor, config.cursor_keychain.is_none());
     if cursor && config.cursor_keychain.is_none() {
         tracing::info!("cursorKeychain on by itself: Cursor's login is only in the Keychain");
     }
-    vault::install(&config.home, &config.vault);
+    // ponytail: a vault that panicked while it opened is no vault: Tetrix's open says so below.
+    let _ = vault_probe.await;
     stopwatch.lap("vault");
     // What the accounts API changed, over the configuration's accounts, before anything uses them;
     // and what sign-ins cut short by the last stop left behind.
@@ -351,9 +388,9 @@ pub async fn serve(
             tokio::spawn(walk_ended(measuring, events.clone(), cleanup.clone()));
         }
     }
-    let sandbox = std::env::current_exe()
-        .map_err(|e| format!("obid can't find its own executable: {e}"))
-        .and_then(|obid| sandbox::Sandbox::detect(&obid));
+    let sandbox = sandbox_probe
+        .await
+        .unwrap_or_else(|e| Err(format!("obid's sandbox self-check failed: {e}")));
     match &sandbox {
         Err(why) => tracing::warn!("no job sandbox, so no job will run: {why}"),
         Ok(boxed) if boxed.encloses() => tracing::warn!(
@@ -373,7 +410,6 @@ pub async fn serve(
         raise_open_files();
     }
     stopwatch.lap("jobs");
-    let (stopping_tx, stopping_rx) = tokio::sync::watch::channel(false);
     let link = sphere::Link::open(
         config.clone(),
         jobs.clone(),
@@ -449,12 +485,9 @@ pub async fn serve(
         stopping: stopping_rx.clone(),
     });
     let app = api::router(shared.clone());
-
-    let server = axum::serve(listener, app.clone()).with_graceful_shutdown(async move {
-        stop.await;
-        let _ = stopping_tx.send(true);
-    });
     stopwatch.lap("the rest");
+    // Every call the door held goes on now.
+    let _ = opened.send(Some(app.clone()));
     ready(bound);
     // How long each step took, so a slow start names its step.
     tracing::info!("{}", stopwatch.line());
@@ -571,7 +604,10 @@ pub async fn serve(
         }
     };
     let result = tokio::select! {
-        result = server => result.map_err(StartError::Serve),
+        result = server => match result {
+            Ok(served) => served.map_err(StartError::Serve),
+            Err(e) => Err(StartError::Serve(std::io::Error::other(e))),
+        },
         () = give_up_at => {
             tracing::warn!("requests still under way {}s after the stop; exiting anyway", SHUTDOWN_GRACE.as_secs());
             Ok(())
@@ -597,8 +633,23 @@ pub async fn serve(
 struct Stopwatch {
     started: std::time::Instant,
     last: std::time::Instant,
-    laps: Vec<(&'static str, u128)>,
+    laps: Laps,
 }
+
+/// Each step done so far, and how long it took (ms): what the door says while obid starts.
+type Laps = Arc<std::sync::Mutex<Vec<(&'static str, u128)>>>;
+
+/// `serve`'s steps, in order, as [`Stopwatch::lap`] names them.
+const STEPS: [&str; 8] = [
+    "listen",
+    "worktrees",
+    "vault",
+    "accounts",
+    "sandbox",
+    "jobs",
+    "sphere",
+    "the rest",
+];
 
 impl Stopwatch {
     fn new() -> Stopwatch {
@@ -606,7 +657,7 @@ impl Stopwatch {
         Stopwatch {
             started: now,
             last: now,
-            laps: Vec::new(),
+            laps: Laps::default(),
         }
     }
 
@@ -615,13 +666,18 @@ impl Stopwatch {
         let now = std::time::Instant::now();
         let ms = (now - self.last).as_millis();
         tracing::info!("starting: {step} done in {ms} ms");
-        self.laps.push((step, ms));
+        self.laps
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push((step, ms));
         self.last = now;
     }
 
     fn line(&self) -> String {
         let laps: Vec<String> = self
             .laps
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
             .iter()
             .map(|(step, ms)| format!("{step} {ms}"))
             .collect();
@@ -630,6 +686,111 @@ impl Stopwatch {
             self.started.elapsed().as_millis(),
             laps.join(", ")
         )
+    }
+}
+
+/// What answers on obid's address from the moment it listens (docs/runner-api.md, "obid only:
+/// starting"): the API once `serve` has opened everything; before that, `GET /v1/status` with
+/// the token answers `503` with `starting` (the steps done, the one under way), and every other
+/// call waits for the API. A start that fails answers the calls that waited `503`.
+#[derive(Clone)]
+struct Door {
+    token: Arc<str>,
+    api: tokio::sync::watch::Receiver<Option<axum::Router>>,
+    started: std::time::Instant,
+    laps: Laps,
+}
+
+impl Door {
+    /// The door, as an app to serve, and what opens it.
+    fn open(
+        token: String,
+        stopwatch: &Stopwatch,
+    ) -> (
+        tokio::sync::watch::Sender<Option<axum::Router>>,
+        axum::Router,
+    ) {
+        let (opened, api) = tokio::sync::watch::channel(None);
+        let door = Door {
+            token: token.into(),
+            api,
+            started: stopwatch.started,
+            laps: stopwatch.laps.clone(),
+        };
+        (
+            opened,
+            axum::Router::new().fallback(Door::answer).with_state(door),
+        )
+    }
+
+    async fn answer(
+        axum::extract::State(door): axum::extract::State<Door>,
+        request: axum::extract::Request,
+    ) -> axum::response::Response {
+        use axum::response::IntoResponse;
+        use tower::ServiceExt;
+        let mut api = door.api.clone();
+        let open = api.borrow().clone();
+        let api = match open {
+            Some(api) => api,
+            None if request.method() == axum::http::Method::GET
+                && request.uri().path() == "/v1/status" =>
+            {
+                return door.starting(&request);
+            }
+            None => match api.wait_for(Option::is_some).await {
+                Ok(api) => api.clone().expect("the API is there"),
+                Err(_) => {
+                    return api::ApiError::new(
+                        axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                        "Oby’s engine didn’t start.",
+                    )
+                    .into_response();
+                }
+            },
+        };
+        match api.oneshot(request).await {
+            Ok(response) => response,
+            Err(never) => match never {},
+        }
+    }
+
+    /// `503 {"error", "starting": {"ms", "done": [{"step", "ms"}], "now"}}`, `Retry-After: 1`,
+    /// to a request the API's gate would let in; its `401` or `403` otherwise.
+    fn starting(&self, request: &axum::extract::Request) -> axum::response::Response {
+        use axum::http::{HeaderValue, StatusCode, header};
+        use axum::response::IntoResponse;
+        let mut response = match api::admit(request.uri(), request.headers(), &self.token) {
+            Err(error) => error.into_response(),
+            Ok(()) => {
+                let laps = self.laps.lock().unwrap_or_else(|e| e.into_inner()).clone();
+                let done: Vec<serde_json::Value> = laps
+                    .iter()
+                    .map(|(step, ms)| serde_json::json!({"step": step, "ms": ms}))
+                    .collect();
+                let starting = serde_json::json!({
+                    "error": "Oby’s engine is starting.",
+                    "starting": {
+                        "ms": self.started.elapsed().as_millis(),
+                        "done": done,
+                        "now": STEPS.get(laps.len()),
+                    },
+                });
+                let mut response =
+                    (StatusCode::SERVICE_UNAVAILABLE, axum::Json(starting)).into_response();
+                response
+                    .headers_mut()
+                    .insert(header::RETRY_AFTER, HeaderValue::from_static("1"));
+                response
+            }
+        };
+        let headers = response.headers_mut();
+        headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+        headers.insert(
+            header::X_CONTENT_TYPE_OPTIONS,
+            HeaderValue::from_static("nosniff"),
+        );
+        response
     }
 }
 
