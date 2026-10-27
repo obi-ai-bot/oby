@@ -64,6 +64,15 @@ struct FirstLaunchTests {
         #expect(FirstLaunchSteps.waiting(inApplications: true, needsApproval: true, problem: "x").contains("Login Items"))
         #expect(FirstLaunchSteps.waiting(inApplications: true, needsApproval: false, problem: "It failed.") == "Oby’s engine couldn’t start: It failed.")
         #expect(FirstLaunchSteps.waiting(inApplications: true, needsApproval: false, problem: nil) == "Waiting for Oby’s engine on this Mac…")
+        // obid's own reason comes first, then what the feed's last try got.
+        #expect(FirstLaunchSteps.waiting(inApplications: true, needsApproval: false, problem: nil,
+                                         startError: "unknown field `telemetri`", offline: "Could not connect to the server.")
+                == "Oby’s engine couldn’t start: unknown field `telemetri`")
+        #expect(FirstLaunchSteps.waiting(inApplications: true, needsApproval: false, problem: nil,
+                                         offline: "Could not connect to the server.")
+                == "Oby’s engine isn’t answering: Could not connect to the server.")
+        #expect(FirstLaunchSteps.offline(.offline("x")) == "x")
+        #expect(FirstLaunchSteps.offline(.live) == nil)
     }
 
     @Test func gitHubsStepCountsTheRepositoriesAndHomeGetsAFirstTask() throws {

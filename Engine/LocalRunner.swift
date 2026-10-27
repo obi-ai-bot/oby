@@ -72,7 +72,24 @@ nonisolated enum LocalRunner {
     /// A bounded read of a regular, owner-only file. O_NOFOLLOW and fstat check the file we
     /// actually opened; O_NONBLOCK keeps a FIFO at that name from hanging the app.
     static func obidToken(in home: URL) -> String? {
-        let path = home.appending(path: "api-token").path
+        guard let (data, mode) = ownFile(home.appending(path: "api-token").path, upTo: 4097),
+              mode & 0o077 == 0, data.count <= 4096 else { return nil }
+        var bytes = Array(data)
+        while bytes.last == 10 || bytes.last == 13 { bytes.removeLast() }
+        guard bytes.count >= 32, bytes.allSatisfy({ (33...126).contains($0) }) else { return nil }
+        return String(decoding: bytes, as: UTF8.self)
+    }
+
+    /// Why obid's last start failed, as it keeps it in `home/last-start-error` (docs/runner-api.md,
+    /// "A start that fails says why"); nil when it started, or never said.
+    static func lastStartError(in home: URL = home) -> String? {
+        guard let (data, _) = ownFile(home.appending(path: "last-start-error").path, upTo: 2048) else { return nil }
+        let text = String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+        return text.isEmpty ? nil : text
+    }
+
+    /// At most `limit` bytes of the regular file at `path`, when it's the user's own, and its mode.
+    static func ownFile(_ path: String, upTo limit: Int) -> (Data, mode_t)? {
         let fd = open(path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK)
         guard fd >= 0 else { return nil }
         let file = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
@@ -80,12 +97,9 @@ nonisolated enum LocalRunner {
         var info = stat()
         guard fstat(fd, &info) == 0,
               info.st_mode & mode_t(S_IFMT) == mode_t(S_IFREG),
-              info.st_uid == getuid(), info.st_mode & 0o077 == 0,
-              let data = try? file.read(upToCount: 4097), data.count <= 4096 else { return nil }
-        var bytes = Array(data)
-        while bytes.last == 10 || bytes.last == 13 { bytes.removeLast() }
-        guard bytes.count >= 32, bytes.allSatisfy({ (33...126).contains($0) }) else { return nil }
-        return String(decoding: bytes, as: UTF8.self)
+              info.st_uid == getuid(),
+              let data = try? file.read(upToCount: limit) else { return nil }
+        return (data, info.st_mode)
     }
 
     /// The token as `store` has it, or nil when there's none yet (the runner hasn't started) or
