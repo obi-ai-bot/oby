@@ -797,6 +797,7 @@ async fn run(shared: &Arc<Shared>, session: &Session, args: Value) -> Result<Sho
         temp: Some(temp.clone()),
         home: Some(temp.clone()),
         logins: place.bounds().logins,
+        git: Vec::new(),
     };
     let rules = shared.jobs.rules();
     let tainted = session.web.load(Ordering::SeqCst);
@@ -1040,6 +1041,7 @@ mod tests {
             temp: Some(temp.clone()),
             home: Some(temp),
             logins: vec![room.parent().unwrap().join("config")],
+            git: Vec::new(),
         }
     }
 
