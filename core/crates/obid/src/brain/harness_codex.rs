@@ -5,8 +5,8 @@
 //! conversation, kept in `session.json` and picked up with `thread/resume`, its own sandbox off
 //! inside obid's as a job's (`danger-full-access`, every approval obid's: [`crate::codex`]), its
 //! `CODEX_HOME` the conversation's own (`config`, with a copy of the login and nothing else). Oby's
-//! MCP server comes in its `-c` settings, streamable HTTP with the turn's token in
-//! `OBY_MCP_TOKEN`, never an argument.
+//! MCP server (and obid's Tetrix server, while Oby is signed in to Tetrix) comes in its `-c`
+//! settings, streamable HTTP with the turn's token in `OBY_MCP_TOKEN`, never an argument.
 
 use std::ffi::OsString;
 
@@ -61,20 +61,22 @@ const SETTINGS: &[&str] = &[
 
 /// The `app-server` to run for one attempt of the turn, and what its thread is started with:
 /// `resume`'s thread when there is one, the conversation's orientation, the configured model;
-/// `web` false for a turn nobody watches.
+/// obid's Tetrix server at `tetrix` when it's given; `web` false for a turn nobody watches.
 /// Refuses, saying why, a Codex that keeps a feature of [`OFF`] on and a login copy near its end
 /// ([`crate::jobs::codex_copy_ready`]).
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn launch(
     shared: &Shared,
     account: &crate::config::Account,
     place: &Place,
     url: &str,
+    tetrix: Option<&str>,
     token: &str,
     resume: &Option<String>,
     web: bool,
 ) -> Result<(Launch, Option<crate::codex::Options>), String> {
-    // Oby's server as a job's broker is given ([`crate::codex::argv`]: its `-c` settings).
-    let argv = crate::codex::argv(Default::default(), Some((url, token)), None);
+    // Oby's server and Tetrix's as a job's are given ([`crate::codex::argv`]: its `-c` settings).
+    let argv = crate::codex::argv(Default::default(), Some((url, token)), tetrix);
     let mut flags: Vec<OsString> = argv[1..argv.len() - 1].to_vec();
     for feature in OFF {
         flags.extend(["-c".into(), format!("features.{feature}=false").into()]);
@@ -108,7 +110,7 @@ pub(super) async fn launch(
         resume: resume.clone(),
         model: (!model.is_empty()).then(|| model.clone()),
         plan: false,
-        instructions: Some(orientation(shared)),
+        instructions: Some(orientation(shared, tetrix.is_some())),
         no_commands: true,
         usage: false,
         priced: None,
