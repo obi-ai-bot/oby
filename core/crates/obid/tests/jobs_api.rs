@@ -3224,6 +3224,14 @@ fn a_parked_permission_frees_its_slot_and_an_allow_resumes_it() {
     assert_eq!(done["status"], "done", "{done}");
     assert_eq!(done["summary"], "answer: allow", "{done}");
     assert!(done["permission"].is_null(), "{done}");
+    // The parked run never heard a no: the only answer its agent got is the resumed run's allow.
+    let answers = std::fs::read_to_string(
+        obid.home
+            .join("worktrees")
+            .join(&id)
+            .join(".obi/answers.log"),
+    );
+    assert_eq!(answers.unwrap_or_default(), "allow\n");
     let heard = prompts(&obid, &id);
     assert_eq!(heard.len(), 2, "{heard:?}");
     assert!(
@@ -3312,6 +3320,95 @@ fn a_parked_job_survives_a_restart_and_words_are_its_no() {
             && summary.contains(r#"Bash {"command":"npm install left-pad"}"#)
             && summary.ends_with("The owner said no: Not now: use the lockfile."),
         "{done}"
+    );
+}
+
+/// A question and a plan park their jobs too, and the answer picks each session up: the question's
+/// answer as a question a restart kept, the approved plan in Ask mode. Stopping a parked job drops
+/// its card and settles its inbox item.
+#[test]
+fn parked_questions_and_plans_resume_and_a_stop_drops_them() {
+    let folder = Folder::new("park-kinds");
+    let remote = fixture(&folder.0.join("fixture"));
+    let mut config = config(&folder.0, &remote);
+    config["parkAfter"] = json!(1);
+    let obid = start(&folder.0, &config);
+    let new = |ask: Value, mode: &str| {
+        post_job(
+            &obid,
+            json!({"repo": "obi-e2e/fixture-app", "kind": "research", "mode": mode,
+                   "task": format!("ASK: {ask}")}),
+        )
+        .body["id"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    };
+    let question = new(
+        json!({"tool": "AskUserQuestion", "input": {"questions": [{"question": "Which store?",
+            "options": [{"label": "SQLite"}, {"label": "Postgres"}]}]}}),
+        "ask",
+    );
+    let plan = new(
+        json!({"tool": "ExitPlanMode", "input": {"plan": "1. Fix it"}}),
+        "plan",
+    );
+    let stopped = new(
+        json!({"tool": "Bash", "input": {"command": "npm install left-pad"}}),
+        "ask",
+    );
+    let answer = |id: &str, body: Value| {
+        let card = until(&obid, id, was_parked)["permission"].clone();
+        let mut body = body;
+        body["id"] = card["id"].clone();
+        let said = request(
+            &obid,
+            "POST",
+            &format!("/v1/jobs/{id}/permission"),
+            Some(&body.to_string()),
+        );
+        assert_eq!(said.status, 200, "{}", said.text);
+        said.body
+    };
+
+    answer(&question, json!({"answer": "postgres"}));
+    let done = wait(&obid, &question);
+    assert_eq!(done["status"], "done", "{done}");
+    let summary = done["summary"].as_str().unwrap();
+    assert!(
+        summary.starts_with(
+            "heard: obid paused you while your AskUserQuestion call waited for the owner"
+        ) && summary.contains(r#"- "Which store?": the owner answered "Postgres""#),
+        "{done}"
+    );
+
+    let approved = answer(&plan, json!({"decision": "allow"}));
+    assert_eq!(approved["mode"], "ask", "{approved}");
+    let done = wait(&obid, &plan);
+    assert_eq!(done["status"], "done", "{done}");
+    assert!(
+        done["summary"]
+            .as_str()
+            .unwrap()
+            .ends_with("The owner approved it: carry it out now."),
+        "{done}"
+    );
+
+    let card = until(&obid, &stopped, was_parked)["permission"].clone();
+    let stop = request(&obid, "POST", &format!("/v1/jobs/{stopped}/stop"), None);
+    assert_eq!(stop.status, 200, "{}", stop.text);
+    let job = wait(&obid, &stopped);
+    assert_eq!(job["status"], "stopped", "{job}");
+    assert!(job["permission"].is_null(), "{job}");
+    let item = format!("{stopped}-permission-{}", card["id"].as_str().unwrap());
+    let items = inbox(&obid);
+    assert!(
+        items
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|i| i["id"] != item.as_str() || !i["done"].is_null()),
+        "{items}"
     );
 }
 

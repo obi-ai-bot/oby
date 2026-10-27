@@ -8,7 +8,8 @@
 //   COMMIT WHEN TOLD told by obid to commit what it left uncommitted, commits it all and ends the
 //                    turn with "Committed the draft." (without it, that turn is "Nothing to do.")
 //   KEEP PROMPTS     from now on appends every prompt it gets to .obi/prompts.log, each ended by a
-//                    line "<<<end of prompt>>>"
+//                    line "<<<end of prompt>>>", and every answer to its permission prompts to
+//                    .obi/answers.log, one per line
 //   SLEEP            beats: writes a growing count to .obi/beat every 50 ms until it is ended
 //   HOG: <mb> <s>    holds <mb> MB of random bytes, as a build does, for <s> seconds, then
 //                    ends the turn with "Held." (scripts measuring memory admission)
@@ -203,6 +204,7 @@ rl.on("line", (line) => {
   if (message.type === "control_response" && asked) {
     const answer = message.response?.response ?? {};
     asked = null;
+    if (existsSync(".obi/keep-prompts")) appendFileSync(".obi/answers.log", `${answer.behavior}\n`);
     if (listing) {
       said.push(answer.behavior === "deny" ? `deny: ${answer.message}` : answer.behavior);
       if (queue.length) return askNext();

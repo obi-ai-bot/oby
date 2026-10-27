@@ -272,15 +272,33 @@ pub struct QuestionCall {
 }
 
 /// A permission or plan call whose job obid parked while it waited for the owner (crate::jobs,
-/// `parkAfter`), kept on the job: its agent ended, so the session the answer picks up hears it
-/// ([`after_park`]); `allowed` once the owner allowed it, and the resumed agent's same call goes
-/// through once without asking again.
+/// `parkAfter`), kept on the job until the run its answer starts ends: its agent ended, so that
+/// run picks its session up and hears it ([`after_park`]).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Parked {
     pub tool: String,
     pub input: Value,
+    /// The owner answered it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub answered: bool,
+    /// They allowed it, and the resumed agent hasn't made the same call again yet
+    /// ([`Parked::lets_through`]).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub allowed: bool,
+}
+
+impl Parked {
+    /// Whether the owner's allow lets the resumed agent's `tool` call with `input` through, once:
+    /// the same call as obid judges calls (the same command, files, address or plan), or, for a
+    /// call that names none of those (an MCP tool's, a search's, a subagent's), the very same input.
+    pub fn lets_through(&self, tool: &str, input: &Value) -> bool {
+        let (was, now) = (Call::new(&self.tool, &self.input), Call::new(tool, input));
+        let named = was.command.is_some()
+            || !was.paths.is_empty()
+            || was.url.is_some()
+            || was.plan.is_some();
+        self.allowed && was == now && (named || self.input == *input)
+    }
 }
 
 /// The most of a parked call's input [`after_park`] quotes, in characters.
@@ -3689,6 +3707,7 @@ mod tests {
         let run = Parked {
             tool: "Bash".into(),
             input: json!({"command": "npm test"}),
+            answered: false,
             allowed: false,
         };
         assert_eq!(
@@ -3702,6 +3721,7 @@ mod tests {
         let write = Parked {
             tool: "Write".into(),
             input: json!({"file_path": "big.txt", "content": "x".repeat(10_000)}),
+            answered: false,
             allowed: false,
         };
         let told = after_park(&write, &Answer::Allow);
@@ -3712,6 +3732,7 @@ mod tests {
         let plan = Parked {
             tool: "ExitPlanMode".into(),
             input: json!({"plan": "1. Fix"}),
+            answered: false,
             allowed: false,
         };
         assert!(
@@ -3721,6 +3742,48 @@ mod tests {
             after_park(&plan, &Answer::Deny("Smaller.".into()))
                 .ends_with("The owner sent it back: Smaller.")
         );
+    }
+
+    /// The owner's allow of a parked call lets the resumed agent's same call through: the same
+    /// command, files, address or plan; a call that names none of those, only with the very same
+    /// input. Nothing before the owner allowed it.
+    #[test]
+    fn a_parked_allow_lets_the_same_call_through() {
+        let allowed = |tool: &str, input: Value| Parked {
+            tool: tool.into(),
+            input,
+            answered: true,
+            allowed: true,
+        };
+        let bash = allowed(
+            "Bash",
+            json!({"command": "npm test", "description": "Run it"}),
+        );
+        assert!(bash.lets_through(
+            "Bash",
+            &json!({"command": "npm test", "description": "Again"})
+        ));
+        assert!(!bash.lets_through("Bash", &json!({"command": "npm test -- --all"})));
+        assert!(!bash.lets_through("Edit", &json!({"command": "npm test"})));
+        let edit = allowed(
+            "Edit",
+            json!({"file_path": "a.rs", "old_string": "x", "new_string": "y"}),
+        );
+        assert!(edit.lets_through(
+            "Edit",
+            &json!({"file_path": "a.rs", "old_string": "x", "new_string": "z"})
+        ));
+        assert!(!edit.lets_through("Edit", &json!({"file_path": "b.rs"})));
+        let mcp = allowed("mcp__tetrix__search_entities", json!({"query": "jobs"}));
+        assert!(mcp.lets_through("mcp__tetrix__search_entities", &json!({"query": "jobs"})));
+        assert!(!mcp.lets_through("mcp__tetrix__search_entities", &json!({"query": "secrets"})));
+        let search = allowed("Grep", json!({"pattern": "TODO", "path": "/etc"}));
+        assert!(!search.lets_through("Grep", &json!({"pattern": "password", "path": "/etc"})));
+        let unanswered = Parked {
+            allowed: false,
+            ..bash.clone()
+        };
+        assert!(!unanswered.lets_through("Bash", &json!({"command": "npm test"})));
     }
 
     /// #858: the owner's answer as Claude Code takes it: an option's label in its own case, several
