@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { ChevronLeft, ChevronRight } from 'lucide-react';
 import { BrandMark } from './brands';
 import { AskBlock } from './TaskCard';
-import { tasksWith, useTasks, type Task } from './tasks';
+import { asksWaiting, openOnGitHub, tasksWith, useTasks, type Asking, type Task } from './tasks';
 
 // What Oby is asking you, on Home, under the attention line: one card per task
 // that needs you, stacked, so everything can be answered in one place without
@@ -12,13 +12,17 @@ import { tasksWith, useTasks, type Task } from './tasks';
 // The arrows (and ← →) go round the stack. Answered, a card lifts away (put
 // off with Later, it sinks) and the next comes up; either way it leaves the
 // stack (what's put off still needs you, so the line above still counts it).
-// Nothing waiting: no stack, and Home is as it always was.
+// Nothing waiting: no stack, and Home is as it always was. On obid, what it asks
+// with no task to show it on (a GitHub offer, a Confirm) comes after the tasks'.
 type Leave = 'out' | 'later' | 'next' | 'prev';
+// a card: what obid asks (tasks.ts), and for a task's decision, its page one click away
+type Entry = Asking & { task?: boolean; answer?: string };
+const entryOf = (t: Task): Entry => ({ id: t.id, title: t.title, who: t.who, brand: t.brand, ask: t.job.ask!, answer: t.answer, task: true });
 const LEAVE_MS = 320;  // the longest way out (app.css, ask-later and the like)
 let left = 0;
 export default function AskStack({ active, onOpen }: { active: boolean; onOpen: (id: string) => void }) {
-  const tasks = useTasks();
-  const asks = tasksWith('needs').filter((t) => !t.answer);
+  useTasks();
+  const asks: Entry[] = [...tasksWith('needs').filter((t) => !t.answer).map(entryOf), ...asksWaiting()];
   const n = asks.length;
   // the card on top, and where it was: answered, the one after it takes its place
   const [at, setAt] = useState({ id: '', i: 0 });
@@ -27,11 +31,11 @@ export default function AskStack({ active, onOpen }: { active: boolean; onOpen: 
   const top = asks[i];
   const count = `${i + 1}/${n}`;
   // cards on their way out, over (or under) the stack until their animation is
-  // over (a timer, so one paused with the window still goes)
-  const [out, setOut] = useState<{ key: number; id: string; how: Leave; count: string }[]>([]);
-  const leave = (how: Leave) => {
+  // over (a timer, so one paused with the window still goes); answered, with the answer
+  const [out, setOut] = useState<{ key: number; entry: Entry; how: Leave; count: string }[]>([]);
+  const leave = (how: Leave, answer?: string) => {
     const key = ++left;
-    setOut((all) => [...all, { key, id: top.id, how, count }]);
+    setOut((all) => [...all, { key, entry: answer ? { ...top, answer } : top, how, count }]);
     setTimeout(() => setOut((all) => all.filter((x) => x.key !== key)), LEAVE_MS);
   };
   const go = (step: number) => {
@@ -66,8 +70,7 @@ export default function AskStack({ active, onOpen }: { active: boolean; onOpen: 
     return () => ro.disconnect();
   }, [top?.id]);
 
-  const leaving = out.flatMap((o) => tasks.filter((t) => t.id === o.id).map((t) => ({ ...o, task: t })));
-  if (!n && !leaving.length) return null;
+  if (!n && !out.length) return null;
   // the ones after the top, going round
   const peeks = Array.from({ length: Math.min(2, n - 1) }, (_, d) => asks[(i + d + 1) % n]);
   return (
@@ -78,21 +81,21 @@ export default function AskStack({ active, onOpen }: { active: boolean; onOpen: 
     >
       {peeks.map((t, d) => <div key={t.id} className="ask-peek" style={{ '--d': d + 1 } as React.CSSProperties} />)}
       {top && (
-        <AskCard key={top.id} ref={topEl} task={top} count={count} many={n > 1} onOpen={onOpen}
+        <AskCard key={top.id} ref={topEl} entry={top} count={count} many={n > 1} onOpen={onOpen}
           onPrev={() => go(-1)} onNext={() => go(1)}
-          onAnswer={(o) => { leave(o === 'Later' ? 'later' : 'out'); setAt({ id: n > 1 ? asks[(i + 1) % n].id : '', i }); }} />
+          onAnswer={(o) => { leave(o === 'Later' ? 'later' : 'out', o); setAt({ id: n > 1 ? asks[(i + 1) % n].id : '', i }); }} />
       )}
-      {leaving.map((o) => (
-        <AskCard key={o.key} task={o.task} count={o.count} many className={`is-${o.how}`} />
+      {out.map((o) => (
+        <AskCard key={o.key} entry={o.entry} count={o.count} many className={`is-${o.how}`} />
       ))}
     </section>
   );
 }
 
 // One card: the task it's for, where it is in the stack (and the way round it)
-// and the way to its page, then its decision as on the task's card.
-function AskCard({ task, count, many, className = 'is-up', ref, onOpen, onPrev, onNext, onAnswer }: {
-  task: Task;
+// and the way to its page (or GitHub's), then its decision as on the task's card.
+function AskCard({ entry, count, many, className = 'is-up', ref, onOpen, onPrev, onNext, onAnswer }: {
+  entry: Entry;
   count: string;
   many: boolean;  // more than one: the arrows to go round
   className?: string;
@@ -103,21 +106,22 @@ function AskCard({ task, count, many, className = 'is-up', ref, onOpen, onPrev, 
   onAnswer?: (option: string) => void;
 }) {
   return (
-    <article ref={ref} className={`ask-card ${className}`} aria-label={task.title}>
+    <article ref={ref} className={`ask-card ${className}`} aria-label={entry.title}>
       <header className="tc-head">
-        <BrandMark brand={task.brand} size={16} mono />
+        {entry.brand && <BrandMark brand={entry.brand} size={16} mono />}
         <h2 className="tc-title">
-          {task.who && <span className="tc-who">{task.who}</span>}
-          {task.title}
+          {entry.who && <span className="tc-who">{entry.who}</span>}
+          {entry.title}
         </h2>
         <span className="ask-nav">
           {many && <button className="icon-button" aria-label="Previous" onClick={onPrev}><ChevronLeft size={14} strokeWidth={1.8} /></button>}
           <span className="ask-count" aria-live="polite">{count}</span>
           {many && <button className="icon-button" aria-label="Next" onClick={onNext}><ChevronRight size={14} strokeWidth={1.8} /></button>}
         </span>
-        <button className="tc-link ask-open" onClick={() => onOpen?.(task.id)}>Open task<ChevronRight size={14} strokeWidth={1.8} /></button>
+        {entry.task ? <button className="tc-link ask-open" onClick={() => onOpen?.(entry.id)}>Open task<ChevronRight size={14} strokeWidth={1.8} /></button>
+          : entry.url && <button className="tc-link ask-open" onClick={() => openOnGitHub(entry.url)}>Open on GitHub<ChevronRight size={14} strokeWidth={1.8} /></button>}
       </header>
-      <AskBlock task={task} onAnswer={onAnswer} />
+      <AskBlock task={{ id: entry.id, answer: entry.answer, job: { ask: entry.ask } }} onAnswer={onAnswer} />
     </article>
   );
 }

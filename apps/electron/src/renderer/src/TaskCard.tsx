@@ -184,7 +184,7 @@ export default function TaskCard({ task, alone = false, onOpen, onSession, style
 // On the card a pick shows as a check line; in the conversation it shows as
 // your reply, and the block just loses its buttons. onAnswer: told after a
 // pick (Home's stack, to send the card away).
-export function AskBlock({ task, inChat = false, onAnswer }: { task: Task; inChat?: boolean; onAnswer?: (option: string) => void }) {
+export function AskBlock({ task, inChat = false, onAnswer }: { task: Pick<Task, 'id' | 'answer'> & { job: Pick<Task['job'], 'ask'> }; inChat?: boolean; onAnswer?: (option: string) => void }) {
   const ask = task.job.ask!;
   // a click before its words have shown answers nothing: on Home, a double-click on the card
   // answered would land on the next one's buttons (one click, one answer)

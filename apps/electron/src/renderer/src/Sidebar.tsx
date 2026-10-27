@@ -3,7 +3,7 @@ import { BookOpen, Check, Mail, UserPlus, ChevronDown, EllipsisVertical, Plus, S
 // the icon strip uses Phosphor: it has outline and filled versions of each icon
 import { ChatsCircleIcon, HouseIcon, PlusIcon } from '@phosphor-icons/react';
 import { BrandMark } from './brands';
-import { ARCHIVE_AFTER, TYPES, archivedTasks, countOf, getArchiveAfter, markSeen, openOf, renameTask, setArchiveAfter, tasksOf, tasksWith, useTasks, type Task } from './tasks';
+import { ARCHIVE_AFTER, TYPES, archivedTasks, asksWaiting, countOf, getArchiveAfter, markSeen, openOf, renameTask, setArchiveAfter, tasksOf, tasksWith, useTasks, type Task } from './tasks';
 import { OBYS, ago } from './mock';
 import { OwnerAvatar } from './ObyFace';
 import { useScrollThumb } from './useScrollThumb';
@@ -25,24 +25,22 @@ import { plain } from './Said';
 
 type Section = 'home' | 'conversations' | 'obysphere' | 'settings';
 type StripIcon = (p: { size?: number; weight?: 'regular' | 'fill' }) => React.ReactNode;
-// sections with something new get a blue dot on their icon
-const UNREAD: Section[] = ['home'];
-const ALL_SECTIONS: { id: Section; label: string; icon: StripIcon }[] = [
+// sections with something new get a blue dot on their icon: Home, a task not opened yet
+const SECTIONS: { id: Section; label: string; icon: StripIcon }[] = [
   { id: 'home', label: 'Home', icon: HouseIcon },
   // your conversations with Oby
   { id: 'conversations', label: 'Conversations', icon: ChatsCircleIcon },
 ];
-// lean (lean.ts): only your conversations; tasks show as cards in them
-const SECTIONS = ALL_SECTIONS.filter((s) => everything || s.id === 'conversations');
 // each section's name over it (an Obysphere's is its own)
 const TITLES: Record<Exclude<Section, 'obysphere'>, string> = {
   home: 'Home', conversations: 'Conversations', settings: 'Settings',
 };
 
 // What each tab can start, first thing under its title; and which tabs can be searched.
-const NEW_ACTION: Partial<Record<Section, { label: string; icon: LucideIcon }>> = everything
-  ? { home: { label: 'New task', icon: Plus } }
-  : { conversations: { label: 'New conversation', icon: Plus } };
+const NEW_ACTION: Partial<Record<Section, { label: string; icon: LucideIcon }>> = {
+  home: { label: 'New task', icon: Plus },
+  ...(everything ? {} : { conversations: { label: 'New conversation', icon: Plus } }),
+};
 const SEARCHABLE: Section[] = ['conversations'];
 // a conversation's line under its name: the tasks it started, else Oby's last words
 const convoAbout = (c: Chat) => {
@@ -101,7 +99,7 @@ export default function Sidebar({ open, onNewChat, onHome, onOpenTask, onOpenCha
   const convos = useConvos();
   const chats = useChats();
   // Home's dot turns orange while any task needs you
-  const needsYou = countOf('needs') > 0;
+  const needsYou = countOf('needs') + asksWaiting().length > 0;
   const [section, setSection] = useState<Section>(SECTIONS[0].id);
   // the Obyspheres you're in (spheres.ts), under the line in the icon strip:
   // an Obysphere (a focused workspace: your Oby with other people's, sharing
@@ -285,7 +283,7 @@ export default function Sidebar({ open, onNewChat, onHome, onOpenTask, onOpenCha
         <div className="rail">
           {SECTIONS.map(({ id, label, icon: Icon }) => (
             <Fragment key={id}>
-              <button className={`rail-button${section === id ? ' is-on' : ''}${UNREAD.includes(id) ? ' has-dot' : ''}${id === 'home' && needsYou ? ' has-dot is-needs' : ''}`} data-tip={label} aria-label={label} aria-pressed={section === id} onClick={() => pick(id)}>
+              <button className={`rail-button${section === id ? ' is-on' : ''}${id === 'home' && tasks.some((t) => t.fresh) ? ' has-dot' : ''}${id === 'home' && needsYou ? ' has-dot is-needs' : ''}`} data-tip={label} aria-label={label} aria-pressed={section === id} onClick={() => pick(id)}>
                 <Icon size={20} weight={section === id ? 'fill' : 'regular'} />
               </button>
               {/* your own places above the line; the Obyspheres (there can be several) below */}

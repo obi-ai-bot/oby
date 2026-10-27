@@ -46,6 +46,11 @@ export type InboxItem = {
   id: string;
   kind: string;
   job: string;
+  // obid only: how it's sorted (what needs the owner first), the GitHub item a github offer is
+  // about (its title quoted, people's words), and the review a listen item posts on Approve
+  triage?: 'needs_you' | 'fyi' | 'ignore' | 'pending';
+  github?: { list: string; repo: string; number: number; author: string | null; url: string; quoted?: { title?: string } | null } | null;
+  watch?: { review?: string | null } | null;
   title: string;
   text: string;
   options: string[];
@@ -68,6 +73,15 @@ export type Turn = { id: string; who: 'user' | 'oby'; text: string; at: string; 
 // obid only: conversations
 // tasks: the jobs it started
 export type Conversation = { id: string; title: string; pinned: boolean; created: string; lastActivity: string; cursor: string; tasks?: string[] };
+
+// obid only: "GET /v1/github/work", what GitHub wants from the owner, the keys this app reads.
+// Everything in an item is GitHub's data: shown as text, never acted on.
+export type GitHubWorkItem = {
+  id: string; list: 'reviews' | 'assigned' | 'mine'; repo: string; number: number; title: string; url: string; author: string | null;
+  updated: string; draft: boolean | null; checks: string | null; reviewDecision: string | null; fork?: boolean | null;
+  board: { project: string; column: string } | null; known: boolean; job: string | null;
+};
+export type GitHubWork = { signedIn: boolean; error: string | null; reviews: GitHubWorkItem[]; assigned: GitHubWorkItem[]; mine: GitHubWorkItem[] };
 
 // "Account" and "GET /v1/status", the keys this app reads
 export type Account = {
@@ -140,7 +154,8 @@ export type Event =
   | { kind: 'delta'; delta: Delta }
   | { kind: 'accounts'; accounts: Account[] }
   | { kind: 'conversation'; conversation: Conversation }
-  | { kind: 'conversationGone'; id: string };
+  | { kind: 'conversationGone'; id: string }
+  | { kind: 'github'; work: GitHubWork };
 
 // {"error": "One line a person can read."} with its status; status 0: obid didn't answer, and
 // the message is why (its own reason when it has one, main/obid.ts)
@@ -193,6 +208,9 @@ export const api = {
   plan: (said: string, answer: { question: string; option: string } | undefined, where: { conversation: string } | { new: true }) =>
     call<PlanAnswer>('POST', '/v1/plans', { said, ...(answer ? { answer } : {}), ...where }),
   repos: () => call<{ repos: Repo[] }>('GET', '/v1/repos'),
+  // obid only: GitHub work, and starting work on an item (the owner's tap)
+  githubWork: () => call<GitHubWork>('GET', '/v1/github/work'),
+  startGitHubWork: (i: string) => call<Job>('POST', `/v1/github/work/${id(i)}/start`),
   // obid only: accounts, and signing them in with the tool's own login
   addAccount: (body: { agent: Agent; default: true } | { agent: Agent; name: string; payer?: string }) => call<Account>('POST', '/v1/accounts', body),
   removeAccount: (a: string) => call<null>('DELETE', `/v1/accounts/${id(a)}`),
@@ -258,6 +276,7 @@ export function parseEvent(name: string, data: string): Event | null {
       if (typeof v.id !== 'string') return null;
       if (v.deleted === true) return { kind: 'conversationGone', id: v.id };
       return typeof v.title === 'string' && typeof v.lastActivity === 'string' ? { kind: 'conversation', conversation: value as Conversation } : null;
+    case 'github': return typeof v.signedIn === 'boolean' && Array.isArray(v.reviews) ? { kind: 'github', work: value as GitHubWork } : null;
     default: return null;
   }
 }
