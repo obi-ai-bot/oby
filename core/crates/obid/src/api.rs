@@ -419,12 +419,12 @@ async fn gate(State(shared): State<Arc<Shared>>, request: Request, next: Next) -
         .strip_prefix("/v1/agent/mcp/")
         .or_else(|| path.strip_prefix("/v1/agent/tetrix/"))
         .filter(|id| !id.is_empty() && !id.contains('/'));
+    // On Linux an agent reaches obid at slirp4netns's host alias: admitted for the agent's own
+    // routes only, its broker's and its job's Apple check (oby-check apple), each with its token.
+    let agent_route = agent_check || agent_mcp.is_some();
+    let via_gateway = agent_route && agent_gateway_request(request.uri(), request.headers());
     let admitted = admit(request.uri(), request.headers(), &shared.token).or_else(|error| {
-        if (!agent_check && agent_mcp.is_none())
-            || (!loopback_request(request.uri(), request.headers())
-                && !agent_mcp
-                    .is_some_and(|_| agent_gateway_request(request.uri(), request.headers())))
-        {
+        if !agent_route || (!loopback_request(request.uri(), request.headers()) && !via_gateway) {
             return Err(error);
         }
         let mut values = request.headers().get_all(header::AUTHORIZATION).iter();
@@ -441,7 +441,7 @@ async fn gate(State(shared): State<Arc<Shared>>, request: Request, next: Next) -
                 })
         }) {
             Ok(())
-        } else if agent_mcp.is_some() && agent_gateway_request(request.uri(), request.headers()) {
+        } else if via_gateway {
             // The gateway's host is admitted for this route, so what's missing is the token: 401,
             // as on loopback, not the host's 403.
             Err(ApiError::new(StatusCode::UNAUTHORIZED, NO_TOKEN))
@@ -484,7 +484,8 @@ async fn gate(State(shared): State<Arc<Shared>>, request: Request, next: Next) -
 }
 
 /// On Linux, sandboxed agents reach the host through slirp4netns at 10.0.2.2. Admit that fixed
-/// host only for the job-token MCP route; normal app API requests still require a loopback Host.
+/// host only for the agent's own routes (its job-token MCP route and its job's Apple check); normal
+/// app API requests still require a loopback Host.
 fn agent_gateway_request(uri: &axum::http::Uri, headers: &HeaderMap) -> bool {
     cfg!(target_os = "linux") && gateway_host(uri, headers)
 }
