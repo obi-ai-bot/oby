@@ -308,6 +308,14 @@ impl Sandbox {
         matches!(self.tool, Tool::Seatbelt(_))
     }
 
+    /// `argv` in a session of its own ([`SESSION`]) and in no box of obid's: a Claude Code run in
+    /// its own sandbox (`claudeOwnSandbox`, crate::jobs, `own_sandbox`).
+    pub fn unboxed(&self, argv: &[OsString]) -> Vec<OsString> {
+        let mut out: Vec<OsString> = vec![self.session.clone().into(), SESSION.into(), "--".into()];
+        out.extend(argv.iter().cloned());
+        out
+    }
+
     /// The command line that runs `argv` inside the sandbox `spec` describes: the program, then its
     /// arguments. The caller sets the working directory to `spec.worktree` and the environment, and
     /// starts it as it is, in obid's own process group: the first program (obid, [`SESSION`]) makes
@@ -413,10 +421,31 @@ impl Sandbox {
     }
 }
 
+/// What `root` holds, but `kept` and the folders on the way to them, into `out`.
+fn all_but(root: &Path, kept: &[PathBuf], out: &mut Vec<(PathBuf, bool)>) {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let folder = entry.file_type().is_ok_and(|t| t.is_dir());
+        if kept.contains(&path) {
+            continue;
+        }
+        if kept.iter().any(|k| k.starts_with(&path)) {
+            if folder {
+                all_but(&path, kept, out);
+            }
+        } else if !out.iter().any(|(p, _)| p == &path) {
+            out.push((path, folder));
+        }
+    }
+}
+
 impl Spec {
     /// Every path as the kernel sees it (macOS's `/tmp` and `/var` are behind symbolic links, and a
     /// Seatbelt profile matches real paths). A path that doesn't exist is kept as given.
-    fn canonical(&self) -> Spec {
+    pub(crate) fn canonical(&self) -> Spec {
         let real = |p: &PathBuf| p.canonicalize().unwrap_or_else(|_| p.clone());
         let mut read_only: Vec<PathBuf> = Vec::new();
         for path in &self.read_only {
@@ -493,8 +522,33 @@ impl Spec {
         }
     }
 
+    /// What a process that runs in a sandbox of its own (Claude Code's, `claudeOwnSandbox`) is
+    /// denied of the hidden folders, each `(path, is a folder)`: everything in them but the paths
+    /// this spec reads and `also` (canonical, as from [`Spec::canonical`]), found by walking down
+    /// only toward those. A hidden folder that holds none of them is denied whole. Listed as the
+    /// folders are now.
+    // ponytail: one entry per sibling on the way (about 300 for a Mac's home), since Claude Code's
+    // Read and Edit deny rules can't re-open a path inside a denied one; what appears in a hidden
+    // folder after the run starts isn't on it.
+    pub(crate) fn denied(&self, also: &[PathBuf]) -> Vec<(PathBuf, bool)> {
+        let mut kept = self.readable();
+        kept.extend(also.iter().cloned());
+        let mut out = Vec::new();
+        for root in &self.hidden {
+            if kept.iter().any(|k| root.starts_with(k)) {
+                continue;
+            }
+            if kept.iter().any(|k| k.starts_with(root)) {
+                all_but(root, &kept, &mut out);
+            } else if !out.iter().any(|(p, _)| p == root) {
+                out.push((root.clone(), root.is_dir()));
+            }
+        }
+        out
+    }
+
     /// The folders written.
-    fn writable(&self) -> Vec<PathBuf> {
+    pub(crate) fn writable(&self) -> Vec<PathBuf> {
         let mut out = vec![self.worktree.clone()];
         out.extend(self.git_admin.clone());
         out.push(self.temp.clone());
@@ -503,7 +557,7 @@ impl Spec {
     }
 
     /// Everything read inside a hidden folder.
-    fn readable(&self) -> Vec<PathBuf> {
+    pub(crate) fn readable(&self) -> Vec<PathBuf> {
         let mut out = self.writable();
         out.extend(self.git_common.clone());
         out.extend(self.read_only.iter().cloned());
@@ -1270,6 +1324,53 @@ pub fn install_root(bin: &Path, hidden: &[PathBuf], never: &[PathBuf]) -> Option
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// What a run in its own sandbox is denied of the hidden folders: every sibling on the way
+    /// down to what it reads, never those paths or the folders that lead to them; a hidden folder
+    /// holding none of them, whole.
+    #[test]
+    fn a_run_in_its_own_sandbox_is_denied_all_but_its_paths() {
+        let root = std::env::temp_dir().join(format!("obid-denied-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let home = root.join("home");
+        for dir in [
+            "worktrees/job",
+            "worktrees/other",
+            "tmp/job",
+            "logins/job",
+            "tools/bin",
+        ] {
+            std::fs::create_dir_all(home.join(dir)).unwrap();
+        }
+        std::fs::write(home.join("api-token"), "x").unwrap();
+        let account = root.join("account");
+        std::fs::create_dir_all(&account).unwrap();
+        let spec = Spec {
+            worktree: home.join("worktrees/job"),
+            git_admin: None,
+            git_common: None,
+            commits: false,
+            temp: home.join("tmp/job"),
+            accounts: Vec::new(),
+            read_only: Vec::new(),
+            hidden: vec![home.clone(), account.clone()],
+            network: true,
+            loopback: false,
+            proxied: false,
+            frozen: Vec::new(),
+        };
+        let mut denied = spec.denied(&[home.join("tools")]);
+        denied.sort();
+        let mut want = vec![
+            (account, true),
+            (home.join("api-token"), false),
+            (home.join("logins"), true),
+            (home.join("worktrees/other"), true),
+        ];
+        want.sort();
+        assert_eq!(denied, want);
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
     /// A folder a box may read shows nothing hidden: not a hidden folder, nor one that holds one,
     /// nor anything in obid's home.

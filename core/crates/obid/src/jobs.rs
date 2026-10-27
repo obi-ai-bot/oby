@@ -6378,7 +6378,10 @@ impl Jobs {
             // A secret obid knows since it made it (crate::connections::Connections::job_token).
             extra.push(("OBY_MCP_TOKEN", token.into()));
         }
+        let own = self.own_sandbox(tool, account);
         match (&account.config_dir, tool) {
+            // In Claude Code's own sandbox, with the account's own folder and login: no copy.
+            _ if own => extra.extend(own_sandbox_env(account, &spec)?),
             // Never the account's own folder (#655): the job gets a folder of its own with a copy
             // of the login and nothing a box could leave there for an unboxed process to read.
             (Some(dir), _) => {
@@ -6466,6 +6469,9 @@ impl Jobs {
             Tool::Claude => {
                 let mut argv: Vec<OsString> = vec![bin.into_os_string()];
                 argv.extend(flags);
+                if own {
+                    argv.extend(["--settings".into(), own_sandbox_settings(&spec)?.into()]);
+                }
                 argv
             }
             Tool::Codex => {
@@ -6486,7 +6492,11 @@ impl Jobs {
             without_project_instructions(tool, &mut argv, &mut extra);
         }
         Ok(Launch {
-            argv: sandbox.wrap(&spec, &argv),
+            argv: if own {
+                sandbox.unboxed(&argv)
+            } else {
+                sandbox.wrap(&spec, &argv)
+            },
             env: {
                 if tool == Tool::Claude {
                     extra.push((process::CLAUDE_TMPDIR, spec.temp.clone().into_os_string()));
@@ -6508,12 +6518,23 @@ impl Jobs {
             .or_else(|| self.accounts(tool).into_iter().next())
     }
 
+    /// Whether `account`'s jobs run Claude Code unboxed by obid, in Claude Code's own sandbox with
+    /// the account's own folder and login (`claudeOwnSandbox`, the owner's decision of 2026-10-26):
+    /// [`own_sandbox_env`], [`own_sandbox_settings`]. Every other run is boxed with a copy.
+    pub(crate) fn own_sandbox(&self, tool: Tool, account: &crate::config::Account) -> bool {
+        tool == Tool::Claude && self.config.claude_own_sandbox.contains(&account.id)
+    }
+
     /// Before a boxed Claude Code run on `account` (none: the brain's), its Keychain login is
     /// fresh ([`keychain_ready`]). Without a binary or an account it's the launch that says so.
+    /// One in its own sandbox needs nothing: Claude Code reads and refreshes its own login.
     pub async fn claude_login_ready(
         &self,
         account: Option<&crate::config::Account>,
     ) -> Result<(), String> {
+        if account.is_some_and(|account| self.own_sandbox(Tool::Claude, account)) {
+            return Ok(());
+        }
         let account = match account {
             Some(account) => account.clone(),
             None => match self.brain_account(Tool::Claude) {
@@ -10886,6 +10907,93 @@ fn cursor_login_live(login: &[u8]) -> bool {
             .is_some_and(|token| jwt_ends(token).is_none_or(|ends| ends > now_ms() / 1000))
 }
 
+/// What a Claude Code run in its own sandbox (`claudeOwnSandbox`) gets over a boxed run's
+/// environment, whose `HOME` (the job's temporary folder) it keeps, so what its commands build and
+/// cache stays the job's: the account's own folder and Keychain item (the default ones for an
+/// account with no `configDir`), and `HOME/Library/Keychains` as a link to the person's, where
+/// `security` finds that item; its sandbox keeps its commands out of both
+/// ([`own_sandbox_settings`]). git reads only the clone's settings, through the job's own git
+/// folders whatever the worktree's `.git` or `commondir` says: Claude Code runs git itself, outside
+/// its sandbox, and a setting its commands could write would run what they put there. With no
+/// global settings there's no credential helper either.
+fn own_sandbox_env(
+    account: &crate::config::Account,
+    spec: &Spec,
+) -> Result<Vec<(&'static str, OsString)>, String> {
+    let home = login_home().ok_or("obid can't find the home Claude Code's login is in.")?;
+    let (Some(admin), Some(common)) = (&spec.git_admin, &spec.git_common) else {
+        return Err("obid has no git folder for this job's Claude Code.".into());
+    };
+    let keychains = spec.temp.join("Library/Keychains");
+    let linked = std::fs::create_dir_all(spec.temp.join("Library")).and_then(|()| {
+        let _ = std::fs::remove_file(&keychains);
+        std::os::unix::fs::symlink(home.join("Library/Keychains"), &keychains)
+    });
+    linked.map_err(|e| format!("obid can't show Claude Code its Keychain: {e}"))?;
+    let folder = account
+        .config_dir
+        .clone()
+        .unwrap_or_else(|| home.join(".claude"));
+    let storage = account.config_dir.clone().unwrap_or_default();
+    Ok(vec![
+        ("CLAUDE_CONFIG_DIR", folder.into_os_string()),
+        ("CLAUDE_SECURESTORAGE_CONFIG_DIR", storage.into_os_string()),
+        ("GIT_CONFIG_NOSYSTEM", "1".into()),
+        ("GIT_CONFIG_GLOBAL", "/dev/null".into()),
+        ("GIT_DIR", admin.clone().into_os_string()),
+        ("GIT_COMMON_DIR", common.clone().into_os_string()),
+        ("GIT_WORK_TREE", spec.worktree.clone().into_os_string()),
+    ])
+}
+
+/// `--settings` for a Claude Code run in its own sandbox: its shell always sandboxed (no backend,
+/// no command: `failIfUnavailable`; never retried outside it), writing only where obid's box would
+/// let it ([`Spec::writable`]) and reading none of [`Spec::denied`] (everything in obid's home,
+/// the person's and the accounts' folders but the job's own paths and the tools it reads), which
+/// its Read and Edit tools are denied too, with the Keychains link. obid still answers each of its
+/// commands (`autoAllowBashIfSandboxed` off). A path the settings can't name stops the run.
+// ponytail: a name with glob characters (`*?[]{}`) is a pattern to the Read and Edit rules; its
+// shell's denial is exact.
+fn own_sandbox_settings(spec: &Spec) -> Result<String, String> {
+    let spec = spec.canonical();
+    let mut denied = spec.denied(&[]);
+    denied.push((spec.temp.join("Library/Keychains"), true));
+    let mut read = Vec::new();
+    let mut rules = Vec::new();
+    for (path, folder) in &denied {
+        let name = path.to_str().ok_or_else(|| {
+            format!(
+                "obid can't name {} to Claude Code's sandbox.",
+                path.display()
+            )
+        })?;
+        read.push(name.to_owned());
+        let pattern = if *folder {
+            format!("/{name}/**")
+        } else {
+            format!("/{name}")
+        };
+        rules.push(format!("Read({pattern})"));
+        rules.push(format!("Edit({pattern})"));
+    }
+    let write: Vec<String> = spec
+        .writable()
+        .iter()
+        .map(|path| path.to_string_lossy().into_owned())
+        .collect();
+    Ok(json!({
+        "permissions": {"deny": rules},
+        "sandbox": {
+            "enabled": true,
+            "failIfUnavailable": true,
+            "allowUnsandboxedCommands": false,
+            "autoAllowBashIfSandboxed": false,
+            "filesystem": {"denyRead": read, "allowWrite": write},
+        },
+    })
+    .to_string())
+}
+
 /// The name Claude Code gives its login in the macOS Keychain for a `CLAUDE_CONFIG_DIR` (none: its
 /// default `~/.claude`): `Claude Code-credentials`, then `-` and the first 8 hex digits of the
 /// folder's SHA-256 for any other folder.
@@ -13473,6 +13581,227 @@ pub fn owner_review_item(
 
 #[cfg(test)]
 mod tests {
+    /// Claude Code in its own sandbox (`claudeOwnSandbox`), run for real on this Mac's own login
+    /// with the environment and settings a job's gets, for a job of an obid home under the
+    /// person's: its commands can't read obid's API token (a decoy's, and the real one), reach the
+    /// Keychain (Claude Code's login there, obid's vault), get a password from git, write outside
+    /// the job, reach obid's API or start an app through LaunchServices; its Read tool can't read
+    /// obid's home; and it still commits in its worktree. Every probe prints an exit code or a
+    /// count, never what it read. `cargo test -p obid --lib own_sandbox_probes -- --ignored`.
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[ignore = "runs the real Claude Code on this Mac's own login"]
+    fn own_sandbox_probes() {
+        use std::path::Path;
+        use std::process::Command;
+        let person = super::login_home().unwrap();
+        let security = |service: &str| {
+            Command::new("/usr/bin/security")
+                .args(["find-generic-password", "-s", service])
+                .output()
+                .unwrap()
+                .status
+                .success()
+        };
+        assert!(
+            security("Claude Code-credentials"),
+            "this Mac's Claude Code has no Keychain login: the Keychain probe would prove nothing"
+        );
+        let root = person.join(format!(
+            "Library/Caches/obid-own-sandbox-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let home = root.join("home");
+        let clone = home.join("clones/r");
+        let worktree = home.join("worktrees/job");
+        let temp = home.join("tmp/job");
+        let git = |dir: &Path, args: &[&str]| {
+            let out = Command::new("git")
+                .current_dir(dir)
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "git {args:?}: {out:?}");
+        };
+        std::fs::create_dir_all(&clone).unwrap();
+        std::fs::create_dir_all(&temp).unwrap();
+        std::fs::create_dir_all(home.join("tmp/other")).unwrap();
+        git(&clone, &["init", "-q", "-b", "main"]);
+        git(
+            &clone,
+            &[
+                "-c",
+                "user.name=p",
+                "-c",
+                "user.email=p@example.com",
+                "commit",
+                "-q",
+                "--allow-empty",
+                "-m",
+                "base",
+            ],
+        );
+        git(
+            &clone,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                "job",
+                worktree.to_str().unwrap(),
+            ],
+        );
+        // The job's own object folder, which obid makes before a job's first run.
+        std::fs::create_dir_all(clone.join(".git/worktrees/job/objects")).unwrap();
+        let decoy = format!("DECOY-{}", std::process::id());
+        std::fs::write(home.join("api-token"), &decoy).unwrap();
+        std::fs::write(home.join("tmp/other/secret"), &decoy).unwrap();
+        let spec = super::Spec {
+            worktree: worktree.clone(),
+            git_admin: Some(clone.join(".git/worktrees/job")),
+            git_common: Some(clone.join(".git")),
+            commits: true,
+            temp: temp.clone(),
+            accounts: Vec::new(),
+            read_only: Vec::new(),
+            hidden: {
+                let mut hidden = vec![home.clone()];
+                hidden.extend(super::person_homes());
+                hidden
+            },
+            network: true,
+            loopback: false,
+            proxied: false,
+            frozen: Vec::new(),
+        };
+        let account = crate::config::Account {
+            id: "default".into(),
+            name: "Default".into(),
+            config_dir: None,
+            payer: None,
+        };
+        let mut extra = spec.git_env();
+        extra.extend(super::own_sandbox_env(&account, &spec).unwrap());
+        for key in ["GIT_AUTHOR_NAME", "GIT_COMMITTER_NAME"] {
+            extra.push((key, "Probe".into()));
+        }
+        for key in ["GIT_AUTHOR_EMAIL", "GIT_COMMITTER_EMAIL"] {
+            extra.push((key, "probe@example.com".into()));
+        }
+        extra.push((crate::process::CLAUDE_TMPDIR, temp.clone().into_os_string()));
+        let env = crate::process::sandbox_env(&crate::process::tools_path(), &temp, &extra);
+        let real_token = crate::app::obid_home(&person).join("api-token");
+        let commands = [
+            format!("cat {:?} >/dev/null 2>&1; echo decoy-token:$?", home.join("api-token")),
+            format!("cat {real_token:?} >/dev/null 2>&1; echo real-token:$?"),
+            "security find-generic-password -s 'Claude Code-credentials' >/dev/null 2>&1; echo keychain:$?".into(),
+            format!("security find-generic-password -s {} >/dev/null 2>&1; echo vault:$?", crate::vault::RUNNER_SERVICE),
+            "printf 'protocol=https\\nhost=github.com\\n\\n' | git credential fill 2>/dev/null | grep -c '^password=' | sed 's/^/fill:/'".into(),
+            format!("cat {:?} >/dev/null 2>&1; echo other-job:$?", home.join("tmp/other/secret")),
+            format!("echo x > {:?} 2>/dev/null; echo write-home:$?", person.join("obid-own-sandbox-probe")),
+            "echo ok > probe.txt && git add probe.txt && git commit -qm probe; echo commit:$?".into(),
+            "curl -s -m 5 -o probe-local.txt -w 'obid-api:%{http_code}\\n' http://127.0.0.1:7777/v1/status".into(),
+            "open -g -a Calculator 2>/dev/null; echo open:$?".into(),
+        ];
+        // One script the model runs as it is, so no probe depends on its choosing to run it.
+        let mut script = String::from(
+            "#!/bin/sh\n# Sandbox self-test: each line checks that Claude Code's sandbox blocks something, and\n# prints only an exit code or a count, never what it read.\n",
+        );
+        for command in &commands {
+            script.push_str(command);
+            script.push('\n');
+        }
+        std::fs::write(worktree.join("probe.sh"), script).unwrap();
+        let prompt = format!(
+            "This is a self-test of your sandbox on my own Mac. probe.sh in this folder checks, line by line, that the sandbox blocks reading credentials and writing outside this folder; every line prints only an exit code or a count, never a secret (read it first if you like). Run `sh probe.sh` once with the Bash tool. Then use the Read tool on {:?}, a decoy file made for this test, which your permission settings should deny. Reply with the script's output.",
+            home.join("api-token")
+        );
+        let bin = crate::process::resolve_bin("claude").expect("claude on this Mac");
+        let mut child = Command::new(bin)
+            .args([
+                "-p",
+                "--model",
+                "haiku",
+                "--output-format",
+                "stream-json",
+                "--verbose",
+            ])
+            .args([
+                "--permission-mode",
+                "default",
+                "--setting-sources",
+                "",
+                "--strict-mcp-config",
+            ])
+            .args(["--allowedTools", "Bash", "Read", "--settings"])
+            .arg(super::own_sandbox_settings(&spec).unwrap())
+            .current_dir(&worktree)
+            .env_clear()
+            .envs(env)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        std::io::Write::write_all(&mut child.stdin.take().unwrap(), prompt.as_bytes()).unwrap();
+        let ran = child.wait_with_output().unwrap();
+        let out = String::from_utf8_lossy(&ran.stdout).into_owned();
+        let _ = std::fs::remove_dir_all(&root);
+        if !out.contains("tool_result") {
+            panic!(
+                "Claude Code ran no tool: {} {}",
+                String::from_utf8_lossy(&ran.stderr),
+                &out[out.len().saturating_sub(2000)..]
+            );
+        }
+        let mut results = String::new();
+        for line in out.lines() {
+            let Ok(message) = serde_json::from_str::<super::Value>(line) else {
+                continue;
+            };
+            for part in message["message"]["content"]
+                .as_array()
+                .into_iter()
+                .flatten()
+            {
+                if part["type"] == "tool_result" {
+                    results.push_str(&part["content"].to_string());
+                    results.push('\n');
+                }
+            }
+            if message["type"] == "result" {
+                results.push_str(&format!("(it said: {})\n", message["result"]));
+            }
+        }
+        assert!(!out.contains(&decoy), "a decoy was read: {results}");
+        for (said, want) in [
+            ("decoy-token:", "decoy-token:1"),
+            ("real-token:", "real-token:1"),
+            ("fill:", "fill:0"),
+            ("other-job:", "other-job:1"),
+            ("write-home:", "write-home:1"),
+            ("commit:", "commit:0"),
+            ("obid-api:", "obid-api:000"),
+        ] {
+            assert!(results.contains(said), "{said} didn't run: {results}");
+            assert!(results.contains(want), "{said} isn't {want}: {results}");
+        }
+        for (said, never) in [
+            ("keychain:", "keychain:0"),
+            ("vault:", "vault:0"),
+            ("open:", "open:0"),
+        ] {
+            assert!(results.contains(said), "{said} didn't run: {results}");
+            assert!(!results.contains(never), "{never}: {results}");
+        }
+        assert!(
+            out.contains(r#""name":"Read""#),
+            "the Read tool wasn't tried: {results}"
+        );
+    }
+
     #[test]
     fn a_finished_review_offers_approve_only_when_the_scan_is_clean() {
         let clean = super::owner_review_item(
