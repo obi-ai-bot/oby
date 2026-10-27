@@ -1855,6 +1855,85 @@ async fn a_chain_rolled_back_or_forked_doesnt_check_out() {
     );
 }
 
+/// The receipts obid keeps for its sends (sphere-api.md 7.1), by envelope id: `(seq, hash)`.
+fn kept_receipts(folder: &Folder) -> Value {
+    let chain = std::fs::read(folder.0.join("home/sphere/chain.json")).unwrap();
+    serde_json::from_slice::<Value>(&chain).unwrap()["sends"].clone()
+}
+
+/// A send's receipt is taken only when it names the envelope sent. A reply answered with another
+/// entry's receipt isn't taken as sent: it goes again, and its own receipt is the one kept. A
+/// request answered so is refused, and nothing is kept for it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_send_is_taken_only_when_its_receipt_names_it() {
+    let folder = Folder::new("receipt-names");
+    let (sphere, obid, ernesto) = setup(&folder, &stub_agent(), None).await;
+
+    let request = ernesto.request("obi-wellington", "review_request", brief(), 3600);
+    let cid = request["id"].as_str().unwrap().to_owned();
+    ernesto.send(&request).await;
+    let item = tokio::task::block_in_place(|| wait_item(&obid));
+    sphere.answer_next_with_last("decline");
+    tokio::task::block_in_place(|| answer(&obid, &item, "Decline"));
+    let decline = ernesto.receive_reply_to(&request, 30).await;
+    let entry = |id: &Value| {
+        sphere
+            .lock()
+            .entries
+            .iter()
+            .find(|e| &e["envelope"]["id"] == id)
+            .cloned()
+            .unwrap()
+    };
+    let recorded = entry(&decline["id"]);
+    let done = within(30, "the decline listed as sent", || {
+        let e = tokio::task::block_in_place(|| exchange(&obid, &cid));
+        (e["messages"].as_array().unwrap().len() == 2).then_some(e)
+    });
+    assert_eq!(done["messages"][1]["envelope"]["id"], decline["id"]);
+    assert_eq!(done["messages"][1]["seq"], recorded["seq"]);
+    assert_eq!(
+        sends_of(&sphere, "obi-wellington")
+            .iter()
+            .filter(|s| s.0 == "decline")
+            .count(),
+        2,
+        "answered with the request's receipt first, then recorded"
+    );
+    assert_eq!(
+        kept_receipts(&folder),
+        json!({decline["id"].as_str().unwrap(): [recorded["seq"], recorded["hash"]]})
+    );
+    let audit = tokio::task::block_in_place(|| get(&obid, "/v1/obid/sphere/audit"));
+    assert_eq!(audit["verified"], true, "{audit}");
+
+    sphere.answer_next_with_last("review_request");
+    let body =
+        json!({"to": "obi-ernesto", "type": "review_request", "body": brief(), "expiresIn": 3600});
+    let refused = tokio::task::block_in_place(|| {
+        call(&obid, "POST", "/v1/obid/sphere/requests", Some(&body))
+    });
+    assert_eq!(refused.status, 502, "{}", refused.text);
+    assert!(
+        refused
+            .text
+            .contains("the send's receipt names another envelope than the one sent"),
+        "{}",
+        refused.text
+    );
+    let outgoing = tokio::task::block_in_place(|| get(&obid, "/v1/obid/sphere/exchanges"));
+    assert!(
+        outgoing
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|e| e["direction"] != "outgoing"),
+        "{outgoing}"
+    );
+    assert_eq!(kept_receipts(&folder).as_object().unwrap().len(), 1);
+    assert!(ernesto.waiting_after(1).await.is_empty());
+}
+
 /// A Sphere that lists another Obi key for a member, with the member's card untouched: the key isn't
 /// the one the card signs, so obid doesn't trust that member (nor any message signed with it).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

@@ -1086,6 +1086,9 @@ pub struct SphereState {
     /// The next send of this type is recorded and delivered, and its answer is lost: `503`, once
     /// the test lets it go (`FakeSphere::lose_next_answer`).
     pub lose: Option<(String, Arc<tokio::sync::Notify>)>,
+    /// The next send of this type is neither recorded nor delivered, and its answer is the receipt
+    /// of the chain's last entry, another envelope's (`FakeSphere::answer_next_with_last`).
+    pub answer_with_last: Option<String>,
 }
 
 pub type RelaySender = tokio::sync::mpsc::UnboundedSender<axum::extract::ws::Message>;
@@ -1169,6 +1172,12 @@ impl FakeSphere {
         let release = Arc::new(tokio::sync::Notify::new());
         self.lock().lose = Some((kind.to_owned(), release.clone()));
         release
+    }
+
+    /// Neither records nor delivers the next send of type `kind`, and answers it `202` with the
+    /// receipt of the chain's last entry: another envelope's id, seq and hash.
+    pub fn answer_next_with_last(&self, kind: &str) {
+        self.lock().answer_with_last = Some(kind.to_owned());
     }
 
     /// An invitation for `obi` of `owner`: its id and secret.
@@ -1997,6 +2006,20 @@ fn record(state: &Mutex<SphereState>, headers: &HeaderMap, body: &[u8]) -> Respo
                 sphere_error(StatusCode::CONFLICT, "bad_reply", &problem),
             );
         }
+    }
+    if state
+        .answer_with_last
+        .take_if(|named| *named == kind)
+        .is_some()
+    {
+        let last = state.entries.last().cloned().unwrap();
+        let receipt = json!({"id": last["envelope"]["id"], "seq": last["seq"],
+                             "entry_hash": last["hash"], "recorded_at": last["recorded_at"]});
+        return answer(
+            &mut state,
+            StatusCode::ACCEPTED,
+            (StatusCode::ACCEPTED, axum::Json(receipt)).into_response(),
+        );
     }
     let recorded_at = time::format(time::now());
     let entries = chain::append(&state.entries, SPHERE, &env, &recorded_at).unwrap();

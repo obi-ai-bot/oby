@@ -379,13 +379,21 @@ impl Client {
     }
 
     /// Sends a signed envelope. A retry of one already recorded answers its original place (`200`).
+    /// The receipt is the envelope's only when it names it: one with another `id` is refused.
     pub async fn send(&self, token: &str, envelope: &Value) -> Result<Sent, ClientError> {
         let url = self.sphere_path("/messages");
         let (status, body) = self
             .call(|| self.http.post(&url).bearer_auth(token).json(envelope))
             .await?;
         let body = Client::expect(status, body, &[200, 202], "wire/send.response")?;
-        serde_json::from_value(body).map_err(|e| ClientError::Protocol(e.to_string()))
+        let sent: Sent =
+            serde_json::from_value(body).map_err(|e| ClientError::Protocol(e.to_string()))?;
+        if envelope["id"].as_str() != Some(sent.id.as_str()) {
+            return Err(ClientError::Protocol(
+                "the send's receipt names another envelope than the one sent".into(),
+            ));
+        }
+        Ok(sent)
     }
 
     /// The deliveries waiting for the Obi, oldest first; the Sphere may hold the call up to `wait`
@@ -454,5 +462,64 @@ mod tests {
         assert_eq!(e.code(), Some("invalid_grant"));
         let e = Client::refused(502, &Value::Null);
         assert_eq!(e.code(), Some("http_502"));
+    }
+
+    /// A Sphere on loopback that answers one call with `202` and `body`: its base URL.
+    async fn answering_once(body: Value) -> String {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            let mut chunk = [0u8; 4096];
+            // The headers, then as much body as they say.
+            loop {
+                let n = socket.read(&mut chunk).await.unwrap();
+                request.extend_from_slice(&chunk[..n]);
+                let text = String::from_utf8_lossy(&request).to_lowercase();
+                if let Some(end) = text.find("\r\n\r\n") {
+                    let length: usize = text
+                        .lines()
+                        .find_map(|l| l.strip_prefix("content-length:"))
+                        .and_then(|l| l.trim().parse().ok())
+                        .unwrap_or(0);
+                    if n == 0 || request.len() >= end + 4 + length {
+                        break;
+                    }
+                }
+            }
+            let body = body.to_string();
+            let answer = format!(
+                "HTTP/1.1 202 Accepted\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            socket.write_all(answer.as_bytes()).await.unwrap();
+        });
+        base
+    }
+
+    /// A send's receipt is taken only when it names the envelope sent.
+    #[tokio::test]
+    async fn a_receipt_names_the_envelope_sent() {
+        let sent = "0b6f2a4e-8c1d-4e3f-9a5b-7c2d1e0f3a4b";
+        let other = "5d3c1b2a-6e4f-4a7b-8c9d-0e1f2a3b4c5d";
+        for (named, taken) in [(sent, true), (other, false)] {
+            let receipt = json!({"id": named, "seq": 4, "entry_hash": "ab".repeat(32),
+                                 "recorded_at": "2026-10-27T09:00:00Z"});
+            let base = answering_once(receipt).await;
+            let client = Client::new(&base, "s").unwrap();
+            let answer = client.send("token", &json!({"id": sent})).await;
+            if taken {
+                assert_eq!(answer.unwrap().id, sent);
+            } else {
+                assert_eq!(
+                    answer,
+                    Err(ClientError::Protocol(
+                        "the send's receipt names another envelope than the one sent".into()
+                    ))
+                );
+            }
+        }
     }
 }
