@@ -76,6 +76,8 @@ export type Account = {
   name: string;
   payer?: string | null;
   signedIn: boolean;
+  // what the tool says about the login; signed out, what obid says to do ("Run codex once")
+  label?: string | null;
   fiveHour: number | null;
   sevenDay: number | null;
   sevenDayResets: string | null;
@@ -97,7 +99,7 @@ export type Repo = { repo: string; defaultBranch: string; listed: boolean };
 
 // A sign-in under way: the page to open, and the code to type there (Codex's, GitHub's) or, with
 // pasteCode, the code that page shows, to send back (Claude Code's)
-export type SignIn = { account?: string; url: string; userCode?: string | null; pasteCode?: boolean };
+export type SignIn = { account?: string; url: string; userCode?: string | null; pasteCode?: boolean; expiresAt?: string };
 
 // "POST /v1/plans"
 export type Question = { text: string; options: string[]; recommended: number | null };
@@ -176,9 +178,11 @@ export const api = {
     call<PlanAnswer>('POST', '/v1/plans', { said, ...(answer ? { answer } : {}), ...where }),
   repos: () => call<{ repos: Repo[] }>('GET', '/v1/repos'),
   // obid only: accounts, and signing them in with the tool's own login
-  addAccount: (body: { agent: Agent; default: true } | { agent: Agent; name: string }) => call<Account>('POST', '/v1/accounts', body),
+  addAccount: (body: { agent: Agent; default: true } | { agent: Agent; name: string; payer?: string }) => call<Account>('POST', '/v1/accounts', body),
+  removeAccount: (a: string) => call<null>('DELETE', `/v1/accounts/${id(a)}`),
   signIn: (a: string) => call<SignIn>('GET', `/v1/accounts/${id(a)}/sign-in`),
   signInCode: (a: string, code: string) => call<Account>('POST', `/v1/accounts/${id(a)}/sign-in`, { code }),
+  endSignIn: (a: string) => call<null>('DELETE', `/v1/accounts/${id(a)}/sign-in`),
   // obid only: GitHub's sign-in (gh's device flow), and Tetrix's
   github: () => call<{ gh: boolean; signedIn: boolean; user: string | null }>('GET', '/v1/github'),
   githubSignIn: () => call<SignIn>('POST', '/v1/github/sign-in'),

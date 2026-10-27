@@ -8,6 +8,7 @@ import { SAMPLE_TALK, Sphere, SphereHowTo, still } from './Welcome';
 import { AGENTS, type Agent, type SetupStep } from './mock';
 import { FIRST_TASK, accountOf, connectTetrix, pick, sceneDone, sceneReplayed, sendAgentCode, signInAgent, signInGitHub, useSetup, type Code } from './onboarding';
 import { onObid } from './lean';
+import { PasteCode } from './SettingsView';
 import { useLive } from './live';
 
 // a sign-in's code to type on its page, after what the row says
@@ -138,13 +139,3 @@ const Row = ({ mark, name, sub, state, act, onAct, children }: { mark: ReactNode
   </li>
 );
 
-// Claude Code's sign-in ends on a page that shows a code: pasted here, it goes to its login (obid's)
-function PasteCode({ onCode }: { onCode: (code: string) => void }) {
-  const [code, setCode] = useState('');
-  return (
-    <form className="setup-code" onSubmit={(e) => { e.preventDefault(); onCode(code); }}>
-      <input className="set-field" value={code} onChange={(e) => setCode(e.target.value)} placeholder="Paste the code from the page" aria-label="Sign-in code" spellCheck={false} autoFocus />
-      <button className="set-button" disabled={!code.trim()}>Send</button>
-    </form>
-  );
-}
