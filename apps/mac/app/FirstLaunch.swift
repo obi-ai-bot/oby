@@ -482,19 +482,14 @@ struct FirstLaunchView: View {
             do {
                 guard let runner = feed.runner else { throw RunnerError(message: "Oby isn't connected to its engine on this Mac yet.") }
                 let added = try await runner.addAccount(agent: agent, name: "Personal", payer: "")
-                signingIn = try await ShownAccountSignIn.start(added.account, on: feed)
+                signingIn = ShownAccountSignIn(account: added.account)
                 problem = nil
             } catch { problem = error.localizedDescription }
         }
     }
 
     private func signIn(_ account: Account) {
-        Task {
-            do {
-                signingIn = try await ShownAccountSignIn.start(account, on: feed)
-                problem = nil
-            } catch { problem = error.localizedDescription }
-        }
+        signingIn = ShownAccountSignIn(account: account)
     }
 
     private func adopt() async {

@@ -27,9 +27,19 @@ struct SpherePanel: View {
     /// "9 members", you included; "1 member" alone.
     nonisolated static func count(_ members: Int) -> String { "\(members) member\(members == 1 ? "" : "s")" }
 
-    /// A member as the Obysphere's screens name them: their owner id, capitalised as a name is
-    /// (the Obysphere keeps no display names, sphere-api.md).
+    /// Someone by their owner id, capitalised as a name is: where you compare their key (a name is
+    /// theirs to write, the owner id is who the Obysphere bound the key to), and for a member who
+    /// gave no name.
     nonisolated static func shown(_ owner: String) -> String { owner.prefix(1).uppercased() + owner.dropFirst() }
+
+    /// A member as the Obysphere's screens name them: the name they gave in Oby, which their card
+    /// carries as "Ana's Oby" (`SphereModel.cardName`), else their owner id. The owner id stays in
+    /// reach: the row's help, Settings' about line.
+    nonisolated static func shown(_ member: SphereModel.Member) -> String {
+        guard member.name.hasSuffix("'s Oby") else { return shown(member.owner) }
+        let name = member.name.dropLast(6).trimmingCharacters(in: .whitespaces)
+        return name.isEmpty || name == member.owner || !SphereModel.isLineText(name) ? shown(member.owner) : name
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -209,7 +219,7 @@ private struct InvitedRow: View {
 private struct MemberRow: View {
     let member: SphereModel.Member
 
-    private var shown: String { SpherePanel.shown(member.owner) }
+    private var shown: String { SpherePanel.shown(member) }
 
     var body: some View {
         HStack(spacing: 10) {
@@ -222,10 +232,11 @@ private struct MemberRow: View {
             Spacer(minLength: 0)
             if member.changedTo != nil {
                 Circle().fill(Tokens.needs).frame(width: 6, height: 6)
-                    .help("\(shown)’s key changed: compare it with them, on Home")
+                    .help("\(SpherePanel.shown(member.owner))’s key changed: compare it with them, on Home")
             }
         }
         .padding(.horizontal, 10).frame(height: 34)
+        .help(member.owner)
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(shown)’s Oby" + (member.changedTo != nil ? ", key changed" : ""))
     }

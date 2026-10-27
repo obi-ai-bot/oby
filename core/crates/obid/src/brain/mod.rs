@@ -77,10 +77,12 @@ pub async fn plan(State(shared): State<Arc<Shared>>, body: Bytes) -> Result<Resp
     let req: Request = serde_json::from_slice(&body)
         .map_err(|_| ApiError::new(StatusCode::BAD_REQUEST, "That isn't a plan request."))?;
     let words = req.said.trim();
-    if words.is_empty() || words.chars().count() > 2000 {
+    // No length of obid's own, as in Claude Code: the request's body is at most axum's 2 MB, and
+    // the model says when words are more than it can read at once ([`TOO_LONG`]).
+    if words.is_empty() {
         return Err(ApiError::new(
             StatusCode::UNPROCESSABLE_ENTITY,
-            "said is 1 to 2,000 characters.",
+            "There's no message to send.",
         ));
     }
     let id = req.id.clone();
@@ -642,13 +644,10 @@ fn validate_turns(input: Option<Vec<InputTurn>>) -> Result<Option<Vec<Turn>>, Ap
     }
     let mut out = vec![];
     for t in turns {
-        if !["user", "oby"].contains(&t.who.as_str())
-            || t.text.trim().is_empty()
-            || t.text.chars().count() > 2000
-        {
+        if !["user", "oby"].contains(&t.who.as_str()) || t.text.trim().is_empty() {
             return Err(ApiError::new(
                 StatusCode::UNPROCESSABLE_ENTITY,
-                "Each turn needs who user or oby and 1 to 2,000 characters of text.",
+                "Each turn needs who user or oby and some text.",
             ));
         }
         out.push(Turn {
@@ -667,6 +666,17 @@ fn validate_turns(input: Option<Vec<InputTurn>>) -> Result<Option<Vec<Turn>>, Ap
 }
 /// The most jobs one message attaches.
 const ATTACHED_JOBS: usize = 20;
+
+/// What a turn answers when Claude Code found the prompt more than its model can read at once
+/// ([`too_long`]): a message that long, or a conversation grown that long. Neither trying again nor
+/// the plan loop helps.
+pub const TOO_LONG: &str = "That's more than Oby's model can read at once, so nothing was started. Attach long text as a file (+) instead, or send it in parts; if this conversation has grown long, start a new one.";
+
+/// Whether Claude Code ended because the prompt didn't fit its model (its result's
+/// `Prompt is too long`, 2.1.302).
+pub(crate) fn too_long(said: &str) -> bool {
+    said.contains("Prompt is too long")
+}
 
 /// The jobs the owner attached to their words, each once: only jobs obid has, which Oby's tools
 /// read anyway (`oby_job`), so an id grants nothing.

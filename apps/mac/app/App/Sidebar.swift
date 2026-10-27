@@ -410,6 +410,7 @@ private struct IconStrip: View {
     let state: ChatState
     let work: [WorkList.Item<SidebarSections.JobRow>]
     @State private var creating = false
+    @State private var editingProfile = false
     /// The Obysphere this Oby is in, by name, once read; nil while it's in none.
     @State private var sphere: String?
 
@@ -475,19 +476,19 @@ private struct IconStrip: View {
         .background(alignment: .top) { WindowDragArea().frame(height: state.chrome.bar) }
     }
 
-    /// You (Sangam's account menu): your name and this Mac's name, then Settings, which opens on
-    /// General unless one of its pages shows. There's no Oby login, so no Log out.
+    /// You (Sangam's account menu): your name, which opens your name and picture (`ProfileSheet`),
+    /// and this Mac's name, then Settings, which opens on General unless one of its pages shows.
+    /// There's no Oby login, so no Log out.
     private var account: some View {
-        let name = NSFullUserName()
+        let name = Profile.shared.name
         return Menu {
             // Sangam's head: your name, this Mac under it (there's no Oby account to show).
-            Text(name)
+            Button(name) { editingProfile = true }
             Text(SidebarSections.macName ?? "This Mac")
             Divider()
             Button("Settings") { withAnimation(Tokens.warm) { state.openSettings() } }
         } label: {
-            Text(SidebarSections.initials(name)).font(Tokens.font(10, .semibold)).foregroundStyle(.white.opacity(0.92))
-                .frame(width: 24, height: 24).background(Tokens.avatar(name), in: Circle())
+            PersonPicture(name: name, image: Profile.shared.picture)
                 .frame(width: 32, height: 32)
                 // Lit while Settings shows, as Sangam's is.
                 .background(state.section == .settings ? Tokens.active : .clear, in: RoundedRectangle(cornerRadius: Tokens.iconRadius, style: .continuous))
@@ -496,6 +497,9 @@ private struct IconStrip: View {
         .menuStyle(.button).buttonStyle(.plain).menuIndicator(.hidden).fixedSize()
         .help("Account")
         .accessibilityLabel("\(name)’s account")
+        .sheet(isPresented: $editingProfile) { ProfileSheet { editingProfile = false } }
+        // A new name reaches teammates now, in a new card, not at the 5-minute look (`keepRenewing`).
+        .onChange(of: Profile.shared.given) { Task { [feed = model.feed] in _ = try? await SphereModel(feed: feed).renewCard() } }
     }
 }
 

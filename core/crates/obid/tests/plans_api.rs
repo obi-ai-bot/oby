@@ -108,6 +108,9 @@ fn plans_map_replies_questions_none_and_dispatched_jobs() {
     let obid = start(&folder.0, &config, Some(planner().parent().unwrap()));
     let post = |said: &str| call(&obid, "POST", "/v1/plans", Some(&json!({"said": said})));
 
+    // A pasted brief reaches Oby whatever its length: only the model's own limit counts.
+    assert_eq!(post(&"x".repeat(50_000)).status, 200);
+
     let reply = post("a normal reply");
     assert_eq!(reply.status, 200, "{}", reply.text);
     let conversation = reply.body["conversation"].clone();
@@ -344,6 +347,22 @@ fn retries_are_limited_to_transient_empty_failures() {
         "{refused}"
     );
     assert!(!refused.contains("attempt 2"), "{refused}");
+}
+
+/// More than the model can read at once (Claude Code's own `Prompt is too long`): the turn says so,
+/// and what to send instead, with no retry.
+#[test]
+fn words_too_long_for_the_model_are_answered_plainly() {
+    let folder = Folder::new("brain-too-long");
+    let obid = started(&folder);
+    let result = json!({"type": "result", "subtype": "success", "is_error": true,
+                        "result": "Prompt is too long"});
+    queue(&obid, &[format!("FAIL 1 {result}"), reply("Never asked.")]);
+    assert_eq!(
+        said(&obid, "hello")["text"],
+        "That's more than Oby's model can read at once, so nothing was started. Attach long text as a file (+) instead, or send it in parts; if this conversation has grown long, start a new one."
+    );
+    assert_eq!(calls(&obid).len(), 1);
 }
 
 /// #546's acceptance: a plan naming an unknown job is refused, retried with the reason, and the

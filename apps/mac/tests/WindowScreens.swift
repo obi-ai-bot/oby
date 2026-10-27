@@ -59,11 +59,12 @@ struct WindowScreens {
     }
 
     /// `hover`: where the pointer rests for the picture, from the window's top left.
-    func shoot(_ name: String, model: IslandModel, state: ChatState, sidebar: Bool = true, hover: CGPoint? = nil) async throws {
-        try await withPanel(open: sidebar) { try await picture(name, model: model, state: state, hover: hover) }
+    /// `fullScreen`: in macOS full screen, as the green button puts it.
+    func shoot(_ name: String, model: IslandModel, state: ChatState, sidebar: Bool = true, hover: CGPoint? = nil, fullScreen: Bool = false) async throws {
+        try await withPanel(open: sidebar) { try await picture(name, model: model, state: state, hover: hover, fullScreen: fullScreen) }
     }
 
-    private func picture(_ name: String, model: IslandModel, state: ChatState, hover: CGPoint? = nil) async throws {
+    private func picture(_ name: String, model: IslandModel, state: ChatState, hover: CGPoint? = nil, fullScreen: Bool = false) async throws {
         // Oby itself, from the app's bundled character, once it has drawn.
         let character = ObyCharacter(query: "embed&size=1.23")
         let window = ChatWindow.make(ChatView(model: model, state: state, character: character))
@@ -71,6 +72,7 @@ struct WindowScreens {
         window.orderFrontRegardless()
         defer { window.close() }
         ChatWindow.measureLights(window, into: state)
+        if fullScreen { try await window.fullScreen(true, state: state) }
         for _ in 0..<50 where !character.ready { try await Task.sleep(for: .milliseconds(100)) }
         try await Task.sleep(for: .milliseconds(1200))
         if let hover, let height = window.contentView?.bounds.height,
@@ -81,6 +83,21 @@ struct WindowScreens {
             try await Task.sleep(for: .milliseconds(500))
         }
         try await save(name, window: window)
+        if fullScreen { try await window.fullScreen(false, state: state) }
+    }
+
+    /// The window in macOS full screen, which a tester found broken on Oby 0.4.2: Home, the
+    /// conversation, a task and Settings, with the side panel open and closed.
+    @Test(arguments: ["home", "convo", "task", "settings"], [true, false])
+    func fullScreen(_ screen: String, panel: Bool) async throws {
+        let state = ChatState(defaults: .scratch)
+        switch screen {
+        case "convo": state.trail.start(.talk)
+        case "task": state.trail.start(.group(.review), .job(id: "r2"))
+        case "settings": state.openSettings(.about)
+        default: break
+        }
+        try await shoot("mac-full-\(screen)-\(panel ? "open" : "closed")", model: model(), state: state, sidebar: panel, fullScreen: true)
     }
 
     /// Names the window in `windows.txt` and waits for the shell's picture of it.
@@ -99,6 +116,78 @@ struct WindowScreens {
 
     @Test func home() async throws {
         try await shoot("mac-home", model: model(), state: ChatState(defaults: .scratch))
+    }
+
+    /// An Obysphere's members on a teammate's Mac, in its side panel and Settings › Obysphere: the
+    /// name each gave in Oby (Dmytro's), else their owner id, which Settings keeps beside it. A
+    /// made-up obid and Obysphere answer; the owner key `ana` signs with is the test's, taken out after.
+    @Test(arguments: ["panel", "settings"])
+    func sphereMembers(_ screen: String) async throws {
+        let owner = "ana"
+        try #require(try OwnerKey.store.value(owner) == nil, "a key for \(owner) is this Mac's own")
+        let before = (Profile.shared, SphereServer.session)
+        let file = URL(filePath: NSTemporaryDirectory()).appending(path: "profile-\(UUID().uuidString)")
+        defer { (Profile.shared, SphereServer.session) = before; try? OwnerKey.store.remove(owner) }
+        Profile.shared = Profile(defaults: .scratch, file: file)
+        try Profile.shared.save(name: "Ana Lima", picture: nil)
+        let members = [("dmytro", "Dmytro Kovalenko's Oby"), ("sangam", "sangam's Oby"), ("ernesto", "ernesto's Oby")]
+        let sphere = RunnerStub { request in
+            switch (request.method, request.path) {
+            case ("POST", "/v0.1/oauth/token"): (200, #"{"access_token": "t", "expires_in": 600}"#)
+            case ("GET", "/v0.1/spheres/screens-deskree"): (200, #"{"name": "Deskree", "admin_owner": "sangam"}"#)
+            case ("GET", "/v0.1/spheres/screens-deskree/members"):
+                (200, String(decoding: try! JSONSerialization.data(withJSONObject: ["members": members.map { owner, name in
+                    ["obi": "obi-\(owner)", "owner": owner, "status": "active", "card": ["name": name]]
+                }]), as: UTF8.self))
+            default: (404, "{}")
+            }
+        }
+        let obid = RunnerStub { request in
+            switch (request.method, request.path) {
+            case ("GET", "/v1/obid/sphere"):
+                (200, #"{"state": "joined", "owner": "\#(owner)", "url": "https://\#(sphere.host)", "sphere": "screens-deskree", "obiId": "obi-\#(owner)", "sealing": "on", "card": {"name": "Ana Lima's Oby"}}"#)
+            case ("GET", "/v1/obid/sphere/pins"):
+                (200, #"[{"owner": "dmytro", "fingerprint": "ed25519:Qm9iI2RteXRybw", "verified": true}, {"owner": "sangam", "fingerprint": "ed25519:c2FuZ2FtI2tleQ", "verified": false}, {"owner": "ernesto", "fingerprint": "ed25519:ZXJuZXN0byNr", "verified": true}]"#)
+            default: (404, "{}")
+            }
+        }
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [RunnerStubProtocol.self] + (configuration.protocolClasses ?? [])
+        SphereServer.session = URLSession(configuration: configuration, delegate: NoRedirects(), delegateQueue: nil)
+
+        let model = model()
+        model.feed.stageAlerts(following: obid.runner)
+        let state = ChatState(defaults: .scratch)
+        if screen == "panel" { state.section = .sphere } else { state.openSettings(.sphere) }
+        try await shoot("mac-sphere-members-\(screen)", model: model, state: state)
+    }
+
+    /// Your name and picture: the sheet the account menu's name opens, then Home with them, the
+    /// picture at the icon strip's foot. On a profile of the test's own, never the Mac's.
+    @Test func yourNameAndPicture() async throws {
+        let before = Profile.shared
+        let file = URL(filePath: NSTemporaryDirectory()).appending(path: "profile-\(UUID().uuidString)")
+        defer { Profile.shared = before; try? FileManager.default.removeItem(at: file) }
+        Profile.shared = Profile(defaults: .scratch, file: file)
+        let picture = NSImage(size: NSSize(width: 256, height: 256), flipped: false) { rect in
+            NSGradient(colors: [.systemOrange, .systemPink, .systemPurple])?.draw(in: rect, angle: 60)
+            return true
+        }
+        try Profile.shared.save(name: "Dmytro Kovalenko", picture: picture)
+
+        let sheet = NSWindow(contentRect: .zero, styleMask: [.borderless], backing: .buffered, defer: false)
+        sheet.isReleasedWhenClosed = false
+        sheet.appearance = NSAppearance(named: .darkAqua)
+        let view = NSHostingView(rootView: ProfileSheet(close: {}))
+        sheet.contentView = view
+        sheet.setContentSize(view.fittingSize)
+        sheet.setFrameOrigin(NSPoint(x: 40, y: 40))
+        sheet.orderFrontRegardless()
+        try await Task.sleep(for: .milliseconds(800))
+        try await save("mac-profile-sheet", window: sheet)
+        sheet.close()
+
+        try await shoot("mac-profile-home", model: model(), state: ChatState(defaults: .scratch))
     }
 
     @Test func homeWithThePanelClosed() async throws {

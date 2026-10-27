@@ -853,7 +853,9 @@ fn oby_check_apple_waits_for_the_mac_and_prints_compilers_errors_and_failing_tes
         &obid,
         "POST",
         "/v1/jobs",
-        Some(&json!({"job":{"repo":"obi-e2e/fixture-app","kind":"investigate","task":"SLEEP"}})),
+        Some(
+            &json!({"job":{"repo":"obi-e2e/fixture-app","kind":"investigate","task":"SLEEP APPLECHECK"}}),
+        ),
     );
     assert_eq!(created.status, 201, "{}", created.text);
     let job_id = created.body["id"].as_str().unwrap();
@@ -902,13 +904,36 @@ fn oby_check_apple_waits_for_the_mac_and_prints_compilers_errors_and_failing_tes
         );
         std::thread::sleep(Duration::from_millis(25));
     };
+    // On Linux the agent's box reaches obid at slirp4netns's host alias, not its own loopback.
+    let host = if cfg!(target_os = "linux") {
+        "10.0.2.2"
+    } else {
+        "127.0.0.1"
+    };
     assert!(
         agent_env["url"]
             .as_str()
             .unwrap()
-            .starts_with("http://127.0.0.1:")
+            .starts_with(&format!("http://{host}:")),
+        "{agent_env}"
     );
     assert_eq!(agent_env["token"], token);
+    // The agent asked from inside its box, as `oby-check apple` does, and was let in.
+    let asked_path = env_path.with_file_name("apple-check-asked.json");
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let from_the_box = loop {
+        if let Ok(bytes) = std::fs::read(&asked_path)
+            && let Ok(value) = serde_json::from_slice::<Value>(&bytes)
+        {
+            break value;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the agent didn't ask for its Apple check"
+        );
+        std::thread::sleep(Duration::from_millis(25));
+    };
+    assert_eq!(from_the_box["status"], 200, "{from_the_box}");
     let asked = call_with_token(&obid, token, "POST", "/v1/agent/apple-check", None);
     assert_eq!(asked.status, 200, "{}", asked.text);
     assert_eq!(asked.body["check"]["kind"], "apple");

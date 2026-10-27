@@ -195,6 +195,8 @@ pub async fn fetch(
     // The disk must hold all of it, compressed and unpacked, and SPARE more: sizes from the pin.
     let total = download_size(pin);
     let unpacked: u64 = FILES.iter().filter_map(|f| size_of(pin, f)).sum();
+    // The cast is a no-op on Linux, where fsblkcnt_t is u64; macOS's is u32.
+    #[allow(clippy::unnecessary_cast)]
     let free = nix::sys::statvfs::statvfs(dir)
         .ok()
         .map(|s| (s.blocks_available() as u64).saturating_mul(s.fragment_size()));

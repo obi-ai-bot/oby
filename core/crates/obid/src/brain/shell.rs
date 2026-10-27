@@ -371,12 +371,16 @@ fn system_program_on(name: &str, path: &std::ffi::OsStr) -> bool {
     else {
         return false;
     };
+    // Where it's found and what it really is must both be the system's, not necessarily under the
+    // same folder: on Linux with a merged /usr, /bin/cat is a link to /usr/bin/cat.
+    let system = |p: &Path| {
+        SYSTEM_SOFTWARE
+            .iter()
+            .any(|s| p.to_string_lossy().starts_with(s))
+    };
     found.is_absolute()
-        && std::fs::canonicalize(&found).is_ok_and(|real| {
-            SYSTEM_SOFTWARE.iter().any(|s| {
-                real.to_string_lossy().starts_with(s) && found.to_string_lossy().starts_with(s)
-            })
-        })
+        && system(&found)
+        && std::fs::canonicalize(&found).is_ok_and(|real| system(&real))
 }
 
 /// Whether one simple command only reads: a program [`read_options`] names, as its first word (no

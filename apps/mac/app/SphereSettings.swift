@@ -293,11 +293,11 @@ struct SphereSettingsView: View {
         // comes with the member's own page (docs/obysphere.md, step 5).
         SetGroup("Members · \(sphere.memberCount)",
                  footer: sphere.membership?.lastError.map { "Last problem with the Obysphere: \($0)" } ?? Self.compareNote(sphere.members)) {
-            SetRow("\(NSFullUserName()) (you)", about: [sphere.owner, sphere.ownFingerprint.map { "your key \($0)" }].compactMap(\.self).joined(separator: " · ")) {
+            SetRow("\(Profile.shared.name) (you)", about: [sphere.owner, sphere.ownFingerprint.map { "your key \($0)" }].compactMap(\.self).joined(separator: " · ")) {
                 role(sphere.owner ?? "", you: true)
             }
             ForEach(sphere.members) { member in
-                SetRow(SpherePanel.shown(member.owner), about: Self.memberAbout(member)) {
+                SetRow(SpherePanel.shown(member), about: Self.memberAbout(member)) {
                     if member.changedTo != nil {
                         Button("Compare new key") { comparing = member }.buttonStyle(.set)
                     } else {

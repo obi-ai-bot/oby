@@ -393,6 +393,10 @@ fn finish(end: &End, done: &[String], looked: &[String]) -> Talk {
 /// What a turn says when no brain answered: which brain and how, what the turn did or looked
 /// at first, and what the owner can do.
 fn unanswered(failed: &Unanswered, done: &[String], looked: &[String]) -> Talk {
+    // Trying again can't help: what to send instead.
+    if failed.too_long {
+        return Talk::reply(super::TOO_LONG);
+    }
     let why = failed.why();
     Talk::reply(if !done.is_empty() {
         format!(
