@@ -346,7 +346,7 @@ const BUILTINS: &[&str] = &[
 
 /// Whether `name`, as bash finds it on the box's `PATH`, is the system's software. A name with a
 /// folder in it (`./cat`, `bin/git`) never is: the agent could have written it.
-fn system_program(name: &str) -> bool {
+pub(crate) fn system_program(name: &str) -> bool {
     system_program_on(name, &crate::process::tools_path())
 }
 
