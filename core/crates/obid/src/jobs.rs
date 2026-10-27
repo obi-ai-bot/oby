@@ -6346,14 +6346,18 @@ impl Jobs {
         // Its builds take what admission leaves them next to the other jobs (crate::meter).
         extra.extend(self.build_env(&job.id, false));
         if let Some(token) = self.apple_check_token(&job.id) {
-            extra.push((
-                "OBY_CHECK_URL",
-                self.api_url
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .clone()
-                    .into(),
-            ));
+            let url = self
+                .api_url
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone();
+            // On Linux the agent's box (bubblewrap) has a loopback of its own: it reaches obid at
+            // slirp4netns's host alias, which obid admits for this route (crate::api::gate).
+            let url = match url.rsplit_once(':') {
+                Some((_, port)) if cfg!(target_os = "linux") => format!("http://10.0.2.2:{port}"),
+                _ => url,
+            };
+            extra.push(("OBY_CHECK_URL", url.into()));
             crate::secrets::known().learn(&format!("job {} check token", job.id), &token);
             extra.push(("OBY_CHECK_TOKEN", token.into()));
         }

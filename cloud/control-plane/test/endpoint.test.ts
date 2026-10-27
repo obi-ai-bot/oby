@@ -152,6 +152,7 @@ describe("what a tunnel may cost", () => {
     expect((await app.call(mac.mac, "POST", path)).status).toBe(201);
   });
 
+  // Dozens of set-ups through Miniflare: 7.2 s on a GitHub-hosted Linux runner, past vitest's 5 s default.
   it("Google accounts under one registrable domain share its limits, subdomains too: 20 Macs set up a day and 25 live endpoints", async () => {
     const app = testApp();
     const path = "/v1/installations/self/endpoint";
@@ -175,7 +176,7 @@ describe("what a tunnel may cost", () => {
     const full = await app.call(mac, "POST", path, undefined, { "CF-Connecting-IP": "10.30.0.1" });
     expect(full.status).toBe(409);
     expect(full.body.error).toBe("Accounts at cheap.example have 25 Macs with remote access on already. Forget one first.");
-  });
+  }, 30_000);
 
   it("two universities under ac.in don't share a bucket", async () => {
     const app = testApp();

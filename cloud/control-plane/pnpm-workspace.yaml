@@ -1,0 +1,5 @@
+# The packages whose install scripts may run: each checks that its platform binary is in place.
+# pnpm 11 stops `pnpm install` on any other dependency's build script it wasn't told about.
+allowBuilds:
+  esbuild: true
+  workerd: true
