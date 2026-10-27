@@ -1884,7 +1884,8 @@ button.sphere-logo-badge:hover { color: var(--ink); background: #3a3a39; }
 .splash-face { animation: splash-in 400ms var(--warm) both; }
 .splash-line {
   margin: 0; max-width: 440px; color: var(--muted); font-size: var(--text-md); line-height: 20px;
-  text-align: center; white-space: pre-line; user-select: text; animation: splash-in 400ms var(--warm) both;
+  text-align: center; white-space: pre-line; user-select: text; -webkit-app-region: no-drag;
+  animation: splash-in 400ms var(--warm) both;
 }
 .splash-line.is-failed { color: var(--text); }
 .splash .set-button { -webkit-app-region: no-drag; }

@@ -262,8 +262,9 @@ function down(mine: number, problem: string, why?: Live['why']) {
   generation++;
   unfollow?.();
   set({ connection: 'down', problem, why, working: {}, words: {}, pace: {} });
-  // before the first load (the splash, main.tsx) every second, so the chat comes soon after obid
-  reconnecting = setTimeout(connect, state.status ? Math.min(10_000, 1000 * 2 ** retry++) : 1000);
+  // every second while main starts obid before the first load (the splash, main.tsx), so the chat
+  // comes soon after it; otherwise backing off, as a failure won't clear that fast
+  reconnecting = setTimeout(connect, state.status || why !== 'waiting' ? Math.min(10_000, 1000 * 2 ** retry++) : 1000);
 }
 
 async function sync(mine: number, pending: Event[], onSynced: () => void) {

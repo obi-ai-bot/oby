@@ -33,19 +33,19 @@ function readOwn(name: string, secret: boolean): string | null {
 // Read again on every call: obid writes a new one when it's reset.
 const token = () => readOwn('api-token', true);
 
-// Why obid isn't answering: why this app's own couldn't start (startObid), else obid's own reason
-// (home/last-start-error, written by a start that failed and removed once it listens, #1493),
-// else what the connection said. why: 'approval' when macOS waits for the person's approval,
-// 'waiting' when nothing's wrong yet (this app is still starting obid): the page says no reason then.
+// Why obid isn't answering: why this app's own couldn't start (startObid); else, while startObid
+// still works, nothing yet ('waiting': the page says no reason, and an old error isn't one); else
+// obid's own reason (home/last-start-error, written by a start that failed and removed once it
+// listens, #1493); else what the connection said. 'approval': macOS waits for the person's.
 function reason(error?: unknown): Answer {
   // whatever listens now gets checked again before the next call
   mineUntil = 0;
   if (problem) return { status: 0, text: problem, ...(problem === APPROVAL ? { why: 'approval' } : {}) };
+  if (starting) return { status: 0, text: 'Oby’s engine is starting.', why: 'waiting' };
   const own = readOwn('last-start-error', false);
   if (own) return { status: 0, text: own };
   const cause = (error as { cause?: { code?: string; message?: string } })?.cause;
-  const text = !error || cause?.code === 'ECONNREFUSED' ? 'Nothing answers on 127.0.0.1:7777: obid isn’t running.' : cause?.message ?? (error instanceof Error ? error.message : String(error));
-  return { status: 0, text, ...(starting ? { why: 'waiting' } : {}) };
+  return { status: 0, text: !error || cause?.code === 'ECONNREFUSED' ? 'Nothing answers on 127.0.0.1:7777: obid isn’t running.' : cause?.message ?? (error instanceof Error ? error.message : String(error)) };
 }
 
 // Who listens on 127.0.0.1:7777: launchd's obid of this user's ('mine': this app's agent or its
@@ -262,10 +262,12 @@ export async function startObid() {
     // registered but not running: one macOS kept from an older signature, registered again once
     if (status() === 'enabled') register(false);
     register(true);
+    // until it's approved (checked every 2 s, in this process), then it starts as below
     if (status() === 'requires-approval') {
       problem = APPROVAL;
       void openLoginItems();
-      return;
+      while (status() === 'requires-approval') await sleep(2000);
+      problem = null;
     }
     // a first start can take a while (its configuration, the security probes) while it runs
     const started = async () => await answers(10_000) || (field(await launchd(), 'state') === 'running' && await answers(60_000));
