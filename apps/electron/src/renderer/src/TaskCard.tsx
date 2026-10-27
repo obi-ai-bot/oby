@@ -203,7 +203,8 @@ export function AskBlock({ task, inChat = false, onAnswer }: { task: Pick<Task, 
           {ask.options.map((o, i) => (
             <button
               key={o}
-              className={`tc-option${i === (ask.recommended ?? 0) ? ' is-primary' : ''}${o === 'Deny' ? ' is-danger' : ''}`}
+              // a Confirm looks preferred only when Oby recommends it (obid never does)
+              className={`tc-option${i === (ask.kind === 'confirm' ? ask.recommended : ask.recommended ?? 0) ? ' is-primary' : ''}${o === 'Deny' ? ' is-danger' : ''}`}
               onClick={() => pick(o)}
             >
               {o}

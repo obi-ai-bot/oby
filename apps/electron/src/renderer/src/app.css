@@ -331,8 +331,8 @@ button.crumb:hover { color: var(--ink); background: var(--hover); }
 .group-empty { margin: 8px 4px; color: var(--muted); font-size: var(--text-base); }
 /* To do (Review PR, Issues): GitHub's items by board column, each column's name over its cards */
 .group-board { display: contents; }
-.group-board-name { margin: 8px 4px 0; color: var(--muted); font-size: var(--text-sm); font-weight: 500; }
-.tc-column { display: inline-block; margin-left: 8px; padding: 2px 8px; border-radius: var(--radius-pill); background: var(--hover); color: var(--text); font-size: var(--text-sm); line-height: 16px; }
+.group-board-name { margin: 8px 4px 0; color: var(--muted); font-size: var(--text-sm); font-weight: 500; overflow-wrap: anywhere; }
+.tc-column { display: inline-block; margin-left: 8px; padding: 2px 8px; border-radius: var(--radius-pill); background: var(--hover); color: var(--text); font-size: var(--text-sm); line-height: 16px; overflow-wrap: anywhere; }
 /* switching tabs: the new cards come in right away, a little closer together */
 .group-layer.is-switched .group-cards .rise { animation-delay: calc((min(var(--i), 8) - 2) * 40ms); }
 .card {
@@ -404,8 +404,8 @@ button.crumb:hover { color: var(--ink); background: var(--hover); }
 .tc-ask { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--divider); }
 .tc-ask-kind { color: var(--needs); font-size: var(--text-sm); font-weight: 500; }
 .tc-ask-kind.is-failed { color: var(--danger); }
-.tc-ask-head { margin: 4px 0 0; color: var(--ink); font-size: var(--text-base); font-weight: 500; line-height: 20px; }
-.tc-ask-text { margin: 4px 0 0; color: var(--text); font-size: var(--text-md); line-height: 19px; }
+.tc-ask-head { margin: 4px 0 0; color: var(--ink); font-size: var(--text-base); font-weight: 500; line-height: 20px; overflow-wrap: anywhere; }
+.tc-ask-text { margin: 4px 0 0; color: var(--text); font-size: var(--text-md); line-height: 19px; overflow-wrap: anywhere; }
 .tc-code {
   margin: 10px 0 0;
   padding: 10px 12px;

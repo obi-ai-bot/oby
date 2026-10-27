@@ -3,7 +3,7 @@ import { useScrollThumb } from './useScrollThumb';
 import TaskCard from './TaskCard';
 import { BrandMark, BRANDS } from './brands';
 import { ago, ASK_LABEL, type GitHubItem } from './mock';
-import { columnsOf, hasToDo, openOnGitHub, putOff, startGitHub, tasksIn, toDoOf, useTasks, type Tab, type TaskType } from './tasks';
+import { columnsOf, gitHubError, hasToDo, openOnGitHub, putOff, startGitHub, tasksIn, toDoOf, useTasks, type Tab, type TaskType } from './tasks';
 
 // how long the way out takes (the sink animation in app.css)
 const LEAVE_MS = 220;
@@ -114,6 +114,8 @@ export default function GroupView({ group, tab: startTab, leaving, covered = fal
           </div>
           {/* keyed by tab, so switching brings the new cards in fresh */}
           <div key={tab} className="group-cards" role="tabpanel">
+            {/* why GitHub's work couldn't be read last (obid's words); what was read before stays */}
+            {tab === 'todo' && gitHubError() && <p className="group-empty rise" style={{ '--i': 2 } as React.CSSProperties}>{gitHubError()}</p>}
             {columns.map((c) => (
               <div key={`${c.project ?? ''}/${c.name ?? ''}`} className="group-board">
                 {named && <h2 className="group-board-name rise" style={{ '--i': at++ } as React.CSSProperties}>{c.name ?? 'Not on a board'}</h2>}

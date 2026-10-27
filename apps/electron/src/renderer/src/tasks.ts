@@ -1,6 +1,6 @@
 import { useSyncExternalStore } from 'react';
 import { BRANDS, type Brand } from './brands';
-import { AGENTS, ARCHIVE, GITHUB_WORK, JOBS, MEMORY_WAIT, hasAttachments, type Archived, type Ask, type Attachments, type GitHubItem, type Job, type Message } from './mock';
+import { AGENTS, ARCHIVE, GITHUB_WORK, JOBS, MEMORY_WAIT, hasAttachments, type Archived, type Ask, type Attachments, type GitHubItem, type Job, type Message, type Offer } from './mock';
 import { streamWords, wait } from './stream';
 import { everything, onObid } from './lean';
 import * as live from './live';
@@ -46,14 +46,19 @@ const subscribe = (l: () => void) => { listeners.add(l); return () => { listener
 // every task; components that call it re-render when one is added or opened
 export const useTasks = () => useSyncExternalStore(subscribe, () => tasks);
 // Something obid asks the owner with no task to show it on (live.ts): a GitHub offer, a Confirm,
-// work Oby offers to start. Home's stack shows it with the tasks that need you, answered as theirs
-// are (answer); url: its page on GitHub
-export type Asking = { id: string; title: string; who?: string; brand?: Brand; url?: string; ask: Ask };
+// a failure, answered as a task's decision is (answer); or work Oby offers to start, as OfferCard
+// shows it, with the conversation it was offered in (talk). Home's stack shows them with the tasks
+// that need you. url: its page on GitHub
+export type Asking = { id: string; title: string; who?: string; brand?: Brand; url?: string; talk?: string }
+  & ({ ask: Ask; offer?: undefined } | { offer: Offer; ask?: undefined });
 let asks: Asking[] = [];
 export const asksWaiting = () => asks;
-// obid's jobs, in place of the mock's (live.ts), with what it asks and GitHub's work
-export const replaceTasks = (next: Task[], more?: { asks: Asking[]; work: GitHubItem[] }) => {
-  if (more) { asks = more.asks; waiting = more.work; }
+// obid's jobs, in place of the mock's (live.ts), with what it asks and GitHub's work (error: why
+// the last read of it failed)
+let workError: string | undefined;
+export const gitHubError = () => workError;
+export const replaceTasks = (next: Task[], more?: { asks: Asking[]; work: GitHubItem[]; error?: string }) => {
+  if (more) { asks = more.asks; waiting = more.work; workError = more.error; }
   set(next);
 };
 // the conversation whose words started it, as obid says (Job.conversation)
