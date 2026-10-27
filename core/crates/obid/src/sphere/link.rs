@@ -121,6 +121,11 @@ struct State {
     /// Every envelope id obid has handled: the messages of its exchanges, and the ones it dropped.
     seen: HashSet<String>,
     dropped: Vec<String>,
+    /// Requests the Council's convener sent whose post didn't answer (`504`): the envelope as
+    /// signed, by its id, so that a repeated call posts the same bytes again (an Obysphere answers a
+    /// byte-identical envelope with its first receipt, sphere-api.md section 6.1, check 8) rather
+    /// than send the seat a second request. Kept while obid runs.
+    unconfirmed: HashMap<String, Value>,
 }
 
 /// `sealing` in `GET /v1/obid/sphere`: `on` once the card carries obid's seal key; `card_needed`
@@ -698,6 +703,7 @@ impl Link {
             all_self_answers: Vec::new(),
             seen,
             dropped: Vec::new(),
+            unconfirmed: HashMap::new(),
         };
         let link = Arc::new(Link {
             config,
@@ -4165,6 +4171,70 @@ impl Link {
             .map(|x| (x.to_json(), x.request["body"].clone(), x.peer_owner.clone()))
     }
 
+    /// The owners of every member this Obi sent a `review_request` for `repo` (ignoring ASCII case) at
+    /// `head_sha` expiring at `expires_at`: the seats of one Council motion so far, declined or not.
+    pub(crate) fn motion_owners(
+        &self,
+        repo: &str,
+        head_sha: &str,
+        expires_at: i64,
+    ) -> HashSet<String> {
+        let at = time::format(expires_at);
+        self.lock()
+            .exchanges
+            .values()
+            .filter(|x| {
+                x.direction == "outgoing"
+                    && x.kind == "review_request"
+                    && x.request["expires_at"] == at.as_str()
+                    && x.request["body"]["head_sha"] == head_sha
+                    && x.request["body"]["repo"]
+                        .as_str()
+                        .is_some_and(|r| r.eq_ignore_ascii_case(repo))
+            })
+            .filter_map(|x| x.peer_owner.clone())
+            .collect()
+    }
+
+    /// Posts again, byte for byte, a request whose post didn't answer ([`Link::send_scanned`] with an
+    /// instant expiry): `None` when `cid` isn't one; otherwise the exchange once the Obysphere has it,
+    /// or the error again.
+    pub(crate) async fn resend_unconfirmed(&self, cid: &str) -> Option<Result<Value, ApiError>> {
+        let envelope = self.lock().unconfirmed.get(cid).cloned()?;
+        let sent = match self.token().await {
+            Ok(token) => match self.client() {
+                Ok(client) => client.send(&token, &envelope).await,
+                Err(e) => Err(e),
+            },
+            Err(e) => Err(e),
+        };
+        Some(match sent {
+            Ok(sent) => {
+                self.keep_receipt(&sent);
+                self.lock().unconfirmed.remove(cid);
+                self.lock().seen.insert(cid.to_owned());
+                let updated = self.update_exchange(cid, |x| {
+                    x.error = None;
+                    let kept = x.request.clone();
+                    x.messages.insert(
+                        0,
+                        Message {
+                            direction: "sent".into(),
+                            seq: Some(sent.seq),
+                            at: sent.recorded_at.clone(),
+                            envelope: kept,
+                        },
+                    );
+                });
+                Ok(updated.map(|x| x.to_json()).unwrap_or(Value::Null))
+            }
+            Err(e) => {
+                self.refused_token(&e);
+                Err(from_client(&e))
+            }
+        })
+    }
+
     /// Sends one request already scanned ([`Link::scan_outgoing`]): sealed for the receiver when its
     /// card has a seal key, signed, checked as the receiver will check it, and kept as an outgoing
     /// exchange. `expiry` is a lifetime from now, or an instant (the Council's convener gives every seat
@@ -4317,6 +4387,18 @@ impl Link {
                     return Ok(updated.unwrap_or(exchange).to_json());
                 }
                 Err(e) => {
+                    // A post that didn't answer may have been recorded. For an instant expiry (the
+                    // Council's convener), the exchange and the signed envelope stay, so a repeated
+                    // call posts the same bytes again rather than send the seat a second request.
+                    if matches!(e, ClientError::Unreachable(_)) && matches!(expiry, Expiry::At(_)) {
+                        self.lock()
+                            .unconfirmed
+                            .insert(cid.clone(), envelope.clone());
+                        self.update_exchange(&cid, |x| {
+                            x.error = Some(format!("Not confirmed yet: {e}"));
+                        });
+                        return Err(from_client(&e));
+                    }
                     self.lock().exchanges.remove(&cid);
                     self.exchanges.remove(&cid);
                     // The Sphere kept nothing: `to`'s card gained a seal key, or another, since the

@@ -2571,7 +2571,10 @@ async fn the_council_convener_sends_one_review_request_per_seat() {
     );
     assert_eq!(one_owner.status, 422, "{}", one_owner.text);
     assert!(one_owner.text.contains("same owner"), "{}", one_owner.text);
-    // Nor can a later call for the first motion seat maria's other agent: maria already sits.
+    // Nor can a later call for the first motion seat maria's other agent, alone or with others:
+    // maria already sits.
+    let alone = convene(json!({"seats": ["obi-maria-2"], "review": brief(), "expiresAt": at}));
+    assert_eq!(alone.status, 422, "{}", alone.text);
     let replacement =
         convene(json!({"seats": ["obi-maria", "obi-maria-2"], "review": brief(), "expiresAt": at}));
     assert_eq!(replacement.status, 422, "{}", replacement.text);
