@@ -10940,6 +10940,11 @@ fn own_sandbox_env(
         ("CLAUDE_SECURESTORAGE_CONFIG_DIR", storage.into_os_string()),
         ("GIT_CONFIG_NOSYSTEM", "1".into()),
         ("GIT_CONFIG_GLOBAL", "/dev/null".into()),
+        // And an empty credential helper on top of whatever the clone's settings say: in the
+        // environment, which nothing the agent writes changes for Claude Code's own git.
+        ("GIT_CONFIG_COUNT", "1".into()),
+        ("GIT_CONFIG_KEY_0", "credential.helper".into()),
+        ("GIT_CONFIG_VALUE_0", "".into()),
         ("GIT_DIR", admin.clone().into_os_string()),
         ("GIT_COMMON_DIR", common.clone().into_os_string()),
         ("GIT_WORK_TREE", spec.worktree.clone().into_os_string()),
@@ -10989,10 +10994,22 @@ fn own_sandbox_settings(spec: &Spec) -> Result<String, String> {
             "allowUnsandboxedCommands": false,
             "autoAllowBashIfSandboxed": false,
             "filesystem": {"denyRead": read, "allowWrite": write},
+            "network": {"deniedDomains": CODE_HOSTS},
         },
     })
     .to_string())
 }
+
+/// The code hosts a Claude Code run in its own sandbox never reaches from its commands, whatever
+/// it's allowed: only Publish pushes and opens pull requests (AGENTS.md, "Agents can't publish").
+const CODE_HOSTS: [&str; 6] = [
+    "github.com",
+    "*.github.com",
+    "gitlab.com",
+    "*.gitlab.com",
+    "bitbucket.org",
+    "*.bitbucket.org",
+];
 
 /// The name Claude Code gives its login in the macOS Keychain for a `CLAUDE_CONFIG_DIR` (none: its
 /// default `~/.claude`): `Claude Code-credentials`, then `-` and the first 8 hex digits of the
@@ -13584,8 +13601,8 @@ mod tests {
     /// Claude Code in its own sandbox (`claudeOwnSandbox`), run for real on this Mac's own login
     /// with the environment and settings a job's gets, for a job of an obid home under the
     /// person's: its commands can't read obid's API token (a decoy's, and the real one), reach the
-    /// Keychain (Claude Code's login there, obid's vault), get a password from git, write outside
-    /// the job, reach obid's API or start an app through LaunchServices; its Read tool can't read
+    /// Keychain (Claude Code's login there, obid's vault), get a password from git, push or call
+    /// `gh`, write outside the job, reach obid's API or start an app through LaunchServices; its Read tool can't read
     /// obid's home; and it still commits in its worktree. Every probe prints an exit code or a
     /// count, never what it read. `cargo test -p obid --lib own_sandbox_probes -- --ignored`.
     #[cfg(target_os = "macos")]
@@ -13704,6 +13721,9 @@ mod tests {
             "echo ok > probe.txt && git add probe.txt && git commit -qm probe; echo commit:$?".into(),
             "curl -s -m 5 -o probe-local.txt -w 'obid-api:%{http_code}\\n' http://127.0.0.1:7777/v1/status".into(),
             "open -g -a Calculator 2>/dev/null; echo open:$?".into(),
+            // A dry run: were everything else to fail, it still changes nothing on GitHub.
+            "git push --dry-run https://github.com/obi-ai-bot/oby.git HEAD:refs/heads/obid-own-sandbox-probe >/dev/null 2>&1; echo push:$?".into(),
+            "gh api user >/dev/null 2>&1; echo gh:$?".into(),
         ];
         // One script the model runs as it is, so no probe depends on its choosing to run it.
         let mut script = String::from(
@@ -13792,6 +13812,8 @@ mod tests {
             ("keychain:", "keychain:0"),
             ("vault:", "vault:0"),
             ("open:", "open:0"),
+            ("push:", "push:0"),
+            ("gh:", "gh:0"),
         ] {
             assert!(results.contains(said), "{said} didn't run: {results}");
             assert!(!results.contains(never), "{never}: {results}");
