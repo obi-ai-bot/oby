@@ -887,6 +887,9 @@ impl Jobs {
         // some other way (a crash, a kill, a stop that didn't finish), and a job it ran counts it.
         let clean = config.home.join(STOPPED_CLEANLY);
         let stopped_cleanly = std::fs::remove_file(&clean).is_ok();
+        // What its agents and checks it left running end before any job is picked up again, so
+        // none goes on writing beside the job's next run (crate::groups).
+        crate::groups::reap(&crate::groups::dir(&config.home));
         let now = obi_protocol::time::now();
         let mut jobs = HashMap::new();
         for mut job in store.load_all() {
@@ -5373,6 +5376,11 @@ impl Jobs {
         spec.network = false;
         spec.read_only.clear();
         let env = process::sandbox_env(&process::tools_path(), &temp, &spec.git_env());
+        // Recorded, but never the worktree's lock: it runs beside the job's agent.
+        let group = crate::groups::Recording {
+            git_admin: None,
+            ..self.recording(id, &spec)
+        };
         sandboxed_output(
             &sandbox.wrap(&spec, argv),
             &env,
@@ -5380,6 +5388,7 @@ impl Jobs {
             input,
             limit,
             max,
+            Some(&group),
         )
         .await
     }
@@ -5978,6 +5987,15 @@ impl Jobs {
         }
     }
 
+    /// Where a run of job `id` in `spec`'s worktree records its process group (crate::groups).
+    fn recording(&self, id: &str, spec: &Spec) -> crate::groups::Recording {
+        crate::groups::Recording {
+            records: crate::groups::dir(&self.config.home),
+            job: id.to_owned(),
+            git_admin: spec.git_admin.clone(),
+        }
+    }
+
     pub(crate) fn agent_bin(&self, tool: Tool) -> Option<PathBuf> {
         self.agent_config(tool)
             .and_then(|agent| process::resolve_bin(&agent.bin))
@@ -6152,6 +6170,7 @@ impl Jobs {
         }
         Ok(Launch {
             own_sandbox: own,
+            group: Some(self.recording(&job.id, &spec)),
             argv: if own {
                 sandbox.unboxed(&argv)
             } else {
@@ -6341,6 +6360,7 @@ impl Jobs {
         ];
         Ok(Launch {
             own_sandbox: false,
+            group: None,
             argv: sandbox.wrap_command(&spec, &argv),
             env: process::sandbox_env(&process::tools_path(), temp, &git),
             cwd: room.to_path_buf(),
@@ -6479,6 +6499,7 @@ impl Jobs {
         };
         Ok(Launch {
             own_sandbox: false,
+            group: None,
             argv,
             env: {
                 if tool == Tool::Claude {
@@ -7073,6 +7094,7 @@ impl Jobs {
         let mut env = process::sandbox_env(&process::tools_path(), &spec.temp, &extra);
         declared.apply(&mut env);
         let secrets = declared.secrets();
+        let group = self.recording(id, &spec);
         let running = run_check(
             &argv,
             &env,
@@ -7081,6 +7103,7 @@ impl Jobs {
             signal.clone(),
             Some(watch.clone()),
             Some(&secrets),
+            Some(&group),
         );
         tokio::pin!(running);
         let mut tick = tokio::time::interval(CHECK_TICK);
@@ -10929,7 +10952,7 @@ pub fn claude_accounts(claude: &crate::config::Agent) -> Vec<crate::config::Acco
 }
 
 /// What a sandboxed command (`argv`, wrapped already) prints, with `input` on its stdin; why not,
-/// when it fails.
+/// when it fails. A job's is recorded while it runs (`group`, crate::groups).
 async fn sandboxed_output(
     argv: &[OsString],
     env: &[(OsString, OsString)],
@@ -10937,6 +10960,7 @@ async fn sandboxed_output(
     input: Option<Vec<u8>>,
     limit: Duration,
     max: usize,
+    group: Option<&crate::groups::Recording>,
 ) -> Result<Vec<u8>, String> {
     clear_recorded_exit(env);
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -10955,6 +10979,7 @@ async fn sandboxed_output(
         .kill_on_drop(true)
         .spawn()
         .map_err(|e| format!("obid couldn't start git in the job's sandbox: {e}"))?;
+    let _recorded = group.map(|group| crate::groups::record(group, child.id().unwrap_or(0)));
     if let (Some(input), Some(mut stdin)) = (input, child.stdin.take()) {
         tokio::spawn(async move {
             let _ = stdin.write_all(&input).await;
@@ -13689,6 +13714,7 @@ pub struct CheckRun {
 /// `secrets` (the values its repository declares, crate::secretspec) are taken out of its output
 /// before it is cut to size or kept: when only its end was kept, the first line, which a value may
 /// have been cut in, goes too.
+#[allow(clippy::too_many_arguments)]
 pub async fn run_check(
     argv: &[OsString],
     env: &[(OsString, OsString)],
@@ -13697,6 +13723,7 @@ pub async fn run_check(
     mut signal: watch::Receiver<Signal>,
     watch: Option<Arc<Mutex<crate::facts::CheckWatch>>>,
     secrets: Option<&crate::secrets::Secrets>,
+    group: Option<&crate::groups::Recording>,
 ) -> std::io::Result<CheckRun> {
     let (reader, writer) = std::io::pipe()?;
     clear_recorded_exit(env);
@@ -13713,6 +13740,11 @@ pub async fn run_check(
         .stdout(writer.try_clone()?)
         .stderr(writer)
         .kill_on_drop(true);
+    if let Some(group) = group {
+        crate::groups::take(group)
+            .await
+            .map_err(std::io::Error::other)?;
+    }
     // No process group set here: the command line is the job sandbox's (`Sandbox::wrap`), whose
     // first program starts a session of its own, and so a process group whose id is the child's.
     let mut child = command.spawn()?;
@@ -13720,6 +13752,7 @@ pub async fn run_check(
     drop(command);
     let pgid = child.id().unwrap_or(0);
     let _metered = crate::meter::check_root(pgid, cwd);
+    let _recorded = group.map(|group| crate::groups::record(group, pgid));
     // Dropped part way (its job's task panicked, #914), what it started ends too, not only the
     // first process `kill_on_drop` ends.
     struct Group(u32);
@@ -14909,7 +14942,16 @@ mod tests {
             let argv = sh(script);
             let dir = dir.clone();
             async move {
-                sandboxed_output(&argv, &[], &dir, None, Duration::from_secs(limit), max).await
+                sandboxed_output(
+                    &argv,
+                    &[],
+                    &dir,
+                    None,
+                    Duration::from_secs(limit),
+                    max,
+                    None,
+                )
+                .await
             }
         };
         assert_eq!(run("printf hello", 10, 5).await.unwrap(), b"hello");

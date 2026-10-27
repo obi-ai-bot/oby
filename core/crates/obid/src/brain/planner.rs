@@ -286,6 +286,7 @@ impl ClaudeBrain {
             .map_err(Failure::Failed)?;
             let launch = Launch {
                 own_sandbox: false,
+                group: None,
                 argv: std::iter::once(self.bin.clone().into_os_string())
                     .chain(flags)
                     .collect(),

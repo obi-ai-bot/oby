@@ -8,6 +8,8 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
@@ -3897,6 +3899,113 @@ fn the_api_lifts_and_restores_the_reserve() {
     ] {
         assert_eq!(lift(&obid, body).status, status, "{body}");
     }
+}
+
+/// obid killed while a job's agent runs (a crash, a SIGKILL) leaves the agent running, still
+/// writing in the job's worktree; the next start ends it, with its group, before the job runs
+/// again, so only the new run's agent writes there (crate::groups).
+#[test]
+fn a_restart_ends_the_agent_a_killed_obid_left_running() {
+    let folder = Folder::new("orphan");
+    let remote = fixture(&folder.0.join("fixture"));
+    let config = config(&folder.0, &remote);
+    let mut obid = start(&folder.0, &config);
+    let id = post_job(
+        &obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "research", "task": "SLEEP"}),
+    )
+    .body["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    beat(&obid, &id);
+    // Its group is recorded in obid's home, and holds the lock in the worktree's own git folder.
+    let records = obid.home.join("jobs/groups");
+    let recorded = |records: &Path| -> Vec<Value> {
+        std::fs::read_dir(records)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter_map(|e| serde_json::from_slice(&std::fs::read(e.path()).ok()?).ok())
+            .collect()
+    };
+    let old = recorded(&records);
+    assert_eq!(old.len(), 1, "{old:?}");
+    assert_eq!(old[0]["job"], id.as_str());
+    let pgid = old[0]["pgid"].as_i64().unwrap() as i32;
+    let worktree = obid.home.join("worktrees").join(&id);
+    let admin = Command::new("git")
+        .args(["rev-parse", "--absolute-git-dir"])
+        .current_dir(&worktree)
+        .output()
+        .unwrap();
+    let admin = PathBuf::from(String::from_utf8(admin.stdout).unwrap().trim());
+    let lock: Value =
+        serde_json::from_slice(&std::fs::read(admin.join("obid-run")).unwrap()).unwrap();
+    assert_eq!(lock, old[0]);
+
+    obid.child.kill().unwrap();
+    obid.child.wait().unwrap();
+    assert!(!stopped_beating(&obid, &id), "the agent outlived obid");
+    // Every count the worktree's beat shows from now until well into the next run.
+    let seeing = Arc::new(AtomicBool::new(true));
+    let seen: Arc<Mutex<Vec<u64>>> = Arc::default();
+    let watcher = {
+        let (seeing, seen, path) = (seeing.clone(), seen.clone(), worktree.join(".obi/beat"));
+        std::thread::spawn(move || {
+            while seeing.load(Ordering::Relaxed) {
+                let mut seen = seen.lock().unwrap();
+                if let Some(count) = std::fs::read_to_string(&path)
+                    .ok()
+                    .and_then(|t| t.trim().parse().ok())
+                    && seen.last() != Some(&count)
+                {
+                    seen.push(count);
+                }
+                drop(seen);
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        })
+    };
+    let restarts = || {
+        let seen = seen.lock().unwrap();
+        (
+            seen.windows(2).filter(|w| w[1] < w[0]).count(),
+            seen.clone(),
+        )
+    };
+    drop(obid);
+
+    let obid = start(&folder.0, &config);
+    let gone = Instant::now() + Duration::from_secs(10);
+    while nix::sys::signal::killpg(nix::unistd::Pid::from_raw(pgid), None).is_ok() {
+        assert!(Instant::now() < gone, "the old agent's group still runs");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    // The job runs again: a new group, recorded, and its agent's count starts again.
+    let again = Instant::now() + Duration::from_secs(30);
+    while recorded(&records).is_empty() || restarts().0 == 0 {
+        assert!(
+            Instant::now() < again,
+            "the job never ran again: {:?}",
+            restarts().1
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let new = recorded(&records);
+    assert!(
+        new.iter().all(|r| r["pgid"].as_i64() != Some(pgid as i64)),
+        "{new:?}"
+    );
+    std::thread::sleep(Duration::from_millis(1000));
+    seeing.store(false, Ordering::Relaxed);
+    watcher.join().unwrap();
+    // The old agent's count climbed until it ended, then the new run's started again once, and
+    // only climbs: two agents writing would take it down again and again.
+    let (restarts, seen) = restarts();
+    assert_eq!(restarts, 1, "{seen:?}");
+    let stopped = request(&obid, "POST", &format!("/v1/jobs/{id}/stop"), None);
+    assert_eq!(stopped.status, 200, "{}", stopped.text);
 }
 
 /// A Claude Code job's turns sum into its `usage` as their result lines report them, and it
