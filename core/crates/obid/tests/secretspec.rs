@@ -904,7 +904,7 @@ fn a_memory_found_in_someone_elses_words_gives_nothing() {
     );
 }
 
-/// The fake Claude Code, which waits when its task says `SLEEP`.
+/// The fake Claude Code (tests/agents/fake-claude).
 fn fake_claude() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/agents/fake-claude")
 }
