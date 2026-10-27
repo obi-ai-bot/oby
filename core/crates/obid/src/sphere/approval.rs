@@ -470,6 +470,8 @@ pub async fn code_host(
         let Some((org, slug)) = team.split_once('/').filter(|(o, t)| named(o) && named(t)) else {
             continue;
         };
+        // CODEOWNERS names a team in any case; GitHub's team slugs are lowercase.
+        let (org, slug) = (org.to_ascii_lowercase(), slug.to_ascii_lowercase());
         for login in candidates.iter().filter(|l| named(l)) {
             let path = format!("orgs/{org}/teams/{slug}/memberships/{login}");
             let said = crate::github::run(gh, &["api", &path]).await;

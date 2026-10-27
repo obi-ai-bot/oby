@@ -30,7 +30,8 @@
 #   permissions/<login>   what `gh api repos/<repo>/collaborators/<login>/permission` answers
 #               (login in lower case); without it, GitHub's 404
 #   teams/<org>-<team>   the team's members, a login a line, any case: `gh api orgs/<org>/teams/
-#               <team>/memberships/<login>` answers an active membership for them, else 404
+#               <team>/memberships/<login>` answers an active membership for them, else 404 (the
+#               file's name matched exactly, in any file system: GitHub's team slugs are lowercase)
 #   after-post/   when it exists, its files replace those above right after a review is posted
 #               (the pull request changing while obid approves)
 #   dismissals  one line per `gh api -X PUT …/dismissals`: its arguments
@@ -76,7 +77,7 @@ if [ -d "$work" ]; then
       exit 0 ;;
     "api orgs/"*)
       rest=${2#orgs/}; org=${rest%%/*}; team=${rest#*/teams/}; team=${team%%/*}; login=${2##*/}
-      if grep -qix "$login" "$work/teams/$org-$team" 2>/dev/null; then
+      if ls "$work/teams" 2>/dev/null | grep -qxF -- "$org-$team" && grep -qix -- "$login" "$work/teams/$org-$team"; then
         echo '{"state":"active","role":"member","url":"https://api.github.com/'"$2"'"}'; exit 0
       fi
       echo "gh: Not Found (HTTP 404)" >&2; exit 1 ;;
