@@ -59,6 +59,30 @@ pub struct CardFields<'a> {
     pub issued_at: &'a str,
     /// The Obi's seal key, its id and public key (protocol.md section 9.1), when it has one.
     pub seal: Option<(&'a str, &'a str)>,
+    /// The features it takes, and the runtime and vendors its owner declares (identity.md section
+    /// 2.3), when the card carries them.
+    pub runtime: Option<CardRuntime<'a>>,
+}
+
+/// A card's `features`, `runtime` and `vendors` (identity.md section 2.3): they come together with
+/// the feature `card_runtime`, which `features` always names.
+#[derive(Debug, Clone)]
+pub struct CardRuntime<'a> {
+    pub features: &'a [&'a str],
+    pub id: &'a str,
+    pub version: &'a str,
+    pub vendors: &'a [&'a str],
+}
+
+/// The feature a card's `features`, `runtime` and `vendors` come with (identity.md section 2.3).
+pub const CARD_RUNTIME: &str = "card_runtime";
+
+/// Whether `params` says its agent takes `feature`: its card lists it in `features`.
+pub fn lists_feature(params: &Map<String, Value>, feature: &str) -> bool {
+    params
+        .get("features")
+        .and_then(Value::as_array)
+        .is_some_and(|f| f.iter().any(|x| x == feature))
 }
 
 /// The agent card without signatures (identity.md 2): what the owner signs.
@@ -78,6 +102,11 @@ pub fn unsigned_card(fields: &CardFields<'_>) -> Map<String, Value> {
     if let Some((seal_key_id, seal_public_key)) = fields.seal {
         params["seal_key_id"] = json!(seal_key_id);
         params["seal_public_key"] = json!(seal_public_key);
+    }
+    if let Some(runtime) = &fields.runtime {
+        params["features"] = json!(runtime.features);
+        params["runtime"] = json!({"id": runtime.id, "version": runtime.version});
+        params["vendors"] = json!(runtime.vendors);
     }
     let card = json!({
         "protocolVersion": A2A_PROTOCOL_VERSION,
@@ -241,6 +270,7 @@ mod tests {
             card_seq: 1,
             issued_at: "2026-10-14T12:00:00Z",
             seal: None,
+            runtime: None,
         });
         assert!(unsigned_card_problems(&unsigned).is_empty());
         assert_eq!(
@@ -253,6 +283,64 @@ mod tests {
             bound_owner_key: Some(owner.public_key()),
         };
         card::verify(&signed, &context).unwrap();
+    }
+
+    #[test]
+    fn a_card_with_its_runtime_and_vendors_passes_and_one_without_features_doesnt() {
+        let owner = Keypair::from_seed_string("owner");
+        let obi = Keypair::from_seed_string("obi");
+        let accepts = vec!["review_request".to_owned()];
+        let (owner_key, key_id, public_key) = (owner.public_key(), obi.key_id(), obi.public_key());
+        let fields = |runtime| CardFields {
+            sphere_url: "http://127.0.0.1:8787",
+            sphere: "e2e",
+            obi_id: "obi-wellington",
+            owner: "wellington",
+            owner_key: &owner_key,
+            name: "Wellington's Oby",
+            description: DEFAULT_DESCRIPTION,
+            version: "0.3.0",
+            key_id: &key_id,
+            public_key: &public_key,
+            accepts: &accepts,
+            card_seq: 1,
+            issued_at: "2026-10-14T12:00:00Z",
+            seal: None,
+            runtime,
+        };
+        let unsigned = unsigned_card(&fields(Some(CardRuntime {
+            features: &[CARD_RUNTIME],
+            id: "oby",
+            version: "0.3.0",
+            vendors: &["anthropic"],
+        })));
+        assert!(
+            unsigned_card_problems(&unsigned).is_empty(),
+            "{:?}",
+            unsigned_card_problems(&unsigned)
+        );
+        let signed = card::sign(&unsigned, &owner).unwrap();
+        let params = card::params(&signed).unwrap();
+        assert!(lists_feature(params, CARD_RUNTIME));
+        assert_eq!(params["runtime"], json!({"id": "oby", "version": "0.3.0"}));
+        assert_eq!(params["vendors"], json!(["anthropic"]));
+        let context = card::Context {
+            now: time::parse("2026-10-14T12:00:00Z"),
+            bound_owner_key: Some(owner.public_key()),
+        };
+        card::verify(&signed, &context).unwrap();
+        // features must name card_runtime: the schema copy says so.
+        let wrong = unsigned_card(&fields(Some(CardRuntime {
+            features: &["some_later_feature"],
+            id: "oby",
+            version: "0.3.0",
+            vendors: &["anthropic"],
+        })));
+        assert!(!unsigned_card_problems(&wrong).is_empty());
+        assert!(!lists_feature(
+            card::params(&card::sign(&unsigned_card(&fields(None)), &owner).unwrap()).unwrap(),
+            CARD_RUNTIME
+        ));
     }
 
     fn delegation(owner: &Keypair, claims: Value) -> String {

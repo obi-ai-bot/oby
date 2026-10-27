@@ -227,6 +227,109 @@ fn card_cases() -> Vec<(String, Value)> {
         Some("card_invalid"),
         &context,
     );
+    // The card's features, runtime and vendors (identity.md section 2.3), behind card_runtime.
+    let runtime = json!({"features": ["card_runtime"], "runtime": {"id": "claude", "version": "2.1.0"}, "vendors": ["anthropic"]});
+    let with_runtime = |over: Value| {
+        let mut params = runtime.clone();
+        for (k, v) in over.as_object().unwrap() {
+            params[k] = v.clone();
+        }
+        with_seal(params)
+    };
+    let accepted: [(&str, Value); 5] = [
+        (
+            "valid-card-with-runtime-and-vendors",
+            with_seal(runtime.clone()),
+        ),
+        (
+            "valid-card-with-several-vendors",
+            with_runtime(
+                json!({"runtime": {"id": "cursor", "version": "2026.10.1"}, "vendors": ["openai", "anthropic", "google"]}),
+            ),
+        ),
+        (
+            "valid-card-with-features-only",
+            with_seal(json!({"features": ["card_runtime"]})),
+        ),
+        (
+            "valid-card-runtime-nobody-listed",
+            with_runtime(
+                json!({"runtime": {"id": "acme-agent", "version": "0.0.1-beta.2"}, "vendors": ["acme-models"]}),
+            ),
+        ),
+        (
+            "valid-card-with-an-unknown-feature",
+            with_runtime(json!({"features": ["card_runtime", "some_later_feature"]})),
+        ),
+    ];
+    for (name, card) in accepted {
+        add(name, card, "accept", None, &context);
+    }
+    let refused: [(&str, Value); 12] = [
+        (
+            "invalid-card-runtime-without-features",
+            with_seal(json!({"runtime": runtime["runtime"]})),
+        ),
+        (
+            "invalid-card-vendors-without-features",
+            with_seal(json!({"vendors": runtime["vendors"]})),
+        ),
+        (
+            "invalid-card-features-without-card-runtime",
+            with_runtime(json!({"features": ["some_later_feature"]})),
+        ),
+        (
+            "invalid-card-features-empty",
+            with_seal(json!({"features": []})),
+        ),
+        (
+            "invalid-card-feature-repeated",
+            with_runtime(json!({"features": ["card_runtime", "card_runtime"]})),
+        ),
+        (
+            "invalid-card-feature-not-an-id",
+            with_runtime(json!({"features": ["card_runtime", "Follow ups"]})),
+        ),
+        (
+            "invalid-card-runtime-not-an-id",
+            with_runtime(json!({"runtime": {"id": "Claude Code", "version": "2.1.0"}})),
+        ),
+        (
+            "invalid-card-runtime-without-version",
+            with_runtime(json!({"runtime": {"id": "claude"}})),
+        ),
+        (
+            "invalid-card-runtime-extra-field",
+            with_runtime(
+                json!({"runtime": {"id": "claude", "version": "2.1.0", "model": "the newest"}}),
+            ),
+        ),
+        (
+            "invalid-card-vendors-empty",
+            with_runtime(json!({"vendors": []})),
+        ),
+        (
+            "invalid-card-vendor-repeated",
+            with_runtime(json!({"vendors": ["anthropic", "anthropic"]})),
+        ),
+        (
+            "invalid-card-vendor-not-an-id",
+            with_runtime(json!({"vendors": ["Anthropic"]})),
+        ),
+    ];
+    for (name, card) in refused {
+        add(name, card, "reject", Some("card_invalid"), &context);
+    }
+    let mut vendors_changed = with_seal(runtime.clone());
+    vendors_changed["capabilities"]["extensions"][0]["params"]["vendors"] =
+        json!(["anthropic", "openai"]);
+    add(
+        "invalid-card-vendors-changed-after-signing",
+        vendors_changed,
+        "reject",
+        Some("bad_signature"),
+        &context,
+    );
     cases
 }
 

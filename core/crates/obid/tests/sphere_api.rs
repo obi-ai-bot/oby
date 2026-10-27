@@ -1745,6 +1745,7 @@ async fn a_member_whose_owner_key_changes_isnt_trusted_until_the_owner_accepts_i
             card_seq: 2,
             issued_at: &issued_at,
             seal: None,
+            runtime: None,
         });
         let signed = obi_protocol::card::sign(&unsigned, &mallory).unwrap();
         let member = state
@@ -2085,7 +2086,7 @@ async fn words_between_two_sealing_obis_cross_the_sphere_sealed_and_their_owners
     let me = tokio::task::block_in_place(|| get(&obid, "/v1/obid/sphere"));
     assert_eq!(me["sealing"], "on");
     assert_eq!(me["sealKeyId"], obi_protocol::seal::key_id_of(&own_seal));
-    assert_eq!(me["card"]["version"], "0.2.0");
+    assert_eq!(me["card"]["version"], "0.3.0");
 
     // In the clear, between two Obis that seal: the Sphere refuses it.
     let plain = ernesto.request("obi-wellington", "review_request", brief(), 3600);
@@ -2391,7 +2392,7 @@ async fn a_seal_key_waits_for_a_sphere_and_a_team_that_read_one() {
         // The new card says 0.2.0, without a seal key: the Sphere doesn't take one yet.
         assert_eq!(seal_card(&obid, &sphere, &owner), "waiting");
         let me = get(&obid, "/v1/obid/sphere");
-        assert_eq!(me["card"]["version"], "0.2.0");
+        assert_eq!(me["card"]["version"], "0.3.0");
         assert!(params(&me["card"]).get("seal_key_id").is_none());
     });
     // The Sphere takes them now, but sangam's Obi is from before: still no seal key.
@@ -2433,6 +2434,71 @@ async fn a_seal_key_waits_for_a_sphere_and_a_team_that_read_one() {
     tokio::task::block_in_place(|| {
         let card = read_directory_now(&obid, &sphere);
         assert!(params(&card).get("seal_key_id").is_some());
+        assert_eq!(get(&obid, "/v1/obid/sphere")["sealing"], "on");
+    });
+}
+
+/// obid's card says what runs it, `oby` at its version with Anthropic's models, only once the Sphere
+/// and every other member take a card with `features`, `runtime` and `vendors` (identity.md section
+/// 2.3), and keeps saying it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_card_says_its_runtime_once_the_sphere_and_the_team_take_it() {
+    let folder = Folder::new("card-runtime");
+    let sphere = FakeSphere::start().await;
+    let remote = fixture(&folder.0.join("fixture"));
+    let obid = start(&folder.0, &config(&folder.0, &remote, &stub_agent()), None);
+    let owner = Owner::new("wellington");
+    let params = |card: &Value| card["capabilities"]["extensions"][0]["params"].clone();
+    tokio::task::block_in_place(|| {
+        join_a_accepting(&obid, &sphere, &owner, &["review_request", "question"])
+    });
+    // A teammate's obid from before 0.3.0, and a Sphere that doesn't take it: no runtime.
+    let _sangam = TestObi::join_sealing(&sphere, "obi-sangam", "sangam").await;
+    tokio::task::block_in_place(|| {
+        let card = read_directory_now(&obid, &sphere);
+        assert_eq!(card["version"], "0.3.0", "it says it takes card_runtime");
+        assert!(params(&card).get("features").is_none(), "{card}");
+    });
+    // The Sphere takes it now, and sangam's card is still from before: still none.
+    sphere.lock().takes_card_runtime = true;
+    tokio::task::block_in_place(|| {
+        assert!(
+            params(&read_directory_now(&obid, &sphere))
+                .get("runtime")
+                .is_none()
+        );
+    });
+    // sangam's obid updates (a card saying 0.3.0): obid asks for a card, and it says what runs it.
+    {
+        let mut state = sphere.lock();
+        let member = state
+            .members
+            .iter_mut()
+            .find(|m| m["obi"] == "obi-sangam")
+            .unwrap();
+        let mut card = member["card"].clone();
+        card["version"] = json!("0.3.0");
+        card["capabilities"]["extensions"][0]["params"]["card_seq"] = json!(2);
+        card.as_object_mut().unwrap().remove("signatures");
+        member["card"] =
+            obi_protocol::card::sign(card.as_object().unwrap(), &Owner::new("sangam").key).unwrap();
+    }
+    tokio::task::block_in_place(|| {
+        let card = read_directory_now(&obid, &sphere);
+        let p = params(&card);
+        assert_eq!(p["features"], json!(["card_runtime"]));
+        assert_eq!(p["runtime"], json!({"id": "oby", "version": "0.3.0"}));
+        assert_eq!(p["vendors"], json!(["anthropic"]));
+        assert_eq!(seal_card(&obid, &sphere, &owner), "on");
+        let me = get(&obid, "/v1/obid/sphere");
+        assert_eq!(params(&me["card"])["runtime"]["id"], "oby", "{me}");
+        assert_eq!(me["sealing"], "on", "nothing more to sign");
+    });
+    // Published once, it stays: an old Obi joining later doesn't take it out of the next card.
+    let _ana = TestObi::join_old(&sphere, "obi-ana", "ana").await;
+    tokio::task::block_in_place(|| {
+        let card = read_directory_now(&obid, &sphere);
+        assert_eq!(params(&card)["vendors"], json!(["anthropic"]));
         assert_eq!(get(&obid, "/v1/obid/sphere")["sealing"], "on");
     });
 }

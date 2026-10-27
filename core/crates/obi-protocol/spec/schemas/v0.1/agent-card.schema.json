@@ -178,7 +178,9 @@
           ],
           "dependentRequired": {
             "seal_key_id": ["seal_public_key"],
-            "seal_public_key": ["seal_key_id"]
+            "seal_public_key": ["seal_key_id"],
+            "runtime": ["features"],
+            "vendors": ["features"]
           },
           "properties": {
             "protocol": {
@@ -231,6 +233,50 @@
             },
             "issued_at": {
               "$ref": "common.schema.json#/$defs/timestamp"
+            },
+            "features": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 64,
+              "uniqueItems": true,
+              "items": {
+                "$ref": "common.schema.json#/$defs/feature_id"
+              },
+              "contains": {
+                "const": "card_runtime"
+              },
+              "description": "The additions to obi/0.1 this agent takes (spec/identity.md section 2.3). The list comes with the feature card_runtime, so it always names it."
+            },
+            "runtime": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "id",
+                "version"
+              ],
+              "properties": {
+                "id": {
+                  "$ref": "common.schema.json#/$defs/runtime_id"
+                },
+                "version": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 64,
+                  "pattern": "^[0-9A-Za-z.+-]{1,64}$",
+                  "description": "The runtime's version, as it names its own."
+                }
+              },
+              "description": "The agent runtime this member runs, as its owner declares it (spec/identity.md section 2.3). Declared, not proven. Needs features."
+            },
+            "vendors": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 16,
+              "uniqueItems": true,
+              "items": {
+                "$ref": "common.schema.json#/$defs/vendor_id"
+              },
+              "description": "The model vendors this member may use, as its owner declares them (spec/identity.md section 2.3). Declared, not proven. Needs features."
             }
           }
         }

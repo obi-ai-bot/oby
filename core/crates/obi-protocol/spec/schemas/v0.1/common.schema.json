@@ -252,6 +252,27 @@
       "description": "The coding agent a run_request runs: its own CLI, with the member's own account.",
       "enum": ["claude", "codex"]
     },
+    "feature_id": {
+      "description": "The name of an addition to obi/0.1 (spec/README.md, 'Versions'; spec/identity.md section 2.3): a lower-case letter, then up to 63 lower-case letters, digits and _. An id a reader doesn't know means nothing to it.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[a-z][a-z0-9_]{0,63}$"
+    },
+    "runtime_id": {
+      "description": "The id of an agent runtime: the program that acts as a member's agent (spec/identity.md section 2.3, which lists the known ones). Any id that matches is valid.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[a-z][a-z0-9-]{0,63}$"
+    },
+    "vendor_id": {
+      "description": "The id of a model vendor (spec/identity.md section 2.3, which lists the known ones). Any id that matches is valid.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[a-z][a-z0-9-]{0,63}$"
+    },
     "model_id": {
       "description": "A model name as the agent's CLI takes it.",
       "type": "string",

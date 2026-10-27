@@ -49,19 +49,41 @@ const POLL_WAIT: u32 = 25;
 const DIRECTORY_EVERY: i64 = 60;
 /// The longest a reply waits to be sent again after a failure.
 const BACKOFF_MAX: Duration = Duration::from_secs(30);
-/// What obid's card says it is: from 0.2.0, an obid that reads a card with a seal key (#1233). One
-/// from before refuses such a card (its schema closes `params`), so obid puts its seal key in a card
-/// only once every other member's card says it reads one ([`reads_seal_keys`]).
-const OBID_VERSION: &str = "0.2.0";
+/// What obid's card says it is: from 0.2.0, an obid that reads a card with a seal key (#1233); from
+/// 0.3.0, one that takes `card_runtime` too, a card's `features`, `runtime` and `vendors` (spec
+/// identity.md section 2.3). One from before refuses such a card (its schema closes `params`), so
+/// obid puts them in a card only once every other member's card says it reads them
+/// ([`reads_seal_keys`], [`takes_card_runtime`]).
+const OBID_VERSION: &str = "0.3.0";
 
-/// Whether a card's `version` is an obid's that reads a card with a seal key: 0.2.0 or later.
-fn reads_seal_keys(version: &str) -> bool {
+/// The runtime obid's card declares (identity.md section 2.3): Oby, at obid's version.
+const RUNTIME_ID: &str = "oby";
+/// The model vendors obid's card declares: work it does for another member (a review, a question it
+/// answers by itself) runs on Claude Code only, so Anthropic's models.
+const VENDORS: [&str; 1] = ["anthropic"];
+
+/// Whether a card's `version` is an obid's from `major.minor` or later.
+fn obid_from(version: &str, from: (u64, u64)) -> bool {
     let parts: Vec<u64> = version
         .split(['.', '-', '+'])
         .take(3)
         .map_while(|p| p.parse().ok())
         .collect();
-    parts.len() == 3 && (parts[0], parts[1]) >= (0, 2)
+    parts.len() == 3 && (parts[0], parts[1]) >= from
+}
+
+/// Whether a card's `version` is an obid's that reads a card with a seal key: 0.2.0 or later.
+fn reads_seal_keys(version: &str) -> bool {
+    obid_from(version, (0, 2))
+}
+
+/// Whether a member's card says its agent takes `card_runtime`: it lists the feature, or, from
+/// before cards listed features, it is an obid's from 0.3.0 (identity.md section 2.3, "Publishing a
+/// card with an addition").
+fn takes_card_runtime(card: &Value) -> bool {
+    obi_protocol::card::params(card).is_some_and(|p| {
+        obi_protocol::identity::lists_feature(p, obi_protocol::identity::CARD_RUNTIME)
+    }) || obid_from(card["version"].as_str().unwrap_or(""), (0, 3))
 }
 /// The scopes a delegation must grant for obid to follow and answer.
 const NEEDED_SCOPES: [&str; 2] = ["receive", "reply"];
@@ -99,6 +121,11 @@ struct State {
     /// directory read.
     sphere_seals: bool,
     team_reads_seal_keys: bool,
+    /// Whether obid may put `features`, `runtime` and `vendors` in a card (identity.md section 2.3):
+    /// its Sphere's health lists `card_runtime`, and every other active member takes it. From the
+    /// last directory read.
+    sphere_takes_card_runtime: bool,
+    team_takes_card_runtime: bool,
     membership: Option<Membership>,
     delegation: Option<String>,
     client: Option<Client>,
@@ -129,21 +156,48 @@ struct State {
 }
 
 /// `sealing` in `GET /v1/obid/sphere`: `on` once the card carries obid's seal key; `card_needed`
-/// when the owner should sign a new card (to say obid reads seal keys, or to add its own once every
-/// member reads them); `waiting` until the Sphere or a teammate's obid can take one.
+/// when the owner should sign a new card (to say obid reads seal keys or a card's runtime, or to add
+/// its own seal key or its runtime once every member reads them); `waiting` until the Sphere or a
+/// teammate's obid can take one.
 fn sealing(state: &State) -> &'static str {
     let version = state
         .membership
         .as_ref()
         .and_then(|m| m.card["version"].as_str())
         .unwrap_or("");
-    if !own_seal_keys(state).is_empty() {
+    if runtime_card_needed(state) {
+        "card_needed"
+    } else if !own_seal_keys(state).is_empty() {
         "on"
     } else if !reads_seal_keys(version) || (state.sphere_seals && state.team_reads_seal_keys) {
         "card_needed"
     } else {
         "waiting"
     }
+}
+
+/// Whether the card obid holds should be signed again for its runtime (identity.md section 2.3): it
+/// doesn't say an obid that takes `card_runtime` yet, or it could carry `features`, `runtime` and
+/// `vendors` now and doesn't.
+fn runtime_card_needed(state: &State) -> bool {
+    let Some(card) = state.membership.as_ref().map(|m| &m.card) else {
+        return false;
+    };
+    !obid_from(card["version"].as_str().unwrap_or(""), (0, 3))
+        || (!carries_runtime(state)
+            && state.sphere_takes_card_runtime
+            && state.team_takes_card_runtime)
+}
+
+/// Whether the card obid holds lists `card_runtime`, and so carries its runtime and vendors.
+fn carries_runtime(state: &State) -> bool {
+    state
+        .membership
+        .as_ref()
+        .and_then(|m| obi_protocol::card::params(&m.card))
+        .is_some_and(|p| {
+            obi_protocol::identity::lists_feature(p, obi_protocol::identity::CARD_RUNTIME)
+        })
 }
 
 /// When this Obi's card first carried its seal key: its `issued_at`, while it carries it.
@@ -690,6 +744,8 @@ impl Link {
             seal,
             sphere_seals: false,
             team_reads_seal_keys: false,
+            sphere_takes_card_runtime: false,
+            team_takes_card_runtime: false,
             membership,
             delegation,
             client,
@@ -1725,6 +1781,21 @@ impl Link {
         };
         let seal = ready.then(|| self.seal_key()).transpose()?;
         let seal = seal.as_ref().map(|s| (s.key_id(), s.public_key()));
+        // Its runtime and vendors go in the same way (identity.md section 2.3): once the Sphere and
+        // every other member take `card_runtime`, and in every card after the first that has them.
+        let runtime = {
+            let state = self.lock();
+            carries_runtime(&state)
+                || (state.membership.is_some()
+                    && state.sphere_takes_card_runtime
+                    && state.team_takes_card_runtime)
+        };
+        let runtime = runtime.then_some(obi_protocol::identity::CardRuntime {
+            features: &[obi_protocol::identity::CARD_RUNTIME],
+            id: RUNTIME_ID,
+            version: OBID_VERSION,
+            vendors: &VENDORS,
+        });
         let owner = self.owner();
         let unsigned = obi_protocol::identity::unsigned_card(&obi_protocol::identity::CardFields {
             sphere_url: url,
@@ -1741,6 +1812,7 @@ impl Link {
             card_seq,
             issued_at: &issued_at,
             seal: seal.as_ref().map(|(id, key)| (id.as_str(), key.as_str())),
+            runtime,
         });
         let problems = obi_protocol::identity::unsigned_card_problems(&unsigned);
         if !problems.is_empty() {
@@ -2128,16 +2200,32 @@ impl Link {
         // member's obid reads one, whatever obid trusts of it, and the Sphere takes one (asked
         // until it says so).
         let me = self.lock().membership.as_ref().map(|m| m.obi_id.clone());
-        let team_reads_seal_keys = members
-            .iter()
-            .filter(|m| m["status"] == "active" && me.as_deref() != m["obi"].as_str())
-            .all(|m| reads_seal_keys(m["card"]["version"].as_str().unwrap_or("")));
-        let sphere_seals = self.lock().sphere_seals
-            || self
-                .client()?
-                .health()
-                .await
-                .is_ok_and(|h| h["seal"] == true);
+        let others = || {
+            members
+                .iter()
+                .filter(|m| m["status"] == "active" && me.as_deref() != m["obi"].as_str())
+        };
+        let team_reads_seal_keys =
+            others().all(|m| reads_seal_keys(m["card"]["version"].as_str().unwrap_or("")));
+        // And whether it may put its runtime in one: every other member takes `card_runtime`, and
+        // so does the Sphere (asked, as for sealing, until it says so).
+        let team_takes_card_runtime = others().all(|m| takes_card_runtime(&m["card"]));
+        let (known_seals, known_runtime) = {
+            let state = self.lock();
+            (state.sphere_seals, state.sphere_takes_card_runtime)
+        };
+        let health = if known_seals && known_runtime {
+            None
+        } else {
+            self.client()?.health().await.ok()
+        };
+        let sphere_seals = known_seals || health.as_ref().is_some_and(|h| h["seal"] == true);
+        let sphere_takes_card_runtime = known_runtime
+            || health.as_ref().is_some_and(|h| {
+                h["features"]
+                    .as_array()
+                    .is_some_and(|f| f.iter().any(|x| x == obi_protocol::identity::CARD_RUNTIME))
+            });
         let revoked = {
             let mut state = self.lock();
             let revoked = me
@@ -2147,6 +2235,8 @@ impl Link {
             state.directory_read = now;
             state.team_reads_seal_keys = team_reads_seal_keys;
             state.sphere_seals = sphere_seals;
+            state.team_takes_card_runtime = team_takes_card_runtime;
+            state.sphere_takes_card_runtime = sphere_takes_card_runtime;
             if revoked && let Some(m) = state.membership.as_mut() {
                 m.state = "revoked".into();
             }
@@ -7272,6 +7362,7 @@ mod tests {
                 card_seq: 1,
                 issued_at: &time::format(time::now()),
                 seal: None,
+                runtime: None,
             }),
             &owner,
         )

@@ -895,6 +895,7 @@ impl TestObi {
                 .map(|s| (s.key_id(), s.public_key()))
                 .as_ref()
                 .map(|(id, public)| (id.as_str(), public.as_str())),
+            runtime: None,
         });
         let signed = card::sign(&unsigned, &owner.key).unwrap();
         let client = obi_protocol::client::Client::new(&sphere.url, SPHERE).unwrap();
@@ -1082,6 +1083,9 @@ pub struct SphereState {
     pub token_lifetime: Option<i64>,
     /// A Sphere from before sealing: its health doesn't say `seal`.
     pub predates_sealing: bool,
+    /// A Sphere that takes a card's `features`, `runtime` and `vendors`: its health lists
+    /// `card_runtime` (identity.md section 2.3).
+    pub takes_card_runtime: bool,
     /// The next send of this type is recorded and delivered, and its answer is lost: `503`, once
     /// the test lets it go (`FakeSphere::lose_next_answer`).
     pub lose: Option<(String, Arc<tokio::sync::Notify>)>,
@@ -1387,11 +1391,15 @@ async fn token(
         .into_response()
 }
 
-/// `GET /v0.1/health`: `seal: true` but for a Sphere from before sealing.
+/// `GET /v0.1/health`: `seal: true` but for a Sphere from before sealing, and `features` with
+/// `card_runtime` for one that takes it.
 async fn health(State(state): State<Arc<Mutex<SphereState>>>) -> Response {
     let mut health = json!({"ok": true, "protocol": "obi/0.1"});
     if !state.lock().unwrap().predates_sealing {
         health["seal"] = json!(true);
+    }
+    if state.lock().unwrap().takes_card_runtime {
+        health["features"] = json!(["card_runtime"]);
     }
     axum::Json(health).into_response()
 }
