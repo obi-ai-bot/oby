@@ -35,8 +35,10 @@ export type Job = {
   pipeline: { number: number; total: number; stages: Stage[] } | null;
   title: string;
   waiting?: { kind: string; text: string } | null;
-  // obid only: the conversation whose words started it (#493)
+  // obid only: the conversation whose words started it (#493), and the user's turn there whose
+  // words started it or offered it (oby_offer)
   conversation?: string | null;
+  turn?: string | null;
 };
 
 // "Inbox item"
@@ -50,8 +52,13 @@ export type InboxItem = {
   details: string[] | null;
   created: string;
   state: 'open' | 'later' | 'done';
+  later: string | null;
   headline: string | null;
   recommended: number | null;
+  // obid only: the conversation a start item was offered in, and the offer (oby_offer): the card
+  // it's on there, and obid's words for the job it starts
+  conversation?: string | null;
+  offer?: { id: string; what: string } | null;
 };
 
 // "GET /v1/conversation"

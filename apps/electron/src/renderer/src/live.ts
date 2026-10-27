@@ -1,6 +1,6 @@
 import { useSyncExternalStore } from 'react';
 import { ApiError, api, parseEvent, sseReader, type Conversation, type Event, type InboxItem, type Job, type Question, type Repo, type Status, type Turn } from './obid';
-import { AGENTS, type Ask, type AskKind, type Job as JobView, type Message, type StageId } from './mock';
+import { AGENTS, type Ask, type AskKind, type Job as JobView, type Message, type Offer, type StageId } from './mock';
 import { replaceChats, type Chat } from './chats';
 import { replaceTasks, type Task } from './tasks';
 import { replaceAccounts } from './SettingsView';
@@ -62,16 +62,38 @@ const realId = (shown: string) => Object.keys(state.alias).find((k) => state.ali
 
 // --- obid's state as the screens' conversations and tasks
 
+// What Oby offers to start in a conversation (obid's oby_offer): its start items still waiting,
+// one card per offer (a turn's), in the order they came. Put off with Later, a card is gone
+// until its time.
+function offersOf(s: Live, c: string): (Offer & { at: string })[] {
+  const cards = new Map<string, InboxItem[]>();
+  for (const i of s.inbox) if (i.kind === 'start' && i.offer && i.conversation === c) cards.set(i.offer.id, [...(cards.get(i.offer.id) ?? []), i]);
+  return [...cards].filter(([, items]) => items.some((i) => !i.later || Date.parse(i.later) <= Date.now())).map(([id, items]) => ({
+    id, at: items[0].created, title: items.length === 1 ? items[0].title : `${items.length} jobs`, what: items.map((i) => i.offer!.what),
+  }));
+}
+
 function chatOf(s: Live, c: Conversation): Chat {
-  // a task's card under the answer that started it, not again under each that mentions it
+  // a task's card under the answer that started it, not again under each that mentions it;
+  // one started from an offer goes under the answer to the words it was offered for (its turn)
   const carded = new Set<string>();
   const p = s.pace[c.id];
-  const said: Message[] = (s.turns[c.id] ?? []).filter((t) => t.id !== p?.turn).map((t) => {
-    const jobs = t.jobs.filter((j) => !carded.has(j) && carded.add(j));
-    return { who: t.who === 'user' ? 'you' : 'oby', text: t.text, ago: minutesAgo(t.at), ...(jobs.length ? { jobs } : {}) };
-  });
+  const offered = Object.values(s.jobs).filter((j) => j.conversation === c.id && j.turn).sort((a, b) => a.created.localeCompare(b.created));
+  // an offer's card under Oby's answer to the turn that made it: the first of Oby's turns since
+  const offers = offersOf(s, c.id);
+  const said: Message[] = [];
+  let asked: string | undefined;
+  for (const t of (s.turns[c.id] ?? []).filter((t) => t.id !== p?.turn)) {
+    const mine = t.who === 'oby' && asked ? offered.filter((j) => j.turn === asked).map((j) => j.id) : [];
+    const jobs = [...t.jobs, ...mine].filter((j) => !carded.has(j) && carded.add(j));
+    said.push({ who: t.who === 'user' ? 'you' : 'oby', text: t.text, ago: minutesAgo(t.at), ...(jobs.length ? { jobs } : {}) });
+    asked = t.who === 'user' ? t.id : undefined;
+    while (t.who === 'oby' && offers.length && offers[0].at <= t.at) said.push({ who: 'oby', text: '', ago: minutesAgo(t.at), offer: offers.shift() });
+  }
   const words = p ? wordsOf(p.to).slice(0, p.n).join('') : s.words[c.id], q = s.waiting[c.id];
   if (p || words) said.push({ who: 'oby', text: words ?? '', ago: 0, streaming: true });
+  // (its answer still coming: under the words so far)
+  for (const offer of offers) said.push({ who: 'oby', text: '', ago: 0, offer });
   return {
     id: s.alias[c.id] ?? c.id, title: c.title, pinned: c.pinned, at: minutesAgo(c.lastActivity), said,
     about: c.tasks?.length ? `Started ${c.tasks.length} task${c.tasks.length === 1 ? '' : 's'}` : '',
@@ -468,6 +490,16 @@ export async function answerJob(id: string, option: string) {
     // not taken: it's still yours to answer
     set({ answered: without(state.answered, id) });
     say(e);
+  }
+}
+
+// An offer answered (OfferCard.tsx), for each of its jobs still waiting: Dispatch is the owner's own
+// Start, which only this tap gives (POST /v1/inbox/{id}/answer); Skip cancels it; Later puts it
+// off an hour. What starts comes as its job's event, its card under the answer.
+export async function answerOffer(offer: string, option: 'Dispatch' | 'Skip' | 'Later') {
+  for (const item of state.inbox.filter((i) => i.offer?.id === offer)) {
+    const body = option === 'Later' ? { later: new Date(Date.now() + 3600_000).toISOString().replace(/\.\d+Z$/, 'Z') } : { answer: option === 'Dispatch' ? 'Start' : 'Cancel' };
+    try { set(apply(state, { kind: 'inbox', item: await api.answer(item.id, body) })); } catch (e) { say(e); }
   }
 }
 
