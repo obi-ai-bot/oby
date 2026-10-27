@@ -262,6 +262,10 @@ pub fn router(shared: Arc<Shared>) -> Router {
             "/v1/obid/sphere",
             get(crate::sphere::routes::membership).delete(crate::sphere::routes::leave),
         )
+        .route(
+            "/v1/obid/sphere/members",
+            get(crate::sphere::routes::members),
+        )
         .route("/v1/obid/sphere/pins", get(crate::sphere::routes::pins))
         .route(
             "/v1/obid/sphere/pins/{owner}",

@@ -6367,6 +6367,47 @@ impl Link {
         json!(list)
     }
 
+    /// `GET /v1/obid/sphere/members`: the other active members of the Sphere whose cards obid
+    /// trusts (identity.md 2.2, its pinned owner keys), as typed fields only: who they are, what
+    /// they take, whether obid seals its words for them, and whether the owner compared their
+    /// owner's key. The directory is read fresh, so a teammate who just joined shows; when it
+    /// can't be read, the last read answers. `409` before joining.
+    pub async fn members_json(&self) -> Result<Value, ApiError> {
+        let joined = self
+            .lock()
+            .membership
+            .as_ref()
+            .is_some_and(|m| m.state == "joined");
+        if !joined {
+            return Err(api(StatusCode::CONFLICT, "obid hasn't joined a Sphere."));
+        }
+        if let Err(e) = self.read_directory().await {
+            self.note_error(&e);
+        }
+        let state = self.lock();
+        let me = state
+            .membership
+            .as_ref()
+            .map(|m| m.obi_id.clone())
+            .unwrap_or_default();
+        let mut list: Vec<Value> = state
+            .directory
+            .members
+            .iter()
+            .filter(|(obi, m)| **obi != me && m.active)
+            .map(|(obi, m)| {
+                let mut accepts = m.accepts.clone();
+                accepts.sort();
+                json!({"obi": obi, "owner": m.owner, "accepts": accepts,
+                       "sealed": m.seal.is_some(), "verified": self.pins.verified(&m.owner)})
+            })
+            .collect();
+        list.sort_by(|a, b| {
+            (a["owner"].as_str(), a["obi"].as_str()).cmp(&(b["owner"].as_str(), b["obi"].as_str()))
+        });
+        Ok(json!(list))
+    }
+
     /// `PUT /v1/obid/sphere/membership`: a new card and/or delegation the owner signed (to take
     /// `run_request`, or a delegation with `send:run_request`, or a fresh one), checked as at
     /// joining. The card goes to the Sphere first; the delegation is kept and the token renewed.
