@@ -5,6 +5,7 @@ import { useScrollThumb } from './useScrollThumb';
 import { AGENTS, type Agent } from './mock';
 import { OwnerAvatar } from './ObyFace';
 import { useSpheres } from './spheres';
+import { onObid } from './lean';
 
 // how long the way out takes (the sink animation in app.css)
 const LEAVE_MS = 220;
@@ -203,7 +204,9 @@ const ACCOUNTS: Account[] = [
   { id: 'a4', agent: 'claude', name: 'Deskree API', payer: 'Deskree', used: 8, resets: '$32 of $400 this month', plan: 'api' },
 ];
 // the accounts and their use this week: here, and in the message box's usage panel (the gauge)
-export const useAccounts = () => useSetting<Account[]>('accounts', ACCOUNTS);
+export const useAccounts = () => useSetting<Account[]>('accounts', onObid ? [] : ACCOUNTS);
+// obid's accounts and their use, in place of the mock's (live.ts)
+export const replaceAccounts = (next: Account[]) => { values.set('accounts', next); listeners.forEach((l) => l()); };
 function Accounts() {
   const [accounts, setAccounts] = useAccounts();
   const [agent, setAgent] = useState<Account['agent']>('claude');

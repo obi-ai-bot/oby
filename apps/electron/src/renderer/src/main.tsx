@@ -4,7 +4,8 @@ import './tokens.css';
 import './app.css';
 import Home from './Home';
 import Welcome from './Welcome';
-import { everything } from './lean';
+import { everything, onObid } from './lean';
+import { connect } from './live';
 
 // Line the title bar up with the traffic lights, where macOS actually put them
 const chrome = window.app?.chrome;
@@ -29,4 +30,5 @@ function App() {
   return welcome ? <Welcome onDone={done} /> : <Home />;
 }
 
+if (onObid) connect();
 createRoot(document.getElementById('root')!).render(<App />);

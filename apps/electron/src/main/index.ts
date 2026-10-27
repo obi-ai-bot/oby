@@ -1,6 +1,7 @@
 import { app, BrowserWindow, ipcMain, screen } from 'electron';
 import { createRequire } from 'node:module';
 import { join } from 'node:path';
+import { bridge, startObid, stopFollowing } from './obid';
 
 // One small window: Oby, what needs you, and a way to talk. The renderer gets
 // the cursor's position wherever it is on screen, so Oby can watch it outside
@@ -37,6 +38,8 @@ let last = '';
 // the page asks for both before it draws, to lay its title bar out around the lights
 ipcMain.on('window-chrome', (e) => { e.returnValue = chrome; });
 ipcMain.on('full-screen', (e) => { e.returnValue = win?.isFullScreen() ?? false; });
+// obid, through main (obid.ts): only for the window's own page, never a frame in it
+bridge((e) => !!win && e.sender === win.webContents && e.senderFrame === win.webContents.mainFrame);
 
 function track(on: boolean) {
   if (tracker) clearInterval(tracker);
@@ -88,7 +91,10 @@ function createWindow() {
   win.on('restore', () => track(true));
   win.on('hide', () => track(false));
   win.on('minimize', () => track(false));
-  win.on('closed', () => { track(false); win = null; });
+  win.on('closed', () => { track(false); stopFollowing(); win = null; });
+  // the page holds obid's API through main: it never leaves for another page or opens one
+  win.webContents.on('will-navigate', (e) => e.preventDefault());
+  win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   // full screen hides the traffic lights: the page moves its title bar over.
   // Besides entering and leaving, re-check whenever the window comes back
   // (switching Spaces between full-screen apps), so the page never drifts.
@@ -102,6 +108,7 @@ function createWindow() {
 app.whenReady().then(() => {
   // the Dock icon while developing (a packaged app takes build/icon.icns)
   if (process.platform === 'darwin') app.dock?.setIcon(join(__dirname, '../../build/icon.png'));
+  startObid();
   createWindow();
   app.on('activate', () => { if (!win) createWindow(); });
 });

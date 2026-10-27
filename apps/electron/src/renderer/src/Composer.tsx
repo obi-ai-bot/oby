@@ -1,7 +1,9 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { ArrowUp, Check, ChevronLeft, File, Gauge, Laptop, ListChecks, Plus, Search, Settings, X } from 'lucide-react';
 import { ObyIcon, OwnerAvatar } from './ObyFace';
-import { AGENTS, OBYS, PLACES, SHARED_WITH_ME, type Attachments } from './mock';
+import { AGENTS, OBYS, PLACES, SHARED_WITH_ME as MOCK_SHARED, type Attachments } from './mock';
+import { onObid } from './lean';
+
 import MessageEditor, { type EditorHandle, type MentionKey } from './MessageEditor';
 import { mentioned } from './textTokens';
 import StatusDot from './StatusDot';
@@ -10,6 +12,9 @@ import { useTasks, type Task } from './tasks';
 import { BrandMark } from './brands';
 import { fullness, useAccounts } from './SettingsView';
 import { useScrollThumb } from './useScrollThumb';
+
+// obid shares no usage yet (Mac share is hidden for launch): none, rather than the mock's
+const SHARED_WITH_ME = onObid ? [] : MOCK_SHARED;
 
 // What a message carries besides its words: files or photos (a photo with a
 // small preview of itself), tasks attached. (Other Obys are brought in by name,

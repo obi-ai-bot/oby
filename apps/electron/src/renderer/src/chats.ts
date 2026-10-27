@@ -1,8 +1,9 @@
 import { useSyncExternalStore } from 'react';
 import { JOBS, TURNS as LOG, convoTitle, followUpsOf, hasAttachments, type Attachments, type Message } from './mock';
-import { addTask, relay } from './tasks';
+import { addTask, conversationOfTask, relay } from './tasks';
 import { streamWords, wait } from './stream';
-import { everything } from './lean';
+import { everything, onObid } from './lean';
+import * as live from './live';
 
 // A conversation with Oby: what you asked, its answers, and the tasks they
 // started (a card under the answer that started each). Asking Oby (Home's
@@ -13,7 +14,9 @@ import { everything } from './lean';
 // message box until you answer (a pick, or anything you type). pinned: kept
 // at the top of Conversations, under Pinned
 type Ask = { question: string; options: string[] };
-export type Chat = { id: string; title: string; said: Message[]; typing?: boolean; step?: string; waiting?: Ask; pinned?: boolean };
+// at: when it last moved (minutes ago), when that's known apart from what's loaded of it (obid's)
+// about: its line in Conversations while none of it is loaded (obid's)
+export type Chat = { id: string; title: string; said: Message[]; typing?: boolean; step?: string; waiting?: Ask; pinned?: boolean; at?: number; about?: string };
 
 // named after its first line, as Oby would title it
 const titled = (text: string) => {
@@ -65,7 +68,7 @@ const past: Chat[] = PAST.map(([title, asked, answer, at], i) => ({
 }));
 
 // when it last moved (minutes ago): its latest message
-export const lastAgo = (c: Chat) => Math.min(...c.said.map((m) => m.ago));
+export const lastAgo = (c: Chat) => Math.min(c.at ?? Infinity, ...c.said.map((m) => m.ago));
 
 // a new user (lean.ts) starts with none: Oby opens the first (onboarding.ts)
 let chats: Chat[] = everything ? [...seeded, ...past].sort((a, b) => lastAgo(a) - lastAgo(b)) : [];
@@ -73,8 +76,13 @@ const listeners = new Set<() => void>();
 const set = (next: Chat[]) => { chats = next; listeners.forEach((l) => l()); };
 const subscribe = (l: () => void) => { listeners.add(l); return () => { listeners.delete(l); }; };
 export const useChats = () => useSyncExternalStore(subscribe, () => chats);
+// obid's conversations, in place of the mock's (live.ts)
+export const replaceChats = (next: Chat[]) => set(next);
 // the conversation a task was started in, if it was started in one
-export const chatOfTask = (taskId: string) => chats.find((c) => c.said.some((m) => m.jobs?.includes(taskId)));
+export const chatOfTask = (taskId: string) => {
+  const from = conversationOfTask(taskId);
+  return chats.find((c) => c.id === from || c.said.some((m) => m.jobs?.includes(taskId)));
+};
 
 const update = (id: string, fn: (c: Chat) => Partial<Chat>) => set(chats.map((c) => (c.id === id ? { ...c, ...fn(c) } : c)));
 
@@ -91,15 +99,21 @@ export async function sayOby(id: string, m: Omit<Message, 'who' | 'ago' | 'jobs'
 // from its menu (ConvoMenu): renamed, pinned to the top or not, deleted (the
 // tasks it started stay; their conversation is then their own thread)
 export function renameChat(id: string, title: string) {
+  if (onObid) return void live.renameConversation(id, title);
   const t = title.trim();
   if (t) update(id, () => ({ title: t }));
 }
-export const pinChat = (id: string, pinned: boolean) => update(id, () => ({ pinned }));
-export const deleteChat = (id: string) => { queued.delete(id); set(chats.filter((c) => c.id !== id)); };
+export const pinChat = (id: string, pinned: boolean) => (onObid ? void live.pinConversation(id, pinned) : update(id, () => ({ pinned })));
+export const deleteChat = (id: string) => {
+  if (onObid) return void live.deleteConversation(id);
+  queued.delete(id); set(chats.filter((c) => c.id !== id));
+};
 
 // Asked in Home's message box: a new conversation, at the top, Oby at work on it
 let made = 0;
 export function askOby(text: string, att?: Attachments) {
+  // ponytail: words only to obid; attachments wait for its uploads (POST /v1/attachments)
+  if (onObid) return live.ask(text);
   const t = text.trim();
   if (!t && !hasAttachments(att)) return;
   const id = `c${++made}`;
@@ -110,6 +124,7 @@ export function askOby(text: string, att?: Attachments) {
 // a reply in a conversation: Oby takes its next turn on it. Oby was waiting on
 // you: its question goes into the conversation, your words under it as the answer
 export function tellChat(id: string, text: string, att?: Attachments) {
+  if (onObid) return void live.ask(text, id);
   const t = text.trim();
   if (!t && !hasAttachments(att)) return;
   update(id, (c) => ({
@@ -121,6 +136,8 @@ export function tellChat(id: string, text: string, att?: Attachments) {
 // Told Oby something about a task started in this conversation (from the task's
 // page): it goes on the end of the conversation, and Oby passes it on (relay)
 export function tellAbout(id: string, taskId: string, text: string, att?: Attachments) {
+  // obid: words in the conversation, which Oby passes on to the task
+  if (onObid) return void live.ask(text, id);
   const t = text.trim(), r = relay(taskId, t);
   if ((!t && !hasAttachments(att)) || !r) return;
   update(id, (c) => ({ said: [...c.said, { who: 'you', text: t, ago: 0, ...att }] }));

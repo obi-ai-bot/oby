@@ -43,6 +43,7 @@ const NEW_ACTION: Partial<Record<Section, { label: string; icon: LucideIcon }>> 
 const SEARCHABLE: Section[] = ['conversations'];
 // a conversation's line under its name: the tasks it started, else Oby's last words
 const convoAbout = (c: Chat) => {
+  if (!c.said.length && c.about !== undefined) return c.about;
   const n = c.said.flatMap((m) => m.jobs ?? []).length;
   if (n) return `Started ${n} task${n === 1 ? '' : 's'}`;
   return [...c.said].reverse().find((m) => m.who === 'oby' && m.text)?.text ?? 'Oby is on it';

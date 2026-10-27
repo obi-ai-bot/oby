@@ -16,7 +16,8 @@ import SettingsView, { settingsLabel } from './SettingsView';
 import SphereSettings, { sphereSettingsLabel } from './SphereSettings';
 import KnowledgeView, { knowledgeLabel } from './KnowledgeView';
 import { useSpheres } from './spheres';
-import { everything } from './lean';
+import { everything, onObid } from './lean';
+import { useLive } from './live';
 import { WELCOME, setUp, startOnboarding } from './onboarding';
 import { askOby, chatOfTask, renameChat, tellAbout, useChats } from './chats';
 import { useConvos } from './peers';
@@ -163,7 +164,7 @@ export default function Home() {
 
   // the first launch (lean.ts): Oby opens its first conversation and sets you up in it
   useEffect(() => {
-    if (everything || setUp()) return;
+    if (everything || onObid || setUp()) return;
     startOnboarding();
     start({ kind: 'talk', id: WELCOME });
   }, []);
@@ -382,6 +383,7 @@ export default function Home() {
         </div>
       </main>
 
+      {onObid && <Connection />}
       {/* asking Oby: a new conversation, opened at once */}
       <Composer
         home
@@ -421,6 +423,14 @@ export default function Home() {
       </button>
     </div>
   );
+}
+
+// How the app stands with obid (live.ts): connecting, or why it isn't answering (its own reason),
+// or what last went wrong; nothing while all's well
+function Connection() {
+  const { connection, problem } = useLive();
+  if (connection === 'live' && !problem) return null;
+  return <p className={`connection is-${connection}`} role="status">{problem ?? 'Connecting to Oby’s engine…'}</p>;
 }
 
 // One step of the title bar's trail: a link back to it, or (no onClick) where

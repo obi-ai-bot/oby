@@ -15,6 +15,8 @@ import { markSeen, tell, useTasks, type Task } from './tasks';
 import { obys, tellChat, useChats, type Chat } from './chats';
 import SetupCard from './SetupCard';
 import { WELCOME, typedFirst } from './onboarding';
+import { onObid } from './lean';
+import { openConversation } from './live';
 
 // how long the way out takes (the sink animation in app.css)
 const LEAVE_MS = 220;
@@ -93,7 +95,7 @@ export default function ChatView({ id, kind = 'task', leaving, covered = false, 
   const working = typing && head >= 0 && !convo;
 
   // opened, it's seen; it opens at the latest message, and anything new scrolls into view
-  useEffect(() => { if (kind === 'task') markSeen(id); if (kind === 'peer') markRead(id); }, [id, kind]);
+  useEffect(() => { if (kind === 'task') markSeen(id); if (kind === 'peer') markRead(id); if (kind === 'oby' && onObid) void openConversation(id); }, [id, kind]);
   const first = useRef(true);
   useLayoutEffect(() => {
     const l = list.current;
