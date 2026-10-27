@@ -29,22 +29,30 @@
 //! 1. **The check runs only the commit**, in its own checkout (above). The turn that made it is
 //!    over: on macOS its sandbox's watcher kills everything the turn started, a process that
 //!    called `setsid` included (`crate::sandbox`, `WATCHER`).
-//! 2. **Ref hygiene is the provenance.** obid's clone holds only the default branch
-//!    (`git clone --single-branch`, `crate::git::NARROW`). Anything else comes in only by obid's own
-//!    fetch (a job's base, a pull request's head, commits back from a teammate's Mac), and one
-//!    whose commits aren't all in obid's record of the owner's jobs marks the clone
-//!    (`crate::git::taint`): from then on no check whose worktree reads it gets values. A clone made
-//!    before clones were narrow gets none either. A review another Oby asks for is fetched into a
-//!    clone of its own. An agent can't fetch anything itself: it has no code host's login (an
-//!    empty `GH_CONFIG_DIR`, an invalid push URL), and on macOS its only way off the Mac is obid's
-//!    egress proxy, which lets its tool's own services through and decides every other site; one
-//!    it lets through beyond the package registries marks the job foreign ([`site_is_foreign`]).
+//! 2. **Ref hygiene is the provenance.** obid's own clone of a repository holds only the default
+//!    branch (`git clone --single-branch`, `crate::git::NARROW`) and what the owner's own jobs make
+//!    there. A job that's untrusted, someone else's code or bound for a teammate's Mac when it's
+//!    made keeps to a clone apart (`Job::apart`, `home/apart/clones`), as a review another Oby asks
+//!    for does (`home/received/clones`). Anything else comes into the owner's clone only by obid's
+//!    own fetch (a job's base, a pull request's head, commits back from a teammate's Mac), and one
+//!    that isn't a reviewed branch and whose commits aren't all in obid's record of the owner's
+//!    jobs marks the clone (`crate::git::taint`), as a job there turning someone else's code does
+//!    (`Jobs::mark_foreign`): from then on no check in that repository gets values. A clone made
+//!    before clones were narrow gets none either. An agent can't fetch anything itself: it has no
+//!    code host's login (an empty `GH_CONFIG_DIR`, an invalid push URL), and on macOS its only way
+//!    off the Mac is obid's egress proxy, which lets its tool's own services through and decides
+//!    every other site. A vendor host past its tool's API ([`crate::egress::tools_api`]), a site
+//!    the proxy lets through beyond the registries that serve only published versions, and the Go
+//!    module proxy (which serves any commit) mark the job ([`site_is_foreign`]).
 //! 3. **Linux gives no values** ([`platform_refusal`]): its agents still have a network of their
 //!    own until oby#616, so they could fetch anyone's code themselves.
-//! 4. **The base is reviewed**: a branch the repository lets in only through a pull request with an
-//!    approving review, for the login Oby pushes as too ([`protected_base`]).
+//! 4. **The base is reviewed**, and so is the default branch every clone holds: a branch the
+//!    repository lets in only through a pull request with an approving review that a later push
+//!    can't slip past (the last push approved, or stale reviews dismissed), for the login Oby
+//!    pushes as too ([`protected_base`]).
 //! 5. **Defence in depth**: every commit between the base and the commit is in obid's own record of
-//!    what the job made ([`on_record`], `Job::made`, after each turn's [`new_commits`]), and the job
+//!    what the job made ([`on_record`], `Job::made`, after each turn's [`new_commits`], whose new
+//!    commits may carry no change any other branch the clone has, other jobs' own included), and the job
 //!    isn't another Oby's review, one whose agent ran on a teammate's Mac, a follow-up of one that
 //!    got none, or untrusted.
 //!
@@ -314,9 +322,13 @@ pub async fn protected_base(gh: &Path, repo: &str, base: &str) -> Result<(), Str
             .filter(|rule| rule["type"] == "pull_request")
             // Only one that needs someone's approval: a pull request with no review is a push.
             .filter(|rule| {
-                rule["parameters"]["required_approving_review_count"]
+                let parameters = &rule["parameters"];
+                // And one a push after the approval can't slip past.
+                parameters["required_approving_review_count"]
                     .as_u64()
                     .is_some_and(|n| n >= 1)
+                    && (parameters["require_last_push_approval"] == true
+                        || parameters["dismiss_stale_reviews_on_push"] == true)
             })
             .filter_map(|rule| rule["ruleset_id"].as_u64())
             .collect();
@@ -349,7 +361,9 @@ pub async fn protected_base(gh: &Path, repo: &str, base: &str) -> Result<(), Str
                 .any(|kind| allowances[*kind].as_array().is_some_and(|a| !a.is_empty()));
         let reviewed = reviews["required_approving_review_count"]
             .as_u64()
-            .is_some_and(|n| n >= 1);
+            .is_some_and(|n| n >= 1)
+            && (reviews["require_last_push_approval"] == true
+                || reviews["dismiss_stale_reviews"] == true);
         let admin = ask(format!("repos/{repo}"))
             .await
             .map(|r| r["permissions"]["admin"] == true);
@@ -453,6 +467,7 @@ pub async fn new_commits(
     before: &str,
     started: i64,
     base_ref: &str,
+    own: &str,
 ) -> Result<Vec<String>, String> {
     let commits = commits_since(worktree, env, before).await?;
     if commits.is_empty() {
@@ -489,7 +504,15 @@ pub async fn new_commits(
     let ours = patch_ids(worktree, env, &[&range]).await?;
     let most = format!("--max-count={MOST_ELSEWHERE}");
     let not = format!("^{base_ref}");
-    let elsewhere = patch_ids(worktree, env, &[&most, "--remotes", &not]).await?;
+    // Every other branch the clone has, other jobs' own included: not this job's own.
+    let mine = format!("--exclude={own}");
+    let mine_remote = format!("--exclude=origin/{own}");
+    let elsewhere = patch_ids(
+        worktree,
+        env,
+        &[&most, &mine, "--branches", &mine_remote, "--remotes", &not],
+    )
+    .await?;
     if !ours.is_disjoint(&elsewhere) {
         return Err(
             "its agent committed a change another branch already has (a cherry-pick or a copy of it)"
@@ -557,8 +580,15 @@ pub fn platform_refusal() -> Option<String> {
 /// owner's own tests would install too. A code host, a pull request's page, a site with code on
 /// it: what the agent read there could be anyone's.
 pub fn site_is_foreign(host: &str) -> bool {
-    !crate::egress::REGISTRIES.contains(&host)
+    !crate::egress::REGISTRIES.contains(&host) || UNPINNED.contains(&host)
 }
+
+/// Registries that serve any public repository's branch or commit, not only what was published:
+/// the Go module proxy (a pseudo-version is any commit) and its checksum database. Reaching them
+/// makes the job someone else's code. The other registries obid lets through serve only published,
+/// immutable versions: npm, Yarn, PyPI, crates.io and Rust's toolchains, RubyGems, Maven, Gradle's
+/// plugins and CocoaPods' specs (whose sources come from code hosts, which do mark the job).
+const UNPINNED: &[&str] = &["proxy.golang.org", "sum.golang.org"];
 
 /// A checkout of commit `head` that obid makes for the check, apart from the job's: its worktree
 /// at `at/work`, its own git folder in the clone's `worktrees/`, its own temporary folder at
@@ -1078,7 +1108,7 @@ required = false
                 ),
                 (
                     "repos/o/r/rules/branches/main",
-                    r#"[{"type":"pull_request","ruleset_id":1,"parameters":{"required_approving_review_count":1}}]"#,
+                    r#"[{"type":"pull_request","ruleset_id":1,"parameters":{"required_approving_review_count":1,"require_last_push_approval":true}}]"#,
                 ),
                 (
                     "repos/o/r/rulesets/1",
@@ -1110,7 +1140,15 @@ required = false
                 ),
                 (
                     "repos/o/r/branches/release/protection",
+                    r#"{"required_pull_request_reviews":{"required_approving_review_count":1,"dismiss_stale_reviews":true},"enforce_admins":{"enabled":true}}"#,
+                ),
+                (
+                    "repos/o/r/branches/stale-ok/protection",
                     r#"{"required_pull_request_reviews":{"required_approving_review_count":1},"enforce_admins":{"enabled":true}}"#,
+                ),
+                (
+                    "repos/o/r/rules/branches/push-after",
+                    r#"[{"type":"pull_request","ruleset_id":1,"parameters":{"required_approving_review_count":1}}]"#,
                 ),
                 (
                     "repos/o/r/branches/admins-skip/protection",
@@ -1154,6 +1192,8 @@ required = false
             "app-allowed",
             "no-approvals",
             "unreviewed",
+            "stale-ok",
+            "push-after",
             "no-reviews",
             "teammate-fix",
         ] {
@@ -1224,6 +1264,13 @@ required = false
             &clone,
             "git config fetch.hideRefs worktrees/ && echo ignored.log >> .git/info/exclude",
         );
+        // Another job's own branch, kept in the clone as obid keeps a job's commits.
+        sh(
+            &clone,
+            &format!(
+                "git worktree add -q -b oby/job1 ../other origin/main && cd ../other && echo payload > payload.txt && git add payload.txt && {COMMIT} -m payload"
+            ),
+        );
         let base = crate::git::git(&clone, &["rev-parse", "refs/remotes/origin/main"])
             .await
             .unwrap();
@@ -1254,7 +1301,7 @@ required = false
             .await
             .unwrap();
             as_job(&spec, script);
-            new_commits(&spec.worktree, &env, &before, started, base_ref).await
+            new_commits(&spec.worktree, &env, &before, started, base_ref, "oby/me").await
         };
         // Its own commit: recorded.
         let own = turn(job_worktree(&dir, "own", "origin/main"), "echo b > b && git add b && git -c user.name=T -c user.email=t@example.com -c commit.gpgsign=false commit -q -m own").await;
@@ -1294,6 +1341,11 @@ required = false
                 "alternates",
                 "mkdir -p \"$GIT_OBJECT_DIRECTORY/info\" && echo \"$GIT_ALTERNATE_OBJECT_DIRECTORIES\" > \"$GIT_OBJECT_DIRECTORY/info/alternates\" && git reset -q --hard origin/oby/fix-12",
                 "made elsewhere",
+            ),
+            (
+                "another-job",
+                "git checkout oby/job1 -- payload.txt && git -c user.name=T -c user.email=t@example.com -c commit.gpgsign=false commit -q -m mine",
+                "another branch already has",
             ),
         ] {
             let why = turn(job_worktree(&dir, name, "origin/main"), script)
@@ -1465,6 +1517,8 @@ required = false
             "codeload.github.com",
             "gitlab.com",
             "example.com",
+            "proxy.golang.org",
+            "sum.golang.org",
         ] {
             assert!(site_is_foreign(host), "{host}");
         }

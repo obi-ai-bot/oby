@@ -170,7 +170,7 @@ fn github(folder: &Path) -> PathBuf {
         r#"#!/bin/sh
 case "$1 $2" in
   "auth status") echo '{"hosts":{"github.com":[{"login":"wellington","active":true,"state":"success"}]}}' ;;
-  "api repos/obi-e2e/fixture-app/rules/branches/main") echo '[{"type":"pull_request","ruleset_id":7,"parameters":{"required_approving_review_count":1}}]' ;;
+  "api repos/obi-e2e/fixture-app/rules/branches/main") echo '[{"type":"pull_request","ruleset_id":7,"parameters":{"required_approving_review_count":1,"require_last_push_approval":true}}]' ;;
   "api repos/obi-e2e/fixture-app/rulesets/7") echo '{"id":7,"enforcement":"active","current_user_can_bypass":"never"}' ;;
   *) exit 1 ;;
 esac
@@ -354,6 +354,43 @@ fn an_agent_that_reaches_a_code_host_gets_nothing() {
     );
 }
 
+/// The reviewer's repro: a job that turns someone else's code (its agent reached a code host)
+/// commits a payload, which obid keeps on its branch in the shared clone; a plain job takes the
+/// payload from that branch as its own commit. Its turn's look sees another branch's change, and
+/// the first job marked the clone: the second job's check gets nothing either way.
+#[test]
+fn a_payload_from_another_jobs_branch_gets_nothing() {
+    let (_folder, obid, first) = run_one(
+        "secretspec-steal",
+        json!({"repo": "obi-e2e/fixture-app", "kind": "build", "task": "FETCH", "check": "true", "mode": "bypass"}),
+    );
+    let _ = first;
+    let clone = obid.home.join("clones/obi-e2e/fixture-app");
+    let branches = git(
+        &clone,
+        &["for-each-ref", "--format=%(refname)", "refs/heads/oby/"],
+    );
+    assert!(
+        !branches.is_empty(),
+        "the first job's commits are kept in the clone"
+    );
+    let log = dispatch_and_log(
+        &obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "build", "task": "STEAL", "check": "sh check.sh"}),
+    );
+    // Two of obid's lines hold: the payload is another branch's change (the turn's look), and the
+    // clone holds someone else's commits (the first job marked it).
+    assert!(
+        log.contains("obid gave this check none of its owner's secrets")
+            && (log.contains("another branch already has")
+                || log.contains("holds someone else's commits")),
+        "{log}"
+    );
+    let marked = git(&clone, &["config", "--get", "obid.foreign"]);
+    assert!(marked.contains("reached code.example.test"), "{marked}");
+    holds_none(&log, &fake(), "check.log");
+}
+
 /// A job based on a branch obid didn't record anyone of the owner's making (a teammate's) brings
 /// that branch's commits into the clone: from then on no check in the repository gets values.
 #[test]
@@ -452,4 +489,37 @@ async fn a_received_reviews_check_gets_nothing() {
         .unwrap();
     assert!(again.check_refuses_secrets().is_some());
     jobs.stop(&again.id);
+
+    // A job made untrusted keeps to a clone apart: nothing it fetches, commits or keeps lands in
+    // the owner's own clone, which other jobs' checks read.
+    let untrusted = jobs
+        .create(obid::jobs::NewJob {
+            repo: "obi-e2e/fixture-app".into(),
+            kind: "build".into(),
+            task: "Read what someone sent".into(),
+            untrusted: true,
+            ..Default::default()
+        })
+        .unwrap();
+    assert!(untrusted.apart);
+    let prepared = tokio::time::timeout(Duration::from_secs(60), async {
+        loop {
+            if let Some(job) = jobs.get(&untrusted.id)
+                && job.worktree.is_some()
+            {
+                break job;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let pointer =
+        std::fs::read_to_string(PathBuf::from(prepared.worktree.unwrap()).join(".git")).unwrap();
+    assert!(
+        pointer.contains("/apart/clones/obi-e2e/fixture-app/"),
+        "{pointer}"
+    );
+    assert!(!home.join("clones/obi-e2e/fixture-app").exists());
+    jobs.stop(&untrusted.id);
 }

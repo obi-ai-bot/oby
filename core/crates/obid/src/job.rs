@@ -528,6 +528,12 @@ pub struct Job {
     /// (or its follow-up chain's). Never in the API's job.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub made: Vec<String>,
+    /// Its worktree belongs to a clone apart from the owner's own (`home/apart/clones`): it was
+    /// untrusted, someone else's code or bound for a teammate's Mac when it was made, so nothing
+    /// it fetches, commits or keeps ever lands in the clone other jobs' checks read
+    /// (crate::secretspec). A follow-up stays in its job's clone. Never in the API's job.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub apart: bool,
     /// Why obid didn't merge its pull request, when only the owner can take it on from here
     /// (crate::merge); none otherwise.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -774,6 +780,7 @@ impl Job {
             untrusted: false,
             foreign: None,
             made: Vec::new(),
+            apart: false,
             ran_secs: None,
             budget_from: None,
             merge_error: None,

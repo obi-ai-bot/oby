@@ -221,6 +221,32 @@ pub async fn taint(clone: &Path, why: &str) {
     }
 }
 
+/// [`taint`], at once, from a caller that can't wait: `git config` run as it is.
+pub fn taint_now(clone: &Path, why: &str) {
+    let has = std::process::Command::new("git")
+        .args(["config", "--get", FOREIGN])
+        .current_dir(clone)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success());
+    if has {
+        return;
+    }
+    let set = std::process::Command::new("git")
+        .args(["config", FOREIGN, why])
+        .current_dir(clone)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+    if !set.is_ok_and(|s| s.success()) {
+        tracing::warn!(
+            "couldn't note that {} holds someone else's commits",
+            clone.display()
+        );
+    }
+}
+
 /// Why `clone` may hold someone else's commits, or none: it was made before clones held only
 /// their default branch, or obid fetched someone else's into it ([`taint`]).
 pub async fn foreign_in(clone: &Path) -> Option<String> {

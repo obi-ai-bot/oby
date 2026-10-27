@@ -907,6 +907,24 @@ pub fn tools_own(tool: Tool, host: &str, port: u16) -> bool {
     port == 443 && domains.iter().any(|domain| within(host, domain))
 }
 
+/// Whether `host` is one of `tool`'s API hosts: what its agent calls its model and its login
+/// through, as obid has seen them, and nothing that serves what people share (claude.ai's or
+/// chatgpt.com's shared conversations). Reaching another of [`tools_own`]'s hosts makes the job
+/// someone else's code (crate::secretspec). Codex with a ChatGPT login calls chatgpt.com itself,
+/// which serves shared conversations too, so such a job's check gets no values.
+pub fn tools_api(tool: Tool, host: &str) -> bool {
+    let hosts: &[&str] = match tool {
+        Tool::Claude => &[
+            "api.anthropic.com",
+            "statsig.anthropic.com",
+            "console.anthropic.com",
+        ],
+        Tool::Codex => &["api.openai.com", "auth.openai.com"],
+        Tool::Cursor => &["api2.cursor.sh", "api3.cursor.sh", "api4.cursor.sh"],
+    };
+    hosts.contains(&host)
+}
+
 /// Telemetry a CLI sends elsewhere than its vendor (Claude Code's to Datadog, seen 2026-10-26):
 /// refused without asking the owner about it.
 pub fn telemetry(host: &str) -> bool {
@@ -1039,6 +1057,15 @@ mod tests {
         assert!(!tools_own(Tool::Claude, "evilanthropic.com", 443));
         assert!(!tools_own(Tool::Claude, "anthropic.com.evil.example", 443));
         assert!(telemetry("http-intake.logs.us5.datadoghq.com"));
+        // Only a tool's API hosts leave its job the owner's: the vendor's others serve what
+        // people share (crate::secretspec).
+        assert!(tools_api(Tool::Claude, "api.anthropic.com"));
+        assert!(!tools_api(Tool::Claude, "claude.ai"));
+        assert!(!tools_api(Tool::Claude, "claude.com"));
+        assert!(tools_api(Tool::Codex, "api.openai.com"));
+        assert!(!tools_api(Tool::Codex, "chatgpt.com"));
+        assert!(tools_api(Tool::Cursor, "api2.cursor.sh"));
+        assert!(!tools_api(Tool::Cursor, "cursor.com"));
     }
 
     #[test]

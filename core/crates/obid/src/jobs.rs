@@ -3239,6 +3239,11 @@ impl Jobs {
         // never carries `rule` (it's never from the API): found here. So is an untrusted one's.
         let of = job.follow_up_of.as_deref().and_then(|of| self.get(of));
         job.untrusted = new.untrusted || of.as_ref().is_some_and(|of| of.untrusted);
+        // Someone else's code from the start keeps to a clone apart; a follow-up to its job's.
+        job.apart = match &of {
+            Some(of) => of.apart,
+            None => job.untrusted || job.runs_on.is_some(),
+        };
         // A follow-up runs the code of the job it follows: when that one's check got none of the
         // owner's secrets, neither does this one's (crate::secretspec).
         job.foreign = of.as_ref().and_then(|of| {
@@ -4575,8 +4580,19 @@ impl Jobs {
         let Some(job) = self.get(id) else {
             return Some(Err("The job is gone.".into()));
         };
-        if Tool::from_id(&job.agent).is_some_and(|tool| crate::egress::tools_own(tool, host, port))
+        if let Some(tool) = Tool::from_id(&job.agent)
+            && crate::egress::tools_own(tool, host, port)
         {
+            // Past its model's API, a vendor's other hosts serve what people share there.
+            if !crate::egress::tools_api(tool, host) {
+                self.mark_foreign(
+                    id,
+                    format!(
+                        "its agent reached {}, beyond its tool's API (a vendor's other hosts serve what people share)",
+                        crate::egress::site(host, port)
+                    ),
+                );
+            }
             return Some(Ok(()));
         }
         (crate::egress::telemetry(host) || job.obi.is_some()).then(|| {
@@ -5769,7 +5785,7 @@ impl Jobs {
         if let Some(files) = half {
             return Onto::Conflict(files);
         }
-        let clone = git::clone_path(&self.config.home, &repo.repo);
+        let clone = self.clone_for(&job);
         let tracking = format!("refs/remotes/origin/{base}");
         {
             let preparing = self.preparing(&repo.repo);
@@ -5788,6 +5804,7 @@ impl Jobs {
                 &clone,
                 &repo,
                 &tracking,
+                Some(&base),
                 &format!("the branch {base}, fetched as a job's base"),
             ))
             .await;
@@ -7495,22 +7512,35 @@ impl Jobs {
         if let Err(why) = crate::secretspec::protected_base(&gh, &repo.repo, base).await {
             return Some(why);
         }
+        // The default branch is in every clone: unreviewed commits there could be copied in.
+        if base != repo.default_branch
+            && let Err(why) =
+                crate::secretspec::protected_base(&gh, &repo.repo, &repo.default_branch).await
+        {
+            return Some(format!("the clone's default branch isn't reviewed: {why}"));
+        }
         crate::secretspec::on_record(spec, base_commit, head, &self.record_of(job))
             .await
             .err()
     }
 
     /// Notes job `id` as someone else's code from now on ([`Job::foreign`]): its check, and its
-    /// follow-ups', get none of the owner's secrets. The first reason is kept.
+    /// follow-ups', get none of the owner's secrets. The first reason is kept. A job in the owner's
+    /// own clone marks that clone too ([`git::taint`]): what it has already committed, fetched or
+    /// kept there is visible to every other job's worktree, so no check in the repository gets
+    /// values from then on.
     pub(crate) fn mark_foreign(&self, id: &str, why: String) {
-        if self.get(id).is_some_and(|job| job.foreign.is_none()) {
-            tracing::info!(
-                "job {id}: its check gets none of the owner's secrets from now on: {why}"
-            );
-            self.update(id, |job| {
-                job.foreign.get_or_insert(why);
-            });
+        let Some(job) = self.get(id) else { return };
+        if job.foreign.is_some() {
+            return;
         }
+        tracing::info!("job {id}: its check gets none of the owner's secrets from now on: {why}");
+        if !job.apart && job.obi.is_none() {
+            git::taint_now(&self.clone_for(&job), &format!("job {id}: {why}"));
+        }
+        self.update(id, |job| {
+            job.foreign.get_or_insert(why);
+        });
     }
 
     /// Every commit obid recorded any job making, of the jobs whose checks would get values.
@@ -7524,18 +7554,31 @@ impl Jobs {
             .collect()
     }
 
-    /// After obid fetched `fetched` (a ref) into `clone` for a job: unless it's the repository's
-    /// default branch, or every commit it adds to it is one obid recorded a job of the owner's
-    /// making, the clone holds someone else's commits from now on ([`git::taint`]), named `what`.
+    /// After obid fetched `fetched` (a ref, branch `branch` when it is one) into `clone` for a
+    /// job: unless it's the repository's default branch, a branch GitHub says is reviewed
+    /// ([`crate::secretspec::protected_base`]), or every commit it adds to the default branch is
+    /// one obid recorded a job of the owner's making, the clone holds someone else's commits from
+    /// now on ([`git::taint`]), named `what`.
     async fn taint_unless_ours(
         &self,
         clone: &Path,
         repo: &crate::config::Repo,
         fetched: &str,
+        branch: Option<&str>,
         what: &str,
     ) {
         let default = format!("refs/remotes/origin/{}", repo.default_branch);
         if fetched == default {
+            return;
+        }
+        // A branch GitHub says is reviewed holds nothing that got in unreviewed. (The default
+        // branch itself must be one for any check to get values: `code_refuses_secrets`.)
+        if let Some(branch) = branch
+            && let Some(gh) = crate::github::gh()
+            && crate::secretspec::protected_base(&gh, &repo.repo, branch)
+                .await
+                .is_ok()
+        {
             return;
         }
         let range = format!("{default}..{fetched}");
@@ -7609,6 +7652,7 @@ impl Jobs {
             before,
             started,
             &base_ref,
+            &job.branch,
         )
         .await
         {
@@ -7616,14 +7660,7 @@ impl Jobs {
             Ok(new) => {
                 self.update(id, |job| job.made.extend(new));
             }
-            Err(why) => {
-                tracing::info!(
-                    "job {id}: its check gets none of the owner's secrets from now on: {why}"
-                );
-                self.update(id, |job| {
-                    job.foreign.get_or_insert(why);
-                });
-            }
+            Err(why) => self.mark_foreign(id, why),
         }
     }
 
@@ -7736,14 +7773,22 @@ impl Jobs {
         self.config.home.join("received")
     }
 
-    /// The clone `job`'s worktree belongs to: the received one for a review another Oby asked
-    /// for, else the owner's.
-    fn clone_for(&self, job: &Job) -> PathBuf {
+    /// Where the clones are kept that `job`'s worktree belongs to: the received ones for a review
+    /// another Oby asked for, the ones apart for a job made untrusted or someone else's code
+    /// ([`Job::apart`]), else the owner's own, which only the owner's own jobs ever write to.
+    fn clone_home(&self, job: &Job) -> PathBuf {
         if job.obi.is_some() {
-            git::clone_path(&self.received_home(), &job.repo)
+            self.received_home()
+        } else if job.apart {
+            self.config.home.join("apart")
         } else {
-            git::clone_path(&self.config.home, &job.repo)
+            self.config.home.clone()
         }
+    }
+
+    /// The clone `job`'s worktree belongs to ([`Jobs::clone_home`]).
+    fn clone_for(&self, job: &Job) -> PathBuf {
+        git::clone_path(&self.clone_home(job), &job.repo)
     }
 
     /// A review another Obi asked for, steps 2 to 7 (runner-api.md, "obid only: Obi-to-Obi review
@@ -8126,15 +8171,24 @@ impl Jobs {
             if let Some(pr) = job.pr {
                 refspecs.push(format!("+refs/pull/{pr}/head:refs/remotes/origin/pr/{pr}"));
             }
-            let clone = git::ensure_clone(&self.config.home, &repo.repo, &repo.remote, &refspecs)
-                .await
-                .map_err(|e| format!("Couldn't get {} ready: {e}", repo.repo))?;
-            // A branch or a pull request's head that isn't the owner's own makes the clone
-            // someone else's code for every check from now on (crate::secretspec).
+            let clone =
+                git::ensure_clone(&self.clone_home(&job), &repo.repo, &repo.remote, &refspecs)
+                    .await
+                    .map_err(|e| format!("Couldn't get {} ready: {e}", repo.repo))?;
+            // A job that is someone else's code in the owner's own clone (a follow-up of one that
+            // turned so) makes the clone someone else's code for every check from now on, as does
+            // a branch or a pull request's head that isn't the owner's own (crate::secretspec).
+            if !job.apart
+                && job.obi.is_none()
+                && let Some(why) = job.check_refuses_secrets()
+            {
+                git::taint(&clone, &format!("job {id}: {why}")).await;
+            }
             Box::pin(self.taint_unless_ours(
                 &clone,
                 &repo,
                 &format!("refs/remotes/origin/{base}"),
+                Some(&base),
                 &format!("the branch {base}, fetched as a job's base"),
             ))
             .await;
@@ -8143,6 +8197,7 @@ impl Jobs {
                     &clone,
                     &repo,
                     &format!("refs/remotes/origin/pr/{pr}"),
+                    None,
                     &format!("pull request #{pr}'s head"),
                 ))
                 .await;
@@ -8212,7 +8267,7 @@ impl Jobs {
         let mut start_commit = job.start_commit.clone().unwrap_or_default();
         // Where its branch was when this run started: a job whose own publish failed is tried
         // again by itself only when this run made new commits (runner-api.md, "Job").
-        let clone = git::clone_path(&self.config.home, &repo.repo);
+        let clone = self.clone_for(&job);
         self.offer_check(&job, &clone, &start_commit).await;
         let before_head = git::git(
             &clone,
@@ -9529,13 +9584,13 @@ impl Jobs {
         else {
             return Vec::new();
         };
-        let (Some(seen), Some(repo)) = (job.tetrix.clone(), self.repo(&job.repo)) else {
+        let (Some(seen), Some(_)) = (job.tetrix.clone(), self.repo(&job.repo)) else {
             return Vec::new();
         };
         if !tetrix.connected() || start.is_empty() {
             return Vec::new();
         }
-        let clone = git::clone_path(&self.config.home, &repo.repo);
+        let clone = self.clone_for(&job);
         let range = format!("{start}..{head}");
         let mut args = vec!["diff", "-U0"];
         args.extend_from_slice(crate::publish::DIFF);
@@ -10102,7 +10157,7 @@ impl Jobs {
         let Some(pushed_head) = job.pushed_head() else {
             return job.pushed;
         };
-        let clone = git::clone_path(&self.config.home, &job.repo);
+        let clone = self.clone_for(job);
         let unpushed = git::git(
             &clone,
             &["rev-list", "--count", &format!("{pushed_head}..{head}")],
@@ -10130,7 +10185,7 @@ impl Jobs {
         crate::store::make_private_dir(&scratch)
             .map_err(|e| format!("Not published: obid couldn't make its scan's folder ({e})."))?;
         Ok(crate::publish::Target {
-            clone: git::clone_path(&self.config.home, &repo.repo),
+            clone: self.clone_for(job),
             remote: repo.remote.clone(),
             default_branch: repo.default_branch.clone(),
             scratch,
