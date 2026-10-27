@@ -2,7 +2,13 @@
 
 2026-10-27 · inspected detached HEAD `ab65f02` in obi-ai-bot/oby. Design only; no runtime code changed. This updates the implementation direction in `docs/research/cursor-usage.md`, whose October 14 paths and login assumptions predate today's obid implementation.
 
-Delivery scope: this document is the investigation artifact explicitly requested for this job, including a proposed implementation sequence. The task specifically requires committing it in this worktree under `.obi/artifacts/` and prohibits GitHub posts. That task-specific direction takes precedence over the repository's general rule to author plans and research in `obi-ai-bot/oby-plan`. This artifact does not schedule or authorize implementation; any subsequently adopted roadmap plan belongs in `oby-plan`. No cross-repository publication is included in this job.
+Delivery scope: this document is the investigation artifact requested in the user message in this conversation, including a proposed implementation sequence. The relevant delivery instructions are quoted below; they are from the conversation, not from `.obi/inputs/asked.md`.
+
+> Commit your changes here when they're ready. Don't push, open pull requests or post anything to GitHub: obid publishes the work itself.
+
+> To show the user something to look at (a page, a document, a chart, an image, a PDF), put it in .obi/artifacts/: one file, or one folder with an index.html, per thing.
+
+Taken together, these task-specific instructions authorize this committed artifact here despite the general repository rule to author plans and research in `obi-ai-bot/oby-plan`. This artifact does not schedule or authorize implementation; any subsequently adopted roadmap plan belongs in `oby-plan`. No cross-repository publication is included in this job. During review 2, neither `.obi/inputs/asked.md` nor `.obi/inputs/base-rules.md` was present in this worktree; the general rule itself is available in the user-supplied AGENTS.md instructions and is acknowledged here.
 
 ## Findings: what ships today
 
