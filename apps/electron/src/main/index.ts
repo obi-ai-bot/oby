@@ -132,8 +132,8 @@ function createWindow() {
 }
 
 app.whenReady().then(() => {
-  // the Dock icon while developing (a packaged app takes build/icon.icns)
-  if (process.platform === 'darwin' && !app.isPackaged) app.dock?.setIcon(join(__dirname, '../../build/icon.png'));
+  // the Dock icon while developing (a packaged app takes apps/icon/AppIcon.icon, electron-builder.yml)
+  if (process.platform === 'darwin' && !app.isPackaged) app.dock?.setIcon(join(__dirname, '../../../icon/exports/oby-1024.png'));
   startObid();
   createWindow();
   app.on('activate', () => { if (!win) createWindow(); });
