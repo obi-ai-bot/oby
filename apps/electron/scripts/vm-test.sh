@@ -83,9 +83,12 @@ ssh "${ssh_to[@]}" -N -L 9339:127.0.0.1:9333 "admin@$ip" &
 tunnel=$!
 
 say "No DevTools port unless an admin allows it"
-in_vm "open -a '/Applications/$name.app' --args --remote-debugging-port=9333; sleep 5; pgrep -x '$name'" > /dev/null \
-  && die "the app runs with a DevTools port and no file allowing it"
-echo "    it quits when opened with one"
+# (a first open is slow: macOS checks the app before any of it runs)
+in_vm "open -a '/Applications/$name.app' --args --remote-debugging-port=9333; sleep 3
+  for _ in {1..30}; do pgrep -x '$name' > /dev/null || break; sleep 1; done
+  ! pgrep -x '$name' > /dev/null && ! lsof -nP -iTCP:9333 -sTCP:LISTEN > /dev/null" \
+  || die "the app runs with a DevTools port and no file allowing it"
+echo "    it quits when opened with one, and the port never listens"
 # The rest of this test reads the page over that port: the root-owned file that allows it
 in_vm "sudo -n mkdir -p '/Library/Application Support/Oby' && sudo -n touch '/Library/Application Support/Oby/allow-devtools-port'"
 
