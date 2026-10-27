@@ -2474,6 +2474,7 @@ mod tests {
         let root = std::env::temp_dir().join(format!("obid-warm-{}", std::process::id()));
         std::fs::create_dir_all(&root).unwrap();
         let launch = agent::Launch {
+            own_sandbox: false,
             argv: vec!["/bin/cat".into()],
             env: vec![],
             cwd: root.clone(),

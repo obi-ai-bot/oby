@@ -5602,14 +5602,19 @@ impl Jobs {
         if !worktree.join(".git").exists() {
             return Err("the job has no worktree".into());
         }
-        let (_, common) = self.own_git_dirs(id).await?;
+        let (admin, common) = self.own_git_dirs(id).await?;
+        let folders = git_folders(&admin, &common, &worktree);
         let clone = common
             .parent()
             .ok_or("the clone's git directory has no folder")?
             .to_path_buf();
-        let head = git::git(&worktree, &["rev-parse", "--verify", "--quiet", "HEAD"])
-            .await
-            .map_err(|e| e.to_string())?;
+        let head = git::pinned(
+            &worktree,
+            &folders,
+            &["rev-parse", "--verify", "--quiet", "HEAD"],
+        )
+        .await
+        .map_err(|e| e.to_string())?;
         if !git::is_sha(&head) {
             return Err(format!("the worktree's HEAD isn't a commit: {head}"));
         }
@@ -5679,6 +5684,13 @@ impl Jobs {
             }
             _ => Err(NOT_OUR_GIT.into()),
         }
+    }
+
+    /// [`Jobs::own_git_dirs`] as the variables that pin obid's own git calls in the worktree there
+    /// ([`git::pinned`], [`git_folders`]).
+    async fn pinned_git(&self, id: &str) -> Result<Vec<(&'static str, String)>, String> {
+        let (admin, common) = self.own_git_dirs(id).await?;
+        Ok(git_folders(&admin, &common, &self.worktree_path(id)))
     }
 
     /// Runs git in the job's worktree inside its sandbox, without the network, so git reads and
@@ -5980,11 +5992,15 @@ impl Jobs {
     /// Takes obid's own `wip:` commit back out as the job runs again: what it held is uncommitted,
     /// as the agent left it. One the job started from (a follow-up's) stays.
     async fn unkeep_wip(&self, id: &str, start_commit: &str) -> Result<(), String> {
-        self.own_git_dirs(id).await?;
+        let folders = self.pinned_git(id).await?;
         let worktree = self.worktree_path(id);
-        let head = git::git(&worktree, &["rev-parse", "--verify", "--quiet", "HEAD"])
-            .await
-            .map_err(|e| e.to_string())?;
+        let head = git::pinned(
+            &worktree,
+            &folders,
+            &["rev-parse", "--verify", "--quiet", "HEAD"],
+        )
+        .await
+        .map_err(|e| e.to_string())?;
         if head == start_commit {
             return Ok(());
         }
@@ -6123,10 +6139,14 @@ impl Jobs {
                 // What it committed itself ends here, before obid's `wip:` commit, which never
                 // counts: counted once keep_commits has its objects in the clone.
                 let worktree = self.worktree_path(id);
-                let own_head = match self.own_git_dirs(id).await {
-                    Ok(_) => git::git(&worktree, &["rev-parse", "--verify", "--quiet", "HEAD"])
-                        .await
-                        .unwrap_or_default(),
+                let own_head = match self.pinned_git(id).await {
+                    Ok(folders) => git::pinned(
+                        &worktree,
+                        &folders,
+                        &["rev-parse", "--verify", "--quiet", "HEAD"],
+                    )
+                    .await
+                    .unwrap_or_default(),
                     Err(_) => String::new(),
                 };
                 if !paused
@@ -6141,7 +6161,10 @@ impl Jobs {
                 match self.keep_commits(id).await {
                     Ok(_) => {
                         let made = match self.get(id) {
-                            Some(job) => self.counted(&job, &worktree, &own_head).await,
+                            Some(job) => {
+                                let folders = self.pinned_git(id).await.unwrap_or_default();
+                                self.counted(&job, &worktree, &folders, &own_head).await
+                            }
                             None => 0,
                         };
                         if made > 0 {
@@ -6387,7 +6410,7 @@ impl Jobs {
         let own = self.own_sandbox(tool, account);
         match (&account.config_dir, tool) {
             // In Claude Code's own sandbox, with the account's own folder and login: no copy.
-            _ if own => extra.extend(own_sandbox_env(account, &spec)?),
+            _ if own => extra.extend(own_sandbox_env(account, &spec, &self.login_path(&job.id))?),
             // Never the account's own folder (#655): the job gets a folder of its own with a copy
             // of the login and nothing a box could leave there for an unboxed process to read.
             (Some(dir), _) => {
@@ -6476,7 +6499,8 @@ impl Jobs {
                 let mut argv: Vec<OsString> = vec![bin.into_os_string()];
                 argv.extend(flags);
                 if own {
-                    argv.extend(["--settings".into(), own_sandbox_settings(&spec)?.into()]);
+                    let settings = own_sandbox_settings(&spec, &self.login_path(&job.id))?;
+                    argv.extend(["--settings".into(), settings.into()]);
                 }
                 argv
             }
@@ -6498,6 +6522,7 @@ impl Jobs {
             without_project_instructions(tool, &mut argv, &mut extra);
         }
         Ok(Launch {
+            own_sandbox: own,
             argv: if own {
                 sandbox.unboxed(&argv)
             } else {
@@ -6686,6 +6711,7 @@ impl Jobs {
             ("GIT_CONFIG_GLOBAL", OsString::from("/dev/null")),
         ];
         Ok(Launch {
+            own_sandbox: false,
             argv: sandbox.wrap_command(&spec, &argv),
             env: process::sandbox_env(&process::tools_path(), temp, &git),
             cwd: room.to_path_buf(),
@@ -6823,6 +6849,7 @@ impl Jobs {
             sandbox.wrap(&spec, &argv)
         };
         Ok(Launch {
+            own_sandbox: false,
             argv,
             env: {
                 if tool == Tool::Claude {
@@ -6858,17 +6885,27 @@ impl Jobs {
         let worktree = launch.cwd.clone();
         let job = self.get(id).ok_or("the job is gone")?;
         let jobs = self;
-        // In Claude Code's own sandbox its tools run unboxed: never a path outside the worktree.
-        let own = tool == Tool::Claude && self.config.claude_own_sandbox.contains(&job.account);
+        // In Claude Code's own sandbox its tools run unboxed: never a path outside the worktree,
+        // nor the worktree's `.git`, which obid's later git calls would otherwise follow.
+        let own = launch.own_sandbox;
+        let pointer = policy::real_path(&worktree.join(".git"));
         // obid's fixed rules first, in every mode; then, for the owner's own jobs, the job's mode
         // and the repository's saved rules, which may ask the owner. A review another Obi asked
         // for only reads, and never asks.
         let decide = |name: &str, input: &Value| -> Ruling {
-            let outside = (own && policy::names_outside(name, input, &worktree)).then(|| {
-                Answer::Deny(format!(
-                    "Stay inside this job's worktree ({}).",
-                    worktree.display()
-                ))
+            let names_pointer = ["file_path", "notebook_path"]
+                .iter()
+                .filter_map(|key| input.get(*key).and_then(Value::as_str))
+                .any(|path| policy::real_path(&worktree.join(path)) == pointer);
+            let outside = (own && names_pointer)
+                .then(|| Answer::Deny("obid keeps the worktree's .git as it made it.".into()));
+            let outside = outside.or_else(|| {
+                (own && policy::names_outside(name, input, &worktree)).then(|| {
+                    Answer::Deny(format!(
+                        "Stay inside this job's worktree ({}).",
+                        worktree.display()
+                    ))
+                })
             });
             match outside
                 .unwrap_or_else(|| policy::decide(name, input, &worktree, obi_review, mcp_rules))
@@ -7684,7 +7721,8 @@ impl Jobs {
                 format!("Claude Code couldn't finish the review: {first}")
             });
         }
-        let head = git::git(&worktree, &["rev-parse", "HEAD"])
+        let folders = git_folders(&admin, &common, &worktree);
+        let head = git::pinned(&worktree, &folders, &["rev-parse", "HEAD"])
             .await
             .map_err(|e| e.to_string())?;
         if head != request.head_sha {
@@ -7957,14 +7995,24 @@ impl Jobs {
         let spec = self.spec(&worktree, &admin, &common, &temp, true, tool);
         // HEAD detached at the branch (a worktree from before may be on it), and the folder the
         // job's new objects go to (Spec::git_env).
-        if let Ok(head) = git::git(&worktree, &["rev-parse", "--verify", "--quiet", "HEAD"]).await
-            && git::git(&worktree, &["symbolic-ref", "--quiet", "HEAD"])
+        let folders = git_folders(&admin, &common, &worktree);
+        if let Ok(head) = git::pinned(
+            &worktree,
+            &folders,
+            &["rev-parse", "--verify", "--quiet", "HEAD"],
+        )
+        .await
+            && git::pinned(&worktree, &folders, &["symbolic-ref", "--quiet", "HEAD"])
                 .await
                 .is_ok()
         {
-            git::git(&worktree, &["update-ref", "--no-deref", "HEAD", &head])
-                .await
-                .map_err(|e| format!("obid couldn't detach the job's HEAD: {e}"))?;
+            git::pinned(
+                &worktree,
+                &folders,
+                &["update-ref", "--no-deref", "HEAD", &head],
+            )
+            .await
+            .map_err(|e| format!("obid couldn't detach the job's HEAD: {e}"))?;
         }
         if spec.own_objects().is_some() {
             own_objects(&admin)?;
@@ -8726,7 +8774,8 @@ impl Jobs {
             stages.begin("keep commits");
             let head = self.keep_commits(id).await?;
             let job = self.get(id).ok_or("the job is gone")?;
-            let commits = self.counted(&job, &worktree, &head).await;
+            let folders = self.pinned_git(id).await.unwrap_or_default();
+            let commits = self.counted(&job, &worktree, &folders, &head).await;
             // Work it left uncommitted, none committed: once, it's told to commit it, then the
             // check runs on what it committed. Before the job's end is told to anyone.
             if COMMITTING.contains(&job.kind.as_str())
@@ -8764,7 +8813,14 @@ impl Jobs {
             }
             // Carrying only commits whose pull request was closed unmerged: Publish is the owner's.
             if let Some(first) = self.first_turned_down(&job)
-                && count_commits(&worktree, &start_commit, &head).await == 0
+                && count_commits(
+                    &worktree,
+                    &self.pinned_git(id).await.unwrap_or_default(),
+                    &start_commit,
+                    &head,
+                )
+                .await
+                    == 0
             {
                 self.end_done(id, commits, job.pushed, |job| {
                     job.reason = Some(format!(
@@ -9076,21 +9132,25 @@ impl Jobs {
             return;
         }
         let range = format!("{start}..HEAD");
-        let changed: Vec<String> = git::git(worktree, &["diff", "--name-only", &range])
-            .await
-            .unwrap_or_default()
-            .lines()
-            .map(str::trim)
-            .filter(|f| !f.is_empty())
-            .map(String::from)
-            .collect();
+        let Ok(folders) = self.pinned_git(id).await else {
+            return;
+        };
+        let changed: Vec<String> =
+            git::pinned(worktree, &folders, &["diff", "--name-only", &range])
+                .await
+                .unwrap_or_default()
+                .lines()
+                .map(str::trim)
+                .filter(|f| !f.is_empty())
+                .map(String::from)
+                .collect();
         if changed.is_empty() {
             return;
         }
         let Some(found) = self.teammates_on(&job, &changed).await else {
             return;
         };
-        let ours = git::git(worktree, &["diff", "-U0", &range])
+        let ours = git::pinned(worktree, &folders, &["diff", "-U0", &range])
             .await
             .unwrap_or_default();
         let teammates = crate::teammates::Teammates {
@@ -9123,6 +9183,9 @@ impl Jobs {
         ) else {
             return;
         };
+        let Ok(folders) = self.pinned_git(id).await else {
+            return;
+        };
         // Ended already, and a round came after (a push the secret scan blocked gets one): its
         // gaps went once, and its summary gets the line again.
         if seen.ended {
@@ -9135,7 +9198,7 @@ impl Jobs {
             return;
         }
         let (ended, outgoing) = tetrix
-            .job_ended(connections, &job, &seen, worktree, start)
+            .job_ended(connections, &job, &seen, worktree, &folders, start)
             .await;
         self.update(id, |job| {
             if job.kind != "review" {
@@ -9653,10 +9716,16 @@ impl Jobs {
     /// (unless that work's pull request was closed unmerged), or, when none is under `head` (a
     /// branch of its own, or one rebased since), over its base or its pull request's head. A split
     /// part counts only its own: its siblings carry the same commits.
-    async fn counted(&self, job: &Job, worktree: &Path, head: &str) -> u64 {
+    async fn counted(
+        &self,
+        job: &Job,
+        worktree: &Path,
+        folders: &[(&'static str, String)],
+        head: &str,
+    ) -> u64 {
         let start_commit = job.start_commit.as_deref().unwrap_or_default();
         if job.start_from.is_none() || head.is_empty() || self.split_part(job) {
-            return count_commits(worktree, start_commit, head).await;
+            return count_commits(worktree, folders, start_commit, head).await;
         }
         let from_out = self.first_turned_down(job).is_none();
         let out = |branch: Option<&str>| {
@@ -9673,11 +9742,16 @@ impl Jobs {
             .collect();
         let mut least: Option<u64> = None;
         for there in pushed.iter().filter(|there| git::is_sha(there)) {
-            let under = git::git(worktree, &["merge-base", "--is-ancestor", there, head])
+            let under = !folders.is_empty()
+                && git::pinned(
+                    worktree,
+                    folders,
+                    &["merge-base", "--is-ancestor", there, head],
+                )
                 .await
                 .is_ok();
             if under {
-                let count = count_commits(worktree, there, head).await;
+                let count = count_commits(worktree, folders, there, head).await;
                 least = Some(least.map_or(count, |least| least.min(count)));
             }
         }
@@ -9691,7 +9765,7 @@ impl Jobs {
                 job.base.as_deref().unwrap_or_default()
             ),
         };
-        count_commits(worktree, &from, head).await
+        count_commits(worktree, folders, &from, head).await
     }
 
     /// Whether `job` is one part of its first job's split (crate::brain::supervisor).
@@ -10924,12 +10998,13 @@ fn cursor_login_live(login: &[u8]) -> bool {
 }
 
 /// What a Claude Code run in its own sandbox (`claudeOwnSandbox`) gets over a boxed run's
-/// environment, whose `HOME` (the job's temporary folder) it keeps, so what its commands build and
-/// cache stays the job's: the account's own folder and Keychain item (the default ones for an
-/// account with no `configDir`), and `HOME/Library/Keychains` as a link to the person's, where
-/// `security` finds that item; its sandbox keeps its commands out of both and the link as obid
-/// made it ([`own_sandbox_settings`]). git reads only the clone's settings, through the job's own
-/// git folders whatever the worktree's `.git` or `commondir` says: Claude Code runs git itself,
+/// environment: the account's own folder and Keychain item (the default ones for an account with
+/// no `configDir`), and, as its own `HOME`, the job's `login` folder (`home/logins/<job id>`,
+/// which its commands can neither read nor write), holding only `Library/Keychains`, a link to the
+/// person's, where `security` finds that item. Its commands get the job's temporary folder as
+/// `HOME` instead, through `CLAUDE_ENV_FILE` (`env.sh` there, written fresh every turn), so what
+/// they build and cache stays the job's. git reads only the clone's settings, through the job's
+/// own git folders whatever the worktree's `.git` or `commondir` says: Claude Code runs git itself,
 /// outside its sandbox, and a setting its commands could write would run what they put there.
 /// With no global settings and an empty `credential.helper` there's no credential helper either.
 /// Refused when the account's `.claude.json` sets, in its `env` (which Claude Code applies whatever
@@ -10937,6 +11012,7 @@ fn cursor_login_live(login: &[u8]) -> bool {
 fn own_sandbox_env(
     account: &crate::config::Account,
     spec: &Spec,
+    login: &Path,
 ) -> Result<Vec<(&'static str, OsString)>, String> {
     let home = login_home().ok_or("obid can't find the home Claude Code's login is in.")?;
     let (Some(admin), Some(common)) = (&spec.git_admin, &spec.git_common) else {
@@ -10948,6 +11024,8 @@ fn own_sandbox_env(
         .unwrap_or_else(|| home.join(".claude"));
     let storage = account.config_dir.clone().unwrap_or_default();
     let env: Vec<(&'static str, OsString)> = vec![
+        ("HOME", login.as_os_str().to_owned()),
+        ("CLAUDE_ENV_FILE", login.join("env.sh").into_os_string()),
         ("CLAUDE_CONFIG_DIR", folder.clone().into_os_string()),
         ("CLAUDE_SECURESTORAGE_CONFIG_DIR", storage.into_os_string()),
         ("GIT_CONFIG_NOSYSTEM", "1".into()),
@@ -10975,16 +11053,30 @@ fn own_sandbox_env(
             ));
         }
     }
-    link_keychains(&spec.temp, &home)
+    let mut made = std::fs::DirBuilder::new();
+    std::os::unix::fs::DirBuilderExt::mode(made.recursive(true), 0o700);
+    made.create(login)
+        .and_then(|()| link_keychains(login, &home))
         .map_err(|e| format!("obid can't show Claude Code its Keychain: {e}"))?;
+    let temp = shell_quoted(&spec.temp.to_string_lossy());
+    std::fs::write(
+        login.join("env.sh"),
+        format!("export HOME={temp}\nexport CFFIXED_USER_HOME={temp}\n"),
+    )
+    .map_err(|e| format!("obid can't give Claude Code's commands their HOME: {e}"))?;
     Ok(env)
 }
 
-/// `temp/Library/Keychains` as a link to `home`'s, where `security` finds the login Keychain
-/// through `HOME`. Never through a link the job left: a `Library` that isn't a folder of its own,
-/// or anything at `Keychains`, goes first.
-fn link_keychains(temp: &Path, home: &Path) -> std::io::Result<()> {
-    let library = temp.join("Library");
+/// `text` in single quotes for `sh`, a quote in it closed, escaped and opened again.
+fn shell_quoted(text: &str) -> String {
+    format!("'{}'", text.replace('\'', "'\\''"))
+}
+
+/// `at/Library/Keychains` as a link to `home`'s, where `security` finds the login Keychain through
+/// `HOME`. Never through a link found there: a `Library` that isn't a folder of its own, or
+/// anything at `Keychains`, goes first.
+fn link_keychains(at: &Path, home: &Path) -> std::io::Result<()> {
+    let library = at.join("Library");
     if std::fs::symlink_metadata(&library).is_ok_and(|meta| !meta.is_dir()) {
         std::fs::remove_file(&library)?;
     }
@@ -11005,11 +11097,13 @@ fn link_keychains(temp: &Path, home: &Path) -> std::io::Result<()> {
 /// home, the person's or the accounts' folders ([`Spec::hidden`], denied whole, so a folder made
 /// there mid-turn is denied too) but what obid's box reads ([`Spec::readable`], re-opened), writes
 /// only where the box would ([`Spec::writable`]), and never the git pointers ([`Spec::pointers`]) or
-/// the Keychains link. Its Read and Edit tools ask before going outside the worktree, which obid
-/// refuses in this mode (`policy::names_outside`), and are denied the pointers and the link outright. obid still
-/// answers each of its commands (`autoAllowBashIfSandboxed` off). A path the settings can't name
-/// stops the run.
-fn own_sandbox_settings(spec: &Spec) -> Result<String, String> {
+/// what Claude Code keeps in `login` (its `Library` with the Keychains link, and `env.sh`, which
+/// Claude Code lets its commands write whatever the settings say: obid writes it again every turn,
+/// and what it sets reaches only them). Its Read and Edit tools ask before going outside the
+/// worktree, which obid refuses in this mode (`policy::names_outside`), and are denied the pointers
+/// and those outright. obid still answers each of its commands (`autoAllowBashIfSandboxed` off). A
+/// path the settings can't name stops the run.
+fn own_sandbox_settings(spec: &Spec, login: &Path) -> Result<String, String> {
     let spec = spec.canonical();
     let name = |path: &PathBuf| {
         path.to_str().map(str::to_owned).ok_or_else(|| {
@@ -11020,8 +11114,10 @@ fn own_sandbox_settings(spec: &Spec) -> Result<String, String> {
         })
     };
     let names = |paths: &[PathBuf]| paths.iter().map(name).collect::<Result<Vec<_>, _>>();
-    let keychains = spec.temp.join("Library/Keychains");
+    let login = login.canonicalize().unwrap_or_else(|_| login.to_path_buf());
+    let keychains = login.join("Library/Keychains");
     let mut kept = spec.pointers();
+    kept.extend([login.join("Library"), login.join("env.sh")]);
     kept.push(keychains.clone());
     let mut hidden = spec.hidden.clone();
     hidden.push(keychains.clone());
@@ -12707,13 +12803,21 @@ fn tail(text: &str, max: usize) -> &str {
     &text[start..]
 }
 
-/// The commits in `worktree` from `start_commit` to `head`: none without either.
-async fn count_commits(worktree: &Path, start_commit: &str, head: &str) -> u64 {
-    if start_commit.is_empty() || head.is_empty() {
+/// The commits in `worktree` from `start_commit` to `head`, git pinned to the job's folders
+/// (`folders`, [`git_folders`]): none without either commit, or without the folders (obid didn't
+/// find its own git there).
+async fn count_commits(
+    worktree: &Path,
+    folders: &[(&'static str, String)],
+    start_commit: &str,
+    head: &str,
+) -> u64 {
+    if start_commit.is_empty() || head.is_empty() || folders.is_empty() {
         return 0;
     }
-    git::git(
+    git::pinned(
         worktree,
+        folders,
         &["rev-list", "--count", &format!("{start_commit}..{head}")],
     )
     .await
@@ -13086,6 +13190,18 @@ fn own_objects(admin: &Path) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// The variables that pin a git call in `worktree` to its git folders as obid checked them
+/// ([`Jobs::own_git_dirs`]): git then never reads the worktree's `.git` or the folder's
+/// `commondir`, which a run in Claude Code's own sandbox, whose tools aren't sandboxed, could
+/// have changed since.
+fn git_folders(admin: &Path, common: &Path, worktree: &Path) -> Vec<(&'static str, String)> {
+    vec![
+        ("GIT_DIR", admin.to_string_lossy().into_owned()),
+        ("GIT_COMMON_DIR", common.to_string_lossy().into_owned()),
+        ("GIT_WORK_TREE", worktree.to_string_lossy().into_owned()),
+    ]
 }
 
 /// Takes a job's worktree away through obid's clone, and whatever git leaves of it.
@@ -13702,8 +13818,11 @@ mod tests {
         ] {
             std::fs::create_dir_all(dir).unwrap();
         }
-        // A `Library` the job left as a link: replaced, and nothing where it led is touched.
-        std::os::unix::fs::symlink(root.join("elsewhere"), temp.join("Library")).unwrap();
+        // A `Library` left as a link where Claude Code's HOME is: replaced, and nothing where it led
+        // is touched.
+        let login = home.join("logins/job");
+        std::fs::create_dir_all(&login).unwrap();
+        std::os::unix::fs::symlink(root.join("elsewhere"), login.join("Library")).unwrap();
         let spec = super::Spec {
             worktree: worktree.clone(),
             git_admin: Some(admin.clone()),
@@ -13724,7 +13843,7 @@ mod tests {
             config_dir: Some(root.join("account")),
             payer: None,
         };
-        let env = super::own_sandbox_env(&account, &spec).unwrap();
+        let env = super::own_sandbox_env(&account, &spec, &login).unwrap();
         let get = |name: &str| {
             env.iter()
                 .find(|(set, _)| *set == name)
@@ -13744,12 +13863,23 @@ mod tests {
             get("CLAUDE_CONFIG_DIR").as_deref(),
             root.join("account").to_str()
         );
-        let library = std::fs::symlink_metadata(temp.join("Library")).unwrap();
+        assert_eq!(get("HOME").as_deref(), login.to_str());
+        assert_eq!(
+            get("CLAUDE_ENV_FILE").as_deref(),
+            login.join("env.sh").to_str()
+        );
+        // Its commands' HOME is the job's temporary folder.
+        let said = std::fs::read_to_string(login.join("env.sh")).unwrap();
+        assert!(
+            said.contains(&format!("export HOME='{}'", temp.display())),
+            "{said}"
+        );
+        let library = std::fs::symlink_metadata(login.join("Library")).unwrap();
         assert!(library.is_dir(), "the job's link was followed");
         assert!(root.join("elsewhere/Keychains").is_dir());
         let person = super::login_home().unwrap();
         assert_eq!(
-            std::fs::read_link(temp.join("Library/Keychains")).unwrap(),
+            std::fs::read_link(login.join("Library/Keychains")).unwrap(),
             person.join("Library/Keychains")
         );
         for (set, refused) in [
@@ -13762,14 +13892,14 @@ mod tests {
         ] {
             std::fs::write(root.join("account/.claude.json"), set).unwrap();
             assert_eq!(
-                super::own_sandbox_env(&account, &spec).is_err(),
+                super::own_sandbox_env(&account, &spec, &login).is_err(),
                 refused,
                 "{set}"
             );
         }
 
         let settings: super::Value =
-            serde_json::from_str(&super::own_sandbox_settings(&spec).unwrap()).unwrap();
+            serde_json::from_str(&super::own_sandbox_settings(&spec, &login).unwrap()).unwrap();
         let sandbox = &settings["sandbox"];
         assert_eq!(sandbox["enabled"], true);
         assert_eq!(sandbox["failIfUnavailable"], true);
@@ -13793,7 +13923,9 @@ mod tests {
             real(&worktree).join(".git"),
             real(&admin).join("commondir"),
             real(&admin).join("gitdir"),
-            real(&temp).join("Library/Keychains"),
+            real(&login).join("Library"),
+            real(&login).join("env.sh"),
+            real(&login).join("Library/Keychains"),
         ];
         for pointer in &pointers {
             assert!(list("denyWrite").contains(pointer), "{}", pointer.display());
@@ -13916,7 +14048,8 @@ mod tests {
             payer: None,
         };
         let mut extra = spec.git_env();
-        extra.extend(super::own_sandbox_env(&account, &spec).unwrap());
+        let login = home.join("logins/job");
+        extra.extend(super::own_sandbox_env(&account, &spec, &login).unwrap());
         for key in ["GIT_AUTHOR_NAME", "GIT_COMMITTER_NAME"] {
             extra.push((key, "Probe".into()));
         }
@@ -13925,7 +14058,7 @@ mod tests {
         }
         extra.push((crate::process::CLAUDE_TMPDIR, temp.clone().into_os_string()));
         let env = crate::process::sandbox_env(&crate::process::tools_path(), &temp, &extra);
-        let settings = super::own_sandbox_settings(&spec).unwrap();
+        let settings = super::own_sandbox_settings(&spec, &login).unwrap();
         // Made after the settings, as another job's folder or the vault can be mid-turn.
         for later in ["tmp/later/secret", "vault/secrets.json"] {
             std::fs::create_dir_all(home.join(later).parent().unwrap()).unwrap();
@@ -13951,7 +14084,9 @@ mod tests {
             "printf 'gitdir: /tmp\\n' > .git 2>/dev/null; echo dotgit:$?".into(),
             "printf '/tmp\\n' > \"$GIT_DIR/commondir\" 2>/dev/null; echo commondir:$?".into(),
             "printf '/tmp\\n' > \"$GIT_DIR/gitdir\" 2>/dev/null; echo gitdir:$?".into(),
-            "ln -sfn /tmp \"$HOME/Library/Keychains\" 2>/dev/null; echo keychains-link:$?".into(),
+            format!("ln -sfn /tmp {:?} 2>/dev/null; echo keychains-link:$?", login.join("Library/Keychains")),
+            format!("mv {:?} {:?} 2>/dev/null; echo claude-library:$?", login.join("Library"), login.join("Moved")),
+            "mkdir -p \"$HOME/Library/Caches/go-build\" && echo caches:ok".into(),
         ];
         // One script the model runs as it is, so no probe depends on its choosing to run it.
         let mut script = String::from(
@@ -14034,6 +14169,7 @@ mod tests {
             ("commit:", "commit:0"),
             ("later-job:", "later-job:1"),
             ("later-vault:", "later-vault:1"),
+            ("caches:", "caches:ok"),
             ("obid-api:", "obid-api:000"),
         ] {
             assert!(results.contains(said), "{said} didn't run: {results}");
@@ -14049,6 +14185,7 @@ mod tests {
             ("commondir:", "commondir:0"),
             ("gitdir:", "gitdir:0"),
             ("keychains-link:", "keychains-link:0"),
+            ("claude-library:", "claude-library:0"),
         ] {
             assert!(results.contains(said), "{said} didn't run: {results}");
             assert!(!results.contains(never), "{never}: {results}");
@@ -17364,10 +17501,12 @@ mod tests {
         follow.follow_up_of = Some("p".into());
         follow.start_from = Some("oby/fix-p".into());
         follow.start_commit = Some(first.clone());
+        // A plain repository here: git pinned to its own folders.
+        let folders = git_folders(&repo.join(".git"), &repo.join(".git"), &repo);
         // A branch of its own: over its base, or its pull request's head.
-        assert_eq!(jobs.counted(&follow, &repo, &first).await, 2);
+        assert_eq!(jobs.counted(&follow, &repo, &folders, &first).await, 2);
         follow.pr = Some(5);
-        assert_eq!(jobs.counted(&follow, &repo, &first).await, 1);
+        assert_eq!(jobs.counted(&follow, &repo, &folders, &first).await, 1);
         follow.pr = None;
         // A split part: its own alone.
         let mut split = parent.clone();
@@ -17379,12 +17518,12 @@ mod tests {
             count: 1,
         });
         jobs.lock().jobs.insert("p".into(), split);
-        assert_eq!(jobs.counted(&follow, &repo, &first).await, 0);
-        assert_eq!(jobs.counted(&follow, &repo, &next).await, 1);
+        assert_eq!(jobs.counted(&follow, &repo, &folders, &first).await, 0);
+        assert_eq!(jobs.counted(&follow, &repo, &folders, &next).await, 1);
         jobs.lock().jobs.insert("p".into(), parent.clone());
         // Its first job's branch: over the last push under its head, never a rebased one.
         follow.branch = "oby/fix-p".into();
-        assert_eq!(jobs.counted(&follow, &repo, &first).await, 2);
+        assert_eq!(jobs.counted(&follow, &repo, &folders, &first).await, 2);
         parent.outgoing.push(crate::publish::Outgoing::new(
             "push",
             "o/r",
@@ -17392,13 +17531,13 @@ mod tests {
             Some("oby/fix-p"),
         ));
         jobs.lock().jobs.insert("p".into(), parent.clone());
-        assert_eq!(jobs.counted(&follow, &repo, &first).await, 0);
-        assert_eq!(jobs.counted(&follow, &repo, &next).await, 1);
+        assert_eq!(jobs.counted(&follow, &repo, &folders, &first).await, 0);
+        assert_eq!(jobs.counted(&follow, &repo, &folders, &next).await, 1);
         // A branch of its own: what was pushed to the one it started from is out too, unless its
         // pull request was closed unmerged.
         follow.branch = "oby/fix-f".into();
-        assert_eq!(jobs.counted(&follow, &repo, &first).await, 0);
-        assert_eq!(jobs.counted(&follow, &repo, &next).await, 1);
+        assert_eq!(jobs.counted(&follow, &repo, &folders, &first).await, 0);
+        assert_eq!(jobs.counted(&follow, &repo, &folders, &next).await, 1);
         parent.published = Some("https://github.com/o/r/pull/9".into());
         parent.pull_request = Some(crate::github::PullRequest {
             state: "CLOSED".into(),
@@ -17409,7 +17548,7 @@ mod tests {
             head: None,
         });
         jobs.lock().jobs.insert("p".into(), parent);
-        assert_eq!(jobs.counted(&follow, &repo, &first).await, 2);
+        assert_eq!(jobs.counted(&follow, &repo, &folders, &first).await, 2);
         // Through a follow-up between them that published nothing.
         let mut middle = new("m", "oby/fix-m");
         middle.follow_up_of = Some("p".into());

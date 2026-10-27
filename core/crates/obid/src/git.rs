@@ -144,6 +144,19 @@ pub async fn git(dir: &Path, args: &[&str]) -> Result<String, GitError> {
     run(dir, &args, &[]).await
 }
 
+/// [`git`] in a job's worktree with its git folders given (`GIT_DIR`, `GIT_COMMON_DIR`,
+/// `GIT_WORK_TREE`, crate::jobs, `git_folders`), so git never reads the worktree's `.git` or the
+/// git folder's `commondir`, which the job's agent could have rewritten since obid checked them.
+pub async fn pinned(
+    dir: &Path,
+    folders: &[(&str, String)],
+    args: &[&str],
+) -> Result<String, GitError> {
+    let args: Vec<&OsStr> = args.iter().map(OsStr::new).collect();
+    let extra: Vec<(&str, &str)> = folders.iter().map(|(k, v)| (*k, v.as_str())).collect();
+    run(dir, &args, &extra).await
+}
+
 /// The clone of `repo` (`owner/name`) under `home`.
 pub fn clone_path(home: &Path, repo: &str) -> PathBuf {
     let mut path = home.join("clones");
