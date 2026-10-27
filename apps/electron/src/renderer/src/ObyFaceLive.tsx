@@ -42,7 +42,7 @@ const WRAP_UP = 4.0;
 // fullSpin, Sangam's spin; the balloon as three dots, or none. Read as Oby next talks.
 export const dev = { fullSpin: false, balloon: 'gx' as 'gx' | 'dots' | 'off' };
 const QUICK: typeof KEYS = [
-  [0, { dBounce: 0, dSpread: 0 }, 'fast'],      // the dots run together
+  [0, { dBounce: 0, dSpread: 0, sq: 1 }, 'fast'],  // the dots run together
   [0.05, { scale: 1, inflate: 0.17 }, 'fast'],  // and spring back into the face
   [0.1, { dR: 0 }, 'fast'],
 ];
@@ -64,8 +64,12 @@ const clamp01 = (v: number) => Math.min(1, Math.max(0, v));
 
 type Spring = { v: number; vel: number; to: number; k: number; c: number };
 
-// talk: Oby's words coming in (their length; each change is a word); undefined once they stop
-export default function ObyFaceLive({ live, talk, size = 22 }: { live: boolean; talk?: number; size?: number }) {
+// talk: Oby's words coming in (their length; each change is a word); undefined once they stop.
+// While its balloon's up the face talks; at work (working) it's the dots again once that's down
+export default function ObyFaceLive({ live: working, talk, size = 22 }: { live: boolean; talk?: number; size?: number }) {
+  // the balloon: off; in (there, closed, about to grow); open; out (deflating)
+  const [say, setSay] = useState<'off' | 'in' | 'open' | 'out'>('off');
+  const live = working && say === 'off';
   const [active, setActive] = useState(live);
   const liveRef = useRef(live);
   liveRef.current = live;
@@ -76,8 +80,6 @@ export default function ObyFaceLive({ live, talk, size = 22 }: { live: boolean; 
   // reduced motion: no spin, melt or bounce, just three still dots while Oby works
   const [still] = useState(() => matchMedia('(prefers-reduced-motion: reduce)').matches);
 
-  // the balloon: off; in (there, closed, about to grow); open; out (deflating)
-  const [say, setSay] = useState<'off' | 'in' | 'open' | 'out'>('off');
   const [bob, setBob] = useState(false);
   const [glyph, setGlyph] = useState(0);
   const wrap = useRef<HTMLSpanElement>(null);

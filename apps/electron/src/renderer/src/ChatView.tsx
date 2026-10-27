@@ -93,7 +93,7 @@ export default function ChatView({ id, kind = 'task', leaving, covered = false, 
   let head = -1;
   for (let k = thread.length - 1; k >= 0 && runOf(thread[k]) === 'oby'; k--) head = k;
   const working = typing && head >= 0 && !convo;
-  // Oby's words coming in, in that run: its face talks (a speech balloon), rather than working
+  // Oby's words coming in, in that run: its face talks (a speech balloon)
   const talking = head >= 0 ? (thread.slice(head).find((m) => (m as Message).streaming) as Message | undefined) : undefined;
 
   // opened, it's seen; it opens at the latest message, and anything new scrolls into view
@@ -174,7 +174,7 @@ export default function ChatView({ id, kind = 'task', leaving, covered = false, 
                       ? <PeerByline name={(m as Message).by!} />
                       // yours among other people's Obys: named, as theirs are
                       : mine ? <span className="peer-by"><ObyFace size={22} /><span>Your Oby</span></span>
-                      : <span className="msg-face"><Face live={working && i === head && !covered && !talking} talk={i === head && !covered ? talking?.text.length : undefined} /></span>)}
+                      : <span className="msg-face"><Face live={working && i === head && !covered} talk={i === head && !covered ? talking?.text.length : undefined} /></span>)}
                     {parts}
                     {last && !(m as Message).streaming && !(typing && i === thread.length - 1 && side === 'oby') ? (
                       <div className={`msg-end${end?.type === ThreadTask || end?.type === SetupCard || 'ask' in m ? ' is-wide' : ''}`}>

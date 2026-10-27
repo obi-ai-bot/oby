@@ -46,7 +46,7 @@ let state: Live = {
 const listeners = new Set<() => void>();
 const set = (patch: Partial<Live>) => {
   state = { ...state, ...patch }; publish(); listeners.forEach((l) => l());
-  if (!pacing && Object.keys(state.pace).length) pacing = setInterval(tick, WORD_MS);
+  if (!pacing && Object.keys(state.pace).length) { ticked = performance.now(); pacing = setInterval(tick, WORD_MS); }
 };
 export const useLive = () => useSyncExternalStore((l) => { listeners.add(l); return () => { listeners.delete(l); }; }, () => state);
 export const liveState = () => state;
@@ -165,7 +165,9 @@ function apply(s: Live, e: Event): Live {
       const next = { ...s, alias, turns: { ...s.turns, [c]: merged(s.turns[c] ?? [], [e.turn]) } };
       // Oby's answer: its turn is over, its words final (paced on from those shown, if it was talking here)
       const live = c in s.working || c in s.words || c in s.pace;
-      return e.turn.who === 'oby' ? { ...next, working: without(s.working, c), words: without(s.words, c), pace: live ? paced(s, c, e.turn.text, e.turn.id) : s.pace } : next;
+      if (e.turn.who === 'oby') return { ...next, working: without(s.working, c), words: without(s.words, c), pace: live ? paced(s, c, e.turn.text, e.turn.id) : s.pace };
+      // your words after Oby's: the rest of its last answer shows whole
+      return s.pace[c]?.turn ? { ...next, pace: without(s.pace, c) } : next;
     }
     case 'step': {
       const c = e.step.conversation ?? Object.keys(s.turns).find((k) => s.turns[k].some((t) => t.id === e.step.turn));
@@ -190,24 +192,28 @@ function apply(s: Live, e: Event): Live {
 
 // --- Oby's words, a word at a time
 
-// about a word each WORD_MS, faster when they pile up, so they never trail by more than MAX_LAG.
+// about a word each WORD_MS, faster when they pile up, so they never trail by more than MAX_LAG;
+// by the time passed, so a throttled window keeps up, and all at once while it's hidden.
 // With reduced motion they show as they come.
 const WORD_MS = 35, MAX_LAG = 1200;
 const wordsOf = (text: string) => text.match(/\S+\s*/g) ?? [];
 function paced(s: Live, c: string, to: string, turn?: string): Live['pace'] {
+  if (matchMedia('(prefers-reduced-motion: reduce)').matches) return without(s.pace, c);
   const p = s.pace[c];
-  if (matchMedia('(prefers-reduced-motion: reduce)').matches || (p?.turn && !turn)) return s.pace;
-  // another turn while one is still shown: it shows whole, this one starts from its first word
+  // another turn's words while one is still shown: that one shows whole, this one starts from its first word
   return { ...s.pace, [c]: { to, turn, n: p?.turn && p.turn !== turn ? 0 : p?.n ?? 0 } };
 }
-let pacing: ReturnType<typeof setInterval> | undefined;
+let pacing: ReturnType<typeof setInterval> | undefined, ticked = 0;
 function tick() {
+  const now = performance.now(), dt = now - ticked;
+  ticked = now;
   const pace = { ...state.pace };
   let moved = false;
   for (const [c, p] of Object.entries(pace)) {
     // while they come in, only whole words (the last may be cut)
     const all = wordsOf(p.to).length, ready = p.turn || /\s$/.test(p.to) ? all : all - 1;
-    if (p.n < ready) pace[c] = { ...p, n: p.n + Math.ceil(((ready - p.n) * WORD_MS) / MAX_LAG) };
+    const step = document.hidden ? ready : Math.max(Math.floor(dt / WORD_MS), Math.ceil((ready - p.n) * Math.min(1, dt / MAX_LAG)));
+    if (p.n < ready) pace[c] = { ...p, n: Math.min(ready, p.n + Math.max(1, step)) };
     else if (p.turn) delete pace[c];  // all shown: its turn takes over
     else continue;
     moved = true;
@@ -358,7 +364,8 @@ export function ask(said: string, shown?: string, repo?: string): string | undef
   // an answer to Oby's question is only the answer
   const words = q ? said.trim() : inRepo(said.trim(), repo, shown);
   if (repo && !q) set({ picked: { ...state.picked, [id]: { repo, at: new Date().toISOString() } } });
-  if (c) set({ waiting: without(state.waiting, c), working: { ...state.working, [c]: 'Thinking' } });
+  // (the rest of Oby's last answer, if it's still being shown, shows whole)
+  if (c) set({ waiting: without(state.waiting, c), working: { ...state.working, [c]: 'Thinking' }, ...(state.pace[c]?.turn ? { pace: without(state.pace, c) } : {}) });
   else set({ starting: { id, said: words } });
   let failed = false;
   void (async () => {
