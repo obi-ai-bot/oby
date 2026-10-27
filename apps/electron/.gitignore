@@ -1,0 +1,7 @@
+node_modules/
+out/
+
+# the app icon and the script that draws it (the repository ignores build/ folders)
+!/build/
+# the native module's, built by npm install
+native/*/build/

@@ -123,6 +123,27 @@ pub enum StartError {
     },
 }
 
+/// `home/last-start-error`: why obid's last start failed, for the apps to show in place of a
+/// wait. Removed once obid listens.
+pub const START_ERROR: &str = "last-start-error";
+
+/// Keeps `reason` in `home/last-start-error` (making `home`, 0700, when it isn't there yet).
+pub fn note_start_error(home: &std::path::Path, reason: &str) {
+    let mut builder = std::fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+    let written = builder
+        .create(home)
+        .and_then(|()| std::fs::write(home.join(START_ERROR), format!("{reason}\n")));
+    if let Err(e) = written {
+        eprintln!(
+            "obid: can't write {}: {e}",
+            home.join(START_ERROR).display()
+        );
+    }
+}
+
 /// As many open files as this Mac lets obid have: each tunnel of the egress proxy holds two, and
 /// macOS starts a process with 256 (#1471's review). macOS refuses more than `OPEN_MAX` (10240)
 /// when the hard limit is unlimited.
@@ -246,15 +267,28 @@ pub async fn serve(
     let bound = listener
         .local_addr()
         .map_err(|source| StartError::Listen { address, source })?;
-    // The gateway's address is taken now too, so a busy one stops obid before anything starts.
-    let gateway = match config.gateway {
-        Some(address) => Some(
-            tokio::net::TcpListener::bind(address)
-                .await
-                .map_err(|source| StartError::Listen { address, source })?,
-        ),
-        None => None,
+    // The gateway's address is taken now too. A busy one is a warning, never a stop: the apps on
+    // this Mac need only the API, and `status.gateway` says why paired phones can't reach it.
+    let (gateway, gateway_state) = match config.gateway {
+        Some(address) => match tokio::net::TcpListener::bind(address).await {
+            Ok(listener) => (
+                Some(listener),
+                Some(serde_json::json!({"state": "listening", "address": address.to_string()})),
+            ),
+            Err(e) => {
+                let detail = format!("can't listen on {address}: {e}");
+                tracing::warn!("no gateway: {detail}");
+                (
+                    None,
+                    Some(
+                        serde_json::json!({"state": "down", "address": address.to_string(), "detail": detail}),
+                    ),
+                )
+            }
+        },
+        None => (None, None),
     };
+    stopwatch.lap("listen");
     let host = gethostname::gethostname().to_string_lossy().into_owned();
     let cleanup = Arc::new(api::Cleanup::unmeasured(&config.home));
     let cancelled = Arc::new(AtomicBool::new(false));
@@ -410,6 +444,7 @@ pub async fn serve(
         cleared,
         devices,
         gateway: paired,
+        gateway_state,
         relay,
         connections,
         jobs: jobs.clone(),
@@ -608,10 +643,12 @@ impl Stopwatch {
         }
     }
 
-    /// `step` ended now.
+    /// `step` ended now, said in the log at once, so a start that hangs names the step after it.
     fn lap(&mut self, step: &'static str) {
         let now = std::time::Instant::now();
-        self.laps.push((step, (now - self.last).as_millis()));
+        let ms = (now - self.last).as_millis();
+        tracing::info!("starting: {step} done in {ms} ms");
+        self.laps.push((step, ms));
         self.last = now;
     }
 

@@ -1,12 +1,13 @@
 # Working on Oby
 
-Oby is a native macOS app (SwiftUI, macOS 26 and later) that lives in a window and the menu bar and hands coding work to the user's own Claude Code, Codex and Cursor CLIs (Gemini later). The product is described in [README.md](README.md); what is being built, and in which order, is the GitHub project "Oby — Roadmap" (one milestone per feature, F1 to F16).
+Oby is a native macOS app (SwiftUI, macOS 26 and later) that lives in a window and the menu bar and hands coding work to the user's own Claude Code, Codex and Cursor CLIs (Gemini later). Its desktop app is moving to Electron (`apps/electron`, Dmytro and Wellington's call of 2026-10-26): it started as a copy of Sangam's design, shows only the conversation (Oby sets a new user up in it), is mocked until the experience is right, and then talks to obid, which stays in Rust. The Swift Mac app gets no new work meanwhile. The product is described in [README.md](README.md); what is being built, and in which order, is the GitHub project "Oby — Roadmap" (one milestone per feature, F1 to F16).
 
 ## How we work
 
 - Branch from `dev` and open pull requests into `dev`. `dev` is merged into `main` only when a feature's "Test it when it's done" list passes on a real Mac.
 - One feature at a time, in roadmap order. Each feature issue has the test, the build list and the feasibility notes; read its spikes before starting.
 - Plans are written in [obi-ai-bot/oby-plan](https://github.com/obi-ai-bot/oby-plan) (internal; since 2026-10-26), not in this repository: the Obysphere roadmap and its epics, the research behind them, and ideas not yet scheduled. Features are still issues here and on the board. When a plan's epic has a piece that lands in Oby, follow its order and its "done when".
+- The desktop client is the Electron app, `apps/electron` (the owner's decision of 2026-10-26): a copy of Sangam's design, chat-first, on obid's API. The Swift Mac app (`apps/mac/app`) is frozen after 0.4.5: it takes bug fixes only, no new features, until users have moved to the Electron app. obid (`core/`) stays the engine. The iPhone and Apple Watch apps stay in Swift on obid's API, so that API stays add-only: new keys and values, never a renamed or removed one, and no new value in an enum the Swift apps decode as closed.
 - Work from this repository is Oby only (the owner's decision of 2026-10-26): Dmytro owns the Obysphere (obi-ai-bot/obi-sphere: its server, spec and deploys). Don't open pull requests there or deploy it unless the owner asks.
 - Update the issue at every step, in the same turn: `status:in-progress` and the branch name when work starts; `status:in-review` and the pull request link when it's open; `status:blocked` and what it waits on; status labels off when it's merged. Move it on the project board too.
 - Commits follow Conventional Commits. Agents commit unsigned in their worktree (they have no signing key); commits are signed when Oby pushes them. Report the checks you actually ran and what they printed.
@@ -67,6 +68,7 @@ Oby launches lean, and where this differs from Sangam's design, this wins until 
 
 ## Build and run
 
+- The Electron app: `cd apps/electron && npm install && npm run dev` (the window), or `npm run web` for the renderer alone in a browser; `npm run typecheck`. `?everything` shows all of Sangam's design; `apps/electron/README.md` maps it.
 - Open `apps/Oby.xcodeproj` in Xcode 27 and run the `Oby` scheme on My Mac, or `xcodebuild -project apps/Oby.xcodeproj -scheme Oby build`.
 - Tests: `MacTests` (Swift Testing, hosted by the app). Run them with ⌘U or `xcodebuild -project apps/Oby.xcodeproj -scheme Oby -destination 'platform=macOS' test`. While tests run, a test-host Oby is alive, so a freshly launched Oby quits (one instance at a time): launch it again when they finish.
 - What changed, checked: `scripts/oby-check.sh` runs only the suites a change reaches (obid's touched lib modules and test binaries with fmt and clippy, the touched MacTests or iOSTests suites, `swift test`), then gitleaks; `OBY_CHECK_PLAN=1` prints what it would run. It's this repository's check in obid (`"check": "scripts/oby-check.sh"` on `obi-ai-bot/oby` in its `config.json`, docs/runner-api.md, `repos`), so Oby's jobs here run it in their sandbox.
