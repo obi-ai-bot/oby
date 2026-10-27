@@ -2015,8 +2015,6 @@ A repository says which secrets its check needs in `secretspec.toml` at its root
   | `PATCH /v1/jobs/{id}` (a title, which Oby's conversations read) | the job isn't |
   | `POST /v1/plans` | the conversation is marked |
   | `POST /v1/memory/suggestions/{id}/remember` | the memory is marked |
-  | `GET /v1/checks/next` (a Mac taking a check; its name reaches the job's agent) | the check is bound to no app, and its job isn't the owner's own words; the first signer is kept on the check (`device`), and anyone else taking it again unbinds it |
-  | `POST /v1/checks/{id}/result` (failures and a log the job's agent reads) | unless the app that took it signed it too, the job isn't, before its agent can read them |
 
   The rest put no words into a job or a conversation: a Confirm has its own tap (`oby-confirm`), and what it carries out is marked as Oby proposed it (a Start's planned words a working follow-up hears carry the plan's mark, and one kept before obid marked plans isn't the owner's own words); an offer's start (GitHub's, a failure's fix) and a routine's run start jobs that are never the owner's own words; a conversation's or an artifact's title reaches no model; the settings, accounts, devices, sharing and the Obysphere routes carry no words to either.
 - **Memories.** Each memory keeps where it came from: a suggestion found in a reviewer's words, or in a conversation that was marked, is marked, and so is one a Remember no app signed saved (one kept before, without `clean: yes` in its file, counts as marked). A job that's given a marked memory isn't the owner's own words any more, and a conversation's room with one marks the conversation. obid's own sentences (a repository's workflow, who reviews where) are the owner's.
