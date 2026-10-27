@@ -259,16 +259,18 @@ pub async fn rename(
             Some(Ok(_)) => {}
         }
     }
-    // Its title is what Oby's conversations read of it (`oby_jobs`, how it ended): one no app of
-    // the owner's signed isn't the owner's own words (crate::secretspec).
-    if title.is_some() && !typed_by_owner(&shared, "PATCH", &uri, &headers, &body) {
-        shared
-            .jobs
-            .unvet(&id, "a title no app of the owner's signed");
-    }
+    let unsigned = title.is_some() && !typed_by_owner(&shared, "PATCH", &uri, &headers, &body);
     let job = match title {
         Some(title) => shared.jobs.rename(&id, title),
         None => shared.jobs.get(&id),
+    };
+    // Its title is what Oby's conversations read of it (`oby_jobs`, how it ended): one no app of
+    // the owner's signed isn't the owner's own words (crate::secretspec).
+    let job = match job {
+        Some(job) if unsigned => shared
+            .jobs
+            .unvet(&job.id, "a title no app of the owner's signed"),
+        job => job,
     };
     match job {
         None => Err(ApiError::new(StatusCode::NOT_FOUND, NO_JOB)),

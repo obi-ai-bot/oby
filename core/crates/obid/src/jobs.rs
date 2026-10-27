@@ -5562,6 +5562,11 @@ impl Jobs {
     /// check gets none of the owner's secrets from now on (crate::secretspec). Nothing else
     /// changes: what they may do is the words' [`Source`]'s.
     pub fn unvet(&self, id: &str, why: &str) -> Option<Job> {
+        // Nothing to change, nothing told: a job that isn't the owner's own words stays as it is.
+        let job = self.get(id)?;
+        if !job.vetted {
+            return Some(job);
+        }
         self.update(id, |job| {
             if job.vetted {
                 tracing::info!("job {}: {why}: its check gets no declared secrets", job.id);
