@@ -1,4 +1,4 @@
-import { Component, createElement, Fragment, useMemo, type ReactNode } from 'react';
+import { Component, createElement, Fragment, useMemo, useRef, type ReactNode } from 'react';
 import { lexer, type Token, type Tokens } from 'marked';
 import { tokenize } from './textTokens';
 
@@ -12,15 +12,28 @@ import { tokenize } from './textTokens';
 export default function Said({ text, streaming = false }: { text: string; streaming?: boolean }) {
   return <Safe text={text}><Blocks text={text} streaming={streaming} /></Safe>;
 }
+// A read that takes too long twice (once could be the machine, not the words) isn't done again:
+// twice in a row while words come in, until they're all in; twice for the same words, for as long
+// as the app runs (opening the conversation again doesn't stall it again)
+const SLOW_MS = 50, slow = new Map<string, number>();
 function Blocks({ text, streaming }: { text: string; streaming: boolean }) {
-  return useMemo(() => { const ts = lex(streaming ? closed(text) : text); return ts ? blocks(ts) : <p>{text}</p>; }, [text, streaming]);
+  const slowStream = useRef(0);
+  return useMemo(() => {
+    if ((streaming ? slowStream.current : slow.get(text) ?? 0) > 1) return <p>{text}</p>;
+    const t = performance.now(), ts = lex(streaming ? closed(text) : text);
+    const late = performance.now() - t > SLOW_MS;
+    if (streaming) slowStream.current = late ? slowStream.current + 1 : 0;
+    else if (late) slow.set(text, (slow.get(text) ?? 0) + 1);
+    return ts ? blocks(ts) : <p>{text}</p>;
+  }, [text, streaming]);
 }
 
 // marked slows down sharply on long runs of *, _, ~ or ! and on deep nesting, and throws past a
 // few thousand levels; the words are anyone's (an agent quoting a GitHub comment). Past these, or
 // if it throws anyway, a message shows as the text it is.
-// ponytail: limits measured on marked 18.1.1, each shape under ~20 ms; parse in a Worker with a
-// time budget if another slow shape turns up
+// ponytail: limits measured on marked 18.1.1, each shape under ~20 ms; a shape not found yet
+// stalls at most twice per text (SLOW_MS, above). Parse in a Worker with a time budget if one
+// turns up (asynchronous: a long message would show plain first, then reflow)
 const LIMIT = 16 * 1024, MARKS = 300;
 function lex(text: string): Token[] | null {
   if (text.length > LIMIT) return null;
@@ -40,31 +53,35 @@ class Safe extends Component<{ text: string; children: ReactNode }, { text: stri
   render() { return this.state.failed ? <p>{this.props.text}</p> : this.props.children; }
 }
 
-// While words come in, the marks they haven't closed yet (**bold**, `code`, a [link](…)) show as
-// they will once they're closed, never as typed so far: on the line being written, and never in a
-// code block, which is code until its fence comes. A ` with nothing after it yet waits; a ** opens
-// bold only before a word and closes it only after one (a ** b stays as it is)
-// ponytail: **, ` and links only; a lone *italic* or ~~strike~~ shows its marks until it closes
+// While words come in, the marks they haven't closed yet (*italic*, **bold**, ~~strike~~, `code`,
+// a [link](…)) show as they will once they're closed, never as typed so far: on the line being
+// written, and never in a code block, which is code until its fence comes. A ` with nothing after
+// it yet waits. A run of * or _ (one: italic, two: bold) or a ~~ opens before a word and closes
+// after one, so a ** b stays as it is; an _ inside a word (snake_case) and marks in an address
+// are neither
 export function closed(text: string) {
   if ((text.match(/^ {0,3}(?:```|~~~)/gm) ?? []).length % 2) return text;
   const start = text.lastIndexOf('\n') + 1;
   let line = text.slice(start).trimEnd().replace(/\[([^\]]*)(?:\]\([^)]*)?$/, '$1');
-  // a ** inside a code span still open is code, not bold
+  // a mark inside a code span still open is code
   const prose = line.replace(/`[^`]*`/g, ''), tick = prose.indexOf('`');
-  const close = (mark: string) => { line = line.endsWith(mark) ? line.slice(0, -mark.length).trimEnd() : line + mark; };
-  if (tick >= 0) close('`');
-  const bold = tick >= 0 ? prose.slice(0, tick) : prose;
-  let open = false;
-  for (const { index: i } of bold.matchAll(/\*\*/g)) if (/\S/.test(bold[open ? i - 1 : i + 2] ?? ' ')) open = !open;
-  if (open) close('**');
-  return text.slice(0, start) + line;
+  if (tick >= 0) line = line.endsWith('`') ? line.slice(0, -1).trimEnd() : line + '`';
+  const marks = (tick >= 0 ? prose.slice(0, tick) : prose).replace(/\bhttps?:\/\/\S*/g, ' ');
+  const open: string[] = [];
+  for (const { 0: run, index: i } of marks.matchAll(/\*{1,3}|_{1,3}|~~/g)) {
+    const before = marks[i - 1] ?? ' ', after = marks[i + run.length] ?? ' ';
+    if (run[0] === '_' && /\w/.test(before) && /\w/.test(after)) continue;
+    if (open.at(-1) === run && /\S/.test(before)) open.pop();
+    else if (/\S/.test(after)) open.push(run);
+  }
+  return text.slice(0, start) + line + open.reverse().join('');
 }
 
 const blocks = (ts: Token[]): ReactNode[] => ts.map((t, k) => {
   switch (t.type) {
     case 'paragraph': return <p key={k}>{inline(t.tokens!)}</p>;
     // a list item's words, when its list is tight
-    case 'text': return <Fragment key={k}>{t.tokens ? inline(t.tokens) : words(t.text)}</Fragment>;
+    case 'text': return <Fragment key={k}>{t.tokens ? inline(t.tokens) : words(decode(t.text))}</Fragment>;
     // under the page's own headings, all at the words' size
     case 'heading': return createElement(`h${Math.min(t.depth + 2, 6)}`, { key: k }, inline(t.tokens!));
     case 'list': return createElement(t.ordered ? 'ol' : 'ul', { key: k, start: t.ordered ? t.start : undefined },
@@ -103,7 +120,7 @@ const inline = (ts: Token[], inLink = false): ReactNode[] => ts.map((t, k) => {
     case 'link': return inLink ? <Fragment key={k}>{inline(t.tokens!, true)}</Fragment> : <Link key={k} href={t.href}>{inline(t.tokens!, true)}</Link>;
     // a picture is never fetched: its words, linked (inside a link, a badge: just its words)
     case 'image': return inLink ? <Fragment key={k}>{words(t.text || t.href)}</Fragment> : <Link key={k} href={t.href}>{words(t.text || t.href)}</Link>;
-    case 'text': return <Fragment key={k}>{t.tokens ? inline(t.tokens, inLink) : words(t.text)}</Fragment>;
+    case 'text': return <Fragment key={k}>{t.tokens ? inline(t.tokens, inLink) : words(decode(t.text))}</Fragment>;
     case 'escape': return t.text;
     // HTML, and anything else: as it was written
     default: return <Fragment key={k}>{words(t.raw)}</Fragment>;
@@ -122,9 +139,16 @@ function Link({ href, children }: { href: string; children: ReactNode }) {
   );
 }
 
-// references, paths and @mentions set apart as in the message box (Formatted)
-const words = (s: string) => tokenize(s).map((r, i) => (r.kind ? <span key={i} className={`tok tok-${r.kind}`}>{split(r.text)}</span> : split(r.text, i)));
+// references, paths and @mentions set apart as in the message box (Formatted); a run of text past
+// 4 KB (no one's prose) stays one piece of text: thousands of spans cost more than they show
+const words = (s: string) => s.length > 4096 ? s : tokenize(s).map((r, i) => (r.kind ? <span key={i} className={`tok tok-${r.kind}`}>{split(r.text)}</span> : split(r.text, i)));
 const split = (s: string, at = 0) => s.split(/(\s+)/).map((w, k) => (!w || /\s/.test(w) ? w : <span key={`${at}.${k}`} className="w">{w}</span>));
+
+// &amp;, &mdash;, &#8212; and the like read as what they stand for, as in any Markdown (not in
+// code, where they're what was typed): the browser's own table, given only the entity, in a
+// textarea, whose content is never markup
+const scratch = document.createElement('textarea');
+const decode = (s: string) => (s.includes('&') ? s.replace(/&(?:#\d{1,7}|#x[\da-f]{1,6}|[a-z][a-z\d]{1,31});/gi, (e) => { scratch.innerHTML = e; return scratch.value; }) : s);
 
 // Oby's words as they read in a message, in one line of plain text, where there's room for only
 // how it starts (the side panel)
@@ -133,5 +157,5 @@ export function plain(text: string) {
   return ts ? flat(ts).replace(/\s+/g, ' ').trim() : text;
 }
 // tokens' words, a space after each block
-const flat = (ts: Token[]): string => ts.map((t) => (t.type === 'list' ? flat(t.items) : 'tokens' in t && t.tokens ? flat(t.tokens) : 'text' in t ? t.text : '')
+const flat = (ts: Token[]): string => ts.map((t) => (t.type === 'list' ? flat(t.items) : 'tokens' in t && t.tokens ? flat(t.tokens) : t.type === 'text' ? decode(t.text) : 'text' in t ? t.text : '')
   + (['paragraph', 'heading', 'list_item', 'code', 'br'].includes(t.type) ? ' ' : '')).join('');
