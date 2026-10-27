@@ -186,7 +186,10 @@ export default function TaskCard({ task, alone = false, onOpen, onSession, style
 // pick (Home's stack, to send the card away).
 export function AskBlock({ task, inChat = false, onAnswer }: { task: Task; inChat?: boolean; onAnswer?: (option: string) => void }) {
   const ask = task.job.ask!;
-  const pick = (o: string) => { answer(task.id, o); onAnswer?.(o); };
+  // a click before its words have shown answers nothing: on Home, a double-click on the card
+  // answered would land on the next one's buttons (one click, one answer)
+  const [shownAt] = useState(() => performance.now());
+  const pick = (o: string) => { if (performance.now() - shownAt < 500) return; answer(task.id, o); onAnswer?.(o); };
   return (
     <div className="tc-ask">
       <span className={`tc-ask-kind is-${ask.kind}`}>{ASK_LABEL[ask.kind] ?? ask.kind}</span>

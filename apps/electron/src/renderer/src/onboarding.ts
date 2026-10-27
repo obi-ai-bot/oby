@@ -81,12 +81,14 @@ export async function signInAgent(a: Agent) {
     const s = liveState().status;
     if (s?.availableLogins?.some((l) => l.agent === a)) {
       await api.addAccount({ agent: a, default: true });
-      return;
+    } else {
+      const account = s?.accounts.find((x) => x.agent === a)?.id ?? (await api.addAccount({ agent: a, name: 'Personal' })).id;
+      const page = await api.signIn(account);
+      set((x) => ({ codes: { ...x.codes, [a]: { userCode: page.userCode, paste: page.pasteCode ? account : undefined } } }));
+      open(page.url);
     }
-    const account = s?.accounts.find((x) => x.agent === a)?.id ?? (await api.addAccount({ agent: a, name: 'Personal' })).id;
-    const page = await api.signIn(account);
-    set((x) => ({ codes: { ...x.codes, [a]: { userCode: page.userCode, paste: page.pasteCode ? account : undefined } } }));
-    open(page.url);
+    // a login that didn't take (its page closed, an expired login adopted): the button again
+    if (!(await until(async () => signedIn(a)))) set((x) => ({ ...agentSign(a, 'out'), codes: { ...x.codes, [a]: undefined } }));
   } catch (e) {
     failed(e, () => set(() => agentSign(a, 'out')));
   }
