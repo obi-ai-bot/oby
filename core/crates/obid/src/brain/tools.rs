@@ -1740,17 +1740,27 @@ fn github(shared: &Shared, session: &Session, args: Value) -> Result<String, Str
         Some(other) => return Err(format!("list is mine, reviews or assigned, not {other}.")),
     };
     let feed = shared.github_work.to_json();
+    // gh's error can carry GitHub's own words: quoted like the rest.
+    let failed = feed["error"]
+        .as_str()
+        .map(|why| {
+            format!(
+                "\nIts last read failed. What gh said:\n{}",
+                quoted(session, "gh", why)
+            )
+        })
+        .unwrap_or_default();
     if feed["signedIn"] != true {
-        let why = feed["error"]
-            .as_str()
-            .unwrap_or("it isn't signed in to GitHub yet; the owner signs in with GitHub in Oby");
-        return Ok(format!("Oby hasn't read GitHub: {why}"));
+        if failed.is_empty() {
+            return Ok("Oby hasn't read GitHub: it isn't signed in to GitHub yet; the owner signs in with GitHub in Oby.".into());
+        }
+        return Ok(format!("Oby hasn't read GitHub.{failed}"));
     }
     let items: Vec<&Value> = lists
         .iter()
         .flat_map(|l| feed[*l].as_array().into_iter().flatten())
         .collect();
-    let mut head = format!(
+    let head = format!(
         "GitHub as {}, read {}. Found: {} open of theirs, {} waiting for their review, {} assigned.",
         feed["login"].as_str().unwrap_or_default(),
         feed["checkedAt"].as_str().unwrap_or("earlier"),
@@ -1758,11 +1768,8 @@ fn github(shared: &Shared, session: &Session, args: Value) -> Result<String, Str
         feed["counts"]["reviews"],
         feed["counts"]["assigned"],
     );
-    if let Some(why) = feed["error"].as_str() {
-        head.push_str(&format!(" Its last read failed: {why}"));
-    }
     if items.is_empty() {
-        return Ok(format!("{head} Nothing in {}.", lists.join(", ")));
+        return Ok(format!("{head} Nothing in {}.{failed}", lists.join(", ")));
     }
     // Titles and labels are anyone's who can rename or label the item, the owner's own pull
     // requests too: always tainted, as oby_job is.
@@ -1779,7 +1786,7 @@ fn github(shared: &Shared, session: &Session, args: Value) -> Result<String, Str
         })
         .collect();
     Ok(format!(
-        "{head}\n{}",
+        "{head}\n{}{failed}",
         quoted(
             session,
             "GitHub",
