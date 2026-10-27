@@ -67,6 +67,9 @@ struct File {
     allow_file_remotes: bool,
     #[serde(default)]
     telemetry: bool,
+    /// Whether this obid may convene a Council review panel (`POST /v1/obid/sphere/council`).
+    #[serde(default)]
+    council: bool,
     /// How long one conversation turn may act, in seconds: 1 to 110, 110 when left out.
     #[serde(default)]
     turn_budget: Option<u64>,
@@ -225,6 +228,9 @@ pub struct Config {
     pub allow_file_remotes: bool,
     /// False unless the owner turns it on; obid sends nothing to anyone otherwise.
     pub telemetry: bool,
+    /// False unless the owner turns it on: then obid may convene a Council review panel, one
+    /// `review_request` per seat (crate::sphere::council). It has no UI.
+    pub council: bool,
     /// Where the owner's vault is (crate::vault).
     pub vault: crate::vault::Location,
     /// How long one conversation turn may plan and act (`Desk.turnBudget`): 110 seconds unless
@@ -552,6 +558,7 @@ impl Config {
             repos: crate::repos::Repos::new(file.repos),
             allow_file_remotes: file.allow_file_remotes,
             telemetry: file.telemetry,
+            council: file.council,
             vault,
             turn_budget: std::time::Duration::from_secs(turn_budget),
             least_think,
@@ -804,6 +811,14 @@ mod tests {
         assert_eq!(config.repos.get()[0].check.as_deref(), Some("node --test"));
         assert!(!config.allow_file_remotes);
         assert!(!config.telemetry);
+    }
+
+    #[test]
+    fn council_panels_are_off_unless_turned_on() {
+        let config = Config::parse(&with(serde_json::json!({}))).unwrap();
+        assert!(!config.council);
+        let config = Config::parse(&with(serde_json::json!({"council": true}))).unwrap();
+        assert!(config.council);
     }
 
     #[test]

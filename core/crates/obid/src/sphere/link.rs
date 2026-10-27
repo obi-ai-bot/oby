@@ -4029,6 +4029,37 @@ impl Link {
         if to == joined.obi_id {
             return Err(invalid("An Obi doesn't ask itself.".into()));
         }
+        self.send_checked(&joined, to, kind, action, expires_in)
+            .await
+    }
+
+    /// Whether this obid may convene a Council review panel: the `council` setting.
+    pub(crate) fn council_enabled(&self) -> bool {
+        self.config.council
+    }
+
+    /// This Obi's membership, when it has joined: `409` otherwise.
+    pub(crate) fn joined(&self) -> Result<Membership, ApiError> {
+        self.lock()
+            .membership
+            .clone()
+            .filter(|m| m.state == "joined")
+            .ok_or_else(|| api(StatusCode::CONFLICT, "obid hasn't joined a Sphere."))
+    }
+
+    /// Sends one request that matches the spec's schema for `kind`, to another Obi: every text field
+    /// scanned for secrets, then sealed for the receiver when its card has a seal key, signed, checked
+    /// as the receiver will check it, and kept as an outgoing exchange (`POST /v1/obid/sphere/requests`
+    /// and the Council's convener, crate::sphere::council). Answers the exchange.
+    pub(crate) async fn send_checked(
+        &self,
+        joined: &Membership,
+        to: String,
+        kind: String,
+        action: Value,
+        expires_in: i64,
+    ) -> Result<Value, ApiError> {
+        let invalid = |m: String| api(StatusCode::UNPROCESSABLE_ENTITY, m);
         // Every text field, before anything is signed or sent (#478).
         let texts = every_text(&action);
         let scratch = self.config.home.join("tmp");

@@ -1,9 +1,10 @@
 //! Obi-to-Obi work (docs/runner-api.md, "obid only"): the Sphere membership, exchanges, the
 //! `obiRequest` inbox item, remembered decisions, questions with the sharing rules and per-sender
-//! limits that answer them, and the routes that serve them.
+//! limits that answer them, the Council's convener, and the routes that serve them.
 
 pub mod answering;
 pub mod approval;
+pub mod council;
 pub mod decisions;
 pub mod exchange;
 pub mod inbox;

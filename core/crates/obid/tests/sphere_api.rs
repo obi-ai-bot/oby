@@ -2482,3 +2482,121 @@ async fn a_reply_is_sealed_again_only_when_the_sphere_kept_nothing() {
     assert_eq!(decline["seal"]["key_id"], second.key_id());
     assert!(!sends_of(&sphere, "obi-wellington").contains(&("decline".into(), 409)));
 }
+
+/// The Council's convener (oby-sphere spec/council/review.md, section 5), on with `council`: one
+/// review_request per seat, the same for every seat, each its own exchange, so no seat sees
+/// another's. It never sits on its own panel, never names a seat twice, and never asks a panel to
+/// approve on the code host (rule I7). A seat that can't be sent to is said, and the rest go.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_council_convener_sends_one_review_request_per_seat() {
+    let folder = Folder::new("council");
+    let sphere = FakeSphere::start().await;
+    let remote = fixture(&folder.0.join("fixture"));
+    let mut settings = config(&folder.0, &remote, &stub_agent());
+    settings["council"] = json!(true);
+    let obid = start(&folder.0, &settings, None);
+    let wellington = Owner::new("wellington");
+    let joined = tokio::task::block_in_place(|| join_a(&obid, &sphere, &wellington));
+    assert_eq!(joined["state"], "joined");
+    let ernesto = TestObi::join(&sphere, "obi-ernesto", "ernesto").await;
+    let maria = TestObi::join(&sphere, "obi-maria", "maria").await;
+    let convene = |body: Value| {
+        tokio::task::block_in_place(|| call(&obid, "POST", "/v1/obid/sphere/council", Some(&body)))
+    };
+
+    let sent = convene(
+        json!({"seats": ["obi-ernesto", "obi-maria"], "review": brief(), "expiresIn": 3600}),
+    );
+    assert_eq!(sent.status, 202, "{}", sent.text);
+    let seats = sent.body["seats"].as_array().unwrap().clone();
+    assert_eq!(seats.len(), 2);
+    let mut exchanges = Vec::new();
+    for (seat, member) in seats.iter().zip([&ernesto, &maria]) {
+        let exchange = &seat["exchange"];
+        assert_eq!(exchange["peer"], seat["seat"]);
+        assert_eq!(exchange["direction"], "outgoing");
+        let got = member.receive(1, 20).await;
+        assert_eq!(got.len(), 1, "{}: one request", seat["seat"]);
+        assert_eq!(got[0]["type"], "review_request");
+        assert_eq!(got[0]["to"], seat["seat"]);
+        assert_eq!(got[0]["body"], brief(), "the same review for every seat");
+        assert_eq!(&got[0], &exchange["messages"][0]["envelope"]);
+        exchanges.push(exchange["correlationId"].as_str().unwrap().to_owned());
+    }
+    assert_ne!(exchanges[0], exchanges[1], "each seat its own exchange");
+
+    // A seat that isn't a member is said, and the others still go.
+    let partial = convene(
+        json!({"seats": ["obi-nobody", "obi-ernesto"], "review": brief(), "expiresIn": 3600}),
+    );
+    assert_eq!(partial.status, 202, "{}", partial.text);
+    assert_eq!(partial.body["seats"][0]["status"], 422);
+    assert!(
+        partial.body["seats"][1]["exchange"].is_object(),
+        "{}",
+        partial.text
+    );
+    assert_eq!(ernesto.receive(1, 20).await.len(), 1);
+    // When no seat's request can go, the call fails with the first seat's reason.
+    let none = convene(json!({"seats": ["obi-nobody"], "review": brief(), "expiresIn": 3600}));
+    assert_eq!(none.status, 422, "{}", none.text);
+
+    let mut asks_host = brief();
+    asks_host["pr"] = json!(7);
+    asks_host["approve_on_host"] = json!(true);
+    for (body, why) in [
+        (
+            json!({"seats": ["obi-ernesto"], "review": asks_host, "expiresIn": 3600}),
+            "approve_on_host",
+        ),
+        (
+            json!({"seats": ["obi-wellington", "obi-ernesto"], "review": brief(), "expiresIn": 3600}),
+            "its own seat",
+        ),
+        (
+            json!({"seats": ["obi-ernesto", "obi-ernesto"], "review": brief(), "expiresIn": 3600}),
+            "twice",
+        ),
+        (
+            json!({"seats": [], "review": brief(), "expiresIn": 3600}),
+            "no seats",
+        ),
+        (
+            json!({"seats": ["obi-ernesto"], "review": {"goal": "x"}, "expiresIn": 3600}),
+            "review",
+        ),
+        (
+            json!({"seats": ["obi-ernesto"], "review": brief(), "expiresIn": 10}),
+            "expiresIn",
+        ),
+        (
+            json!({"seats": ["obi-ernesto"], "review": brief(), "expiresIn": 3600, "prompt": "x"}),
+            "field",
+        ),
+    ] {
+        let refused = convene(body);
+        assert_eq!(refused.status, 422, "{why}: {}", refused.text);
+    }
+    // Nothing went for any refused call.
+    let list = tokio::task::block_in_place(|| get(&obid, "/v1/obid/sphere/exchanges"));
+    assert_eq!(list.as_array().unwrap().len(), 3);
+}
+
+/// Without `council` in its configuration, obid convenes nothing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn council_panels_are_off_unless_the_configuration_turns_them_on() {
+    let folder = Folder::new("council-off");
+    let (_sphere, obid, ernesto) = setup(&folder, &stub_agent(), None).await;
+    let refused = tokio::task::block_in_place(|| {
+        call(
+            &obid,
+            "POST",
+            "/v1/obid/sphere/council",
+            Some(&json!({"seats": ["obi-ernesto"], "review": brief(), "expiresIn": 3600})),
+        )
+    });
+    assert_eq!(refused.status, 403, "{}", refused.text);
+    let list = tokio::task::block_in_place(|| get(&obid, "/v1/obid/sphere/exchanges"));
+    assert!(list.as_array().unwrap().is_empty());
+    drop(ernesto);
+}

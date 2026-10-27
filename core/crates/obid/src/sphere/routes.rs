@@ -94,6 +94,14 @@ pub async fn request(State(shared): State<Arc<Shared>>, body: Bytes) -> Result<R
     ))
 }
 
+/// `POST /v1/obid/sphere/council`.
+pub async fn council(State(shared): State<Arc<Shared>>, body: Bytes) -> Result<Response, ApiError> {
+    Ok(json(
+        StatusCode::ACCEPTED,
+        crate::sphere::council::convene(&shared.link, &body).await?,
+    ))
+}
+
 /// `GET /v1/obid/sphere/exchanges?limit=50`.
 pub async fn exchanges(
     State(shared): State<Arc<Shared>>,

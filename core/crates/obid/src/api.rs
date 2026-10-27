@@ -268,6 +268,10 @@ pub fn router(shared: Arc<Shared>) -> Router {
             post(crate::sphere::routes::request),
         )
         .route(
+            "/v1/obid/sphere/council",
+            post(crate::sphere::routes::council),
+        )
+        .route(
             "/v1/obid/sphere/exchanges",
             get(crate::sphere::routes::exchanges),
         )
