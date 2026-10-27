@@ -5021,7 +5021,7 @@ impl Jobs {
     /// call, and no agent of its waiting on it.
     fn kept_ask(&self, id: &str) -> Option<Permission> {
         let state = self.lock();
-        if state.workers.contains_key(id) || state.asks.get(id).is_some_and(|a| !a.is_empty()) {
+        if !waits_with_no_agent(&state, id) {
             return None;
         }
         let job = state.jobs.get(id).filter(|j| j.status == Status::Running)?;
@@ -5040,7 +5040,7 @@ impl Jobs {
     ) -> Option<Result<Job, PermissionRefused>> {
         let (next, said, picked_up) = {
             let mut state = self.lock();
-            if state.workers.contains_key(id) || state.asks.get(id).is_some_and(|a| !a.is_empty()) {
+            if !waits_with_no_agent(&state, id) {
                 return None;
             }
             let job = state
@@ -11093,7 +11093,7 @@ fn keychain_item(config_dir: Option<&Path>, value: bool) -> Option<Vec<u8>> {
     if value {
         command.arg("-w");
     }
-    let output = command.output().ok()?;
+    let output = process::output_within(&mut command, security_limit(value))?;
     output.status.success().then_some(output.stdout)
 }
 
@@ -11111,6 +11111,13 @@ fn security_bin() -> PathBuf {
         .map(PathBuf::from)
         .filter(|path| path.is_absolute())
         .unwrap_or_else(|| PathBuf::from("/usr/bin/security"))
+}
+
+/// How long `security` gets: 5 seconds to say whether an item is there (obid asks while it
+/// starts), 60 to give its value, which can wait on the person's OK to the Keychain's prompt.
+#[cfg(target_os = "macos")]
+fn security_limit(value: bool) -> Duration {
+    Duration::from_secs(if value { 60 } else { 5 })
 }
 
 /// Whether Claude Code keeps a login for `config_dir` in the Keychain (macOS only).
@@ -11214,7 +11221,7 @@ fn cursor_keychain_item(service: &str, value: bool) -> Option<Vec<u8>> {
     if value {
         command.arg("-w");
     }
-    let output = command.output().ok()?;
+    let output = process::output_within(&mut command, security_limit(value))?;
     output.status.success().then_some(output.stdout)
 }
 
@@ -12666,6 +12673,23 @@ async fn count_commits(worktree: &Path, start_commit: &str, head: &str) -> u64 {
 /// Claude Code asks with its own AskUserQuestion, and another Obi's job has nobody to ask.
 pub fn asks_through_oby(job: &Job) -> bool {
     job.obi.is_none() && matches!(Tool::from_id(&job.agent), Some(Tool::Codex | Tool::Cursor))
+}
+
+/// Whether job `id`'s question waits with no agent on it (#858): no live agent's prompt waits, and
+/// no run of its is under way but the one that asked with `oby_ask_owner` and ended its turn. That
+/// run shows the question before its worker lets go (closing its connections takes a moment), yet
+/// nothing of it waits on the answer, and the run the answer queues starts only once it's gone
+/// ([`Jobs::schedule`] passes over a job with a worker).
+fn waits_with_no_agent(state: &State, id: &str) -> bool {
+    if state.asks.get(id).is_some_and(|a| !a.is_empty()) {
+        return false;
+    }
+    !state.workers.contains_key(id)
+        || state
+            .jobs
+            .get(id)
+            .and_then(|j| j.question_call.as_ref())
+            .is_some_and(|call| call.ended_turn)
 }
 
 /// The agent's question `job` shows, kept with its call (#858): what a restart keeps waiting.
@@ -16113,6 +16137,67 @@ mod tests {
             job.changes
         );
         assert!(jobs.lock().workers.is_empty());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A question asked with `oby_ask_owner` takes its answer the moment it shows, while the run
+    /// that asked still lets go of its worker: the job is queued, and its next run waits for that
+    /// worker to go. A live agent's question, there and with no prompt left, is still not one
+    /// waiting with no agent.
+    #[tokio::test]
+    async fn an_asked_question_takes_its_answer_while_its_run_winds_down() {
+        let root = std::env::temp_dir().join(format!("obid-asked-{}", uuid::Uuid::new_v4()));
+        let job = Job::new(
+            "eeee0004".into(),
+            "o/r".into(),
+            "build".into(),
+            "Build it".into(),
+            "codex".into(),
+            "c".into(),
+        );
+        let jobs = jobs_with_kept(&root.join("home"), &[&job]);
+        // Its run is under way.
+        jobs.update("eeee0004", |job| job.status = Status::Running);
+        let (sender, _) = watch::channel(Signal::Run);
+        jobs.lock().workers.insert("eeee0004".into(), sender);
+        let call = permissions::ask_owner_call(&json!({"question": "Which store?",
+            "options": [{"label": "SQLite"}, {"label": "Postgres"}]}))
+        .unwrap();
+
+        // A live agent's question with its prompt already taken: no answer settles it here.
+        jobs.update("eeee0004", |job| {
+            job.permission = Some(permissions::question_card(
+                &call.questions,
+                &permissions::new_id(),
+                0,
+            ));
+            job.question_call = Some(permissions::QuestionCall {
+                ended_turn: false,
+                ..call.clone()
+            });
+        });
+        let live = jobs.get("eeee0004").unwrap().permission.unwrap();
+        assert!(matches!(
+            jobs.answer_question("eeee0004", &live.id, "Postgres"),
+            Err(PermissionRefused::NotWaiting(_))
+        ));
+
+        jobs.wait_for_answer("eeee0004", call);
+        let asked = jobs.get("eeee0004").unwrap().permission.unwrap();
+        let job = jobs
+            .answer_question("eeee0004", &asked.id, "Postgres")
+            .unwrap();
+        assert_eq!(job.status, Status::Queued);
+        assert!(job.permission.is_none() && job.question_call.is_none());
+        assert!(
+            job.heard[0].contains("the owner answered \"Postgres\""),
+            "{:?}",
+            job.heard
+        );
+        // Its next run doesn't start beside the worker still letting go.
+        jobs.schedule();
+        assert_eq!(jobs.get("eeee0004").unwrap().status, Status::Queued);
+        assert_eq!(jobs.lock().workers.len(), 1);
         let _ = std::fs::remove_dir_all(&root);
     }
 

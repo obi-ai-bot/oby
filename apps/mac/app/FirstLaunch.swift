@@ -129,13 +129,23 @@ nonisolated enum FirstLaunchSteps {
     }
 
     /// What the steps that need obid say while it doesn't answer: why, when the login item can't
-    /// start it (Oby isn't in Applications, macOS waits for an OK, registering failed).
+    /// start it (Oby isn't in Applications, macOS waits for an OK, registering failed), when obid
+    /// said why its last start failed (`startError`, `LocalRunner.lastStartError`), or what the
+    /// feed's last try got (`offline`).
     static func waiting(inApplications: Bool, needsApproval: Bool, problem: String?,
+                        startError: String? = nil, offline: String? = nil,
                         otherwise: String = "Waiting for Oby’s engine on this Mac…") -> String {
         if !inApplications { return RunnerLoginItem.moveToApplications }
         if needsApproval { return "Oby’s engine waits for your OK in System Settings › General › Login Items." }
         if let problem { return "Oby’s engine couldn’t start: \(problem)" }
+        if let startError { return "Oby’s engine couldn’t start: \(startError)" }
+        if let offline { return "Oby’s engine isn’t answering: \(offline)" }
         return otherwise
+    }
+
+    /// `connection`'s reason when it's offline.
+    static func offline(_ connection: RunnerConnection) -> String? {
+        if case .offline(let why) = connection { why } else { nil }
     }
 
     /// "12 repositories ready".
@@ -350,7 +360,8 @@ struct FirstLaunchView: View {
     private var waiting: some View {
         VStack(alignment: .leading, spacing: 10) {
             text(FirstLaunchSteps.waiting(inApplications: RunnerLoginItem.mayRegister(), needsApproval: loginItem.needsApproval,
-                                          problem: loginItem.problem))
+                                          problem: loginItem.problem, startError: LocalRunner.lastStartError(),
+                                          offline: FirstLaunchSteps.offline(feed.connection)))
             HStack(spacing: 8) {
                 if loginItem.needsApproval {
                     Button("Open Login Items Settings") { RunnerLoginItem.openSettings() }

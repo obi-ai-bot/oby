@@ -16,7 +16,8 @@ struct EngineDownLine: View {
             if shown {
                 VStack(alignment: .leading, spacing: 8) {
                     Label(FirstLaunchSteps.waiting(inApplications: RunnerLoginItem.mayRegister(), needsApproval: loginItem.needsApproval,
-                                                   problem: loginItem.problem,
+                                                   problem: loginItem.problem, startError: LocalRunner.lastStartError(),
+                                                   offline: FirstLaunchSteps.offline(feed.connection),
                                                    otherwise: "Oby’s engine on this Mac isn’t answering, so nothing runs."),
                           systemImage: "exclamationmark.triangle")
                         .font(Tokens.font(Tokens.textSm)).foregroundStyle(Tokens.needs)

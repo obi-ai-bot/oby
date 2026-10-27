@@ -1,8 +1,10 @@
 # design
 
 Sangam's desktop app mockup: the look, the screens and how they fit together,
-to take from when the real apps build them. Nothing outside this folder
-depends on it, and it depends on nothing outside it.
+to take from when the real apps build them. The new desktop app
+(`apps/electron`) started as a copy of `app/` and takes its character from
+`oby/`; nothing else outside this folder depends on it, and it depends on
+nothing outside it.
 
 ```
 app/   the mockup: an Electron app (React, Vite) with mock data. Home, task
