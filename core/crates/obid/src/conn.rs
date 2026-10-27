@@ -168,10 +168,10 @@ impl Conn {
         // first program starts a session of its own, and so a process group whose id is the child's.
         let mut child = command.spawn()?;
         let pgid = child.id().unwrap_or(0);
-        let recorded = launch
-            .group
-            .as_ref()
-            .map(|group| crate::groups::record(group, pgid));
+        let recorded = match &launch.group {
+            Some(group) => Some(crate::groups::record(group, pgid).await),
+            None => None,
+        };
         let stdin = child.stdin.take();
         let copying = child.stderr.take().map(|mut stderr| {
             tokio::spawn(async move {

@@ -5376,11 +5376,6 @@ impl Jobs {
         spec.network = false;
         spec.read_only.clear();
         let env = process::sandbox_env(&process::tools_path(), &temp, &spec.git_env());
-        // Recorded, but never the worktree's lock: it runs beside the job's agent.
-        let group = crate::groups::Recording {
-            git_admin: None,
-            ..self.recording(id, &spec)
-        };
         sandboxed_output(
             &sandbox.wrap(&spec, argv),
             &env,
@@ -5388,7 +5383,6 @@ impl Jobs {
             input,
             limit,
             max,
-            Some(&group),
         )
         .await
     }
@@ -10952,7 +10946,7 @@ pub fn claude_accounts(claude: &crate::config::Agent) -> Vec<crate::config::Acco
 }
 
 /// What a sandboxed command (`argv`, wrapped already) prints, with `input` on its stdin; why not,
-/// when it fails. A job's is recorded while it runs (`group`, crate::groups).
+/// when it fails.
 async fn sandboxed_output(
     argv: &[OsString],
     env: &[(OsString, OsString)],
@@ -10960,7 +10954,6 @@ async fn sandboxed_output(
     input: Option<Vec<u8>>,
     limit: Duration,
     max: usize,
-    group: Option<&crate::groups::Recording>,
 ) -> Result<Vec<u8>, String> {
     clear_recorded_exit(env);
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -10979,7 +10972,6 @@ async fn sandboxed_output(
         .kill_on_drop(true)
         .spawn()
         .map_err(|e| format!("obid couldn't start git in the job's sandbox: {e}"))?;
-    let _recorded = group.map(|group| crate::groups::record(group, child.id().unwrap_or(0)));
     if let (Some(input), Some(mut stdin)) = (input, child.stdin.take()) {
         tokio::spawn(async move {
             let _ = stdin.write_all(&input).await;
@@ -13752,7 +13744,10 @@ pub async fn run_check(
     drop(command);
     let pgid = child.id().unwrap_or(0);
     let _metered = crate::meter::check_root(pgid, cwd);
-    let _recorded = group.map(|group| crate::groups::record(group, pgid));
+    let _recorded = match group {
+        Some(group) => Some(crate::groups::record(group, pgid).await),
+        None => None,
+    };
     // Dropped part way (its job's task panicked, #914), what it started ends too, not only the
     // first process `kill_on_drop` ends.
     struct Group(u32);
@@ -14942,16 +14937,7 @@ mod tests {
             let argv = sh(script);
             let dir = dir.clone();
             async move {
-                sandboxed_output(
-                    &argv,
-                    &[],
-                    &dir,
-                    None,
-                    Duration::from_secs(limit),
-                    max,
-                    None,
-                )
-                .await
+                sandboxed_output(&argv, &[], &dir, None, Duration::from_secs(limit), max).await
             }
         };
         assert_eq!(run("printf hello", 10, 5).await.unwrap(), b"hello");
