@@ -769,19 +769,27 @@ const MOST_SITES_ASKED: usize = 3;
 
 /// How often the meter reads while jobs run or wait for memory ([`Jobs::meter`]).
 const METER_TICK: Duration = Duration::from_secs(5);
-/// How often at most each account's usage is asked of its tool ([`Jobs::want_usage`]); a running
-/// job's own reports come between.
-const USAGE_EVERY: Duration = Duration::from_secs(600);
+/// How often at most each account's usage is asked of its tool ([`Jobs::want_usage`]): every 10
+/// minutes, or `OBID_USAGE_EVERY_SECONDS` (obid's tests set less). A running job's own reports
+/// come between.
+fn usage_every() -> Duration {
+    std::env::var("OBID_USAGE_EVERY_SECONDS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .map_or(Duration::from_secs(600), Duration::from_secs)
+}
 /// How long one account's usage read may take: Claude Code's took 4 seconds.
 const USAGE_READ_LIMIT: Duration = Duration::from_secs(30);
+/// How long past now a Claude Code login copy must last to read with: twice the 5 minutes in which
+/// Claude Code refreshes it, so the boxed run never does.
+const USAGE_LOGIN_MARGIN_MS: u64 = 5 * 60_000;
 
 /// The usage reads ([`Jobs::want_usage`]).
 #[derive(Default)]
 struct UsageReads {
     /// When each account was last asked.
     asked: HashMap<String, std::time::Instant>,
-    /// Accounts not asked again until obid restarts: their tool said no usage, or asked a model.
-    // ponytail: until a restart; forget one when it signs in again if a login's kind changes.
+    /// Accounts not asked again until obid restarts: their Claude Code asked a model for `/usage`.
     never: HashSet<String>,
     /// Reads are under way.
     reading: bool,
@@ -793,6 +801,15 @@ struct ReadFolder(PathBuf);
 impl Drop for ReadFolder {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// A pass of usage reads under way: the next look starts another however this one ends.
+struct Reading<'a>(&'a Jobs);
+
+impl Drop for Reading<'_> {
+    fn drop(&mut self) {
+        self.0.usage_reads().reading = false;
     }
 }
 /// What a job's agent, or a check, may hold at once until obid has measured 3 like it: about one
@@ -1704,22 +1721,22 @@ impl Jobs {
     }
 
     /// An app looks at the accounts (`GET /v1/status`, its event stream opening): each signed-in
-    /// Claude Code and Codex account not asked in the last [`USAGE_EVERY`] is asked of its tool
+    /// Claude Code and Codex account not asked in the last [`usage_every`] is asked of its tool
     /// now, one after another in the background, so the apps show its usage before any job runs
     /// on it: Claude Code's own `/usage` and Codex's `account/rateLimits/read`, neither asking a
     /// model. While no app looks, nothing is read: a running job reports its own. Cursor's CLI
     /// reports no usage. `OBID_USAGE_READS=off` (obid's tests set it) reads none.
     pub fn want_usage(self: &Arc<Self>) {
-        if std::env::var_os("OBID_USAGE_READS").is_some_and(|v| v == "off") {
-            return;
-        }
-        if std::mem::replace(&mut self.usage_reads().reading, true) {
+        if std::env::var_os("OBID_USAGE_READS").is_some_and(|v| v == "off")
+            || self.shutting_down.load(Ordering::Relaxed)
+            || std::mem::replace(&mut self.usage_reads().reading, true)
+        {
             return;
         }
         let jobs = self.clone();
         tokio::spawn(async move {
+            let _reading = Reading(&jobs);
             jobs.read_due_usages().await;
-            jobs.usage_reads().reading = false;
         });
     }
 
@@ -1731,16 +1748,17 @@ impl Jobs {
     async fn read_due_usages(&self) {
         use crate::usage::Asked;
         let home = login_home();
+        let every = usage_every();
         for tool in [Tool::Claude, Tool::Codex] {
             for account in self.accounts(tool) {
+                if self.shutting_down.load(Ordering::Relaxed) {
+                    return;
+                }
                 let id = account.id.clone();
                 let due = {
                     let reads = self.usage_reads();
                     !reads.never.contains(&id)
-                        && reads
-                            .asked
-                            .get(&id)
-                            .is_none_or(|at| at.elapsed() >= USAGE_EVERY)
+                        && reads.asked.get(&id).is_none_or(|at| at.elapsed() >= every)
                 };
                 if !due || self.being_changed(&id) || !signed_in(tool, &account, home.as_deref()) {
                     continue;
@@ -1760,12 +1778,9 @@ impl Jobs {
                         self.usage_changed.notify_one();
                     }
                     Ok(Asked::Said(_)) => {}
-                    Ok(Asked::Silent) => {
-                        self.usage_reads().never.insert(id.clone());
-                        tracing::info!(
-                            "{name} account {id} reports no usage: not asked again until obid restarts"
-                        );
-                    }
+                    // An API key's account, or one its tool reports none for now: asked again
+                    // after the interval, as any read is.
+                    Ok(Asked::Silent) => tracing::info!("{name} account {id} reports no usage"),
                     Ok(Asked::ModelRan) => {
                         self.usage_reads().never.insert(id.clone());
                         tracing::warn!(
@@ -1780,8 +1795,8 @@ impl Jobs {
 
     /// One account's usage, from its tool boxed as the brain's run is, in a folder of its own in
     /// `home/plans` with its own copy of the account's login, removed however the read ends. It
-    /// never refreshes a login: a Claude Code copy that ends within 5 minutes isn't read with
-    /// (a run would refresh it, rotating the Mac's own away), and the Keychain keeper doesn't
+    /// never refreshes a login: a Claude Code copy that ends within 10 minutes isn't read with (a
+    /// run refreshes in its last 5, rotating the Mac's own away), and the Keychain keeper doesn't
     /// count a read as the login's use (`claude_login_ready` isn't asked).
     async fn read_usage(
         &self,
@@ -1815,8 +1830,8 @@ impl Jobs {
             confined: false,
         })?;
         match tool {
-            Tool::Claude if !login_copy_lasts(&login) => {
-                Err("its login ends within 5 minutes: read once it's refreshed".into())
+            Tool::Claude if !login_copy_lasts_past(&login, now_ms() + USAGE_LOGIN_MARGIN_MS) => {
+                Err("its login ends within 10 minutes: read once it's refreshed".into())
             }
             Tool::Claude => agent::read_usage(&launch, USAGE_READ_LIMIT).await,
             _ => codex::read_usage(&launch, USAGE_READ_LIMIT).await,
@@ -11864,6 +11879,11 @@ fn folder_login_ok(login: Option<&[u8]>, now: u64) -> bool {
 /// token doesn't end within 5 minutes ([`file_login_ok`]). A conversation's Claude Code kept
 /// running between turns reads it.
 pub(crate) fn login_copy_lasts(login: &Path) -> bool {
+    login_copy_lasts_past(login, now_ms())
+}
+
+/// [`login_copy_lasts`] at `now` (milliseconds): later than now asks for a wider margin.
+fn login_copy_lasts_past(login: &Path, now: u64) -> bool {
     match [".credentials.json", ".claude/.credentials.json"]
         .iter()
         .map(|name| login.join(name))
@@ -11875,7 +11895,7 @@ pub(crate) fn login_copy_lasts(login: &Path) -> bool {
             std::fs::symlink_metadata(&file).is_ok_and(|m| m.is_file())
                 && std::fs::read(file)
                     .ok()
-                    .is_some_and(|login| file_login_ok(Some(&login), now_ms()))
+                    .is_some_and(|login| file_login_ok(Some(&login), now))
         }
     }
 }

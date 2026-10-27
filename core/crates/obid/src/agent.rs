@@ -297,7 +297,8 @@ pub const USAGE_FLAGS: [&str; 15] = [
 ];
 
 /// What Claude Code's `/usage` (`launch` runs [`USAGE_FLAGS`]) says of the account, read until
-/// its `result`, or `limit`; why not, when it ends without one.
+/// its `result`, or `limit`; why not, when it failed (offline, a refused login) or ended without
+/// one.
 pub async fn read_usage(launch: &Launch, limit: Duration) -> Result<crate::usage::Asked, String> {
     use crate::usage::Asked;
     // Kept until the read ends: a stop channel whose sender is gone stops the agent.
@@ -307,20 +308,25 @@ pub async fn read_usage(launch: &Launch, limit: Duration) -> Result<crate::usage
         .map_err(|e| format!("Claude Code didn't start: {e}"))?;
     conn.close_input();
     let mut usage = None;
-    let mut asked = None;
+    let mut asked = Err("Claude Code ended without answering.".to_owned());
     while let Ok(line) = conn.next().await {
         usage = usage.or_else(|| crate::usage::claude_report(&line));
         if line["type"] == "result" {
-            asked = Some(if crate::usage::claude_ran_model(&line) {
-                Asked::ModelRan
+            asked = if crate::usage::claude_ran_model(&line) {
+                Ok(Asked::ModelRan)
+            } else if line["is_error"] == true {
+                Err(format!(
+                    "Claude Code's /usage failed: {}",
+                    line["result"].as_str().unwrap_or("no reason given")
+                ))
             } else {
-                usage.take().map_or(Asked::Silent, Asked::Said)
-            });
+                Ok(usage.take().map_or(Asked::Silent, Asked::Said))
+            };
             break;
         }
     }
     conn.finish().await;
-    asked.ok_or_else(|| "Claude Code ended without answering.".into())
+    asked
 }
 
 /// [`run_turn`] on a Claude Code already running (`conn`). With `keep`, a turn that ends with its

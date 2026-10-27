@@ -1084,3 +1084,57 @@ fn an_apps_look_reads_each_accounts_usage() {
         });
     }
 }
+
+/// A read never uses a Claude Code login copy within 10 minutes of its end. An account whose
+/// Claude Code asked a model for `/usage` isn't asked again until obid restarts; one that answered
+/// with no usage, or failed (offline), is asked again once the interval passed.
+#[test]
+fn usage_reads_retry_but_never_after_a_model_ran() {
+    let folder = Folder::new("usage-retry");
+    let mut config = config(
+        &folder.0,
+        &folder.0.join("remote.git"),
+        &agent("fake-claude"),
+    );
+    config["claudeKeychain"] = json!(false);
+    let mut list = Vec::new();
+    for (id, minutes) in [
+        ("ending", 7),
+        ("asks-model", 600),
+        ("silent", 600),
+        ("offline", 600),
+    ] {
+        let dir = folder.0.join("home/accounts").join(id);
+        std::fs::create_dir_all(&dir).unwrap();
+        let ends = (obi_protocol::time::now() + minutes * 60) * 1000;
+        let login = json!({"claudeAiOauth": {"accessToken": format!("tok-{id}-plain-test-login"), "expiresAt": ends}});
+        std::fs::write(dir.join(".credentials.json"), login.to_string()).unwrap();
+        list.push(json!({"id": id, "name": id, "configDir": dir}));
+    }
+    config["agents"]["claude"]["accounts"] = json!(list);
+    let env = [
+        ("OBID_USAGE_READS", "on"),
+        ("OBID_USAGE_EVERY_SECONDS", "1"),
+    ];
+    let obid = start_with(&folder.0, &config, None, &env);
+    let said = |what: &str| obid.log().matches(what).count();
+    let failed = "account offline: usage not read: Claude Code's /usage failed: fetch failed";
+    // Two passes, a second apart; `offline` is read last in each.
+    for pass in 1..=2 {
+        accounts(&obid);
+        within(20, "a pass of reads", || {
+            (said(failed) >= pass).then_some(())
+        });
+        std::thread::sleep(Duration::from_millis(1100));
+    }
+    assert_eq!(said("account asks-model: /usage asked a model"), 1);
+    assert_eq!(said("account silent reports no usage"), 2);
+    assert_eq!(said(failed), 2);
+    assert_eq!(
+        said("account ending: usage not read: its login ends within 10 minutes"),
+        2
+    );
+    for id in ["ending", "asks-model", "silent", "offline"] {
+        assert!(account(&obid, id).unwrap()["sevenDay"].is_null(), "{id}");
+    }
+}
