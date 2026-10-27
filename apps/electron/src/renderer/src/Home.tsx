@@ -179,7 +179,11 @@ export default function Home() {
   const [sidebar, setSidebar] = useState(() => {
     try { return localStorage.getItem('oby.sidebarOpen') === '1'; } catch { return false; }
   });
+  // lent: opened by setting up's Obysphere tour (onboarding.ts), which isn't your choice, so it
+  // isn't remembered, and the tour closes it again at its end unless you've toggled it since
+  const lent = useRef(false);
   useEffect(() => {
+    if (lent.current) return;
     try { localStorage.setItem('oby.sidebarOpen', sidebar ? '1' : '0'); } catch { /* not remembered, that's all */ }
   }, [sidebar]);
   // the side panel's width (icons included), set by dragging its edge; remembered
@@ -205,6 +209,17 @@ export default function Home() {
     if (done) settled.current = window.setTimeout(() => setSettling(false), 520);
     if (done) try { localStorage.setItem('oby.sidebarWidth', String(next)); } catch { /* not remembered, that's all */ }
   }, []);
+
+  useEffect(() => {
+    const lend = (e: Event) => {
+      const open = (e as CustomEvent<boolean>).detail;
+      // only where it fits beside the view (--view-min, 420px); else the tour's picks stand in for it
+      if (open && !sidebar && innerWidth >= sidebarWidth + 420) { lent.current = true; setSidebar(true); }
+      if (!open && lent.current) { lent.current = false; setSidebar(false); }
+    };
+    addEventListener('oby:sidebar', lend);
+    return () => removeEventListener('oby:sidebar', lend);
+  }, [sidebar, sidebarWidth]);
 
   // what's showing over Oby's stage, if anything (until it has left)
   const away = layers.length > 0;
@@ -423,7 +438,7 @@ export default function Home() {
       {/* stays next to the traffic lights whether the side panel is open or not.
           Last in the page on purpose: Electron reads drag areas in page order,
           so coming after the title bar keeps its click from being taken as a drag */}
-      <button className="icon-button panel-toggle" aria-label={sidebar ? 'Hide sidebar' : 'Show sidebar'} aria-expanded={sidebar} onClick={() => setSidebar((v) => !v)}>
+      <button className="icon-button panel-toggle" aria-label={sidebar ? 'Hide sidebar' : 'Show sidebar'} aria-expanded={sidebar} onClick={() => { lent.current = false; setSidebar((v) => !v); }}>
         <PanelLeft size={18} strokeWidth={1.6} />
       </button>
     </div>

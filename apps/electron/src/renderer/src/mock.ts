@@ -587,8 +587,9 @@ export const TURNS: Turn[] = [
 // it asked); streaming: its words still coming in. files: what went with yours
 // (a photo with a preview of itself); obys: the Obys it @mentions
 export type Message = { who: string; text: string; ago: number; jobs?: string[]; by?: string; steps?: string[]; looked?: number; asked?: string[]; streaming?: boolean; setup?: SetupStep } & Attachments;
-// a step of setting up, in Oby's first conversation (onboarding.ts): its card under Oby's words
-export type SetupStep = 'agents' | 'github' | 'extras' | 'first';
+// a step of setting up, in Oby's first conversation (onboarding.ts): its card under Oby's words.
+// sphere to knowledge: the Obysphere tour (convo: a sample teammate's conversation)
+export type SetupStep = 'agents' | 'github' | 'extras' | 'first' | 'sphere' | 'showme' | 'sample' | `convo:${'Ernesto' | 'Dima' | 'Wellington'}` | 'knowledge';
 // What went with a message from the message box besides its words
 // repo: the repository picked for it (obid's, Composer's repository tag)
 export type Attachments = { files?: { name: string; preview?: string }[]; obys?: string[]; jobs?: string[]; on?: string; repo?: string };

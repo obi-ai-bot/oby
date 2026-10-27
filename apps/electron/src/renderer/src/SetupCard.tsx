@@ -1,9 +1,12 @@
-import { useState, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { Check } from 'lucide-react';
 import { BRANDS, BrandMark, type Brand } from './brands';
-import { ObyFace } from './ObyFace';
+import SphereTile from './SphereTile';
+import { SAMPLE, memberCount } from './spheres';
+import { tetrixFor } from './knowledge';
+import { SAMPLE_TALK, Sphere, SphereHowTo } from './Welcome';
 import { AGENTS, type Agent, type SetupStep } from './mock';
-import { FIRST_TASK, accountOf, connectTetrix, joinSphere, pick, sendAgentCode, signInAgent, signInGitHub, useSetup, type Code } from './onboarding';
+import { FIRST_TASK, accountOf, connectTetrix, pick, sendAgentCode, signInAgent, signInGitHub, useSetup, type Code } from './onboarding';
 import { onObid } from './lean';
 import { useLive } from './live';
 
@@ -13,13 +16,20 @@ const typed = (c?: Code) => (c?.userCode ? ` · enter ${c.userCode}` : '');
 // A step of setting up, under Oby's words in its first conversation
 // (onboarding.ts): a row for each thing to connect, with its button or how it
 // stands, then the picks that carry on (only while this step waits on you).
+// The Obysphere tour's cards (the sample's) become one line once it's put away.
 export default function SetupCard({ step }: { step: SetupStep }) {
   const s = useSetup();
   const repos = useLive().repos.length;
   const waiting = s.at === step;
   const mark = (brand: Brand) => <BrandMark brand={brand} size={22} />;
+  // a sample conversation: what to click next shows once its last line is in
+  const [heard, setHeard] = useState(false);
+  // (picks come in under the conversation's end, so they're brought into view)
+  const end = useRef<HTMLDivElement>(null);
+  useEffect(() => { if (waiting) end.current?.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); }, [waiting, heard]);
 
-  let rows: ReactNode = null, picks: { label: string; quiet?: boolean; ok?: boolean }[] = [];
+  if (s.sphere === 'gone' && SAMPLE_STEPS.some((x) => step.startsWith(x))) return <p className="setup-label setup-gone">Sample · put away</p>;
+  let rows: ReactNode = null, body: ReactNode = null, cue = '', picks: { label: string; quiet?: boolean; ok?: boolean }[] = [];
   if (step === 'agents') {
     const AGENT_SUB: Record<Agent, [ready: string, out: string]> = {
       claude: ['Signed in · Personal', 'On this Mac, not signed in'],
@@ -45,10 +55,30 @@ export default function SetupCard({ step }: { step: SetupStep }) {
     rows = <>
       <Row mark={mark(BRANDS.tetrix)} name="Tetrix" state={s.tetrix} act="Connect" onAct={connectTetrix}
         sub={s.tetrix === 'in' ? 'Connected · every agent gets your code graph' : s.tetrix === 'waiting' ? 'Finish in your browser' : 'Your code as a graph, for every agent'} />
-      <Row mark={<ObyFace size={22} />} name="Obysphere" state={s.sphere} act="Join" onAct={joinSphere}
-        sub={s.sphere === 'in' ? 'Joined Deskree · 5 members' : s.sphere === 'waiting' ? 'Joining with your invite' : 'Your team’s Obys review each other’s work'} />
     </>;
-    picks = s.tetrix === 'in' || s.sphere === 'in' ? [{ label: 'Continue' }] : [{ label: 'Skip for now', quiet: true }];
+    picks = s.tetrix === 'in' ? [{ label: 'Continue' }] : [{ label: 'Skip for now', quiet: true }];
+  } else if (step === 'sphere') {
+    picks = [{ label: 'Show me', ok: true }, { label: 'Skip', quiet: true }];
+  } else if (step === 'showme') {
+    body = <><p className="setup-label">Example</p><SphereHowTo /></>;
+    picks = [{ label: 'Continue', ok: true }];
+  } else if (step === 'sample') {
+    rows = <Row mark={<span className="is-sample"><SphereTile name={SAMPLE.name} brand={SAMPLE.brand} /></span>} name={SAMPLE.name} state="out"
+      sub={`Sample · ${memberCount(SAMPLE)} members`} act={waiting ? 'Take a look' : undefined} onAct={() => pick('Take a look')} />;
+    cue = 'It’s on the left, in the side panel.';
+    picks = [{ label: 'Not now', quiet: true }];
+  } else if (step.startsWith('convo:')) {
+    const who = step.slice(6), { title, talk } = SAMPLE_TALK[who];
+    body = <><p className="setup-label">Sample conversation · {title}</p><Sphere talk={talk} peer={who} loop={false} onEnd={() => setHeard(true)} /></>;
+    if (heard) {
+      cue = CUES[s.call ?? ''] ?? '';
+      picks = [{ label: s.call === 'Knowledge' ? 'Knowledge' : `${s.call}’s`, ok: true }, { label: 'Done looking', quiet: true }];
+    }
+  } else if (step === 'knowledge') {
+    const tetrix = tetrixFor('deskree-inc', 'Wellington');
+    rows = <Row mark={mark(BRANDS.tetrix)} name={`Tetrix · ${tetrix.org}`} state="out" sub="Sample · connected by Wellington · every member’s Oby can use it" />;
+    cue = tetrix.tools.filter((t) => t.on).map((t) => t.name).join(', ');
+    picks = [{ label: 'Continue', ok: true }];
   } else {
     picks = [{ label: FIRST_TASK }, { label: 'Review my open pull requests' }];
   }
@@ -56,8 +86,10 @@ export default function SetupCard({ step }: { step: SetupStep }) {
   return (
     <div className="setup">
       {rows && <ul className="setup-rows">{rows}</ul>}
+      {body}
+      {waiting && cue && <p className="setup-label setup-cue">{cue}</p>}
       {waiting && (
-        <div className="tc-options">
+        <div ref={end} className="tc-options">
           {picks.map((p) => (
             <button key={p.label} className={`tc-option${p.quiet ? ' is-quiet' : p.ok !== undefined ? ' is-primary' : ''}`} disabled={p.ok === false} onClick={() => pick(p.label)}>{p.label}</button>
           ))}
@@ -67,9 +99,18 @@ export default function SetupCard({ step }: { step: SetupStep }) {
   );
 }
 
+// the tour's cards with the sample in them; and what to click next, under a sample conversation
+const SAMPLE_STEPS = ['showme', 'sample', 'convo:', 'knowledge'];
+const CUES: Record<string, string> = {
+  Ernesto: 'Ernesto’s Oby asked yours for a review too.',
+  Dima: 'Dima’s Oby asked yours something too.',
+  Wellington: 'Wellington’s asked for something only you can OK.',
+  Knowledge: 'Last one: Knowledge, what Deskree’s Obys can look up.',
+};
+
 // one thing to connect: its mark, its name and how it stands (and anything it needs from you
-// there), and its button until it's ready
-const Row = ({ mark, name, sub, state, act, onAct, children }: { mark: ReactNode; name: string; sub: string; state: 'out' | 'waiting' | 'in' | 'looking'; act: string; onAct: () => void; children?: ReactNode }) => (
+// there), and its button until it's ready (none: nothing to do there)
+const Row = ({ mark, name, sub, state, act, onAct, children }: { mark: ReactNode; name: string; sub: string; state: 'out' | 'waiting' | 'in' | 'looking'; act?: string; onAct?: () => void; children?: ReactNode }) => (
   <li className="setup-row">
     {mark}
     <span className="wl-two">
@@ -78,7 +119,7 @@ const Row = ({ mark, name, sub, state, act, onAct, children }: { mark: ReactNode
       {children}
     </span>
     {state === 'in' ? <span className="wl-ready"><Check size={14} strokeWidth={2} />Ready</span>
-      : state !== 'looking' && <button className="set-button" disabled={state === 'waiting'} onClick={onAct}>{state === 'waiting' ? 'Waiting…' : act}</button>}
+      : state !== 'looking' && act && <button className="set-button" disabled={state === 'waiting'} onClick={onAct}>{state === 'waiting' ? 'Waiting…' : act}</button>}
   </li>
 );
 
