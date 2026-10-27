@@ -1,0 +1,58 @@
+# The Mac app, built into dist/ by scripts/package.sh (which notarizes it and makes the DMG).
+# Its own bundle ID and name while the Swift Oby (com.deskree.oby, Oby.app) is still installed:
+# dragged into Applications it never replaces it, the two apps never share a login item, and each
+# adopts the obid already answering on 127.0.0.1:7777. "Oby" again once users have moved over.
+appId: com.deskree.oby.electron
+productName: Oby Electron
+directories:
+  buildResources: build
+  output: dist
+# Vite bundles the renderer's packages, and main uses only Electron and Node.
+files:
+  - out/**
+  - native/window-style/build/Release/window_style.node
+  - package.json
+  - "!node_modules/**"
+asarUnpack:
+  - native/**/*.node
+npmRebuild: false
+# No running the app as plain Node, no Node flags or inspector from outside, and only the app's own
+# checked asar: main holds obid's token.
+electronFuses:
+  runAsNode: false
+  enableNodeOptionsEnvironmentVariable: false
+  enableNodeCliInspectArguments: false
+  enableEmbeddedAsarIntegrityValidation: true
+  onlyLoadAppFromAsar: true
+  enableCookieEncryption: true
+mac:
+  target: dir
+  icon: build/icon.icns
+  category: public.app-category.developer-tools
+  minimumSystemVersion: "26.0"
+  identity: "Deskree Technologies Inc. (3UV9W5SV7W)"
+  hardenedRuntime: true
+  entitlements: build/entitlements.mac.plist
+  entitlementsInherit: build/entitlements.mac.plist
+  notarize: false
+  # obid, gh and gitleaks, staged and signed by scripts/helpers.sh (gitleaks with its own
+  # entitlement), where the Swift app has them: obid finds the others and its plug-ins from its own
+  # path (core/crates/obid/src/app.rs). Their signatures stay as staged.
+  extraFiles:
+    - from: build/helpers/Contents/Helpers
+      to: Helpers
+    - from: build/helpers/Contents/MacOS
+      to: MacOS
+    - from: build/com.deskree.oby.electron.obid.plist
+      to: Library/LaunchAgents/com.deskree.oby.electron.obid.plist
+  extraResources:
+    - from: build/helpers/Contents/Resources/obid
+      to: obid
+    - from: build/helpers/Contents/Resources/Licenses
+      to: Licenses
+  # ponytail: Chromium's .pak files are resources Electron Framework's own signature seals; signed
+  # one by one they'd each wait on Apple's timestamp server (over 200 of them)
+  signIgnore:
+    - /Contents/Helpers/obid$
+    - /Contents/MacOS/(gh|gitleaks)$
+    - \.pak$
