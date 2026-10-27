@@ -5411,6 +5411,13 @@ impl Link {
                 let mut item = item;
                 match &given {
                     Given::Answer(a) if a == inbox::START => {
+                        // An offer past its day closes instead, though nothing read the inbox
+                        // since (`settle_stale_starts`): nothing starts.
+                        if let Some(closed) = close_expired(&mut state.inbox, id, now) {
+                            drop(state);
+                            self.save_item(&closed);
+                            return Err(api(StatusCode::CONFLICT, OFFER_EXPIRED));
+                        }
                         if let Some(kept) = state.inbox.get_mut(id) {
                             kept.done = Some(now);
                         }
@@ -6183,6 +6190,15 @@ const OFFER_GONE: &str = "Closed by Oby: the conversation it was offered in was 
 fn expired(item: &Item, now: i64) -> bool {
     item.start.as_ref().is_some_and(|s| s["offer"].is_object())
         && now - item.created >= OFFER_SECONDS
+}
+
+/// Closes `inbox`'s item `id` when it's an offer past its day ([`expired`]), answering it closed;
+/// none otherwise. The caller holds the lock `inbox` is under.
+fn close_expired(inbox: &mut HashMap<String, Item>, id: &str, now: i64) -> Option<Item> {
+    let item = inbox.get(id).filter(|i| expired(i, now))?.clone();
+    let closed = closed_start(item, OFFER_EXPIRED, now);
+    inbox.insert(id.to_owned(), closed.clone());
+    Some(closed)
 }
 
 /// A `start` item done by Oby itself, `why` above its words, with no options: nothing starts.
@@ -7093,6 +7109,30 @@ mod tests {
         );
         assert!(!home.join("keys/seal.key").exists());
         let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// A Start on an offer past its day closes it under the lock instead, even when nothing read
+    /// the inbox since; a fresh offer is left to start.
+    #[test]
+    fn a_start_on_an_expired_offer_closes_it() {
+        let confirmed = inbox::Confirmed {
+            action: String::new(),
+            target: String::new(),
+            payload: Value::Null,
+        };
+        let mut item = inbox::confirm_item("", "Greeting".into(), "Start it?".into(), confirmed, 0);
+        item.kind = "start".into();
+        item.confirm = None;
+        item.start = Some(Box::new(json!({"repo": "o/app", "offer": {"id": "t1"}})));
+        let id = item.id.clone();
+        let mut inbox = HashMap::from([(id.clone(), item.clone())]);
+        assert!(super::close_expired(&mut inbox, &id, super::OFFER_SECONDS - 1).is_none());
+        assert_eq!(inbox[&id], item);
+        let closed = super::close_expired(&mut inbox, &id, super::OFFER_SECONDS).unwrap();
+        assert_eq!(closed.done, Some(super::OFFER_SECONDS));
+        assert!(closed.text.starts_with(super::OFFER_EXPIRED) && closed.options.is_empty());
+        assert_eq!(inbox[&id], closed);
+        assert!(super::close_expired(&mut inbox, "gone", super::OFFER_SECONDS).is_none());
     }
 
     /// An offer (`oby_offer`) closes a day after it was made, its words kept under obid's own
