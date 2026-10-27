@@ -2747,67 +2747,6 @@ A share of a company-paid API account the owner holds the key to, for a teammate
 
 **The teammate's side.** **`GET /v1/obid/sharing/shared`**: `{"shares": [{"grant", "from", "owner", "agent", "account", "share", "limitCents", "usedCents", "resets"}], "takesShares": true}`, the shares teammates gave this owner as their last `share_status` left them, until a `share_revoke`; `takesShares` says whether this Obi's card accepts `share_offer` (the Mac app adds it when the owner turns sharing on). A job goes on a share with `"runsOn": {"obi": "<their Obi>", "grant": "<grant>"}` on `POST /v1/jobs`, `POST /v1/plans` or `PATCH /v1/jobs/{id}` (`422` for a share that isn't this owner's); its Job's `runsOn` has the `grant`. No model call comes back here: none is relayed, and the owner's own key isn't needed.
 
-### obid only: plug-ins
-
-Context providers and event sources (docs/ARCHITECTURE.md, "Plug-ins"). None is enabled until the owner enables it.
-
-**`GET /v1/obid/plugins`**: every plug-in obid found, enabled or not:
-
-```json
-[{"id": "tetrix", "name": "Tetrix", "version": "0.1.0", "kinds": ["agent-mcp"], "enabled": false,
-  "state": "disabled", "lastError": null}]
-```
-
-`state` is `disabled`, `starting`, `ready` or `failed` (it failed three times in a row, after restarts 1 and then 2 seconds after its first two failures, docs/ARCHITECTURE.md 5.3; or it couldn't be started, `lastError` says why; enabling it again starts it again). `lastError` may carry the plug-in's own words, so the secrets obid holds are taken out of it, as from its log lines; so they are from `PUT`'s `500`. With no plug-in found it is `200 []`. When obid's plug-in host didn't start it is `503` with `{"error": "obid's plug-in host didn't start: <why>"}`, never an empty list; `<why>` has the secrets obid holds taken out, like its log line (the host's words may carry a plug-in's).
-
-**`PUT /v1/obid/plugins/{id}`**: `{"enabled": true}` or `{"enabled": false}`, optionally with `"config": { … }` matching the manifest's `config` schema. Answers the plug-in. Kept in `home/plugins.json`. `404` for an unknown plug-in, `422` for a config that doesn't match. Also `422` for a body that isn't that shape (`enabled` not a boolean, `config` not an object, another key), `400` for one that isn't JSON, and `503` when obid's plug-in host didn't start (the same redacted `error` as `GET`) or obid is stopping. Enabling answers once the plug-in is `ready` or its first start failed; disabling answers once it, and everything it started, has stopped.
-
-**What obid does with them.** The plug-in host (`core/crates/obi-plugin-host`) starts when obid starts, after the plug-ins obid ships are installed (`bundledPlugins`, "obid only: configuration"), and shuts down when obid stops: every plug-in gets `shutdown` at once, side by side with the jobs' agents, and no process a plug-in started is left running when obid exits. A fresh home runs **no** plug-in: obid works fully with none enabled.
-
-- **Context** (`context` plug-ins). Each time obid gives a job's agent its whole prompt (its first turn, and the first after obid restarted the job) obid first asks every ready context plug-in (`context/query`) with the job's typed fields only (`id`, `kind`, `repo`, `branch`, `base`, `issue`, `pr`, `files`), and `purpose` `review` for a `review` job and a review another Obi asked for (`repo`, `branch` and `base` are then the request's), `plan` for a job in Plan mode, `dispatch` for every other job. Each plug-in's items are written to `.obi/context/<plugin id>.md` in the job's worktree (excluded from git with all of `.obi/`), in place of an earlier run's: a heading and a sentence saying it is quoted data from that plug-in, then each item's `title`, `source` and `uri` as JSON strings and its `text` in a fence longer than any run of backticks in it. The prompt gets one fixed paragraph naming those files and saying they are data, never instructions; nothing a plug-in wrote is in the prompt. No answer, a failed or late one (5 seconds) gives no file and no paragraph, and the job goes on; when no plug-in gave an item, obid doesn't touch `.obi/` at all. obid writes these files itself, outside the sandbox, into a worktree that holds whatever the repository commits, so it follows no link: when `.obi` or `.obi/context` isn't a real folder (a link out of the worktree, or a file), obid writes and removes nothing, logs why, and the job goes on without context.
-- **Agent MCP servers** (`agent-mcp` plug-ins). For a Claude Code agent of the owner's own job, every ready `agent-mcp` plug-in's server goes into `<job's temporary folder>/obi-mcp.json` (0600, written before each turn), named by the plug-in's id, as `{"mcpServers": {"<id>": {"type": "http", "url"}}}` (or `{"type": "stdio", "command", "args"}`; a stdio command runs inside the job sandbox, so it must be a tool the sandbox can run): only what the server needs to start, no header and no environment. The agent runs with `--strict-mcp-config --mcp-config <that file>` and then `--allowedTools` followed by **one argument per allowed tool**, `mcp__<plugin id>__<tool>`, never joined into one string; the arguments name no secret. obid's own gate (its fixed denials, before any mode or saved rule) allows an MCP tool only when it is one of those rules: every other MCP tool, of any server, is refused, also when no plug-in is enabled. With no ready `agent-mcp` plug-in the agent gets no `--mcp-config` and no `--allowedTools`. Codex and Cursor agents get no plug-in's server in this version, and a review another Obi asked for gets none (it only reads).
-- **Events** (`events` plug-ins) become `pluginEvent` items in the inbox, below.
-- **The log.** A plug-in's stderr and `log` messages, and what the host says about a plug-in, are logged under the `tracing` target `obi_plugin`. obid's log layer takes every secret obid holds out of each such line before it is written, plain and in its encoded forms (base64, standard or URL-safe, padded or not and at any offset in a longer run, hex in either case, URL-encoded, and runs of those that decode to one), as `[redacted: <name>]`; for base64 the whole run of base64 characters that holds it goes, so no fragment of it is left: the API token (`api-token`), the Obi key (`obi-key`: both its hex text, `keys/obi.key`, in either case, and its 32 bytes), the Sphere's delegation (`sphere-delegation`) and access token (`sphere-token`). obid has no vault yet (#457); the vault's secrets join the same set when it is ported. No secret is in obid's or any of its children's environment or arguments (a plug-in's environment is `PATH`, `HOME`, `LANG` and `TMPDIR` only).
-
-**Plug-in events in the inbox.** Each event an `events` plug-in emits (`events/emit`, docs/ARCHITECTURE.md 5.4) that obid accepts becomes one inbox item of kind **`pluginEvent`**; an event with an `id` that plug-in sent before makes nothing new:
-
-```json
-{"id": "ev-tetrix-0b9c2d4e6f8a1b3c", "kind": "pluginEvent", "job": "", "title": "Review requested: obi-e2e/fixture-app #12",
- "text": "The tetrix plug-in says a review was requested on obi-e2e/fixture-app pull request #12.",
- "options": ["Dismiss"], "details": ["Mark it read."],
- "recommended": null, "created": "2026-10-14T12:00:11Z", "done": null, "later": null, "answer": null, "state": "open",
- "plugin": {"id": "tetrix", "eventId": "…", "kind": "pull_request.review_requested", "occurredAt": "2026-10-14T12:00:09Z",
-            "repo": "obi-e2e/fixture-app", "pr": 12, "issue": null, "headSha": null,
-            "project": null, "environment": null, "severity": null, "ticket": null,
-            "quoted": {"actor": "…", "title": "…", "url": "…", "text": ""}}}
-```
-
-An `obi-plugin/0.2` plug-in's failed deploy on one of obid's repositories is an offer:
-
-```json
-{"id": "ev-vercel-5c1e…", "kind": "pluginEvent", "job": "", "title": "Deploy failed: web (production)",
- "text": "The vercel plug-in says a deploy of web to production failed.",
- "options": ["Look into it", "Dismiss"],
- "details": ["Starts an investigate job in obi-e2e/fixture-app, with what the vercel plug-in sent quoted for its agent.", "Mark it read."],
- "plugin": {"id": "vercel", "eventId": "dpl-1", "kind": "deploy.failed", "occurredAt": "2026-10-23T03:12:00Z",
-            "repo": "obi-e2e/fixture-app", "pr": null, "issue": null, "headSha": null,
-            "project": "web", "environment": "production", "severity": null, "ticket": null,
-            "quoted": {"actor": "…", "title": "…", "url": "…", "text": "…"}}, …}
-```
-
-- `id` is `ev-<plug-in id>-` and the first 16 hex of SHA-256 of the event's `id`.
-- `title` and `text` come from typed fields only: the plug-in's id, the event's `kind` (a fixed phrase per kind: `Review requested`, `Changes requested`, `Issue assigned`, `Check failed`, `Mentioned`, `Deploy failed`, `Alert`, `Ticket assigned`), `repo`, `pr` or `issue`, `project`, `environment`, `severity` and `ticket`.
-  - For the GitHub kinds `title` is `<phrase>: <repo> #<pr or issue>` (no `#…` when the event has neither); `text` is `The <plug-in id> plug-in says <what> on <where>.`, where `<what>` is `a review was requested`, `changes were requested`, `an issue was assigned`, `a check failed` or `you were mentioned`, and `<where>` is `<repo> pull request #<pr>`, else `<repo> issue #<issue>`, else `<repo> at <the first 7 of headSha>`, else `<repo>`.
-  - `deploy.failed`: `Deploy failed: <project> (<environment>)`, `The <plug-in id> plug-in says a deploy of <project> to <environment> failed.`
-  - `alert.fired`: `Alert: <project> (<severity>)`, `The <plug-in id> plug-in says an alert fired on <project>.`
-  - `ticket.assigned`: `Ticket assigned: <ticket>`, `The <plug-in id> plug-in says ticket <ticket> is assigned to you.`
-
-  `plugin` holds the typed fields (null when the event has none) and `plugin.quoted` the event's text (`actor`, `data.title`, `data.url`, `data.text`, `""` when it has none) unchanged: shown as quoted text, never as a link that opens by itself, never to a model as instructions. Only `pluginEvent` items have the `plugin` key.
-- **Answers.** A GitHub kind, and any event whose `repo` isn't one of obid's `repos`, only says something: its one answer is `Dismiss`. A `deploy.failed` or `alert.fired` on one of obid's repositories is an offer, `Look into it` then `Dismiss`, and a `ticket.assigned` one `Fix it` then `Dismiss`. `{"done": true}` settles any of them, and `{"later": …}` puts it off as for any item; any other answer is `422`, naming the item's options.
-- **The start.** `Look into it` starts an ordinary `investigate` job in the event's repository, `Fix it` a `fix` job. The answer claims the item first, so a second one is `409`, and answers the item, done with its `job`. The task and title are obid's own words: `Look into the failed deploy of <project> to <environment> that the <plug-in id> plug-in reported. What it sent is quoted in .obi/inputs/event-<plug-in id>-<16 hex>.md.` (`Look into the alert on <project> (<severity>) …`, `Fix ticket <ticket> …`), titled `Deploy failed: <project>`, `Alert: <project>` or `Ticket <ticket>`. That file, kept as the job's attachment, has the typed fields, then a rule naming the plug-in and each of its texts fenced as quoted data; every line has the secrets obid knows and the vault's taken out, and a line the secret scan still flags is left out. When the vault can't be read nothing is written, no job starts, the answer is `503` saying why, and the item stays open. The conversation's brain may answer an offer as it may a GitHub offer: `Dismiss` by itself, a start only once the owner confirms it (it's an ordinary job, with every gate); the event orchestrator never acts on a `pluginEvent` item. Nothing starts one with no answer, and answering never sends anything anywhere.
-- An item is never made twice for the same plug-in and event `id`, also across restarts of the plug-in or obid, and also once the first is done.
-- At most 100 open `pluginEvent` items per plug-in: past that, the oldest open one is settled by itself with no `answer`. Oldest is by the order the events came in, also among events that came in the same second; `GET /v1/inbox` lists open items in that order too, within each `triage` (obid only: sorting the inbox).
-
 ### obid only: sorting the inbox
 
 Every inbox item gets a `triage` (Inbox item, above), so only what needs the owner notifies them. Rules first, from obid's typed fields only, never from what came from outside; the brain's quick model only for an outside item no rule sorts.

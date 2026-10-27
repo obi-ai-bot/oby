@@ -60,8 +60,6 @@ pub struct Shared {
     pub presence: crate::brain::recap::Presence,
     /// Its Sphere: membership, exchanges, the inbox and decisions.
     pub link: Arc<crate::sphere::Link>,
-    /// The plug-in host (`GET` and `PUT /v1/obid/plugins`).
-    pub plugins: Arc<crate::plugins::Plugins>,
     /// The accounts' sign-ins under way (crate::accounts).
     pub sign_ins: crate::accounts::SignIns,
     /// The GitHub login and its sign-in (crate::github_login).
@@ -297,11 +295,6 @@ pub fn router(shared: Arc<Shared>) -> Router {
         .route(
             "/v1/memory/suggestions/{id}/dismiss",
             post(crate::memory::dismiss),
-        )
-        .route("/v1/obid/plugins", get(crate::plugins::list))
-        .route(
-            "/v1/obid/plugins/{id}",
-            axum::routing::put(crate::plugins::set),
         )
         .route(
             "/v1/obid/decisions",

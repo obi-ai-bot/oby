@@ -24,20 +24,6 @@ pub fn log_path(home: &Path) -> PathBuf {
     home.join("Library/Logs/obid.log")
 }
 
-/// `Contents/Resources/obid` of the app obid runs from (`Contents/Helpers/obid`), where the app
-/// carries obid's plug-ins and web app; none for an obid anywhere else.
-pub fn resources() -> Option<PathBuf> {
-    let exe = std::env::current_exe().ok()?;
-    resources_of(&exe)
-}
-
-fn resources_of(exe: &Path) -> Option<PathBuf> {
-    let contents = exe.parent()?.parent()?;
-    (contents.file_name()? == "Contents")
-        .then(|| contents.join("Resources/obid"))
-        .filter(|dir| dir.is_dir())
-}
-
 /// A tool Oby.app carries beside obid, signed with it (gh, gitleaks: apps/mac/app/Tools/bundle-*.sh):
 /// `Contents/MacOS/<name>` of the app obid runs from (`Contents/Helpers/obid` or
 /// `Contents/MacOS/obid`); none for an obid anywhere else.
@@ -58,7 +44,7 @@ fn bundled_beside(exe: &Path, name: &str) -> Option<PathBuf> {
 /// What obid writes the first time, as install.sh does: listening where the Mac app looks for it,
 /// in the home the app reads the token from, the person's login as owner, Claude Code with its
 /// default login, Codex too when it's on the login shell's PATH, the gateway on for pairing, and
-/// telemetry off. `bundledPlugins` and `web` are left out: obid takes them from the app.
+/// telemetry off.
 pub fn default_config(home: &Path, owner: &str, codex: bool) -> serde_json::Value {
     let mut agents = serde_json::json!({
         "claude": {"bin": "claude", "accounts": [{"id": "default", "name": "Default", "configDir": null}]}
@@ -265,20 +251,5 @@ mod tests {
             default_config(home, "someone", true)["agents"]["codex"]["bin"],
             "codex"
         );
-    }
-
-    #[test]
-    fn the_apps_resources_are_found_only_inside_an_app() {
-        let root = folder("resources");
-        let contents = root.join("Oby.app/Contents");
-        std::fs::create_dir_all(contents.join("Helpers")).unwrap();
-        assert_eq!(resources_of(&contents.join("Helpers/obid")), None);
-        std::fs::create_dir_all(contents.join("Resources/obid")).unwrap();
-        assert_eq!(
-            resources_of(&contents.join("Helpers/obid")),
-            Some(contents.join("Resources/obid"))
-        );
-        assert_eq!(resources_of(&root.join("bin/obid")), None);
-        let _ = std::fs::remove_dir_all(&root);
     }
 }

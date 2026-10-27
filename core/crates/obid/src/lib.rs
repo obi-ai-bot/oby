@@ -24,7 +24,6 @@ pub mod decisions;
 pub mod detail;
 pub mod devices;
 pub mod egress;
-pub mod event_work;
 pub mod events;
 pub mod facts;
 pub mod failures;
@@ -36,13 +35,11 @@ pub mod github_work;
 pub mod job;
 pub mod jobs;
 pub mod limits;
-pub mod logs;
 pub mod memory;
 pub mod merge;
 pub mod meter;
 pub mod obi_dir;
 pub mod permissions;
-pub mod plugins;
 pub mod policy;
 pub mod process;
 pub mod publish;
@@ -81,10 +78,9 @@ pub const SHUTDOWN_GRACE: Duration = Duration::from_secs(6);
 /// How long the jobs' agents and checks get to end when obid stops.
 pub const JOBS_GRACE: Duration = Duration::from_secs(2);
 
-/// How long after the stop obid waits, at most, for its plug-ins to have stopped (each gets 5
-/// seconds after `shutdown` before it is killed, docs/ARCHITECTURE.md 5.3, step 6; they stop at
-/// once, side by side with the jobs, from the moment obid is told to stop).
-pub const PLUGINS_GRACE: Duration = Duration::from_secs(8);
+/// How long after the stop obid waits, at most, for its jobs to have stopped: their grace and a
+/// second more.
+pub const ENDING_GRACE: Duration = Duration::from_secs(3);
 
 /// How long obid waits for the worktrees' measurement before it answers anyway (`serve`).
 pub const MEASURE_FIRST: Duration = Duration::from_millis(200);
@@ -384,13 +380,7 @@ pub async fn serve(
         events.clone(),
         stopping_rx.clone(),
     );
-    // A rule's start that a stop cut short is an offer again (#1314).
-    // The plug-ins obid ships, installed where missing (disabled), then the host, which starts
-    // the ones the owner enabled without waiting for them.
     stopwatch.lap("sphere");
-    let plugins = Arc::new(plugins::Plugins::start(&config).await);
-    stopwatch.lap("plug-ins");
-    jobs.use_plugins(plugins.clone());
     let cleared = clear::Cleared::open(&config.home);
     let devices = devices::Devices::open(&config.home);
     let paired = gateway::Gateway::open(&config.home);
@@ -439,7 +429,6 @@ pub async fn serve(
         harness: brain::harness::Sessions::default(),
         presence: brain::recap::Presence::default(),
         link: link.clone(),
-        plugins: plugins.clone(),
         sign_ins: accounts::SignIns::default(),
         github: github_login::GitHubLogin::default(),
         tetrix,
@@ -534,26 +523,13 @@ pub async fn serve(
     triage::spawn(shared.clone());
     // A job a conversation started that stalls goes back to that conversation, which decides.
     brain::supervisor::spawn(shared.clone());
-    // Every event a plug-in emits becomes a `pluginEvent` inbox item. The receiver ends once
-    // the host has shut down.
-    if let Some(mut events) = plugins.take_events() {
-        let shared = shared.clone();
-        tokio::spawn(async move {
-            while let Some(event) = events.recv().await {
-                shared
-                    .link
-                    .add_event_item(shared.link.plugin_event_offer(&event));
-            }
-        });
-    }
     // Once told to stop: every agent and check ends now, and its job stays as it is for the next
-    // start; every plug-in stops, with everything it started; every sign-in's login ends, with
-    // everything it started; the event streams and waits end, so the server's connections close.
+    // start; every sign-in's login ends, with everything it started; the event streams and waits
+    // end, so the server's connections close.
     let stopped_at = Arc::new(std::sync::OnceLock::new());
     let ending = {
         let shared = shared.clone();
         let jobs = jobs.clone();
-        let plugins = plugins.clone();
         let stopped_at = stopped_at.clone();
         let mut stopping = stopping_rx.clone();
         tokio::spawn(async move {
@@ -568,7 +544,7 @@ pub async fn serve(
             shared.github.kill();
             shared.harness.end_all_warm();
             shared.harness.shell.end_all();
-            tokio::join!(jobs.shutdown(JOBS_GRACE), plugins.shutdown());
+            jobs.shutdown(JOBS_GRACE).await;
         })
     };
     let give_up_at = {
@@ -589,16 +565,16 @@ pub async fn serve(
             Ok(())
         }
     };
-    // Within PLUGINS_GRACE of the stop, whatever the server took.
+    // Within ENDING_GRACE of the stop, whatever the server took.
     let deadline = stopped_at
         .get()
         .copied()
         .unwrap_or_else(tokio::time::Instant::now)
-        + PLUGINS_GRACE;
+        + ENDING_GRACE;
     if tokio::time::timeout_at(deadline, ending).await.is_err() {
         tracing::warn!(
-            "plug-ins or jobs still stopping {}s after the stop; exiting anyway",
-            PLUGINS_GRACE.as_secs()
+            "jobs still stopping {}s after the stop; exiting anyway",
+            ENDING_GRACE.as_secs()
         );
     }
     result
