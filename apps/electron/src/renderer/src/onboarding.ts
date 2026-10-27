@@ -3,6 +3,7 @@ import { openChat, sayOby, sayYours } from './chats';
 import { addTask } from './tasks';
 import { wait } from './stream';
 import { onObid } from './lean';
+import { CAN_CREATE } from './spheres';
 import { api } from './obid';
 import { ask, liveState, say, useLive } from './live';
 import type { Agent, SetupStep } from './mock';
@@ -201,9 +202,10 @@ export async function startOnboarding(show?: (id: string) => void) {
     setup: 'extras',
   });
   await choose('extras');
+  // (saved first: leaving mid-tour doesn't set everything up again)
+  try { localStorage.setItem(KEY, '1'); } catch { /* set up again next time, that's all */ }
   // on obid the first task opens a conversation of its own, so the tour comes first
   if (onObid) await sphereTour();
-  try { localStorage.setItem(KEY, '1'); } catch { /* set up again next time, that's all */ }
   await sayOby(WELCOME, { text: 'You’re set. What should I work on first? Pick one, or tell me in your own words.', setup: 'first' });
   const first = await choose('first');
   // on obid, Oby itself takes it: a conversation of its own, opened
@@ -229,6 +231,10 @@ export async function startOnboarding(show?: (id: string) => void) {
 // points at the sample once it's put away (the cards become one line then).
 const SAMPLE_MEMBERS = ['Ernesto', 'Dima', 'Wellington'] as const;
 type Member = (typeof SAMPLE_MEMBERS)[number];
+// the teammates whose conversation has played (each plays once: its card stays in the chat)
+const seen = new Set<string>();
+// how one is made, as the + is shown or not (spheres.ts)
+const orMake = CAN_CREATE ? ', or the + on the left makes your own.' : '.';
 const SAMPLE_SAYS: Record<Member, string> = {
   Ernesto: 'Everyone here has an Oby, and yours can ask theirs. When GitHub needs another person’s OK on your pull request, your Oby asks a teammate’s, like this:',
   Dima: 'Dima’s Oby asked about your branch. Yours knew, so it answered by itself and told you after.',
@@ -241,9 +247,9 @@ export const sampleOut = (s: Setup) => s.sphere === 'sample' || s.sphere === 'in
 async function sphereTour() {
   set(() => ({ sphere: 'explain' }));
   await sayOby(WELCOME, { text: `${onObid ? 'Your' : 'While Claude Code works: your'} team can have an Obysphere. It’s where your Obys meet and ask each other for reviews and answers, so nobody has to chase anyone.`, setup: 'sphere' });
-  if ((await choose('sphere', 'Skip')) === 'Skip') return putAway('Okay. When your team has one, its invite link brings you in, or the + on the left makes your own.');
+  if ((await choose('sphere', 'Skip')) === 'Skip') return putAway(`Okay. When your team has one, its invite link brings you in${orMake}`);
   set(() => ({ sphere: 'showme' }));
-  await sayOby(WELCOME, { text: 'You make one with the + on the left, or join your team’s from an invite link. Like this:', setup: 'showme' });
+  await sayOby(WELCOME, { text: CAN_CREATE ? 'You make one with the + on the left, or join your team’s from an invite link. Like this:' : 'Someone on your team makes one, and the rest join from its invite link. Like this:', setup: 'showme' });
   await choose('showme', 'Continue');
   await sayOby(WELCOME, { text: 'Here’s a sample to look around in: Deskree, with four teammates. It’s only an example, and it goes away when we’re done.', setup: 'sample' });
   await wait(300);
@@ -253,15 +259,14 @@ async function sphereTour() {
   if ((await choose('sample', 'Not now')) === 'Not now') return putAway('Okay, I’ve put the sample away.');
   set(() => ({ sphere: 'inside' }));
   // each teammate in turn; a click on another plays theirs, and the rest keep their order
-  const left: Member[] = [...SAMPLE_MEMBERS];
   for (let who: Member | undefined = 'Ernesto'; who;) {
-    left.splice(left.indexOf(who), 1);
+    seen.add(who);
     set(() => ({ member: who, call: undefined }));
     await sayOby(WELCOME, { text: SAMPLE_SAYS[who], setup: `convo:${who}` });
-    set(() => ({ call: left[0] ?? 'Knowledge' }));
+    set(() => ({ call: SAMPLE_MEMBERS.find((m) => !seen.has(m)) ?? 'Knowledge' }));
     const next = await choose(`convo:${who}`, 'Done looking');
     if (next === 'Done looking') return wrapUp();
-    who = SAMPLE_MEMBERS.find((m) => next === `${m}’s`);
+    who = SAMPLE_MEMBERS.find((m) => next === `${m}’s` && !seen.has(m));
   }
   set(() => ({ member: 'Knowledge', call: undefined }));
   await sayOby(WELCOME, { text: 'Wellington connected Tetrix here once, for everyone. Your Oby asks through his connection and gets only the answer; his sign-in never leaves his Oby.', setup: 'knowledge' });
@@ -270,7 +275,7 @@ async function sphereTour() {
 }
 async function wrapUp() {
   set(() => ({ member: undefined, call: undefined }));
-  await sayOby(WELCOME, { text: 'That’s an Obysphere. When your team makes a real one, its invite link brings you in, or the + on the left makes your own.' });
+  await sayOby(WELCOME, { text: `That’s an Obysphere. When your team makes a real one, its invite link brings you in${orMake}` });
   await putAway('That’s it. I’ve put the Deskree sample away. Ask me anything, here or from Home.');
 }
 // The end of the tour: the sample's tile shrinks away (220ms, app.css), the side
@@ -300,7 +305,8 @@ export async function sampleDid(what: string) {
   if (what === 'tile') return void (at === 'sample' && pick('Take a look'));
   if (!at.startsWith('convo:')) return;
   if (what === 'Knowledge') return void pick('Knowledge');
-  if ((SAMPLE_MEMBERS as readonly string[]).includes(what)) return void (setup.member !== what && pick(`${what}’s`));
+  // one already played (its card is up there): nothing new to show
+  if ((SAMPLE_MEMBERS as readonly string[]).includes(what)) return void (!seen.has(what) && pick(`${what}’s`));
   aside = true;
   await sayOby(WELCOME, { text: what === 'invite' ? 'That’s how you’d ask a teammate in. It’s off here, since this one’s a sample.' : `Nothing with ${what}’s Oby yet. Conversations show up under each Oby.` });
   aside = false;

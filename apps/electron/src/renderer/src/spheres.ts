@@ -1,6 +1,7 @@
 import { useSyncExternalStore } from 'react';
 import { BRANDS, type Brand } from './brands';
 import { OBYS } from './mock';
+import { everything } from './lean';
 
 // The Obyspheres you're in: each a place where your Oby works with other
 // people's. Its picture in the icon strip is its logo (an image you gave it,
@@ -28,9 +29,10 @@ export const SAMPLE: Sphere = {
   id: 'sample', name: 'Deskree', slug: 'deskree', brand: BRANDS.deskree, admin: false,
   members: ['Wellington', 'Ernesto', 'Dima', 'Sangam'], invited: ['ana@deskree.com'], domain: 'deskree.com', sample: true,
 };
-// ponytail: the + makes one in the lean build too (the plan's decision 1, the owner's to confirm);
-// it adds to this mock only, until making one reaches the Obysphere
-export const CAN_CREATE = true;
+// The + to make one: only with ?everything until making one reaches the Obysphere (it would add
+// to this mock only, gone at the next launch). Showing it in the lean build is the plan's
+// decision 1, the owner's to make; the tour's words follow this
+export const CAN_CREATE = everything;
 const listeners = new Set<() => void>();
 const set = (next: Sphere[]) => { spheres = next; listeners.forEach((l) => l()); };
 const subscribe = (l: () => void) => { listeners.add(l); return () => { listeners.delete(l); }; };
