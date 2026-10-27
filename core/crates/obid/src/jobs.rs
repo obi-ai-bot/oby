@@ -1149,6 +1149,8 @@ impl Jobs {
 
     /// A broker call belongs in the job report even after the call is over.
     pub fn connection_used(&self, id: &str, use_record: crate::connections::ConnectionUse) {
+        // What a connected app answers is anyone's words (crate::secretspec).
+        self.mark_foreign(id, "its agent read a connected app's answer".into());
         self.update(id, |job| {
             crate::connections::keep_use(&mut job.connection_uses, use_record)
         });
@@ -1183,7 +1185,18 @@ impl Jobs {
         answers.retain(|(plugin, _)| !more.iter().any(|(own, _)| own == plugin));
         answers.extend(more);
         match crate::plugins::write_context(worktree, &answers) {
-            Ok(files) => crate::plugins::context_note(&files),
+            Ok(files) => {
+                // What a plug-in or Tetrix answered is anyone's words (crate::secretspec).
+                let from: Vec<String> = answers
+                    .iter()
+                    .filter(|(_, items)| !items.is_empty())
+                    .map(|(plugin, _)| plugin.to_string())
+                    .collect();
+                if !files.is_empty() && !from.is_empty() {
+                    self.mark_foreign(id, format!("context from {} came into it", from.join(", ")));
+                }
+                crate::plugins::context_note(&files)
+            }
             Err(e) => {
                 tracing::warn!("job {id}: the plug-ins' context isn't given to the agent: {e}");
                 None
@@ -3244,6 +3257,7 @@ impl Jobs {
             Some(of) => of.apart,
             None => job.untrusted || job.runs_on.is_some(),
         };
+        job.clone_root = of.as_ref().and_then(|of| of.clone_root.clone());
         // A follow-up runs the code of the job it follows: when that one's check got none of the
         // owner's secrets, neither does this one's (crate::secretspec).
         job.foreign = of.as_ref().and_then(|of| {
@@ -6947,6 +6961,18 @@ impl Jobs {
                 .transcripts
                 .record(id, &event, &worktree, job.check.as_deref());
             jobs.transcribed(id, entries);
+            // A vendor's own web search or fetch, or any MCP server's answer, brings it content
+            // obid's proxy doesn't see (crate::secretspec).
+            if let AgentEvent::Tool { name, .. } = &event
+                && crate::secretspec::tool_brings_content(name)
+            {
+                jobs.mark_foreign(
+                    id,
+                    format!(
+                        "its agent used {name}, which brings it content obid's proxy doesn't see"
+                    ),
+                );
+            }
             match event {
                 AgentEvent::Tokens(tokens) => {
                     let mut own_cost = None;
@@ -7509,6 +7535,15 @@ impl Jobs {
                 repo.repo
             ));
         };
+        // What someone else wrote in the issue or pull request it works from may steer it.
+        for (kind, number) in [("issue", job.issue), ("pr", job.pr)] {
+            if let Some(number) = number
+                && let Some(why) =
+                    crate::secretspec::others_wrote(&gh, &repo.repo, kind, number).await
+            {
+                return Some(why);
+            }
+        }
         if let Err(why) = crate::secretspec::protected_base(&gh, &repo.repo, base).await {
             return Some(why);
         }
@@ -7593,6 +7628,73 @@ impl Jobs {
         if theirs {
             git::taint(clone, what).await;
         }
+    }
+
+    /// When the owner's clone of `repo` holds someone else's commits, or was made before clones
+    /// were narrow ([`git::foreign_in`]), and no other job of the repository is running in it: the
+    /// clone is moved aside (`home/marked/<when>`), the jobs whose worktrees belong to it keep to
+    /// it there ([`Job::clone_root`], their follow-ups too), and the next `ensure_clone` makes a
+    /// fresh one, so the repository's checks get values again (crate::secretspec). Called under the
+    /// repository's preparing lock, for `job`, which has no worktree yet.
+    async fn remake_marked_clone(&self, job: &Job, repo: &crate::config::Repo) {
+        let clone = git::clone_path(&self.config.home, &repo.repo);
+        if !clone.join(".git").is_dir() {
+            return;
+        }
+        let Some(why) = git::foreign_in(&clone).await else {
+            return;
+        };
+        let users: Vec<Job> = {
+            let state = self.lock();
+            state
+                .jobs
+                .values()
+                .filter(|other| {
+                    other.id != job.id
+                        && other.repo == repo.repo
+                        && other.clone_root.is_none()
+                        && !other.apart
+                        && other.obi.is_none()
+                        && other.worktree.is_some()
+                })
+                .cloned()
+                .collect()
+        };
+        if users.iter().any(|other| other.status.is_active()) {
+            tracing::info!(
+                "{}: its clone holds someone else's commits, and a job runs in it, so it isn't made again yet",
+                repo.repo
+            );
+            return;
+        }
+        let Ok(when) = random_check_id() else { return };
+        let root = self
+            .config
+            .home
+            .join("marked")
+            .join(format!("{}-{when}", obi_protocol::time::now()));
+        let moved = git::clone_path(&root, &repo.repo);
+        let Some(parent) = moved.parent() else { return };
+        if std::fs::create_dir_all(parent).is_err() || std::fs::rename(&clone, &moved).is_err() {
+            tracing::warn!("{}: couldn't move its marked clone aside", repo.repo);
+            return;
+        }
+        let root_text = root.to_string_lossy().into_owned();
+        for other in &users {
+            if let Some(worktree) = &other.worktree
+                && Path::new(worktree).exists()
+            {
+                let _ = git::git(&moved, &["worktree", "repair", worktree]).await;
+            }
+            self.update(&other.id, |other| {
+                other.clone_root = Some(root_text.clone())
+            });
+        }
+        tracing::info!(
+            "{}: its clone is made again ({why}); the old one is in {}",
+            repo.repo,
+            root.display()
+        );
     }
 
     /// obid's record of the commits `job` made, with those of the jobs it follows up while each
@@ -7777,7 +7879,9 @@ impl Jobs {
     /// another Oby asked for, the ones apart for a job made untrusted or someone else's code
     /// ([`Job::apart`]), else the owner's own, which only the owner's own jobs ever write to.
     fn clone_home(&self, job: &Job) -> PathBuf {
-        if job.obi.is_some() {
+        if let Some(root) = &job.clone_root {
+            PathBuf::from(root)
+        } else if job.obi.is_some() {
             self.received_home()
         } else if job.apart {
             self.config.home.join("apart")
@@ -8167,6 +8271,10 @@ impl Jobs {
         let preparing = self.preparing(&repo.repo);
         let prepared = preparing.lock().await;
         if !worktree.join(".git").exists() {
+            // A clone someone else's commits came into is made again before a new job uses it.
+            if job.clone_root.is_none() && !job.apart && job.obi.is_none() {
+                Box::pin(self.remake_marked_clone(&job, &repo)).await;
+            }
             let mut refspecs = vec![format!("+refs/heads/{base}:refs/remotes/origin/{base}")];
             if let Some(pr) = job.pr {
                 refspecs.push(format!("+refs/pull/{pr}/head:refs/remotes/origin/pr/{pr}"));
@@ -15327,6 +15435,164 @@ mod tests {
 
     /// git tidies obid's clone (its own automatic maintenance is off) only while no job uses the
     /// repository: loose objects are packed, and a job that's queued or running holds it off.
+    /// Jobs over a fresh remote `o/r` (one commit on main) and obid's own clone of it, with a
+    /// queued job `j`: the jobs, the clone, and the folder to remove after.
+    async fn jobs_with_a_clone(name: &str) -> (Arc<Jobs>, PathBuf, PathBuf) {
+        let root = std::env::temp_dir().join(format!("obid-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let remote = root.join("remote");
+        std::fs::create_dir_all(&remote).unwrap();
+        crate::git::git(&remote, &["init", "-q", "-b", "main"])
+            .await
+            .unwrap();
+        std::fs::write(remote.join("f"), "x").unwrap();
+        crate::git::git(&remote, &["add", "f"]).await.unwrap();
+        crate::git::git(
+            &remote,
+            &[
+                "-c",
+                "user.name=a",
+                "-c",
+                "user.email=a@b",
+                "commit",
+                "-qm",
+                "c",
+            ],
+        )
+        .await
+        .unwrap();
+        let url = format!("file://{}", remote.display());
+        let config = crate::config::Config::parse(
+            &serde_json::json!({"listen": "127.0.0.1:0", "home": root.join("home"), "owner": "o",
+                "allowFileRemotes": true,
+                "repos": [{"repo": "o/r", "remote": url, "defaultBranch": "main"}]})
+            .to_string(),
+        )
+        .unwrap();
+        let clone = crate::git::ensure_clone(&config.home, "o/r", &url, &[])
+            .await
+            .unwrap();
+        let jobs = Jobs::open(
+            config,
+            crate::events::Events::new(),
+            Err("no sandbox".into()),
+        )
+        .unwrap();
+        let job = Job::new(
+            "j".into(),
+            "o/r".into(),
+            "fix".into(),
+            "Fix it".into(),
+            "claude".into(),
+            "a".into(),
+        );
+        jobs.lock().jobs.insert("j".into(), job);
+        (jobs, clone, root)
+    }
+
+    /// A connected app's answer, obid's own context (Tetrix's, a plug-in's): content from
+    /// someone else reaches the job's agent, so its check gets no values, and the owner's clone it
+    /// works in is marked (crate::secretspec).
+    #[tokio::test]
+    async fn content_from_a_connected_app_or_a_context_plugin_marks_the_job() {
+        let (jobs, clone, root) = jobs_with_a_clone("content-app").await;
+        assert_eq!(crate::git::foreign_in(&clone).await, None);
+        jobs.connection_used(
+            "j",
+            crate::connections::ConnectionUse {
+                job: "j".into(),
+                connection: "linear".into(),
+                tool: "search".into(),
+                access: "read".into(),
+                allowed: true,
+                secret: "linear-key".into(),
+                host: "api.linear.app".into(),
+                date: "2026-10-26T00:00:00Z".into(),
+            },
+        );
+        let why = jobs.get("j").unwrap().check_refuses_secrets().unwrap();
+        assert!(why.contains("connected app"), "{why}");
+        assert!(
+            crate::git::foreign_in(&clone)
+                .await
+                .unwrap()
+                .contains("connected app")
+        );
+        let _ = std::fs::remove_dir_all(&root);
+
+        let (jobs, _clone, root) = jobs_with_a_clone("content-context").await;
+        let worktree = root.join("work");
+        std::fs::create_dir_all(&worktree).unwrap();
+        let job = jobs.get("j").unwrap();
+        let item = obi_plugin_api::ContextItem {
+            title: "An entity".into(),
+            source: "tetrix".into(),
+            uri: "tetrix://e/1".into(),
+            text: "What someone wrote in Tetrix".into(),
+        };
+        let note = jobs
+            .plugin_context(
+                "j",
+                obi_plugin_api::Purpose::Dispatch,
+                crate::plugins::context_job(&job),
+                &worktree,
+                vec![(obi_plugin_api::PluginId::new("tetrix").unwrap(), vec![item])],
+            )
+            .await;
+        assert!(note.is_some());
+        let why = jobs.get("j").unwrap().check_refuses_secrets().unwrap();
+        assert!(why.contains("context from tetrix"), "{why}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A marked clone is made again before the next job uses it, once no job runs in it: the old
+    /// one moves aside with the jobs whose worktrees belong to it, and the new one isn't marked.
+    #[tokio::test]
+    async fn a_marked_clone_is_made_again_for_the_next_job() {
+        let (jobs, clone, root) = jobs_with_a_clone("remake").await;
+        crate::git::taint(&clone, "a test's").await;
+        let repo = jobs.repo("o/r").unwrap().clone();
+        // One that ran in it, and one running there now, which holds it.
+        jobs.update("j", |job| {
+            job.worktree = Some(root.join("gone").to_string_lossy().into_owned());
+            job.status = Status::Running;
+        });
+        let next = Job::new(
+            "k".into(),
+            "o/r".into(),
+            "fix".into(),
+            "Next".into(),
+            "claude".into(),
+            "a".into(),
+        );
+        jobs.lock().jobs.insert("k".into(), next.clone());
+        jobs.remake_marked_clone(&next, &repo).await;
+        assert!(
+            crate::git::foreign_in(&clone).await.is_some(),
+            "a running job holds it"
+        );
+        jobs.update("j", |job| job.status = Status::Done);
+        jobs.remake_marked_clone(&next, &repo).await;
+        assert!(!clone.exists());
+        let moved_to = jobs.get("j").unwrap().clone_root.unwrap();
+        let moved = crate::git::clone_path(Path::new(&moved_to), "o/r");
+        assert!(
+            crate::git::foreign_in(&moved)
+                .await
+                .unwrap()
+                .contains("a test's")
+        );
+        assert_eq!(jobs.clone_for(&jobs.get("j").unwrap()), moved);
+        // The next job's clone is a fresh one.
+        let url = jobs.repo("o/r").unwrap().remote.clone();
+        let fresh = crate::git::ensure_clone(&jobs.clone_home(&next), "o/r", &url, &[])
+            .await
+            .unwrap();
+        assert_eq!(fresh, clone);
+        assert_eq!(crate::git::foreign_in(&fresh).await, None);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     #[tokio::test]
     async fn a_clone_is_tidied_only_while_no_job_uses_it() {
         let root = std::env::temp_dir().join(format!("obid-tidy-{}", std::process::id()));

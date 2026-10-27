@@ -41,24 +41,32 @@
 //!    before clones were narrow gets none either. An agent can't fetch anything itself: it has no
 //!    code host's login (an empty `GH_CONFIG_DIR`, an invalid push URL), and on macOS its only way
 //!    off the Mac is obid's egress proxy, which lets its tool's own services through and decides
-//!    every other site. A vendor host past its tool's API ([`crate::egress::tools_api`]), a site
-//!    the proxy lets through beyond the registries that serve only published versions, and the Go
-//!    module proxy (which serves any commit) mark the job ([`site_is_foreign`]).
+//!    every other site. A vendor host past its tool's API ([`crate::egress::tools_api`]) and any
+//!    site but the registries that serve only published versions and don't serve a CDN's other
+//!    sites for another `Host:` ([`UNFRONTED`]) mark the job ([`site_is_foreign`]): the proxy reads
+//!    a connection's TLS name, not the `Host:` inside it. So do the channels that bring content past
+//!    the proxy: a vendor's own web search or fetch and any MCP server's answer in the turn
+//!    ([`tool_brings_content`]), a connected app's answer, and Tetrix's or a plug-in's context. A
+//!    marked clone is made again for the next job once no job runs in it, the old one kept aside
+//!    with the jobs that used it (`Jobs::remake_marked_clone`).
 //! 3. **Linux gives no values** ([`platform_refusal`]): its agents still have a network of their
 //!    own until oby#616, so they could fetch anyone's code themselves.
 //! 4. **The base is reviewed**, and so is the default branch every clone holds: a branch the
 //!    repository lets in only through a pull request with an approving review that a later push
-//!    can't slip past (the last push approved, or stale reviews dismissed), for the login Oby
-//!    pushes as too ([`protected_base`]).
-//! 5. **Defence in depth**: every commit between the base and the commit is in obid's own record of
+//!    can't slip past (the last push approved, or stale reviews dismissed), with no one able to
+//!    bypass it (no bypass actor but an empty break-glass team; classic protection held for
+//!    admins) ([`protected_base`]).
+//! 5. **What someone else wrote steers**: a job that works from an issue or pull request anyone but
+//!    the owner wrote in (its body, a comment, a review) gets no values ([`others_wrote`]).
+//! 6. **Defence in depth**: every commit between the base and the commit is in obid's own record of
 //!    what the job made ([`on_record`], `Job::made`, after each turn's [`new_commits`], whose new
 //!    commits may carry no change any other branch the clone has, other jobs' own included), and the job
 //!    isn't another Oby's review, one whose agent ran on a teammate's Mac, a follow-up of one that
 //!    got none, or untrusted.
 //!
-//! What's left: an agent that writes out, as its own new commit, foreign code it read where obid
-//! can't see (its model's own knowledge, a package from a registry). That is content steering the
-//! agent, the known limit until agents' reads are tracked.
+//! Out of scope, and said so: a package anyone may publish to a registry the job installs from
+//! (the owner's own tests would install the same); and an agent that writes out, as its own new
+//! commit, foreign code from what its model already knows.
 
 use std::collections::HashSet;
 use std::ffi::{OsStr, OsString};
@@ -337,12 +345,14 @@ pub async fn protected_base(gh: &Path, repo: &str, base: &str) -> Result<(), Str
                 && set["enforcement"] != "disabled"
                 && set["enforcement"] != "evaluate"
                 && set["current_user_can_bypass"] == "never"
+                && no_one_bypasses(&ask, repo, &set).await
             {
                 return Ok(());
             }
         }
     }
-    // Classic protection: required reviews, held for admins, with no allowance for the login.
+    // Classic protection: required reviews, held for admins (`enforce_admins`), with no allowance
+    // for the login, a team or an app.
     if let Some(protection) = ask(format!("repos/{repo}/branches/{base}/protection")).await {
         let reviews = &protection["required_pull_request_reviews"];
         let allowances = &reviews["bypass_pull_request_allowances"];
@@ -364,15 +374,47 @@ pub async fn protected_base(gh: &Path, repo: &str, base: &str) -> Result<(), Str
             .is_some_and(|n| n >= 1)
             && (reviews["require_last_push_approval"] == true
                 || reviews["dismiss_stale_reviews"] == true);
-        let admin = ask(format!("repos/{repo}"))
-            .await
-            .map(|r| r["permissions"]["admin"] == true);
-        let held = protection["enforce_admins"]["enabled"] == true || admin == Some(false);
+        // Held for admins too, whoever the login is.
+        let held = protection["enforce_admins"]["enabled"] == true;
         if reviews.is_object() && reviewed && !allowed && held {
             return Ok(());
         }
     }
     Err(not)
+}
+
+/// Whether ruleset `set` lets no one past it: its `bypass_actors` (which GitHub shows obid's login
+/// only when it may see them) is empty, or holds only teams with no members (a break-glass team
+/// kept empty). Any other actor (a role, an app, a deploy key, a team with someone in it), or a
+/// list obid can't read, is a no.
+async fn no_one_bypasses<F, Fut>(ask: &F, repo: &str, set: &serde_json::Value) -> bool
+where
+    F: Fn(String) -> Fut,
+    Fut: std::future::Future<Output = Option<serde_json::Value>>,
+{
+    let Some(actors) = set["bypass_actors"].as_array() else {
+        return false;
+    };
+    if actors.is_empty() {
+        return true;
+    }
+    let Some(org) = ask(format!("repos/{repo}"))
+        .await
+        .and_then(|r| r["owner"]["id"].as_u64())
+    else {
+        return false;
+    };
+    for actor in actors {
+        let team = actor["actor_type"] == "Team";
+        let Some(id) = actor["actor_id"].as_u64().filter(|_| team) else {
+            return false;
+        };
+        let members = ask(format!("organizations/{org}/team/{id}/members")).await;
+        if !members.is_some_and(|m| m.as_array().is_some_and(|m| m.is_empty())) {
+            return false;
+        }
+    }
+    true
 }
 
 /// The most commits on a job's branch obid looks at one by one.
@@ -576,19 +618,89 @@ pub fn platform_refusal() -> Option<String> {
 }
 
 /// Whether an agent reaching `host` (not its tool's own: those never come here) makes its job
-/// someone else's code: anything but the package registries, which serve the dependencies the
-/// owner's own tests would install too. A code host, a pull request's page, a site with code on
-/// it: what the agent read there could be anyone's.
+/// someone else's code: anything but the registries in [`UNFRONTED`]. A code host, a pull
+/// request's page, a site with code on it, a registry a CDN fronts: what the agent read there
+/// could be anyone's.
 pub fn site_is_foreign(host: &str) -> bool {
-    !crate::egress::REGISTRIES.contains(&host) || UNPINNED.contains(&host)
+    !UNFRONTED.contains(&host)
 }
 
-/// Registries that serve any public repository's branch or commit, not only what was published:
-/// the Go module proxy (a pseudo-version is any commit) and its checksum database. Reaching them
-/// makes the job someone else's code. The other registries obid lets through serve only published,
-/// immutable versions: npm, Yarn, PyPI, crates.io and Rust's toolchains, RubyGems, Maven, Gradle's
-/// plugins and CocoaPods' specs (whose sources come from code hosts, which do mark the job).
-const UNPINNED: &[&str] = &["proxy.golang.org", "sum.golang.org"];
+/// The registries an agent may reach and still be the owner's own: each serves only published,
+/// immutable versions (what the owner's own tests would install), and answered 403 when asked, with
+/// another site's name in its `Host:` header, for that site (tried 2026-10-26): npm, Maven Central,
+/// Gradle's plugins and services, CocoaPods' CDN. obid's proxy reads only a connection's TLS name,
+/// not the `Host:` it carries, so a registry on a CDN that serves its other sites for whatever
+/// `Host:` asks (Fastly's: PyPI, crates.io and Rust's toolchains, RubyGems) could carry anyone's
+/// code; so could one not tried (Yarn's), and the Go module proxy and its checksum database serve
+/// any public commit. Reaching any of those makes the job someone else's code.
+const UNFRONTED: &[&str] = &[
+    "registry.npmjs.org",
+    "repo.maven.apache.org",
+    "repo1.maven.org",
+    "plugins.gradle.org",
+    "services.gradle.org",
+    "cdn.cocoapods.org",
+];
+
+/// Whether a tool call named `name` brings the agent content from somewhere obid's proxy doesn't
+/// see: a web search or fetch its model's vendor runs on its own servers, and any MCP server's
+/// answer (obid's connected apps, Tetrix, a plug-in's), but obid's own question to the owner,
+/// whose answer is the owner's words.
+pub fn tool_brings_content(name: &str) -> bool {
+    let ask_owner = format!("mcp__oby__{}", crate::permissions::ASK_OWNER);
+    matches!(name, "WebSearch" | "WebFetch") || (name.starts_with("mcp__") && name != ask_owner)
+}
+
+/// Why issue or pull request `number` of `repo` (`kind`, `issue` or `pr`) isn't only the owner's
+/// own words, or none: by the threat model, what anyone else wrote there (its body, a comment, a
+/// review) is content that may steer the agent, whatever they may do elsewhere (an organisation
+/// member's words count as the owner's for other purposes, `crate::github_work`). What GitHub
+/// can't say is a no.
+pub async fn others_wrote(gh: &Path, repo: &str, kind: &str, number: u64) -> Option<String> {
+    let owner = crate::github_login::read_status(gh).await.user;
+    let Some(owner) = owner else {
+        return Some(format!(
+            "obid's gh isn't signed in to say who wrote {kind} #{number}"
+        ));
+    };
+    let fields = if kind == "pr" {
+        "author,comments,reviews"
+    } else {
+        "author,comments"
+    };
+    let what = if kind == "pr" { "pr" } else { "issue" };
+    let n = number.to_string();
+    let said = crate::github::output(gh, &[what, "view", &n, "-R", repo, "--json", fields])
+        .await
+        .ok()
+        .and_then(|said| serde_json::from_str::<serde_json::Value>(&said).ok());
+    let Some(said) = said else {
+        return Some(format!("GitHub didn't say who wrote {kind} #{number}"));
+    };
+    let mut writers = vec![&said["author"]];
+    for list in ["comments", "reviews"] {
+        writers.extend(
+            said[list]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .map(|c| &c["author"]),
+        );
+    }
+    let someone_else = writers.iter().any(|author| {
+        !author["login"]
+            .as_str()
+            .is_some_and(|login| login.eq_ignore_ascii_case(&owner))
+    });
+    someone_else.then(|| {
+        let name = if kind == "pr" {
+            "pull request"
+        } else {
+            "issue"
+        };
+        format!("it works from {name} #{number}, which someone else wrote in")
+    })
+}
 
 /// A checkout of commit `head` that obid makes for the check, apart from the job's: its worktree
 /// at `at/work`, its own git folder in the clone's `worktrees/`, its own temporary folder at
@@ -1104,7 +1216,44 @@ required = false
             &[
                 (
                     "repos/o/r",
-                    r#"{"default_branch":"main","permissions":{"admin":true}}"#,
+                    r#"{"default_branch":"main","permissions":{"admin":true},"owner":{"id":42}}"#,
+                ),
+                (
+                    "repos/o/r/rules/branches/glass",
+                    r#"[{"type":"pull_request","ruleset_id":5,"parameters":{"required_approving_review_count":1,"require_last_push_approval":true}}]"#,
+                ),
+                (
+                    "repos/o/r/rulesets/5",
+                    r#"{"id":5,"enforcement":"active","current_user_can_bypass":"never","bypass_actors":[{"actor_type":"Team","actor_id":7,"bypass_mode":"always"}]}"#,
+                ),
+                ("organizations/42/team/7/members", "[]"),
+                (
+                    "repos/o/r/rules/branches/staffed",
+                    r#"[{"type":"pull_request","ruleset_id":6,"parameters":{"required_approving_review_count":1,"require_last_push_approval":true}}]"#,
+                ),
+                (
+                    "repos/o/r/rulesets/6",
+                    r#"{"id":6,"enforcement":"active","current_user_can_bypass":"never","bypass_actors":[{"actor_type":"Team","actor_id":8,"bypass_mode":"always"}]}"#,
+                ),
+                (
+                    "organizations/42/team/8/members",
+                    r#"[{"login":"ernesto"}]"#,
+                ),
+                (
+                    "repos/o/r/rules/branches/role",
+                    r#"[{"type":"pull_request","ruleset_id":9,"parameters":{"required_approving_review_count":1,"require_last_push_approval":true}}]"#,
+                ),
+                (
+                    "repos/o/r/rulesets/9",
+                    r#"{"id":9,"enforcement":"active","current_user_can_bypass":"never","bypass_actors":[{"actor_type":"RepositoryRole","actor_id":5,"bypass_mode":"always"}]}"#,
+                ),
+                (
+                    "repos/o/r/rules/branches/unseen",
+                    r#"[{"type":"pull_request","ruleset_id":10,"parameters":{"required_approving_review_count":1,"require_last_push_approval":true}}]"#,
+                ),
+                (
+                    "repos/o/r/rulesets/10",
+                    r#"{"id":10,"enforcement":"active","current_user_can_bypass":"never"}"#,
                 ),
                 (
                     "repos/o/r/rules/branches/main",
@@ -1112,7 +1261,7 @@ required = false
                 ),
                 (
                     "repos/o/r/rulesets/1",
-                    r#"{"id":1,"enforcement":"active","current_user_can_bypass":"never"}"#,
+                    r#"{"id":1,"enforcement":"active","current_user_can_bypass":"never","bypass_actors":[]}"#,
                 ),
                 (
                     "repos/o/r/rules/branches/bypassed",
@@ -1120,7 +1269,7 @@ required = false
                 ),
                 (
                     "repos/o/r/rulesets/2",
-                    r#"{"id":2,"enforcement":"active","current_user_can_bypass":"always"}"#,
+                    r#"{"id":2,"enforcement":"active","current_user_can_bypass":"always","bypass_actors":[]}"#,
                 ),
                 (
                     "repos/o/r/rules/branches/evaluated",
@@ -1128,7 +1277,7 @@ required = false
                 ),
                 (
                     "repos/o/r/rulesets/3",
-                    r#"{"id":3,"enforcement":"evaluate","current_user_can_bypass":"never"}"#,
+                    r#"{"id":3,"enforcement":"evaluate","current_user_can_bypass":"never","bypass_actors":[]}"#,
                 ),
                 (
                     "repos/o/r/rules/branches/weak",
@@ -1182,6 +1331,8 @@ required = false
         );
         assert_eq!(protected_base(&gh, "o/r", "main").await, Ok(()));
         assert_eq!(protected_base(&gh, "o/r", "release").await, Ok(()));
+        // A break-glass team kept empty doesn't let anyone past.
+        assert_eq!(protected_base(&gh, "o/r", "glass").await, Ok(()));
         for weak in [
             "bypassed",
             "evaluated",
@@ -1194,6 +1345,9 @@ required = false
             "unreviewed",
             "stale-ok",
             "push-after",
+            "staffed",
+            "role",
+            "unseen",
             "no-reviews",
             "teammate-fix",
         ] {
@@ -1519,12 +1673,84 @@ required = false
             "example.com",
             "proxy.golang.org",
             "sum.golang.org",
+            // Fastly's, which serve its other sites for whatever `Host:` asks, and Yarn's, not
+            // tried.
+            "pypi.org",
+            "files.pythonhosted.org",
+            "crates.io",
+            "index.crates.io",
+            "static.crates.io",
+            "static.rust-lang.org",
+            "rubygems.org",
+            "index.rubygems.org",
+            "registry.yarnpkg.com",
         ] {
             assert!(site_is_foreign(host), "{host}");
         }
-        for host in ["registry.npmjs.org", "crates.io", "pypi.org"] {
+        for host in [
+            "registry.npmjs.org",
+            "repo.maven.apache.org",
+            "repo1.maven.org",
+            "plugins.gradle.org",
+            "services.gradle.org",
+            "cdn.cocoapods.org",
+        ] {
             assert!(!site_is_foreign(host), "{host}");
         }
+    }
+
+    /// A vendor's own web search or fetch and any MCP server's answer bring content obid's proxy
+    /// doesn't see; asking the owner doesn't; obid's own tools don't.
+    #[test]
+    fn tools_that_bring_content() {
+        for name in [
+            "WebSearch",
+            "WebFetch",
+            "mcp__tetrix__search_entities",
+            "mcp__oby__linear_search",
+            "mcp__a-plugin__lookup",
+        ] {
+            assert!(tool_brings_content(name), "{name}");
+        }
+        for name in ["mcp__oby__oby_ask_owner", "Bash", "Read", "Edit", "Agent"] {
+            assert!(!tool_brings_content(name), "{name}");
+        }
+    }
+
+    /// What anyone but the owner wrote in the issue or pull request a job works from (its body, a
+    /// comment, a review) may steer it: no values. The owner's own: values.
+    #[tokio::test]
+    async fn someone_elses_issue_text_gives_nothing() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = std::env::temp_dir().join(format!("obid-secretspec-text-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let gh = dir.join("gh");
+        std::fs::write(
+            &gh,
+            r#"#!/bin/sh
+case "$1 $2 $3" in
+  "auth status --hostname") echo '{"hosts":{"github.com":[{"login":"wellington","active":true,"state":"success"}]}}' ;;
+  "issue view 1") echo '{"author":{"login":"Wellington"},"comments":[{"author":{"login":"wellington"}}]}' ;;
+  "issue view 2") echo '{"author":{"login":"ernesto"},"comments":[]}' ;;
+  "issue view 3") echo '{"author":{"login":"wellington"},"comments":[{"author":{"login":"a-member"}}]}' ;;
+  "pr view 4") echo '{"author":{"login":"wellington"},"comments":[],"reviews":[{"author":{"login":"ernesto"}}]}' ;;
+  "pr view 5") echo '{"author":{"login":"wellington"},"comments":[],"reviews":[]}' ;;
+  *) exit 1 ;;
+esac
+"#,
+        )
+        .unwrap();
+        std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(others_wrote(&gh, "o/r", "issue", 1).await, None);
+        assert_eq!(others_wrote(&gh, "o/r", "pr", 5).await, None);
+        for (kind, n) in [("issue", 2), ("issue", 3), ("pr", 4), ("issue", 9)] {
+            assert!(
+                others_wrote(&gh, "o/r", kind, n).await.is_some(),
+                "{kind} {n}"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

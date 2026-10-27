@@ -534,6 +534,11 @@ pub struct Job {
     /// (crate::secretspec). A follow-up stays in its job's clone. Never in the API's job.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub apart: bool,
+    /// Where the owner's clone its worktree belongs to was moved when obid made the repository's
+    /// clone again, because someone else's commits had come into it (crate::secretspec): its
+    /// folder of clones. The job, and its follow-ups, stay with it. Never in the API's job.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub clone_root: Option<String>,
     /// Why obid didn't merge its pull request, when only the owner can take it on from here
     /// (crate::merge); none otherwise.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -781,6 +786,7 @@ impl Job {
             foreign: None,
             made: Vec::new(),
             apart: false,
+            clone_root: None,
             ran_secs: None,
             budget_from: None,
             merge_error: None,

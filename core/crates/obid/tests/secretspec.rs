@@ -171,7 +171,7 @@ fn github(folder: &Path) -> PathBuf {
 case "$1 $2" in
   "auth status") echo '{"hosts":{"github.com":[{"login":"wellington","active":true,"state":"success"}]}}' ;;
   "api repos/obi-e2e/fixture-app/rules/branches/main") echo '[{"type":"pull_request","ruleset_id":7,"parameters":{"required_approving_review_count":1,"require_last_push_approval":true}}]' ;;
-  "api repos/obi-e2e/fixture-app/rulesets/7") echo '{"id":7,"enforcement":"active","current_user_can_bypass":"never"}' ;;
+  "api repos/obi-e2e/fixture-app/rulesets/7") echo '{"id":7,"enforcement":"active","current_user_can_bypass":"never","bypass_actors":[]}' ;;
   *) exit 1 ;;
 esac
 "#,
@@ -355,61 +355,101 @@ fn an_agent_that_reaches_a_code_host_gets_nothing() {
 }
 
 /// The reviewer's repro: a job that turns someone else's code (its agent reached a code host)
-/// commits a payload, which obid keeps on its branch in the shared clone; a plain job takes the
-/// payload from that branch as its own commit. Its turn's look sees another branch's change, and
-/// the first job marked the clone: the second job's check gets nothing either way.
+/// commits a payload, which obid keeps on its branch in the owner's clone, and marks the clone. A
+/// plain job after it gets a clone made again, with no other job's branch in it: the payload
+/// isn't there to take, and its check gets the owner's value. The old clone, marked, is kept
+/// aside with the first job.
 #[test]
-fn a_payload_from_another_jobs_branch_gets_nothing() {
-    let (_folder, obid, first) = run_one(
+fn a_payload_from_another_jobs_branch_isnt_there_to_take() {
+    let (_folder, obid, _) = run_one(
         "secretspec-steal",
         json!({"repo": "obi-e2e/fixture-app", "kind": "build", "task": "FETCH", "check": "true", "mode": "bypass"}),
     );
-    let _ = first;
     let clone = obid.home.join("clones/obi-e2e/fixture-app");
-    let branches = git(
-        &clone,
-        &["for-each-ref", "--format=%(refname)", "refs/heads/oby/"],
-    );
-    assert!(
-        !branches.is_empty(),
-        "the first job's commits are kept in the clone"
-    );
+    let marked = git(&clone, &["config", "--get", "obid.foreign"]);
+    assert!(marked.contains("reached code.example.test"), "{marked}");
     let log = dispatch_and_log(
         &obid,
         json!({"repo": "obi-e2e/fixture-app", "kind": "build", "task": "STEAL", "check": "sh check.sh"}),
     );
-    // Two of obid's lines hold: the payload is another branch's change (the turn's look), and the
-    // clone holds someone else's commits (the first job marked it).
+    let branches = git(
+        &clone,
+        &["for-each-ref", "--format=%(refname)", "refs/heads/oby/"],
+    );
+    assert_eq!(branches.lines().count(), 1, "only its own: {branches}");
     assert!(
-        log.contains("obid gave this check none of its owner's secrets")
-            && (log.contains("another branch already has")
-                || log.contains("holds someone else's commits")),
+        log.contains(&format!("sha: {}", fingerprint(&fake()))),
         "{log}"
     );
-    let marked = git(&clone, &["config", "--get", "obid.foreign"]);
-    assert!(marked.contains("reached code.example.test"), "{marked}");
+    holds_none(&log, &fake(), "check.log");
+    let aside: Vec<_> = std::fs::read_dir(obid.home.join("marked"))
+        .unwrap()
+        .collect();
+    assert_eq!(aside.len(), 1);
+}
+
+/// Each channel that brings an agent content obid's proxy doesn't see, used once in a turn: the
+/// vendor's own web search, Tetrix's MCP server, a plug-in's, obid's connected apps. Its check gets
+/// nothing.
+#[test]
+fn content_from_outside_the_proxy_gives_nothing() {
+    let (_folder, obid, _) = run_one(
+        "secretspec-channels",
+        json!({"repo": "obi-e2e/fixture-app", "kind": "build", "task": "TOOL: WebSearch", "check": "sh check.sh"}),
+    );
+    for name in [
+        "WebSearch",
+        "mcp__tetrix__search_entities",
+        "mcp__a-plugin__lookup",
+        "mcp__oby__linear_search",
+    ] {
+        let log = dispatch_and_log(
+            &obid,
+            json!({"repo": "obi-e2e/fixture-app", "kind": "build", "task": format!("TOOL: {name}"), "check": "sh check.sh"}),
+        );
+        assert!(
+            log.contains(&format!(
+                "none of its owner's secrets: its agent used {name}"
+            )),
+            "{name}: {log}"
+        );
+        holds_none(&log, &fake(), "check.log");
+    }
+}
+
+/// A job that works from an issue someone else wrote, or one GitHub won't say about: no values.
+#[test]
+fn an_issue_someone_else_wrote_gives_nothing() {
+    let (_folder, _obid, log) = run_one(
+        "secretspec-issue",
+        json!({"repo": "obi-e2e/fixture-app", "kind": "build", "task": "Fix issue 3", "issue": 3, "check": "sh check.sh"}),
+    );
+    assert!(log.contains("who wrote issue #3"), "{log}");
     holds_none(&log, &fake(), "check.log");
 }
 
 /// A job based on a branch obid didn't record anyone of the owner's making (a teammate's) brings
-/// that branch's commits into the clone: from then on no check in the repository gets values.
+/// that branch's commits into the clone and marks it. The next job gets the clone made again, so
+/// its check gets the owner's values.
 #[test]
-fn a_clone_with_someone_elses_commits_gives_nothing() {
+fn a_marked_clone_is_made_again_and_values_come_back() {
     let (_folder, obid, _) = run_one(
         "secretspec-taint",
         json!({"repo": "obi-e2e/fixture-app", "kind": "build", "task": "Nothing to do here",
                "base": "feature/average", "check": "true"}),
     );
+    let clone = obid.home.join("clones/obi-e2e/fixture-app");
+    let marked = git(&clone, &["config", "--get", "obid.foreign"]);
+    assert!(marked.contains("the branch feature/average"), "{marked}");
     let log = dispatch_and_log(
         &obid,
         json!({"repo": "obi-e2e/fixture-app", "kind": "build", "task": "Nothing to do here", "check": "sh check.sh"}),
     );
     assert!(
-        log.contains(
-            "holds someone else's commits (the branch feature/average, fetched as a job's base)"
-        ),
+        log.contains(&format!("sha: {}", fingerprint(&fake()))),
         "{log}"
     );
+    assert!(git(&clone, &["config", "--get-all", "obid.narrow"]).contains("true"));
 }
 
 /// (a) A review another Oby asked for: its check gets none of the owner's values, though the
