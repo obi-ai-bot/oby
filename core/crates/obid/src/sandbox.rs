@@ -308,6 +308,14 @@ impl Sandbox {
         matches!(self.tool, Tool::Seatbelt(_))
     }
 
+    /// `argv` in a session of its own ([`SESSION`]) and in no box of obid's: a Claude Code run in
+    /// its own sandbox (`claudeOwnSandbox`, crate::jobs, `own_sandbox`).
+    pub fn unboxed(&self, argv: &[OsString]) -> Vec<OsString> {
+        let mut out: Vec<OsString> = vec![self.session.clone().into(), SESSION.into(), "--".into()];
+        out.extend(argv.iter().cloned());
+        out
+    }
+
     /// The command line that runs `argv` inside the sandbox `spec` describes: the program, then its
     /// arguments. The caller sets the working directory to `spec.worktree` and the environment, and
     /// starts it as it is, in obid's own process group: the first program (obid, [`SESSION`]) makes
@@ -416,7 +424,7 @@ impl Sandbox {
 impl Spec {
     /// Every path as the kernel sees it (macOS's `/tmp` and `/var` are behind symbolic links, and a
     /// Seatbelt profile matches real paths). A path that doesn't exist is kept as given.
-    fn canonical(&self) -> Spec {
+    pub(crate) fn canonical(&self) -> Spec {
         let real = |p: &PathBuf| p.canonicalize().unwrap_or_else(|_| p.clone());
         let mut read_only: Vec<PathBuf> = Vec::new();
         for path in &self.read_only {
@@ -493,8 +501,19 @@ impl Spec {
         }
     }
 
+    /// The pointers that say where the worktree's git data is, and the way back: its `.git` and
+    /// the git folder's `commondir` and `gitdir`. They stay as obid wrote them, whatever the job's
+    /// sandbox (Seatbelt's profile, bubblewrap's read-only binds, Claude Code's own `denyWrite`).
+    pub(crate) fn pointers(&self) -> Vec<PathBuf> {
+        let mut out = vec![self.worktree.join(".git")];
+        if let Some(admin) = &self.git_admin {
+            out.extend(["commondir", "gitdir"].map(|file| admin.join(file)));
+        }
+        out
+    }
+
     /// The folders written.
-    fn writable(&self) -> Vec<PathBuf> {
+    pub(crate) fn writable(&self) -> Vec<PathBuf> {
         let mut out = vec![self.worktree.clone()];
         out.extend(self.git_admin.clone());
         out.push(self.temp.clone());
@@ -503,7 +522,7 @@ impl Spec {
     }
 
     /// Everything read inside a hidden folder.
-    fn readable(&self) -> Vec<PathBuf> {
+    pub(crate) fn readable(&self) -> Vec<PathBuf> {
         let mut out = self.writable();
         out.extend(self.git_common.clone());
         out.extend(self.read_only.iter().cloned());
@@ -702,14 +721,9 @@ fn seatbelt_profile_reading(spec: &Spec, confined: bool, loopback: bool) -> Stri
     );
     // The pointers that say where the worktree's git data is, and the way back, stay as obid wrote
     // them (bubblewrap binds them read-only).
-    profile.push_str(&format!(
-        "(deny file-write* (literal {})",
-        sbpl_string(&spec.worktree.join(".git"))
-    ));
-    if let Some(admin) = &spec.git_admin {
-        for file in ["commondir", "gitdir"] {
-            profile.push_str(&format!(" (literal {})", sbpl_string(&admin.join(file))));
-        }
+    profile.push_str("(deny file-write*");
+    for pointer in spec.pointers() {
+        profile.push_str(&format!(" (literal {})", sbpl_string(&pointer)));
     }
     // What stays read-only inside the worktree, itself included (it can't be removed or renamed).
     for frozen in &spec.frozen {

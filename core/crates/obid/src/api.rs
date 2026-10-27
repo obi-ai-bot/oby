@@ -416,7 +416,7 @@ async fn gate(State(shared): State<Arc<Shared>>, request: Request, next: Next) -
 }
 
 /// On Linux, sandboxed agents reach the host through slirp4netns at 10.0.2.2. Admit that fixed
-/// host only for the agent's own routes (its job-token MCP route and its job's Apple check); normal
+/// host only for the agent's own routes (its job-token MCP route and Tetrix's); normal
 /// app API requests still require a loopback Host.
 fn agent_gateway_request(uri: &axum::http::Uri, headers: &HeaderMap) -> bool {
     cfg!(target_os = "linux") && gateway_host(uri, headers)

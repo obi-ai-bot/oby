@@ -557,6 +557,12 @@ impl Link {
         stopping: watch::Receiver<bool>,
     ) -> Arc<Link> {
         let files = Files::new(&config.home);
+        // What compute sharing kept in obid's home (the guest image, guest jobs' disks, its log)
+        // went with it, once.
+        for folder in ["vm", "g"] {
+            let _ = std::fs::remove_dir_all(config.home.join(folder));
+        }
+        let _ = std::fs::remove_file(config.home.join("sharing-log.jsonl"));
         let mut unread = None;
         let key = match files.load_key() {
             Ok(key) => key.map(Arc::new),
@@ -630,7 +636,12 @@ impl Link {
                     "permission" | "plan" | inbox::QUESTION_KIND
                 ) && !kept
                     || own_pr_offer
-                    || i.kind == "pluginEvent")
+                    || i.kind == "pluginEvent"
+                    // A teammate's job for this Mac, or a share they used: compute sharing is
+                    // gone, and nothing answers those any more.
+                    || i.obi.as_ref().is_some_and(|o| {
+                        o["type"] == "run_request" || o["type"] == "share_used"
+                    }))
                     && i.done.is_none()
                 {
                     i.done = Some(now);
@@ -1644,7 +1655,7 @@ impl Link {
             Some(Value::String(d)) => d.as_str(),
             Some(_) => return Err(invalid("description is a string.".into())),
         };
-        let accepts: Vec<String> = match map.get("accepts") {
+        let mut accepts: Vec<String> = match map.get("accepts") {
             Some(Value::Array(list)) => list
                 .iter()
                 .map(|a| a.as_str().map(str::to_owned))
@@ -1656,17 +1667,18 @@ impl Link {
                 ));
             }
         };
+        // The frozen Mac app still asks for run_request and share_offer: they went with compute
+        // sharing, so the card never offers them (teammates would send work this Mac declines).
+        accepts.retain(|a| !matches!(a.as_str(), "run_request" | "share_offer"));
         if accepts.is_empty() {
             return Err(invalid("accepts names at least one request type.".into()));
         }
-        if let Some(other) = accepts.iter().find(|a| {
-            !matches!(
-                a.as_str(),
-                "review_request" | "question" | "run_request" | "share_offer"
-            )
-        }) {
+        if let Some(other) = accepts
+            .iter()
+            .find(|a| !matches!(a.as_str(), "review_request" | "question"))
+        {
             return Err(invalid(format!(
-                "obid takes review_request, question, run_request and share_offer in this version, not {other}."
+                "obid takes review_request and question in this version, not {other}."
             )));
         }
         if obi_protocol::keys::key_id_of(owner_key).is_none() {
@@ -3991,9 +4003,11 @@ impl Link {
             .ok_or_else(|| api(StatusCode::CONFLICT, "obid hasn't joined a Sphere."))?;
         let to = text_field(&map, "to")?.to_owned();
         let kind = text_field(&map, "type")?.to_owned();
+        // run_request and share_offer went with compute sharing (refused below, once the Obi is
+        // known, as before).
         if !obi_protocol::REQUEST_TYPES.contains(&kind.as_str()) {
             return Err(invalid(format!(
-                "type is review_request, question, handoff, run_request or share_offer, not {kind}."
+                "type is review_request, question or handoff, not {kind}."
             )));
         }
         let action = map

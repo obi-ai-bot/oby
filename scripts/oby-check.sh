@@ -25,8 +25,9 @@
 # Inside a job's sandbox (where Seatbelt can't make another: a no-op sandbox-exec fails), the Apple
 # apps aren't built and swift test doesn't run: SwiftPM evaluates every package manifest in a
 # sandbox of its own, which can't nest there, and xcodebuild has no switch for it, and a cold
-# SwiftPM build in the job's HOME doesn't fit the check's 20 minutes. The Mac check before merging
-# runs them (docs/runner-api.md, "Mac check"), and the Apple check builds the apps for an agent.
+# SwiftPM build in the job's HOME doesn't fit the check's 20 minutes. Nothing runs them by itself
+# since obid's Mac checks went (docs/runner-api.md, "Mac check"): a `mac` workflow's merge waits
+# for the owner, who runs them on the Mac.
 # obid's tests that make a sandbox of their own (tests/sandbox.rs, the plug-in tests) fail there,
 # not verified: they're verified outside a job's sandbox only.
 #
@@ -166,7 +167,7 @@ if [[ -z "$nested" ]]; then
         step swift test -j "$jobs" --scratch-path "$cache/swiftpm" --filter "$(each "$swift_suites" | paste -sd '|' -)"
     fi
 elif [[ -n "$mac$ios$swift$swift_suites" ]]; then
-    echo "oby-check: the Apple apps and swift test don't run in a job's sandbox (SwiftPM's own can't nest in it): the Mac check runs them before merging"
+    echo "oby-check: the Apple apps and swift test don't run in a job's sandbox (SwiftPM's own can't nest in it): run them on the Mac before merging"
 fi
 
 # What changed, committed or not, scanned for secrets with this repository's rules.
