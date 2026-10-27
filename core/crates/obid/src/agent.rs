@@ -629,7 +629,10 @@ pub fn step(tool: &str, input: &Value) -> String {
         "Edit" | "MultiEdit" | "Write" | "NotebookEdit" => {
             format!("Editing {}", file.as_deref().unwrap_or("a file"))
         }
-        "Grep" => format!("Searching for {}", text("pattern").unwrap_or("text")),
+        "Grep" => format!(
+            "Searching for {}",
+            searched(text("pattern").unwrap_or("text"))
+        ),
         "Glob" => format!("Looking for {}", text("pattern").unwrap_or("files")),
         "WebFetch" | "WebSearch" => "Reading the web".into(),
         "TodoWrite" => "Planning the work".into(),
@@ -637,6 +640,58 @@ pub fn step(tool: &str, input: &Value) -> String {
             .unwrap_or("Starting a helper")
             .to_owned(),
         _ => format!("Using {tool}"),
+    }
+}
+
+/// A search's regular expression in words, for a step: its flags, anchors and escapes left out
+/// (`(?i)\busage\b` is `usage`), `a|b` as `a or b`, a run of anything as `…`, of spaces as a
+/// space. A pattern of nothing but those stays as it was.
+pub fn searched(pattern: &str) -> String {
+    let mut rest = pattern.trim();
+    // Inline flags before it: (?i), (?ms), (?-i).
+    while let Some(after) = rest.strip_prefix("(?")
+        && let Some(end) = after.find(')')
+        && end > 0
+        && after[..end]
+            .chars()
+            .all(|c| c.is_ascii_alphabetic() || c == '-')
+    {
+        rest = &after[end + 1..];
+    }
+    let mut words = String::new();
+    let mut chars = rest.chars().peekable();
+    // A quantifier after what's just been put in words: it says nothing more.
+    let skip_quantifier = |chars: &mut std::iter::Peekable<std::str::Chars>| {
+        while chars.next_if(|c| matches!(c, '*' | '+' | '?')).is_some() {}
+    };
+    while let Some(c) = chars.next() {
+        match c {
+            '\\' => match chars.next() {
+                Some('b' | 'B' | 'A' | 'z' | 'Z') | None => {}
+                Some('s') => {
+                    words.push(' ');
+                    skip_quantifier(&mut chars);
+                }
+                Some('w' | 'W' | 'd' | 'D' | 'S') => {
+                    words.push('…');
+                    skip_quantifier(&mut chars);
+                }
+                Some(escaped) => words.push(escaped),
+            },
+            '^' | '$' => {}
+            '.' if matches!(chars.peek(), Some('*' | '+')) => {
+                words.push_str(" … ");
+                skip_quantifier(&mut chars);
+            }
+            '|' => words.push_str(" or "),
+            _ => words.push(c),
+        }
+    }
+    let words = words.split_whitespace().collect::<Vec<_>>().join(" ");
+    if words.is_empty() || words == "…" {
+        pattern.to_owned()
+    } else {
+        words
     }
 }
 
@@ -812,6 +867,27 @@ mod tests {
         assert_eq!(
             permission_response(Answer::Deny("no".into()), input),
             json!({"behavior": "deny", "message": "no"})
+        );
+    }
+
+    /// A search's step says its words, not its regular expression.
+    #[test]
+    fn a_search_says_its_words() {
+        for (pattern, words) in [
+            ("(?i)usage", "usage"),
+            ("(?im)\\bread_usage\\b", "read_usage"),
+            ("usage|Usage", "usage or Usage"),
+            ("fn\\s+read_usage\\(", "fn read_usage("),
+            ("^import .*react$", "import … react"),
+            ("TODO", "TODO"),
+            ("(?i)", "(?i)"),
+            (".*", ".*"),
+        ] {
+            assert_eq!(searched(pattern), words, "{pattern}");
+        }
+        assert_eq!(
+            step("Grep", &json!({"pattern": "(?i)usage"})),
+            "Searching for usage"
         );
     }
 
