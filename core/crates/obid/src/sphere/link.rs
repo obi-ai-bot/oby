@@ -582,17 +582,29 @@ fn needs_you_first(items: &mut [impl std::borrow::Borrow<Item>], sorts: &crate::
 }
 
 impl Link {
-    /// Opens what obid keeps of its Sphere, its exchanges, inbox and decisions.
+    /// Opens what obid keeps of its Sphere, its exchanges, inbox and decisions. A key that can't
+    /// be read is said in the log and left out, never a reason not to start: the Sphere is optional.
     pub fn open(
         config: Config,
         jobs: Arc<Jobs>,
         events: Events,
         stopping: watch::Receiver<bool>,
-    ) -> std::io::Result<Arc<Link>> {
+    ) -> Arc<Link> {
         let files = Files::new(&config.home);
         let setup_config = config.clone();
-        let key = files.load_key()?.map(Arc::new);
-        let seal = files.load_seal_key()?.map(Arc::new);
+        let unread = |e: std::io::Error| tracing::error!("the Sphere's key is left out: {e}");
+        let key = files
+            .load_key()
+            .map_err(unread)
+            .ok()
+            .flatten()
+            .map(Arc::new);
+        let seal = files
+            .load_seal_key()
+            .map_err(unread)
+            .ok()
+            .flatten()
+            .map(Arc::new);
         let membership = files.load_membership();
         let delegation = files.load_delegation();
         // What obid's log layer takes out of plug-ins' lines (crate::logs).
@@ -606,8 +618,8 @@ impl Link {
         if let Some(delegation) = &delegation {
             secrets.learn(DELEGATION_SECRET, delegation);
         }
-        let exchanges = Exchanges::open(&config.home)?;
-        let inbox = Inbox::open(&config.home)?;
+        let exchanges = Exchanges::open(&config.home);
+        let inbox = Inbox::open(&config.home);
         let decisions = Decisions::open(&config.home);
         let sharing = sharing::Kept::open(&config.home);
         let pins = super::pins::Pins::open(&config.home);
@@ -746,7 +758,7 @@ impl Link {
                 }
             })
         }));
-        Ok(link)
+        link
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, State> {
@@ -7423,7 +7435,7 @@ mod tests {
         let events = Events::new();
         let jobs = Jobs::open(config.clone(), events.clone(), Err("no sandbox".into())).unwrap();
         let (_stop, stopping) = watch::channel(false);
-        let link = Arc::new(Link::open(config, jobs, events, stopping).unwrap());
+        let link = Arc::new(Link::open(config, jobs, events, stopping));
         let now = time::now();
         const HEAD: &str = "6d20146f366b9fac8907b5066c30ee39aaec09b3";
         const OLDER: &str = "1111111111111111111111111111111111111111";
@@ -7608,7 +7620,7 @@ mod tests {
         let events = Events::new();
         let jobs = Jobs::open(config.clone(), events.clone(), Err("no sandbox".into())).unwrap();
         let (_stop, stopping) = watch::channel(false);
-        let link = Link::open(config, jobs, events, stopping).unwrap();
+        let link = Link::open(config, jobs, events, stopping);
         let head = "6d20146f366b9fac8907b5066c30ee39aaec09b3";
         let change = approval::Change {
             repo: "acme/app",
@@ -7704,7 +7716,7 @@ mod tests {
         let events = Events::new();
         let jobs = Jobs::open(config.clone(), events.clone(), Err("no sandbox".into())).unwrap();
         let (_stop, stopping) = watch::channel(false);
-        let link = Link::open(config, jobs, events.clone(), stopping).unwrap();
+        let link = Link::open(config, jobs, events.clone(), stopping);
         let mut heard = events.subscribe();
 
         let request = json!({"id": "c-1", "correlation_id": "c-1", "type": "review_request",
@@ -7750,10 +7762,10 @@ mod tests {
                 ("exchange", json!("declined")),
             ]
         );
-        let kept = Inbox::open(&home).unwrap().load_all();
+        let kept = Inbox::open(&home).load_all();
         assert_eq!(kept.len(), 1);
         assert_eq!(kept[0].answer.as_deref(), Some(inbox::DECLINE));
-        let kept = Exchanges::open(&home).unwrap().load_all();
+        let kept = Exchanges::open(&home).load_all();
         assert_eq!(kept.len(), 1);
         assert_eq!(kept[0].state, "declined");
         let _ = std::fs::remove_dir_all(&home);
@@ -7779,7 +7791,7 @@ mod tests {
         let events = Events::new();
         let jobs = Jobs::open(config.clone(), events.clone(), Err("no sandbox".into())).unwrap();
         let (stop, stopping) = watch::channel(false);
-        let link = Link::open(config, jobs, events, stopping).unwrap();
+        let link = Link::open(config, jobs, events, stopping);
         (link, home, stop)
     }
 
@@ -7886,7 +7898,7 @@ mod tests {
         let events = Events::new();
         let jobs = Jobs::open(config.clone(), events.clone(), Err("no sandbox".into())).unwrap();
         let (_stop, stopping) = watch::channel(false);
-        let link = Link::open(config, jobs, events, stopping).unwrap();
+        let link = Link::open(config, jobs, events, stopping);
         link.adopt_github_owner("not_a_slug");
         assert_eq!(link.owner(), login);
         link.adopt_github_owner("WellPrado");
@@ -7914,7 +7926,7 @@ mod tests {
         let events = Events::new();
         let jobs = Jobs::open(config.clone(), events.clone(), Err("no sandbox".into())).unwrap();
         let (_stop, stopping) = watch::channel(false);
-        let link = Link::open(config, jobs, events, stopping).unwrap();
+        let link = Link::open(config, jobs, events, stopping);
         link.adopt_github_owner("wellprado");
         assert_eq!(link.owner(), "carol");
         assert_eq!(Files::new(&home).load_owner().as_deref(), Some("carol"));
@@ -7928,7 +7940,7 @@ mod tests {
         let events = Events::new();
         let jobs = Jobs::open(config.clone(), events.clone(), Err("no sandbox".into())).unwrap();
         let (_stop, stopping) = watch::channel(false);
-        let again = Link::open(config, jobs, events, stopping).unwrap();
+        let again = Link::open(config, jobs, events, stopping);
         again.adopt_github_owner("wellprado");
         assert_eq!(again.owner(), "carol");
         let _ = std::fs::remove_dir_all(&home);
@@ -8138,7 +8150,7 @@ mod tests {
         let events = Events::new();
         let jobs = Jobs::open(config.clone(), events.clone(), Err("no sandbox".into())).unwrap();
         let (_stop, stopping) = watch::channel(false);
-        let link = Link::open(config, jobs, events.clone(), stopping).unwrap();
+        let link = Link::open(config, jobs, events.clone(), stopping);
         let mut heard = events.subscribe();
         let event = |id: &str, kind: &str, subject: Value| -> obi_plugin_api::PluginEvent {
             serde_json::from_value(json!({"plugin": "tetrix", "event": {"id": id, "kind": kind,

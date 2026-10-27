@@ -247,7 +247,8 @@ fn redacted_panics() {
         let said = secrets::known()
             .try_redact(&said)
             .unwrap_or_else(|| "(withheld: obid couldn't take its secrets out of it)".into());
-        eprintln!("obid: panic at {place}: {said}");
+        let now = obi_protocol::time::format(obi_protocol::time::now());
+        eprintln!("{now} obid: panic at {place}: {said}");
     }));
 }
 
@@ -385,11 +386,7 @@ pub async fn serve(
         jobs.clone(),
         events.clone(),
         stopping_rx.clone(),
-    )
-    .map_err(|source| StartError::Jobs {
-        path: config.home.join("exchanges"),
-        source,
-    })?;
+    );
     // A rule's start that a stop cut short is an offer again (#1314).
     // The plug-ins obid ships, installed where missing (disabled), then the host, which starts
     // the ones the owner enabled without waiting for them.
@@ -418,12 +415,7 @@ pub async fn serve(
     // A login copy a crash left in a conversation's folder goes before anything runs.
     brain::harness::forget_logins_left(&config.home);
     let conversations = conversation::Conversations::open(&config.home, events.clone());
-    let artifacts = artifacts::Artifacts::open(&config.home, events.clone()).map_err(|source| {
-        StartError::Jobs {
-            path: config.home.join("artifacts"),
-            source,
-        }
-    })?;
+    let artifacts = artifacts::Artifacts::open(&config.home, events.clone());
     jobs.use_artifacts(artifacts.clone());
     let routines = Arc::new(routines::Routines::open(&config.home, events.clone()));
     jobs.use_routines(routines.clone());

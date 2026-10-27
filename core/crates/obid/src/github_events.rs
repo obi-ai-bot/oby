@@ -2041,7 +2041,7 @@ printf 'HTTP/2.0 200 OK\nEtag: %s\n' "$tag"; cat "$file.headers"; printf '\n'; c
             let jobs =
                 Jobs::open(config.clone(), events.clone(), Err("no sandbox".into())).unwrap();
             let (stop, stopping) = tokio::sync::watch::channel(false);
-            let link = crate::sphere::Link::open(config.clone(), jobs, events, stopping).unwrap();
+            let link = crate::sphere::Link::open(config.clone(), jobs, events, stopping);
             (link, stop)
         };
         let words = |id: u64, trusted: bool| json!({"id": id, "kind": "comment", "author": "sangam", "trusted": trusted, "text": "x"});

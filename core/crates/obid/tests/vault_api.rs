@@ -236,9 +236,18 @@ fn the_apis_json_has_the_vaults_secrets_taken_out() {
     holds_none(&seen.join("\n"), &value, "the event stream");
     holds_none(&obid.log(), &value, "obid's log");
 
-    // When the vault can't be read, nothing is answered, and the answer says why.
+    // When the vault can't be read, nothing is answered, and the answer says why; but the status,
+    // which starts no work, still answers and says why too.
     chmod(&vault_file(&obid), 0o644);
-    for target in ["/v1/status", "/v1/jobs", &format!("/v1/jobs/{clean}")] {
+    let status = call(&obid, "GET", "/v1/status", None);
+    assert_eq!(status.status, 200, "{}", status.text);
+    let problem = status.body["vaultProblem"].as_str().unwrap();
+    assert!(
+        problem.starts_with("the vault can't be read: Others may read the vault's"),
+        "{problem}"
+    );
+    holds_none(&status.text, &value, "/v1/status");
+    for target in ["/v1/jobs", &format!("/v1/jobs/{clean}")] {
         let answer = call(&obid, "GET", target, None);
         assert_eq!(answer.status, 503, "{target}: {}", answer.text);
         let error = answer.body["error"].as_str().unwrap();
@@ -253,6 +262,7 @@ fn the_apis_json_has_the_vaults_secrets_taken_out() {
     chmod(&vault_file(&obid), 0o600);
     let answer = call(&obid, "GET", "/v1/status", None);
     assert_eq!(answer.status, 200, "{}", answer.text);
+    assert!(answer.body.get("vaultProblem").is_none(), "{}", answer.text);
 }
 
 /// No vault secret reaches an agent: the job's task is handed on with the secret taken out, and

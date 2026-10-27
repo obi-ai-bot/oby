@@ -1111,7 +1111,8 @@ fn unreadable_for_agents(why: &str) -> String {
 /// out. An answer with a length is scrubbed whole; a streamed one (the event stream, `/wait`) a
 /// frame at a time, and it ends at the first frame the vault can't be read for. Files that
 /// aren't text (a check's bundle) go as they are, and so do the web app's files under `/app/`,
-/// which hold no data.
+/// which hold no data. `GET /v1/status` and `GET /v1/events` answer even then, scrubbed of the
+/// secrets obid last read, so the apps can say why (`status.vaultProblem`): they start no work.
 pub async fn answers(request: Request, next: Next) -> Response {
     if !request.uri().path().starts_with("/v1/") {
         return next.run(request).await;
@@ -1125,12 +1126,20 @@ pub async fn answers(request: Request, next: Next) -> Response {
     else {
         return next.run(request).await;
     };
+    let state = request.method() == axum::http::Method::GET
+        && matches!(request.uri().path(), "/v1/status" | "/v1/events");
     let (request, stops) = stops_only(request).await;
-    if !stops && let Err(why) = vault.check() {
+    if !stops
+        && let Err(why) = vault.check()
+        && !state
+    {
         return unreadable(&why);
     }
     let response = next.run(request).await;
-    if let Err(why) = vault.check() {
+    // Read again either way: what was added meanwhile is taken out too.
+    if let Err(why) = vault.check()
+        && !state
+    {
         return unreadable(&why);
     }
     let kind = response
@@ -1156,7 +1165,11 @@ pub async fn answers(request: Request, next: Next) -> Response {
         // Off the async threads: a big answer (a job list is hundreds of KB) is a lot of text.
         let scrubbed = {
             let (vault, bytes) = (vault.clone(), bytes.clone());
-            tokio::task::spawn_blocking(move || vault.scrubbed(&bytes)).await
+            tokio::task::spawn_blocking(move || match state {
+                true => Ok(vault.scrubbed_checked(&bytes)),
+                false => vault.scrubbed(&bytes),
+            })
+            .await
         };
         return match scrubbed {
             Ok(Ok(None)) => Response::from_parts(parts, Body::from(bytes)),
@@ -1177,7 +1190,9 @@ pub async fn answers(request: Request, next: Next) -> Response {
             // reads the Keychain (it did 4 times every 15 seconds, at each `:ping`).
             Ok(bytes) if keepalive(&bytes, events) => Some(Ok(bytes)),
             Ok(bytes) => {
-                vault.check().ok()?;
+                if vault.check().is_err() && !state {
+                    return None;
+                }
                 let clean = if events {
                     vault.scrubbed_events(&bytes)
                 } else {

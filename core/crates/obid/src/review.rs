@@ -1037,7 +1037,7 @@ mod tests {
             crate::jobs::Jobs::open(config.clone(), events.clone(), Err("no sandbox".into()))
                 .unwrap();
         let (_stop, stopping) = tokio::sync::watch::channel(false);
-        let link = crate::sphere::Link::open(config, jobs, events, stopping).unwrap();
+        let link = crate::sphere::Link::open(config, jobs, events, stopping);
         // A body the scan flags: refused before any gh call.
         let item = ready_item(&format!("AKIA{}", "QWERTYUIOPASDFGH"));
         link.add_items(vec![item.clone()]);

@@ -14,8 +14,8 @@
 //!  "telemetry": false}
 //! ```
 //!
-//! A key the file doesn't know is refused, so a misspelled setting is an error rather than a
-//! default nobody chose.
+//! A key the file doesn't know, at the top or inside a section, is ignored with a warning: one a
+//! later obid retired, or an earlier one wrote, is never a reason not to start.
 
 use std::net::{Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
@@ -49,7 +49,7 @@ pub const DEFAULT_LISTEN: Option<&str> = if cfg!(target_os = "macos") {
 
 /// The file as written. Validated into [`Config`]. A top-level key obid doesn't know (one a later
 /// obid retired, or an earlier one wrote) is ignored with a warning, never a reason not to start:
-/// every updater would exit otherwise. Inside a section, an unknown key is still refused.
+/// every updater would exit otherwise. So is one inside a section ([`ignore_unknown_inside`]).
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct File {
@@ -342,7 +342,9 @@ impl Config {
 
     /// Checks a configuration given as JSON text.
     pub fn parse(text: &str) -> Result<Config, Problem> {
-        let file: File = serde_json::from_str(text).map_err(Problem::Parse)?;
+        let mut value: serde_json::Value = serde_json::from_str(text).map_err(Problem::Parse)?;
+        let inside = ignore_unknown_inside(&mut value);
+        let file: File = serde_json::from_value(value).map_err(Problem::Parse)?;
         let invalid = |problem: String| Err(Problem::Invalid(problem));
 
         let Some(listen_text) = file.listen.or_else(|| DEFAULT_LISTEN.map(str::to_owned)) else {
@@ -645,7 +647,7 @@ impl Config {
             job_token_budget,
             gateway,
             claude_keychain: file.claude_keychain,
-            ignored: file.ignored.into_keys().collect(),
+            ignored: file.ignored.into_keys().chain(inside).collect(),
             cursor_keychain: file.cursor_keychain,
             vm_helper: file.vm_helper,
             vm_image: file.vm_image,
@@ -661,6 +663,59 @@ impl Config {
             },
         })
     }
+}
+
+/// Takes the keys obid doesn't know out of the file's sections (`agents`, each tool and account,
+/// `repos`, `conversation`, `vault`) and says where each was, like `repos[0].lead`. Their structs
+/// still refuse an unknown key, since the accounts API builds them too.
+fn ignore_unknown_inside(file: &mut serde_json::Value) -> Vec<String> {
+    const TOOLS: &[&str] = &["claude", "codex", "cursor"];
+    let mut ignored = Vec::new();
+    let mut keep = |section: Option<&mut serde_json::Value>, known: &[&str], at: &str| {
+        if let Some(serde_json::Value::Object(map)) = section {
+            map.retain(|key, _| {
+                let known = known.contains(&key.as_str());
+                if !known {
+                    ignored.push(format!("{at}.{key}"));
+                }
+                known
+            });
+        }
+    };
+    keep(
+        file.get_mut("conversation"),
+        &["agent", "model", "budget"],
+        "conversation",
+    );
+    keep(file.get_mut("vault"), &["store", "service"], "vault");
+    keep(file.get_mut("agents"), TOOLS, "agents");
+    for tool in TOOLS {
+        let Some(agent) = file.get_mut("agents").and_then(|a| a.get_mut(tool)) else {
+            continue;
+        };
+        keep(
+            Some(&mut *agent),
+            &["bin", "accounts"],
+            &format!("agents.{tool}"),
+        );
+        if let Some(serde_json::Value::Array(accounts)) = agent.get_mut("accounts") {
+            for (i, account) in accounts.iter_mut().enumerate() {
+                let known = ["id", "name", "configDir", "payer"];
+                keep(
+                    Some(account),
+                    &known,
+                    &format!("agents.{tool}.accounts[{i}]"),
+                );
+            }
+        }
+    }
+    if let Some(serde_json::Value::Array(repos)) = file.get_mut("repos") {
+        for (i, repo) in repos.iter_mut().enumerate() {
+            let known = ["repo", "remote", "defaultBranch", "check", "pullRequests"];
+            keep(Some(repo), &known, &format!("repos[{i}]"));
+        }
+    }
+    ignored
 }
 
 /// Why a configuration text can't be used: it isn't the file's shape, or a value is wrong.
@@ -1194,17 +1249,84 @@ mod tests {
         assert!(problem(&with(serde_json::json!({"home": "obid-home"}))).contains("absolute"));
     }
 
-    /// A top-level key obid doesn't know is ignored and named; one inside a section is refused.
+    /// A key obid doesn't know, at the top or inside a section, is ignored and named.
     #[test]
-    fn ignores_top_level_keys_it_doesnt_know() {
+    fn ignores_keys_it_doesnt_know() {
         let config = Config::parse(&with(
             serde_json::json!({"telemetri": true, "zzRetired": 1}),
         ));
         let config = config.unwrap();
         assert_eq!(config.ignored, ["telemetri", "zzRetired"]);
         assert!(!config.telemetry);
-        let inside = serde_json::json!({"agents": {"claude": {"bin": "claude", "accountz": []}}});
-        assert!(problem(&with(inside)).contains("accountz"));
+        let inside = serde_json::json!({
+            "agents": {"claude": {"bin": "claude", "accountz": [], "accounts": [
+                {"id": "default", "name": "Default", "configDir": null, "plan": "max"}]},
+                "gemini": {"bin": "gemini"}},
+            "repos": [{"repo": "o/r", "remote": "https://github.com/o/r", "lead": true}],
+            "conversation": {"agent": "plan", "harness": false},
+            "vault": {"store": "file", "path": "/x"}
+        });
+        let config = Config::parse(&with(inside)).unwrap();
+        assert_eq!(
+            config.ignored,
+            [
+                "conversation.harness",
+                "vault.path",
+                "agents.gemini",
+                "agents.claude.accountz",
+                "agents.claude.accounts[0].plan",
+                "repos[0].lead"
+            ]
+        );
+        assert_eq!(config.agents.get().claude.unwrap().accounts.len(), 1);
+        assert_eq!(config.repos.get().len(), 1);
+    }
+
+    /// Every configuration Oby.app wrote from 0.2.0 to 0.4.5 (crate::app::default_config, the
+    /// repositories crate::repos adds, an account's payer), with every key obid has retired or is
+    /// about to retire, still starts.
+    #[test]
+    fn every_older_configuration_and_retired_key_still_reads() {
+        let mut file = crate::app::default_config(Path::new("/Users/w"), "w", true);
+        file["repos"] = serde_json::json!([
+            {"repo": "o/r", "remote": "https://github.com/o/r.git", "defaultBranch": "main"},
+            {"repo": "o/s", "remote": "git@github.com:o/s.git", "defaultBranch": "dev",
+             "check": "make test", "pullRequests": true}]);
+        file["agents"]["claude"]["accounts"][0]["payer"] = serde_json::json!("Deskree");
+        Config::parse(&file.to_string()).unwrap();
+        for (key, value) in [
+            ("vmHelper", serde_json::json!("/x/obi-vm")),
+            ("vmImage", serde_json::json!("/x/vm")),
+            (
+                "vmImageUrl",
+                serde_json::json!("https://downloads.oby.deskree.com/vm"),
+            ),
+            ("guestRequestEvery", serde_json::json!(900)),
+            (
+                "guestModelApi",
+                serde_json::json!("https://api.anthropic.com"),
+            ),
+            ("turnBudget", serde_json::json!(110)),
+            ("leastThink", serde_json::json!(1)),
+            ("orchestratorDelay", serde_json::json!(30)),
+            (
+                "conversation",
+                serde_json::json!({"agent": "plan", "harness": true}),
+            ),
+            ("bundledPlugins", serde_json::json!("/x/plugins")),
+            ("web", serde_json::json!("/x/web")),
+            ("gateway", serde_json::json!("127.0.0.1:8810")),
+            ("claudeKeychain", serde_json::json!(true)),
+            ("cursorKeychain", serde_json::json!(false)),
+            (
+                "pushRelay",
+                serde_json::json!("https://oby-control.deskree.com"),
+            ),
+        ] {
+            file[key] = value;
+        }
+        let config = Config::parse(&file.to_string()).unwrap();
+        assert_eq!(config.ignored, ["conversation.harness"]);
     }
 
     #[test]
@@ -1329,7 +1451,8 @@ mod tests {
                 .contains("must be an absolute path")
         );
         let agents = serde_json::json!({"gemini": {"bin": "gemini"}});
-        assert!(Config::parse(&with(serde_json::json!({ "agents": agents }))).is_err());
+        let config = Config::parse(&with(serde_json::json!({ "agents": agents }))).unwrap();
+        assert_eq!(config.ignored, ["agents.gemini"]);
         assert!(
             problem(&with(serde_json::json!({"guestRequestEvery": -1})))
                 .contains("guestRequestEvery is -1")

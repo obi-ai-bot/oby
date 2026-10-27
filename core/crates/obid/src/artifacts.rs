@@ -151,21 +151,27 @@ pub struct Artifacts {
 
 impl Artifacts {
     /// `home/artifacts` (0700), made if missing, with what a publish cut short left behind gone.
-    pub fn open(home: &Path, events: Events) -> std::io::Result<Arc<Artifacts>> {
+    /// A folder that can't be made is said in the log, never a reason not to start: each publish
+    /// then fails with its own reason.
+    pub fn open(home: &Path, events: Events) -> Arc<Artifacts> {
         let dir = home.join("artifacts");
-        make_private_dir(&dir)?;
-        for entry in std::fs::read_dir(&dir)?.flatten() {
-            if entry.file_name().to_string_lossy().starts_with(".staging-") {
-                let _ = std::fs::remove_dir_all(entry.path());
+        match make_private_dir(&dir).and_then(|()| std::fs::read_dir(&dir)) {
+            Ok(entries) => {
+                for entry in entries.flatten() {
+                    if entry.file_name().to_string_lossy().starts_with(".staging-") {
+                        let _ = std::fs::remove_dir_all(entry.path());
+                    }
+                }
             }
+            Err(e) => tracing::error!("can't open {}: {e}", dir.display()),
         }
-        Ok(Arc::new(Artifacts {
+        Arc::new(Artifacts {
             dir,
             scratch: home.join("tmp"),
             events,
             job_bytes: MAX_JOB_BYTES,
             lock: Mutex::new(()),
-        }))
+        })
     }
 
     /// Publishes `what` as a new artifact, or a new version of `what.artifact`, and says its id
@@ -1026,10 +1032,7 @@ mod tests {
         ) {
             let events = Events::new();
             let receiver = events.subscribe();
-            (
-                Artifacts::open(&self.0.join("home"), events).unwrap(),
-                receiver,
-            )
+            (Artifacts::open(&self.0.join("home"), events), receiver)
         }
     }
 
