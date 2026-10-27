@@ -13,8 +13,9 @@
 //!  "telemetry": false}
 //! ```
 //!
-//! A key the file doesn't know, at the top or inside a section, is ignored with a warning: one a
-//! later obid retired, or an earlier one wrote, is never a reason not to start.
+//! A top-level key the file doesn't know, or a key a later obid retired from a section, is ignored
+//! with a warning: an update never stops on one. Any other unknown key in a section is refused, so
+//! a misspelled setting is an error rather than a default nobody chose.
 
 use std::net::{Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
@@ -48,7 +49,7 @@ pub const DEFAULT_LISTEN: Option<&str> = if cfg!(target_os = "macos") {
 
 /// The file as written. Validated into [`Config`]. A top-level key obid doesn't know (one a later
 /// obid retired, or an earlier one wrote) is ignored with a warning, never a reason not to start:
-/// every updater would exit otherwise. So is one inside a section ([`ignore_unknown_inside`]).
+/// every updater would exit otherwise. So is a key retired from a section ([`RETIRED_INSIDE`]).
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct File {
@@ -329,7 +330,7 @@ impl Config {
     /// Checks a configuration given as JSON text.
     pub fn parse(text: &str) -> Result<Config, Problem> {
         let mut value: serde_json::Value = serde_json::from_str(text).map_err(Problem::Parse)?;
-        let inside = ignore_unknown_inside(&mut value);
+        let inside = ignore_retired_inside(&mut value);
         let file: File = serde_json::from_value(value).map_err(Problem::Parse)?;
         let invalid = |problem: String| Err(Problem::Invalid(problem));
 
@@ -643,54 +644,20 @@ impl Config {
     }
 }
 
-/// Takes the keys obid doesn't know out of the file's sections (`agents`, each tool and account,
-/// `repos`, `conversation`, `vault`) and says where each was, like `repos[0].lead`. Their structs
-/// still refuse an unknown key, since the accounts API builds them too.
-fn ignore_unknown_inside(file: &mut serde_json::Value) -> Vec<String> {
-    const TOOLS: &[&str] = &["claude", "codex", "cursor"];
+/// Keys a later obid retired from inside a section: ignored with a warning, like a top-level key
+/// obid doesn't know. Any other unknown key in a section is still refused: a typo there (`checks`
+/// for a repository's `check`, a mistyped `configDir`) would quietly drop a check or move an account
+/// to another login.
+const RETIRED_INSIDE: &[(&str, &str)] = &[("conversation", "harness")];
+
+/// Takes [`RETIRED_INSIDE`]'s keys out of the file and says where each was (`conversation.harness`).
+fn ignore_retired_inside(file: &mut serde_json::Value) -> Vec<String> {
     let mut ignored = Vec::new();
-    let mut keep = |section: Option<&mut serde_json::Value>, known: &[&str], at: &str| {
-        if let Some(serde_json::Value::Object(map)) = section {
-            map.retain(|key, _| {
-                let known = known.contains(&key.as_str());
-                if !known {
-                    ignored.push(format!("{at}.{key}"));
-                }
-                known
-            });
-        }
-    };
-    keep(
-        file.get_mut("conversation"),
-        &["agent", "model", "budget"],
-        "conversation",
-    );
-    keep(file.get_mut("vault"), &["store", "service"], "vault");
-    keep(file.get_mut("agents"), TOOLS, "agents");
-    for tool in TOOLS {
-        let Some(agent) = file.get_mut("agents").and_then(|a| a.get_mut(tool)) else {
-            continue;
-        };
-        keep(
-            Some(&mut *agent),
-            &["bin", "accounts"],
-            &format!("agents.{tool}"),
-        );
-        if let Some(serde_json::Value::Array(accounts)) = agent.get_mut("accounts") {
-            for (i, account) in accounts.iter_mut().enumerate() {
-                let known = ["id", "name", "configDir", "payer"];
-                keep(
-                    Some(account),
-                    &known,
-                    &format!("agents.{tool}.accounts[{i}]"),
-                );
-            }
-        }
-    }
-    if let Some(serde_json::Value::Array(repos)) = file.get_mut("repos") {
-        for (i, repo) in repos.iter_mut().enumerate() {
-            let known = ["repo", "remote", "defaultBranch", "check", "pullRequests"];
-            keep(Some(repo), &known, &format!("repos[{i}]"));
+    for (section, key) in RETIRED_INSIDE {
+        if let Some(serde_json::Value::Object(map)) = file.get_mut(*section)
+            && map.remove(*key).is_some()
+        {
+            ignored.push(format!("{section}.{key}"));
         }
     }
     ignored
@@ -1217,37 +1184,50 @@ mod tests {
         assert!(problem(&with(serde_json::json!({"home": "obid-home"}))).contains("absolute"));
     }
 
-    /// A key obid doesn't know, at the top or inside a section, is ignored and named.
+    /// A top-level key obid doesn't know, and a key retired from a section, are ignored and named;
+    /// any other unknown key inside a section is refused, so a typo never drops a check or moves an
+    /// account to another login.
     #[test]
-    fn ignores_keys_it_doesnt_know() {
+    fn ignores_unknown_top_level_and_retired_keys_only() {
         let config = Config::parse(&with(
-            serde_json::json!({"telemetri": true, "zzRetired": 1}),
+            serde_json::json!({"telemetri": true, "zzRetired": 1, "conversation": {"harness": false}}),
         ));
         let config = config.unwrap();
-        assert_eq!(config.ignored, ["telemetri", "zzRetired"]);
-        assert!(!config.telemetry);
-        let inside = serde_json::json!({
-            "agents": {"claude": {"bin": "claude", "accountz": [], "accounts": [
-                {"id": "default", "name": "Default", "configDir": null, "plan": "max"}]},
-                "gemini": {"bin": "gemini"}},
-            "repos": [{"repo": "o/r", "remote": "https://github.com/o/r", "lead": true}],
-            "conversation": {"agent": "plan", "harness": false},
-            "vault": {"store": "file", "path": "/x"}
-        });
-        let config = Config::parse(&with(inside)).unwrap();
         assert_eq!(
             config.ignored,
-            [
-                "conversation.harness",
-                "vault.path",
-                "agents.gemini",
-                "agents.claude.accountz",
-                "agents.claude.accounts[0].plan",
-                "repos[0].lead"
-            ]
+            ["telemetri", "zzRetired", "conversation.harness"]
         );
-        assert_eq!(config.agents.get().claude.unwrap().accounts.len(), 1);
-        assert_eq!(config.repos.get().len(), 1);
+        assert!(!config.telemetry);
+        let typos = [
+            (
+                "agents",
+                serde_json::json!({"claude": {"bin": "claude", "accountz": []}}),
+                "accountz",
+            ),
+            (
+                "agents",
+                serde_json::json!({"claude": {"bin": "claude", "accounts": [
+                {"id": "w", "name": "W", "confDir": "/srv/w"}]}}),
+                "confDir",
+            ),
+            (
+                "repos",
+                serde_json::json!([{"repo": "o/r", "remote": "https://github.com/o/r",
+                "checks": "make test"}]),
+                "checks",
+            ),
+            (
+                "vault",
+                serde_json::json!({"store": "file", "path": "/x"}),
+                "path",
+            ),
+        ];
+        for (key, value, says) in typos {
+            assert!(
+                problem(&with(serde_json::json!({ key: value }))).contains(says),
+                "{says}"
+            );
+        }
     }
 
     /// Every configuration Oby.app wrote from 0.2.0 to 0.4.5 (crate::app::default_config, the
@@ -1419,8 +1399,7 @@ mod tests {
                 .contains("must be an absolute path")
         );
         let agents = serde_json::json!({"gemini": {"bin": "gemini"}});
-        let config = Config::parse(&with(serde_json::json!({ "agents": agents }))).unwrap();
-        assert_eq!(config.ignored, ["agents.gemini"]);
+        assert!(Config::parse(&with(serde_json::json!({ "agents": agents }))).is_err());
         assert!(
             problem(&with(serde_json::json!({"guestRequestEvery": -1})))
                 .contains("guestRequestEvery is -1")
