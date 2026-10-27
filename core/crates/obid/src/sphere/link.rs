@@ -4469,23 +4469,28 @@ impl Link {
         item
     }
 
-    /// [`Link::add_confirm`], unless a `confirm` item for the same job and action is still open:
-    /// that one stands, so a caller asking again and again adds nothing (crate::jobs,
-    /// `confirm_past_safety`).
+    /// [`Link::add_confirm`], unless a `confirm` item with the same action and target is still
+    /// open: that one stands, so a caller asking again and again adds nothing (crate::jobs:
+    /// `confirm_past_safety`'s job, `offer_check`'s repository).
     pub fn add_confirm_once(&self, item: Item) -> Item {
-        let action = |i: &Item| i.confirm.as_ref().map(|c| c.action.clone());
+        let what = |i: &Item| {
+            i.confirm
+                .as_ref()
+                .map(|c| (c.action.clone(), c.target.clone()))
+        };
         {
-            let state = self.lock();
-            if let Some(open) = state.inbox.values().find(|i| {
-                i.kind == "confirm"
-                    && i.done.is_none()
-                    && i.job == item.job
-                    && action(i) == action(&item)
-            }) {
+            let mut state = self.lock();
+            if let Some(open) = state
+                .inbox
+                .values()
+                .find(|i| i.kind == "confirm" && i.done.is_none() && what(i) == what(&item))
+            {
                 return open.clone();
             }
+            state.inbox.insert(item.id.clone(), item.clone());
         }
-        self.add_confirm(item)
+        self.save_item(&item);
+        item
     }
 
     /// `POST /v1/inbox/{id}/answer` on a `confirm` item: `Confirm` carries out what its title
@@ -4500,12 +4505,53 @@ impl Link {
         if let Some(at) = later {
             item.later = Some(at);
         } else {
+            // Oby's ask for a repository's check (#1062, inbox::check_item).
+            let check_of = item
+                .confirm
+                .as_ref()
+                .filter(|c| c.action == inbox::action::SET_CHECK)
+                .map(|c| c.target.clone());
             if let Some(answer) = &answer {
+                // Edit: any other answer is the command the owner wants instead, asked again as an
+                // item of its own, whose title its Confirm signs. This one is done with it.
+                if answer != inbox::CONFIRM
+                    && answer != inbox::CANCEL
+                    && let Some(repo) = &check_of
+                {
+                    let check = answer.trim();
+                    if !crate::repos::fits_check(check) {
+                        return Err(api(
+                            StatusCode::UNPROCESSABLE_ENTITY,
+                            "A check is one line of up to 200 characters.",
+                        ));
+                    }
+                    let next = inbox::check_item(&item.job, repo, check, time::now());
+                    item.done = Some(time::now());
+                    item.answer = Some(check.to_owned());
+                    self.lock().inbox.insert(item.id.clone(), item.clone());
+                    self.save_item(&item);
+                    return Ok(self.add_confirm(next).to_json());
+                }
                 if answer != inbox::CONFIRM && answer != inbox::CANCEL {
                     return Err(api(
                         StatusCode::UNPROCESSABLE_ENTITY,
                         format!("The answer is {} or {}.", inbox::CONFIRM, inbox::CANCEL),
                     ));
+                }
+                // No check: remembered, so Oby never asks about this repository again.
+                if answer == inbox::CANCEL
+                    && let Some(repo) = &check_of
+                    && let Err(e) = crate::settings::update(&self.config.home, |settings| {
+                        if !settings
+                            .no_check
+                            .iter()
+                            .any(|r| r.eq_ignore_ascii_case(repo))
+                        {
+                            settings.no_check.push(repo.clone());
+                        }
+                    })
+                {
+                    tracing::warn!("No check for {repo} isn't remembered: {e}");
                 }
                 if answer == inbox::CONFIRM {
                     let done = match item.confirm.clone() {
@@ -4810,7 +4856,7 @@ impl Link {
             // The check Oby offered for a repository with none (#1062), kept on the owner's tap.
             inbox::action::SET_CHECK => {
                 let check = confirmed.payload["check"].as_str().unwrap_or("");
-                if check.trim().is_empty() || check.contains('\n') || check.chars().count() > 200 {
+                if !crate::repos::fits_check(check) {
                     return Err(api(StatusCode::CONFLICT, "That check's plan was lost."));
                 }
                 self.config

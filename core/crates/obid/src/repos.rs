@@ -235,9 +235,10 @@ fn add_to_file(file: &Path, repo: &Repo, check: Option<&str>) -> Result<(), Stri
 }
 
 /// The check Oby offers for a repository with none (#1062), from the names of the files at its
-/// root and the text of two of them (`read`: its `Makefile`, its `package.json`), only to see
-/// whether they have a test. The command is always one of obid's own, never words from the
-/// repository. ponytail: the usual root files only; more tools when owners say a guess missed.
+/// root and the text of three of them (`read`: its `Makefile`, its `package.json`, its
+/// `pyproject.toml`), only to see whether they have a test and which tool runs it. The command is
+/// always one of obid's own, never words from the repository. ponytail: the usual root files only;
+/// more tools when owners say a guess missed.
 pub fn guess_check(names: &[String], read: impl Fn(&str) -> Option<String>) -> Option<String> {
     let has = |name: &str| names.iter().any(|n| n == name);
     let make_test = |text: String| {
@@ -252,38 +253,70 @@ pub fn guess_check(names: &[String], read: impl Fn(&str) -> Option<String>) -> O
         return Some("make test".into());
     }
     if has("package.json") {
-        let scripts = read("package.json")
+        let package = read("package.json")
             .and_then(|text| serde_json::from_str::<Value>(&text).ok())
-            .map(|package| package["scripts"].clone())
             .unwrap_or_default();
-        let runner = if has("pnpm-lock.yaml") {
-            "pnpm"
-        } else if has("yarn.lock") {
-            "yarn"
-        } else {
-            "npm"
+        let scripts = &package["scripts"];
+        // The tool the repository names (Corepack's `packageManager`), else its lockfile's.
+        let runner = match package["packageManager"]
+            .as_str()
+            .and_then(|named| named.split('@').next())
+        {
+            Some("pnpm") => "pnpm",
+            Some("yarn") => "yarn",
+            Some("bun") => "bun",
+            Some("npm") => "npm",
+            _ if has("pnpm-lock.yaml") => "pnpm",
+            _ if has("yarn.lock") => "yarn",
+            _ if has("bun.lock") || has("bun.lockb") => "bun",
+            _ => "npm",
         };
         // npm init's own placeholder fails on purpose.
         if scripts["test"]
             .as_str()
             .is_some_and(|test| !test.contains("no test specified"))
         {
-            return Some(format!("{runner} test"));
+            // `bun test` is Bun's own test runner, not the script.
+            return Some(match runner {
+                "bun" => "bun run test".into(),
+                runner => format!("{runner} test"),
+            });
         }
         if scripts["lint"].is_string() {
             return Some(format!("{runner} run lint"));
         }
     }
+    // pytest only where the repository uses it: one that collects no tests fails.
+    let pytest = (has("pytest.ini")
+        || has("conftest.py")
+        || (has("pyproject.toml") && read("pyproject.toml").is_some_and(|t| t.contains("pytest"))))
+    .then(|| {
+        if has("uv.lock") {
+            "uv run pytest"
+        } else if has("poetry.lock") {
+            "poetry run pytest"
+        } else {
+            "python3 -m pytest"
+        }
+    });
     let by_file = [
         ("Cargo.toml", "cargo test"),
         ("go.mod", "go test ./..."),
-        ("pyproject.toml", "pytest"),
         ("Package.swift", "swift test"),
+        ("gradlew", "./gradlew test"),
+        ("pom.xml", "mvn test"),
     ];
     by_file
         .iter()
         .find(|(file, _)| has(file))
-        .map(|(_, check)| (*check).to_owned())
+        .map(|(_, check)| *check)
+        .or(pytest)
+        .map(str::to_owned)
+}
+
+/// Whether `check` can be a repository's check: one line of up to 200 characters, as a job's.
+pub fn fits_check(check: &str) -> bool {
+    !check.trim().is_empty() && !check.contains(['\n', '\r']) && check.chars().count() <= 200
 }
 
 /// The repositories gh's `api` printed (`owner/name`, a tab, the default branch, a line each), as
@@ -425,14 +458,17 @@ mod tests {
 
     #[test]
     fn a_check_is_guessed_from_the_repositorys_own_files() {
-        let guess = |names: &[&str], make: &str, package: &str| {
+        let guess_with = |names: &[&str], make: &str, package: &str, pyproject: &str| {
             let names: Vec<String> = names.iter().map(|n| (*n).to_owned()).collect();
             guess_check(&names, |name| match name {
                 "Makefile" => Some(make.to_owned()),
                 "package.json" => Some(package.to_owned()),
+                "pyproject.toml" => Some(pyproject.to_owned()),
                 _ => None,
             })
         };
+        let guess =
+            |names: &[&str], make: &str, package: &str| guess_with(names, make, package, "");
         let none = guess(&["README.md", "src"], "", "");
         assert_eq!(none, None);
         let make = "build:\n\tcc x.c\ntest lint: build\n\t./run";
@@ -462,15 +498,54 @@ mod tests {
             Some("npm test")
         );
         assert_eq!(guess(&["package.json"], "", "{"), None);
-        assert_eq!(guess(&["go.mod"], "", "").as_deref(), Some("go test ./..."));
+        // The tool package.json names wins over a lockfile; Bun runs the script, not its own runner.
+        let named = |tool: &str| {
+            format!(r#"{{"packageManager": "{tool}@9.1.0", "scripts": {{"test": "vitest"}}}}"#)
+        };
         assert_eq!(
-            guess(&["pyproject.toml"], "", "").as_deref(),
-            Some("pytest")
+            guess(&["package.json", "yarn.lock"], "", &named("pnpm")).as_deref(),
+            Some("pnpm test")
+        );
+        assert_eq!(
+            guess(&["package.json"], "", &named("evil; rm -rf /")).as_deref(),
+            Some("npm test")
+        );
+        assert_eq!(
+            guess(&["package.json", "bun.lockb"], "", tested).as_deref(),
+            Some("bun run test")
+        );
+        assert_eq!(guess(&["go.mod"], "", "").as_deref(), Some("go test ./..."));
+        // pytest only where the repository uses it, through its own environment's tool.
+        let pytested = "[tool.pytest.ini_options]\ntestpaths = [\"tests\"]\n";
+        assert_eq!(
+            guess_with(&["pyproject.toml"], "", "", "[project]\nname = \"x\"\n"),
+            None
+        );
+        assert_eq!(
+            guess_with(&["pyproject.toml"], "", "", pytested).as_deref(),
+            Some("python3 -m pytest")
+        );
+        assert_eq!(
+            guess_with(&["pyproject.toml", "uv.lock"], "", "", pytested).as_deref(),
+            Some("uv run pytest")
+        );
+        assert_eq!(
+            guess(&["conftest.py", "poetry.lock"], "", "").as_deref(),
+            Some("poetry run pytest")
         );
         assert_eq!(
             guess(&["Package.swift"], "", "").as_deref(),
             Some("swift test")
         );
+        assert_eq!(
+            guess(&["gradlew", "build.gradle"], "", "").as_deref(),
+            Some("./gradlew test")
+        );
+        assert_eq!(guess(&["pom.xml"], "", "").as_deref(), Some("mvn test"));
+        assert!(fits_check("cargo test -p obid"));
+        assert!(!fits_check("  "));
+        assert!(!fits_check("make\nrm -rf ~"));
+        assert!(!fits_check(&"x".repeat(201)));
     }
 
     /// The owner's Confirm of an offered check (#1062) sets it on the listed entry, or lists one of

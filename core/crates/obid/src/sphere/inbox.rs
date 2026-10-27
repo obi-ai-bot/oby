@@ -104,8 +104,8 @@ pub mod action {
     /// Change a job's mode, tool or account (`oby_change_job`): `target` the job, `payload`
     /// `{"mode": "…"}`, `{"agent": "…", "account": "…"}` or both.
     pub const CHANGE_JOB: &str = "change_job";
-    /// Make a check Oby guessed the check of a repository that has none (#1062): `target` the
-    /// repository, `payload` `{"check": "<command>"}`.
+    /// Make a check Oby guessed, or the owner typed, the check of a repository that has none
+    /// (#1062, [`super::check_item`]): `target` the repository, `payload` `{"check": "<command>"}`.
     pub const SET_CHECK: &str = "set_check";
 }
 
@@ -145,6 +145,31 @@ pub fn confirm_item(
         github: None,
         watch: None,
     }
+}
+
+/// Oby's ask for `repo`, which has no check (#1062): a `confirm` item, so the apps that know one
+/// show it, on job `job`. `Confirm` (Use it) keeps `check` as its check, `Cancel` is No check,
+/// remembered; any other answer is the command the owner wants instead, asked again as an item of
+/// its own (crate::sphere::link), so what a Confirm signs is always the title it shows.
+pub fn check_item(job: &str, repo: &str, check: &str, now: i64) -> Item {
+    let mut item = confirm_item(
+        job,
+        format!("Use `{check}` as {repo}'s check before publishing?"),
+        format!(
+            "{repo} has no check, so its pull requests go out after the secret scan alone. With one, every job there that starts after your answer runs it in its box, with no network, before anything goes out."
+        ),
+        Confirmed {
+            action: action::SET_CHECK.into(),
+            target: repo.into(),
+            payload: json!({"check": check}),
+        },
+        now,
+    );
+    item.details = Some(vec![
+        format!("Every later job in {repo} runs `{check}` before it publishes."),
+        format!("{repo} keeps no check, and Oby doesn't ask again."),
+    ]);
+    item
 }
 
 /// An inbox item as obid keeps it.
