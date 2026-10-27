@@ -366,15 +366,15 @@ export async function stopJob(id: string) {
 }
 
 // A job's decision answered: its permission through obid's own route (POST /v1/jobs/{id}/permission),
-// anything else in the inbox; Later puts it off an hour. A Confirm needs a device's signature
-// (#776), which this app can't make yet.
+// anything else in the inbox; Later puts it off an hour. A Confirm goes with this Mac's device
+// signature, which main adds (#776).
 const DECISIONS: Record<string, 'allow' | 'always' | 'deny'> = { Allow: 'allow', 'Always allow': 'always', Deny: 'deny' };
 export async function answerJob(id: string, option: string) {
   const j = state.jobs[id], item = itemOf(state, id), ask = j && askOf(state, j);
   if (ask) set({ answered: { ...state.answered, [id]: { ask, option, item: item?.id } } });
   try {
-    if (item?.kind === 'confirm' && option === 'Confirm') throw new Error('This app can’t sign a Confirm yet: confirm it in Oby on your iPhone.');
-    if (item?.kind === 'permission' && j?.permission && DECISIONS[option]) {
+    if (item?.kind === 'confirm' && option === 'Confirm') set(apply(state, { kind: 'inbox', item: await api.confirm(item.id) }));
+    else if (item?.kind === 'permission' && j?.permission && DECISIONS[option]) {
       const next = await api.permission(id, { id: j.permission.id, decision: DECISIONS[option] });
       set({ jobs: { ...state.jobs, [next.id]: next } });
     } else if (item) {

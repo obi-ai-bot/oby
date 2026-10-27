@@ -1,7 +1,8 @@
 import { app, BrowserWindow, ipcMain, screen } from 'electron';
 import { createRequire } from 'node:module';
 import { join } from 'node:path';
-import { bridge, startObid, stopFollowing } from './obid';
+import { bridge, startObid, stopFollowing, type Trusted } from './obid';
+import { confirming } from './device';
 
 // One small window: Oby, what needs you, and a way to talk. The renderer gets
 // the cursor's position wherever it is on screen, so Oby can watch it outside
@@ -38,8 +39,11 @@ let last = '';
 // the page asks for both before it draws, to lay its title bar out around the lights
 ipcMain.on('window-chrome', (e) => { e.returnValue = chrome; });
 ipcMain.on('full-screen', (e) => { e.returnValue = win?.isFullScreen() ?? false; });
-// obid, through main (obid.ts): only for the window's own page, never a frame in it
-bridge((e) => !!win && e.sender === win.webContents && e.senderFrame === win.webContents.mainFrame);
+// obid, through main (obid.ts): only for the window's own page, never a frame in it; and its
+// Confirm, signed with this Mac's device key (device.ts)
+const trusted: Trusted = (e) => !!win && e.sender === win.webContents && e.senderFrame === win.webContents.mainFrame;
+bridge(trusted);
+confirming(trusted);
 
 function track(on: boolean) {
   if (tracker) clearInterval(tracker);
