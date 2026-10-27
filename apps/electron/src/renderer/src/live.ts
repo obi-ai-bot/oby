@@ -1,5 +1,5 @@
 import { useSyncExternalStore } from 'react';
-import { ApiError, api, parseEvent, sseReader, type Conversation, type Event, type InboxItem, type Job, type Question, type Status, type Turn } from './obid';
+import { ApiError, api, parseEvent, sseReader, type Conversation, type Event, type InboxItem, type Job, type Question, type Repo, type Status, type Turn } from './obid';
 import { AGENTS, type Ask, type AskKind, type Job as JobView, type Message, type StageId } from './mock';
 import { replaceChats, type Chat } from './chats';
 import { replaceTasks, type Task } from './tasks';
@@ -14,6 +14,7 @@ type Live = {
   connection: 'connecting' | 'live' | 'down';
   problem: string | null;        // why obid isn't answering (its own reason, main/obid.ts), or what last went wrong
   status: Status | null;
+  repos: Repo[];                 // where a job may start (GET /v1/repos)
   jobs: Record<string, Job>;
   firstJobs: Set<string>;        // the jobs there when the app opened: never new
   seen: Set<string>;             // jobs opened since
@@ -31,11 +32,13 @@ type Live = {
   // decisions answered here, by job: what was asked, the pick, and the inbox item it settles.
   // The cards keep showing it answered (as the mock's do), and the stack lets it go.
   answered: Record<string, { ask: Ask; option: string; item?: string }>;
+  // the repository last picked for words sent here, by conversation (its app id), and when
+  picked: Record<string, { repo: string; at: string }>;
 };
 
 let state: Live = {
-  connection: 'connecting', problem: null, status: null, jobs: {}, firstJobs: new Set(), seen: new Set(), inbox: [],
-  conversations: [], turns: {}, loaded: new Set(), working: {}, words: {}, waiting: {}, starting: null, alias: {}, answered: {},
+  connection: 'connecting', problem: null, status: null, repos: [], jobs: {}, firstJobs: new Set(), seen: new Set(), inbox: [],
+  conversations: [], turns: {}, loaded: new Set(), working: {}, words: {}, waiting: {}, starting: null, alias: {}, answered: {}, picked: {},
 };
 const listeners = new Set<() => void>();
 const set = (patch: Partial<Live>) => { state = { ...state, ...patch }; publish(); listeners.forEach((l) => l()); };
@@ -225,6 +228,8 @@ async function sync(mine: number, pending: Event[], onSynced: () => void) {
     pending.length = 0;
     set(next);
     onSynced();
+    // where work can start: GitHub's list takes a moment, so the rest doesn't wait for it
+    void api.repos().then(({ repos }) => { if (mine === generation) set({ repos }); }, () => {});
     // the conversations opened before: what they missed while obid was away; and the latest
     // words of the newest ones, for their lines in Conversations
     const latest = [...conversations].sort((a, b) => b.lastActivity.localeCompare(a.lastActivity)).slice(0, 20).map((c) => c.id);
@@ -258,6 +263,29 @@ function say(e: unknown) {
 
 // --- what the app does
 
+// The repository a conversation's work was last in, by its id in the app: the one picked for
+// words sent in it, or its newest job's, whichever came later; with none, or on Home, the newest
+// job's anywhere
+const newest = (jobs: Job[]) => jobs.reduce<Job | undefined>((a, j) => (!a || j.created > a.created ? j : a), undefined);
+function lastRepo(s: Live, shown?: string) {
+  const c = shown && (Object.keys(s.alias).find((k) => s.alias[k] === shown) ?? shown);
+  const all = Object.values(s.jobs);
+  const job = c ? newest(all.filter((j) => j.conversation === c)) : undefined, picked = shown ? s.picked[shown] : undefined;
+  return { here: picked && (!job || picked.at > job.created) ? picked.repo : job?.repo, anywhere: newest(all)?.repo };
+}
+// The message box's repositories, and the one it starts on: the conversation's last, else the
+// newest job's (lean.ts: only on obid)
+export function useRepos(shown?: string) {
+  const s = useLive();
+  const last = lastRepo(s, shown);
+  return { repos: s.repos.map((r) => r.repo), last: last.here ?? last.anywhere };
+}
+// The words as obid gets them: with the repository picked in front ("In owner/name: …") unless
+// Oby already knows it (the conversation's last) or the words name it. obid's plans take no
+// repository of their own.
+const inRepo = (words: string, repo: string | undefined, shown?: string) =>
+  !repo || repo === lastRepo(state, shown).here || words.toLowerCase().includes(repo.toLowerCase()) ? words : `In ${repo}: ${words}`;
+
 // A conversation opened: its turns fetched once (then the events keep them), and the jobs they
 // name that aren't among the latest
 export async function openConversation(shown: string) {
@@ -280,12 +308,14 @@ export async function openConversation(shown: string) {
 // words, its answer and the jobs it starts come back as events. Oby's question back waits over
 // the message box; your next words answer it.
 let made = 0;
-export function ask(said: string, shown?: string): string | undefined {
-  const words = said.trim();
-  if (!words) return;
+export function ask(said: string, shown?: string, repo?: string): string | undefined {
+  if (!said.trim()) return;
   const id = shown ?? `new:${++made}`;
   const c = shown ? realId(shown) : null;
   const q = c ? state.waiting[c] : undefined;
+  // an answer to Oby's question is only the answer
+  const words = q ? said.trim() : inRepo(said.trim(), repo, shown);
+  if (repo && !q) set({ picked: { ...state.picked, [id]: { repo, at: new Date().toISOString() } } });
   if (c) set({ waiting: without(state.waiting, c), working: { ...state.working, [c]: 'Thinking' } });
   else set({ starting: { id, said: words } });
   void (async () => {

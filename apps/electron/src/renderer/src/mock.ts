@@ -589,7 +589,8 @@ export type Message = { who: string; text: string; ago: number; jobs?: string[];
 // a step of setting up, in Oby's first conversation (onboarding.ts): its card under Oby's words
 export type SetupStep = 'agents' | 'github' | 'extras' | 'first';
 // What went with a message from the message box besides its words
-export type Attachments = { files?: { name: string; preview?: string }[]; obys?: string[]; jobs?: string[]; on?: string };
+// repo: the repository picked for it (obid's, Composer's repository tag)
+export type Attachments = { files?: { name: string; preview?: string }[]; obys?: string[]; jobs?: string[]; on?: string; repo?: string };
 export const hasAttachments = (a?: Attachments) => !!(a?.files?.length || a?.obys?.length || a?.jobs?.length);
 const SOURCE = new Map<Brand, string>([[github, 'GitHub'], [slack, 'Slack'], [gmail, 'Gmail'], [deskree, 'Deskree Ops']]);
 // What was said after it started, in minutes ago (between when it started and now)

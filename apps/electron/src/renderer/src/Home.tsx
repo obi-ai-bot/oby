@@ -391,6 +391,7 @@ export default function Home() {
         placeholder="What do you want me to work on, Doti?"
         label="Message Oby"
         onSend={ask}
+        repos
       />
       {/* what's open, each over the one before; the one on top is live, the rest
           covered (and still, under it); one leaving fades out, then it's gone */}
