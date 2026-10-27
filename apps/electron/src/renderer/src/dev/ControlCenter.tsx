@@ -5,6 +5,7 @@ import { AGENTS, type Agent, type Ask, type AskKind, type SetupStep, type Stage,
 import { FIRST_TASK, WELCOME, pick, signInGitHub, dev as setupDev, type Setup } from '../onboarding';
 import { addTask, stop, useTasks, dev as tasksDev, type Task } from '../tasks';
 import { sayOby, useChats, dev as chatsDev } from '../chats';
+import { onObid } from '../lean';
 import { clock } from '../stream';
 
 // The control center (dev builds only: main.tsx imports it behind import.meta.env.DEV), as
@@ -12,6 +13,7 @@ import { clock } from '../stream';
 // app's own stores, so it works in the browser preview too. A scenario is an address
 // (?welcome&dev=<id>): the page loads on the mock and plays the real script at Instant up to that
 // state, so jumping also tests the script. States are written as obid's events would set them.
+// On obid it only offers the scenarios: the rest would act on real jobs.
 
 const ob = setupDev!, tk = tasksDev!, ch = chatsDev!;
 const store = (k: string, v?: string) => {
@@ -70,20 +72,25 @@ const nextStep = () => new Promise<SetupStep>((r) => {
   const off = ob.subscribe(look);
   look();
 });
-// Instant while it plays, not kept: left mid-way, the next page plays at the speed picked
+// Instant while it plays, not kept: left mid-way, the next page plays at the speed picked. A
+// script that no longer gets there gives up after 10s, left where it stopped.
+const GIVE_UP_MS = 10_000;
 async function play(s: Scenario) {
   clock.speed = INSTANT;
+  const end = Date.now() + GIVE_UP_MS, late = () => Date.now() > end;
+  const timeout = new Promise<null>((r) => setTimeout(() => r(null), GIVE_UP_MS));
   for (;;) {
-    const at = await nextStep();
-    if (at === s.to) break;
+    const at = await Promise.race([nextStep(), timeout]);
+    if (!at || at === s.to) break;
     const label = s.go?.[at] ?? DEFAULT[at];
     if (at === 'github' && label === 'Continue') await signInGitHub();
     pick(label);
     if (at === 'first') break;
   }
   // ponytail: polled, as tasks.ts has no subscribe outside React
-  if (s.to === 'task') while (!first()) await new Promise((r) => setTimeout(r, 20));
-  s.then?.();
+  if (s.to === 'task') while (!first() && !late()) await new Promise((r) => setTimeout(r, 20));
+  if (late()) console.warn(`Control center: ${s.id} didn't get there in ${GIVE_UP_MS / 1000}s`);
+  else s.then?.();
   clock.speed = Number(store('oby.dev.speed')) || 1;
   changed();
 }
@@ -198,8 +205,12 @@ function ControlCenter() {
   if (hidden) return null;
   const close = () => { setOpen(false); badge.current?.focus(); };
   const reset = () => {
-    try { Object.keys(localStorage).filter((k) => k.startsWith('oby.')).forEach((k) => localStorage.removeItem(k)); } catch { /* nothing kept */ }
-    location.href = '?welcome';
+    try {
+      Object.keys(localStorage).filter((k) => k.startsWith('oby.')).forEach((k) => localStorage.removeItem(k));
+      Object.keys(sessionStorage).filter((k) => k.startsWith('oby.dev.')).forEach((k) => sessionStorage.removeItem(k));
+    } catch { /* nothing kept */ }
+    // on the mock, as every scenario: a reset never sets up again on the real obid
+    location.href = '?welcome&dev=fresh-install';
   };
   const agents = Object.keys(AGENTS) as Agent[];
   return <>
@@ -215,8 +226,10 @@ function ControlCenter() {
           <button type="button" className="cc-icon" onClick={close} aria-label="Close the control center">×</button>
         </header>
         <p className="cc-read">
-          at: {s.at ?? (task ? `task · ${task.job.step}` : '—')}{playing ? ` · scenario: ${playing.id}` : ''}
-          {mode !== 'run' && ` · ${held.length ? `waiting ${held[0].ms}ms${held.length > 1 ? ` (+${held.length - 1})` : ''}` : 'nothing waiting'}`}
+          {onObid ? 'live obid · a scenario opens on the mock' : <>
+            at: {s.at ?? (task ? `task · ${task.job.step}` : '—')}{playing ? ` · scenario: ${playing.id}` : ''}
+            {mode !== 'run' && ` · ${held.length ? `waiting ${held[0].ms}ms${held.length > 1 ? ` (+${held.length - 1})` : ''}` : 'nothing waiting'}`}
+          </>}
         </p>
 
         <section className="cc-grp" aria-label="Scenarios">
@@ -226,53 +239,56 @@ function ControlCenter() {
           </span>
         </section>
 
-        <section className="cc-grp" aria-label="Time">
-          <h6>Time</h6>
-          <span className="cc-row">
-            <Seg label="Speed" options={SPEEDS} on={clock.speed} set={setSpeed} />
-            <Seg label="Hold" options={[['Step', 'step'], ['Pause', 'pause']]} on={mode === 'run' ? undefined : mode} set={(m) => setMode(mode === m ? 'run' : m)} />
-            {mode !== 'run' && <button type="button" className="cc-go" disabled={!held.length} onClick={mode === 'step' ? stepOn : () => setMode('run')}>{mode === 'step' ? 'Next' : 'Go on'}</button>}
-          </span>
-        </section>
-
-        <section className="cc-grp" aria-label="Connections">
-          <h6>Connections</h6>
-          <div className="cc-kv">
-            {agents.map((a, i) => [
-              <span key={`${a}l`}>{AGENTS[a].name}</span>,
-              <Seg key={a} label={AGENTS[a].name} options={pills('looking', 'out', 'waiting', 'code', 'in')} on={agentState(s, a, i)} set={(v) => setAgent(a, i, v)} />,
-            ])}
-            <span>GitHub</span><Seg label="GitHub" options={pills('out', 'waiting', 'code', 'in')} on={githubState(s)} set={setGitHub} />
-            <span>Tetrix</span><Seg label="Tetrix" options={pills('out', 'waiting', 'in')} on={s.tetrix} set={(tetrix) => ob.set(() => ({ tetrix }))} />
-            <span>Obysphere</span><Seg label="Obysphere" options={pills('out', 'waiting', 'in')} on={s.sphere} set={(sphere) => ob.set(() => ({ sphere }))} />
-          </div>
-        </section>
-
-        <section className="cc-grp" aria-label="Task">
-          <h6>Task{task && <span className="cc-sub"> · {task.title}</span>}</h6>
-          {task ? <>
-            <Seg label="Stage" options={STAGES.map(([, title], i) => [title, i])} on={stageOf(task)} set={(i) => setStage(task, i)} />
+        {/* on obid these would act on real jobs: there, only the scenarios (on the mock) */}
+        {!onObid && <>
+          <section className="cc-grp" aria-label="Time">
+            <h6>Time</h6>
             <span className="cc-row">
-              <button type="button" className="cc-go" onClick={() => finish(task)}>Finish</button>
-              <button type="button" className="cc-go" onClick={() => fail(task)}>Fail</button>
-              <button type="button" className="cc-go" onClick={() => stop(task.id)}>Stop</button>
+              <Seg label="Speed" options={SPEEDS} on={clock.speed} set={setSpeed} />
+              <Seg label="Hold" options={[['Step', 'step'], ['Pause', 'pause']]} on={mode === 'run' ? undefined : mode} set={(m) => setMode(mode === m ? 'run' : m)} />
+              {mode !== 'run' && <button type="button" className="cc-go" disabled={!held.length} onClick={mode === 'step' ? stepOn : () => setMode('run')}>{mode === 'step' ? 'Next' : 'Go on'}</button>}
             </span>
-          </> : <button type="button" className="cc-go" onClick={() => addTask(FIRST_TASK)}>Start one</button>}
-        </section>
+          </section>
 
-        <section className="cc-grp" aria-label="Add decision">
-          <h6>Add decision</h6>
-          <Seg label="How many" options={[['1', 1], ['2', 2], ['3', 3]]} on={count} set={setCount} />
-          <span className="cc-seg">{KINDS.map((k) => <button key={k} type="button" onClick={() => addDecision(k, count)}>{k}</button>)}</span>
-        </section>
+          <section className="cc-grp" aria-label="Connections">
+            <h6>Connections</h6>
+            <div className="cc-kv">
+              {agents.map((a, i) => [
+                <span key={`${a}l`}>{AGENTS[a].name}</span>,
+                <Seg key={a} label={AGENTS[a].name} options={pills('looking', 'out', 'waiting', 'code', 'in')} on={agentState(s, a, i)} set={(v) => setAgent(a, i, v)} />,
+              ])}
+              <span>GitHub</span><Seg label="GitHub" options={pills('out', 'waiting', 'code', 'in')} on={githubState(s)} set={setGitHub} />
+              <span>Tetrix</span><Seg label="Tetrix" options={pills('out', 'waiting', 'in')} on={s.tetrix} set={(tetrix) => ob.set(() => ({ tetrix }))} />
+              <span>Obysphere</span><Seg label="Obysphere" options={pills('out', 'waiting', 'in')} on={s.sphere} set={(sphere) => ob.set(() => ({ sphere }))} />
+            </div>
+          </section>
 
-        <section className="cc-grp" aria-label="Oby">
-          <h6>Oby</h6>
-          <span className="cc-seg">
-            <button type="button" className={talk?.typing ? 'is-on' : ''} disabled={!talk} onClick={() => ch.patch(talk!.id, (c) => ({ typing: !c.typing, step: c.typing ? undefined : 'Thinking' }))}>thinking</button>
-            <button type="button" disabled={!talk} onClick={() => void sayOby(talk!.id, { text: SAMPLE })}>talking</button>
-          </span>
-        </section>
+          <section className="cc-grp" aria-label="Task">
+            <h6>Task{task && <span className="cc-sub"> · {task.title}</span>}</h6>
+            {task ? <>
+              <Seg label="Stage" options={STAGES.map(([, title], i) => [title, i])} on={stageOf(task)} set={(i) => setStage(task, i)} />
+              <span className="cc-row">
+                <button type="button" className="cc-go" onClick={() => finish(task)}>Finish</button>
+                <button type="button" className="cc-go" onClick={() => fail(task)}>Fail</button>
+                <button type="button" className="cc-go" onClick={() => stop(task.id)}>Stop</button>
+              </span>
+            </> : <button type="button" className="cc-go" onClick={() => addTask(FIRST_TASK)}>Start one</button>}
+          </section>
+
+          <section className="cc-grp" aria-label="Add decision">
+            <h6>Add decision</h6>
+            <Seg label="How many" options={[['1', 1], ['2', 2], ['3', 3]]} on={count} set={setCount} />
+            <span className="cc-seg">{KINDS.map((k) => <button key={k} type="button" onClick={() => addDecision(k, count)}>{k}</button>)}</span>
+          </section>
+
+          <section className="cc-grp" aria-label="Oby">
+            <h6>Oby</h6>
+            <span className="cc-seg">
+              <button type="button" className={talk?.typing ? 'is-on' : ''} disabled={!talk} onClick={() => ch.patch(talk!.id, (c) => ({ typing: !c.typing, step: c.typing ? undefined : 'Thinking' }))}>thinking</button>
+              <button type="button" disabled={!talk} onClick={() => void sayOby(talk!.id, { text: SAMPLE })}>talking</button>
+            </span>
+          </section>
+        </>}
 
         <footer className="cc-foot">
           ⌘⇧. toggles · Esc closes · <button type="button" onClick={() => { store('oby.dev.hidden', '1'); setHidden(true); }}>Hide for this session</button>
