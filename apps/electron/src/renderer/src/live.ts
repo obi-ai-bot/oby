@@ -163,6 +163,8 @@ function apply(s: Live, e: Event): Live {
         alias = { ...alias, [c]: s.starting.id };
       }
       const next = { ...s, alias, turns: { ...s.turns, [c]: merged(s.turns[c] ?? [], [e.turn]) } };
+      // one sent again (its jobs changed): only it changes, unless it's the answer still being shown
+      if (s.turns[c]?.some((t) => t.id === e.turn.id) && s.pace[c]?.turn !== e.turn.id) return next;
       // Oby's answer: its turn is over, its words final (paced on from those shown, if it was talking here)
       const live = c in s.working || c in s.words || c in s.pace;
       if (e.turn.who === 'oby') return { ...next, working: without(s.working, c), words: without(s.words, c), pace: live ? paced(s, c, e.turn.text, e.turn.id) : s.pace };
