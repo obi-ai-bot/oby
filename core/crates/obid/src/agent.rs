@@ -389,7 +389,8 @@ pub async fn turn_on(
                             });
                         }
                     }
-                    if block.get("type").and_then(Value::as_str) == Some("tool_use") {
+                    let kind = block.get("type").and_then(Value::as_str).unwrap_or("");
+                    if kind == "tool_use" {
                         let name = block.get("name").and_then(Value::as_str).unwrap_or("");
                         let input = block.get("input").cloned().unwrap_or(Value::Null);
                         on_event(Event::Step(step(name, &input)));
@@ -397,6 +398,19 @@ pub async fn turn_on(
                             id: text_of(block, "id"),
                             name: name.to_owned(),
                             input,
+                        });
+                    } else if !matches!(kind, "text" | "thinking" | "redacted_thinking") {
+                        // A block obid doesn't parse (a server tool's use or result, an MCP
+                        // tool's): a tool call of a kind obid doesn't know, so it counts
+                        // (crate::secretspec, fail closed).
+                        on_event(Event::Tool {
+                            id: text_of(block, "id"),
+                            name: if kind.is_empty() {
+                                "Tool".into()
+                            } else {
+                                kind.to_owned()
+                            },
+                            input: Value::Null,
                         });
                     }
                 }
@@ -627,6 +641,62 @@ mod tests {
         .await
         .unwrap();
         (turn, began.elapsed(), root)
+    }
+
+    /// A content block obid doesn't parse (a server tool's use and result, an MCP tool's) reaches
+    /// the job as a tool call of a kind obid doesn't know (crate::secretspec, fail closed).
+    #[tokio::test]
+    async fn a_block_obid_doesnt_parse_is_a_tool_call() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!("obid-blocks-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let bin = root.join("claude");
+        let lines = [
+            r#"{"type":"assistant","message":{"content":[{"type":"text","text":"Looking."},{"type":"server_tool_use","id":"s1","name":"web_search","input":{"query":"x"}},{"type":"web_search_tool_result","tool_use_id":"s1","content":[]},{"type":"thinking","thinking":"hm"}]}}"#,
+            r#"{"type":"result","subtype":"success","is_error":false,"result":"Done.","session_id":"s1"}"#,
+        ];
+        std::fs::write(
+            &bin,
+            format!(
+                "#!/bin/sh\nread line\n{}\n",
+                lines
+                    .iter()
+                    .map(|l| format!("echo '{l}'"))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let launch = Launch {
+            argv: vec![bin.into_os_string()],
+            env: vec![("PATH".into(), "/usr/bin:/bin".into())],
+            cwd: root.clone(),
+            stderr: root.join("agent.log"),
+            own_sandbox: false,
+        };
+        let (_stop, stop) = watch::channel(process::Signal::Run);
+        let tools = std::sync::Mutex::new(Vec::new());
+        run_turn(
+            launch,
+            "Do it.",
+            Duration::from_secs(60),
+            stop,
+            |_, _| Ruling::Now(Answer::Allow),
+            |event| {
+                if let Event::Tool { name, .. } = event {
+                    tools.lock().unwrap().push(name);
+                }
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            *tools.lock().unwrap(),
+            ["server_tool_use", "web_search_tool_result"]
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// After its result Claude Code finishes its session file, which the next turn's `--resume`

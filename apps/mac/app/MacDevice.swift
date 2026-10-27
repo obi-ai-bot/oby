@@ -229,8 +229,18 @@ final class MacDevice {
     /// The runner's sentence for removing connection `name` (Runner/Connections.swift, `Connection.removal`).
     nonisolated static func removal(_ name: String) -> String { "Disconnect \(name)." }
 
+    /// Signs the words the owner types on this Mac for `runner` with this Mac's key, as its id there
+    /// is when the request goes (`DeviceKey.signWords`): nothing before the runner knows the key.
+    nonisolated static func signsWords(for runner: Runner) -> Runner.SignsWords {
+        let key = idKey(runner)
+        return { method, path, body in
+            guard DeviceKey.isAvailable, let device = UserDefaults.standard.string(forKey: key) else { return nil }
+            return try? DeviceKey.signWords(method: method, path: path, body: body, device: device)
+        }
+    }
+
     /// The id of the key that signs without asking (the owner's decision of 2026-10-24).
-    private static func idKey(_ runner: Runner) -> String { "device.approval.\(runner.base.host() ?? runner.base.absoluteString)" }
+    nonisolated private static func idKey(_ runner: Runner) -> String { "device.approval.\(runner.base.host() ?? runner.base.absoluteString)" }
     /// The ids of the keys `idKey`'s replaced, revoked once the new one is added (`enroll`): Touch ID
     /// only (`device.<host>`, until 2026-10-23), then Touch ID or the password (`device.presence.<host>`,
     /// until 2026-10-24).

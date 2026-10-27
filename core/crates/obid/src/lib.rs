@@ -52,6 +52,7 @@ pub mod routines;
 pub mod sandbox;
 pub mod scan;
 pub mod secrets;
+pub mod secretspec;
 pub mod settings;
 pub mod sphere;
 pub mod store;

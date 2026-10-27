@@ -99,6 +99,19 @@ pub struct Memory {
     /// follows, never its text.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workflow: Option<Workflow>,
+    /// Why its words aren't on obid's allowlist for the owner's secrets (crate::secretspec): what
+    /// it was found in, or a Remember no app of the owner's signed. A job or a conversation that
+    /// reads it is no longer the owner's own words alone. Kept in its file as `clean: yes` when
+    /// none, so one kept before is marked ([`KEPT_BEFORE`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub foreign: Option<String>,
+}
+
+/// What a memory or a suggestion kept before obid marked where they came from was found in.
+pub const KEPT_BEFORE: &str = "words obid kept before it marked where memories came from";
+
+fn kept_before() -> Option<String> {
+    Some(KEPT_BEFORE.into())
 }
 
 const KINDS: [&str; 6] = [
@@ -262,6 +275,10 @@ impl Memory {
                 serde_json::to_string(workflow).unwrap_or_default()
             ));
         }
+        out.push(match &self.foreign {
+            None => "clean: yes".to_owned(),
+            Some(why) => format!("foreign: {}", line(why)),
+        });
         out.extend(["---".into(), self.text.clone()]);
         out.join("\n") + "\n"
     }
@@ -284,6 +301,7 @@ impl Memory {
             updated: String::new(),
             used: 0,
             workflow: None,
+            foreign: kept_before(),
         };
         for line in head.lines() {
             let Some((key, value)) = line.split_once(": ") else {
@@ -302,6 +320,8 @@ impl Memory {
                 "updated" => memory.updated = value,
                 "used" => memory.used = value.parse().ok()?,
                 "workflow" => memory.workflow = Some(serde_json::from_str(&value).ok()?),
+                "clean" if value == "yes" => memory.foreign = None,
+                "foreign" => memory.foreign = Some(value),
                 _ => {}
             }
         }
@@ -576,6 +596,8 @@ pub fn ask_workflow(
         from: from.replace(['\r', '\n'], " "),
         sources: vec![],
         workflow: Some(workflow),
+        // obid's own sentence of a typed workflow (crate::secretspec).
+        foreign: None,
     };
     let _writing = writing();
     let mut list = suggestions(home);
@@ -596,7 +618,8 @@ pub async fn remember_workflow(
     repos: &[(String, String)],
 ) -> Result<Memory, Refused> {
     let asked = ask_workflow(home, repo, workflow, from)?;
-    remembered(home, &asked.id, repos)
+    // Its text is obid's own sentence of a typed workflow (crate::secretspec).
+    remembered(home, &asked.id, repos, true)
         .await?
         .ok_or_else(|| Refused::Io("the question went away before it was answered".into()))
 }
@@ -629,6 +652,8 @@ pub async fn remember_review(
         updated: now,
         used: 0,
         workflow: None,
+        // obid's own words, who reviews where (crate::secretspec).
+        foreign: None,
     };
     let own = own_branches(repos, Some(repo));
     keep(home, memory, &own, &scratch(home)).await
@@ -703,6 +728,15 @@ pub fn applying(home: &Path, repos: &[&str]) -> Vec<Memory> {
     memories.sort_by(|a, b| b.created.cmp(&a.created));
     memories.truncate(QUOTED);
     memories
+}
+
+/// Why the memories that apply to work in `repos` aren't all on obid's allowlist
+/// (crate::secretspec): the first that isn't, or none.
+pub fn foreign_among(home: &Path, repos: &[&str]) -> Option<String> {
+    applying(home, repos).into_iter().find_map(|m| {
+        m.foreign
+            .map(|why| format!("the memory “{}”, from {why}", m.title))
+    })
 }
 
 /// The quoted file of `memories`: each under a heading of obid's own words (whom it's about, its
@@ -1139,6 +1173,10 @@ pub struct Suggestion {
     /// What Remember saves for a `workflow` suggestion ([`ask_workflow`]); none for the rest.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workflow: Option<Workflow>,
+    /// Why what it was found in isn't on obid's allowlist (crate::secretspec), which the memory
+    /// Remember saves carries. Always kept, `null` too: one kept before reads as marked.
+    #[serde(default = "kept_before")]
+    pub foreign: Option<String>,
 }
 
 fn suggestions_file(home: &Path) -> PathBuf {
@@ -1462,6 +1500,8 @@ pub fn verify(
             from: from(&places),
             sources,
             workflow: None,
+            // Until its caller says what it was found in (`find`).
+            foreign: kept_before(),
         });
         if out.len() == SUGGESTIONS {
             break;
@@ -1785,6 +1825,15 @@ pub async fn find(State(shared): State<Arc<Shared>>) -> Result<Response, ApiErro
             }
         }
     }
+    // The model reads every quote at once: what it suggests carries what any of them isn't
+    // (crate::secretspec), a reviewer's words or a marked conversation's.
+    let foreign = said.iter().find_map(|s| match &s.place {
+        Place::Review { repo, number } => Some(format!("a review comment on {repo}#{number}")),
+        Place::Conversation(id) => shared
+            .conversations
+            .foreign(id)
+            .map(|why| format!("a conversation that read {why}")),
+    });
     let said = scanned(said, &scratch(&home)).await.map_err(|why| {
         unavailable(format!(
             "Nothing was read: the secret scan couldn't run ({why})."
@@ -1810,7 +1859,13 @@ pub async fn find(State(shared): State<Arc<Shared>>) -> Result<Response, ApiErro
         unavailable("Oby couldn't finish looking. Try again in a minute.".into())
     })?;
     // A workflow's question waits for its own answer: finding doesn't replace it.
-    let mut found: Vec<Suggestion> = found;
+    let mut found: Vec<Suggestion> = found
+        .into_iter()
+        .map(|s| Suggestion {
+            foreign: foreign.clone(),
+            ..s
+        })
+        .collect();
     {
         let _writing = writing();
         let mut asked: Vec<Suggestion> = suggestions(&home)
@@ -1841,9 +1896,14 @@ pub async fn find(State(shared): State<Arc<Shared>>) -> Result<Response, ApiErro
 pub async fn remember(
     State(shared): State<Arc<Shared>>,
     UrlPath(id): UrlPath<String>,
+    uri: axum::http::Uri,
+    headers: axum::http::HeaderMap,
+    body: axum::body::Bytes,
 ) -> Result<Response, ApiError> {
     let home = shared.config.home.clone();
-    match remembered(&home, &id, &repos(&shared)).await? {
+    // Only the owner's yes in Oby's apps keeps it the owner's own (crate::secretspec).
+    let typed = crate::routes::typed_by_owner(&shared, "POST", &uri, &headers, &body);
+    match remembered(&home, &id, &repos(&shared), typed).await? {
         Some(saved) => Ok(answer(StatusCode::CREATED, json!(saved))),
         None => Err(ApiError::new(
             StatusCode::NOT_FOUND,
@@ -1858,10 +1918,15 @@ async fn remembered(
     home: &Path,
     id: &str,
     repos: &[(String, String)],
+    typed: bool,
 ) -> Result<Option<Memory>, Refused> {
     let Some(suggestion) = suggestions(home).into_iter().find(|s| s.id == id) else {
         return Ok(None);
     };
+    let foreign = suggestion
+        .foreign
+        .clone()
+        .or_else(|| (!typed).then(|| "a Remember no app of the owner's signed".to_owned()));
     let now = obi_protocol::time::format(obi_protocol::time::now());
     let memory = Memory {
         id: new_id('m'),
@@ -1881,6 +1946,7 @@ async fn remembered(
         updated: now,
         used: 0,
         workflow: suggestion.workflow.clone(),
+        foreign,
     };
     let own = own_branches(repos, memory.repo.as_deref());
     let saved = keep(home, memory, &own, &scratch(home)).await?;
@@ -1932,6 +1998,7 @@ mod tests {
             updated: "2026-10-20T10:00:00Z".into(),
             used: 0,
             workflow: None,
+            foreign: None,
         }
     }
 
@@ -2540,6 +2607,87 @@ mod tests {
 
     /// Only the owner's Remember on its own question saves a workflow; a new one replaces the one
     /// before, and it's read back typed.
+    /// A memory carries where it came from (crate::secretspec): one found in words that weren't
+    /// the owner's alone, one a Remember no app signed saved, and one kept before obid marked
+    /// them say why, and the work that reads it is no longer the owner's own words alone; a
+    /// signed Remember of the owner's own words, and obid's own sentences, don't.
+    #[tokio::test]
+    async fn a_memory_carries_where_it_came_from() {
+        let home = home();
+        let repos = vec![("obi-ai-bot/oby".to_owned(), "dev".to_owned())];
+        let clean = memory(None, "Keep pull requests small.");
+        assert_eq!(Memory::parse(&clean.to_file()).unwrap().foreign, None);
+        let found = Memory {
+            foreign: Some("a review comment on o/r#1".into()),
+            ..clean.clone()
+        };
+        assert_eq!(
+            Memory::parse(&found.to_file()).unwrap().foreign.as_deref(),
+            Some("a review comment on o/r#1")
+        );
+        let before = clean.to_file().replace("clean: yes\n", "");
+        assert_eq!(
+            Memory::parse(&before).unwrap().foreign.as_deref(),
+            Some(KEPT_BEFORE)
+        );
+        let kept: Suggestion = serde_json::from_value(json!({
+            "id": "s00000001", "scope": "user", "repo": null, "kind": "preference",
+            "title": "Small", "text": "Keep pull requests small.", "from": "You said it twice",
+            "sources": []
+        }))
+        .unwrap();
+        assert_eq!(kept.foreign.as_deref(), Some(KEPT_BEFORE));
+        let suggestion = |id: &str, text: &str, foreign: Option<&str>| Suggestion {
+            id: id.into(),
+            title: text.into(),
+            text: text.into(),
+            foreign: foreign.map(str::to_owned),
+            ..kept.clone()
+        };
+        keep_suggestions(
+            &home,
+            &[
+                suggestion("s00000002", "Keep pull requests small.", None),
+                suggestion("s00000003", "Name branches after their issue.", None),
+                suggestion(
+                    "s00000004",
+                    "Write tests before the fix.",
+                    Some("a conversation that read the inbox"),
+                ),
+            ],
+        )
+        .unwrap();
+        let signed = remembered(&home, "s00000002", &repos, true)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(signed.foreign, None);
+        assert_eq!(foreign_among(&home, &["obi-ai-bot/oby"]), None);
+        let unsigned = remembered(&home, "s00000003", &repos, false)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            unsigned.foreign.as_deref(),
+            Some("a Remember no app of the owner's signed")
+        );
+        let marked = remembered(&home, "s00000004", &repos, true)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            marked.foreign.as_deref(),
+            Some("a conversation that read the inbox")
+        );
+        assert!(foreign_among(&home, &["obi-ai-bot/oby"]).is_some());
+        // obid's own sentence of who reviews where is the owner's.
+        let review = remember_review(&home, "obi-ai-bot/oby", "You asked", &repos)
+            .await
+            .unwrap();
+        assert_eq!(review.foreign, None);
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
     #[tokio::test]
     async fn a_workflow_is_saved_only_on_the_owners_yes() {
         let home = home();
@@ -2570,20 +2718,29 @@ mod tests {
         ));
         assert_eq!(list(&home), vec![]);
         // The owner's yes.
-        let saved = remembered(&home, &asked.id, &repos).await.unwrap().unwrap();
+        let saved = remembered(&home, &asked.id, &repos, true)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(saved.workflow, Some(obis()));
         assert_eq!(saved.source, "user");
         assert_eq!(saved.from, "You merged oby#671 this way");
         assert_eq!(workflow(&home, repo), Some(saved.clone()));
         assert_eq!(suggestions(&home), vec![]);
-        assert_eq!(remembered(&home, &asked.id, &repos).await.unwrap(), None);
+        assert_eq!(
+            remembered(&home, &asked.id, &repos, true).await.unwrap(),
+            None
+        );
         // A second one replaces it.
         let mut merge = obis();
         merge.method = Method::Merge;
         merge.checks = Checks::Github;
         let again =
             ask_workflow(&home, repo, merge.clone(), "You merged oby#672 this way").unwrap();
-        let replaced = remembered(&home, &again.id, &repos).await.unwrap().unwrap();
+        let replaced = remembered(&home, &again.id, &repos, true)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(workflow(&home, repo).and_then(|m| m.workflow), Some(merge));
         assert_eq!(list(&home).len(), 1);
         assert!(workflow(&home, "obi-ai-bot/other").is_none());

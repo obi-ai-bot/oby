@@ -51,11 +51,12 @@ fn started(obid: &Obid, script: &str, kind: &str, task: &str) -> (String, String
 
 /// [`started`], the job in `mode`; one in Bypass starts once the owner confirms it.
 fn started_in(obid: &Obid, script: &str, kind: &str, task: &str, mode: &str) -> (String, String) {
-    let started = call(
+    // The owner's words, typed in Oby's app (signed, as the apps sign them).
+    let started = call_typed(
         obid,
         "POST",
         "/v1/plans",
-        Some(&json!({"said": "SAY Ready.", "new": true})),
+        &json!({"said": "SAY Ready.", "new": true}),
     );
     assert_eq!(started.status, 200, "{}", started.text);
     let conversation = started.body["conversation"].as_str().unwrap().to_owned();
@@ -70,11 +71,11 @@ fn started_in(obid: &Obid, script: &str, kind: &str, task: &str, mode: &str) -> 
         json!({"repo": "obi-e2e/fixture-app", "task": task, "kind": kind, "mode": mode,
                "title": "Both halves"})
     );
-    let answer = call(
+    let answer = call_typed(
         obid,
         "POST",
         "/v1/plans",
-        Some(&json!({"said": dispatch, "conversation": conversation})),
+        &json!({"said": dispatch, "conversation": conversation}),
     );
     assert_eq!(answer.status, 200, "{}", answer.text);
     if mode == "bypass" {
@@ -167,6 +168,22 @@ fn a_stalled_job_is_continued_and_finishes() {
     let step = supervised(&obid, &id, 1)["supervised"][0].clone();
     assert_eq!(step["decision"], "continue", "{step}");
     assert_eq!(step["count"], 1);
+    // The supervisor reads the job's own transcript, which isn't on obid's allowlist: its
+    // conversation, and the job its words carried on, get none of the owner's secrets
+    // (crate::secretspec).
+    let log = obid.log();
+    assert!(
+        log.contains(&format!(
+            "conversation {conversation}: the supervisor's turn on stalled job {id}"
+        )),
+        "{log}"
+    );
+    assert!(
+        log.contains(&format!(
+            "job {id}: its check gets none of the owner's secrets from now on: words Oby wrote after its conversation read the supervisor's turn"
+        )),
+        "{log}"
+    );
     let done = within(90, "the job finishes", || {
         let job = job(&obid, &id);
         (job["status"] == "done").then_some(job)

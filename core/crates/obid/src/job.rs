@@ -495,6 +495,38 @@ pub struct Job {
     /// replacing 2026-10-23's by hand).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub untrusted: bool,
+    /// Why the code it runs isn't only its owner's own, when it follows up a job whose check got
+    /// none of the owner's secrets (crate::secretspec): a received review, a job that ran on a
+    /// teammate's Mac, another person's pull request. Carried to every follow-up of it, so a
+    /// follow-up never runs that code with the owner's values. Never in the API's job.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub foreign: Option<String>,
+    /// The commits obid saw this job make (crate::secretspec, "made"): its agent's turns' new
+    /// commits that passed its look (made then, by whoever made them, not a copy of one elsewhere),
+    /// its rebases of them and its "work left uncommitted" commit, recorded only while the job was
+    /// never foreign or untrusted. Kept in the job's file in obid's home, which no sandbox can
+    /// write. A check gets the owner's values only when every commit on its base is one of these
+    /// (or its follow-up chain's). Never in the API's job.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub made: Vec<String>,
+    /// Its worktree belongs to a clone apart from the owner's own (`home/apart/clones`): it was
+    /// untrusted, someone else's code or bound for a teammate's Mac when it was made, so nothing
+    /// it fetches, commits or keeps ever lands in the clone other jobs' checks read
+    /// (crate::secretspec). A follow-up stays in its job's clone. Never in the API's job.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub apart: bool,
+    /// Where the owner's clone its worktree belongs to was moved when obid made the repository's
+    /// clone again, because someone else's commits had come into it (crate::secretspec): its
+    /// folder of clones. The job, and its follow-ups, stay with it. Never in the API's job.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub clone_root: Option<String>,
+    /// It started from the owner's own words through Oby's apps (`POST /v1/jobs`), or follows up
+    /// such a job with them, and carries nothing obid didn't write besides (no Lead's brief): the
+    /// one way a job may be eligible for the owner's secrets (crate::secretspec, "fail closed").
+    /// What reaches it later from anywhere but an allowlisted channel makes it someone else's
+    /// code ([`Job::foreign`]). Never in the API's job.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub vetted: bool,
     /// Why obid didn't merge its pull request, when only the owner can take it on from here
     /// (crate::merge); none otherwise.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -600,6 +632,34 @@ impl Job {
     /// review, whose commits came from elsewhere.
     pub fn check_keeps_loopback(&self) -> bool {
         self.obi.is_none()
+    }
+
+    /// Why the code it runs is someone else's, or none: a job another Oby asked for (a review),
+    /// a follow-up of any such job ([`Job::foreign`]), one something else's words or content reached, and one whose
+    /// conversation read something Oby didn't write. What marks the owner's clone and stops obid's
+    /// record of its commits (crate::secretspec).
+    pub fn someone_elses(&self) -> Option<String> {
+        if self.obi.is_some() {
+            Some("another Oby asked for this job".into())
+        } else if let Some(why) = &self.foreign {
+            Some(why.clone())
+        } else if self.untrusted {
+            Some("this job's conversation read something Oby didn't write".into())
+        } else {
+            None
+        }
+    }
+
+    /// Why its check gets none of the owner's secrets its repository declares (crate::secretspec),
+    /// or none when it gets them, as far as the job itself says: someone else's code
+    /// ([`Job::someone_elses`]), and fail closed, any job that didn't start from the owner's own
+    /// words in Oby's apps ([`Job::vetted`]). What its check runs decides too (crate::jobs,
+    /// `declared_secrets`).
+    pub fn check_refuses_secrets(&self) -> Option<String> {
+        self.someone_elses().or_else(|| {
+            (!self.vetted)
+                .then(|| "it didn't start from the owner's own words in Oby's apps".into())
+        })
     }
 
     pub fn merged(&self) -> bool {
@@ -718,6 +778,11 @@ impl Job {
             window_share: None,
             routine: None,
             untrusted: false,
+            foreign: None,
+            made: Vec::new(),
+            apart: false,
+            clone_root: None,
+            vetted: false,
             ran_secs: None,
             budget_from: None,
             merge_error: None,
@@ -1529,6 +1594,45 @@ mod tests {
             request_id: "r".into(),
         });
         assert!(!review.check_keeps_loopback());
+    }
+
+    /// Only an owner's job gets the secrets its repository declares for its check: never another
+    /// Oby's review.
+    #[test]
+    fn only_an_owners_job_gets_declared_secrets() {
+        let mut job = job();
+        // Fail closed: a job is the owner's only once obid says it came from their own words.
+        assert!(
+            job.check_refuses_secrets()
+                .unwrap()
+                .contains("owner's own words")
+        );
+        job.vetted = true;
+        assert_eq!(job.check_refuses_secrets(), None);
+        let mut review = self::job();
+        review.vetted = true;
+        review.obi = Some(ObiRef {
+            correlation_id: "c".into(),
+            from: "ernesto-mac".into(),
+            from_owner: "ernesto".into(),
+            request_id: "r".into(),
+        });
+        assert_eq!(
+            review.check_refuses_secrets().as_deref(),
+            Some("another Oby asked for this job")
+        );
+        let mut untrusted = self::job();
+        untrusted.vetted = true;
+        untrusted.untrusted = true;
+        assert!(untrusted.check_refuses_secrets().is_some());
+        let mut follow_up = self::job();
+        follow_up.vetted = true;
+        follow_up.foreign = Some("it follows up a job that got none: x".into());
+        assert_eq!(
+            follow_up.check_refuses_secrets().as_deref(),
+            Some("it follows up a job that got none: x")
+        );
+        assert!(follow_up.to_json().get("foreign").is_none());
     }
 
     /// Ported from RunnerTests/RunnerTests.swift, `jobsHaveISODatesAndEveryKey`: every key the

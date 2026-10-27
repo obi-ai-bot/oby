@@ -213,6 +213,34 @@ fn answered(called: Result<String, String>) -> Value {
 /// this one.
 const UNWATCHED_START: &str = "A turn nobody watches starts no other work: say what should happen, and the owner can start it.";
 
+/// Why Oby's tool `name`'s answer isn't on obid's allowlist (crate::secretspec), which marks the
+/// conversation: none only for an answer in obid's own words, the brain's, or those of a job that
+/// is the owner's own throughout. Fail closed: a tool this doesn't name marks it.
+fn reads_foreign(shared: &Shared, name: &str, args: &Value) -> Option<String> {
+    match name {
+        // obid's words about what the brain itself wrote, its own list, or its room's files (judged
+        // where they're read, `oby_read`).
+        "oby_dispatch" | "oby_tasks" | "oby_routine" | "oby_check_in" | "oby_artifact"
+        | "oby_read" | "oby_search" | "oby_list" => None,
+        // Listed where the jobs are known (`jobs`).
+        "oby_jobs" => None,
+        // obid's words and the job's title.
+        "oby_tell_job" | "oby_stop_job" | "oby_continue_job" | "oby_archive_job"
+        | "oby_delete_job" | "oby_change_job" => {
+            let id = args["id"].as_str().unwrap_or_default();
+            match shared.jobs.get(id) {
+                Some(job) => job
+                    .check_refuses_secrets()
+                    .map(|why| format!("the title of job {id}, which {why}")),
+                None => Some(format!("{name} on a job obid doesn't have")),
+            }
+        }
+        // A job's section holds its pull request's and its checks' words too: anyone's.
+        "oby_job" => Some("a job's report, pull request and checks".into()),
+        _ => Some(format!("{name}'s answer")),
+    }
+}
+
 /// The tool's answer, or why it refused.
 async fn call(
     shared: &Arc<Shared>,
@@ -226,6 +254,9 @@ async fn call(
     // A turn nobody watches reads only its own job, and archives nothing (super::supervisor).
     if let Some(why) = super::supervisor::refused(session, name, &args) {
         return Err(why.into());
+    }
+    if let Some(why) = reads_foreign(shared, name, &args) {
+        shared.conversations.mark(&session.conversation, why);
     }
     match name {
         "oby_jobs" => Ok(jobs(shared, session, args)?),
@@ -350,6 +381,10 @@ async fn call(
             // Read from the repositories (or a folder holding them): other people's words.
             if taints {
                 session.taint();
+                shared.conversations.mark(
+                    &session.conversation,
+                    "the repositories' checkouts, or the owner's files, in its room".into(),
+                );
             }
             Ok(quoted(session, "the files you read", &text))
         }
@@ -514,7 +549,11 @@ fn continue_job(shared: &Arc<Shared>, session: &Session, args: Value) -> Result<
             Some(words) => Some(super::supervisor::quoted(words, &session.nonce)?),
             None => None,
         };
-        return match shared.jobs.continue_job(&id, words.as_deref(), BY_OBY) {
+        let foreign = super::written_after(shared, &session.conversation);
+        return match shared
+            .jobs
+            .continue_job(&id, words.as_deref(), BY_OBY, foreign)
+        {
             Some(Ok(job)) => {
                 super::supervisor::record(
                     shared,
@@ -547,7 +586,8 @@ fn continue_job(shared: &Arc<Shared>, session: &Session, args: Value) -> Result<
             },
         );
     }
-    match shared.jobs.continue_job(&id, Some(&added), BY_OBY) {
+    let foreign = super::written_after(shared, &session.conversation);
+    match shared.jobs.continue_job(&id, Some(&added), BY_OBY, foreign) {
         Some(Ok(job)) => Ok(format!("Continuing {name}: round {}.", job.current_round())),
         Some(Err(refused)) => Err(format!("Couldn't continue {name}: {}", refused.0)),
         None => Err("That job isn't here any more.".into()),
@@ -1403,6 +1443,7 @@ async fn tell(
     {
         allowed?;
         let new = super::supervisor::follow_up(&job, added, None, &session.nonce)?;
+        let new = super::written_in(shared, &session.conversation, new);
         let outcome = actions::follow_up(shared, &job, new);
         if let Outcome::Started(_, next) = &outcome {
             let started = next["id"].as_str().map(str::to_owned).into_iter().collect();
@@ -1415,7 +1456,14 @@ async fn tell(
         let words = agent_ready(&words)?;
         return outcome_answer(
             session,
-            actions::already_on_it(shared, &job, &next, &words, source(session)),
+            actions::already_on_it(
+                shared,
+                &job,
+                &next,
+                &words,
+                source(session),
+                &session.conversation,
+            ),
         );
     }
     if session.supervising.is_some() {
@@ -1454,6 +1502,7 @@ async fn tell(
     // After something untrusted was read, it never runs in Bypass.
     new.untrusted = source(session) == crate::jobs::Source::Untrusted;
     new.turn = actions::started_by(&job, &session.conversation, &session.control.turn);
+    let new = super::written_in(shared, &session.conversation, new);
     outcome_answer(session, actions::follow_up(shared, &job, new))
 }
 
@@ -1476,6 +1525,7 @@ async fn dispatch(shared: &Arc<Shared>, session: &Session, args: Value) -> Resul
         allowed?;
         let part = Some(super::supervisor::part(session));
         let mut new = super::supervisor::follow_up(&job, &start.task, part, &session.nonce)?;
+        new = super::written_in(shared, &session.conversation, new);
         new.split = true;
         let outcome = match shared.jobs.create(new) {
             Ok(part) => {
@@ -1595,7 +1645,7 @@ fn jobs(shared: &Shared, session: &Session, args: Value) -> Result<String, Strin
         limit,
     } = parse(args)?;
     let archived = archived.unwrap_or(false);
-    let listed: Vec<Value> = shared
+    let picked: Vec<_> = shared
         .jobs
         .list(usize::MAX)
         .into_iter()
@@ -1603,6 +1653,19 @@ fn jobs(shared: &Shared, session: &Session, args: Value) -> Result<String, Strin
         .filter(|j| repo.as_deref().is_none_or(|r| j.repo == r))
         .filter(|j| j.archived.is_some() == archived)
         .take(limit.unwrap_or(20).clamp(1, 100))
+        .collect();
+    // Their titles are their own words: the owner's alone only for jobs that are (crate::secretspec).
+    if let Some((job, why)) = picked
+        .iter()
+        .find_map(|j| j.check_refuses_secrets().map(|why| (j, why)))
+    {
+        shared.conversations.mark(
+            &session.conversation,
+            format!("the list of jobs, with job {}, which {why}", job.id),
+        );
+    }
+    let listed: Vec<Value> = picked
+        .into_iter()
         .map(|j| {
             json!({"id": j.id, "title": super::briefing::line(&j.short_title(), 80),
                    // Its `step` can be its agent's own words, which would steer this turn: oby_job
