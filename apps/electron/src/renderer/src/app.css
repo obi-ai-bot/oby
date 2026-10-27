@@ -1760,6 +1760,58 @@ button.sphere-logo-badge:hover { color: var(--ink); background: #3a3a39; }
 }
 .connection.is-down { color: var(--ink); border-color: color-mix(in srgb, var(--over) 45%, transparent); }
 
+/* --- Oby talking (ObyFaceLive; the owner's, 2026-10-27, ~/Projects/Deskree/research/oby-specs/balloon-final.css) ---
+   The speech balloon: Q*bert's grawlix beside Oby's head while its words come in. It grows out of its
+   tail on the face's body spring, breathes while open, its glyphs crossfading, then deflates back into
+   Oby on the melt spring as Oby blinks. Closed is its resting state; .open is a transition, so a late
+   word reverses a close part-way. */
+.oby-talk { display: block; transform-origin: 50% 94%; }  /* the body's bottom edge */
+.oby-talk > svg { display: block; }
+/* while the balloon's open: one slow, gentle bob a glyph */
+.oby-talk.is-bob { animation: say-bob 480ms ease-in-out infinite; }
+/* as it deflates: one soft blink, on `scale`, so it never fights the eyes' own transform */
+.oby-talk .oby-eyes { transform-box: fill-box; transform-origin: 50% 50%; }
+.oby-talk.is-blink .oby-eyes { animation: say-blink 220ms ease-in-out; }
+.say {
+  /* PRESET.body [120, 16] over 720ms: grown by 300ms, 3.4% over at 420ms, then settles */
+  --say-body: linear(0, 0.047, 0.157, 0.297, 0.443, 0.581, 0.702, 0.802, 0.881, 0.939, 0.981, 1.008, 1.024, 1.032, 1.034, 1.033, 1.029, 1.024, 1.019, 1.014, 1.010, 1.007, 1.004, 1.002, 1);
+  /* PRESET.melt [55, 13] over 770ms, the spring the face melts into its dots on: a soft start, a long landing */
+  --say-melt: linear(0, 0.026, 0.087, 0.170, 0.263, 0.357, 0.450, 0.537, 0.615, 0.684, 0.744, 0.795, 0.838, 0.875, 0.904, 0.928, 0.947, 0.962, 0.973, 0.982, 0.989, 0.994, 0.997, 1, 1);
+  position: absolute; left: 27px; top: -7px; z-index: 1; pointer-events: none; user-select: none;
+  transform-origin: -5px calc(100% - 1px);  /* the tail's tip, at Oby's cheek */
+  transform: scale(0.4); opacity: 0;
+  /* closing: sinks back into the tail, solid at first, fading once it's mostly in */
+  transition: transform 770ms var(--say-melt), opacity var(--fade) 160ms;
+}
+.say.open { transform: none; opacity: 1; transition: transform 720ms var(--say-body), opacity var(--fade); }
+/* a slow breath while it's there; the grawlix's a fixed width, so a new glyph never moves it */
+.say-in {
+  position: relative; display: grid; grid-auto-flow: column; place-items: center; place-content: center; gap: 3.5px;
+  height: 20px; min-width: 38px; padding: 0 9px; border-radius: 10px; background: #f1f1ee;
+  transform-origin: -5px calc(100% - 1px); animation: say-breath 2800ms ease-in-out infinite;
+}
+.say.gx .say-in { width: 56px; padding: 0; }
+.say-in::before { content: ""; position: absolute; left: -5px; bottom: 1px; width: 11px; height: 8px; background: #f1f1ee; clip-path: polygon(100% 0, 100% 100%, 0 100%); }
+/* the grawlix: two layers in one cell, the new one puffing in over the last */
+.say b {
+  grid-area: 1 / 1; font: 800 12px/1 var(--font); color: #0d0d0e; letter-spacing: 0.4px; white-space: nowrap;
+  opacity: 0; transform: scale(0.86); transition: opacity var(--fade), transform 360ms var(--warm);
+}
+.say b.on { opacity: 1; transform: none; }
+/* three dots instead (the control center's, to compare) */
+.say i { width: 4px; height: 4px; border-radius: 50%; background: #0d0d0e; animation: say-dot 1200ms ease-in-out infinite; }
+.say i:nth-child(2) { animation-delay: 200ms; } .say i:nth-child(3) { animation-delay: 400ms; }
+@keyframes say-bob { 0%, 100% { transform: none; } 40% { transform: translateY(-0.7px) scale(1.02, 0.96); } }
+@keyframes say-blink { 0%, 100% { scale: 1; } 40% { scale: 1 0.12; } }
+@keyframes say-breath { 50% { scale: 1.025; } }
+@keyframes say-dot { 0%, 60%, 100% { transform: none; opacity: 0.4; } 30% { transform: translateY(-2px); opacity: 1; } }
+/* reduced motion: it only fades, at full size, with one still glyph; no bob, blink or breath */
+@media (prefers-reduced-motion: reduce) {
+  .say, .say.open { transform: none; transition: opacity 240ms ease-out; }
+  .say-in, .say i, .oby-talk.is-bob, .oby-talk.is-blink .oby-eyes { animation: none; }
+}
+/* --- end of Oby talking --- */
+
 /* ==== The Obysphere tour (onboarding.ts, SetupCard, Sidebar, Welcome's SphereHowTo) ==== */
 /* the sample in the icon strip: a dashed edge; it pops in, calls (three ripples, then its blue
    dot pulses until it's opened), and shrinks away when it's put away (removed on a 220ms timer) */

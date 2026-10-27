@@ -62,8 +62,11 @@ export function ObyFace({ size = 24, badge = false }: { size?: number; badge?: b
     <svg width={size} height={size} viewBox="0 0 24 24" aria-hidden="true">
       <Ears fill="#f1f1ee" />
       <rect x="1.5" y="6" width="21" height="16.5" rx="5" fill="#f1f1ee" />
-      <rect x="6" y="10.6" width="2.8" height="5" rx="1.4" fill="#0d0d0e" />
-      <rect x="14.6" y="10.6" width="2.8" height="5" rx="1.4" fill="#0d0d0e" />
+      {/* the eyes, as one (they blink together when Oby stops talking: ObyFaceLive) */}
+      <g className="oby-eyes" fill="#0d0d0e">
+        <rect x="6" y="10.6" width="2.8" height="5" rx="1.4" />
+        <rect x="14.6" y="10.6" width="2.8" height="5" rx="1.4" />
+      </g>
     </svg>
   );
 }

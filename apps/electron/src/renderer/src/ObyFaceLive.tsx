@@ -34,8 +34,26 @@ const KEYS: [number, Partial<Record<Name, number>>, Preset][] = [
   [4.5, { dR: 0 }, 'body'],
 ];
 // while Oby works it holds just before WRAP_UP (the dots bouncing); once its
-// words land it skips to WRAP_UP, and is done after the last key, once settled
-const WRAP_UP = 4.0, LAST = 4.5;
+// words land it comes back (QUICK, or Sangam's full spin from WRAP_UP), and is
+// done after the last key, once settled
+const WRAP_UP = 4.0;
+// Oby starting to talk: the dots spring back into the face in about 250ms, facing
+// you, instead of the full spin. The control center's (dev only), to compare:
+// fullSpin, Sangam's spin; the balloon as three dots, or none. Read as Oby next talks.
+export const dev = { fullSpin: false, balloon: 'gx' as 'gx' | 'dots' | 'off' };
+const QUICK: typeof KEYS = [
+  [0, { dBounce: 0, dSpread: 0, sq: 1 }, 'fast'],  // the dots run together
+  [0.05, { scale: 1, inflate: 0.17 }, 'fast'],  // and spring back into the face
+  [0.1, { dR: 0 }, 'fast'],
+];
+
+// The speech balloon while Oby talks (the owner's, 2026-10-27): Q*bert's grawlix,
+// every time. It grows out of its tail a beat after the words start (once the face
+// is back from its dots), holds at least `hold` and `linger` past the last word
+// (each change of `talk` restarts that), a new glyph each `glyph`, then deflates
+// back into Oby as Oby blinks. A word during the deflate grows it back.
+const GX = ['@!#?@!', '#$!%?', '?@*!#', '%!&?!', '!?#@$'];  // all fit its fixed width
+const SAY = { at: 120, glyph: 480, hold: 1400, linger: 800, out: 480 };
 
 // The face in its 24-unit square (as ObyFace): body 21 × 16.5 centred here
 const CX = 12, CY = 14.25;
@@ -46,7 +64,12 @@ const clamp01 = (v: number) => Math.min(1, Math.max(0, v));
 
 type Spring = { v: number; vel: number; to: number; k: number; c: number };
 
-export default function ObyFaceLive({ live, size = 22 }: { live: boolean; size?: number }) {
+// talk: Oby's words coming in (their length; each change is a word); undefined once they stop.
+// While its balloon's up the face talks; at work (working) it's the dots again once that's down
+export default function ObyFaceLive({ live: working, talk, size = 22 }: { live: boolean; talk?: number; size?: number }) {
+  // the balloon: off; in (there, closed, about to grow); open; out (deflating)
+  const [say, setSay] = useState<'off' | 'in' | 'open' | 'out'>('off');
+  const live = working && say === 'off';
   const [active, setActive] = useState(live);
   const liveRef = useRef(live);
   liveRef.current = live;
@@ -56,6 +79,42 @@ export default function ObyFaceLive({ live, size = 22 }: { live: boolean; size?:
   const svg = useRef<SVGSVGElement>(null);
   // reduced motion: no spin, melt or bounce, just three still dots while Oby works
   const [still] = useState(() => matchMedia('(prefers-reduced-motion: reduce)').matches);
+
+  const [bob, setBob] = useState(false);
+  const [glyph, setGlyph] = useState(0);
+  const wrap = useRef<HTMLSpanElement>(null);
+  const timers = useRef({ opens: 0, out: false, open: 0, close: 0, gone: 0 });
+  useEffect(() => {
+    if (talk === undefined) return;
+    const r = timers.current, now = performance.now();
+    if (say === 'off') {
+      // closed first, so it grows rather than appears; once the face is back from its dots
+      const at = active ? (dev.fullSpin ? 900 : 250) : SAY.at;
+      r.opens = now + at;
+      setSay('in'); setGlyph(0);
+      r.open = window.setTimeout(() => { setSay('open'); setBob(true); }, at);
+    } else if (r.out) {
+      // a word while it deflates: it grows back from where it is
+      r.out = false;
+      clearTimeout(r.gone);
+      setSay('open'); setBob(true);
+    }
+    clearTimeout(r.close);
+    r.close = window.setTimeout(() => {
+      r.out = true;
+      setSay('out');
+      // the bob lands at rest, at the end of its beat
+      wrap.current?.addEventListener('animationiteration', () => { if (r.out) setBob(false); }, { once: true });
+      r.gone = window.setTimeout(() => { r.out = false; setSay('off'); setBob(false); }, SAY.out);
+    }, Math.max(SAY.linger, r.opens + SAY.hold - now));
+  }, [talk]);
+  useEffect(() => () => { const r = timers.current; clearTimeout(r.open); clearTimeout(r.close); clearTimeout(r.gone); }, []);
+  // a new glyph each beat while it's open (one still glyph with reduced motion)
+  useEffect(() => {
+    if (say !== 'open' || still || dev.balloon !== 'gx') return;
+    const t = setInterval(() => setGlyph((g) => g + 1), SAY.glyph);
+    return () => clearInterval(t);
+  }, [say, still]);
 
   useEffect(() => {
     if (!active || still) return;
@@ -69,10 +128,10 @@ export default function ObyFaceLive({ live, size = 22 }: { live: boolean; size?:
       [n, { v, vel: 0, to: v, k: PRESET[p][0], c: PRESET[p][1] }])) as Record<Name, Spring>;
     const V = (n: Name) => s[n].v;
     // the keys in order: idx is the next one due
-    let t = 0, idx = 0;
+    let keys = KEYS, t = 0, idx = 0;
     const advance = (to: number) => {
-      for (; idx < KEYS.length && KEYS[idx][0] <= to; idx++) {
-        const [, set, p] = KEYS[idx];
+      for (; idx < keys.length && keys[idx][0] <= to; idx++) {
+        const [, set, p] = keys[idx];
         for (const [n, v] of Object.entries(set) as [Name, number][]) {
           s[n].to = v; s[n].k = PRESET[p][0]; s[n].c = PRESET[p][1];
         }
@@ -118,8 +177,18 @@ export default function ObyFaceLive({ live, size = 22 }: { live: boolean; size?:
       prev = now;
       clock += dt;
       const live = liveRef.current;
-      if (live && t >= WRAP_UP) { idx = 0; advance(0); }  // back to work while coming together: start over
-      if (!live && t < WRAP_UP) { idx = KEYS.findIndex(([at]) => at >= WRAP_UP); t = WRAP_UP; }  // words in: skip to coming together
+      if (live && (keys !== KEYS || t >= WRAP_UP)) { keys = KEYS; idx = 0; advance(0); }  // back to work while coming together: start over
+      if (!live && keys === KEYS && t < WRAP_UP) {
+        if (dev.fullSpin) { idx = KEYS.findIndex(([at]) => at >= WRAP_UP); t = WRAP_UP; }  // words in: skip to coming together
+        else {
+          // words in: straight back, turning to face you the short way round (at once
+          // when it's melted into dots, where nobody sees it turn)
+          keys = QUICK; idx = 0; t = 0;
+          const r = s.ry;
+          r.to = Math.round(r.v / TAU) * TAU; r.k = PRESET.fast[0]; r.c = PRESET.fast[1];
+          if (V('scale') < 0.1) { r.v = r.to; r.vel = 0; }
+        }
+      }
       advance(live ? Math.min(t + dt, WRAP_UP - 1e-3) : t + dt);
       // springs, in small steps so the stiff ones stay steady
       const n = Math.ceil(dt / (1 / 240)), h = dt / n;
@@ -127,7 +196,7 @@ export default function ObyFaceLive({ live, size = 22 }: { live: boolean; size?:
         sp.vel += (sp.k * (sp.to - sp.v) - sp.c * sp.vel) * h;
         sp.v += sp.vel * h;
       }
-      if (!live && t > LAST && Object.values(s).every((sp) => Math.abs(sp.to - sp.v) < 1e-3 && Math.abs(sp.vel) < 1e-2)) {
+      if (!live && t > keys.at(-1)![0] && Object.values(s).every((sp) => Math.abs(sp.to - sp.v) < 1e-3 && Math.abs(sp.vel) < 1e-2)) {
         setActive(false);  // settled: the still face takes over
         return;
       }
@@ -140,13 +209,13 @@ export default function ObyFaceLive({ live, size = 22 }: { live: boolean; size?:
     return () => cancelAnimationFrame(raf);
   }, [active, still, goo]);
 
-  if (still) return live ? (
+  // two layers in one cell, crossfading: the one that's on has the newest glyph
+  const glyphOf = (i: number) => GX[(glyph % 2 === i ? glyph : glyph - 1) % GX.length] ?? '';
+  const face = still ? (live ? (
     <svg width={size} height={size} viewBox="0 0 24 24" aria-hidden="true">
       {[-1, 0, 1].map((i) => <circle key={i} cx={CX + i * GAP} cy={CY} r={DOT_R} fill="#f1f1ee" />)}
     </svg>
-  ) : <ObyFace size={size} />;
-  if (!active) return <ObyFace size={size} />;
-  return (
+  ) : <ObyFace size={size} />) : !active ? <ObyFace size={size} /> : (
     <svg ref={svg} width={size} height={size} viewBox="0 0 24 24" overflow="visible" aria-hidden="true">
       <defs>
         {/* blur, then a hard alpha edge: shapes near each other run together like liquid */}
@@ -164,10 +233,21 @@ export default function ObyFaceLive({ live, size = 22 }: { live: boolean; size?:
         </g>
         <circle data-dot="" cx={CX} cy={CY} r="0" /><circle data-dot="" cx={CX} cy={CY} r="0" /><circle data-dot="" cx={CX} cy={CY} r="0" />
       </g>
-      <g data-eyes="" fill="#0d0d0e">
+      <g data-eyes="" className="oby-eyes" fill="#0d0d0e">
         <rect x="6" y="10.6" width="2.8" height="5" rx="1.4" />
         <rect x="14.6" y="10.6" width="2.8" height="5" rx="1.4" />
       </g>
     </svg>
   );
+  // the face (bobbing gently while the balloon's open, blinking as it deflates), and the balloon
+  return <>
+    <span ref={wrap} className={`oby-talk${bob ? ' is-bob' : ''}${say === 'out' ? ' is-blink' : ''}`}>{face}</span>
+    {say !== 'off' && dev.balloon !== 'off' && (
+      <span className={`say${dev.balloon === 'gx' ? ' gx' : ''}${say === 'open' ? ' open' : ''}`} aria-hidden="true">
+        <span className="say-in">{dev.balloon === 'gx'
+          ? [0, 1].map((i) => <b key={i} className={glyph % 2 === i ? 'on' : undefined}>{glyphOf(i)}</b>)
+          : <><i /><i /><i /></>}</span>
+      </span>
+    )}
+  </>;
 }
