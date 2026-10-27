@@ -65,6 +65,9 @@ export type InboxItem = {
   // task it planned, and whether the turn had read something untrusted first
   conversation?: string | null;
   offer?: { id: string; what: string; task: string; untrusted: boolean } | null;
+  // obid only: what a confirm item's Confirm carries out; set_check's target is the repository,
+  // its payload the command (Oby's ask for a check, #1062)
+  confirm?: { action: string; target: string; payload: { check?: string } | null } | null;
 };
 
 // "GET /v1/conversation"

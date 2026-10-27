@@ -154,7 +154,7 @@ const ASKS: Record<AskKind, Ask> = {
   start: { kind: 'start', headline: 'Start it now?', text: 'A standing rule wants to update obi’s dependencies. It runs in Sandbox mode and publishes by itself.', options: ['Start it', 'Not this time'] },
   merge: { kind: 'merge', headline: 'Merge obi #1502 into dev?', text: 'Checks passed on 4c1e9a0 and my review found nothing to change. I haven’t learned how obi merges yet, so this first one is yours.', options: ['Squash and merge', 'Leave it open'] },
   back: { kind: 'back', headline: 'That Mac couldn’t keep running it', text: 'It ran there for 18 minutes and came back with its notes and 2 commits.', options: ['Run it here', 'Wait for that Mac'] },
-  check: { kind: 'check', headline: 'Which check proves it done?', text: 'obi has no check set yet. Pick one, or tell me yours.', options: ['scripts/oby-check.sh', 'npm run typecheck'] },
+  check: { kind: 'check', headline: 'Use this as obi’s check before publishing?', text: 'obi has no check, so its pull requests go out after the secret scan alone. With one, every job there that starts after your answer runs it in its box, with no network, before anything goes out.', options: ['Use it', 'Edit', 'No check'], detail: 'scripts/oby-check.sh' },
   remember: { kind: 'remember', headline: 'Can I remember that?', text: 'You squash-merged into dev. Next time in obi I’ll do the same, and say so.', options: ['Yes, remember', 'No'] },
   confirm: { kind: 'confirm', headline: 'Add acme/other and review #12', text: 'Adds acme/other to the repositories Oby works in, with no check, then starts Oby’s review of pull request #12. Nothing is posted on GitHub.', options: ['Confirm', 'Cancel'] },
 };

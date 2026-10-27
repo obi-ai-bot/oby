@@ -144,10 +144,18 @@ function askOf(s: Live, j: Job): Ask | undefined {
 // review's Approve posts (as text). A GitHub offer is Sangam's "Start it?", as on To do's cards,
 // and an Oby failure his "Failed".
 const LABELLED: Record<string, AskKind> = { github: 'start', failure: 'failed' };
-const itemAsk = (item: InboxItem, detail?: string): Ask => ({
-  kind: LABELLED[item.kind] ?? item.kind as AskKind, headline: item.headline ?? item.title, text: item.headline ? item.text : '',
-  options: item.options, recommended: item.recommended ?? undefined, detail: detail ?? item.watch?.review ?? undefined,
-});
+const itemAsk = (item: InboxItem, detail?: string): Ask => {
+  // Oby's ask for a repository's check (set_check): the command under the question, and the
+  // answers in plain words (answerJob turns them into obid's Confirm and Cancel)
+  const check = checkOf(item);
+  if (check) return { kind: 'check', headline: `Use this as ${item.confirm!.target}’s check before publishing?`, text: item.text, options: CHECK_OPTIONS, detail: check };
+  return {
+    kind: LABELLED[item.kind] ?? item.kind as AskKind, headline: item.headline ?? item.title, text: item.headline ? item.text : '',
+    options: item.options, recommended: item.recommended ?? undefined, detail: detail ?? item.watch?.review ?? undefined,
+  };
+};
+const CHECK_OPTIONS = ['Use it', 'Edit', 'No check'];
+const checkOf = (item?: InboxItem) => (item?.kind === 'confirm' && item.confirm?.action === 'set_check' ? item.confirm.payload?.check : undefined);
 
 // What obid asks the owner with no task to show it on (a job's item shows on its task's card), for
 // Home's stack, of the kinds it was made for: GitHub's offers, Confirms, failures, and work Oby
@@ -566,13 +574,26 @@ export async function startGitHubWork(id: string) {
 // anything else in the inbox; Later puts it off an hour. A Confirm goes with this Mac's device
 // signature, which main adds (#776). id: a job's, or an item's with no task (asksOf), answered from
 // Home's stack.
+// On Oby's ask for a check, Use it is the owner's Confirm and No check their Cancel; Edit sends
+// the command they typed (words), which obid asks again as an item of its own, confirmed here at
+// once with this Mac's signature over that item's title.
 const DECISIONS: Record<string, 'allow' | 'always' | 'deny'> = { Allow: 'allow', 'Always allow': 'always', Deny: 'deny' };
-export async function answerJob(id: string, option: string) {
+export async function answerJob(id: string, option: string, words?: string) {
   const j = state.jobs[id], item = itemOf(state, id) ?? state.inbox.find((i) => i.id === id), ask = j && askOf(state, j);
-  if (ask) set({ answered: { ...state.answered, [id]: { ask, option, item: item?.id } } });
+  const shown = option === 'Edit' && words ? `Use ${words}` : option;
+  if (ask) set({ answered: { ...state.answered, [id]: { ask, option: shown, item: item?.id } } });
   else if (item) answering(item.id, true);
   try {
-    if (item?.kind === 'confirm' && option === 'Confirm') set(apply(state, { kind: 'inbox', item: await api.confirm(item.id) }));
+    if (checkOf(item) && option !== 'Later') {
+      let asked = item!;
+      if (option === 'Edit' && words) {
+        asked = await api.answer(asked.id, { answer: words });
+        set(apply(state, { kind: 'inbox', item: asked }));
+        if (ask) set({ answered: { ...state.answered, [id]: { ask, option: shown, item: asked.id } } });
+      }
+      const next = option === 'No check' ? await api.answer(asked.id, { answer: 'Cancel' }) : await api.confirm(asked.id);
+      set(apply(state, { kind: 'inbox', item: next }));
+    } else if (item?.kind === 'confirm' && option === 'Confirm') set(apply(state, { kind: 'inbox', item: await api.confirm(item.id) }));
     else if (item?.kind === 'permission' && j?.permission && DECISIONS[option]) {
       const next = await api.permission(id, { id: j.permission.id, decision: DECISIONS[option] });
       set({ jobs: { ...state.jobs, [next.id]: next } });

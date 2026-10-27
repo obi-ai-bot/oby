@@ -183,29 +183,42 @@ export default function TaskCard({ task, alone = false, onOpen, onSession, style
 // happened, then the choices (the recommended one first-looking) and Later.
 // On the card a pick shows as a check line; in the conversation it shows as
 // your reply, and the block just loses its buttons. onAnswer: told after a
-// pick (Home's stack, to send the card away).
+// pick (Home's stack, to send the card away). A check's Edit opens the command
+// in a field, in place of the choices: Use it keeps what's typed.
 export function AskBlock({ task, inChat = false, onAnswer }: { task: Pick<Task, 'id' | 'answer'> & { job: Pick<Task['job'], 'ask'> }; inChat?: boolean; onAnswer?: (option: string) => void }) {
   const ask = task.job.ask!;
   // a click before its words have shown answers nothing: on Home, a double-click on the card
   // answered would land on the next one's buttons (one click, one answer)
   const [shownAt] = useState(() => performance.now());
-  const pick = (o: string) => { if (performance.now() - shownAt < 500) return; answer(task.id, o); onAnswer?.(o); };
+  const [editing, setEditing] = useState<string | null>(null);
+  const pick = (o: string, words?: string) => { if (performance.now() - shownAt < 500) return; answer(task.id, o, words); onAnswer?.(o); };
+  const typed = editing?.trim() ?? '';
   return (
     <div className="tc-ask">
       <span className={`tc-ask-kind is-${ask.kind}`}>{ASK_LABEL[ask.kind] ?? ask.kind}</span>
       <p className="tc-ask-head">{ask.headline}</p>
       <p className="tc-ask-text">{ask.text}</p>
-      {ask.detail && <pre className="tc-code">{ask.detail}</pre>}
+      {ask.detail && editing === null && <pre className="tc-code">{ask.detail}</pre>}
       {task.answer ? (
         !inChat && <p className="tc-answered"><Check size={14} strokeWidth={1.8} />{task.answer}</p>
+      ) : editing !== null ? (
+        <form className="tc-options" onSubmit={(e) => { e.preventDefault(); if (typed) pick('Edit', typed); }}>
+          <input
+            className="set-field" autoFocus value={editing} maxLength={200} spellCheck={false} aria-label="The check’s command"
+            onChange={(e) => setEditing(e.target.value)} onKeyDown={(e) => { if (e.key === 'Escape') setEditing(null); }}
+          />
+          <button type="submit" className="tc-option" disabled={!typed}>Use it</button>
+          <button type="button" className="tc-option is-quiet" onClick={() => setEditing(null)}>Cancel</button>
+        </form>
       ) : (
         <div className="tc-options">
           {ask.options.map((o, i) => (
             <button
               key={o}
-              // a Confirm looks preferred only when Oby recommends it (obid never does)
-              className={`tc-option${i === (ask.kind === 'confirm' ? ask.recommended : ask.recommended ?? 0) ? ' is-primary' : ''}${o === 'Deny' ? ' is-danger' : ''}`}
-              onClick={() => pick(o)}
+              // a Confirm looks preferred only when Oby recommends it (obid never does), and a
+              // check's Use it is one
+              className={`tc-option${i === (ask.kind === 'confirm' || ask.kind === 'check' ? ask.recommended : ask.recommended ?? 0) ? ' is-primary' : ''}${o === 'Deny' ? ' is-danger' : ''}`}
+              onClick={() => (ask.kind === 'check' && o === 'Edit' ? setEditing(ask.detail ?? '') : pick(o))}
             >
               {o}
             </button>

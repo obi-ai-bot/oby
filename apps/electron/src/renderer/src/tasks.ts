@@ -148,8 +148,9 @@ export function relay(id: string, text: string): { line: string; start?: () => s
 // Picked an answer to its decision: it shows as your reply, and Oby confirms.
 // Nothing's left for you to decide, so it no longer needs you: the agent goes
 // on (done, it stays done). Later keeps it needing you, only put off.
-export function answer(id: string, option: string) {
-  if (onObid) return void live.answerJob(id, option);
+// words: what the owner typed for an Edit (a check's command)
+export function answer(id: string, option: string, words?: string) {
+  if (onObid) return void live.answerJob(id, option, words);
   const k = tasks.find((x) => x.id === id);
   if (!k) return;
   update(id, () => ({ answer: option, status: option === 'Later' ? k.status : k.job.status === 'done' ? 'done' : 'running' }));
