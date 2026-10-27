@@ -464,6 +464,28 @@ fn an_unlearned_repository_asks_first_with_no_reviewer() {
     assert!(!calls(&folder.0).contains("-X POST"));
 }
 
+/// In a repository Oby hasn't learned, a pull request into main whose checks failed asks the owner:
+/// no workflow can be proposed for main, and nothing of Oby's fixes its own pull request's checks.
+#[test]
+fn red_checks_into_main_in_an_unlearned_repository_ask_the_owner() {
+    let folder = Folder::new("merge-red-main");
+    let mut published = published();
+    published.base = Some("main".into());
+    let obid = started_with(&folder, false, None, published, &[]);
+    let file = folder.0.join("gh/view.json");
+    let mut view: Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+    view["baseRefName"] = json!("main");
+    view["statusCheckRollup"][0]["conclusion"] = json!("FAILURE");
+    std::fs::write(&file, view.to_string()).unwrap();
+    let card = within(30, "the owner's card", || {
+        merge_cards(&obid).into_iter().find(|c| {
+            c["done"].is_null() && c["text"] == "Not merged yet: its checks failed on GitHub."
+        })
+    });
+    assert_eq!(card["options"], json!(["Dismiss"]), "{card}");
+    assert!(!calls(&folder.0).contains("-X PUT"));
+}
+
 /// An approval someone dismissed on GitHub isn't posted again: the merge waits on the owner, with
 /// one card, however many times it's read.
 #[test]
