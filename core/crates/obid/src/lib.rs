@@ -32,6 +32,7 @@ pub mod git;
 pub mod github;
 pub mod github_login;
 pub mod github_work;
+pub mod groups;
 pub mod job;
 pub mod jobs;
 pub mod limits;

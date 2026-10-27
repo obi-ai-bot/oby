@@ -2541,6 +2541,7 @@ mod tests {
         std::fs::create_dir_all(&root).unwrap();
         let launch = agent::Launch {
             own_sandbox: false,
+            group: None,
             argv: vec!["/bin/cat".into()],
             env: vec![],
             cwd: root.clone(),

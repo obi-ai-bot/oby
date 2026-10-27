@@ -125,6 +125,8 @@ pub struct Conn {
     pub holding: bool,
     /// Its processes count as its job's while it runs (crate::meter).
     _metered: crate::meter::Root,
+    /// A job's run: recorded while it runs, for the sweep at obid's next start (crate::groups).
+    _recorded: Option<crate::groups::Recorded>,
 }
 
 impl Conn {
@@ -157,10 +159,19 @@ impl Conn {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
+        if let Some(group) = &launch.group {
+            crate::groups::take(group)
+                .await
+                .map_err(std::io::Error::other)?;
+        }
         // No process group set here: the command line is the job sandbox's (`Sandbox::wrap`), whose
         // first program starts a session of its own, and so a process group whose id is the child's.
         let mut child = command.spawn()?;
         let pgid = child.id().unwrap_or(0);
+        let recorded = match &launch.group {
+            Some(group) => Some(crate::groups::record(group, pgid).await),
+            None => None,
+        };
         let stdin = child.stdin.take();
         let copying = child.stderr.take().map(|mut stderr| {
             tokio::spawn(async move {
@@ -195,6 +206,7 @@ impl Conn {
             quiet_out: false,
             holding: false,
             _metered: crate::meter::root(pgid, &launch.cwd),
+            _recorded: recorded,
         })
     }
 
