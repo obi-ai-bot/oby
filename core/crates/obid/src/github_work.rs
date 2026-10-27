@@ -909,10 +909,8 @@ impl Feed {
         self.config.repos.find(repo).is_some()
     }
 
-    /// Reads every [`EVERY`] seconds (or once a rate limit's wait is over) until obid stops, and
-    /// sooner when GitHub's events say so (crate::github_events).
+    /// Reads every [`EVERY`] seconds (or once a rate limit's wait is over) until obid stops.
     pub fn spawn(self: &Arc<Self>, mut stopping: tokio::sync::watch::Receiver<bool>) {
-        crate::github_events::spawn(self.clone(), stopping.clone());
         let feed = self.clone();
         tokio::spawn(async move {
             loop {

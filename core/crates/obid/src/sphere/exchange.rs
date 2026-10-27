@@ -149,10 +149,13 @@ pub struct Exchanges {
 }
 
 impl Exchanges {
-    pub fn open(home: &Path) -> std::io::Result<Exchanges> {
+    /// `home/exchanges`; one that can't be made is said in the log, and each save then fails.
+    pub fn open(home: &Path) -> Exchanges {
         let dir = home.join("exchanges");
-        store::make_private_dir(&dir)?;
-        Ok(Exchanges { dir })
+        if let Err(e) = store::make_private_dir(&dir) {
+            tracing::error!("can't make {}: {e}", dir.display());
+        }
+        Exchanges { dir }
     }
 
     /// A correlation id is a lower-case UUID (the envelope's schema checked it): safe as a name.

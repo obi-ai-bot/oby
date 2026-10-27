@@ -87,7 +87,8 @@
 //!    `crate::egress::ROUTED_BY_HOST`), mark the job ([`site_is_foreign`]): the proxy reads a
 //!    connection's TLS name, not the `Host:` inside it. So do the channels that bring content past
 //!    the proxy: a vendor's own web search or fetch and any MCP server's answer in the turn
-//!    ([`tool_brings_content`]), a connected app's answer, and Tetrix's or a plug-in's context. A
+//!    ([`tool_brings_content`]), a connected app's answer, and the context obid gives (Tetrix's,
+//!    teammates' pull requests). A
 //!    marked clone is made again for the next job once no job runs in it, the old one kept aside
 //!    with the jobs that used it (`Jobs::remake_marked_clone`).
 //! 3. **Linux gives no values** ([`platform_refusal`]): its agents still have a network of their

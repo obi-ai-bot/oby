@@ -1080,6 +1080,7 @@ exec sleep 30
         .unwrap();
         std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
         let launch = Launch {
+            own_sandbox: false,
             argv: vec![bin.into_os_string()],
             env: vec![("PATH".into(), "/usr/bin:/bin".into())],
             cwd: root.clone(),
@@ -1139,6 +1140,7 @@ exec sleep 30
             env: vec![("PATH".into(), "/usr/bin:/bin".into())],
             cwd: root.clone(),
             stderr: root.join("agent.log"),
+            own_sandbox: false,
         };
         let (_stop, stop) = watch::channel(process::Signal::Run);
         let tools = std::sync::Mutex::new(Vec::new());
@@ -1184,6 +1186,7 @@ exec sleep 30
         .unwrap();
         std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
         let launch = Launch {
+            own_sandbox: false,
             argv: vec![bin.into_os_string()],
             env: vec![("PATH".into(), "/usr/bin:/bin".into())],
             cwd: root.clone(),

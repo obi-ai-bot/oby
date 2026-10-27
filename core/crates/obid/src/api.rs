@@ -12,7 +12,7 @@ use axum::extract::{Request, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post, put};
+use axum::routing::{get, post};
 use obi_protocol::time;
 use serde::Serialize;
 
@@ -60,24 +60,18 @@ pub struct Shared {
     pub presence: crate::brain::recap::Presence,
     /// Its Sphere: membership, exchanges, the inbox and decisions.
     pub link: Arc<crate::sphere::Link>,
-    /// The plug-in host (`GET` and `PUT /v1/obid/plugins`).
-    pub plugins: Arc<crate::plugins::Plugins>,
     /// The accounts' sign-ins under way (crate::accounts).
     pub sign_ins: crate::accounts::SignIns,
     /// The GitHub login and its sign-in (crate::github_login).
     pub github: crate::github_login::GitHubLogin,
     /// Oby's Tetrix login, and agents' Tetrix through obid (crate::tetrix).
     pub tetrix: Arc<crate::tetrix::Tetrix>,
-    /// The browsers signed in to the web app's own files (crate::web): nothing under `/v1`.
-    pub pages: crate::web::Sessions,
     /// What GitHub wants from the owner (crate::github_work).
     pub github_work: Arc<crate::github_work::Feed>,
     /// The phones' FCM tokens and the job alerts sent to them (crate::push).
     pub push: crate::push::Push,
     /// True once obid is stopping: streams end.
     pub stopping: tokio::sync::watch::Receiver<bool>,
-    /// The Cloudflare Tunnel phones reach this Mac through from anywhere (crate::tunnel, #896).
-    pub tunnel: Arc<crate::tunnel::Tunnel>,
 }
 
 /// What `status.cleanup` says: the job worktrees' folder and the disk space it took when last
@@ -302,18 +296,6 @@ pub fn router(shared: Arc<Shared>) -> Router {
             "/v1/memory/suggestions/{id}/dismiss",
             post(crate::memory::dismiss),
         )
-        .route("/v1/obid/tunnel", put(tunnel_put).delete(tunnel_delete))
-        .route("/v1/obid/plugins", get(crate::plugins::list))
-        .route(
-            "/v1/obid/plugins/{id}",
-            axum::routing::put(crate::plugins::set),
-        )
-        // The web app (apps/web) and how a browser signs in to it (crate::web).
-        .route("/app", get(crate::web::bare))
-        .route("/app/", get(crate::web::index))
-        .route("/app/{*path}", get(crate::web::file))
-        .route(crate::web::SIGN_IN, post(crate::web::sign_in))
-        .route(crate::web::SIGN_OUT, post(crate::web::sign_out))
         .route(
             "/v1/obid/decisions",
             get(crate::sphere::routes::decisions).post(crate::sphere::routes::propose_decision),
@@ -407,17 +389,8 @@ pub const NO_TOKEN: &str = "This runner answers only requests with its API token
 /// web page can't reach obid through a name that resolves to 127.0.0.1), then it must carry the
 /// API token (`401` otherwise). Unlike a Mac runner's gate (Runner/API.swift, `Gate.admit`), OAuth
 /// discovery paths get no exception: runner-api.md, "obid only: configuration", says anything
-/// without the token is `401`, so they are `401` without it and `404` with it. The one exception
-/// is the web app's own files (crate::web): a browser that signed in with the token opens them
-/// with its page session, which admits nothing else; signing in and out pass on a loopback `Host`
-/// alone. Without the token or a session, a page under `/app` is the sign-in form, still `401`.
-/// Every `/v1` answer is `Cache-Control: no-store` (unless it says otherwise) and `nosniff`.
+/// without the token is `401`, so they are `401` without it and `404` with it. Every `/v1` answer is `Cache-Control: no-store` (unless it says otherwise) and `nosniff`.
 async fn gate(State(shared): State<Arc<Shared>>, request: Request, next: Next) -> Response {
-    if crate::web::is_open(request.method(), request.uri())
-        && loopback_request(request.uri(), request.headers())
-    {
-        return next.run(request).await;
-    }
     let api = request.uri().path().starts_with("/v1/");
     let agent_check = request.uri().path() == "/v1/agent/apple-check";
     let path = request.uri().path();
@@ -455,25 +428,8 @@ async fn gate(State(shared): State<Arc<Shared>>, request: Request, next: Next) -
             Err(error)
         }
     });
-    let admitted = admitted.or_else(|error| {
-        let (method, uri, headers) = (request.method(), request.uri(), request.headers());
-        if error.status == StatusCode::UNAUTHORIZED
-            && crate::web::admitted(method, uri, headers, &shared.pages)
-        {
-            Ok(())
-        } else {
-            Err(error)
-        }
-    });
     let mut response = match admitted {
         Ok(()) => next.run(request).await,
-        Err(error)
-            if error.status == StatusCode::UNAUTHORIZED
-                && request.method() == axum::http::Method::GET
-                && crate::web::is_app(request.uri().path()) =>
-        {
-            crate::web::sign_in_page(None)
-        }
         Err(error) => error.into_response(),
     };
     if api {
@@ -625,6 +581,10 @@ pub struct Status {
     /// The gateway (crate::gateway): `{state, address, detail}`; left out with none configured.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub gateway: Option<serde_json::Value>,
+    /// Why the vault can't be read (`the vault can't be read: …`): then every other `/v1` answer
+    /// is `503` (crate::vault, `answers`). Left out while it reads.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vault_problem: Option<String>,
     /// The machine's memory and each running job's (crate::meter); left out when it can't be read.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub memory: Option<MemoryJson>,
@@ -809,7 +769,8 @@ pub fn account_json(
 }
 
 async fn status(State(shared): State<Arc<Shared>>) -> Result<axum::Json<Status>, ApiError> {
-    // A tool installed or signed in since obid started (first launch on a fresh Mac) shows up here.
+    // A tool installed or signed in since obid started (first launch on a fresh Mac) shows up here,
+    // looked for at most every 2 seconds.
     let agents = shared.config.agents.clone();
     let _ = tokio::task::spawn_blocking(move || crate::accounts::refind_own_logins(&agents)).await;
     let accounts = crate::accounts::list_now(&shared).await;
@@ -852,8 +813,11 @@ async fn status(State(shared): State<Arc<Shared>>) -> Result<axum::Json<Status>,
             on: crate::jobs::cursor_keychain_on(),
             auto: crate::jobs::cursor_keychain_auto(),
         },
-        tunnel: shared.tunnel.json(),
+        // Remote access through a Cloudflare Tunnel is gone (#896): always off, for the apps that
+        // still decode it.
+        tunnel: serde_json::json!({"state": "off", "detail": null}),
         gateway: shared.gateway_state.clone(),
+        vault_problem: crate::vault::check().err(),
         memory: shared
             .jobs
             .memory()
@@ -864,45 +828,6 @@ async fn status(State(shared): State<Arc<Shared>>) -> Result<axum::Json<Status>,
                 waiting,
             }),
     }))
-}
-
-/// `PUT /v1/obid/tunnel` `{"token"}` (#896): keeps the tunnel's run token in the vault and runs
-/// cloudflared on it. `204`; `409` for an obid with no cloudflared, `422` for a bad body or token.
-async fn tunnel_put(
-    State(shared): State<Arc<Shared>>,
-    body: axum::body::Bytes,
-) -> Result<axum::response::Response, ApiError> {
-    #[derive(serde::Deserialize)]
-    #[serde(deny_unknown_fields)]
-    struct Body {
-        token: String,
-    }
-    let body: Body = serde_json::from_slice(&body).map_err(|_| {
-        ApiError::new(
-            StatusCode::UNPROCESSABLE_ENTITY,
-            "The body is {\"token\": \"…\"}.",
-        )
-    })?;
-    shared.tunnel.put(&body.token).map_err(|(status, why)| {
-        ApiError::new(
-            StatusCode::from_u16(status).unwrap_or(StatusCode::CONFLICT),
-            why,
-        )
-    })?;
-    Ok(StatusCode::NO_CONTENT.into_response())
-}
-
-/// `DELETE /v1/obid/tunnel` (#896): stops cloudflared and forgets its token. `204`.
-async fn tunnel_delete(
-    State(shared): State<Arc<Shared>>,
-) -> Result<axum::response::Response, ApiError> {
-    shared.tunnel.delete().map_err(|(status, why)| {
-        ApiError::new(
-            StatusCode::from_u16(status).unwrap_or(StatusCode::SERVICE_UNAVAILABLE),
-            why,
-        )
-    })?;
-    Ok(StatusCode::NO_CONTENT.into_response())
 }
 
 /// The disk space allocated under `path`, each file counted once however many links it has; 0 when

@@ -86,6 +86,8 @@ export const chatOfTask = (taskId: string) => {
 };
 
 const update = (id: string, fn: (c: Chat) => Partial<Chat>) => set(chats.map((c) => (c.id === id ? { ...c, ...fn(c) } : c)));
+// dev only (dev/ControlCenter.tsx): the conversations as they are, and one changed in place
+export const dev = import.meta.env.DEV ? { get: () => chats, patch: update } : undefined;
 
 // Oby's first conversation (onboarding.ts): Oby opens it, not you; your picks in
 // it go in as your words, and Oby's words land as any of its answers do

@@ -789,6 +789,7 @@ impl Place {
                 self.temp.join(".claude"),
                 self.temp.join(".claude.json"),
             ],
+            git: Vec::new(),
         }
     }
 
@@ -2501,6 +2502,7 @@ mod tests {
         let root = std::env::temp_dir().join(format!("obid-warm-{}", std::process::id()));
         std::fs::create_dir_all(&root).unwrap();
         let launch = agent::Launch {
+            own_sandbox: false,
             argv: vec!["/bin/cat".into()],
             env: vec![],
             cwd: root.clone(),
@@ -2908,6 +2910,7 @@ mod tests {
             temp: Some(place.temp.clone()),
             home: Some(place.temp.clone()),
             logins: vec![],
+            git: Vec::new(),
         };
         let web = AtomicBool::new(false);
         let taint = || web.store(true, Ordering::SeqCst);
@@ -2983,6 +2986,7 @@ mod tests {
             temp: Some(place.temp.clone()),
             home: Some(place.temp.clone()),
             logins: vec![],
+            git: Vec::new(),
         };
         let safe = |tool: &str, input: Value| known_safe(tool, &input, &bounds, &place.repos);
         assert!(safe("Read", json!({"file_path": "notes.md"})));
@@ -3016,6 +3020,7 @@ mod tests {
             temp: Some(place.temp.clone()),
             home: Some(place.temp.clone()),
             logins: vec![],
+            git: Vec::new(),
         };
         let read = |path: std::path::PathBuf| {
             taints("Read", &json!({ "file_path": path }), &bounds, &place.repos)

@@ -734,7 +734,7 @@ fn seed_listener_review(config: &Value) {
         let jobs = obid::jobs::Jobs::open(config.clone(), events.clone(), Err("no sandbox".into()))
             .unwrap();
         let (_stop, stopping) = tokio::sync::watch::channel(false);
-        let link = obid::sphere::Link::open(config, jobs, events, stopping).unwrap();
+        let link = obid::sphere::Link::open(config, jobs, events, stopping);
         let mut item = obid::jobs::owner_review_item(
             "job1",
             "obi-ai-bot/obi",
@@ -783,30 +783,6 @@ fn a_phone_cant_approve_a_listeners_review() {
     );
     assert_eq!(dismissed.status, 200, "{}", dismissed.text);
     assert_eq!(dismissed.body["state"], "done");
-}
-
-/// #896: the tunnel's routes are on obid's own API, never on the gateway: a paired phone can't put
-/// or delete the tunnel's token.
-#[test]
-fn a_phone_cannot_reach_the_tunnel_routes() {
-    let folder = Folder::new("gateway-tunnel");
-    let obid = started(&folder);
-    let token = paired(&obid);
-    for method in ["PUT", "DELETE"] {
-        let answer = through(
-            &obid,
-            Some(&token),
-            method,
-            "/v1/obid/tunnel",
-            Some(&json!({"token": "abc"})),
-        );
-        assert!(
-            matches!(answer.status, 403 | 404),
-            "{method}: {} {}",
-            answer.status,
-            answer.text
-        );
-    }
 }
 
 // ---------------------------------------------------------------------------------------------

@@ -144,6 +144,43 @@ pub async fn git(dir: &Path, args: &[&str]) -> Result<String, GitError> {
     run(dir, &args, &[]).await
 }
 
+/// [`git`] in a job's worktree with its git folders given (`GIT_DIR`, `GIT_COMMON_DIR`,
+/// `GIT_WORK_TREE`, crate::jobs, `git_folders`), so git never reads the worktree's `.git` or the
+/// git folder's `commondir`, which the job's agent could have rewritten since obid checked them.
+pub async fn pinned(
+    dir: &Path,
+    folders: &[(&str, String)],
+    args: &[&str],
+) -> Result<String, GitError> {
+    let args: Vec<&OsStr> = args.iter().map(OsStr::new).collect();
+    let extra: Vec<(&str, &str)> = folders.iter().map(|(k, v)| (*k, v.as_str())).collect();
+    run(dir, &args, &extra).await
+}
+
+/// A git command of obid's in `dir` that doesn't wait on the runtime (`std::process`), with what
+/// [`run_bytes`] gives every call (the [`SAFE`] settings, no prompt, none of git's variables from
+/// obid's own environment) and `folders` pinning it to a job's git folders ([`pinned`]); with none,
+/// git finds them itself, as [`run`] does.
+pub fn command(dir: &Path, folders: &[(&str, String)]) -> std::process::Command {
+    let mut command = std::process::Command::new("git");
+    command
+        .current_dir(dir)
+        .args(SAFE)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_OPTIONAL_LOCKS", "0")
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_INDEX_FILE")
+        .env_remove("GIT_COMMON_DIR")
+        .env_remove("GIT_OBJECT_DIRECTORY")
+        .env_remove("GIT_ALTERNATE_OBJECT_DIRECTORIES")
+        .stdin(std::process::Stdio::null());
+    for (key, value) in folders {
+        command.env(key, value);
+    }
+    command
+}
+
 /// The clone of `repo` (`owner/name`) under `home`.
 pub fn clone_path(home: &Path, repo: &str) -> PathBuf {
     let mut path = home.join("clones");

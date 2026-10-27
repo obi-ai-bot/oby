@@ -580,7 +580,7 @@ pub(crate) async fn post_with(
 
 /// What every review obid posts on GitHub ends with, unless it's signed already: under whoever's
 /// login, its words are Oby's or a model's, never the owner's own (crate::github_work, "by Oby:";
-/// crate::github_events reads reviews on Oby's own pull requests).
+/// jobs.rs follows reviews on Oby's own pull requests).
 pub const SIGNED: &str = "by Oby: Oby wrote this review.";
 
 /// Posts the review in `file` on pull request `number` of `repo`, as the reviewer whose settings
@@ -1037,7 +1037,7 @@ mod tests {
             crate::jobs::Jobs::open(config.clone(), events.clone(), Err("no sandbox".into()))
                 .unwrap();
         let (_stop, stopping) = tokio::sync::watch::channel(false);
-        let link = crate::sphere::Link::open(config, jobs, events, stopping).unwrap();
+        let link = crate::sphere::Link::open(config, jobs, events, stopping);
         // A body the scan flags: refused before any gh call.
         let item = ready_item(&format!("AKIA{}", "QWERTYUIOPASDFGH"));
         link.add_items(vec![item.clone()]);

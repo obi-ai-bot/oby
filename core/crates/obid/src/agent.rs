@@ -61,6 +61,10 @@ pub struct Launch {
     pub env: Vec<(OsString, OsString)>,
     pub cwd: PathBuf,
     pub stderr: PathBuf,
+    /// A Claude Code job run in its own sandbox rather than obid's box (`claudeOwnSandbox`,
+    /// crate::jobs, `own_sandbox`): its tools aren't sandboxed, so obid refuses any path outside
+    /// the worktree.
+    pub own_sandbox: bool,
 }
 
 /// What obid answers a permission prompt.
@@ -618,6 +622,7 @@ mod tests {
         .unwrap();
         std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
         let launch = Launch {
+            own_sandbox: false,
             argv: vec![bin.into_os_string()],
             env: vec![("PATH".into(), "/usr/bin:/bin".into())],
             cwd: root.clone(),
@@ -669,6 +674,7 @@ mod tests {
             env: vec![("PATH".into(), "/usr/bin:/bin".into())],
             cwd: root.clone(),
             stderr: root.join("agent.log"),
+            own_sandbox: false,
         };
         let (_stop, stop) = watch::channel(process::Signal::Run);
         let tools = std::sync::Mutex::new(Vec::new());

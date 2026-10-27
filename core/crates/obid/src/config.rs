@@ -9,13 +9,12 @@
 //!             "cursor": {"bin": "cursor-agent", "accounts": [{"id": "cursor", "name": "Cursor", "configDir": "/abs/path/cursor"}]}},
 //!  "repos": [{"repo": "obi-e2e/fixture-app", "remote": "file:///abs/path/remote.git", "defaultBranch": "main", "check": "node --test"}],
 //!  "allowFileRemotes": false,
-//!  "bundledPlugins": "/abs/path/obi/plugins",
-//!  "web": "/abs/path/obi/apps/web/dist",
 //!  "telemetry": false}
 //! ```
 //!
-//! A key the file doesn't know is refused, so a misspelled setting is an error rather than a
-//! default nobody chose.
+//! A top-level key the file doesn't know, or a key a later obid retired from a section, is ignored
+//! with a warning: an update never stops on one. Any other unknown key in a section is refused, so
+//! a misspelled setting is an error rather than a default nobody chose.
 
 use std::net::{Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
@@ -49,7 +48,7 @@ pub const DEFAULT_LISTEN: Option<&str> = if cfg!(target_os = "macos") {
 
 /// The file as written. Validated into [`Config`]. A top-level key obid doesn't know (one a later
 /// obid retired, or an earlier one wrote) is ignored with a warning, never a reason not to start:
-/// every updater would exit otherwise. Inside a section, an unknown key is still refused.
+/// every updater would exit otherwise. So is a key retired from a section ([`RETIRED_INSIDE`]).
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct File {
@@ -66,10 +65,6 @@ struct File {
     repos: Vec<Repo>,
     #[serde(default)]
     allow_file_remotes: bool,
-    #[serde(default)]
-    bundled_plugins: Option<PathBuf>,
-    #[serde(default)]
-    web: Option<PathBuf>,
     #[serde(default)]
     telemetry: bool,
     /// How long one conversation turn may act, in seconds: 1 to 110, 110 when left out.
@@ -103,6 +98,10 @@ struct File {
     /// cursor_keychain_login); left out, obid decides when it starts (crate::jobs::cursor_keychain_wanted).
     #[serde(default)]
     cursor_keychain: Option<bool>,
+    /// The Claude Code accounts whose jobs run in Claude Code's own sandbox with their own folder
+    /// (crate::jobs, `own_sandbox`); left out, none.
+    #[serde(default)]
+    claude_own_sandbox: Vec<String>,
     /// Sharing this Mac (crate::sphere::hosting): where `obi-vm` and the guest image are.
     #[serde(default)]
     vm_helper: Option<PathBuf>,
@@ -239,13 +238,6 @@ pub struct Config {
     /// the file), and GitHub's that gh can push to (crate::repos). Every copy shares them.
     pub repos: crate::repos::Repos,
     pub allow_file_remotes: bool,
-    /// The plug-ins obid ships (`plugins/<id>`), installed into `home/plugins/<id>` at start when
-    /// missing, disabled (docs/ARCHITECTURE.md 5.3, step 1): `bundledPlugins`, or when it is left
-    /// out [`default_bundled_plugins`].
-    pub bundled_plugins: PathBuf,
-    /// The built web app (`apps/web/dist`) obid serves at `/app/` (crate::web): `web`, or when it
-    /// is left out [`default_web`].
-    pub web: PathBuf,
     /// False unless the owner turns it on; obid sends nothing to anyone otherwise.
     pub telemetry: bool,
     /// Where the owner's vault is (crate::vault).
@@ -283,6 +275,11 @@ pub struct Config {
     /// `claude_keychain`: `None` when it's left out, and then obid turns it on by itself on macOS when
     /// Cursor's own login is only in the Keychain (crate::jobs::cursor_keychain_wanted).
     pub cursor_keychain: Option<bool>,
+    /// `claudeOwnSandbox`: the Claude Code accounts (by id) whose jobs run unboxed by obid, with the
+    /// account's own folder and login, their shell in Claude Code's own sandbox and their tools kept
+    /// out of obid's home and the person's (the owner's decision of 2026-10-26; crate::jobs,
+    /// `own_sandbox`). Every other account's jobs stay in obid's box with a copy of the login.
+    pub claude_own_sandbox: Vec<String>,
     /// How conversations run.
     pub conversation: Conversation,
     /// `vmHelper` and `vmImage`: `obi-vm` and the guest image's folder, when not the defaults
@@ -301,22 +298,6 @@ pub struct Config {
     /// (crate::push); Deskree's, `https://oby-control.deskree.com`, when left out. An iPhone's
     /// registration with any other is refused.
     pub push_relay: String,
-}
-
-/// Where the plug-ins obid ships are when the configuration doesn't say: the `plugins/` folder
-/// of the repository this obid was built from (`core/crates/obid/../../../plugins`).
-pub fn default_bundled_plugins() -> PathBuf {
-    crate::app::resources()
-        .map(|dir| dir.join("plugins"))
-        .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../plugins"))
-}
-
-/// Where the built web app is when the configuration doesn't say: `apps/web/dist` in the
-/// repository this obid was built from (`core/crates/obid/../../../apps/web/dist`).
-pub fn default_web() -> PathBuf {
-    crate::app::resources()
-        .map(|dir| dir.join("web"))
-        .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps/web/dist"))
 }
 
 impl Config {
@@ -342,7 +323,9 @@ impl Config {
 
     /// Checks a configuration given as JSON text.
     pub fn parse(text: &str) -> Result<Config, Problem> {
-        let file: File = serde_json::from_str(text).map_err(Problem::Parse)?;
+        let mut value: serde_json::Value = serde_json::from_str(text).map_err(Problem::Parse)?;
+        let inside = ignore_retired_inside(&mut value);
+        let file: File = serde_json::from_value(value).map_err(Problem::Parse)?;
         let invalid = |problem: String| Err(Problem::Invalid(problem));
 
         let Some(listen_text) = file.listen.or_else(|| DEFAULT_LISTEN.map(str::to_owned)) else {
@@ -471,13 +454,6 @@ impl Config {
                 return invalid(format!("repos: {}'s defaultBranch is empty.", repo.repo));
             }
         }
-        if let Some(dir) = &file.bundled_plugins
-            && !dir.is_absolute()
-        {
-            return invalid(format!(
-                "bundledPlugins is {dir:?}: it must be an absolute path, the folder of the plug-ins obid ships."
-            ));
-        }
         // The guest image comes over https; plain http only from this machine (a test's server).
         // Parsed, never matched as text: `http://127.0.0.1:1@evil.example/vm` is evil.example's.
         if let Some(url) = &file.vm_image_url {
@@ -512,13 +488,6 @@ impl Config {
         {
             return invalid(format!(
                 "guestRequestEvery is {every}: it must be 0 (off) or more seconds."
-            ));
-        }
-        if let Some(dir) = &file.web
-            && !dir.is_absolute()
-        {
-            return invalid(format!(
-                "web is {dir:?}: it must be an absolute path, the folder of the built web app (apps/web/dist)."
             ));
         }
 
@@ -633,8 +602,6 @@ impl Config {
             agents: crate::accounts::Live::new(file.agents),
             repos: crate::repos::Repos::new(file.repos),
             allow_file_remotes: file.allow_file_remotes,
-            bundled_plugins: file.bundled_plugins.unwrap_or_else(default_bundled_plugins),
-            web: file.web.unwrap_or_else(default_web),
             telemetry: file.telemetry,
             vault,
             turn_budget: std::time::Duration::from_secs(turn_budget),
@@ -645,8 +612,9 @@ impl Config {
             job_token_budget,
             gateway,
             claude_keychain: file.claude_keychain,
-            ignored: file.ignored.into_keys().collect(),
+            ignored: file.ignored.into_keys().chain(inside).collect(),
             cursor_keychain: file.cursor_keychain,
+            claude_own_sandbox: file.claude_own_sandbox,
             vm_helper: file.vm_helper,
             vm_image: file.vm_image,
             vm_image_url: file.vm_image_url,
@@ -661,6 +629,25 @@ impl Config {
             },
         })
     }
+}
+
+/// Keys a later obid retired from inside a section: ignored with a warning, like a top-level key
+/// obid doesn't know. Any other unknown key in a section is still refused: a typo there (`checks`
+/// for a repository's `check`, a mistyped `configDir`) would quietly drop a check or move an account
+/// to another login.
+const RETIRED_INSIDE: &[(&str, &str)] = &[("conversation", "harness")];
+
+/// Takes [`RETIRED_INSIDE`]'s keys out of the file and says where each was (`conversation.harness`).
+fn ignore_retired_inside(file: &mut serde_json::Value) -> Vec<String> {
+    let mut ignored = Vec::new();
+    for (section, key) in RETIRED_INSIDE {
+        if let Some(serde_json::Value::Object(map)) = file.get_mut(*section)
+            && map.remove(*key).is_some()
+        {
+            ignored.push(format!("{section}.{key}"));
+        }
+    }
+    ignored
 }
 
 /// Why a configuration text can't be used: it isn't the file's shape, or a value is wrong.
@@ -956,6 +943,12 @@ mod tests {
             parse(serde_json::json!({"claudeKeychain": false})),
             Some(false)
         );
+        let own = |extra| Config::parse(&with(extra)).unwrap().claude_own_sandbox;
+        assert!(own(serde_json::json!({})).is_empty());
+        assert_eq!(
+            own(serde_json::json!({"claudeOwnSandbox": ["default"]})),
+            ["default"]
+        );
         let cursor = |extra| Config::parse(&with(extra)).unwrap().cursor_keychain;
         assert_eq!(cursor(serde_json::json!({})), None);
         assert_eq!(
@@ -1158,53 +1151,101 @@ mod tests {
     }
 
     #[test]
-    fn bundled_plugins_are_the_repositorys_unless_given() {
-        let config = Config::parse(&with(serde_json::json!({}))).unwrap();
-        assert_eq!(config.bundled_plugins, default_bundled_plugins());
-        assert!(
-            config
-                .bundled_plugins
-                .join("tetrix/obi-plugin.json")
-                .is_file(),
-            "{:?}",
-            config.bundled_plugins
-        );
-        let config = Config::parse(&with(
-            serde_json::json!({"bundledPlugins": "/opt/obi/plugins"}),
-        ))
-        .unwrap();
-        assert_eq!(config.bundled_plugins, PathBuf::from("/opt/obi/plugins"));
-        assert!(
-            problem(&with(serde_json::json!({"bundledPlugins": "plugins"}))).contains("absolute")
-        );
-    }
-
-    #[test]
-    fn the_web_app_is_the_repositorys_unless_given() {
-        let config = Config::parse(&with(serde_json::json!({}))).unwrap();
-        assert_eq!(config.web, default_web());
-        assert!(config.web.ends_with("apps/web/dist"), "{:?}", config.web);
-        let config = Config::parse(&with(serde_json::json!({"web": "/opt/obi/web"}))).unwrap();
-        assert_eq!(config.web, PathBuf::from("/opt/obi/web"));
-        assert!(problem(&with(serde_json::json!({"web": "dist"}))).contains("absolute"));
-    }
-
-    #[test]
     fn home_is_absolute() {
         assert!(problem(&with(serde_json::json!({"home": "obid-home"}))).contains("absolute"));
     }
 
-    /// A top-level key obid doesn't know is ignored and named; one inside a section is refused.
+    /// A top-level key obid doesn't know, and a key retired from a section, are ignored and named;
+    /// any other unknown key inside a section is refused, so a typo never drops a check or moves an
+    /// account to another login.
     #[test]
-    fn ignores_top_level_keys_it_doesnt_know() {
+    fn ignores_unknown_top_level_and_retired_keys_only() {
         let config = Config::parse(&with(
-            serde_json::json!({"telemetri": true, "zzRetired": 1}),
+            serde_json::json!({"telemetri": true, "zzRetired": 1, "conversation": {"harness": false}}),
         ));
         let config = config.unwrap();
-        assert_eq!(config.ignored, ["telemetri", "zzRetired"]);
+        assert_eq!(
+            config.ignored,
+            ["telemetri", "zzRetired", "conversation.harness"]
+        );
         assert!(!config.telemetry);
-        let inside = serde_json::json!({"agents": {"claude": {"bin": "claude", "accountz": []}}});
-        assert!(problem(&with(inside)).contains("accountz"));
+        let typos = [
+            (
+                "agents",
+                serde_json::json!({"claude": {"bin": "claude", "accountz": []}}),
+                "accountz",
+            ),
+            (
+                "agents",
+                serde_json::json!({"claude": {"bin": "claude", "accounts": [
+                {"id": "w", "name": "W", "confDir": "/srv/w"}]}}),
+                "confDir",
+            ),
+            (
+                "repos",
+                serde_json::json!([{"repo": "o/r", "remote": "https://github.com/o/r",
+                "checks": "make test"}]),
+                "checks",
+            ),
+            (
+                "vault",
+                serde_json::json!({"store": "file", "path": "/x"}),
+                "path",
+            ),
+        ];
+        for (key, value, says) in typos {
+            assert!(
+                problem(&with(serde_json::json!({ key: value }))).contains(says),
+                "{says}"
+            );
+        }
+    }
+
+    /// Every configuration Oby.app wrote from 0.2.0 to 0.4.5 (crate::app::default_config, the
+    /// repositories crate::repos adds, an account's payer), with every key obid has retired or is
+    /// about to retire, still starts.
+    #[test]
+    fn every_older_configuration_and_retired_key_still_reads() {
+        let mut file = crate::app::default_config(Path::new("/Users/w"), "w", true);
+        file["repos"] = serde_json::json!([
+            {"repo": "o/r", "remote": "https://github.com/o/r.git", "defaultBranch": "main"},
+            {"repo": "o/s", "remote": "git@github.com:o/s.git", "defaultBranch": "dev",
+             "check": "make test", "pullRequests": true}]);
+        file["agents"]["claude"]["accounts"][0]["payer"] = serde_json::json!("Deskree");
+        Config::parse(&file.to_string()).unwrap();
+        for (key, value) in [
+            ("vmHelper", serde_json::json!("/x/obi-vm")),
+            ("vmImage", serde_json::json!("/x/vm")),
+            (
+                "vmImageUrl",
+                serde_json::json!("https://downloads.oby.deskree.com/vm"),
+            ),
+            ("guestRequestEvery", serde_json::json!(900)),
+            (
+                "guestModelApi",
+                serde_json::json!("https://api.anthropic.com"),
+            ),
+            ("turnBudget", serde_json::json!(110)),
+            ("leastThink", serde_json::json!(1)),
+            ("orchestratorDelay", serde_json::json!(30)),
+            (
+                "conversation",
+                serde_json::json!({"agent": "plan", "harness": true}),
+            ),
+            ("bundledPlugins", serde_json::json!("/x/plugins")),
+            ("web", serde_json::json!("/x/web")),
+            ("gateway", serde_json::json!("127.0.0.1:8810")),
+            ("claudeKeychain", serde_json::json!(true)),
+            ("cursorKeychain", serde_json::json!(false)),
+            (
+                "pushRelay",
+                serde_json::json!("https://oby-control.deskree.com"),
+            ),
+        ] {
+            file[key] = value;
+        }
+        let config = Config::parse(&file.to_string()).unwrap();
+        assert!(config.ignored.contains(&"conversation.harness".to_owned()));
     }
 
     #[test]

@@ -426,6 +426,8 @@ pub struct Link {
     tokening: tokio::sync::Mutex<()>,
     /// One key, card or join call at a time.
     joining: tokio::sync::Mutex<()>,
+    /// Why a key file that's there couldn't be read when obid started: no key is made over it.
+    unread_key: Option<String>,
     /// One pass over the shares of the owner's API accounts at a time (crate::sphere::shares).
     shares_sync: tokio::sync::Mutex<()>,
     /// The chain as this Obi knows it for itself: no rollback, no fork (crate::sphere::link::ChainKept).
@@ -582,17 +584,36 @@ fn needs_you_first(items: &mut [impl std::borrow::Borrow<Item>], sorts: &crate::
 }
 
 impl Link {
-    /// Opens what obid keeps of its Sphere, its exchanges, inbox and decisions.
+    /// Opens what obid keeps of its Sphere, its exchanges, inbox and decisions. A key that can't
+    /// be read is left out and said (the log, `lastError`), never a reason not to start: the Sphere
+    /// is optional. No new key is made over it ([`Link::make_key`]): that would lose the Obi's
+    /// identity and its paired phones.
     pub fn open(
         config: Config,
         jobs: Arc<Jobs>,
         events: Events,
         stopping: watch::Receiver<bool>,
-    ) -> std::io::Result<Arc<Link>> {
+    ) -> Arc<Link> {
         let files = Files::new(&config.home);
         let setup_config = config.clone();
-        let key = files.load_key()?.map(Arc::new);
-        let seal = files.load_seal_key()?.map(Arc::new);
+        let mut unread = None;
+        let key = match files.load_key() {
+            Ok(key) => key.map(Arc::new),
+            Err(e) => {
+                unread = Some(format!("obid can't read its Obi key: {e}"));
+                None
+            }
+        };
+        let seal = match files.load_seal_key() {
+            Ok(seal) => seal.map(Arc::new),
+            Err(e) => {
+                unread.get_or_insert(format!("obid can't read its seal key: {e}"));
+                None
+            }
+        };
+        if let Some(why) = &unread {
+            tracing::error!("sphere: {why}");
+        }
         let membership = files.load_membership();
         let delegation = files.load_delegation();
         // What obid's log layer takes out of plug-ins' lines (crate::logs).
@@ -606,8 +627,8 @@ impl Link {
         if let Some(delegation) = &delegation {
             secrets.learn(DELEGATION_SECRET, delegation);
         }
-        let exchanges = Exchanges::open(&config.home)?;
-        let inbox = Inbox::open(&config.home)?;
+        let exchanges = Exchanges::open(&config.home);
+        let inbox = Inbox::open(&config.home);
         let decisions = Decisions::open(&config.home);
         let sharing = sharing::Kept::open(&config.home);
         let pins = super::pins::Pins::open(&config.home);
@@ -637,11 +658,21 @@ impl Link {
                         .is_some_and(|p| inbox::permission_item_id(&i.job, &p.id) == i.id);
                 // A permission waited on an agent that ended with obid: its job's agent asks again
                 // when it runs, so the old item is done by itself.
-                if matches!(
+                // An older obid's offer about Oby's own pull request (`Address it`, `Fix CI` on
+                // its red head): nothing starts those any more, so it's done by itself too; the
+                // follower asks the owner about that pull request instead (crate::merge). So is a
+                // plug-in's event: obid has no plug-ins any more, and its offers start nothing.
+                let own_pr_offer = i.kind == "github"
+                    && i.github
+                        .as_deref()
+                        .is_some_and(|g| g["list"] == "comments" || g["list"] == "checks");
+                if (matches!(
                     i.kind.as_str(),
                     "permission" | "plan" | inbox::QUESTION_KIND
-                ) && i.done.is_none()
-                    && !kept
+                ) && !kept
+                    || own_pr_offer
+                    || i.kind == "pluginEvent")
+                    && i.done.is_none()
                 {
                     i.done = Some(now);
                     if let Err(e) = inbox.save(&i) {
@@ -681,7 +712,7 @@ impl Link {
             directory: Directory::default(),
             directory_read: 0,
             last_poll: None,
-            last_error: None,
+            last_error: unread.clone(),
             exchanges: by_id,
             inbox: items,
             decisions: decisions.load(),
@@ -710,6 +741,7 @@ impl Link {
             saving: Mutex::new(()),
             tokening: tokio::sync::Mutex::new(()),
             joining: tokio::sync::Mutex::new(()),
+            unread_key: unread,
             shares_sync: tokio::sync::Mutex::new(()),
             chain: Mutex::new(chain),
             following: AtomicBool::new(false),
@@ -746,7 +778,7 @@ impl Link {
                 }
             })
         }));
-        Ok(link)
+        link
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, State> {
@@ -877,100 +909,6 @@ impl Link {
         }
     }
 
-    /// An event a plug-in emitted and the host accepted: one `pluginEvent` inbox item
-    /// (docs/runner-api.md, "obid only: plug-ins"), unless an item for the same plug-in and event
-    /// id is there already, open or done. Past [`inbox::MAX_OPEN_EVENTS`] open items of that
-    /// plug-in, the oldest open one is settled by itself, with no answer. The event never starts
-    /// work by itself and no remembered decision applies to it: a failed deploy, an alert or a
-    /// ticket about one of obid's repositories is an offer, started only on an answer (#1124).
-    pub fn plugin_event(&self, event: obi_plugin_api::PluginEvent) {
-        self.add_event_item(self.plugin_event_offer(&event));
-    }
-
-    /// The item [`Self::plugin_event`] keeps for `event`, an offer on one of obid's repositories.
-    pub fn plugin_event_offer(&self, event: &obi_plugin_api::PluginEvent) -> Item {
-        let repo = &event.event.subject.repo;
-        let known = self.config.repos.get().iter().any(|r| &r.repo == repo);
-        inbox::plugin_event_item(event, known, time::now())
-    }
-
-    /// A `pluginEvent` item from a plug-in: kept
-    /// unless an item with its id is there already, open or done; past
-    /// [`inbox::MAX_OPEN_EVENTS`] open items of its source (`plugin.id`), the oldest open one is
-    /// settled by itself, with no answer.
-    pub fn add_event_item(&self, item: Item) -> bool {
-        let now = time::now();
-        let mut changed = Vec::new();
-        {
-            let mut state = self.lock();
-            if state.inbox.contains_key(&item.id) {
-                return false;
-            }
-            let source = item
-                .plugin
-                .as_ref()
-                .and_then(|p| p["id"].as_str())
-                .unwrap_or_default()
-                .to_owned();
-            let plugin = source.as_str();
-            // Oldest first, in the order they arrived (not by id: ids are hashes).
-            let mut open: Vec<(u64, String)> = state
-                .inbox
-                .values()
-                .filter(|i| {
-                    i.kind == "pluginEvent"
-                        && i.done.is_none()
-                        && i.plugin.as_ref().and_then(|p| p["id"].as_str()) == Some(plugin)
-                })
-                .map(|i| (i.arrival_order(), i.id.clone()))
-                .collect();
-            open.sort();
-            let over = (open.len() + 1).saturating_sub(inbox::MAX_OPEN_EVENTS);
-            for (_, id) in open.into_iter().take(over) {
-                if let Some(old) = state.inbox.get_mut(&id) {
-                    old.done = Some(now);
-                    changed.push(old.clone());
-                }
-            }
-            state.inbox.insert(item.id.clone(), item.clone());
-            changed.push(item);
-        }
-        for item in &changed {
-            self.save_item(item);
-        }
-        true
-    }
-
-    /// Settles an open `pluginEvent` item by itself, with `answer` saying why (its source said the
-    /// problem went away, #1311): one already answered, or done, is left alone.
-    pub fn settle_event(&self, id: &str, answer: &str) {
-        let settled = {
-            let mut state = self.lock();
-            let Some(item) = state.inbox.get_mut(id).filter(|i| i.done.is_none()) else {
-                return;
-            };
-            item.done = Some(time::now());
-            item.answer = Some(answer.to_owned());
-            item.clone()
-        };
-        self.save_item(&settled);
-    }
-
-    /// Settles, as [`Self::settle_event`] does, every open `pluginEvent` item that `matches` (a
-    /// PagerDuty incident's offers, opened and opened again, #1312).
-    pub fn settle_events(&self, matches: impl Fn(&Item) -> bool, answer: &str) {
-        let ids: Vec<String> = self
-            .lock()
-            .inbox
-            .values()
-            .filter(|i| i.kind == "pluginEvent" && i.done.is_none() && matches(i))
-            .map(|i| i.id.clone())
-            .collect();
-        for id in ids {
-            self.settle_event(&id, answer);
-        }
-    }
-
     pub fn use_relay(&self, relay: Arc<crate::relay::Relay>) {
         let _ = self.relay.set(relay);
     }
@@ -995,11 +933,7 @@ impl Link {
             let mut state = self.lock();
             if let Some(live) = live {
                 for item in state.inbox.values_mut() {
-                    if item.kind == "github"
-                        && item.done.is_none()
-                        && !crate::github_events::ours(item)
-                        && !live.contains(&item.id)
-                    {
+                    if item.kind == "github" && item.done.is_none() && !live.contains(&item.id) {
                         item.done = Some(now);
                         changed.push(item.clone());
                     }
@@ -1010,44 +944,6 @@ impl Link {
                 if !state.inbox.contains_key(&item.id) {
                     state.inbox.insert(item.id.clone(), item.clone());
                     changed.push(item);
-                }
-            }
-        }
-        for item in &changed {
-            self.save_item(item);
-        }
-    }
-
-    /// What GitHub's events found on Oby's own pull requests (crate::github_events): each open
-    /// offer about one that `stands` says doesn't stand any more is done by itself, with no
-    /// answer; each of `offers` that never was in the inbox is added, or, for comments on a pull
-    /// request whose offer is still open, joins that one.
-    pub fn github_events(&self, offers: Vec<Item>, stands: impl Fn(&Item) -> bool) {
-        let now = time::now();
-        let mut changed = Vec::new();
-        {
-            let mut state = self.lock();
-            for item in state.inbox.values_mut() {
-                if item.done.is_none() && crate::github_events::ours(item) && !stands(item) {
-                    item.done = Some(now);
-                    changed.push(item.clone());
-                }
-            }
-            for offer in offers {
-                let mut joined = false;
-                for open in state.inbox.values_mut().filter(|i| i.done.is_none()) {
-                    let before = open.github.clone();
-                    if crate::github_events::join(open, &offer) {
-                        joined = true;
-                        if open.github != before {
-                            changed.push(open.clone());
-                        }
-                        break;
-                    }
-                }
-                if !joined && !state.inbox.contains_key(&offer.id) {
-                    state.inbox.insert(offer.id.clone(), offer.clone());
-                    changed.push(offer);
                 }
             }
         }
@@ -1261,9 +1157,7 @@ impl Link {
     }
 
     /// `POST /v1/inbox/{id}/answer` on a `github` item: `Review it`, `Fix it` or `Fix CI` starts the
-    /// work as `POST /v1/github/work/{id}/start` does, and on an offer about Oby's own pull request
-    /// `Address it` or `Fix CI` starts its job's follow-up (crate::github_events::start); an error
-    /// leaves the item open. `Dismiss` or
+    /// work as `POST /v1/github/work/{id}/start` does; an error leaves the item open. `Dismiss` or
     /// done settle it, later puts it off. Nothing is sent to GitHub. A review in a repository obid
     /// doesn't work in yet waits for the owner's signed Confirm instead, which adds it (#776,
     /// #1118): an API token alone (an agent, oby-mcp) never widens what obid clones.
@@ -1284,16 +1178,7 @@ impl Link {
                         format!("The answer is {start} or {}.", inbox::DISMISS),
                     ));
                 }
-                if *answer == start && crate::github_events::ours(&item) {
-                    // A follow-up of Oby's own pull request's job.
-                    match crate::github_events::start(&self.jobs, &self.config, &item).await {
-                        Ok(job) => item.job = job.id,
-                        Err(why) => {
-                            self.lock().inbox.insert(item.id.clone(), item.clone());
-                            return Err(why);
-                        }
-                    }
-                } else if *answer == start {
+                if *answer == start {
                     let work = item.github.as_deref().cloned().unwrap_or_default();
                     let list = work["list"].as_str().unwrap_or_default();
                     let repo = work["repo"].as_str().unwrap_or_default();
@@ -1370,24 +1255,6 @@ impl Link {
         )
     }
 
-    /// `POST /v1/inbox/{id}/answer` on a plug-in's offer with its start answer (`Look into it`,
-    /// `Fix it`), which `answer` claimed: starts the work (crate::event_work); what couldn't start
-    /// leaves the item open again. Nothing is sent anywhere.
-    async fn answer_plugin_offer(&self, mut item: Item, answer: String) -> Result<Value, ApiError> {
-        match crate::event_work::start(&self.jobs, &self.config, &item).await {
-            Ok(job) => item.job = job.id,
-            Err(why) => {
-                self.lock().inbox.insert(item.id.clone(), item.clone());
-                return Err(why);
-            }
-        }
-        item.done = Some(time::now());
-        item.answer = Some(answer);
-        self.lock().inbox.insert(item.id.clone(), item.clone());
-        self.save_item(&item);
-        Ok(item.to_json())
-    }
-
     /// Changes an inbox item as `change` does, keeps it and says so.
     pub fn change_item(&self, id: &str, change: impl FnOnce(&mut Item)) {
         let changed = {
@@ -1402,8 +1269,7 @@ impl Link {
     }
 
     /// `POST /v1/inbox/{id}/answer` on a `pluginEvent` item: `Dismiss` or `{"done": true}` settles
-    /// it, `later` puts it off. Nothing is sent anywhere. (An offer's start is
-    /// [`Self::answer_plugin_offer`]'s.)
+    /// it, `later` puts it off. Nothing is sent anywhere.
     fn answer_plugin_event(
         &self,
         mut item: Item,
@@ -1697,6 +1563,7 @@ impl Link {
     /// `POST /v1/obid/sphere/key`: the Obi key, made the first time.
     pub async fn make_key(&self) -> Result<Value, ApiError> {
         let _one = self.joining.lock().await;
+        self.no_key_over_unread()?;
         let existing = self.lock().key.clone();
         let key = match existing {
             Some(key) => key,
@@ -1717,6 +1584,19 @@ impl Link {
                   "sealKeyId": seal.key_id(), "sealPublicKey": seal.public_key()}))
     }
 
+    /// `409` while a key file obid couldn't read at start is there: a new key would replace it.
+    fn no_key_over_unread(&self) -> Result<(), ApiError> {
+        match &self.unread_key {
+            Some(why) => Err(api(
+                StatusCode::CONFLICT,
+                format!(
+                    "{why}. Oby makes no new key over it, which would end this Obi and its paired phones: fix the file, or move it out of obid's home, then restart obid."
+                ),
+            )),
+            None => Ok(()),
+        }
+    }
+
     /// Whether a card's seal key, when it has one, is obid's own.
     fn carries_own_seal_key(&self, params: &Map<String, Value>) -> bool {
         let Some(public) = params.get("seal_public_key") else {
@@ -1733,6 +1613,7 @@ impl Link {
         if let Some(seal) = self.lock().seal.clone() {
             return Ok(seal);
         }
+        self.no_key_over_unread()?;
         let seal = Arc::new(self.files.make_seal_key().map_err(|e| {
             api(
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -5489,30 +5370,6 @@ impl Link {
             }
             item
         };
-        // A plug-in's offer (#1124): its start answer claims the item under the lock, as a GitHub
-        // offer's does, so a second answer finds it done and starts nothing.
-        let offer = {
-            let mut state = self.lock();
-            let item = state
-                .inbox
-                .get(id)
-                .filter(|i| {
-                    i.done.is_none()
-                        && i.kind == "pluginEvent"
-                        && i.options.len() > 1
-                        && matches!(&given, Given::Answer(a) if i.options.first() == Some(a))
-                })
-                .cloned();
-            if item.is_some()
-                && let Some(kept) = state.inbox.get_mut(id)
-            {
-                kept.done = Some(time::now());
-            }
-            item
-        };
-        if let (Some(item), Given::Answer(answer)) = (offer, &given) {
-            return self.answer_plugin_offer(item, answer.clone()).await;
-        }
         let share_used = self
             .lock()
             .inbox
@@ -7429,7 +7286,7 @@ mod tests {
         let events = Events::new();
         let jobs = Jobs::open(config.clone(), events.clone(), Err("no sandbox".into())).unwrap();
         let (_stop, stopping) = watch::channel(false);
-        let link = Arc::new(Link::open(config, jobs, events, stopping).unwrap());
+        let link = Arc::new(Link::open(config, jobs, events, stopping));
         let now = time::now();
         const HEAD: &str = "6d20146f366b9fac8907b5066c30ee39aaec09b3";
         const OLDER: &str = "1111111111111111111111111111111111111111";
@@ -7614,7 +7471,7 @@ mod tests {
         let events = Events::new();
         let jobs = Jobs::open(config.clone(), events.clone(), Err("no sandbox".into())).unwrap();
         let (_stop, stopping) = watch::channel(false);
-        let link = Link::open(config, jobs, events, stopping).unwrap();
+        let link = Link::open(config, jobs, events, stopping);
         let head = "6d20146f366b9fac8907b5066c30ee39aaec09b3";
         let change = approval::Change {
             repo: "acme/app",
@@ -7710,7 +7567,7 @@ mod tests {
         let events = Events::new();
         let jobs = Jobs::open(config.clone(), events.clone(), Err("no sandbox".into())).unwrap();
         let (_stop, stopping) = watch::channel(false);
-        let link = Link::open(config, jobs, events.clone(), stopping).unwrap();
+        let link = Link::open(config, jobs, events.clone(), stopping);
         let mut heard = events.subscribe();
 
         let request = json!({"id": "c-1", "correlation_id": "c-1", "type": "review_request",
@@ -7756,10 +7613,10 @@ mod tests {
                 ("exchange", json!("declined")),
             ]
         );
-        let kept = Inbox::open(&home).unwrap().load_all();
+        let kept = Inbox::open(&home).load_all();
         assert_eq!(kept.len(), 1);
         assert_eq!(kept[0].answer.as_deref(), Some(inbox::DECLINE));
-        let kept = Exchanges::open(&home).unwrap().load_all();
+        let kept = Exchanges::open(&home).load_all();
         assert_eq!(kept.len(), 1);
         assert_eq!(kept[0].state, "declined");
         let _ = std::fs::remove_dir_all(&home);
@@ -7785,7 +7642,7 @@ mod tests {
         let events = Events::new();
         let jobs = Jobs::open(config.clone(), events.clone(), Err("no sandbox".into())).unwrap();
         let (stop, stopping) = watch::channel(false);
-        let link = Link::open(config, jobs, events, stopping).unwrap();
+        let link = Link::open(config, jobs, events, stopping);
         (link, home, stop)
     }
 
@@ -7892,7 +7749,7 @@ mod tests {
         let events = Events::new();
         let jobs = Jobs::open(config.clone(), events.clone(), Err("no sandbox".into())).unwrap();
         let (_stop, stopping) = watch::channel(false);
-        let link = Link::open(config, jobs, events, stopping).unwrap();
+        let link = Link::open(config, jobs, events, stopping);
         link.adopt_github_owner("not_a_slug");
         assert_eq!(link.owner(), login);
         link.adopt_github_owner("WellPrado");
@@ -7920,7 +7777,7 @@ mod tests {
         let events = Events::new();
         let jobs = Jobs::open(config.clone(), events.clone(), Err("no sandbox".into())).unwrap();
         let (_stop, stopping) = watch::channel(false);
-        let link = Link::open(config, jobs, events, stopping).unwrap();
+        let link = Link::open(config, jobs, events, stopping);
         link.adopt_github_owner("wellprado");
         assert_eq!(link.owner(), "carol");
         assert_eq!(Files::new(&home).load_owner().as_deref(), Some("carol"));
@@ -7934,7 +7791,7 @@ mod tests {
         let events = Events::new();
         let jobs = Jobs::open(config.clone(), events.clone(), Err("no sandbox".into())).unwrap();
         let (_stop, stopping) = watch::channel(false);
-        let again = Link::open(config, jobs, events, stopping).unwrap();
+        let again = Link::open(config, jobs, events, stopping);
         again.adopt_github_owner("wellprado");
         assert_eq!(again.owner(), "carol");
         let _ = std::fs::remove_dir_all(&home);
@@ -8129,14 +7986,14 @@ mod tests {
         let _ = std::fs::remove_dir_all(&home);
     }
 
-    /// The inbox lists what needs the owner first (with what waits for the model), then FYI, then
-    /// ignore, each by arrival; a second item about the same thing is `ignore` while the one that
-    /// stands for it is open, an offer standing before what only says something; and the model's
-    /// sort is kept once, the apps told (crate::triage).
+    /// A key file obid can't read starts obid all the same, says why in `lastError`, and no new key
+    /// is made over it: the Obi's identity and its paired phones stay.
     #[tokio::test]
-    async fn the_inbox_lists_what_needs_you_first() {
-        let home = std::env::temp_dir().join(format!("obid-link-triage-{}", std::process::id()));
+    async fn an_unreadable_key_starts_obid_but_is_never_replaced() {
+        let home = std::env::temp_dir().join(format!("obid-link-bad-key-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(home.join("keys")).unwrap();
+        std::fs::write(home.join("keys/obi.key"), "not a key").unwrap();
         let config = Config::parse(
             &json!({"listen": "127.0.0.1:0", "home": home, "owner": "wellington"}).to_string(),
         )
@@ -8144,110 +8001,19 @@ mod tests {
         let events = Events::new();
         let jobs = Jobs::open(config.clone(), events.clone(), Err("no sandbox".into())).unwrap();
         let (_stop, stopping) = watch::channel(false);
-        let link = Link::open(config, jobs, events.clone(), stopping).unwrap();
-        let mut heard = events.subscribe();
-        let event = |id: &str, kind: &str, subject: Value| -> obi_plugin_api::PluginEvent {
-            serde_json::from_value(json!({"plugin": "tetrix", "event": {"id": id, "kind": kind,
-                "occurredAt": "2026-10-23T03:12:00Z", "subject": subject, "actor": "sangam",
-                "data": {"title": "Needs you NOW", "url": "https://example.com/x"}}}))
-            .unwrap()
-        };
-        let warning = event(
-            "w",
-            "alert.fired",
-            json!({"repo": "o/r", "project": "api", "severity": "warning"}),
+        let link = Link::open(config, jobs, events, stopping);
+        let said = link.membership_json()["lastError"].clone();
+        assert!(
+            said.as_str().unwrap().contains("can't read its Obi key"),
+            "{said}"
         );
-        let review = event(
-            "r",
-            "pull_request.review_requested",
-            json!({"repo": "o/r", "pr": 12}),
-        );
-        link.plugin_event(warning);
-        link.plugin_event(review);
-        let work: crate::github_work::Item = serde_json::from_value(json!({
-            "id": "i-7", "list": "assigned", "repo": "o/r", "number": 7, "title": "Fix it",
-            "url": "https://github.com/o/r/issues/7", "author": "sangam", "labels": [],
-            "updated": "2026-10-23T03:12:00Z", "state": "OPEN", "draft": null,
-            "reviewDecision": null, "checks": null, "board": null}))
-        .unwrap();
-        let mut asked = work.clone();
-        (asked.id, asked.list, asked.number) = ("r-12".into(), "reviews".into(), 12);
-        link.github_work(&[asked, work], None);
-
-        let drain = |heard: &mut tokio::sync::broadcast::Receiver<crate::events::Event>| {
-            std::iter::from_fn(|| heard.try_recv().ok())
-                .map(|e| (e.data["title"].clone(), e.data["triage"].clone()))
-                .collect::<Vec<_>>()
-        };
-        // The plug-in's review request needed the owner when it came; the feed's offer of the same
-        // review then stands for both.
+        let refused = link.make_key().await.err().unwrap();
+        assert_eq!(refused.status, StatusCode::CONFLICT);
         assert_eq!(
-            drain(&mut heard),
-            [
-                (json!("Alert: api (warning)"), json!("fyi")),
-                (json!("Review requested: o/r #12"), json!("needs_you")),
-                (json!("Review requested: r #12"), json!("needs_you")),
-                (json!("Assigned to you: r #7"), json!("pending")),
-            ]
+            std::fs::read_to_string(home.join("keys/obi.key")).unwrap(),
+            "not a key"
         );
-        let order = |items: Vec<Value>| -> Vec<(String, Value)> {
-            items
-                .iter()
-                .map(|i| (i["title"].as_str().unwrap().to_owned(), i["triage"].clone()))
-                .collect()
-        };
-        let listed = order(link.inbox_json(false, 50).as_array().unwrap().clone());
-        assert_eq!(
-            listed,
-            [
-                ("Review requested: r #12".to_owned(), json!("needs_you")),
-                ("Assigned to you: r #7".to_owned(), json!("pending")),
-                ("Alert: api (warning)".to_owned(), json!("fyi")),
-                ("Review requested: o/r #12".to_owned(), json!("ignore")),
-            ]
-        );
-        let waiting: Vec<String> = link
-            .waiting_items(time::now())
-            .into_iter()
-            .map(|i| i.title)
-            .collect();
-        assert_eq!(
-            waiting,
-            listed.iter().map(|(t, _)| t.clone()).collect::<Vec<_>>()
-        );
-        // The offer dismissed, the plug-in's request needs the owner again.
-        link.answer("github-r-12", br#"{"answer": "Dismiss"}"#)
-            .await
-            .ok()
-            .unwrap();
-        assert_eq!(
-            order(link.inbox_json(false, 50).as_array().unwrap().clone())[0],
-            ("Review requested: o/r #12".to_owned(), json!("needs_you"))
-        );
-        drain(&mut heard);
-
-        // Only the assigned issue waits for the model; its sort is kept once, the apps told.
-        let unsorted = link.unsorted();
-        assert_eq!(unsorted.len(), 1);
-        let id = unsorted[0].id.clone();
-        link.sorted(&[(id.clone(), crate::triage::FYI)]);
-        link.sorted(&[(id.clone(), crate::triage::NEEDS_YOU)]);
-        assert_eq!(
-            drain(&mut heard),
-            [(json!("Assigned to you: r #7"), json!("fyi"))]
-        );
-        assert!(link.unsorted().is_empty());
-        // Answered, it shows its sort too; nothing was answered or settled by sorting.
-        let answered = link
-            .answer(&id, br#"{"answer": "Dismiss"}"#)
-            .await
-            .ok()
-            .unwrap();
-        assert_eq!(
-            (&answered["state"], &answered["triage"]),
-            (&json!("done"), &json!("fyi"))
-        );
-        assert_eq!(link.inbox_json(true, 50).as_array().unwrap().len(), 2);
+        assert!(!home.join("keys/seal.key").exists());
         let _ = std::fs::remove_dir_all(&home);
     }
 }

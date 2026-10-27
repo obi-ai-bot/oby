@@ -32,3 +32,5 @@ function App() {
 
 if (onObid) connect();
 createRoot(document.getElementById('root')!).render(<App />);
+// dev builds only: the control center (dev/ControlCenter.tsx), left out of a release build
+if (import.meta.env.DEV) import('./dev/ControlCenter');
