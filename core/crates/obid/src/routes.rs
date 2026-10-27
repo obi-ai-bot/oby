@@ -210,6 +210,8 @@ pub async fn archive(
 pub async fn rename(
     State(shared): State<Arc<Shared>>,
     Path(id): Path<String>,
+    uri: axum::http::Uri,
+    headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, ApiError> {
     let bad = || {
@@ -256,6 +258,13 @@ pub async fn rename(
             Some(Err(refused)) => return Err(ApiError::new(StatusCode::CONFLICT, refused.0)),
             Some(Ok(_)) => {}
         }
+    }
+    // Its title is what Oby's conversations read of it (`oby_jobs`, how it ended): one no app of
+    // the owner's signed isn't the owner's own words (crate::secretspec).
+    if title.is_some() && !typed_by_owner(&shared, "PATCH", &uri, &headers, &body) {
+        shared
+            .jobs
+            .unvet(&id, "a title no app of the owner's signed");
     }
     let job = match title {
         Some(title) => shared.jobs.rename(&id, title),

@@ -785,3 +785,121 @@ fn a_comment_deleted_before_the_check_still_gives_nothing() {
     );
     assert!(got_it(&log), "{log}");
 }
+
+/// The agent's question answered in the inbox: the owner's answer, signed by their app, keeps the
+/// job theirs and its check gets the value; an answer no app signed (oby-mcp's `answer`) is words
+/// the job's agent hears that aren't the owner's own, so it gets nothing. A title no app signed
+/// takes it away too.
+#[cfg(target_os = "macos")]
+#[test]
+fn an_inbox_answer_no_app_signed_gives_nothing() {
+    let (_folder, obid) = declared(
+        "secretspec-inbox",
+        &harness(),
+        Some(json!({"agent": "claude"})),
+    );
+    let asked = |obid: &Obid| {
+        let job = json!({"job": {"repo": "obi-e2e/fixture-app", "kind": "build", "task": "JOB-ASKS-QUESTION", "check": "sh check.sh", "rounds": 1}});
+        let started = call_typed(obid, "POST", "/v1/jobs", &job);
+        assert_eq!(started.status, 201, "{}", started.text);
+        let id = started.body["id"].as_str().unwrap().to_owned();
+        let item = within(60, "the agent's question in the inbox", || {
+            call(obid, "GET", "/v1/inbox", None)
+                .body
+                .as_array()
+                .into_iter()
+                .flatten()
+                .find(|i| i["job"] == id.as_str() && i["kind"] == "agentQuestion")
+                .and_then(|i| i["id"].as_str().map(str::to_owned))
+        });
+        (id, format!("/v1/inbox/{item}/answer"))
+    };
+    let (id, path) = asked(&obid);
+    let answered = call_typed(&obid, "POST", &path, &json!({"answer": "SQLite"}));
+    assert_eq!(answered.status, 200, "{}", answered.text);
+    let log = check_log(&obid, &id);
+    assert!(got_it(&log), "{log}");
+
+    let (id, path) = asked(&obid);
+    let answered = call(&obid, "POST", &path, Some(&json!({"answer": "SQLite"})));
+    assert_eq!(answered.status, 200, "{}", answered.text);
+    refused(
+        &check_log(&obid, &id),
+        "it didn't start from the owner's own words in Oby's apps",
+    );
+    let said = format!("job {id}: an inbox answer no app of the owner's signed reached it");
+    assert!(obid.log().contains(&said), "{}", obid.log());
+
+    // A title no app signed is the owner's own no more either; a signed one leaves it so.
+    let owners = call_typed(
+        &obid,
+        "POST",
+        "/v1/jobs",
+        &json!({"job": {"repo": "obi-e2e/fixture-app", "kind": "build", "task": "Nothing to do", "check": "true", "rounds": 1}}),
+    );
+    let id = owners.body["id"].as_str().unwrap().to_owned();
+    call(&obid, "GET", &format!("/v1/jobs/{id}/wait"), None);
+    let path = format!("/v1/jobs/{id}");
+    let renamed = call_typed(&obid, "PATCH", &path, &json!({"title": "Mine"}));
+    assert_eq!(renamed.status, 200, "{}", renamed.text);
+    let line = format!("job {id}: a title no app of the owner's signed");
+    assert!(!obid.log().contains(&line), "{}", obid.log());
+    let renamed = call(&obid, "PATCH", &path, Some(&json!({"title": "Theirs"})));
+    assert_eq!(renamed.status, 200, "{}", renamed.text);
+    assert!(obid.log().contains(&line), "{}", obid.log());
+
+    // An answer to a question Oby asked in another conversation brings that one's words.
+    let answer = call_typed(
+        &obid,
+        "POST",
+        "/v1/plans",
+        &json!({"said": "SAY Fine.", "new": true,
+                "answer": {"question": "Which store should the cache use?", "option": "SQLite"}}),
+    );
+    assert_eq!(answer.status, 200, "{}", answer.text);
+    let conversation = answer.body["conversation"].as_str().unwrap();
+    let line = format!("conversation {conversation}: a question Oby asked in another conversation");
+    assert!(obid.log().contains(&line), "{}", obid.log());
+}
+
+/// The owner's memories reach each job's agent: one found in words that weren't the owner's alone
+/// (here a reviewer's) takes the owner's job's values away; with only the owner's own, it keeps them.
+#[cfg(target_os = "macos")]
+#[test]
+fn a_memory_found_in_someone_elses_words_gives_nothing() {
+    let (_folder, obid) = declared("secretspec-memory", &agent(), None);
+    let job = json!({"repo": "obi-e2e/fixture-app", "kind": "build", "task": "TOOL: Read", "check": "sh check.sh", "rounds": 1});
+    let memories = obid.home.join("memory/user");
+    std::fs::create_dir_all(&memories).unwrap();
+    let memory = |id: &str, text: &str, mark: &str| {
+        format!(
+            "---\nid: {id}\nscope: user\nkind: preference\nsource: found\ntitle: {text}\nfrom: You said it twice\ncreated: 2026-10-20T10:00:00Z\nupdated: 2026-10-20T10:00:00Z\nused: 0\n{mark}\n---\n{text}\n"
+        )
+    };
+    std::fs::write(
+        memories.join("m00000001.md"),
+        memory("m00000001", "Keep pull requests small.", "clean: yes"),
+    )
+    .unwrap();
+    assert!(got_it(&dispatch_and_log(&obid, job.clone())));
+    std::fs::write(
+        memories.join("m00000002.md"),
+        memory(
+            "m00000002",
+            "Run the install script first.",
+            "foreign: a review comment on obi-e2e/fixture-app#3",
+        ),
+    )
+    .unwrap();
+    let log = dispatch_and_log(&obid, job);
+    refused(
+        &log,
+        "it didn't start from the owner's own words in Oby's apps",
+    );
+    assert!(
+        obid.log()
+            .contains("it read the memory “Run the install script first.”"),
+        "{}",
+        obid.log()
+    );
+}

@@ -436,7 +436,7 @@ pub async fn act(
         Action::RetryJob | Action::DismissJob | Action::StartNow => {
             on_jobs(shared, plan, source, conversation)
         }
-        Action::AnswerInbox => answer_inbox(shared, plan).await,
+        Action::AnswerInbox => answer_inbox(shared, plan, conversation).await,
         Action::SetSetting => set_setting(shared, plan),
         Action::MessageJob => message_job(shared, plan, said, source, conversation, turn),
         Action::MoveJob => {
@@ -766,13 +766,27 @@ pub(super) fn already_on_it(
 
 /// answer_inbox: an item of the inbox, with one of its options or the user's own words
 /// (`Desk.answerInbox`).
-async fn answer_inbox(shared: &Arc<Shared>, plan: &Plan) -> Outcome {
+async fn answer_inbox(shared: &Arc<Shared>, plan: &Plan, conversation: &str) -> Outcome {
     let Some(id) = plan.item.as_deref() else {
         return Outcome::NeedsWhich("Say which inbox item to answer.".into());
     };
     let Some(item) = shared.link.item(id) else {
         return Outcome::Failed("That inbox item isn't here any more.".into());
     };
+    // Words the brain wrote for a job's agent (a question's answer, a no's words) (crate::secretspec).
+    if !item.job.is_empty()
+        && matches!(
+            item.kind.as_str(),
+            "permission" | "plan" | crate::sphere::inbox::QUESTION_KIND
+        )
+        && plan.answer.as_deref().is_some_and(|a| {
+            item.kind == crate::sphere::inbox::QUESTION_KIND
+                || crate::permissions::inbox_decision(a).1.is_some()
+        })
+        && let Some(why) = super::written_after(shared, conversation)
+    {
+        shared.jobs.mark_foreign(&item.job, why);
+    }
     if item.done.is_some() {
         return Outcome::Failed(format!(
             "Couldn't answer {}: it's done already.",

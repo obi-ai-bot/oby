@@ -45,7 +45,9 @@
 //!   it doesn't know (`crate::brain::tools`, `reads_foreign`; `crate::brain::harness`,
 //!   `known_safe`). What a marked conversation starts is someone else's from the start, in a clone
 //!   apart; its words, a tell, a continue or a no's, make the job they reach someone else's
-//!   (`crate::brain::written_in`, `written_after`).
+//!   (`crate::brain::written_in`, `written_after`). A memory carries where it was found
+//!   (`crate::memory::Memory::foreign`): one from words that weren't the owner's alone, or saved by
+//!   a Remember no app signed, takes a job's values away and marks a conversation that reads it.
 //! - **The text of an issue or pull request the owner alone wrote**: its body, its title and every
 //!   comment, edit, rename, review and review comment, every list whole
 //!   (`crate::github_work::owners_only`; [`others_wrote`]), read as the job starts and again at its

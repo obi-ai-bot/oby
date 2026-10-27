@@ -1251,6 +1251,11 @@ async fn attempts(
     let memories = place.room.join(crate::memory::FILE);
     match crate::memory::for_agent(&shared.config.home, &repos).await? {
         Some(text) => {
+            // In its room, read as its own (crate::secretspec): a memory found in words that
+            // weren't the owner's alone marks the conversation.
+            if let Some(why) = crate::memory::foreign_among(&shared.config.home, &repos) {
+                shared.conversations.mark(&control.conversation, why);
+            }
             if let Err(e) = crate::jobs::write_login(&memories, text.as_bytes()) {
                 tracing::warn!(
                     "conversation {}: the owner's memories weren't quoted: {e}",

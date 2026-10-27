@@ -601,6 +601,19 @@ impl Conversations {
         self.append_as(id, "oby", text, jobs, false, vec![], Some(routine), foreign)
     }
 
+    /// Whether Oby's own turns in the conversation `id` hold `text`.
+    pub fn oby_said(&self, id: &str, text: &str) -> bool {
+        self.lock()
+            .iter()
+            .find(|t| t.id == id)
+            .is_some_and(|thread| {
+                thread
+                    .turns
+                    .iter()
+                    .any(|turn| turn.who == "oby" && !turn.ended && turn.text.contains(text.trim()))
+            })
+    }
+
     /// Marks the conversation `id` as having read `why`, not on obid's allowlist
     /// (crate::secretspec): the first reason is kept.
     pub fn mark(&self, id: &str, why: String) {
@@ -1550,6 +1563,9 @@ mod tests {
         .unwrap();
         assert!(kept.foreign.is_some());
         assert!(conversations.foreign("no-such-conversation").is_some());
+        // Oby's own words there: what an answer to its question may quote.
+        assert!(conversations.oby_said(&id, "On it."));
+        assert!(!conversations.oby_said(&id, "Which store?"));
     }
 
     #[test]

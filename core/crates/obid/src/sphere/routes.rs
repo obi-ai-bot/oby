@@ -181,8 +181,32 @@ pub async fn answer(
     State(shared): State<Arc<Shared>>,
     device: Option<axum::Extension<crate::gateway::PairedDevice>>,
     Path(id): Path<String>,
+    uri: axum::http::Uri,
+    headers: axum::http::HeaderMap,
     body: Bytes,
 ) -> Result<Response, ApiError> {
+    // Words for a job's agent (its question's answer, a no's words) that no app of the owner's
+    // signed: the job is no longer the owner's own words alone (crate::secretspec), before it
+    // hears them.
+    if let Some(item) = shared.link.item(&id).filter(|i| {
+        i.done.is_none()
+            && !i.job.is_empty()
+            && matches!(
+                i.kind.as_str(),
+                "permission" | "plan" | super::inbox::QUESTION_KIND
+            )
+    }) && let Some(answer) = serde_json::from_slice::<Value>(&body)
+        .ok()
+        .and_then(|b| b["answer"].as_str().map(str::to_owned))
+        && (item.kind == super::inbox::QUESTION_KIND
+            || crate::permissions::inbox_decision(&answer).1.is_some())
+        && !crate::routes::typed_by_owner(&shared, "POST", &uri, &headers, &body)
+    {
+        shared.jobs.unvet(
+            &item.job,
+            "an inbox answer no app of the owner's signed reached it",
+        );
+    }
     // A phone (through the gateway) can't Approve a channel listener's review, which it doesn't
     // show yet: by the item itself, found by its decoded id, so no spelling of the path gets by.
     if device.is_some()

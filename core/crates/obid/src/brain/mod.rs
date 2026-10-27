@@ -157,6 +157,8 @@ pub async fn plan(
         )
             .into_response());
     }
+    // Oby's question the words answer: its text is that conversation's (crate::secretspec).
+    let question = req.answer.as_ref().map(|a| a.question.clone());
     let said = req
         .answer
         .map(|a| {
@@ -180,6 +182,16 @@ pub async fn plan(
     let begun = shared
         .conversations
         .begin(target, said.clone(), jobs.clone(), id, foreign)?;
+    // An answer to a question Oby asked elsewhere (the Watch answers in the latest conversation)
+    // brings that conversation's words here.
+    if let Some(question) = &question
+        && !shared.conversations.oby_said(&begun.conversation, question)
+    {
+        shared.conversations.mark(
+            &begun.conversation,
+            "a question Oby asked in another conversation".into(),
+        );
+    }
     // The same words sent again: obid has them (and answered, or answers, them in its turn).
     if begun.repeated {
         return Ok((

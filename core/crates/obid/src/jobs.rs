@@ -8,7 +8,7 @@
 //! ([`Jobs::start_obi_review`]): a fresh worktree detached at the request's commit, the request
 //! quoted as data, the agent reading only, the check in the sandbox, a typed result body.
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -7721,10 +7721,11 @@ impl Jobs {
     }
 
     /// Whether obid wrote pull request `number` of `repo`'s description only for jobs that are the
-    /// owner's own throughout (crate::secretspec): the jobs whose `outgoing` opened or described it,
-    /// at least one, each clean. One no job here records is someone else's.
+    /// owner's own throughout (crate::secretspec): every job that ever opened or described it, as
+    /// `home/described.json` and the jobs' `outgoing` record them, at least one, each still here and
+    /// clean. One no job records, or whose job is gone, is someone else's.
     fn described_clean(&self, repo: &str, number: u64) -> bool {
-        let described: Vec<Job> = self
+        let mut ids: BTreeSet<String> = self
             .list(usize::MAX)
             .into_iter()
             .filter(|job| {
@@ -7734,11 +7735,62 @@ impl Jobs {
                             && crate::github::pull_request_number(&o.id, repo) == Some(number)
                     })
             })
+            .map(|job| job.id)
             .collect();
-        !described.is_empty()
-            && described
-                .iter()
-                .all(|job| job.check_refuses_secrets().is_none())
+        ids.extend(self.described(repo, number));
+        !ids.is_empty()
+            && ids.iter().all(|id| {
+                self.get(id)
+                    .is_some_and(|job| job.check_refuses_secrets().is_none())
+            })
+    }
+
+    /// `home/described.json`: every job obid opened or described a pull request for, by
+    /// `<repo>#<number>`, kept past the jobs themselves (crate::secretspec).
+    fn described_file(&self) -> PathBuf {
+        self.config.home.join("described.json")
+    }
+
+    /// The jobs `home/described.json` says pull request `number` of `repo` was described for. A
+    /// file that doesn't read names one no job has, so the description is someone else's.
+    fn described(&self, repo: &str, number: u64) -> Vec<String> {
+        let file = self.described_file();
+        match std::fs::read(&file) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => vec![],
+            read => read
+                .ok()
+                .and_then(|b| serde_json::from_slice::<BTreeMap<String, Vec<String>>>(&b).ok())
+                .map(|kept| {
+                    kept.get(&format!("{repo}#{number}"))
+                        .cloned()
+                        .unwrap_or_default()
+                })
+                .unwrap_or_else(|| vec!["(described.json didn't read)".into()]),
+        }
+    }
+
+    /// Notes that obid opened or described pull request `url` of `repo` for job `id`.
+    fn note_described(&self, repo: &str, url: &str, id: &str) {
+        static NOTING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let Some(number) = crate::github::pull_request_number(url, repo) else {
+            return;
+        };
+        let _noting = NOTING.lock().unwrap_or_else(|e| e.into_inner());
+        let file = self.described_file();
+        let mut kept: BTreeMap<String, Vec<String>> = std::fs::read(&file)
+            .ok()
+            .and_then(|b| serde_json::from_slice(&b).ok())
+            .unwrap_or_default();
+        let ids = kept.entry(format!("{repo}#{number}")).or_default();
+        if !ids.iter().any(|i| i == id) {
+            ids.push(id.to_owned());
+        }
+        let written = serde_json::to_vec(&kept)
+            .map_err(std::io::Error::other)
+            .and_then(|bytes| store::write_private(&file, &bytes));
+        if let Err(e) = written {
+            tracing::warn!("job {id}: pull request {url} wasn't noted as described: {e}");
+        }
     }
 
     /// Who wrote the issue or pull request `job` works from, as it starts (crate::secretspec):
@@ -8676,6 +8728,12 @@ impl Jobs {
                 && let Some(text) =
                     crate::memory::for_agent(&self.config.home, &[job.repo.as_str()]).await?
             {
+                // A memory found in words that weren't the owner's alone (crate::secretspec).
+                if let Some(why) =
+                    crate::memory::foreign_among(&self.config.home, &[job.repo.as_str()])
+                {
+                    self.unvet(id, &format!("it read {why}"));
+                }
                 let written = crate::obi_dir::folder(&worktree, "inputs").and_then(|dir| {
                     crate::obi_dir::write_new(&dir, crate::memory::FILE, text.as_bytes())
                 });
@@ -11295,6 +11353,10 @@ impl crate::publish::Hooks for PublishHooks {
             outgoing.branch.as_deref().unwrap_or(""),
             outgoing.id
         );
+        if matches!(outgoing.action.as_str(), "pullRequest" | "pullRequestEdit") {
+            self.jobs
+                .note_described(&outgoing.repo, &outgoing.id, &self.id);
+        }
         self.jobs
             .update(&self.id, |job| job.outgoing.push(outgoing));
     }
@@ -15813,6 +15875,11 @@ mod tests {
         });
         assert!(jobs.described_clean("o/r", 7));
         assert!(!jobs.described_clean("o/r", 8));
+        // A job that described it and is gone since (deleted) leaves it someone else's.
+        jobs.note_described("o/r", "https://github.com/o/r/pull/7", "deleted-since");
+        assert!(!jobs.described_clean("o/r", 7));
+        jobs.note_described("o/r", "https://github.com/o/r/pull/9", "j");
+        assert!(jobs.described_clean("o/r", 9));
         jobs.update("j", |job| job.vetted = false);
         assert!(!jobs.described_clean("o/r", 7));
         let _ = std::fs::remove_dir_all(&root);
