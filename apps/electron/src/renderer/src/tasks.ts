@@ -1,7 +1,7 @@
 import { useSyncExternalStore } from 'react';
 import { BRANDS, type Brand } from './brands';
 import { AGENTS, ARCHIVE, GITHUB_WORK, JOBS, MEMORY_WAIT, hasAttachments, type Archived, type Attachments, type GitHubItem, type Job, type Message } from './mock';
-import { streamWords } from './stream';
+import { streamWords, wait } from './stream';
 import { everything, onObid } from './lean';
 import * as live from './live';
 
@@ -71,6 +71,8 @@ export function addTask(text: string, after?: Task) {
   }, true), ...tasks]);
   return id;
 }
+// dev only (dev/ControlCenter.tsx): the tasks as they are, and one changed in place
+export const dev = import.meta.env.DEV ? { get: () => tasks, patch: (id: string, fn: (t: Task) => Partial<Task>) => update(id, fn) } : undefined;
 // opened: its blue dot goes
 export function markSeen(id: string) {
   if (onObid) return live.markSeen(id);
@@ -86,14 +88,14 @@ const REPLY_MS = 3000;
 // cards) once they're all in, so the cards and the side panel's rows show together.
 function reply(id: string, text: () => string, start?: () => string[] | undefined) {
   update(id, () => ({ typing: true }));
-  setTimeout(async () => {
+  void wait(REPLY_MS).then(async () => {
     let at = 0;
     update(id, (k) => { at = k.said?.length ?? 0; return { typing: false, said: [...(k.said ?? []), { who: 'oby', text: '', ago: 0, streaming: true }] }; });
     const edit = (fn: (m: Message) => Message) => update(id, (k) => ({ said: k.said?.map((x, i) => (i === at ? fn(x) : x)) }));
     await streamWords(text(), edit);
     const jobs = start?.();
     edit((x) => ({ ...x, streaming: undefined, jobs }));
-  }, REPLY_MS);
+  });
 }
 
 // Told the agent something: it goes on the end of the task's conversation, and
