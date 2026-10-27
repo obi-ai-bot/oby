@@ -35,16 +35,17 @@ const token = () => readOwn('api-token', true);
 
 // Why obid isn't answering: why this app's own couldn't start (startObid), else obid's own reason
 // (home/last-start-error, written by a start that failed and removed once it listens, #1493),
-// else what the connection said.
-function reason(error?: unknown): string {
+// else what the connection said. why: 'approval' when macOS waits for the person's approval,
+// 'waiting' when nothing's wrong yet (this app is still starting obid): the page says no reason then.
+function reason(error?: unknown): Answer {
   // whatever listens now gets checked again before the next call
   mineUntil = 0;
-  if (problem) return problem;
+  if (problem) return { status: 0, text: problem, ...(problem === APPROVAL ? { why: 'approval' } : {}) };
   const own = readOwn('last-start-error', false);
-  if (own) return own;
+  if (own) return { status: 0, text: own };
   const cause = (error as { cause?: { code?: string; message?: string } })?.cause;
-  if (!error || cause?.code === 'ECONNREFUSED') return 'Nothing answers on 127.0.0.1:7777: obid isn’t running.';
-  return cause?.message ?? (error instanceof Error ? error.message : String(error));
+  const text = !error || cause?.code === 'ECONNREFUSED' ? 'Nothing answers on 127.0.0.1:7777: obid isn’t running.' : cause?.message ?? (error instanceof Error ? error.message : String(error));
+  return { status: 0, text, ...(starting ? { why: 'waiting' } : {}) };
 }
 
 // Who listens on 127.0.0.1:7777: launchd's obid of this user's ('mine': this app's agent or its
@@ -72,15 +73,16 @@ async function listener(): Promise<'mine' | 'foreign' | 'none'> {
 }
 
 // What a call or the stream came back with: obid's status and body, or (status 0) why it didn't answer
-export type Answer = { status: number; text: string };
+export type Answer = { status: number; text: string; why?: 'waiting' | 'approval' };
 
 async function send(method: string, path: string, body: unknown, signal?: AbortSignal): Promise<Response | Answer> {
   // only obid's API: never another host, never another path
   if (!METHODS.has(method) || !/^\/v1\/[^\s#]*$/.test(path) || !new URL(BASE + path).pathname.startsWith('/v1/')) return { status: 400, text: JSON.stringify({ error: 'Not an obid call.' }) };
   const t = token();
-  if (!t) return { status: 0, text: problem ?? readOwn('last-start-error', false) ?? `No token of obid’s in ${HOME}/api-token: is obid set up on this Mac?` };
+  // (obid writes its token on its first start)
+  if (!t) return problem || starting || readOwn('last-start-error', false) ? reason() : { status: 0, text: `No token of obid’s in ${HOME}/api-token: is obid set up on this Mac?` };
   const who = await listener();
-  if (who !== 'mine') return { status: 0, text: who === 'foreign' ? TAKEN : reason() };
+  if (who !== 'mine') return who === 'foreign' ? { status: 0, text: TAKEN } : reason();
   try {
     const r = await fetch(BASE + path, {
       method, signal, cache: 'no-store',
@@ -95,7 +97,7 @@ async function send(method: string, path: string, body: unknown, signal?: AbortS
     problem = null;
     return r;
   } catch (e) {
-    return { status: 0, text: reason(e) };
+    return reason(e);
   }
 }
 
@@ -130,6 +132,11 @@ const register = (on: boolean) => app.setLoginItemSettings({ ...SERVICE, openAtL
 
 // Why this app's obid isn't there, as startObid found it: said before anything else
 let problem: string | null = null;
+// while startObid works: obid not answering yet is no problem
+let starting = false;
+const APPROVAL = 'Oby’s engine waits for your approval: turn Oby on in System Settings › General › Login Items.';
+// System Settings › General › Login Items, where that approval is given
+export const openLoginItems = () => shell.openExternal(LOGIN_ITEMS);
 
 const domain = () => `gui/${process.getuid?.()}`;
 const helper = () => join(process.resourcesPath, '../Helpers/obid');
@@ -228,7 +235,7 @@ async function restartIfStale(label: string, printed: string) {
 // Only a packaged app has the launch agent: in development it's the obid you run, or the Swift Oby's.
 export async function startObid() {
   if (process.platform !== 'darwin' || !app.isPackaged) return;
-  problem = 'Oby’s engine is starting…';
+  starting = true;
   try {
     const who = await listener();
     // never in the way of another user's obid or another program: nothing registered or stopped
@@ -256,8 +263,8 @@ export async function startObid() {
     if (status() === 'enabled') register(false);
     register(true);
     if (status() === 'requires-approval') {
-      problem = 'Oby’s engine waits for your approval: turn Oby on in System Settings › General › Login Items.';
-      void shell.openExternal(LOGIN_ITEMS);
+      problem = APPROVAL;
+      void openLoginItems();
       return;
     }
     // a first start can take a while (its configuration, the security probes) while it runs
@@ -269,6 +276,8 @@ export async function startObid() {
     problem = await why();
   } catch (e) {
     problem = `Oby’s engine couldn’t be started: ${e instanceof Error ? e.message : String(e)}`;
+  } finally {
+    starting = false;
   }
 }
 
@@ -291,6 +300,9 @@ export function bridge(trusted: Trusted) {
     if (!trusted(e)) return { status: 403, text: '' };
     return obid(method, path, body);
   });
+
+  // the splash's Open Login Items, when obid waits for that approval
+  ipcMain.on('open-login-items', (e) => { if (trusted(e)) void openLoginItems(); });
 
   // The event stream (GET /v1/events), one at a time: each piece of its text goes to the page as
   // it comes ('obid-chunk'), then how it ended ('obid-end'). Following again drops the one before.
@@ -317,7 +329,7 @@ export function bridge(trusted: Trusted) {
       mineUntil = 0;
       end({ status: 0, text: 'obid closed the event stream.' });
     } catch (err) {
-      if (!control.signal.aborted) end({ status: 0, text: reason(err) });
+      if (!control.signal.aborted) end(reason(err));
     }
   });
 }

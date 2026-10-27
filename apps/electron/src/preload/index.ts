@@ -1,8 +1,8 @@
 import { contextBridge, ipcRenderer } from 'electron';
 
 type Point = { x: number; y: number };
-// obid's answer: its status and body, or (status 0) why it didn't answer
-type Answer = { status: number; text: string };
+// obid's answer: its status and body, or (status 0) why it didn't answer (main/obid.ts, reason)
+type Answer = { status: number; text: string; why?: 'waiting' | 'approval' };
 
 contextBridge.exposeInMainWorld('app', {
   // where macOS put the traffic lights, in CSS px (null without the native
@@ -23,6 +23,8 @@ contextBridge.exposeInMainWorld('app', {
   },
   // a sign-in page in the person's browser (https only)
   openExternal: (url: string) => ipcRenderer.send('open-external', url),
+  // System Settings › General › Login Items, where macOS asks to approve obid
+  openLoginItems: () => ipcRenderer.send('open-login-items'),
   // obid, through main, which holds its token (main/obid.ts): one call, and the event stream's
   // text as it comes, then how it ended. Following again replaces the stream before.
   obid: {

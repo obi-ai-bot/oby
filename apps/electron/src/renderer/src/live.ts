@@ -13,6 +13,7 @@ import { replaceAccounts } from './SettingsView';
 type Live = {
   connection: 'connecting' | 'live' | 'down';
   problem: string | null;        // why obid isn't answering (its own reason, main/obid.ts), or what last went wrong
+  why?: 'waiting' | 'approval';  // and what kind of why (main/obid.ts, reason): 'waiting', none yet
   status: Status | null;
   repos: Repo[];                 // where a job may start (GET /v1/repos)
   jobs: Record<string, Job>;
@@ -252,16 +253,17 @@ export function connect() {
       // obid follows the stream before it answers anything else: fetch once its first text came
       if (first) { first = false; void sync(mine, pending, () => { syncing = false; }); }
     },
-    ({ status, text }) => down(mine, status === 401 ? 'obid refused this Mac’s token (api-token).' : status ? `obid answered ${status}.` : text),
+    ({ status, text, why }) => down(mine, status === 401 ? 'obid refused this Mac’s token (api-token).' : status ? `obid answered ${status}.` : text, why),
   );
 }
 
-function down(mine: number, problem: string) {
+function down(mine: number, problem: string, why?: Live['why']) {
   if (mine !== generation) return;
   generation++;
   unfollow?.();
-  set({ connection: 'down', problem, working: {}, words: {}, pace: {} });
-  reconnecting = setTimeout(connect, Math.min(10_000, 1000 * 2 ** retry++));
+  set({ connection: 'down', problem, why, working: {}, words: {}, pace: {} });
+  // before the first load (the splash, main.tsx) every second, so the chat comes soon after obid
+  reconnecting = setTimeout(connect, state.status ? Math.min(10_000, 1000 * 2 ** retry++) : 1000);
 }
 
 async function sync(mine: number, pending: Event[], onSynced: () => void) {
@@ -270,7 +272,7 @@ async function sync(mine: number, pending: Event[], onSynced: () => void) {
     if (mine !== generation) return;
     retry = 0;
     let next: Live = {
-      ...state, connection: 'live', problem: null, status, inbox: inbox.filter((i) => i.state !== 'done'), conversations,
+      ...state, connection: 'live', problem: null, why: undefined, status, inbox: inbox.filter((i) => i.state !== 'done'), conversations,
       jobs: { ...state.jobs, ...Object.fromEntries(jobs.map((j) => [j.id, j])) },
       firstJobs: state.status ? state.firstJobs : new Set(jobs.map((j) => j.id)),
     };

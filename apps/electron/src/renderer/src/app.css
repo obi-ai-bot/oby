@@ -1874,3 +1874,23 @@ button.sphere-logo-badge:hover { color: var(--ink); background: #3a3a39; }
   .setup .wl-bubble { transition: none; }
 }
 /* ==== end of the Obysphere tour ==== */
+
+/* --- the splash (Splash.tsx): Oby's face on the window's background while obid gets ready; still,
+   so it costs nothing while it waits. The whole window drags, as the title bar does. */
+.splash {
+  height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 16px;
+  padding: 0 32px; -webkit-app-region: drag;
+}
+.splash-face { animation: splash-in 400ms var(--warm) both; }
+.splash-line {
+  margin: 0; max-width: 440px; color: var(--muted); font-size: var(--text-md); line-height: 20px;
+  text-align: center; white-space: pre-line; user-select: text; animation: splash-in 400ms var(--warm) both;
+}
+.splash-line.is-failed { color: var(--text); }
+.splash .set-button { -webkit-app-region: no-drag; }
+@keyframes splash-in { from { opacity: 0; } }
+/* the chat once obid is ready */
+#root.is-revealed > * { animation: splash-in 320ms var(--warm) backwards; }
+@media (prefers-reduced-motion: reduce) {
+  .splash-face, .splash-line, #root.is-revealed > * { animation: none; }
+}
