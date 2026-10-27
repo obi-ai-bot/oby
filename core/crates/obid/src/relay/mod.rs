@@ -13,6 +13,7 @@
 //! device's relay token digest (crate::gateway). The relay tokens themselves are only in the QR.
 
 pub mod envelope;
+pub mod frame;
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
@@ -38,8 +39,8 @@ use tower::ServiceExt as _;
 use crate::api::Shared;
 use crate::gateway::{RelayInvite, Relayed};
 use crate::sphere::Link;
-use crate::sphere::channel::{Frame, Kind};
 use envelope::{MacKey, Opener, Sealer};
+use frame::{Frame, Kind};
 
 /// A `ping` this often (sphere-api.md 9.3: 2 minutes of silence closes a socket).
 const PING_EVERY: Duration = Duration::from_secs(30);

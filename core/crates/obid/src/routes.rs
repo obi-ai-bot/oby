@@ -18,6 +18,9 @@ use crate::jobs::NewJob;
 
 const NO_JOB: &str = "There's no such job.";
 
+/// What a job sent to a teammate's Mac hears: compute sharing went with the strip to a dispatcher.
+pub const ELSEWHERE: &str = "Jobs run only on this Mac now: runsOn is null or left out.";
+
 /// Resolves once obid is stopping: a stream that would otherwise stay open ends.
 async fn stopping(mut receiver: tokio::sync::watch::Receiver<bool>) {
     while !*receiver.borrow() {
@@ -205,8 +208,8 @@ pub async fn archive(
 }
 
 /// `PATCH /v1/jobs/{id}`: `{"title": "…"}` renames the job, one line of 1 to 60 characters once
-/// trimmed (as a new job's `title`); `{"runsOn": "<Obi>" | null}` moves a job that isn't running to
-/// a teammate's Mac, or back to this one (Sangam's "Run it here", #808). Either, or both.
+/// trimmed (as a new job's `title`). `{"runsOn": null}` (this Mac, where every job runs now) is
+/// taken and changes nothing; a teammate's Mac is `422`.
 pub async fn rename(
     State(shared): State<Arc<Shared>>,
     Path(id): Path<String>,
@@ -241,21 +244,8 @@ pub async fn rename(
             "title is one line of 1 to 60 characters.",
         ));
     }
-    let place = match map.get("runsOn") {
-        None => None,
-        Some(Value::Null) => Some(None),
-        Some(place) => {
-            Some(Some(shared.link.runs_on(place).map_err(|m| {
-                ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, m)
-            })?))
-        }
-    };
-    if let Some(place) = place {
-        match shared.jobs.place(&id, place) {
-            None => return Err(ApiError::new(StatusCode::NOT_FOUND, NO_JOB)),
-            Some(Err(refused)) => return Err(ApiError::new(StatusCode::CONFLICT, refused.0)),
-            Some(Ok(_)) => {}
-        }
+    if map.get("runsOn").is_some_and(|place| !place.is_null()) {
+        return Err(ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, ELSEWHERE));
     }
     let job = match title {
         Some(title) => shared.jobs.rename(&id, title),
@@ -394,25 +384,9 @@ pub async fn dispatch(
             "A job needs repo, kind and task.",
         ));
     }
-    let mut new =
-        new_job(job).map_err(|why| ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, why))?;
-    // On a teammate's Mac (#797): their Obi, which must take run_request.
-    match job.get("runsOn") {
-        None | Some(Value::Null) => {}
-        Some(place @ (Value::String(_) | Value::Object(_))) => {
-            new.runs_on = Some(
-                shared
-                    .link
-                    .runs_on(place)
-                    .map_err(|m| ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, m))?,
-            );
-        }
-        Some(_) => {
-            return Err(ApiError::new(
-                StatusCode::UNPROCESSABLE_ENTITY,
-                "runsOn is a teammate's Obi id.",
-            ));
-        }
+    let new = new_job(job).map_err(|why| ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, why))?;
+    if job.get("runsOn").is_some_and(|place| !place.is_null()) {
+        return Err(ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, ELSEWHERE));
     }
     let job = shared
         .jobs
@@ -488,7 +462,6 @@ fn new_job(job: &Map<String, Value>) -> Result<NewJob, String> {
         follow_up_of: None,
         earlier: None,
         start_from: None,
-        runs_on: None,
         routine: None,
         untrusted: false,
         split: false,

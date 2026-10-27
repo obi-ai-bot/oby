@@ -496,9 +496,6 @@ pub struct NewJob {
     pub earlier: Option<String>,
     #[serde(default)]
     pub start_from: Option<String>,
-    /// The teammate's Mac its agent runs on (crate::sphere::guest).
-    #[serde(default)]
-    pub runs_on: Option<crate::job::RunsOn>,
     /// The routine whose run it is (crate::routines).
     #[serde(default)]
     pub routine: Option<crate::job::RoutineMark>,
@@ -826,12 +823,6 @@ pub struct JobMemory {
     #[serde(skip)]
     pub check_rss: u64,
 }
-
-/// Why a Codex job can't go to a teammate's Mac: the guest VM's image carries Claude Code only
-/// (core/obi-vm/image/Dockerfile). Every way a job gets there checks it: made with `runsOn`
-/// (the API or the brain, whatever agent it names or defaults to), moved there, or moved to Codex
-/// while it's there; sphere::guest refuses its turn too.
-pub const GUEST_ONLY_CLAUDE: &str = "Only Claude Code jobs run on a teammate's Mac so far: the guest VM has no Codex yet. Run this job here.";
 
 impl Jobs {
     /// Opens the jobs kept in `home/jobs`. Those that were queued or running when obid stopped
@@ -1886,7 +1877,7 @@ impl Jobs {
                 .workers
                 .keys()
                 .filter(|w| *w != id)
-                .filter(|w| state.jobs.get(*w).is_some_and(|j| j.runs_on.is_none()))
+                .filter(|w| state.jobs.contains_key(*w))
                 .count();
             (check_budget(state.jobs.values(), job), others)
         };
@@ -2753,7 +2744,7 @@ impl Jobs {
     /// Whether `job` goes on on another account past its account's limit: failover is on, the
     /// owner didn't name its account, and it's the owner's own, on this Mac.
     fn moves_on(&self, job: &Job) -> bool {
-        self.account_failover() && !job.named && job.runs_on.is_none() && job.obi.is_none()
+        self.account_failover() && !job.named && job.obi.is_none()
     }
 
     /// `account` hit its usage limit: it's marked full until `reset` (an hour, when its tool named
@@ -3118,10 +3109,6 @@ impl Jobs {
 
     pub fn create(self: &Arc<Self>, new: NewJob) -> Result<Job, Refused> {
         let (repo, tool, account, files, waiting) = self.vetted(&new)?;
-        // Whoever asks (the API, the brain), whatever agent was named or is the default.
-        if new.runs_on.is_some() && tool != Tool::Claude {
-            return Err(Refused(GUEST_ONLY_CLAUDE.into()));
-        }
         let id = self.new_id();
         let mut job = Job::new(
             id.clone(),
@@ -3163,7 +3150,6 @@ impl Jobs {
             .start_from
             .filter(|b| new.follow_up_of.is_some() && git::is_branch_name(b));
         job.follow_up_of = new.follow_up_of;
-        job.runs_on = new.runs_on;
         job.routine = new.routine;
         // A follow-up of a rule's job is the rule's too (#1314): never Bypass. A Start item's job
         // never carries `rule` (it's never from the API): found here. So is an untrusted one's.
@@ -4116,7 +4102,6 @@ impl Jobs {
         let same = |r: &String| r.eq_ignore_ascii_case(&job.repo);
         if job.check.is_some()
             || job.review_of.is_some()
-            || job.runs_on.is_some()
             || self
                 .repo(&job.repo)
                 .is_none_or(|r| r.check.is_some() || !crate::github::is_remote(&r.remote))
@@ -5219,34 +5204,6 @@ impl Jobs {
         })
     }
 
-    /// Moves a job that isn't running to a teammate's Mac, or back to this one (`None`): its next
-    /// turn runs there. The apps' "Run it here" and "Run on another Mac" on a job that came back.
-    pub fn place(
-        &self,
-        id: &str,
-        runs_on: Option<crate::job::RunsOn>,
-    ) -> Option<Result<Job, Refused>> {
-        let job = self.get(id)?;
-        if job.status.is_active() {
-            return Some(Err(Refused("The job is running: stop it first.".into())));
-        }
-        if runs_on.is_some() && job.agent != Tool::Claude.id() {
-            return Some(Err(Refused(GUEST_ONLY_CLAUDE.into())));
-        }
-        let said = match &runs_on {
-            Some(on) => format!(
-                "Moved to {}'s Mac by you",
-                crate::sphere::hosting::person(&on.owner)
-            ),
-            None => "Moved to this Mac by you".to_owned(),
-        };
-        self.update(id, |job| {
-            job.runs_on = runs_on;
-            job.changed(said);
-        })
-        .map(Ok)
-    }
-
     /// Why the job `id` can't be deleted now, when it can't (see [`undeletable_in`]).
     pub fn undeletable(&self, id: &str) -> Option<Refused> {
         let state = self.lock();
@@ -5331,9 +5288,6 @@ impl Jobs {
             Ok(picked) => picked,
             Err(refused) => return Some(Err(refused)),
         };
-        if job.runs_on.is_some() && tool != Tool::Claude {
-            return Some(Err(Refused(GUEST_ONLY_CLAUDE.into())));
-        }
         if tool.id() == job.agent && chosen.id == job.account {
             return Some(Err(Refused(format!(
                 "It's on {} · {} already.",
@@ -6172,10 +6126,7 @@ impl Jobs {
                     // Needing the owner, with a session to pick up: the agent's own summary stays
                     // (`summaries` has every round's), and why it stopped is said apart. A dead end,
                     // or one with no session, failed, its summary why.
-                    // A job that ran on a teammate's Mac has no session here, but Try again sends it
-                    // back there (or Run it here, #808): it needs its owner too.
-                    let needs_you = matches!(end, End::NeedsYou { .. })
-                        && (job.session.is_some() || job.runs_on.is_some());
+                    let needs_you = matches!(end, End::NeedsYou { .. }) && job.session.is_some();
                     if needs_you {
                         job.status = Status::Interrupted;
                         if job.summary.trim().is_empty() {
@@ -6877,7 +6828,6 @@ impl Jobs {
             jobs.transcribed(id, entries);
             match event {
                 AgentEvent::Tokens(tokens) => {
-                    let mut own_cost = None;
                     jobs.update(id, |job| {
                         // Claude Code's counts are its session's so far, the turns it resumed
                         // included: this turn's own are what grew since the session's last ones.
@@ -6892,9 +6842,6 @@ impl Jobs {
                         } else {
                             tokens
                         };
-                        if job.runs_on.is_none() {
-                            own_cost = own.cost_usd.map(|usd| (job.account.clone(), usd));
-                        }
                         job.usage = Some(before.plus(&own));
                         if let Some(ran) = ran_secs {
                             job.ran_secs = Some(ran());
@@ -6905,12 +6852,6 @@ impl Jobs {
                             let _ = cut.send(Signal::Stop);
                         }
                     });
-                    // The owner's own job on an account they share counts against its month (#809).
-                    if let Some((account, usd)) = own_cost
-                        && let Some(link) = jobs.link.get().and_then(std::sync::Weak::upgrade)
-                    {
-                        link.count_own(&account, usd);
-                    }
                 }
                 AgentEvent::Usage(usage) => {
                     let (was, now) = jobs.usage.record(&job.account, &usage);
@@ -6957,46 +6898,6 @@ impl Jobs {
         // The job's activity and context follow the transcript, saved and sent at most once a
         // second while the agent works (each call's start and end would be a `job` event).
         let run = async {
-            if let Some(on) = job.runs_on.clone() {
-                let link = self
-                    .link
-                    .get()
-                    .and_then(std::sync::Weak::upgrade)
-                    .ok_or_else(|| std::io::Error::other("obid isn't in a Sphere"))?;
-                // The job's own account: its model calls use that login, from this Mac.
-                let on_account = self
-                    .accounts(tool)
-                    .into_iter()
-                    .find(|a| a.id == job.account)
-                    .and_then(|a| a.config_dir);
-                let ask = crate::sphere::guest::Ask {
-                    host: &on.obi,
-                    host_owner: &crate::sphere::hosting::person(&on.owner),
-                    agent: tool.id(),
-                    model: job.model.as_deref(),
-                    repo: &job.repo,
-                    base_branch: job.base.as_deref().unwrap_or("main"),
-                    branch: &job.branch,
-                    // The title goes in the run_request (and the chain): never the task's words.
-                    title: &job
-                        .title
-                        .clone()
-                        .unwrap_or_else(|| format!("Job in {}", job.repo)),
-                    size: "small",
-                    grant: on.grant.as_deref(),
-                    config_dir: on_account.as_deref(),
-                };
-                return crate::sphere::guest::run_turn(
-                    &link,
-                    ask,
-                    std::path::Path::new(&worktree),
-                    prompt,
-                    signal.clone(),
-                    on_event,
-                )
-                .await
-                .map_err(std::io::Error::other);
-            }
             match tool {
                 Tool::Claude => {
                     agent::run_turn(
@@ -7966,9 +7867,8 @@ impl Jobs {
             }
             // The owner's memories about them and the job's repository, quoted (#378). Never on a
             // teammate's Mac: only the job's code goes there, never its inputs.
-            if job.runs_on.is_none()
-                && let Some(text) =
-                    crate::memory::for_agent(&self.config.home, &[job.repo.as_str()]).await?
+            if let Some(text) =
+                crate::memory::for_agent(&self.config.home, &[job.repo.as_str()]).await?
             {
                 let written = crate::obi_dir::folder(&worktree, "inputs").and_then(|dir| {
                     crate::obi_dir::write_new(&dir, crate::memory::FILE, text.as_bytes())
@@ -8231,7 +8131,6 @@ impl Jobs {
                 }
                 // A job run on a teammate's Mac uses the company API key, not this account's login.
                 if tool == Tool::Claude
-                    && job.runs_on.is_none()
                     && let Err(why) = self.claude_login_ready(Some(&account)).await
                 {
                     // Moved here past a limit: a login that can't run puts it back on its account
@@ -8446,7 +8345,7 @@ impl Jobs {
                     if limited {
                         self.mark_full(&account.id, reset, now);
                     }
-                    let room = if limited && job.runs_on.is_none() {
+                    let room = if limited {
                         self.room_for(tool, &account.id).await
                     } else {
                         None
@@ -8459,7 +8358,7 @@ impl Jobs {
                     }
                     // With every account of the tool full, it's tried again once the first of
                     // them has room, and goes on there.
-                    let first = (limited && job.runs_on.is_none() && room.is_none())
+                    let first = (limited && room.is_none())
                         .then(|| self.all_full(id, tool, now))
                         .flatten();
                     let resumes = reset
@@ -12847,12 +12746,9 @@ fn pull_request_open(job: &Job) -> bool {
 /// it borrows only upward, so a build never takes a research job's small peak. A job on a
 /// teammate's Mac holds nothing here.
 fn budget<'a>(jobs: impl Iterator<Item = &'a Job> + Clone, job: &Job) -> u64 {
-    if job.runs_on.is_some() {
-        return 0;
-    }
     let peaks = |like: &dyn Fn(&Job) -> bool| -> Vec<(i64, u64)> {
         jobs.clone()
-            .filter(|j| j.agent == job.agent && j.runs_on.is_none() && like(j))
+            .filter(|j| j.agent == job.agent && like(j))
             .filter_map(|j| Some((j.finished?, j.agent_peak_rss?)))
             .collect()
     };
@@ -12918,7 +12814,9 @@ impl Load {
             check: check_budget(jobs.values(), job),
             agent_now,
             check_now,
-            here: job.runs_on.is_none(),
+            // ponytail: every job runs here since compute sharing went; drop `here` when Load is
+            // next reworked.
+            here: true,
         }
     }
 }
@@ -16477,88 +16375,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// No Codex job goes to a teammate's Mac, however it would: started with Codex named or as
-    /// the only agent there is (the API's and the brain's way), moved there, or moved to Codex there.
-    #[tokio::test]
-    async fn a_codex_job_never_runs_on_a_teammates_mac() {
-        let root = std::env::temp_dir().join(format!("obid-guest-codex-{}", uuid::Uuid::new_v4()));
-        let jobs_with = |agents: serde_json::Value| {
-            let config = crate::config::Config::parse(
-                &serde_json::json!({"listen": "127.0.0.1:0", "home": root.join("home"), "owner": "o",
-                    "repos": [{"repo": "o/r", "remote": "https://example.com/o/r.git"}],
-                    "agents": agents})
-                .to_string(),
-            )
-            .unwrap();
-            Jobs::open(
-                config,
-                crate::events::Events::new(),
-                Err("no sandbox".into()),
-            )
-            .unwrap()
-        };
-        let teammate = crate::job::RunsOn {
-            obi: "obi-t".into(),
-            owner: "t".into(),
-            grant: None,
-        };
-        let new = |agent: Option<&str>| NewJob {
-            repo: "o/r".into(),
-            kind: "fix".into(),
-            task: "Fix it".into(),
-            agent: agent.map(Into::into),
-            runs_on: Some(teammate.clone()),
-            ..NewJob::default()
-        };
-        let refused = |r: Result<Job, Refused>| r.unwrap_err().0;
-
-        // Codex is the only agent: the default.
-        let codex =
-            serde_json::json!({"bin": "/usr/bin/true", "accounts": [{"id": "c", "name": "C"}]});
-        let only = jobs_with(serde_json::json!({"codex": codex}));
-        assert_eq!(refused(only.create(new(None))), GUEST_ONLY_CLAUDE);
-        drop(only);
-
-        let both = jobs_with(serde_json::json!({"codex": codex,
-            "claude": {"bin": "/usr/bin/true", "accounts": [{"id": "a", "name": "A"}]}}));
-        assert_eq!(refused(both.create(new(Some("codex")))), GUEST_ONLY_CLAUDE);
-
-        // A Codex job that ended here, moved there.
-        let mut here = Job::new(
-            "j1".into(),
-            "o/r".into(),
-            "fix".into(),
-            "Fix it".into(),
-            "codex".into(),
-            "c".into(),
-        );
-        here.status = Status::Done;
-        both.insert(here);
-        assert_eq!(
-            refused(both.place("j1", Some(teammate.clone())).unwrap()),
-            GUEST_ONLY_CLAUDE
-        );
-        assert!(both.place("j1", None).unwrap().is_ok());
-
-        // A Claude Code job that came back from there, moved to Codex.
-        let mut there = Job::new(
-            "j2".into(),
-            "o/r".into(),
-            "fix".into(),
-            "Fix it".into(),
-            "claude".into(),
-            "a".into(),
-        );
-        there.status = Status::Done;
-        there.runs_on = Some(teammate.clone());
-        both.insert(there);
-        assert_eq!(
-            refused(both.change("j2", Some("codex"), None, "you").unwrap()),
-            GUEST_ONLY_CLAUDE
-        );
-        let _ = std::fs::remove_dir_all(&root);
-    }
-
     fn cleanup_git(dir: &Path, args: &[&str]) -> String {
         let out = std::process::Command::new("git")
             .args([
@@ -16798,16 +16614,6 @@ mod tests {
         assert_eq!(budget(jobs.iter(), &new), 8 * gib);
         jobs.push(ran("f", "claude", "o/r", "fix", 15, Some(gib / 4)));
         assert_eq!(budget(jobs.iter(), &new), gib);
-        // One run on a teammate's Mac measured nothing of its agent here.
-        let mut away = ran("away", "claude", "o/r", "fix", 16, Some(9 * gib));
-        away.runs_on = Some(crate::job::RunsOn {
-            obi: "obi-t".into(),
-            owner: "t".into(),
-            grant: None,
-        });
-        jobs.push(away.clone());
-        assert_eq!(budget(jobs.iter(), &new), gib);
-        assert_eq!(budget(jobs.iter(), &away), 0);
         // With 5 measured, the one outlier is left out; then only the latest 10 count.
         jobs.push(ran("big", "claude", "o/r", "fix", 17, Some(6 * gib)));
         jobs.push(ran("g", "claude", "o/r", "fix", 18, Some(gib / 4)));
@@ -16943,13 +16749,6 @@ mod tests {
         };
         jobs.insert(job("checking"));
         jobs.insert(job("other"));
-        let mut away = job("away");
-        away.runs_on = Some(crate::job::RunsOn {
-            obi: "obi-t".into(),
-            owner: "t".into(),
-            grant: None,
-        });
-        jobs.insert(away);
         // 3 GiB available on 10: 1 GiB spare, less than a check's 1.5 GiB until one is measured.
         let tight = Machine {
             total: 10 * gib,
@@ -16962,7 +16761,6 @@ mod tests {
                 .insert(id.into(), watch::channel(Signal::Run).0);
         };
         worker("checking");
-        worker("away");
         jobs.measured().machine = Some((std::time::Instant::now(), tight));
         assert!(jobs.check_fits("checking"), "alone here, it runs");
         worker("other");

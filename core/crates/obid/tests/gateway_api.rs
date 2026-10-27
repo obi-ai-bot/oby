@@ -791,7 +791,7 @@ fn a_phone_cant_approve_a_listeners_review() {
 
 use futures_util::{SinkExt as _, StreamExt as _};
 use obid::relay::envelope::{Opener, Phone, Sealer};
-use obid::sphere::channel::{Frame, Kind};
+use obid::relay::frame::{Frame, Kind};
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 
