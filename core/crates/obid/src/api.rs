@@ -37,6 +37,8 @@ pub struct Shared {
     pub devices: crate::devices::Devices,
     /// The phones paired with the gateway, and the open invitation (crate::gateway).
     pub gateway: crate::gateway::Gateway,
+    /// `status.gateway`: whether the gateway listens, and why not; none with no `gateway` configured.
+    pub gateway_state: Option<serde_json::Value>,
     /// The phones' relay through the Obysphere, sealed end to end (crate::relay).
     pub relay: Arc<crate::relay::Relay>,
     /// Connected apps and their job-scoped MCP broker.
@@ -620,6 +622,9 @@ pub struct Status {
     pub cursor_keychain: KeychainJson,
     /// The tunnel phones reach this Mac through (crate::tunnel): `{state, detail}`.
     pub tunnel: serde_json::Value,
+    /// The gateway (crate::gateway): `{state, address, detail}`; left out with none configured.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gateway: Option<serde_json::Value>,
     /// The machine's memory and each running job's (crate::meter); left out when it can't be read.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub memory: Option<MemoryJson>,
@@ -848,6 +853,7 @@ async fn status(State(shared): State<Arc<Shared>>) -> Result<axum::Json<Status>,
             auto: crate::jobs::cursor_keychain_auto(),
         },
         tunnel: shared.tunnel.json(),
+        gateway: shared.gateway_state.clone(),
         memory: shared
             .jobs
             .memory()

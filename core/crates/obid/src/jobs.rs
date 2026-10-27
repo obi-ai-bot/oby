@@ -10968,7 +10968,7 @@ fn keychain_item(config_dir: Option<&Path>, value: bool) -> Option<Vec<u8>> {
     if value {
         command.arg("-w");
     }
-    let output = command.output().ok()?;
+    let output = process::output_within(&mut command, security_limit(value))?;
     output.status.success().then_some(output.stdout)
 }
 
@@ -10986,6 +10986,13 @@ fn security_bin() -> PathBuf {
         .map(PathBuf::from)
         .filter(|path| path.is_absolute())
         .unwrap_or_else(|| PathBuf::from("/usr/bin/security"))
+}
+
+/// How long `security` gets: 5 seconds to say whether an item is there (obid asks while it
+/// starts), 60 to give its value, which can wait on the person's OK to the Keychain's prompt.
+#[cfg(target_os = "macos")]
+fn security_limit(value: bool) -> Duration {
+    Duration::from_secs(if value { 60 } else { 5 })
 }
 
 /// Whether Claude Code keeps a login for `config_dir` in the Keychain (macOS only).
@@ -11089,7 +11096,7 @@ fn cursor_keychain_item(service: &str, value: bool) -> Option<Vec<u8>> {
     if value {
         command.arg("-w");
     }
-    let output = command.output().ok()?;
+    let output = process::output_within(&mut command, security_limit(value))?;
     output.status.success().then_some(output.stdout)
 }
 

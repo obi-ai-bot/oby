@@ -254,6 +254,32 @@ fn measured_status(obid: &Obid, host: &str) -> Answer {
     }
 }
 
+/// A gateway port something else holds doesn't stop obid: it answers, `status.gateway` says the
+/// gateway is down and why, and a start that worked leaves no `last-start-error`.
+#[test]
+fn a_busy_gateway_port_leaves_obid_answering() {
+    let folder = Folder::new("busy-gateway");
+    let taken = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = taken.local_addr().unwrap().to_string();
+    let mut config = config(&folder.0, 0);
+    config["gateway"] = json!(address);
+    let home = Path::new(config["home"].as_str().unwrap()).to_path_buf();
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::write(home.join("last-start-error"), "an earlier start's\n").unwrap();
+    let obid = start(&folder.0, &config, Some(TOKEN));
+    let answer = get_status(&obid, "127.0.0.1", TOKEN);
+    assert_eq!(answer.status, 200, "{}", answer.body);
+    let gateway = &answer.body["gateway"];
+    assert_eq!(gateway["state"], "down", "{gateway}");
+    assert_eq!(gateway["address"], address.as_str());
+    let detail = gateway["detail"].as_str().unwrap();
+    assert!(detail.contains(&address), "{detail}");
+    assert!(!home.join("last-start-error").exists());
+    let log = std::fs::read_to_string(&obid.stderr).unwrap();
+    assert!(log.contains("no gateway: can't listen on"), "{log}");
+    assert!(log.contains("starting: listen done in"), "{log}");
+}
+
 #[test]
 fn status_answers_with_engine_obid() {
     let folder = Folder::new("status");
@@ -659,7 +685,9 @@ fn makes_and_keeps_its_own_token() {
     assert_eq!(get_status(&obid, "127.0.0.1", &first).status, 200);
 }
 
-/// Exits non-zero, saying why, with a configuration or token it can't use, and binds nothing.
+/// Exits non-zero, saying why, with a configuration or token it can't use, and binds nothing; the
+/// same reason is in `home/last-start-error` for the apps, whenever the configuration names an
+/// absolute `home`, an unknown key's included.
 #[test]
 fn refuses_what_it_cant_use() {
     let folder = Folder::new("refuses");
@@ -706,7 +734,9 @@ fn refuses_what_it_cant_use() {
     // A token file that holds no usable token.
     cases.push((good.clone(), Some("too-short"), "no usable token"));
 
+    let reason_file = Path::new(good["home"].as_str().unwrap()).join("last-start-error");
     for (config, token, says) in cases {
+        let _ = std::fs::remove_file(&reason_file);
         let path = folder.0.join("config.json");
         std::fs::write(&path, config.to_string()).unwrap();
         let mut command = command(&folder.0, &path);
@@ -726,6 +756,11 @@ fn refuses_what_it_cant_use() {
             TcpStream::connect(("127.0.0.1", port)).is_err(),
             "{says}: something listens"
         );
+        if config["home"] == good["home"] {
+            let reason = std::fs::read_to_string(&reason_file)
+                .unwrap_or_else(|e| panic!("{says}: no {}: {e}", reason_file.display()));
+            assert!(reason.contains(says), "{says}: {reason}");
+        }
     }
 
     // A config file that isn't there, or isn't JSON.
