@@ -16,7 +16,7 @@ import SettingsView, { settingsLabel } from './SettingsView';
 import SphereSettings, { sphereSettingsLabel } from './SphereSettings';
 import KnowledgeView, { knowledgeLabel } from './KnowledgeView';
 import { useSpheres } from './spheres';
-import { everything, onObid } from './lean';
+import { everything, onObid, welcome } from './lean';
 import { useLive } from './live';
 import { WELCOME, setUp, startOnboarding } from './onboarding';
 import { askOby, chatOfTask, renameChat, tellAbout, useChats } from './chats';
@@ -162,12 +162,16 @@ export default function Home() {
     goToConversation(id);
   };
 
-  // the first launch (lean.ts): Oby opens its first conversation and sets you up in it
+  // the first launch (lean.ts): Oby opens its first conversation and sets you up in it. On obid,
+  // for someone new to it (no conversation, no job yet) or with ?welcome; the first task's own
+  // conversation then opens
+  const { connection, conversations: had, jobs: ran } = useLive();
+  const fresh = connection === 'live' && !had.length && !Object.keys(ran).length;
   useEffect(() => {
-    if (everything || onObid || setUp()) return;
-    startOnboarding();
+    if (everything || setUp() || (onObid && !welcome && !fresh)) return;
+    startOnboarding((id) => start({ kind: 'talk', id }));
     start({ kind: 'talk', id: WELCOME });
-  }, []);
+  }, [fresh]);
 
   // the pointer arriving on the chips: Oby glances over
   const [onChips, setOnChips] = useState(false);

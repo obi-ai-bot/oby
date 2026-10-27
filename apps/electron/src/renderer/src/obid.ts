@@ -75,6 +75,8 @@ export type Account = {
 export type Status = {
   runner: { version: string; host: string; engine?: string };
   accounts: Account[];
+  // obid only: the tools' own logins found on this Mac that aren't accounts yet
+  availableLogins?: { agent: Agent; id: string; name: string }[];
   models: Record<string, { model: string }>;
   maxRunning: number;
   running: number;
@@ -83,6 +85,10 @@ export type Status = {
 // obid only: "GET /v1/repos", the repositories a job may start in: the listed ones first, then
 // GitHub's (newest push first)
 export type Repo = { repo: string; defaultBranch: string; listed: boolean };
+
+// A sign-in under way: the page to open, and the code to type there (Codex's, GitHub's) or, with
+// pasteCode, the code that page shows, to send back (Claude Code's)
+export type SignIn = { account?: string; url: string; userCode?: string | null; pasteCode?: boolean };
 
 // "POST /v1/plans"
 export type Question = { text: string; options: string[]; recommended: number | null };
@@ -160,6 +166,15 @@ export const api = {
   plan: (said: string, answer: { question: string; option: string } | undefined, where: { conversation: string } | { new: true }) =>
     call<PlanAnswer>('POST', '/v1/plans', { said, ...(answer ? { answer } : {}), ...where }),
   repos: () => call<{ repos: Repo[] }>('GET', '/v1/repos'),
+  // obid only: accounts, and signing them in with the tool's own login
+  addAccount: (body: { agent: Agent; default: true } | { agent: Agent; name: string }) => call<Account>('POST', '/v1/accounts', body),
+  signIn: (a: string) => call<SignIn>('GET', `/v1/accounts/${id(a)}/sign-in`),
+  signInCode: (a: string, code: string) => call<Account>('POST', `/v1/accounts/${id(a)}/sign-in`, { code }),
+  // obid only: GitHub's sign-in (gh's device flow), and Tetrix's
+  github: () => call<{ gh: boolean; signedIn: boolean; user: string | null }>('GET', '/v1/github'),
+  githubSignIn: () => call<SignIn>('POST', '/v1/github/sign-in'),
+  tetrix: () => call<{ connected: boolean; presets: { id: string; name: string }[] }>('GET', '/v1/tetrix'),
+  tetrixSignIn: (preset: string) => call<SignIn>('POST', '/v1/tetrix/sign-in', { preset }),
   conversations: (opts: { after?: string; limit?: number } = {}) => call<Conversation[]>('GET', `/v1/conversations${q(opts)}`),
   editConversation: (c: string, change: { title?: string; pinned?: boolean }) => call<Conversation>('PATCH', `/v1/conversations/${id(c)}`, change),
   deleteConversation: (c: string) => call<null>('DELETE', `/v1/conversations/${id(c)}`),

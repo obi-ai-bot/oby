@@ -233,7 +233,7 @@ export default function ChatView({ id, kind = 'task', leaving, covered = false, 
         placeholder={convo ? `Message ${convo.with.length > 1 ? 'the group' : `${writer}’s Oby`}…` : !task ? 'Reply to Oby…' : task.status === 'done' ? 'Ask for a follow-up…' : `Tell ${agent}…`}
         label={convo ? `Message ${convo.title}` : task ? `Tell the agent about ${task.title}` : 'Reply to Oby'}
         onSend={(text, att) => (task ? tell(task.id, text, att) : talk ? (talk.id === WELCOME && typedFirst(text)) || tellChat(talk.id, text, att) : say(convo!.id, text, att))}
-        repos={!!talk}
+        repos={!!talk && !talk.local}
         conversation={talk?.id}
       />
     </div>

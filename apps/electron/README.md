@@ -15,8 +15,10 @@ Obysphere, both optional), and a task shows as a card in the conversation
 that started it. What isn't used yet is hidden, not deleted: open the page
 with `?everything` (`npm run web`, then http://localhost:5175/?everything) for
 all of Sangam's design and its demo data, and `?welcome` to be set up again.
-In a browser, or with `?everything`, it runs on the mock; the mocked setup
-(`onboarding.ts`) runs only there.
+In a browser, or with `?everything`, it runs on the mock. Oby's first
+conversation (`onboarding.ts`) sets a new user up: on obid, for someone it has
+no conversation or job for yet (or with `?welcome`), with the tools' own
+sign-ins through obid, and the first task goes to Oby.
 
 ```bash
 npm install     # on macOS this also builds the native window module

@@ -16,7 +16,8 @@ import * as live from './live';
 type Ask = { question: string; options: string[] };
 // at: when it last moved (minutes ago), when that's known apart from what's loaded of it (obid's)
 // about: its line in Conversations while none of it is loaded (obid's)
-export type Chat = { id: string; title: string; said: Message[]; typing?: boolean; step?: string; waiting?: Ask; pinned?: boolean; at?: number; about?: string };
+// local: the app's own, not obid's (Oby's first conversation, onboarding.ts): kept as obid's change
+export type Chat = { id: string; title: string; said: Message[]; typing?: boolean; step?: string; waiting?: Ask; pinned?: boolean; at?: number; about?: string; local?: boolean };
 
 // named after its first line, as Oby would title it
 const titled = (text: string) => {
@@ -77,7 +78,7 @@ const set = (next: Chat[]) => { chats = next; listeners.forEach((l) => l()); };
 const subscribe = (l: () => void) => { listeners.add(l); return () => { listeners.delete(l); }; };
 export const useChats = () => useSyncExternalStore(subscribe, () => chats);
 // obid's conversations, in place of the mock's (live.ts)
-export const replaceChats = (next: Chat[]) => set(next);
+export const replaceChats = (next: Chat[]) => set([...chats.filter((c) => c.local), ...next]);
 // the conversation a task was started in, if it was started in one
 export const chatOfTask = (taskId: string) => {
   const from = conversationOfTask(taskId);
@@ -88,7 +89,7 @@ const update = (id: string, fn: (c: Chat) => Partial<Chat>) => set(chats.map((c)
 
 // Oby's first conversation (onboarding.ts): Oby opens it, not you; your picks in
 // it go in as your words, and Oby's words land as any of its answers do
-export const openChat = (id: string, title: string) => { if (!chats.some((c) => c.id === id)) set([{ id, title, said: [] }, ...chats]); };
+export const openChat = (id: string, title: string) => { if (!chats.some((c) => c.id === id)) set([{ id, title, said: [], local: true }, ...chats]); };
 export const sayYours = (id: string, text: string) => update(id, (c) => ({ said: [...c.said, { who: 'you', text, ago: 0 }] }));
 export async function sayOby(id: string, m: Omit<Message, 'who' | 'ago' | 'jobs'>, start?: () => string[] | undefined) {
   update(id, () => ({ typing: true, step: 'Thinking' }));
@@ -98,14 +99,16 @@ export async function sayOby(id: string, m: Omit<Message, 'who' | 'ago' | 'jobs'
 
 // from its menu (ConvoMenu): renamed, pinned to the top or not, deleted (the
 // tasks it started stay; their conversation is then their own thread)
+// obid's, not the app's own (setting up)
+const ofObid = (id: string) => onObid && !chats.find((c) => c.id === id)?.local;
 export function renameChat(id: string, title: string) {
-  if (onObid) return void live.renameConversation(id, title);
+  if (ofObid(id)) return void live.renameConversation(id, title);
   const t = title.trim();
   if (t) update(id, () => ({ title: t }));
 }
-export const pinChat = (id: string, pinned: boolean) => (onObid ? void live.pinConversation(id, pinned) : update(id, () => ({ pinned })));
+export const pinChat = (id: string, pinned: boolean) => (ofObid(id) ? void live.pinConversation(id, pinned) : update(id, () => ({ pinned })));
 export const deleteChat = (id: string) => {
-  if (onObid) return void live.deleteConversation(id);
+  if (ofObid(id)) return void live.deleteConversation(id);
   queued.delete(id); set(chats.filter((c) => c.id !== id));
 };
 
@@ -124,7 +127,8 @@ export function askOby(text: string, att?: Attachments) {
 // a reply in a conversation: Oby takes its next turn on it. Oby was waiting on
 // you: its question goes into the conversation, your words under it as the answer
 export function tellChat(id: string, text: string, att?: Attachments) {
-  if (onObid) return void live.ask(text, id, att?.repo);
+  // the app's own (setting up): only its picks carry it on
+  if (onObid) return void (ofObid(id) ? live.ask(text, id, att?.repo) : live.say('Pick one above to go on.'));
   const t = text.trim();
   if (!t && !hasAttachments(att)) return;
   update(id, (c) => ({

@@ -8,6 +8,7 @@ declare global {
       chrome: { lightsCenterY: number; lightsRight: number } | null;
       fullScreen: boolean;
       onFullScreen(fn: (on: boolean) => void): () => void;
+      openExternal(url: string): void;
       // obid, through main (preload, main/obid.ts)
       obid: {
         call(method: string, path: string, body?: unknown): Promise<{ status: number; text: string }>;
