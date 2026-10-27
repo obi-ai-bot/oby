@@ -106,3 +106,210 @@ async fn a_stop_while_obid_measures_ends_the_walk() {
         );
     }
 }
+
+/// obid answers as soon as it listens: `GET /v1/status` says it's starting (`503`, `starting`)
+/// while the slow steps run, a call made then waits for the API rather than fail, and once
+/// obid is ready status answers in full.
+#[tokio::test(flavor = "multi_thread")]
+async fn status_answers_before_the_slow_steps_finish() {
+    let folder = Folder::new("answers-first");
+    let home = folder.0.join("home");
+    // A walk that takes the whole MEASURE_FIRST: obid isn't ready for at least that long.
+    fill_worktrees(&home, 50, 400);
+    let port = free_port();
+    let mut config = config(&folder.0);
+    config.listen = format!("127.0.0.1:{port}").parse().unwrap();
+    let token = "t".repeat(64);
+    let said_ready = Arc::new(AtomicBool::new(false));
+    let told = said_ready.clone();
+    let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+    let serving = tokio::spawn(obid::serve(
+        config,
+        token.clone(),
+        async move {
+            let _ = stopped.await;
+        },
+        move |_| told.store(true, Ordering::SeqCst),
+    ));
+    let client = reqwest::Client::new();
+    let url = |path: &str| format!("http://127.0.0.1:{port}{path}");
+    let status = loop {
+        if let Ok(answer) = client
+            .get(url("/v1/status"))
+            .bearer_auth(&token)
+            .send()
+            .await
+        {
+            break answer;
+        }
+        tokio::time::sleep(Duration::from_millis(2)).await;
+    };
+    assert!(
+        !said_ready.load(Ordering::SeqCst),
+        "obid was ready before its first answer"
+    );
+    assert_eq!(status.status(), 503);
+    assert_eq!(status.headers()["retry-after"], "1");
+    let body: serde_json::Value = status.json().await.unwrap();
+    assert_eq!(body["error"], "Oby’s engine is starting.");
+    assert_eq!(body["starting"]["done"][0]["step"], "listen");
+    assert!(body["starting"]["now"].is_string(), "{body}");
+    // Without the token, the door says no as the API does.
+    let refused = client.get(url("/v1/status")).send().await.unwrap();
+    assert_eq!(refused.status(), 401);
+    // A call made while obid starts waits for it.
+    let jobs = client
+        .get(url("/v1/jobs"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(jobs.status(), 200);
+    let status = client
+        .get(url("/v1/status"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(status.status(), 200);
+    let _ = stop.send(());
+    assert!(serving.await.unwrap().is_ok());
+}
+
+/// A free port on loopback, for a config whose address a test must know before obid is ready.
+fn free_port() -> u16 {
+    std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port()
+}
+
+/// Waits for obid's first answer to `GET /v1/status`, whatever it is.
+async fn first_status(client: &reqwest::Client, port: u16, token: &str) -> reqwest::Response {
+    loop {
+        if let Ok(answer) = client
+            .get(format!("http://127.0.0.1:{port}/v1/status"))
+            .bearer_auth(token)
+            .send()
+            .await
+        {
+            return answer;
+        }
+        tokio::time::sleep(Duration::from_millis(2)).await;
+    }
+}
+
+/// While obid starts, a call its gate would refuse is refused at once, never held: no token is
+/// `401`, a name other than loopback's `403`.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_door_refuses_before_anything_waits() {
+    let folder = Folder::new("door-refuses");
+    fill_worktrees(&folder.0.join("home"), 50, 400);
+    let port = free_port();
+    let mut config = config(&folder.0);
+    config.listen = format!("127.0.0.1:{port}").parse().unwrap();
+    let token = "t".repeat(64);
+    let said_ready = Arc::new(AtomicBool::new(false));
+    let told = said_ready.clone();
+    let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+    let serving = tokio::spawn(obid::serve(
+        config,
+        token.clone(),
+        async move {
+            let _ = stopped.await;
+        },
+        move |_| told.store(true, Ordering::SeqCst),
+    ));
+    let client = reqwest::Client::new();
+    assert_eq!(first_status(&client, port, &token).await.status(), 503);
+    let jobs = format!("http://127.0.0.1:{port}/v1/jobs");
+    let tokenless = client.get(&jobs).send().await.unwrap();
+    let elsewhere = client
+        .get(&jobs)
+        .bearer_auth(&token)
+        .header("host", "rebound.example")
+        .send()
+        .await
+        .unwrap();
+    assert!(
+        !said_ready.load(Ordering::SeqCst),
+        "obid was ready before the door answered"
+    );
+    assert_eq!(tokenless.status(), 401);
+    assert_eq!(tokenless.headers()["cache-control"], "no-store");
+    assert_eq!(elsewhere.status(), 403);
+    let _ = stop.send(());
+    assert!(serving.await.unwrap().is_ok());
+}
+
+/// A start that fails after obid listens answers the calls it held `503` with why, and `serve`
+/// returns the failure.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_failed_start_answers_what_the_door_held() {
+    let folder = Folder::new("door-fails");
+    let home = folder.0.join("home");
+    fill_worktrees(&home, 50, 400);
+    // The jobs' folder can't be made: Jobs::open fails.
+    std::fs::write(home.join("jobs"), b"not a folder").unwrap();
+    let port = free_port();
+    let mut config = config(&folder.0);
+    config.listen = format!("127.0.0.1:{port}").parse().unwrap();
+    let token = "t".repeat(64);
+    let serving = tokio::spawn(obid::serve(
+        config,
+        token.clone(),
+        std::future::pending(),
+        |_| {},
+    ));
+    let client = reqwest::Client::new();
+    assert_eq!(first_status(&client, port, &token).await.status(), 503);
+    let held = client
+        .get(format!("http://127.0.0.1:{port}/v1/jobs"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(held.status(), 503);
+    let body: serde_json::Value = held.json().await.unwrap();
+    assert_eq!(body["error"], "Oby’s engine didn’t start.");
+    assert!(matches!(
+        serving.await.unwrap(),
+        Err(obid::StartError::Jobs { .. })
+    ));
+}
+
+/// An agent's own routes (its MCP server, Tetrix's) wait for the API while obid starts, rather
+/// than be refused: a job resumed at the start may call them before obid opens, and the API's
+/// gate checks their tokens then.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_agent_route_waits_for_the_api() {
+    let folder = Folder::new("door-agent");
+    fill_worktrees(&folder.0.join("home"), 50, 400);
+    let port = free_port();
+    let mut config = config(&folder.0);
+    config.listen = format!("127.0.0.1:{port}").parse().unwrap();
+    let token = "t".repeat(64);
+    let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+    let serving = tokio::spawn(obid::serve(
+        config,
+        token.clone(),
+        async move {
+            let _ = stopped.await;
+        },
+        |_| {},
+    ));
+    let client = reqwest::Client::new();
+    assert_eq!(first_status(&client, port, &token).await.status(), 503);
+    let agent = client
+        .post(format!("http://127.0.0.1:{port}/v1/agent/mcp/job-1"))
+        .bearer_auth("not-a-broker-token")
+        .send()
+        .await
+        .unwrap();
+    // Answered by the API's gate, so only once obid is open.
+    assert_eq!(agent.status(), 401);
+    assert_eq!(first_status(&client, port, &token).await.status(), 200);
+    let _ = stop.send(());
+    assert!(serving.await.unwrap().is_ok());
+}
