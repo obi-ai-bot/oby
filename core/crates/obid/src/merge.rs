@@ -333,11 +333,12 @@ pub fn ready(
     }
 }
 
-/// `mac` (this repository's remembered workflow) never merges by itself since the Mac app's Mac
-/// checks went with the strip to a dispatcher: the job's own check runs boxed and skips the suites
-/// only a Mac runs unboxed (MacTests, `swift test`; scripts/oby-check.sh), and nothing else runs
-/// them on the pushed head. Once everything else holds, the owner is asked, and so is a job with no
-/// check at all, whatever the workflow: nothing merges without a check that passed on its head.
+/// `mac` (this repository's remembered workflow, and what `proposed` offers wherever GitHub's checks
+/// aren't green) never merges by itself since the Mac app's Mac checks went with the strip to a
+/// dispatcher: the job's own check runs boxed and may skip what only the Mac runs unboxed (here,
+/// MacTests and `swift test`; scripts/oby-check.sh), and nothing else runs it on the pushed head.
+/// Once everything else holds, the owner is asked, with its own words for a job with no check at
+/// all. (A `github` workflow waits for GitHub's checks instead.)
 fn mac_checks(job: &Job, workflow: &Workflow) -> Result<(), Blocked> {
     if job.check.is_none() && workflow.checks == Checks::Mac {
         return Err(needs_you(
@@ -346,7 +347,7 @@ fn mac_checks(job: &Job, workflow: &Workflow) -> Result<(), Blocked> {
     }
     if workflow.checks == Checks::Mac {
         return Err(needs_you(
-            "Not merged: the Mac's own checks (MacTests, swift test) don't run by themselves any more, so it's yours to merge.",
+            "Not merged: the checks this workflow waits for on this Mac don't run by themselves any more, so it's yours to merge.",
         ));
     }
     Ok(())
@@ -1977,7 +1978,7 @@ mod tests {
             assert_eq!(
                 check(&checked, Some(&mac), text),
                 Err(needs_you(
-                    "Not merged: the Mac's own checks (MacTests, swift test) don't run by themselves any more, so it's yours to merge."
+                    "Not merged: the checks this workflow waits for on this Mac don't run by themselves any more, so it's yours to merge."
                 ))
             );
         }
