@@ -10242,7 +10242,11 @@ impl Jobs {
                                 reviewers.as_ref(),
                             ) {
                                 Ok(()) => Some(crate::merge::ready_card(&job, number, &head, &w)),
-                                Err(blocked) if refused.as_ref() == Some(&blocked) => {
+                                // What only the owner can settle (red checks, a change request)
+                                // asks them here too.
+                                Err(blocked)
+                                    if blocked.needs_you || refused.as_ref() == Some(&blocked) =>
+                                {
                                     Some(crate::merge::stopped_card(&job, &head, &blocked.why))
                                 }
                                 Err(_) => None,

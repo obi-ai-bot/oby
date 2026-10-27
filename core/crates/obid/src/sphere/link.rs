@@ -658,11 +658,19 @@ impl Link {
                         .is_some_and(|p| inbox::permission_item_id(&i.job, &p.id) == i.id);
                 // A permission waited on an agent that ended with obid: its job's agent asks again
                 // when it runs, so the old item is done by itself.
-                if matches!(
+                // An older obid's offer about Oby's own pull request (`Address it`, `Fix CI` on
+                // its red head): nothing starts those any more, so it's done by itself too; the
+                // follower asks the owner about that pull request instead (crate::merge).
+                let own_pr_offer = i.kind == "github"
+                    && i.github
+                        .as_deref()
+                        .is_some_and(|g| g["list"] == "comments" || g["list"] == "checks");
+                if (matches!(
                     i.kind.as_str(),
                     "permission" | "plan" | inbox::QUESTION_KIND
-                ) && i.done.is_none()
-                    && !kept
+                ) && !kept
+                    || own_pr_offer)
+                    && i.done.is_none()
                 {
                     i.done = Some(now);
                     if let Err(e) = inbox.save(&i) {
