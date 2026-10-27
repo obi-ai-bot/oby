@@ -3152,6 +3152,169 @@ fn a_restart_keeps_the_agents_question() {
     assert!(settled.is_none_or(|i| !i["done"].is_null()), "{items}");
 }
 
+/// Whether obid parked `job` for a call that waited for the owner past `parkAfter`, as its
+/// `changes` say.
+fn was_parked(job: &Value) -> bool {
+    job["changes"].as_array().is_some_and(|changes| {
+        changes.iter().any(|c| {
+            c["what"]
+                .as_str()
+                .is_some_and(|w| w.starts_with("Parked by obid"))
+        })
+    })
+}
+
+/// A permission that waits for the owner past `parkAfter` parks its job (docs/runner-api.md,
+/// "Parked"): its agent ends and gives its slot back, so the job queued behind it starts, while the
+/// parked one stays `running` showing the same card, its inbox item open. Allowed, it's queued
+/// again: its session is picked up, told the call and the answer, and its agent's same call goes
+/// through without asking again.
+#[test]
+fn a_parked_permission_frees_its_slot_and_an_allow_resumes_it() {
+    let folder = Folder::new("park-allow");
+    let remote = fixture(&folder.0.join("fixture"));
+    let mut config = config(&folder.0, &remote);
+    config["parkAfter"] = json!(1);
+    let obid = start(&folder.0, &config);
+    let one = request(
+        &obid,
+        "PUT",
+        "/v1/settings/jobs",
+        Some(&json!({"maxRunning": 1}).to_string()),
+    );
+    assert_eq!(one.status, 200, "{}", one.text);
+    let new = |task: String| {
+        post_job(
+            &obid,
+            json!({"repo": "obi-e2e/fixture-app", "kind": "research", "task": task}),
+        )
+        .body["id"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    };
+    let ask = json!({"tool": "Bash", "input": {"command": "npm install left-pad"}});
+    let id = new(format!("KEEP PROMPTS ASK: {ask}"));
+    let card = until(&obid, &id, |j| j["permission"].is_object())["permission"].clone();
+    let behind = new("Nothing".into());
+    assert_eq!(wait(&obid, &behind)["status"], "done");
+    let job = until(&obid, &id, was_parked);
+    assert_eq!(job["status"], "running", "{job}");
+    assert_eq!(job["permission"], card, "{job}");
+    assert_eq!(job["step"], "Waiting for your OK", "{job}");
+    let item = format!("{id}-permission-{}", card["id"].as_str().unwrap());
+    let items = inbox(&obid);
+    assert!(
+        items
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|i| i["id"] == item.as_str() && i["done"].is_null()),
+        "{items}"
+    );
+
+    let answered = request(
+        &obid,
+        "POST",
+        &format!("/v1/jobs/{id}/permission"),
+        Some(&json!({"id": card["id"], "decision": "allow"}).to_string()),
+    );
+    assert_eq!(answered.status, 200, "{}", answered.text);
+    let done = wait(&obid, &id);
+    assert_eq!(done["status"], "done", "{done}");
+    assert_eq!(done["summary"], "answer: allow", "{done}");
+    assert!(done["permission"].is_null(), "{done}");
+    let heard = prompts(&obid, &id);
+    assert_eq!(heard.len(), 2, "{heard:?}");
+    assert!(
+        heard[1].starts_with("obid paused you while this call of yours waited for the owner")
+            && heard[1].contains(r#"Bash {"command":"npm install left-pad"}"#)
+            && heard[1].contains("The owner allowed it: you may now run it."),
+        "{heard:?}"
+    );
+    let items = inbox(&obid);
+    assert!(
+        items
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|i| i["id"] != item.as_str() || !i["done"].is_null()),
+        "{items}"
+    );
+}
+
+/// A parked job stays parked across a restart (SIGTERM, as obid's own update): `running` with its
+/// card and no agent, its inbox item open. The owner's words are that permission's no, as while
+/// its agent waited: its session is picked up and told them.
+#[test]
+fn a_parked_job_survives_a_restart_and_words_are_its_no() {
+    let folder = Folder::new("park-restart");
+    let remote = fixture(&folder.0.join("fixture"));
+    let mut config = config(&folder.0, &remote);
+    config["parkAfter"] = json!(1);
+    let obid = start(&folder.0, &config);
+    let ask = json!({"tool": "Bash", "input": {"command": "npm install left-pad"}});
+    let id = post_job(
+        &obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "research", "task": format!("ASK: {ask}")}),
+    )
+    .body["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let card = until(&obid, &id, was_parked)["permission"].clone();
+    assert!(card.is_object(), "{card}");
+
+    nix::sys::signal::kill(
+        nix::unistd::Pid::from_raw(obid.child.id() as i32),
+        nix::sys::signal::Signal::SIGTERM,
+    )
+    .unwrap();
+    let mut obid = obid;
+    let started = Instant::now();
+    while obid.child.try_wait().unwrap().is_none() {
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "obid didn't exit"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let folder_path = obid.folder.clone();
+    drop(obid);
+    let obid = start(&folder_path, &config);
+
+    let job = request(&obid, "GET", &format!("/v1/jobs/{id}"), None).body;
+    assert_eq!(job["status"], "running", "{job}");
+    assert_eq!(job["permission"], card, "{job}");
+    let item = format!("{id}-permission-{}", card["id"].as_str().unwrap());
+    let items = inbox(&obid);
+    assert!(
+        items
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|i| i["id"] == item.as_str() && i["done"].is_null()),
+        "{items}"
+    );
+
+    let told = request(
+        &obid,
+        "POST",
+        &format!("/v1/jobs/{id}/messages"),
+        Some(&json!({"text": "Not now: use the lockfile."}).to_string()),
+    );
+    assert_eq!(told.status, 200, "{}", told.text);
+    let done = wait(&obid, &id);
+    assert_eq!(done["status"], "done", "{done}");
+    let summary = done["summary"].as_str().unwrap();
+    assert!(
+        summary.starts_with("heard: obid paused you")
+            && summary.contains(r#"Bash {"command":"npm install left-pad"}"#)
+            && summary.ends_with("The owner said no: Not now: use the lockfile."),
+        "{done}"
+    );
+}
+
 /// Only the owner makes what sticks: an "always" on a network card saves their rule, and the next
 /// job's install goes through without asking; a secret's card can't be saved ("always" is
 /// refused), so the next job asks again (#586).

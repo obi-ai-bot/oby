@@ -78,6 +78,9 @@ struct File {
     /// How long a job may go without progress before it stalls, in seconds: 1 to 86,400, 900
     /// when left out.
     stall_after: Option<u64>,
+    /// How long a job's agent may wait for the owner's answer before obid parks the job, in
+    /// seconds: 1 to 86,400, 600 when left out.
+    park_after: Option<u64>,
     /// The safety ceiling of one run of a job, in hours: 1 to 168, 12 when left out.
     job_ceiling_hours: Option<u64>,
     /// The safety budget of a job, in tokens (cache reads left out): 1 to 10^10, 50 million when
@@ -239,6 +242,10 @@ pub struct Config {
     /// How long a job may go without progress before it stalls (docs/runner-api.md, `limit`): 15
     /// minutes unless `stallAfter` says otherwise.
     pub stall_after: std::time::Duration,
+    /// How long a job's agent may wait for the owner's answer to a permission, a plan or a
+    /// question before obid parks the job (crate::jobs, `Jobs::park`): its agent ends, its slot
+    /// frees, and the answer picks its session up. 10 minutes unless `parkAfter` says otherwise.
+    pub park_after: std::time::Duration,
     /// The safety ceiling of one run of a job, against runaway cost only: 12 hours unless
     /// `jobCeilingHours` says otherwise.
     pub job_ceiling: std::time::Duration,
@@ -493,6 +500,12 @@ impl Config {
                 "stallAfter is {stall_after}: it is 1 to 86400 seconds."
             ));
         }
+        let park_after = file.park_after.unwrap_or(10 * 60);
+        if !(1..=86_400).contains(&park_after) {
+            return invalid(format!(
+                "parkAfter is {park_after}: it is 1 to 86400 seconds."
+            ));
+        }
         let job_ceiling_hours = file.job_ceiling_hours.unwrap_or(12);
         if !(1..=168).contains(&job_ceiling_hours) {
             return invalid(format!(
@@ -557,6 +570,7 @@ impl Config {
             least_think,
             orchestrator_delay: std::time::Duration::from_secs(orchestrator_delay),
             stall_after: std::time::Duration::from_secs(stall_after),
+            park_after: std::time::Duration::from_secs(park_after),
             job_ceiling: std::time::Duration::from_secs(job_ceiling_hours * 3600),
             job_token_budget,
             gateway,
@@ -996,20 +1010,24 @@ mod tests {
     fn jobs_stall_after_15_minutes_and_stop_at_12_hours_unless_set() {
         let config = Config::parse(&with(serde_json::json!({}))).unwrap();
         assert_eq!(config.stall_after, std::time::Duration::from_secs(900));
+        assert_eq!(config.park_after, std::time::Duration::from_secs(600));
         assert_eq!(
             config.job_ceiling,
             std::time::Duration::from_secs(12 * 3600)
         );
         let config = Config::parse(&with(
-            serde_json::json!({"stallAfter": 2, "jobCeilingHours": 1}),
+            serde_json::json!({"stallAfter": 2, "parkAfter": 3, "jobCeilingHours": 1}),
         ))
         .unwrap();
         assert_eq!(config.stall_after, std::time::Duration::from_secs(2));
+        assert_eq!(config.park_after, std::time::Duration::from_secs(3));
         assert_eq!(config.job_ceiling, std::time::Duration::from_secs(3600));
         assert_eq!(config.job_token_budget, 50_000_000);
         for (key, wrong) in [
             ("stallAfter", 0),
             ("stallAfter", 86_401),
+            ("parkAfter", 0),
+            ("parkAfter", 86_401),
             ("jobCeilingHours", 0),
             ("jobCeilingHours", 169),
             ("jobTokenBudget", 0),

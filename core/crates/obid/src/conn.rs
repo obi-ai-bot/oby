@@ -316,16 +316,19 @@ impl Conn {
             if self.stopped {
                 return Err(Cut::Stopped);
             }
+            // A stop first: a job parked for this answer (crate::jobs, `Jobs::park`) lets the
+            // question go only after it's told to stop, and the agent hears no "no" for it.
             tokio::select! {
-                answer = &mut asked => {
-                    break answer.unwrap_or_else(|_| Answer::Deny(
-                        "Nobody answered that: obid let the question go.".into(),
-                    ));
-                }
+                biased;
                 changed = self.stop.changed() => {
                     if changed.is_err() || *self.stop.borrow() != process::Signal::Run {
                         self.stopped = true;
                     }
+                }
+                answer = &mut asked => {
+                    break answer.unwrap_or_else(|_| Answer::Deny(
+                        "Nobody answered that: obid let the question go.".into(),
+                    ));
                 }
             }
         };

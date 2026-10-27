@@ -5,7 +5,9 @@
 // does comes from the thread's first prompt (the job's task):
 //   COMMIT: <file>   asks to write the file (a file change), writes it, asks to commit, commits
 //   SNEAK: <file>    writes the file and commits it without asking (Plan mode or not)
-//   ASK: <command>   asks to run the command and says what obid answered, and what it heard after
+//   ASK: <command>   asks to run the command and says what obid answered, and what it heard after;
+//                    resumed by obid after it paused it, asks again, or says what it heard when
+//                    the owner said no
 //   OUTSIDE          asks to write a file outside the worktree
 //   UNKNOWN          sends a request obid doesn't know and says what came back
 //   QUESTION         asks its own question (`item/tool/requestUserInput`; a secret one with
@@ -126,6 +128,7 @@ async function runTurn(turnId, prompt) {
     return complete(turnId, `Added ${commit[1]}.`);
   }
   if (command) {
+    if (prompt.includes("obid paused you") && !prompt.includes("The owner allowed it")) return complete(turnId, `heard: ${prompt}`);
     const answer = await ask("item/commandExecution/requestApproval", { threadId: thread, turnId, itemId: "c1", command: command[1] });
     if (answer.decision === "decline") await new Promise((r) => setTimeout(r, 300));
     return complete(turnId, `answer: ${answer.decision}${steered.length ? `\nheard: ${steered.join(" | ")}` : ""}`);

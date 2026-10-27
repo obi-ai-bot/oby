@@ -615,12 +615,13 @@ impl Link {
             .load_all()
             .into_iter()
             .map(|mut i| {
-                // The agent's question its job still shows waits on, a restart kept it (#858).
-                let kept = i.kind == inbox::QUESTION_KIND
-                    && jobs
-                        .get(&i.job)
-                        .and_then(|j| j.permission)
-                        .is_some_and(|p| inbox::permission_item_id(&i.job, &p.id) == i.id);
+                // What its job still shows waits on: a restart kept the agent's question (#858),
+                // or the call obid parked the job for (crate::jobs, `Jobs::park`). A job shows
+                // no other card once it's open.
+                let kept = jobs
+                    .get(&i.job)
+                    .and_then(|j| j.permission)
+                    .is_some_and(|p| inbox::permission_item_id(&i.job, &p.id) == i.id);
                 // A permission waited on an agent that ended with obid: its job's agent asks again
                 // when it runs, so the old item is done by itself.
                 // An older obid's offer about Oby's own pull request (`Address it`, `Fix CI` on

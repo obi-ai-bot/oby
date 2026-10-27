@@ -28,8 +28,16 @@ fn obid(folder: &Folder, signed_out: bool) -> Obid {
 
 /// [`obid`], and the fixture's bare remote.
 fn obid_and_remote(folder: &Folder, signed_out: bool) -> (Obid, PathBuf) {
+    obid_with(folder, signed_out, json!({}))
+}
+
+/// [`obid_and_remote`], with `more` in its configuration.
+fn obid_with(folder: &Folder, signed_out: bool, more: Value) -> (Obid, PathBuf) {
     let remote = fixture(&folder.0.join("fixture"));
     let mut config = config(&folder.0, &remote, &agents().join("fake-claude"));
+    for (key, value) in more.as_object().unwrap() {
+        config[key] = value.clone();
+    }
     let accounts = folder.0.join("home/accounts");
     config["agents"] = json!({
         "codex": {"bin": agents().join("fake-codex"),
@@ -1105,6 +1113,70 @@ fn codex_and_cursor_ask_the_owner_in_ask_mode() {
     answer(&cursor, "deny");
     assert_eq!(summary(&ended(&obid, &codex)), "answer: accept");
     assert_eq!(summary(&ended(&obid, &cursor)), "answer: reject-once");
+}
+
+/// Codex's and Cursor's approvals park their jobs as Claude Code's do (docs/runner-api.md,
+/// "Parked"): past `parkAfter` the agent ends, its thread or session kept, and the job keeps its
+/// card. An allow picks it up and its same call goes through (Codex's `accept`, Cursor's
+/// `allow-once`); a no picks it up told the owner's words.
+#[test]
+fn codex_and_cursor_park_and_resume_with_the_answer() {
+    let folder = Folder::new("park-tools");
+    let (obid, _) = obid_with(&folder, false, json!({"parkAfter": 1}));
+    let jobs: Vec<(String, &str, String)> = [
+        ("codex", "allow", "answer: accept"),
+        ("codex", "deny", "heard: "),
+        ("cursor", "allow", "answer: allow-once"),
+        ("cursor", "deny", "heard: "),
+    ]
+    .into_iter()
+    .map(|(agent, decision, said)| {
+        let id = dispatch(
+            &obid,
+            json!({"agent": agent, "task": "ASK: node --test", "mode": "ask"}),
+        );
+        (id, decision, said.to_owned())
+    })
+    .collect();
+    for (id, decision, _) in &jobs {
+        let job = within(60, "the job parks", || {
+            let job = call(&obid, "GET", &format!("/v1/jobs/{id}"), None).body;
+            let parked = job["changes"].as_array().is_some_and(|c| {
+                c.iter().any(|c| {
+                    c["what"]
+                        .as_str()
+                        .is_some_and(|w| w.starts_with("Parked by obid"))
+                })
+            });
+            parked.then_some(job)
+        });
+        assert_eq!(job["status"], "running", "{job}");
+        assert_eq!(job["permission"]["title"], "Run node --test", "{job}");
+        let mut answer = json!({"id": job["permission"]["id"], "decision": decision});
+        if *decision == "deny" {
+            answer["message"] = json!("Not here.");
+        }
+        let answered = call(
+            &obid,
+            "POST",
+            &format!("/v1/jobs/{id}/permission"),
+            Some(&answer),
+        );
+        assert_eq!(answered.status, 200, "{}", answered.text);
+    }
+    for (id, decision, said) in &jobs {
+        let job = ended(&obid, id);
+        let summary = summary(&job);
+        if *decision == "allow" {
+            assert_eq!(summary, said, "{job}");
+        } else {
+            assert!(
+                summary.starts_with("heard: obid paused you")
+                    && summary.ends_with("The owner said no: Not here."),
+                "{job}"
+            );
+        }
+    }
 }
 
 /// Codex wraps each command in `/bin/zsh -lc "…"` (#634): the card asks about the command out of

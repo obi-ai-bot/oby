@@ -7,7 +7,8 @@
 // it edits files without asking and asks before every command. What a prompt does comes from the
 // session's first prompt (the job's task):
 //   COMMIT: <file>   writes the file (no request), then asks to commit, and commits when allowed
-//   ASK: <command>   asks to run the command and says which option obid chose
+//   ASK: <command>   asks to run the command and says which option obid chose; resumed by obid
+//                    after it paused it, asks again, or says what it heard when the owner said no
 //   PLAN             sends its plan (`cursor/create_plan`), a new one each time it's rejected (up
 //                    to three), and says what came back; its next prompt says those and its mode
 //   QUESTION         asks a question (`cursor/ask_question`) and says what came back; a later
@@ -113,6 +114,10 @@ async function prompt(id, text) {
     return answered(id);
   }
   if (command && !task.includes("TWICE")) {
+    if (text.includes("obid paused you") && !text.includes("The owner allowed it")) {
+      say(`heard: ${text}`);
+      return answered(id);
+    }
     update({ sessionUpdate: "tool_call", toolCallId: "x2", title: command[1], kind: "execute", status: "pending", rawInput: { command: command[1] } });
     const answer = await ask("session/request_permission", { sessionId: session, toolCall: { toolCallId: "x2" }, options });
     say(`answer: ${chosen(answer)}`);
