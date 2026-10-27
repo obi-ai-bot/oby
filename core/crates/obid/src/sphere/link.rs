@@ -660,7 +660,8 @@ impl Link {
                 // when it runs, so the old item is done by itself.
                 // An older obid's offer about Oby's own pull request (`Address it`, `Fix CI` on
                 // its red head): nothing starts those any more, so it's done by itself too; the
-                // follower asks the owner about that pull request instead (crate::merge).
+                // follower asks the owner about that pull request instead (crate::merge). So is a
+                // plug-in's event: obid has no plug-ins any more, and its offers start nothing.
                 let own_pr_offer = i.kind == "github"
                     && i.github
                         .as_deref()
@@ -669,7 +670,8 @@ impl Link {
                     i.kind.as_str(),
                     "permission" | "plan" | inbox::QUESTION_KIND
                 ) && !kept
-                    || own_pr_offer)
+                    || own_pr_offer
+                    || i.kind == "pluginEvent")
                     && i.done.is_none()
                 {
                     i.done = Some(now);
@@ -904,100 +906,6 @@ impl Link {
         }
         for item in &changed {
             self.save_item(item);
-        }
-    }
-
-    /// An event a plug-in emitted and the host accepted: one `pluginEvent` inbox item
-    /// (docs/runner-api.md, "obid only: plug-ins"), unless an item for the same plug-in and event
-    /// id is there already, open or done. Past [`inbox::MAX_OPEN_EVENTS`] open items of that
-    /// plug-in, the oldest open one is settled by itself, with no answer. The event never starts
-    /// work by itself and no remembered decision applies to it: a failed deploy, an alert or a
-    /// ticket about one of obid's repositories is an offer, started only on an answer (#1124).
-    pub fn plugin_event(&self, event: obi_plugin_api::PluginEvent) {
-        self.add_event_item(self.plugin_event_offer(&event));
-    }
-
-    /// The item [`Self::plugin_event`] keeps for `event`, an offer on one of obid's repositories.
-    pub fn plugin_event_offer(&self, event: &obi_plugin_api::PluginEvent) -> Item {
-        let repo = &event.event.subject.repo;
-        let known = self.config.repos.get().iter().any(|r| &r.repo == repo);
-        inbox::plugin_event_item(event, known, time::now())
-    }
-
-    /// A `pluginEvent` item from a plug-in: kept
-    /// unless an item with its id is there already, open or done; past
-    /// [`inbox::MAX_OPEN_EVENTS`] open items of its source (`plugin.id`), the oldest open one is
-    /// settled by itself, with no answer.
-    pub fn add_event_item(&self, item: Item) -> bool {
-        let now = time::now();
-        let mut changed = Vec::new();
-        {
-            let mut state = self.lock();
-            if state.inbox.contains_key(&item.id) {
-                return false;
-            }
-            let source = item
-                .plugin
-                .as_ref()
-                .and_then(|p| p["id"].as_str())
-                .unwrap_or_default()
-                .to_owned();
-            let plugin = source.as_str();
-            // Oldest first, in the order they arrived (not by id: ids are hashes).
-            let mut open: Vec<(u64, String)> = state
-                .inbox
-                .values()
-                .filter(|i| {
-                    i.kind == "pluginEvent"
-                        && i.done.is_none()
-                        && i.plugin.as_ref().and_then(|p| p["id"].as_str()) == Some(plugin)
-                })
-                .map(|i| (i.arrival_order(), i.id.clone()))
-                .collect();
-            open.sort();
-            let over = (open.len() + 1).saturating_sub(inbox::MAX_OPEN_EVENTS);
-            for (_, id) in open.into_iter().take(over) {
-                if let Some(old) = state.inbox.get_mut(&id) {
-                    old.done = Some(now);
-                    changed.push(old.clone());
-                }
-            }
-            state.inbox.insert(item.id.clone(), item.clone());
-            changed.push(item);
-        }
-        for item in &changed {
-            self.save_item(item);
-        }
-        true
-    }
-
-    /// Settles an open `pluginEvent` item by itself, with `answer` saying why (its source said the
-    /// problem went away, #1311): one already answered, or done, is left alone.
-    pub fn settle_event(&self, id: &str, answer: &str) {
-        let settled = {
-            let mut state = self.lock();
-            let Some(item) = state.inbox.get_mut(id).filter(|i| i.done.is_none()) else {
-                return;
-            };
-            item.done = Some(time::now());
-            item.answer = Some(answer.to_owned());
-            item.clone()
-        };
-        self.save_item(&settled);
-    }
-
-    /// Settles, as [`Self::settle_event`] does, every open `pluginEvent` item that `matches` (a
-    /// PagerDuty incident's offers, opened and opened again, #1312).
-    pub fn settle_events(&self, matches: impl Fn(&Item) -> bool, answer: &str) {
-        let ids: Vec<String> = self
-            .lock()
-            .inbox
-            .values()
-            .filter(|i| i.kind == "pluginEvent" && i.done.is_none() && matches(i))
-            .map(|i| i.id.clone())
-            .collect();
-        for id in ids {
-            self.settle_event(&id, answer);
         }
     }
 
@@ -1347,24 +1255,6 @@ impl Link {
         )
     }
 
-    /// `POST /v1/inbox/{id}/answer` on a plug-in's offer with its start answer (`Look into it`,
-    /// `Fix it`), which `answer` claimed: starts the work (crate::event_work); what couldn't start
-    /// leaves the item open again. Nothing is sent anywhere.
-    async fn answer_plugin_offer(&self, mut item: Item, answer: String) -> Result<Value, ApiError> {
-        match crate::event_work::start(&self.jobs, &self.config, &item).await {
-            Ok(job) => item.job = job.id,
-            Err(why) => {
-                self.lock().inbox.insert(item.id.clone(), item.clone());
-                return Err(why);
-            }
-        }
-        item.done = Some(time::now());
-        item.answer = Some(answer);
-        self.lock().inbox.insert(item.id.clone(), item.clone());
-        self.save_item(&item);
-        Ok(item.to_json())
-    }
-
     /// Changes an inbox item as `change` does, keeps it and says so.
     pub fn change_item(&self, id: &str, change: impl FnOnce(&mut Item)) {
         let changed = {
@@ -1379,8 +1269,7 @@ impl Link {
     }
 
     /// `POST /v1/inbox/{id}/answer` on a `pluginEvent` item: `Dismiss` or `{"done": true}` settles
-    /// it, `later` puts it off. Nothing is sent anywhere. (An offer's start is
-    /// [`Self::answer_plugin_offer`]'s.)
+    /// it, `later` puts it off. Nothing is sent anywhere.
     fn answer_plugin_event(
         &self,
         mut item: Item,
@@ -5475,30 +5364,6 @@ impl Link {
             }
             item
         };
-        // A plug-in's offer (#1124): its start answer claims the item under the lock, as a GitHub
-        // offer's does, so a second answer finds it done and starts nothing.
-        let offer = {
-            let mut state = self.lock();
-            let item = state
-                .inbox
-                .get(id)
-                .filter(|i| {
-                    i.done.is_none()
-                        && i.kind == "pluginEvent"
-                        && i.options.len() > 1
-                        && matches!(&given, Given::Answer(a) if i.options.first() == Some(a))
-                })
-                .cloned();
-            if item.is_some()
-                && let Some(kept) = state.inbox.get_mut(id)
-            {
-                kept.done = Some(time::now());
-            }
-            item
-        };
-        if let (Some(item), Given::Answer(answer)) = (offer, &given) {
-            return self.answer_plugin_offer(item, answer.clone()).await;
-        }
         let share_used = self
             .lock()
             .inbox
@@ -8115,10 +7980,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&home);
     }
 
-    /// The inbox lists what needs the owner first (with what waits for the model), then FYI, then
-    /// ignore, each by arrival; a second item about the same thing is `ignore` while the one that
-    /// stands for it is open, an offer standing before what only says something; and the model's
-    /// sort is kept once, the apps told (crate::triage).
     /// A key file obid can't read starts obid all the same, says why in `lastError`, and no new key
     /// is made over it: the Obi's identity and its paired phones stay.
     #[tokio::test]
@@ -8147,124 +8008,6 @@ mod tests {
             "not a key"
         );
         assert!(!home.join("keys/seal.key").exists());
-        let _ = std::fs::remove_dir_all(&home);
-    }
-
-    #[tokio::test]
-    async fn the_inbox_lists_what_needs_you_first() {
-        let home = std::env::temp_dir().join(format!("obid-link-triage-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&home);
-        let config = Config::parse(
-            &json!({"listen": "127.0.0.1:0", "home": home, "owner": "wellington"}).to_string(),
-        )
-        .unwrap();
-        let events = Events::new();
-        let jobs = Jobs::open(config.clone(), events.clone(), Err("no sandbox".into())).unwrap();
-        let (_stop, stopping) = watch::channel(false);
-        let link = Link::open(config, jobs, events.clone(), stopping);
-        let mut heard = events.subscribe();
-        let event = |id: &str, kind: &str, subject: Value| -> obi_plugin_api::PluginEvent {
-            serde_json::from_value(json!({"plugin": "tetrix", "event": {"id": id, "kind": kind,
-                "occurredAt": "2026-10-23T03:12:00Z", "subject": subject, "actor": "sangam",
-                "data": {"title": "Needs you NOW", "url": "https://example.com/x"}}}))
-            .unwrap()
-        };
-        let warning = event(
-            "w",
-            "alert.fired",
-            json!({"repo": "o/r", "project": "api", "severity": "warning"}),
-        );
-        let review = event(
-            "r",
-            "pull_request.review_requested",
-            json!({"repo": "o/r", "pr": 12}),
-        );
-        link.plugin_event(warning);
-        link.plugin_event(review);
-        let work: crate::github_work::Item = serde_json::from_value(json!({
-            "id": "i-7", "list": "assigned", "repo": "o/r", "number": 7, "title": "Fix it",
-            "url": "https://github.com/o/r/issues/7", "author": "sangam", "labels": [],
-            "updated": "2026-10-23T03:12:00Z", "state": "OPEN", "draft": null,
-            "reviewDecision": null, "checks": null, "board": null}))
-        .unwrap();
-        let mut asked = work.clone();
-        (asked.id, asked.list, asked.number) = ("r-12".into(), "reviews".into(), 12);
-        link.github_work(&[asked, work], None);
-
-        let drain = |heard: &mut tokio::sync::broadcast::Receiver<crate::events::Event>| {
-            std::iter::from_fn(|| heard.try_recv().ok())
-                .map(|e| (e.data["title"].clone(), e.data["triage"].clone()))
-                .collect::<Vec<_>>()
-        };
-        // The plug-in's review request needed the owner when it came; the feed's offer of the same
-        // review then stands for both.
-        assert_eq!(
-            drain(&mut heard),
-            [
-                (json!("Alert: api (warning)"), json!("fyi")),
-                (json!("Review requested: o/r #12"), json!("needs_you")),
-                (json!("Review requested: r #12"), json!("needs_you")),
-                (json!("Assigned to you: r #7"), json!("pending")),
-            ]
-        );
-        let order = |items: Vec<Value>| -> Vec<(String, Value)> {
-            items
-                .iter()
-                .map(|i| (i["title"].as_str().unwrap().to_owned(), i["triage"].clone()))
-                .collect()
-        };
-        let listed = order(link.inbox_json(false, 50).as_array().unwrap().clone());
-        assert_eq!(
-            listed,
-            [
-                ("Review requested: r #12".to_owned(), json!("needs_you")),
-                ("Assigned to you: r #7".to_owned(), json!("pending")),
-                ("Alert: api (warning)".to_owned(), json!("fyi")),
-                ("Review requested: o/r #12".to_owned(), json!("ignore")),
-            ]
-        );
-        let waiting: Vec<String> = link
-            .waiting_items(time::now())
-            .into_iter()
-            .map(|i| i.title)
-            .collect();
-        assert_eq!(
-            waiting,
-            listed.iter().map(|(t, _)| t.clone()).collect::<Vec<_>>()
-        );
-        // The offer dismissed, the plug-in's request needs the owner again.
-        link.answer("github-r-12", br#"{"answer": "Dismiss"}"#)
-            .await
-            .ok()
-            .unwrap();
-        assert_eq!(
-            order(link.inbox_json(false, 50).as_array().unwrap().clone())[0],
-            ("Review requested: o/r #12".to_owned(), json!("needs_you"))
-        );
-        drain(&mut heard);
-
-        // Only the assigned issue waits for the model; its sort is kept once, the apps told.
-        let unsorted = link.unsorted();
-        assert_eq!(unsorted.len(), 1);
-        let id = unsorted[0].id.clone();
-        link.sorted(&[(id.clone(), crate::triage::FYI)]);
-        link.sorted(&[(id.clone(), crate::triage::NEEDS_YOU)]);
-        assert_eq!(
-            drain(&mut heard),
-            [(json!("Assigned to you: r #7"), json!("fyi"))]
-        );
-        assert!(link.unsorted().is_empty());
-        // Answered, it shows its sort too; nothing was answered or settled by sorting.
-        let answered = link
-            .answer(&id, br#"{"answer": "Dismiss"}"#)
-            .await
-            .ok()
-            .unwrap();
-        assert_eq!(
-            (&answered["state"], &answered["triage"]),
-            (&json!("done"), &json!("fyi"))
-        );
-        assert_eq!(link.inbox_json(true, 50).as_array().unwrap().len(), 2);
         let _ = std::fs::remove_dir_all(&home);
     }
 }

@@ -9,7 +9,6 @@
 //!             "cursor": {"bin": "cursor-agent", "accounts": [{"id": "cursor", "name": "Cursor", "configDir": "/abs/path/cursor"}]}},
 //!  "repos": [{"repo": "obi-e2e/fixture-app", "remote": "file:///abs/path/remote.git", "defaultBranch": "main", "check": "node --test"}],
 //!  "allowFileRemotes": false,
-//!  "bundledPlugins": "/abs/path/obi/plugins",
 //!  "telemetry": false}
 //! ```
 //!
@@ -66,8 +65,6 @@ struct File {
     repos: Vec<Repo>,
     #[serde(default)]
     allow_file_remotes: bool,
-    #[serde(default)]
-    bundled_plugins: Option<PathBuf>,
     #[serde(default)]
     telemetry: bool,
     /// How long one conversation turn may act, in seconds: 1 to 110, 110 when left out.
@@ -241,10 +238,6 @@ pub struct Config {
     /// the file), and GitHub's that gh can push to (crate::repos). Every copy shares them.
     pub repos: crate::repos::Repos,
     pub allow_file_remotes: bool,
-    /// The plug-ins obid ships (`plugins/<id>`), installed into `home/plugins/<id>` at start when
-    /// missing, disabled (docs/ARCHITECTURE.md 5.3, step 1): `bundledPlugins`, or when it is left
-    /// out [`default_bundled_plugins`].
-    pub bundled_plugins: PathBuf,
     /// False unless the owner turns it on; obid sends nothing to anyone otherwise.
     pub telemetry: bool,
     /// Where the owner's vault is (crate::vault).
@@ -305,14 +298,6 @@ pub struct Config {
     /// (crate::push); Deskree's, `https://oby-control.deskree.com`, when left out. An iPhone's
     /// registration with any other is refused.
     pub push_relay: String,
-}
-
-/// Where the plug-ins obid ships are when the configuration doesn't say: the `plugins/` folder
-/// of the repository this obid was built from (`core/crates/obid/../../../plugins`).
-pub fn default_bundled_plugins() -> PathBuf {
-    crate::app::resources()
-        .map(|dir| dir.join("plugins"))
-        .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../plugins"))
 }
 
 impl Config {
@@ -469,13 +454,6 @@ impl Config {
                 return invalid(format!("repos: {}'s defaultBranch is empty.", repo.repo));
             }
         }
-        if let Some(dir) = &file.bundled_plugins
-            && !dir.is_absolute()
-        {
-            return invalid(format!(
-                "bundledPlugins is {dir:?}: it must be an absolute path, the folder of the plug-ins obid ships."
-            ));
-        }
         // The guest image comes over https; plain http only from this machine (a test's server).
         // Parsed, never matched as text: `http://127.0.0.1:1@evil.example/vm` is evil.example's.
         if let Some(url) = &file.vm_image_url {
@@ -624,7 +602,6 @@ impl Config {
             agents: crate::accounts::Live::new(file.agents),
             repos: crate::repos::Repos::new(file.repos),
             allow_file_remotes: file.allow_file_remotes,
-            bundled_plugins: file.bundled_plugins.unwrap_or_else(default_bundled_plugins),
             telemetry: file.telemetry,
             vault,
             turn_budget: std::time::Duration::from_secs(turn_budget),
@@ -1171,28 +1148,6 @@ mod tests {
             assert!(problem(&text).contains("listen"));
         }
         assert!(problem(&with(serde_json::json!({"owner": " "}))).contains("owner"));
-    }
-
-    #[test]
-    fn bundled_plugins_are_the_repositorys_unless_given() {
-        let config = Config::parse(&with(serde_json::json!({}))).unwrap();
-        assert_eq!(config.bundled_plugins, default_bundled_plugins());
-        assert!(
-            config
-                .bundled_plugins
-                .join("tetrix/obi-plugin.json")
-                .is_file(),
-            "{:?}",
-            config.bundled_plugins
-        );
-        let config = Config::parse(&with(
-            serde_json::json!({"bundledPlugins": "/opt/obi/plugins"}),
-        ))
-        .unwrap();
-        assert_eq!(config.bundled_plugins, PathBuf::from("/opt/obi/plugins"));
-        assert!(
-            problem(&with(serde_json::json!({"bundledPlugins": "plugins"}))).contains("absolute")
-        );
     }
 
     #[test]

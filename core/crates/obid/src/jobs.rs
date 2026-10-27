@@ -82,7 +82,7 @@ const TIDY_EVERY: Duration = Duration::from_secs(24 * 60 * 60);
 /// How long a job that ended keeps its worktree unless it's put away (docs/runner-api.md, `cleanup`).
 const SETTLE_AFTER: i64 = 24 * 60 * 60;
 /// The agent's MCP configuration (`--mcp-config`), in the job's own folder (its `HOME`), written
-/// before each turn: the `agent-mcp` plug-ins' servers.
+/// before each turn: Oby's own servers (Tetrix, the broker).
 pub const MCP_CONFIG_FILE: &str = "obi-mcp.json";
 /// The kinds whose work is commits: one that ends with none committed says so.
 const COMMITTING: [&str; 3] = ["build", "fix", "test"];
@@ -433,9 +433,9 @@ impl End {
 /// Which of obid's rules a turn's permission prompts meet.
 #[derive(Clone, Copy)]
 enum Gate<'a> {
-    /// A review another Obi asked for: it only reads, and has no plug-in's MCP server.
+    /// A review another Obi asked for: it only reads, and has no MCP server.
     ObiReview,
-    /// The owner's own job, with its MCP permission rules (`crate::plugins::rules`).
+    /// The owner's own job, with its MCP permission rules (Tetrix's tools, the broker's).
     Owner { mcp: &'a [String] },
 }
 
@@ -726,8 +726,6 @@ pub struct Jobs {
     confirm_hook: std::sync::OnceLock<ConfirmHook>,
     /// Settings › Permissions' default mode and the saved rules (`home/permissions.json`).
     permissions: Mutex<permissions::Kept>,
-    /// The plug-in host: context for the agent, and `agent-mcp` plug-ins' servers.
-    plugins: std::sync::OnceLock<Arc<crate::plugins::Plugins>>,
     /// The connected-app broker: job-scoped MCP config and use records.
     connections: std::sync::OnceLock<Arc<crate::connections::Connections>>,
     /// The routines, for the owner's Confirm of one the brain planned (crate::routines).
@@ -958,7 +956,6 @@ impl Jobs {
             link: std::sync::OnceLock::new(),
             confirm_hook: std::sync::OnceLock::new(),
             permissions: Mutex::new(kept),
-            plugins: std::sync::OnceLock::new(),
             connections: std::sync::OnceLock::new(),
             routines: std::sync::OnceLock::new(),
             tetrix: std::sync::OnceLock::new(),
@@ -1005,12 +1002,6 @@ impl Jobs {
 
     pub fn set_api_address(&self, address: std::net::SocketAddr) {
         *self.api_url.lock().unwrap_or_else(|e| e.into_inner()) = format!("http://{address}");
-    }
-
-    /// The plug-in host jobs ask for context and agent MCP servers (once; a second call changes
-    /// nothing). Without one, jobs run with no plug-in.
-    pub fn use_plugins(&self, plugins: Arc<crate::plugins::Plugins>) {
-        let _ = self.plugins.set(plugins);
     }
 
     pub fn use_connections(&self, connections: Arc<crate::connections::Connections>) {
@@ -1158,43 +1149,6 @@ impl Jobs {
         self.update(id, |job| {
             crate::connections::keep_use(&mut job.connection_uses, use_record)
         });
-    }
-
-    /// The MCP servers of the ready `agent-mcp` plug-ins, for a `tool` agent of the owner's own
-    /// job: Claude Code's only in this version (Codex and Cursor get none yet).
-    fn agent_mcp(&self, tool: Tool) -> Vec<crate::plugins::AgentMcp> {
-        match (tool, self.plugins.get()) {
-            (Tool::Claude, Some(plugins)) => plugins.agent_mcp(),
-            _ => Vec::new(),
-        }
-    }
-
-    /// Asks the ready context plug-ins about the job, writes their answers to
-    /// `.obi/context/<plugin id>.md` in `worktree` as quoted data, and gives what the prompt says
-    /// about those files: their paths and that they are data, nothing a plug-in wrote. `None`
-    /// when no plug-in gave anything.
-    async fn plugin_context(
-        &self,
-        id: &str,
-        purpose: obi_plugin_api::Purpose,
-        job: obi_plugin_api::ContextJob,
-        worktree: &Path,
-        more: Vec<(obi_plugin_api::PluginId, Vec<obi_plugin_api::ContextItem>)>,
-    ) -> Option<String> {
-        let mut answers = match self.plugins.get() {
-            Some(plugins) => plugins.context(purpose, job).await,
-            None => Vec::new(),
-        };
-        // obid's own (Tetrix's) in place of a plug-in's of the same name.
-        answers.retain(|(plugin, _)| !more.iter().any(|(own, _)| own == plugin));
-        answers.extend(more);
-        match crate::plugins::write_context(worktree, &answers) {
-            Ok(files) => crate::plugins::context_note(&files),
-            Err(e) => {
-                tracing::warn!("job {id}: the plug-ins' context isn't given to the agent: {e}");
-                None
-            }
-        }
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, State> {
@@ -7589,30 +7543,7 @@ impl Jobs {
         let temp = self.temp_path(id);
         let (tool, account) = self.job_account(&job)?;
         let spec = self.spec(&worktree, &admin, &common, &temp, false, tool);
-        // The context plug-ins' answers, quoted as data next to the request. The prompt names
-        // only the files.
-        let context = self
-            .plugin_context(
-                id,
-                obi_plugin_api::Purpose::Review,
-                obi_plugin_api::ContextJob {
-                    id: id.to_owned(),
-                    kind: "review".into(),
-                    repo: request.repo.clone(),
-                    branch: request.head_branch.clone(),
-                    base: request.base_branch.clone(),
-                    issue: None,
-                    pr: request.pr,
-                    files: Vec::new(),
-                },
-                &worktree,
-                Vec::new(),
-            )
-            .await;
-        let mut prompt = review::prompt(&request);
-        if let Some(note) = context {
-            prompt = format!("{prompt}\n\n{note}");
-        }
+        let prompt = review::prompt(&request);
         let flags: Vec<OsString> = [
             "-p",
             "--input-format",
@@ -7660,7 +7591,7 @@ impl Jobs {
             job.phase = Some(Phase::Work);
             job.step = "Reviewing".into();
         });
-        // A review another Obi asked for only reads: no plug-in's MCP server.
+        // A review another Obi asked for only reads: no MCP server.
         let turn = self
             .turn(
                 id,
@@ -8011,7 +7942,7 @@ impl Jobs {
         let words = self.take_heard(id);
         // A restart cut it short while it ran its check or published ("After any restart"): it
         // picks up there (below), and builds no prompt it won't send (nor asks Tetrix or the
-        // plug-ins for one). Words the owner sent meanwhile are its next turn instead.
+        // teammates for one). Words the owner sent meanwhile are its next turn instead.
         let cut = self.get(id).and_then(|j| j.cut);
         if cut.is_some() {
             self.update(id, |job| job.cut = None);
@@ -8050,14 +7981,7 @@ impl Jobs {
                     Err(e) => tracing::warn!("job {id}: the owner's memories weren't quoted: {e}"),
                 }
             }
-            let purpose = if job.kind == "review" {
-                obi_plugin_api::Purpose::Review
-            } else if Self::mode_of(&job) == Mode::Plan {
-                obi_plugin_api::Purpose::Plan
-            } else {
-                obi_plugin_api::Purpose::Dispatch
-            };
-            let mut more = Vec::new();
+            let mut context = Vec::new();
             // Teammates' open pull requests on the files it claimed (crate::teammates).
             if let Some(found) = self
                 .teammates_on(&job, job.files.as_deref().unwrap_or_default())
@@ -8066,10 +7990,7 @@ impl Jobs {
                 let prs: Vec<_> = found.iter().map(|(pr, _)| pr.clone()).collect();
                 if let Some(line) = crate::teammates::prompt_line(&prs) {
                     message = format!("{message}\n\n{line}");
-                    more.push((
-                        obi_plugin_api::PluginId::new("teammates").expect("a plug-in id"),
-                        crate::teammates::context_items(&found),
-                    ));
+                    context.push(("teammates", crate::teammates::context_items(&found)));
                 }
                 self.update(id, |job| {
                     if !job.teammates.as_ref().is_some_and(|t| t.rechecked) {
@@ -8087,23 +8008,17 @@ impl Jobs {
                 let (items, seen) = tetrix.context(connections, &job).await;
                 self.tetrix_used(id, |used| used.absorb(seen));
                 if !items.is_empty() {
-                    more.push((
-                        obi_plugin_api::PluginId::new("tetrix").expect("a plug-in id"),
-                        items,
-                    ));
+                    context.push(("tetrix", items));
                 }
             }
-            if let Some(note) = self
-                .plugin_context(
-                    id,
-                    purpose,
-                    crate::plugins::context_job(&job),
-                    &worktree,
-                    more,
-                )
-                .await
-            {
-                message = format!("{message}\n\n{note}");
+            // What they gave, quoted as data in `.obi/context/`: the prompt names only the files.
+            match crate::tetrix::write_context(&worktree, &context) {
+                Ok(files) => {
+                    if let Some(note) = crate::tetrix::context_note(&files) {
+                        message = format!("{message}\n\n{note}");
+                    }
+                }
+                Err(e) => tracing::warn!("job {id}: the context isn't given to the agent: {e}"),
             }
             if self.tetrix_for(&job).is_some() {
                 message = format!("{message}\n\n{}", crate::tetrix::PROMPT);
@@ -8267,17 +8182,11 @@ impl Jobs {
                 if let Some(session) = &job.session {
                     flags.extend(["--resume".into(), session.into()]);
                 }
-                // The ready agent-mcp plug-ins' servers, from a file in the job's own folder, and
-                // one permission rule per tool each allows, each its own argument (last, since
-                // --allowedTools takes every argument after it).
-                // Signed in to Tetrix, obid's own Tetrix server replaces the plug-in's: the same
-                // name, the same tools, Oby's login (crate::tetrix).
+                // Oby's own servers, from a file in the job's own folder, and one permission rule
+                // per tool each allows, each its own argument (last, since --allowedTools takes
+                // every argument after it). Signed in to Tetrix, obid's own Tetrix server, with
+                // Oby's login (crate::tetrix).
                 let tetrix = self.tetrix_mcp(&job);
-                let servers: Vec<_> = self
-                    .agent_mcp(tool)
-                    .into_iter()
-                    .filter(|s| tetrix.is_none() || s.plugin.as_str() != "tetrix")
-                    .collect();
                 // Oby's own server, where Codex and Cursor ask the owner (`oby_ask_owner`) whatever
                 // they're connected to. Cursor gets no connected app on it, only that tool.
                 let broker = match tool {
@@ -8285,7 +8194,7 @@ impl Jobs {
                     Tool::Codex => self.connection_mcp(id).or_else(|| self.ask_mcp(id)),
                     Tool::Cursor => self.ask_mcp(id),
                 };
-                let mut mcp_rules = crate::plugins::rules(&servers);
+                let mut mcp_rules = Vec::new();
                 if broker.is_some() {
                     mcp_rules.push(if tool == Tool::Cursor {
                         format!("mcp__oby__{}", permissions::ASK_OWNER)
@@ -8301,11 +8210,9 @@ impl Jobs {
                             .map(|tool| format!("mcp__tetrix__{tool}")),
                     );
                 }
-                if !servers.is_empty()
-                    || (broker.is_some() || tetrix.is_some()) && tool == Tool::Claude
-                {
+                if (broker.is_some() || tetrix.is_some()) && tool == Tool::Claude {
                     let file = spec.temp.join(MCP_CONFIG_FILE);
-                    let mut config = crate::plugins::claude_mcp_config(&servers);
+                    let mut config = json!({"mcpServers": {}});
                     if let Some((url, token)) = broker.as_ref().filter(|_| tool == Tool::Claude) {
                         config["mcpServers"]["oby"] = json!({"type":"http","url":url,"headers":{"Authorization":format!("Bearer {token}")}});
                     }
