@@ -6,7 +6,7 @@ import { SAMPLE, memberCount } from './spheres';
 import { tetrixFor } from './knowledge';
 import { SAMPLE_TALK, Sphere, SphereHowTo, still } from './Welcome';
 import { AGENTS, type Agent, type SetupStep } from './mock';
-import { FIRST_TASK, accountOf, connectTetrix, pick, sceneDone, sendAgentCode, signInAgent, signInGitHub, useSetup, type Code } from './onboarding';
+import { FIRST_TASK, accountOf, connectTetrix, pick, sceneDone, sceneReplayed, sendAgentCode, signInAgent, signInGitHub, useSetup, type Code } from './onboarding';
 import { onObid } from './lean';
 import { useLive } from './live';
 
@@ -68,10 +68,10 @@ export default function SetupCard({ step }: { step: SetupStep }) {
     const calm = still();
     body = <>
       <p className="setup-label">Example</p>
-      <SphereHowTo key={run} skip={skipped || (heard && !replaying)} onEnd={() => { ended(); sceneDone(); }} />
+      <SphereHowTo key={run} skip={skipped || (heard && !replaying)} onEnd={() => { ended(); if (!calm) sceneDone(); }} />
       {!calm && <div className="tc-options">
         {heard && !replaying
-          ? <button className="tc-option is-quiet" onClick={() => { setRun(run + 1); setSkipped(false); setReplaying(true); }}>Replay</button>
+          ? <button className="tc-option is-quiet" onClick={() => { sceneReplayed(); setRun(run + 1); setSkipped(false); setReplaying(true); }}>Replay</button>
           : <button className="tc-option is-quiet" onClick={() => setSkipped(true)}>Skip</button>}
       </div>}
     </>;

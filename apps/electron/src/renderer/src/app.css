@@ -1817,7 +1817,7 @@ button.sphere-logo-badge:hover { color: var(--ink); background: #3a3a39; }
 .how-ripple { position: absolute; z-index: 2; width: 28px; height: 28px; margin: -14px 0 0 -14px; border-radius: 50%; box-shadow: 0 0 0 1.5px rgba(255, 255, 255, 0.5); animation: how-ripple 900ms var(--warm) both; }
 @keyframes how-ripple { from { opacity: 1; transform: scale(0.4); } to { opacity: 0; transform: scale(1.6); } }
 @media (prefers-reduced-motion: reduce) {
-  .rail-button.is-sample, .rail-button.is-sample::before, .status-dot.is-new.is-calling, .sidebar-new.is-calling::after, .setup-gone { animation: none !important; }
+  .rail-button.is-sample, .rail-button.is-sample::before, .status-dot.is-new.is-calling, .sidebar-new.is-calling::after, .setup-gone, .how-pop, .how .wl-ready { animation: none !important; }
   .rail-button.is-sample.is-calling { box-shadow: 0 0 0 1.5px rgba(10, 132, 255, 0.6); }
   .setup .wl-bubble { transition: none; }
 }

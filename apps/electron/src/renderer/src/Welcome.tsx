@@ -5,7 +5,7 @@ import Oby from './Oby';
 import { BRANDS, BrandMark } from './brands';
 import { ObyFace, OwnerAvatar } from './ObyFace';
 import SphereTile from './SphereTile';
-import { SUFFIX, slugOf } from './spheres';
+import { CAN_CREATE, SUFFIX, slugOf } from './spheres';
 import { clock } from './stream';
 import { AGENTS, PEER_CONVOS, type Agent } from './mock';
 
@@ -190,6 +190,8 @@ export function Sphere({ talk = TALK, peer = 'Ernesto', loop = true, skip = fals
 const HOW_LAST = 98;
 const CLICKS = [15, 37, 69, 81];  // on the +, Create, the link, Join
 const TEAM = 'My team';
+// who makes one, as the + is shown or not (spheres.ts), as Oby's words over it say
+const MAKE = CAN_CREATE ? ['Make one', 'Made. You’re its admin, and you invite the rest.'] : ['Someone on your team makes one', 'Made. They’re its admin, and they invite the rest.'];
 const HOW_LABEL = 'Example: making an Obysphere with the + and a name, then joining one from a teammate’s invite link';
 export function SphereHowTo({ skip = false, onEnd }: { skip?: boolean; onEnd?: () => void }) {
   const calm = still();
@@ -210,7 +212,7 @@ export function SphereHowTo({ skip = false, onEnd }: { skip?: boolean; onEnd?: (
   }, [target]);
   if (calm) return <HowStill />;
   const typed = TEAM.slice(0, Math.max(0, b - 19));
-  const caption = b < 43 ? 'Make one' : b < 56 ? 'Made. You’re its admin, and you invite the rest.' : b < 92 ? 'Or join one' : 'In. Your Oby can now ask theirs.';
+  const caption = b < 43 ? MAKE[0] : b < 56 ? MAKE[1] : b < 92 ? 'Or join one' : 'In. Your Oby can now ask theirs.';
   return (
     <div ref={stage} className="how-scene" role="img" aria-label={HOW_LABEL}>
       <MiniRail plusRef={refs.plus} hover={b >= 11 && b < 17}
@@ -238,7 +240,7 @@ const HowStill = () => (
         <MiniRail tile={<SphereTile name={TEAM} />} />
         <CreateCard name={TEAM} ok />
       </div>
-      <figcaption>Make one: + → name it → Create Obysphere</figcaption>
+      <figcaption>{MAKE[0]}: + → name it → Create Obysphere</figcaption>
     </figure>
     <figure className="how-frame">
       <div className="how-stage is-join">
