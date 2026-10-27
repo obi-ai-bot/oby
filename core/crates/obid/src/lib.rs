@@ -254,6 +254,13 @@ pub async fn serve(
 ) -> Result<(), StartError> {
     redacted_panics();
     let mut stopwatch = Stopwatch::new();
+    let address = config.listen;
+    let listener = tokio::net::TcpListener::bind(address)
+        .await
+        .map_err(|source| StartError::Listen { address, source })?;
+    let bound = listener
+        .local_addr()
+        .map_err(|source| StartError::Listen { address, source })?;
     // What obid asks the system while it starts, at once and side by side: the Keychain's items,
     // the vault's store and the sandbox's self-check don't wait on each other or on the worktrees.
     let claude_probe = config
@@ -273,13 +280,6 @@ pub async fn serve(
             .map_err(|e| format!("obid can't find its own executable: {e}"))
             .and_then(|obid| sandbox::Sandbox::detect(&obid))
     });
-    let address = config.listen;
-    let listener = tokio::net::TcpListener::bind(address)
-        .await
-        .map_err(|source| StartError::Listen { address, source })?;
-    let bound = listener
-        .local_addr()
-        .map_err(|source| StartError::Listen { address, source })?;
     // The gateway's address is taken now too. A busy one is a warning, never a stop: the apps on
     // this Mac need only the API, and `status.gateway` says why paired phones can't reach it.
     let (gateway, gateway_state) = match config.gateway {
@@ -314,6 +314,8 @@ pub async fn serve(
             })
             .into_future(),
     );
+    // However `serve` returns, the door stops taking calls with it.
+    let _server_ends = AbortOnDrop(server.abort_handle());
     let host = gethostname::gethostname().to_string_lossy().into_owned();
     let cleanup = Arc::new(api::Cleanup::unmeasured(&config.home));
     let cancelled = Arc::new(AtomicBool::new(false));
@@ -329,7 +331,7 @@ pub async fn serve(
         biased;
         _ = stopped.wait_for(|stopped| *stopped) => {
             tracing::info!("stopped while starting");
-            server.abort();
+            let _ = opened.send(Some(Err(STOPPING)));
             return Ok(());
         }
         // A few worktrees are measured before the first answer; the owner's 20 GB took 4 to 28
@@ -486,36 +488,8 @@ pub async fn serve(
     });
     let app = api::router(shared.clone());
     stopwatch.lap("the rest");
-    // Every call the door held goes on now.
-    let _ = opened.send(Some(app.clone()));
-    ready(bound);
     // How long each step took, so a slow start names its step.
     tracing::info!("{}", stopwatch.line());
-    // The gateway (crate::gateway): paired phones' calls, forwarded to the same router.
-    if let Some(listener) = gateway {
-        let address = listener.local_addr().map_err(StartError::Serve)?;
-        println!("obid gateway listening on http://{address}");
-        tracing::info!(%address, "obid gateway listening");
-        let app = gateway::router(shared.clone(), app.clone());
-        let mut stopping = stopping_rx.clone();
-        tokio::spawn(async move {
-            let stopped = async move {
-                while !*stopping.borrow() {
-                    if stopping.changed().await.is_err() {
-                        return;
-                    }
-                }
-            };
-            if let Err(e) = axum::serve(listener, app)
-                .with_graceful_shutdown(stopped)
-                .await
-            {
-                tracing::error!("the gateway stopped: {e}");
-            }
-        });
-    }
-    // Phones paired through the Obysphere reach the same router, sealed (crate::relay).
-    relay::spawn(shared.clone(), gateway::router(shared.clone(), app.clone()));
     // Jobs that were queued or running when obid last stopped carry on, and so does its Sphere.
     jobs.resume();
     link.start();
@@ -571,6 +545,34 @@ pub async fn serve(
     // Once told to stop: every agent and check ends now, and its job stays as it is for the next
     // start; every sign-in's login ends, with everything it started; the event streams and waits
     // end, so the server's connections close.
+    // Every call the door held goes on now, once everything above is in place.
+    let _ = opened.send(Some(Ok(app.clone())));
+    ready(bound);
+    // The gateway (crate::gateway): paired phones' calls, forwarded to the same router.
+    if let Some(listener) = gateway {
+        let address = listener.local_addr().map_err(StartError::Serve)?;
+        println!("obid gateway listening on http://{address}");
+        tracing::info!(%address, "obid gateway listening");
+        let app = gateway::router(shared.clone(), app.clone());
+        let mut stopping = stopping_rx.clone();
+        tokio::spawn(async move {
+            let stopped = async move {
+                while !*stopping.borrow() {
+                    if stopping.changed().await.is_err() {
+                        return;
+                    }
+                }
+            };
+            if let Err(e) = axum::serve(listener, app)
+                .with_graceful_shutdown(stopped)
+                .await
+            {
+                tracing::error!("the gateway stopped: {e}");
+            }
+        });
+    }
+    // Phones paired through the Obysphere reach the same router, sealed (crate::relay).
+    relay::spawn(shared.clone(), gateway::router(shared.clone(), app.clone()));
     let stopped_at = Arc::new(std::sync::OnceLock::new());
     let ending = {
         let shared = shared.clone();
@@ -690,13 +692,14 @@ impl Stopwatch {
 }
 
 /// What answers on obid's address from the moment it listens (docs/runner-api.md, "obid only:
-/// starting"): the API once `serve` has opened everything; before that, `GET /v1/status` with
-/// the token answers `503` with `starting` (the steps done, the one under way), and every other
-/// call waits for the API. A start that fails answers the calls that waited `503`.
+/// starting"): the API once `serve` has opened everything; before that, a call the API's gate
+/// would refuse gets its `401` or `403` at once, `GET /v1/status` answers `503` with `starting`
+/// (the steps done, the one under way), and every other call waits for the API. A start that
+/// fails, or a stop while starting, answers the calls that waited `503`.
 #[derive(Clone)]
 struct Door {
     token: Arc<str>,
-    api: tokio::sync::watch::Receiver<Option<axum::Router>>,
+    api: tokio::sync::watch::Receiver<Opening>,
     started: std::time::Instant,
     laps: Laps,
 }
@@ -706,10 +709,7 @@ impl Door {
     fn open(
         token: String,
         stopwatch: &Stopwatch,
-    ) -> (
-        tokio::sync::watch::Sender<Option<axum::Router>>,
-        axum::Router,
-    ) {
+    ) -> (tokio::sync::watch::Sender<Opening>, axum::Router) {
         let (opened, api) = tokio::sync::watch::channel(None);
         let door = Door {
             token: token.into(),
@@ -729,25 +729,30 @@ impl Door {
     ) -> axum::response::Response {
         use axum::response::IntoResponse;
         use tower::ServiceExt;
-        let mut api = door.api.clone();
-        let open = api.borrow().clone();
-        let api = match open {
-            Some(api) => api,
-            None if request.method() == axum::http::Method::GET
-                && request.uri().path() == "/v1/status" =>
-            {
-                return door.starting(&request);
-            }
-            None => match api.wait_for(Option::is_some).await {
-                Ok(api) => api.clone().expect("the API is there"),
-                Err(_) => {
-                    return api::ApiError::new(
-                        axum::http::StatusCode::SERVICE_UNAVAILABLE,
-                        "Oby’s engine didn’t start.",
-                    )
-                    .into_response();
+        let mut opening = door.api.clone();
+        let now = opening.borrow().clone();
+        let api = match now {
+            Some(Ok(api)) => api,
+            Some(Err(why)) => return closed(why),
+            // The start failed: `serve` returned without opening.
+            None if opening.has_changed().is_err() => return closed(DIDNT_START),
+            None => {
+                // Nothing waits without the token, from a name other than loopback's.
+                if let Err(error) = api::admit(request.uri(), request.headers(), &door.token) {
+                    return sealed(error.into_response());
                 }
-            },
+                if request.method() == axum::http::Method::GET
+                    && request.uri().path() == "/v1/status"
+                {
+                    return door.starting();
+                }
+                let opened = opening.wait_for(Option::is_some).await.map(|o| o.clone());
+                match opened {
+                    Ok(Some(Ok(api))) => api,
+                    Ok(Some(Err(why))) => return closed(why),
+                    Ok(None) | Err(_) => return closed(DIDNT_START),
+                }
+            }
         };
         match api.oneshot(request).await {
             Ok(response) => response,
@@ -755,42 +760,62 @@ impl Door {
         }
     }
 
-    /// `503 {"error", "starting": {"ms", "done": [{"step", "ms"}], "now"}}`, `Retry-After: 1`,
-    /// to a request the API's gate would let in; its `401` or `403` otherwise.
-    fn starting(&self, request: &axum::extract::Request) -> axum::response::Response {
+    /// `503 {"error", "starting": {"ms", "done": [{"step", "ms"}], "now"}}`, `Retry-After: 1`.
+    fn starting(&self) -> axum::response::Response {
         use axum::http::{HeaderValue, StatusCode, header};
         use axum::response::IntoResponse;
-        let mut response = match api::admit(request.uri(), request.headers(), &self.token) {
-            Err(error) => error.into_response(),
-            Ok(()) => {
-                let laps = self.laps.lock().unwrap_or_else(|e| e.into_inner()).clone();
-                let done: Vec<serde_json::Value> = laps
-                    .iter()
-                    .map(|(step, ms)| serde_json::json!({"step": step, "ms": ms}))
-                    .collect();
-                let starting = serde_json::json!({
-                    "error": "Oby’s engine is starting.",
-                    "starting": {
-                        "ms": self.started.elapsed().as_millis(),
-                        "done": done,
-                        "now": STEPS.get(laps.len()),
-                    },
-                });
-                let mut response =
-                    (StatusCode::SERVICE_UNAVAILABLE, axum::Json(starting)).into_response();
-                response
-                    .headers_mut()
-                    .insert(header::RETRY_AFTER, HeaderValue::from_static("1"));
-                response
-            }
-        };
-        let headers = response.headers_mut();
-        headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
-        headers.insert(
-            header::X_CONTENT_TYPE_OPTIONS,
-            HeaderValue::from_static("nosniff"),
-        );
+        let laps = self.laps.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let done: Vec<serde_json::Value> = laps
+            .iter()
+            .map(|(step, ms)| serde_json::json!({"step": step, "ms": ms}))
+            .collect();
+        let starting = serde_json::json!({
+            "error": "Oby’s engine is starting.",
+            "starting": {
+                "ms": self.started.elapsed().as_millis(),
+                "done": done,
+                "now": STEPS.get(laps.len()),
+            },
+        });
+        let mut response = (StatusCode::SERVICE_UNAVAILABLE, axum::Json(starting)).into_response();
         response
+            .headers_mut()
+            .insert(header::RETRY_AFTER, HeaderValue::from_static("1"));
+        sealed(response)
+    }
+}
+
+/// Whether the door has opened: not yet (None), on the API, or closed for good, saying why.
+type Opening = Option<Result<axum::Router, &'static str>>;
+
+/// What the calls a door held hear when obid stops, or fails, while it starts.
+const STOPPING: &str = "Oby’s engine is stopping.";
+const DIDNT_START: &str = "Oby’s engine didn’t start.";
+
+/// `503 {"error": why}`, from a door that won't open.
+fn closed(why: &'static str) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    sealed(api::ApiError::new(axum::http::StatusCode::SERVICE_UNAVAILABLE, why).into_response())
+}
+
+/// The headers every `/v1` answer carries (the API's gate's).
+fn sealed(mut response: axum::response::Response) -> axum::response::Response {
+    use axum::http::{HeaderValue, header};
+    let headers = response.headers_mut();
+    headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    headers.insert(
+        header::X_CONTENT_TYPE_OPTIONS,
+        HeaderValue::from_static("nosniff"),
+    );
+    response
+}
+
+/// Aborts its task when dropped: the door's server, however `serve` returns.
+struct AbortOnDrop(tokio::task::AbortHandle);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
     }
 }
 
