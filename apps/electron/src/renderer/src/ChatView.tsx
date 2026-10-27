@@ -12,10 +12,9 @@ import Formatted from './Formatted';
 import { tokenize } from './textTokens';
 import { AGENTS, convoTitle, threadOf, type Message } from './mock';
 import { markSeen, tell, useTasks, type Task } from './tasks';
-import { obys, tellChat, useChats, type Chat } from './chats';
+import { obys, ofObid, tellChat, useChats, type Chat } from './chats';
 import SetupCard from './SetupCard';
 import { WELCOME, typedFirst } from './onboarding';
-import { onObid } from './lean';
 import { openConversation } from './live';
 
 // how long the way out takes (the sink animation in app.css)
@@ -93,9 +92,11 @@ export default function ChatView({ id, kind = 'task', leaving, covered = false, 
   let head = -1;
   for (let k = thread.length - 1; k >= 0 && runOf(thread[k]) === 'oby'; k--) head = k;
   const working = typing && head >= 0 && !convo;
+  // Oby's words coming in, in that run: its face talks (a speech balloon)
+  const talking = head >= 0 ? (thread.slice(head).find((m) => (m as Message).streaming) as Message | undefined) : undefined;
 
   // opened, it's seen; it opens at the latest message, and anything new scrolls into view
-  useEffect(() => { if (kind === 'task') markSeen(id); if (kind === 'peer') markRead(id); if (kind === 'oby' && onObid) void openConversation(id); }, [id, kind]);
+  useEffect(() => { if (kind === 'task') markSeen(id); if (kind === 'peer') markRead(id); if (kind === 'oby' && ofObid(id)) void openConversation(id); }, [id, kind]);
   const first = useRef(true);
   useLayoutEffect(() => {
     const l = list.current;
@@ -172,7 +173,7 @@ export default function ChatView({ id, kind = 'task', leaving, covered = false, 
                       ? <PeerByline name={(m as Message).by!} />
                       // yours among other people's Obys: named, as theirs are
                       : mine ? <span className="peer-by"><ObyFace size={22} /><span>Your Oby</span></span>
-                      : <span className="msg-face"><Face live={working && i === head && !covered} /></span>)}
+                      : <span className="msg-face"><Face live={working && i === head && !covered} talk={i === head && !covered ? talking?.text.length : undefined} /></span>)}
                     {parts}
                     {last && !(m as Message).streaming && !(typing && i === thread.length - 1 && side === 'oby') ? (
                       <div className={`msg-end${end?.type === ThreadTask || end?.type === SetupCard || 'ask' in m ? ' is-wide' : ''}`}>
@@ -292,8 +293,9 @@ const split = (s: string, at = 0) => s.split(/(\s+)/).map((w, k) => (!w || /\s/.
 
 // Oby's face over what it says. live (while it writes): the face melts into
 // bouncing dots; once its words are in, they run back together into the face
-// live: at work, and in sight (under a page opened over it, it rests: the power budget)
-const Face = ({ live = false }: { live?: boolean }) => <ObyFaceLive live={live} />;
+// live: at work, and in sight (under a page opened over it, it rests: the power budget).
+// talk: its words coming in (their length), while the face has its speech balloon
+const Face = ({ live = false, talk }: { live?: boolean; talk?: number }) => <ObyFaceLive live={live} talk={talk} />;
 
 // A task started in the conversation, as a small card under Oby's message:
 // its title, how it stands and who has it, what it left behind once done, and

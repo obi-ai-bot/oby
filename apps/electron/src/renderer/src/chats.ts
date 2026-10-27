@@ -86,6 +86,8 @@ export const chatOfTask = (taskId: string) => {
 };
 
 const update = (id: string, fn: (c: Chat) => Partial<Chat>) => set(chats.map((c) => (c.id === id ? { ...c, ...fn(c) } : c)));
+// dev only (dev/ControlCenter.tsx): the conversations as they are, and one changed in place
+export const dev = import.meta.env.DEV ? { get: () => chats, patch: update } : undefined;
 
 // Oby's first conversation (onboarding.ts): Oby opens it, not you; your picks in
 // it go in as your words, and Oby's words land as any of its answers do
@@ -100,7 +102,7 @@ export async function sayOby(id: string, m: Omit<Message, 'who' | 'ago' | 'jobs'
 // from its menu (ConvoMenu): renamed, pinned to the top or not, deleted (the
 // tasks it started stay; their conversation is then their own thread)
 // obid's, not the app's own (setting up)
-const ofObid = (id: string) => onObid && !chats.find((c) => c.id === id)?.local;
+export const ofObid = (id: string) => onObid && !chats.find((c) => c.id === id)?.local;
 export function renameChat(id: string, title: string) {
   if (ofObid(id)) return void live.renameConversation(id, title);
   const t = title.trim();

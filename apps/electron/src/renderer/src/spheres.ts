@@ -1,6 +1,7 @@
 import { useSyncExternalStore } from 'react';
 import { BRANDS, type Brand } from './brands';
 import { OBYS } from './mock';
+import { everything } from './lean';
 
 // The Obyspheres you're in: each a place where your Oby works with other
 // people's. Its picture in the icon strip is its logo (an image you gave it,
@@ -8,9 +9,10 @@ import { OBYS } from './mock';
 // made an admin of it (only people invited in can leave). members: the Obys in
 // it besides yours (by their owner's name); invited: addresses asked in that
 // haven't joined yet. domain: anyone with an address there can join by its link.
+// sample: the one Oby shows while setting up (SAMPLE), never one you're in
 export type Sphere = {
   id: string; name: string; slug: string; brand?: Brand; image?: string;
-  admin: boolean; members: string[]; invited: string[]; domain?: string;
+  admin: boolean; members: string[]; invited: string[]; domain?: string; sample?: true;
 };
 // you (until there's sign-in)
 export const ME = { name: 'Doti', email: 'doti@deskree.com' };
@@ -20,6 +22,17 @@ export const urlOf = (s: Sphere) => `${s.slug}${SUFFIX}`;
 let spheres: Sphere[] = [
   { id: 'deskree', name: 'Deskree', slug: 'deskree', brand: BRANDS.deskree, admin: true, members: OBYS.map((o) => o.name), invited: [], domain: 'deskree.com' },
 ];
+// A sample to look around in while setting up (onboarding.ts's Obysphere tour): shown, never
+// kept. It's outside the store, so nothing that lists your Obyspheres (Settings, Knowledge, Home)
+// sees it; only the side panel adds it, while the tour has it out
+export const SAMPLE: Sphere = {
+  id: 'sample', name: 'Deskree', slug: 'deskree', brand: BRANDS.deskree, admin: false,
+  members: ['Wellington', 'Ernesto', 'Dima', 'Sangam'], invited: ['ana@deskree.com'], domain: 'deskree.com', sample: true,
+};
+// The + to make one: only with ?everything until making one reaches the Obysphere (it would add
+// to this mock only, gone at the next launch). Showing it in the lean build is the plan's
+// decision 1, the owner's to make; the tour's words follow this
+export const CAN_CREATE = everything;
 const listeners = new Set<() => void>();
 const set = (next: Sphere[]) => { spheres = next; listeners.forEach((l) => l()); };
 const subscribe = (l: () => void) => { listeners.add(l); return () => { listeners.delete(l); }; };

@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- obid, Oby's engine, as this app's launch agent: src/main/obid.ts registers it (SMAppService,
+     through Electron's agentService), and launchd starts Contents/Helpers/obid at login and keeps
+     it running after Oby quits, as the Swift app's (apps/mac/app/Tools/com.deskree.oby.obid.plist).
+     Its own label and bundle ID, not the Swift app's: macOS's background-task records keep a label
+     tied to the app that first registered it, and both apps' obids want 127.0.0.1:7777, so this
+     app adopts whichever obid answers there and registers its own only when none does.
+     electron-builder.yml puts this file at Contents/Library/LaunchAgents. -->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.deskree.oby.electron.obid</string>
+	<key>BundleProgram</key>
+	<string>Contents/Helpers/obid</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>obid</string>
+		<string>serve</string>
+	</array>
+	<key>AssociatedBundleIdentifiers</key>
+	<array>
+		<string>com.deskree.oby.electron</string>
+	</array>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<dict>
+		<key>SuccessfulExit</key>
+		<false/>
+	</dict>
+</dict>
+</plist>

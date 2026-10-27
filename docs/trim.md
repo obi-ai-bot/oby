@@ -20,7 +20,7 @@ What's cut leaves the code, not the history: it stays in git, and Sangam's desig
 - Tetrix: `tetrix`, `decisions` (top level), and the `/v1/agent/mcp/{job}` endpoint in `connections` that hands agents its tools.
 - Asking and telling: `permissions`, `policy`, `triage`, `transcript`, `detail`, `activity`, `facts`, `failures`, `events`, `clear`, `conversation`, the learned-workflow part of `memory` (merge uses it).
 - Plumbing: `api`, `routes`, `config`, `app`, `logs`, `token`, `secrets` (redaction, used by 36 files), `vault` (Tetrix's login lives there).
-- The Obysphere: `sphere/link`, `exchange`, `inbox`, `decisions`, `membership`, `pins`, `routes`, `approval`, `answering`, `sharing` (the rules for answering other Obys, not compute sharing), `channel` and `sealed`.
+- The Obysphere: `sphere/link`, `exchange`, `inbox`, `decisions`, `membership`, `pins`, `routes`, `approval`, `answering`, `sharing` (the rules for answering other Obys, not compute sharing). (`channel` and `sealed` went with compute sharing on 2026-10-27; the phone relay's frames are `relay/frame.rs`.)
 - The conversation as a Claude Code (or Codex) session with an `oby` MCP server: `brain/harness`, `harness_codex`, `tools`, `actions`, `plan` (its checks). This already exists; only the plan loop around it goes.
 - The Mac app's window, side panel, tasks, conversations, decisions, accounts, models, Tetrix, Obysphere, first launch, updates.
 - The iPhone app and what serves it (`relay`, `push`, `gateway`, `devices`, `approval`, `PairingView`): back after 0.4.1, pairing through the Obysphere with no Tailscale (#1421's work), hiding what the Mac's launch build hides. The Watch app stays parked, not cut and not worked on.

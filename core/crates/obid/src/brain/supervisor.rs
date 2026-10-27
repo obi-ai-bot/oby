@@ -440,6 +440,11 @@ async fn supervise(shared: &Arc<Shared>, job: &Job) -> bool {
         return false;
     };
     let watch = Arc::new(Watch::new(&job.id, &turn));
+    // It reads the stalled job's own transcript (crate::secretspec).
+    shared.conversations.mark(
+        &conversation,
+        format!("the supervisor's turn on stalled job {}", job.id),
+    );
     let said = prompt(job, taken);
     let asked = Asked {
         said: &said,
@@ -448,7 +453,6 @@ async fn supervise(shared: &Arc<Shared>, job: &Job) -> bool {
         conversation: &conversation,
         // No turn of the owner's: the jobs it starts are on Oby's answer.
         turn: "",
-        runs_on: None,
     };
     let ran = super::harness::supervise(shared, &account, &asked, &control, watch.clone()).await;
     shared.turns.end(&control);
@@ -535,10 +539,13 @@ fn ask_owner(
         stall_words(job)
     );
     if let Some(conversation) = conversation
-        && let Err(e) =
-            shared
-                .conversations
-                .append(conversation, "oby", text.clone(), vec![job.id.clone()])
+        && let Err(e) = shared.conversations.append(
+            conversation,
+            "oby",
+            text.clone(),
+            vec![job.id.clone()],
+            Some(format!("the supervisor's words on stalled job {}", job.id)),
+        )
     {
         tracing::info!(
             "job {} stalled; conversation {conversation} wasn't told: {e:?}",
@@ -585,7 +592,6 @@ mod tests {
             said: String::new(),
             attachments: vec![],
             attached_jobs: vec![],
-            runs_on: None,
             control: super::super::turn::Turns::default().begin("t1", "c1"),
             jobs: Mutex::new(vec![]),
             nonce: "n".into(),

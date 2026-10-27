@@ -80,7 +80,6 @@ pub struct Words {
     pub attachments: Vec<String>,
     /// The jobs the owner attached (`POST /v1/plans`'s `jobs`).
     pub jobs: Vec<String>,
-    pub runs_on: Option<crate::job::RunsOn>,
 }
 
 /// What the owner's next turn in a conversation answers ([`Turns::wait_turn`]): every word said
@@ -157,7 +156,6 @@ impl Turns {
                     .join("\n\n"),
                 attachments: taken.iter().flat_map(|w| w.attachments.clone()).collect(),
                 jobs: taken.iter().flat_map(|w| w.jobs.clone()).collect(),
-                runs_on: taken.iter().rev().find_map(|w| w.runs_on.clone()),
             },
             turns: taken.into_iter().map(|w| w.turn).collect(),
             _held: held,
@@ -818,6 +816,11 @@ pub async fn run(
     // "Work on the roadmap" and the like are the Lead's (#589): it reads the board, not the
     // briefing.
     if super::lead::leads(said) {
+        // The board is anyone's words: issues, labels, pull requests (crate::secretspec).
+        shared.conversations.mark(
+            &control.conversation,
+            "the roadmap board, which the Lead read".into(),
+        );
         // It says it's thinking first, like every turn (#592).
         let thought = "Reading the roadmap";
         super::thinking(shared, control, 1, thought, State::Running);
@@ -829,6 +832,11 @@ pub async fn run(
         super::thinking(shared, control, 1, thought, state);
         return answered;
     }
+    // The briefing holds other jobs' words, the inbox's and the repositories' (crate::secretspec).
+    shared.conversations.mark(
+        &control.conversation,
+        "the plan's briefing: other jobs, the inbox, the repositories' notes".into(),
+    );
     run_with(shared, said, given, asked, control, None).await
 }
 
@@ -1671,11 +1679,6 @@ mod tests {
             said: format!("said {turn}"),
             attachments: vec![format!("{turn}.png")],
             jobs: vec![],
-            runs_on: (turn == "t2").then(|| crate::job::RunsOn {
-                obi: "dima".into(),
-                owner: "Dima".into(),
-                grant: None,
-            }),
         };
         let wait = |turn: &'static str| {
             let turns = turns.clone();
@@ -1712,7 +1715,6 @@ mod tests {
         assert_eq!(next.turn, "t3");
         assert_eq!(next.said, "said t2\n\nsaid t3");
         assert_eq!(next.attachments, ["t2.png", "t3.png"]);
-        assert_eq!(next.runs_on.unwrap().obi, "dima");
         let held = turns.wait_turn("c1", words("t4")).await.unwrap();
         let dropped = wait("t5");
         waiting(1).await;

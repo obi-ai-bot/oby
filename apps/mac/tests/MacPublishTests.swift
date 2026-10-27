@@ -200,6 +200,39 @@ struct MacPublishTests {
         #expect(String(decoding: Approval.confirmMessage(item: "i9", title: "T", signedAt: "S"), as: UTF8.self) == "oby-confirm\ni9\nT\nS")
     }
 
+    /// The owner's typed words go signed (`X-Oby-Words`, docs/runner-api.md): the runner's sentence
+    /// over the method, the path and the body's exact bytes, so nothing else holding its token passes
+    /// for them. A read carries none; a POST with no body signs an empty one.
+    @Test func typedWordsAreSigned() async throws {
+        #expect(String(decoding: Approval.wordsMessage(method: "POST", path: "/v1/plans", body: Data("{}".utf8), signedAt: "S"), as: UTF8.self)
+                == "oby-words\nPOST\n/v1/plans\n44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a\nS")
+        let stub = RunnerStub { _ in (200, "{}") }
+        let key = FakeKey()
+        var runner = stub.runner
+        runner.signsWords = { method, path, body in
+            let signature = try? key.signing.signature(for: Approval.wordsMessage(method: method, path: path, body: body, signedAt: "S"))
+            return signature.map { "d7c1 S \($0.derRepresentation.base64EncodedString())" }
+        }
+        try await runner.send("POST", "v1/plans", body: ["said": "Fix the flaky test"])
+        try await runner.send("GET", "v1/jobs?limit=50")
+        try await runner.send("POST", "v1/memory/suggestions/s1/remember")
+        // Taking a check is a read the runner binds to this app: signed too.
+        _ = try await runner.nextCheck(mac: "Mac", apple: true)
+        let plan = try #require(stub.requests.first { $0.path == "/v1/plans" })
+        let parts = try #require(plan.words?.split(separator: " ").map(String.init))
+        #expect(parts.count == 3 && parts[0] == "d7c1" && parts[1] == "S")
+        let der = try #require(Data(base64Encoded: parts[2]))
+        let signature = try P256.Signing.ECDSASignature(derRepresentation: der)
+        #expect(key.signing.publicKey.isValidSignature(signature, for: Approval.wordsMessage(method: "POST", path: "/v1/plans", body: plan.body, signedAt: "S")))
+        #expect(stub.requests.first { $0.path == "/v1/jobs" }?.words == nil)
+        // Remember has no body: its signature is over an empty one.
+        let remember = try #require(stub.requests.first { $0.path == "/v1/memory/suggestions/s1/remember" })
+        let words = try #require(remember.words?.split(separator: " ").map(String.init))
+        let empty = try P256.Signing.ECDSASignature(derRepresentation: try #require(Data(base64Encoded: words[2])))
+        #expect(key.signing.publicKey.isValidSignature(empty, for: Approval.wordsMessage(method: "POST", path: "/v1/memory/suggestions/s1/remember", body: Data(), signedAt: "S")))
+        #expect(stub.requests.first { $0.path == "/v1/checks/next" }?.words != nil)
+    }
+
     /// Pair a device, the owner's click: this Mac's key signs the invitation (`oby-pair-invite`) as
     /// its registered device, so only the phone it pairs may add its own key.
     @Test func thePairingInvitationIsSignedByThisMac() async throws {
@@ -318,6 +351,8 @@ nonisolated final class RunnerStub: Sendable {
         var path: String
         var body: Data
         var authorization: String? = nil
+        /// The signature over words the owner typed (`X-Oby-Words`), when there is one.
+        var words: String? = nil
 
         var json: [String: Any]? { (try? JSONSerialization.jsonObject(with: body)) as? [String: Any] }
     }
@@ -340,7 +375,8 @@ nonisolated final class RunnerStub: Sendable {
     fileprivate func take(_ request: URLRequest) -> (Int, Data) {
         let body = request.httpBody ?? request.httpBodyStream.map(Self.read) ?? Data()
         let got = Request(method: request.httpMethod ?? "GET", path: request.url?.absoluteURL.path() ?? "", body: body,
-                          authorization: request.value(forHTTPHeaderField: "Authorization"))
+                          authorization: request.value(forHTTPHeaderField: "Authorization"),
+                          words: request.value(forHTTPHeaderField: "X-Oby-Words"))
         self.got.withLock { $0.append(got) }
         let (status, text) = answer(got)
         return (status, Data(text.utf8))

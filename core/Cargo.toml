@@ -15,9 +15,6 @@ repository = "https://github.com/obi-ai-bot/obi"
 publish = false
 
 [workspace.dependencies]
-# The plug-in boundary's crates (docs/ARCHITECTURE.md 5.5): obid runs the host and reads the types.
-obi-plugin-api = { path = "crates/obi-plugin-api" }
-obi-plugin-host = { path = "crates/obi-plugin-host" }
 # Async runtime and traits (the plug-in traits in docs/ARCHITECTURE.md 5.5 are async-trait).
 tokio = { version = "1.53", features = ["full"] }
 async-trait = "0.1.92"
@@ -51,8 +48,6 @@ uuid = { version = "1.28.0", features = ["v4"] }
 nix = { version = "0.31", features = ["signal", "process", "term", "user", "fs", "dir", "resource"] }
 # The Sphere client (crates/obi-protocol, client.rs): HTTP and HTTPS, no proxy from the environment.
 reqwest = { version = "0.13.5", default-features = false, features = ["rustls", "json", "form"] }
-# The guest image comes zstd-compressed (crates/obid/src/sphere/vm_image.rs): a decoder in Rust.
-ruzstd = "0.9.1"
 # The publish gate's secret scan: the built-in rules (Engine/Publish.swift's).
 regex = "1.13.1"
 # Streamed answers: the event stream and `GET /v1/jobs/{id}/wait`.

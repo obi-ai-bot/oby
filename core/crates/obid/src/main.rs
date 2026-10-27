@@ -98,11 +98,11 @@ fn main() -> ExitCode {
                 .map(|user| user.dir)
                 .filter(|dir| dir.is_absolute())
             else {
-                eprintln!("obid: can't find the person's home folder");
+                fatal("can't find the person's home folder");
                 return ExitCode::FAILURE;
             };
             if let Err(e) = obid::app::log_to_file(&home) {
-                eprintln!("obid: {e}");
+                fatal(&e);
             }
             start_home = Some(obid::app::obid_home(&home));
             let path = obid::app::config_path(&home);
@@ -119,7 +119,7 @@ fn main() -> ExitCode {
     let runtime = match tokio::runtime::Runtime::new() {
         Ok(runtime) => runtime,
         Err(e) => {
-            eprintln!("obid: can't start the runtime: {e}");
+            fatal(&format!("can't start the runtime: {e}"));
             return ExitCode::FAILURE;
         }
     };
@@ -128,19 +128,14 @@ fn main() -> ExitCode {
         match obid::StopSignal::install() {
             Ok(stop) => stop,
             Err(e) => {
-                eprintln!("obid: can't catch SIGTERM and SIGINT: {e}");
+                fatal(&format!("can't catch SIGTERM and SIGINT: {e}"));
                 return ExitCode::FAILURE;
             }
         }
     };
 
-    // Plug-ins' lines (the `obi_plugin` target) go to the log only with the secrets obid holds
-    // taken out (obid::logs, docs/ARCHITECTURE.md 5.4).
     tracing_subscriber::fmt()
-        .with_writer(obid::logs::Redacting::new(
-            std::io::stderr,
-            obid::secrets::known(),
-        ))
+        .with_writer(std::io::stderr)
         .with_ansi(std::io::stderr().is_terminal())
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_env("OBID_LOG")
@@ -195,11 +190,17 @@ fn main() -> ExitCode {
 /// apps read why obid isn't there, then exits with `code`.
 fn fail(home: Option<&std::path::Path>, reason: impl std::fmt::Display, code: u8) -> ExitCode {
     let reason = reason.to_string();
-    eprintln!("obid: {reason}");
+    fatal(&reason);
     if let Some(home) = home {
         obid::note_start_error(home, &reason);
     }
     ExitCode::from(code)
+}
+
+/// `line` on stderr, with the time, like the log's own lines: obid's last word before it exits.
+fn fatal(line: &str) {
+    let now = obi_protocol::time::format(obi_protocol::time::now());
+    eprintln!("{now} obid: {line}");
 }
 
 /// The absolute `home` the configuration at `path` names, read as plain JSON: for a configuration

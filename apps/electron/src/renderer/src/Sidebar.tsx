@@ -12,13 +12,15 @@ import { SETTINGS_PAGES } from './SettingsView';
 import InviteModal from './InviteModal';
 import CreateSphereModal from './CreateSphereModal';
 import SphereTile from './SphereTile';
-import { ME, cancelInvite, invite, memberCount, urlOf, useSpheres, type Sphere } from './spheres';
+import { CAN_CREATE, ME, SAMPLE, cancelInvite, invite, memberCount, urlOf, useSpheres, type Sphere } from './spheres';
 import TaskMenu from './TaskMenu';
 import ConvoMenu from './ConvoMenu';
 import StatusDot from './StatusDot';
 import { convosWith, hasUnread, useConvos } from './peers';
 import { lastAgo, renameChat, useChats, type Chat } from './chats';
 import { everything } from './lean';
+import { WELCOME, sampleDid, sampleOut, useSetup } from './onboarding';
+import { SAMPLE_TALK } from './Welcome';
 
 type Section = 'home' | 'conversations' | 'obysphere' | 'settings';
 type StripIcon = (p: { size?: number; weight?: 'regular' | 'fill' }) => React.ReactNode;
@@ -103,13 +105,21 @@ export default function Sidebar({ open, onNewChat, onHome, onOpenTask, onOpenCha
   // an Obysphere (a focused workspace: your Oby with other people's, sharing
   // what the org knows) by its name, under its own logo. Which one is showing
   const spheres = useSpheres();
-  const [sphereId, setSphereId] = useState(() => spheres[0]?.id ?? '');
+  // ponytail: the one list here that knows of setting up's tour: yours, and its sample while
+  // it's out (onboarding.ts), so the sample opens, and goes, as any other one does
+  const tour = useSetup();
+  const all = sampleOut(tour) ? [...spheres, SAMPLE] : spheres;
+  // in the icon strip: in lean, not the demo's own Deskree (spheres.ts), only what you made with the +
+  const strip = all.filter((x) => everything || x.id !== 'deskree');
+  const [sphereId, setSphereId] = useState(() => all[0]?.id ?? '');
   // (the last one shown, while it goes: deleted or left, the panel goes back to Home)
-  const lastSphere = useRef<Sphere>(spheres[0]);
-  const sphere = spheres.find((x) => x.id === sphereId) ?? lastSphere.current;
+  const lastSphere = useRef<Sphere>(all[0]);
+  const sphere = all.find((x) => x.id === sphereId) ?? lastSphere.current;
   lastSphere.current = sphere;
   const inSphere = section === 'obysphere';
   const members = memberCount(sphere);
+  // Knowledge lit: its page open, or in the sample, its step
+  const knowing = sphere.sample ? tour.member === 'Knowledge' : activeKnowledge === sphere.id;
   // an invite's menu (⋮ or right-click on it; an admin's): send it again, or take it back.
   // resent: the one just sent again, which says so for a moment
   const [inviteMenu, setInviteMenu] = useState<{ email: string; at: DOMRect; atPointer?: boolean } | null>(null);
@@ -132,10 +142,10 @@ export default function Sidebar({ open, onNewChat, onHome, onOpenTask, onOpenCha
     setSection('obysphere');
   }, [activeSphereSetting, activeKnowledge]);
   useEffect(() => {
-    if (spheres.some((x) => x.id === sphereId)) return;
-    if (spheres[0]) setSphereId(spheres[0].id);
+    if (all.some((x) => x.id === sphereId)) return;
+    if (all[0]) setSphereId(all[0].id);
     setSection((s) => (s === 'obysphere' ? SECTIONS[0].id : s));
-  }, [spheres, sphereId]);
+  }, [all.length, sphereId]);
   const [query, setQuery] = useState('');
   const [searching, setSearching] = useState(false);
   const searchInput = useRef<HTMLInputElement>(null);
@@ -197,6 +207,10 @@ export default function Sidebar({ open, onNewChat, onHome, onOpenTask, onOpenCha
     setSection(id); setSearching(false); setQuery('');
     if (list.current) list.current.scrollTop = 0;
   };
+  // In the sample: a click is the tour's (the same as its pick in the chat), with the
+  // conversation brought back on top first if a page covers it; Take a look shows it here
+  const tourDid = (what: string) => { onOpenTalk(WELCOME); void sampleDid(what); };
+  useEffect(() => { if (tour.sphere === 'inside') { setSphereId(SAMPLE.id); pick('obysphere'); } }, [tour.sphere]);
   const q = query.trim().toLowerCase();
   const matches = (...text: string[]) => !q || text.join(' ').toLowerCase().includes(q);
   const newAction = NEW_ACTION[section];
@@ -273,16 +287,25 @@ export default function Sidebar({ open, onNewChat, onHome, onOpenTask, onOpenCha
                 <Icon size={20} weight={section === id ? 'fill' : 'regular'} />
               </button>
               {/* your own places above the line; the Obyspheres (there can be several) below */}
-              {id === 'conversations' && everything && <span className="rail-sep" role="separator" />}
+              {id === 'conversations' && (everything || CAN_CREATE || strip.length > 0) && <span className="rail-sep" role="separator" />}
             </Fragment>
           ))}
-          {everything && spheres.map((x) => (
-            <button key={x.id} className={`rail-button${inSphere && sphere.id === x.id ? ' is-on' : ''}`} data-tip={x.name} aria-label={x.name} aria-pressed={inSphere && sphere.id === x.id} onClick={() => { setSphereId(x.id); pick('obysphere'); }}>
+          {strip.map((x) => (
+            <button
+              key={x.id}
+              // the sample: a dashed edge, calling you (a ripple, then a pulsing dot) until you open it
+              className={`rail-button${inSphere && sphere.id === x.id ? ' is-on' : ''}${x.sample ? ` is-sample${tour.sphere === 'sample' ? ' has-dot is-calling' : ''}${tour.sphere === 'leaving' ? ' is-leaving' : ''}` : ''}`}
+              data-tip={x.sample ? `${x.name} · Sample` : x.name}
+              aria-label={x.sample ? `${x.name}, a sample Obysphere` : x.name}
+              aria-description={x.sample ? 'Sample. It goes away when setup is done.' : undefined}
+              aria-pressed={inSphere && sphere.id === x.id}
+              onClick={() => { setSphereId(x.id); pick('obysphere'); if (x.sample) tourDid('tile'); }}
+            >
               <SphereTile name={x.name} brand={x.brand} image={x.image} />
             </button>
           ))}
           {/* not a section: makes another Obysphere (CreateSphereModal) */}
-          {everything && <button className="rail-button" data-tip="Create an Obysphere" aria-label="Create an Obysphere" aria-haspopup="dialog" onClick={() => setCreating(true)}>
+          {(everything || CAN_CREATE) && <button className="rail-button" data-tip="Create an Obysphere" aria-label="Create an Obysphere" aria-haspopup="dialog" onClick={() => setCreating(true)}>
             <PlusIcon size={20} />
           </button>}
           {/* you, at the foot: your picture opens your account's menu (Settings is in it) */}
@@ -300,7 +323,7 @@ export default function Sidebar({ open, onNewChat, onHome, onOpenTask, onOpenCha
 
         <div className="sidebar-content">
         <div className="sidebar-title-row">
-          <h2 className="sidebar-title">{inSphere ? sphere.name : TITLES[section]}</h2>
+          <h2 className="sidebar-title">{inSphere ? sphere.name : TITLES[section]}{inSphere && sphere.sample && <span className="sidebar-sample">Sample</span>}</h2>
           {section === 'home' && (
             <button
               className={`icon-button${archiveMenu ? ' is-on' : ''}`}
@@ -312,7 +335,7 @@ export default function Sidebar({ open, onNewChat, onHome, onOpenTask, onOpenCha
               <EllipsisVertical size={16} strokeWidth={1.6} />
             </button>
           )}
-          {section === 'obysphere' && (
+          {section === 'obysphere' && !sphere.sample && (
             <button
               className={`icon-button${sphereMenu ? ' is-on' : ''}`}
               aria-label={`${sphere.name} options`}
@@ -359,11 +382,11 @@ export default function Sidebar({ open, onNewChat, onHome, onOpenTask, onOpenCha
             connected for everyone), and inviting someone in (InviteModal), first */}
         {section === 'obysphere' && (
           <>
-            <button className={`sidebar-new is-stacked${activeKnowledge === sphere.id ? ' is-active' : ''}`} aria-current={activeKnowledge === sphere.id || undefined} onClick={() => onOpenKnowledge(sphere.id)}>
+            <button className={`sidebar-new is-stacked${knowing ? ' is-active' : ''}${sphere.sample && tour.call === 'Knowledge' ? ' is-calling' : ''}`} aria-current={knowing || undefined} onClick={() => (sphere.sample ? tourDid('Knowledge') : onOpenKnowledge(sphere.id))}>
               <BookOpen size={16} strokeWidth={1.6} />
               <span className="sidebar-new-label">Knowledge</span>
             </button>
-            <button className="sidebar-new is-stacked" aria-haspopup="dialog" onClick={() => setInviting(true)}>
+            <button className="sidebar-new is-stacked" aria-haspopup={sphere.sample ? undefined : 'dialog'} onClick={() => (sphere.sample ? tourDid('invite') : setInviting(true))}>
               <UserPlus size={16} strokeWidth={1.6} />
               <span className="sidebar-new-label">Invite member</span>
             </button>
@@ -469,18 +492,24 @@ export default function Sidebar({ open, onNewChat, onHome, onOpenTask, onOpenCha
                 in Members), each folding as Home's groups do */}
             <SphereGroup id={`members:${sphere.id}`} label="Members" folded={folded} onToggle={toggleGroup}>
             {!sphere.members.length && <p className="sidebar-empty">Just you so far</p>}
-            {OBYS.filter((o) => sphere.members.includes(o.name) && matches(o.name)).map((o) => (
-              <button key={o.name} className={`connector oby-row${activeOby === o.name ? ' is-active' : ''}`} aria-current={activeOby === o.name || undefined} onClick={() => onOpenOby(o.name)} aria-label={`Chat with ${o.name}’s Oby${hasUnread(convos, o.name) ? ', new messages' : ''}`}>
-                <OwnerAvatar name={o.name} size={22} />
-                <span className="connector-text">
-                  <span className="connector-name">{o.name}</span>
-                </span>
-                {/* something new from it: a blue dot, just before the count */}
-                {hasUnread(convos, o.name) && <span className="status-dot is-new" role="img" aria-label="New messages" />}
-                {/* how many conversations with it, if any */}
-                {convosWith(convos, o.name).length > 0 && <span className="connector-count" aria-label={`${convosWith(convos, o.name).length} conversations`}>{convosWith(convos, o.name).length}</span>}
-              </button>
-            ))}
+            {(sphere.sample ? sphere.members.map((name) => ({ name })) : OBYS.filter((o) => sphere.members.includes(o.name))).filter((o) => matches(o.name)).map((o) => {
+              // in the sample: the tour's conversations, the one showing lit, the one it calls dotted
+              const n = sphere.sample ? (SAMPLE_TALK[o.name] ? 1 : 0) : convosWith(convos, o.name).length;
+              const unread = sphere.sample ? tour.call === o.name : hasUnread(convos, o.name);
+              const lit = sphere.sample ? tour.member === o.name : activeOby === o.name;
+              return (
+                <button key={o.name} className={`connector oby-row${lit ? ' is-active' : ''}`} aria-current={lit || undefined} onClick={() => (sphere.sample ? tourDid(o.name) : onOpenOby(o.name))} aria-label={`Chat with ${o.name}’s Oby${sphere.sample ? ', a sample' : ''}${unread ? ', new messages' : ''}`}>
+                  <OwnerAvatar name={o.name} size={22} />
+                  <span className="connector-text">
+                    <span className="connector-name">{o.name}</span>
+                  </span>
+                  {/* something new from it: a blue dot, just before the count */}
+                  {unread && <span className={`status-dot is-new${sphere.sample ? ' is-calling' : ''}`} role="img" aria-label="New messages" />}
+                  {/* how many conversations with it, if any */}
+                  {n > 0 && <span className="connector-count" aria-label={`${n} conversations`}>{n}</span>}
+                </button>
+              );
+            })}
             </SphereGroup>
             {sphere.invited.length > 0 && (
               <SphereGroup id={`invited:${sphere.id}`} label="Invited" count={sphere.invited.length} folded={folded} onToggle={toggleGroup}>

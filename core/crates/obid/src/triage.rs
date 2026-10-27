@@ -76,7 +76,7 @@ pub fn rule(item: &Item) -> Option<&'static str> {
 
 /// A `github` item: a review requested of the owner needs them, unless its author is a bot (the
 /// feed's login, the only outside field a rule reads), and so do failed checks on the owner's own
-/// pull request, and comments or failed checks on Oby's own (crate::github_events); an assigned
+/// pull request, and comments or failed checks on Oby's own (an older obid's offers); an assigned
 /// issue is the model's to sort.
 fn github(work: &Value) -> Option<&'static str> {
     match work["list"].as_str() {
@@ -839,7 +839,7 @@ mod tests {
         let mut twin = work("mine", 13, "wellington", "Fix CI");
         twin.github.as_mut().unwrap()["head"] = json!("a".repeat(40));
         assert_eq!(sorted(&kept, &[&fix, &twin], 0), [NEEDS_YOU; 2]);
-        // On Oby's own pull request (crate::github_events): its Fix CI stands for the plug-in's
+        // On Oby's own pull request (an older obid's offers): its Fix CI stands for the plug-in's
         // red check on its head, and its comments, once a review among them asks for changes,
         // for the plug-in's changes requested.
         let mut red = work("checks", 12, "wellington", "Fix CI");

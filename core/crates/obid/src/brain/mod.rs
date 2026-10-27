@@ -56,9 +56,10 @@ struct Request {
     /// The id the app gave the user's words (a lower-case UUID): sent again with an id obid has,
     /// they're the same words, and nothing new happens.
     id: Option<String>,
-    /// The teammate's Obi whose Mac this message's jobs run on ("Run on another Mac", #808).
+    /// The teammate's Mac the iPhone may still send ("Run on another Mac", #808): taken and
+    /// ignored, since every job runs on this Mac now.
     #[serde(rename = "runsOn")]
-    runs_on: Option<Value>,
+    _runs_on: Option<serde::de::IgnoredAny>,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -73,7 +74,12 @@ struct InputTurn {
     text: String,
 }
 
-pub async fn plan(State(shared): State<Arc<Shared>>, body: Bytes) -> Result<Response, ApiError> {
+pub async fn plan(
+    State(shared): State<Arc<Shared>>,
+    uri: axum::http::Uri,
+    headers: axum::http::HeaderMap,
+    body: Bytes,
+) -> Result<Response, ApiError> {
     let req: Request = serde_json::from_slice(&body)
         .map_err(|_| ApiError::new(StatusCode::BAD_REQUEST, "That isn't a plan request."))?;
     let words = req.said.trim();
@@ -114,15 +120,6 @@ pub async fn plan(State(shared): State<Arc<Shared>>, body: Bytes) -> Result<Resp
         (None, false) => Target::Latest,
     };
     let turns = validate_turns(req.turns)?;
-    let runs_on = match &req.runs_on {
-        None | Some(Value::Null) => None,
-        Some(place) => Some(
-            shared
-                .link
-                .runs_on(place)
-                .map_err(|m| ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, m))?,
-        ),
-    };
     // The owner's message: after more than 30 minutes away, the answer starts with a recap (#594).
     let now = obi_protocol::time::now();
     let back = shared.presence.seen(now);
@@ -152,6 +149,11 @@ pub async fn plan(State(shared): State<Arc<Shared>>, body: Bytes) -> Result<Resp
         )
             .into_response());
     }
+    // Oby's question the words answer: its text is that conversation's (crate::secretspec).
+    let question = req
+        .answer
+        .as_ref()
+        .map(|a| (a.question.clone(), a.option.clone()));
     let said = req
         .answer
         .map(|a| {
@@ -161,9 +163,32 @@ pub async fn plan(State(shared): State<Arc<Shared>>, body: Bytes) -> Result<Resp
             )
         })
         .unwrap_or_else(|| words.to_owned());
+    // What the conversation hears that isn't on obid's allowlist (crate::secretspec): words no app
+    // of the owner's signed (oby-mcp's, a script's), turns the client wrote, files.
+    let foreign = if !crate::routes::typed_by_owner(&shared, "POST", &uri, &headers, &body) {
+        Some("words no app of the owner's signed".to_owned())
+    } else if turns.is_some() {
+        Some("turns its client wrote".to_owned())
+    } else if !attachments.is_empty() {
+        Some("files the owner attached".to_owned())
+    } else {
+        None
+    };
     let begun = shared
         .conversations
-        .begin(target, said.clone(), jobs.clone(), id)?;
+        .begin(target, said.clone(), jobs.clone(), id, foreign)?;
+    // An answer to a question Oby asked elsewhere (the Watch answers in the latest conversation)
+    // brings that conversation's words here.
+    if let Some((question, option)) = &question
+        && !shared
+            .conversations
+            .oby_asked(&begun.conversation, question, option)
+    {
+        shared.conversations.mark(
+            &begun.conversation,
+            "a question Oby asked in another conversation".into(),
+        );
+    }
     // The same words sent again: obid has them (and answered, or answers, them in its turn).
     if begun.repeated {
         return Ok((
@@ -179,7 +204,6 @@ pub async fn plan(State(shared): State<Arc<Shared>>, body: Bytes) -> Result<Resp
         said,
         attachments,
         jobs,
-        runs_on,
     };
     // The turn goes on by itself: a client that stops waiting can't be told from a slow one, so
     // what the plan does still happens, and is kept (docs/runner-api.md, `POST /v1/plans`).
@@ -205,7 +229,6 @@ pub async fn plan(State(shared): State<Arc<Shared>>, body: Bytes) -> Result<Resp
             jobs: &next.words.jobs,
             conversation: &conversation,
             turn: &control.turn,
-            runs_on: next.words.runs_on.as_ref(),
         };
         // The recap is written while the brain thinks; a background call is bounded and
         // tried once, and when it fails the answer is the same as without it.
@@ -231,6 +254,39 @@ pub async fn plan(State(shared): State<Arc<Shared>>, body: Bytes) -> Result<Resp
             "Oby's brain stopped before it answered.",
         )
     })?
+}
+
+/// Why words Oby's brain wrote in `conversation` aren't on obid's allowlist (crate::secretspec):
+/// what the conversation read that isn't, or none when it read nothing else. A job they reach is
+/// someone else's from then on.
+pub fn written_after(shared: &Shared, conversation: &str) -> Option<String> {
+    shared
+        .conversations
+        .foreign(conversation)
+        .map(|why| format!("words Oby wrote after its conversation read {why} reached it"))
+}
+
+/// `new`, a job Oby's brain starts with words it wrote in `conversation` (crate::secretspec): the
+/// owner's own words only while the conversation read nothing off obid's allowlist; otherwise
+/// someone else's from the start, in a clone apart.
+pub fn written_in(
+    shared: &Shared,
+    conversation: &str,
+    new: crate::jobs::NewJob,
+) -> crate::jobs::NewJob {
+    match shared.conversations.foreign(conversation) {
+        None => crate::jobs::NewJob {
+            vetted: true,
+            ..new
+        },
+        Some(why) => crate::jobs::NewJob {
+            vetted: false,
+            foreign: Some(format!(
+                "Oby's conversation that wrote its words read {why}"
+            )),
+            ..new
+        },
+    }
 }
 
 /// Which conversation's turn Stop or cancel is for: `{"conversation": "<id>"}`, or, with no
@@ -295,6 +351,12 @@ fn respond(
         (_, recap) => recap,
     };
     let talk = recap::lead(talk, recap.as_deref());
+    // Written from other jobs and the inbox: the conversation reads it in Oby's answer from now on.
+    if recap.is_some() {
+        shared
+            .conversations
+            .mark(conversation, "a recap of other jobs and the inbox".into());
+    }
     let mut body = match &talk {
         Talk::None => json!({"kind": "none", "jobs": [], "drafts": []}),
         Talk::Reply { text, jobs } => {
@@ -329,9 +391,17 @@ fn respond(
                 .collect(),
             _ => vec![],
         };
+        // A question keeps what it asked, so an answer's words are known to be this one's.
+        let asked = match &talk {
+            Talk::Question { question, .. } => Some(crate::conversation::Asked {
+                question: question.text.clone(),
+                options: question.options.clone(),
+            }),
+            _ => None,
+        };
         match shared
             .conversations
-            .append_made(conversation, text, jobs, artifacts.clone())
+            .append_asking(conversation, text, jobs, artifacts.clone(), asked)
         {
             Ok(_) => {}
             // Deleted while the brain thought: the answer still goes to the app that asked.
@@ -660,6 +730,7 @@ fn validate_turns(input: Option<Vec<InputTurn>>) -> Result<Option<Vec<Turn>>, Ap
             ended: false,
             artifacts: vec![],
             routine: None,
+            asked: None,
         });
     }
     Ok(Some(out))

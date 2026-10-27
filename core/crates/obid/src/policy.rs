@@ -310,15 +310,13 @@ fn value_names_a_path(value: &Value) -> bool {
 }
 
 /// Why a tool call is refused whatever the job, or `None`. `mcp` is the job's permission rules
-/// for MCP tools: `mcp__<plugin id>__<tool>`, one per tool an enabled `agent-mcp` plug-in allows
-/// (`crate::plugins::rules`). Every other MCP tool is refused (Engine/Jobs.swift's
-/// `Policy.tetrixTools`, made per plug-in: docs/ARCHITECTURE.md 5.1).
+/// for MCP tools: `mcp__tetrix__<tool>` for each of Tetrix's allowed tools (crate::tetrix::TOOLS)
+/// and the broker's rule. Every other MCP tool is refused (Engine/Jobs.swift's
+/// `Policy.tetrixTools`).
 pub fn fixed_denial(tool: &str, input: &Value, worktree: &Path, mcp: &[String]) -> Option<String> {
     // The broker itself checks every upstream tool's read-only annotation and holds each login
-    // outside the job sandbox. Its tool calls are therefore the only non-plug-in MCP calls Oby
-    // accepts, and only in a job given the broker (its rule is in `mcp`): a plug-in whose id is
-    // `oby` gets no more than the tools its manifest allows. The job-scoped broker token still
-    // limits them to this job.
+    // outside the job sandbox. Its tool calls are accepted only in a job given the broker (its rule
+    // is in `mcp`). The job-scoped broker token still limits them to this job.
     if tool.starts_with("mcp__oby__")
         && mcp
             .iter()
@@ -328,7 +326,7 @@ pub fn fixed_denial(tool: &str, input: &Value, worktree: &Path, mcp: &[String]) 
     }
     if tool.starts_with("mcp__") || tool == "mcp" {
         return (!mcp.iter().any(|rule| rule == tool)).then(|| format!(
-            "obid's agents use only the MCP tools of the plug-ins the owner enabled, and only the ones each allows. Say in your summary what you'd have done with {tool}."
+            "obid's agents use only the MCP tools Oby connected for them (Tetrix's allowed tools, Oby's own). Say in your summary what you'd have done with {tool}."
         ));
     }
     // A background command is fine: Claude Code wakes when it ends, obid waits for that
@@ -365,6 +363,25 @@ pub fn fixed_denial(tool: &str, input: &Value, worktree: &Path, mcp: &[String]) 
     None
 }
 
+/// Whether a call of `tool` names a path outside `worktree`, links followed: a file's path, a
+/// search's folder (Grep's and Glob's `path`), or an absolute Glob pattern's fixed part, before its
+/// first wildcard. A job in Claude Code's own sandbox is refused those whatever its mode (crate::jobs,
+/// `own_sandbox`): its tools run outside any sandbox, where a boxed job's would read only what the
+/// box shows.
+pub fn names_outside(tool: &str, input: &Value, worktree: &Path) -> bool {
+    let pattern = input
+        .get("pattern")
+        .and_then(Value::as_str)
+        .filter(|pattern| tool == "Glob" && pattern.starts_with('/'))
+        .and_then(|pattern| pattern.split(['*', '?', '[', '{']).next());
+    let real = real_worktree(worktree);
+    ["file_path", "notebook_path", "path"]
+        .iter()
+        .filter_map(|key| input.get(*key).and_then(Value::as_str))
+        .chain(pattern)
+        .any(|path| !inside(path, worktree, &real))
+}
+
 /// What obid answers for a job of `kind`, and whether it is a review another Obi asked for; `mcp`
 /// is the job's MCP permission rules ([`fixed_denial`]).
 pub fn decide(
@@ -396,6 +413,31 @@ pub fn decide(
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// A search outside the worktree names a path outside it, as a read does: Grep's and Glob's
+    /// folder, and an absolute Glob pattern; inside it, or relative, it doesn't.
+    #[test]
+    fn searches_stay_inside_the_worktree() {
+        let worktree =
+            std::env::temp_dir().join(format!("obid-policy-search-{}", std::process::id()));
+        std::fs::create_dir_all(worktree.join("src")).unwrap();
+        let denied = |tool: &str, input: Value| names_outside(tool, &input, &worktree);
+        assert!(denied(
+            "Grep",
+            json!({"pattern": "token", "path": "/Users"})
+        ));
+        assert!(denied("Grep", json!({"pattern": "token", "path": "../.."})));
+        assert!(denied("Glob", json!({"pattern": "*.json", "path": "/"})));
+        assert!(denied(
+            "Glob",
+            json!({"pattern": "/Users/*/Library/**/api-token"})
+        ));
+        assert!(!denied("Grep", json!({"pattern": "token", "path": "src"})));
+        assert!(!denied("Glob", json!({"pattern": "**/*.rs"})));
+        let inner = format!("{}/src/*.rs", worktree.display());
+        assert!(!denied("Glob", json!({"pattern": inner})));
+        let _ = std::fs::remove_dir_all(&worktree);
+    }
 
     #[test]
     fn publishing_commands_are_refused() {

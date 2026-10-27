@@ -144,6 +144,43 @@ pub async fn git(dir: &Path, args: &[&str]) -> Result<String, GitError> {
     run(dir, &args, &[]).await
 }
 
+/// [`git`] in a job's worktree with its git folders given (`GIT_DIR`, `GIT_COMMON_DIR`,
+/// `GIT_WORK_TREE`, crate::jobs, `git_folders`), so git never reads the worktree's `.git` or the
+/// git folder's `commondir`, which the job's agent could have rewritten since obid checked them.
+pub async fn pinned(
+    dir: &Path,
+    folders: &[(&str, String)],
+    args: &[&str],
+) -> Result<String, GitError> {
+    let args: Vec<&OsStr> = args.iter().map(OsStr::new).collect();
+    let extra: Vec<(&str, &str)> = folders.iter().map(|(k, v)| (*k, v.as_str())).collect();
+    run(dir, &args, &extra).await
+}
+
+/// A git command of obid's in `dir` that doesn't wait on the runtime (`std::process`), with what
+/// [`run_bytes`] gives every call (the [`SAFE`] settings, no prompt, none of git's variables from
+/// obid's own environment) and `folders` pinning it to a job's git folders ([`pinned`]); with none,
+/// git finds them itself, as [`run`] does.
+pub fn command(dir: &Path, folders: &[(&str, String)]) -> std::process::Command {
+    let mut command = std::process::Command::new("git");
+    command
+        .current_dir(dir)
+        .args(SAFE)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_OPTIONAL_LOCKS", "0")
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_INDEX_FILE")
+        .env_remove("GIT_COMMON_DIR")
+        .env_remove("GIT_OBJECT_DIRECTORY")
+        .env_remove("GIT_ALTERNATE_OBJECT_DIRECTORIES")
+        .stdin(std::process::Stdio::null());
+    for (key, value) in folders {
+        command.env(key, value);
+    }
+    command
+}
+
 /// The clone of `repo` (`owner/name`) under `home`.
 pub fn clone_path(home: &Path, repo: &str) -> PathBuf {
     let mut path = home.join("clones");
@@ -174,6 +211,9 @@ pub async fn ensure_clone(
         let signed = crate::publish::fetch_credentials(remote, crate::github::gh().as_deref());
         run(parent, &clone_args(&signed, remote, &partial), &[]).await?;
         git(&partial, &["config", "remote.origin.pushurl", NO_PUSH_URL]).await?;
+        // Only the default branch: what else the clone holds comes in by obid's own fetches,
+        // which say when it's someone else's ([`taint`]; crate::secretspec).
+        git(&partial, &["config", NARROW, "true"]).await?;
         std::fs::rename(&partial, &clone)
             .map_err(|e| GitError(format!("can't move the clone into place: {e}")))?;
     } else {
@@ -197,13 +237,80 @@ pub async fn ensure_clone(
     Ok(clone)
 }
 
+/// The clone's setting that says obid made it with only the default branch (`git clone
+/// --single-branch`): a clone made before holds every branch of its remote, teammates' too.
+pub const NARROW: &str = "obid.narrow";
+/// The clone's setting that says obid fetched someone else's commits into it, and why.
+pub const FOREIGN: &str = "obid.foreign";
+
+/// Notes in `clone`'s own settings, which no job's sandbox can write, that obid fetched someone
+/// else's commits into it (`why`): from then on no check whose worktree reads it gets the owner's
+/// secrets (crate::secretspec). The first reason is kept.
+pub async fn taint(clone: &Path, why: &str) {
+    if git(clone, &["config", "--get", FOREIGN]).await.is_ok() {
+        return;
+    }
+    if let Err(e) = git(clone, &["config", FOREIGN, why]).await {
+        tracing::warn!(
+            "couldn't note that {} holds someone else's commits: {e}",
+            clone.display()
+        );
+    }
+}
+
+/// [`taint`], at once, from a caller that can't wait: `git config` run as it is.
+pub fn taint_now(clone: &Path, why: &str) {
+    let has = std::process::Command::new("git")
+        .args(["config", "--get", FOREIGN])
+        .current_dir(clone)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success());
+    if has {
+        return;
+    }
+    let set = std::process::Command::new("git")
+        .args(["config", FOREIGN, why])
+        .current_dir(clone)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+    if !set.is_ok_and(|s| s.success()) {
+        tracing::warn!(
+            "couldn't note that {} holds someone else's commits",
+            clone.display()
+        );
+    }
+}
+
+/// Why `clone` may hold someone else's commits, or none: it was made before clones held only
+/// their default branch, or obid fetched someone else's into it ([`taint`]).
+pub async fn foreign_in(clone: &Path) -> Option<String> {
+    if git(clone, &["config", "--get", NARROW])
+        .await
+        .ok()
+        .as_deref()
+        != Some("true")
+    {
+        return Some(
+            "obid's clone of the repository was made before clones held only their default branch, so teammates' branches are in it (move it aside, and obid makes it again)".into(),
+        );
+    }
+    git(clone, &["config", "--get", FOREIGN])
+        .await
+        .ok()
+        .map(|why| format!("obid's clone of the repository holds someone else's commits ({why})"))
+}
+
 /// `git clone` of `remote` into `partial`, after the credential settings `signed`
 /// ([`crate::publish::fetch_credentials`]).
 fn clone_args<'a>(signed: &'a [String], remote: &'a str, partial: &'a Path) -> Vec<&'a OsStr> {
     let mut args: Vec<&OsStr> = signed.iter().map(OsStr::new).collect();
-    args.extend::<[&OsStr; 6]>([
+    args.extend::<[&OsStr; 7]>([
         "clone".as_ref(),
         "--no-checkout".as_ref(),
+        "--single-branch".as_ref(),
         "--quiet".as_ref(),
         "--".as_ref(),
         remote.as_ref(),

@@ -151,21 +151,27 @@ pub struct Artifacts {
 
 impl Artifacts {
     /// `home/artifacts` (0700), made if missing, with what a publish cut short left behind gone.
-    pub fn open(home: &Path, events: Events) -> std::io::Result<Arc<Artifacts>> {
+    /// A folder that can't be made is said in the log, never a reason not to start: each publish
+    /// then fails with its own reason.
+    pub fn open(home: &Path, events: Events) -> Arc<Artifacts> {
         let dir = home.join("artifacts");
-        make_private_dir(&dir)?;
-        for entry in std::fs::read_dir(&dir)?.flatten() {
-            if entry.file_name().to_string_lossy().starts_with(".staging-") {
-                let _ = std::fs::remove_dir_all(entry.path());
+        match make_private_dir(&dir).and_then(|()| std::fs::read_dir(&dir)) {
+            Ok(entries) => {
+                for entry in entries.flatten() {
+                    if entry.file_name().to_string_lossy().starts_with(".staging-") {
+                        let _ = std::fs::remove_dir_all(entry.path());
+                    }
+                }
             }
+            Err(e) => tracing::error!("can't open {}: {e}", dir.display()),
         }
-        Ok(Arc::new(Artifacts {
+        Arc::new(Artifacts {
             dir,
             scratch: home.join("tmp"),
             events,
             job_bytes: MAX_JOB_BYTES,
             lock: Mutex::new(()),
-        }))
+        })
     }
 
     /// Publishes `what` as a new artifact, or a new version of `what.artifact`, and says its id
@@ -470,7 +476,7 @@ impl Artifacts {
         if !kept.files.iter().any(|f| f == path) {
             return None;
         }
-        let file = crate::web::inside(&self.version_path(id, version), path)?;
+        let file = inside(&self.version_path(id, version), path)?;
         let bytes = std::fs::read(&file).ok()?;
         Some((file, bytes))
     }
@@ -887,7 +893,7 @@ pub async fn file(
     let headers = response.headers_mut();
     headers.insert(
         header::CONTENT_TYPE,
-        HeaderValue::from_static(crate::web::type_of(&file)),
+        HeaderValue::from_static(type_of(&file)),
     );
     headers.insert(
         header::CONTENT_SECURITY_POLICY,
@@ -996,6 +1002,42 @@ pub fn title_of(entry: &str) -> String {
     clean_title(&title).unwrap_or_else(|| "Artifact".into())
 }
 
+/// `relative` under `root`, when it names a file there by plain names only.
+fn inside(root: &Path, relative: &str) -> Option<PathBuf> {
+    let plain = |part: &str| {
+        !part.is_empty() && !part.starts_with('.') && !part.contains(['\\', '\0', ':'])
+    };
+    if !relative.split('/').all(plain) {
+        return None;
+    }
+    let root = root.canonicalize().ok()?;
+    let path = root.join(relative).canonicalize().ok()?;
+    (path.starts_with(&root) && path.is_file()).then_some(path)
+}
+
+/// The media type for a file, by its extension.
+fn type_of(path: &Path) -> &'static str {
+    match path.extension().and_then(|e| e.to_str()).unwrap_or("") {
+        "html" | "htm" => "text/html; charset=utf-8",
+        "js" | "mjs" => "text/javascript; charset=utf-8",
+        "css" => "text/css; charset=utf-8",
+        "json" | "map" => "application/json",
+        "svg" => "image/svg+xml",
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "ico" => "image/x-icon",
+        "woff" => "font/woff",
+        "woff2" => "font/woff2",
+        "txt" => "text/plain; charset=utf-8",
+        "md" | "markdown" => "text/markdown; charset=utf-8",
+        "csv" => "text/csv; charset=utf-8",
+        "pdf" => "application/pdf",
+        _ => "application/octet-stream",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1026,10 +1068,7 @@ mod tests {
         ) {
             let events = Events::new();
             let receiver = events.subscribe();
-            (
-                Artifacts::open(&self.0.join("home"), events).unwrap(),
-                receiver,
-            )
+            (Artifacts::open(&self.0.join("home"), events), receiver)
         }
     }
 
@@ -1655,5 +1694,44 @@ mod tests {
             job_entries(&t.0.join("worktree")),
             Ok(vec!["a.md".to_owned()])
         );
+    }
+
+    /// What a published artifact serves is only plain names inside its version's folder: no
+    /// `..`, hidden files, other separators, absolute paths, or a link out of it.
+    #[test]
+    fn only_plain_names_inside_the_root() {
+        let root =
+            std::env::temp_dir().join(format!("obid-artifacts-inside-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("dist/assets")).unwrap();
+        std::fs::write(root.join("dist/index.html"), "page").unwrap();
+        std::fs::write(root.join("dist/assets/app.js"), "js").unwrap();
+        std::fs::write(root.join("dist/.hidden"), "no").unwrap();
+        std::fs::write(root.join("secret"), "no").unwrap();
+        let dist = root.join("dist");
+        assert!(inside(&dist, "index.html").is_some());
+        assert!(inside(&dist, "assets/app.js").is_some());
+        for wrong in [
+            "",
+            "assets",
+            "assets/",
+            "../secret",
+            "assets/../../secret",
+            ".hidden",
+            "./index.html",
+            "assets//app.js",
+            "assets\\app.js",
+            "/etc/passwd",
+            "C:/x",
+            "missing.js",
+        ] {
+            assert!(inside(&dist, wrong).is_none(), "{wrong:?}");
+        }
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(root.join("secret"), dist.join("out.txt")).unwrap();
+            assert!(inside(&dist, "out.txt").is_none(), "a link out of the root");
+        }
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

@@ -95,6 +95,7 @@ pub async fn run_turn(
         priced: options.priced.clone(),
         fatal: None,
         thread: None,
+        helpers: Default::default(),
         turn: None,
         said: None,
         reasoning: HashMap::new(),
@@ -191,7 +192,20 @@ struct Run<D, E> {
     ended: Option<(String, bool)>,
     /// When Codex's own limit resets, once it said it's full (crate::limits).
     resets: Option<i64>,
+    /// The helper threads that spoke this turn, each said once as a tool call.
+    helpers: std::collections::HashSet<String>,
 }
+
+/// The items that aren't a tool call: words, thinking, a plan, the owner's words, a compaction, a
+/// pause. Any other item [`tool_call`] doesn't name is a tool call of a kind obid doesn't know.
+const NOT_TOOLS: &[&str] = &[
+    "agentMessage",
+    "reasoning",
+    "plan",
+    "userMessage",
+    "contextCompaction",
+    "sleep",
+];
 
 impl<D: Fn(&str, &Value) -> Ruling, E: FnMut(Event)> Run<D, E> {
     async fn turn(&mut self, prompt: &str, options: &Options) -> Result<(), Stop> {
@@ -322,10 +336,20 @@ impl<D: Fn(&str, &Value) -> Ruling, E: FnMut(Event)> Run<D, E> {
         {
             return self.end_for_good(what).await;
         }
-        // Helpers Codex starts run in threads of their own: only this job's thread reports.
+        // Helpers Codex starts run in threads of their own: only this job's thread reports. What
+        // a helper does isn't followed, so its first word is a tool call of a kind obid doesn't
+        // know (crate::secretspec, fail closed).
         if let (Some(other), Some(thread)) = (params["threadId"].as_str(), &self.thread)
             && other != thread
         {
+            if !self.helpers.contains(other) {
+                self.helpers.insert(other.to_owned());
+                (self.on_event)(Event::Tool {
+                    id: format!("helper-{other}"),
+                    name: "Agent".into(),
+                    input: json!({"description": "a helper thread obid doesn't follow"}),
+                });
+            }
             return;
         }
         if message["method"] == "thread/tokenUsage/updated"
@@ -382,6 +406,13 @@ impl<D: Fn(&str, &Value) -> Ruling, E: FnMut(Event)> Run<D, E> {
                         id: item["id"].as_str().unwrap_or("").to_owned(),
                         name,
                         input,
+                    });
+                } else if !NOT_TOOLS.contains(&item["type"].as_str().unwrap_or("")) {
+                    // An item obid doesn't parse: a tool call of a kind it doesn't know.
+                    (self.on_event)(Event::Tool {
+                        id: item["id"].as_str().unwrap_or("").to_owned(),
+                        name: "Tool".into(),
+                        input: json!({"type": item["type"]}),
                     });
                 }
             }
@@ -1049,6 +1080,7 @@ exec sleep 30
         .unwrap();
         std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
         let launch = Launch {
+            own_sandbox: false,
             argv: vec![bin.into_os_string()],
             env: vec![("PATH".into(), "/usr/bin:/bin".into())],
             cwd: root.clone(),
@@ -1077,6 +1109,60 @@ exec sleep 30
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// What Codex does that obid doesn't follow or parse still reaches the job as a tool call of a
+    /// kind obid doesn't know (crate::secretspec, fail closed): a helper thread, said once, and an
+    /// item of a kind obid doesn't name.
+    #[tokio::test]
+    async fn a_helper_thread_and_an_unknown_item_are_tool_calls() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!("obid-codex-unseen-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let bin = root.join("codex");
+        std::fs::write(
+            &bin,
+            r#"#!/bin/sh
+read l; echo '{"id":1,"result":{}}'
+read l
+read l; echo '{"id":2,"result":{"thread":{"id":"t1"}}}'
+read l; echo '{"id":3,"result":{"turn":{"id":"u1"}}}'
+echo '{"method":"item/started","params":{"threadId":"t2","turnId":"x","item":{"type":"agentMessage","id":"h1"}}}'
+echo '{"method":"item/started","params":{"threadId":"t2","turnId":"x","item":{"type":"webSearch","id":"h2","query":"q"}}}'
+echo '{"method":"item/started","params":{"threadId":"t1","turnId":"u1","item":{"type":"someItemLater","id":"i1"}}}'
+echo '{"method":"turn/completed","params":{"threadId":"t1","turn":{"id":"u1","status":"completed","items":[{"type":"agentMessage","text":"Done."}]}}}'
+exec sleep 30
+"#,
+        )
+        .unwrap();
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let launch = Launch {
+            argv: vec![bin.into_os_string()],
+            env: vec![("PATH".into(), "/usr/bin:/bin".into())],
+            cwd: root.clone(),
+            stderr: root.join("agent.log"),
+            own_sandbox: false,
+        };
+        let (_stop, stop) = watch::channel(process::Signal::Run);
+        let tools = std::sync::Mutex::new(Vec::new());
+        run_turn(
+            launch,
+            "Do it.",
+            &Options::default(),
+            Duration::from_secs(60),
+            stop,
+            |_, _| Ruling::Now(Answer::Allow),
+            |event| {
+                if let Event::Tool { name, .. } = event {
+                    tools.lock().unwrap().push(name);
+                }
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(*tools.lock().unwrap(), ["Agent", "Tool"]);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// A conversation's Codex that runs a command is ended at once, with everything it started:
     /// no grace to read out (finding 6).
     #[tokio::test]
@@ -1100,6 +1186,7 @@ exec sleep 30
         .unwrap();
         std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
         let launch = Launch {
+            own_sandbox: false,
             argv: vec![bin.into_os_string()],
             env: vec![("PATH".into(), "/usr/bin:/bin".into())],
             cwd: root.clone(),

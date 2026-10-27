@@ -9,6 +9,11 @@
 //! `"oby-confirm\n<item id>\n<title>\n<signedAt>"`, so no publish or connection signature passes
 //! for a Confirm, and one tap confirms one item.
 //!
+//! Words the owner typed in Oby's apps carry the same proof, on every request that has them
+//! ([`WORDS`], crate::secretspec): the device signed `"oby-words\n<method>\n<path>\n<SHA-256 of
+//! the body, hex>\n<signedAt>"`, so a token alone (oby-mcp, a script, an agent) never passes for
+//! the owner's own words, and one signature passes for one request.
+//!
 //! What was used is kept in `home/approvals.json` (0600) for 10 minutes, so a restart doesn't
 //! open a replay.
 
@@ -104,6 +109,46 @@ impl Approvals {
         self.check_signed(approval, &message, title, key, now)
     }
 
+    /// Lets the request `method` `path` with `body` through once as words the owner typed in Oby's
+    /// apps: `header` is [`WORDS`]'s value, `"<device> <signedAt> <signature>"`, and `key_of` the
+    /// registered key of a device by id.
+    pub fn check_words(
+        &self,
+        header: &str,
+        method: &str,
+        path: &str,
+        body: &[u8],
+        key_of: impl Fn(&str) -> Option<String>,
+        now: i64,
+    ) -> Result<(), String> {
+        let mut parts = header.split(' ');
+        let (Some(device), Some(signed_at), Some(signature), None) =
+            (parts.next(), parts.next(), parts.next(), parts.next())
+        else {
+            return Err(format!("{WORDS} is \"<device> <signedAt> <signature>\"."));
+        };
+        // Milliseconds keep two of the same request within a second apart: the message is signed
+        // with them, its freshness read to the second.
+        let whole = match signed_at.split_once('.') {
+            Some((seconds, rest))
+                if rest.len() > 1
+                    && rest.ends_with('Z')
+                    && rest[..rest.len() - 1].bytes().all(|b| b.is_ascii_digit()) =>
+            {
+                format!("{seconds}Z")
+            }
+            _ => signed_at.to_owned(),
+        };
+        let approval = Approval {
+            device: device.into(),
+            action: String::new(),
+            signed_at: whole,
+            signature: signature.into(),
+        };
+        let message = words_message(method, path, body, signed_at);
+        self.check_signed(&approval, &message, "", key_of(device).as_deref(), now)
+    }
+
     /// The checks every approval takes, on the exact `message` the device signed.
     fn check_signed(
         &self,
@@ -155,6 +200,17 @@ impl Approvals {
     }
 }
 
+/// The header an app of the owner's signs a request with when it carries words the owner typed.
+pub const WORDS: &str = "x-oby-words";
+
+/// What a device signs for the request `method` `path` (from `/v1/` on) with `body`.
+pub fn words_message(method: &str, path: &str, body: &[u8], signed_at: &str) -> String {
+    format!(
+        "oby-words\n{method}\n{path}\n{}\n{signed_at}",
+        hex::encode(obi_protocol::keys::sha256(body))
+    )
+}
+
 /// The verifying key in a device's registered public key, or none.
 fn verifying_key(public_key: &str) -> Option<p256::ecdsa::VerifyingKey> {
     let bytes = base64::engine::general_purpose::STANDARD
@@ -199,6 +255,103 @@ mod tests {
         let _ = std::fs::remove_dir_all(&path);
         std::fs::create_dir_all(&path).unwrap();
         path
+    }
+
+    /// Words the owner typed pass once, for exactly the request their device signed: not for
+    /// another method, path or body, not from a device obid doesn't know, not when they're stale,
+    /// and never as a publish or a Confirm.
+    #[test]
+    fn typed_words_pass_once_for_exactly_their_request() {
+        let home = home("words");
+        let approvals = Approvals::open(&home);
+        let (key, public) = device(5);
+        let (other, _) = device(6);
+        let body = br#"{"said":"Fix the flaky test"}"#;
+        let signed =
+            |key: &p256::ecdsa::SigningKey, method: &str, path: &str, body: &[u8], at: i64| {
+                let signed_at = obi_protocol::time::format(at);
+                let signature: p256::ecdsa::Signature =
+                    key.sign(words_message(method, path, body, &signed_at).as_bytes());
+                format!(
+                    "d1 {signed_at} {}",
+                    base64::engine::general_purpose::STANDARD.encode(signature.to_der())
+                )
+            };
+        let known = |device: &str| (device == "d1").then(|| public.clone());
+        let good = signed(&key, "POST", "/v1/plans", body, NOW);
+        for (header, method, path, body) in [
+            (good.as_str(), "POST", "/v1/jobs", &body[..]),
+            (good.as_str(), "PUT", "/v1/plans", &body[..]),
+            (
+                good.as_str(),
+                "POST",
+                "/v1/plans",
+                &br#"{"said":"Fix it all"}"#[..],
+            ),
+        ] {
+            assert!(
+                approvals
+                    .check_words(header, method, path, body, known, NOW)
+                    .unwrap_err()
+                    .contains("signature")
+            );
+        }
+        let by_other = signed(&other, "POST", "/v1/plans", body, NOW);
+        assert!(
+            approvals
+                .check_words(&by_other, "POST", "/v1/plans", body, known, NOW)
+                .is_err()
+        );
+        assert!(
+            approvals
+                .check_words(&good, "POST", "/v1/plans", body, |_| None, NOW)
+                .unwrap_err()
+                .contains("registered")
+        );
+        let stale = signed(&key, "POST", "/v1/plans", body, NOW - 600);
+        assert!(
+            approvals
+                .check_words(&stale, "POST", "/v1/plans", body, known, NOW)
+                .is_err()
+        );
+        assert!(
+            approvals
+                .check_words("d1 only-two", "POST", "/v1/plans", body, known, NOW)
+                .is_err()
+        );
+        assert_eq!(
+            approvals.check_words(&good, "POST", "/v1/plans", body, known, NOW),
+            Ok(())
+        );
+        assert!(
+            approvals
+                .check_words(&good, "POST", "/v1/plans", body, known, NOW + 1)
+                .unwrap_err()
+                .contains("already used")
+        );
+        // Signed words are neither a publish nor a Confirm of anything.
+        let mut parts = good.split(' ');
+        let (device, signed_at, signature) = (
+            parts.next().unwrap(),
+            parts.next().unwrap(),
+            parts.next().unwrap(),
+        );
+        let as_approval = Approval {
+            device: device.into(),
+            action: String::new(),
+            signed_at: signed_at.into(),
+            signature: signature.into(),
+        };
+        assert!(
+            approvals
+                .check(&as_approval, "j1", "", Some(&public), NOW)
+                .is_err()
+        );
+        assert!(
+            approvals
+                .check_confirm(&as_approval, "i1", "", Some(&public), NOW)
+                .is_err()
+        );
     }
 
     #[test]
