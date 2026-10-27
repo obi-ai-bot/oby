@@ -73,7 +73,6 @@ The Mac app runs Oby's server, `obid`, for you (Settings › Runner › This Mac
 apps/        the Mac and iPhone apps (SwiftUI); the Apple Watch, Android and web clients wait until the Mac app is right
 core/        obid, Oby's server (Rust): plans, runs and tracks jobs
 character/   Oby, the 3D character (three.js)
-plugins/     optional context sources, such as Tetrix
 mcp/         Oby's MCP server
 docs/        architecture, runner API and install guides
 ```

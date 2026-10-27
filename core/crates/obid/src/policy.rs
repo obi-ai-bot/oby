@@ -310,15 +310,13 @@ fn value_names_a_path(value: &Value) -> bool {
 }
 
 /// Why a tool call is refused whatever the job, or `None`. `mcp` is the job's permission rules
-/// for MCP tools: `mcp__<plugin id>__<tool>`, one per tool an enabled `agent-mcp` plug-in allows
-/// (`crate::plugins::rules`). Every other MCP tool is refused (Engine/Jobs.swift's
-/// `Policy.tetrixTools`, made per plug-in: docs/ARCHITECTURE.md 5.1).
+/// for MCP tools: `mcp__tetrix__<tool>` for each of Tetrix's allowed tools (crate::tetrix::TOOLS)
+/// and the broker's rule. Every other MCP tool is refused (Engine/Jobs.swift's
+/// `Policy.tetrixTools`).
 pub fn fixed_denial(tool: &str, input: &Value, worktree: &Path, mcp: &[String]) -> Option<String> {
     // The broker itself checks every upstream tool's read-only annotation and holds each login
-    // outside the job sandbox. Its tool calls are therefore the only non-plug-in MCP calls Oby
-    // accepts, and only in a job given the broker (its rule is in `mcp`): a plug-in whose id is
-    // `oby` gets no more than the tools its manifest allows. The job-scoped broker token still
-    // limits them to this job.
+    // outside the job sandbox. Its tool calls are accepted only in a job given the broker (its rule
+    // is in `mcp`). The job-scoped broker token still limits them to this job.
     if tool.starts_with("mcp__oby__")
         && mcp
             .iter()
@@ -328,7 +326,7 @@ pub fn fixed_denial(tool: &str, input: &Value, worktree: &Path, mcp: &[String]) 
     }
     if tool.starts_with("mcp__") || tool == "mcp" {
         return (!mcp.iter().any(|rule| rule == tool)).then(|| format!(
-            "obid's agents use only the MCP tools of the plug-ins the owner enabled, and only the ones each allows. Say in your summary what you'd have done with {tool}."
+            "obid's agents use only the MCP tools Oby connected for them (Tetrix's allowed tools, Oby's own). Say in your summary what you'd have done with {tool}."
         ));
     }
     // A background command is fine: Claude Code wakes when it ends, obid waits for that

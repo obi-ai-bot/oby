@@ -246,7 +246,6 @@ fn the_apis_json_has_the_vaults_secrets_taken_out() {
         problem.starts_with("the vault can't be read: Others may read the vault's"),
         "{problem}"
     );
-    holds_none(&status.text, &value, "/v1/status");
     for target in ["/v1/jobs", &format!("/v1/jobs/{clean}")] {
         let answer = call(&obid, "GET", target, None);
         assert_eq!(answer.status, 503, "{target}: {}", answer.text);

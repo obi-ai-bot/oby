@@ -23,8 +23,6 @@ struct LoginItemTests {
         // The Swift runner's plist stays, only so an older registration can be undone.
         let swift = Bundle.main.bundleURL.appending(path: "Contents/Library/LaunchAgents/\(RunnerLoginItem.swiftRunnerPlist)")
         #expect(FileManager.default.fileExists(atPath: swift.path))
-        let plugins = Bundle.main.bundleURL.appending(path: "Contents/Resources/obid/plugins")
-        #expect(FileManager.default.fileExists(atPath: plugins.path))
     }
 
     /// install.sh's obid moves only when it uses the file the app's obid reads.

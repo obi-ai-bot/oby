@@ -839,6 +839,15 @@ impl Vault {
         self.check_with_force(false)
     }
 
+    /// Whether the store was ever read: until it is, obid knows none of its secrets to take out.
+    fn ever_read(&self) -> bool {
+        self.learned
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .read
+            .is_some()
+    }
+
     fn check_with_force(&self, force: bool) -> Result<(), String> {
         let lock = || self.learned.lock().unwrap_or_else(|e| e.into_inner());
         lock().checked = Some(Instant::now());
@@ -1111,8 +1120,9 @@ fn unreadable_for_agents(why: &str) -> String {
 /// out. An answer with a length is scrubbed whole; a streamed one (the event stream, `/wait`) a
 /// frame at a time, and it ends at the first frame the vault can't be read for. Files that
 /// aren't text (a check's bundle) go as they are, and so do the web app's files under `/app/`,
-/// which hold no data. `GET /v1/status` and `GET /v1/events` answer even then, scrubbed of the
-/// secrets obid last read, so the apps can say why (`status.vaultProblem`): they start no work.
+/// which hold no data. `GET /v1/status` answers even then, so the apps can say why
+/// (`status.vaultProblem`), and so does `GET /v1/events` once obid has read the vault, scrubbed of
+/// the secrets it last read: neither starts any work.
 pub async fn answers(request: Request, next: Next) -> Response {
     if !request.uri().path().starts_with("/v1/") {
         return next.run(request).await;
@@ -1126,8 +1136,11 @@ pub async fn answers(request: Request, next: Next) -> Response {
     else {
         return next.run(request).await;
     };
+    // The event stream carries jobs' output: only once obid has read the vault, so it knows what
+    // to take out.
+    let path = request.uri().path();
     let state = request.method() == axum::http::Method::GET
-        && matches!(request.uri().path(), "/v1/status" | "/v1/events");
+        && (path == "/v1/status" || (path == "/v1/events" && vault.ever_read()));
     let (request, stops) = stops_only(request).await;
     if !stops
         && let Err(why) = vault.check()
@@ -1762,6 +1775,107 @@ mod tests {
         fn exact(&self) -> bool {
             false
         }
+    }
+
+    /// A store that fails while `broken` is set.
+    #[derive(Clone, Default)]
+    struct Breakable {
+        values: Arc<Mutex<BTreeMap<String, String>>>,
+        broken: Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    impl Store for Breakable {
+        fn stamp(&self) -> Result<String, String> {
+            if self.broken.load(std::sync::atomic::Ordering::SeqCst) {
+                return Err("it's broken.".into());
+            }
+            Ok(self.values.lock().unwrap().len().to_string())
+        }
+        fn read(&self) -> Result<BTreeMap<String, String>, String> {
+            self.stamp().map(|_| self.values.lock().unwrap().clone())
+        }
+        fn save(&self, value: &str, name: &str) -> Result<(), String> {
+            self.values
+                .lock()
+                .unwrap()
+                .insert(name.into(), value.into());
+            Ok(())
+        }
+        fn remove(&self, name: &str) -> Result<bool, String> {
+            Ok(self.values.lock().unwrap().remove(name).is_some())
+        }
+    }
+
+    /// While the vault can't be read, the status still answers, and so does the event stream once
+    /// obid has read the vault, scrubbed of what it learned; before any read the stream is `503`,
+    /// since nothing could be taken out of it. Everything else is `503`.
+    #[tokio::test]
+    async fn status_and_events_answer_while_the_vault_cant_be_read() {
+        use tower::ServiceExt as _;
+        let store = Breakable::default();
+        let secret = format!("secret-{}", uuid::Uuid::new_v4().simple());
+        store.save(&secret, "key").unwrap();
+        store
+            .broken
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        let vault = Arc::new(Vault::new(
+            Box::new(store.clone()),
+            Arc::new(Secrets::default()),
+        ));
+        let said = format!("{{\"step\": \"ran with {secret}\"}}");
+        let app = {
+            let said = said.clone();
+            axum::Router::new()
+                .route("/v1/status", axum::routing::get(|| async { "{}" }))
+                .route("/v1/jobs", axum::routing::get(|| async { "[]" }))
+                .route(
+                    "/v1/events",
+                    axum::routing::get(move || {
+                        let said = said.clone();
+                        async move {
+                            axum::response::Response::builder()
+                                .header(header::CONTENT_TYPE, "text/event-stream")
+                                .body(Body::from(format!("data: {said}\n\n")))
+                                .unwrap()
+                        }
+                    }),
+                )
+                .layer(axum::middleware::from_fn(answers))
+                .layer(axum::Extension(vault.clone()))
+        };
+        let get = |path: &'static str| {
+            let app = app.clone();
+            async move {
+                let response = app
+                    .oneshot(Request::get(path).body(Body::empty()).unwrap())
+                    .await
+                    .unwrap();
+                let status = response.status();
+                let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+                    .await
+                    .unwrap();
+                (status, String::from_utf8_lossy(&body).into_owned())
+            }
+        };
+        // Never read: the status answers; the stream and the rest don't.
+        assert_eq!(get("/v1/status").await.0, StatusCode::OK);
+        assert_eq!(get("/v1/events").await.0, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(get("/v1/jobs").await.0, StatusCode::SERVICE_UNAVAILABLE);
+        // Read once, then broken: the stream answers, without the secret it learned.
+        store
+            .broken
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        vault.check().unwrap();
+        store
+            .broken
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        let (status, events) = get("/v1/events").await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(
+            events.contains("[vault: key]") && !events.contains(&secret),
+            "{events}"
+        );
+        assert_eq!(get("/v1/jobs").await.0, StatusCode::SERVICE_UNAVAILABLE);
     }
 
     /// The event stream through the `answers` middleware, as obid serves it: its `:ping`s read

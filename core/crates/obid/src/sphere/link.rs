@@ -426,6 +426,8 @@ pub struct Link {
     tokening: tokio::sync::Mutex<()>,
     /// One key, card or join call at a time.
     joining: tokio::sync::Mutex<()>,
+    /// Why a key file that's there couldn't be read when obid started: no key is made over it.
+    unread_key: Option<String>,
     /// One pass over the shares of the owner's API accounts at a time (crate::sphere::shares).
     shares_sync: tokio::sync::Mutex<()>,
     /// The chain as this Obi knows it for itself: no rollback, no fork (crate::sphere::link::ChainKept).
@@ -583,7 +585,9 @@ fn needs_you_first(items: &mut [impl std::borrow::Borrow<Item>], sorts: &crate::
 
 impl Link {
     /// Opens what obid keeps of its Sphere, its exchanges, inbox and decisions. A key that can't
-    /// be read is said in the log and left out, never a reason not to start: the Sphere is optional.
+    /// be read is left out and said (the log, `lastError`), never a reason not to start: the Sphere
+    /// is optional. No new key is made over it ([`Link::make_key`]): that would lose the Obi's
+    /// identity and its paired phones.
     pub fn open(
         config: Config,
         jobs: Arc<Jobs>,
@@ -592,19 +596,24 @@ impl Link {
     ) -> Arc<Link> {
         let files = Files::new(&config.home);
         let setup_config = config.clone();
-        let unread = |e: std::io::Error| tracing::error!("the Sphere's key is left out: {e}");
-        let key = files
-            .load_key()
-            .map_err(unread)
-            .ok()
-            .flatten()
-            .map(Arc::new);
-        let seal = files
-            .load_seal_key()
-            .map_err(unread)
-            .ok()
-            .flatten()
-            .map(Arc::new);
+        let mut unread = None;
+        let key = match files.load_key() {
+            Ok(key) => key.map(Arc::new),
+            Err(e) => {
+                unread = Some(format!("obid can't read its Obi key: {e}"));
+                None
+            }
+        };
+        let seal = match files.load_seal_key() {
+            Ok(seal) => seal.map(Arc::new),
+            Err(e) => {
+                unread.get_or_insert(format!("obid can't read its seal key: {e}"));
+                None
+            }
+        };
+        if let Some(why) = &unread {
+            tracing::error!("sphere: {why}");
+        }
         let membership = files.load_membership();
         let delegation = files.load_delegation();
         // What obid's log layer takes out of plug-ins' lines (crate::logs).
@@ -649,11 +658,21 @@ impl Link {
                         .is_some_and(|p| inbox::permission_item_id(&i.job, &p.id) == i.id);
                 // A permission waited on an agent that ended with obid: its job's agent asks again
                 // when it runs, so the old item is done by itself.
-                if matches!(
+                // An older obid's offer about Oby's own pull request (`Address it`, `Fix CI` on
+                // its red head): nothing starts those any more, so it's done by itself too; the
+                // follower asks the owner about that pull request instead (crate::merge). So is a
+                // plug-in's event: obid has no plug-ins any more, and its offers start nothing.
+                let own_pr_offer = i.kind == "github"
+                    && i.github
+                        .as_deref()
+                        .is_some_and(|g| g["list"] == "comments" || g["list"] == "checks");
+                if (matches!(
                     i.kind.as_str(),
                     "permission" | "plan" | inbox::QUESTION_KIND
-                ) && i.done.is_none()
-                    && !kept
+                ) && !kept
+                    || own_pr_offer
+                    || i.kind == "pluginEvent")
+                    && i.done.is_none()
                 {
                     i.done = Some(now);
                     if let Err(e) = inbox.save(&i) {
@@ -693,7 +712,7 @@ impl Link {
             directory: Directory::default(),
             directory_read: 0,
             last_poll: None,
-            last_error: None,
+            last_error: unread.clone(),
             exchanges: by_id,
             inbox: items,
             decisions: decisions.load(),
@@ -722,6 +741,7 @@ impl Link {
             saving: Mutex::new(()),
             tokening: tokio::sync::Mutex::new(()),
             joining: tokio::sync::Mutex::new(()),
+            unread_key: unread,
             shares_sync: tokio::sync::Mutex::new(()),
             chain: Mutex::new(chain),
             following: AtomicBool::new(false),
@@ -1543,6 +1563,7 @@ impl Link {
     /// `POST /v1/obid/sphere/key`: the Obi key, made the first time.
     pub async fn make_key(&self) -> Result<Value, ApiError> {
         let _one = self.joining.lock().await;
+        self.no_key_over_unread()?;
         let existing = self.lock().key.clone();
         let key = match existing {
             Some(key) => key,
@@ -1563,6 +1584,19 @@ impl Link {
                   "sealKeyId": seal.key_id(), "sealPublicKey": seal.public_key()}))
     }
 
+    /// `409` while a key file obid couldn't read at start is there: a new key would replace it.
+    fn no_key_over_unread(&self) -> Result<(), ApiError> {
+        match &self.unread_key {
+            Some(why) => Err(api(
+                StatusCode::CONFLICT,
+                format!(
+                    "{why}. Oby makes no new key over it, which would end this Obi and its paired phones: fix the file, or move it out of obid's home, then restart obid."
+                ),
+            )),
+            None => Ok(()),
+        }
+    }
+
     /// Whether a card's seal key, when it has one, is obid's own.
     fn carries_own_seal_key(&self, params: &Map<String, Value>) -> bool {
         let Some(public) = params.get("seal_public_key") else {
@@ -1579,6 +1613,7 @@ impl Link {
         if let Some(seal) = self.lock().seal.clone() {
             return Ok(seal);
         }
+        self.no_key_over_unread()?;
         let seal = Arc::new(self.files.make_seal_key().map_err(|e| {
             api(
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -7942,6 +7977,37 @@ mod tests {
         .await
         .expect("the clock expires what this Obi sent");
         assert!(link.lock().exchanges["c-sent"].outbox.is_empty());
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// A key file obid can't read starts obid all the same, says why in `lastError`, and no new key
+    /// is made over it: the Obi's identity and its paired phones stay.
+    #[tokio::test]
+    async fn an_unreadable_key_starts_obid_but_is_never_replaced() {
+        let home = std::env::temp_dir().join(format!("obid-link-bad-key-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(home.join("keys")).unwrap();
+        std::fs::write(home.join("keys/obi.key"), "not a key").unwrap();
+        let config = Config::parse(
+            &json!({"listen": "127.0.0.1:0", "home": home, "owner": "wellington"}).to_string(),
+        )
+        .unwrap();
+        let events = Events::new();
+        let jobs = Jobs::open(config.clone(), events.clone(), Err("no sandbox".into())).unwrap();
+        let (_stop, stopping) = watch::channel(false);
+        let link = Link::open(config, jobs, events, stopping);
+        let said = link.membership_json()["lastError"].clone();
+        assert!(
+            said.as_str().unwrap().contains("can't read its Obi key"),
+            "{said}"
+        );
+        let refused = link.make_key().await.err().unwrap();
+        assert_eq!(refused.status, StatusCode::CONFLICT);
+        assert_eq!(
+            std::fs::read_to_string(home.join("keys/obi.key")).unwrap(),
+            "not a key"
+        );
+        assert!(!home.join("keys/seal.key").exists());
         let _ = std::fs::remove_dir_all(&home);
     }
 }

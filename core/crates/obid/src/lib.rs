@@ -304,7 +304,7 @@ pub async fn serve(
         measured = tokio::time::timeout(MEASURE_FIRST, &mut measuring) => measured.ok(),
     };
     stopwatch.lap("worktrees");
-    // The API token is a secret obid's log layer takes out of plug-ins' lines (crate::logs).
+    // The API token is a secret obid takes out of what it sends (crate::secrets).
     secrets::known().learn("api-token", &token);
     // claudeKeychain as the owner set it; left out, on by itself on macOS when Claude Code's default
     // login is only in the Keychain (the owner's decision of 2026-10-18).
@@ -399,6 +399,18 @@ pub async fn serve(
         events.clone(),
     );
     jobs.use_tetrix(tetrix.clone());
+    // Tetrix was a plug-in once, which gave agents its server on the owner's own login: an owner
+    // who turned that on and never signed Oby in to Tetrix hears how to get it back.
+    if !tetrix.connected()
+        && std::fs::read(config.home.join("plugins.json"))
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+            .is_some_and(|plugins| plugins["tetrix"]["enabled"] == true)
+    {
+        tracing::warn!(
+            "the Tetrix plug-in was on, and plug-ins are gone: sign Oby in to Tetrix (Settings › Connectors) to give agents Tetrix again"
+        );
+    }
     // A login copy a crash left in a conversation's folder goes before anything runs.
     brain::harness::forget_logins_left(&config.home);
     let conversations = conversation::Conversations::open(&config.home, events.clone());

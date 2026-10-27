@@ -1257,4 +1257,15 @@ mod tests {
         assert!(facts(&[], &inbox, T0).happened());
         let _ = std::fs::remove_dir_all(&home);
     }
+
+    /// A line the secret scan flags is left out of what an agent gets, the rest kept.
+    #[test]
+    fn a_line_the_scan_flags_is_left_out() {
+        let key = ["ghp_", &"a1B2c3D4e5".repeat(4)[..36]].concat();
+        let text = format!("first line\nGITHUB_TOKEN={key}\nlast line\n");
+        let clean = super::for_agent(&text).unwrap();
+        assert!(!clean.contains(&key), "{clean}");
+        assert!(clean.contains("first line") && clean.contains("last line"));
+        assert!(clean.contains("left out"));
+    }
 }

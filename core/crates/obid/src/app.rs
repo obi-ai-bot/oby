@@ -3,7 +3,7 @@
 //! login item that starts `obid serve` with no `--config`; then, on macOS, obid uses the same file
 //! install.sh writes, `~/Library/Application Support/Oby/obid/config.json`, writes it the first
 //! time from what it finds on the Mac, and logs to `~/Library/Logs/obid.log` as install.sh's
-//! service does. Its plug-ins and web app come from the app's own `Contents/Resources/obid`.
+//! service does.
 
 use std::path::{Path, PathBuf};
 
