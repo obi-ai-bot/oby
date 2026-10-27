@@ -461,7 +461,7 @@ Something only the user can answer (docs/pipeline-cases.md, "Your inbox"). Like 
 ### Account
 
 ```json
-{"id": "default", "agent": "claude", "name": "Personal", "payer": "Wellington", "label": "Max · well0cp@gmail.com",
+{"id": "default", "agent": "claude", "name": "Personal", "payer": "Alex", "label": "Max · someone@example.com",
  "signedIn": true, "fiveHour": 0.12, "sevenDay": 0.4,
  "fiveHourResets": "2026-10-10T02:14:40Z", "sevenDayResets": "2026-10-14T19:27:22Z", "running": 1, "fullUntil": null,
  "tetrix": true, "tetrixJobs": 12, "tetrixUsed": 9, "reserved": false, "reserveLiftedUntil": null}
