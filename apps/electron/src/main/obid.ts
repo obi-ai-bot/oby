@@ -228,7 +228,10 @@ async function restartIfStale(label: string, printed: string) {
     if (!running) break;
     await sleep(30_000);
   }
+  // starting again while it comes back (startObid's finally clears it)
+  starting = true;
   await run('/bin/launchctl', ['kickstart', '-k', `${domain()}/${label}`]).catch(() => {});
+  await answers(10_000);
 }
 
 // At launch: adopts the obid that answers, or starts this app's own and says why when it can't.
