@@ -253,7 +253,10 @@ export async function startObid() {
       problem = null;
       for (const label of [LABEL, SESSION]) {
         const printed = await launchd(label);
-        if (field(printed, 'state') === 'running') return await restartIfStale(label, printed!);
+        if (field(printed, 'state') !== 'running') continue;
+        // adopted: it's up, so a crash while waiting for its jobs says its own reason
+        starting = false;
+        return await restartIfStale(label, printed!);
       }
       // an obid nobody registered (one run by hand): adopted, this app's agent kept for later logins
       return;
