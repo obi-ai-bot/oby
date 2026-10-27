@@ -76,24 +76,30 @@ function Live() {
   const [problem, setProblem] = useState<string | null>(null);
   // the connector whose sign-in is on its way (gh takes a few seconds to give its code)
   const [busy, setBusy] = useState<'GitHub' | 'Tetrix' | null>(null);
+  // the Tetrix picked below, while it isn't the one Oby uses (null: that one)
+  const [draft, setDraft] = useState<{ pick: string; url: string } | null>(null);
   const repos = useLive().repos.length;
   const read = () => Promise.all([api.github(), api.tetrix()]).then(([g, t]) => { setGitHub(g); setTetrix(t); setProblem(null); }, (e: Error) => setProblem(e.message));
   useEffect(() => { void read(); }, []);
+  // signed in somewhere new: the pick starts from there again
+  useEffect(() => setDraft(null), [tetrix?.url, tetrix?.preset]);
   const signingIn = !!(github?.signIn || tetrix?.signIn);
   useEffect(() => {
     if (!signingIn) return;
     const t = setInterval(read, 2000);
     return () => clearInterval(t);
   }, [signingIn]);
-  const act = (f: () => Promise<unknown>, signingIn?: 'GitHub' | 'Tetrix') => () => {
-    if (signingIn) setBusy(signingIn);
-    void f().catch(say).then(read).finally(() => setBusy(null));
+  // only a sign-in's own click clears its busy: a Cancel never puts back a Connect still on its way
+  const act = (f: () => Promise<unknown>, signIn?: 'GitHub' | 'Tetrix') => () => {
+    if (signIn) setBusy(signIn);
+    void f().catch(say).then(read).finally(() => { if (signIn) setBusy(null); });
   };
   // a sign-in's page, in the person's browser (main opens https only)
   const open = (page: { url: string }) => window.app?.openExternal(page.url);
-  const waiting = (cancel: () => Promise<unknown>) => <>
+  // Cancel only once obid has a sign-in to end (while it starts, there's none yet)
+  const waiting = (cancel: (() => Promise<unknown>) | false) => <>
     <button className="set-button" disabled>Waiting…</button>
-    <button className="set-button" onClick={act(cancel)}>Cancel</button>
+    {cancel && <button className="set-button" onClick={act(cancel)}>Cancel</button>}
   </>;
   if (problem && !github) return <p className="group-empty">{problem}</p>;
   if (!github || !tetrix) return null;
@@ -101,8 +107,8 @@ function Live() {
   const g = github, t = tetrix;
   const gitHub: Connector = { name: 'GitHub', brand: BRANDS.github, connected: g.signedIn, about: 'Repos, pull requests and checks', control: null };
   if (g.signIn || busy === 'GitHub') {
-    gitHub.about = `Finish in your browser${g.signIn?.userCode ? ` · enter ${g.signIn.userCode}` : ''}`;
-    gitHub.control = waiting(api.githubCancel);
+    gitHub.about = `Finish in your browser${at(g.signIn?.url)}${g.signIn?.userCode ? ` · enter ${g.signIn.userCode}` : ''}`;
+    gitHub.control = waiting(!!g.signIn && api.githubCancel);
   } else if (g.signedIn) {
     gitHub.about = `${g.user ?? 'Signed in'}${repos ? ` · ${repos} repositories` : ''}`;
     gitHub.control = connected;
@@ -114,25 +120,37 @@ function Live() {
     gitHub.control = <button className="set-button" onClick={act(async () => open(await api.githubSignIn()), 'GitHub')}>Connect</button>;
   }
 
-  // the server Oby signed in to last (kept after Disconnect), else the first preset
-  const current: TetrixTarget | null = t.preset ? { preset: t.preset } : t.url ? { url: t.url } : t.presets[0] ? { preset: t.presets[0].id } : null;
-  const signIn = (to: TetrixTarget) => act(async () => open(await api.tetrixSignIn(to)), 'Tetrix');
+  // the Tetrix to connect to: as picked, else the one Oby signed in to last (kept after
+  // Disconnect), else the first preset. One Connect at a time: the row's, or, while Oby is
+  // connected, the server group's for another one.
+  const d = draft ?? { pick: t.preset ?? (t.url ? 'url' : t.presets[0]?.id ?? 'url'), url: t.preset ? '' : t.url ?? '' };
+  const chosen: TetrixTarget | null = d.pick === 'url' ? (d.url.trim() ? { url: d.url.trim() } : null) : { preset: d.pick };
+  const same = d.pick === 'url' ? !t.preset && d.url.trim() === t.url : d.pick === t.preset;
+  const connect = (label: string) => <button className="set-button" disabled={!chosen} onClick={chosen ? act(async () => open(await api.tetrixSignIn(chosen)), 'Tetrix') : undefined}>{label}</button>;
   const tetrixRow: Connector = { name: 'Tetrix', brand: BRANDS.tetrix, connected: t.connected, about: t.error ?? 'Project knowledge and blast radius', control: null };
   const disconnect = <button className="set-button is-danger" onClick={act(api.tetrixDisconnect)}>Disconnect</button>;
-  if (t.signIn || busy === 'Tetrix') {
-    tetrixRow.about = 'Finish in your browser';
-    tetrixRow.control = waiting(api.tetrixCancel);
+  const settled = !t.signIn && busy !== 'Tetrix';
+  if (!settled) {
+    tetrixRow.about = `Finish in your browser${at(t.signIn?.server)}`;
+    tetrixRow.control = waiting(!!t.signIn && api.tetrixCancel);
   } else if (t.connected) {
     // with an error, still connected: a refresh the sign-in server didn't answer
     if (!t.error) tetrixRow.about = `${serverName(t)} · for every agent`;
-    tetrixRow.control = <>{t.error ? current && <button className="set-button" onClick={signIn(current)}>Reconnect</button> : connected}{disconnect}</>;
+    tetrixRow.control = <>{t.error ? connect(same ? 'Reconnect' : 'Connect') : connected}{disconnect}</>;
   } else {
-    tetrixRow.control = <button className="set-button" disabled={!current} onClick={current ? signIn(current) : undefined}>Connect</button>;
+    tetrixRow.control = connect('Connect');
   }
 
   return <List connectors={[gitHub, tetrixRow]} after={(shown) => shown.includes(tetrixRow) && (
-    <TetrixServer key={t.url ?? ''} tetrix={t} busy={!!t.signIn || busy === 'Tetrix'} onConnect={(to) => signIn(to)()} />
+    <TetrixServer tetrix={t} draft={d} onDraft={setDraft}>
+      {settled && t.connected && !t.error && !same && connect('Connect')}
+    </TetrixServer>
   )} />;
+}
+
+// where a sign-in's page is: " at github.com"
+function at(url?: string) {
+  try { return url ? ` at ${new URL(url).host}` : ''; } catch { return ''; }
 }
 
 // what the person calls the Tetrix Oby uses: its preset's name, else its address's host
@@ -143,21 +161,17 @@ function serverName(t: Tetrix) {
 }
 
 // Which Tetrix Oby signs in to: a preset, or another server's MCP address (obid checks it: HTTPS,
-// plain HTTP only on 127.0.0.1). Connecting to another signs Oby in there in place of the one before.
-function TetrixServer({ tetrix: t, busy, onConnect }: { tetrix: Tetrix; busy: boolean; onConnect: (to: TetrixTarget) => void }) {
-  const [pick, setPick] = useState(t.preset ?? (t.url ? 'url' : t.presets[0]?.id ?? 'url'));
-  const [url, setUrl] = useState(t.preset ? '' : t.url ?? '');
-  const to: TetrixTarget | null = pick === 'url' ? (url.trim() ? { url: url.trim() } : null) : { preset: pick };
-  const same = pick === 'url' ? !t.preset && url.trim() === t.url : pick === t.preset;
+// plain HTTP only on 127.0.0.1). Connecting to another signs Oby in there in place of the one
+// before (which obid signs out of, when it's another sign-in server's). children: its Connect,
+// when it's the one to click.
+function TetrixServer({ tetrix: t, draft, onDraft, children }: { tetrix: Tetrix; draft: { pick: string; url: string }; onDraft: (d: { pick: string; url: string }) => void; children: React.ReactNode }) {
   return (
     <Group i={4} title="Tetrix server" footer="Oby signs in to Tetrix once, for every agent. Connecting to another server signs Oby in there instead.">
       <Row label="Server">
-        <Select value={pick} onChange={setPick} label="Tetrix server" options={[...t.presets.map((p) => [p.id, p.name] as const), ['url', 'Another server']]} />
+        <Select value={draft.pick} onChange={(pick) => onDraft({ ...draft, pick })} label="Tetrix server" options={[...t.presets.map((p) => [p.id, p.name] as const), ['url', 'Another server']]} />
       </Row>
-      {pick === 'url' && <Row label="Address"><TextField value={url} onChange={setUrl} placeholder="https://tetrix.example.com/mcp" label="Tetrix server address" /></Row>}
-      <Row label="">
-        <button className="set-button" disabled={!to || busy || (same && t.connected && !t.error)} onClick={() => to && onConnect(to)}>Connect</button>
-      </Row>
+      {draft.pick === 'url' && <Row label="Address"><TextField value={draft.url} onChange={(url) => onDraft({ ...draft, url })} placeholder="https://tetrix.example.com/mcp" label="Tetrix server address" /></Row>}
+      {children && <Row label="">{children}</Row>}
     </Group>
   );
 }

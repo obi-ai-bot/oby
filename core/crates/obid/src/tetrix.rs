@@ -289,6 +289,21 @@ fn cut(text: &str) -> String {
     text.chars().take(LONGEST_GAP).collect()
 }
 
+/// Asks the sign-in server at `at` to take back `refresh` (RFC 7009); obid goes on if it doesn't.
+async fn revoke(http: &reqwest::Client, at: &str, client: &str, refresh: &str) {
+    let form = [
+        ("token", refresh),
+        ("token_type_hint", "refresh_token"),
+        ("client_id", client),
+    ];
+    if let Err(e) = http.post(at).form(&form).send().await {
+        tracing::info!(
+            "Tetrix's sign-in server didn't take back the login: {}",
+            e.without_url()
+        );
+    }
+}
+
 impl Tetrix {
     pub fn open(
         home: &Path,
@@ -819,6 +834,9 @@ impl Tetrix {
                 TokenError::Refused => "Tetrix's sign-in server refused the sign-in.".to_owned(),
                 TokenError::Other(why) => why,
             })?;
+        // The login this one replaces, taken back below when it's another sign-in server's.
+        let before = self.saved();
+        let replaced = self.vault.value(REFRESH).ok().flatten();
         self.keep(&tokens, true)?;
         let now = obi_protocol::time::now();
         let mut saved = self.saved();
@@ -841,7 +859,20 @@ impl Tetrix {
         saved.connected_at = Some(obi_protocol::time::format(now));
         saved.expires = tokens.expires_in.map(|s| now + s);
         saved.error = None;
-        self.save(saved)
+        self.save(saved)?;
+        // Switched to another sign-in server: the old one takes back the login obid no longer
+        // holds, as on a sign-out, in the background (the callback's page doesn't wait for it).
+        // Not on the same sign-in server: there the old and new logins can share one session
+        // (Keycloak's client session), and revoking the old would end the new.
+        if before.connected_at.is_some()
+            && before.token_endpoint.as_deref() != Some(sign_in.token_endpoint.as_str())
+            && let (Some(at), Some(client), Some(refresh)) =
+                (before.revocation_endpoint, before.client_id, replaced)
+        {
+            let http = self.http.clone();
+            tokio::spawn(async move { revoke(&http, &at, &client, &refresh).await });
+        }
+        Ok(())
     }
 
     /// The access token, refreshed first when it has less than a minute left, or when `stale`
@@ -938,17 +969,7 @@ impl Tetrix {
             &saved.client_id,
             self.vault.value(REFRESH),
         ) {
-            let form = [
-                ("token", refresh.as_str()),
-                ("token_type_hint", "refresh_token"),
-                ("client_id", client.as_str()),
-            ];
-            if let Err(e) = self.http.post(at).form(&form).send().await {
-                tracing::info!(
-                    "Tetrix's sign-in server didn't take back the login: {}",
-                    e.without_url()
-                );
-            }
+            revoke(&self.http, at, client, &refresh).await;
         }
         self.forget(None);
     }

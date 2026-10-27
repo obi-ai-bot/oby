@@ -102,7 +102,8 @@ export type Tetrix = {
   preset: string | null;
   presets: { id: string; name: string; url: string }[];
   connectedAt: string | null;
-  signIn: { url: string } | null;
+  // the sign-in under way: its page, and the sign-in server it's on
+  signIn: { url: string; server: string } | null;
   error: string | null;
 };
 export type TetrixTarget = { preset: string } | { url: string };

@@ -1303,3 +1303,46 @@ fn a_turn_nobody_watches_gets_no_tetrix() {
         said.text.contains("mcp: no tetrix").then_some(())
     });
 }
+
+/// Signing in to another Tetrix whose sign-in server is another one takes back the login it
+/// replaces there, as a sign-out does. Signing in again on the same sign-in server doesn't: there
+/// the old and new logins can share one session, and revoking the old would end the new.
+#[test]
+fn switching_tetrix_servers_takes_back_the_old_login() {
+    let folder = Folder::new("tetrix-switch");
+    let remote = fixture(&folder.0.join("fixture"));
+    let (old, old_seen) = fake_tetrix();
+    let (new, new_seen) = fake_tetrix();
+    let obid = start(&folder.0, &config(&folder.0, &remote, &fake_claude()), None);
+    let revoked = |seen: &Arc<Mutex<Seen>>| -> Vec<std::collections::HashMap<String, String>> {
+        seen.lock()
+            .unwrap()
+            .requests
+            .iter()
+            .filter(|r| r.1 == "/auth/revoke")
+            .map(|r| form(&r.3))
+            .collect()
+    };
+
+    sign_in(&obid, &old);
+    // Again on the same sign-in server: nothing taken back.
+    sign_in(&obid, &old);
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    assert!(revoked(&old_seen).is_empty());
+
+    sign_in(&obid, &new);
+    let status = call(&obid, "GET", "/v1/tetrix", None).body;
+    assert_eq!(status["connected"], true);
+    assert_eq!(status["url"], format!("{new}/mcp"));
+
+    let taken_back = within(10, "the old server takes back its login", || {
+        Some(revoked(&old_seen)).filter(|r| !r.is_empty())
+    });
+    assert_eq!(taken_back.len(), 1, "{taken_back:?}");
+    assert_eq!(taken_back[0]["token"], REFRESH_1);
+    assert_eq!(taken_back[0]["token_type_hint"], "refresh_token");
+    assert_eq!(taken_back[0]["client_id"], "oby-dynamic-1");
+    // The new login is kept, and its server is asked to take back nothing.
+    assert!(revoked(&new_seen).is_empty());
+    assert!(!obid.log().contains(REFRESH_1));
+}
