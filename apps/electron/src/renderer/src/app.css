@@ -600,6 +600,8 @@ button.crumb:hover { color: var(--ink); background: var(--hover); }
 .ss-said { margin: 8px 0 4px; display: flex; gap: 10px; }
 .ss-mark { flex: none; width: 22px; height: 20px; display: grid; place-items: center; color: var(--ink); opacity: 0.7; }
 .ss-words { flex: 1; min-width: 0; margin: 0; color: var(--item); font-size: var(--text-base); line-height: 20px; white-space: pre-wrap; overflow-wrap: anywhere; }
+/* the caret after the words being written, on their last line */
+.ss-words > p:has(+ .ss-caret) { display: inline; }
 .ss-caret { display: inline-block; width: 7px; height: 14px; margin-left: 2px; vertical-align: -2px; border-radius: 1px; background: var(--ink); animation: caret-blink 1s step-end infinite; }
 .ss-thought { margin-left: 32px; }
 .ss-thought > button, .ss-tool-row { width: 100%; padding: 0; border: 0; background: none; font: inherit; text-align: left; cursor: pointer; }
@@ -734,15 +736,32 @@ button.crumb:hover { color: var(--ink); background: var(--hover); }
 .msg.is-oby.is-mine, .msg.is-oby.is-mine .msg-end { align-items: flex-end; }
 .msg.is-oby.is-mine .msg-bubble { width: auto; max-width: 80%; }
 /* its paragraphs and lists: 8px apart, the list's dots in the margin of its words */
-.msg.is-oby .msg-bubble > :is(p, ul) { margin: 0; }
-.msg.is-oby .msg-bubble > :is(p, ul) + :is(p, ul) { margin-top: 8px; }
+.msg.is-oby .msg-bubble > *, .ss-words > * { margin: 0; }
+.msg.is-oby .msg-bubble > * + *, .ss-words > * + * { margin-top: 8px; }
 .msg.is-oby .msg-bubble > ul { padding-left: 18px; list-style: disc; }
 .msg.is-oby .msg-bubble li + li { margin-top: 2px; }
+/* The rest of Oby's and an agent's Markdown (Said), where Sangam's design is silent: kept plain, with his tokens.
+   Numbered and nested lists as the dotted one; headings at the words' size, bold; code blocks as
+   a session's (.ss-code); quotes as another Oby's (.msg-quote); tables with --line rules */
+:is(.msg-bubble, .msg-quote, .ss-words) :is(ul, ol) { margin: 0; padding-left: 18px; }
+:is(.msg-bubble, .msg-quote, .ss-words) li > :is(ul, ol, p, pre) { margin: 2px 0 0; }
+:is(.msg-bubble, .msg-quote, .ss-words) li > p:first-child { margin: 0; }
+:is(.msg-bubble, .msg-quote, .ss-words) :is(h3, h4, h5, h6) { font-size: inherit; font-weight: 600; color: var(--ink); }
+:is(.msg-bubble, .msg-quote, .ss-words) li:has(> input[type="checkbox"], > p > input[type="checkbox"]) { list-style: none; }
+:is(.msg-bubble, .msg-quote, .ss-words) li > input[type="checkbox"],
+:is(.msg-bubble, .msg-quote, .ss-words) li > p > input[type="checkbox"] { margin: 0 6px 0 0; vertical-align: -2px; }
+:is(.msg-bubble, .msg-quote, .ss-words) hr { height: 1px; border: 0; background: var(--line); }
+:is(.msg-bubble, .ss-words) a.tok-url { text-decoration: none; }
+:is(.msg-bubble, .ss-words) a.tok-url:hover { text-decoration: underline; }
+.md-table { max-width: 100%; overflow-x: auto; }
+.md-table table { border-collapse: collapse; }
+.md-table :is(th, td) { padding: 4px 10px; border: 1px solid var(--line); text-align: left; vertical-align: top; }
+.md-table th { font-weight: 600; color: var(--ink); }
 /* another Oby's answer to what Oby asked, quoted in Oby's turn: a 3px line down
    its left, rounded at both ends, 16px from the words */
 .msg-quote { position: relative; width: 100%; margin: 0; padding: 2px 0 2px 19px; display: flex; flex-direction: column; gap: 8px; color: var(--text); font-size: var(--text-base); line-height: 20px; }
 .msg-quote::before { content: ''; position: absolute; top: 0; bottom: 0; left: 0; width: 3px; border-radius: 1.5px; background: var(--line); }
-.msg-quote > p, .msg-quote > ul { margin: 0; }
+.msg-quote > * { margin: 0; }
 /* Oby's words coming in: each new word fades in over 240ms */
 .is-streaming .w { animation: word-in 240ms ease-out both; }
 @keyframes word-in { from { opacity: 0; } }

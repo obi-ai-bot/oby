@@ -19,7 +19,8 @@ const PATTERNS: [Kind, RegExp][] = [
   ['url', /\bhttps?:\/\/[^\s<>"'`]*[^\s<>"'`.,;:!?)\]}]/],
   ['code', /`[^`\n]+`/],
   ['ref', /(?<![\w#])(?:[\w.-]+\/)?(?:[\w.-]+)?#\d+(?!\w)/],
-  ['path', /(?<![\w.:/@-])(?:~\/|\.{1,2}\/|\/)?(?:[\w@.-]+\/)+[\w@.-]+/],
+  // (not the full stop or dash after it)
+  ['path', /(?<![\w.:/@-])(?:~\/|\.{1,2}\/|\/)?(?:[\w@.-]+\/)+[\w@.-]*[\w@]/],
 ];
 // the earliest thing in a stretch of text worth setting apart
 export function findToken(text: string) {
@@ -36,16 +37,24 @@ const kindOf = (text: string): Kind | null =>
 
 // Text cut into runs, plain or recognised (with what kind), in order: how a
 // sent message shows the same things the message box did as it was typed.
+// Each pattern keeps its next match and looks again only once that's behind: one with none left
+// isn't run again, so a long message costs its length, not its length for every token in it.
 export function tokenize(text: string): { text: string; kind: Kind | null }[] {
   const out: { text: string; kind: Kind | null }[] = [];
-  let rest = text;
-  for (let m = findToken(rest); m; m = findToken(rest)) {
-    if (m.start > 0) out.push({ text: rest.slice(0, m.start), kind: null });
-    const t = rest.slice(m.start, m.end);
-    out.push({ text: t, kind: kindOf(t) });
-    rest = rest.slice(m.end);
+  const next = PATTERNS.map(([, re]) => ({ re: new RegExp(re, `g${re.flags}`), m: undefined as RegExpExecArray | null | undefined }));
+  let at = 0;
+  for (;;) {
+    let m: RegExpExecArray | null = null;
+    for (const p of next) {
+      if (p.m === undefined || (p.m && p.m.index < at)) { p.re.lastIndex = at; p.m = p.re.exec(text); }
+      if (p.m && (!m || p.m.index < m.index)) m = p.m;
+    }
+    if (!m) break;
+    if (m.index > at) out.push({ text: text.slice(at, m.index), kind: null });
+    out.push({ text: m[0], kind: kindOf(m[0]) });
+    at = m.index + m[0].length;
   }
-  if (rest) out.push({ text: rest, kind: null });
+  if (at < text.length) out.push({ text: text.slice(at), kind: null });
   return out;
 }
 
