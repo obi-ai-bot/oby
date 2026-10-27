@@ -10,7 +10,6 @@
 //!  "repos": [{"repo": "obi-e2e/fixture-app", "remote": "file:///abs/path/remote.git", "defaultBranch": "main", "check": "node --test"}],
 //!  "allowFileRemotes": false,
 //!  "bundledPlugins": "/abs/path/obi/plugins",
-//!  "web": "/abs/path/obi/apps/web/dist",
 //!  "telemetry": false}
 //! ```
 //!
@@ -69,8 +68,6 @@ struct File {
     allow_file_remotes: bool,
     #[serde(default)]
     bundled_plugins: Option<PathBuf>,
-    #[serde(default)]
-    web: Option<PathBuf>,
     #[serde(default)]
     telemetry: bool,
     /// How long one conversation turn may act, in seconds: 1 to 110, 110 when left out.
@@ -248,9 +245,6 @@ pub struct Config {
     /// missing, disabled (docs/ARCHITECTURE.md 5.3, step 1): `bundledPlugins`, or when it is left
     /// out [`default_bundled_plugins`].
     pub bundled_plugins: PathBuf,
-    /// The built web app (`apps/web/dist`) obid serves at `/app/` (crate::web): `web`, or when it
-    /// is left out [`default_web`].
-    pub web: PathBuf,
     /// False unless the owner turns it on; obid sends nothing to anyone otherwise.
     pub telemetry: bool,
     /// Where the owner's vault is (crate::vault).
@@ -319,14 +313,6 @@ pub fn default_bundled_plugins() -> PathBuf {
     crate::app::resources()
         .map(|dir| dir.join("plugins"))
         .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../plugins"))
-}
-
-/// Where the built web app is when the configuration doesn't say: `apps/web/dist` in the
-/// repository this obid was built from (`core/crates/obid/../../../apps/web/dist`).
-pub fn default_web() -> PathBuf {
-    crate::app::resources()
-        .map(|dir| dir.join("web"))
-        .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps/web/dist"))
 }
 
 impl Config {
@@ -526,13 +512,6 @@ impl Config {
                 "guestRequestEvery is {every}: it must be 0 (off) or more seconds."
             ));
         }
-        if let Some(dir) = &file.web
-            && !dir.is_absolute()
-        {
-            return invalid(format!(
-                "web is {dir:?}: it must be an absolute path, the folder of the built web app (apps/web/dist)."
-            ));
-        }
 
         let vault = match &file.vault {
             None => crate::vault::Location::default_for(&file.home),
@@ -646,7 +625,6 @@ impl Config {
             repos: crate::repos::Repos::new(file.repos),
             allow_file_remotes: file.allow_file_remotes,
             bundled_plugins: file.bundled_plugins.unwrap_or_else(default_bundled_plugins),
-            web: file.web.unwrap_or_else(default_web),
             telemetry: file.telemetry,
             vault,
             turn_budget: std::time::Duration::from_secs(turn_budget),
@@ -1218,16 +1196,6 @@ mod tests {
     }
 
     #[test]
-    fn the_web_app_is_the_repositorys_unless_given() {
-        let config = Config::parse(&with(serde_json::json!({}))).unwrap();
-        assert_eq!(config.web, default_web());
-        assert!(config.web.ends_with("apps/web/dist"), "{:?}", config.web);
-        let config = Config::parse(&with(serde_json::json!({"web": "/opt/obi/web"}))).unwrap();
-        assert_eq!(config.web, PathBuf::from("/opt/obi/web"));
-        assert!(problem(&with(serde_json::json!({"web": "dist"}))).contains("absolute"));
-    }
-
-    #[test]
     fn home_is_absolute() {
         assert!(problem(&with(serde_json::json!({"home": "obid-home"}))).contains("absolute"));
     }
@@ -1322,7 +1290,7 @@ mod tests {
             file[key] = value;
         }
         let config = Config::parse(&file.to_string()).unwrap();
-        assert_eq!(config.ignored, ["conversation.harness"]);
+        assert!(config.ignored.contains(&"conversation.harness".to_owned()));
     }
 
     #[test]

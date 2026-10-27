@@ -785,30 +785,6 @@ fn a_phone_cant_approve_a_listeners_review() {
     assert_eq!(dismissed.body["state"], "done");
 }
 
-/// #896: the tunnel's routes are on obid's own API, never on the gateway: a paired phone can't put
-/// or delete the tunnel's token.
-#[test]
-fn a_phone_cannot_reach_the_tunnel_routes() {
-    let folder = Folder::new("gateway-tunnel");
-    let obid = started(&folder);
-    let token = paired(&obid);
-    for method in ["PUT", "DELETE"] {
-        let answer = through(
-            &obid,
-            Some(&token),
-            method,
-            "/v1/obid/tunnel",
-            Some(&json!({"token": "abc"})),
-        );
-        assert!(
-            matches!(answer.status, 403 | 404),
-            "{method}: {} {}",
-            answer.status,
-            answer.text
-        );
-    }
-}
-
 // ---------------------------------------------------------------------------------------------
 // Through the owner's Obysphere (docs/runner-api.md, "obid only: the phone relay"): the fake
 // Sphere relays what the test's phone sends, and keeps every byte it relayed.

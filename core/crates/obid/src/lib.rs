@@ -31,7 +31,6 @@ pub mod failures;
 pub mod gateway;
 pub mod git;
 pub mod github;
-pub mod github_events;
 pub mod github_login;
 pub mod github_work;
 pub mod job;
@@ -64,10 +63,8 @@ pub mod tetrix;
 pub mod token;
 pub mod transcript;
 pub mod triage;
-pub mod tunnel;
 pub mod usage;
 pub mod vault;
-pub mod web;
 
 use std::future::Future;
 use std::net::SocketAddr;
@@ -422,11 +419,6 @@ pub async fn serve(
     let github =
         github_work::Feed::open(config.clone(), jobs.clone(), link.clone(), events.clone());
     let pushes = push::Push::open(&config.home, &config.push_relay);
-    let tunnel = tunnel::Tunnel::open(
-        &config.home,
-        vault::shared().expect("the vault is installed first"),
-        events.clone(),
-    );
     let shared = Arc::new(api::Shared {
         config,
         token,
@@ -451,11 +443,9 @@ pub async fn serve(
         sign_ins: accounts::SignIns::default(),
         github: github_login::GitHubLogin::default(),
         tetrix,
-        pages: web::Sessions::default(),
         github_work: github.clone(),
         push: pushes,
         stopping: stopping_rx.clone(),
-        tunnel: tunnel.clone(),
     });
     let app = api::router(shared.clone());
 
@@ -495,8 +485,6 @@ pub async fn serve(
     // Jobs that were queued or running when obid last stopped carry on, and so does its Sphere.
     jobs.resume();
     link.start();
-    // The tunnel phones reach this Mac through, when the owner turned remote access on (#896).
-    tunnel.spawn(stopping_rx.clone());
     github.spawn(stopping_rx.clone());
     // GitHub's repositories gh can push to, now and every hour (crate::repos).
     repos::spawn(shared.clone());
