@@ -259,18 +259,16 @@ pub async fn rename(
             Some(Ok(_)) => {}
         }
     }
-    let unsigned = title.is_some() && !typed_by_owner(&shared, "PATCH", &uri, &headers, &body);
+    // Its title is what Oby's conversations read of it (`oby_jobs`, how it ended): one no app of
+    // the owner's signed isn't the owner's own words (crate::secretspec), from before it lands.
+    if title.is_some() && !typed_by_owner(&shared, "PATCH", &uri, &headers, &body) {
+        shared
+            .jobs
+            .unvet(&id, "a title no app of the owner's signed");
+    }
     let job = match title {
         Some(title) => shared.jobs.rename(&id, title),
         None => shared.jobs.get(&id),
-    };
-    // Its title is what Oby's conversations read of it (`oby_jobs`, how it ended): one no app of
-    // the owner's signed isn't the owner's own words (crate::secretspec).
-    let job = match job {
-        Some(job) if unsigned => shared
-            .jobs
-            .unvet(&job.id, "a title no app of the owner's signed"),
-        job => job,
     };
     match job {
         None => Err(ApiError::new(StatusCode::NOT_FOUND, NO_JOB)),
@@ -387,13 +385,21 @@ pub fn typed_by_owner(
     headers: &HeaderMap,
     body: &[u8],
 ) -> bool {
+    signed_by(shared, method, uri, headers, body).is_some()
+}
+
+/// The registered device whose app signed the request ([`typed_by_owner`]), or none.
+pub fn signed_by(
+    shared: &Shared,
+    method: &str,
+    uri: &axum::http::Uri,
+    headers: &HeaderMap,
+    body: &[u8],
+) -> Option<String> {
     let path = uri.path();
-    let Some(header) = headers
+    let header = headers
         .get(crate::approval::WORDS)
-        .and_then(|v| v.to_str().ok())
-    else {
-        return false;
-    };
+        .and_then(|v| v.to_str().ok())?;
     let checked = shared.jobs.approvals().check_words(
         header,
         method,
@@ -405,7 +411,9 @@ pub fn typed_by_owner(
     if let Err(why) = &checked {
         tracing::info!("{method} {path}: not words the owner typed in Oby's apps: {why}");
     }
-    checked.is_ok()
+    checked
+        .ok()
+        .and_then(|()| header.split(' ').next().map(str::to_owned))
 }
 
 /// `POST /v1/jobs`: a job described whole (`{"job": {"repo", "kind", "task", …}}`).
@@ -650,6 +658,8 @@ pub struct CheckQuery {
 pub async fn next_check(
     State(shared): State<Arc<Shared>>,
     Query(query): Query<CheckQuery>,
+    uri: axum::http::Uri,
+    headers: HeaderMap,
 ) -> Result<Response, ApiError> {
     let kinds = query.kinds.as_deref().unwrap_or("merge");
     let kinds: Vec<&str> = kinds.split(',').collect();
@@ -686,6 +696,21 @@ pub async fn next_check(
                 .then(|| shared.jobs.next_merge_check(mac))
                 .flatten()
         });
+    // The Mac app that took it signs for it (crate::secretspec): what it reports, its name too,
+    // reaches the job's agent.
+    let check = match check {
+        Some(check) => {
+            let device = signed_by(&shared, "GET", &uri, &headers, b"");
+            let id = check["id"].as_str().unwrap_or_default().to_owned();
+            Some(
+                shared
+                    .jobs
+                    .bind_check(&id, device.as_deref())
+                    .unwrap_or(check),
+            )
+        }
+        None => None,
+    };
     Ok(json(StatusCode::OK, json!({"check": check})))
 }
 
@@ -710,13 +735,24 @@ pub async fn check_bundle(
 pub async fn check_result(
     State(shared): State<Arc<Shared>>,
     Path(id): Path<String>,
+    uri: axum::http::Uri,
+    headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, ApiError> {
     let report: Value = serde_json::from_slice(&body)
         .map_err(|_| ApiError::new(StatusCode::BAD_REQUEST, "That isn't JSON."))?;
-    let Some((_, check, _)) = shared.jobs.find_check(&id) else {
+    let Some((job, check, _)) = shared.jobs.find_check(&id) else {
         return Err(check_api_error(crate::jobs::CheckResultError::Missing));
     };
+    // Its failures and log reach the job's agent: only the app that took it, signing, keeps the
+    // job the owner's own words (crate::secretspec), before the agent can read them.
+    let device = signed_by(&shared, "POST", &uri, &headers, &body);
+    if device.is_none() || check["device"].as_str() != device.as_deref() {
+        shared.jobs.unvet(
+            &job,
+            "a check's report the Mac app that took it didn't sign reached it",
+        );
+    }
     let mac = check["mac"].as_str().unwrap_or("").to_owned();
     let check = shared
         .jobs

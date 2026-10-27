@@ -5189,7 +5189,8 @@ impl Link {
                         .as_deref()
                         .and_then(|of| self.jobs.following(of));
                     let job = match following {
-                        Some(next) => match self.jobs.hear_at_work(&next.id, &new.task) {
+                        // Heard as they are (crate::secretspec, `Jobs::hear_plan`).
+                        Some(next) => match self.jobs.hear_plan(&next.id, &new) {
                             Some(Ok(job)) => job,
                             Some(Err(e)) => {
                                 return Err(open_again(api(

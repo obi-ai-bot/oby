@@ -500,8 +500,19 @@ pub fn call(obid: &Obid, method: &str, target: &str, body: Option<&Value>) -> An
 /// Words the owner typed in Oby's apps: `body` to `target`, signed by the test owner's device as
 /// the apps sign them (`X-Oby-Words`, crate::approval::WORDS).
 pub fn call_typed(obid: &Obid, method: &str, target: &str, body: &Value) -> Answer {
-    let text = body.to_string();
-    let signed_at = time::format(time::now());
+    call_signed(obid, method, target, Some(body))
+}
+
+/// [`call_typed`] with no body when `body` is none (a GET that takes something, as a Mac's check).
+/// Signed to the millisecond, as the apps sign.
+pub fn call_signed(obid: &Obid, method: &str, target: &str, body: Option<&Value>) -> Answer {
+    let text = body.map(Value::to_string).unwrap_or_default();
+    let millis = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .subsec_millis();
+    let whole = time::format(time::now());
+    let signed_at = format!("{}.{millis:03}Z", &whole[..19]);
     let path = target.split('?').next().unwrap_or(target);
     let digest = hex::encode(obi_protocol::keys::sha256(text.as_bytes()));
     let signed = owner_signs(
@@ -519,7 +530,7 @@ pub fn call_typed(obid: &Obid, method: &str, target: &str, body: &Value) -> Answ
         TOKEN,
         method,
         target,
-        Some(body),
+        body,
         &[("X-Oby-Words", &header)],
     )
 }

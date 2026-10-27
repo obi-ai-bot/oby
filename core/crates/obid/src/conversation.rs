@@ -53,6 +53,17 @@ pub struct Turn {
     /// catchUp}`. Left out on every other turn.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub routine: Option<Value>,
+    /// On Oby's turn that asks the owner something: the question and its options, which an
+    /// answer must name exactly to stay this conversation's words ([`Conversations::oby_asked`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub asked: Option<Asked>,
+}
+
+/// The question an Oby turn asked, and its options.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Asked {
+    pub question: String,
+    pub options: Vec<String>,
 }
 
 /// One conversation as obid keeps it.
@@ -550,7 +561,36 @@ impl Conversations {
         jobs: Vec<String>,
         artifacts: Vec<Value>,
     ) -> Result<Turn, Error> {
-        self.append_as(id, "oby", text, jobs, false, artifacts, None, None)
+        self.append_asking(id, text, jobs, artifacts, None)
+    }
+
+    /// [`Self::append_made`], the turn asking `asked` when it does.
+    pub fn append_asking(
+        &self,
+        id: &str,
+        text: String,
+        jobs: Vec<String>,
+        artifacts: Vec<Value>,
+        asked: Option<Asked>,
+    ) -> Result<Turn, Error> {
+        let mut threads = self.lock();
+        let index = threads
+            .iter()
+            .position(|t| t.id == id)
+            .ok_or(Error::NoConversation)?;
+        self.add_asking(
+            &mut threads,
+            index,
+            "oby",
+            text,
+            jobs,
+            false,
+            artifacts,
+            None,
+            None,
+            None,
+            asked,
+        )
     }
 
     /// Oby's turn telling the conversation `id` how the job `job` ended ([`job_report`], #351).
@@ -601,16 +641,19 @@ impl Conversations {
         self.append_as(id, "oby", text, jobs, false, vec![], Some(routine), foreign)
     }
 
-    /// Whether Oby's own turns in the conversation `id` hold `text`.
-    pub fn oby_said(&self, id: &str, text: &str) -> bool {
+    /// Whether Oby asked `question` in the conversation `id`, `option` one of its options, word
+    /// for word.
+    pub fn oby_asked(&self, id: &str, question: &str, option: &str) -> bool {
         self.lock()
             .iter()
             .find(|t| t.id == id)
             .is_some_and(|thread| {
-                thread
-                    .turns
-                    .iter()
-                    .any(|turn| turn.who == "oby" && !turn.ended && turn.text.contains(text.trim()))
+                thread.turns.iter().any(|turn| {
+                    turn.who == "oby"
+                        && turn.asked.as_ref().is_some_and(|asked| {
+                            asked.question == question && asked.options.iter().any(|o| o == option)
+                        })
+                })
             })
     }
 
@@ -730,6 +773,27 @@ impl Conversations {
         routine: Option<Value>,
         foreign: Option<String>,
     ) -> Result<Turn, Error> {
+        self.add_asking(
+            threads, index, who, text, jobs, ended, artifacts, id, routine, foreign, None,
+        )
+    }
+
+    /// [`Self::add`], with the question the turn asks.
+    #[allow(clippy::too_many_arguments)]
+    fn add_asking(
+        &self,
+        threads: &mut [Thread],
+        index: usize,
+        who: &str,
+        text: String,
+        jobs: Vec<String>,
+        ended: bool,
+        artifacts: Vec<Value>,
+        id: Option<String>,
+        routine: Option<Value>,
+        foreign: Option<String>,
+        asked: Option<Asked>,
+    ) -> Result<Turn, Error> {
         let sequence = next_sequence(threads);
         let thread = &mut threads[index];
         let kept = thread.clone();
@@ -752,6 +816,7 @@ impl Conversations {
             ended,
             artifacts,
             routine,
+            asked,
         };
         thread.turns.push(turn.clone());
         let excess = thread.turns.len().saturating_sub(KEPT);
@@ -1564,8 +1629,22 @@ mod tests {
         assert!(kept.foreign.is_some());
         assert!(conversations.foreign("no-such-conversation").is_some());
         // Oby's own words there: what an answer to its question may quote.
-        assert!(conversations.oby_said(&id, "On it."));
-        assert!(!conversations.oby_said(&id, "Which store?"));
+        conversations
+            .append_asking(
+                &id,
+                "Which store?".into(),
+                vec![],
+                vec![],
+                Some(super::Asked {
+                    question: "Which store?".into(),
+                    options: vec!["SQLite".into(), "Postgres".into()],
+                }),
+            )
+            .unwrap();
+        assert!(conversations.oby_asked(&id, "Which store?", "SQLite"));
+        assert!(!conversations.oby_asked(&id, "Which store?", "MySQL"));
+        assert!(!conversations.oby_asked(&id, "Which store", "SQLite"));
+        assert!(!conversations.oby_asked(&id, "On it.", "SQLite"));
     }
 
     #[test]

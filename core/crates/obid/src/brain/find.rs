@@ -155,6 +155,7 @@ mod tests {
                         ended: false,
                         artifacts: vec![],
                         routine: None,
+                        asked: None,
                     },
                 )
             })

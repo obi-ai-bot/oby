@@ -158,7 +158,10 @@ pub async fn plan(
             .into_response());
     }
     // Oby's question the words answer: its text is that conversation's (crate::secretspec).
-    let question = req.answer.as_ref().map(|a| a.question.clone());
+    let question = req
+        .answer
+        .as_ref()
+        .map(|a| (a.question.clone(), a.option.clone()));
     let said = req
         .answer
         .map(|a| {
@@ -184,8 +187,10 @@ pub async fn plan(
         .begin(target, said.clone(), jobs.clone(), id, foreign)?;
     // An answer to a question Oby asked elsewhere (the Watch answers in the latest conversation)
     // brings that conversation's words here.
-    if let Some(question) = &question
-        && !shared.conversations.oby_said(&begun.conversation, question)
+    if let Some((question, option)) = &question
+        && !shared
+            .conversations
+            .oby_asked(&begun.conversation, question, option)
     {
         shared.conversations.mark(
             &begun.conversation,
@@ -396,9 +401,17 @@ fn respond(
                 .collect(),
             _ => vec![],
         };
+        // A question keeps what it asked, so an answer's words are known to be this one's.
+        let asked = match &talk {
+            Talk::Question { question, .. } => Some(crate::conversation::Asked {
+                question: question.text.clone(),
+                options: question.options.clone(),
+            }),
+            _ => None,
+        };
         match shared
             .conversations
-            .append_made(conversation, text, jobs, artifacts.clone())
+            .append_asking(conversation, text, jobs, artifacts.clone(), asked)
         {
             Ok(_) => {}
             // Deleted while the brain thought: the answer still goes to the app that asked.
@@ -727,6 +740,7 @@ fn validate_turns(input: Option<Vec<InputTurn>>) -> Result<Option<Vec<Turn>>, Ap
             ended: false,
             artifacts: vec![],
             routine: None,
+            asked: None,
         });
     }
     Ok(Some(out))

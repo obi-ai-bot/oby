@@ -107,7 +107,10 @@ nonisolated enum DeviceKey {
     /// Signs a request that carries words the owner typed, as device `device`: the value of its
     /// `X-Oby-Words` header, `"<device> <signedAt> <signature>"`.
     static func signWords(method: String, path: String, body: Data, device: String) throws -> String {
-        let signedAt = ISO8601DateFormatter().string(from: .now)
+        // To the millisecond: two of the same request in one second are two signatures.
+        let format = ISO8601DateFormatter()
+        format.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let signedAt = format.string(from: .now)
         let signature = try sign(Approval.wordsMessage(method: method, path: path, body: body, signedAt: signedAt))
         return "\(device) \(signedAt) \(signature)"
     }

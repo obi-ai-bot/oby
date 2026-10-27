@@ -127,10 +127,22 @@ impl Approvals {
         else {
             return Err(format!("{WORDS} is \"<device> <signedAt> <signature>\"."));
         };
+        // Milliseconds keep two of the same request within a second apart: the message is signed
+        // with them, its freshness read to the second.
+        let whole = match signed_at.split_once('.') {
+            Some((seconds, rest))
+                if rest.len() > 1
+                    && rest.ends_with('Z')
+                    && rest[..rest.len() - 1].bytes().all(|b| b.is_ascii_digit()) =>
+            {
+                format!("{seconds}Z")
+            }
+            _ => signed_at.to_owned(),
+        };
         let approval = Approval {
             device: device.into(),
             action: String::new(),
-            signed_at: signed_at.into(),
+            signed_at: whole,
             signature: signature.into(),
         };
         let message = words_message(method, path, body, signed_at);

@@ -1680,6 +1680,28 @@ impl Jobs {
         Some(Ok(job))
     }
 
+    /// [`Self::hear_at_work`] with a planned job's words (a Start's, `new`), heard as they are
+    /// (crate::secretspec): what the conversation that planned it read marks the job; a plan kept
+    /// before obid marked them, or one no app signed, is no longer the owner's own words.
+    pub fn hear_plan(&self, id: &str, new: &NewJob) -> Option<Result<Job, Refused>> {
+        let heard = self.hear_at_work(id, &new.task)?;
+        Some(heard.map(|job| {
+            match &new.foreign {
+                Some(why) => {
+                    self.mark_foreign(&job.id, why.clone());
+                    self.get(&job.id).unwrap_or(job)
+                }
+                None if !new.vetted => self
+                    .unvet(
+                        &job.id,
+                        "a planned job's words that weren't the owner's own",
+                    )
+                    .unwrap_or(job),
+                None => job,
+            }
+        }))
+    }
+
     /// The latest `limit` jobs, newest first.
     pub fn list(&self, limit: usize) -> Vec<Job> {
         let mut jobs: Vec<Job> = self.lock().jobs.values().cloned().collect();
@@ -2329,6 +2351,38 @@ impl Jobs {
         self.update(&job_id, |job| job.mac_check = Some(returned))?;
         self.events.send("check", check.clone());
         Some(check)
+    }
+
+    /// Check `id` taken by the Mac app of registered device `device` (none: no app signed for it)
+    /// (crate::secretspec): the first taker's device is kept on it, and anyone else's taking it
+    /// again leaves it no one's. Taken by no app's signature, its job is no longer the owner's own
+    /// words: the Mac's name, and then its report, reach the job's agent. The check as it is now.
+    pub fn bind_check(&self, id: &str, device: Option<&str>) -> Option<Value> {
+        let (job_id, _, apple) = self.find_check(id)?;
+        let mut bound = None;
+        self.update(&job_id, |job| {
+            let check = if apple {
+                job.apple_check.as_mut()
+            } else {
+                job.mac_check.as_mut()
+            };
+            if let Some(check) = check {
+                let now = match (check.get("device"), device) {
+                    (None, Some(device)) => json!(device),
+                    (Some(Value::String(was)), Some(device)) if was == device => json!(device),
+                    _ => Value::Null,
+                };
+                check["device"] = now;
+                bound = Some(check.clone());
+            }
+        })?;
+        if bound.as_ref().is_some_and(|c| c["device"].is_null()) {
+            self.unvet(
+                &job_id,
+                "a check no Mac app of the owner's signed for was taken",
+            );
+        }
+        bound
     }
 
     /// Finds a queued/running check by ID, including checks persisted on jobs.
@@ -3866,6 +3920,9 @@ impl Jobs {
                         heard: unheard,
                         // Words the owner typed; a Confirm's are what Oby proposed.
                         vetted: source == Source::Owner,
+                        // Files may hold anyone's words, as a conversation's do (crate::secretspec).
+                        foreign: (!attachments.is_empty())
+                            .then(|| "files the owner attached, which may hold anyone's words".into()),
                         ..follow_up(&job, text)
                     });
                     if made.is_ok() && !job.heard.is_empty() {
@@ -17857,6 +17914,66 @@ mod tests {
         follow.follow_up_of = Some("m".into());
         follow.start_from = Some("oby/fix-m".into());
         assert_eq!(jobs.first_turned_down(&follow).as_deref(), Some("Fix it"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A Start's planned words, heard by a follow-up at work (crate::secretspec): a clean plan's
+    /// leave it the owner's own, one kept before obid marked plans isn't, and a marked
+    /// conversation's marks it.
+    #[tokio::test]
+    async fn a_starts_planned_words_carry_their_plans_mark() {
+        let root = std::env::temp_dir().join(format!("obid-hear-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let config = crate::config::Config::parse(
+            &serde_json::json!({"listen": "127.0.0.1:0", "home": root.join("home"), "owner": "o",
+                "repos": [{"repo": "o/r", "remote": "https://example.com/o/r.git"}]})
+            .to_string(),
+        )
+        .unwrap();
+        let jobs = Jobs::open(
+            config,
+            crate::events::Events::new(),
+            Err("no sandbox".into()),
+        )
+        .unwrap();
+        let mut job = Job::new(
+            "j".into(),
+            "o/r".into(),
+            "fix".into(),
+            "Fix it".into(),
+            "claude".into(),
+            "a".into(),
+        );
+        job.status = Status::Running;
+        job.phase = Some(Phase::Work);
+        job.mode = Some("plan".into());
+        let (worker, _signals) = watch::channel(Signal::Run);
+        {
+            let mut state = jobs.lock();
+            state.jobs.insert("j".into(), job);
+            state.workers.insert("j".into(), worker);
+        }
+        jobs.update("j", |job| job.vetted = true);
+        let planned = |extra: Value| -> NewJob {
+            let mut plan = json!({"repo": "o/r", "kind": "fix", "task": "and the tests"});
+            plan.as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            serde_json::from_value(plan).unwrap()
+        };
+        let heard = jobs
+            .hear_plan("j", &planned(json!({"vetted": true})))
+            .unwrap()
+            .unwrap();
+        assert!(heard.vetted);
+        let heard = jobs.hear_plan("j", &planned(json!({}))).unwrap().unwrap();
+        assert!(!heard.vetted && heard.foreign.is_none());
+        let heard = jobs
+            .hear_plan("j", &planned(json!({"foreign": "the inbox"})))
+            .unwrap()
+            .unwrap();
+        assert_eq!(heard.foreign.as_deref(), Some("the inbox"));
+        jobs.update("j", |job| job.foreign = None);
         let _ = std::fs::remove_dir_all(&root);
     }
 

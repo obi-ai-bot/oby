@@ -216,6 +216,8 @@ struct MacPublishTests {
         try await runner.send("POST", "v1/plans", body: ["said": "Fix the flaky test"])
         try await runner.send("GET", "v1/jobs?limit=50")
         try await runner.send("POST", "v1/memory/suggestions/s1/remember")
+        // Taking a check is a read the runner binds to this app: signed too.
+        _ = try await runner.nextCheck(mac: "Mac", apple: true)
         let plan = try #require(stub.requests.first { $0.path == "/v1/plans" })
         let parts = try #require(plan.words?.split(separator: " ").map(String.init))
         #expect(parts.count == 3 && parts[0] == "d7c1" && parts[1] == "S")
@@ -228,6 +230,7 @@ struct MacPublishTests {
         let words = try #require(remember.words?.split(separator: " ").map(String.init))
         let empty = try P256.Signing.ECDSASignature(derRepresentation: try #require(Data(base64Encoded: words[2])))
         #expect(key.signing.publicKey.isValidSignature(empty, for: Approval.wordsMessage(method: "POST", path: "/v1/memory/suggestions/s1/remember", body: Data(), signedAt: "S")))
+        #expect(stub.requests.first { $0.path == "/v1/checks/next" }?.words != nil)
     }
 
     /// Pair a device, the owner's click: this Mac's key signs the invitation (`oby-pair-invite`) as
