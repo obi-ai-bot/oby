@@ -3807,7 +3807,8 @@ impl Jobs {
     /// keeps the first). Use it keeps it on the repository (`set_check`) and Edit the owner's own
     /// command, for the jobs that start after; No check is remembered (`noCheck` in
     /// `home/settings.json`), so it never asks there again. This job never waits for the answer:
-    /// it goes on with none, and its pull request says Oby asked (`check_asked`).
+    /// it goes on with none, and its pull request says Oby asked (`check_asked`). Never for a
+    /// guess whose tool isn't on the `PATH` jobs run with (crate::repos::runs_here).
     async fn offer_check(&self, job: &Job, clone: &Path, commit: &str) {
         let Some(hook) = self.confirm_hook.get() else {
             return;
@@ -3843,16 +3844,20 @@ impl Jobs {
                 .find(|(n, _)| *n == name)
                 .map(|(_, t)| t.clone())
         };
-        let Some(check) = crate::repos::guess_check(&names, read) else {
+        // A tool that isn't where jobs look for it would fail every job there: no guess then.
+        let Some(check) = crate::repos::guess_check(&names, read)
+            .filter(|check| crate::repos::runs_here(check, &process::tools_path()))
+        else {
             return;
         };
         hook(crate::sphere::inbox::check_item(
             &job.id,
             &job.repo,
-            &check,
+            Some(&check),
+            None,
             obi_protocol::time::now(),
         ));
-        self.update(&job.id, |job| job.check_asked = Some(check));
+        self.update(&job.id, |job| job.check_asked = true);
     }
 
     fn note(&self, note: PermissionNote) {
@@ -16505,21 +16510,16 @@ mod tests {
     }
 
     /// A job in a GitHub repository with no check asks for the check obid guessed from the files
-    /// at its start commit (here a pyproject.toml that uses pytest, beside uv.lock): never where
-    /// there's a check, nor where the owner said No check (#1062). Each such job asks; the inbox
-    /// keeps one open per repository (tests/repo_check.rs).
+    /// at its start commit (here a Makefile's `test` target): never where there's a check, nor
+    /// where the owner said No check (#1062). Each such job asks; the inbox keeps one open per
+    /// repository (tests/repo_check.rs).
     #[tokio::test]
     async fn a_repository_with_no_check_is_asked_for_one() {
         let root = std::env::temp_dir().join(format!("obid-offer-{}", uuid::Uuid::new_v4()));
         let home = root.join("home");
         let clone = root.join("clone");
         std::fs::create_dir_all(&clone).unwrap();
-        std::fs::write(
-            clone.join("pyproject.toml"),
-            "[project]\nname = \"x\"\n\n[tool.pytest.ini_options]\ntestpaths = [\"tests\"]\n",
-        )
-        .unwrap();
-        std::fs::write(clone.join("uv.lock"), "").unwrap();
+        std::fs::write(clone.join("Makefile"), "test:\n\ttrue\n").unwrap();
         let git = |args: &[&str]| {
             let done = std::process::Command::new("git")
                 .args([
@@ -16550,13 +16550,8 @@ mod tests {
             .to_string(),
         )
         .unwrap();
-        // Kept by an obid from before No check was its own key.
         std::fs::create_dir_all(&home).unwrap();
-        std::fs::write(
-            home.join("settings.json"),
-            r#"{"checksOffered": ["O/Declined"]}"#,
-        )
-        .unwrap();
+        crate::settings::no_check(&home, "O/Declined", true).unwrap();
         let jobs = Jobs::open(
             config,
             crate::events::Events::new(),
@@ -16593,20 +16588,28 @@ mod tests {
         assert_eq!(items[0], again);
         assert_eq!(
             items[0].title,
-            "Use `uv run pytest` as o/app's check before publishing?"
+            "Use `make test` as o/app's check before publishing?"
         );
         assert_eq!(items[0].job, "ffff0001");
         assert_eq!(
             items[0].details.as_deref().unwrap(),
             [
-                "Every later job in o/app runs `uv run pytest` before it publishes.",
+                "Every later job in o/app runs `make test` before it publishes.",
                 "o/app keeps no check, and Oby doesn't ask again."
             ]
         );
         let confirmed = items[0].confirm.as_deref().unwrap();
         assert_eq!(confirmed.action, crate::sphere::inbox::action::SET_CHECK);
         assert_eq!(confirmed.target, "o/app");
-        assert_eq!(confirmed.payload, json!({"check": "uv run pytest"}));
+        assert_eq!(
+            confirmed.payload,
+            json!({"check": "make test", "was": null})
+        );
+        assert!(
+            items[0]
+                .text
+                .ends_with("No check keeps none, and Oby won't ask again.")
+        );
         assert_eq!(crate::settings::load(&home).no_check, ["O/Declined"]);
         let _ = std::fs::remove_dir_all(&root);
     }

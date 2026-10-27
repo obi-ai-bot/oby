@@ -136,6 +136,7 @@ pub fn router(shared: Arc<Shared>) -> Router {
         .route("/v1/accounts/{id}/reserve", post(crate::accounts::reserve))
         .route("/v1/github", get(crate::github_login::get))
         .route("/v1/repos", get(crate::repos::list))
+        .route("/v1/repos/check", post(crate::repos::change_check))
         .route(
             "/v1/github/sign-in",
             post(crate::github_login::sign_in).delete(crate::github_login::end_sign_in),

@@ -31,14 +31,11 @@ pub struct Settings {
     /// account of the tool with room by itself (#871, #874); [`ACCOUNT_FAILOVER`] when unset.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub account_failover: Option<bool>,
-    /// The repositories the owner answered No check for when Oby offered one (#1062): it never
-    /// asks there again. `checksOffered` before, when it was every repository it had asked about,
-    /// whatever the answer: those stay asked.
-    #[serde(
-        default,
-        alias = "checksOffered",
-        skip_serializing_if = "Vec::is_empty"
-    )]
+    /// The repositories the owner answered No check for when Oby asked for one (#1062): it never
+    /// asks there again, until the owner says to (`POST /v1/repos/check`). The `checksOffered` an
+    /// older obid kept listed every repository it had asked about, answered or not, so it isn't
+    /// read: those are asked once more.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub no_check: Vec<String>,
 }
 
@@ -131,6 +128,17 @@ pub fn update<T>(home: &Path, change: impl FnOnce(&mut Settings) -> T) -> std::i
     let answer = change(&mut settings);
     save(home, &settings)?;
     Ok(answer)
+}
+
+/// Remembers the owner's No check for `repo` in `home` (#1062), or with `no` false forgets it, so
+/// Oby may ask there again. Letter case aside, as GitHub's names.
+pub fn no_check(home: &Path, repo: &str, no: bool) -> std::io::Result<()> {
+    update(home, |settings| {
+        settings.no_check.retain(|r| !r.eq_ignore_ascii_case(repo));
+        if no {
+            settings.no_check.push(repo.to_owned());
+        }
+    })
 }
 
 #[cfg(test)]

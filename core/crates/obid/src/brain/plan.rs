@@ -1443,10 +1443,13 @@ pub fn is_branch_name(name: &str) -> bool {
         && !name.contains("/.")
 }
 
-/// A command Oby will run to check the work: one line, short enough to read on the card.
+/// A command Oby will run to check the work: one line, short enough to read on the card, with no
+/// control character but a tab (NUL among them).
 pub fn is_check(command: &str) -> bool {
     let trimmed = command.trim_matches([' ', '\t']);
-    !trimmed.is_empty() && count(trimmed) <= 200 && !trimmed.contains(['\n', '\r'])
+    !trimmed.is_empty()
+        && count(trimmed) <= 200
+        && !trimmed.chars().any(|c| c.is_control() && c != '\t')
 }
 
 /// A job's title: one line, short enough for a row on the iPhone and the notch.

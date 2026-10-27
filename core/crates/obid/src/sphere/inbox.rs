@@ -147,29 +147,92 @@ pub fn confirm_item(
     }
 }
 
-/// Oby's ask for `repo`, which has no check (#1062): a `confirm` item, so the apps that know one
-/// show it, on job `job`. `Confirm` (Use it) keeps `check` as its check, `Cancel` is No check,
-/// remembered; any other answer is the command the owner wants instead, asked again as an item of
-/// its own (crate::sphere::link), so what a Confirm signs is always the title it shows.
-pub fn check_item(job: &str, repo: &str, check: &str, now: i64) -> Item {
+/// Oby's ask about `repo`'s check (#1062), on job `job` (empty for one the owner opened,
+/// `POST /v1/repos/check`): a `confirm` item, so every app that knows one shows it. `current` is
+/// the check it has now. With `check`, `Confirm` (Use it) makes it the check; `Cancel` keeps
+/// `current`, or with none is No check, remembered. With no `check`, `Confirm` takes `current` out
+/// (payload `was`, so a check changed since isn't the one taken out) and the next job asks again.
+pub fn check_item(
+    job: &str,
+    repo: &str,
+    check: Option<&str>,
+    current: Option<&str>,
+    now: i64,
+) -> Item {
+    let (title, text, details) = match (check, current) {
+        (Some(check), current) => {
+            let (now_has, cancel, kept) = match current {
+                None => (
+                    format!(
+                        "{repo} has no check, so its pull requests go out after the secret scan alone. With one,"
+                    ),
+                    "No check keeps none, and Oby won't ask again.".to_owned(),
+                    format!("{repo} keeps no check, and Oby doesn't ask again."),
+                ),
+                Some(current) => (
+                    format!("{repo}'s check is `{current}` now. With `{check}` instead,"),
+                    format!("Cancel keeps `{current}`."),
+                    format!("{repo} keeps `{current}`."),
+                ),
+            };
+            (
+                format!("Use `{check}` as {repo}'s check before publishing?"),
+                format!(
+                    "{now_has} every job there that starts after your answer runs it in its box, with no network, before anything goes out.{} {cancel}",
+                    fetches(check)
+                ),
+                vec![
+                    format!("Every later job in {repo} runs `{check}` before it publishes."),
+                    kept,
+                ],
+            )
+        }
+        (None, current) => {
+            let current = current.unwrap_or_default();
+            (
+                format!("Take `{current}` out as {repo}'s check?"),
+                format!(
+                    "Its pull requests then go out after the secret scan alone, until you keep another: the next job there asks you again. Cancel keeps `{current}`."
+                ),
+                vec![
+                    format!("{repo} has no check, and its next job asks for one."),
+                    format!("{repo} keeps `{current}`."),
+                ],
+            )
+        }
+    };
     let mut item = confirm_item(
         job,
-        format!("Use `{check}` as {repo}'s check before publishing?"),
-        format!(
-            "{repo} has no check, so its pull requests go out after the secret scan alone. With one, every job there that starts after your answer runs it in its box, with no network, before anything goes out."
-        ),
+        title,
+        text,
         Confirmed {
             action: action::SET_CHECK.into(),
             target: repo.into(),
-            payload: json!({"check": check}),
+            payload: match check {
+                Some(check) => json!({"check": check, "was": current}),
+                None => json!({"check": null, "was": current}),
+            },
         },
         now,
     );
-    item.details = Some(vec![
-        format!("Every later job in {repo} runs `{check}` before it publishes."),
-        format!("{repo} keeps no check, and Oby doesn't ask again."),
-    ]);
+    item.details = Some(details);
     item
+}
+
+/// What a check needs from the network, said on its ask: its tool fetches from a site that each
+/// job asks the owner for (crate::egress, `ROUTED_BY_HOST`), unless a rule always allows it. npm's
+/// and Yarn's registries, Maven's and Gradle's pass in Sandbox mode, and `make` fetches nothing.
+fn fetches(check: &str) -> String {
+    let site = match check.split_whitespace().next().unwrap_or("") {
+        "cargo" => "crates.io",
+        "go" => "Go's module proxy",
+        "uv" | "poetry" => "PyPI",
+        "swift" => "its Swift packages' hosts",
+        _ => return String::new(),
+    };
+    format!(
+        " To fetch what it needs, each job asks you to let it reach {site}, unless you always allow it."
+    )
 }
 
 /// An inbox item as obid keeps it.
@@ -911,6 +974,45 @@ impl Inbox {
 
 #[cfg(test)]
 mod tests {
+
+    /// Oby's ask about a check says what each answer does in its text, which every app shows
+    /// (Electron shows no `details`), and when the check's tool will ask for a site (#1062).
+    #[test]
+    fn a_check_ask_says_what_its_answers_do() {
+        let first = super::check_item("j1", "acme/app", Some("cargo test"), None, 0);
+        assert_eq!(
+            first.title,
+            "Use `cargo test` as acme/app's check before publishing?"
+        );
+        assert!(
+            first.text.starts_with("acme/app has no check, so"),
+            "{}",
+            first.text
+        );
+        assert!(first.text.ends_with(
+            "To fetch what it needs, each job asks you to let it reach crates.io, unless you always allow it. No check keeps none, and Oby won't ask again."
+        ));
+        let change = super::check_item("", "acme/app", Some("make test"), Some("cargo test"), 0);
+        assert!(change.text.starts_with(
+            "acme/app's check is `cargo test` now. With `make test` instead, every job"
+        ));
+        assert!(
+            change
+                .text
+                .ends_with("before anything goes out. Cancel keeps `cargo test`.")
+        );
+        assert_eq!(
+            change.confirm.unwrap().payload,
+            serde_json::json!({"check": "make test", "was": "cargo test"})
+        );
+        let out = super::check_item("", "acme/app", None, Some("make test"), 0);
+        assert_eq!(out.title, "Take `make test` out as acme/app's check?");
+        assert_eq!(out.options, ["Confirm", "Cancel"]);
+        assert_eq!(
+            out.confirm.unwrap().payload,
+            serde_json::json!({"check": null, "was": "make test"})
+        );
+    }
 
     /// A start item made before obid kept its text free of fences reads without them, words kept.
     #[test]

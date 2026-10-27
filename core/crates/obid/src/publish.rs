@@ -548,12 +548,10 @@ pub fn body(job: &Job, closes: bool) -> String {
         ),
         // Oby asked whether to keep one (#1062): the job never waits for the answer.
         None => (
-            match &job.check_asked {
-                Some(asked) => format!(
-                    "- Check: none, the job had no check. Oby asked its owner whether later jobs here should run {}.",
-                    code(asked)
-                ),
-                None => "- Check: none, the job had no check.".into(),
+            if job.check_asked {
+                "- Check: none, the job had no check. Oby asked its owner for one for the jobs after it.".into()
+            } else {
+                "- Check: none, the job had no check.".into()
             },
             "after the secret scan was clean",
         ),
@@ -1877,9 +1875,9 @@ mod tests {
             "by Oby: Oby opened this pull request after the secret scan was clean. Oby merges it only when its owner says so."
         ));
         // One whose repository Oby asked a check for says so (#1062).
-        job.check_asked = Some("pnpm test".into());
+        job.check_asked = true;
         assert!(body(&job, false).contains(
-            "- Check: none, the job had no check. Oby asked its owner whether later jobs here should run ` pnpm test `.\n- Secret scan: clean."
+            "- Check: none, the job had no check. Oby asked its owner for one for the jobs after it.\n- Secret scan: clean."
         ));
         job.check = Some("cargo test".into());
         assert!(body(&job, false).contains(
