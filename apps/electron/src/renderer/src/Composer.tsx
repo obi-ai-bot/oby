@@ -1,8 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { ArrowUp, Check, ChevronLeft, File, Gauge, Laptop, ListChecks, Plus, Search, Settings, X } from 'lucide-react';
 import { ObyIcon, OwnerAvatar } from './ObyFace';
-import { AGENTS, OBYS, PLACES, SHARED_WITH_ME as MOCK_SHARED, type Attachments } from './mock';
-import { onObid } from './lean';
+import { AGENTS, OBYS, PLACES, SHARED_WITH_ME, type Attachments } from './mock';
 
 import MessageEditor, { type EditorHandle, type MentionKey } from './MessageEditor';
 import { mentioned } from './textTokens';
@@ -12,9 +11,6 @@ import { useTasks, type Task } from './tasks';
 import { BrandMark } from './brands';
 import { fullness, useAccounts } from './SettingsView';
 import { useScrollThumb } from './useScrollThumb';
-
-// obid shares no usage yet (Mac share is hidden for launch): none, rather than the mock's
-const SHARED_WITH_ME = onObid ? [] : MOCK_SHARED;
 
 // What a message carries besides its words: files or photos (a photo with a
 // small preview of itself), tasks attached. (Other Obys are brought in by name,
@@ -298,7 +294,7 @@ function AddPanel({ view, tasks, onView, onBlur, onFiles, onPick, onPickOby, isP
   const menu = useRef<HTMLDivElement>(null);
   const was = useRef<View>(view);
   useEffect(() => {
-    if (view === 'root') menu.current?.querySelectorAll('button')[was.current === 'oby' ? 1 : was.current === 'task' ? 2 : was.current === 'where' ? 3 : 0]?.focus();
+    if (view === 'root') (menu.current?.querySelector<HTMLButtonElement>(`[data-view="${was.current}"]`) ?? menu.current?.querySelector('button'))?.focus();
     was.current = view;
   }, [view]);
   const onMenuKey = (e: React.KeyboardEvent) => {
@@ -323,10 +319,11 @@ function AddPanel({ view, tasks, onView, onBlur, onFiles, onPick, onPickOby, isP
     return (
       <div ref={menu} className="add-panel" role="menu" onKeyDown={onMenuKey} onBlur={onBlur}>
         <button type="button" role="menuitem" tabIndex={-1} onClick={onFiles}><File size={16} strokeWidth={1.6} />Add files or photos</button>
-        <button type="button" role="menuitem" tabIndex={-1} onClick={() => onView('oby')}><ObyIcon size={16} />Add other Obys<kbd className="add-hint">@</kbd></button>
-        <button type="button" role="menuitem" tabIndex={-1} onClick={() => onView('task')}><ListChecks size={16} strokeWidth={1.6} />Attach tasks</button>
+        {/* no other Obys, or no Macs to run on (on obid, for now): not offered */}
+        {OBYS.length > 0 && <button type="button" role="menuitem" tabIndex={-1} data-view="oby" onClick={() => onView('oby')}><ObyIcon size={16} />Add other Obys<kbd className="add-hint">@</kbd></button>}
+        <button type="button" role="menuitem" tabIndex={-1} data-view="task" onClick={() => onView('task')}><ListChecks size={16} strokeWidth={1.6} />Attach tasks</button>
         {/* Sharing (a preview): run it on a teammate's Mac that's free, with your own accounts */}
-        <button type="button" role="menuitem" tabIndex={-1} onClick={() => onView('where')}><Laptop size={16} strokeWidth={1.6} />Run on another Mac</button>
+        {PLACES.length > 0 && <button type="button" role="menuitem" tabIndex={-1} data-view="where" onClick={() => onView('where')}><Laptop size={16} strokeWidth={1.6} />Run on another Mac</button>}
       </div>
     );
   }
