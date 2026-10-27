@@ -158,8 +158,10 @@ const ASKS: Record<AskKind, Ask> = {
   remember: { kind: 'remember', headline: 'Can I remember that?', text: 'You squash-merged into dev. Next time in obi I’ll do the same, and say so.', options: ['Yes, remember', 'No'] },
   confirm: { kind: 'confirm', headline: 'Add acme/other and review #12', text: 'Adds acme/other to the repositories Oby works in, with no check, then starts Oby’s review of pull request #12. Nothing is posted on GitHub.', options: ['Confirm', 'Cancel'] },
 };
+// (a check's ask comes with its repository's check, so Details offers Change check)
 const decide = (t: Task, k: AskKind, at = stageOf(t)) => tk.patch(t.id, (x) => ({
-  status: 'needs', answer: undefined, job: { ...x.job, status: 'running', ask: ASKS[k], stages: stagesAt(at), step: STAGES[at][2] },
+  status: 'needs', answer: undefined,
+  job: { ...x.job, status: 'running', ask: ASKS[k], stages: stagesAt(at), step: STAGES[at][2], ...(k === 'check' ? { repoCheck: null } : {}) },
 }));
 // n new tasks waiting on that kind, on Home and as cards in this conversation
 const talkId = () => (ch.get().find((c) => c.id === WELCOME) ?? ch.get()[0])?.id;

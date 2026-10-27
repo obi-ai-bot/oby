@@ -434,6 +434,9 @@ button.crumb:hover { color: var(--ink); background: var(--hover); }
 .tc-option.is-quiet:hover { color: var(--ink); background: var(--hover); }
 /* a check's Edit: the command in Settings' field, as wide as the card leaves it */
 .tc-options .set-field { flex: 1 1 200px; min-width: 0; width: auto; font-family: ui-monospace, "SF Mono", Menlo, monospace; }
+/* Change check, after "Done when"'s command; its field in the row's place */
+.tc-facts .tc-change { margin-left: 8px; color: var(--muted); }
+.tc-facts .tc-options { margin-top: 0; }
 .tc-answered { margin: 14px 0 0; display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: var(--text-md); }
 
 /* done: the agent's report and what it left behind */

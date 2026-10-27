@@ -147,15 +147,20 @@ const LABELLED: Record<string, AskKind> = { github: 'start', failure: 'failed' }
 const itemAsk = (item: InboxItem, detail?: string): Ask => {
   // Oby's ask for a repository's check (set_check): the command under the question, and the
   // answers in plain words (answerJob turns them into obid's Confirm and Cancel)
+  // (Cancel keeps the check a repository has; with none it's No check)
   const check = checkOf(item);
-  if (check) return { kind: 'check', headline: `Use this as ${item.confirm!.target}’s check before publishing?`, text: item.text, options: CHECK_OPTIONS, detail: check };
+  if (check) {
+    const options = ['Use it', 'Edit', item.confirm!.payload?.was ? 'Keep it' : 'No check'];
+    return { kind: 'check', headline: `Use this as ${item.confirm!.target}’s check before publishing?`, text: item.text, options, detail: check };
+  }
   return {
     kind: LABELLED[item.kind] ?? item.kind as AskKind, headline: item.headline ?? item.title, text: item.headline ? item.text : '',
     options: item.options, recommended: item.recommended ?? undefined, detail: detail ?? item.watch?.review ?? undefined,
   };
 };
-const CHECK_OPTIONS = ['Use it', 'Edit', 'No check'];
-const checkOf = (item?: InboxItem) => (item?.kind === 'confirm' && item.confirm?.action === 'set_check' ? item.confirm.payload?.check : undefined);
+// a check to keep: one taking a check out shows as any confirm item, its Confirm as such
+const checkOf = (item?: InboxItem) =>
+  (item?.kind === 'confirm' && item.confirm?.action === 'set_check' ? item.confirm.payload?.check ?? undefined : undefined);
 
 // What obid asks the owner with no task to show it on (a job's item shows on its task's card), for
 // Home's stack, of the kinds it was made for: GitHub's offers, Confirms, failures, and work Oby
@@ -223,7 +228,7 @@ function taskOf(s: Live, j: Job): Task {
     id: j.id, type: j.kind === 'review' ? 'review' : j.issue != null ? 'issues' : 'tasks', title: j.title, request: j.request,
     agent: j.agent, account: s.status?.accounts.find((a) => a.id === j.account)?.name ?? j.account,
     model: j.model ?? s.status?.models[j.agent]?.model ?? 'default', repo: j.repo, branch: j.branch || '—', base: j.base ?? '—',
-    check: j.check ?? undefined, status: j.status, step: j.step, waiting: j.waiting ?? undefined,
+    check: j.check ?? undefined, repoCheck: s.repos.find((r) => r.repo === j.repo)?.check, status: j.status, step: j.step, waiting: j.waiting ?? undefined,
     round: j.rounds > 1 ? [j.round, j.rounds] : undefined,
     stages: (j.pipeline?.stages ?? []).map((st) => ({ id: st.id as StageId, title: st.title, state: st.state, detail: st.detail ?? undefined })),
     ask, summary: j.summary || undefined, commits: j.commits ?? undefined, published: j.published ?? undefined,
@@ -574,9 +579,9 @@ export async function startGitHubWork(id: string) {
 // anything else in the inbox; Later puts it off an hour. A Confirm goes with this Mac's device
 // signature, which main adds (#776). id: a job's, or an item's with no task (asksOf), answered from
 // Home's stack.
-// On Oby's ask for a check, Use it is the owner's Confirm and No check their Cancel; Edit sends
-// the command they typed (words), which obid asks again as an item of its own, confirmed here at
-// once with this Mac's signature over that item's title.
+// On Oby's ask for a check, Use it is the owner's Confirm, No check (or Keep it) their Cancel; Edit
+// sends the command they typed (words) to POST /v1/repos/check, which asks for it in the ask's
+// place, confirmed here at once with this Mac's signature over that ask's title.
 const DECISIONS: Record<string, 'allow' | 'always' | 'deny'> = { Allow: 'allow', 'Always allow': 'always', Deny: 'deny' };
 export async function answerJob(id: string, option: string, words?: string) {
   const j = state.jobs[id], item = itemOf(state, id) ?? state.inbox.find((i) => i.id === id), ask = j && askOf(state, j);
@@ -587,12 +592,14 @@ export async function answerJob(id: string, option: string, words?: string) {
     if (checkOf(item) && option !== 'Later') {
       let asked = item!;
       if (option === 'Edit' && words) {
-        asked = await api.answer(asked.id, { answer: words });
-        set(apply(state, { kind: 'inbox', item: asked }));
-        if (ask) set({ answered: { ...state.answered, [id]: { ask, option: shown, item: asked.id } } });
+        // (the card stays answered: obid closes this ask, and the new one has no job)
+        const changed = await api.changeCheck(asked.confirm!.target, words);
+        if (!changed.ask) return;
+        asked = changed.ask;
       }
-      const next = option === 'No check' ? await api.answer(asked.id, { answer: 'Cancel' }) : await api.confirm(asked.id);
+      const next = option === 'No check' || option === 'Keep it' ? await api.answer(asked.id, { answer: 'Cancel' }) : await api.confirm(asked.id);
       set(apply(state, { kind: 'inbox', item: next }));
+      void api.repos().then(({ repos }) => set({ repos }), () => {});
     } else if (item?.kind === 'confirm' && option === 'Confirm') set(apply(state, { kind: 'inbox', item: await api.confirm(item.id) }));
     else if (item?.kind === 'permission' && j?.permission && DECISIONS[option]) {
       const next = await api.permission(id, { id: j.permission.id, decision: DECISIONS[option] });
@@ -613,6 +620,25 @@ export async function answerJob(id: string, option: string, words?: string) {
     if (!j && item) answering(item.id, false);
   }
 }
+// Change check, on a task's page (#1062): the owner's own command for its repository, or none to
+// start over. obid asks for it (POST /v1/repos/check) and this Mac's signature over that ask's
+// title, given at once, keeps it: the same Confirm as Use it. Nothing to keep (starting over with
+// no check kept) forgets a No check at once.
+export async function changeCheck(repo: string, check: string | null) {
+  try {
+    const changed = await api.changeCheck(repo, check);
+    const repos = state.repos.map((r) => (r.repo === changed.repo.repo ? changed.repo : r));
+    set({ repos });
+    if (changed.ask) {
+      set(apply(state, { kind: 'inbox', item: changed.ask }));
+      set(apply(state, { kind: 'inbox', item: await api.confirm(changed.ask.id) }));
+      set({ repos: (await api.repos()).repos });
+    }
+  } catch (e) {
+    say(e);
+  }
+}
+
 // an item with no task answered from Home's stack, its answer on its way (or not any more)
 const answering = (item: string, on: boolean) =>
   set({ answering: new Set(on ? [...state.answering, item] : [...state.answering].filter((x) => x !== item)) });

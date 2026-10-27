@@ -66,8 +66,8 @@ export type InboxItem = {
   conversation?: string | null;
   offer?: { id: string; what: string; task: string; untrusted: boolean } | null;
   // obid only: what a confirm item's Confirm carries out; set_check's target is the repository,
-  // its payload the command (Oby's ask for a check, #1062)
-  confirm?: { action: string; target: string; payload: { check?: string } | null } | null;
+  // its payload the command (null: take `was` out) and the check it has now (Oby's ask, #1062)
+  confirm?: { action: string; target: string; payload: { check?: string | null; was?: string | null } | null } | null;
 };
 
 // "GET /v1/conversation"
@@ -112,7 +112,8 @@ export type Status = {
 
 // obid only: "GET /v1/repos", the repositories a job may start in: the listed ones first, then
 // GitHub's (newest push first)
-export type Repo = { repo: string; defaultBranch: string; listed: boolean };
+// check: the one its jobs run (none: null); noCheck: the owner said No check (#1062)
+export type Repo = { repo: string; defaultBranch: string; listed: boolean; check?: string | null; noCheck?: boolean };
 
 // A sign-in under way: the page to open, and the code to type there (Codex's, GitHub's) or, with
 // pasteCode, the code that page shows, to send back (Claude Code's)
@@ -211,6 +212,10 @@ export const api = {
   plan: (said: string, answer: { question: string; option: string } | undefined, where: { conversation: string } | { new: true }) =>
     call<PlanAnswer>('POST', '/v1/plans', { said, ...(answer ? { answer } : {}), ...where }),
   repos: () => call<{ repos: Repo[] }>('GET', '/v1/repos'),
+  // obid only: the owner's own check for a repository, or null to start over: obid asks for it
+  // (ask, a set_check confirm item) unless there's nothing to keep
+  changeCheck: (repo: string, check: string | null) =>
+    call<{ repo: Repo; ask: InboxItem | null }>('POST', '/v1/repos/check', { repo, check }),
   // obid only: GitHub work, and starting work on an item (the owner's tap)
   githubWork: () => call<GitHubWork>('GET', '/v1/github/work'),
   startGitHubWork: (i: string) => call<Job>('POST', `/v1/github/work/${id(i)}/start`),

@@ -159,6 +159,13 @@ export function answer(id: string, option: string, words?: string) {
   reply(id, () => (option === 'Later' ? 'Okay, it’ll wait. I’ll bring it back up in an hour.' : `Got it. ${agent} will go with that.`));
 }
 
+// Change check on a task's page: its repository's check, or none to start over (on obid the
+// owner's tap keeps it, live.changeCheck); on the mock, its tasks there show it at once
+export function changeCheck(repo: string, check: string | null) {
+  if (onObid) return void live.changeCheck(repo, check);
+  for (const k of tasks.filter((x) => x.job.repo === repo)) update(k.id, () => ({ job: { ...k.job, check: check ?? undefined, repoCheck: check } }));
+}
+
 // Stopped by you: it ends where it was, with nothing left to decide, and moves to Done
 export function stop(id: string) {
   if (onObid) return void live.stopJob(id);

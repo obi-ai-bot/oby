@@ -3,7 +3,7 @@ import { Check, ChevronDown, ChevronRight, Info } from 'lucide-react';
 import { BrandMark } from './brands';
 import StatusDot from './StatusDot';
 import { AGENTS, ASK_LABEL, ago, type CheckRow, type Page, type Stage, type ToolGroup } from './mock';
-import { answer, markSeen, type Task } from './tasks';
+import { answer, changeCheck, markSeen, type Task } from './tasks';
 
 // A task as a card in its group: where it came from and what it is, which
 // agent has it where, then what's happening now: the live step while it runs,
@@ -23,6 +23,8 @@ export default function TaskCard({ task, alone = false, onOpen, onSession, style
   const page = alone ? j.page : undefined;
   // the raw session, opened from Details
   const [log, setLogOpen] = useState(false);
+  // Change check, open on Details' "Done when"
+  const [changing, setChanging] = useState(false);
   const setLog = (on: boolean) => (onSession && on ? onSession() : setLogOpen(on));
   const repo = j.repo.includes('/') ? j.repo.split('/')[1] : null;
   // top right: how long an open task has been going; when a done one finished
@@ -153,7 +155,17 @@ export default function TaskCard({ task, alone = false, onOpen, onSession, style
               {j.base !== '—' && <><dt>Base</dt><dd className="is-mono">{j.base}</dd></>}
               <dt>Model</dt><dd>{j.model}</dd>
               {page?.mode && <><dt>Mode</dt><dd>{page.mode}</dd></>}
-              {j.check && <><dt>Done when</dt><dd className="is-mono">{j.check} passes</dd></>}
+              {(j.check || j.repoCheck !== undefined) && <><dt>Done when</dt><dd>
+                {changing ? (
+                  <CheckField
+                    initial={j.repoCheck ?? j.check ?? ''} empty={j.repoCheck ? 'Take it out' : 'Ask again'}
+                    onUse={(check) => { setChanging(false); changeCheck(j.repo, check); }} onCancel={() => setChanging(false)}
+                  />
+                ) : <>
+                  {j.check ? <span className="is-mono">{j.check} passes</span> : 'No check'}
+                  {j.repoCheck !== undefined && <button className="tc-link tc-change" onClick={() => setChanging(true)}>Change check</button>}
+                </>}
+              </dd></>}
             </dl>
           </Section>
 
@@ -192,7 +204,6 @@ export function AskBlock({ task, inChat = false, onAnswer }: { task: Pick<Task, 
   const [shownAt] = useState(() => performance.now());
   const [editing, setEditing] = useState<string | null>(null);
   const pick = (o: string, words?: string) => { if (performance.now() - shownAt < 500) return; answer(task.id, o, words); onAnswer?.(o); };
-  const typed = editing?.trim() ?? '';
   return (
     <div className="tc-ask">
       <span className={`tc-ask-kind is-${ask.kind}`}>{ASK_LABEL[ask.kind] ?? ask.kind}</span>
@@ -202,14 +213,7 @@ export function AskBlock({ task, inChat = false, onAnswer }: { task: Pick<Task, 
       {task.answer ? (
         !inChat && <p className="tc-answered"><Check size={14} strokeWidth={1.8} />{task.answer}</p>
       ) : editing !== null ? (
-        <form className="tc-options" onSubmit={(e) => { e.preventDefault(); if (typed) pick('Edit', typed); }}>
-          <input
-            className="set-field" autoFocus value={editing} maxLength={200} spellCheck={false} aria-label="The check’s command"
-            onChange={(e) => setEditing(e.target.value)} onKeyDown={(e) => { if (e.key === 'Escape') setEditing(null); }}
-          />
-          <button type="submit" className="tc-option" disabled={!typed}>Use it</button>
-          <button type="button" className="tc-option is-quiet" onClick={() => setEditing(null)}>Cancel</button>
-        </form>
+        <CheckField initial={editing} onUse={(check) => check && pick('Edit', check)} onCancel={() => setEditing(null)} />
       ) : (
         <div className="tc-options">
           {ask.options.map((o, i) => (
@@ -227,6 +231,23 @@ export function AskBlock({ task, inChat = false, onAnswer }: { task: Pick<Task, 
         </div>
       )}
     </div>
+  );
+}
+
+// A check's command in Settings' field, in place of the choices: Use it keeps what's typed; with
+// empty (Change check's) an empty field is allowed, that button its label, and gives null.
+function CheckField({ initial, empty, onUse, onCancel }: { initial: string; empty?: string; onUse: (check: string | null) => void; onCancel: () => void }) {
+  const [value, setValue] = useState(initial);
+  const typed = value.trim();
+  return (
+    <form className="tc-options" onSubmit={(e) => { e.preventDefault(); if (typed || empty) onUse(typed || null); }}>
+      <input
+        className="set-field" autoFocus value={value} maxLength={200} spellCheck={false} aria-label="The check’s command"
+        onChange={(e) => setValue(e.target.value)} onKeyDown={(e) => { if (e.key === 'Escape') onCancel(); }}
+      />
+      <button type="submit" className="tc-option" disabled={!typed && !empty}>{typed || !empty ? 'Use it' : empty}</button>
+      <button type="button" className="tc-option is-quiet" onClick={onCancel}>Cancel</button>
+    </form>
   );
 }
 
