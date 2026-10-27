@@ -102,7 +102,7 @@ export async function sayOby(id: string, m: Omit<Message, 'who' | 'ago' | 'jobs'
 // from its menu (ConvoMenu): renamed, pinned to the top or not, deleted (the
 // tasks it started stay; their conversation is then their own thread)
 // obid's, not the app's own (setting up)
-const ofObid = (id: string) => onObid && !chats.find((c) => c.id === id)?.local;
+export const ofObid = (id: string) => onObid && !chats.find((c) => c.id === id)?.local;
 export function renameChat(id: string, title: string) {
   if (ofObid(id)) return void live.renameConversation(id, title);
   const t = title.trim();
