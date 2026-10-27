@@ -6,8 +6,23 @@ Mac app (`apps/mac`). In the app it shows what obid, Oby's engine, has (its API,
 `docs/runner-api.md`): the obid already answering on `127.0.0.1:7777`, with the
 token main reads from `~/Library/Application Support/Oby/Runner/api-token`
 (the page never sees it). When obid doesn't answer, the window says why: obid's
-own reason (`last-start-error`), else the connection's. The app doesn't start
-obid yet: the Swift Mac app's login item does.
+own reason (`last-start-error`), else the connection's.
+
+The packaged app carries its own obid (`Contents/Helpers/obid`, with `gh` and
+`gitleaks` in `Contents/MacOS`, as the Swift app does) and starts it as a launch
+agent (`com.deskree.oby.electron.obid`, registered with SMAppService through
+Electron), so it keeps running after Oby quits, with its jobs and the iPhone's
+relay. Until users have moved over it is `Oby Electron.app`, with its own bundle
+ID, `com.deskree.oby.electron`, and its own label, so dragged into Applications it
+never replaces the Swift `Oby.app` (`com.deskree.oby`) and never shares its login
+item. Both obids use the same configuration,
+home and port: at launch the app adopts any obid already answering on 7777 (the
+Swift Oby's, install.sh's) and stands its own down, and registers its own only
+when none answers; the Swift Oby does the same. When its own can't start, the
+window says why: not in Applications (it offers to move itself there), waiting
+for approval in System Settings › General › Login Items (it opens that page),
+obid's `last-start-error`, else launchd's last exit code and the end of
+`~/Library/Logs/obid.log`. In development (`npm run dev`) it starts nothing.
 
 It shows only the conversation: a new user starts empty, Oby sets them up in
 its first conversation (the tools on this Mac, GitHub, then Tetrix and the
@@ -27,18 +42,35 @@ npm run web     # the renderer alone in a browser, on port 5175
 npm run build   # into out/
 npm start       # the built app
 npm run typecheck
+scripts/package.sh [arm64] [x64]   # signed, notarized DMGs in dist/ (below)
 ```
+
+`scripts/package.sh` packages the Mac app on this Mac, as `scripts/release.sh`
+does the Swift app's (`docs/release.md`, no CI): `scripts/helpers.sh` builds obid
+universal from `core/` and stages it with gh and gitleaks through the Swift
+app's own `apps/mac/app/Tools/bundle-*.sh`, each signed with the team's
+Developer ID; then, per architecture, window-style is built for it,
+electron-builder signs the app (`electron-builder.yml`: hardened runtime, V8's
+JIT as the only entitlement, Electron's fuses closed), and the script checks it,
+scans it with gitleaks, notarizes and staples it (keychain profile
+`oby-notary`), and makes `dist/Oby-Electron-<version>-<arch>.dmg`, signed, notarized and
+stapled too. It needs the Developer ID Application identity of team
+`3UV9W5SV7W` and both Rust targets (`rustup target add aarch64-apple-darwin
+x86_64-apple-darwin`); `OBY_CARGO_TARGET_DIR` reuses a cargo target directory.
 
 ```
 src/main/       the window (opens at 994×670, at least 420×520) and the cursor feed;
-                obid.ts: obid's API through main, which holds its token;
+                obid.ts: obid's API through main, which holds its token, and
+                starting the app's own obid;
                 device.ts: this Mac's device key (safeStorage), which signs a Confirm
 src/preload/    window.app: the traffic lights' position, full screen, the cursor feed,
                 and obid (a call, and the event stream)
 src/renderer/   the screens; tokens.css holds the shared look
 native/         window-style: makes the window macOS's toolbar window type
 build/          the app icon: icon.png, icon.icns, and make-icon.py that draws them
-                (from oby-head.png: Oby's head, rising from the icon's bottom edge)
+                (from oby-head.png: Oby's head, rising from the icon's bottom edge);
+                obid's launch agent and the entitlements; helpers/, what helpers.sh stages
+scripts/        helpers.sh and package.sh: the signed, notarized app
 ```
 
 The renderer, in `src/renderer/src/`:

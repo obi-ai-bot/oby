@@ -118,7 +118,7 @@ function createWindow() {
 
 app.whenReady().then(() => {
   // the Dock icon while developing (a packaged app takes build/icon.icns)
-  if (process.platform === 'darwin') app.dock?.setIcon(join(__dirname, '../../build/icon.png'));
+  if (process.platform === 'darwin' && !app.isPackaged) app.dock?.setIcon(join(__dirname, '../../build/icon.png'));
   startObid();
   createWindow();
   app.on('activate', () => { if (!win) createWindow(); });
