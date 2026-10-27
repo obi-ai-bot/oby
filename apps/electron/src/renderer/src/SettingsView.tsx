@@ -6,6 +6,9 @@ import { AGENTS, type Agent } from './mock';
 import { OwnerAvatar } from './ObyFace';
 import { useSpheres } from './spheres';
 import { onObid } from './lean';
+import { api, type SignIn } from './obid';
+import { lookAtUsage, useLive } from './live';
+import { PasteCode } from './SetupCard';
 
 // how long the way out takes (the sink animation in app.css)
 const LEAVE_MS = 220;
@@ -195,7 +198,8 @@ function Remote() {
 // plan: what kind of login it is, which decides whether a part of it can be
 // shared (SHARING below)
 // used: this week's share in percent, null while its tool hasn't said
-export type Account = { id: string; agent: Agent; name: string; payer: string; used: number | null; resets: string; plan?: Plan };
+// signedIn: obid's (the mock's are all signed in)
+export type Account = { id: string; agent: Agent; name: string; payer: string; used: number | null; resets: string; plan?: Plan; signedIn?: boolean };
 // how full an account (or an agent) is: past 80% yellow, past 90% red
 export const fullness = (used: number) => (used > 90 ? 'is-over' : used > 80 ? 'is-high' : '');
 const ACCOUNTS: Account[] = [
@@ -208,11 +212,58 @@ const ACCOUNTS: Account[] = [
 export const useAccounts = () => useSetting<Account[]>('accounts', onObid ? [] : ACCOUNTS);
 // obid's accounts and their use, in place of the mock's (live.ts)
 export const replaceAccounts = (next: Account[]) => { values.set('accounts', next); listeners.forEach((l) => l()); };
+// On obid they're obid's (docs/runner-api.md, "obid only: accounts"): Add Account adds one (obid
+// makes its folder) and opens its tool's own sign-in page at once; Sign In opens it again, Remove
+// removes it. Each tool keeps its own login; Oby only learns that it worked.
 function Accounts() {
   const [accounts, setAccounts] = useAccounts();
+  // the tools' own logins on this Mac that aren't accounts (found, or removed here): only
+  // GET /v1/status has them, read as the page opens (with the usage it shows) and after a change
+  const own = useLive().status?.availableLogins ?? [];
+  useEffect(lookAtUsage, []);
   const [agent, setAgent] = useState<Account['agent']>('claude');
   const [name, setName] = useState('');
   const [payer, setPayer] = useState('');
+  // sign-ins under way, by account: opening, then its page (with Codex's code, or Claude Code's to
+  // paste), then that code on its way
+  type Signing = SignIn | 'opening' | 'sending';
+  const [signing, setSigning] = useState<Record<string, Signing>>({});
+  const put = (id: string, v?: Signing) => setSigning(({ [id]: _, ...rest }) => (v ? { ...rest, [id]: v } : rest));
+  const [busy, setBusy] = useState(false);
+  const [problem, setProblem] = useState<string | null>(null);
+  // what obid said went wrong, under Add an account
+  const tried = async (f: () => Promise<unknown>) => {
+    setProblem(null); setBusy(true);
+    try { await f(); } catch (e) { setProblem(e instanceof Error ? e.message : String(e)); } finally { setBusy(false); }
+  };
+  const signIn = async (id: string) => {
+    put(id, 'opening');
+    try {
+      const page = await api.signIn(id);
+      put(id, page);
+      window.app?.openExternal(page.url);
+    } catch (e) { put(id); throw e; }
+  };
+  // Claude Code's code: signed in, or that sign-in is ended (a wrong code can leave it waiting,
+  // with its code spent), so Sign In opens a new link
+  const sendCode = (id: string, code: string) => tried(async () => {
+    put(id, 'sending');
+    try { await api.signInCode(id, code.trim()); } catch (e) { await api.endSignIn(id).catch(() => {}); throw e; } finally { put(id); }
+  });
+  const add = () => tried(async () => {
+    const n = name.trim(), p = payer.trim();
+    const a = onObid ? await api.addAccount({ agent, name: n, ...(p ? { payer: p } : {}) }) : null;
+    setName(''); setPayer('');
+    if (a) return signIn(a.id);
+    setAccounts([...accounts, { id: `a${Date.now()}`, agent, name: n, payer: p || 'You', used: 0, resets: 'Resets in 7 days' }]);
+  });
+  const remove = (a: Account) => {
+    if (!onObid) return setAccounts(accounts.filter((x) => x.id !== a.id));
+    if (!confirm(removeNote(a))) return;
+    void tried(() => api.removeAccount(a.id).then(() => { put(a.id); lookAtUsage(); }));
+  };
+  // signed in (Codex and Cursor end by themselves; obid's `accounts` event says so)
+  useEffect(() => { for (const a of accounts) if (a.signedIn && signing[a.id]) put(a.id); }, [accounts]);
   const roomiest = accounts.filter((a) => a.used != null).sort((a, b) => a.used! - b.used!)[0];
   return <>
     <Group i={1} title="Accounts on this Mac">
@@ -220,36 +271,53 @@ function Accounts() {
     </Group>
     {(['claude', 'codex', 'cursor'] as const).filter((g) => accounts.some((a) => a.agent === g)).map((g, k) => (
       <Group key={g} i={2 + k} title={AGENTS[g].name}>
-        {accounts.filter((a) => a.agent === g).map((a) => (
-          <div key={a.id} className="set-row set-usage">
-            <BrandMark brand={AGENTS[g].brand} size={16} mono />
-            <span className="set-label">
-              {a.name}
-              <span className="set-about">Paid by {a.payer} · {a.resets}</span>
-              {a.used != null && <span className="set-meter" role="meter" aria-valuenow={a.used} aria-valuemin={0} aria-valuemax={100} aria-label={`${a.used}% used`}>
-                <span className={fullness(a.used)} style={{ width: `${a.used}%` }} />
-              </span>}
-            </span>
-            <span className="set-control set-control-top">
-              {a.used != null && <span className="set-value">{a.used}% used</span>}
-              <button className="set-button is-danger" onClick={() => setAccounts(accounts.filter((x) => x.id !== a.id))}>Remove</button>
-            </span>
-          </div>
-        ))}
+        {accounts.filter((a) => a.agent === g).map((a) => {
+          const s = signing[a.id], page = typeof s === 'object' ? s : null;
+          return (
+            <div key={a.id} className="set-row set-usage">
+              <BrandMark brand={AGENTS[g].brand} size={16} mono />
+              <span className="set-label">
+                {a.name}
+                <span className="set-about">{!s ? `Paid by ${a.payer} · ${a.resets}`
+                  : page ? `Finish on ${AGENTS[g].name}’s sign-in page${page.userCode ? ` · enter ${page.userCode}` : ''}`
+                  : s === 'sending' ? `Signing in to ${AGENTS[g].name}` : `Opening ${AGENTS[g].name}’s sign-in page`}</span>
+                {page?.pasteCode && <PasteCode onCode={(code) => sendCode(a.id, code)} />}
+                {a.used != null && <span className="set-meter" role="meter" aria-valuenow={a.used} aria-valuemin={0} aria-valuemax={100} aria-label={`${a.used}% used`}>
+                  <span className={fullness(a.used)} style={{ width: `${a.used}%` }} />
+                </span>}
+              </span>
+              <span className="set-control set-control-top">
+                {a.used != null && <span className="set-value">{a.used}% used</span>}
+                {a.signedIn === false && (page
+                  ? <button className="set-button" onClick={() => { put(a.id); void tried(() => api.endSignIn(a.id)); }}>Cancel</button>
+                  : <button className="set-button" disabled={!!s} onClick={() => tried(() => signIn(a.id))}>{s ? 'Waiting…' : 'Sign In'}</button>)}
+                <button className="set-button is-danger" onClick={() => remove(a)}>Remove</button>
+              </span>
+            </div>
+          );
+        })}
       </Group>
     ))}
-    <Group i={5} title="Add an account">
+    <Group i={5} title="Add an account" footer={problem && <span className="set-problem" role="alert">{problem}</span>}>
       <Row label="Tool"><Select value={agent} onChange={(v) => setAgent(v as Account['agent'])} label="Tool" options={(Object.keys(AGENTS) as Agent[]).map((id) => [id, AGENTS[id].name] as const)} /></Row>
       <Row label="Name"><TextField value={name} onChange={setName} placeholder="Personal" label="Account name" /></Row>
       <Row label="Paid by"><TextField value={payer} onChange={setPayer} placeholder="Wellington" label="Paid by" /></Row>
       <Row label="">
-        <button className="set-button" disabled={!name.trim()} onClick={() => {
-          setAccounts([...accounts, { id: `a${Date.now()}`, agent, name: name.trim(), payer: payer.trim() || 'You', used: 0, resets: 'Resets in 7 days' }]);
-          setName(''); setPayer('');
-        }}>Add Account</button>
+        {onObid && own.some((l) => l.agent === agent) && (
+          <button className="set-button" disabled={busy} onClick={() => tried(() => api.addAccount({ agent, default: true }).then(lookAtUsage))}>Use {AGENTS[agent].name}’s Own Login</button>
+        )}
+        <button className="set-button" disabled={!name.trim() || busy} onClick={add}>Add Account</button>
       </Row>
     </Group>
   </>;
+}
+
+// What removing one of obid's accounts does, and what it leaves (the Swift app's words)
+function removeNote(a: Account) {
+  const tool = AGENTS[a.agent].name, provider = { claude: 'Anthropic', codex: 'OpenAI', cursor: 'Cursor' }[a.agent];
+  // its own login has no folder of obid's
+  if (['default', 'codex', 'cursor'].includes(a.id)) return `Remove ${a.name}? Oby stops using ${tool}’s own login on this Mac; nothing of it is deleted. Bring it back with Use ${tool}’s Own Login, under Add an account.`;
+  return `Remove ${a.name}? Oby stops using it, and deletes the folder it made for it. Your account with ${provider} stays signed in there until you sign it out.${a.agent === 'claude' ? ' Its Keychain item stays too; Keychain Access removes it.' : ''}`;
 }
 
 // Sharing (a preview for Sangam): this Mac's spare time, and a part of an

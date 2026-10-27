@@ -144,7 +144,7 @@ function publish() {
   if (state.status) replaceAccounts(state.status.accounts.map((a) => {
     const used = a.agent === 'cursor' ? null : a.sevenDay ?? a.fiveHour;
     return {
-      id: a.id, agent: a.agent, name: a.name, payer: a.payer ?? 'You', used: used == null ? null : Math.round(used * 100),
+      id: a.id, agent: a.agent, name: a.name, payer: a.payer ?? 'You', signedIn: a.signedIn, used: used == null ? null : Math.round(used * 100),
       resets: !a.signedIn ? 'Not signed in' : a.agent === 'cursor' ? 'Cursor doesn’t report usage' : used == null ? 'No use reported yet'
         : a.sevenDayResets ? `Resets ${new Date(a.sevenDayResets).toLocaleDateString([], { weekday: 'long' })}` : 'No reset reported',
     };
