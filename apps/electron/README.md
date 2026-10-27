@@ -24,7 +24,9 @@ this user's: the pid of its own agent, its session job, the Swift Oby's or
 install.sh's (`lsof` lists only this user's processes). 7777 is shared by every
 user on the Mac, so another user's obid, or any other program (an agent's, from
 its sandbox, included), gets nothing, and the window says the port is taken. The
-packaged app also quits when it's opened with a DevTools port or pipe, unless an
+packaged app quits when it's opened with a switch that runs another program as one
+of its processes (`--browser-subprocess-path`, `--renderer-cmd-prefix`,
+`--gpu-launcher`, `--utility-cmd-prefix`), and with a DevTools port or pipe unless an
 admin allowed that on the Mac with a root-owned
 `/Library/Application Support/Oby/allow-devtools-port` (the VM test does). When its own can't start, the
 window says why: not in Applications (it offers to move itself there), waiting
