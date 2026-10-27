@@ -6,6 +6,8 @@
 //! host is the job's to decide (`Jobs::ask_about`): the repository's `WebFetch(domain:…)` rules,
 //! its mode, and else the owner's card. A tunnel carries only TLS whose hello names the host it
 //! was opened for ([`hello_fits`]): a CDN's edge serves whichever of its sites the hello names.
+//! The HTTP `Host` inside the tunnel isn't read, so the registries let through by default are only
+//! those whose edge answers just the hello's host ([`REGISTRIES`], [`ROUTED_BY_HOST`]).
 //! A plain `http://` request is refused.
 
 use std::collections::HashMap;
@@ -936,25 +938,38 @@ pub fn telemetry(host: &str) -> bool {
 /// The package registries a job in Sandbox mode reaches without asking, on 443 (the PR's
 /// proposal, #616): what installs fetch from, exactly these hosts. Each also takes a publish (a
 /// login the agent brought with it would work), which is what Sandbox mode accepts for them.
+///
+/// Only registries whose edge answers just the host the TLS hello named: the proxy checks that
+/// name, not the HTTP `Host` inside the tunnel ([`hello_fits`]), so a site on an edge that picks
+/// its site by `Host` would stand for the whole edge. Tried 2026-10-26, a hello naming each with
+/// `Host` naming another site of the same edge: every host here (Cloudflare's) answered `403`.
+/// [`ROUTED_BY_HOST`]'s answered with the other site, and ask like any other site.
 pub const REGISTRIES: &[&str] = &[
     "registry.npmjs.org",
     "registry.yarnpkg.com",
     "repo.yarnpkg.com",
+    "repo.maven.apache.org",
+    "repo1.maven.org",
+    "plugins.gradle.org",
+    "services.gradle.org",
+    "cdn.cocoapods.org",
+];
+
+/// Registries that were in [`REGISTRIES`] until 2026-10-26 and aren't: their edge answered a
+/// hello naming them with whichever of its sites `Host` named (Fastly's: PyPI, crates.io and
+/// `static.rust-lang.org`, RubyGems; Google's: the Go module proxy and checksum database). A job
+/// reaches them as any other site, when its rules, its mode or the owner's card allow it.
+pub const ROUTED_BY_HOST: &[&str] = &[
     "pypi.org",
     "files.pythonhosted.org",
     "crates.io",
     "index.crates.io",
     "static.crates.io",
     "static.rust-lang.org",
-    "proxy.golang.org",
-    "sum.golang.org",
     "rubygems.org",
     "index.rubygems.org",
-    "repo.maven.apache.org",
-    "repo1.maven.org",
-    "plugins.gradle.org",
-    "services.gradle.org",
-    "cdn.cocoapods.org",
+    "proxy.golang.org",
+    "sum.golang.org",
 ];
 
 /// The sites the `http(s)://` addresses in `words` name, each once.
@@ -1066,6 +1081,26 @@ mod tests {
         assert!(!tools_api(Tool::Codex, "chatgpt.com"));
         assert!(tools_api(Tool::Cursor, "api2.cursor.sh"));
         assert!(!tools_api(Tool::Cursor, "cursor.com"));
+    }
+
+    /// The default registries and those left off them for their edge are apart, and the npm,
+    /// Yarn, Maven, Gradle and CocoaPods registries stay on.
+    #[test]
+    fn the_default_registries_leave_out_those_whose_edge_picks_by_host() {
+        for host in ROUTED_BY_HOST {
+            assert!(!REGISTRIES.contains(host), "{host}");
+        }
+        for host in [
+            "registry.npmjs.org",
+            "registry.yarnpkg.com",
+            "repo.maven.apache.org",
+            "plugins.gradle.org",
+            "cdn.cocoapods.org",
+        ] {
+            assert!(REGISTRIES.contains(&host), "{host}");
+        }
+        assert_eq!(REGISTRIES.len(), 8);
+        assert_eq!(ROUTED_BY_HOST.len(), 10);
     }
 
     #[test]

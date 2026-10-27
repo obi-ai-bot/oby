@@ -18270,4 +18270,58 @@ mod tests {
         assert_eq!(ended, "407");
         let _ = std::fs::remove_dir_all(&root);
     }
+
+    /// In Sandbox mode the default registries go through without a card, and only those whose
+    /// edge answers just the host the hello names: PyPI, crates.io, RubyGems and Go's ask the
+    /// owner, as a fetch from them, like any other site (crate::egress::ROUTED_BY_HOST).
+    #[test]
+    fn only_registries_whose_edge_answers_its_own_host_go_through_by_default() {
+        use crate::egress::{Asked, REGISTRIES, ROUTED_BY_HOST};
+
+        let root = std::env::temp_dir().join(format!("obid-registries-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let config = crate::config::Config::parse(
+            &serde_json::json!({"listen": "127.0.0.1:0", "home": root.join("home"), "owner": "o",
+                "repos": [{"repo": "o/r", "remote": "https://example.com/o/r.git"}]})
+            .to_string(),
+        )
+        .unwrap();
+        let jobs = Jobs::open(
+            config,
+            crate::events::Events::new(),
+            Err("no sandbox".into()),
+        )
+        .unwrap();
+        let mut job = Job::new(
+            "j".into(),
+            "o/r".into(),
+            "fix".into(),
+            "Fix it".into(),
+            "claude".into(),
+            "a".into(),
+        );
+        job.status = Status::Running;
+        job.mode = Some("sandbox".into());
+        jobs.lock().jobs.insert("j".into(), job);
+
+        for host in REGISTRIES {
+            assert!(
+                matches!(jobs.ask_about("j", host, 443), Asked::Now(Ok(()))),
+                "{host} asked"
+            );
+            assert!(jobs.get("j").unwrap().permission.is_none(), "{host}");
+        }
+        for host in ROUTED_BY_HOST {
+            assert!(!REGISTRIES.contains(host), "{host}");
+            assert!(
+                matches!(jobs.ask_about("j", host, 443), Asked::Card { .. }),
+                "{host} wasn't asked about"
+            );
+            let card = jobs.get("j").unwrap().permission.unwrap();
+            assert_eq!(card.title, format!("Fetch {host}"));
+            jobs.answer_permission("j", &card.id, Decision::Deny, None)
+                .unwrap();
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }
