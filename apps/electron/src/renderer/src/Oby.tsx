@@ -8,6 +8,11 @@ declare global {
       chrome: { lightsCenterY: number; lightsRight: number } | null;
       fullScreen: boolean;
       onFullScreen(fn: (on: boolean) => void): () => void;
+      // obid, through main (preload, main/obid.ts)
+      obid: {
+        call(method: string, path: string, body?: unknown): Promise<{ status: number; text: string }>;
+        follow(onChunk: (text: string) => void, onEnd: (a: { status: number; text: string }) => void): () => void;
+      };
     };
   }
 }

@@ -2,7 +2,8 @@ import { useSyncExternalStore } from 'react';
 import { BRANDS, type Brand } from './brands';
 import { AGENTS, ARCHIVE, GITHUB_WORK, JOBS, MEMORY_WAIT, hasAttachments, type Archived, type Attachments, type GitHubItem, type Job, type Message } from './mock';
 import { streamWords } from './stream';
-import { everything } from './lean';
+import { everything, onObid } from './lean';
+import * as live from './live';
 
 // Tasks are Oby's jobs (mock.ts) as Home shows them. Each belongs to a kind of
 // work (the chips on Home, the groups in the side panel) and is running,
@@ -43,6 +44,10 @@ const subscribe = (l: () => void) => { listeners.add(l); return () => { listener
 
 // every task; components that call it re-render when one is added or opened
 export const useTasks = () => useSyncExternalStore(subscribe, () => tasks);
+// obid's jobs, in place of the mock's (live.ts)
+export const replaceTasks = (next: Task[]) => set(next);
+// the conversation whose words started it, as obid says (Job.conversation)
+export const conversationOfTask = (id: string) => tasks.find((t) => t.id === id)?.job.conversation;
 
 // Asked in the message box: a new task in Tasks, queued, fresh, at the top.
 // A follow-up asked in a done task's conversation goes with it instead: same
@@ -68,6 +73,7 @@ export function addTask(text: string, after?: Task) {
 }
 // opened: its blue dot goes
 export function markSeen(id: string) {
+  if (onObid) return live.markSeen(id);
   if (tasks.some((t) => t.id === id && t.fresh)) set(tasks.map((t) => (t.id === id ? { ...t, fresh: false } : t)));
 }
 
@@ -95,6 +101,7 @@ function reply(id: string, text: () => string, start?: () => string[] | undefine
 // decision, it's passed on with a nudge; done, it starts a follow-up task,
 // whose card shows under Oby's reply.
 export function tell(id: string, text: string, att?: Attachments) {
+  if (onObid) return void live.tellJob(id, text);
   const t = text.trim(), r = relay(id, t);
   if ((!t && !hasAttachments(att)) || !r) return;
   say(id, { who: 'you', text: t, ago: 0, ...att });
@@ -121,6 +128,7 @@ export function relay(id: string, text: string): { line: string; start?: () => s
 // Nothing's left for you to decide, so it no longer needs you: the agent goes
 // on (done, it stays done). Later keeps it needing you, only put off.
 export function answer(id: string, option: string) {
+  if (onObid) return void live.answerJob(id, option);
   const k = tasks.find((x) => x.id === id);
   if (!k) return;
   update(id, () => ({ answer: option, status: option === 'Later' ? k.status : k.job.status === 'done' ? 'done' : 'running' }));
@@ -131,6 +139,7 @@ export function answer(id: string, option: string) {
 
 // Stopped by you: it ends where it was, with nothing left to decide, and moves to Done
 export function stop(id: string) {
+  if (onObid) return void live.stopJob(id);
   update(id, (k) => ({
     status: 'done',
     job: { ...k.job, status: 'stopped', ask: undefined, step: 'Stopped', finished: 0, stages: k.job.stages.map((st) => (st.state === 'current' ? { ...st, state: 'skipped' } : st)) },

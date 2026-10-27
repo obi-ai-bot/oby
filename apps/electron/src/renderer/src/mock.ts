@@ -102,6 +102,7 @@ export type Job = {
   published?: string;  // the pull request it opened
   log?: LogLine[];
   page?: Page;         // the job page's extra data, once obid serves it
+  conversation?: string;  // obid's: the conversation whose words started it
   created: number;     // minutes ago
   finished?: number;   // minutes ago
 };

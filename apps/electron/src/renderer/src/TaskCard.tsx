@@ -189,7 +189,7 @@ export function AskBlock({ task, inChat = false, onAnswer }: { task: Task; inCha
   const pick = (o: string) => { answer(task.id, o); onAnswer?.(o); };
   return (
     <div className="tc-ask">
-      <span className={`tc-ask-kind is-${ask.kind}`}>{ASK_LABEL[ask.kind]}</span>
+      <span className={`tc-ask-kind is-${ask.kind}`}>{ASK_LABEL[ask.kind] ?? ask.kind}</span>
       <p className="tc-ask-head">{ask.headline}</p>
       <p className="tc-ask-text">{ask.text}</p>
       {ask.detail && <pre className="tc-code">{ask.detail}</pre>}

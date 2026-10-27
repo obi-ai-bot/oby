@@ -4,3 +4,6 @@
 // Obyspheres, the archive) is hidden, not deleted. ?everything shows all of
 // Sangam's design again, with its demo data.
 export const everything = new URLSearchParams(location.search).has('everything');
+// In the Mac app (window.app), without ?everything, what's shown is obid's (live.ts); in a browser,
+// or with it, the mock's.
+export const onObid = !everything && !!window.app?.obid;

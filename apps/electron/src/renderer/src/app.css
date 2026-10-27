@@ -1745,3 +1745,14 @@ button.sphere-logo-badge:hover { color: var(--ink); background: #3a3a39; }
 .setup .tc-options { margin-top: 10px; }
 .setup-rows + .tc-options { margin-top: 12px; }
 .tc-option:disabled { opacity: 0.3; cursor: default; }
+
+/* how the app stands with obid (Home's Connection): connecting, or why obid isn't answering, or
+   what last went wrong; a quiet line under the title bar, over Home and what opens on it, as
+   apps/web has it */
+.connection {
+  position: absolute; top: calc(var(--bar, 52px) + 8px); left: 50%; transform: translateX(-50%); z-index: 50;
+  margin: 0; padding: 6px 14px; max-width: min(560px, calc(100vw - 32px));
+  border-radius: var(--radius-pill); border: 1px solid var(--surface-edge); background: var(--surface);
+  color: var(--text); font-size: var(--text-md); line-height: 20px; text-align: center; white-space: pre-line;
+}
+.connection.is-down { color: var(--ink); border-color: color-mix(in srgb, var(--over) 45%, transparent); }

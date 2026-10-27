@@ -2,8 +2,12 @@
 
 Oby's new desktop app: Electron, with a React renderer built by Vite. It starts
 as a copy of Sangam's design (`design/app`, 2026-10-26) and replaces the Swift
-Mac app (`apps/mac`). First it's a mock that gets the experience right; then
-it talks to obid, Oby's engine, over its API (`docs/runner-api.md`).
+Mac app (`apps/mac`). In the app it shows what obid, Oby's engine, has (its API,
+`docs/runner-api.md`): the obid already answering on `127.0.0.1:7777`, with the
+token main reads from `~/Library/Application Support/Oby/Runner/api-token`
+(the page never sees it). When obid doesn't answer, the window says why: obid's
+own reason (`last-start-error`), else the connection's. The app doesn't start
+obid yet: the Swift Mac app's login item does.
 
 It shows only the conversation: a new user starts empty, Oby sets them up in
 its first conversation (the tools on this Mac, GitHub, then Tetrix and the
@@ -11,6 +15,8 @@ Obysphere, both optional), and a task shows as a card in the conversation
 that started it. What isn't used yet is hidden, not deleted: open the page
 with `?everything` (`npm run web`, then http://localhost:5175/?everything) for
 all of Sangam's design and its demo data, and `?welcome` to be set up again.
+In a browser, or with `?everything`, it runs on the mock; the mocked setup
+(`onboarding.ts`) runs only there.
 
 ```bash
 npm install     # on macOS this also builds the native window module
@@ -22,8 +28,10 @@ npm run typecheck
 ```
 
 ```
-src/main/       the window (opens at 994×670, at least 420×520) and the cursor feed
-src/preload/    window.app: the traffic lights' position, full screen, and the cursor feed
+src/main/       the window (opens at 994×670, at least 420×520) and the cursor feed;
+                obid.ts: obid's API through main, which holds its token
+src/preload/    window.app: the traffic lights' position, full screen, the cursor feed,
+                and obid (a call, and the event stream)
 src/renderer/   the screens; tokens.css holds the shared look
 native/         window-style: makes the window macOS's toolbar window type
 build/          the app icon: icon.png, icon.icns, and make-icon.py that draws them
@@ -80,7 +88,10 @@ tasks.ts, peers.ts  the tasks and the conversations with other Obys, as small st
 spheres.ts          the Obyspheres you're in, their members and invites
 knowledge.ts        each Obysphere's knowledge sources
 stream.ts           Oby's words coming in a word at a time
-mock.ts             the demo data behind these stores, until the app talks to Oby's engine
+obid.ts             obid's API: its types and calls (copied from apps/web/src/api.ts), through main
+live.ts             what obid has, kept live by its event stream, put into the stores
+                    above as conversations, tasks and accounts; and what the app asks of it
+mock.ts             the demo data behind these stores, in a browser or with ?everything
 tokens.css, app.css the shared look, and the rest of it
 ```
 
