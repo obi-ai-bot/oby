@@ -1083,8 +1083,8 @@ pub struct SphereState {
     pub token_lifetime: Option<i64>,
     /// A Sphere from before sealing: its health doesn't say `seal`.
     pub predates_sealing: bool,
-    /// A Sphere that takes a card's `features`, `runtime` and `vendors`: its health lists
-    /// `card_runtime` (identity.md section 2.3).
+    /// A Sphere that takes a card's `features`, `runtime` and `vendors`: its `GET /v0.1/features`
+    /// lists `card_runtime` (identity.md section 2.3).
     pub takes_card_runtime: bool,
     /// The next send of this type is recorded and delivered, and its answer is lost: `503`, once
     /// the test lets it go (`FakeSphere::lose_next_answer`).
@@ -1398,7 +1398,6 @@ async fn health(State(state): State<Arc<Mutex<SphereState>>>) -> Response {
     if !state.lock().unwrap().predates_sealing {
         health["seal"] = json!(true);
     }
-
     axum::Json(health).into_response()
 }
 
@@ -1489,6 +1488,26 @@ async fn put_card(
     if !same_key {
         return sphere_error(StatusCode::BAD_REQUEST, "card_invalid", "another key");
     }
+    // A card that brings card_runtime's members while its own card didn't, and another active
+    // member doesn't take it, waits (spec sphere-api.md section 4: 409 feature_not_taken).
+    let brings = |c: &Value| card::params(c).is_some_and(|p| p.contains_key("features"));
+    if brings(new) && !brings(&member["card"]) {
+        let behind = state.members.iter().any(|m| {
+            m["obi"] != obi.as_str()
+                && m["status"] == "active"
+                && !obi_protocol::identity::takes_card_runtime(&m["card"])
+        });
+        if behind {
+            return sphere_error(
+                StatusCode::CONFLICT,
+                "feature_not_taken",
+                "a member doesn't take card_runtime",
+            );
+        }
+    }
+    let Some(member) = state.members.iter_mut().find(|m| m["obi"] == obi.as_str()) else {
+        return sphere_error(StatusCode::NOT_FOUND, "not_found", "no such member");
+    };
     member["card"] = new.clone();
     axum::Json(member.clone()).into_response()
 }

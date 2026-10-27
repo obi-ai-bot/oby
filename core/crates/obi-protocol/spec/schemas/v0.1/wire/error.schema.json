@@ -37,6 +37,7 @@
             "forbidden",
             "not_found",
             "conflict",
+            "feature_not_taken",
             "invitation_invalid",
             "card_invalid",
             "payload_too_large",

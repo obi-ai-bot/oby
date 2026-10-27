@@ -2495,10 +2495,7 @@ async fn a_card_says_its_runtime_once_the_sphere_and_the_team_take_it() {
         let card = read_directory_now(&obid, &sphere);
         let p = params(&card);
         assert_eq!(p["features"], json!(["card_runtime"]));
-        assert_eq!(
-            p["runtime"],
-            json!({"id": "oby", "version": env!("CARGO_PKG_VERSION")})
-        );
+        assert_eq!(p["runtime"], json!({"id": "oby", "version": "0.3.0"}));
         assert_eq!(
             p["vendors"],
             json!(["anthropic"]),
