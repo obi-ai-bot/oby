@@ -335,7 +335,7 @@ fn status_answers_with_engine_obid() {
     assert_eq!(status["github"], "owner");
     assert_eq!(status["checks"], "no app");
     assert_eq!(status["permissions"], json!({"mode": "sandbox"}));
-    // No remote access set up: no tunnel (crate::tunnel, #896).
+    // Remote access is gone: the tunnel is always off (#896), for the apps that still decode it.
     assert_eq!(status["tunnel"], json!({"state": "off", "detail": null}));
     // claudeKeychain left out: obid decided, and the stand-in Keychain holds no Claude login.
     assert_eq!(status["claudeKeychain"], json!({"on": false, "auto": true}));

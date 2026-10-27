@@ -574,7 +574,6 @@ fn the_configuration_it_writes_is_obids_defaults() {
     assert_eq!(config.owner, user_name());
     assert!(!config.telemetry);
     assert_eq!(config.bundled_plugins, rig.prefix().join("share/plugins"));
-    assert_eq!(config.web, rig.prefix().join("share/web"));
     let claude = config
         .agents
         .get()
