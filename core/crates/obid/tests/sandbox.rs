@@ -543,7 +543,10 @@ setTimeout(() => process.exit(0), 3000);";
             .output()
             .unwrap();
         let said = String::from_utf8_lossy(&output.stdout);
-        let own = if loopback {
+        // On Linux the network namespace bubblewrap makes always has a loopback of its own, with
+        // nothing of the host's on it, so a server the check starts answers it; Seatbelt can only
+        // allow or deny the host's.
+        let own = if loopback || cfg!(target_os = "linux") {
             "loopback own"
         } else {
             "loopback no"

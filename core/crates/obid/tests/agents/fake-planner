@@ -5,7 +5,7 @@
 # Its state is in its account's folder ($HOME/.fake-planner unboxed, else $HOME). Boxed (when the
 # brain may read its quoted file) it can write nothing that outlives the call (#655: never its
 # account's folder), so it asks the test's state server (support::planner_state), whose address
-# is in `fake-planner-url` in a folder above its working folder.
+# is in `fake-planner-url` in a folder above its working folder, or, on Linux, in one on its PATH.
 #   plans        a queue, one line per call, the first taken each time:
 #                  EXIT <code> <stderr…>   prints the words on stderr, nothing on stdout, exits
 #                  PRINT <text>            prints the text as it is, and exits 0
@@ -35,6 +35,15 @@ if [ ! -d "$HOME/.fake-planner" ]; then
     if [ -r "$d/fake-planner-url" ]; then url=$(cat "$d/fake-planner-url"); break; fi
     d=$(dirname "$d")
   done
+  # On Linux the box shows nothing above its working folder: the test puts the file in a folder
+  # of its own on PATH instead (support::start_with).
+  if [ -z "$url" ]; then
+    oldifs=$IFS; IFS=:
+    for p in $PATH; do
+      if [ -r "$p/fake-planner-url" ]; then url=$(cat "$p/fake-planner-url"); break; fi
+    done
+    IFS=$oldifs
+  fi
 fi
 line=""
 if [ -n "$url" ]; then

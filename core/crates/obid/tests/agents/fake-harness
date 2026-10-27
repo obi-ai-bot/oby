@@ -46,6 +46,7 @@
 // it; SPEND-TOKENS: <n> ends its turn saying it used n input tokens; JOB-COMMITS: <file> writes the
 // file in its worktree and commits it.
 import { spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -59,8 +60,15 @@ if (argv.includes("--json-schema")) {
 }
 
 const emit = (line) => process.stdout.write(JSON.stringify(line) + "\n");
+// Which process this is, for the tests: a random id, not its pid (under bubblewrap's --unshare-pid
+// on Linux the pid is the namespace's). While it runs it rewrites alive-<id> in its config folder.
+const procId = randomUUID();
 if (process.env.CLAUDE_CONFIG_DIR && !argv.includes("--json-schema")) {
-  appendFileSync(join(process.env.CLAUDE_CONFIG_DIR, "started.jsonl"), JSON.stringify({ pid: process.pid, cwd: process.cwd(), at: Date.now() }) + "\n");
+  const config = process.env.CLAUDE_CONFIG_DIR;
+  appendFileSync(join(config, "started.jsonl"), JSON.stringify({ id: procId, pid: process.pid, config, cwd: process.cwd(), at: Date.now() }) + "\n");
+  const beat = () => { try { writeFileSync(join(config, `alive-${procId}`), String(Date.now())); } catch {} };
+  beat();
+  setInterval(beat, 100).unref();
 }
 const flag = (name) => (argv.indexOf(name) >= 0 ? argv[argv.indexOf(name) + 1] : null);
 const resumed = flag("--resume");
@@ -143,7 +151,7 @@ rl.on("line", (line) => {
   const prompt = typeof message.message.content === "string" ? message.message.content : "";
   appendFileSync(
     join(process.env.CLAUDE_CONFIG_DIR, "turns.jsonl"),
-    JSON.stringify({ at: Date.now(), argv, cwd: process.cwd(), home: process.env.HOME, config: process.env.CLAUDE_CONFIG_DIR, prompt, resumed, pid: process.pid }) + "\n",
+    JSON.stringify({ at: Date.now(), argv, cwd: process.cwd(), home: process.env.HOME, config: process.env.CLAUDE_CONFIG_DIR, prompt, resumed, id: procId, pid: process.pid }) + "\n",
   );
   emit({ type: "system", subtype: "init", cwd: process.cwd(), session_id: session, tools: ["Read", "Bash"], mcp_servers: [{ name: "oby", status: "connected" }], model: flag("--model") ?? "fake" });
   const before = going;

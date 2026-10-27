@@ -451,15 +451,15 @@ fn agents_use_connected_apps_without_ever_seeing_the_login() {
     // The broker token opens the broker, and only this job's: no other route of the runner.
     let probes = &report["probes"];
     assert_eq!(probes["ownToken"], 200, "{probes}");
-    for probe in [
-        "jobs",
-        "connections",
-        "connect",
-        "appleCheck",
-        "noToken",
-        "emptyToken",
-        "twoTokens",
-    ] {
+    // On Linux the agent reaches obid at slirp4netns's 10.0.2.2, a host obid admits only for the
+    // agent's own routes: the runner's are refused for the host (403) before any token is read.
+    let runner_routes = if cfg!(target_os = "linux") { 403 } else { 401 };
+    for probe in ["jobs", "connections", "connect"] {
+        assert_eq!(probes[probe], runner_routes, "{probe}: {probes}");
+    }
+    // The Apple check is the agent's own route, so on Linux too it's the token that's wrong here
+    // (the broker's, not the check's): 401.
+    for probe in ["appleCheck", "noToken", "emptyToken", "twoTokens"] {
         assert_eq!(probes[probe], 401, "{probe}: {probes}");
     }
     let tools = report["answers"]["oby"]["result"]["tools"]

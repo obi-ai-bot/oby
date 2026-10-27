@@ -1122,7 +1122,7 @@ What the Mac found:
 
 ### `POST /v1/agent/apple-check` and `GET /v1/agent/apple-check`
 
-For `oby-check apple` in an agent's sandbox, with `Authorization: Bearer <its job's token>` instead of a Tailscale login. The runner gives each job's agent its token (`OBY_CHECK_TOKEN`), the API's address (`OBY_CHECK_URL`, `http://127.0.0.1:7777`) and the command (first on `PATH`, a script in `OBY_HOME/bin` that runs `oby-runner check`, both shown read-only in bubblewrap). `POST` asks for an Apple check of the job's worktree commit (or picks up the one already asked for that commit); `GET` says where the job's latest one is. Both answer:
+For `oby-check apple` in an agent's sandbox, with `Authorization: Bearer <its job's token>` instead of a Tailscale login. The runner gives each job's agent its token (`OBY_CHECK_TOKEN`), the API's address (`OBY_CHECK_URL`, `http://127.0.0.1:7777`; on Linux `http://10.0.2.2:7777`, slirp4netns's host alias, the one host besides loopback obid admits for this route and an agent's broker) and the command (first on `PATH`, a script in `OBY_HOME/bin` that runs `oby-runner check`, both shown read-only in bubblewrap). `POST` asks for an Apple check of the job's worktree commit (or picks up the one already asked for that commit); `GET` says where the job's latest one is. Both answer:
 
 ```json
 {"check": { …Mac check, "kind": "apple" },
