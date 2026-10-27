@@ -24,6 +24,9 @@ type Live = {
   loaded: Set<string>;           // the conversations whose turns were fetched
   working: Record<string, string>;            // a turn under way, by conversation: what it's on
   words: Record<string, string>;              // its words so far (delta events), by conversation
+  // Oby's words as shown, by conversation: a word at a time toward `to` (its words so far, then its
+  // turn's once that's in; the turn waits, hidden, until they're all shown). History shows at once.
+  pace: Record<string, { to: string; n: number; turn?: string }>;
   waiting: Record<string, Question & { said: string }>;  // Oby's question back, by conversation
   // words to Oby starting a new conversation, shown at once under an id of the app's own
   // ('new:1'); obid's id for it, once known, maps onto that one (alias), so its page stays open
@@ -38,10 +41,13 @@ type Live = {
 
 let state: Live = {
   connection: 'connecting', problem: null, status: null, repos: [], jobs: {}, firstJobs: new Set(), seen: new Set(), inbox: [],
-  conversations: [], turns: {}, loaded: new Set(), working: {}, words: {}, waiting: {}, starting: null, alias: {}, answered: {}, picked: {},
+  conversations: [], turns: {}, loaded: new Set(), working: {}, words: {}, pace: {}, waiting: {}, starting: null, alias: {}, answered: {}, picked: {},
 };
 const listeners = new Set<() => void>();
-const set = (patch: Partial<Live>) => { state = { ...state, ...patch }; publish(); listeners.forEach((l) => l()); };
+const set = (patch: Partial<Live>) => {
+  state = { ...state, ...patch }; publish(); listeners.forEach((l) => l());
+  if (!pacing && Object.keys(state.pace).length) pacing = setInterval(tick, WORD_MS);
+};
 export const useLive = () => useSyncExternalStore((l) => { listeners.add(l); return () => { listeners.delete(l); }; }, () => state);
 export const liveState = () => state;
 
@@ -58,16 +64,17 @@ const realId = (shown: string) => Object.keys(state.alias).find((k) => state.ali
 function chatOf(s: Live, c: Conversation): Chat {
   // a task's card under the answer that started it, not again under each that mentions it
   const carded = new Set<string>();
-  const said: Message[] = (s.turns[c.id] ?? []).map((t) => {
+  const p = s.pace[c.id];
+  const said: Message[] = (s.turns[c.id] ?? []).filter((t) => t.id !== p?.turn).map((t) => {
     const jobs = t.jobs.filter((j) => !carded.has(j) && carded.add(j));
     return { who: t.who === 'user' ? 'you' : 'oby', text: t.text, ago: minutesAgo(t.at), ...(jobs.length ? { jobs } : {}) };
   });
-  const words = s.words[c.id], q = s.waiting[c.id];
-  if (words) said.push({ who: 'oby', text: words, ago: 0, streaming: true });
+  const words = p ? wordsOf(p.to).slice(0, p.n).join('') : s.words[c.id], q = s.waiting[c.id];
+  if (p || words) said.push({ who: 'oby', text: words ?? '', ago: 0, streaming: true });
   return {
     id: s.alias[c.id] ?? c.id, title: c.title, pinned: c.pinned, at: minutesAgo(c.lastActivity), said,
     about: c.tasks?.length ? `Started ${c.tasks.length} task${c.tasks.length === 1 ? '' : 's'}` : '',
-    typing: c.id in s.working, step: words ? undefined : s.working[c.id],
+    typing: c.id in s.working, step: p || words ? undefined : s.working[c.id],
     waiting: q ? { question: q.text, options: q.options } : undefined,
   };
 }
@@ -156,16 +163,19 @@ function apply(s: Live, e: Event): Live {
         alias = { ...alias, [c]: s.starting.id };
       }
       const next = { ...s, alias, turns: { ...s.turns, [c]: merged(s.turns[c] ?? [], [e.turn]) } };
-      // Oby's answer: its turn is over, its words final
-      return e.turn.who === 'oby' ? { ...next, working: without(s.working, c), words: without(s.words, c) } : next;
+      // Oby's answer: its turn is over, its words final (paced on from those shown, if it was talking here)
+      const live = c in s.working || c in s.words || c in s.pace;
+      return e.turn.who === 'oby' ? { ...next, working: without(s.working, c), words: without(s.words, c), pace: live ? paced(s, c, e.turn.text, e.turn.id) : s.pace } : next;
     }
     case 'step': {
       const c = e.step.conversation ?? Object.keys(s.turns).find((k) => s.turns[k].some((t) => t.id === e.step.turn));
       if (!c || e.step.state !== 'running') return s;
       return { ...s, working: { ...s.working, [c]: e.step.text } };
     }
-    case 'delta':
-      return { ...s, working: { ...s.working, [e.delta.conversation]: s.working[e.delta.conversation] ?? 'Writing' }, words: { ...s.words, [e.delta.conversation]: (s.words[e.delta.conversation] ?? '') + e.delta.text } };
+    case 'delta': {
+      const c = e.delta.conversation, words = (s.words[c] ?? '') + e.delta.text;
+      return { ...s, working: { ...s.working, [c]: s.working[c] ?? 'Writing' }, words: { ...s.words, [c]: words }, pace: paced(s, c, words) };
+    }
     case 'accounts':
       return s.status ? { ...s, status: { ...s.status, accounts: e.accounts } } : s;
     case 'conversation': {
@@ -177,6 +187,35 @@ function apply(s: Live, e: Event): Live {
     case 'conversationGone':
       return { ...s, conversations: s.conversations.filter((c) => c.id !== e.id), turns: without(s.turns, e.id) };
   }
+}
+
+// --- Oby's words, a word at a time
+
+// about a word each WORD_MS, faster when they pile up, so they never trail by more than MAX_LAG.
+// With reduced motion they show as they come.
+const WORD_MS = 35, MAX_LAG = 1200;
+const wordsOf = (text: string) => text.match(/\S+\s*/g) ?? [];
+function paced(s: Live, c: string, to: string, turn?: string): Live['pace'] {
+  const p = s.pace[c];
+  if (matchMedia('(prefers-reduced-motion: reduce)').matches || (p?.turn && !turn)) return s.pace;
+  // another turn while one is still shown: it shows whole, this one starts from its first word
+  return { ...s.pace, [c]: { to, turn, n: p?.turn && p.turn !== turn ? 0 : p?.n ?? 0 } };
+}
+let pacing: ReturnType<typeof setInterval> | undefined;
+function tick() {
+  const pace = { ...state.pace };
+  let moved = false;
+  for (const [c, p] of Object.entries(pace)) {
+    // while they come in, only whole words (the last may be cut)
+    const all = wordsOf(p.to).length, ready = p.turn || /\s$/.test(p.to) ? all : all - 1;
+    if (p.n < ready) pace[c] = { ...p, n: p.n + Math.ceil(((ready - p.n) * WORD_MS) / MAX_LAG) };
+    else if (p.turn) delete pace[c];  // all shown: its turn takes over
+    else continue;
+    moved = true;
+  }
+  // idle until more words come
+  if (moved) set({ pace });
+  else { clearInterval(pacing); pacing = undefined; }
 }
 
 // --- following obid
@@ -211,7 +250,7 @@ export function connect() {
 function down(mine: number, problem: string) {
   if (mine !== generation) return;
   generation++;
-  set({ connection: 'down', problem, working: {}, words: {} });
+  set({ connection: 'down', problem, working: {}, words: {}, pace: {} });
   reconnecting = setTimeout(connect, Math.min(10_000, 1000 * 2 ** retry++));
 }
 
@@ -319,6 +358,7 @@ export function ask(said: string, shown?: string, repo?: string): string | undef
   if (repo && !q) set({ picked: { ...state.picked, [id]: { repo, at: new Date().toISOString() } } });
   if (c) set({ waiting: without(state.waiting, c), working: { ...state.working, [c]: 'Thinking' } });
   else set({ starting: { id, said: words } });
+  let failed = false;
   void (async () => {
     try {
       const a = await api.plan(q ? q.said : words, q ? { question: q.text, option: words } : undefined, c ? { conversation: c } : { new: true });
@@ -335,10 +375,12 @@ export function ask(said: string, shown?: string, repo?: string): string | undef
       // the turns of the one it started, from the start
       if (!c && where) { set({ loaded: new Set([...state.loaded, where]) }); set({ turns: { ...state.turns, [where]: merged(state.turns[where] ?? [], await api.conversation({ id: where, limit: 100 })) } }); }
     } catch (e) {
+      failed = true;
       say(e);
     } finally {
+      // (words still being shown carry on to the turn, unless it failed)
       const where = c ?? Object.keys(state.alias).find((k) => state.alias[k] === id);
-      set({ starting: state.starting?.id === id ? null : state.starting, ...(where ? { working: without(state.working, where), words: without(state.words, where) } : {}) });
+      set({ starting: state.starting?.id === id ? null : state.starting, ...(where ? { working: without(state.working, where), words: without(state.words, where), ...(failed ? { pace: without(state.pace, where) } : {}) } : {}) });
     }
   })();
   return id;
