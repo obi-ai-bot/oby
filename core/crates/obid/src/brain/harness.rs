@@ -451,7 +451,7 @@ async fn start_next(shared: &Arc<Shared>, id: &str) -> Result<(), String> {
     let token = new_token();
     let (mcp, url, tetrix) = mcp_config(shared, &place, id);
     write_mcp(&mcp, &url, tetrix.as_deref(), &token)?;
-    let mut flags = claude_flags(shared);
+    let mut flags = claude_flags(shared, tetrix.is_some());
     let key = flags_key(&flags);
     flags.extend(["--mcp-config".into(), mcp.into_os_string()]);
     let launch = shared.jobs.conversation_launch(
@@ -529,8 +529,9 @@ pub fn end_warm_with_conversations(shared: Arc<Shared>) {
     });
 }
 
-/// A conversation's Claude Code's flags, before `--resume` and `--mcp-config`.
-fn claude_flags(shared: &Shared) -> Vec<OsString> {
+/// A conversation's Claude Code's flags, before `--resume` and `--mcp-config`; `tetrix` when its
+/// session gets Tetrix's server.
+fn claude_flags(shared: &Shared, tetrix: bool) -> Vec<OsString> {
     [
         "-p",
         "--input-format",
@@ -554,7 +555,7 @@ fn claude_flags(shared: &Shared) -> Vec<OsString> {
         "--model",
         shared.config.conversation.model.as_str(),
         "--append-system-prompt",
-        orientation(shared).as_str(),
+        orientation(shared, tetrix).as_str(),
     ]
     .iter()
     .map(OsString::from)
@@ -562,7 +563,8 @@ fn claude_flags(shared: &Shared) -> Vec<OsString> {
 }
 
 /// Where a conversation's MCP configuration is (a file in its `HOME`), the URL of Oby's tools
-/// for it, and of obid's Tetrix server for it while Oby is signed in to Tetrix (crate::tetrix).
+/// for it, and of obid's Tetrix server for it while Oby is signed in to Tetrix (crate::tetrix):
+/// the one place a turn asks, so its server and its orientation always agree.
 fn mcp_config(
     shared: &Shared,
     place: &Place,
@@ -1343,7 +1345,7 @@ async fn attempts(
             Some(_) => words.clone(),
             None => first.clone(),
         };
-        let mut flags = claude_flags(shared);
+        let mut flags = claude_flags(shared, tetrix.is_some());
         if session.supervising.is_some()
             && let Some(at) = flags.iter().position(|f| f == TOOLS)
         {
@@ -1703,8 +1705,9 @@ fn first_prompt(words: &str, given: &[Turn]) -> String {
     )
 }
 
-/// [`ORIENTATION`], with the repositories the room holds.
-pub(super) fn orientation(shared: &Shared) -> String {
+/// [`ORIENTATION`], with the repositories the room holds, and [`TETRIX`] when the session gets
+/// Tetrix's server (`tetrix`).
+pub(super) fn orientation(shared: &Shared, tetrix: bool) -> String {
     let repos: Vec<String> = shared
         .config
         .repos
@@ -1736,9 +1739,9 @@ pub(super) fn orientation(shared: &Shared) -> String {
             github.join(", ")
         );
     }
-    // Only while the session gets Tetrix's server (`mcp_config`): a waiting Claude Code started
-    // with the other words isn't given the turn ([`flags_key`]).
-    if shared.tetrix.connected() {
+    // Only when the session gets Tetrix's server (`mcp_config`, never a turn nobody watches): a
+    // waiting Claude Code started with the other words isn't given the turn ([`flags_key`]).
+    if tetrix {
         orientation += TETRIX;
     }
     orientation

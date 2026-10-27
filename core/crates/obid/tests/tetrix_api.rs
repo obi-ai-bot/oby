@@ -1168,30 +1168,138 @@ fn a_conversation_asks_tetrix_for_reads_with_its_turns_token() {
     assert!(!seen.requests.iter().any(|r| r.3.contains("resume_session")));
     drop(seen);
 
-    // Between turns its token lists and calls nothing; any other token is refused.
-    let mcp: Value =
-        serde_json::from_slice(&std::fs::read(place.join("home/oby-mcp.json")).unwrap()).unwrap();
-    let server = &mcp["mcpServers"]["tetrix"];
-    let url = server["url"].as_str().unwrap();
-    let path = &url[url.find("/v1/").unwrap()..];
-    let token = server["headers"]["Authorization"]
-        .as_str()
-        .unwrap()
-        .strip_prefix("Bearer ")
-        .unwrap();
+    // Between turns its token lists and calls nothing; any other token is refused, another
+    // conversation's too.
+    let tetrix_of = |conversation: &str| -> (String, String) {
+        let file = obid
+            .home
+            .join(format!("conversations/{conversation}/home/oby-mcp.json"));
+        let mcp: Value = serde_json::from_slice(&std::fs::read(file).unwrap()).unwrap();
+        let server = &mcp["mcpServers"]["tetrix"];
+        let url = server["url"].as_str().unwrap();
+        let token = server["headers"]["Authorization"].as_str().unwrap();
+        (
+            url[url.find("/v1/").unwrap()..].to_owned(),
+            token.strip_prefix("Bearer ").unwrap().to_owned(),
+        )
+    };
+    let (path, token) = tetrix_of(&conversation);
     let rpc = |token: &str, method: &str| {
         call_with_token(
             &obid,
             token,
             "POST",
-            path,
+            &path,
             Some(&json!({"jsonrpc": "2.0", "id": 1, "method": method,
                          "params": {"name": "search_entities", "arguments": {"query": "x"}}})),
         )
     };
-    let between = rpc(token, "tools/list");
+    let between = rpc(&token, "tools/list");
     assert!(between.text.contains("search_entities"), "{}", between.text);
-    let called = rpc(token, "tools/call");
+    let called = rpc(&token, "tools/call");
     assert_eq!(called.body["error"]["code"], -32600, "{}", called.text);
     assert_eq!(rpc("not-the-turns-token", "tools/list").status, 401);
+    let other = call(
+        &obid,
+        "POST",
+        "/v1/plans",
+        Some(&json!({"said": "SAY Hi.", "new": true})),
+    );
+    let (_, theirs) = tetrix_of(other.body["conversation"].as_str().unwrap());
+    assert_ne!(theirs, token);
+    assert_eq!(rpc(&theirs, "tools/list").status, 401);
+
+    // Work it starts after reading Tetrix is untrusted (last: its job's end sends Tetrix its gaps).
+    let dispatch = format!(
+        "OBY oby_dispatch {}",
+        json!({"repo": "obi-e2e/fixture-app", "task": "Look into the greeting",
+               "kind": "investigate", "title": "Look into it"})
+    );
+    let answer = call(
+        &obid,
+        "POST",
+        "/v1/plans",
+        Some(&json!({"said": dispatch, "conversation": conversation})),
+    );
+    let id = answer.body["jobs"][0]["id"]
+        .as_str()
+        .unwrap_or_else(|| panic!("{}", answer.text));
+    let job = call(&obid, "GET", &format!("/v1/jobs/{id}"), None).body;
+    assert_eq!(job["untrusted"], true, "{job}");
+}
+
+/// A turn nobody watches (a stalled job back in its conversation, crate::brain::supervisor) gets
+/// no Tetrix: no server, and no word of it in its orientation.
+#[test]
+fn a_turn_nobody_watches_gets_no_tetrix() {
+    let folder = Folder::new("tetrix-unwatched");
+    let remote = fixture(&folder.0.join("fixture"));
+    let (base, _seen) = fake_tetrix();
+    let harness = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/agents/fake-harness");
+    let mut config = config(&folder.0, &remote, &harness);
+    config["conversation"] = json!({"agent": "claude"});
+    config["stallAfter"] = json!(2);
+    let account = folder.0.join("home/accounts/stub");
+    std::fs::create_dir_all(&account).unwrap();
+    std::fs::write(account.join(".credentials.json"), "{}").unwrap();
+    let obid = start(&folder.0, &config, None);
+    sign_in(&obid, &base);
+
+    // The owner's words, typed in Oby's app (as tests/supervisor.rs starts its stalls).
+    let started = call_typed(
+        &obid,
+        "POST",
+        "/v1/plans",
+        &json!({"said": "SAY Ready.", "new": true}),
+    );
+    let conversation = started.body["conversation"].as_str().unwrap().to_owned();
+    let place = obid.home.join("conversations").join(&conversation);
+    std::fs::write(place.join("room/supervise.txt"), "MCP tetrix tools/list {}").unwrap();
+    let dispatch = format!(
+        "OBY oby_dispatch {}",
+        json!({"repo": "obi-e2e/fixture-app", "task": "Look into both halves STALLS-ONCE",
+               "kind": "investigate", "mode": "acceptEdits", "title": "Both halves"})
+    );
+    let answer = call_typed(
+        &obid,
+        "POST",
+        "/v1/plans",
+        &json!({"said": dispatch, "conversation": conversation}),
+    );
+    assert!(answer.body["jobs"][0]["id"].is_string(), "{}", answer.text);
+
+    let turns = || -> Vec<Value> {
+        std::fs::read_to_string(place.join("config/turns.jsonl"))
+            .unwrap_or_default()
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect()
+    };
+    let unwatched = within(90, "a turn nobody watches", || {
+        turns().into_iter().find(|t| {
+            t["prompt"]
+                .as_str()
+                .unwrap_or_default()
+                .starts_with("Oby here, not the owner")
+        })
+    });
+    let oriented = |turn: &Value| turn["argv"].to_string().contains("the MCP server tetrix");
+    assert!(!oriented(&unwatched), "{unwatched}");
+    // The owner's own turn had it.
+    assert!(turns().iter().any(|t| {
+        t["prompt"]
+            .as_str()
+            .unwrap_or_default()
+            .ends_with("SAY Ready.")
+            && oriented(t)
+    }));
+    within(30, "its answer", || {
+        let said = call(
+            &obid,
+            "GET",
+            &format!("/v1/conversation?id={conversation}&limit=100"),
+            None,
+        );
+        said.text.contains("mcp: no tetrix").then_some(())
+    });
 }

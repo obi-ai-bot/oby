@@ -1119,6 +1119,10 @@ impl Tetrix {
                 tools.retain(|t| t["name"].as_str().is_some_and(reads));
                 json!({"tools": tools})
             }
+            // A stopped turn calls nothing more, as Oby's own tools (crate::brain::tools).
+            ("tools/call", Some(session)) if !session.control.live() => {
+                failure("The turn was stopped: nothing more happens for it.".into())
+            }
             ("tools/call", Some(session)) => {
                 let tool = params["name"].as_str().unwrap_or("");
                 let arguments = params

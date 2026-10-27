@@ -110,7 +110,7 @@ pub(super) async fn launch(
         resume: resume.clone(),
         model: (!model.is_empty()).then(|| model.clone()),
         plan: false,
-        instructions: Some(orientation(shared)),
+        instructions: Some(orientation(shared, tetrix.is_some())),
         no_commands: true,
         usage: false,
         priced: None,
