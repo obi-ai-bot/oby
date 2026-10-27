@@ -643,10 +643,17 @@ pub fn step(tool: &str, input: &Value) -> String {
     }
 }
 
-/// A search's regular expression in words, for a step: its flags, anchors and escapes left out
-/// (`(?i)\busage\b` is `usage`), `a|b` as `a or b`, a run of anything as `…`, of spaces as a
-/// space. A pattern of nothing but those stays as it was.
+/// A search's regular expression in words, for a step: its flags, anchors and escaped
+/// punctuation left out (`(?i)\busage\b` is `usage`), `a|b` as `a or b`, a run of anything as
+/// `…`, of spaces as a space; character classes and other escapes stay as written. A pattern of
+/// nothing but those stays as it was, and one the secret scan or the vault's values would take
+/// anything out of is `[redacted]`: its words could break up what they'd catch.
 pub fn searched(pattern: &str) -> String {
+    if !crate::scan::matches(pattern).is_empty()
+        || crate::secrets::known().redact(pattern) != pattern
+    {
+        return "[redacted]".into();
+    }
     let mut rest = pattern.trim();
     // Inline flags before it: (?i), (?ms), (?-i).
     while let Some(after) = rest.strip_prefix("(?")
@@ -660,9 +667,16 @@ pub fn searched(pattern: &str) -> String {
     }
     let mut words = String::new();
     let mut chars = rest.chars().peekable();
-    // A quantifier after what's just been put in words: it says nothing more.
-    let skip_quantifier = |chars: &mut std::iter::Peekable<std::str::Chars>| {
-        while chars.next_if(|c| matches!(c, '*' | '+' | '?')).is_some() {}
+    // A quantifier after what's just been put in words (`+`, `*?`, `{3}`): it says nothing more.
+    let skip_quantifier = |chars: &mut std::iter::Peekable<std::str::Chars>| loop {
+        if chars.next_if(|c| matches!(c, '*' | '+' | '?')).is_some() {
+            continue;
+        }
+        if chars.next_if_eq(&'{').is_some() {
+            while chars.next().is_some_and(|c| c != '}') {}
+            continue;
+        }
+        break;
     };
     while let Some(c) = chars.next() {
         match c {
@@ -676,8 +690,27 @@ pub fn searched(pattern: &str) -> String {
                     words.push('…');
                     skip_quantifier(&mut chars);
                 }
-                Some(escaped) => words.push(escaped),
+                Some(escaped) if !escaped.is_ascii_alphanumeric() => words.push(escaped),
+                Some(escaped) => {
+                    words.push('\\');
+                    words.push(escaped);
+                }
             },
+            // A character class says what it says: as written, to its `]`.
+            '[' => {
+                words.push('[');
+                let mut first = true;
+                while let Some(inside) = chars.next() {
+                    words.push(inside);
+                    match inside {
+                        '\\' => words.extend(chars.next()),
+                        '^' if first => continue,
+                        ']' if !first => break,
+                        _ => {}
+                    }
+                    first = false;
+                }
+            }
             '^' | '$' => {}
             '.' if matches!(chars.peek(), Some('*' | '+')) => {
                 words.push_str(" … ");
@@ -882,9 +915,21 @@ mod tests {
             ("TODO", "TODO"),
             ("(?i)", "(?i)"),
             (".*", ".*"),
+            // Character classes and escaped letters say what they say, as written.
+            ("[^a-z]+usage", "[^a-z]+usage"),
+            ("[$]", "[$]"),
+            ("a[|]b", "a[|]b"),
+            ("[]a]", "[]a]"),
+            ("foo\\nbar", "foo\\nbar"),
+            ("\\x41", "\\x41"),
+            ("\\d{3}-\\d{4}", "…-…"),
+            ("(?i)café|naïve", "café or naïve"),
         ] {
             assert_eq!(searched(pattern), words, "{pattern}");
         }
+        // What the scan would take out of the pattern, its words never show.
+        let token = format!("(?i)token ghp_{}", "a".repeat(36));
+        assert_eq!(searched(&token), "[redacted]");
         assert_eq!(
             step("Grep", &json!({"pattern": "(?i)usage"})),
             "Searching for usage"
