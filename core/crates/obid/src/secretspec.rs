@@ -42,9 +42,10 @@
 //!    code host's login (an empty `GH_CONFIG_DIR`, an invalid push URL), and on macOS its only way
 //!    off the Mac is obid's egress proxy, which lets its tool's own services through and decides
 //!    every other site. A vendor host past its tool's API ([`crate::egress::tools_api`]) and any
-//!    site but the registries that serve only published versions and don't serve a CDN's other
-//!    sites for another `Host:` ([`UNFRONTED`]) mark the job ([`site_is_foreign`]): the proxy reads
-//!    a connection's TLS name, not the `Host:` inside it. So do the channels that bring content past
+//!    site but the default registries, which serve only published versions on an edge that
+//!    answers only the TLS hello's host (`crate::egress::REGISTRIES`; never
+//!    `crate::egress::ROUTED_BY_HOST`), mark the job ([`site_is_foreign`]): the proxy reads a
+//!    connection's TLS name, not the `Host:` inside it. So do the channels that bring content past
 //!    the proxy: a vendor's own web search or fetch and any MCP server's answer in the turn
 //!    ([`tool_brings_content`]), a connected app's answer, and Tetrix's or a plug-in's context. A
 //!    marked clone is made again for the next job once no job runs in it, the old one kept aside
@@ -618,29 +619,16 @@ pub fn platform_refusal() -> Option<String> {
 }
 
 /// Whether an agent reaching `host` (not its tool's own: those never come here) makes its job
-/// someone else's code: anything but the registries in [`UNFRONTED`]. A code host, a pull
-/// request's page, a site with code on it, a registry a CDN fronts: what the agent read there
-/// could be anyone's.
+/// someone else's code: anything but the default registries ([`crate::egress::REGISTRIES`]),
+/// which serve only published, immutable versions on an edge that answers only the host the TLS
+/// hello named. A code host, a pull request's page, a site with code on it, and a registry whose
+/// edge serves whichever of its sites the HTTP `Host` names ([`crate::egress::ROUTED_BY_HOST`]:
+/// Fastly's, the Go module proxy) all could carry anyone's code: obid's proxy reads the hello's
+/// name, not the `Host` inside the tunnel, and an owner's card or a rule can still let such a host
+/// through.
 pub fn site_is_foreign(host: &str) -> bool {
-    !UNFRONTED.contains(&host)
+    crate::egress::ROUTED_BY_HOST.contains(&host) || !crate::egress::REGISTRIES.contains(&host)
 }
-
-/// The registries an agent may reach and still be the owner's own: each serves only published,
-/// immutable versions (what the owner's own tests would install), and answered 403 when asked, with
-/// another site's name in its `Host:` header, for that site (tried 2026-10-26): npm, Maven Central,
-/// Gradle's plugins and services, CocoaPods' CDN. obid's proxy reads only a connection's TLS name,
-/// not the `Host:` it carries, so a registry on a CDN that serves its other sites for whatever
-/// `Host:` asks (Fastly's: PyPI, crates.io and Rust's toolchains, RubyGems) could carry anyone's
-/// code; so could one not tried (Yarn's), and the Go module proxy and its checksum database serve
-/// any public commit. Reaching any of those makes the job someone else's code.
-const UNFRONTED: &[&str] = &[
-    "registry.npmjs.org",
-    "repo.maven.apache.org",
-    "repo1.maven.org",
-    "plugins.gradle.org",
-    "services.gradle.org",
-    "cdn.cocoapods.org",
-];
 
 /// Whether a tool call named `name` brings the agent content from somewhere obid's proxy doesn't
 /// see: a web search or fetch its model's vendor runs on its own servers, and any MCP server's
@@ -1673,8 +1661,7 @@ required = false
             "example.com",
             "proxy.golang.org",
             "sum.golang.org",
-            // Fastly's, which serve its other sites for whatever `Host:` asks, and Yarn's, not
-            // tried.
+            // Fastly's, which serve their edge's other sites for whatever `Host:` asks.
             "pypi.org",
             "files.pythonhosted.org",
             "crates.io",
@@ -1683,12 +1670,13 @@ required = false
             "static.rust-lang.org",
             "rubygems.org",
             "index.rubygems.org",
-            "registry.yarnpkg.com",
         ] {
             assert!(site_is_foreign(host), "{host}");
         }
         for host in [
             "registry.npmjs.org",
+            "registry.yarnpkg.com",
+            "repo.yarnpkg.com",
             "repo.maven.apache.org",
             "repo1.maven.org",
             "plugins.gradle.org",
