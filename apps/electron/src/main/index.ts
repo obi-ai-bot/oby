@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, screen } from 'electron';
+import { app, BrowserWindow, ipcMain, screen, shell } from 'electron';
 import { createRequire } from 'node:module';
 import { join } from 'node:path';
 import { bridge, startObid, stopFollowing, type Trusted } from './obid';
@@ -44,6 +44,10 @@ ipcMain.on('full-screen', (e) => { e.returnValue = win?.isFullScreen() ?? false;
 const trusted: Trusted = (e) => !!win && e.sender === win.webContents && e.senderFrame === win.webContents.mainFrame;
 bridge(trusted);
 confirming(trusted);
+// a sign-in page (an agent's, GitHub's, Tetrix's) in the person's browser: https only
+ipcMain.on('open-external', (e, url: unknown) => {
+  if (trusted(e) && typeof url === 'string' && url.startsWith('https://')) void shell.openExternal(url);
+});
 
 function track(on: boolean) {
   if (tracker) clearInterval(tracker);
@@ -96,8 +100,11 @@ function createWindow() {
   win.on('hide', () => track(false));
   win.on('minimize', () => track(false));
   win.on('closed', () => { track(false); stopFollowing(); win = null; });
-  // the page holds obid's API through main: it never leaves for another page or opens one
-  win.webContents.on('will-navigate', (e) => e.preventDefault());
+  // the page holds obid's API through main: it never leaves for another page or opens one (in dev,
+  // only to itself with other words after ?, like ?welcome)
+  win.webContents.on('will-navigate', (e, url) => {
+    if (!dev || new URL(url).origin !== new URL(win!.webContents.getURL()).origin) e.preventDefault();
+  });
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   // full screen hides the traffic lights: the page moves its title bar over.
   // Besides entering and leaving, re-check whenever the window comes back

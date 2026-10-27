@@ -21,6 +21,8 @@ contextBridge.exposeInMainWorld('app', {
     ipcRenderer.on('cursor', listener);
     return () => { ipcRenderer.off('cursor', listener); };
   },
+  // a sign-in page in the person's browser (https only)
+  openExternal: (url: string) => ipcRenderer.send('open-external', url),
   // obid, through main, which holds its token (main/obid.ts): one call, and the event stream's
   // text as it comes, then how it ended. Following again replaces the stream before.
   obid: {

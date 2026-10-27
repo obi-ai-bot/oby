@@ -43,6 +43,7 @@ let state: Live = {
 const listeners = new Set<() => void>();
 const set = (patch: Partial<Live>) => { state = { ...state, ...patch }; publish(); listeners.forEach((l) => l()); };
 export const useLive = () => useSyncExternalStore((l) => { listeners.add(l); return () => { listeners.delete(l); }; }, () => state);
+export const liveState = () => state;
 
 const minutesAgo = (iso: string | null | undefined) => (iso ? Math.max(0, (Date.now() - Date.parse(iso)) / 60_000) : 0);
 const byAt = (a: Turn, b: Turn) => a.at.localeCompare(b.at);
@@ -255,7 +256,7 @@ async function allConversations() {
 
 // what went wrong with something the app did, for a moment
 let clearing: ReturnType<typeof setTimeout> | undefined;
-function say(e: unknown) {
+export function say(e: unknown) {
   set({ problem: e instanceof Error ? e.message : String(e) });
   clearTimeout(clearing);
   clearing = setTimeout(() => { if (state.connection === 'live') set({ problem: null }); }, 6000);

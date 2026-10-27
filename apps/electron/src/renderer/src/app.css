@@ -1744,6 +1744,9 @@ button.sphere-logo-badge:hover { color: var(--ink); background: #3a3a39; }
 .setup-row .wl-sub { white-space: normal; }
 .setup .tc-options { margin-top: 10px; }
 .setup-rows + .tc-options { margin-top: 12px; }
+/* Claude Code's code, pasted from its sign-in page (on obid) */
+.setup-code { margin-top: 8px; display: flex; gap: 8px; }
+.setup-code .set-field { flex: 1; min-width: 0; width: auto; }
 .tc-option:disabled { opacity: 0.3; cursor: default; }
 
 /* how the app stands with obid (Home's Connection): connecting, or why obid isn't answering, or
