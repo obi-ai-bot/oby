@@ -338,10 +338,10 @@ pub fn prompt_line(prs: &[Pr]) -> Option<String> {
 
 /// The quoted context items for the agent: one per pull request, who opened it, its branch,
 /// its title and its diff.
-pub fn context_items(found: &[(Pr, String)]) -> Vec<obi_plugin_api::ContextItem> {
+pub fn context_items(found: &[(Pr, String)]) -> Vec<crate::tetrix::ContextItem> {
     found
         .iter()
-        .map(|(pr, diff)| obi_plugin_api::ContextItem {
+        .map(|(pr, diff)| crate::tetrix::ContextItem {
             title: format!(
                 "Pull request #{} by @{}{}: {}",
                 pr.number,

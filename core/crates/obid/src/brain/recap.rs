@@ -297,7 +297,7 @@ where
     // What obid knows (titles from GitHub, Slack or an alert among it) loses every secret obid
     // and the vault know, and each line the secret scan flags, before any model sees it, quoted
     // like the briefing.
-    let quoted = crate::event_work::for_agent(&facts.text(now - since)).ok()?;
+    let quoted = for_agent(&facts.text(now - since)).ok()?;
     let user = format!(
         "{}\n\n{}",
         fence_rule(&nonce, "obid's own records of the jobs and the inbox"),
@@ -599,6 +599,23 @@ pub fn keep(shared: Arc<Shared>, since: i64, now: i64) {
             shared.presence.hold(recap);
         }
     });
+}
+
+/// `text` as an agent may get it: the secrets obid knows and the vault's taken out (one vault read
+/// for the whole text), then, line by line, a line the secret scan still flags left out. Fails
+/// when the vault can't be read.
+fn for_agent(text: &str) -> Result<String, String> {
+    let clean = crate::vault::for_agent(&crate::secrets::known().redact(text))?;
+    let mut kept = Vec::new();
+    for line in clean.lines() {
+        let line = line.to_owned();
+        if crate::scan::matches(&line).is_empty() {
+            kept.push(line);
+        } else {
+            kept.push("(A line is left out: the secret scan flagged it.)".to_owned());
+        }
+    }
+    Ok(kept.join("\n") + "\n")
 }
 
 #[cfg(test)]
@@ -1239,5 +1256,16 @@ mod tests {
         // Without the sort, the duplicate would have been news.
         assert!(facts(&[], &inbox, T0).happened());
         let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// A line the secret scan flags is left out of what an agent gets, the rest kept.
+    #[test]
+    fn a_line_the_scan_flags_is_left_out() {
+        let key = ["ghp_", &"a1B2c3D4e5".repeat(4)[..36]].concat();
+        let text = format!("first line\nGITHUB_TOKEN={key}\nlast line\n");
+        let clean = super::for_agent(&text).unwrap();
+        assert!(!clean.contains(&key), "{clean}");
+        assert!(clean.contains("first line") && clean.contains("last line"));
+        assert!(clean.contains("left out"));
     }
 }

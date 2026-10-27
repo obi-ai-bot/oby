@@ -60,8 +60,6 @@ pub struct Shared {
     pub presence: crate::brain::recap::Presence,
     /// Its Sphere: membership, exchanges, the inbox and decisions.
     pub link: Arc<crate::sphere::Link>,
-    /// The plug-in host (`GET` and `PUT /v1/obid/plugins`).
-    pub plugins: Arc<crate::plugins::Plugins>,
     /// The accounts' sign-ins under way (crate::accounts).
     pub sign_ins: crate::accounts::SignIns,
     /// The GitHub login and its sign-in (crate::github_login).
@@ -298,11 +296,6 @@ pub fn router(shared: Arc<Shared>) -> Router {
             "/v1/memory/suggestions/{id}/dismiss",
             post(crate::memory::dismiss),
         )
-        .route("/v1/obid/plugins", get(crate::plugins::list))
-        .route(
-            "/v1/obid/plugins/{id}",
-            axum::routing::put(crate::plugins::set),
-        )
         .route(
             "/v1/obid/decisions",
             get(crate::sphere::routes::decisions).post(crate::sphere::routes::propose_decision),
@@ -310,27 +303,6 @@ pub fn router(shared: Arc<Shared>) -> Router {
         .route(
             "/v1/obid/decisions/{id}",
             axum::routing::delete(crate::sphere::routes::forget),
-        )
-        .route(
-            "/v1/obid/sharing/mac",
-            get(crate::sphere::routes::mac).put(crate::sphere::routes::set_mac),
-        )
-        .route(
-            "/v1/obid/sharing/mac/stop",
-            post(crate::sphere::routes::stop_guests),
-        )
-        .route("/v1/obid/sharing/macs", get(crate::sphere::routes::macs))
-        .route(
-            "/v1/obid/sharing/grants",
-            get(crate::sphere::routes::grants).put(crate::sphere::routes::put_grant),
-        )
-        .route(
-            "/v1/obid/sharing/grants/{id}",
-            axum::routing::delete(crate::sphere::routes::delete_grant),
-        )
-        .route(
-            "/v1/obid/sharing/shared",
-            get(crate::sphere::routes::shared_with_me),
         )
         .route("/v1/obid/sphere/audit", get(crate::sphere::routes::audit))
         .route(

@@ -4,20 +4,13 @@
 
 pub mod answering;
 pub mod approval;
-pub mod channel;
 pub mod decisions;
 pub mod exchange;
-pub mod guest;
-pub mod hosting;
 pub mod inbox;
 pub mod link;
 pub mod membership;
 pub mod pins;
 pub mod routes;
-mod sealed;
-pub mod shares;
 pub mod sharing;
-pub mod vm;
-pub mod vm_image;
 
 pub use link::Link;

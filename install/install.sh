@@ -438,7 +438,6 @@ else
   "agents": {
     "claude": {"bin": "claude", "accounts": [{"id": "default", "name": "Default", "configDir": null}]}$codex
   },
-  "bundledPlugins": "$prefix/share/plugins",
   "telemetry": false
 }
 EOF

@@ -9,7 +9,6 @@
 //!             "cursor": {"bin": "cursor-agent", "accounts": [{"id": "cursor", "name": "Cursor", "configDir": "/abs/path/cursor"}]}},
 //!  "repos": [{"repo": "obi-e2e/fixture-app", "remote": "file:///abs/path/remote.git", "defaultBranch": "main", "check": "node --test"}],
 //!  "allowFileRemotes": false,
-//!  "bundledPlugins": "/abs/path/obi/plugins",
 //!  "telemetry": false}
 //! ```
 //!
@@ -67,8 +66,6 @@ struct File {
     #[serde(default)]
     allow_file_remotes: bool,
     #[serde(default)]
-    bundled_plugins: Option<PathBuf>,
-    #[serde(default)]
     telemetry: bool,
     /// How long one conversation turn may act, in seconds: 1 to 110, 110 when left out.
     #[serde(default)]
@@ -105,24 +102,9 @@ struct File {
     /// (crate::jobs, `own_sandbox`); left out, none.
     #[serde(default)]
     claude_own_sandbox: Vec<String>,
-    /// Sharing this Mac (crate::sphere::hosting): where `obi-vm` and the guest image are.
-    #[serde(default)]
-    vm_helper: Option<PathBuf>,
-    #[serde(default)]
-    vm_image: Option<PathBuf>,
-    #[serde(default)]
-    vm_image_url: Option<String>,
     /// The control plane the iPhone's pushes go through (crate::push).
     #[serde(default)]
     push_relay: Option<String>,
-    /// The least seconds between two run_requests taken from one teammate's owner (900 when left
-    /// out; 0 turns it off, for tests or an owner who wants that).
-    #[serde(default)]
-    guest_request_every: Option<i64>,
-    /// Where a job run on another Mac sends its model calls from here (crate::sphere::guest):
-    /// the providers' own APIs when it's left out. Tests point it at a stand-in.
-    #[serde(default)]
-    guest_model_api: Option<String>,
     /// How conversations run (crate::brain::harness): `{"agent", "model", "budget"}`.
     #[serde(default)]
     conversation: Option<ConversationSetting>,
@@ -241,10 +223,6 @@ pub struct Config {
     /// the file), and GitHub's that gh can push to (crate::repos). Every copy shares them.
     pub repos: crate::repos::Repos,
     pub allow_file_remotes: bool,
-    /// The plug-ins obid ships (`plugins/<id>`), installed into `home/plugins/<id>` at start when
-    /// missing, disabled (docs/ARCHITECTURE.md 5.3, step 1): `bundledPlugins`, or when it is left
-    /// out [`default_bundled_plugins`].
-    pub bundled_plugins: PathBuf,
     /// False unless the owner turns it on; obid sends nothing to anyone otherwise.
     pub telemetry: bool,
     /// Where the owner's vault is (crate::vault).
@@ -289,30 +267,10 @@ pub struct Config {
     pub claude_own_sandbox: Vec<String>,
     /// How conversations run.
     pub conversation: Conversation,
-    /// `vmHelper` and `vmImage`: `obi-vm` and the guest image's folder, when not the defaults
-    /// (crate::sphere::hosting::Setup).
-    pub vm_helper: Option<PathBuf>,
-    pub vm_image: Option<PathBuf>,
-    /// `vmImageUrl`: where obid fetches the guest image from when sharing is turned on and it keeps
-    /// the image itself (no `vmImage`); https://downloads.oby.deskree.com/vm when left out.
-    pub vm_image_url: Option<String>,
-    /// `guestRequestEvery`: the least seconds between two run_requests taken from one teammate's
-    /// owner; 900 when left out, 0 for off (crate::sphere::hosting). Never negative.
-    pub guest_request_every: Option<i64>,
-    /// `guestModelApi`: the model API a guest job's calls go to from here, when not the providers'.
-    pub guest_model_api: Option<String>,
     /// `pushRelay`: the control plane the iPhone's sealed pushes go through, as its origin
     /// (crate::push); Deskree's, `https://oby-control.deskree.com`, when left out. An iPhone's
     /// registration with any other is refused.
     pub push_relay: String,
-}
-
-/// Where the plug-ins obid ships are when the configuration doesn't say: the `plugins/` folder
-/// of the repository this obid was built from (`core/crates/obid/../../../plugins`).
-pub fn default_bundled_plugins() -> PathBuf {
-    crate::app::resources()
-        .map(|dir| dir.join("plugins"))
-        .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../plugins"))
 }
 
 impl Config {
@@ -469,30 +427,6 @@ impl Config {
                 return invalid(format!("repos: {}'s defaultBranch is empty.", repo.repo));
             }
         }
-        if let Some(dir) = &file.bundled_plugins
-            && !dir.is_absolute()
-        {
-            return invalid(format!(
-                "bundledPlugins is {dir:?}: it must be an absolute path, the folder of the plug-ins obid ships."
-            ));
-        }
-        // The guest image comes over https; plain http only from this machine (a test's server).
-        // Parsed, never matched as text: `http://127.0.0.1:1@evil.example/vm` is evil.example's.
-        if let Some(url) = &file.vm_image_url {
-            let fine = reqwest::Url::parse(url)
-                .ok()
-                .filter(|u| u.username().is_empty() && u.password().is_none())
-                .is_some_and(|u| match (u.scheme(), u.host_str()) {
-                    ("https", Some(host)) => !host.is_empty(),
-                    ("http", Some(host)) => matches!(host, "127.0.0.1" | "localhost" | "[::1]"),
-                    _ => false,
-                });
-            if !fine {
-                return invalid(format!(
-                    "vmImageUrl is {url:?}: it must be https:// (plain http:// only on this machine)."
-                ));
-            }
-        }
         let push_relay = match &file.push_relay {
             None => crate::push::RELAY.to_owned(),
             Some(url) => match crate::push::origin(url) {
@@ -505,13 +439,6 @@ impl Config {
                 }
             },
         };
-        if let Some(every) = file.guest_request_every
-            && every < 0
-        {
-            return invalid(format!(
-                "guestRequestEvery is {every}: it must be 0 (off) or more seconds."
-            ));
-        }
 
         let vault = match &file.vault {
             None => crate::vault::Location::default_for(&file.home),
@@ -624,7 +551,6 @@ impl Config {
             agents: crate::accounts::Live::new(file.agents),
             repos: crate::repos::Repos::new(file.repos),
             allow_file_remotes: file.allow_file_remotes,
-            bundled_plugins: file.bundled_plugins.unwrap_or_else(default_bundled_plugins),
             telemetry: file.telemetry,
             vault,
             turn_budget: std::time::Duration::from_secs(turn_budget),
@@ -638,11 +564,6 @@ impl Config {
             ignored: file.ignored.into_keys().chain(inside).collect(),
             cursor_keychain: file.cursor_keychain,
             claude_own_sandbox: file.claude_own_sandbox,
-            vm_helper: file.vm_helper,
-            vm_image: file.vm_image,
-            vm_image_url: file.vm_image_url,
-            guest_request_every: file.guest_request_every,
-            guest_model_api: file.guest_model_api,
             push_relay,
             conversation: Conversation {
                 harness,
@@ -1174,28 +1095,6 @@ mod tests {
     }
 
     #[test]
-    fn bundled_plugins_are_the_repositorys_unless_given() {
-        let config = Config::parse(&with(serde_json::json!({}))).unwrap();
-        assert_eq!(config.bundled_plugins, default_bundled_plugins());
-        assert!(
-            config
-                .bundled_plugins
-                .join("tetrix/obi-plugin.json")
-                .is_file(),
-            "{:?}",
-            config.bundled_plugins
-        );
-        let config = Config::parse(&with(
-            serde_json::json!({"bundledPlugins": "/opt/obi/plugins"}),
-        ))
-        .unwrap();
-        assert_eq!(config.bundled_plugins, PathBuf::from("/opt/obi/plugins"));
-        assert!(
-            problem(&with(serde_json::json!({"bundledPlugins": "plugins"}))).contains("absolute")
-        );
-    }
-
-    #[test]
     fn home_is_absolute() {
         assert!(problem(&with(serde_json::json!({"home": "obid-home"}))).contains("absolute"));
     }
@@ -1416,29 +1315,6 @@ mod tests {
         );
         let agents = serde_json::json!({"gemini": {"bin": "gemini"}});
         assert!(Config::parse(&with(serde_json::json!({ "agents": agents }))).is_err());
-        assert!(
-            problem(&with(serde_json::json!({"guestRequestEvery": -1})))
-                .contains("guestRequestEvery is -1")
-        );
-        assert!(Config::parse(&with(serde_json::json!({"guestRequestEvery": 0}))).is_ok());
-        for bad in [
-            "http://downloads.example.com/vm",
-            "http://127.0.0.1:1@evil.example/vm",
-            "https://user:pass@downloads.example.com/vm",
-            "ftp://127.0.0.1/vm",
-        ] {
-            assert!(
-                problem(&with(serde_json::json!({"vmImageUrl": bad})))
-                    .contains("it must be https://"),
-                "{bad}"
-            );
-        }
-        for ok in [
-            "https://downloads.oby.deskree.com/vm",
-            "http://127.0.0.1:8080/vm",
-        ] {
-            assert!(Config::parse(&with(serde_json::json!({"vmImageUrl": ok}))).is_ok());
-        }
         // The iPhone's pushes: Deskree's control plane unless it says another, https only.
         let relay = |config: &str| Config::parse(config).unwrap().push_relay;
         assert_eq!(

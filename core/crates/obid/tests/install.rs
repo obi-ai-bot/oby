@@ -573,7 +573,6 @@ fn the_configuration_it_writes_is_obids_defaults() {
     assert_eq!(config.home, rig.obid_home());
     assert_eq!(config.owner, user_name());
     assert!(!config.telemetry);
-    assert_eq!(config.bundled_plugins, rig.prefix().join("share/plugins"));
     let claude = config
         .agents
         .get()
@@ -583,7 +582,7 @@ fn the_configuration_it_writes_is_obids_defaults() {
     assert_eq!(claude.accounts.len(), 1);
     assert_eq!(claude.accounts[0].config_dir, None);
     assert!(config.agents.get().cursor.is_none());
-    // The plug-ins and the web app obid ships are where the configuration says.
+    // An older archive's share/ folders are installed as they are.
     assert!(
         rig.prefix()
             .join("share/plugins/demo/obi-plugin.json")
@@ -1221,22 +1220,12 @@ fn the_packager_builds_the_archive_the_installer_reads() {
     let folder = Folder::new("package");
     let bin = folder.0.join("obid");
     write_executable(&bin, "#!/bin/sh\necho \"obid 1.2.3\"\n");
-    let plugins = folder.0.join("plugins");
-    std::fs::create_dir_all(plugins.join("one")).unwrap();
-    std::fs::write(plugins.join("one/obi-plugin.json"), "{}").unwrap();
-    let web = folder.0.join("dist");
-    std::fs::create_dir_all(&web).unwrap();
-    std::fs::write(web.join("index.html"), "<html></html>").unwrap();
     let out_dir = folder.0.join("out");
-    let run = |web: &Path| {
+    let run = || {
         Command::new("sh")
             .arg(script("package.sh"))
             .arg("--bin")
             .arg(&bin)
-            .arg("--plugins")
-            .arg(&plugins)
-            .arg("--web")
-            .arg(web)
             .arg("--out")
             .arg(&out_dir)
             .args(["--target", "linux-x86_64"])
@@ -1245,7 +1234,7 @@ fn the_packager_builds_the_archive_the_installer_reads() {
             .unwrap()
     };
     std::fs::create_dir_all(folder.0.join("tmp")).unwrap();
-    let out = run(&web);
+    let out = run();
     assert!(out.status.success(), "{}", text(&out));
     let archive = out_dir.join("obid-linux-x86_64.tar.gz");
     assert_eq!(
@@ -1258,16 +1247,12 @@ fn the_packager_builds_the_archive_the_installer_reads() {
         .output()
         .unwrap();
     let listing = String::from_utf8(listing.stdout).unwrap();
-    for entry in [
-        "bin/obid",
-        "share/plugins/one/obi-plugin.json",
-        "share/web/index.html",
-    ] {
-        assert!(
-            listing.lines().any(|l| l.trim_start_matches("./") == entry),
-            "{entry}\n{listing}"
-        );
-    }
+    let entries: Vec<&str> = listing
+        .lines()
+        .map(|l| l.trim_start_matches("./").trim_end_matches('/'))
+        .filter(|l| !l.is_empty())
+        .collect();
+    assert_eq!(entries, ["bin", "bin/obid"], "{listing}");
     // Its checksum file is the one the installer reads.
     let sums = std::fs::read_to_string(out_dir.join("obid-linux-x86_64.tar.gz.sha256")).unwrap();
     assert_eq!(
@@ -1275,21 +1260,6 @@ fn the_packager_builds_the_archive_the_installer_reads() {
         Some(sha256(&archive).as_str())
     );
     assert!(sums.trim_end().ends_with("obid-linux-x86_64.tar.gz"));
-
-    // Without a built web app it still packs, and says so.
-    let none = run(&folder.0.join("missing-dist"));
-    assert!(none.status.success(), "{}", text(&none));
-    assert!(text(&none).contains("no web app"), "{}", text(&none));
-    let listing = Command::new("tar")
-        .arg("-tzf")
-        .arg(&archive)
-        .output()
-        .unwrap();
-    assert!(
-        !String::from_utf8(listing.stdout)
-            .unwrap()
-            .contains("share/web")
-    );
 }
 
 /// The installed service, started for real: the `systemctl` stand-in runs the unit's `ExecStart`
