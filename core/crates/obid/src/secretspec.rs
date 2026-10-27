@@ -24,7 +24,28 @@
 //! teammates', pull request authors', received work, and content that steered the agent. An agent
 //! that never read foreign input counts as the owner's own, as the owner running the tests on their
 //! own laptop would. Commit metadata can't tell where a tree came from, so obid controls the
-//! inputs instead:
+//! inputs, and **fails closed**: a job is eligible only if every input it ever received came from
+//! an allowlisted channel, and anything else, a channel no one listed included, makes it
+//! someone else's code when it arrives (and marks the owner's clone, as below):
+//!
+//! - **The owner's own words typed in Oby's apps**: a job started through the jobs API
+//!   (`Job::vetted`), and the owner's words sent to it (`Source::Owner`). Not a job Oby's brain
+//!   planned (its briefing quotes the inbox and other jobs), an event's, a routine's, the Lead's
+//!   brief, an inbox offer, nor words from the brain, an event, the orchestrator or a Confirm of what
+//!   Oby proposed (obid's own Try again aside).
+//! - **The text of an issue or pull request the owner alone wrote**: its body, its title and every
+//!   comment, edit, rename, review and review comment, every list whole
+//!   (`crate::github_work::owners_only`; [`others_wrote`]).
+//! - **The base repository's code** (2 and 4 below).
+//! - **Tool calls of kinds obid knows are safe** ([`tool_is_known_safe`]): a file read, write, edit
+//!   or search, a command inside the job's sandbox, its own to-do list, obid's own question to the
+//!   owner. Anything else (a vendor's own web search or fetch, any MCP tool or resource, a helper
+//!   agent, an MCP server's tool descriptions given at launch, and any kind an agent adds later or
+//!   obid doesn't parse: Claude Code's unparsed blocks, Codex's helper threads and unknown items,
+//!   Cursor's unknown kinds) marks the job. So does network egress past the tool's API and the
+//!   default registries (2).
+//!
+//! What that takes:
 //!
 //! 1. **The check runs only the commit**, in its own checkout (above). The turn that made it is
 //!    over: on macOS its sandbox's watcher kills everything the turn started, a process that
@@ -316,7 +337,8 @@ pub async fn protected_base(gh: &Path, repo: &str, base: &str) -> Result<(), Str
     let not = format!(
         "its base, {base}, isn't a branch {repo} lets in only through a reviewed pull request, for the login Oby pushes as too"
     );
-    let login = crate::github_login::read_status(gh)
+    // `current_user_can_bypass` is the signed-in login's: there must be one.
+    crate::github_login::read_status(gh)
         .await
         .user
         .ok_or_else(|| {
@@ -352,24 +374,15 @@ pub async fn protected_base(gh: &Path, repo: &str, base: &str) -> Result<(), Str
             }
         }
     }
-    // Classic protection: required reviews, held for admins (`enforce_admins`), with no allowance
-    // for the login, a team or an app.
+    // Classic protection: required reviews, held for admins (`enforce_admins`), with no bypass
+    // allowance for anyone.
     if let Some(protection) = ask(format!("repos/{repo}/branches/{base}/protection")).await {
         let reviews = &protection["required_pull_request_reviews"];
         let allowances = &reviews["bypass_pull_request_allowances"];
-        // The login by name, or any team or app: obid can't tell whose a team or an app is.
-        let allowed = allowances["users"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .any(|user| {
-                user["login"]
-                    .as_str()
-                    .is_some_and(|l| l.eq_ignore_ascii_case(&login))
-            })
-            || ["teams", "apps"]
-                .iter()
-                .any(|kind| allowances[*kind].as_array().is_some_and(|a| !a.is_empty()));
+        // Anyone allowed past it, a user, a team or an app, is someone whose push skips the review.
+        let allowed = ["users", "teams", "apps"]
+            .iter()
+            .any(|kind| allowances[*kind].as_array().is_some_and(|a| !a.is_empty()));
         let reviewed = reviews["required_approving_review_count"]
             .as_u64()
             .is_some_and(|n| n >= 1)
@@ -630,64 +643,55 @@ pub fn site_is_foreign(host: &str) -> bool {
     crate::egress::ROUTED_BY_HOST.contains(&host) || !crate::egress::REGISTRIES.contains(&host)
 }
 
-/// Whether a tool call named `name` brings the agent content from somewhere obid's proxy doesn't
-/// see: a web search or fetch its model's vendor runs on its own servers, and any MCP server's
-/// answer (obid's connected apps, Tetrix, a plug-in's), but obid's own question to the owner,
-/// whose answer is the owner's words.
-pub fn tool_brings_content(name: &str) -> bool {
+/// Whether a tool call named `name` is of a kind obid knows keeps the job the owner's own: a
+/// file read, write, edit or search inside the worktree, a command inside the job's sandbox (what
+/// it reaches past the Mac goes through obid's proxy, which decides and marks), its own to-do
+/// list, a plan's end, or obid's own question to the owner. Fail closed: anything else (a vendor's
+/// web search or fetch, any MCP server's tool or resource, a helper agent whose own calls obid
+/// may not see, a kind an agent adds later or obid doesn't parse) may bring it someone else's
+/// words.
+pub fn tool_is_known_safe(name: &str) -> bool {
     let ask_owner = format!("mcp__oby__{}", crate::permissions::ASK_OWNER);
-    matches!(name, "WebSearch" | "WebFetch") || (name.starts_with("mcp__") && name != ask_owner)
+    SAFE_TOOLS.contains(&name) || name == ask_owner
 }
 
+/// The tools [`tool_is_known_safe`] knows: Claude Code's own names, which the Codex and Cursor
+/// adapters name theirs after (crate::codex, `tool_call`; crate::acp, `named`).
+const SAFE_TOOLS: &[&str] = &[
+    "Read",
+    "Write",
+    "Edit",
+    "MultiEdit",
+    "NotebookEdit",
+    "NotebookRead",
+    "Glob",
+    "Grep",
+    "LS",
+    "Bash",
+    "BashOutput",
+    "KillShell",
+    "KillBash",
+    "TodoWrite",
+    "TodoRead",
+    "ExitPlanMode",
+    "StructuredOutput",
+    "AskUserQuestion",
+];
+
 /// Why issue or pull request `number` of `repo` (`kind`, `issue` or `pr`) isn't only the owner's
-/// own words, or none: by the threat model, what anyone else wrote there (its body, a comment, a
-/// review) is content that may steer the agent, whatever they may do elsewhere (an organisation
-/// member's words count as the owner's for other purposes, `crate::github_work`). What GitHub
-/// can't say is a no.
+/// own words, or none: by the threat model, what anyone else wrote there (its body, its title, an
+/// edit, a comment, a review or a review's comment) is content that may steer the agent, whatever
+/// they may do elsewhere (an organisation member's words count as the owner's for other
+/// purposes, `crate::github_work::Owner::trusts`). Read as `crate::github_work` reads who wrote an
+/// issue, every list whole; what GitHub can't say is a no.
 pub async fn others_wrote(gh: &Path, repo: &str, kind: &str, number: u64) -> Option<String> {
-    let owner = crate::github_login::read_status(gh).await.user;
-    let Some(owner) = owner else {
-        return Some(format!(
-            "obid's gh isn't signed in to say who wrote {kind} #{number}"
-        ));
-    };
-    let fields = if kind == "pr" {
-        "author,comments,reviews"
+    let name = if kind == "pr" {
+        "pull request"
     } else {
-        "author,comments"
+        "issue"
     };
-    let what = if kind == "pr" { "pr" } else { "issue" };
-    let n = number.to_string();
-    let said = crate::github::output(gh, &[what, "view", &n, "-R", repo, "--json", fields])
-        .await
-        .ok()
-        .and_then(|said| serde_json::from_str::<serde_json::Value>(&said).ok());
-    let Some(said) = said else {
-        return Some(format!("GitHub didn't say who wrote {kind} #{number}"));
-    };
-    let mut writers = vec![&said["author"]];
-    for list in ["comments", "reviews"] {
-        writers.extend(
-            said[list]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .map(|c| &c["author"]),
-        );
-    }
-    let someone_else = writers.iter().any(|author| {
-        !author["login"]
-            .as_str()
-            .is_some_and(|login| login.eq_ignore_ascii_case(&owner))
-    });
-    someone_else.then(|| {
-        let name = if kind == "pr" {
-            "pull request"
-        } else {
-            "issue"
-        };
-        format!("it works from {name} #{number}, which someone else wrote in")
-    })
+    (!crate::github_work::owners_only(gh, repo, number).await)
+        .then(|| format!("it works from {name} #{number}, which someone else wrote in or GitHub didn't say who wrote"))
 }
 
 /// A checkout of commit `head` that obid makes for the check, apart from the job's: its worktree
@@ -1296,6 +1300,10 @@ required = false
                     r#"{"required_pull_request_reviews":{"required_approving_review_count":1,"bypass_pull_request_allowances":{"users":[{"login":"Wellington"}]}},"enforce_admins":{"enabled":true}}"#,
                 ),
                 (
+                    "repos/o/r/branches/someone-allowed/protection",
+                    r#"{"required_pull_request_reviews":{"required_approving_review_count":1,"dismiss_stale_reviews":true,"bypass_pull_request_allowances":{"users":[{"login":"ernesto"}]}},"enforce_admins":{"enabled":true}}"#,
+                ),
+                (
                     "repos/o/r/branches/team-allowed/protection",
                     r#"{"required_pull_request_reviews":{"required_approving_review_count":1,"bypass_pull_request_allowances":{"teams":[{"slug":"core"}]}},"enforce_admins":{"enabled":true}}"#,
                 ),
@@ -1327,6 +1335,7 @@ required = false
             "weak",
             "admins-skip",
             "allowed",
+            "someone-allowed",
             "team-allowed",
             "app-allowed",
             "no-approvals",
@@ -1687,10 +1696,10 @@ required = false
         }
     }
 
-    /// A vendor's own web search or fetch and any MCP server's answer bring content obid's proxy
-    /// doesn't see; asking the owner doesn't; obid's own tools don't.
+    /// Only the tools obid knows are safe keep a job the owner's: a vendor's search or fetch, any
+    /// MCP server's tool or resource, a helper, a kind obid doesn't know don't.
     #[test]
-    fn tools_that_bring_content() {
+    fn only_known_tools_are_safe() {
         for name in [
             "WebSearch",
             "WebFetch",
@@ -1698,45 +1707,142 @@ required = false
             "mcp__oby__linear_search",
             "mcp__a-plugin__lookup",
         ] {
-            assert!(tool_brings_content(name), "{name}");
+            assert!(!tool_is_known_safe(name), "{name}");
         }
-        for name in ["mcp__oby__oby_ask_owner", "Bash", "Read", "Edit", "Agent"] {
-            assert!(!tool_brings_content(name), "{name}");
+        for name in [
+            "Agent",
+            "Task",
+            "Tool",
+            "ListMcpResourcesTool",
+            "ReadMcpResourceTool",
+            "mcp__codex__read_mcp_resource",
+            "server_tool_use",
+            "SomeToolAddedLater",
+        ] {
+            assert!(!tool_is_known_safe(name), "{name}");
+        }
+        for name in [
+            "mcp__oby__oby_ask_owner",
+            "Bash",
+            "Read",
+            "Edit",
+            "Grep",
+            "TodoWrite",
+        ] {
+            assert!(tool_is_known_safe(name), "{name}");
         }
     }
 
-    /// What anyone but the owner wrote in the issue or pull request a job works from (its body, a
-    /// comment, a review) may steer it: no values. The owner's own: values.
+    /// What anyone but the owner wrote in the issue or pull request a job works from (its body, its
+    /// title, an edit, a comment, a review or its comment, past the first page too) may steer it:
+    /// no values. The owner's own, every list whole: values.
     #[tokio::test]
     async fn someone_elses_issue_text_gives_nothing() {
         use std::os::unix::fs::PermissionsExt as _;
         let dir = std::env::temp_dir().join(format!("obid-secretspec-text-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
+        let whole =
+            |nodes: &str| format!(r#"{{"pageInfo":{{"hasNextPage":false}},"nodes":[{nodes}]}}"#);
+        let me = r#"{"login":"wellington"}"#;
+        let written = |who: &str| format!(r#"{{"author":{who},"userContentEdits":{}}}"#, whole(""));
+        let item = |author: &str,
+                    edits: &str,
+                    renames: &str,
+                    comments: &str,
+                    reviews: Option<&str>| {
+            let reviews = reviews
+                .map(|r| format!(r#","reviews":{r}"#))
+                .unwrap_or_default();
+            format!(
+                r#"{{"data":{{"viewer":{me},"repository":{{"issueOrPullRequest":{{"author":{author},"userContentEdits":{edits},"timelineItems":{renames},"comments":{comments}{reviews}}}}}}}}}"#
+            )
+        };
+        let other = r#"{"login":"a-member"}"#;
+        let answers = [
+            // 1: the owner's own, every list whole.
+            item(me, &whole(""), &whole(""), &whole(&written(me)), None),
+            // 2: a comment someone else wrote.
+            item(me, &whole(""), &whole(""), &whole(&written(other)), None),
+            // 3: the body edited by someone else.
+            item(
+                me,
+                &whole(&format!(r#"{{"editor":{other}}}"#)),
+                &whole(""),
+                &whole(""),
+                None,
+            ),
+            // 4: the title renamed by someone else.
+            item(
+                me,
+                &whole(""),
+                &whole(&format!(r#"{{"actor":{other}}}"#)),
+                &whole(""),
+                None,
+            ),
+            // 5: more comments than GitHub gave.
+            item(
+                me,
+                &whole(""),
+                &whole(""),
+                r#"{"pageInfo":{"hasNextPage":true},"nodes":[]}"#,
+                None,
+            ),
+            // 6: a pull request with a review someone else wrote.
+            item(
+                me,
+                &whole(""),
+                &whole(""),
+                &whole(""),
+                Some(&whole(&format!(
+                    r#"{{"author":{other},"userContentEdits":{},"comments":{}}}"#,
+                    whole(""),
+                    whole("")
+                ))),
+            ),
+            // 7: a pull request whose own review holds someone else's comment.
+            item(
+                me,
+                &whole(""),
+                &whole(""),
+                &whole(""),
+                Some(&whole(&format!(
+                    r#"{{"author":{me},"userContentEdits":{},"comments":{}}}"#,
+                    whole(""),
+                    whole(&written(other))
+                ))),
+            ),
+            // 8: a pull request that's the owner's own throughout.
+            item(
+                me,
+                &whole(""),
+                &whole(""),
+                &whole(""),
+                Some(&whole(&format!(
+                    r#"{{"author":{me},"userContentEdits":{},"comments":{}}}"#,
+                    whole(""),
+                    whole(&written(me))
+                ))),
+            ),
+        ];
+        let mut script = String::from("#!/bin/sh\ncase \"$*\" in\n");
+        for (i, answer) in answers.iter().enumerate() {
+            let file = dir.join(format!("{}.json", i + 1));
+            std::fs::write(&file, answer).unwrap();
+            script.push_str(&format!(
+                "  *number={}) cat '{}' ;;\n",
+                i + 1,
+                file.display()
+            ));
+        }
+        script.push_str("  *) exit 1 ;;\nesac\n");
         let gh = dir.join("gh");
-        std::fs::write(
-            &gh,
-            r#"#!/bin/sh
-case "$1 $2 $3" in
-  "auth status --hostname") echo '{"hosts":{"github.com":[{"login":"wellington","active":true,"state":"success"}]}}' ;;
-  "issue view 1") echo '{"author":{"login":"Wellington"},"comments":[{"author":{"login":"wellington"}}]}' ;;
-  "issue view 2") echo '{"author":{"login":"ernesto"},"comments":[]}' ;;
-  "issue view 3") echo '{"author":{"login":"wellington"},"comments":[{"author":{"login":"a-member"}}]}' ;;
-  "pr view 4") echo '{"author":{"login":"wellington"},"comments":[],"reviews":[{"author":{"login":"ernesto"}}]}' ;;
-  "pr view 5") echo '{"author":{"login":"wellington"},"comments":[],"reviews":[]}' ;;
-  *) exit 1 ;;
-esac
-"#,
-        )
-        .unwrap();
+        std::fs::write(&gh, script).unwrap();
         std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755)).unwrap();
         assert_eq!(others_wrote(&gh, "o/r", "issue", 1).await, None);
-        assert_eq!(others_wrote(&gh, "o/r", "pr", 5).await, None);
-        for (kind, n) in [("issue", 2), ("issue", 3), ("pr", 4), ("issue", 9)] {
-            assert!(
-                others_wrote(&gh, "o/r", kind, n).await.is_some(),
-                "{kind} {n}"
-            );
+        assert_eq!(others_wrote(&gh, "o/r", "pr", 8).await, None);
+        for n in [2, 3, 4, 5, 6, 7, 9] {
+            assert!(others_wrote(&gh, "o/r", "issue", n).await.is_some(), "#{n}");
         }
         let _ = std::fs::remove_dir_all(&dir);
     }

@@ -64,6 +64,19 @@ fn run_job(obid: &Obid, kind: &str, task: &str, mode: Option<&str>) -> (Value, O
     (job, report)
 }
 
+/// Why obid marked the owner's clone as holding someone else's words (crate::secretspec), if it did.
+fn clone_marked(obid: &Obid) -> Option<String> {
+    let output = std::process::Command::new("git")
+        .args(["config", "--get", "obid.foreign"])
+        .current_dir(obid.home.join("clones/obi-e2e/fixture-app"))
+        .output()
+        .unwrap();
+    output
+        .status
+        .success()
+        .then(|| String::from_utf8_lossy(&output.stdout).trim().to_owned())
+}
+
 /// The arguments after `--allowedTools`, up to the next option.
 fn allowed_tools(argv: &[Value]) -> Option<Vec<String>> {
     let at = argv.iter().position(|a| a == "--allowedTools")?;
@@ -1069,6 +1082,8 @@ fn obid_runs_with_no_plugin_enabled_and_tetrix_listed_disabled() {
     assert_eq!(allowed_tools(argv), None, "{argv:?}");
     assert_eq!(report["context"], json!([]));
     assert!(!report["prompt"].as_str().unwrap().contains(".obi/context"));
+    // No MCP server was given, so nothing marked the owner's clone.
+    assert_eq!(clone_marked(&obid), None);
 
     // An MCP tool is refused when no plug-in allows it.
     let (job, _) = run_job(
@@ -1171,6 +1186,10 @@ fn tetrix_is_enabled_and_disabled_through_put_and_its_tools_are_one_rule_each() 
         report["mcp"],
         json!({"mcpServers": {"tetrix": {"type": "http", "url": stub.url}}})
     );
+    // Its tools' descriptions reached the model: someone else's words, so the owner's clone is
+    // marked and no check gets values from it until it's made again (crate::secretspec).
+    let marked = clone_marked(&obid).unwrap_or_default();
+    assert!(marked.contains("given the tools of tetrix"), "{marked}");
     let argv = report["argv"].as_array().unwrap();
     let rules: Vec<String> = tetrix_manifest()["agentMcp"]["allowedTools"]
         .as_array()

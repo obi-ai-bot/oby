@@ -297,6 +297,89 @@ pub async fn issue_trusted(gh: &std::path::Path, repo: &str, number: u64, shown:
     only_the_owners(&owner, repo, &read["data"]["repository"]["issue"], shown)
 }
 
+/// Who wrote, edited and renamed an issue or a pull request, its comments, and a pull request's
+/// reviews and their comments, every list with whether GitHub gave it whole, and as which login gh
+/// read it: what [`owners_only`] reads.
+const WHO_WROTE_ALL: &str = "query($owner: String!, $name: String!, $number: Int!) { viewer { login } \
+repository(owner: $owner, name: $name) { issueOrPullRequest(number: $number) { \
+... on Issue { author { login } userContentEdits(first: 50) { pageInfo { hasNextPage } nodes { editor { login } } } \
+timelineItems(itemTypes: [RENAMED_TITLE_EVENT], first: 50) { pageInfo { hasNextPage } nodes { ... on RenamedTitleEvent { actor { login } } } } \
+comments(first: 100) { pageInfo { hasNextPage } nodes { author { login } userContentEdits(first: 50) { pageInfo { hasNextPage } nodes { editor { login } } } } } } \
+... on PullRequest { author { login } userContentEdits(first: 50) { pageInfo { hasNextPage } nodes { editor { login } } } \
+timelineItems(itemTypes: [RENAMED_TITLE_EVENT], first: 50) { pageInfo { hasNextPage } nodes { ... on RenamedTitleEvent { actor { login } } } } \
+comments(first: 100) { pageInfo { hasNextPage } nodes { author { login } userContentEdits(first: 50) { pageInfo { hasNextPage } nodes { editor { login } } } } } \
+reviews(first: 100) { pageInfo { hasNextPage } nodes { author { login } userContentEdits(first: 50) { pageInfo { hasNextPage } nodes { editor { login } } } \
+comments(first: 100) { pageInfo { hasNextPage } nodes { author { login } userContentEdits(first: 50) { pageInfo { hasNextPage } nodes { editor { login } } } } } } } } } } }";
+
+/// Whether issue or pull request `number` on `repo` holds only words the owner (the login obid's
+/// gh is signed in as, and no one else, organisation members included) wrote: its body, its title
+/// and every edit and rename, every comment and its edits, and a pull request's every review and
+/// review comment, each list given whole. For the owner's secrets (crate::secretspec), stricter
+/// than [`issue_trusted`]. Anything obid can't read is a no.
+pub async fn owners_only(gh: &std::path::Path, repo: &str, number: u64) -> bool {
+    let Some((holder, name)) = repo.split_once('/') else {
+        return false;
+    };
+    let args = [
+        "api".to_owned(),
+        "graphql".into(),
+        "-f".into(),
+        format!("query={WHO_WROTE_ALL}"),
+        "-f".into(),
+        format!("owner={holder}"),
+        "-f".into(),
+        format!("name={name}"),
+        "-F".into(),
+        format!("number={number}"),
+    ];
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    let Some(read) = crate::github::run(gh, &args)
+        .await
+        .ok()
+        .and_then(|said| serde_json::from_str::<Value>(&said).ok())
+    else {
+        return false;
+    };
+    let Some(login) = read["data"]["viewer"]["login"]
+        .as_str()
+        .filter(|l| is_login(l))
+    else {
+        return false;
+    };
+    all_by(login, &read["data"]["repository"]["issueOrPullRequest"])
+}
+
+/// [`owners_only`] on what [`WHO_WROTE_ALL`] read (`item`): every login in it is `login`, and every
+/// list in it was given whole.
+fn all_by(login: &str, item: &Value) -> bool {
+    let by = |who: &Value| {
+        who["login"]
+            .as_str()
+            .is_some_and(|l| l.eq_ignore_ascii_case(login))
+    };
+    // A list given whole, every node passing `each`.
+    let whole = |list: &Value, each: &dyn Fn(&Value) -> bool| {
+        list["pageInfo"]["hasNextPage"] == false
+            && list["nodes"]
+                .as_array()
+                .is_some_and(|nodes| nodes.iter().all(each))
+    };
+    let edits = |node: &Value| whole(&node["userContentEdits"], &|e| by(&e["editor"]));
+    let written = |node: &Value| by(&node["author"]) && edits(node);
+    if !item.is_object() || !written(item) {
+        return false;
+    }
+    let renames = whole(&item["timelineItems"], &|r| by(&r["actor"]));
+    let comments = whole(&item["comments"], &|c| written(c));
+    // An issue has no reviews; a pull request's are read whole too.
+    let reviews = item.get("reviews").is_none_or(|reviews| {
+        whole(reviews, &|r| {
+            written(r) && whole(&r["comments"], &|c| written(c))
+        })
+    });
+    renames && comments && reviews
+}
+
 /// [`issue_trusted`] on what [`WHO_WROTE`] read (`issue`): its author and the author of every
 /// comment in `shown` count ([`Owner::trusts`]), each text was edited only by its author or the
 /// owner and the title renamed only by its author or the owner, and no text in `shown` carries

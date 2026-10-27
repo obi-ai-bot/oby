@@ -491,6 +491,8 @@ fn new_job(job: &Map<String, Value>) -> Result<NewJob, String> {
         runs_on: None,
         routine: None,
         untrusted: false,
+        // The owner's own words, through Oby's apps or the runner's API (crate::secretspec).
+        vetted: true,
         split: false,
         adding: None,
         heard: Vec::new(),

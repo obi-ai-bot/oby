@@ -1202,6 +1202,14 @@ mod tests {
             "Tool"
         );
         assert_eq!(call(json!({"title": "rm -rf / and a secret"})), "Tool");
+        // A kind obid doesn't know is no kind it knows is safe (crate::secretspec, fail closed).
+        for kind in ["other", "think", "switch_mode", "a-kind-added-later"] {
+            let name = call(json!({"kind": kind}));
+            assert!(
+                !crate::secretspec::tool_is_known_safe(&name),
+                "{kind}: {name}"
+            );
+        }
         assert_eq!(call(json!({"kind": "execute", "title": "Read"})), "Bash");
         assert_eq!(call(json!({"kind": "search", "title": "x"})), "Grep");
     }

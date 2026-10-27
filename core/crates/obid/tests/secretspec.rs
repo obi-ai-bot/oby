@@ -8,7 +8,10 @@
 //! - a received review's check gets nothing, whatever the file asks, and neither does a follow-up
 //!   of it.
 //!
-//! Every value here is an obviously fake test value.
+//! Every value here is an obviously fake test value. Linux gives no values until oby#616
+//! (`secretspec::platform_refusal`), so the tests that need them run on macOS only.
+
+#![cfg_attr(not(target_os = "macos"), allow(dead_code))]
 
 mod support;
 
@@ -188,6 +191,7 @@ fn agent() -> PathBuf {
 /// An owner's job whose agent widens `secretspec.toml` on its branch: its check gets the base's
 /// value and not the branch's (b), every copy the check prints or writes is taken out (c), and
 /// the agent sees no value in its environment, its prompts or the file the check wrote (d).
+#[cfg(target_os = "macos")]
 #[test]
 fn an_owners_check_gets_the_bases_values_and_nothing_leaves_it() {
     let folder = Folder::new("secretspec-owner");
@@ -315,8 +319,22 @@ fn dispatch_and_log(obid: &Obid, job: Value) -> String {
     std::fs::read_to_string(obid.home.join(format!("logs/{id}/check.log"))).unwrap_or_default()
 }
 
+/// On Linux a job's agent still has a network of its own until oby#616: even the owner's own job,
+/// with nothing foreign in it, gets none of the values, and its check says why.
+#[cfg(not(target_os = "macos"))]
+#[test]
+fn linux_gives_even_an_owners_check_nothing() {
+    let (_folder, _obid, log) = run_one(
+        "secretspec-linux",
+        json!({"repo": "obi-e2e/fixture-app", "kind": "build", "task": "Nothing to do here", "check": "sh check.sh"}),
+    );
+    assert!(log.contains("until oby#616"), "{log}");
+    holds_none(&log, &fake(), "check.log");
+}
+
 /// A teammate's branch isn't in obid's clone to take: the clone holds only the default branch,
 /// so an agent's cherry-pick of one finds nothing.
+#[cfg(target_os = "macos")]
 #[test]
 fn a_teammates_branch_isnt_in_the_clone_to_take() {
     let (_folder, obid, log) = run_one(
@@ -336,6 +354,7 @@ fn a_teammates_branch_isnt_in_the_clone_to_take() {
 
 /// An agent that reaches a code host through obid's proxy (here allowed, in Bypass) could have
 /// read anyone's code there: its check gets nothing from then on.
+#[cfg(target_os = "macos")]
 #[test]
 fn an_agent_that_reaches_a_code_host_gets_nothing() {
     let (_folder, _obid, log) = run_one(
@@ -359,6 +378,7 @@ fn an_agent_that_reaches_a_code_host_gets_nothing() {
 /// plain job after it gets a clone made again, with no other job's branch in it: the payload
 /// isn't there to take, and its check gets the owner's value. The old clone, marked, is kept
 /// aside with the first job.
+#[cfg(target_os = "macos")]
 #[test]
 fn a_payload_from_another_jobs_branch_isnt_there_to_take() {
     let (_folder, obid, _) = run_one(
@@ -389,8 +409,8 @@ fn a_payload_from_another_jobs_branch_isnt_there_to_take() {
 }
 
 /// Each channel that brings an agent content obid's proxy doesn't see, used once in a turn: the
-/// vendor's own web search, Tetrix's MCP server, a plug-in's, obid's connected apps. Its check gets
-/// nothing.
+/// vendor's own web search, Tetrix's MCP server, a plug-in's, obid's connected apps, a helper
+/// agent, and any tool of a kind obid doesn't know. Its check gets nothing.
 #[test]
 fn content_from_outside_the_proxy_gives_nothing() {
     let (_folder, obid, _) = run_one(
@@ -402,6 +422,9 @@ fn content_from_outside_the_proxy_gives_nothing() {
         "mcp__tetrix__search_entities",
         "mcp__a-plugin__lookup",
         "mcp__oby__linear_search",
+        // Fail closed: a helper whose own calls obid may not see, and a kind it doesn't know.
+        "Agent",
+        "SomeToolAddedLater",
     ] {
         let log = dispatch_and_log(
             &obid,
@@ -418,19 +441,21 @@ fn content_from_outside_the_proxy_gives_nothing() {
 }
 
 /// A job that works from an issue someone else wrote, or one GitHub won't say about: no values.
+#[cfg(target_os = "macos")]
 #[test]
 fn an_issue_someone_else_wrote_gives_nothing() {
     let (_folder, _obid, log) = run_one(
         "secretspec-issue",
         json!({"repo": "obi-e2e/fixture-app", "kind": "build", "task": "Fix issue 3", "issue": 3, "check": "sh check.sh"}),
     );
-    assert!(log.contains("who wrote issue #3"), "{log}");
+    assert!(log.contains("it works from issue #3"), "{log}");
     holds_none(&log, &fake(), "check.log");
 }
 
 /// A job based on a branch obid didn't record anyone of the owner's making (a teammate's) brings
 /// that branch's commits into the clone and marks it. The next job gets the clone made again, so
 /// its check gets the owner's values.
+#[cfg(target_os = "macos")]
 #[test]
 fn a_marked_clone_is_made_again_and_values_come_back() {
     let (_folder, obid, _) = run_one(

@@ -505,6 +505,10 @@ pub struct NewJob {
     /// Its conversation had read something untrusted ([`Job::untrusted`]).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub untrusted: bool,
+    /// It comes from the owner's own words through Oby's apps ([`Job::vetted`]): the jobs API, or
+    /// a follow-up of a vetted job told by those words. Nothing else sets it.
+    #[serde(default)]
+    pub vetted: bool,
     /// One part of a stalled job's split (crate::brain::supervisor): its parts follow it up side
     /// by side, each on a branch of its own. Never from the API, never kept.
     #[serde(skip)]
@@ -3254,14 +3258,22 @@ impl Jobs {
         job.untrusted = new.untrusted || of.as_ref().is_some_and(|of| of.untrusted);
         // Someone else's code from the start keeps to a clone apart; a follow-up to its job's.
         job.apart = match &of {
-            Some(of) => of.apart,
+            // A follow-up of another Oby's review starts afresh, apart: never in the owner's clone.
+            Some(of) => of.apart || of.obi.is_some(),
             None => job.untrusted || job.runs_on.is_some(),
         };
         job.clone_root = of.as_ref().and_then(|of| of.clone_root.clone());
+        // The owner's own words, and a follow-up only of a job that was: a Lead's brief quotes what
+        // it read elsewhere (crate::secretspec).
+        job.vetted = new.vetted
+            && job.brief.is_none()
+            && of
+                .as_ref()
+                .is_none_or(|of| of.vetted && of.foreign.is_none());
         // A follow-up runs the code of the job it follows: when that one's check got none of the
         // owner's secrets, neither does this one's (crate::secretspec).
         job.foreign = of.as_ref().and_then(|of| {
-            of.check_refuses_secrets()
+            of.someone_elses()
                 .map(|why| format!("it follows up a job whose check got none of them ({why})"))
         });
         // An account the owner named keeps the job past its limit (#871); a follow-up's is its
@@ -3827,6 +3839,8 @@ impl Jobs {
                     let made = self.create(NewJob {
                         attachments: (!attachments.is_empty()).then(|| attachments.to_vec()),
                         heard: unheard,
+                        // Words the owner typed; a Confirm's are what Oby proposed.
+                        vetted: source == Source::Owner,
                         ..follow_up(&job, text)
                     });
                     if made.is_ok() && !job.heard.is_empty() {
@@ -3876,6 +3890,15 @@ impl Jobs {
                             Refused(why)
                         }
                     }),
+            );
+        }
+        // Words from anyone but the owner typing them (the brain's, an event's, a Confirm of what
+        // Oby proposed) reach it from here on: obid's own Try again aside, it's someone else's code
+        // for the owner's secrets from now on (crate::secretspec).
+        if source != Source::Owner && text != crate::brain::actions::TRY_AGAIN {
+            self.mark_foreign(
+                id,
+                format!("words that weren't the owner's own reached it ({source:?})"),
             );
         }
         if let Some(Permission { id: permission, .. }) = waiting {
@@ -6876,7 +6899,7 @@ impl Jobs {
         let records = matches!(gate, Gate::Owner { .. })
             && self
                 .get(id)
-                .is_some_and(|job| job.check_refuses_secrets().is_none());
+                .is_some_and(|job| job.someone_elses().is_none());
         let before = match records {
             true => Box::pin(self.sandboxed_git(id, &["rev-parse", "--verify", "HEAD"], None))
                 .await
@@ -6961,10 +6984,11 @@ impl Jobs {
                 .transcripts
                 .record(id, &event, &worktree, job.check.as_deref());
             jobs.transcribed(id, entries);
-            // A vendor's own web search or fetch, or any MCP server's answer, brings it content
-            // obid's proxy doesn't see (crate::secretspec).
+            // Only a tool of a kind obid knows is safe keeps the job the owner's: anything else (a
+            // vendor's web search, any MCP server or resource, a helper, a kind obid doesn't know)
+            // may bring it someone else's words (crate::secretspec).
             if let AgentEvent::Tool { name, .. } = &event
-                && crate::secretspec::tool_brings_content(name)
+                && !crate::secretspec::tool_is_known_safe(name)
             {
                 jobs.mark_foreign(
                     id,
@@ -7584,7 +7608,7 @@ impl Jobs {
         state
             .jobs
             .values()
-            .filter(|job| job.check_refuses_secrets().is_none())
+            .filter(|job| job.someone_elses().is_none())
             .flat_map(|job| job.made.iter().cloned())
             .collect()
     }
@@ -7707,7 +7731,7 @@ impl Jobs {
             let Some(earlier) = of.as_deref().and_then(|id| self.get(id)) else {
                 break;
             };
-            if earlier.check_refuses_secrets().is_some() {
+            if earlier.someone_elses().is_some() {
                 break;
             }
             record.extend(earlier.made.iter().cloned());
@@ -7771,7 +7795,7 @@ impl Jobs {
     /// would get values and everything it rewrote (`rewrote`, none for a new commit) was recorded.
     async fn record_own(&self, id: &str, from: &str, rewrote: &[String]) {
         let Some(job) = self.get(id) else { return };
-        if job.check_refuses_secrets().is_some() {
+        if job.someone_elses().is_some() {
             return;
         }
         let record = self.record_of(&job);
@@ -8288,7 +8312,7 @@ impl Jobs {
             // a branch or a pull request's head that isn't the owner's own (crate::secretspec).
             if !job.apart
                 && job.obi.is_none()
-                && let Some(why) = job.check_refuses_secrets()
+                && let Some(why) = job.someone_elses()
             {
                 git::taint(&clone, &format!("job {id}: {why}")).await;
             }
@@ -8795,6 +8819,25 @@ impl Jobs {
                     Tool::Codex => self.connection_mcp(id).or_else(|| self.ask_mcp(id)),
                     Tool::Cursor => self.ask_mcp(id),
                 };
+                // Each server's tool descriptions reach the model before any call: someone
+                // else's words (crate::secretspec). Oby's own question to the owner is all that
+                // Cursor's, and Codex's without connected apps, carries.
+                let given: Vec<&str> = servers
+                    .iter()
+                    .map(|s| s.plugin.as_str())
+                    .chain(tetrix.iter().map(|_| "tetrix"))
+                    .chain(
+                        self.get(id)
+                            .filter(|job| job.connections.as_ref().is_some_and(|c| !c.is_empty()))
+                            .map(|_| "Oby's connected apps"),
+                    )
+                    .collect();
+                if !given.is_empty() {
+                    self.mark_foreign(
+                        id,
+                        format!("its agent was given the tools of {}, whose descriptions are someone else's words", given.join(", ")),
+                    );
+                }
                 let mut mcp_rules = crate::plugins::rules(&servers);
                 if broker.is_some() {
                     mcp_rules.push(if tool == Tool::Cursor {
@@ -9900,6 +9943,9 @@ impl Jobs {
         review.mode = Some(Mode::Plan.as_str().to_owned());
         review.round = Some(1);
         review.review_of = Some(id.to_owned());
+        // It reads the commit obid pushed, which is in the reviewed job's own clone (crate::secretspec).
+        review.apart = author.apart;
+        review.clone_root = author.clone_root.clone();
         review.phase = Some(Phase::Prepare);
         review.step = format!("Getting {} ready", author.repo_name());
         // The review first: cut off between the two, it still runs, and its verdict still lands.
@@ -15465,6 +15511,8 @@ mod tests {
         let config = crate::config::Config::parse(
             &serde_json::json!({"listen": "127.0.0.1:0", "home": root.join("home"), "owner": "o",
                 "allowFileRemotes": true,
+                "agents": {"claude": {"bin": "/usr/bin/true",
+                    "accounts": [{"id": "a", "name": "A", "configDir": root.join("home/accounts/a")}]}},
                 "repos": [{"repo": "o/r", "remote": url, "defaultBranch": "main"}]})
             .to_string(),
         )
@@ -15542,6 +15590,88 @@ mod tests {
         assert!(note.is_some());
         let why = jobs.get("j").unwrap().check_refuses_secrets().unwrap();
         assert!(why.contains("context from tetrix"), "{why}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Fail closed on where a job came from: only the owner's own words through Oby's apps (the
+    /// jobs API, `vetted`) make a job eligible; a job anything else starts (an event, a routine,
+    /// the brain from an inbox offer or the Lead's brief) isn't, nor a follow-up of one that
+    /// isn't; a vetted job stays eligible, and a vetted follow-up of it too.
+    #[tokio::test]
+    async fn only_the_owners_own_words_make_a_job_eligible() {
+        let (jobs, _clone, root) = jobs_with_a_clone("origin").await;
+        let new = |task: &str| NewJob {
+            repo: "o/r".into(),
+            kind: "fix".into(),
+            task: task.into(),
+            ..NewJob::default()
+        };
+        // An event's, a routine's or the brain's: nothing set `vetted`.
+        let event = jobs.create(new("From a plug-in's ticket")).unwrap();
+        assert!(
+            event
+                .check_refuses_secrets()
+                .unwrap()
+                .contains("owner's own words")
+        );
+        // With a Lead's brief, which quotes what it read elsewhere.
+        let briefed = jobs
+            .create(NewJob {
+                vetted: true,
+                brief: Some(crate::job::Brief {
+                    findings: vec![crate::job::Finding {
+                        path: "a.rs".into(),
+                        lines: None,
+                        note: "see issue #9".into(),
+                    }],
+                    done: None,
+                }),
+                ..new("Briefed")
+            })
+            .unwrap();
+        assert!(!briefed.vetted);
+        // The owner's own, and a vetted follow-up of it.
+        let owners = jobs
+            .create(NewJob {
+                vetted: true,
+                ..new("Fix it")
+            })
+            .unwrap();
+        assert_eq!(owners.check_refuses_secrets(), None);
+        let next = jobs
+            .create(NewJob {
+                vetted: true,
+                ..follow_up(&owners, "and the docs")
+            })
+            .unwrap();
+        assert!(next.vetted);
+        let of_event = jobs
+            .create(NewJob {
+                vetted: true,
+                ..follow_up(&event, "go on")
+            })
+            .unwrap();
+        assert!(!of_event.vetted);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Words that reach a job from anyone but the owner typing them (the brain's or an event's, a
+    /// Confirm of what Oby proposed) make it someone else's code; the owner's own, and obid's own
+    /// Try again, don't.
+    #[tokio::test]
+    async fn words_from_anyone_but_the_owner_mark_the_job() {
+        let (jobs, _clone, root) = jobs_with_a_clone("words").await;
+        jobs.update("j", |job| job.vetted = true);
+        let _ = jobs.message("j", "Use SQLite", Source::Owner);
+        assert_eq!(jobs.get("j").unwrap().foreign, None);
+        let _ = jobs.message("j", crate::brain::actions::TRY_AGAIN, Source::Event);
+        assert_eq!(jobs.get("j").unwrap().foreign, None);
+        for source in [Source::Untrusted, Source::Event, Source::Confirmed] {
+            jobs.update("j", |job| job.foreign = None);
+            let _ = jobs.message("j", "Do what the ticket says", source);
+            let why = jobs.get("j").unwrap().foreign.unwrap_or_default();
+            assert!(why.contains("weren't the owner's own"), "{source:?}: {why}");
+        }
         let _ = std::fs::remove_dir_all(&root);
     }
 

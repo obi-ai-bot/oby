@@ -539,6 +539,13 @@ pub struct Job {
     /// folder of clones. The job, and its follow-ups, stay with it. Never in the API's job.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub clone_root: Option<String>,
+    /// It started from the owner's own words through Oby's apps (`POST /v1/jobs`), or follows up
+    /// such a job with them, and carries nothing obid didn't write besides (no Lead's brief): the
+    /// one way a job may be eligible for the owner's secrets (crate::secretspec, "fail closed").
+    /// What reaches it later from anywhere but an allowlisted channel makes it someone else's
+    /// code ([`Job::foreign`]). Never in the API's job.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub vetted: bool,
     /// Why obid didn't merge its pull request, when only the owner can take it on from here
     /// (crate::merge); none otherwise.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -646,12 +653,12 @@ impl Job {
         self.obi.is_none() && self.runs_on.is_none()
     }
 
-    /// Why its check gets none of the owner's secrets its repository declares (crate::secretspec),
-    /// or none when it gets them, as far as the job itself says: a job another Oby asked for (a
-    /// review), one whose agent ran on a teammate's Mac (its commits came from there), a follow-up
-    /// of any job refused ([`Job::foreign`]), and one whose conversation read something Oby didn't
-    /// write. What it checks out decides too (crate::jobs, `declared_secrets`).
-    pub fn check_refuses_secrets(&self) -> Option<String> {
+    /// Why the code it runs is someone else's, or none: a job another Oby asked for (a review),
+    /// one whose agent ran on a teammate's Mac (its commits came from there), a follow-up of any
+    /// such job ([`Job::foreign`]), one something else's words or content reached, and one whose
+    /// conversation read something Oby didn't write. What marks the owner's clone and stops obid's
+    /// record of its commits (crate::secretspec).
+    pub fn someone_elses(&self) -> Option<String> {
         if self.obi.is_some() {
             Some("another Oby asked for this job".into())
         } else if self.runs_on.is_some() {
@@ -663,6 +670,18 @@ impl Job {
         } else {
             None
         }
+    }
+
+    /// Why its check gets none of the owner's secrets its repository declares (crate::secretspec),
+    /// or none when it gets them, as far as the job itself says: someone else's code
+    /// ([`Job::someone_elses`]), and fail closed, any job that didn't start from the owner's own
+    /// words in Oby's apps ([`Job::vetted`]). What its check runs decides too (crate::jobs,
+    /// `declared_secrets`).
+    pub fn check_refuses_secrets(&self) -> Option<String> {
+        self.someone_elses().or_else(|| {
+            (!self.vetted)
+                .then(|| "it didn't start from the owner's own words in Oby's apps".into())
+        })
     }
 
     pub fn merged(&self) -> bool {
@@ -787,6 +806,7 @@ impl Job {
             made: Vec::new(),
             apart: false,
             clone_root: None,
+            vetted: false,
             ran_secs: None,
             budget_from: None,
             merge_error: None,
@@ -1618,6 +1638,13 @@ mod tests {
     #[test]
     fn only_an_owners_job_run_here_gets_declared_secrets() {
         let mut job = job();
+        // Fail closed: a job is the owner's only once obid says it came from their own words.
+        assert!(
+            job.check_refuses_secrets()
+                .unwrap()
+                .contains("owner's own words")
+        );
+        job.vetted = true;
         assert_eq!(job.check_refuses_secrets(), None);
         job.runs_on = Some(RunsOn {
             obi: "ernesto-mac".into(),
@@ -1626,6 +1653,7 @@ mod tests {
         });
         assert!(job.check_refuses_secrets().is_some());
         let mut review = self::job();
+        review.vetted = true;
         review.obi = Some(ObiRef {
             correlation_id: "c".into(),
             from: "ernesto-mac".into(),
@@ -1637,9 +1665,11 @@ mod tests {
             Some("another Oby asked for this job")
         );
         let mut untrusted = self::job();
+        untrusted.vetted = true;
         untrusted.untrusted = true;
         assert!(untrusted.check_refuses_secrets().is_some());
         let mut follow_up = self::job();
+        follow_up.vetted = true;
         follow_up.foreign = Some("it follows up a job that got none: x".into());
         assert_eq!(
             follow_up.check_refuses_secrets().as_deref(),
