@@ -172,12 +172,18 @@ export function pick(label: string, quiet = false) {
   if (!quiet) sayYours(WELCOME, label);
   go(label);
 }
-// idle: the tour's steps don't wait forever; left alone, they go on as this pick
+// idle: the tour's steps don't wait forever; left alone, they go on as this pick.
+// A Replay (sceneReplayed) makes the timer stale and starts another
 const IDLE_MS = 22_000;
+let idleGen = 0;
+const idleAfter = (r: (label: string) => void, idle: string) => {
+  const g = ++idleGen;
+  void wait(IDLE_MS).then(() => { if (g === idleGen && picked === r) pick(idle, true); });
+};
 const choose = (step: SetupStep, idle?: string) => new Promise<string>((r) => {
   set(() => ({ at: step }));
   picked = r;
-  if (idle) void wait(IDLE_MS).then(() => { if (picked === r) pick(idle, true); });
+  if (idle) idleAfter(r, idle);
 });
 // typed in the message box: at the last step, your own words are the first task
 export const typedFirst = (text: string) => setup.at === 'first' && !!text.trim() && (pick(text.trim()), true);
@@ -296,7 +302,7 @@ async function putAway(line: string) {
 // (a Replay meanwhile, sceneReplayed, makes its timer stale: the tour waits for the replay's end)
 let sceneGen = 0;
 export const sceneDone = () => { const g = sceneGen; void wait(1200).then(() => { if (g === sceneGen && setup.at === 'showme') pick('Continue', true); }); };
-export const sceneReplayed = () => { sceneGen++; };
+export const sceneReplayed = () => { sceneGen++; if (picked && setup.at === 'showme') idleAfter(picked, 'Continue'); };
 
 // A click on the sample in the side panel (Sidebar.tsx): the same as its pick in
 // the chat. Sangam (no conversation yet) and Invite member (off in a sample) get

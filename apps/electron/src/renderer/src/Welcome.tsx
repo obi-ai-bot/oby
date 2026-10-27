@@ -192,7 +192,9 @@ const CLICKS = [15, 37, 69, 81];  // on the +, Create, the link, Join
 const TEAM = 'My team';
 // who makes one, as the + is shown or not (spheres.ts), as Oby's words over it say
 const MAKE = CAN_CREATE ? ['Make one', 'Made. You’re its admin, and you invite the rest.'] : ['Someone on your team makes one', 'Made. They’re its admin, and they invite the rest.'];
-const HOW_LABEL = 'Example: making an Obysphere with the + and a name, then joining one from a teammate’s invite link';
+const HOW_LABEL = CAN_CREATE
+  ? 'Example: making an Obysphere with the + and a name, then joining one from a teammate’s invite link'
+  : 'Example: someone on your team making an Obysphere, then joining one from a teammate’s invite link';
 export function SphereHowTo({ skip = false, onEnd }: { skip?: boolean; onEnd?: () => void }) {
   const calm = still();
   const beat = useBeat(HOW_LAST, 100 / clock.speed, false, !calm && !skip);
