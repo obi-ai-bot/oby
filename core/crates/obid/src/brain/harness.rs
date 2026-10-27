@@ -2197,7 +2197,8 @@ fn detail_of(name: &str, input: &Value, room: &Path) -> String {
                 .or_else(|_| Path::new(&path).strip_prefix(&real))
                 .map_or(path.clone(), |p| p.display().to_string())
         }
-        "Grep" | "Glob" | "mcp__oby__oby_search" => text("pattern").to_owned(),
+        "Grep" | "mcp__oby__oby_search" => agent::searched(text("pattern")),
+        "Glob" => text("pattern").to_owned(),
         "WebSearch" => text("query").to_owned(),
         "WebFetch" => text("url").to_owned(),
         "Bash" | "mcp__oby__oby_shell" => text("command").lines().next().unwrap_or("").to_owned(),
