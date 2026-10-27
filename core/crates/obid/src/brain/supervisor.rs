@@ -194,8 +194,12 @@ pub fn refused(session: &Session, tool: &str, args: &serde_json::Value) -> Optio
         "oby_shell" | "oby_shell_output" | "oby_shell_stop" => {
             Some("A turn nobody watches runs no commands.")
         }
-        // The inbox is what waits for the owner: an unattended turn answers none of it.
+        // The inbox is what waits for the owner: an unattended turn answers none of it, and adds
+        // no offer to it.
         "oby_answer" => Some("A turn nobody watches answers nothing in the inbox."),
+        "oby_offer" => Some(
+            "A turn nobody watches offers nothing: say what should happen, and the owner can start it.",
+        ),
         "oby_job" if args["id"].as_str() != Some(watch.job.as_str()) => {
             Some("A turn nobody watches reads only the job it's about.")
         }
@@ -625,6 +629,7 @@ mod tests {
             "oby_shell_output",
             "oby_shell_stop",
             "oby_tasks",
+            "oby_offer",
         ] {
             assert!(
                 refused(&unattended, tool, &serde_json::json!({})).is_some(),

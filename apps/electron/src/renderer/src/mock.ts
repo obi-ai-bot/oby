@@ -586,7 +586,10 @@ export const TURNS: Turn[] = [
 // way, folded over its words (looked: how many were lookups; asked: whose Obys
 // it asked); streaming: its words still coming in. files: what went with yours
 // (a photo with a preview of itself); obys: the Obys it @mentions
-export type Message = { who: string; text: string; ago: number; jobs?: string[]; by?: string; steps?: string[]; looked?: number; asked?: string[]; streaming?: boolean; setup?: SetupStep } & Attachments;
+export type Message = { who: string; text: string; ago: number; jobs?: string[]; by?: string; steps?: string[]; looked?: number; asked?: string[]; streaming?: boolean; setup?: SetupStep; offer?: Offer } & Attachments;
+// Work Oby offers to start, on obid only (OfferCard.tsx): its title, each job in obid's words with
+// the task Oby planned, and whether Oby had read something untrusted first
+export type Offer = { id: string; title: string; jobs: { what: string; task: string }[]; untrusted: boolean };
 // a step of setting up, in Oby's first conversation (onboarding.ts): its card under Oby's words.
 // sphere to knowledge: the Obysphere tour (convo: a sample teammate's conversation)
 export type SetupStep = 'agents' | 'github' | 'extras' | 'first' | 'sphere' | 'showme' | 'sample' | `convo:${'Ernesto' | 'Dima' | 'Wellington'}` | 'knowledge';

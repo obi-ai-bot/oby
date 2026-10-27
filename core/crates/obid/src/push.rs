@@ -325,7 +325,16 @@ pub fn wanted(jobs: &[Job], inbox: &[Value]) -> Vec<(String, Alert)> {
         let ended = job.finished.unwrap_or(job.created);
         wanted.push((format!("end:{ended}"), alert(said, false)));
     }
-    for item in inbox.iter().filter(|i| i["state"] == "open") {
+    let open: Vec<&Value> = inbox.iter().filter(|i| i["state"] == "open").collect();
+    // What one turn offered (`oby_offer`) is one alert, however many jobs: its first item's,
+    // replaced in place by its offer.
+    let offered = |offer: &str| open.iter().filter(|i| i["offer"]["id"] == offer).count();
+    let mut alerted = HashSet::new();
+    for item in open.iter().copied() {
+        let offer = item["offer"]["id"].as_str();
+        if offer.is_some_and(|o| !alerted.insert(o)) {
+            continue;
+        }
         let job = item["job"].as_str().filter(|j| !j.is_empty());
         let category = match item["kind"].as_str() {
             Some("permission") if job.is_some() => continue,
@@ -345,11 +354,15 @@ pub fn wanted(jobs: &[Job], inbox: &[Value]) -> Vec<(String, Alert)> {
         };
         let conversation = item["conversation"].as_str().map(str::to_owned);
         let text = item["text"].as_str().unwrap_or_default();
+        let title = match offer.map(offered) {
+            Some(n) if n > 1 => format!("Oby offers {n} jobs"),
+            _ => title.to_owned(),
+        };
         wanted.push((
             "open".into(),
             Alert {
-                collapse: collapse_id(id),
-                title: clipped(title, 100),
+                collapse: collapse_id(offer.unwrap_or(id)),
+                title: clipped(&title, 100),
                 body: clipped(first_line(text).unwrap_or(""), BODY),
                 thread: conversation.clone().unwrap_or_else(|| "inbox".into()),
                 category: category.into(),
@@ -1964,6 +1977,42 @@ mod tests {
             item["triage"] = json!(triage);
         }
         item
+    }
+
+    /// One turn's offers (`oby_offer`) are one push, however many jobs it offered; another turn's
+    /// are another.
+    #[test]
+    fn a_turns_offers_are_one_alert() {
+        let offer = |id: &str, turn: &str| {
+            let mut item = inbox_item(id, "start", "", None);
+            item["offer"] = json!({"id": turn, "what": "build app"});
+            item
+        };
+        let wanted = wanted(
+            &[],
+            &[
+                offer("start-1", "t1"),
+                offer("start-2", "t1"),
+                offer("start-3", "t2"),
+            ],
+        );
+        let alerts: Vec<(&str, &str, &str)> = wanted
+            .iter()
+            .map(|(_, a)| {
+                (
+                    a.collapse.as_str(),
+                    a.title.as_str(),
+                    a.item.as_deref().unwrap(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            alerts,
+            [
+                ("t1", "Oby offers 2 jobs", "start-1"),
+                ("t2", "start start-3", "start-3")
+            ]
+        );
     }
 
     #[test]

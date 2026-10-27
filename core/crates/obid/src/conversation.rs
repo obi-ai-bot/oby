@@ -1420,12 +1420,15 @@ pub async fn update(
     Ok((StatusCode::OK, axum::Json(summary)).into_response())
 }
 
-/// `DELETE /v1/conversations/{id}`: the conversation goes; the jobs it started stay.
+/// `DELETE /v1/conversations/{id}`: the conversation goes, and the offers made in it close; the
+/// jobs it started stay.
 pub async fn remove(
     State(shared): State<std::sync::Arc<Shared>>,
     UrlPath(id): UrlPath<String>,
 ) -> Result<Response, ApiError> {
     shared.conversations.delete(&id)?;
+    // What Oby offered there can't be started from it any more.
+    shared.link.close_offers(&id);
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 

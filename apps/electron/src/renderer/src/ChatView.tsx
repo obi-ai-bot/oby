@@ -14,6 +14,7 @@ import { AGENTS, convoTitle, threadOf, type Message } from './mock';
 import { markSeen, tell, useTasks, type Task } from './tasks';
 import { obys, ofObid, tellChat, useChats, type Chat } from './chats';
 import SetupCard from './SetupCard';
+import OfferCard from './OfferCard';
 import { WELCOME, typedFirst } from './onboarding';
 import { openConversation } from './live';
 
@@ -160,6 +161,8 @@ export default function ChatView({ id, kind = 'task', leaving, covered = false, 
                   ) : null,
                   // setting up (Oby's first conversation): where you act, once its words are in
                   ...((m as Message).setup && !(m as Message).streaming ? [<SetupCard key="setup" step={(m as Message).setup!} />] : []),
+                  // work Oby offers to start: yours to start with a tap
+                  ...((m as Message).offer ? [<OfferCard key="offer" offer={(m as Message).offer!} />] : []),
                   // what this message started
                   ...('jobs' in m ? m.jobs ?? [] : []).map((jid) => {
                     const t = tasks.find((x) => x.id === jid);
@@ -176,7 +179,7 @@ export default function ChatView({ id, kind = 'task', leaving, covered = false, 
                       : <span className="msg-face"><Face live={working && i === head && !covered} talk={i === head && !covered ? talking?.text.length : undefined} /></span>)}
                     {parts}
                     {last && !(m as Message).streaming && !(typing && i === thread.length - 1 && side === 'oby') ? (
-                      <div className={`msg-end${end?.type === ThreadTask || end?.type === SetupCard || 'ask' in m ? ' is-wide' : ''}`}>
+                      <div className={`msg-end${end?.type === ThreadTask || end?.type === SetupCard || end?.type === OfferCard || 'ask' in m ? ' is-wide' : ''}`}>
                         {end}
                         <time className="msg-time">{clock(m.ago)}</time>
                       </div>

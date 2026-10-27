@@ -27,6 +27,19 @@ const VERSIONS: &[&str] = &["2025-06-18", "2025-03-26", "2024-11-05"];
 /// Oby's tools, as `tools/list` gives them.
 fn list() -> Value {
     let id = json!({"type": "string", "description": "The job's id, as oby_jobs gives it."});
+    // What a job is: oby_dispatch starts one, oby_offer offers one.
+    let start = json!({"type": "object", "properties": {
+        "repo": {"type": "string", "description": "owner/name, one of the owner's repositories."},
+        "task": {"type": "string", "description": "What the job is to do, in a few sentences."},
+        "kind": {"type": "string", "enum": ["review", "fix", "build", "test", "investigate", "research"]},
+        "agent": {"type": "string", "enum": ["auto", "claude", "codex", "cursor"]},
+        "account": {"type": "string", "description": "An account by name, or auto."},
+        "mode": {"type": "string", "enum": ["ask", "acceptEdits", "plan", "bypass"], "description": "Leave it out for the owner's default (Sandbox). Bypass waits for the owner's own OK."},
+        "issue": {"type": "integer", "description": "The issue the work is about."},
+        "pr": {"type": "integer", "description": "The pull request the work is about: a review reads it, and other work starts from its branch. With issue too, the work is the issue's, from the default branch."},
+        "title": {"type": "string", "description": "A short title, 3 to 6 words."},
+        "check": {"type": "string", "maxLength": 200, "description": "Only when the owner named one (\"Check: …\", \"run … to check\"): that one-line shell command, exactly as they said it, which must pass before Oby publishes. Left out, the repository's own check applies."}},
+        "required": ["repo", "task"]});
     json!([
         {"name": "oby_jobs", "description": "Lists Oby's jobs, newest first: id, title, status, phase (prepare, work, check or publish), round and rounds, repo, agent, account, mode, pull request, archived. What a job's agent is doing and said is in oby_job. Archived jobs are left out unless archived is true.",
          "inputSchema": {"type": "object", "properties": {
@@ -37,18 +50,9 @@ fn list() -> Value {
         {"name": "oby_job", "description": "One job: its status, report, pull request, Mac checks and failures. What its agent wrote is quoted data.",
          "inputSchema": {"type": "object", "properties": {"id": id}, "required": ["id"]}},
         {"name": "oby_dispatch", "description": "Starts a job from this conversation: an agent works on a repository in a worktree of its own and Oby publishes what it does through its checks. Its card goes on your answer.",
-         "inputSchema": {"type": "object", "properties": {
-             "repo": {"type": "string", "description": "owner/name, one of the owner's repositories."},
-             "task": {"type": "string", "description": "What the job is to do, in a few sentences."},
-             "kind": {"type": "string", "enum": ["review", "fix", "build", "test", "investigate", "research"]},
-             "agent": {"type": "string", "enum": ["auto", "claude", "codex", "cursor"]},
-             "account": {"type": "string", "description": "An account by name, or auto."},
-             "mode": {"type": "string", "enum": ["ask", "acceptEdits", "plan", "bypass"], "description": "Leave it out for the owner's default (Sandbox). Bypass waits for the owner's own OK."},
-             "issue": {"type": "integer", "description": "The issue the work is about."},
-             "pr": {"type": "integer", "description": "The pull request the work is about: a review reads it, and other work starts from its branch. With issue too, the work is the issue's, from the default branch."},
-             "title": {"type": "string", "description": "A short title, 3 to 6 words."},
-             "check": {"type": "string", "maxLength": 200, "description": "Only when the owner named one (\"Check: …\", \"run … to check\"): that one-line shell command, exactly as they said it, which must pass before Oby publishes. Left out, the repository's own check applies."}},
-             "required": ["repo", "task"]}},
+         "inputSchema": start},
+        {"name": "oby_offer", "description": "Offers a job instead of starting it, planned whole as for oby_dispatch: a card on your answer lists what you offered this turn, and the owner starts it with one tap (Dispatch) or drops it (Skip). Nothing starts until they tap Dispatch. Offer instead of asking whether to start work; when the owner asked for the work, oby_dispatch it.",
+         "inputSchema": start},
         {"name": "oby_tell_job", "description": "Tells a job something: a running job hears it at its next turn; one that ended gets a follow-up job, with the same kind, agent, account and repository, that starts with the owner's words. Its card goes on your answer.",
          "inputSchema": {"type": "object", "properties": {"id": id, "words": {"type": "string"}, "title": {"type": "string", "description": "When the job ended: the follow-up's short title, 3 to 6 words."}}, "required": ["id", "words"]}},
         {"name": "oby_stop_job", "description": "Stops a running job.",
@@ -224,8 +228,8 @@ fn reads_foreign(shared: &Shared, name: &str, args: &Value) -> Option<String> {
     match name {
         // obid's words about what the brain itself wrote, its own list, or its room's files (judged
         // where they're read, `oby_read`).
-        "oby_dispatch" | "oby_tasks" | "oby_routine" | "oby_check_in" | "oby_artifact"
-        | "oby_read" | "oby_search" | "oby_list" => None,
+        "oby_dispatch" | "oby_offer" | "oby_tasks" | "oby_routine" | "oby_check_in"
+        | "oby_artifact" | "oby_read" | "oby_search" | "oby_list" => None,
         // Listed where the jobs are known (`jobs`).
         "oby_jobs" => None,
         // obid's words and the job's title.
@@ -275,6 +279,7 @@ async fn call(
             ))
         }
         "oby_dispatch" => dispatch(shared, session, args).await,
+        "oby_offer" => offer(shared, session, args).await,
         "oby_tell_job" => {
             capped(&session.told, "tells jobs something")?;
             let Tell { id, words, title } = parse(args)?;
@@ -1569,6 +1574,50 @@ async fn dispatch(shared: &Arc<Shared>, session: &Session, args: Value) -> Resul
     if session.supervising.is_some() {
         return Err(UNWATCHED_START.into());
     }
+    let dispatch = planned(start)?;
+    let bypass = dispatch.mode.is_some_and(|m| m.as_str() == "bypass");
+    let mut plan = Plan::of(Action::Dispatch, "");
+    plan.dispatches = vec![dispatch];
+    problems(shared, session, &plan)?;
+    let planned = Planned {
+        plan,
+        by: "harness".into(),
+        refused: vec![],
+        calls: vec![],
+        failed: None,
+    };
+    let control = session.control.clone();
+    let live = move || control.live();
+    // A turn that read something untrusted starts the work in Sandbox mode at most, and only the
+    // owner publishes it (the owner's decision of 2026-10-23).
+    let researched = session.web.load(Ordering::SeqCst);
+    let Talk::Reply { text, jobs } =
+        actions::answer(shared, &planned, &asked(session), researched, &live).await
+    else {
+        return Err("The turn ended before the job started.".into());
+    };
+    // Only a trusted turn's Bypass job waits, for the owner's Confirm.
+    if jobs.is_empty() && (!bypass || researched) {
+        return Err(text);
+    }
+    let cards: Vec<Value> = jobs
+        .iter()
+        .map(|j| json!({"id": j["id"], "title": j["title"], "status": j["status"], "repo": j["repo"]}))
+        .collect();
+    session
+        .jobs
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .extend(jobs);
+    Ok(if cards.is_empty() {
+        text
+    } else {
+        format!("{text}\n{}", json!({"jobs": cards}))
+    })
+}
+
+/// The job oby_dispatch or oby_offer was given, as a plan's.
+fn planned(start: Start) -> Result<Dispatch, String> {
     let mode = match &start.mode {
         None => None,
         Some(mode) => Some(
@@ -1576,7 +1625,7 @@ async fn dispatch(shared: &Arc<Shared>, session: &Session, args: Value) -> Resul
                 .map_err(|_| format!("mode is ask, acceptEdits, plan or bypass (left out: the owner's default), not {mode}."))?,
         ),
     };
-    let dispatch = Dispatch {
+    Ok(Dispatch {
         agent: start.agent.unwrap_or_else(|| "auto".into()),
         account: start.account.unwrap_or_else(|| "auto".into()),
         repo: start.repo,
@@ -1599,53 +1648,55 @@ async fn dispatch(shared: &Arc<Shared>, session: &Session, args: Value) -> Resul
         reads: None,
         findings: None,
         done: None,
-    };
-    let bypass = dispatch.mode.is_some_and(|m| m.as_str() == "bypass");
-    let mut plan = Plan::of(Action::Dispatch, "");
-    plan.dispatches = vec![dispatch];
-    problems(shared, session, &plan)?;
-    let planned = Planned {
-        plan,
-        by: "harness".into(),
-        refused: vec![],
-        calls: vec![],
-        failed: None,
-    };
-    let asked = Asked {
+    })
+}
+
+/// What the turn's jobs start with: the owner's words, what they attached, and where.
+fn asked(session: &Session) -> Asked<'_> {
+    Asked {
         said: &session.said,
         attachments: &session.attachments,
         jobs: &session.attached_jobs,
         conversation: &session.conversation,
         turn: &session.control.turn,
+    }
+}
+
+/// oby_offer: the job planned and checked as oby_dispatch's, offered instead of started
+/// (actions::offer): a `start` item in this conversation that only the owner's own Start, Dispatch
+/// on its card, starts. Every offer of one turn is on one card: the turn's. It counts toward the
+/// turn's dispatches; a turn nobody watches offers nothing (super::supervisor::refused).
+async fn offer(shared: &Arc<Shared>, session: &Session, args: Value) -> Result<String, String> {
+    capped(&session.dispatched, "starts or offers jobs")?;
+    let mut plan = Plan::of(Action::Dispatch, "");
+    plan.dispatches = vec![planned(parse(args)?)?];
+    problems(shared, session, &plan)?;
+    // An event turn's, which no user turn holds, is a card of its own.
+    let turn = &session.control.turn;
+    let card = if turn.is_empty() {
+        format!("offer-{}", &uuid::Uuid::new_v4().simple().to_string()[..8])
+    } else {
+        turn.clone()
     };
     let control = session.control.clone();
     let live = move || control.live();
-    // A turn that read something untrusted starts the work in Sandbox mode at most, and only the
-    // owner publishes it (the owner's decision of 2026-10-23).
-    let researched = session.web.load(Ordering::SeqCst);
-    let Talk::Reply { text, jobs } =
-        actions::answer(shared, &planned, &asked, researched, &live).await
-    else {
-        return Err("The turn ended before the job started.".into());
-    };
-    // Only a trusted turn's Bypass job waits, for the owner's Confirm.
-    if jobs.is_empty() && (!bypass || researched) {
-        return Err(text);
-    }
-    let cards: Vec<Value> = jobs
+    let items = actions::offer(
+        shared,
+        &plan,
+        &asked(session),
+        &card,
+        session.web.load(Ordering::SeqCst),
+        &live,
+    )
+    .await?;
+    let offered: Vec<String> = items
         .iter()
-        .map(|j| json!({"id": j["id"], "title": j["title"], "status": j["status"], "repo": j["repo"]}))
+        .map(|i| format!("{} (inbox item {})", i.title, i.id))
         .collect();
-    session
-        .jobs
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .extend(jobs);
-    Ok(if cards.is_empty() {
-        text
-    } else {
-        format!("{text}\n{}", json!({"jobs": cards}))
-    })
+    Ok(format!(
+        "Offered {}. Its card is on your answer: nothing starts until the owner taps Dispatch there, and Skip drops it.",
+        offered.join("; ")
+    ))
 }
 
 /// oby_jobs: the jobs, newest first, in obid's own fields only (nothing an agent wrote), quoted.

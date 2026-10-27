@@ -111,6 +111,129 @@ pub async fn answer(
     }
 }
 
+/// Each of the plan's jobs' issue files, in its order.
+async fn files_of(plan: &Plan) -> Vec<Option<Vec<String>>> {
+    let mut files = vec![];
+    for d in &plan.dispatches {
+        files.push(match d.issue {
+            Some(issue) if issue > 0 => super::issue_files(&d.repo, issue as u64).await,
+            _ => None,
+        });
+    }
+    files
+}
+
+/// The job `d` plans, as obid keeps it, linked to the conversation.
+fn planned_job(
+    shared: &Shared,
+    d: &super::plan::Dispatch,
+    asked: &Asked<'_>,
+    files: Option<Vec<String>>,
+    researched: bool,
+) -> NewJob {
+    // An issue and a pull request is the issue's work started from the pull request (#219):
+    // obid has no `fromPR` yet, so the job is the issue's, from its repository's base.
+    let new = NewJob {
+        repo: d.repo.clone(),
+        kind: d.kind.as_str().into(),
+        task: d.task.clone(),
+        title: d.title.clone(),
+        request: Some(asked.said.into()),
+        pr: if d.issue.is_some() {
+            None
+        } else {
+            d.pr.map(|pr| pr as u64)
+        },
+        issue: d.issue.map(|issue| issue as u64),
+        account: Some(d.account.clone()),
+        agent: Some(d.agent.clone()),
+        // The plan's 1 is "no number named": obid's own default (Jobs::create, #958).
+        rounds: (d.rounds > 1).then_some(d.rounds as u32),
+        check: kept_check(
+            d.check.as_deref(),
+            shared
+                .config
+                .repos
+                .find(&d.repo)
+                .and_then(|r| r.check)
+                .as_deref(),
+            asked.said,
+        ),
+        files,
+        attachments: (!asked.attachments.is_empty()).then(|| asked.attachments.to_vec()),
+        conversation: Some(asked.conversation.to_owned()),
+        base: d.base_branch.clone(),
+        mode: d.mode.map(|m| m.as_str().to_owned()),
+        brief: d.brief(),
+        ..NewJob::default()
+    };
+    // Work planned after the turn read something untrusted starts now, in Sandbox mode at
+    // most, as a standing rule's job (the owner's decision of 2026-10-23, replacing #374's
+    // Start item), and publishes by itself as any job does (the owner's decision of
+    // 2026-10-24).
+    NewJob {
+        untrusted: researched,
+        ..super::written_in(shared, asked.conversation, new)
+    }
+}
+
+/// Offers the plan's jobs instead of starting them (`oby_offer`): each planned as [`dispatch`]
+/// would start it, then kept as a `start` item of the conversation, which only the owner's own
+/// Start (Dispatch on its card) starts. `offer` groups items into one card (the turn's); the
+/// turn goes on each job, so once started its card shows under the words that asked. Bypass is
+/// refused: only the owner's Confirm starts a job in it, which `oby_dispatch` asks for.
+pub async fn offer(
+    shared: &Arc<Shared>,
+    plan: &Plan,
+    asked: &Asked<'_>,
+    offer: &str,
+    researched: bool,
+    live: &(dyn Fn() -> bool + Send + Sync),
+) -> Result<Vec<Item>, String> {
+    if plan
+        .dispatches
+        .iter()
+        .any(|d| matches!(d.mode, Some(super::plan::Mode::Bypass)))
+    {
+        return Err(
+            "A job in Bypass mode starts only on the owner's own Confirm: oby_dispatch it, and Oby asks them.".into(),
+        );
+    }
+    let files = files_of(plan).await;
+    if !live() {
+        return Err("The turn ended before the offer was made.".into());
+    }
+    Ok(plan
+        .dispatches
+        .iter()
+        .zip(files)
+        .map(|(d, files)| {
+            let new = NewJob {
+                turn: (!asked.turn.is_empty()).then(|| asked.turn.to_owned()),
+                ..planned_job(shared, d, asked, files, researched)
+            };
+            // What the brain wrote shows with every secret obid knows taken out.
+            let known = crate::secrets::known();
+            let what = known.redact(&describe(&new));
+            let title = known.redact(
+                &d.title
+                    .clone()
+                    .filter(|t| !t.trim().is_empty())
+                    .unwrap_or_else(|| super::briefing::line(&d.task, 60)),
+            );
+            // obid's own words for the job it keeps, then the task it planned (as #374's Start
+            // item had them); the card shows both, and whether something untrusted came first.
+            let task = known.redact(d.task.trim());
+            let text = format!("Start {what}?\n\nThe task Oby planned:\n{task}");
+            let offer = serde_json::json!({"id": offer, "what": what, "task": task,
+                                           "untrusted": new.untrusted});
+            shared
+                .link
+                .propose(&new, title, text, asked.conversation, offer)
+        })
+        .collect())
+}
+
 /// Starts the plan's jobs, each with its issue's files, linked to the conversation.
 async fn dispatch(
     shared: &Arc<Shared>,
@@ -119,13 +242,7 @@ async fn dispatch(
     researched: bool,
     live: &(dyn Fn() -> bool + Send + Sync),
 ) -> Talk {
-    let mut files = vec![];
-    for d in &plan.dispatches {
-        files.push(match d.issue {
-            Some(issue) if issue > 0 => super::issue_files(&d.repo, issue as u64).await,
-            _ => None,
-        });
-    }
+    let files = files_of(plan).await;
     // Cancelled while the files were read: nothing starts, and nothing asks.
     if !live() {
         tracing::info!(
@@ -139,50 +256,7 @@ async fn dispatch(
     // Jobs that would start in Bypass mode, waiting for the owner's Confirm.
     let mut waiting: Vec<String> = vec![];
     for (d, files) in plan.dispatches.iter().zip(files) {
-        // An issue and a pull request is the issue's work started from the pull request (#219):
-        // obid has no `fromPR` yet, so the job is the issue's, from its repository's base.
-        let new = NewJob {
-            repo: d.repo.clone(),
-            kind: d.kind.as_str().into(),
-            task: d.task.clone(),
-            title: d.title.clone(),
-            request: Some(asked.said.into()),
-            pr: if d.issue.is_some() {
-                None
-            } else {
-                d.pr.map(|pr| pr as u64)
-            },
-            issue: d.issue.map(|issue| issue as u64),
-            account: Some(d.account.clone()),
-            agent: Some(d.agent.clone()),
-            // The plan's 1 is "no number named": obid's own default (Jobs::create, #958).
-            rounds: (d.rounds > 1).then_some(d.rounds as u32),
-            check: kept_check(
-                d.check.as_deref(),
-                shared
-                    .config
-                    .repos
-                    .find(&d.repo)
-                    .and_then(|r| r.check)
-                    .as_deref(),
-                asked.said,
-            ),
-            files,
-            attachments: (!asked.attachments.is_empty()).then(|| asked.attachments.to_vec()),
-            conversation: Some(asked.conversation.to_owned()),
-            base: d.base_branch.clone(),
-            mode: d.mode.map(|m| m.as_str().to_owned()),
-            brief: d.brief(),
-            ..NewJob::default()
-        };
-        // Work planned after the turn read something untrusted starts now, in Sandbox mode at
-        // most, as a standing rule's job (the owner's decision of 2026-10-23, replacing #374's
-        // Start item), and publishes by itself as any job does (the owner's decision of
-        // 2026-10-24).
-        let new = NewJob {
-            untrusted: researched,
-            ..super::written_in(shared, asked.conversation, new)
-        };
+        let new = planned_job(shared, d, asked, files, researched);
         // A job that would never ask the owner anything widens trust: only their own Confirm
         // starts it (the owner's decision of 2026-10-16; review on #551). An untrusted one never
         // runs in Bypass (Jobs::create).

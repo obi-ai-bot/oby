@@ -4860,8 +4860,9 @@ impl Link {
     }
 
     /// A `start` item for a follow-up whose work merged after it was proposed (the first job's pull
-    /// request or a follow-up's) is done by itself, with no options, its text saying so above the
-    /// owner's words. Checked whenever the inbox is read; nothing starts.
+    /// request or a follow-up's), or an offer left a day ([`OFFER_SECONDS`]), is done by itself,
+    /// with no options, its text saying so above the owner's words. Checked whenever the inbox is
+    /// read; nothing starts.
     fn settle_stale_starts(&self) {
         let open: Vec<Item> = self
             .lock()
@@ -4876,7 +4877,12 @@ impl Link {
         let jobs = self.jobs.list(usize::MAX);
         let now = time::now();
         let mut closed = Vec::new();
-        for mut item in open {
+        for item in open {
+            // An offer nobody started in a day: the phone and the briefing stop asking.
+            if expired(&item, now) {
+                closed.push(closed_start(item, OFFER_EXPIRED, now));
+                continue;
+            }
             let Some(of) = item.start.as_ref().and_then(|s| s["follow_up_of"].as_str()) else {
                 continue;
             };
@@ -4895,16 +4901,11 @@ impl Link {
             else {
                 continue;
             };
-            item.text = format!(
-                "Closed by Oby: {}'s work merged after this was proposed.\n\n{}",
-                merged.short_title(),
-                inbox::unfenced(&item.text)
+            let why = format!(
+                "Closed by Oby: {}'s work merged after this was proposed.",
+                merged.short_title()
             );
-            item.options = vec![];
-            item.details = None;
-            item.recommended = None;
-            item.done = Some(now);
-            closed.push(item);
+            closed.push(closed_start(item, &why, now));
         }
         {
             let mut state = self.lock();
@@ -4920,18 +4921,50 @@ impl Link {
         }
     }
 
-    /// Work the brain planned after looking things up waits for the owner's Start, as a `start`
-    /// item (Engine/Inbox.swift, `Inbox.proposal`): nothing starts until they say so.
-    /// `conversation`: the one it was proposed in, which shows it (`Item::conversation`).
+    /// Closes the open `start` items offered in `conversation`, which was deleted: nothing of it
+    /// starts any more. Under the lock, so a Start that claimed one first stands.
+    pub fn close_offers(&self, conversation: &str) {
+        let now = time::now();
+        let closed: Vec<Item> = {
+            let mut state = self.lock();
+            let open: Vec<Item> = state
+                .inbox
+                .values()
+                .filter(|i| {
+                    i.kind == "start"
+                        && i.done.is_none()
+                        && i.conversation().as_deref() == Some(conversation)
+                })
+                .cloned()
+                .collect();
+            open.into_iter()
+                .map(|item| {
+                    let item = closed_start(item, OFFER_GONE, now);
+                    state.inbox.insert(item.id.clone(), item.clone());
+                    item
+                })
+                .collect()
+        };
+        for item in &closed {
+            self.save_item(item);
+        }
+    }
+
+    /// Work the brain offered (`oby_offer`) waits for the owner's Start, as a `start` item
+    /// (Engine/Inbox.swift, `Inbox.proposal`): nothing starts until they say so.
+    /// `conversation`: the one it was proposed in, which shows it (`Item::conversation`);
+    /// `offer`: `{"id", "what"}`, the card it's on there (`Item::to_json`).
     pub fn propose(
         &self,
         new: &crate::jobs::NewJob,
         title: String,
         text: String,
         conversation: &str,
+        offer: Value,
     ) -> Item {
         let mut start = serde_json::to_value(new).unwrap_or_default();
         start["proposedIn"] = json!(conversation);
+        start["offer"] = offer;
         let item = Item {
             id: format!("start-{}", &uuid::Uuid::new_v4().simple().to_string()[..8]),
             kind: "start".into(),
@@ -4961,79 +4994,51 @@ impl Link {
         item
     }
 
-    /// `POST /v1/inbox/{id}/answer` on a `start` item: Start queues the job as planned; Cancel,
-    /// done or later start nothing.
-    fn answer_start(
-        &self,
-        mut item: Item,
-        answer: Option<String>,
-        later: Option<i64>,
-    ) -> Result<Value, ApiError> {
-        if let Some(at) = later {
-            item.later = Some(at);
-        } else {
-            if let Some(answer) = &answer {
-                if answer != inbox::START && answer != inbox::CANCEL_START {
-                    return Err(api(
-                        StatusCode::UNPROCESSABLE_ENTITY,
-                        format!("The answer is {} or {}.", inbox::START, inbox::CANCEL_START),
-                    ));
+    /// Start on a `start` item `answer_as` claimed: queues the job as planned. What couldn't start
+    /// leaves it open again.
+    fn start_item(&self, mut item: Item) -> Result<Value, ApiError> {
+        let open_again = |why: ApiError| {
+            self.lock().inbox.insert(item.id.clone(), item.clone());
+            why
+        };
+        let new: crate::jobs::NewJob = item
+            .start
+            .clone()
+            .and_then(|s| serde_json::from_value(*s).ok())
+            .ok_or_else(|| open_again(api(StatusCode::CONFLICT, "That plan was lost.")))?;
+        // A follow-up of a job whose follow-up is working already: that one hears it (the owner's
+        // own Start), and the item is done, never a second. Only while it's at work with nothing
+        // waiting, checked as the words are taken (`hear_at_work`): a permission or plan would
+        // take them as its answer, so the item stays open until then.
+        let following = new
+            .follow_up_of
+            .as_deref()
+            .and_then(|of| self.jobs.following(of));
+        let job = match following {
+            // Heard as they are (crate::secretspec, `Jobs::hear_plan`).
+            Some(next) => match self.jobs.hear_plan(&next.id, &new) {
+                Some(Ok(job)) => job,
+                Some(Err(e)) => {
+                    return Err(open_again(api(
+                        StatusCode::CONFLICT,
+                        format!(
+                            "{} (job {}) is following it up already. {} Start it again once it's at work, or tell that job.",
+                            next.short_title(),
+                            next.id,
+                            e.0
+                        ),
+                    )));
                 }
-                if answer == inbox::START {
-                    // `answer` claimed it; what couldn't start leaves it open again.
-                    let open_again = |why: ApiError| {
-                        self.lock().inbox.insert(item.id.clone(), item.clone());
-                        why
-                    };
-                    let new: crate::jobs::NewJob = item
-                        .start
-                        .clone()
-                        .and_then(|s| serde_json::from_value(*s).ok())
-                        .ok_or_else(|| {
-                            open_again(api(StatusCode::CONFLICT, "That plan was lost."))
-                        })?;
-                    // A follow-up of a job whose follow-up is working already: that one hears
-                    // it (the owner's own Start), and the item is done, never a second. Only
-                    // while it's at work with nothing waiting, checked as the words are taken
-                    // (`hear_at_work`): a permission or plan would take them as its answer, so
-                    // the item stays open until then.
-                    let following = new
-                        .follow_up_of
-                        .as_deref()
-                        .and_then(|of| self.jobs.following(of));
-                    let job = match following {
-                        // Heard as they are (crate::secretspec, `Jobs::hear_plan`).
-                        Some(next) => match self.jobs.hear_plan(&next.id, &new) {
-                            Some(Ok(job)) => job,
-                            Some(Err(e)) => {
-                                return Err(open_again(api(
-                                    StatusCode::CONFLICT,
-                                    format!(
-                                        "{} (job {}) is following it up already. {} Start it again once it's at work, or tell that job.",
-                                        next.short_title(),
-                                        next.id,
-                                        e.0
-                                    ),
-                                )));
-                            }
-                            None => {
-                                return Err(open_again(api(
-                                    StatusCode::CONFLICT,
-                                    "That job is gone.",
-                                )));
-                            }
-                        },
-                        None => self
-                            .jobs
-                            .create(new)
-                            .map_err(|e| open_again(api(StatusCode::UNPROCESSABLE_ENTITY, e.0)))?,
-                    };
-                    item.job = job.id;
-                }
-            }
-            item.done = Some(time::now());
-            item.answer = answer;
-        }
+                None => return Err(open_again(api(StatusCode::CONFLICT, "That job is gone."))),
+            },
+            None => self
+                .jobs
+                .create(new)
+                .map_err(|e| open_again(api(StatusCode::UNPROCESSABLE_ENTITY, e.0)))?,
+        };
+        item.job = job.id;
+        item.done = Some(time::now());
+        item.answer = Some(inbox::START.into());
         self.lock().inbox.insert(item.id.clone(), item.clone());
         self.save_item(&item);
         Ok(item.to_json())
@@ -5398,20 +5403,37 @@ impl Link {
                 self.save_item(&item);
                 return Err(api(StatusCode::CONFLICT, refused));
             }
+            // A `start` item: every answer settles it under the lock, so of two at the same
+            // moment only the first counts. A second Start finds it done and starts nothing
+            // (review on #552), and Later, Cancel or done never write back a copy read before a
+            // Start that started its job (review on #1536). Only Start carries anything out.
             if item.kind == "start" {
-                // Start claims the item under the lock: a second Start at the same moment finds
-                // it done and starts nothing (review on #552).
-                if matches!(&given, Given::Answer(a) if a == inbox::START)
-                    && let Some(kept) = state.inbox.get_mut(id)
-                {
-                    kept.done = Some(now);
+                let mut item = item;
+                match &given {
+                    Given::Answer(a) if a == inbox::START => {
+                        if let Some(kept) = state.inbox.get_mut(id) {
+                            kept.done = Some(now);
+                        }
+                        drop(state);
+                        return self.start_item(item);
+                    }
+                    Given::Answer(a) if a == inbox::CANCEL_START => {
+                        item.done = Some(now);
+                        item.answer = Some(a.clone());
+                    }
+                    Given::Answer(_) => {
+                        return Err(api(
+                            StatusCode::UNPROCESSABLE_ENTITY,
+                            format!("The answer is {} or {}.", inbox::START, inbox::CANCEL_START),
+                        ));
+                    }
+                    Given::Done => item.done = Some(now),
+                    Given::Later(at) => item.later = Some(*at),
                 }
+                state.inbox.insert(item.id.clone(), item.clone());
                 drop(state);
-                return match given {
-                    Given::Answer(answer) => self.answer_start(item, Some(answer), None),
-                    Given::Done => self.answer_start(item, None, None),
-                    Given::Later(at) => self.answer_start(item, None, Some(at)),
-                };
+                self.save_item(&item);
+                return Ok(item.to_json());
             }
             // A `limit` item (#871): Try again carries its job on now, Dismiss lets the job go. The
             // answer claims it under the lock, so a second tap carries nothing out.
@@ -6150,6 +6172,28 @@ enum Recheck {
 /// Why a Confirm without the owner's tap is refused (#776).
 pub const NEEDS_YOUR_TAP: &str =
     "Only your tap can confirm this: confirm it in Oby on your Mac or iPhone.";
+
+/// How long an offer (`oby_offer`) stays open: a day, then Oby closes it ([`OFFER_EXPIRED`]).
+const OFFER_SECONDS: i64 = 24 * 3600;
+const OFFER_EXPIRED: &str =
+    "Closed by Oby: offered a day ago and never started. Ask Oby again to start it.";
+const OFFER_GONE: &str = "Closed by Oby: the conversation it was offered in was deleted.";
+
+/// Whether `item` is work the brain offered (`oby_offer`) a day or more before `now`.
+fn expired(item: &Item, now: i64) -> bool {
+    item.start.as_ref().is_some_and(|s| s["offer"].is_object())
+        && now - item.created >= OFFER_SECONDS
+}
+
+/// A `start` item done by Oby itself, `why` above its words, with no options: nothing starts.
+fn closed_start(mut item: Item, why: &str, now: i64) -> Item {
+    item.text = format!("{why}\n\n{}", inbox::unfenced(&item.text));
+    item.options = vec![];
+    item.details = None;
+    item.recommended = None;
+    item.done = Some(now);
+    item
+}
 
 #[cfg(test)]
 mod tests {
@@ -7049,5 +7093,31 @@ mod tests {
         );
         assert!(!home.join("keys/seal.key").exists());
         let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// An offer (`oby_offer`) closes a day after it was made, its words kept under obid's own
+    /// sentence and nothing left to answer; any other `start` item stays as it was.
+    #[test]
+    fn an_offer_closes_after_a_day() {
+        let confirmed = inbox::Confirmed {
+            action: String::new(),
+            target: String::new(),
+            payload: Value::Null,
+        };
+        let mut item = inbox::confirm_item("", "Greeting".into(), "Start it?".into(), confirmed, 0);
+        item.kind = "start".into();
+        item.confirm = None;
+        item.start = Some(Box::new(json!({"repo": "o/app"})));
+        assert!(!super::expired(&item, super::OFFER_SECONDS));
+        item.start = Some(Box::new(json!({"repo": "o/app", "offer": {"id": "t1"}})));
+        assert!(!super::expired(&item, super::OFFER_SECONDS - 1));
+        assert!(super::expired(&item, super::OFFER_SECONDS));
+        let closed = super::closed_start(item, super::OFFER_EXPIRED, 7);
+        assert_eq!(
+            closed.text,
+            format!("{}\n\nStart it?", super::OFFER_EXPIRED)
+        );
+        assert!(closed.options.is_empty() && closed.details.is_none());
+        assert_eq!(closed.done, Some(7));
     }
 }
