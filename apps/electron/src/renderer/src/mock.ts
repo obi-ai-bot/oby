@@ -53,8 +53,9 @@ export type Page = {
 
 // What the job needs from you (InboxItem + Question + Permission). Buttons
 // per kind follow Inbox.swift; every ask also has Later.
-// back: a job that was on someone else's Mac came back to yours (Sharing, a preview)
-export type AskKind = 'question' | 'permission' | 'review' | 'failed' | 'limit' | 'start' | 'merge' | 'back';
+// back: a job that was on someone else's Mac came back to yours (Sharing, a preview); check: which
+// command proves it done (obid's set_check); remember: may Oby keep what it learned (a workflow)
+export type AskKind = 'question' | 'permission' | 'review' | 'failed' | 'limit' | 'start' | 'merge' | 'back' | 'check' | 'remember';
 export type Ask = {
   kind: AskKind;
   headline: string;   // Oby's plain-words rewrite, e.g. "Pick one vault"
@@ -65,7 +66,7 @@ export type Ask = {
 };
 export const ASK_LABEL: Record<AskKind, string> = {
   question: 'Question', permission: 'Permission', review: 'Out of reviews', failed: 'Failed',
-  limit: 'Out of usage', start: 'Start it?', merge: 'Not merged', back: 'Came back',
+  limit: 'Out of usage', start: 'Start it?', merge: 'Not merged', back: 'Came back', check: 'Check', remember: 'Remember?',
 };
 
 // One line of the agent's session: a file it read, a command it ran, what it said.
