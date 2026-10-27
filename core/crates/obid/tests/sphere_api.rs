@@ -2555,17 +2555,26 @@ async fn the_council_convener_sends_one_review_request_per_seat() {
 
     // Every seat is checked before any is sent: one that isn't a member stops the call, and so do
     // two seats with one owner (rule I3).
+    let later = obi_protocol::time::format(obi_protocol::time::now() + 7300);
     let unknown = convene(
-        json!({"seats": ["obi-ernesto", "obi-nobody"], "review": brief(), "expiresAt": at}),
+        json!({"seats": ["obi-ernesto", "obi-nobody"], "review": brief(), "expiresAt": later}),
     );
     assert_eq!(unknown.status, 422, "{}", unknown.text);
+    // A repeat for the same motion with other words is refused: the seat holds the first.
+    let mut reworded = brief();
+    reworded["goal"] = json!("Something else");
+    let other = convene(json!({"seats": ["obi-ernesto"], "review": reworded, "expiresAt": at}));
+    assert_eq!(other.status, 409, "{}", other.text);
     let _maria_again = TestObi::join(&sphere, "obi-maria-2", "maria").await;
-    let later = obi_protocol::time::format(obi_protocol::time::now() + 7300);
     let one_owner = convene(
         json!({"seats": ["obi-ernesto", "obi-maria-2", "obi-maria"], "review": brief(), "expiresAt": later}),
     );
     assert_eq!(one_owner.status, 422, "{}", one_owner.text);
     assert!(one_owner.text.contains("same owner"), "{}", one_owner.text);
+    // Nor can a later call for the first motion seat maria's other agent: maria already sits.
+    let replacement =
+        convene(json!({"seats": ["obi-maria", "obi-maria-2"], "review": brief(), "expiresAt": at}));
+    assert_eq!(replacement.status, 422, "{}", replacement.text);
 
     // When every seat's send fails on the way (the Obysphere refusing), the call fails with the first
     // seat's error and keeps nothing.

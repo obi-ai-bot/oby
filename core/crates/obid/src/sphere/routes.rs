@@ -94,12 +94,18 @@ pub async fn request(State(shared): State<Arc<Shared>>, body: Bytes) -> Result<R
     ))
 }
 
-/// `POST /v1/obid/sphere/council`.
+/// `POST /v1/obid/sphere/council`. Runs apart from the caller's connection, so a client that hangs up
+/// mid-call doesn't leave the remaining seats without their requests.
 pub async fn council(State(shared): State<Arc<Shared>>, body: Bytes) -> Result<Response, ApiError> {
-    Ok(json(
-        StatusCode::ACCEPTED,
-        crate::sphere::council::convene(&shared.link, &body).await?,
-    ))
+    let task =
+        tokio::spawn(async move { crate::sphere::council::convene(&shared.link, &body).await });
+    let answer = task.await.map_err(|e| {
+        ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("The convener stopped: {e}"),
+        )
+    })??;
+    Ok(json(StatusCode::ACCEPTED, answer))
 }
 
 /// `GET /v1/obid/sphere/exchanges?limit=50`.

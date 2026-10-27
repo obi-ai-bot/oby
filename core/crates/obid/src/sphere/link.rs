@@ -4080,11 +4080,16 @@ impl Link {
         Ok(())
     }
 
-    /// The Council's seats, checked before any request is sent (crate::sphere::council): each an
-    /// active member whose card accepts `review_request` and whose seal key obid trusts when it seals,
-    /// none this Obi's owner's, and no two with one owner (rules I2 and I3). `422` (or `409` for a seal
-    /// key obid doesn't trust) with nothing sent. Reads the directory first.
-    pub(crate) async fn check_seats(&self, seats: &[String]) -> Result<(), ApiError> {
+    /// The Council's seats not sent their request yet, checked before any is sent
+    /// (crate::sphere::council): each an active member whose card accepts `review_request` and whose
+    /// seal key obid trusts when it seals, none this Obi's owner's, and no two with one owner, nor with
+    /// the owner of a seat already sent this motion's request (`seated`; rules I2 and I3). `422` (or
+    /// `409` for a seal key obid doesn't trust) with nothing sent. Reads the directory first.
+    pub(crate) async fn check_seats(
+        &self,
+        seats: &[String],
+        seated: HashSet<String>,
+    ) -> Result<(), ApiError> {
         if let Err(e) = self.read_directory().await {
             self.note_error(&e);
             return Err(from_client(&e));
@@ -4092,7 +4097,7 @@ impl Link {
         let kind = "review_request".to_owned();
         let mine = self.owner();
         let state = self.lock();
-        let mut owners = HashSet::new();
+        let mut owners = seated;
         let invalid = |m: String| api(StatusCode::UNPROCESSABLE_ENTITY, m);
         for obi in seats {
             let member = state
@@ -4133,15 +4138,16 @@ impl Link {
     }
 
     /// The outgoing `review_request` exchange to `to` for `repo` (ignoring ASCII case) at `head_sha`,
-    /// expiring at `expires_at`, when obid sent one: the Council's convener answers it again rather
-    /// than send a seat a second request for one motion (its deadline says which motion).
+    /// expiring at `expires_at`, when obid sent one, with that request's body (its words opened) and
+    /// its receiver's owner: the Council's convener answers it again rather than send a seat a second
+    /// request for one motion (its deadline says which motion).
     pub(crate) fn sent_review(
         &self,
         to: &str,
         repo: &str,
         head_sha: &str,
         expires_at: i64,
-    ) -> Option<Value> {
+    ) -> Option<(Value, Value, Option<String>)> {
         let at = time::format(expires_at);
         self.lock()
             .exchanges
@@ -4156,7 +4162,7 @@ impl Link {
                         .as_str()
                         .is_some_and(|r| r.eq_ignore_ascii_case(repo))
             })
-            .map(Exchange::to_json)
+            .map(|x| (x.to_json(), x.request["body"].clone(), x.peer_owner.clone()))
     }
 
     /// Sends one request already scanned ([`Link::scan_outgoing`]): sealed for the receiver when its

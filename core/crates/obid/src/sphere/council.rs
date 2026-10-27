@@ -7,8 +7,9 @@
 //! checked before anything goes (a member, active, accepting reviews, not this Obi's owner's, one per
 //! owner), so nothing obid can check leaves a seat out; each request is then sealed, signed and sent
 //! as every request is (`Link::send_scanned`), all expiring at the same instant, the motion's
-//! `deadlines.reviews`. A seat obid already sent this motion's request is answered with that exchange,
-//! never sent a second one (the tally refuses two requests to one seat), and one call runs at a time. The Obysphere relays each exchange between its two Obis only, so no seat sees
+//! `deadlines.reviews`. A seat obid already sent this motion's request is answered with that
+//! exchange, never sent a second one (the tally refuses two requests to one seat), and one call runs
+//! at a time, apart from the caller's connection. The Obysphere relays each exchange between its two Obis only, so no seat sees
 //! another's request or result. obid never
 //! passes one seat's result to another: the panel is blind by construction (rule I1). A panel never
 //! approves on the code host in a person's place (rule I7), so a request asking it is refused.
@@ -96,22 +97,44 @@ pub async fn convene(link: &Link, body: &[u8]) -> Result<Value, ApiError> {
         })?;
 
     // Everything that would stop a seat's request, before any is sent: a panel that reaches only
-    // some of its seats leaves the others absent, and nobody takes their places.
+    // some of its seats leaves the others absent, and nobody takes their places. A seat already sent
+    // this motion's request keeps it: a repeated call checks and sends only the others.
     let _one_at_a_time = CONVENING.lock().await;
-    link.scan_outgoing(&review).await?;
-    link.check_seats(&seats).await?;
     let repo = review["repo"].as_str().unwrap_or_default().to_owned();
     let head = review["head_sha"].as_str().unwrap_or_default().to_owned();
+    let mut sent = std::collections::HashMap::new();
+    let mut seated = std::collections::HashSet::new();
+    for seat in &seats {
+        if let Some((exchange, body, owner)) = link.sent_review(seat, &repo, &head, expires_at) {
+            if body != review {
+                return Err(ApiError::new(
+                    StatusCode::CONFLICT,
+                    format!(
+                        "{seat} already has another request for this motion: nothing was sent."
+                    ),
+                ));
+            }
+            seated.extend(owner);
+            sent.insert(seat.clone(), exchange);
+        }
+    }
+    let unsent: Vec<String> = seats
+        .iter()
+        .filter(|s| !sent.contains_key(*s))
+        .cloned()
+        .collect();
+    link.scan_outgoing(&review).await?;
+    link.check_seats(&unsent, seated).await?;
 
     // One request per seat, the same for every seat, each its own exchange.
     let mut answered = Vec::with_capacity(seats.len());
     let mut first_error = None;
     for seat in seats {
-        if let Some(exchange) = link.sent_review(&seat, &repo, &head, expires_at) {
+        if let Some(exchange) = sent.remove(&seat) {
             answered.push(json!({"seat": seat, "exchange": exchange}));
             continue;
         }
-        let sent = link
+        let result = link
             .send_scanned(
                 &joined,
                 seat.clone(),
@@ -120,7 +143,7 @@ pub async fn convene(link: &Link, body: &[u8]) -> Result<Value, ApiError> {
                 Expiry::At(expires_at),
             )
             .await;
-        match sent {
+        match result {
             Ok(exchange) => answered.push(json!({"seat": seat, "exchange": exchange})),
             Err(e) => {
                 answered
