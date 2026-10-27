@@ -11,6 +11,7 @@ declare global {
       // obid, through main (preload, main/obid.ts)
       obid: {
         call(method: string, path: string, body?: unknown): Promise<{ status: number; text: string }>;
+        confirm(item: string): Promise<{ status: number; text: string }>;
         follow(onChunk: (text: string) => void, onEnd: (a: { status: number; text: string }) => void): () => void;
       };
     };

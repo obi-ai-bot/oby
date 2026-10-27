@@ -11,7 +11,7 @@ import { join } from 'node:path';
 // fixed: obid never moves to another port, and neither does the app
 const BASE = 'http://127.0.0.1:7777';
 // ponytail: macOS only, as the Swift app's runner home; follows obid's `home` when the app starts it
-const HOME = join(homedir(), 'Library/Application Support/Oby/Runner');
+export const HOME = join(homedir(), 'Library/Application Support/Oby/Runner');
 const METHODS = new Set(['GET', 'POST', 'PATCH', 'DELETE']);
 
 // A file in obid's home, read only when it's a regular file of this user's, never through a link;
@@ -74,16 +74,20 @@ let following: AbortController | null = null;
 // the window closed: nobody to send events to
 export const stopFollowing = () => { following?.abort(); following = null; };
 
+// One call, read whole
+export async function obid(method: string, path: string, body?: unknown): Promise<Answer> {
+  const r = await send(method, path, body);
+  return r instanceof Response ? { status: r.status, text: await r.text() } : r;
+}
+
 // The page's own frame only: no other page, or frame in it, gets obid
-type Trusted = (e: IpcMainEvent | IpcMainInvokeEvent) => boolean;
+export type Trusted = (e: IpcMainEvent | IpcMainInvokeEvent) => boolean;
 
 export function bridge(trusted: Trusted) {
   // one call: obid's status and body, or why it didn't answer
   ipcMain.handle('obid', async (e, method: string, path: string, body?: unknown): Promise<Answer> => {
     if (!trusted(e)) return { status: 403, text: '' };
-    const r = await send(method, path, body);
-    if (!(r instanceof Response)) return r;
-    return { status: r.status, text: await r.text() };
+    return obid(method, path, body);
   });
 
   // The event stream (GET /v1/events), one at a time: each piece of its text goes to the page as

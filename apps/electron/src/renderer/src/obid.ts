@@ -117,10 +117,11 @@ export class ApiError extends Error {
   }
 }
 
-async function call<T>(method: string, path: string, body?: unknown): Promise<T> {
+type Bridge = NonNullable<Window['app']>['obid'];
+async function call<T>(method: string, path: string, body?: unknown, via = (b: Bridge) => b.call(method, path, body)): Promise<T> {
   const bridge = window.app?.obid;
   if (!bridge) throw new ApiError(0, 'Oby’s engine is reached from the Mac app only.');
-  const { status, text } = await bridge.call(method, path, body);
+  const { status, text } = await via(bridge);
   if (status === 0) throw new ApiError(0, text);
   let value: unknown = null;
   try { value = text ? JSON.parse(text) : null; } catch { /* not JSON: said below */ }
@@ -151,6 +152,8 @@ export const api = {
     call<Job>('POST', `/v1/jobs/${id(j)}/permission`, body),
   inbox: () => call<InboxItem[]>('GET', '/v1/inbox'),
   answer: (i: string, body: { answer: string } | { later: string }) => call<InboxItem>('POST', `/v1/inbox/${id(i)}/answer`, body),
+  // Confirm on a confirm item: main signs it with this Mac's device key (main/device.ts)
+  confirm: (i: string) => call<InboxItem>('POST', `/v1/inbox/${id(i)}/answer`, undefined, (b) => b.confirm(i)),
   // one conversation's turns
   conversation: (opts: { id?: string; before?: string; limit?: number } = {}) => call<Turn[]>('GET', `/v1/conversation${q(opts)}`),
   // words to Oby: in a conversation, or starting a new one

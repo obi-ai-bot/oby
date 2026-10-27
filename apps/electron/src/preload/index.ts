@@ -25,6 +25,8 @@ contextBridge.exposeInMainWorld('app', {
   // text as it comes, then how it ended. Following again replaces the stream before.
   obid: {
     call: (method: string, path: string, body?: unknown) => ipcRenderer.invoke('obid', method, path, body) as Promise<Answer>,
+    // Confirm on an open confirm item, by its id: main signs it with this Mac's device key
+    confirm: (item: string) => ipcRenderer.invoke('obid-confirm', item) as Promise<Answer>,
     follow(onChunk: (text: string) => void, onEnd: (a: Answer) => void) {
       const chunk = (_: unknown, text: string) => onChunk(text);
       const end = (_: unknown, a: Answer) => { stop(); onEnd(a); };

@@ -29,7 +29,8 @@ npm run typecheck
 
 ```
 src/main/       the window (opens at 994×670, at least 420×520) and the cursor feed;
-                obid.ts: obid's API through main, which holds its token
+                obid.ts: obid's API through main, which holds its token;
+                device.ts: this Mac's device key (safeStorage), which signs a Confirm
 src/preload/    window.app: the traffic lights' position, full screen, the cursor feed,
                 and obid (a call, and the event stream)
 src/renderer/   the screens; tokens.css holds the shared look
