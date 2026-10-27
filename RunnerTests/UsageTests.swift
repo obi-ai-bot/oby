@@ -51,8 +51,8 @@ struct UsageTests {
     @Test func namesAndPlans() {
         #expect(Usage.tool("claude") == "Claude Code" && Usage.tool("codex") == "Codex")
         #expect(Usage.tool("cursor") == "Cursor" && Usage.tool("gemini") == "Gemini" && Usage.tool("aider") == "Aider")
-        #expect(Usage.plan("Max · well0cp@gmail.com") == "Max" && Usage.plan("Plus") == "Plus")
-        #expect(Usage.plan("well0cp@gmail.com") == nil && Usage.plan(nil) == nil)
+        #expect(Usage.plan("Max · someone@example.com") == "Max" && Usage.plan("Plus") == "Plus")
+        #expect(Usage.plan("someone@example.com") == nil && Usage.plan(nil) == nil)
         #expect(snapshot("Deskree").title == "Deskree · Team")
         #expect(snapshot("Personal", label: "w@deskree.com").title == "Personal")
         #expect(Usage.agents(["gemini", "codex", "cursor", "claude", "codex"]) == ["claude", "codex", "cursor", "gemini"])

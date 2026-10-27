@@ -1,7 +1,7 @@
 import { app, ipcMain, safeStorage } from 'electron';
 import { createPrivateKey, createPublicKey, generateKeyPairSync, sign, type KeyObject } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import { closeSync, constants, openSync, readFileSync, rmSync, writeSync } from 'node:fs';
+import { closeSync, constants, openSync, readFileSync, renameSync, rmSync, writeSync } from 'node:fs';
 import { hostname } from 'node:os';
 import { join } from 'node:path';
 import { HOME, obid, type Answer, type Trusted } from './obid';
@@ -33,7 +33,13 @@ export function deviceKey(): KeyObject {
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e;
   }
-  if (sealed) return (key = createPrivateKey(safeStorage.decryptString(sealed)));
+  if (sealed) {
+    try { return (key = createPrivateKey(safeStorage.decryptString(sealed))); } catch {
+      // sealed by a key this app can't open anymore (another signature, a Keychain reset): set
+      // aside, and a new one, which pairs on the owner's click as the first did
+      renameSync(keyFile(), `${keyFile()}.unreadable-${Date.now()}`);
+    }
+  }
   const made = generateKeyPairSync('ec', { namedCurve: 'prime256v1' }).privateKey;
   // O_EXCL: never over a key that's there
   writeOwn(keyFile(), safeStorage.encryptString(made.export({ type: 'pkcs8', format: 'pem' }) as string), O.O_EXCL);

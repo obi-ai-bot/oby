@@ -179,10 +179,9 @@ function apply(s: Live, e: Event): Live {
     case 'accounts':
       return s.status ? { ...s, status: { ...s.status, accounts: e.accounts } } : s;
     case 'conversation': {
-      const known = s.conversations.some((c) => c.id === e.conversation.id);
-      // one starting while this app's words start one: theirs
-      const alias = !known && s.starting && !Object.values(s.alias).includes(s.starting.id) ? { ...s.alias, [e.conversation.id]: s.starting.id } : s.alias;
-      return { ...s, alias, conversations: [...s.conversations.filter((c) => c.id !== e.conversation.id), e.conversation] };
+      // not taken as the one this app's words start: another device may start one meanwhile (the
+      // words' own turn, or the plan's answer, says which is this app's)
+      return { ...s, conversations: [...s.conversations.filter((c) => c.id !== e.conversation.id), e.conversation] };
     }
     case 'conversationGone':
       return { ...s, conversations: s.conversations.filter((c) => c.id !== e.id), turns: without(s.turns, e.id) };
@@ -223,6 +222,7 @@ function tick() {
 let generation = 0;
 let retry = 0;
 let reconnecting: ReturnType<typeof setTimeout> | undefined;
+let unfollow: (() => void) | undefined;
 
 export function connect() {
   const mine = ++generation;
@@ -237,7 +237,8 @@ export function connect() {
     else set(apply(state, e));
   });
   let first = true;
-  window.app!.obid.follow(
+  unfollow?.();
+  unfollow = window.app!.obid.follow(
     (chunk) => {
       read(chunk);
       // obid follows the stream before it answers anything else: fetch once its first text came
@@ -250,6 +251,7 @@ export function connect() {
 function down(mine: number, problem: string) {
   if (mine !== generation) return;
   generation++;
+  unfollow?.();
   set({ connection: 'down', problem, working: {}, words: {}, pace: {} });
   reconnecting = setTimeout(connect, Math.min(10_000, 1000 * 2 ** retry++));
 }
@@ -363,7 +365,8 @@ export function ask(said: string, shown?: string, repo?: string): string | undef
     try {
       const a = await api.plan(q ? q.said : words, q ? { question: q.text, option: words } : undefined, c ? { conversation: c } : { new: true });
       const where = a.conversation ?? c;
-      const alias = !c && a.conversation && !(a.conversation in state.alias) ? { ...state.alias, [a.conversation]: id } : state.alias;
+      // the plan's answer is the one: it replaces a guess from the words' turn
+      const alias = !c && a.conversation ? { ...Object.fromEntries(Object.entries(state.alias).filter(([, v]) => v !== id)), [a.conversation]: id } : state.alias;
       // the one it started, listed at once (its own event may come later), so its page stays
       const now = new Date().toISOString();
       const listed = !where || state.conversations.some((x) => x.id === where) ? state.conversations

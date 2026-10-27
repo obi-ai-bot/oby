@@ -37,6 +37,8 @@ pub struct Shared {
     pub devices: crate::devices::Devices,
     /// The phones paired with the gateway, and the open invitation (crate::gateway).
     pub gateway: crate::gateway::Gateway,
+    /// `status.gateway`: whether the gateway listens, and why not; none with no `gateway` configured.
+    pub gateway_state: Option<serde_json::Value>,
     /// The phones' relay through the Obysphere, sealed end to end (crate::relay).
     pub relay: Arc<crate::relay::Relay>,
     /// Connected apps and their job-scoped MCP broker.
@@ -262,6 +264,10 @@ pub fn router(shared: Arc<Shared>) -> Router {
             "/v1/obid/sphere",
             get(crate::sphere::routes::membership).delete(crate::sphere::routes::leave),
         )
+        .route(
+            "/v1/obid/sphere/members",
+            get(crate::sphere::routes::members),
+        )
         .route("/v1/obid/sphere/pins", get(crate::sphere::routes::pins))
         .route(
             "/v1/obid/sphere/pins/{owner}",
@@ -419,12 +425,12 @@ async fn gate(State(shared): State<Arc<Shared>>, request: Request, next: Next) -
         .strip_prefix("/v1/agent/mcp/")
         .or_else(|| path.strip_prefix("/v1/agent/tetrix/"))
         .filter(|id| !id.is_empty() && !id.contains('/'));
+    // On Linux an agent reaches obid at slirp4netns's host alias: admitted for the agent's own
+    // routes only, its broker's and its job's Apple check (oby-check apple), each with its token.
+    let agent_route = agent_check || agent_mcp.is_some();
+    let via_gateway = agent_route && agent_gateway_request(request.uri(), request.headers());
     let admitted = admit(request.uri(), request.headers(), &shared.token).or_else(|error| {
-        if (!agent_check && agent_mcp.is_none())
-            || (!loopback_request(request.uri(), request.headers())
-                && !agent_mcp
-                    .is_some_and(|_| agent_gateway_request(request.uri(), request.headers())))
-        {
+        if !agent_route || (!loopback_request(request.uri(), request.headers()) && !via_gateway) {
             return Err(error);
         }
         let mut values = request.headers().get_all(header::AUTHORIZATION).iter();
@@ -441,6 +447,10 @@ async fn gate(State(shared): State<Arc<Shared>>, request: Request, next: Next) -
                 })
         }) {
             Ok(())
+        } else if via_gateway {
+            // The gateway's host is admitted for this route, so what's missing is the token: 401,
+            // as on loopback, not the host's 403.
+            Err(ApiError::new(StatusCode::UNAUTHORIZED, NO_TOKEN))
         } else {
             Err(error)
         }
@@ -480,7 +490,8 @@ async fn gate(State(shared): State<Arc<Shared>>, request: Request, next: Next) -
 }
 
 /// On Linux, sandboxed agents reach the host through slirp4netns at 10.0.2.2. Admit that fixed
-/// host only for the job-token MCP route; normal app API requests still require a loopback Host.
+/// host only for the agent's own routes (its job-token MCP route and its job's Apple check); normal
+/// app API requests still require a loopback Host.
 fn agent_gateway_request(uri: &axum::http::Uri, headers: &HeaderMap) -> bool {
     cfg!(target_os = "linux") && gateway_host(uri, headers)
 }
@@ -611,6 +622,9 @@ pub struct Status {
     pub cursor_keychain: KeychainJson,
     /// The tunnel phones reach this Mac through (crate::tunnel): `{state, detail}`.
     pub tunnel: serde_json::Value,
+    /// The gateway (crate::gateway): `{state, address, detail}`; left out with none configured.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gateway: Option<serde_json::Value>,
     /// The machine's memory and each running job's (crate::meter); left out when it can't be read.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub memory: Option<MemoryJson>,
@@ -839,6 +853,7 @@ async fn status(State(shared): State<Arc<Shared>>) -> Result<axum::Json<Status>,
             auto: crate::jobs::cursor_keychain_auto(),
         },
         tunnel: shared.tunnel.json(),
+        gateway: shared.gateway_state.clone(),
         memory: shared
             .jobs
             .memory()

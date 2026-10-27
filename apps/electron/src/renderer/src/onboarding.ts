@@ -73,20 +73,25 @@ const failed = (e: unknown, back: () => void) => { back(); say(e); };
 // An agent: its login already on this Mac becomes an account (availableLogins); else an account
 // of its own, signed in with the tool's own login on its page. obid's `accounts` event says when
 // it's in.
+const attempts: Partial<Record<Agent, number>> = {};
 export async function signInAgent(a: Agent) {
   if (!onObid) return signIn((s) => s.agents[a], (v) => agentSign(a, v));
   if (setup.agents[a] !== 'out' || signedIn(a)) return;
+  const mine = (attempts[a] = (attempts[a] ?? 0) + 1);
   set(() => agentSign(a, 'waiting'));
   try {
     const s = liveState().status;
     if (s?.availableLogins?.some((l) => l.agent === a)) {
       await api.addAccount({ agent: a, default: true });
-      return;
+    } else {
+      const account = s?.accounts.find((x) => x.agent === a)?.id ?? (await api.addAccount({ agent: a, name: 'Personal' })).id;
+      const page = await api.signIn(account);
+      set((x) => ({ codes: { ...x.codes, [a]: { userCode: page.userCode, paste: page.pasteCode ? account : undefined } } }));
+      open(page.url);
     }
-    const account = s?.accounts.find((x) => x.agent === a)?.id ?? (await api.addAccount({ agent: a, name: 'Personal' })).id;
-    const page = await api.signIn(account);
-    set((x) => ({ codes: { ...x.codes, [a]: { userCode: page.userCode, paste: page.pasteCode ? account : undefined } } }));
-    open(page.url);
+    // a login that didn't take (its page closed, an expired login adopted): the button again,
+    // unless a later try took over
+    if (!(await until(async () => signedIn(a) || attempts[a] !== mine))) set((x) => ({ ...agentSign(a, 'out'), codes: { ...x.codes, [a]: undefined } }));
   } catch (e) {
     failed(e, () => set(() => agentSign(a, 'out')));
   }

@@ -207,6 +207,24 @@ struct LocalRunnerTests {
         #expect(LocalRunner.obidToken(in: root) == nil)
     }
 
+    /// obid's reason for a start that failed (docs/runner-api.md, "A start that fails says why"):
+    /// read trimmed, none when it's missing, empty or a link.
+    @Test func readsObidsLastStartError() throws {
+        let root = try temporaryFolder()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let path = root.appending(path: "last-start-error")
+        #expect(LocalRunner.lastStartError(in: root) == nil)
+        try Data("can't listen on 127.0.0.1:7777: Address already in use\n".utf8).write(to: path)
+        #expect(LocalRunner.lastStartError(in: root) == "can't listen on 127.0.0.1:7777: Address already in use")
+        try Data("\n".utf8).write(to: path)
+        #expect(LocalRunner.lastStartError(in: root) == nil)
+        let real = root.appending(path: "real")
+        try Data("x".utf8).write(to: real)
+        try FileManager.default.removeItem(at: path)
+        try FileManager.default.createSymbolicLink(at: path, withDestinationURL: real)
+        #expect(LocalRunner.lastStartError(in: root) == nil)
+    }
+
     @Test func readsTheBearerToken() {
         let token = String(repeating: "0f", count: 32)
         #expect(Gate<BasicRequestContext>.bearer("Bearer \(token)") == token)

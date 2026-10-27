@@ -44,8 +44,20 @@ impl Folder {
     }
 }
 
+/// On Linux, where the fake planner's boxed calls find its state server's address
+/// ([`start_with`]): a folder of this test's own, outside /tmp.
+pub fn planner_url_dir(folder: &Path) -> PathBuf {
+    Path::new("/var/tmp").join(format!(
+        "obid-planner-{}",
+        folder.file_name().unwrap().to_string_lossy()
+    ))
+}
+
 impl Drop for Folder {
     fn drop(&mut self) {
+        if cfg!(target_os = "linux") {
+            let _ = std::fs::remove_dir_all(planner_url_dir(&self.0));
+        }
         // OBID_TEST_KEEP=1 keeps it, for reading the logs.
         if std::env::var_os("OBID_TEST_KEEP").is_some() {
             eprintln!("kept {}", self.0.display());
@@ -204,9 +216,8 @@ pub fn start_with(
     env: &[(&str, &str)],
 ) -> Obid {
     let path = folder.join("config.json");
-    put_token(config, TOKEN);
-    std::fs::write(&path, config.to_string()).unwrap();
     std::fs::create_dir_all(folder.join("env-home")).unwrap();
+    let mut planner_url = None;
     // The fake planner's state is its account's folder; unboxed, obid gives the brain a config
     // folder of its own (#651), so it finds the account's from obid's HOME. Boxed, it can write
     // nothing that outlives its call (#655), so it asks the state server below, whose address it
@@ -217,14 +228,33 @@ pub fn start_with(
         let _ = std::fs::remove_file(&link);
         std::os::unix::fs::symlink(dir, link).unwrap();
         let url = planner_state(PathBuf::from(dir));
-        std::fs::write(folder.join("fake-planner-url"), url).unwrap();
+        std::fs::write(folder.join("fake-planner-url"), &url).unwrap();
+        // On Linux the box (bubblewrap) shows nothing of the test's folder above the brain's own,
+        // and its loopback is its own: it reaches the host's at slirp4netns's 10.0.2.2. So the
+        // address also goes in a folder of the test's own outside /tmp, put on obid's PATH, which
+        // the box shows (a confined box binds PATH's folders; another binds all but /tmp and the
+        // homes), and the fake planner looks there too.
+        if cfg!(target_os = "linux") {
+            let dir = planner_url_dir(folder);
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(
+                dir.join("fake-planner-url"),
+                url.replace("127.0.0.1", "10.0.2.2"),
+            )
+            .unwrap();
+            planner_url = Some(dir);
+        }
     }
+    put_token(config, TOKEN);
+    std::fs::write(&path, config.to_string()).unwrap();
     std::fs::create_dir_all(folder.join("tmp")).unwrap();
     let stderr = folder.join("obid.stderr");
     // The fake gh (tests/agents/gh) always comes before the person's own: obid reads GitHub by
     // itself (crate::github_work), and a test never reaches their real gh login.
     let mut dirs: Vec<PathBuf> = path_first.map(Path::to_path_buf).into_iter().collect();
     dirs.push(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/agents"));
+    dirs.extend(planner_url);
     dirs.extend(std::env::split_paths(
         &std::env::var_os("PATH").unwrap_or_default(),
     ));

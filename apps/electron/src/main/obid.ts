@@ -46,7 +46,7 @@ export type Answer = { status: number; text: string };
 
 async function send(method: string, path: string, body: unknown, signal?: AbortSignal): Promise<Response | Answer> {
   // only obid's API: never another host, never another path
-  if (!METHODS.has(method) || !/^\/v1\/[^\s#]*$/.test(path) || path.includes('..')) return { status: 400, text: JSON.stringify({ error: 'Not an obid call.' }) };
+  if (!METHODS.has(method) || !/^\/v1\/[^\s#]*$/.test(path) || !new URL(BASE + path).pathname.startsWith('/v1/')) return { status: 400, text: JSON.stringify({ error: 'Not an obid call.' }) };
   const t = token();
   if (!t) return { status: 0, text: readOwn('last-start-error', false) ?? `No token of obid’s in ${HOME}/api-token: is obid set up on this Mac?` };
   try {
