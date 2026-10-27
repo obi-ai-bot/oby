@@ -27,11 +27,7 @@ async fn setup(
 ) -> (FakeSphere, Obid, TestObi) {
     let sphere = FakeSphere::start().await;
     let remote = fixture(&folder.0.join("fixture"));
-    let obid = start(
-        &folder.0,
-        &with_teamwork(config(&folder.0, &remote, agent)),
-        path_first,
-    );
+    let obid = start(&folder.0, &config(&folder.0, &remote, agent), path_first);
     let wellington = Owner::new("wellington");
     let joined = tokio::task::block_in_place(|| join_a(&obid, &sphere, &wellington));
     assert_eq!(joined["state"], "joined");
@@ -279,7 +275,7 @@ async fn a_request_waits_for_the_owner_and_the_remembered_decision_answers_the_n
     let status = obid.stop();
     assert!(status.success(), "obid exited {status}");
     let remote = folder.0.join("fixture/remote.git");
-    let obid = start_teamwork(&folder.0, &config(&folder.0, &remote, &stub_agent()), None);
+    let obid = start(&folder.0, &config(&folder.0, &remote, &stub_agent()), None);
     tokio::task::block_in_place(|| {
         let membership = get(&obid, "/v1/obid/sphere");
         assert_eq!(membership["state"], "joined");
@@ -918,7 +914,7 @@ async fn an_approval_needs_the_receivers_own_passing_check_whatever_the_request_
     let remote = fixture(&folder.0.join("fixture"));
     let mut config = config(&folder.0, &remote, &stub_agent());
     config["repos"][0]["check"] = json!("false");
-    let obid = start_teamwork(&folder.0, &config, None);
+    let obid = start(&folder.0, &config, None);
     let wellington = Owner::new("wellington");
     let joined = tokio::task::block_in_place(|| join_a(&obid, &sphere, &wellington));
     assert_eq!(joined["state"], "joined");
@@ -1380,7 +1376,7 @@ async fn membership_takes_only_what_checks_out() {
     let folder = Folder::new("member");
     let sphere = FakeSphere::start().await;
     let remote = fixture(&folder.0.join("fixture"));
-    let obid = start_teamwork(&folder.0, &config(&folder.0, &remote, &stub_agent()), None);
+    let obid = start(&folder.0, &config(&folder.0, &remote, &stub_agent()), None);
     let owner = Owner::new("wellington");
     tokio::task::block_in_place(|| {
         let none = get(&obid, "/v1/obid/sphere");
@@ -1928,7 +1924,7 @@ async fn an_older_key_the_sphere_adds_signs_nothing() {
 async fn sealing_setup(folder: &Folder) -> (FakeSphere, Obid, TestObi) {
     let sphere = FakeSphere::start().await;
     let remote = fixture(&folder.0.join("fixture"));
-    let obid = start_teamwork(&folder.0, &config(&folder.0, &remote, &stub_agent()), None);
+    let obid = start(&folder.0, &config(&folder.0, &remote, &stub_agent()), None);
     let owner = Owner::new("wellington");
     tokio::task::block_in_place(|| {
         join_a_accepting(&obid, &sphere, &owner, &["review_request", "question"])
@@ -2191,7 +2187,7 @@ async fn words_go_in_the_clear_until_both_cards_have_a_seal_key_and_follow_a_new
     let folder = Folder::new("sealed-card");
     let sphere = FakeSphere::start().await;
     let remote = fixture(&folder.0.join("fixture"));
-    let obid = start_teamwork(&folder.0, &config(&folder.0, &remote, &stub_agent()), None);
+    let obid = start(&folder.0, &config(&folder.0, &remote, &stub_agent()), None);
     let owner = Owner::new("wellington");
     tokio::task::block_in_place(|| join_a(&obid, &sphere, &owner));
     let ernesto = TestObi::join_sealing(&sphere, "obi-ernesto", "ernesto").await;
@@ -2281,7 +2277,7 @@ async fn a_seal_key_waits_for_a_sphere_and_a_team_that_read_one() {
     let sphere = FakeSphere::start().await;
     sphere.lock().predates_sealing = true;
     let remote = fixture(&folder.0.join("fixture"));
-    let obid = start_teamwork(&folder.0, &config(&folder.0, &remote, &stub_agent()), None);
+    let obid = start(&folder.0, &config(&folder.0, &remote, &stub_agent()), None);
     let owner = Owner::new("wellington");
     let params = |card: &Value| card["capabilities"]["extensions"][0]["params"].clone();
     tokio::task::block_in_place(|| {
@@ -2365,7 +2361,7 @@ async fn an_obi_without_a_seal_key_gets_its_reply_to_a_sealed_request() {
     let folder = Folder::new("sealed-keyless");
     let sphere = FakeSphere::start().await;
     let remote = fixture(&folder.0.join("fixture"));
-    let obid = start_teamwork(&folder.0, &config(&folder.0, &remote, &stub_agent()), None);
+    let obid = start(&folder.0, &config(&folder.0, &remote, &stub_agent()), None);
     let owner = Owner::new("wellington");
     tokio::task::block_in_place(|| join_a(&obid, &sphere, &owner));
     let ernesto = TestObi::join(&sphere, "obi-ernesto", "ernesto").await;

@@ -947,8 +947,7 @@ fn a_change_against_an_earlier_decision_gets_one_round_and_never_blocks() {
     let bin = body_keeping_gh(&folder.0);
     let mut config = config(&folder.0, &remote, &fake_claude());
     config["repos"][0]["check"] = Value::Null;
-    // Tetrix's decision check is one of teamwork's extras, off by default (crate::settings).
-    let obid = start_teamwork(&folder.0, &config, Some(&bin));
+    let obid = start(&folder.0, &config, Some(&bin));
     sign_in(&obid, &base);
     let run = |task: &str| {
         let made = call(

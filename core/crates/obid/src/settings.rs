@@ -34,12 +34,6 @@ pub struct Settings {
     /// The repositories Oby has offered a check for (#1062), once each, whatever the answer.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub checks_offered: Vec<String>,
-    /// Oby-to-Oby work and its extras (the strip to a dispatcher, 2026-10-27): the Sphere's follower
-    /// and sender (teammates' requests, questions and reviews), the GitHub work feed, teammates'
-    /// pull requests on a job's files and Tetrix's decision check before publishing. Off unless
-    /// set: the code stays for when "Obys talk" comes back. The phone relay and pairing don't need it.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub teamwork: bool,
 }
 
 impl Settings {
@@ -81,7 +75,6 @@ impl Default for Settings {
             check_in_sent: None,
             account_failover: None,
             checks_offered: Vec::new(),
-            teamwork: false,
         }
     }
 }
@@ -159,12 +152,6 @@ mod tests {
         assert_eq!(load(&home).max_running, 6);
         std::fs::write(path(&home), "{}").unwrap();
         assert_eq!(load(&home).max_running, 6);
-        // Teamwork is off unless the owner set it, and kept only when on.
-        assert!(!load(&home).teamwork);
-        std::fs::write(path(&home), r#"{"teamwork": true}"#).unwrap();
-        assert!(load(&home).teamwork);
-        let off = serde_json::to_value(Settings::default()).unwrap();
-        assert!(off.get("teamwork").is_none(), "{off}");
         let _ = std::fs::remove_dir_all(&home);
     }
 }
