@@ -767,6 +767,12 @@ const MOST_SITES_ASKED: usize = 3;
 
 /// How often the meter reads while jobs run or wait for memory ([`Jobs::meter`]).
 const METER_TICK: Duration = Duration::from_secs(5);
+/// How often each account's usage is asked of its tool ([`Jobs::read_usages`]); a running job's
+/// own reports come between.
+// ponytail: a fixed tick; read on demand (the apps' usage panel opening) if 10 minutes is stale.
+const USAGE_EVERY: Duration = Duration::from_secs(600);
+/// How long one account's usage read may take: Claude Code's took 4 seconds.
+const USAGE_READ_LIMIT: Duration = Duration::from_secs(30);
 /// What a job's agent, or a check, may hold at once until obid has measured 3 like it: about one
 /// cold Rust build.
 pub const DEFAULT_BUDGET: u64 = 1536 * 1024 * 1024;
@@ -1672,6 +1678,98 @@ impl Jobs {
                 _ = stopping.changed() => return,
             }
         }
+    }
+
+    /// Each signed-in Claude Code and Codex account's usage, asked of its tool when obid starts
+    /// and every [`USAGE_EVERY`] after, so the apps show it before any job runs on it: Claude
+    /// Code's own `/usage` and Codex's `account/rateLimits/read`, neither of which asks a model.
+    /// Cursor's CLI reports no usage. `OBID_USAGE_READS=off` (obid's tests set it) reads none.
+    pub async fn read_usages(self: Arc<Self>, mut stopping: watch::Receiver<bool>) {
+        if std::env::var_os("OBID_USAGE_READS").is_some_and(|v| v == "off") {
+            return;
+        }
+        loop {
+            let home = login_home();
+            for tool in [Tool::Claude, Tool::Codex] {
+                for account in self.accounts(tool) {
+                    if *stopping.borrow() {
+                        return;
+                    }
+                    if self.being_changed(&account.id)
+                        || !signed_in(tool, &account, home.as_deref())
+                    {
+                        continue;
+                    }
+                    match self.read_usage(tool, &account).await {
+                        Ok(Some(usage)) => {
+                            let (was, now) = self.usage.record(&account.id, &usage);
+                            self.share_rise(&account.id, &was, &now);
+                            self.usage_changed.notify_one();
+                        }
+                        Ok(None) => tracing::info!(
+                            "{} account {}: it said nothing of its usage",
+                            tool.name(),
+                            account.id
+                        ),
+                        Err(why) => tracing::info!(
+                            "{} account {}: its usage wasn't read: {why}",
+                            tool.name(),
+                            account.id
+                        ),
+                    }
+                }
+            }
+            tokio::select! {
+                () = tokio::time::sleep(USAGE_EVERY) => {}
+                _ = stopping.changed() => return,
+            }
+        }
+    }
+
+    /// One account's usage, from its tool boxed as the brain's run is: in a folder of its own in
+    /// `home/plans` with its own copy of the account's login, the folder removed after.
+    async fn read_usage(
+        &self,
+        tool: Tool,
+        account: &crate::config::Account,
+    ) -> Result<Option<crate::usage::Usage>, String> {
+        if tool == Tool::Claude {
+            self.claude_login_ready(Some(account)).await?;
+        }
+        let dir = self
+            .config
+            .home
+            .join("plans")
+            .join(uuid::Uuid::new_v4().to_string());
+        let temp = dir.join("home");
+        store::make_private_dir(&temp)
+            .map_err(|e| format!("obid can't make the read's folder: {e}"))?;
+        let flags = match tool {
+            Tool::Claude => agent::USAGE_FLAGS.map(OsString::from).to_vec(),
+            // No plug-in sync, as a job's Codex (`launch`).
+            _ => vec!["-c".into(), "features.plugins=false".into()],
+        };
+        let launch = self.boxed_launch(Boxed {
+            tool,
+            account,
+            dir: &dir,
+            temp: &temp,
+            login: &dir.join("login"),
+            frozen: Vec::new(),
+            flags,
+            stderr: dir.join("stderr.log"),
+            confined: false,
+        });
+        let read = match launch {
+            Ok(launch) => match tool {
+                Tool::Claude => agent::read_usage(&launch, USAGE_READ_LIMIT).await,
+                _ => codex::read_usage(&launch, USAGE_READ_LIMIT).await,
+            }
+            .map_err(|e| format!("{} didn't start: {e}", tool.name())),
+            Err(why) => Err(why),
+        };
+        let _ = std::fs::remove_dir_all(&dir);
+        read
     }
 
     /// One reading: the machine, and each running job's processes, those running in its worktree.

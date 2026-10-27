@@ -445,7 +445,7 @@ export const typingIn = (e: KeyboardEvent) => {
 // with a dot on it while any account is past 80% (yellow), or 90% (red).
 function UsageGauge({ ref, open, onClick }: { ref: React.Ref<HTMLButtonElement>; open: boolean; onClick: () => void }) {
   const [accounts] = useAccounts();
-  const full = fullness(Math.max(0, ...accounts.map((a) => a.used)));
+  const full = fullness(Math.max(0, ...accounts.map((a) => a.used ?? 0)));
   return (
     <button
       ref={ref}
@@ -495,9 +495,9 @@ function UsagePanel({ onClose, onBlur }: { onClose: () => void; onBlur: (e: Reac
             <span className="usage-line">
               <span className="usage-name">{AGENTS[a.agent].name} · {a.name}</span>
               <span className="usage-about">{a.resets}</span>
-              <span className={`usage-used ${fullness(a.used)}`.trim()}>{a.used}%</span>
+              {a.used != null && <span className={`usage-used ${fullness(a.used)}`.trim()}>{a.used}%</span>}
             </span>
-            <span className="set-meter"><span className={fullness(a.used)} style={{ width: `${a.used}%` }} /></span>
+            {a.used != null && <span className="set-meter"><span className={fullness(a.used)} style={{ width: `${a.used}%` }} /></span>}
           </span>
         </div>
       ))}

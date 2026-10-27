@@ -280,6 +280,9 @@ pub fn start_with(
         // No conversation's Claude Code started ahead (crate::brain::harness::prestart), but in the
         // tests of it: its processes would weigh on every other test's time.
         .env("OBID_PRESTART", "off")
+        // No account's usage asked of its tool by itself (crate::jobs, `read_usages`): tests say
+        // what each account reports.
+        .env("OBID_USAGE_READS", "off")
         // The brains' time never depends on how busy the machine running the tests is.
         .env("OBID_LOAD", "0")
         .envs(env.iter().copied())

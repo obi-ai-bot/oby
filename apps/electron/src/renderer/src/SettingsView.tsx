@@ -194,7 +194,8 @@ function Remote() {
 // Accounts: the logins Oby spreads jobs across, who pays for each, how much each has used
 // plan: what kind of login it is, which decides whether a part of it can be
 // shared (SHARING below)
-export type Account = { id: string; agent: Agent; name: string; payer: string; used: number; resets: string; plan?: Plan };
+// used: this week's share in percent, null while its tool hasn't said
+export type Account = { id: string; agent: Agent; name: string; payer: string; used: number | null; resets: string; plan?: Plan };
 // how full an account (or an agent) is: past 80% yellow, past 90% red
 export const fullness = (used: number) => (used > 90 ? 'is-over' : used > 80 ? 'is-high' : '');
 const ACCOUNTS: Account[] = [
@@ -212,10 +213,10 @@ function Accounts() {
   const [agent, setAgent] = useState<Account['agent']>('claude');
   const [name, setName] = useState('');
   const [payer, setPayer] = useState('');
-  const roomiest = [...accounts].sort((a, b) => a.used - b.used)[0];
+  const roomiest = accounts.filter((a) => a.used != null).sort((a, b) => a.used! - b.used!)[0];
   return <>
     <Group i={1} title="Accounts on this Mac">
-      <Row label={roomiest ? <span className="set-plain">Most room: {roomiest.name} on {AGENTS[roomiest.agent].name}, {100 - roomiest.used}% left this week</span> : <span className="set-none">None yet</span>} />
+      <Row label={roomiest ? <span className="set-plain">Most room: {roomiest.name} on {AGENTS[roomiest.agent].name}, {100 - roomiest.used!}% left this week</span> : <span className="set-none">None yet</span>} />
     </Group>
     {(['claude', 'codex', 'cursor'] as const).filter((g) => accounts.some((a) => a.agent === g)).map((g, k) => (
       <Group key={g} i={2 + k} title={AGENTS[g].name}>
@@ -225,12 +226,12 @@ function Accounts() {
             <span className="set-label">
               {a.name}
               <span className="set-about">Paid by {a.payer} · {a.resets}</span>
-              <span className="set-meter" role="meter" aria-valuenow={a.used} aria-valuemin={0} aria-valuemax={100} aria-label={`${a.used}% used`}>
+              {a.used != null && <span className="set-meter" role="meter" aria-valuenow={a.used} aria-valuemin={0} aria-valuemax={100} aria-label={`${a.used}% used`}>
                 <span className={fullness(a.used)} style={{ width: `${a.used}%` }} />
-              </span>
+              </span>}
             </span>
             <span className="set-control set-control-top">
-              <span className="set-value">{a.used}% used</span>
+              {a.used != null && <span className="set-value">{a.used}% used</span>}
               <button className="set-button is-danger" onClick={() => setAccounts(accounts.filter((x) => x.id !== a.id))}>Remove</button>
             </span>
           </div>

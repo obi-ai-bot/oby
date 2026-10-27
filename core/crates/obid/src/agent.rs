@@ -275,6 +275,43 @@ pub async fn run_turn(
     Ok(turn_on(conn, prompt, decide, on_event, false).await.0)
 }
 
+/// The flags of Claude Code's own `/usage`, run by itself ([`read_usage`]): it answers from its
+/// account's usage without asking a model (claude 2.1.302), with no tool, setting or MCP server.
+pub const USAGE_FLAGS: [&str; 11] = [
+    "-p",
+    "/usage",
+    "--output-format",
+    "stream-json",
+    "--verbose",
+    "--no-session-persistence",
+    "--setting-sources",
+    "",
+    "--strict-mcp-config",
+    "--tools",
+    "",
+];
+
+/// The account's usage as Claude Code's `/usage` reports it (`launch` runs [`USAGE_FLAGS`]),
+/// read until its `result`, or `limit`. `None` when it doesn't say (an API key's account).
+pub async fn read_usage(
+    launch: &Launch,
+    limit: Duration,
+) -> std::io::Result<Option<crate::usage::Usage>> {
+    // Kept until the read ends: a stop channel whose sender is gone stops the agent.
+    let (_run, stop) = watch::channel(process::Signal::Run);
+    let mut conn = Conn::spawn(launch, limit, stop, false).await?;
+    conn.close_input();
+    let mut usage = None;
+    while let Ok(line) = conn.next().await {
+        usage = usage.or_else(|| crate::usage::claude_report(&line));
+        if line["type"] == "result" {
+            break;
+        }
+    }
+    conn.finish().await;
+    Ok(usage)
+}
+
 /// [`run_turn`] on a Claude Code already running (`conn`). With `keep`, a turn that ends with its
 /// `result` leaves the agent running, waiting on its stdin for the next message (stream-json
 /// input takes one turn after another; `--max-turns` counts each on its own), and it comes back
