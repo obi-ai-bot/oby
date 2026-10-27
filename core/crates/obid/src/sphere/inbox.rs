@@ -976,10 +976,13 @@ pub struct Inbox {
 }
 
 impl Inbox {
-    pub fn open(home: &Path) -> std::io::Result<Inbox> {
+    /// `home/inbox`; one that can't be made is said in the log, and each save then fails.
+    pub fn open(home: &Path) -> Inbox {
         let dir = home.join("inbox");
-        store::make_private_dir(&dir)?;
-        Ok(Inbox { dir })
+        if let Err(e) = store::make_private_dir(&dir) {
+            tracing::error!("can't make {}: {e}", dir.display());
+        }
+        Inbox { dir }
     }
 
     /// Item ids obid makes are `obi-<uuid>`, `<job>-permission-<p…>` and `ev-<plug-in id>-<hex>`:

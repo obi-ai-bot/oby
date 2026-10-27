@@ -625,6 +625,10 @@ pub struct Status {
     /// The gateway (crate::gateway): `{state, address, detail}`; left out with none configured.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub gateway: Option<serde_json::Value>,
+    /// Why the vault can't be read (`the vault can't be read: …`): then every other `/v1` answer
+    /// is `503` (crate::vault, `answers`). Left out while it reads.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vault_problem: Option<String>,
     /// The machine's memory and each running job's (crate::meter); left out when it can't be read.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub memory: Option<MemoryJson>,
@@ -809,7 +813,8 @@ pub fn account_json(
 }
 
 async fn status(State(shared): State<Arc<Shared>>) -> Result<axum::Json<Status>, ApiError> {
-    // A tool installed or signed in since obid started (first launch on a fresh Mac) shows up here.
+    // A tool installed or signed in since obid started (first launch on a fresh Mac) shows up here,
+    // looked for at most every 2 seconds.
     let agents = shared.config.agents.clone();
     let _ = tokio::task::spawn_blocking(move || crate::accounts::refind_own_logins(&agents)).await;
     let accounts = crate::accounts::list_now(&shared).await;
@@ -854,6 +859,7 @@ async fn status(State(shared): State<Arc<Shared>>) -> Result<axum::Json<Status>,
         },
         tunnel: shared.tunnel.json(),
         gateway: shared.gateway_state.clone(),
+        vault_problem: crate::vault::check().err(),
         memory: shared
             .jobs
             .memory()

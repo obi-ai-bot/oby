@@ -254,10 +254,10 @@ fn measured_status(obid: &Obid, host: &str) -> Answer {
     }
 }
 
-/// What's optional never stops obid: with its gateway's port held by something else and a key it
-/// doesn't know in its configuration (one a later obid retired), it answers, `status.gateway` says
-/// the gateway is down and why, the log names the key it ignored, and a start that worked leaves
-/// no `last-start-error`.
+/// What's optional never stops obid: with its gateway's port held by something else and keys it
+/// doesn't know in its configuration (ones a later obid retired, at the top or from a section), it
+/// answers, `status.gateway` says the gateway is down and why, the log names the keys it ignored,
+/// and a start that worked leaves no `last-start-error`.
 #[test]
 fn optional_parts_never_stop_obid() {
     let folder = Folder::new("busy-gateway");
@@ -266,6 +266,7 @@ fn optional_parts_never_stop_obid() {
     let mut config = config(&folder.0, 0);
     config["gateway"] = json!(address);
     config["telemetri"] = json!(true);
+    config["conversation"] = json!({"agent": "plan", "harness": false});
     let home = Path::new(config["home"].as_str().unwrap()).to_path_buf();
     std::fs::create_dir_all(&home).unwrap();
     std::fs::write(home.join("last-start-error"), "an earlier start's\n").unwrap();
@@ -281,10 +282,12 @@ fn optional_parts_never_stop_obid() {
     let log = std::fs::read_to_string(&obid.stderr).unwrap();
     assert!(log.contains("no gateway: can't listen on"), "{log}");
     assert!(log.contains("starting: listen done in"), "{log}");
-    assert!(
-        log.contains("telemetri isn't a key this obid knows: ignored"),
-        "{log}"
-    );
+    for key in ["telemetri", "conversation.harness"] {
+        assert!(
+            log.contains(&format!("{key} isn't a key this obid knows: ignored")),
+            "{key}: {log}"
+        );
+    }
 }
 
 #[test]

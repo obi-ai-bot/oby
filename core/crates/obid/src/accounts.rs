@@ -38,6 +38,9 @@ const LONGEST: usize = 60;
 /// The most accounts obid keeps, the configuration's and the API's together.
 const MOST_ACCOUNTS: usize = 32;
 
+/// How long a look for the tools' own logins stands ([`refind_own_logins`]).
+pub const LOOK_EVERY: std::time::Duration = std::time::Duration::from_secs(2);
+
 /// How long a sign-in may wait for the person: Codex's one-time code lasts 15 minutes.
 const SIGN_IN_LASTS: Duration = Duration::from_secs(15 * 60);
 
@@ -75,6 +78,8 @@ struct Inner {
     agents: Agents,
     /// The tools whose own login obid found on this Mac at start ([`adopt_own_logins`]).
     found: Vec<Tool>,
+    /// When [`refind_own_logins`] last looked.
+    looked: Option<std::time::Instant>,
 }
 
 /// What the API changed: the accounts it added, and the configuration's accounts it renamed or
@@ -138,6 +143,7 @@ impl Live {
             file: None,
             broken: None,
             found: Vec::new(),
+            looked: None,
         })))
     }
 
@@ -500,7 +506,16 @@ fn own_logins(agents: &Live) -> Vec<Tool> {
 /// started, as on a fresh Mac's first launch, is offered ([`Live::available`]) without a restart.
 /// With `claudeKeychain` or `cursorKeychain` left out and off, a login now only in the Keychain
 /// turns its copy on, as it would have at start.
+/// It looks at most every [`LOOK_EVERY`]: a look asks `security`, about 50 ms, and `GET /v1/status`
+/// calls it every time.
 pub fn refind_own_logins(agents: &Live) {
+    {
+        let mut inner = agents.write();
+        if inner.looked.is_some_and(|at| at.elapsed() < LOOK_EVERY) {
+            return;
+        }
+        inner.looked = Some(std::time::Instant::now());
+    }
     static KEEPER: std::sync::Once = std::sync::Once::new();
     if crate::jobs::keychain_auto() && !crate::jobs::keychain_on() && crate::jobs::keychain_wanted()
     {

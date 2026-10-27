@@ -14,8 +14,9 @@
 //!  "telemetry": false}
 //! ```
 //!
-//! A key the file doesn't know is refused, so a misspelled setting is an error rather than a
-//! default nobody chose.
+//! A top-level key the file doesn't know, or a key a later obid retired from a section, is ignored
+//! with a warning: an update never stops on one. Any other unknown key in a section is refused, so
+//! a misspelled setting is an error rather than a default nobody chose.
 
 use std::net::{Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
@@ -49,7 +50,7 @@ pub const DEFAULT_LISTEN: Option<&str> = if cfg!(target_os = "macos") {
 
 /// The file as written. Validated into [`Config`]. A top-level key obid doesn't know (one a later
 /// obid retired, or an earlier one wrote) is ignored with a warning, never a reason not to start:
-/// every updater would exit otherwise. Inside a section, an unknown key is still refused.
+/// every updater would exit otherwise. So is a key retired from a section ([`RETIRED_INSIDE`]).
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct File {
@@ -342,7 +343,9 @@ impl Config {
 
     /// Checks a configuration given as JSON text.
     pub fn parse(text: &str) -> Result<Config, Problem> {
-        let file: File = serde_json::from_str(text).map_err(Problem::Parse)?;
+        let mut value: serde_json::Value = serde_json::from_str(text).map_err(Problem::Parse)?;
+        let inside = ignore_retired_inside(&mut value);
+        let file: File = serde_json::from_value(value).map_err(Problem::Parse)?;
         let invalid = |problem: String| Err(Problem::Invalid(problem));
 
         let Some(listen_text) = file.listen.or_else(|| DEFAULT_LISTEN.map(str::to_owned)) else {
@@ -645,7 +648,7 @@ impl Config {
             job_token_budget,
             gateway,
             claude_keychain: file.claude_keychain,
-            ignored: file.ignored.into_keys().collect(),
+            ignored: file.ignored.into_keys().chain(inside).collect(),
             cursor_keychain: file.cursor_keychain,
             vm_helper: file.vm_helper,
             vm_image: file.vm_image,
@@ -661,6 +664,25 @@ impl Config {
             },
         })
     }
+}
+
+/// Keys a later obid retired from inside a section: ignored with a warning, like a top-level key
+/// obid doesn't know. Any other unknown key in a section is still refused: a typo there (`checks`
+/// for a repository's `check`, a mistyped `configDir`) would quietly drop a check or move an account
+/// to another login.
+const RETIRED_INSIDE: &[(&str, &str)] = &[("conversation", "harness")];
+
+/// Takes [`RETIRED_INSIDE`]'s keys out of the file and says where each was (`conversation.harness`).
+fn ignore_retired_inside(file: &mut serde_json::Value) -> Vec<String> {
+    let mut ignored = Vec::new();
+    for (section, key) in RETIRED_INSIDE {
+        if let Some(serde_json::Value::Object(map)) = file.get_mut(*section)
+            && map.remove(*key).is_some()
+        {
+            ignored.push(format!("{section}.{key}"));
+        }
+    }
+    ignored
 }
 
 /// Why a configuration text can't be used: it isn't the file's shape, or a value is wrong.
@@ -1194,17 +1216,97 @@ mod tests {
         assert!(problem(&with(serde_json::json!({"home": "obid-home"}))).contains("absolute"));
     }
 
-    /// A top-level key obid doesn't know is ignored and named; one inside a section is refused.
+    /// A top-level key obid doesn't know, and a key retired from a section, are ignored and named;
+    /// any other unknown key inside a section is refused, so a typo never drops a check or moves an
+    /// account to another login.
     #[test]
-    fn ignores_top_level_keys_it_doesnt_know() {
+    fn ignores_unknown_top_level_and_retired_keys_only() {
         let config = Config::parse(&with(
-            serde_json::json!({"telemetri": true, "zzRetired": 1}),
+            serde_json::json!({"telemetri": true, "zzRetired": 1, "conversation": {"harness": false}}),
         ));
         let config = config.unwrap();
-        assert_eq!(config.ignored, ["telemetri", "zzRetired"]);
+        assert_eq!(
+            config.ignored,
+            ["telemetri", "zzRetired", "conversation.harness"]
+        );
         assert!(!config.telemetry);
-        let inside = serde_json::json!({"agents": {"claude": {"bin": "claude", "accountz": []}}});
-        assert!(problem(&with(inside)).contains("accountz"));
+        let typos = [
+            (
+                "agents",
+                serde_json::json!({"claude": {"bin": "claude", "accountz": []}}),
+                "accountz",
+            ),
+            (
+                "agents",
+                serde_json::json!({"claude": {"bin": "claude", "accounts": [
+                {"id": "w", "name": "W", "confDir": "/srv/w"}]}}),
+                "confDir",
+            ),
+            (
+                "repos",
+                serde_json::json!([{"repo": "o/r", "remote": "https://github.com/o/r",
+                "checks": "make test"}]),
+                "checks",
+            ),
+            (
+                "vault",
+                serde_json::json!({"store": "file", "path": "/x"}),
+                "path",
+            ),
+        ];
+        for (key, value, says) in typos {
+            assert!(
+                problem(&with(serde_json::json!({ key: value }))).contains(says),
+                "{says}"
+            );
+        }
+    }
+
+    /// Every configuration Oby.app wrote from 0.2.0 to 0.4.5 (crate::app::default_config, the
+    /// repositories crate::repos adds, an account's payer), with every key obid has retired or is
+    /// about to retire, still starts.
+    #[test]
+    fn every_older_configuration_and_retired_key_still_reads() {
+        let mut file = crate::app::default_config(Path::new("/Users/w"), "w", true);
+        file["repos"] = serde_json::json!([
+            {"repo": "o/r", "remote": "https://github.com/o/r.git", "defaultBranch": "main"},
+            {"repo": "o/s", "remote": "git@github.com:o/s.git", "defaultBranch": "dev",
+             "check": "make test", "pullRequests": true}]);
+        file["agents"]["claude"]["accounts"][0]["payer"] = serde_json::json!("Deskree");
+        Config::parse(&file.to_string()).unwrap();
+        for (key, value) in [
+            ("vmHelper", serde_json::json!("/x/obi-vm")),
+            ("vmImage", serde_json::json!("/x/vm")),
+            (
+                "vmImageUrl",
+                serde_json::json!("https://downloads.oby.deskree.com/vm"),
+            ),
+            ("guestRequestEvery", serde_json::json!(900)),
+            (
+                "guestModelApi",
+                serde_json::json!("https://api.anthropic.com"),
+            ),
+            ("turnBudget", serde_json::json!(110)),
+            ("leastThink", serde_json::json!(1)),
+            ("orchestratorDelay", serde_json::json!(30)),
+            (
+                "conversation",
+                serde_json::json!({"agent": "plan", "harness": true}),
+            ),
+            ("bundledPlugins", serde_json::json!("/x/plugins")),
+            ("web", serde_json::json!("/x/web")),
+            ("gateway", serde_json::json!("127.0.0.1:8810")),
+            ("claudeKeychain", serde_json::json!(true)),
+            ("cursorKeychain", serde_json::json!(false)),
+            (
+                "pushRelay",
+                serde_json::json!("https://oby-control.deskree.com"),
+            ),
+        ] {
+            file[key] = value;
+        }
+        let config = Config::parse(&file.to_string()).unwrap();
+        assert_eq!(config.ignored, ["conversation.harness"]);
     }
 
     #[test]

@@ -734,7 +734,7 @@ fn seed_listener_review(config: &Value) {
         let jobs = obid::jobs::Jobs::open(config.clone(), events.clone(), Err("no sandbox".into()))
             .unwrap();
         let (_stop, stopping) = tokio::sync::watch::channel(false);
-        let link = obid::sphere::Link::open(config, jobs, events, stopping).unwrap();
+        let link = obid::sphere::Link::open(config, jobs, events, stopping);
         let mut item = obid::jobs::owner_review_item(
             "job1",
             "obi-ai-bot/obi",
