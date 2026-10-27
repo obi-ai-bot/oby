@@ -325,7 +325,7 @@ fn a_command_ends_a_codex_turn() {
 }
 
 /// The one job `answer` started after its turn read something untrusted: started at once, and
-/// marked so it never runs in Bypass (the owner's decision of 2026-10-23); it publishes by itself
+/// marked so (the owner's decision of 2026-10-23), in the owner's mode (2026-10-27); it publishes by itself
 /// as every job does (the owner's decision of 2026-10-24).
 fn assert_untrusted(obid: &Obid, answer: &Answer) {
     let cards = answer.body["jobs"].as_array().unwrap();

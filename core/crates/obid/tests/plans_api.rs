@@ -2400,8 +2400,8 @@ fn telling_a_finished_job_something_starts_a_follow_up() {
 }
 
 /// A turn that looked something up (a lookup reads the web, GitHub or a repository: data, never
-/// the owner's words) starts the follow-up of a job that ended, marked untrusted so it never runs
-/// in Bypass (the owner's decision of 2026-10-23, replacing #374's Start item).
+/// the owner's words) starts the follow-up of a job that ended, marked untrusted (the owner's
+/// decision of 2026-10-23, replacing #374's Start item).
 #[test]
 fn a_follow_up_after_research_starts_marked_untrusted() {
     let folder = Folder::new("brain-follow-up-research");
@@ -3007,8 +3007,8 @@ fn where_is_answers_with_paths_and_no_job() {
 }
 
 /// ResearchToolsTests.researchThenDispatchWaitsForStart, as the owner decided on 2026-10-23: work
-/// the brain wants after looking things up starts at once, by these words, marked untrusted (never
-/// Bypass); it publishes by itself as every job does (the owner's decision of 2026-10-24), so the
+/// the brain wants after looking things up starts at once, by these words, marked untrusted, in
+/// the owner's mode (the owner's decision of 2026-10-27); it publishes by itself as every job does (the owner's decision of 2026-10-24), so the
 /// answer asks nothing of the owner.
 #[test]
 fn research_then_dispatch_starts_marked_untrusted() {
@@ -3875,10 +3875,11 @@ async fn accepting_another_obis_request_waits_for_the_owners_confirm() {
     });
 }
 
-/// Work the brain plans after looking things up never runs in Bypass, whatever the plan says: it
-/// starts in Sandbox mode, and only the owner publishes it (the owner's decision of 2026-10-23).
+/// Work the brain plans after looking things up is marked untrusted; a Bypass it plans waits for
+/// the owner's Confirm, as a trusted plan's does, and then runs in Bypass, still marked (the
+/// owner's decision of 2026-10-27, replacing 2026-10-23's Sandbox at most).
 #[test]
-fn research_never_starts_a_bypass_job() {
+fn research_starts_a_bypass_job_only_on_the_owners_confirm() {
     let folder = Folder::new("brain-inbox-start");
     let obid = started(&folder);
     let dispatch = json!({"action": "dispatch", "reply": "", "question": null, "jobs": [], "dispatches": [
@@ -3896,12 +3897,17 @@ fn research_never_starts_a_bypass_job() {
     );
     said(&obid, "look into the greeting and fix it");
     let jobs = call(&obid, "GET", "/v1/jobs", None).body;
+    assert!(jobs.as_array().unwrap().is_empty(), "{jobs}");
+    assert!(items_of(&obid, "start").is_empty());
+    let asked = items_of(&obid, "confirm");
+    assert_eq!(asked.len(), 1, "{asked:?}");
+    let confirmed = confirm(&obid, asked[0]["id"].as_str().unwrap());
+    assert_eq!(confirmed.status, 200, "{}", confirmed.text);
+    let jobs = call(&obid, "GET", "/v1/jobs", None).body;
     assert_eq!(jobs.as_array().unwrap().len(), 1, "{jobs}");
     assert_eq!(jobs[0]["title"], "Injected fix");
-    assert_eq!(jobs[0]["mode"], "sandbox", "{jobs}");
+    assert_eq!(jobs[0]["mode"], "bypass", "{jobs}");
     assert_eq!(jobs[0]["untrusted"], true, "{jobs}");
-    assert!(items_of(&obid, "start").is_empty());
-    assert!(items_of(&obid, "confirm").is_empty());
 }
 
 /// The brain is never offered a confirm item, and never answers one.

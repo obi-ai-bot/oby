@@ -75,8 +75,8 @@ pub struct Asked<'a> {
 /// A plan that answers rather than acts: a reply, a question, or jobs it starts (#269). `live` is
 /// asked right before the jobs start: the issues' files take network time, and a turn cancelled
 /// meanwhile starts nothing.
-/// After research (`researched`), the jobs a plan names run in Sandbox mode at most and publish
-/// only when the user does (the owner's decision of 2026-10-23).
+/// After research (`researched`), the jobs a plan names are marked untrusted: they run in the
+/// owner's mode, inside Oby's box (the owner's decision of 2026-10-27).
 pub async fn answer(
     shared: &Arc<Shared>,
     planned: &Planned,
@@ -167,10 +167,9 @@ fn planned_job(
         brief: d.brief(),
         ..NewJob::default()
     };
-    // Work planned after the turn read something untrusted starts now, in Sandbox mode at
-    // most, as a standing rule's job (the owner's decision of 2026-10-23, replacing #374's
-    // Start item), and publishes by itself as any job does (the owner's decision of
-    // 2026-10-24).
+    // Work planned after the turn read something untrusted starts now, marked untrusted, in the
+    // owner's mode (the owner's decision of 2026-10-27, replacing 2026-10-23's Sandbox at most),
+    // and publishes by itself as any job does (the owner's decision of 2026-10-24).
     NewJob {
         untrusted: researched,
         ..super::written_in(shared, asked.conversation, new)
@@ -258,9 +257,8 @@ async fn dispatch(
     for (d, files) in plan.dispatches.iter().zip(files) {
         let new = planned_job(shared, d, asked, files, researched);
         // A job that would never ask the owner anything widens trust: only their own Confirm
-        // starts it (the owner's decision of 2026-10-16; review on #551). An untrusted one never
-        // runs in Bypass (Jobs::create).
-        if new.mode.as_deref() == Some("bypass") && !new.untrusted {
+        // starts it (the owner's decision of 2026-10-16; review on #551), untrusted or not.
+        if new.mode.as_deref() == Some("bypass") {
             let what = describe(&new);
             confirm(
                 shared,
@@ -699,8 +697,8 @@ fn dismiss(shared: &Arc<Shared>, job: &Job, theirs: bool) -> (String, bool) {
 /// taken out, never the brain's restatement of them. A running job hears them at its next turn;
 /// one that ended gets a follow-up that starts with them (Sangam's design, the owner's decision of
 /// 2026-10-18), and stays as it ended. After something untrusted was read the follow-up is marked
-/// untrusted, so it never runs in Bypass, and publishes by itself as any job does (the owner's
-/// decision of 2026-10-24); an event turn's words never start one.
+/// untrusted, and publishes by itself as any job does (the owner's decision of 2026-10-24); an
+/// event turn's words never start one.
 fn message_job(
     shared: &Arc<Shared>,
     plan: &Plan,

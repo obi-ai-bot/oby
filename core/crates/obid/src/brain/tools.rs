@@ -34,7 +34,7 @@ fn list() -> Value {
         "kind": {"type": "string", "enum": ["review", "fix", "build", "test", "investigate", "research"]},
         "agent": {"type": "string", "enum": ["auto", "claude", "codex", "cursor"]},
         "account": {"type": "string", "description": "An account by name, or auto."},
-        "mode": {"type": "string", "enum": ["ask", "acceptEdits", "plan", "bypass"], "description": "Leave it out for the owner's default (Sandbox). Bypass waits for the owner's own OK."},
+        "mode": {"type": "string", "enum": ["ask", "acceptEdits", "plan", "bypass"], "description": "Leave it out for the owner's default mode. Bypass waits for the owner's own OK."},
         "issue": {"type": "integer", "description": "The issue the work is about."},
         "pr": {"type": "integer", "description": "The pull request the work is about: a review reads it, and other work starts from its branch. With issue too, the work is the issue's, from the default branch."},
         "title": {"type": "string", "description": "A short title, 3 to 6 words."},
@@ -1413,8 +1413,7 @@ fn told(owner: &str, agent: &str, nonce: &str) -> String {
 
 /// oby_tell_job: message_job with the owner's words and the agent's quoted. A job that ended gets
 /// a follow-up whose request is the owner's words alone; after something untrusted was read it is
-/// marked untrusted, so it never runs in Bypass, and publishes by itself as any job does (the
-/// owner's decision of 2026-10-24).
+/// marked untrusted, and publishes by itself as any job does (the owner's decision of 2026-10-24).
 async fn tell(
     shared: &Arc<Shared>,
     session: &Session,
@@ -1516,7 +1515,7 @@ async fn tell(
     {
         new.title = Some(title);
     }
-    // After something untrusted was read, it never runs in Bypass.
+    // After something untrusted was read, it's marked so (it keeps the owner's mode).
     new.untrusted = source(session) == crate::jobs::Source::Untrusted;
     new.turn = actions::started_by(&job, &session.conversation, &session.control.turn);
     let new = super::written_in(shared, &session.conversation, new);
@@ -1588,16 +1587,16 @@ async fn dispatch(shared: &Arc<Shared>, session: &Session, args: Value) -> Resul
     };
     let control = session.control.clone();
     let live = move || control.live();
-    // A turn that read something untrusted starts the work in Sandbox mode at most, and only the
-    // owner publishes it (the owner's decision of 2026-10-23).
+    // A turn that read something untrusted starts the work marked untrusted, in the owner's mode
+    // (the owner's decision of 2026-10-27).
     let researched = session.web.load(Ordering::SeqCst);
     let Talk::Reply { text, jobs } =
         actions::answer(shared, &planned, &asked(session), researched, &live).await
     else {
         return Err("The turn ended before the job started.".into());
     };
-    // Only a trusted turn's Bypass job waits, for the owner's Confirm.
-    if jobs.is_empty() && (!bypass || researched) {
+    // A Bypass job the turn named waits for the owner's Confirm.
+    if jobs.is_empty() && !bypass {
         return Err(text);
     }
     let cards: Vec<Value> = jobs

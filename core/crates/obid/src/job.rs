@@ -501,8 +501,9 @@ pub struct Job {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub routine: Option<RoutineMark>,
     /// The conversation that started it had read something it didn't write (a file, a command's
-    /// output, the web, an attachment): it runs in Sandbox mode at most, and publishes by itself as any job does (the owner's decision of 2026-10-24,
-    /// replacing 2026-10-23's by hand).
+    /// output, the web, an attachment): it runs in the owner's mode, Bypass too (the owner's decision
+    /// of 2026-10-27), inside Oby's box, and publishes by itself as any job does (the owner's
+    /// decision of 2026-10-24, replacing 2026-10-23's by hand).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub untrusted: bool,
     /// Why the code it runs isn't only its owner's own, when it follows up a job whose check got
