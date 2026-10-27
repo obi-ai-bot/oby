@@ -146,7 +146,7 @@ export async function connectTetrix() {
   try {
     const preset = (await api.tetrix()).presets[0];
     if (!preset) throw new Error('Oby has no Tetrix to sign in to.');
-    open((await api.tetrixSignIn(preset.id)).url);
+    open((await api.tetrixSignIn({ preset: preset.id })).url);
     if (!(await until(async () => (await api.tetrix()).connected, 10))) set(() => ({ tetrix: 'out' }));
     else set(() => ({ tetrix: 'in' }));
   } catch (e) {

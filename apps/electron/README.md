@@ -109,6 +109,9 @@ SettingsView.tsx    Settings' pages (as Wellington's Mac app has them, plus
                     Connectors), opened from your account menu; its page frame
                     and rows (SettingsPage, Group, Row, Switch, Select…) are
                     shared with the Obysphere's pages
+Connectors.tsx      Settings › Connectors: on obid, GitHub (its gh) and Tetrix
+                    as obid has them, with their sign-ins, Disconnect and
+                    Tetrix's server; otherwise Sangam's demo list
 SphereSettings.tsx  an Obysphere's settings: avatar, name, URL, members,
                     deleting or leaving it
 KnowledgeView.tsx   an Obysphere's knowledge sources (Tetrix, MCP servers);

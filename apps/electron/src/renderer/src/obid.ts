@@ -92,6 +92,21 @@ export type Repo = { repo: string; defaultBranch: string; listed: boolean };
 // pasteCode, the code that page shows, to send back (Claude Code's)
 export type SignIn = { account?: string; url: string; userCode?: string | null; pasteCode?: boolean; expiresAt?: string };
 
+// obid only: "GET /v1/github" (its gh, and as whom it's signed in) and "GET /v1/tetrix" (the server
+// Oby signs in to, kept after a sign-out; error: why the last sign-in or refresh failed), the keys
+// this app reads. No token is in either.
+export type GitHub = { gh: boolean; signedIn: boolean; user: string | null; signIn: SignIn | null };
+export type Tetrix = {
+  connected: boolean;
+  url: string | null;
+  preset: string | null;
+  presets: { id: string; name: string; url: string }[];
+  connectedAt: string | null;
+  signIn: { url: string } | null;
+  error: string | null;
+};
+export type TetrixTarget = { preset: string } | { url: string };
+
 // "POST /v1/plans"
 export type Question = { text: string; options: string[]; recommended: number | null };
 export type PlanAnswer = (
@@ -175,10 +190,14 @@ export const api = {
   signInCode: (a: string, code: string) => call<Account>('POST', `/v1/accounts/${id(a)}/sign-in`, { code }),
   endSignIn: (a: string) => call<null>('DELETE', `/v1/accounts/${id(a)}/sign-in`),
   // obid only: GitHub's sign-in (gh's device flow), and Tetrix's
-  github: () => call<{ gh: boolean; signedIn: boolean; user: string | null }>('GET', '/v1/github'),
+  github: () => call<GitHub>('GET', '/v1/github'),
   githubSignIn: () => call<SignIn>('POST', '/v1/github/sign-in'),
-  tetrix: () => call<{ connected: boolean; presets: { id: string; name: string }[] }>('GET', '/v1/tetrix'),
-  tetrixSignIn: (preset: string) => call<SignIn>('POST', '/v1/tetrix/sign-in', { preset }),
+  githubCancel: () => call<null>('DELETE', '/v1/github/sign-in'),
+  tetrix: () => call<Tetrix>('GET', '/v1/tetrix'),
+  tetrixSignIn: (to: TetrixTarget) => call<SignIn>('POST', '/v1/tetrix/sign-in', to),
+  tetrixCancel: () => call<null>('DELETE', '/v1/tetrix/sign-in'),
+  // signs Oby out of Tetrix (its refresh token revoked where the server offers it)
+  tetrixDisconnect: () => call<null>('DELETE', '/v1/tetrix'),
   conversations: (opts: { after?: string; limit?: number } = {}) => call<Conversation[]>('GET', `/v1/conversations${q(opts)}`),
   editConversation: (c: string, change: { title?: string; pinned?: boolean }) => call<Conversation>('PATCH', `/v1/conversations/${id(c)}`, change),
   deleteConversation: (c: string) => call<null>('DELETE', `/v1/conversations/${id(c)}`),
