@@ -702,6 +702,27 @@ struct Door {
     api: tokio::sync::watch::Receiver<Opening>,
     started: std::time::Instant,
     laps: Laps,
+    /// Agents' calls held now: at most [`MOST_HELD_AGENTS`].
+    held_agents: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+/// How many agents' calls the door holds at once; any more are answered `503` (starting).
+const MOST_HELD_AGENTS: usize = 64;
+
+/// One held call counted in `held_agents`, until it's dropped.
+struct Held(Arc<std::sync::atomic::AtomicUsize>);
+
+impl Held {
+    fn take(count: &Arc<std::sync::atomic::AtomicUsize>) -> Option<Held> {
+        let held = Held(count.clone());
+        (count.fetch_add(1, Ordering::SeqCst) < MOST_HELD_AGENTS).then_some(held)
+    }
+}
+
+impl Drop for Held {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
 }
 
 impl Door {
@@ -716,6 +737,7 @@ impl Door {
             api,
             started: stopwatch.started,
             laps: stopwatch.laps.clone(),
+            held_agents: Arc::default(),
         };
         (
             opened,
@@ -737,10 +759,7 @@ impl Door {
                 // Nothing waits, or hears how the start went, without the token from loopback;
                 // but an agent's own routes, whose tokens the API's gate checks once it's open: a
                 // resumed job's agent may call them before then.
-                let path = request.uri().path();
-                let agent_route = ["/v1/agent/mcp/", "/v1/agent/tetrix/"]
-                    .iter()
-                    .any(|prefix| path.starts_with(prefix));
+                let agent_route = api::agent_request(request.uri(), request.headers());
                 if !agent_route
                     && let Err(error) = api::admit(request.uri(), request.headers(), &door.token)
                 {
@@ -757,6 +776,14 @@ impl Door {
                     }
                     _ => {}
                 }
+                // ponytail: only agents' calls are capped, as the others carry the API token.
+                let _held = match agent_route {
+                    true => match Held::take(&door.held_agents) {
+                        Some(held) => Some(held),
+                        None => return closed(STARTING),
+                    },
+                    false => None,
+                };
                 let opened = opening.wait_for(Option::is_some).await.map(|o| o.clone());
                 match opened {
                     Ok(Some(Ok(api))) => api,
@@ -781,7 +808,7 @@ impl Door {
             .map(|(step, ms)| serde_json::json!({"step": step, "ms": ms}))
             .collect();
         let starting = serde_json::json!({
-            "error": "Oby’s engine is starting.",
+            "error": STARTING,
             "starting": {
                 "ms": self.started.elapsed().as_millis(),
                 "done": done,
@@ -801,6 +828,7 @@ type Opening = Option<Result<axum::Router, &'static str>>;
 
 /// What the calls a door held hear when obid stops, or fails, while it starts.
 const STOPPING: &str = "Oby’s engine is stopping.";
+const STARTING: &str = "Oby’s engine is starting.";
 const DIDNT_START: &str = "Oby’s engine didn’t start.";
 
 /// `503 {"error": why}`, from a door that won't open.

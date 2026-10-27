@@ -301,6 +301,27 @@ async fn an_agent_route_waits_for_the_api() {
     ));
     let client = reqwest::Client::new();
     assert_eq!(first_status(&client, port, &token).await.status(), 503);
+    // What the gate wouldn't take to an agent's token is refused at once, as any other call: no
+    // Bearer token, a name other than loopback's, an id of more than one part.
+    let mcp = format!("http://127.0.0.1:{port}/v1/agent/mcp/job-1");
+    let tokenless = client.post(&mcp).send().await.unwrap();
+    let elsewhere = client
+        .post(&mcp)
+        .bearer_auth("not-a-broker-token")
+        .header("host", "rebound.example")
+        .send()
+        .await
+        .unwrap();
+    let deeper = client
+        .post(format!("{mcp}/more"))
+        .bearer_auth("not-a-broker-token")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(first_status(&client, port, &token).await.status(), 503);
+    assert_eq!(tokenless.status(), 401);
+    assert_eq!(elsewhere.status(), 403);
+    assert_eq!(deeper.status(), 401);
     let agent = client
         .post(format!("http://127.0.0.1:{port}/v1/agent/mcp/job-1"))
         .bearer_auth("not-a-broker-token")

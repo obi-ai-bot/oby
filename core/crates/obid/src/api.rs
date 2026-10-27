@@ -439,6 +439,23 @@ fn gateway_host(uri: &axum::http::Uri, headers: &HeaderMap) -> bool {
     host == "10.0.2.2" || host.strip_prefix("10.0.2.2:").is_some_and(is_port)
 }
 
+/// One of an agent's own routes (its MCP server's or Tetrix's, one id), from loopback (or, on
+/// Linux, the agents' gateway host), with one Bearer token: what the gate takes to its broker and
+/// session tokens, which only it checks (`gate`).
+pub fn agent_request(uri: &axum::http::Uri, headers: &HeaderMap) -> bool {
+    let path = uri.path();
+    let one_id = path
+        .strip_prefix("/v1/agent/mcp/")
+        .or_else(|| path.strip_prefix("/v1/agent/tetrix/"))
+        .is_some_and(|id| !id.is_empty() && !id.contains('/'));
+    let mut values = headers.get_all(header::AUTHORIZATION).iter();
+    let one_bearer = matches!(
+        (values.next(), values.next()),
+        (Some(value), None) if value.to_str().ok().and_then(bearer).is_some()
+    );
+    one_id && one_bearer && (loopback_request(uri, headers) || agent_gateway_request(uri, headers))
+}
+
 /// Throws the refusal, or lets the request through.
 pub fn admit(uri: &axum::http::Uri, headers: &HeaderMap, token: &str) -> Result<(), ApiError> {
     if !loopback_request(uri, headers) {

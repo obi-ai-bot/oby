@@ -397,6 +397,38 @@ fn an_account_is_signed_in_when_its_login_file_is_there() {
     assert_eq!(signed_in(), [json!(true), json!(false)]);
 }
 
+/// A Claude Code login only in the Keychain shows signed in, and signed out once it's gone: obid
+/// takes an item it found as there for 2 seconds (`accounts::LOOK_EVERY`), no longer.
+#[cfg(target_os = "macos")]
+#[test]
+fn a_keychain_login_shows_signed_out_soon_after_it_goes() {
+    let folder = Folder::new("keychain-sign-out");
+    let mut config = config(&folder.0, 0);
+    config["claudeKeychain"] = json!(true);
+    let item = folder
+        .0
+        .join("tmp/obid-test-keychain/Claude Code-credentials");
+    std::fs::create_dir_all(item.parent().unwrap()).unwrap();
+    std::fs::write(&item, "{}").unwrap();
+    let obid = start(&folder.0, &config, Some(TOKEN));
+    let host = format!("127.0.0.1:{}", obid.port);
+    let signed_in = || {
+        let answer = get_status(&obid, &host, TOKEN);
+        assert_eq!(answer.status, 200, "{}", answer.body);
+        answer.body["accounts"][0]["signedIn"].clone()
+    };
+    assert_eq!(signed_in(), json!(true));
+    std::fs::remove_file(&item).unwrap();
+    let removed = Instant::now();
+    while signed_in() == json!(true) {
+        assert!(
+            removed.elapsed() < Duration::from_secs(3),
+            "still signed in 3 s after the login went"
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
 /// #646: a `.credentials.json` an older obid copied from the Keychain into an account's folder
 /// (#643, no refresh token) is taken out at start even with `claudeKeychain` turned off since, so
 /// the account doesn't look signed in by it and no run copies it again. A login file Claude Code

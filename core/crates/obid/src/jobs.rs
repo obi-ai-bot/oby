@@ -11299,13 +11299,15 @@ fn keychain_has(config_dir: Option<&Path>) -> bool {
         return true;
     }
     // ponytail: two callers at once may both ask security; the cache only saves the next ones.
+    // Timed from the ask, so a slow answer is kept no longer than one that came at once.
+    let asked = std::time::Instant::now();
     let has = keychain(config_dir, false).is_some();
     let mut seen = SEEN.lock().unwrap_or_else(|e| e.into_inner());
     seen.retain(|(dir, _)| dir.as_deref() != config_dir);
     if !has {
         return false;
     }
-    seen.push((config_dir.map(Path::to_path_buf), std::time::Instant::now()));
+    seen.push((config_dir.map(Path::to_path_buf), asked));
     true
 }
 
@@ -11444,10 +11446,11 @@ fn cursor_keychain_has() -> bool {
     {
         return true;
     }
+    let asked = std::time::Instant::now();
     let has = CURSOR_ITEMS
         .iter()
         .any(|(_, service)| cursor_keychain_item(service, false).is_some());
-    *FOUND.lock().unwrap_or_else(|e| e.into_inner()) = has.then(std::time::Instant::now);
+    *FOUND.lock().unwrap_or_else(|e| e.into_inner()) = has.then_some(asked);
     has
 }
 
