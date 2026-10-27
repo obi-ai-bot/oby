@@ -275,6 +275,60 @@ pub async fn run_turn(
     Ok(turn_on(conn, prompt, decide, on_event, false).await.0)
 }
 
+/// The flags of Claude Code's own `/usage`, run by itself ([`read_usage`]): it answers from its
+/// account's usage without asking a model (claude 2.1.302), with no tool, setting or MCP server.
+/// A Claude Code without it would take `/usage` for a prompt: haiku and one turn at most, then.
+pub const USAGE_FLAGS: [&str; 15] = [
+    "-p",
+    "/usage",
+    "--model",
+    "haiku",
+    "--max-turns",
+    "1",
+    "--output-format",
+    "stream-json",
+    "--verbose",
+    "--no-session-persistence",
+    "--setting-sources",
+    "",
+    "--strict-mcp-config",
+    "--tools",
+    "",
+];
+
+/// What Claude Code's `/usage` (`launch` runs [`USAGE_FLAGS`]) says of the account, read until
+/// its `result`, or `limit`; why not, when it failed (offline, a refused login) or ended without
+/// one.
+pub async fn read_usage(launch: &Launch, limit: Duration) -> Result<crate::usage::Asked, String> {
+    use crate::usage::Asked;
+    // Kept until the read ends: a stop channel whose sender is gone stops the agent.
+    let (_run, stop) = watch::channel(process::Signal::Run);
+    let mut conn = Conn::spawn(launch, limit, stop, false)
+        .await
+        .map_err(|e| format!("Claude Code didn't start: {e}"))?;
+    conn.close_input();
+    let mut usage = None;
+    let mut asked = Err("Claude Code ended without answering.".to_owned());
+    while let Ok(line) = conn.next().await {
+        usage = usage.or_else(|| crate::usage::claude_report(&line));
+        if line["type"] == "result" {
+            asked = if crate::usage::claude_ran_model(&line) {
+                Ok(Asked::ModelRan)
+            } else if line["is_error"] == true {
+                Err(format!(
+                    "Claude Code's /usage failed: {}",
+                    line["result"].as_str().unwrap_or("no reason given")
+                ))
+            } else {
+                Ok(usage.take().map_or(Asked::Silent, Asked::Said))
+            };
+            break;
+        }
+    }
+    conn.finish().await;
+    asked
+}
+
 /// [`run_turn`] on a Claude Code already running (`conn`). With `keep`, a turn that ends with its
 /// `result` leaves the agent running, waiting on its stdin for the next message (stream-json
 /// input takes one turn after another; `--max-turns` counts each on its own), and it comes back

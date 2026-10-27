@@ -139,10 +139,22 @@ const tasksOf = (s: Live) => Object.values(s.jobs).sort((a, b) => b.created.loca
 function publish() {
   replaceChats(chatsOf(state));
   replaceTasks(tasksOf(state));
-  if (state.status) replaceAccounts(state.status.accounts.map((a) => ({
-    id: a.id, agent: a.agent, name: a.name, payer: a.payer ?? 'You', used: Math.round((a.sevenDay ?? a.fiveHour ?? 0) * 100),
-    resets: a.sevenDayResets ? `Resets ${new Date(a.sevenDayResets).toLocaleDateString([], { weekday: 'long' })}` : a.signedIn ? 'No use reported yet' : 'Not signed in',
-  })));
+  // the week's share, else the 5-hour window's; unknown until the tool says (never a made-up 0%).
+  // Cursor's CLI reports no usage at all.
+  if (state.status) replaceAccounts(state.status.accounts.map((a) => {
+    const used = a.agent === 'cursor' ? null : a.sevenDay ?? a.fiveHour;
+    return {
+      id: a.id, agent: a.agent, name: a.name, payer: a.payer ?? 'You', used: used == null ? null : Math.round(used * 100),
+      resets: !a.signedIn ? 'Not signed in' : a.agent === 'cursor' ? 'Cursor doesn’t report usage' : used == null ? 'No use reported yet'
+        : a.sevenDayResets ? `Resets ${new Date(a.sevenDayResets).toLocaleDateString([], { weekday: 'long' })}` : 'No reset reported',
+    };
+  }));
+}
+
+// the usage panel opened: obid asks the tools for usage it hasn't read in 10 minutes, which comes
+// in an `accounts` event a few seconds later
+export function lookAtUsage() {
+  if (state.connection === 'live') void api.status().then((status) => set({ status }), () => {});
 }
 
 // --- events

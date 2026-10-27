@@ -760,6 +760,9 @@ async fn status(State(shared): State<Arc<Shared>>) -> Result<axum::Json<Status>,
     // looked for at most every 2 seconds.
     let agents = shared.config.agents.clone();
     let _ = tokio::task::spawn_blocking(move || crate::accounts::refind_own_logins(&agents)).await;
+    // An app looks at the accounts: their usage is asked of their tools if it's stale, and comes
+    // in the `accounts` event.
+    shared.jobs.want_usage();
     let accounts = crate::accounts::list_now(&shared).await;
     let cleaned = shared.jobs.cleaned();
     Ok(axum::Json(Status {

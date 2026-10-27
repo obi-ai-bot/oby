@@ -1,9 +1,10 @@
 //! Each account's subscription usage and the owner's weekly reserve, kept privately across
 //! restarts in `home/usage.json` (0600) (Engine/Accounts.swift is the behaviour it follows).
 //!
-//! All of it comes from the tools' own reports: Claude Code's `rate_limit_event` during a job, and
-//! Codex's `account/rateLimits/read` and `account/rateLimits/updated`. obid never reads a login to
-//! find any of it out.
+//! All of it comes from the tools' own reports: Claude Code's `rate_limit_event` during a job and
+//! its `/usage` (crate::jobs, `read_usages`), and Codex's `account/rateLimits/read` and
+//! `account/rateLimits/updated`. obid never reads a login to find any of it out. Cursor's CLI
+//! reports none.
 use obi_protocol::time;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -341,6 +342,58 @@ pub fn claude(message: &Value) -> Usage {
         ),
         ..Usage::default()
     }
+}
+
+/// A UTC time as RFC 3339 says it (`2026-10-29T22:00:00.414919+00:00`), to the second.
+fn utc(value: &Value) -> Option<i64> {
+    let (head, rest) = value.as_str()?.split_at_checked(19)?;
+    let rest = rest.trim_start_matches(|c: char| c == '.' || c.is_ascii_digit());
+    matches!(rest, "Z" | "+00:00")
+        .then(|| time::parse(&format!("{head}Z")))
+        .flatten()
+}
+
+/// What asking a tool for its account's usage came to (crate::jobs, `read_usage`).
+#[derive(Debug, PartialEq)]
+pub enum Asked {
+    Said(Usage),
+    /// It answered without any: an API key's account, or a login its tool reports none for.
+    Silent,
+    /// Claude Code took `/usage` for a prompt and asked a model (one without its own `/usage`).
+    ModelRan,
+}
+
+/// Claude Code's own `/usage`, run by itself (`claude -p /usage --output-format stream-json
+/// --verbose`: no model call, claude 2.1.302): the `usage_report` on its answer's line, whose
+/// `rate_limits.limits` have `kind` `session` (the 5-hour window) and `weekly_all` (the week),
+/// each a `percent` of 0...100 and a `resets_at` in RFC 3339. `None` on a line without one.
+/// Its percent is whole (99.5% says 100), so it never marks the account full: a job's refusal
+/// does.
+pub fn claude_report(line: &Value) -> Option<Usage> {
+    let limits = line["usage_report"]["rate_limits"]["limits"].as_array()?;
+    let mut usage = Usage::default();
+    for limit in limits {
+        let window = (share(&limit["percent"], 100.0), utc(&limit["resets_at"]));
+        match limit["kind"].as_str() {
+            Some("session") => (usage.five_hour, usage.five_hour_resets) = window,
+            Some("weekly_all") => (usage.seven_day, usage.seven_day_resets) = window,
+            _ => {}
+        }
+    }
+    (usage != Usage::default()).then_some(usage)
+}
+
+/// Whether a Claude Code `result` line says a model was asked: a turn, output, a cost or a model's
+/// usage. `/usage` answered by Claude Code itself has none of them.
+pub fn claude_ran_model(result: &Value) -> bool {
+    result["num_turns"].as_u64().is_some_and(|n| n > 0)
+        || result["usage"]["output_tokens"]
+            .as_u64()
+            .is_some_and(|n| n > 0)
+        || result["total_cost_usd"].as_f64().is_some_and(|c| c > 0.0)
+        || result["modelUsage"]
+            .as_object()
+            .is_some_and(|m| !m.is_empty())
 }
 
 /// One snapshot of Codex's limits (`RateLimitSnapshot`, from `account/rateLimits/read` or a sparse
@@ -755,6 +808,51 @@ mod tests {
             .full_until
             .unwrap();
         assert!(refused > time::now() && refused <= time::now() + UNKNOWN_RESET);
+    }
+
+    /// The `usage_report` `claude -p /usage` 2.1.302 sent on 2026-10-27; any other line has none.
+    #[test]
+    fn claude_codes_own_usage_report() {
+        let line = json!({"type": "assistant", "usage_report": {"rate_limits": {"limits": [
+            {"kind": "session", "group": "session", "percent": 8, "resets_at": "2026-10-27T21:20:00.414894+00:00", "scope": null},
+            {"kind": "weekly_all", "group": "weekly", "percent": 91, "resets_at": "2026-10-29T22:00:00.414919+00:00", "scope": null},
+            {"kind": "weekly_scoped", "group": "weekly", "percent": 3, "resets_at": "2026-10-29T22:00:00Z", "scope": {"model": {"display_name": "Fable"}}}
+        ]}}});
+        let usage = claude_report(&line).unwrap();
+        assert_eq!(usage.five_hour, Some(0.08));
+        assert_eq!(usage.seven_day, Some(0.91));
+        assert_eq!(usage.five_hour_resets, time::parse("2026-10-27T21:20:00Z"));
+        assert_eq!(usage.seven_day_resets, time::parse("2026-10-29T22:00:00Z"));
+        assert_eq!(usage.full_until, None);
+        // 100% may be 99.5% rounded: never full by itself.
+        let full = json!({"usage_report": {"rate_limits": {"limits": [
+            {"kind": "weekly_all", "percent": 100, "resets_at": "2026-10-29T22:00:00Z"}]}}});
+        let full = claude_report(&full).unwrap();
+        assert_eq!((full.seven_day, full.full_until), (Some(1.0), None));
+        // A time that isn't UTC isn't guessed at.
+        let local = json!({"usage_report": {"rate_limits": {"limits": [
+            {"kind": "weekly_all", "percent": 40, "resets_at": "2026-10-29T19:00:00-03:00"}]}}});
+        assert_eq!(claude_report(&local).unwrap().seven_day_resets, None);
+        assert_eq!(claude_report(&json!({"type": "result"})), None);
+        assert_eq!(
+            claude_report(&json!({"usage_report": {"rate_limits": null}})),
+            None
+        );
+    }
+
+    /// `claude -p /usage` 2.1.302's `result` (2026-10-27) asked no model; a prompt's does.
+    #[test]
+    fn a_result_says_whether_a_model_ran() {
+        let own = json!({"type": "result", "num_turns": 0, "total_cost_usd": 0, "usage": {"input_tokens": 0, "output_tokens": 0}, "modelUsage": {}});
+        assert!(!claude_ran_model(&own));
+        for asked in [
+            json!({"num_turns": 1}),
+            json!({"usage": {"output_tokens": 3}}),
+            json!({"total_cost_usd": 0.0001}),
+            json!({"modelUsage": {"claude-haiku-4-5": {"inputTokens": 9}}}),
+        ] {
+            assert!(claude_ran_model(&asked), "{asked}");
+        }
     }
 
     /// The event `claude -p` 2.x sent on 2026-10-17.

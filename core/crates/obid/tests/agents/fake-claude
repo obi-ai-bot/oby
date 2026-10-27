@@ -115,6 +115,34 @@ if (process.argv.includes("--no-session-persistence") && process.argv[process.ar
   process.exit(0);
 }
 
+// Claude Code's own `/usage`, as obid asks it (`-p /usage`): a usage_report of 33% of the 5-hour
+// window and 44% of the week, the week resetting in 2 days, and a result that asked no model. By
+// a word in its login copy's access token ($CLAUDE_CONFIG_DIR/.credentials.json): `asks-model`
+// answers as a Claude Code without its own /usage (a model's turn, no report), `silent` with no
+// report, `offline` with an error result.
+if (process.argv[process.argv.indexOf("-p") + 1] === "/usage") {
+  let token = "";
+  try { token = JSON.parse(readFileSync(`${process.env.CLAUDE_CONFIG_DIR}/.credentials.json`, "utf8")).claudeAiOauth.accessToken; } catch {}
+  const at = (days) => new Date(Date.now() + days * 86_400_000).toISOString();
+  const limits = [
+    { kind: "session", group: "session", percent: 33, resets_at: at(0.1), scope: null },
+    { kind: "weekly_all", group: "weekly", percent: 44, resets_at: at(2), scope: null },
+  ];
+  const line = (value) => process.stdout.write(JSON.stringify(value) + "\n");
+  const result = { type: "result", subtype: "success", is_error: false, num_turns: 0, total_cost_usd: 0, usage: { output_tokens: 0 }, modelUsage: {} };
+  if (token.includes("asks-model")) {
+    line({ ...result, num_turns: 1, total_cost_usd: 0.0001, usage: { output_tokens: 5 }, result: "What would you like to know about usage?" });
+  } else if (token.includes("silent")) {
+    line(result);
+  } else if (token.includes("offline")) {
+    line({ ...result, subtype: "error_during_execution", is_error: true, result: "fetch failed" });
+  } else {
+    line({ type: "assistant", message: { role: "assistant", content: [{ type: "text", text: "usage" }] }, usage_report: { rate_limits: { limits } } });
+    line(result);
+  }
+  process.exit(0);
+}
+
 // Its own sign-in, as obid runs the tool's login (fake-login.mjs).
 if (process.argv[2] === "auth" && process.argv[3] === "login") {
   await (await import(new URL("./fake-login.mjs", import.meta.url))).login("claude");
