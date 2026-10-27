@@ -161,17 +161,6 @@ pub struct Stalled {
     pub note_by: String,
 }
 
-/// A teammate's Mac a job's agent runs on: their Obi, and its owner as the directory says.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RunsOn {
-    pub obi: String,
-    pub owner: String,
-    /// On a share of that teammate's API account (#809): its grant. The job's model calls are
-    /// theirs, on their Mac.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub grant: Option<String>,
-}
-
 /// Oby's reviews of a pushed head that ended before a verdict (failed or interrupted: a login
 /// refused, the tool crashing), and whether Oby left that head to the owner (docs/runner-api.md,
 /// "Oby's review").
@@ -326,9 +315,6 @@ pub struct Job {
     /// The job's worktree, an absolute path, once it exists.
     pub worktree: Option<String>,
     pub obi: Option<ObiRef>,
-    /// The teammate's Mac its agent runs on (crate::sphere::guest), or none: this one.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub runs_on: Option<RunsOn>,
     /// The conversation whose plan started it, or none (#493). It keeps the id when that
     /// conversation is deleted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -648,21 +634,18 @@ impl Job {
     /// good. obid follows no pull request yet, so none reads merged until it does.
     /// Whether its check keeps loopback (`sandbox::Spec::loopback`): only an owner's job whose
     /// agent ran here, so its check runs nothing that agent couldn't reach. Never another Obi's
-    /// review, nor a job that ran on a teammate's Mac, whose commits came from there.
+    /// review, whose commits came from elsewhere.
     pub fn check_keeps_loopback(&self) -> bool {
-        self.obi.is_none() && self.runs_on.is_none()
+        self.obi.is_none()
     }
 
     /// Why the code it runs is someone else's, or none: a job another Oby asked for (a review),
-    /// one whose agent ran on a teammate's Mac (its commits came from there), a follow-up of any
-    /// such job ([`Job::foreign`]), one something else's words or content reached, and one whose
+    /// a follow-up of any such job ([`Job::foreign`]), one something else's words or content reached, and one whose
     /// conversation read something Oby didn't write. What marks the owner's clone and stops obid's
     /// record of its commits (crate::secretspec).
     pub fn someone_elses(&self) -> Option<String> {
         if self.obi.is_some() {
             Some("another Oby asked for this job".into())
-        } else if self.runs_on.is_some() {
-            Some("this job's agent ran on a teammate's Mac".into())
         } else if let Some(why) = &self.foreign {
             Some(why.clone())
         } else if self.untrusted {
@@ -751,7 +734,6 @@ impl Job {
             dismissed: None,
             worktree: None,
             obi: None,
-            runs_on: None,
             conversation: None,
             turn: None,
             review_result: None,
@@ -1162,14 +1144,8 @@ impl Job {
         // Why it stopped and its one next step (#725), out of the literal above: json!'s recursion
         // limit.
         value["reason"] = json!(self.reason);
-        // "on Wellington's Mac" on its card (Sangam's design, #808).
-        value["runsOn"] = json!(self.runs_on.as_ref().map(|r| {
-            let mut place = json!({"obi": r.obi, "owner": r.owner});
-            if let Some(grant) = &r.grant {
-                place["grant"] = json!(grant);
-            }
-            place
-        }));
+        // Jobs run only on this Mac now (compute sharing is gone): null, for the apps that decode it.
+        value["runsOn"] = Value::Null;
         value["nextStep"] = json!(self.next_step);
         value["resumesAt"] = json!(date(self.resumes_at));
         if let Some(step) = self.publish_step {
@@ -1611,18 +1587,11 @@ mod tests {
         job
     }
 
-    /// Only an owner's job whose agent ran here keeps loopback in its check: not another Obi's
-    /// review, nor a job that ran on a teammate's Mac.
+    /// Only an owner's job keeps loopback in its check: not another Obi's review.
     #[test]
-    fn only_an_owners_job_run_here_keeps_loopback_in_its_check() {
-        let mut job = job();
+    fn only_an_owners_job_keeps_loopback_in_its_check() {
+        let job = job();
         assert!(job.check_keeps_loopback());
-        job.runs_on = Some(RunsOn {
-            obi: "ernesto-mac".into(),
-            owner: "ernesto".into(),
-            grant: None,
-        });
-        assert!(!job.check_keeps_loopback());
         let mut review = self::job();
         review.obi = Some(ObiRef {
             correlation_id: "c".into(),
@@ -1633,10 +1602,10 @@ mod tests {
         assert!(!review.check_keeps_loopback());
     }
 
-    /// Only an owner's job whose agent ran here gets the secrets its repository declares for its
-    /// check: never another Oby's review, nor a job that ran on a teammate's Mac.
+    /// Only an owner's job gets the secrets its repository declares for its check: never another
+    /// Oby's review.
     #[test]
-    fn only_an_owners_job_run_here_gets_declared_secrets() {
+    fn only_an_owners_job_gets_declared_secrets() {
         let mut job = job();
         // Fail closed: a job is the owner's only once obid says it came from their own words.
         assert!(
@@ -1646,12 +1615,6 @@ mod tests {
         );
         job.vetted = true;
         assert_eq!(job.check_refuses_secrets(), None);
-        job.runs_on = Some(RunsOn {
-            obi: "ernesto-mac".into(),
-            owner: "ernesto".into(),
-            grant: None,
-        });
-        assert!(job.check_refuses_secrets().is_some());
         let mut review = self::job();
         review.vetted = true;
         review.obi = Some(ObiRef {

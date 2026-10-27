@@ -71,10 +71,9 @@
 //!    called `setsid` included (`crate::sandbox`, `WATCHER`).
 //! 2. **Ref hygiene is the provenance.** obid's own clone of a repository holds only the default
 //!    branch (`git clone --single-branch`, `crate::git::NARROW`) and what the owner's own jobs make
-//!    there. A job that's untrusted, someone else's code or bound for a teammate's Mac when it's
-//!    made keeps to a clone apart (`Job::apart`, `home/apart/clones`), as a review another Oby asks
+//!    there. A job that's untrusted or someone else's code when it's made keeps to a clone apart (`Job::apart`, `home/apart/clones`), as a review another Oby asks
 //!    for does (`home/received/clones`). Anything else comes into the owner's clone only by obid's
-//!    own fetch (a job's base, a pull request's head, commits back from a teammate's Mac), and one
+//!    own fetch (a job's base, a pull request's head), and one
 //!    that isn't a reviewed branch and whose commits aren't all in obid's record of the owner's
 //!    jobs marks the clone (`crate::git::taint`), as a job there turning someone else's code does
 //!    (`Jobs::mark_foreign`): from then on no check in that repository gets values. A clone made
@@ -103,8 +102,7 @@
 //! 6. **Defence in depth**: every commit between the base and the commit is in obid's own record of
 //!    what the job made ([`on_record`], `Job::made`, after each turn's [`new_commits`], whose new
 //!    commits may carry no change any other branch the clone has, other jobs' own included), and the job
-//!    isn't another Oby's review, one whose agent ran on a teammate's Mac, a follow-up of one that
-//!    got none, or untrusted.
+//!    isn't another Oby's review, a follow-up of one that got none, or untrusted.
 //!
 //! Out of scope, and said so: a package anyone may publish to a registry the job installs from
 //! (the owner's own tests would install the same); and an agent that writes out, as its own new
