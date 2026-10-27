@@ -32,5 +32,7 @@ export default defineConfig({
   base: './',
   plugins: [react(), oby()],
   server: { port: Number(process.env.PORT) || 5175, strictPort: true },
+  // the favicons, from Oby's icon folder (apps/icon/exports/web): served in dev, copied by a build
+  publicDir: resolve(__dirname, '../icon/exports/web'),
   build: { outDir: resolve(__dirname, 'out/renderer'), emptyOutDir: true },
 });

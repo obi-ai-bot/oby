@@ -27,7 +27,9 @@ electronFuses:
   enableCookieEncryption: true
 mac:
   target: dir
-  icon: build/icon.icns
+  # the Swift Oby's Icon Composer icon (apps/icon): actool makes Assets.car and icon.icns from
+  # it, and macOS draws the shape, its margin and shadow
+  icon: ../icon/AppIcon.icon
   category: public.app-category.developer-tools
   minimumSystemVersion: "26.0"
   identity: "Deskree Technologies Inc. (3UV9W5SV7W)"
