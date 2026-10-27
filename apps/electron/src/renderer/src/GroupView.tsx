@@ -3,7 +3,7 @@ import { useScrollThumb } from './useScrollThumb';
 import TaskCard from './TaskCard';
 import { BrandMark, BRANDS } from './brands';
 import { ago, ASK_LABEL, type GitHubItem } from './mock';
-import { columnsOf, hasToDo, putOff, startGitHub, tasksIn, toDoOf, useTasks, type Tab, type TaskType } from './tasks';
+import { columnsOf, gitHubError, hasToDo, openOnGitHub, putOff, startGitHub, tasksIn, toDoOf, useTasks, type Tab, type TaskType } from './tasks';
 
 // how long the way out takes (the sink animation in app.css)
 const LEAVE_MS = 220;
@@ -114,6 +114,8 @@ export default function GroupView({ group, tab: startTab, leaving, covered = fal
           </div>
           {/* keyed by tab, so switching brings the new cards in fresh */}
           <div key={tab} className="group-cards" role="tabpanel">
+            {/* why GitHub's work couldn't be read last (obid's words); what was read before stays */}
+            {tab === 'todo' && gitHubError() && <p className="group-empty rise" style={{ '--i': 2 } as React.CSSProperties}>{gitHubError()}</p>}
             {columns.map((c) => (
               <div key={`${c.project ?? ''}/${c.name ?? ''}`} className="group-board">
                 {named && <h2 className="group-board-name rise" style={{ '--i': at++ } as React.CSSProperties}>{c.name ?? 'Not on a board'}</h2>}
@@ -140,7 +142,9 @@ export default function GroupView({ group, tab: startTab, leaving, covered = fal
 
 // A GitHub item no job works on yet, as a card under To do: GitHub's mark, who
 // and what, the repository and its board column, then "Start it?" with the one
-// click that starts Oby's job on it, Open on GitHub, and Later.
+// click that starts Oby's job on it, Open on GitHub, and Later. Where Oby can't
+// start on it (live.ts), where it stands instead, and why.
+// Everything from GitHub is shown as text.
 function GitHubCard({ item, style }: { item: GitHubItem; style?: React.CSSProperties }) {
   return (
     <article className="card rise task-card" aria-label={item.title} style={style}>
@@ -157,11 +161,12 @@ function GitHubCard({ item, style }: { item: GitHubItem; style?: React.CSSProper
         {item.board && <span className="tc-column">{item.board.column}</span>}
       </p>
       <div className="tc-ask">
-        <span className="tc-ask-kind">{ASK_LABEL.start}</span>
+        <span className="tc-ask-kind">{item.label ?? ASK_LABEL.start}</span>
         <p className="tc-ask-head">{item.request}</p>
+        {item.note && <p className="tc-ask-text">{item.note}</p>}
         <div className="tc-options">
-          <button className="tc-option is-primary" onClick={() => startGitHub(item.id)}>{item.action}</button>
-          <button className="tc-option">Open on GitHub</button>
+          {item.action && <button className="tc-option is-primary" onClick={() => startGitHub(item.id)}>{item.action}</button>}
+          <button className={`tc-option${item.action ? '' : ' is-primary'}`} onClick={() => openOnGitHub(item.url)}>Open on GitHub</button>
           <button className="tc-option is-quiet" onClick={() => putOff(item.id)}>Later</button>
         </div>
       </div>

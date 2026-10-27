@@ -2,8 +2,11 @@ import { useSyncExternalStore } from 'react';
 import { ApiError, api, parseEvent, sseReader, type Conversation, type Event, type InboxItem, type Job, type Question, type Repo, type Status, type Turn } from './obid';
 import { AGENTS, type Ask, type AskKind, type Job as JobView, type Message, type Offer, type StageId } from './mock';
 import { replaceChats, type Chat } from './chats';
-import { replaceTasks, type Task } from './tasks';
+import { replaceTasks, type Asking, type Task } from './tasks';
 import { replaceAccounts } from './SettingsView';
+import { BRANDS } from './brands';
+import type { GitHubItem } from './mock';
+import type { GitHubWork } from './obid';
 
 // What obid has (docs/runner-api.md), kept live by its event stream, as apps/web/src/live.ts does
 // it: the stream first, then the status, jobs, inbox and conversations, with the events that came
@@ -16,6 +19,7 @@ type Live = {
   why?: 'waiting' | 'approval';  // and what kind of why (main/obid.ts, reason): 'waiting', none yet
   status: Status | null;
   repos: Repo[];                 // where a job may start (GET /v1/repos)
+  github: GitHubWork | null;     // what GitHub wants from the owner (GET /v1/github/work), none from an older obid
   jobs: Record<string, Job>;
   firstJobs: Set<string>;        // the jobs there when the app opened: never new
   seen: Set<string>;             // jobs opened since
@@ -36,13 +40,15 @@ type Live = {
   // decisions answered here, by job: what was asked, the pick, and the inbox item it settles.
   // The cards keep showing it answered (as the mock's do), and the stack lets it go.
   answered: Record<string, { ask: Ask; option: string; item?: string }>;
+  // items with no task answered from Home's stack, their answer on its way: off the stack meanwhile
+  answering: Set<string>;
   // the repository last picked for words sent here, by conversation (its app id), and when
   picked: Record<string, { repo: string; at: string }>;
 };
 
 let state: Live = {
-  connection: 'connecting', problem: null, status: null, repos: [], jobs: {}, firstJobs: new Set(), seen: new Set(), inbox: [],
-  conversations: [], turns: {}, loaded: new Set(), working: {}, words: {}, pace: {}, waiting: {}, starting: null, alias: {}, answered: {}, picked: {},
+  connection: 'connecting', problem: null, status: null, repos: [], github: null, jobs: {}, firstJobs: new Set(), seen: new Set(), inbox: [],
+  conversations: [], turns: {}, loaded: new Set(), working: {}, words: {}, pace: {}, waiting: {}, starting: null, alias: {}, answered: {}, answering: new Set(), picked: {},
 };
 const listeners = new Set<() => void>();
 const set = (patch: Partial<Live>) => {
@@ -62,12 +68,12 @@ const realId = (shown: string) => Object.keys(state.alias).find((k) => state.ali
 
 // --- obid's state as the screens' conversations and tasks
 
-// What Oby offers to start in a conversation (obid's oby_offer): its start items still waiting,
-// one card per offer (a turn's), in the order they came. Put off with Later, a card is gone
-// until its time.
-function offersOf(s: Live, c: string): Offer[] {
+// What Oby offers to start in a conversation (obid's oby_offer), or in any (c: none, Home's
+// stack): its start items still waiting, one card per offer (a turn's), in the order they came.
+// Put off with Later, a card is gone until its time.
+function offersOf(s: Live, c?: string, items = s.inbox): Offer[] {
   const cards = new Map<string, InboxItem[]>();
-  for (const i of s.inbox) if (i.kind === 'start' && i.offer && i.conversation === c) cards.set(i.offer.id, [...(cards.get(i.offer.id) ?? []), i]);
+  for (const i of items) if (i.kind === 'start' && i.offer && (c === undefined || i.conversation === c)) cards.set(i.offer.id, [...(cards.get(i.offer.id) ?? []), i]);
   return [...cards].filter(([, items]) => items.some((i) => !i.later || Date.parse(i.later) <= Date.now())).map(([id, items]) => ({
     id, title: items.length === 1 ? items[0].title : `${items.length} jobs`,
     jobs: items.map((i) => ({ what: i.offer!.what, task: i.offer!.task })), untrusted: items.some((i) => i.offer!.untrusted),
@@ -128,15 +134,76 @@ const itemOf = (s: Live, job: string) => {
 // interrupted and not let go, letting it go
 function askOf(s: Live, j: Job): Ask | undefined {
   const item = itemOf(s, j.id);
-  if (item) {
-    return {
-      kind: item.kind as AskKind, headline: item.headline ?? item.title, text: item.headline ? item.text : '', options: item.options,
-      recommended: item.recommended ?? undefined, detail: item.kind === 'permission' ? j.permission?.detail : undefined,
-    };
-  }
+  if (item) return itemAsk(item, item.kind === 'permission' ? j.permission?.detail : undefined);
   if ((j.status === 'failed' || j.status === 'interrupted') && !j.dismissed) {
     return { kind: 'failed', headline: j.status === 'failed' ? 'It failed' : 'It was interrupted', text: j.summary.split('\n')[0] || j.step, options: ['Dismiss'] };
   }
+}
+
+// An item's decision as a card shows it; detail: a permission's command, else the review a ready
+// review's Approve posts (as text). A GitHub offer is Sangam's "Start it?", as on To do's cards,
+// and an Oby failure his "Failed".
+const LABELLED: Record<string, AskKind> = { github: 'start', failure: 'failed' };
+const itemAsk = (item: InboxItem, detail?: string): Ask => ({
+  kind: LABELLED[item.kind] ?? item.kind as AskKind, headline: item.headline ?? item.title, text: item.headline ? item.text : '',
+  options: item.options, recommended: item.recommended ?? undefined, detail: detail ?? item.watch?.review ?? undefined,
+});
+
+// What obid asks the owner with no task to show it on (a job's item shows on its task's card), for
+// Home's stack, of the kinds it was made for: GitHub's offers, Confirms, failures, and work Oby
+// offers to start (its job isn't one until it starts), as OfferCard shows it in its conversation.
+// Any other kind stays where it's shown in full (an Obi-to-Obi request must show all it quotes
+// before it's answered). Only what needs the owner (as obid sorts it: needs_you, pending with it),
+// not put off, and not while its answer is on its way.
+const ON_HOME = new Set(['github', 'confirm', 'start', 'failed', 'failure']);
+function asksOf(s: Live): Asking[] {
+  const now = Date.now();
+  const open = s.inbox.filter((i) => ON_HOME.has(i.kind) && !s.jobs[i.job] && (!i.triage || i.triage === 'needs_you' || i.triage === 'pending')
+    && !(i.later && Date.parse(i.later) > now) && !s.answering.has(i.id));
+  return [
+    ...open.filter((i) => !i.offer).map((i) => {
+      // over it a GitHub item's own title, as on To do; obid's words under Oby's headline, or under
+      // the title till one comes (clamped: they can be long)
+      const g = i.github;
+      return {
+        id: i.id, ask: { ...itemAsk(i), text: i.text }, title: g?.quoted?.title ? `#${g.number} ${g.quoted.title}` : i.title,
+        ...(g ? { who: g.list === 'reviews' ? g.author ?? undefined : undefined, brand: BRANDS.github, url: g.url } : {}),
+      };
+    }),
+    // an offer under the conversation it was made in, the way to it one click away
+    ...offersOf(s, undefined, open).map((offer) => {
+      const c = open.find((i) => i.offer?.id === offer.id)?.conversation;
+      return { id: offer.id, title: s.conversations.find((x) => x.id === c)?.title ?? offer.title, offer, talk: c ? shownId(c) : undefined };
+    }),
+  ];
+}
+
+// GitHub's work no job is on yet (once one is, the job is the task), as To do's cards: reviews and
+// your own pull requests under Review PR (as the Swift app had them: Sangam's design has no group
+// for your own), assigned issues under Issues. A tap starts Oby's job where it can: not on a draft,
+// an issue in a repository Oby doesn't work in, or your own pull request unless its checks failed
+// on a branch of the repository itself; a review in a repository Oby doesn't work in asks your
+// Confirm first, which adds it.
+const REVIEWED: Record<string, string> = { APPROVED: 'Approved', CHANGES_REQUESTED: 'Changes requested', REVIEW_REQUIRED: 'Waiting for review' };
+const CHECKED: Record<string, string> = { SUCCESS: 'checks passed', FAILURE: 'checks failed', ERROR: 'checks failed', PENDING: 'checks running', EXPECTED: 'checks running' };
+function workOf(w: GitHubWork | null): GitHubItem[] {
+  return (w ? [...w.reviews, ...w.mine, ...w.assigned] : []).filter((g) => !g.job).map((g) => {
+    const name = g.repo.split('/')[1] ?? g.repo, at = `${name} #${g.number}`;
+    const red = g.checks === 'FAILURE' || g.checks === 'ERROR';
+    const action = g.draft ? undefined : g.list === 'reviews' ? 'Review it' as const
+      : g.known && (g.list === 'assigned' || (red && !g.fork)) ? 'Fix it' as const : undefined;
+    // where your own stands: "Changes requested, checks failed."
+    const stands = [REVIEWED[g.reviewDecision ?? ''], CHECKED[g.checks ?? '']].filter(Boolean).join(', ');
+    return {
+      id: g.id, type: g.list === 'assigned' ? 'issues' : 'review', who: g.list === 'reviews' ? g.author ?? undefined : undefined,
+      title: `#${g.number} ${g.title}`, repo: name, url: g.url, board: g.board ?? undefined, updated: minutesAgo(g.updated), action,
+      request: g.list === 'reviews' ? `${g.author ?? 'Someone'} asked you to review ${at}.` : g.list === 'assigned' ? `Assigned to you in ${at}.`
+        : stands ? `${stands[0].toUpperCase()}${stands.slice(1)}.` : `Open in ${at}.`,
+      label: action ? undefined : g.list === 'mine' ? 'Your pull request' : 'On GitHub',
+      note: g.list === 'mine' ? undefined : g.draft ? 'It’s a draft: Oby can review it once it’s ready for review.' : g.known ? undefined
+        : g.list === 'reviews' ? `Oby doesn’t work in ${g.repo} yet: Review it asks you to confirm adding it.` : `Oby doesn’t work in ${g.repo} yet: add it to repos in obid’s configuration.`,
+    };
+  });
 }
 
 function taskOf(s: Live, j: Job): Task {
@@ -163,10 +230,16 @@ function taskOf(s: Live, j: Job): Task {
 const tasksOf = (s: Live) => Object.values(s.jobs).sort((a, b) => b.created.localeCompare(a.created)).map((j) => taskOf(s, j));
 
 // into the stores the screens read
+let waking: ReturnType<typeof setTimeout> | undefined;
 let accountsFrom: Status | null = null;
 function publish() {
   replaceChats(chatsOf(state));
-  replaceTasks(tasksOf(state));
+  replaceTasks(tasksOf(state), { asks: asksOf(state), work: workOf(state.github), error: state.github?.error ?? undefined });
+  // what's put off comes back when its time comes, which obid sends no event for: look again then
+  // (the soonest, and at least hourly)
+  clearTimeout(waking);
+  const due = Math.min(...state.inbox.map((i) => (i.later ? Date.parse(i.later) : Infinity)).filter((t) => t > Date.now()));
+  if (due < Infinity) waking = setTimeout(() => set({}), Math.min(due - Date.now() + 500, 3600_000));
   // the week's share, else the 5-hour window's; unknown until the tool says (never a made-up 0%).
   // Cursor's CLI reports no usage at all. Only when obid's status changed: publish runs at every
   // change, each word of Oby's included, and Settings › Accounts and the usage gauge draw again
@@ -234,6 +307,8 @@ function apply(s: Live, e: Event): Live {
     }
     case 'conversationGone':
       return { ...s, conversations: s.conversations.filter((c) => c.id !== e.id), turns: without(s.turns, e.id) };
+    case 'github':
+      return { ...s, github: e.work };
   }
 }
 
@@ -322,11 +397,15 @@ function down(mine: number, problem: string, why?: Live['why']) {
 
 async function sync(mine: number, pending: Event[], onSynced: () => void) {
   try {
-    const [status, jobs, inbox, conversations] = await Promise.all([api.status(), api.jobs(100), api.inbox().catch(() => []), allConversations()]);
+    const [status, jobs, inbox, conversations, github] = await Promise.all([
+      api.status(), api.jobs(100), api.inbox().catch(() => []), allConversations(),
+      // GitHub's work: not read, the last read stands, with why (as obid keeps its last lists)
+      api.githubWork().catch((e) => (state.github ? { ...state.github, error: e instanceof Error ? e.message : String(e) } : null)),
+    ]);
     if (mine !== generation) return;
     retry = 0;
     let next: Live = {
-      ...state, connection: 'live', problem: null, why: undefined, status, inbox: inbox.filter((i) => i.state !== 'done'), conversations,
+      ...state, connection: 'live', problem: null, why: undefined, status, inbox: inbox.filter((i) => i.state !== 'done'), conversations, github,
       jobs: { ...state.jobs, ...Object.fromEntries(jobs.map((j) => [j.id, j])) },
       firstJobs: state.status ? state.firstJobs : new Set(jobs.map((j) => j.id)),
     };
@@ -476,13 +555,22 @@ export async function stopJob(id: string) {
   try { const j = await api.stop(id); set({ jobs: { ...state.jobs, [j.id]: j } }); } catch (e) { say(e); }
 }
 
+// Work on a GitHub item, on the owner's tap (POST /v1/github/work/{id}/start): its job comes back,
+// and the feed's next event takes the item off To do. A review in a repository Oby doesn't work in
+// starts nothing yet: its Confirm comes into Home's stack, and obid's words say so for a moment.
+export async function startGitHubWork(id: string) {
+  try { const j = await api.startGitHubWork(id); set({ jobs: { ...state.jobs, [j.id]: j } }); } catch (e) { say(e); }
+}
+
 // A job's decision answered: its permission through obid's own route (POST /v1/jobs/{id}/permission),
 // anything else in the inbox; Later puts it off an hour. A Confirm goes with this Mac's device
-// signature, which main adds (#776).
+// signature, which main adds (#776). id: a job's, or an item's with no task (asksOf), answered from
+// Home's stack.
 const DECISIONS: Record<string, 'allow' | 'always' | 'deny'> = { Allow: 'allow', 'Always allow': 'always', Deny: 'deny' };
 export async function answerJob(id: string, option: string) {
-  const j = state.jobs[id], item = itemOf(state, id), ask = j && askOf(state, j);
+  const j = state.jobs[id], item = itemOf(state, id) ?? state.inbox.find((i) => i.id === id), ask = j && askOf(state, j);
   if (ask) set({ answered: { ...state.answered, [id]: { ask, option, item: item?.id } } });
+  else if (item) answering(item.id, true);
   try {
     if (item?.kind === 'confirm' && option === 'Confirm') set(apply(state, { kind: 'inbox', item: await api.confirm(item.id) }));
     else if (item?.kind === 'permission' && j?.permission && DECISIONS[option]) {
@@ -500,16 +588,23 @@ export async function answerJob(id: string, option: string) {
     // not taken: it's still yours to answer
     set({ answered: without(state.answered, id) });
     say(e);
+  } finally {
+    if (!j && item) answering(item.id, false);
   }
 }
+// an item with no task answered from Home's stack, its answer on its way (or not any more)
+const answering = (item: string, on: boolean) =>
+  set({ answering: new Set(on ? [...state.answering, item] : [...state.answering].filter((x) => x !== item)) });
 
 // An offer answered (OfferCard.tsx), for each of its jobs still waiting: Dispatch is the owner's own
 // Start, which only this tap gives (POST /v1/inbox/{id}/answer); Skip cancels it; Later puts it
 // off an hour. What starts comes as its job's event, its card under the answer.
 export async function answerOffer(offer: string, option: 'Dispatch' | 'Skip' | 'Later') {
-  for (const item of state.inbox.filter((i) => i.offer?.id === offer)) {
+  const items = state.inbox.filter((i) => i.offer?.id === offer);
+  items.forEach((i) => answering(i.id, true));
+  for (const item of items) {
     const body = option === 'Later' ? { later: new Date(Date.now() + 3600_000).toISOString().replace(/\.\d+Z$/, 'Z') } : { answer: option === 'Dispatch' ? 'Start' : 'Cancel' };
-    try { set(apply(state, { kind: 'inbox', item: await api.answer(item.id, body) })); } catch (e) { say(e); }
+    try { set(apply(state, { kind: 'inbox', item: await api.answer(item.id, body) })); } catch (e) { say(e); } finally { answering(item.id, false); }
   }
 }
 

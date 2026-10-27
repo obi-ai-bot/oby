@@ -144,7 +144,7 @@ const fail = (t: Task) => tk.patch(t.id, (k) => ({
 }));
 
 // --- decisions: each kind as the first task would ask it
-const KINDS: AskKind[] = ['question', 'permission', 'review', 'failed', 'limit', 'start', 'merge', 'back', 'check', 'remember'];
+const KINDS: AskKind[] = ['question', 'permission', 'review', 'failed', 'limit', 'start', 'merge', 'back', 'check', 'remember', 'confirm'];
 const ASKS: Record<AskKind, Ask> = {
   question: { kind: 'question', headline: 'Which bug first?', text: 'Claude Code found two small ones in obi: a typo in a Settings label and an off-by-one in the jobs list.', options: ['The off-by-one', 'The typo'] },
   permission: { kind: 'permission', headline: 'Let Claude Code fetch one package from npm?', text: 'It wants vitest for a test. The job has no network, so this one install needs your OK; nothing else goes out.', options: ['Allow once', 'Deny'], detail: 'npm install -D vitest' },
@@ -156,6 +156,7 @@ const ASKS: Record<AskKind, Ask> = {
   back: { kind: 'back', headline: 'That Mac couldn’t keep running it', text: 'It ran there for 18 minutes and came back with its notes and 2 commits.', options: ['Run it here', 'Wait for that Mac'] },
   check: { kind: 'check', headline: 'Which check proves it done?', text: 'obi has no check set yet. Pick one, or tell me yours.', options: ['scripts/oby-check.sh', 'npm run typecheck'] },
   remember: { kind: 'remember', headline: 'Can I remember that?', text: 'You squash-merged into dev. Next time in obi I’ll do the same, and say so.', options: ['Yes, remember', 'No'] },
+  confirm: { kind: 'confirm', headline: 'Add acme/other and review #12', text: 'Adds acme/other to the repositories Oby works in, with no check, then starts Oby’s review of pull request #12. Nothing is posted on GitHub.', options: ['Confirm', 'Cancel'] },
 };
 const decide = (t: Task, k: AskKind, at = stageOf(t)) => tk.patch(t.id, (x) => ({
   status: 'needs', answer: undefined, job: { ...x.job, status: 'running', ask: ASKS[k], stages: stagesAt(at), step: STAGES[at][2] },

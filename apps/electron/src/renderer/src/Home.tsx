@@ -23,7 +23,7 @@ import { askOby, chatOfTask, renameChat, tellAbout, useChats } from './chats';
 import { useConvos } from './peers';
 import { AvatarStack } from './ObyFace';
 import { convoTitle, hasAttachments, type Attachments } from './mock';
-import { TYPES, renameTask, tell, countOf, runningCount, memoryCount, firstTab, hasFresh, useTasks, type Tab } from './tasks';
+import { TYPES, renameTask, tell, countOf, runningCount, memoryCount, firstTab, hasFresh, useTasks, asksWaiting, type Tab } from './tasks';
 
 // the line over the chips: what's running and what needs you; with neither,
 // Oby asking for something to do. Between them, only while some do, the tasks
@@ -73,7 +73,8 @@ export default function Home() {
   const chats = useChats();
   const convos = useConvos();
   const spheres = useSpheres();
-  const running = runningCount(), needsYou = countOf('needs'), memory = memoryCount();
+  // what needs you: the tasks', and what obid asks with no task (a GitHub offer, a Confirm)
+  const running = runningCount(), needsYou = countOf('needs') + asksWaiting().length, memory = memoryCount();
 
   const [layers, setLayers] = useState<Layer[]>([]);
   const live = layers.filter((l) => !l.leaving);
@@ -377,13 +378,13 @@ export default function Home() {
         <Oby paused={away} glance={onChips && !away} />
         {TYPES.length > 0 && (
           <section className="attention" aria-label="Your tasks">
-            {everything && <span className={`attention-label${running || needsYou || memory ? '' : ' is-idle'}`}>{attention(running, needsYou, memory)}</span>}
+            <span className={`attention-label${running || needsYou || memory ? '' : ' is-idle'}`}>{attention(running, needsYou, memory)}</span>
             {/* what Oby is asking you, answered here; opening one goes to its task's page */}
-            <AskStack active={!away} onOpen={openTask} />
+            <AskStack active={!away} onOpen={openTask} onOpenTalk={(id) => start({ kind: 'talk', id })} />
             {/* every kind of work, in its usual order, whatever's going on in it (a
                 kind with nothing open opens on its completed ones), so the kinds
                 show here even while the side panel groups by status */}
-            {everything && <div className="chips" onPointerEnter={() => setOnChips(true)} onPointerLeave={() => setOnChips(false)}>
+            <div className="chips" onPointerEnter={() => setOnChips(true)} onPointerLeave={() => setOnChips(false)}>
                 {TYPES.map((c) => (
                   <button key={c.id} className="chip" onClick={() => start({ kind: 'group', id: c.id, tab: firstTab(c.id) })}>
                     {/* blue: holds a new task; orange: something in it needs you; both can show */}
@@ -396,7 +397,7 @@ export default function Home() {
                     {c.label}
                   </button>
                 ))}
-            </div>}
+            </div>
           </section>
         )}
         </div>

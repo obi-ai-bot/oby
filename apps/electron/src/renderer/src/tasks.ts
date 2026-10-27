@@ -1,6 +1,6 @@
 import { useSyncExternalStore } from 'react';
 import { BRANDS, type Brand } from './brands';
-import { AGENTS, ARCHIVE, GITHUB_WORK, JOBS, MEMORY_WAIT, hasAttachments, type Archived, type Attachments, type GitHubItem, type Job, type Message } from './mock';
+import { AGENTS, ARCHIVE, GITHUB_WORK, JOBS, MEMORY_WAIT, hasAttachments, type Archived, type Ask, type Attachments, type GitHubItem, type Job, type Message, type Offer } from './mock';
 import { streamWords, wait } from './stream';
 import { everything, onObid } from './lean';
 import * as live from './live';
@@ -17,13 +17,14 @@ export type TaskType = { id: string; label: string };
 // one; answer: what you picked on its decision.
 export type Task = { id: string; type: string; title: string; who?: string; brand: Brand; status: Status; fresh?: boolean; job: Job; said?: Message[]; typing?: boolean; answer?: string };
 
+// Lean (lean.ts): only the kinds obid's jobs and GitHub's work go under (live.ts)
 export const TYPES: TaskType[] = [
   { id: 'review', label: 'Review PR' },
   { id: 'issues', label: 'Issues' },
   { id: 'wellington', label: 'Wellington' },
   { id: 'tasks', label: 'Tasks' },
   { id: 'routines', label: 'Routines' },
-];
+].filter((t) => everything || ['review', 'issues', 'tasks'].includes(t.id));
 
 // anything with a decision for you needs you, whatever the agent is doing.
 // Queued counts as running: it starts by itself, with nothing for you to do.
@@ -44,8 +45,22 @@ const subscribe = (l: () => void) => { listeners.add(l); return () => { listener
 
 // every task; components that call it re-render when one is added or opened
 export const useTasks = () => useSyncExternalStore(subscribe, () => tasks);
-// obid's jobs, in place of the mock's (live.ts)
-export const replaceTasks = (next: Task[]) => set(next);
+// Something obid asks the owner with no task to show it on (live.ts): a GitHub offer, a Confirm,
+// a failure, answered as a task's decision is (answer); or work Oby offers to start, as OfferCard
+// shows it, with the conversation it was offered in (talk). Home's stack shows them with the tasks
+// that need you. url: its page on GitHub
+export type Asking = { id: string; title: string; who?: string; brand?: Brand; url?: string; talk?: string }
+  & ({ ask: Ask; offer?: undefined } | { offer: Offer; ask?: undefined });
+let asks: Asking[] = [];
+export const asksWaiting = () => asks;
+// obid's jobs, in place of the mock's (live.ts), with what it asks and GitHub's work (error: why
+// the last read of it failed)
+let workError: string | undefined;
+export const gitHubError = () => workError;
+export const replaceTasks = (next: Task[], more?: { asks: Asking[]; work: GitHubItem[]; error?: string }) => {
+  if (more) { asks = more.asks; waiting = more.work; workError = more.error; }
+  set(next);
+};
 // the conversation whose words started it, as obid says (Job.conversation)
 export const conversationOfTask = (id: string) => tasks.find((t) => t.id === id)?.job.conversation;
 
@@ -73,6 +88,10 @@ export function addTask(text: string, after?: Task) {
 }
 // dev only (dev/ControlCenter.tsx): the tasks as they are, and one changed in place
 export const dev = import.meta.env.DEV ? { get: () => tasks, patch: (id: string, fn: (t: Task) => Partial<Task>) => update(id, fn) } : undefined;
+// A page on GitHub, in the browser: only https://github.com/… (what came from GitHub is data)
+export function openOnGitHub(url?: string) {
+  if (url?.startsWith('https://github.com/')) window.app?.openExternal(url);
+}
 // opened: its blue dot goes
 export function markSeen(id: string) {
   if (onObid) return live.markSeen(id);
@@ -185,7 +204,7 @@ const onHome = () => tasks.filter((t) => !isArchived(t));
 // (mock.ts), most recently done first; less any deleted
 export const archivedTasks = (): Archived[] => [
   ...tasks.filter(isArchived).map((t) => ({ id: t.id, type: t.type, who: t.who, title: t.title, agent: t.job.agent, finished: t.job.finished ?? t.job.created })),
-  ...ARCHIVE,
+  ...(everything ? ARCHIVE : []),
 ].filter((a) => !deleted.has(a.id)).sort((a, b) => a.finished - b.finished);
 
 // Top of each list: fresh tasks, then ones that need you, then ones waiting to
@@ -221,9 +240,11 @@ export const firstTab = (type: string): Tab => {
   return f ? tabOf(f) : openOf(type) ? 'running' : toDoOf(type).length ? 'todo' : countOf('done', type) ? 'done' : 'running';
 };
 
-// GitHub's items waiting under To do, until started or put off (Later)
-let waiting = GITHUB_WORK;
-export const toDoOf = (type: string) => waiting.filter((g) => g.type === type).sort((a, b) => a.updated - b.updated);
+// GitHub's items waiting under To do, until started or put off (Later: until the app quits);
+// obid's on obid (live.ts)
+let waiting = everything ? GITHUB_WORK : [];
+const later = new Set<string>();
+export const toDoOf = (type: string) => waiting.filter((g) => g.type === type && !later.has(g.id)).sort((a, b) => a.updated - b.updated);
 // One group of To do: a project's board column, or the items on no board.
 export type BoardColumn = { name?: string; project?: string; items: GitHubItem[] };
 // work under way first, then what's next, the rest by name, no board last
@@ -242,10 +263,11 @@ export const columnsOf = (type: string): BoardColumn[] => {
 };
 // Later takes it off the list for now; Review it / Fix it starts its job, queued
 export function putOff(id: string) {
-  waiting = waiting.filter((g) => g.id !== id);
+  later.add(id);
   set([...tasks]);
 }
 export function startGitHub(id: string) {
+  if (onObid) return void live.startGitHubWork(id);
   const g = waiting.find((k) => k.id === id);
   if (!g) return;
   waiting = waiting.filter((k) => k.id !== id);
