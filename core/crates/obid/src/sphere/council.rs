@@ -3,9 +3,12 @@
 //! same conditions and the same words. Behind the `council` setting, with no UI.
 //!
 //! Who sits is the draw's (`spec/council/draw.md`), made by the clerk outside obid in this version:
-//! obid sends what it is given. Each request takes the path every request takes (the spec's schema,
-//! the secret scan, the seal, the signature: `Link::send_checked`), and the Sphere relays each
-//! exchange between its two Obis only, so no seat sees another's request or result. obid never
+//! obid sends what it is given. The review's words are scanned for secrets once and every seat is
+//! checked before anything goes (a member, active, accepting reviews, not this Obi's owner's, one per
+//! owner), so a call reaches every seat or none; each request is then sealed, signed and sent as
+//! every request is (`Link::send_scanned`), all expiring at the same instant, the motion's
+//! `deadlines.reviews`. The Obysphere relays each exchange between its two Obis only, so no seat sees
+//! another's request or result. obid never
 //! passes one seat's result to another: the panel is blind by construction (rule I1). A panel never
 //! approves on the code host in a person's place (rule I7), so a request asking it is refused.
 
@@ -13,6 +16,7 @@ use axum::http::StatusCode;
 use serde_json::{Value, json};
 
 use super::Link;
+use super::link::{Expiry, object};
 use crate::api::ApiError;
 
 /// The most seats one call convenes: a panel of 15 is already larger than any profile asks for.
@@ -23,9 +27,11 @@ fn invalid(message: impl Into<String>) -> ApiError {
 }
 
 /// `POST /v1/obid/sphere/council`: `{"seats": [obi ids], "review": {a review_request body},
-/// "expiresIn": seconds}`. Sends the review to every seat, in order, and answers each seat's
-/// outgoing exchange, or why its request wasn't sent. `422` with nothing sent when the call itself
-/// is wrong; the first seat's error when no request could be sent.
+/// "expiresAt": the motion's `deadlines.reviews`}`. Checks everything first (the review's words for
+/// secrets, once, and every seat), so a call either sends to every seat or to none; then sends the
+/// review to each seat in order, every request expiring at the same instant, and answers each seat's
+/// outgoing exchange. A seat whose send fails on the way (the Obysphere refusing it) says why, and
+/// the others still go.
 pub async fn convene(link: &Link, body: &[u8]) -> Result<Value, ApiError> {
     if !link.council_enabled() {
         return Err(ApiError::new(
@@ -33,19 +39,7 @@ pub async fn convene(link: &Link, body: &[u8]) -> Result<Value, ApiError> {
             "Council panels are off: \"council\": true in obid's configuration turns them on.",
         ));
     }
-    let value: Value = serde_json::from_slice(body)
-        .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, format!("The body isn't JSON: {e}")))?;
-    let Value::Object(map) = value else {
-        return Err(invalid("The body is a JSON object."));
-    };
-    if let Some(unknown) = map
-        .keys()
-        .find(|k| !["seats", "review", "expiresIn"].contains(&k.as_str()))
-    {
-        return Err(invalid(format!(
-            "{unknown} isn't a field this endpoint takes."
-        )));
-    }
+    let map = object(body, &["seats", "review", "expiresAt"])?;
     let joined = link.joined()?;
 
     let seats: Vec<String> = map
@@ -85,23 +79,34 @@ pub async fn convene(link: &Link, body: &[u8]) -> Result<Value, ApiError> {
             "A panel never approves on the code host in a person's place (rule I7): review can't ask approve_on_host.",
         ));
     }
-    let expires_in = map
-        .get("expiresIn")
-        .and_then(Value::as_i64)
-        .filter(|n| (60..=obi_protocol::MAX_LIFETIME_SECONDS).contains(n))
-        .ok_or_else(|| invalid("expiresIn is 60 to 2,592,000 seconds."))?;
+    let now = obi_protocol::time::now();
+    let expires_at = map
+        .get("expiresAt")
+        .and_then(Value::as_str)
+        .and_then(obi_protocol::time::parse)
+        .filter(|t| *t >= now + 60 && *t - now <= obi_protocol::MAX_LIFETIME_SECONDS)
+        .ok_or_else(|| {
+            invalid(
+                "expiresAt is a time 60 to 2,592,000 seconds from now, like 2026-10-14T12:00:00Z.",
+            )
+        })?;
 
-    // One request per seat, the same for every seat; each is its own exchange.
+    // Everything that would stop a seat's request, before any is sent: a panel that reaches only
+    // some of its seats leaves the others absent, and nobody takes their places.
+    link.scan_outgoing(&review).await?;
+    link.check_recipients(&seats, "review_request").await?;
+
+    // One request per seat, the same for every seat, each its own exchange.
     let mut answered = Vec::with_capacity(seats.len());
     let mut first_error = None;
     for seat in seats {
         let sent = link
-            .send_checked(
+            .send_scanned(
                 &joined,
                 seat.clone(),
                 "review_request".into(),
                 review.clone(),
-                expires_in,
+                Expiry::At(expires_at),
             )
             .await;
         match sent {

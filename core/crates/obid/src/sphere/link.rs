@@ -434,6 +434,13 @@ fn delegation_json(delegation: &str) -> Value {
     })
 }
 
+/// When a request obid sends expires: a lifetime from the moment it's built, or an instant.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum Expiry {
+    In(i64),
+    At(i64),
+}
+
 fn new_uuid() -> String {
     uuid::Uuid::new_v4().to_string()
 }
@@ -494,7 +501,7 @@ fn is_slug(text: &str) -> bool {
 }
 
 /// Reads exactly the keys `allowed` from a JSON object body: `422` for anything else.
-fn object(body: &[u8], allowed: &[&str]) -> Result<Map<String, Value>, ApiError> {
+pub(super) fn object(body: &[u8], allowed: &[&str]) -> Result<Map<String, Value>, ApiError> {
     let value: Value = serde_json::from_slice(body)
         .map_err(|e| api(StatusCode::BAD_REQUEST, format!("The body isn't JSON: {e}")))?;
     let Value::Object(map) = value else {
@@ -3995,12 +4002,7 @@ impl Link {
     pub async fn request(&self, body: &[u8]) -> Result<Value, ApiError> {
         let map = object(body, &["to", "type", "body", "expiresIn"])?;
         let invalid = |m: String| api(StatusCode::UNPROCESSABLE_ENTITY, m);
-        let joined = self
-            .lock()
-            .membership
-            .clone()
-            .filter(|m| m.state == "joined")
-            .ok_or_else(|| api(StatusCode::CONFLICT, "obid hasn't joined a Sphere."))?;
+        let joined = self.joined()?;
         let to = text_field(&map, "to")?.to_owned();
         let kind = text_field(&map, "type")?.to_owned();
         // run_request and share_offer went with compute sharing (refused below, once the Obi is
@@ -4029,7 +4031,7 @@ impl Link {
         if to == joined.obi_id {
             return Err(invalid("An Obi doesn't ask itself.".into()));
         }
-        self.send_checked(&joined, to, kind, action, expires_in)
+        self.send_checked(&joined, to, kind, action, Expiry::In(expires_in))
             .await
     }
 
@@ -4048,19 +4050,24 @@ impl Link {
     }
 
     /// Sends one request that matches the spec's schema for `kind`, to another Obi: every text field
-    /// scanned for secrets, then sealed for the receiver when its card has a seal key, signed, checked
-    /// as the receiver will check it, and kept as an outgoing exchange (`POST /v1/obid/sphere/requests`
-    /// and the Council's convener, crate::sphere::council). Answers the exchange.
+    /// scanned for secrets ([`Link::scan_outgoing`]), then sent as [`Link::send_scanned`] sends it
+    /// (`POST /v1/obid/sphere/requests`). Answers the exchange.
     pub(crate) async fn send_checked(
         &self,
         joined: &Membership,
         to: String,
         kind: String,
         action: Value,
-        expires_in: i64,
+        expiry: Expiry,
     ) -> Result<Value, ApiError> {
+        self.scan_outgoing(&action).await?;
+        self.send_scanned(joined, to, kind, action, expiry).await
+    }
+
+    /// Scans every text field of an action going out for secrets, before anything is signed or sent
+    /// (#478): `422` for a finding, or a scanner that can't run.
+    pub(crate) async fn scan_outgoing(&self, action: &Value) -> Result<(), ApiError> {
         let invalid = |m: String| api(StatusCode::UNPROCESSABLE_ENTITY, m);
-        // Every text field, before anything is signed or sent (#478).
         let texts = every_text(&action);
         let scratch = self.config.home.join("tmp");
         std::fs::create_dir_all(&scratch).map_err(|e| {
@@ -4084,6 +4091,73 @@ impl Link {
                 )));
             }
         }
+        Ok(())
+    }
+
+    /// Checks, before any of them is sent to, that every one of `to` is an active member whose card
+    /// accepts `kind` and whose seal key obid trusts when it seals, that none is this Obi's owner's,
+    /// and that no two share an owner (the Council's rules I2 and I3): `422` (or `409` for a seal
+    /// key obid doesn't trust) with nothing sent. Reads the directory first.
+    pub(crate) async fn check_recipients(&self, to: &[String], kind: &str) -> Result<(), ApiError> {
+        if let Err(e) = self.read_directory().await {
+            self.note_error(&e);
+            return Err(from_client(&e));
+        }
+        let mine = self.owner();
+        let state = self.lock();
+        let mut owners = HashSet::new();
+        for obi in to {
+            let invalid = |m: String| api(StatusCode::UNPROCESSABLE_ENTITY, m);
+            let member = state
+                .directory
+                .members
+                .get(obi)
+                .ok_or_else(|| invalid(format!("{obi} isn't a member: nothing was sent.")))?;
+            if !member.active {
+                return Err(invalid(format!(
+                    "{obi} has been revoked: nothing was sent."
+                )));
+            }
+            if !member.accepts.iter().any(|a| a == kind) {
+                return Err(invalid(format!(
+                    "{obi}'s card doesn't accept {kind}: nothing was sent."
+                )));
+            }
+            if member.seal.is_none() && self.pins.seals(obi) {
+                return Err(api(
+                    StatusCode::CONFLICT,
+                    format!(
+                        "{obi} seals, and obid trusts no seal key of its now: nothing was sent."
+                    ),
+                ));
+            }
+            if member.owner == mine {
+                return Err(invalid(format!(
+                    "{obi} acts for this Obi's own owner, who never sits on their own panel: nothing was sent."
+                )));
+            }
+            if !owners.insert(member.owner.clone()) {
+                return Err(invalid(format!(
+                    "{obi} has the same owner as another seat: one seat per owner, nothing was sent."
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    /// Sends one request already scanned ([`Link::scan_outgoing`]): sealed for the receiver when its
+    /// card has a seal key, signed, checked as the receiver will check it, and kept as an outgoing
+    /// exchange. `expiry` is a lifetime from now, or an instant (the Council's convener gives every seat
+    /// the same one). Answers the exchange.
+    pub(crate) async fn send_scanned(
+        &self,
+        joined: &Membership,
+        to: String,
+        kind: String,
+        action: Value,
+        expiry: Expiry,
+    ) -> Result<Value, ApiError> {
+        let invalid = |m: String| api(StatusCode::UNPROCESSABLE_ENTITY, m);
         // Built, sealed and sent; once more after a seal refusal, with the directory read again.
         let mut attempt = 0;
         loop {
@@ -4125,6 +4199,15 @@ impl Link {
                     .ok_or_else(|| api(StatusCode::CONFLICT, "There's no Obi key."))?;
                 let id = new_uuid();
                 let now = time::now();
+                let expires_at = match expiry {
+                    Expiry::In(seconds) => now + seconds,
+                    Expiry::At(at) => at,
+                };
+                if expires_at <= now || expires_at - now > obi_protocol::MAX_LIFETIME_SECONDS {
+                    return Err(invalid(
+                        "The request would expire in the past, or more than 2,592,000 seconds from now: nothing was sent.".into(),
+                    ));
+                }
                 let unsigned = json!({
                     "protocol": obi_protocol::PROTOCOL,
                     "id": id,
@@ -4134,7 +4217,7 @@ impl Link {
                     "sphere": joined.sphere,
                     "correlation_id": id,
                     "created_at": time::format(now),
-                    "expires_at": time::format(now + expires_in),
+                    "expires_at": time::format(expires_at),
                     "key_id": key.key_id(),
                     "body": action.clone(),
                 });
