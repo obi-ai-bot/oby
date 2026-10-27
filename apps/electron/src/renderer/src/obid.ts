@@ -56,13 +56,15 @@ export type InboxItem = {
   headline: string | null;
   recommended: number | null;
   // obid only: the conversation a start item was offered in, and the offer (oby_offer): the card
-  // it's on there, and obid's words for the job it starts
+  // it's on there (the user's turn it was offered in), obid's words for the job it starts, the
+  // task it planned, and whether the turn had read something untrusted first
   conversation?: string | null;
-  offer?: { id: string; what: string } | null;
+  offer?: { id: string; what: string; task: string; untrusted: boolean } | null;
 };
 
 // "GET /v1/conversation"
-export type Turn = { id: string; who: 'user' | 'oby'; text: string; at: string; jobs: string[]; conversation?: string };
+// ended: the turn that tells how a job ended; routine: a routine's run's (neither answers you)
+export type Turn = { id: string; who: 'user' | 'oby'; text: string; at: string; jobs: string[]; conversation?: string; ended?: boolean; routine?: unknown };
 // obid only: conversations
 // tasks: the jobs it started
 export type Conversation = { id: string; title: string; pinned: boolean; created: string; lastActivity: string; cursor: string; tasks?: string[] };
