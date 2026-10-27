@@ -156,7 +156,7 @@ export default function ChatView({ id, kind = 'task', leaving, covered = false, 
                   ) : m.text ? (
                     // Oby's as it said it (its steps alone, folded where another
                     // Oby's answer came in, have no words)
-                    <div key="text" className="msg-bubble"><Said text={m.text} /></div>
+                    <div key="text" className="msg-bubble"><Said text={m.text} streaming={(m as Message).streaming} /></div>
                   ) : null,
                   // setting up (Oby's first conversation): where you act, once its words are in
                   ...((m as Message).setup && !(m as Message).streaming ? [<SetupCard key="setup" step={(m as Message).setup!} />] : []),

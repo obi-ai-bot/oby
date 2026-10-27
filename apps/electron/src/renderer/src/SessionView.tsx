@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { ArrowDown, Check, ChevronRight, ShieldCheck } from 'lucide-react';
 import Composer, { typingIn } from './Composer';
 import Formatted from './Formatted';
+import Said from './Said';
 import { BrandMark, type Brand } from './brands';
 import { useScrollThumb } from './useScrollThumb';
 import { AGENTS, type Attachments } from './mock';
@@ -160,10 +161,10 @@ function Line({ entry: e, brand, live }: { entry: Entry; brand: Brand; live: { s
       return (
         <li className="ss-said">
           <span className="ss-mark"><BrandMark brand={brand} size={16} mono /></span>
-          <p className="ss-words">
-            <Formatted text={e.live ? live.shown : e.text} />
+          <div className="ss-words">
+            <Said text={e.live ? live.shown : e.text} streaming={e.live} />
             {e.live && <span className="ss-caret" aria-hidden="true" />}
-          </p>
+          </div>
         </li>
       );
     case 'thought':

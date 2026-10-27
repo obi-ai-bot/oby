@@ -19,7 +19,8 @@ const PATTERNS: [Kind, RegExp][] = [
   ['url', /\bhttps?:\/\/[^\s<>"'`]*[^\s<>"'`.,;:!?)\]}]/],
   ['code', /`[^`\n]+`/],
   ['ref', /(?<![\w#])(?:[\w.-]+\/)?(?:[\w.-]+)?#\d+(?!\w)/],
-  ['path', /(?<![\w.:/@-])(?:~\/|\.{1,2}\/|\/)?(?:[\w@.-]+\/)+[\w@.-]+/],
+  // (not the full stop or dash after it)
+  ['path', /(?<![\w.:/@-])(?:~\/|\.{1,2}\/|\/)?(?:[\w@.-]+\/)+[\w@.-]*[\w@]/],
 ];
 // the earliest thing in a stretch of text worth setting apart
 export function findToken(text: string) {

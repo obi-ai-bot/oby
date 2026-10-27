@@ -2,14 +2,31 @@ import { createElement, Fragment, useMemo, type ReactNode } from 'react';
 import { lexer, type Token, type Tokens } from 'marked';
 import { tokenize } from './textTokens';
 
-// What Oby said, from its Markdown (GitHub's): paragraphs, lists (nested, numbered, to-dos),
-// **bold**, *italic*, `code` and code blocks, links, headings, quotes and tables. Built as
-// elements from marked's tokens, never as HTML: HTML in a message shows as the text it is.
-// In plain text, references, paths and @mentions are set apart as in the message box, and
-// each word is its own span, so a word coming in can fade in (see .is-streaming). Read again
-// only when its text changes: the conversation renders again with each word coming in
-export default function Said({ text }: { text: string }) {
-  return useMemo(() => blocks(lexer(text)), [text]);
+// What Oby (or a job's agent) said, from its Markdown (GitHub's): paragraphs, lists (nested,
+// numbered, to-dos), **bold**, *italic*, `code` and code blocks, links, headings, quotes and
+// tables. Built as elements from marked's tokens, never as HTML: HTML in a message shows as the
+// text it is. In plain text, references, paths and @mentions are set apart as in the message
+// box, and each word is its own span, so a word coming in can fade in (see .is-streaming). Read
+// again only when its text changes: the conversation renders again with each word coming in.
+// streaming: its words are still coming in (closed, below)
+export default function Said({ text, streaming = false }: { text: string; streaming?: boolean }) {
+  return useMemo(() => blocks(lexer(streaming ? closed(text) : text)), [text, streaming]);
+}
+
+// While words come in, the marks they haven't closed yet (**bold**, `code`, a [link](…)) show as
+// they will once they're closed, never as typed so far: on the line being written, and never in a
+// code block, which is code until its fence comes. A mark with nothing after it yet waits
+// ponytail: **, ` and links only; a lone *italic* or ~~strike~~ shows its marks until it closes
+export function closed(text: string) {
+  if ((text.match(/^ {0,3}(?:```|~~~)/gm) ?? []).length % 2) return text;
+  const start = text.lastIndexOf('\n') + 1;
+  let line = text.slice(start).trimEnd().replace(/\[([^\]]*)(?:\]\([^)]*)?$/, '$1');
+  // a ** inside a code span still open is code, not bold
+  const prose = line.replace(/`[^`]*`/g, ''), tick = prose.indexOf('`');
+  const close = (mark: string) => { line = line.endsWith(mark) ? line.slice(0, -mark.length).trimEnd() : line + mark; };
+  if (tick >= 0) close('`');
+  if ((tick >= 0 ? prose.slice(0, tick) : prose).split('**').length % 2 === 0) close('**');
+  return text.slice(0, start) + line;
 }
 
 const blocks = (ts: Token[]): ReactNode[] => ts.map((t, k) => {
