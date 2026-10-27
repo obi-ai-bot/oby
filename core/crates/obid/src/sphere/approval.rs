@@ -4,11 +4,14 @@
 //! `approve_on_host`, and that Obi, when its review of the exact head approves, posts the approval
 //! on GitHub as its own owner, with its owner's own `gh`.
 //!
-//! On the receiving side it does that only under its own owner's standing permission (a remembered
-//! decision of type [`HOST_APPROVAL`], kept only once the owner confirmed it with their own tap), or
-//! when the owner says yes to that one pull request in the inbox. The request never grants it. The
-//! review it posts carries no word of the request: fixed words and the commit, after the secret
-//! scan, and only while the pull request's head is still the commit reviewed, which it names.
+//! On the receiving side it does that only when its owner confirmed that one exchange, at that one
+//! commit, with their own tap ([`item`], a `confirm` item signed by the owner's device), or, under
+//! its owner's standing permission (a remembered decision of type [`HOST_APPROVAL`], kept only once
+//! the owner confirmed it with their own tap), next to approvals of that commit by the people who
+//! own every file it changes ([`code_host`]). Both go through `obi_protocol::host_approval::decide`,
+//! the spec's rule. The request never grants it. The review it posts carries no word of the
+//! request: fixed words and the commit, after the secret scan, and only while the pull request's
+//! head is still the commit reviewed, which it names.
 
 use std::path::Path;
 
@@ -30,7 +33,8 @@ pub fn asked(body: &Value) -> bool {
     body["approve_on_host"] == true && body["pr"].as_u64().is_some()
 }
 
-/// The words of the review obid posts: its own, the commit only.
+/// The words of the review obid posts: its own, the commit only, with Oby's marker
+/// (`obi_protocol::host_approval::OBI_REVIEW_MARKER`), so no other Oby counts it as a person's.
 pub fn words(sha: &str) -> String {
     format!(
         "Approved by Oby: its review of {} passed.",
@@ -38,65 +42,79 @@ pub fn words(sha: &str) -> String {
     )
 }
 
-/// The inbox item that asks the owner whether to approve a teammate's pull request on GitHub
-/// (no standing permission covers it). Its answers are a review request's, so the brain needs the
-/// owner's Confirm for any but Decline (crate::brain::actions); `Accept, and remember for this repo`
-/// approves this one and asks for a Confirm to keep the permission.
+/// The id of the item that asks the owner about exchange `cid`: one per exchange, and the device
+/// signs it with the title, so a Confirm covers that exchange only.
+pub fn item_id(cid: &str) -> String {
+    format!("obi-approve-{cid}")
+}
+
+/// The `confirm` item that asks the owner whether to approve a teammate's pull request on GitHub
+/// (no code owner's approval stands next to it). Its Confirm is the owner's own tap, signed by
+/// their device over its id ([`item_id`], the exchange) and its title (the commit), within two
+/// minutes and once (crate::approval): what `obi_protocol::host_approval::decide` takes as the
+/// owner's confirmation. `job` is the review job's id. Cancel approves nothing.
 pub fn item(
     cid: &str,
     from: &str,
     from_owner: &str,
     request: &Value,
     expires_at: &str,
+    job: &str,
     now: i64,
 ) -> Item {
     let text = |key: &str| request[key].as_str().unwrap_or("").to_owned();
     let (repo, base, sha) = (text("repo"), text("base_branch"), text("head_sha"));
     let pr = request["pr"].as_u64().unwrap_or(0);
-    Item {
-        id: format!("obi-approve-{cid}"),
-        kind: "obiRequest".into(),
-        job: String::new(),
-        title: format!("Approve {from_owner}'s pull request on GitHub?"),
-        text: format!(
-            "Your Oby's review of {repo} pull request #{pr} at {} passed. {from_owner}'s Obi ({from}) asks you to approve it on GitHub, as you, so it can merge.",
-            &sha[..sha.len().min(7)]
+    let short = &sha[..sha.len().min(7)];
+    let title =
+        format!("Approve {from_owner}'s pull request #{pr} on {repo} at {short} on GitHub, as you");
+    let mut item = inbox::confirm_item(
+        "",
+        title.clone(),
+        format!(
+            "Your Oby's review of {repo} pull request #{pr} at {short} passed. {from_owner}'s Oby ({from}) asks you to approve it on GitHub, as you, so it can merge. Your Confirm approves this commit only, for this request."
         ),
-        options: vec![
-            inbox::ACCEPT.into(),
-            inbox::ACCEPT_REMEMBER.into(),
-            inbox::DECLINE.into(),
-        ],
-        details: Some(vec![
-            "Approve it on GitHub this time.".into(),
-            format!(
-                "Approve it, and from now on approve on GitHub the pull requests {from_owner}'s Oby asks you to on {repo} when your Oby's review passes, without asking: kept once you confirm."
-            ),
-            "Don't approve it.".into(),
-        ]),
-        recommended: None,
-        created: now,
-        done: None,
-        later: None,
-        answer: None,
-        obi: Some(json!({
-            "correlationId": cid,
-            "from": from,
-            "fromOwner": from_owner,
-            "type": HOST_APPROVAL,
-            "repo": repo,
-            "pr": pr,
-            "baseBranch": base,
-            "headSha": sha,
-            "expiresAt": expires_at,
-        })),
-        plugin: None,
-        arrived: None,
-        confirm: None,
-        start: None,
-        github: None,
-        watch: None,
+        inbox::Confirmed {
+            action: inbox::action::APPROVE_ON_HOST.into(),
+            target: item_id(cid),
+            payload: json!({
+                "correlationId": cid,
+                "from": from,
+                "fromOwner": from_owner,
+                "repo": repo,
+                "pr": pr,
+                "baseBranch": base,
+                "headSha": sha,
+                "expiresAt": expires_at,
+                "job": job,
+            }),
+        },
+        now,
+    );
+    item.id = item_id(cid);
+    item.details = Some(vec![
+        format!("{title}."),
+        "Don't approve it: nothing is posted on GitHub.".into(),
+    ]);
+    item
+}
+
+/// When the ask about approving on GitHub, `item`, lapses: its request's expiry. `None` for an
+/// item that isn't one; `Some(None)` for one whose expiry doesn't read. Both the `confirm` item
+/// ([`item`]) and the `obiRequest` one obid made before it.
+pub fn ask_expiry(item: &Item) -> Option<Option<i64>> {
+    let expires = |v: &Value| v["expiresAt"].as_str().and_then(obi_protocol::time::parse);
+    if let Some(c) = item
+        .confirm
+        .as_ref()
+        .filter(|c| c.action == inbox::action::APPROVE_ON_HOST)
+    {
+        return Some(expires(&c.payload));
     }
+    item.obi
+        .as_ref()
+        .filter(|o| o["type"] == HOST_APPROVAL)
+        .map(expires)
 }
 
 /// The `confirm` item whose Confirm, the owner's own tap (#776), keeps their standing permission to
@@ -111,10 +129,10 @@ pub fn remember_item(owner: &str, repo: &str, target: Option<&str>, now: i64) ->
     let mut item = inbox::confirm_item(
         "",
         format!(
-            "From now on, approve on GitHub the pull requests {owner}'s Oby asks you to on {place}, when your Oby's review passes"
+            "From now on, approve on GitHub the pull requests {owner}'s Oby asks you to on {place}, when your Oby's review passes and their code owners approved"
         ),
         format!(
-            "Whenever {owner}'s Oby asks, Oby will approve that pull request on {place} on GitHub, as you, once your Oby's own review of its exact commit passes and the pull request still goes where the review looked, without asking you. It covers any pull request {owner}'s Oby asks about there, whoever wrote it. Forget it any time. It's kept only if you confirm."
+            "Whenever {owner}'s Oby asks, Oby will approve that pull request on {place} on GitHub, as you, without asking you, once your Oby's own review of its exact commit passes, the pull request still goes where the review looked, and the people who own every file it changes (its CODEOWNERS) already approved that commit on GitHub. Otherwise Oby asks you each time. Forget it any time. It's kept only if you confirm."
         ),
         inbox::Confirmed {
             action: inbox::action::REMEMBER_APPROVAL.into(),
@@ -169,7 +187,7 @@ pub fn as_reviewed(
 /// still the change reviewed ([`as_reviewed`], into `base`), and when the owner's login can push to
 /// `repo` (an approval without that wouldn't count). The words pass the secret scan first and are
 /// written in `scratch`. `still` says, right before GitHub is asked, whether the approval may still
-/// go (obid in its Sphere, the request unexpired). Its URL, or why it wasn't posted.
+/// go (obid in its Sphere, the request unexpired). The review posted, or why it wasn't.
 pub async fn post(
     gh: &Path,
     scratch: &Path,
@@ -178,7 +196,7 @@ pub async fn post(
     base: &str,
     sha: &str,
     still: impl Fn() -> bool,
-) -> Result<String, String> {
+) -> Result<Posted, String> {
     let words = words(sha);
     crate::store::make_private_dir(scratch)
         .map_err(|e| format!("the secret scan couldn't run (its folder: {e})"))?;
@@ -189,22 +207,7 @@ pub async fn post(
             return Err(format!("the secret scan couldn't run ({why})"));
         }
     }
-    let n = number.to_string();
-    let view = crate::github::run(
-        gh,
-        &[
-            "pr",
-            "view",
-            &n,
-            "-R",
-            repo,
-            "--json",
-            "state,headRefOid,baseRefName,url",
-        ],
-    )
-    .await?;
-    let view: Value = serde_json::from_str(&view).map_err(|_| "gh's answer wasn't JSON")?;
-    as_reviewed(&view, repo, number, base, sha)?;
+    still_as_reviewed(gh, repo, number, base, sha).await?;
     if !crate::github::can_push(gh, None, repo).await? {
         return Err(format!(
             "your GitHub login can't push to {repo}, so its approval wouldn't count"
@@ -222,13 +225,269 @@ pub async fn post(
         .await
         .map_err(|(_, why)| why)?;
     let posted: Value = serde_json::from_str(&text).unwrap_or_default();
-    Ok(posted["html_url"]
-        .as_str()
-        .filter(|u| u.starts_with("https://"))
-        .map_or_else(
-            || format!("https://github.com/{repo}/pull/{number}"),
-            str::to_owned,
-        ))
+    Ok(Posted {
+        url: posted["html_url"]
+            .as_str()
+            .filter(|u| u.starts_with("https://"))
+            .map_or_else(
+                || format!("https://github.com/{repo}/pull/{number}"),
+                str::to_owned,
+            ),
+        id: posted["id"].as_u64(),
+    })
+}
+
+/// An approving review obid posted: its URL, and its id, to dismiss it by.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Posted {
+    pub url: String,
+    pub id: Option<u64>,
+}
+
+/// Whether pull request `number` of `repo` is, on GitHub now, still the change reviewed
+/// ([`as_reviewed`]): read with the owner's `gh` ([`view`]).
+pub async fn still_as_reviewed(
+    gh: &Path,
+    repo: &str,
+    number: u64,
+    base: &str,
+    sha: &str,
+) -> Result<(), String> {
+    as_reviewed(&view(gh, repo, number).await?, repo, number, base, sha)
+}
+
+/// Pull request `number` of `repo` as GitHub shows it now, read with the owner's `gh` (`gh pr
+/// view --json state,headRefOid,baseRefName,url`), or why it couldn't be read.
+pub async fn view(gh: &Path, repo: &str, number: u64) -> Result<Value, String> {
+    let n = number.to_string();
+    let view = crate::github::run(
+        gh,
+        &[
+            "pr",
+            "view",
+            &n,
+            "-R",
+            repo,
+            "--json",
+            "state,headRefOid,baseRefName,url",
+        ],
+    )
+    .await?;
+    serde_json::from_str(&view).map_err(|_| "gh's answer wasn't JSON".into())
+}
+
+/// The words obid dismisses its own approval with: its own, carrying Oby's marker.
+pub const DISMISSAL: &str = "Dismissed by Oby: the pull request changed while Oby approved it, so this approval no longer stands.";
+
+/// The `failed` item that tells the owner obid's approval of pull request `number` of `repo`
+/// (`url`), for exchange `cid` and review job `job`, should not stand and that obid couldn't
+/// dismiss it: they remove it on GitHub. One per exchange; Dismiss only closes it.
+pub fn dismissal_item(cid: &str, job: &str, repo: &str, number: u64, url: &str, now: i64) -> Item {
+    Item {
+        id: format!("{DISMISSAL_ITEM}{cid}"),
+        kind: "failed".into(),
+        job: job.to_owned(),
+        title: format!("Remove Oby's approval of {repo} pull request #{number} on GitHub"),
+        text: format!(
+            "Oby approved {repo} pull request #{number} on GitHub, as you, and the pull request changed right after, so that approval shouldn't stand. GitHub didn't let Oby dismiss it: remove this approval on GitHub: {url}"
+        ),
+        options: vec![inbox::DISMISS.into()],
+        details: Some(vec![
+            "Closes this. Remove the approval on GitHub yourself.".into(),
+        ]),
+        recommended: None,
+        created: now,
+        done: None,
+        later: None,
+        answer: None,
+        obi: None,
+        plugin: None,
+        arrived: Some(inbox::arrival()),
+        confirm: None,
+        start: None,
+        github: None,
+        watch: None,
+    }
+}
+
+/// How a [`dismissal_item`]'s id starts.
+pub const DISMISSAL_ITEM: &str = "approval-dismissal-";
+
+/// Whether `item` is a [`dismissal_item`].
+pub fn is_dismissal_item(item: &Item) -> bool {
+    item.kind == "failed" && item.id.starts_with(DISMISSAL_ITEM)
+}
+
+/// Dismisses obid's own approving review `id` on pull request `number` of `repo`, as the owner.
+pub async fn dismiss(gh: &Path, repo: &str, number: u64, id: u64) -> Result<(), String> {
+    if !crate::github::is_repo(repo) {
+        return Err(format!("{repo} isn't a repository name"));
+    }
+    let path = format!("repos/{repo}/pulls/{number}/reviews/{id}/dismissals");
+    let message = format!("message={DISMISSAL}");
+    crate::github::run(
+        gh,
+        &[
+            "api",
+            "-X",
+            "PUT",
+            &path,
+            "-f",
+            &message,
+            "-f",
+            "event=DISMISS",
+        ],
+    )
+    .await
+    .map(|_| ())
+}
+
+/// Where GitHub keeps a repository's code owners, in the order it looks.
+pub const CODEOWNERS_PATHS: [&str; 3] = [".github/CODEOWNERS", "CODEOWNERS", "docs/CODEOWNERS"];
+
+/// The values of `gh api --paginate`'s answer, the pages' arrays run together: each page is one
+/// JSON array, written one after another.
+fn pages(text: &str) -> Result<Vec<Value>, String> {
+    let mut items = Vec::new();
+    for page in serde_json::Deserializer::from_str(text).into_iter::<Value>() {
+        match page.map_err(|_| "gh's answer wasn't JSON")? {
+            Value::Array(page) => items.extend(page),
+            _ => return Err("gh's answer wasn't a list".into()),
+        }
+    }
+    Ok(items)
+}
+
+/// What GitHub shows, with the owner's own `gh`, about whether the people who own every file of
+/// pull request `number` of `repo` approved `head` (spec `protocol.md` section 11, "Who counts as
+/// a code owner"): the `CODEOWNERS` file on `base`, every changed path (a renamed file's old one
+/// too) and whether that's all of them, the reviews in order as GitHub lists them, and, for the
+/// people whose approval may count, their access to `repo` and the teams the file names that
+/// they're in. With the owner's own login, which counts for nobody. Read raw, so what counts is
+/// decided by `obi_protocol::host_approval` alone. Why it couldn't read it, else: then no code
+/// owner's approval counts.
+pub async fn code_host(
+    gh: &Path,
+    repo: &str,
+    number: u64,
+    base: &str,
+    head: &str,
+) -> Result<(obi_protocol::host_approval::CodeHost, String), String> {
+    use obi_protocol::host_approval::{CodeHost, Review, counting_approvers, parse_codeowners};
+    if !crate::github::is_repo(repo) {
+        return Err(format!("{repo} isn't a repository name"));
+    }
+    let own = crate::github::run(gh, &["api", "user", "--jq", ".login"]).await?;
+    let mut host = CodeHost::default();
+    for path in CODEOWNERS_PATHS {
+        let at = format!("repos/{repo}/contents/{path}");
+        let reference = format!("ref={base}");
+        let read = [
+            "api",
+            &at,
+            "--method",
+            "GET",
+            "-f",
+            &reference,
+            "-H",
+            "Accept: application/vnd.github.raw",
+        ];
+        match crate::github::run(gh, &read).await {
+            Ok(text) => {
+                host.codeowners = Some(text);
+                break;
+            }
+            Err(why) if why.contains("HTTP 404") => {}
+            Err(why) => return Err(format!("GitHub didn't show {path}: {why}")),
+        }
+    }
+    let Some(rules) = host.codeowners.as_deref().map(parse_codeowners) else {
+        return Ok((host, own));
+    };
+    let pr = format!("repos/{repo}/pulls/{number}");
+    let files = format!("{pr}/files");
+    let files = pages(&crate::github::run(gh, &["api", &files, "--paginate"]).await?)?;
+    for file in &files {
+        for key in ["filename", "previous_filename"] {
+            if let Some(path) = file[key].as_str() {
+                host.changed_files.push(path.to_owned());
+            }
+        }
+    }
+    let pull: Value = serde_json::from_str(&crate::github::run(gh, &["api", &pr]).await?)
+        .map_err(|_| "gh's answer wasn't JSON")?;
+    host.files_complete = pull["changed_files"]
+        .as_u64()
+        .is_some_and(|n| n == files.len() as u64);
+    let reviews = format!("{pr}/reviews");
+    for review in pages(&crate::github::run(gh, &["api", &reviews, "--paginate"]).await?)? {
+        // A review by an account since deleted has no user: it counts for nobody.
+        let Some(login) = review["user"]["login"].as_str() else {
+            continue;
+        };
+        let text = |v: &Value| v.as_str().unwrap_or("").to_owned();
+        host.reviews.push(Review {
+            login: login.to_owned(),
+            account_type: text(&review["user"]["type"]),
+            body: text(&review["body"]),
+            state: text(&review["state"]),
+            commit_id: text(&review["commit_id"]),
+        });
+    }
+    // The people whose approval may count, as if each could write: their access and teams are
+    // asked for them alone.
+    let anyone = host
+        .reviews
+        .iter()
+        .map(|r| (r.login.clone(), "write".to_owned()))
+        .collect();
+    let candidates = counting_approvers(&host.reviews, head, &own, &anyone);
+    let named = |s: &str| {
+        !s.is_empty()
+            && s.chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+    };
+    for login in candidates.iter().filter(|l| named(l)) {
+        let path = format!("repos/{repo}/collaborators/{login}/permission");
+        // GitHub answers 404 for someone who isn't a collaborator: no access.
+        if let Ok(said) = crate::github::run(gh, &["api", &path]).await {
+            let said: Value = serde_json::from_str(&said).unwrap_or_default();
+            if let Some(access) = said["permission"].as_str() {
+                host.permissions.insert(login.clone(), access.to_owned());
+            }
+        }
+    }
+    let mut teams: Vec<&str> = rules
+        .iter()
+        .flatten()
+        .flat_map(|r| r.owners.iter())
+        .filter_map(|o| o.strip_prefix('@'))
+        .filter(|o| o.contains('/'))
+        .collect();
+    teams.sort_unstable();
+    teams.dedup();
+    for team in teams {
+        let Some((org, slug)) = team.split_once('/').filter(|(o, t)| named(o) && named(t)) else {
+            continue;
+        };
+        // CODEOWNERS names a team in any case; GitHub's team slugs are lowercase.
+        let (org, slug) = (org.to_ascii_lowercase(), slug.to_ascii_lowercase());
+        for login in candidates.iter().filter(|l| named(l)) {
+            let path = format!("orgs/{org}/teams/{slug}/memberships/{login}");
+            let said = crate::github::run(gh, &["api", &path]).await;
+            let state = said
+                .ok()
+                .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+                .and_then(|v| v["state"].as_str().map(str::to_owned));
+            if state.as_deref() == Some("active") {
+                host.teams
+                    .entry(team.to_owned())
+                    .or_default()
+                    .push(login.clone());
+            }
+        }
+    }
+    Ok((host, own))
 }
 
 /// A one-line goal for a request from the owner's own title: its first line, without the
@@ -425,6 +684,33 @@ mod tests {
             words(SHA),
             "Approved by Oby: its review of 6d20146f366b passed."
         );
+    }
+
+    #[test]
+    fn every_word_obid_posts_on_github_carries_obys_marker() {
+        use obi_protocol::host_approval::OBI_REVIEW_MARKER;
+        for posted in [
+            words(SHA),
+            DISMISSAL.to_owned(),
+            crate::review::SIGNED.to_owned(),
+            crate::merge::APPROVAL.to_owned(),
+        ] {
+            assert!(
+                posted.to_lowercase().contains(OBI_REVIEW_MARKER),
+                "{posted}"
+            );
+        }
+        assert_eq!(crate::github_work::OBY_SIGNS, OBI_REVIEW_MARKER);
+    }
+
+    #[test]
+    fn paginated_answers_run_together() {
+        assert_eq!(
+            pages("[{\"a\":1}][{\"a\":2}]\n[]").unwrap(),
+            [json!({"a": 1}), json!({"a": 2})]
+        );
+        assert!(pages("{\"a\":1}").is_err());
+        assert!(pages("[1").is_err());
     }
 
     #[test]
