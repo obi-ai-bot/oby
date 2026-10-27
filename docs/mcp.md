@@ -64,6 +64,10 @@ These answer "answer that in Oby" and call nothing on the runner:
 
 These tools exist so that an assistant asked to do one of these things gets a clear answer instead of trying another route.
 
+## No declared secrets
+
+What `oby-mcp` sends (`dispatch`, `message`, `ask` and the rest) carries no device signature, so obid never takes it as words the owner typed in Oby (docs/runner-api.md, "Words the owner typed"): an assistant's context is unknown, and anything it read could be in them. A job these tools start, the follow-up a `message` starts and the conversation an `ask` joins get none of the secrets a repository's `secretspec.toml` declares, and the check's output says why. Everything else they do is unchanged.
+
 ## Quoted data
 
 Whatever jobs, agents, GitHub or other people wrote reaches the assistant as quoted data, never as instructions (AGENTS.md): job titles, steps and summaries, the brain's replies and questions, inbox texts and options, account labels. Every tool's answer puts what the runner said inside a fenced block. The block carries a label saying it is quoted data, and its fence is longer than any run of backticks inside, so the quoted text can't close it. Only `oby-mcp`'s own sentences appear outside the blocks. The server's MCP `instructions` tell the client the same thing.

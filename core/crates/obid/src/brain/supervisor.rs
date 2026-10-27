@@ -440,6 +440,11 @@ async fn supervise(shared: &Arc<Shared>, job: &Job) -> bool {
         return false;
     };
     let watch = Arc::new(Watch::new(&job.id, &turn));
+    // It reads the stalled job's own transcript (crate::secretspec).
+    shared.conversations.mark(
+        &conversation,
+        format!("the supervisor's turn on stalled job {}", job.id),
+    );
     let said = prompt(job, taken);
     let asked = Asked {
         said: &said,
@@ -535,10 +540,13 @@ fn ask_owner(
         stall_words(job)
     );
     if let Some(conversation) = conversation
-        && let Err(e) =
-            shared
-                .conversations
-                .append(conversation, "oby", text.clone(), vec![job.id.clone()])
+        && let Err(e) = shared.conversations.append(
+            conversation,
+            "oby",
+            text.clone(),
+            vec![job.id.clone()],
+            Some(format!("the supervisor's words on stalled job {}", job.id)),
+        )
     {
         tracing::info!(
             "job {} stalled; conversation {conversation} wasn't told: {e:?}",

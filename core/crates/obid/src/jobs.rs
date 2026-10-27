@@ -509,6 +509,11 @@ pub struct NewJob {
     /// a follow-up of a vetted job told by those words. Nothing else sets it.
     #[serde(default)]
     pub vetted: bool,
+    /// Why its words aren't on obid's allowlist from the start (crate::secretspec): Oby's
+    /// conversation that wrote them read something that isn't. It keeps to a clone apart, and its
+    /// check gets none of the owner's secrets.
+    #[serde(default)]
+    pub foreign: Option<String>,
     /// One part of a stalled job's split (crate::brain::supervisor): its parts follow it up side
     /// by side, each on a branch of its own. Never from the API, never kept.
     #[serde(skip)]
@@ -3260,21 +3265,24 @@ impl Jobs {
         job.apart = match &of {
             // A follow-up of another Oby's review starts afresh, apart: never in the owner's clone.
             Some(of) => of.apart || of.obi.is_some(),
-            None => job.untrusted || job.runs_on.is_some(),
+            None => job.untrusted || job.runs_on.is_some() || new.foreign.is_some(),
         };
         job.clone_root = of.as_ref().and_then(|of| of.clone_root.clone());
         // The owner's own words, and a follow-up only of a job that was: a Lead's brief quotes what
         // it read elsewhere (crate::secretspec).
         job.vetted = new.vetted
+            && new.foreign.is_none()
             && job.brief.is_none()
             && of
                 .as_ref()
                 .is_none_or(|of| of.vetted && of.foreign.is_none());
         // A follow-up runs the code of the job it follows: when that one's check got none of the
         // owner's secrets, neither does this one's (crate::secretspec).
-        job.foreign = of.as_ref().and_then(|of| {
-            of.someone_elses()
-                .map(|why| format!("it follows up a job whose check got none of them ({why})"))
+        job.foreign = new.foreign.clone().or_else(|| {
+            of.as_ref().and_then(|of| {
+                of.someone_elses()
+                    .map(|why| format!("it follows up a job whose check got none of them ({why})"))
+            })
         });
         // An account the owner named keeps the job past its limit (#871); a follow-up's is its
         // job's.
@@ -3748,13 +3756,20 @@ impl Jobs {
 
     /// [`Self::message`] with words the brain wrote (`message_job`, `oby_tell_job`): never the
     /// answer to the agent's question, which is the owner's alone (#858), so refused while one
-    /// waits.
+    /// waits. `foreign`: why they aren't on obid's allowlist (crate::secretspec), which marks the
+    /// job; `None` only when the conversation that wrote them read nothing that isn't.
     pub fn relay(
         self: &Arc<Self>,
         id: &str,
         text: &str,
         source: Source,
+        foreign: Option<String>,
     ) -> Option<Result<Job, Refused>> {
+        if let Some(why) = foreign
+            && self.get(id).is_some_and(|job| job.obi.is_none())
+        {
+            self.mark_foreign(id, why);
+        }
         self.message_as(id, text, source, &[], false)
     }
 
@@ -5504,18 +5519,26 @@ impl Jobs {
 
     /// Continues a job that failed, was stopped or was cut off in its own session, as Try again
     /// does, with `words` after Try again's (`oby_continue_job`), adding `by` to its changes.
+    /// `foreign`: why `words` aren't on obid's allowlist (crate::secretspec), which marks the job
+    /// when there are any; `None` only for words its caller knows are.
     pub fn continue_job(
         self: &Arc<Self>,
         id: &str,
         words: Option<&str>,
         by: &str,
+        foreign: Option<String>,
     ) -> Option<Result<Job, Refused>> {
         let job = self.get(id)?;
         if let Some(why) = not_continuable(&job) {
             return Some(Err(Refused(why.into())));
         }
         let text = match words.map(str::trim).filter(|w| !w.is_empty()) {
-            Some(words) => format!("{}\n\n{words}", crate::brain::actions::TRY_AGAIN),
+            Some(words) => {
+                if let Some(why) = foreign {
+                    self.mark_foreign(id, why);
+                }
+                format!("{}\n\n{words}", crate::brain::actions::TRY_AGAIN)
+            }
             None => crate::brain::actions::TRY_AGAIN.to_owned(),
         };
         let continued = self.message(id, &text, Source::Owner)?;
@@ -5523,6 +5546,18 @@ impl Jobs {
             self.note_change(id, format!("Continued {by}"))
                 .unwrap_or(job)
         }))
+    }
+
+    /// Words that weren't the owner's own, typed in Oby's apps, reached job `id` (`why`): its
+    /// check gets none of the owner's secrets from now on (crate::secretspec). Nothing else
+    /// changes: what they may do is the words' [`Source`]'s.
+    pub fn unvet(&self, id: &str, why: &str) -> Option<Job> {
+        self.update(id, |job| {
+            if job.vetted {
+                tracing::info!("job {}: {why}: its check gets no declared secrets", job.id);
+                job.vetted = false;
+            }
+        })
     }
 
     /// Adds `what` to the job's changes.
@@ -7560,13 +7595,8 @@ impl Jobs {
             ));
         };
         // What someone else wrote in the issue or pull request it works from may steer it.
-        for (kind, number) in [("issue", job.issue), ("pr", job.pr)] {
-            if let Some(number) = number
-                && let Some(why) =
-                    crate::secretspec::others_wrote(&gh, &repo.repo, kind, number).await
-            {
-                return Some(why);
-            }
+        if let Some(why) = self.others_wrote(&gh, job).await {
+            return Some(why);
         }
         if let Err(why) = crate::secretspec::protected_base(&gh, &repo.repo, base).await {
             return Some(why);
@@ -7660,6 +7690,62 @@ impl Jobs {
     /// it there ([`Job::clone_root`], their follow-ups too), and the next `ensure_clone` makes a
     /// fresh one, so the repository's checks get values again (crate::secretspec). Called under the
     /// repository's preparing lock, for `job`, which has no worktree yet.
+    /// Why the issue or pull request `job` works from isn't only the owner's own words
+    /// (crate::secretspec::others_wrote), or none.
+    async fn others_wrote(&self, gh: &Path, job: &Job) -> Option<String> {
+        for (kind, number) in [("issue", job.issue), ("pr", job.pr)] {
+            if let Some(number) = number
+                && let Some(why) = crate::secretspec::others_wrote(
+                    gh,
+                    &job.repo,
+                    kind,
+                    number,
+                    self.described_clean(&job.repo, number),
+                )
+                .await
+            {
+                return Some(why);
+            }
+        }
+        None
+    }
+
+    /// Whether obid wrote pull request `number` of `repo`'s description only for jobs that are the
+    /// owner's own throughout (crate::secretspec): the jobs whose `outgoing` opened or described it,
+    /// at least one, each clean. One no job here records is someone else's.
+    fn described_clean(&self, repo: &str, number: u64) -> bool {
+        let described: Vec<Job> = self
+            .list(usize::MAX)
+            .into_iter()
+            .filter(|job| {
+                job.repo == repo
+                    && job.outgoing.iter().any(|o| {
+                        matches!(o.action.as_str(), "pullRequest" | "pullRequestEdit")
+                            && crate::github::pull_request_number(&o.id, repo) == Some(number)
+                    })
+            })
+            .collect();
+        !described.is_empty()
+            && described
+                .iter()
+                .all(|job| job.check_refuses_secrets().is_none())
+    }
+
+    /// Who wrote the issue or pull request `job` works from, as it starts (crate::secretspec):
+    /// what anyone else wrote there reached it then, even if it's gone by its check.
+    async fn authors_as_it_starts(&self, job: &Job) {
+        let Some(gh) = crate::github::gh() else {
+            self.mark_foreign(
+                &job.id,
+                "obid had no gh to ask who wrote what it works from as it started".into(),
+            );
+            return;
+        };
+        if let Some(why) = self.others_wrote(&gh, job).await {
+            self.mark_foreign(&job.id, format!("as it started, {why}"));
+        }
+    }
+
     async fn remake_marked_clone(&self, job: &Job, repo: &crate::config::Repo) {
         let clone = git::clone_path(&self.config.home, &repo.repo);
         if !clone.join(".git").is_dir() {
@@ -8292,6 +8378,13 @@ impl Jobs {
         let stages = Stages::new(self.log_path(id, "stages.log"));
         stages.begin("prepare");
 
+        // Only a job that could get the owner's secrets asks GitHub (crate::secretspec).
+        if !worktree.join(".git").exists()
+            && job.check_refuses_secrets().is_none()
+            && (job.issue.is_some() || job.pr.is_some())
+        {
+            Box::pin(self.authors_as_it_starts(&job)).await;
+        }
         let preparing = self.preparing(&repo.repo);
         let prepared = preparing.lock().await;
         if !worktree.join(".git").exists() {
@@ -15675,6 +15768,46 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// Words Oby's brain wrote after its conversation read something off obid's allowlist (a tell,
+    /// a continue) make the job someone else's code; the same words from a clean conversation, and
+    /// a bare Try again, don't. obid's record of the pull requests it described decides whether
+    /// its own signed description there is the owner's.
+    #[tokio::test]
+    async fn words_from_a_marked_conversation_mark_the_job() {
+        let (jobs, _clone, root) = jobs_with_a_clone("brain-words").await;
+        jobs.update("j", |job| job.vetted = true);
+        let _ = jobs.relay("j", "Use SQLite", Source::Owner, None);
+        assert_eq!(jobs.get("j").unwrap().foreign, None);
+        let _ = jobs.relay("j", "Use SQLite", Source::Owner, Some("the inbox".into()));
+        assert_eq!(jobs.get("j").unwrap().foreign.as_deref(), Some("the inbox"));
+        jobs.update("j", |job| {
+            job.foreign = None;
+            job.status = Status::Failed;
+        });
+        let _ = jobs.continue_job("j", None, "by Oby", Some("the web".into()));
+        assert_eq!(jobs.get("j").unwrap().foreign, None);
+        jobs.update("j", |job| job.status = Status::Failed);
+        let _ = jobs.continue_job("j", Some("and the docs"), "by Oby", Some("the web".into()));
+        assert_eq!(jobs.get("j").unwrap().foreign.as_deref(), Some("the web"));
+
+        // Described for "j" only: the owner's own while "j" is, someone else's once it isn't, and
+        // one obid has no record of is someone else's too.
+        jobs.update("j", |job| {
+            job.foreign = None;
+            job.outgoing.push(crate::publish::Outgoing::new(
+                "pullRequest",
+                "o/r",
+                "https://github.com/o/r/pull/7",
+                None,
+            ));
+        });
+        assert!(jobs.described_clean("o/r", 7));
+        assert!(!jobs.described_clean("o/r", 8));
+        jobs.update("j", |job| job.vetted = false);
+        assert!(!jobs.described_clean("o/r", 7));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// A marked clone is made again before the next job uses it, once no job runs in it: the old
     /// one moves aside with the jobs whose worktrees belong to it, and the new one isn't marked.
     #[tokio::test]
@@ -17940,7 +18073,7 @@ mod tests {
         };
         let id = waiting();
         for source in [Source::Owner, Source::Confirmed] {
-            let Some(Err(Refused(why))) = jobs.relay("j", "SQLite", source) else {
+            let Some(Err(Refused(why))) = jobs.relay("j", "SQLite", source, None) else {
                 panic!("the brain answered the question");
             };
             assert_eq!(why, QUESTION_IS_THE_OWNERS);

@@ -184,7 +184,7 @@ async fn dispatch(
         // 2026-10-24).
         let new = NewJob {
             untrusted: researched,
-            ..new
+            ..super::written_in(shared, asked.conversation, new)
         };
         // A job that would never ask the owner anything widens trust: only their own Confirm
         // starts it (the owner's decision of 2026-10-16; review on #551). An untrusted one never
@@ -432,7 +432,7 @@ pub async fn act(
     match plan.action {
         Action::StopAgent => stop(shared, plan),
         Action::SetMode => set_mode(shared, plan),
-        Action::AnswerPermission => answer_permission(shared, plan),
+        Action::AnswerPermission => answer_permission(shared, plan, conversation),
         Action::RetryJob | Action::DismissJob | Action::StartNow => {
             on_jobs(shared, plan, source, conversation)
         }
@@ -655,7 +655,7 @@ fn message_job(
             .following(&job.id)
             .filter(|_| source != Source::Event)
         {
-            return already_on_it(shared, &job, &next, &words, source);
+            return already_on_it(shared, &job, &next, &words, source, conversation);
         }
         // Past its safety limit, a follow-up would start its counters again: the owner confirms,
         // whoever's words they are.
@@ -670,7 +670,7 @@ fn message_job(
                 NewJob {
                     turn: started_by(&job, conversation, turn),
                     untrusted: source == Source::Untrusted,
-                    ..new
+                    ..super::written_in(shared, conversation, new)
                 },
             ),
             Source::Event => Outcome::Failed(format!(
@@ -679,7 +679,8 @@ fn message_job(
         };
     }
     // Its agent's question is the owner's to answer (#858): the brain's words never are.
-    match shared.jobs.relay(&job.id, &words, source) {
+    let foreign = super::written_after(shared, conversation);
+    match shared.jobs.relay(&job.id, &words, source, foreign) {
         Some(Ok(_)) => Outcome::Done(format!("Told {name} what you said.")),
         Some(Err(refused)) => Outcome::Failed(format!("Couldn't tell {name}: {}", refused.0)),
         None => Outcome::Failed("That job isn't here any more.".into()),
@@ -746,9 +747,11 @@ pub(super) fn already_on_it(
     next: &Job,
     words: &str,
     source: Source,
+    conversation: &str,
 ) -> Outcome {
     let (name, follow) = (job.short_title(), next.short_title());
-    match shared.jobs.relay(&next.id, words, source) {
+    let foreign = super::written_after(shared, conversation);
+    match shared.jobs.relay(&next.id, words, source, foreign) {
         Some(Ok(heard)) => Outcome::Started(
             format!("Already on it in {follow}, the follow-up of {name}: I told it what you said."),
             heard.to_json(),
@@ -1139,7 +1142,7 @@ fn set_mode(shared: &Arc<Shared>, plan: &Plan) -> Outcome {
 
 /// "Allow it", "always allow that", "no, run only the runner tests": the permission waiting on
 /// the job the conversation is about.
-fn answer_permission(shared: &Arc<Shared>, plan: &Plan) -> Outcome {
+fn answer_permission(shared: &Arc<Shared>, plan: &Plan, conversation: &str) -> Outcome {
     let (Some(id), Some(decision)) = (plan.named().first(), plan.decision) else {
         return Outcome::NeedsWhich("Say which job to answer.".into());
     };
@@ -1201,6 +1204,12 @@ fn answer_permission(shared: &Arc<Shared>, plan: &Plan) -> Outcome {
         ));
     }
     use crate::jobs::PermissionRefused;
+    // Its words, a no's, are the brain's (crate::secretspec).
+    if message.is_some_and(|m| !m.trim().is_empty())
+        && let Some(why) = super::written_after(shared, conversation)
+    {
+        shared.jobs.mark_foreign(id, why);
+    }
     match shared
         .jobs
         .answer_permission(id, &permission.id, decision.to_permissions(), message)

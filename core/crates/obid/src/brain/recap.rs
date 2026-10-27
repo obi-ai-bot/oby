@@ -556,10 +556,13 @@ async fn write_post(shared: &Shared, check_in: &CheckIn, since: i64, now: i64) {
     let Some(conversation) = place(shared, check_in) else {
         return;
     };
-    if let Err(e) = shared
-        .conversations
-        .append(&conversation, "oby", text, jobs)
-    {
+    if let Err(e) = shared.conversations.append(
+        &conversation,
+        "oby",
+        text,
+        jobs,
+        Some("a check-in, written from other jobs and the inbox".into()),
+    ) {
         tracing::warn!("check-in: conversation {conversation} wasn't told: {e:?}");
     }
 }

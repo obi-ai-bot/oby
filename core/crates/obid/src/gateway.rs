@@ -728,6 +728,10 @@ async fn forward(State(through): State<Through>, request: Request) -> Response {
     if let Some(kind) = parts.headers.get(header::CONTENT_TYPE) {
         upstream = upstream.header(header::CONTENT_TYPE, kind);
     }
+    // The phone's signature over words its owner typed (crate::approval::WORDS): checked there.
+    if let Some(signed) = parts.headers.get(crate::approval::WORDS) {
+        upstream = upstream.header(crate::approval::WORDS, signed);
+    }
     let Ok(upstream) = upstream.body(Body::from(body)) else {
         return error(StatusCode::BAD_REQUEST, "That request can't be forwarded.");
     };

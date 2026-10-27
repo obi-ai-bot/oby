@@ -75,6 +75,18 @@ struct Thread {
     /// is treated as having read it too.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     tasks_tainted: bool,
+    /// The first thing its Oby read or heard that isn't on obid's allowlist (crate::secretspec):
+    /// words no app of the owner's signed, another job's or the inbox's words, the web, a tool obid
+    /// doesn't know. From then on what it starts and says is someone else's for the owner's
+    /// secrets. Never cleared: what it read stays in what it says. Always written, `null` too: one
+    /// kept before obid marked it reads as marked ([`kept_before_marks`]).
+    #[serde(default = "kept_before_marks")]
+    foreign: Option<String>,
+}
+
+/// A conversation kept before obid marked what each one read: its turns' words may be anyone's.
+fn kept_before_marks() -> Option<String> {
+    Some("turns kept before obid marked what a conversation read".into())
 }
 
 /// The most tasks a conversation's list holds.
@@ -380,6 +392,7 @@ impl Conversations {
                     turns,
                     tasks: vec![],
                     tasks_tainted: false,
+                    foreign: kept_before_marks(),
                 };
                 // The conversation's name in its folder must be on disk before the old file goes.
                 if let Err(e) = self.write(&thread).and_then(|()| sync_dir(&self.dir)) {
@@ -415,12 +428,15 @@ impl Conversations {
     /// conversation named, the latest, or for a new one the one those words started), is the same
     /// words sent again: `repeated`, and nothing is added. Any other turn of that id is `IdTaken`.
     /// `jobs`: the jobs the owner attached to the words (Sangam's Attach tasks), kept on their turn.
+    /// `foreign`: why the words aren't the owner's own, typed in Oby's apps (crate::secretspec),
+    /// which marks the conversation; `None` only for words an app of the owner's signed.
     pub fn begin(
         &self,
         target: Target,
         said: String,
         jobs: Vec<String>,
         id: Option<String>,
+        foreign: Option<String>,
     ) -> Result<Begun, Error> {
         let mut threads = self.lock();
         if let Some(id) = id.as_deref()
@@ -468,6 +484,7 @@ impl Conversations {
                 turns: vec![],
                 tasks: vec![],
                 tasks_tainted: false,
+                foreign: None,
             });
             threads.len() - 1
         });
@@ -481,6 +498,7 @@ impl Conversations {
             vec![],
             id,
             None,
+            foreign,
         );
         let turn = match added {
             Ok(turn) => turn.id,
@@ -509,18 +527,22 @@ impl Conversations {
         latest(&threads).map(|index| threads[index].id.clone())
     }
 
-    /// Adds a turn to the conversation `id`.
+    /// Adds a turn to the conversation `id`. `foreign`: why its text isn't on obid's allowlist
+    /// (crate::secretspec), which marks the conversation; `None` only when the caller knows every
+    /// word of it is (the owner's signed words, a clean job's).
     pub fn append(
         &self,
         id: &str,
         who: &str,
         text: String,
         jobs: Vec<String>,
+        foreign: Option<String>,
     ) -> Result<Turn, Error> {
-        self.append_as(id, who, text, jobs, false, vec![], None)
+        self.append_as(id, who, text, jobs, false, vec![], None, foreign)
     }
 
-    /// Oby's turn in the conversation `id`, with the artifacts it made (`{id, version}` each).
+    /// Oby's turn in the conversation `id`, with the artifacts it made (`{id, version}` each): its
+    /// brain's own words, which carry only what the conversation read (marked already).
     pub fn append_made(
         &self,
         id: &str,
@@ -528,12 +550,19 @@ impl Conversations {
         jobs: Vec<String>,
         artifacts: Vec<Value>,
     ) -> Result<Turn, Error> {
-        self.append_as(id, "oby", text, jobs, false, artifacts, None)
+        self.append_as(id, "oby", text, jobs, false, artifacts, None, None)
     }
 
     /// Oby's turn telling the conversation `id` how the job `job` ended ([`job_report`], #351).
-    pub fn job_ended(&self, id: &str, text: String, job: String) -> Result<Turn, Error> {
-        self.append_as(id, "oby", text, vec![job], true, vec![], None)
+    /// `foreign`: why the job's summary isn't on obid's allowlist (the job's own reason).
+    pub fn job_ended(
+        &self,
+        id: &str,
+        text: String,
+        job: String,
+        foreign: Option<String>,
+    ) -> Result<Turn, Error> {
+        self.append_as(id, "oby", text, vec![job], true, vec![], None, foreign)
     }
 
     /// A new conversation titled `title`, with no turn yet: the one a routine's runs go to
@@ -549,6 +578,7 @@ impl Conversations {
             turns: vec![],
             tasks: vec![],
             tasks_tainted: false,
+            foreign: None,
         };
         self.write(&thread).map_err(Error::Io)?;
         self.events.send("conversation", thread.summary());
@@ -567,7 +597,36 @@ impl Conversations {
         jobs: Vec<String>,
         routine: Value,
     ) -> Result<Turn, Error> {
-        self.append_as(id, "oby", text, jobs, false, vec![], Some(routine))
+        let foreign = Some("a routine's run, in obid's words and its outcome".to_owned());
+        self.append_as(id, "oby", text, jobs, false, vec![], Some(routine), foreign)
+    }
+
+    /// Marks the conversation `id` as having read `why`, not on obid's allowlist
+    /// (crate::secretspec): the first reason is kept.
+    pub fn mark(&self, id: &str, why: String) {
+        let mut threads = self.lock();
+        let Some(thread) = threads.iter_mut().find(|t| t.id == id) else {
+            return;
+        };
+        if thread.foreign.is_some() {
+            return;
+        }
+        tracing::info!("conversation {id}: {why}: what it starts gets no declared secrets");
+        thread.foreign = Some(why);
+        if let Err(e) = self.write(thread) {
+            // Kept in memory still: what it starts now is someone else's either way.
+            tracing::warn!("conversation {id}'s mark wasn't kept: {e}");
+        }
+    }
+
+    /// What, not on obid's allowlist, the conversation `id` read or heard first
+    /// (crate::secretspec), or none when it read nothing else. One obid doesn't keep has read
+    /// something it can't tell.
+    pub fn foreign(&self, id: &str) -> Option<String> {
+        match self.lock().iter().find(|t| t.id == id) {
+            Some(thread) => thread.foreign.clone(),
+            None => Some("a conversation obid doesn't keep".into()),
+        }
     }
 
     /// The user's own words, the latest first, at most `limit` turns: (conversation id, its
@@ -622,6 +681,7 @@ impl Conversations {
         ended: bool,
         artifacts: Vec<Value>,
         routine: Option<Value>,
+        foreign: Option<String>,
     ) -> Result<Turn, Error> {
         let mut threads = self.lock();
         let index = threads
@@ -638,6 +698,7 @@ impl Conversations {
             artifacts,
             None,
             routine,
+            foreign,
         )
     }
 
@@ -654,10 +715,20 @@ impl Conversations {
         artifacts: Vec<Value>,
         id: Option<String>,
         routine: Option<Value>,
+        foreign: Option<String>,
     ) -> Result<Turn, Error> {
         let sequence = next_sequence(threads);
         let thread = &mut threads[index];
         let kept = thread.clone();
+        if thread.foreign.is_none()
+            && let Some(why) = foreign
+        {
+            tracing::info!(
+                "conversation {}: {why}: what it starts gets no declared secrets",
+                thread.id
+            );
+            thread.foreign = Some(why);
+        }
         let turn = Turn {
             id: id.unwrap_or_else(new_id),
             who: who.into(),
@@ -1013,9 +1084,18 @@ pub fn report_job_ends(shared: std::sync::Arc<Shared>) {
             let Some((conversation, text)) = job_report(&event.data) else {
                 continue;
             };
-            if let Err(e) = shared
-                .conversations
-                .job_ended(&conversation, text, id.to_owned())
+            // Its summary is its agent's: on obid's allowlist only when everything the job read
+            // was (crate::secretspec).
+            let foreign = match shared.jobs.get(id) {
+                Some(job) => job
+                    .check_refuses_secrets()
+                    .map(|why| format!("the summary of job {id}, which {why}")),
+                None => Some(format!("the summary of job {id}, which obid doesn't have")),
+            };
+            if let Err(e) =
+                shared
+                    .conversations
+                    .job_ended(&conversation, text, id.to_owned(), foreign)
             {
                 tracing::info!("job {id} ended; conversation {conversation} wasn't told: {e:?}");
             }
@@ -1400,6 +1480,78 @@ mod tests {
         crate::secrets::known().forget("vault TEST_351");
     }
 
+    /// What a conversation reads off obid's allowlist marks it for good, and the first reason
+    /// stays (crate::secretspec): the owner's signed words, Oby's own answers and a clean job's end
+    /// don't. One kept before the marks, or one obid doesn't keep, counts as marked.
+    #[test]
+    fn what_a_conversation_reads_off_the_allowlist_marks_it() {
+        let home = std::env::temp_dir().join(format!("obid-conversation-{}", uuid::Uuid::new_v4()));
+        struct Cleanup(std::path::PathBuf);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let _cleanup = Cleanup(home.clone());
+        let events = crate::events::Events::new();
+        let conversations = super::Conversations::open(&home, events.clone());
+        let id = conversations
+            .begin(super::Target::New, "Fix it".into(), vec![], None, None)
+            .unwrap()
+            .conversation;
+        conversations
+            .append_made(&id, "On it.".into(), vec![], vec![])
+            .unwrap();
+        conversations
+            .job_ended(&id, "Done.".into(), "j1".into(), None)
+            .unwrap();
+        assert_eq!(conversations.foreign(&id), None);
+        conversations
+            .append(
+                &id,
+                "oby",
+                "It stalled.".into(),
+                vec![],
+                Some("the supervisor's words".into()),
+            )
+            .unwrap();
+        conversations.mark(&id, "the inbox".into());
+        assert_eq!(
+            conversations.foreign(&id).as_deref(),
+            Some("the supervisor's words")
+        );
+        // Kept: obid opened again reads it marked still.
+        let reopened = super::Conversations::open(&home, events.clone());
+        assert_eq!(
+            reopened.foreign(&id).as_deref(),
+            Some("the supervisor's words")
+        );
+        let unsigned = conversations
+            .begin(
+                super::Target::New,
+                "Fix it".into(),
+                vec![],
+                None,
+                Some("words no app of the owner's signed".into()),
+            )
+            .unwrap()
+            .conversation;
+        assert!(conversations.foreign(&unsigned).is_some());
+        let routine = conversations.start_for("Every morning").unwrap();
+        assert_eq!(conversations.foreign(&routine), None);
+        conversations
+            .routine_turn(&routine, "Ran it.".into(), vec![], json!({}))
+            .unwrap();
+        assert!(conversations.foreign(&routine).is_some());
+        let kept: super::Thread = serde_json::from_value(json!({
+            "id": "c", "title": "t", "pinned": false, "created": "2026-01-01T00:00:00Z",
+            "sequence": 1, "turns": []
+        }))
+        .unwrap();
+        assert!(kept.foreign.is_some());
+        assert!(conversations.foreign("no-such-conversation").is_some());
+    }
+
     #[test]
     fn titles_are_the_first_line_as_the_design_cuts_it() {
         assert_eq!(
@@ -1434,7 +1586,7 @@ mod tests {
         let events = crate::events::Events::new();
         let conversations = super::Conversations::open(&home, events.clone());
         let id = conversations
-            .begin(super::Target::New, "first".into(), vec![], None)
+            .begin(super::Target::New, "first".into(), vec![], None, None)
             .unwrap()
             .conversation;
         {
@@ -1456,7 +1608,7 @@ mod tests {
         std::fs::rename(&conversations.dir, &saved).unwrap();
         std::fs::write(&conversations.dir, b"not a directory").unwrap();
         assert!(matches!(
-            conversations.append(&id, "oby", "rejected".into(), vec![]),
+            conversations.append(&id, "oby", "rejected".into(), vec![], None),
             Err(super::Error::Io(_))
         ));
         assert_eq!(
@@ -1470,7 +1622,7 @@ mod tests {
         std::fs::remove_file(&conversations.dir).unwrap();
         std::fs::rename(&saved, &conversations.dir).unwrap();
         conversations
-            .append(&id, "oby", "accepted".into(), vec![])
+            .append(&id, "oby", "accepted".into(), vec![], None)
             .unwrap();
         let threads = conversations.lock();
         assert_eq!(threads[0].turns.len(), super::KEPT);

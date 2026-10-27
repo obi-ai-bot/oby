@@ -28,22 +28,39 @@
 //! an allowlisted channel, and anything else, a channel no one listed included, makes it
 //! someone else's code when it arrives (and marks the owner's clone, as below):
 //!
-//! - **The owner's own words typed in Oby's apps**: a job started through the jobs API
-//!   (`Job::vetted`), and the owner's words sent to it (`Source::Owner`). Not a job Oby's brain
-//!   planned (its briefing quotes the inbox and other jobs), an event's, a routine's, the Lead's
-//!   brief, an inbox offer, nor words from the brain, an event, the orchestrator or a Confirm of what
-//!   Oby proposed (obid's own Try again aside).
+//! - **The owner's own words typed in Oby's apps**, which the app signs with its device's key
+//!   (`crate::approval::WORDS`, checked in `crate::routes::typed_by_owner`): a job started through
+//!   the jobs API (`Job::vetted`), the owner's words sent to it, and what Oby's conversation plans
+//!   from them while it has read nothing off this list (below). Anything else holding obid's token
+//!   (oby-mcp, a script, an agent, an app that doesn't sign) sends words that aren't: a job they
+//!   start, and one they reach, gets nothing. Not a job an event, a routine, the Lead or an inbox
+//!   offer started, nor words from an event, the orchestrator or a Confirm of what Oby proposed
+//!   (obid's own Try again aside).
+//! - **Oby's conversation, while clean** (`crate::conversation`, `foreign`): it fails closed the
+//!   same way. The owner's signed words, Oby's own answers, room files outside the repositories'
+//!   checkouts, its own list and a job's end that's clean throughout keep it so; anything else
+//!   marks it for good: words no app signed, turns its client wrote, attachments, the plan loop's
+//!   briefing, the Lead's board, a supervisor's turn, a recap, a check-in, a routine's run, another
+//!   job's report or words, the inbox, past conversations, the web, a command, a helper, any tool
+//!   it doesn't know (`crate::brain::tools`, `reads_foreign`; `crate::brain::harness`,
+//!   `known_safe`). What a marked conversation starts is someone else's from the start, in a clone
+//!   apart; its words, a tell, a continue or a no's, make the job they reach someone else's
+//!   (`crate::brain::written_in`, `written_after`).
 //! - **The text of an issue or pull request the owner alone wrote**: its body, its title and every
 //!   comment, edit, rename, review and review comment, every list whole
-//!   (`crate::github_work::owners_only`; [`others_wrote`]).
+//!   (`crate::github_work::owners_only`; [`others_wrote`]), read as the job starts and again at its
+//!   check, so what's deleted in between still counts. What obid posted under the owner's login
+//!   is signed (`crate::github_work::OBY_SIGNS`), an Oby's, never the owner's: but a pull request's
+//!   own description obid wrote only for jobs that are clean throughout (`Jobs::described_clean`,
+//!   from their `outgoing`).
 //! - **The base repository's code** (2 and 4 below).
 //! - **Tool calls of kinds obid knows are safe** ([`tool_is_known_safe`]): a file read, write, edit
 //!   or search, a command inside the job's sandbox, its own to-do list, obid's own question to the
 //!   owner. Anything else (a vendor's own web search or fetch, any MCP tool or resource, a helper
 //!   agent, an MCP server's tool descriptions given at launch, and any kind an agent adds later or
 //!   obid doesn't parse: Claude Code's unparsed blocks, Codex's helper threads and unknown items,
-//!   Cursor's unknown kinds) marks the job. So does network egress past the tool's API and the
-//!   default registries (2).
+//!   Cursor's unknown kinds and its `search`, which its web search reports as too) marks the job.
+//!   So does network egress past the tool's API and the default registries (2).
 //!
 //! What that takes:
 //!
@@ -683,14 +700,23 @@ const SAFE_TOOLS: &[&str] = &[
 /// edit, a comment, a review or a review's comment) is content that may steer the agent, whatever
 /// they may do elsewhere (an organisation member's words count as the owner's for other
 /// purposes, `crate::github_work::Owner::trusts`). Read as `crate::github_work` reads who wrote an
-/// issue, every list whole; what GitHub can't say is a no.
-pub async fn others_wrote(gh: &Path, repo: &str, kind: &str, number: u64) -> Option<String> {
+/// issue, every list whole; what GitHub can't say is a no. What obid posted under the owner's login
+/// is signed, an Oby's, never the owner's: but a pull request's own description when
+/// `signed_body`, obid's record that it wrote it only for jobs that are the owner's own throughout
+/// (`Jobs::described_clean`).
+pub async fn others_wrote(
+    gh: &Path,
+    repo: &str,
+    kind: &str,
+    number: u64,
+    signed_body: bool,
+) -> Option<String> {
     let name = if kind == "pr" {
         "pull request"
     } else {
         "issue"
     };
-    (!crate::github_work::owners_only(gh, repo, number).await)
+    (!crate::github_work::owners_only(gh, repo, number, signed_body).await)
         .then(|| format!("it works from {name} #{number}, which someone else wrote in or GitHub didn't say who wrote"))
 }
 
@@ -1824,6 +1850,24 @@ required = false
                     whole(&written(me))
                 ))),
             ),
+            // 9: none (GitHub said nothing).
+            String::new(),
+            // 10: a pull request whose description obid signed, under the owner's login.
+            format!(
+                r#"{{"data":{{"viewer":{me},"repository":{{"issueOrPullRequest":{{"author":{me},"body":"Fixes it.\n\nby Oby: Oby opened this pull request.","userContentEdits":{e},"timelineItems":{e},"comments":{e},"reviews":{e}}}}}}}}}"#,
+                e = whole("")
+            ),
+            // 11: a comment obid signed, under the owner's login.
+            item(
+                me,
+                &whole(""),
+                &whole(""),
+                &whole(&format!(
+                    r#"{{"author":{me},"body":"Ran it. by Oby: it passed.","userContentEdits":{}}}"#,
+                    whole("")
+                )),
+                None,
+            ),
         ];
         let mut script = String::from("#!/bin/sh\ncase \"$*\" in\n");
         for (i, answer) in answers.iter().enumerate() {
@@ -1839,10 +1883,18 @@ required = false
         let gh = dir.join("gh");
         std::fs::write(&gh, script).unwrap();
         std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755)).unwrap();
-        assert_eq!(others_wrote(&gh, "o/r", "issue", 1).await, None);
-        assert_eq!(others_wrote(&gh, "o/r", "pr", 8).await, None);
+        assert_eq!(others_wrote(&gh, "o/r", "issue", 1, false).await, None);
+        assert_eq!(others_wrote(&gh, "o/r", "pr", 8, false).await, None);
+        // What obid signed is an Oby's: a description only when obid wrote it for clean jobs alone,
+        // a comment never.
+        assert!(others_wrote(&gh, "o/r", "pr", 10, false).await.is_some());
+        assert_eq!(others_wrote(&gh, "o/r", "pr", 10, true).await, None);
+        assert!(others_wrote(&gh, "o/r", "issue", 11, true).await.is_some());
         for n in [2, 3, 4, 5, 6, 7, 9] {
-            assert!(others_wrote(&gh, "o/r", "issue", n).await.is_some(), "#{n}");
+            assert!(
+                others_wrote(&gh, "o/r", "issue", n, false).await.is_some(),
+                "#{n}"
+            );
         }
         let _ = std::fs::remove_dir_all(&dir);
     }

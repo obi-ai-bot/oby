@@ -478,8 +478,15 @@ final class Phone {
         // Paired with a Mac, a 401 means the pairing ended: say which, never the Tailscale line.
         let refused = link.map { _ in (pairedUntil.map { $0 <= .now } ?? false) ? ReachNotice.expired : ReachNotice.removed }
         let relay = loadRelay()
-        return Runner(base: base, token: GatewayTokenStore.read(), refused: refused.map { "\($0.title). \($0.detail)" },
-                      relay: base == RemoteRoute.relayBase ? relay : nil)
+        var runner = Runner(base: base, token: GatewayTokenStore.read(), refused: refused.map { "\($0.title). \($0.detail)" },
+                            relay: base == RemoteRoute.relayBase ? relay : nil)
+        // The owner's typed words, signed with this iPhone's key as its id is when they go.
+        let key = deviceKey
+        runner.signsWords = { method, path, body in
+            guard DeviceKey.isAvailable, let device = UserDefaults.standard.string(forKey: key) else { return nil }
+            return try? DeviceKey.signWords(method: method, path: path, body: body, device: device)
+        }
+        return runner
     }
 
     /// The relay of a Mac paired through its Obysphere: read from the keychain once it can be (not

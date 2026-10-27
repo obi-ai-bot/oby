@@ -302,21 +302,23 @@ pub async fn issue_trusted(gh: &std::path::Path, repo: &str, number: u64, shown:
 /// read it: what [`owners_only`] reads.
 const WHO_WROTE_ALL: &str = "query($owner: String!, $name: String!, $number: Int!) { viewer { login } \
 repository(owner: $owner, name: $name) { issueOrPullRequest(number: $number) { \
-... on Issue { author { login } userContentEdits(first: 50) { pageInfo { hasNextPage } nodes { editor { login } } } \
+... on Issue { author { login } body userContentEdits(first: 50) { pageInfo { hasNextPage } nodes { editor { login } } } \
 timelineItems(itemTypes: [RENAMED_TITLE_EVENT], first: 50) { pageInfo { hasNextPage } nodes { ... on RenamedTitleEvent { actor { login } } } } \
-comments(first: 100) { pageInfo { hasNextPage } nodes { author { login } userContentEdits(first: 50) { pageInfo { hasNextPage } nodes { editor { login } } } } } } \
-... on PullRequest { author { login } userContentEdits(first: 50) { pageInfo { hasNextPage } nodes { editor { login } } } \
+comments(first: 100) { pageInfo { hasNextPage } nodes { author { login } body userContentEdits(first: 50) { pageInfo { hasNextPage } nodes { editor { login } } } } } } \
+... on PullRequest { author { login } body userContentEdits(first: 50) { pageInfo { hasNextPage } nodes { editor { login } } } \
 timelineItems(itemTypes: [RENAMED_TITLE_EVENT], first: 50) { pageInfo { hasNextPage } nodes { ... on RenamedTitleEvent { actor { login } } } } \
-comments(first: 100) { pageInfo { hasNextPage } nodes { author { login } userContentEdits(first: 50) { pageInfo { hasNextPage } nodes { editor { login } } } } } \
-reviews(first: 100) { pageInfo { hasNextPage } nodes { author { login } userContentEdits(first: 50) { pageInfo { hasNextPage } nodes { editor { login } } } \
-comments(first: 100) { pageInfo { hasNextPage } nodes { author { login } userContentEdits(first: 50) { pageInfo { hasNextPage } nodes { editor { login } } } } } } } } } } }";
+comments(first: 100) { pageInfo { hasNextPage } nodes { author { login } body userContentEdits(first: 50) { pageInfo { hasNextPage } nodes { editor { login } } } } } \
+reviews(first: 100) { pageInfo { hasNextPage } nodes { author { login } body userContentEdits(first: 50) { pageInfo { hasNextPage } nodes { editor { login } } } \
+comments(first: 100) { pageInfo { hasNextPage } nodes { author { login } body userContentEdits(first: 50) { pageInfo { hasNextPage } nodes { editor { login } } } } } } } } } } }";
 
 /// Whether issue or pull request `number` on `repo` holds only words the owner (the login obid's
 /// gh is signed in as, and no one else, organisation members included) wrote: its body, its title
 /// and every edit and rename, every comment and its edits, and a pull request's every review and
 /// review comment, each list given whole. For the owner's secrets (crate::secretspec), stricter
-/// than [`issue_trusted`]. Anything obid can't read is a no.
-pub async fn owners_only(gh: &std::path::Path, repo: &str, number: u64) -> bool {
+/// than [`issue_trusted`]. Anything obid can't read is a no. A text carrying [`OBY_SIGNS`] is an
+/// Oby's, whoever's login posted it: never the owner's, but the item's own body when
+/// `signed_body` (obid wrote it for jobs that are the owner's own throughout).
+pub async fn owners_only(gh: &std::path::Path, repo: &str, number: u64, signed_body: bool) -> bool {
     let Some((holder, name)) = repo.split_once('/') else {
         return false;
     };
@@ -346,12 +348,17 @@ pub async fn owners_only(gh: &std::path::Path, repo: &str, number: u64) -> bool 
     else {
         return false;
     };
-    all_by(login, &read["data"]["repository"]["issueOrPullRequest"])
+    all_by(
+        login,
+        &read["data"]["repository"]["issueOrPullRequest"],
+        signed_body,
+    )
 }
 
-/// [`owners_only`] on what [`WHO_WROTE_ALL`] read (`item`): every login in it is `login`, and every
-/// list in it was given whole.
-fn all_by(login: &str, item: &Value) -> bool {
+/// [`owners_only`] on what [`WHO_WROTE_ALL`] read (`item`): every login in it is `login`, every
+/// list in it was given whole, and no text in it carries [`OBY_SIGNS`] (but its own body when
+/// `signed_body`).
+fn all_by(login: &str, item: &Value, signed_body: bool) -> bool {
     let by = |who: &Value| {
         who["login"]
             .as_str()
@@ -365,8 +372,14 @@ fn all_by(login: &str, item: &Value) -> bool {
                 .is_some_and(|nodes| nodes.iter().all(each))
     };
     let edits = |node: &Value| whole(&node["userContentEdits"], &|e| by(&e["editor"]));
-    let written = |node: &Value| by(&node["author"]) && edits(node);
-    if !item.is_object() || !written(item) {
+    let unsigned = |node: &Value| {
+        node["body"]
+            .as_str()
+            .is_none_or(|t| !t.to_lowercase().contains(OBY_SIGNS))
+    };
+    let written = |node: &Value| by(&node["author"]) && edits(node) && unsigned(node);
+    if !item.is_object() || !(by(&item["author"]) && edits(item) && (signed_body || unsigned(item)))
+    {
         return false;
     }
     let renames = whole(&item["timelineItems"], &|r| by(&r["actor"]));

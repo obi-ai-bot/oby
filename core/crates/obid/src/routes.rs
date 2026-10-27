@@ -366,9 +366,42 @@ pub async fn events(
     )
 }
 
+/// Whether the request carries words the owner typed in Oby's apps: signed by a registered
+/// device's key ([`crate::approval::WORDS`]). Anything else that holds obid's token (oby-mcp, a
+/// script, an agent, an older app) doesn't, whatever it sends (crate::secretspec).
+pub fn typed_by_owner(
+    shared: &Shared,
+    method: &str,
+    uri: &axum::http::Uri,
+    headers: &HeaderMap,
+    body: &[u8],
+) -> bool {
+    let path = uri.path();
+    let Some(header) = headers
+        .get(crate::approval::WORDS)
+        .and_then(|v| v.to_str().ok())
+    else {
+        return false;
+    };
+    let checked = shared.jobs.approvals().check_words(
+        header,
+        method,
+        path,
+        body,
+        |device| shared.devices.public_key(device),
+        obi_protocol::time::now(),
+    );
+    if let Err(why) = &checked {
+        tracing::info!("{method} {path}: not words the owner typed in Oby's apps: {why}");
+    }
+    checked.is_ok()
+}
+
 /// `POST /v1/jobs`: a job described whole (`{"job": {"repo", "kind", "task", …}}`).
 pub async fn dispatch(
     State(shared): State<Arc<Shared>>,
+    uri: axum::http::Uri,
+    headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, ApiError> {
     let value: Value = serde_json::from_slice(&body)
@@ -396,6 +429,7 @@ pub async fn dispatch(
     }
     let mut new =
         new_job(job).map_err(|why| ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, why))?;
+    new.vetted = typed_by_owner(&shared, "POST", &uri, &headers, &body);
     // On a teammate's Mac (#797): their Obi, which must take run_request.
     match job.get("runsOn") {
         None | Some(Value::Null) => {}
@@ -491,8 +525,9 @@ fn new_job(job: &Map<String, Value>) -> Result<NewJob, String> {
         runs_on: None,
         routine: None,
         untrusted: false,
-        // The owner's own words, through Oby's apps or the runner's API (crate::secretspec).
-        vetted: true,
+        // Set by `dispatch` only for words an app of the owner's signed (crate::secretspec).
+        vetted: false,
+        foreign: None,
         split: false,
         adding: None,
         heard: Vec::new(),
@@ -804,6 +839,8 @@ pub async fn set_job_settings(
 pub async fn message(
     State(shared): State<Arc<Shared>>,
     Path(id): Path<String>,
+    uri: axum::http::Uri,
+    headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, ApiError> {
     if shared.jobs.get(&id).is_none() {
@@ -841,6 +878,17 @@ pub async fn message(
         }
         Some(Ok(job)) => job,
     };
+    // Words no app of the owner's signed: the job that heard them (or the follow-up they started)
+    // is no longer the owner's own words alone (crate::secretspec).
+    let typed = typed_by_owner(&shared, "POST", &uri, &headers, &body);
+    let job = if typed {
+        job
+    } else {
+        shared
+            .jobs
+            .unvet(&job.id, "words no app of the owner's signed reached it")
+            .unwrap_or(job)
+    };
     // Said on the task's page (Sangam's TaskView): the words and Oby's answer go on the end of the
     // job's conversation, which the app opens, as if said there.
     if let Some((first, conversation)) = first
@@ -849,12 +897,26 @@ pub async fn message(
     {
         let said = shared
             .conversations
-            .append(&conversation, "user", text.trim().to_owned(), vec![])
+            .append(
+                &conversation,
+                "user",
+                text.trim().to_owned(),
+                vec![],
+                (!typed).then(|| "words no app of the owner's signed".to_owned()),
+            )
             .and_then(|_| {
                 let line = crate::brain::actions::told_line(&shared, &first, &job);
-                shared
-                    .conversations
-                    .append(&conversation, "oby", line, vec![job.id.clone()])
+                // It names the job: on obid's allowlist only as the job's own words are.
+                let foreign = first
+                    .check_refuses_secrets()
+                    .map(|why| format!("the title of job {}, which {why}", first.id));
+                shared.conversations.append(
+                    &conversation,
+                    "oby",
+                    line,
+                    vec![job.id.clone()],
+                    foreign,
+                )
             });
         if let Err(e) = said {
             tracing::info!("words for job {id}; conversation {conversation} wasn't told: {e:?}");
@@ -933,11 +995,15 @@ pub async fn publish(
 pub async fn permission(
     State(shared): State<Arc<Shared>>,
     Path(id): Path<String>,
+    uri: axum::http::Uri,
+    headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, ApiError> {
     if shared.jobs.get(&id).is_none() {
         return Err(ApiError::new(StatusCode::NOT_FOUND, NO_JOB));
     }
+    // An answer's words, or a no's, that no app of the owner's signed (crate::secretspec).
+    let unsigned = || !typed_by_owner(&shared, "POST", &uri, &headers, &body);
     let value: Value = serde_json::from_slice(&body)
         .map_err(|_| ApiError::new(StatusCode::BAD_REQUEST, "That isn't JSON."))?;
     let shape = "The body is {\"id\", \"decision\": \"allow\" | \"always\" | \"deny\", \"message\"}, or {\"id\", \"answer\"} for a question.";
@@ -949,6 +1015,11 @@ pub async fn permission(
     let answered = match value.get("answer") {
         None | Some(Value::Null) => None,
         Some(Value::String(answer)) if value.get("decision").is_none() => {
+            if unsigned() {
+                shared
+                    .jobs
+                    .unvet(&id, "an answer no app of the owner's signed reached it");
+            }
             Some(shared.jobs.answer_question(&id, permission, answer))
         }
         Some(_) => return Err(ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, shape)),
@@ -975,6 +1046,11 @@ pub async fn permission(
         Some(Value::String(text)) => Some(text.as_str()),
         Some(_) => return Err(ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, shape)),
     };
+    if message.is_some_and(|m| !m.trim().is_empty()) && unsigned() {
+        shared
+            .jobs
+            .unvet(&id, "words no app of the owner's signed reached it");
+    }
     match shared
         .jobs
         .answer_permission(&id, permission, decision, message)

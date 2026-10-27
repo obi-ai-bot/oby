@@ -35,6 +35,15 @@ nonisolated struct Approval: Encodable, Equatable, Sendable {
         Data("oby-revoke-device\n\(device)\n\(signedAt)".utf8)
     }
 
+    /// What a device signs with a request that carries words the owner typed in Oby's apps
+    /// (docs/runner-api.md, "Words the owner typed"): its method, its path from `/v1/` on and its
+    /// body's SHA-256, so the runner can tell them from words anything else holding its token sent
+    /// (oby-mcp, a script, an agent), and one signature passes for one request.
+    static func wordsMessage(method: String, path: String, body: Data, signedAt: String) -> Data {
+        let digest = SHA256.hash(data: body).map { String(format: "%02x", $0) }.joined()
+        return Data("oby-words\n\(method)\n\(path)\n\(digest)\n\(signedAt)".utf8)
+    }
+
     /// What the Mac signs on the owner's Pair a device (docs/runner-api.md, "Invitations"): only the
     /// phone such an invitation pairs may add its own key.
     static func inviteMessage(signedAt: String) -> Data {
@@ -93,6 +102,14 @@ nonisolated enum DeviceKey {
     static func approveInvite(device: String) throws -> Approval {
         let signedAt = ISO8601DateFormatter().string(from: .now)
         return Approval(device: device, action: "", signedAt: signedAt, signature: try sign(Approval.inviteMessage(signedAt: signedAt)))
+    }
+
+    /// Signs a request that carries words the owner typed, as device `device`: the value of its
+    /// `X-Oby-Words` header, `"<device> <signedAt> <signature>"`.
+    static func signWords(method: String, path: String, body: Data, device: String) throws -> String {
+        let signedAt = ISO8601DateFormatter().string(from: .now)
+        let signature = try sign(Approval.wordsMessage(method: method, path: path, body: body, signedAt: signedAt))
+        return "\(device) \(signedAt) \(signature)"
     }
 
     /// ECDSA P-256 with SHA-256, DER, base64: what the runner checks.

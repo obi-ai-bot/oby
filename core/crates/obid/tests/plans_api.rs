@@ -149,6 +149,21 @@ fn plans_map_replies_questions_none_and_dispatched_jobs() {
         json!(["Engine/Review.swift", "Engine/CheckRuns.swift"])
     );
     assert_eq!(dispatch.body["drafts"], json!([]));
+    // Even the owner's own words, signed: the plan reads its briefing (other jobs, the inbox), so
+    // what it starts gets none of the owner's secrets (crate::secretspec).
+    let typed = call_typed(
+        &obid,
+        "POST",
+        "/v1/plans",
+        &json!({"said": "fix oby #176 and #198", "new": true}),
+    );
+    assert_eq!(typed.status, 200, "{}", typed.text);
+    assert!(
+        obid.log()
+            .contains("the plan's briefing: other jobs, the inbox, the repositories' notes"),
+        "{}",
+        obid.log()
+    );
 }
 
 #[test]

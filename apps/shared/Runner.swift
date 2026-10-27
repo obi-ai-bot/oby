@@ -1088,6 +1088,12 @@ nonisolated struct Runner: Sendable {
     /// An iPhone paired through the Mac's Obysphere (#1278) sends every request sealed through it,
     /// never over HTTP.
     var relay: PhoneRelay?
+    /// Signs a request's body as words the owner typed in this app (`DeviceKey.signWords`): given
+    /// its method, its path and its body, the `X-Oby-Words` header, or nil until this device's key
+    /// is registered. Without it, nothing the app sends counts as the owner's own words for the
+    /// secrets a check declares (docs/runner-api.md).
+    typealias SignsWords = @Sendable (_ method: String, _ path: String, _ body: Data) -> String?
+    var signsWords: SignsWords?
 
     init(base: URL, token: String? = nil, refused: String? = nil, relay: PhoneRelay? = nil) {
         self.base = base
@@ -1807,6 +1813,11 @@ nonisolated struct Runner: Sendable {
         if let body = try json ?? body.map({ try Self.encoder.encode($0) }) {
             request.httpBody = body
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            // The path as the runner reads it, without the query.
+            let route = "/" + (path.split(separator: "?", maxSplits: 1).first.map(String.init) ?? path)
+            if let signed = signsWords?(method, route, body) {
+                request.setValue(signed, forHTTPHeaderField: "X-Oby-Words")
+            }
         }
         let (data, response) = try await fetch(signed(request))
         try Self.check(response, data, refused: refused)

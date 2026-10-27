@@ -818,6 +818,11 @@ pub async fn run(
     // "Work on the roadmap" and the like are the Lead's (#589): it reads the board, not the
     // briefing.
     if super::lead::leads(said) {
+        // The board is anyone's words: issues, labels, pull requests (crate::secretspec).
+        shared.conversations.mark(
+            &control.conversation,
+            "the roadmap board, which the Lead read".into(),
+        );
         // It says it's thinking first, like every turn (#592).
         let thought = "Reading the roadmap";
         super::thinking(shared, control, 1, thought, State::Running);
@@ -829,6 +834,11 @@ pub async fn run(
         super::thinking(shared, control, 1, thought, state);
         return answered;
     }
+    // The briefing holds other jobs' words, the inbox's and the repositories' (crate::secretspec).
+    shared.conversations.mark(
+        &control.conversation,
+        "the plan's briefing: other jobs, the inbox, the repositories' notes".into(),
+    );
     run_with(shared, said, given, asked, control, None).await
 }
 

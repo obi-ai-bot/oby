@@ -497,12 +497,51 @@ pub fn call(obid: &Obid, method: &str, target: &str, body: Option<&Value>) -> An
     call_with_token(obid, TOKEN, method, target, body)
 }
 
+/// Words the owner typed in Oby's apps: `body` to `target`, signed by the test owner's device as
+/// the apps sign them (`X-Oby-Words`, crate::approval::WORDS).
+pub fn call_typed(obid: &Obid, method: &str, target: &str, body: &Value) -> Answer {
+    let text = body.to_string();
+    let signed_at = time::format(time::now());
+    let path = target.split('?').next().unwrap_or(target);
+    let digest = hex::encode(obi_protocol::keys::sha256(text.as_bytes()));
+    let signed = owner_signs(
+        obid,
+        &format!("oby-words\n{method}\n{path}\n{digest}\n{signed_at}"),
+        &signed_at,
+    );
+    let header = format!(
+        "{} {signed_at} {}",
+        signed["device"].as_str().unwrap(),
+        signed["signature"].as_str().unwrap()
+    );
+    call_with_headers(
+        obid,
+        TOKEN,
+        method,
+        target,
+        Some(body),
+        &[("X-Oby-Words", &header)],
+    )
+}
+
 pub fn call_with_token(
     obid: &Obid,
     token: &str,
     method: &str,
     target: &str,
     body: Option<&Value>,
+) -> Answer {
+    call_with_headers(obid, token, method, target, body, &[])
+}
+
+/// [`call_with_token`], with `headers` too.
+pub fn call_with_headers(
+    obid: &Obid,
+    token: &str,
+    method: &str,
+    target: &str,
+    body: Option<&Value>,
+    headers: &[(&str, &str)],
 ) -> Answer {
     let body = body.map(Value::to_string);
     let mut stream = TcpStream::connect(("127.0.0.1", obid.port)).unwrap();
@@ -512,6 +551,9 @@ pub fn call_with_token(
     let mut text = format!(
         "{method} {target} HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer {token}\r\nConnection: close\r\n"
     );
+    for (name, value) in headers {
+        text.push_str(&format!("{name}: {value}\r\n"));
+    }
     match &body {
         Some(body) => text.push_str(&format!(
             "Content-Type: application/json\r\nContent-Length: {}\r\n",

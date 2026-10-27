@@ -348,7 +348,9 @@ impl ToolCall {
         match self.kind.as_deref() {
             Some("execute") => ("Bash".into(), json!({"command": self.command})),
             Some("read") => ("Read".into(), path),
-            Some("search") => ("Grep".into(), json!({"pattern": self.pattern})),
+            // Not `Grep`: Cursor's own web search comes as a `search` too, so obid can't tell one
+            // that stays in the worktree (crate::secretspec, fail closed).
+            Some("search") => ("Search".into(), json!({"pattern": self.pattern})),
             Some("edit" | "delete" | "move") => ("Edit".into(), path),
             Some("fetch") => ("WebFetch".into(), json!({"url": self.url})),
             _ => ("Tool".into(), json!({})),
@@ -1211,7 +1213,9 @@ mod tests {
             );
         }
         assert_eq!(call(json!({"kind": "execute", "title": "Read"})), "Bash");
-        assert_eq!(call(json!({"kind": "search", "title": "x"})), "Grep");
+        // A search may be Cursor's web search: no kind obid knows is safe.
+        assert_eq!(call(json!({"kind": "search", "title": "x"})), "Search");
+        assert!(!crate::secretspec::tool_is_known_safe("Search"));
     }
 
     #[test]

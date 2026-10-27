@@ -4738,7 +4738,12 @@ impl Link {
             }
             inbox::action::CONTINUE_JOB => {
                 let words = confirmed.payload["words"].as_str();
-                match self.jobs.continue_job(target, words, "on your Confirm") {
+                // Words Oby proposed, from a conversation the Confirm doesn't name (crate::secretspec).
+                let foreign = Some("words Oby proposed, confirmed in the inbox".to_owned());
+                match self
+                    .jobs
+                    .continue_job(target, words, "on your Confirm", foreign)
+                {
                     Some(Ok(_)) => Ok(()),
                     Some(Err(refused)) => Err(api(StatusCode::CONFLICT, refused.0)),
                     None => Err(api(StatusCode::CONFLICT, "That job is gone.")),
