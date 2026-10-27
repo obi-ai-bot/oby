@@ -34,7 +34,9 @@ function Blocks({ text, streaming }: { text: string; streaming: boolean }) {
 // ponytail: limits measured on marked 18.1.1, each shape under ~20 ms; a shape not found yet
 // stalls at most twice per text (SLOW_MS, above). Parse in a Worker with a time budget if one
 // turns up (asynchronous: a long message would show plain first, then reflow)
-const LIMIT = 16 * 1024, MARKS = 300;
+// MARKS: an 80-step report of `- **step**: path` holds ~500 and lexes in ~2 ms; 1,500 keeps
+// the worst shape found (`_a` repeated) near 20 ms (21 ms measured, warm).
+const LIMIT = 16 * 1024, MARKS = 1500;
 function lex(text: string): Token[] | null {
   if (text.length > LIMIT) return null;
   // its *, _, ~ and ! outside code

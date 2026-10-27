@@ -747,8 +747,9 @@ button.crumb:hover { color: var(--ink); background: var(--hover); }
 :is(.msg-bubble, .msg-quote, .ss-words) li > :is(ul, ol, p, pre) { margin: 2px 0 0; }
 :is(.msg-bubble, .msg-quote, .ss-words) li > p:first-child { margin: 0; }
 :is(.msg-bubble, .msg-quote, .ss-words) :is(h3, h4, h5, h6) { font-size: inherit; font-weight: 600; color: var(--ink); }
-:is(.msg-bubble, .msg-quote, .ss-words) li:has(> input[type="checkbox"]) { list-style: none; }
-:is(.msg-bubble, .msg-quote, .ss-words) li > input[type="checkbox"] { margin: 0 6px 0 0; vertical-align: -2px; }
+:is(.msg-bubble, .msg-quote, .ss-words) li:has(> input[type="checkbox"], > p > input[type="checkbox"]) { list-style: none; }
+:is(.msg-bubble, .msg-quote, .ss-words) li > input[type="checkbox"],
+:is(.msg-bubble, .msg-quote, .ss-words) li > p > input[type="checkbox"] { margin: 0 6px 0 0; vertical-align: -2px; }
 :is(.msg-bubble, .msg-quote, .ss-words) hr { height: 1px; border: 0; background: var(--line); }
 :is(.msg-bubble, .ss-words) a.tok-url { text-decoration: none; }
 :is(.msg-bubble, .ss-words) a.tok-url:hover { text-decoration: underline; }
