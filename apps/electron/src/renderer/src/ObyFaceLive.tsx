@@ -38,14 +38,14 @@ const KEYS: [number, Partial<Record<Name, number>>, Preset][] = [
 // done after the last key, once settled
 const WRAP_UP = 4.0;
 // Oby starting to talk: the dots spring back into the face in about 250ms, facing
-// you, instead of the full spin (true: Sangam's spin, to compare)
-const FULL_SPIN = false;
+// you, instead of the full spin. The control center's (dev only), to compare:
+// fullSpin, Sangam's spin; the balloon as three dots, or none. Read as Oby next talks.
+export const dev = { fullSpin: false, balloon: 'gx' as 'gx' | 'dots' | 'off' };
 const QUICK: typeof KEYS = [
   [0, { dBounce: 0, dSpread: 0 }, 'fast'],      // the dots run together
   [0.05, { scale: 1, inflate: 0.17 }, 'fast'],  // and spring back into the face
   [0.1, { dR: 0 }, 'fast'],
 ];
-const RETURN_MS = FULL_SPIN ? 900 : 250;
 
 // The speech balloon while Oby talks (the owner's, 2026-10-27): Q*bert's grawlix,
 // every time. It grows out of its tail a beat after the words start (once the face
@@ -87,7 +87,7 @@ export default function ObyFaceLive({ live, talk, size = 22 }: { live: boolean; 
     const r = timers.current, now = performance.now();
     if (say === 'off') {
       // closed first, so it grows rather than appears; once the face is back from its dots
-      const at = active ? RETURN_MS : SAY.at;
+      const at = active ? (dev.fullSpin ? 900 : 250) : SAY.at;
       r.opens = now + at;
       setSay('in'); setGlyph(0);
       r.open = window.setTimeout(() => { setSay('open'); setBob(true); }, at);
@@ -109,7 +109,7 @@ export default function ObyFaceLive({ live, talk, size = 22 }: { live: boolean; 
   useEffect(() => () => { const r = timers.current; clearTimeout(r.open); clearTimeout(r.close); clearTimeout(r.gone); }, []);
   // a new glyph each beat while it's open (one still glyph with reduced motion)
   useEffect(() => {
-    if (say !== 'open' || still) return;
+    if (say !== 'open' || still || dev.balloon !== 'gx') return;
     const t = setInterval(() => setGlyph((g) => g + 1), SAY.glyph);
     return () => clearInterval(t);
   }, [say, still]);
@@ -177,7 +177,7 @@ export default function ObyFaceLive({ live, talk, size = 22 }: { live: boolean; 
       const live = liveRef.current;
       if (live && (keys !== KEYS || t >= WRAP_UP)) { keys = KEYS; idx = 0; advance(0); }  // back to work while coming together: start over
       if (!live && keys === KEYS && t < WRAP_UP) {
-        if (FULL_SPIN) { idx = KEYS.findIndex(([at]) => at >= WRAP_UP); t = WRAP_UP; }  // words in: skip to coming together
+        if (dev.fullSpin) { idx = KEYS.findIndex(([at]) => at >= WRAP_UP); t = WRAP_UP; }  // words in: skip to coming together
         else {
           // words in: straight back, turning to face you the short way round (at once
           // when it's melted into dots, where nobody sees it turn)
@@ -240,9 +240,11 @@ export default function ObyFaceLive({ live, talk, size = 22 }: { live: boolean; 
   // the face (bobbing gently while the balloon's open, blinking as it deflates), and the balloon
   return <>
     <span ref={wrap} className={`oby-talk${bob ? ' is-bob' : ''}${say === 'out' ? ' is-blink' : ''}`}>{face}</span>
-    {say !== 'off' && (
-      <span className={`say${say === 'open' ? ' open' : ''}`} aria-hidden="true">
-        <span className="say-in">{[0, 1].map((i) => <b key={i} className={glyph % 2 === i ? 'on' : undefined}>{glyphOf(i)}</b>)}</span>
+    {say !== 'off' && dev.balloon !== 'off' && (
+      <span className={`say${dev.balloon === 'gx' ? ' gx' : ''}${say === 'open' ? ' open' : ''}`} aria-hidden="true">
+        <span className="say-in">{dev.balloon === 'gx'
+          ? [0, 1].map((i) => <b key={i} className={glyph % 2 === i ? 'on' : undefined}>{glyphOf(i)}</b>)
+          : <><i /><i /><i /></>}</span>
       </span>
     )}
   </>;
