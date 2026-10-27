@@ -316,7 +316,7 @@ Oby runs up to three regular reviews (`Review.maxRounds`). If the third still re
 
 ### Mac check
 
-On obid (2026-10-27), the Mac app's separate Mac checks are gone: `GET /v1/checks/next`, `GET /v1/checks/{id}/bundle`, `POST /v1/checks/{id}/result` and the agents' `oby-check apple` (`/v1/agent/apple-check`) answer `404`. A learned workflow's `checks: "mac"` means the job's own check passed and the secret scan was clean on this Mac, on the head obid pushed for it: obid pushes a head only after both, so a pull request whose head is that commit, with that publish's scan clean, merges by itself once its review stands. A job's `macCheck`, `appleCheck` and `appleRan` stay in its JSON (null on new jobs) for the apps that decode them.
+On obid (2026-10-27), the Mac app's separate Mac checks are gone: `GET /v1/checks/next`, `GET /v1/checks/{id}/bundle`, `POST /v1/checks/{id}/result` and the agents' `oby-check apple` (`/v1/agent/apple-check`) answer `404`. A learned workflow's `checks: "mac"` no longer merges by itself: the job's own check runs boxed and skips the suites only the Mac runs unboxed (MacTests, `swift test`; scripts/oby-check.sh), and nothing else runs them on the pushed head, so once everything else holds the owner gets a card (`Not merged: the Mac's own checks (MacTests, swift test) don't run by themselves any more, so it's yours to merge.`). A job with no check at all never merges by itself either (`Not merged: no check ran on its head (this repository has none), so it's yours to merge.`). A job's `macCheck`, `appleCheck` and `appleRan` stay in its JSON (null on new jobs) for the apps that decode them.
 
 ### Xcode Cloud
 
