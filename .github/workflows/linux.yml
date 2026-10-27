@@ -116,13 +116,24 @@ jobs:
       # The commits this run brings, as scripts/oby-check.sh scans a change's (with .gitleaks.toml
       # and .gitleaksignore): a pull request's from its merge base with the base branch, a push's
       # from the commit it replaced. Older history isn't rescanned here.
+      # A push with no earlier commit here (a new branch, or a force-push whose old head isn't
+      # fetched) starts from where it leaves the default branch instead.
       - name: gitleaks over the new commits
         env:
           BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
           HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
+          base=""
           if git cat-file -e "$BASE^{commit}" 2>/dev/null; then
-            range="$(git merge-base "$BASE" "$HEAD")..$HEAD"
+            base=$(git merge-base "$BASE" "$HEAD")
+          elif [ -n "$DEFAULT_BRANCH" ] && fork=$(git merge-base "origin/$DEFAULT_BRANCH" "$HEAD" 2>/dev/null) \
+              && [ "$fork" != "$(git rev-parse "$HEAD")" ]; then
+            echo "No earlier commit to start from (${BASE:-none}): scanning from origin/$DEFAULT_BRANCH."
+            base=$fork
+          fi
+          if [ -n "$base" ]; then
+            range="$base..$HEAD"
           else
             echo "No earlier commit to start from (${BASE:-none}): scanning $HEAD alone."
             range="-1 $HEAD"
@@ -179,11 +190,20 @@ jobs:
           path: oby
           persist-credentials: false
 
-      # The Sphere side of the scenario: oby-sphere's dev, which is public (no token).
+      # The Sphere side of the scenario: oby-sphere (public, no token) at the commit oby records in
+      # e2e/oby-sphere.ref, never its moving dev, so a push there can't turn oby's checks red.
+      # Moving to a newer oby-sphere is a change here, with this run as its test.
+      - name: The oby-sphere commit oby is tested with
+        id: sphere
+        run: |
+          ref=$(tr -d '[:space:]' < e2e/oby-sphere.ref)
+          [[ "$ref" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::e2e/oby-sphere.ref isn't a commit id: $ref"; exit 1; }
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: obi-ai-bot/oby-sphere
-          ref: dev
+          ref: ${{ steps.sphere.outputs.ref }}
           path: oby-sphere
           persist-credentials: false
 
