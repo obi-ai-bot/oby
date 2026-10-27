@@ -136,16 +136,21 @@ function taskOf(s: Live, j: Job): Task {
 const tasksOf = (s: Live) => Object.values(s.jobs).sort((a, b) => b.created.localeCompare(a.created)).map((j) => taskOf(s, j));
 
 // into the stores the screens read
+let accountsFrom: Status | null = null;
 function publish() {
   replaceChats(chatsOf(state));
   replaceTasks(tasksOf(state));
   // the week's share, else the 5-hour window's; unknown until the tool says (never a made-up 0%).
-  // Cursor's CLI reports no usage at all.
-  if (state.status) replaceAccounts(state.status.accounts.map((a) => {
+  // Cursor's CLI reports no usage at all. Only when obid's status changed: publish runs at every
+  // change, each word of Oby's included, and Settings › Accounts and the usage gauge draw again
+  // for each list.
+  if (!state.status || state.status === accountsFrom) return;
+  accountsFrom = state.status;
+  replaceAccounts(state.status.accounts.map((a) => {
     const used = a.agent === 'cursor' ? null : a.sevenDay ?? a.fiveHour;
     return {
-      id: a.id, agent: a.agent, name: a.name, payer: a.payer ?? 'You', signedIn: a.signedIn, used: used == null ? null : Math.round(used * 100),
-      resets: !a.signedIn ? 'Not signed in' : a.agent === 'cursor' ? 'Cursor doesn’t report usage' : used == null ? 'No use reported yet'
+      id: a.id, agent: a.agent, name: a.name, payer: a.payer ?? 'You', signedIn: a.signedIn, label: a.label ?? null, used: used == null ? null : Math.round(used * 100),
+      resets: !a.signedIn ? a.label ?? 'Not signed in' : a.agent === 'cursor' ? 'Cursor doesn’t report usage' : used == null ? 'No use reported yet'
         : a.sevenDayResets ? `Resets ${new Date(a.sevenDayResets).toLocaleDateString([], { weekday: 'long' })}` : 'No reset reported',
     };
   }));

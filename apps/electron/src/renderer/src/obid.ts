@@ -67,6 +67,8 @@ export type Account = {
   name: string;
   payer?: string | null;
   signedIn: boolean;
+  // what the tool says about the login; signed out, what obid says to do ("Run codex once")
+  label?: string | null;
   fiveHour: number | null;
   sevenDay: number | null;
   sevenDayResets: string | null;
@@ -88,7 +90,7 @@ export type Repo = { repo: string; defaultBranch: string; listed: boolean };
 
 // A sign-in under way: the page to open, and the code to type there (Codex's, GitHub's) or, with
 // pasteCode, the code that page shows, to send back (Claude Code's)
-export type SignIn = { account?: string; url: string; userCode?: string | null; pasteCode?: boolean };
+export type SignIn = { account?: string; url: string; userCode?: string | null; pasteCode?: boolean; expiresAt?: string };
 
 // "POST /v1/plans"
 export type Question = { text: string; options: string[]; recommended: number | null };
