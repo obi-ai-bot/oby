@@ -7,11 +7,13 @@
 #   2. `oby-test`: a fresh clone of it, 4 GB of memory, no window, the DMG's folder shared read-only,
 #      reached over SSH as its logged-in user (admin; a throwaway key added with its password);
 #   3. in the VM: the DMG mounted, the app copied into Applications as a drag does, and opened;
-#   4. the checks: obid starts by itself and /v1/status answers with obid's token; the window shows
-#      Oby's conversation and no engine error (its text, read over Chromium's DevTools port through
-#      the SSH connection, and a picture of it in dist/vm-test.png); obid still answers after Oby
-#      quits; after a restart of the VM, launchd starts the app's registered obid at login, with
-#      Oby closed; and with the window closed, the app's CPU over 60 s;
+#   4. the checks: with another program on 7777, Oby says the port is taken, registers nothing and
+#      sends that program nothing (no token); then, with 7777 free, obid starts by itself and
+#      /v1/status answers with obid's token; the window shows Oby's conversation and no engine error
+#      (its text, read over Chromium's DevTools port through the SSH connection, and a picture of it
+#      in dist/vm-test.png); obid still answers after Oby quits; after a restart of the VM, launchd
+#      starts the app's registered obid at login, with Oby closed; and with the window closed, the
+#      app's CPU over 60 s;
 #   5. `oby-test` deleted, whatever happened (obid.log kept in dist/vm-obid.log).
 # Usage: scripts/vm-test.sh [the DMG] (dist/'s newest arm64 DMG by default). Signing an agent in
 # inside the VM is the owner's step, by hand, and never in a VM that's kept.
@@ -75,6 +77,23 @@ say "Installing ${dmg:t}"
 in_vm "mnt=\$(hdiutil attach -nobrowse -noautoopen -readonly '/Volumes/My Shared Files/dist/${dmg:t}' | awk -F'\t' '/\/Volumes\//{print \$NF}')
   ditto \"\$mnt/$name.app\" '/Applications/$name.app' && hdiutil detach \"\$mnt\" -quiet"
 in_vm "lsof -nP -iTCP:7777 -sTCP:LISTEN" > /dev/null 2>&1 && die "something already listens on 7777 in the clean VM"
+ssh "${ssh_to[@]}" -N -L 9339:127.0.0.1:9333 "admin@$ip" &
+tunnel=$!
+
+say "Another program on 7777: Oby sends it nothing and registers nothing"
+in_vm "nohup nc -l 127.0.0.1 7777 > /tmp/foreign.txt 2>&1 < /dev/null &"
+in_vm "open -a '/Applications/$name.app' --args --remote-debugging-port=9333"
+text=""
+for _ in {1..30}; do
+  text=$(page 'document.body.innerText' 2> /dev/null) && [[ "$text" == *'Something other than your Oby engine'* ]] && break
+  sleep 2
+done
+[[ "$text" == *'Something other than your Oby engine'* ]] || die "the window doesn't say 7777 is taken: $text"
+in_vm "launchctl print gui/\$(id -u)/com.deskree.oby.electron.obid" > /dev/null 2>&1 && die "it registered its agent anyway"
+in_vm "grep -c . /tmp/foreign.txt" > /dev/null 2>&1 && die "it sent the other program something: $(in_vm 'head -c 200 /tmp/foreign.txt')"
+echo "    the window says 7777 is taken; nothing registered, nothing sent"
+in_vm "osascript -e 'tell application id \"com.deskree.oby.electron\" to quit'
+  for _ in {1..30}; do pgrep -x '$name' > /dev/null || break; sleep 1; done; pkill -x nc"
 
 say "Opening $name"
 in_vm "open -a '/Applications/$name.app' --args --remote-debugging-port=9333"
@@ -86,8 +105,6 @@ for label in com.deskree.oby.electron.obid com.deskree.oby.electron.obid.session
   running $label && echo "    launchd runs $label"
 done
 
-ssh "${ssh_to[@]}" -N -L 9339:127.0.0.1:9333 "admin@$ip" &
-tunnel=$!
 text=""
 for _ in {1..30}; do
   text=$(page 'document.body.innerText' 2> /dev/null) && [[ -n "$text" && "$text" != *starting* ]] && break

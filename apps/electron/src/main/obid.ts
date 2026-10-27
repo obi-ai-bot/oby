@@ -2,7 +2,7 @@ import { app, dialog, ipcMain, shell, type IpcMainEvent, type IpcMainInvokeEvent
 import { execFile } from 'node:child_process';
 import { closeSync, constants, fstatSync, openSync, readFileSync, readSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { promisify } from 'node:util';
 
 // obid, Oby's engine (core/, docs/runner-api.md), as this app reaches it: the obid already
@@ -36,13 +36,35 @@ const token = () => readOwn('api-token', true);
 // Why obid isn't answering: why this app's own couldn't start (startObid), else obid's own reason
 // (home/last-start-error, written by a start that failed and removed once it listens, #1493),
 // else what the connection said.
-function reason(error: unknown): string {
+function reason(error?: unknown): string {
+  // whatever listens now gets checked again before the next call
+  mineUntil = 0;
   if (problem) return problem;
   const own = readOwn('last-start-error', false);
   if (own) return own;
   const cause = (error as { cause?: { code?: string; message?: string } })?.cause;
-  if (cause?.code === 'ECONNREFUSED') return 'Nothing answers on 127.0.0.1:7777: obid isn’t running.';
+  if (!error || cause?.code === 'ECONNREFUSED') return 'Nothing answers on 127.0.0.1:7777: obid isn’t running.';
   return cause?.message ?? (error instanceof Error ? error.message : String(error));
+}
+
+// Who listens on 127.0.0.1:7777: an obid of this user's ('mine'), something else ('foreign': every
+// user on the Mac shares the port, so another user's obid, or any other program), or nothing. lsof
+// lists only this user's processes. Only 'mine' gets the token, and this app stands down only for
+// it. ponytail: a 'mine' holds 10 s, or until a call fails; checking at every call would run lsof
+// for each of the page's calls.
+const TAKEN = 'Something other than your Oby engine answers on 127.0.0.1:7777 (another user’s Oby on this Mac, or another program), so Oby sends it nothing. Quit it, or log that user out, and open Oby again.';
+let mineUntil = 0;
+async function listener(): Promise<'mine' | 'foreign' | 'none'> {
+  if (Date.now() < mineUntil) return 'mine';
+  let pids: string[] = [];
+  try {
+    pids = (await run('/usr/sbin/lsof', ['-nP', '-a', '-iTCP@127.0.0.1:7777', '-sTCP:LISTEN', '-t'])).stdout.split('\n').filter(Boolean);
+  } catch { /* exit 1: no process of this user's listens there */ }
+  for (const pid of pids) {
+    const name = await run('/bin/ps', ['-o', 'comm=', '-p', pid]).then((r) => basename(r.stdout.trim()), () => '');
+    if (name === 'obid') { mineUntil = Date.now() + 10_000; return 'mine'; }
+  }
+  return pids.length || await answers() ? 'foreign' : 'none';
 }
 
 // What a call or the stream came back with: obid's status and body, or (status 0) why it didn't answer
@@ -53,6 +75,8 @@ async function send(method: string, path: string, body: unknown, signal?: AbortS
   if (!METHODS.has(method) || !/^\/v1\/[^\s#]*$/.test(path) || !new URL(BASE + path).pathname.startsWith('/v1/')) return { status: 400, text: JSON.stringify({ error: 'Not an obid call.' }) };
   const t = token();
   if (!t) return { status: 0, text: problem ?? readOwn('last-start-error', false) ?? `No token of obid’s in ${HOME}/api-token: is obid set up on this Mac?` };
+  const who = await listener();
+  if (who !== 'mine') return { status: 0, text: who === 'foreign' ? TAKEN : reason() };
   try {
     const r = await fetch(BASE + path, {
       method, signal, cache: 'no-store',
@@ -74,9 +98,10 @@ async function send(method: string, path: string, body: unknown, signal?: AbortS
 // This app's own obid (Contents/Helpers/obid, scripts/helpers.sh) is a launch agent from the app's
 // plist (build/com.deskree.oby.electron.obid.plist), registered with SMAppService through
 // Electron: launchd starts it now and at every login, and keeps it running after Oby quits, with
-// its jobs and the iPhone's relay. An obid already answering on 7777 (the Swift Oby's login item,
-// install.sh's) is adopted as it is, and this app's own stands down, so the two never fight for
-// the port at login. The Swift app's lessons (apps/mac/app/LoginItem.swift):
+// its jobs and the iPhone's relay. An obid of this user's already answering on 7777 is adopted as
+// it is. While launchd has the Swift Oby's login item or install.sh's agent (OTHERS), this app
+// registers none and stands its own down, so two agents never fight for the port at login. The
+// Swift app's lessons (apps/mac/app/LoginItem.swift):
 // - only from Applications: a translocated copy, or one on the disk image, would register a path
 //   that goes away;
 // - macOS may want the user's approval first (System Settings › General › Login Items);
@@ -90,6 +115,8 @@ async function send(method: string, path: string, body: unknown, signal?: AbortS
 const PLIST = 'com.deskree.oby.electron.obid.plist';
 const LABEL = 'com.deskree.oby.electron.obid';
 const SESSION = `${LABEL}.session`;
+// the other agents that start an obid at login, and whose they are
+const OTHERS = { 'com.deskree.oby.obid': 'the Swift Oby', 'com.deskree.obid': 'install.sh' };
 const SERVICE = { type: 'agentService', serviceName: PLIST } as const;
 const LOGIN_ITEMS = 'x-apple.systempreferences:com.apple.LoginItems-Settings.extension';
 const run = promisify(execFile);
@@ -180,12 +207,13 @@ async function moveToApplications() {
 // then restarts anyway (they carry on after a restart, docs/runner-api.md)
 async function restartIfStale(label: string, printed: string) {
   try {
-    const started = Date.parse((await run('/bin/ps', ['-o', 'lstart=', '-p', field(printed, 'pid') ?? ''])).stdout.trim());
-    if (!(started < statSync(helper()).ctimeMs - 1000)) return;
+    // in C's words: Date.parse reads no other language's month names
+    const lstart = await run('/bin/ps', ['-o', 'lstart=', '-p', field(printed, 'pid') ?? ''], { env: { ...process.env, LC_ALL: 'C' } });
+    if (!(Date.parse(lstart.stdout.trim()) < statSync(helper()).ctimeMs - 1000)) return;
   } catch { return; }
   for (let i = 0; i < 20; i++) {
     const r = await send('GET', '/v1/status', undefined);
-    const running = r instanceof Response && r.ok ? ((await r.json()) as { running?: number }).running : 0;
+    const running = r instanceof Response && r.ok ? await r.json().then((s: { running?: number }) => s.running, () => 0) : 0;
     if (!running) break;
     await sleep(30_000);
   }
@@ -198,13 +226,24 @@ export async function startObid() {
   if (process.platform !== 'darwin' || !app.isPackaged) return;
   problem = 'Oby’s engine is starting…';
   try {
-    if (await answers()) {
+    const who = await listener();
+    // never in the way of another user's obid or another program: nothing registered or stopped
+    if (who === 'foreign') { problem = TAKEN; return; }
+    for (const [label, whose] of Object.entries(OTHERS).filter(([l]) => l !== LABEL)) {
+      const printed = await launchd(label);
+      if (!printed) continue;
+      if (status() === 'enabled' || status() === 'requires-approval') register(false);
+      const exit = field(printed, 'last exit code');
+      problem = who === 'mine' ? null : `Oby’s engine on this Mac is ${whose}’s, and it isn’t running (launchd says ${exit ? `its last exit code was ${exit}` : `it’s ${field(printed, 'state') ?? 'not running'}`}). Start it there, or remove it, and open this app again.`;
+      return;
+    }
+    if (who === 'mine') {
       problem = null;
       for (const label of [LABEL, SESSION]) {
         const printed = await launchd(label);
         if (field(printed, 'state') === 'running') return await restartIfStale(label, printed!);
       }
-      if (status() === 'enabled' || status() === 'requires-approval') register(false);
+      // an obid nobody registered (one run by hand): adopted, this app's agent kept for later logins
       return;
     }
     if (!app.isInApplicationsFolder()) return await moveToApplications();
@@ -270,6 +309,7 @@ export function bridge(trusted: Trusted) {
         if (done || following !== control) break;
         if (!page.isDestroyed()) page.send('obid-chunk', value);
       }
+      mineUntil = 0;
       end({ status: 0, text: 'obid closed the event stream.' });
     } catch (err) {
       if (!control.signal.aborted) end({ status: 0, text: reason(err) });

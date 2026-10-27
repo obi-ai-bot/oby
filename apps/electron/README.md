@@ -15,14 +15,21 @@ Electron), so it keeps running after Oby quits, with its jobs and the iPhone's
 relay. Until users have moved over it is `Oby Electron.app`, with its own bundle
 ID, `com.deskree.oby.electron`, and its own label, so dragged into Applications it
 never replaces the Swift `Oby.app` (`com.deskree.oby`) and never shares its login
-item. Both obids use the same configuration,
-home and port: at launch the app adopts any obid already answering on 7777 (the
-Swift Oby's, install.sh's) and stands its own down, and registers its own only
-when none answers; the Swift Oby does the same. When its own can't start, the
+item. Both obids use the same configuration, home and port. While launchd has
+the Swift Oby's login item (or install.sh's agent), this app registers none of
+its own and uses that obid; it registers its own only when no other is
+registered, so two agents never fight for 7777 at login. Before it adopts an obid
+or sends it the token, it checks that what listens on 7777 is an obid of this
+user's (`lsof` lists only this user's processes): 7777 is shared by every user
+on the Mac, so another user's obid, or any other program, gets nothing, and the
+window says the port is taken. When its own can't start, the
 window says why: not in Applications (it offers to move itself there), waiting
 for approval in System Settings › General › Login Items (it opens that page),
 obid's `last-start-error`, else launchd's last exit code and the end of
-`~/Library/Logs/obid.log`. In development (`npm run dev`) it starts nothing.
+`~/Library/Logs/obid.log`. macOS 26 often doesn't start a just-registered agent
+until the next login (launchd exits 78: `copy_bundle_path … not a bundle`); the app
+then runs the same obid as a job of this login session only. In development
+(`npm run dev`) it starts nothing.
 
 It shows only the conversation: a new user starts empty, Oby sets them up in
 its first conversation (the tools on this Mac, GitHub, then Tetrix and the
@@ -57,6 +64,9 @@ scans it with gitleaks, notarizes and staples it (keychain profile
 stapled too. It needs the Developer ID Application identity of team
 `3UV9W5SV7W` and both Rust targets (`rustup target add aarch64-apple-darwin
 x86_64-apple-darwin`); `OBY_CARGO_TARGET_DIR` reuses a cargo target directory.
+obid, gh and gitleaks are staged again only when `core/`, `plugins/` or the bundle
+scripts changed since (`build/helpers/stamp`). `scripts/vm-test.sh [dmg]` then
+runs the clean-install test in a throwaway macOS 26 VM.
 
 ```
 src/main/       the window (opens at 994×670, at least 420×520) and the cursor feed;
@@ -70,7 +80,8 @@ native/         window-style: makes the window macOS's toolbar window type
 build/          the app icon: icon.png, icon.icns, and make-icon.py that draws them
                 (from oby-head.png: Oby's head, rising from the icon's bottom edge);
                 obid's launch agent and the entitlements; helpers/, what helpers.sh stages
-scripts/        helpers.sh and package.sh: the signed, notarized app
+scripts/        helpers.sh and package.sh: the signed, notarized app; vm-test.sh (with
+                cdp.mjs): the clean-install test in a macOS 26 VM (Tart)
 ```
 
 The renderer, in `src/renderer/src/`:

@@ -1,7 +1,7 @@
 #!/bin/zsh
 # Packages the Mac app, one DMG per architecture, on this Mac (no CI), as scripts/release.sh does
 # the Swift app's (docs/release.md):
-#   1. obid, gh and gitleaks, staged and signed by helpers.sh (once; OBY_RESTAGE=1 stages again);
+#   1. obid, gh and gitleaks, staged and signed by helpers.sh when what goes in changed since;
 #   2. main, preload and the renderer (electron-vite);
 #   3. per architecture: window-style built for it, the app signed with Developer ID and the
 #      hardened runtime (electron-builder), checked, scanned for secrets before it leaves this Mac,
@@ -16,7 +16,8 @@ root=${app_dir:h:h}
 cd "$app_dir"
 profile=${OBY_NOTARY_PROFILE:-oby-notary}
 team=${OBY_TEAM_ID:-3UV9W5SV7W}
-archs=(${@:-arm64 x64})
+archs=("$@")
+(( ${#archs} )) || archs=(arm64 x64)
 version=$(node -p "require('./package.json').version")
 name=$(sed -n 's/^productName: //p' electron-builder.yml)
 electron=$(node -p "require('electron/package.json').version")
@@ -33,7 +34,7 @@ notarize() {
   xcrun stapler validate "$item" > /dev/null || die "the ticket on ${item:t} doesn't validate"
 }
 
-[[ -x build/helpers/Contents/Helpers/obid && -z "${OBY_RESTAGE:-}" ]] || zsh scripts/helpers.sh
+zsh scripts/helpers.sh --if-stale
 gitleaks=build/helpers/Contents/MacOS/gitleaks
 say "Building main, preload and the renderer"
 npm run build --silent
@@ -51,7 +52,8 @@ for arch in $archs; do
   done
   [[ "$("$app/Contents/MacOS/gitleaks" version 2>&1)" == 8.30.1 ]] || die "the app's gitleaks doesn't run"
 
-  # Nothing leaves this Mac unscanned, Apple's notary service included.
+  # The app's files scanned before they leave this Mac, for Apple's notary service too. gitleaks
+  # reads text: a secret inside a Mach-O binary goes unseen, as in scripts/release.sh.
   say "Secret scan"
   scan=0
   "$gitleaks" dir "$app" --config "$root/.gitleaks.toml" --no-banner --redact --exit-code=99 \
