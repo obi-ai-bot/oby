@@ -397,6 +397,46 @@ pub async fn end_group(pgid: u32, grace: Duration) {
     signal_group(pgid, nix::sys::signal::Signal::SIGKILL);
 }
 
+/// `command`'s exit and stdout once it ends, or none when it didn't start or end within `limit`
+/// (it's killed then): for the short commands obid asks while it starts (`security`), so none can
+/// hang it. Its stdout is read meanwhile, so a long answer can't stall it.
+pub fn output_within(
+    command: &mut std::process::Command,
+    limit: Duration,
+) -> Option<std::process::Output> {
+    let mut child = command.stdout(std::process::Stdio::piped()).spawn().ok()?;
+    let mut stdout = child.stdout.take()?;
+    let read = std::thread::spawn(move || {
+        let mut out = Vec::new();
+        let _ = std::io::Read::read_to_end(&mut stdout, &mut out);
+        out
+    });
+    let give_up_at = std::time::Instant::now() + limit;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if std::time::Instant::now() < give_up_at => {
+                std::thread::sleep(Duration::from_millis(20))
+            }
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                tracing::warn!(
+                    "{} didn't answer within {} s",
+                    command.get_program().to_string_lossy(),
+                    limit.as_secs()
+                );
+                return None;
+            }
+        }
+    };
+    Some(std::process::Output {
+        status,
+        stdout: read.join().ok()?,
+        stderr: Vec::new(),
+    })
+}
+
 /// "exit status 1", or "killed by signal 9".
 pub fn describe(status: std::process::ExitStatus) -> String {
     #[cfg(unix)]

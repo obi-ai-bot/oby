@@ -47,10 +47,15 @@ pub const DEFAULT_LISTEN: Option<&str> = if cfg!(target_os = "macos") {
     None
 };
 
-/// The file as written. Validated into [`Config`].
+/// The file as written. Validated into [`Config`]. A top-level key obid doesn't know (one a later
+/// obid retired, or an earlier one wrote) is ignored with a warning, never a reason not to start:
+/// every updater would exit otherwise. Inside a section, an unknown key is still refused.
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 struct File {
+    /// The top-level keys obid doesn't know, ignored.
+    #[serde(flatten)]
+    ignored: std::collections::BTreeMap<String, serde_json::Value>,
     #[serde(default)]
     listen: Option<String>,
     home: PathBuf,
@@ -271,6 +276,8 @@ pub struct Config {
     /// and then obid turns it on by itself on macOS when Claude Code's default login is only in the
     /// Keychain (crate::jobs::keychain_wanted, the owner's decision of 2026-10-18).
     pub claude_keychain: Option<bool>,
+    /// The top-level keys of the file obid doesn't know, which it ignores (logged when it starts).
+    pub ignored: Vec<String>,
     /// `cursorKeychain`: obid copies Cursor's own login from the macOS Keychain, where cursor-agent
     /// keeps it by default, into a boxed run's place for it (only its access token and API key). As
     /// `claude_keychain`: `None` when it's left out, and then obid turns it on by itself on macOS when
@@ -638,6 +645,7 @@ impl Config {
             job_token_budget,
             gateway,
             claude_keychain: file.claude_keychain,
+            ignored: file.ignored.into_keys().collect(),
             cursor_keychain: file.cursor_keychain,
             vm_helper: file.vm_helper,
             vm_image: file.vm_image,
@@ -1186,9 +1194,17 @@ mod tests {
         assert!(problem(&with(serde_json::json!({"home": "obid-home"}))).contains("absolute"));
     }
 
+    /// A top-level key obid doesn't know is ignored and named; one inside a section is refused.
     #[test]
-    fn refuses_keys_it_doesnt_know() {
-        assert!(problem(&with(serde_json::json!({"telemetri": true}))).contains("telemetri"));
+    fn ignores_top_level_keys_it_doesnt_know() {
+        let config = Config::parse(&with(
+            serde_json::json!({"telemetri": true, "zzRetired": 1}),
+        ));
+        let config = config.unwrap();
+        assert_eq!(config.ignored, ["telemetri", "zzRetired"]);
+        assert!(!config.telemetry);
+        let inside = serde_json::json!({"agents": {"claude": {"bin": "claude", "accountz": []}}});
+        assert!(problem(&with(inside)).contains("accountz"));
     }
 
     #[test]

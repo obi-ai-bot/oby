@@ -117,19 +117,51 @@ pub fn ensure_config(path: &Path, home: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// Sends what obid says on stderr to `~/Library/Logs/obid.log` (appended, 0600 when new).
+/// The size at which `obid.log` becomes `obid.log.1` (#919): with `.1` and `.2`, about 30 MB at most.
+pub const LOG_LIMIT: u64 = 10 * 1024 * 1024;
+
+/// Sends what obid says on stderr to `~/Library/Logs/obid.log` (appended, 0600 when new), rotated
+/// first when it reached [`LOG_LIMIT`], and again whenever it does while obid runs (looked at every
+/// 10 minutes).
 pub fn log_to_file(home: &Path) -> Result<(), String> {
-    use std::os::unix::fs::OpenOptionsExt;
     let path = log_path(home);
+    open_log(&path)?;
+    std::thread::spawn(move || {
+        loop {
+            std::thread::sleep(std::time::Duration::from_secs(10 * 60));
+            if std::fs::metadata(&path).is_ok_and(|m| m.len() >= LOG_LIMIT)
+                && let Err(e) = open_log(&path)
+            {
+                eprintln!("obid: {e}");
+            }
+        }
+    });
+    Ok(())
+}
+
+/// `path` when it's [`LOG_LIMIT`] or more becomes `path.1`, the `.1` before it `.2`, and the old
+/// `.2` goes.
+fn rotate(path: &Path) {
+    if std::fs::metadata(path).is_ok_and(|m| m.len() >= LOG_LIMIT) {
+        let old = |n| PathBuf::from(format!("{}.{n}", path.display()));
+        let _ = std::fs::rename(old(1), old(2));
+        let _ = std::fs::rename(path, old(1));
+    }
+}
+
+/// `path`, [`rotate`]d, opened onto stderr.
+fn open_log(path: &Path) -> Result<(), String> {
+    use std::os::unix::fs::OpenOptionsExt;
     if let Some(folder) = path.parent() {
         std::fs::create_dir_all(folder)
             .map_err(|e| format!("can't make {}: {e}", folder.display()))?;
     }
+    rotate(path);
     let file = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
         .mode(0o600)
-        .open(&path)
+        .open(path)
         .map_err(|e| format!("can't open {}: {e}", path.display()))?;
     nix::unistd::dup2_stderr(&file).map_err(|e| format!("can't log to {}: {e}", path.display()))?;
     Ok(())
@@ -160,6 +192,29 @@ mod tests {
             assert_eq!(found(&contents.join("Helpers/obid")), None);
         }
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A log at the limit becomes `.1`, the `.1` before it `.2`, and the old `.2` goes; one under
+    /// it stays as it is.
+    #[test]
+    fn a_full_log_is_rotated() {
+        let dir = folder("rotate");
+        let path = dir.join("obid.log");
+        let at = |n: u8| dir.join(format!("obid.log.{n}"));
+        std::fs::write(at(2), "oldest").unwrap();
+        std::fs::write(at(1), "older").unwrap();
+        std::fs::File::create(&path)
+            .unwrap()
+            .set_len(LOG_LIMIT)
+            .unwrap();
+        rotate(&path);
+        assert!(!path.exists());
+        assert_eq!(std::fs::metadata(at(1)).unwrap().len(), LOG_LIMIT);
+        assert_eq!(std::fs::read_to_string(at(2)).unwrap(), "older");
+        std::fs::write(&path, "small").unwrap();
+        rotate(&path);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "small");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     fn folder(name: &str) -> PathBuf {

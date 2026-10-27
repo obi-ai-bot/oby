@@ -75,6 +75,9 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
+    // Where a start that fails says why (obid::START_ERROR): the configuration's `home`, or, while
+    // that can't be read, the one Oby.app's obid uses.
+    let mut start_home: Option<PathBuf> = None;
     let config_path = match command {
         Command::Version => {
             println!("obid {}", env!("CARGO_PKG_VERSION"));
@@ -101,10 +104,10 @@ fn main() -> ExitCode {
             if let Err(e) = obid::app::log_to_file(&home) {
                 eprintln!("obid: {e}");
             }
+            start_home = Some(obid::app::obid_home(&home));
             let path = obid::app::config_path(&home);
             if let Err(e) = obid::app::ensure_config(&path, &home) {
-                eprintln!("obid: {e}");
-                return ExitCode::FAILURE;
+                return fail(start_home.as_deref(), e, 1);
             }
             path
         }
@@ -145,46 +148,66 @@ fn main() -> ExitCode {
         )
         .init();
 
+    tracing::info!("obid {} starting", env!("CARGO_PKG_VERSION"));
     let config = match Config::load(&config_path) {
         Ok(config) => config,
         Err(e) => {
-            eprintln!("obid: {e}");
-            return ExitCode::from(2);
+            let home = home_in(&config_path).or(start_home);
+            return fail(home.as_deref(), e, 2);
         }
     };
+    for key in &config.ignored {
+        tracing::warn!(
+            "{}: {key} isn't a key this obid knows: ignored",
+            config_path.display()
+        );
+    }
+    let home = config.home.clone();
     // The token only ever from home/api-token: never from obid's environment.
     if let Err(e) =
         obid::token::refuse_environment(&config.home, std::env::var_os(obid::token::ENV).is_some())
     {
-        eprintln!("obid: {e}");
-        return ExitCode::from(2);
+        return fail(Some(&home), e, 2);
     }
     if let Err(e) = obid::prepare_home(&config) {
-        eprintln!("obid: {e}");
-        return ExitCode::FAILURE;
+        return fail(Some(&home), e, 1);
     }
     let token = match obid::token::load(&config.home) {
         Ok(token) => token,
-        Err(e) => {
-            eprintln!("obid: {e}");
-            return ExitCode::FAILURE;
-        }
+        Err(e) => return fail(Some(&home), e, 1),
     };
 
     let result = runtime.block_on(obid::serve(config, token, stop.wait(), |address| {
         // One line on stdout that says where obid answers; never the token.
         println!("obid listening on http://{address}");
         tracing::info!(%address, "obid listening");
+        let _ = std::fs::remove_file(home.join(obid::START_ERROR));
     }));
     // Whatever a connection still holds, obid has stopped answering: don't wait on it.
     runtime.shutdown_timeout(std::time::Duration::from_secs(1));
     match result {
         Ok(()) => ExitCode::SUCCESS,
-        Err(e) => {
-            eprintln!("obid: {e}");
-            ExitCode::FAILURE
-        }
+        Err(e) => fail(Some(&home), e, 1),
     }
+}
+
+/// Says `reason` on stderr and keeps it in `home/last-start-error` (obid::START_ERROR), where the
+/// apps read why obid isn't there, then exits with `code`.
+fn fail(home: Option<&std::path::Path>, reason: impl std::fmt::Display, code: u8) -> ExitCode {
+    let reason = reason.to_string();
+    eprintln!("obid: {reason}");
+    if let Some(home) = home {
+        obid::note_start_error(home, &reason);
+    }
+    ExitCode::from(code)
+}
+
+/// The absolute `home` the configuration at `path` names, read as plain JSON: for a configuration
+/// obid refused.
+fn home_in(path: &std::path::Path) -> Option<PathBuf> {
+    let text = std::fs::read_to_string(path).ok()?;
+    let value: serde_json::Value = serde_json::from_str(&text).ok()?;
+    Some(PathBuf::from(value.get("home")?.as_str()?)).filter(|home| home.is_absolute())
 }
 
 /// `obid vault`: the vault in the configuration's `home`, run as obid's user. Nothing it prints
