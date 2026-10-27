@@ -320,8 +320,9 @@ pub struct Job {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub conversation: Option<String>,
     /// The user's turn of `conversation` whose words started it, so the conversation shows its
-    /// card under them the moment it starts, before Oby's answer lists it. None for a job no turn
-    /// started directly (a follow-up told from its page, a Start, an event turn's).
+    /// card under them the moment it starts, before Oby's answer lists it; for a job Oby offered
+    /// (`oby_offer`), the turn it was offered in, whenever the owner starts it. None for a job no
+    /// turn started directly (a follow-up told from its page, a confirmed Start, an event turn's).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub turn: Option<String>,
     /// What an Obi-to-Obi review job made: the result body for its exchange

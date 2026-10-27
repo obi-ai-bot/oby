@@ -5,7 +5,7 @@
 //! owner's OK (runner-api.md, "Permission modes"); `pluginEvent`, an event a plug-in emitted
 //! (runner-api.md, "obid only: plug-ins"); `confirm`, something Oby's brain planned that
 //! persists or widens trust, which only the owner's own answer carries out (#546); and `start`,
-//! work the brain planned after looking things up, which waits for the owner's Start (#546).
+//! work the brain offered (`oby_offer`), which waits for the owner's Start (#546).
 //!
 //! An item's `title` and `text` are built from the request's or the event's typed fields only;
 //! every data field is quoted, unchanged, under `obi.quoted` or `plugin.quoted`.
@@ -66,7 +66,7 @@ pub mod action {
     /// Answer another Obi's question in words: `target` its `obiRequest` item, `payload`
     /// `{"words": "…"}`.
     pub const ANSWER_QUESTION: &str = "answer_question";
-    /// Start the work the brain proposed after looking things up: `target` its `start` item.
+    /// Start the work the brain offered: `target` its `start` item.
     pub const START: &str = "start";
     /// Answer any other item: `target` the item, `payload` `{"answer": "…"}`.
     pub const ANSWER_ITEM: &str = "answer_item";
@@ -179,8 +179,8 @@ pub struct Item {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     // Boxed: an item is kept by value in enums, and most items have none.
     pub confirm: Option<Box<Confirmed>>,
-    /// On a `start` item: the job the brain planned after looking things up, which starts only
-    /// on the owner's Start (#546). Kept, never shown; boxed like `confirm`.
+    /// On a `start` item: the job the brain offered, which starts only on the owner's Start
+    /// (#546). Kept, never shown but its `offer`; boxed like `confirm`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub start: Option<Box<Value>>,
     /// On a `github` item: the GitHub work it offers to do, typed fields, and GitHub's title
@@ -290,6 +290,12 @@ impl Item {
         }
         if let Some(confirmed) = &self.confirm {
             shown["confirm"] = serde_json::to_value(confirmed).unwrap_or_default();
+        }
+        // An offered job's card (`oby_offer`): which offer it's on, and obid's words for it.
+        if let Some(offer) = self.start.as_ref().map(|s| &s["offer"])
+            && offer.is_object()
+        {
+            shown["offer"] = offer.clone();
         }
         shown
     }

@@ -4920,18 +4920,21 @@ impl Link {
         }
     }
 
-    /// Work the brain planned after looking things up waits for the owner's Start, as a `start`
-    /// item (Engine/Inbox.swift, `Inbox.proposal`): nothing starts until they say so.
-    /// `conversation`: the one it was proposed in, which shows it (`Item::conversation`).
+    /// Work the brain offered (`oby_offer`) waits for the owner's Start, as a `start` item
+    /// (Engine/Inbox.swift, `Inbox.proposal`): nothing starts until they say so.
+    /// `conversation`: the one it was proposed in, which shows it (`Item::conversation`);
+    /// `offer`: `{"id", "what"}`, the card it's on there (`Item::to_json`).
     pub fn propose(
         &self,
         new: &crate::jobs::NewJob,
         title: String,
         text: String,
         conversation: &str,
+        offer: Value,
     ) -> Item {
         let mut start = serde_json::to_value(new).unwrap_or_default();
         start["proposedIn"] = json!(conversation);
+        start["offer"] = offer;
         let item = Item {
             id: format!("start-{}", &uuid::Uuid::new_v4().simple().to_string()[..8]),
             kind: "start".into(),

@@ -655,7 +655,7 @@ fn oby_dispatch_starts_a_job_whose_card_is_on_the_turn() {
     let conversation = tools.body["conversation"].as_str().unwrap().to_owned();
     assert_eq!(
         tools.body["text"],
-        "tools: oby_jobs,oby_job,oby_dispatch,oby_tell_job,oby_stop_job,oby_continue_job,oby_archive_job,oby_delete_job,oby_change_job,oby_tasks,oby_inbox,oby_github,oby_answer,oby_routines,oby_routine,oby_change_routine,oby_check_in,oby_conversations,oby_artifact,oby_read,oby_search,oby_list,oby_shell,oby_shell_output,oby_shell_stop",
+        "tools: oby_jobs,oby_job,oby_dispatch,oby_offer,oby_tell_job,oby_stop_job,oby_continue_job,oby_archive_job,oby_delete_job,oby_change_job,oby_tasks,oby_inbox,oby_github,oby_answer,oby_routines,oby_routine,oby_change_routine,oby_check_in,oby_conversations,oby_artifact,oby_read,oby_search,oby_list,oby_shell,oby_shell_output,oby_shell_stop",
         "{}",
         tools.text
     );
@@ -714,6 +714,136 @@ fn oby_dispatch_starts_a_job_whose_card_is_on_the_turn() {
         .position(|(n, d)| n == "turn" && d["who"] == "oby" && d["jobs"] == json!([id]))
         .expect("Oby's answer listing the job");
     assert!(started < answered, "{seen:?}");
+}
+
+/// oby_offer plans a job as oby_dispatch does but starts nothing: a `start` item of the
+/// conversation, on the turn's card (`offer`), until the owner's own Start; the job it starts
+/// names the turn that offered it, so its card goes under that answer. The brain can't start its
+/// own offer, Bypass is never offered, and a turn's untrusted state goes with the job.
+#[test]
+fn oby_offer_starts_nothing_until_the_owners_start() {
+    let (_folder, obid) = obid("harness-offer", true);
+    let events = follow_events(&obid);
+    let offer = r#"OBY oby_offer {"repo": "obi-e2e/fixture-app", "task": "Add a greeting", "kind": "build", "title": "Greeting"}"#;
+    let answer = said(
+        &obid,
+        json!({"said": format!("REPEAT 2 {offer}"), "new": true}),
+    );
+    let conversation = answer.body["conversation"].as_str().unwrap().to_owned();
+    assert_eq!(answer.body["jobs"], json!([]), "{}", answer.text);
+    assert!(
+        answer.body["text"]
+            .as_str()
+            .unwrap()
+            .contains("nothing starts until the owner taps Dispatch"),
+        "{}",
+        answer.text
+    );
+    let seen = until_oby_turn(&events, 30);
+    let user = seen
+        .iter()
+        .find(|(n, d)| n == "turn" && d["who"] == "user")
+        .map(|(_, d)| d["id"].clone())
+        .expect("the user's turn");
+    let (_, turn) = seen.last().unwrap();
+    assert_eq!(turn["jobs"], json!([]));
+    let jobs = call(&obid, "GET", "/v1/jobs", None);
+    assert_eq!(jobs.body.as_array().map_or(0, Vec::len), 0, "{}", jobs.text);
+    let starts = || -> Vec<Value> {
+        let inbox = call(&obid, "GET", "/v1/inbox", None);
+        let items = inbox.body.as_array().cloned().unwrap_or_default();
+        items.into_iter().filter(|i| i["kind"] == "start").collect()
+    };
+    let items = starts();
+    assert_eq!(items.len(), 2, "{items:?}");
+    for item in &items {
+        assert_eq!(item["conversation"], conversation.as_str(), "{item}");
+        assert_eq!(item["offer"]["id"], user, "{item}");
+        assert!(
+            item["offer"]["what"]
+                .as_str()
+                .unwrap()
+                .starts_with("build fixture-app (Greeting), on "),
+            "{item}"
+        );
+        assert_eq!(item["options"], json!(["Start", "Cancel"]), "{item}");
+    }
+    let (first, second) = (
+        items[0]["id"].as_str().unwrap(),
+        items[1]["id"].as_str().unwrap(),
+    );
+
+    // The brain's own Start only asks the owner to confirm it.
+    let _ = said(
+        &obid,
+        json!({"said": format!(r#"OBY oby_answer {{"item": "{first}", "answer": "Start"}}"#),
+               "conversation": conversation}),
+    );
+    let jobs = call(&obid, "GET", "/v1/jobs", None);
+    assert_eq!(jobs.body.as_array().map_or(0, Vec::len), 0, "{}", jobs.text);
+    assert_eq!(starts().len(), 2);
+
+    // The owner's Start starts it as planned, under the turn that offered it; Cancel starts none.
+    let started = call(
+        &obid,
+        "POST",
+        &format!("/v1/inbox/{first}/answer"),
+        Some(&json!({"answer": "Start"})),
+    );
+    assert_eq!(started.status, 200, "{}", started.text);
+    let id = started.body["job"].as_str().unwrap();
+    let job = call(&obid, "GET", &format!("/v1/jobs/{id}"), None);
+    assert_eq!(
+        job.body["conversation"],
+        conversation.as_str(),
+        "{}",
+        job.text
+    );
+    assert_eq!(job.body["turn"], user, "{}", job.text);
+    assert_eq!(job.body["title"], "Greeting", "{}", job.text);
+    assert_eq!(job.body["untrusted"], Value::Null, "{}", job.text);
+    let skipped = call(
+        &obid,
+        "POST",
+        &format!("/v1/inbox/{second}/answer"),
+        Some(&json!({"answer": "Cancel"})),
+    );
+    assert_eq!(skipped.body["state"], "done", "{}", skipped.text);
+    assert_eq!(skipped.body["job"], "", "{}", skipped.text);
+    let jobs = call(&obid, "GET", "/v1/jobs", None);
+    assert_eq!(jobs.body.as_array().map_or(0, Vec::len), 1, "{}", jobs.text);
+
+    // Bypass is the owner's own Confirm, never an offer.
+    let bypass = said(
+        &obid,
+        json!({"said": r#"OBY oby_offer {"repo": "obi-e2e/fixture-app", "task": "Add a greeting", "mode": "bypass"}"#,
+               "conversation": conversation}),
+    );
+    assert!(
+        bypass.body["text"]
+            .as_str()
+            .unwrap()
+            .starts_with("oby: refused: A job in Bypass mode"),
+        "{}",
+        bypass.text
+    );
+    assert!(starts().is_empty());
+
+    // After something untrusted, the job it offers starts marked so.
+    let _ = said(
+        &obid,
+        json!({"said": format!("WEB {offer}"), "conversation": conversation}),
+    );
+    let item = starts().pop().expect("the untrusted turn's offer");
+    let started = call(
+        &obid,
+        "POST",
+        &format!("/v1/inbox/{}/answer", item["id"].as_str().unwrap()),
+        Some(&json!({"answer": "Start"})),
+    );
+    let id = started.body["job"].as_str().unwrap();
+    let job = call(&obid, "GET", &format!("/v1/jobs/{id}"), None);
+    assert_eq!(job.body["untrusted"], true, "{}", job.text);
 }
 
 /// The check the owner named ("Check: …") goes on the job exactly, so obid runs it before it
