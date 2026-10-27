@@ -254,15 +254,18 @@ fn measured_status(obid: &Obid, host: &str) -> Answer {
     }
 }
 
-/// A gateway port something else holds doesn't stop obid: it answers, `status.gateway` says the
-/// gateway is down and why, and a start that worked leaves no `last-start-error`.
+/// What's optional never stops obid: with its gateway's port held by something else and a key it
+/// doesn't know in its configuration (one a later obid retired), it answers, `status.gateway` says
+/// the gateway is down and why, the log names the key it ignored, and a start that worked leaves
+/// no `last-start-error`.
 #[test]
-fn a_busy_gateway_port_leaves_obid_answering() {
+fn optional_parts_never_stop_obid() {
     let folder = Folder::new("busy-gateway");
     let taken = TcpListener::bind("127.0.0.1:0").unwrap();
     let address = taken.local_addr().unwrap().to_string();
     let mut config = config(&folder.0, 0);
     config["gateway"] = json!(address);
+    config["telemetri"] = json!(true);
     let home = Path::new(config["home"].as_str().unwrap()).to_path_buf();
     std::fs::create_dir_all(&home).unwrap();
     std::fs::write(home.join("last-start-error"), "an earlier start's\n").unwrap();
@@ -278,6 +281,10 @@ fn a_busy_gateway_port_leaves_obid_answering() {
     let log = std::fs::read_to_string(&obid.stderr).unwrap();
     assert!(log.contains("no gateway: can't listen on"), "{log}");
     assert!(log.contains("starting: listen done in"), "{log}");
+    assert!(
+        log.contains("telemetri isn't a key this obid knows: ignored"),
+        "{log}"
+    );
 }
 
 #[test]
@@ -687,7 +694,7 @@ fn makes_and_keeps_its_own_token() {
 
 /// Exits non-zero, saying why, with a configuration or token it can't use, and binds nothing; the
 /// same reason is in `home/last-start-error` for the apps, whenever the configuration names an
-/// absolute `home`, an unknown key's included.
+/// absolute `home`.
 #[test]
 fn refuses_what_it_cant_use() {
     let folder = Folder::new("refuses");
@@ -711,7 +718,6 @@ fn refuses_what_it_cant_use() {
     with("home", json!("relative/home"), "absolute");
     with("owner", Value::Null, "owner");
     with("allowFileRemotes", json!(false), "allowFileRemotes");
-    with("telemetri", json!(true), "telemetri");
     // Remotes git or ssh would read as options are refused before anything clones them.
     for remote in [
         "ssh://-oProxyCommand=touch /tmp/pwned/x",

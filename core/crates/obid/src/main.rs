@@ -156,6 +156,12 @@ fn main() -> ExitCode {
             return fail(home.as_deref(), e, 2);
         }
     };
+    for key in &config.ignored {
+        tracing::warn!(
+            "{}: {key} isn't a key this obid knows: ignored",
+            config_path.display()
+        );
+    }
     let home = config.home.clone();
     // The token only ever from home/api-token: never from obid's environment.
     if let Err(e) =
