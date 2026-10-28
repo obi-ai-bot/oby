@@ -2465,7 +2465,10 @@ async fn a_card_says_its_runtime_once_the_sphere_and_the_team_take_it() {
         assert!(params(&me["card"]).get("seal_key_id").is_some());
         assert!(params(&me["card"]).get("features").is_none(), "{me}");
     });
-    // The Sphere takes it now, but sangam's card is still from before: still none, still `on`.
+    // The Sphere takes it now, but sangam's card is still from before: still none, still `on`,
+    // and obid doesn't ask the Sphere while its team doesn't take it (it asked once, at its join,
+    // before sangam was a member).
+    let asked = sphere.lock().features_asked;
     sphere.lock().takes_card_runtime = true;
     tokio::task::block_in_place(|| {
         assert!(
@@ -2475,6 +2478,8 @@ async fn a_card_says_its_runtime_once_the_sphere_and_the_team_take_it() {
         );
         assert_eq!(get(&obid, "/v1/obid/sphere")["sealing"], "on");
     });
+    let asked_now = sphere.lock().features_asked;
+    assert_eq!(asked_now, asked);
     // sangam's obid updates (its card says it takes card_runtime): obid asks for a card, and the
     // new one says what runs it and keeps its seal key.
     {
@@ -2516,6 +2521,96 @@ async fn a_card_says_its_runtime_once_the_sphere_and_the_team_take_it() {
         assert_eq!(params(&card)["vendors"], json!(["anthropic"]));
         assert_eq!(get(&obid, "/v1/obid/sphere")["sealing"], "on");
     });
+}
+
+/// `obi`'s owner signs it a new card (one `card_seq` up) whose `version` says it takes
+/// `card_runtime`, as an obid from 0.3.0 does.
+fn tag_card_runtime(sphere: &FakeSphere, obi: &str, owner: &str) {
+    let mut state = sphere.lock();
+    let member = state.members.iter_mut().find(|m| m["obi"] == obi).unwrap();
+    let mut card = member["card"].clone();
+    card["version"] = json!("0.3.0+card-runtime");
+    let params = &mut card["capabilities"]["extensions"][0]["params"];
+    params["card_seq"] = json!(params["card_seq"].as_u64().unwrap() + 1);
+    card.as_object_mut().unwrap().remove("signatures");
+    member["card"] =
+        obi_protocol::card::sign(card.as_object().unwrap(), &Owner::new(owner).key).unwrap();
+}
+
+/// A joining obid can't read the directory before it joins, so its first card says it takes
+/// `card_runtime` and carries none of it, even where the Sphere and the team take it already
+/// (sphere-api.md section 4, redeem check 8); its next card does.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_joining_obid_leaves_its_runtime_out_of_its_first_card() {
+    let folder = Folder::new("card-runtime-join");
+    let sphere = FakeSphere::start().await;
+    sphere.lock().takes_card_runtime = true;
+    let _sangam = TestObi::join(&sphere, "obi-sangam", "sangam").await;
+    tag_card_runtime(&sphere, "obi-sangam", "sangam");
+    let remote = fixture(&folder.0.join("fixture"));
+    let obid = start(&folder.0, &config(&folder.0, &remote, &stub_agent()), None);
+    let owner = Owner::new("wellington");
+    let params = |card: &Value| card["capabilities"]["extensions"][0]["params"].clone();
+    tokio::task::block_in_place(|| {
+        join_a_accepting(&obid, &sphere, &owner, &["review_request", "question"])
+    });
+    let joined = sphere
+        .lock()
+        .members
+        .iter()
+        .find(|m| m["obi"] == "obi-wellington")
+        .unwrap()["card"]
+        .clone();
+    assert_eq!(joined["version"], "0.3.0+card-runtime");
+    for member in ["features", "runtime", "vendors"] {
+        assert!(params(&joined).get(member).is_none(), "{member}: {joined}");
+    }
+    tokio::task::block_in_place(|| {
+        let next = read_directory_now(&obid, &sphere);
+        assert_eq!(params(&next)["runtime"]["id"], "oby", "{next}");
+        assert_eq!(get(&obid, "/v1/obid/sphere")["sealing"], "card_needed");
+    });
+}
+
+/// Only a `200` whose body lists the features is an answer (sphere-api.md section 2): an error, or
+/// a body that isn't the list, means the Sphere takes none, so obid's card stays without its
+/// runtime, and obid asks again only after FEATURES_EVERY.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_features_answer_that_isnt_the_list_means_none() {
+    for (n, (status, body)) in [
+        (
+            500,
+            json!({"error": {"code": "internal", "message": "down"}}),
+        ),
+        (200, json!({"features": "card_runtime"})),
+        (200, json!({"features": ["card_runtime"], "more": true})),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let folder = Folder::new(&format!("card-runtime-answer-{n}"));
+        let sphere = FakeSphere::start().await;
+        sphere.lock().features_answer = Some((status, body.clone()));
+        let _sangam = TestObi::join(&sphere, "obi-sangam", "sangam").await;
+        tag_card_runtime(&sphere, "obi-sangam", "sangam");
+        let remote = fixture(&folder.0.join("fixture"));
+        let obid = start(&folder.0, &config(&folder.0, &remote, &stub_agent()), None);
+        let owner = Owner::new("wellington");
+        tokio::task::block_in_place(|| {
+            join_a_accepting(&obid, &sphere, &owner, &["review_request", "question"]);
+            for _ in 0..2 {
+                let card = read_directory_now(&obid, &sphere);
+                assert!(
+                    card["capabilities"]["extensions"][0]["params"]
+                        .get("runtime")
+                        .is_none(),
+                    "{status} {body}: {card}"
+                );
+            }
+        });
+        let asked = sphere.lock().features_asked;
+        assert_eq!(asked, 1, "{status} {body}");
+    }
 }
 
 /// An obid upgraded from 0.2.0 whose card carries its seal key asks for a card that says it takes

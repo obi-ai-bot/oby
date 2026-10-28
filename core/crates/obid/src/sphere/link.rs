@@ -78,19 +78,14 @@ fn vendors(config: &Config) -> Vec<&'static str> {
     }
 }
 
-/// Whether a card's `version` is an obid's from `major.minor` or later.
-fn obid_from(version: &str, from: (u64, u64)) -> bool {
+/// Whether a card's `version` is an obid's that reads a card with a seal key: 0.2.0 or later.
+fn reads_seal_keys(version: &str) -> bool {
     let parts: Vec<u64> = version
         .split(['.', '-', '+'])
         .take(3)
         .map_while(|p| p.parse().ok())
         .collect();
-    parts.len() == 3 && (parts[0], parts[1]) >= from
-}
-
-/// Whether a card's `version` is an obid's that reads a card with a seal key: 0.2.0 or later.
-fn reads_seal_keys(version: &str) -> bool {
-    obid_from(version, (0, 2))
+    parts.len() == 3 && (parts[0], parts[1]) >= (0, 2)
 }
 
 /// The scopes a delegation must grant for obid to follow and answer.
@@ -7415,6 +7410,37 @@ mod tests {
             vendors(&parse(json!({"conversation": {"agent": "plan"}}))),
             ["anthropic"]
         );
+    }
+
+    /// The version obid's card says is its runtime's, with `+card-runtime` as its build metadata:
+    /// the two constants move together.
+    #[test]
+    fn the_cards_version_is_the_runtimes_with_card_runtime() {
+        assert_eq!(OBID_VERSION, format!("{RUNTIME_VERSION}+card-runtime"));
+        assert!(reads_seal_keys(OBID_VERSION));
+        assert!(obi_protocol::identity::takes_card_runtime(
+            &json!({"version": OBID_VERSION})
+        ));
+    }
+
+    /// A card that carries obid's runtime is signed again when it says other vendors than obid
+    /// would now (its owner moved the conversation to Codex, say), or another runtime version.
+    #[tokio::test]
+    async fn a_card_with_stale_vendors_is_signed_again() {
+        let (link, _home, _stop) = sender_link("stale-vendors", Some("joined"));
+        let mut state = link.lock();
+        let card = |runtime_version: &str| {
+            json!({"version": OBID_VERSION, "capabilities": {"extensions": [{"params": {
+                "features": ["card_runtime"],
+                "runtime": {"id": RUNTIME_ID, "version": runtime_version},
+                "vendors": ["anthropic"],
+            }}]}})
+        };
+        state.membership.as_mut().unwrap().card = card(RUNTIME_VERSION);
+        assert!(!runtime_card_needed(&state, &["anthropic"]));
+        assert!(runtime_card_needed(&state, &["anthropic", "openai"]));
+        state.membership.as_mut().unwrap().card = card("0.2.9");
+        assert!(runtime_card_needed(&state, &["anthropic"]));
     }
 
     /// Leaving a Sphere forgets what obid learnt of it and its team, so the next one is asked again.

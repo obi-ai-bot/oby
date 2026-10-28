@@ -1086,6 +1086,10 @@ pub struct SphereState {
     /// A Sphere that takes a card's `features`, `runtime` and `vendors`: its `GET /v0.1/features`
     /// lists `card_runtime` (identity.md section 2.3).
     pub takes_card_runtime: bool,
+    /// What `GET /v0.1/features` answers instead, as a status and a body.
+    pub features_answer: Option<(u16, Value)>,
+    /// How many times `GET /v0.1/features` was asked.
+    pub features_asked: usize,
     /// The next send of this type is recorded and delivered, and its answer is lost: `503`, once
     /// the test lets it go (`FakeSphere::lose_next_answer`).
     pub lose: Option<(String, Arc<tokio::sync::Notify>)>,
@@ -1401,9 +1405,15 @@ async fn health(State(state): State<Arc<Mutex<SphereState>>>) -> Response {
     axum::Json(health).into_response()
 }
 
-/// `GET /v0.1/features`: `card_runtime` for a Sphere that takes it; `404` from one from before.
+/// `GET /v0.1/features`: `card_runtime` for a Sphere that takes it; `404` from one from before;
+/// or `features_answer`, when a test sets one.
 async fn features(State(state): State<Arc<Mutex<SphereState>>>) -> Response {
-    if state.lock().unwrap().takes_card_runtime {
+    let mut state = state.lock().unwrap();
+    state.features_asked += 1;
+    if let Some((status, body)) = state.features_answer.clone() {
+        return (StatusCode::from_u16(status).unwrap(), axum::Json(body)).into_response();
+    }
+    if state.takes_card_runtime {
         axum::Json(json!({"features": ["card_runtime"]})).into_response()
     } else {
         sphere_error(StatusCode::NOT_FOUND, "not_found", "no such endpoint")
