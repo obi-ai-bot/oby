@@ -3,7 +3,7 @@ import { constants, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { obid, send, type Answer, type Trusted } from './obid';
 import { writeOwn } from './device';
-import { parseEvent, sseReader, type Conversation, type Event, type InboxItem, type Job, type Turn } from '../renderer/src/obid';
+import { parseEvent, sseReader, type Conversation, type Event, type InboxItem, type Job, type Turn } from '../shared/obid-wire';
 
 // Oby's alerts on this Mac, as the Swift app posted them (apps/mac/app/Alerts.swift and
 // RunnerFeed.swift; the owner's rule of 2026-10-23): what needs the owner, a job they started that

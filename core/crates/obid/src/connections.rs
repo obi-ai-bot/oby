@@ -706,12 +706,9 @@ fn failure(text: impl Into<String>) -> Value {
 }
 
 fn append_private(path: &Path, data: &[u8]) -> std::io::Result<()> {
-    use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
     let parent = path.parent().unwrap();
-    std::fs::DirBuilder::new()
-        .recursive(true)
-        .mode(0o700)
-        .create(parent)?;
+    crate::store::make_private_dir(parent)?;
     let uid = nix::unistd::geteuid().as_raw();
     let directory = std::fs::symlink_metadata(parent)?;
     if !directory.is_dir()

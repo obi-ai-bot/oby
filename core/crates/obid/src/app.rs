@@ -68,15 +68,12 @@ pub fn default_config(home: &Path, owner: &str, codex: bool) -> serde_json::Valu
 /// only its owner opens); one that's there is never rewritten.
 pub fn ensure_config(path: &Path, home: &Path) -> Result<(), String> {
     use std::io::Write;
-    use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+    use std::os::unix::fs::OpenOptionsExt;
     if std::fs::symlink_metadata(path).is_ok() {
         return Ok(());
     }
     let folder = path.parent().ok_or("the configuration has no folder")?;
-    std::fs::DirBuilder::new()
-        .recursive(true)
-        .mode(0o700)
-        .create(folder)
+    crate::store::make_private_dir(folder)
         .map_err(|e| format!("can't make {}: {e}", folder.display()))?;
     let owner = nix::unistd::User::from_uid(nix::unistd::getuid())
         .ok()

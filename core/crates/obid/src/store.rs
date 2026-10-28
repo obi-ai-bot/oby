@@ -37,21 +37,7 @@ impl Store {
 
     /// Every job kept, oldest first. A file that doesn't read as a job is left alone and logged.
     pub fn load_all(&self) -> Vec<Job> {
-        let mut jobs = Vec::new();
-        let Ok(entries) = std::fs::read_dir(&self.dir) else {
-            return jobs;
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.extension().is_none_or(|e| e != "json") {
-                continue;
-            }
-            match std::fs::read(&path).map(|bytes| serde_json::from_slice::<Job>(&bytes)) {
-                Ok(Ok(job)) => jobs.push(job),
-                Ok(Err(e)) => tracing::warn!("{} isn't a job: {e}", path.display()),
-                Err(e) => tracing::warn!("can't read {}: {e}", path.display()),
-            }
-        }
+        let mut jobs = load_dir::<Job>(&self.dir);
         jobs.sort_by(|a, b| a.created.cmp(&b.created).then_with(|| a.id.cmp(&b.id)));
         jobs
     }
