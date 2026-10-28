@@ -6,11 +6,13 @@ import { answerLimit, writeOwn } from './device';
 import { parseEvent, sseReader, type Conversation, type Event, type InboxItem, type Job, type LimitDecision, type Turn } from '../shared/obid-wire';
 
 // Oby's alerts on this Mac, as the Swift app posted them (apps/mac/app/Alerts.swift and
-// RunnerFeed.swift; the owner's rule of 2026-10-23): what needs the owner, a job they started that
-// ended, and Oby's answer away from the window; never progress, an FYI, or what the window shows.
-// What alerts is what obid pushes to the phones (core/crates/obid/src/push.rs, `wanted`), so the
-// Mac and the iPhone agree; the words are the Swift app's. One alert per thing, replaced when what
-// it needs changes, gone once it's settled anywhere; nothing that was there when Oby opened.
+// RunnerFeed.swift), by the owner's rule of 2026-10-28 (`notifies`, the one gate): nothing while
+// the window is in front, on any page; away from it, only what waits on the owner to decide or
+// act (an agent's ask, a Confirm, a Start, a question, a job that failed or couldn't publish);
+// never progress, a result with nothing to decide, or Oby's own words. What alerts is what obid
+// pushes to the phones (core/crates/obid/src/push.rs, `wanted` and its `notifies`), so the Mac and
+// the iPhone agree; the words are the Swift app's. One alert per thing, replaced when what it
+// needs changes, gone once it's settled anywhere; nothing that was there when Oby opened.
 // Main follows obid's event stream for them by itself, from launch until Oby quits, with the
 // window closed too (the page's own stream ends with the window). A ping every 15 seconds is all
 // it hears while nothing happens.
@@ -20,8 +22,10 @@ type Place = { job?: string; conversation?: string };
 // A button: obid's answer, as the same tap in the window gives it
 type Button = { text: string; does: () => Promise<Answer> };
 type Alert = {
-  // what it says (sent again only when this changes), and whether it needs the owner: it goes once
-  // that's settled, and alerts once the window stops showing it if it was there when it came
+  // what it says (sent again only when this changes), and whether it needs the owner to decide or
+  // act (the gate's one question, `notifies`): it goes once that's settled, and alerts once the
+  // window leaves the front if it came while the window was there; FYI (`needs` false) is kept
+  // for the window and never alerts
   what: string;
   needs: boolean;
   title: string;
@@ -174,6 +178,14 @@ function wanted(): Map<string, Alert> {
   return want;
 }
 
+// --- the gate
+
+// The one gate every alert passes (the owner's rule of 2026-10-28): nothing while the window is
+// in front (what's there is on screen, the rest a click away), and away from it only what waits
+// on the owner to decide or act. What each alert needs is decided where it's built (`wanted`, and
+// Oby's answers in `look`); change what alerts here, in one place.
+export const notifies = (needs: boolean, focused: boolean): boolean => !focused && needs;
+
 // --- on screen
 
 let on = true;
@@ -191,10 +203,15 @@ const shown = new Map<string, { n: Notification; place: Place }>();
 // ("It waits for your Start") say the same, so they don't alert within a minute
 const askedAt = new Map<string, number>();
 
+// Whether the window is in front now, on any page: open, not in the Dock, and the one with focus
+function focused() {
+  const w = current();
+  return !!w && w.isVisible() && !w.isMinimized() && w.isFocused();
+}
+
 // Whether the window is in front on that place now
 function looking(p: Place) {
-  const w = current();
-  if (!w || !showing || !w.isVisible() || w.isMinimized() || !w.isFocused()) return false;
+  if (!showing || !focused()) return false;
   if (p.job && showing.job === p.job) return true;
   if (p.conversation) return showing.conversation === p.conversation;
   // Home, whose stack shows what has no task
@@ -247,17 +264,19 @@ function look() {
     // published, reviewed or merged elsewhere: done, and that alert only goes
     if (!a.needs && /^(ready|review|merge):/.test(before?.what ?? '')) withdraw(key);
     else if (before?.what !== a.what) {
-      if (!looking(a.place)) post(key, a);
-      // on screen: nothing, and what needs the owner alerts once the window stops showing it
+      if (notifies(a.needs, focused())) post(key, a);
+      // the window in front: nothing now, and what needs the owner alerts once it leaves
+      // (windowLeft); what needs nothing is told by the window and never alerts
       else if (a.needs) continue;
     }
     next.set(key, { what: a.what, needs: a.needs });
   }
   for (const [key, s] of said) if (s.needs && !next.has(key)) withdraw(key);
   said = next;
+  // Oby's answer asks nothing (its asks come as inbox items, above): FYI, which the gate keeps in
   for (const [c, text] of answers) {
     const place = { conversation: c };
-    if (looking(place) || (askedAt.get(c) ?? 0) > Date.now() - 60_000) continue;
+    if (!notifies(false, focused()) || (askedAt.get(c) ?? 0) > Date.now() - 60_000) continue;
     post(`turn:${c}`, { what: '', needs: false, title: 'Oby answered', subtitle: titles.get(c), body: plain(text), place, thread: `conversation-${c}`, buttons: [] });
   }
   answers.clear();
@@ -361,7 +380,7 @@ function open(place: Place) {
 }
 
 // The window went (closed, minimized, behind another app): what needs the owner and waited while
-// it showed it alerts now
+// it was in front alerts now
 export const windowLeft = () => look();
 // The window is in front: the alerts for what it shows go
 export function windowSeen() {
