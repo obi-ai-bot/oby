@@ -3304,17 +3304,48 @@ async fn the_actor_assertion_names_the_server_where_the_sphere_takes_it() {
         let remote = fixture(&folder.0.join("fixture"));
         let obid = start(&folder.0, &config(&folder.0, &remote, &stub_agent()), None);
         let owner = Owner::new("wellington");
-        let auds = tokio::task::block_in_place(|| {
-            join_a(&obid, &sphere, &owner);
-            wait_exchanges(&sphere, 1)
-        });
+        tokio::task::block_in_place(|| join_a(&obid, &sphere, &owner));
         let want = if binds {
             by_url.clone()
         } else {
             format!("obi-sphere:{SPHERE}")
         };
-        assert_eq!(auds[0], want, "binds {binds}");
+        // The join's one exchange, with no refused try before it.
+        assert_eq!(sphere.lock().actor_auds, [want], "binds {binds}");
     }
+}
+
+/// obid asks what the Sphere takes once for many exchanges, not before each.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn obid_asks_what_the_sphere_takes_once_for_many_exchanges() {
+    let folder = Folder::new("bound-aud-asked-once");
+    let sphere = FakeSphere::start().await;
+    let by_url = format!("{}/v0.1/spheres/{SPHERE}", sphere.url);
+    sphere.lock().url_aud = Some(by_url.clone());
+    sphere.lock().token_lifetime = Some(61);
+    let remote = fixture(&folder.0.join("fixture"));
+    let obid = start(&folder.0, &config(&folder.0, &remote, &stub_agent()), None);
+    let owner = Owner::new("wellington");
+    let auds = tokio::task::block_in_place(|| {
+        join_a(&obid, &sphere, &owner);
+        wait_exchanges(&sphere, 3)
+    });
+    assert!(auds.iter().all(|aud| *aud == by_url), "{auds:?}");
+    assert_eq!(sphere.lock().features_asked, 1);
+}
+
+/// A Sphere whose `GET /v0.1/features` fails is taken to list nothing: obid names it alone.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_sphere_whose_features_fail_is_named_alone() {
+    let folder = Folder::new("bound-aud-no-features");
+    let sphere = FakeSphere::start().await;
+    sphere.lock().url_aud = Some(format!("{}/v0.1/spheres/{SPHERE}", sphere.url));
+    sphere.lock().features_answer = Some((500, json!({"error": "internal"})));
+    let remote = fixture(&folder.0.join("fixture"));
+    let obid = start(&folder.0, &config(&folder.0, &remote, &stub_agent()), None);
+    let owner = Owner::new("wellington");
+    tokio::task::block_in_place(|| join_a(&obid, &sphere, &owner));
+    assert_eq!(sphere.lock().actor_auds, [format!("obi-sphere:{SPHERE}")]);
 }
 
 /// A Sphere that lists `sphere_url_aud` but knows itself by another address refuses obid's URL:
@@ -3332,7 +3363,7 @@ async fn a_refused_url_audience_falls_back_to_the_sphere_alone() {
         join_a(&obid, &sphere, &owner);
         wait_exchanges(&sphere, 3)
     });
-    assert!(auds[0].starts_with("http"), "{auds:?}");
+    assert_eq!(auds[0], format!("{}/v0.1/spheres/{SPHERE}", sphere.url));
     assert_eq!(auds[1], format!("obi-sphere:{SPHERE}"));
     assert_eq!(
         auds[2],

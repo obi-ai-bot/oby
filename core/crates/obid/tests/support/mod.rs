@@ -1087,7 +1087,7 @@ pub struct SphereState {
     /// lists `card_runtime` (identity.md section 2.3).
     pub takes_card_runtime: bool,
     /// The URL form of `aud` this Sphere takes (identity.md 4.1), when it lists `sphere_url_aud`:
-    /// an actor assertion naming another URL is `invalid_request`.
+    /// an actor assertion naming anything but this or `obi-sphere:<id>` is `invalid_request`.
     pub url_aud: Option<String>,
     /// Every actor assertion's `aud`, in the order exchanged.
     pub actor_auds: Vec<String>,
@@ -1380,7 +1380,7 @@ async fn token(
     }
     let aud = actor.claims["aud"].as_str().unwrap_or("").to_owned();
     state.actor_auds.push(aud.clone());
-    if aud.starts_with("http") && state.url_aud.as_deref() != Some(aud.as_str()) {
+    if aud != format!("obi-sphere:{SPHERE}") && state.url_aud.as_deref() != Some(aud.as_str()) {
         return oauth("invalid_request");
     }
     let obi = actor.claims["sub"].as_str().unwrap_or("").to_owned();

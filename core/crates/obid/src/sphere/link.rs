@@ -14,7 +14,7 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use axum::http::StatusCode;
 use obi_protocol::client::{Client, ClientError, Delivery};
@@ -143,9 +143,12 @@ struct State {
     team_takes_card_runtime: bool,
     /// When obid last asked the Sphere's `GET /v0.1/features`, while it didn't list `card_runtime`.
     features_read: i64,
-    /// Whether the Sphere takes an actor assertion that names its URL (`sphere_url_aud`,
-    /// identity.md 4.1), once obid has asked; obid's assertions then name the server too.
-    binds_aud: Option<bool>,
+    /// The Sphere's `GET /v0.1/features` and when obid read it (an answer that isn't the list counts
+    /// as none): the token exchange and the card's runtime both read it from here.
+    features: Option<(Instant, Vec<String>)>,
+    /// The Sphere refused an actor assertion that named its URL, and took one naming it alone:
+    /// obid names it alone from then on, while it is a member.
+    url_aud_refused: bool,
     membership: Option<Membership>,
     delegation: Option<String>,
     client: Option<Client>,
@@ -776,7 +779,8 @@ impl Link {
             team_reads_seal_keys: false,
             sphere_takes_card_runtime: false,
             team_takes_card_runtime: false,
-            binds_aud: None,
+            features: None,
+            url_aud_refused: false,
             features_read: 0,
             membership,
             delegation,
@@ -1623,7 +1627,8 @@ impl Link {
             state.sphere_takes_card_runtime = false;
             state.team_takes_card_runtime = false;
             state.features_read = 0;
-            state.binds_aud = None;
+            state.features = None;
+            state.url_aud_refused = false;
         }
         *self.chain.lock().unwrap_or_else(|e| e.into_inner()) = ChainKept::default();
         self.pins.forget_all();
@@ -2009,6 +2014,8 @@ impl Link {
             state.delegation = Some(delegation);
             state.client = Some(client);
             state.token = None;
+            state.features = None;
+            state.url_aud_refused = false;
         }
         if let Err(e) = kept {
             self.note_error(format!("obid couldn't keep its membership: {e}"));
@@ -2061,21 +2068,15 @@ impl Link {
         };
         let now = time::now();
         // The actor assertion names the server too when the Sphere takes that (identity.md 4.1).
-        let known = self.lock().binds_aud;
-        let binds = match known {
-            Some(known) => known,
-            None => match client.features().await {
-                Ok(features) => {
-                    let binds = features
-                        .iter()
-                        .any(|f| f == obi_protocol::identity::SPHERE_URL_AUD);
-                    self.lock().binds_aud = Some(binds);
-                    binds
-                }
-                // Asked again at the next exchange.
-                Err(_) => false,
-            },
-        };
+        let refused = self.lock().url_aud_refused;
+        let binds = !refused
+            && self
+                .sphere_features(&client, |at| {
+                    at.elapsed() < Duration::from_secs(FEATURES_EVERY.unsigned_abs())
+                })
+                .await
+                .iter()
+                .any(|f| f == obi_protocol::identity::SPHERE_URL_AUD);
         let by_url = binds
             .then(|| obi_protocol::identity::url_audience(client.base(), &membership.sphere))
             .flatten();
@@ -2092,11 +2093,13 @@ impl Link {
         let plain = obi_protocol::identity::audience(&membership.sphere);
         let token = match by_url {
             Some(aud) => match client.token(&delegation, &actor(&aud)?).await {
-                // A Sphere whose own address isn't the one obid joined by refuses its URL: name
-                // the Sphere alone from now on.
+                // A Sphere whose own address isn't the one obid joined by refuses its URL: the
+                // same exchange naming the Sphere alone tells, and if it passes, obid names it
+                // alone from then on.
                 Err(ClientError::Refused { code, .. }) if code == "invalid_request" => {
-                    self.lock().binds_aud = Some(false);
-                    client.token(&delegation, &actor(&plain)?).await?
+                    let token = client.token(&delegation, &actor(&plain)?).await?;
+                    self.lock().url_aud_refused = true;
+                    token
                 }
                 answer => answer?,
             },
@@ -2105,6 +2108,25 @@ impl Link {
         crate::secrets::known().learn(SPHERE_TOKEN_SECRET, &token.access_token);
         self.lock().token = Some((token.access_token.clone(), now + token.expires_in));
         Ok(token.access_token)
+    }
+
+    /// The Sphere's `GET /v0.1/features`: the answer obid kept, if `fresh` says when it was read
+    /// is recent enough, else read again. An answer that isn't the list (an Obysphere from before
+    /// it, an error) counts as none.
+    async fn sphere_features(
+        &self,
+        client: &Client,
+        fresh: impl FnOnce(Instant) -> bool,
+    ) -> Vec<String> {
+        if let Some((at, list)) = self.lock().features.clone()
+            && fresh(at)
+        {
+            return list;
+        }
+        let at = Instant::now();
+        let list = client.features().await.unwrap_or_default();
+        self.lock().features = Some((at, list.clone()));
+        list
     }
 
     /// The Sphere's client while obid is a member (`joined`): the phone relay's (crate::relay).
@@ -2149,6 +2171,7 @@ impl Link {
     /// Reads the directory and keeps every member whose card passes the checks (identity.md 2.2,
     /// with the owner key the Sphere bound), with every key it ever had.
     async fn read_directory(&self) -> Result<(), ClientError> {
+        let began = Instant::now();
         let token = self.token().await?;
         let members = match self.client()?.members(&token).await {
             Ok(members) => members,
@@ -2305,12 +2328,14 @@ impl Link {
         let ask = !known_runtime
             && team_takes_card_runtime
             && (!team_was_ready || now - features_read >= FEATURES_EVERY);
-        let sphere_takes_card_runtime =
-            known_runtime
-                || (ask
-                    && self.client()?.features().await.is_ok_and(|f| {
-                        f.iter().any(|x| x == obi_protocol::identity::CARD_RUNTIME)
-                    }));
+        // An answer read since this read began (its token exchange's) is fresh enough.
+        let sphere_takes_card_runtime = known_runtime
+            || (ask
+                && self
+                    .sphere_features(&self.client()?, |at| at >= began)
+                    .await
+                    .iter()
+                    .any(|x| x == obi_protocol::identity::CARD_RUNTIME));
         let revoked = {
             let mut state = self.lock();
             let revoked = me
@@ -7651,12 +7676,15 @@ mod tests {
             state.sphere_takes_card_runtime = true;
             state.team_takes_card_runtime = true;
             state.features_read = 1;
+            state.features = Some((Instant::now(), vec!["sphere_url_aud".into()]));
+            state.url_aud_refused = true;
         }
         link.leave().await.unwrap();
         let state = link.lock();
         assert!(!state.sphere_seals && !state.team_reads_seal_keys);
         assert!(!state.sphere_takes_card_runtime && !state.team_takes_card_runtime);
         assert_eq!(state.features_read, 0);
+        assert!(state.features.is_none() && !state.url_aud_refused);
     }
 
     /// The directory says obid's membership was revoked: what's open incoming is settled with no

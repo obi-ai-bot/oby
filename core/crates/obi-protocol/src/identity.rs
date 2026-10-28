@@ -465,6 +465,15 @@ mod tests {
             url_audience("http://127.0.0.1:8787", "e2e").as_deref(),
             Some("http://127.0.0.1:8787/v0.1/spheres/e2e")
         );
+        // A default port is left out; an IPv6 host keeps its brackets.
+        assert_eq!(
+            url_audience("http://sphere.example.com:80/x?y", "e2e").as_deref(),
+            Some("http://sphere.example.com/v0.1/spheres/e2e")
+        );
+        assert_eq!(
+            url_audience("http://[::1]:8787", "e2e").as_deref(),
+            Some("http://[::1]:8787/v0.1/spheres/e2e")
+        );
         assert_eq!(url_audience("file:///tmp/x", "e2e"), None);
         assert_eq!(url_audience("not a url", "e2e"), None);
         let obi = Keypair::from_seed_string("obi");
