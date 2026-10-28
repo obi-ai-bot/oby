@@ -2482,3 +2482,181 @@ async fn a_reply_is_sealed_again_only_when_the_sphere_kept_nothing() {
     assert_eq!(decline["seal"]["key_id"], second.key_id());
     assert!(!sends_of(&sphere, "obi-wellington").contains(&("decline".into(), 409)));
 }
+
+/// The Council's convener (oby-sphere spec/council/review.md, section 5), on with `council`: one
+/// review_request per seat, the same for every seat and expiring at the same instant, each its own
+/// exchange, sealed for a seat whose card has a seal key. Everything is checked before anything is
+/// sent: a seat that isn't a member stops the whole call. It never sits on its own panel, never names
+/// a seat twice, and never asks a panel to approve on the code host (rule I7).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_council_convener_sends_one_review_request_per_seat() {
+    let folder = Folder::new("council");
+    let sphere = FakeSphere::start().await;
+    let remote = fixture(&folder.0.join("fixture"));
+    let mut settings = config(&folder.0, &remote, &stub_agent());
+    settings["council"] = json!(true);
+    let obid = start(&folder.0, &settings, None);
+    let wellington = Owner::new("wellington");
+    let joined = tokio::task::block_in_place(|| join_a(&obid, &sphere, &wellington));
+    assert_eq!(joined["state"], "joined");
+    let ernesto = TestObi::join(&sphere, "obi-ernesto", "ernesto").await;
+    let maria = TestObi::join_sealing(&sphere, "obi-maria", "maria").await;
+    let convene = |body: Value| {
+        tokio::task::block_in_place(|| call(&obid, "POST", "/v1/obid/sphere/council", Some(&body)))
+    };
+    let at = obi_protocol::time::format(obi_protocol::time::now() + 7200);
+
+    let sent =
+        convene(json!({"seats": ["obi-ernesto", "obi-maria"], "review": brief(), "expiresAt": at}));
+    assert_eq!(sent.status, 202, "{}", sent.text);
+    let seats = sent.body["seats"].as_array().unwrap().clone();
+    assert_eq!(seats.len(), 2);
+    let mut exchanges = Vec::new();
+    for (seat, member) in seats.iter().zip([&ernesto, &maria]) {
+        let exchange = &seat["exchange"];
+        assert_eq!(exchange["peer"], seat["seat"]);
+        assert_eq!(exchange["direction"], "outgoing");
+        let got = member.receive(1, 20).await;
+        assert_eq!(got.len(), 1, "{}: one request", seat["seat"]);
+        assert_eq!(got[0]["type"], "review_request");
+        assert_eq!(got[0]["to"], seat["seat"]);
+        assert_eq!(
+            got[0]["expires_at"],
+            json!(at),
+            "every seat's request expires at the same instant"
+        );
+        exchanges.push(exchange["correlationId"].as_str().unwrap().to_owned());
+    }
+    // ernesto has no seal key: the words in the clear, as given. maria seals: hers are sealed for
+    // her, and the exchange keeps them opened.
+    let clear = &seats[0]["exchange"]["messages"][0]["envelope"];
+    assert!(clear.get("seal").is_none());
+    assert_eq!(clear["body"], brief(), "the same review for every seat");
+    let sealed = &seats[1]["exchange"]["messages"][0]["envelope"];
+    assert!(sealed.get("seal").is_some(), "{sealed}");
+    assert_eq!(sealed["body"], brief());
+    assert_ne!(exchanges[0], exchanges[1], "each seat its own exchange");
+
+    // The same call again sends nothing: each seat's request for this motion is answered as it was.
+    let again =
+        convene(json!({"seats": ["obi-ernesto", "obi-maria"], "review": brief(), "expiresAt": at}));
+    assert_eq!(again.status, 202, "{}", again.text);
+    let again_ids: Vec<&str> = again.body["seats"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["exchange"]["correlationId"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        again_ids,
+        exchanges.iter().map(String::as_str).collect::<Vec<_>>(),
+        "the same exchanges"
+    );
+
+    // Every seat is checked before any is sent: one that isn't a member stops the call, and so do
+    // two seats with one owner (rule I3).
+    let later = obi_protocol::time::format(obi_protocol::time::now() + 7300);
+    let unknown = convene(
+        json!({"seats": ["obi-ernesto", "obi-nobody"], "review": brief(), "expiresAt": later}),
+    );
+    assert_eq!(unknown.status, 422, "{}", unknown.text);
+    // A repeat for the same motion with other words is refused: the seat holds the first.
+    let mut reworded = brief();
+    reworded["goal"] = json!("Something else");
+    let other = convene(json!({"seats": ["obi-ernesto"], "review": reworded, "expiresAt": at}));
+    assert_eq!(other.status, 409, "{}", other.text);
+    let _maria_again = TestObi::join(&sphere, "obi-maria-2", "maria").await;
+    let one_owner = convene(
+        json!({"seats": ["obi-ernesto", "obi-maria-2", "obi-maria"], "review": brief(), "expiresAt": later}),
+    );
+    assert_eq!(one_owner.status, 422, "{}", one_owner.text);
+    assert!(one_owner.text.contains("same owner"), "{}", one_owner.text);
+    // Nor can a later call for the first motion seat maria's other agent, alone or with others:
+    // maria already sits.
+    let alone = convene(json!({"seats": ["obi-maria-2"], "review": brief(), "expiresAt": at}));
+    assert_eq!(alone.status, 422, "{}", alone.text);
+    let replacement =
+        convene(json!({"seats": ["obi-maria", "obi-maria-2"], "review": brief(), "expiresAt": at}));
+    assert_eq!(replacement.status, 422, "{}", replacement.text);
+
+    // When every seat's send fails on the way (the Obysphere refusing), the call fails with the first
+    // seat's error and keeps nothing.
+    sphere.lock().deny_requests = true;
+    let denied = convene(json!({"seats": ["obi-ernesto"], "review": brief(), "expiresAt": later}));
+    assert_eq!(denied.status, 502, "{}", denied.text);
+    sphere.lock().deny_requests = false;
+
+    let mut asks_host = brief();
+    asks_host["pr"] = json!(7);
+    asks_host["approve_on_host"] = json!(true);
+    let many: Vec<String> = (0..16).map(|i| format!("obi-{i}")).collect();
+    let soon = obi_protocol::time::format(obi_protocol::time::now() + 10);
+    for (body, why) in [
+        (
+            json!({"seats": ["obi-ernesto"], "review": asks_host, "expiresAt": at}),
+            "approve_on_host",
+        ),
+        (
+            json!({"seats": ["obi-wellington", "obi-ernesto"], "review": brief(), "expiresAt": at}),
+            "its own seat",
+        ),
+        (
+            json!({"seats": ["obi-ernesto", "obi-ernesto"], "review": brief(), "expiresAt": at}),
+            "twice",
+        ),
+        (
+            json!({"seats": [], "review": brief(), "expiresAt": at}),
+            "no seats",
+        ),
+        (
+            json!({"seats": many, "review": brief(), "expiresAt": at}),
+            "more than 15",
+        ),
+        (
+            json!({"seats": ["obi-ernesto", 7], "review": brief(), "expiresAt": at}),
+            "a seat that isn't an id",
+        ),
+        (
+            json!({"seats": ["obi-ernesto"], "review": {"goal": "x"}, "expiresAt": at}),
+            "review",
+        ),
+        (
+            json!({"seats": ["obi-ernesto"], "review": brief(), "expiresAt": soon}),
+            "expiresAt too soon",
+        ),
+        (
+            json!({"seats": ["obi-ernesto"], "review": brief(), "expiresIn": 3600}),
+            "expiresIn",
+        ),
+        (
+            json!({"seats": ["obi-ernesto"], "review": brief(), "expiresAt": at, "prompt": "x"}),
+            "field",
+        ),
+    ] {
+        let refused = convene(body);
+        assert_eq!(refused.status, 422, "{why}: {}", refused.text);
+    }
+    // Nothing went for any refused call.
+    let list = tokio::task::block_in_place(|| get(&obid, "/v1/obid/sphere/exchanges"));
+    assert_eq!(list.as_array().unwrap().len(), 2);
+}
+
+/// Without `council` in its configuration, obid convenes nothing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn council_panels_are_off_unless_the_configuration_turns_them_on() {
+    let folder = Folder::new("council-off");
+    let (_sphere, obid, ernesto) = setup(&folder, &stub_agent(), None).await;
+    let at = obi_protocol::time::format(obi_protocol::time::now() + 7200);
+    let refused = tokio::task::block_in_place(|| {
+        call(
+            &obid,
+            "POST",
+            "/v1/obid/sphere/council",
+            Some(&json!({"seats": ["obi-ernesto"], "review": brief(), "expiresAt": at})),
+        )
+    });
+    assert_eq!(refused.status, 403, "{}", refused.text);
+    let list = tokio::task::block_in_place(|| get(&obid, "/v1/obid/sphere/exchanges"));
+    assert!(list.as_array().unwrap().is_empty());
+    drop(ernesto);
+}
