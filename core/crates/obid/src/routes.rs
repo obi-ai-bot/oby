@@ -781,6 +781,36 @@ fn refused(refused: crate::devices::Refused) -> ApiError {
     }
 }
 
+/// The default for new conversation tasks, kept before notifying subscribers.
+pub async fn set_default_agent(
+    State(shared): State<Arc<Shared>>,
+    body: Bytes,
+) -> Result<Response, ApiError> {
+    let value: Value = serde_json::from_slice(&body)
+        .map_err(|_| ApiError::new(StatusCode::BAD_REQUEST, "That isn't JSON."))?;
+    let agent = value
+        .get("defaultAgent")
+        .and_then(Value::as_str)
+        .filter(|agent| crate::settings::valid_default_agent(agent))
+        .ok_or_else(|| {
+            ApiError::new(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "defaultAgent is auto, claude, codex or cursor.",
+            )
+        })?;
+    crate::settings::update(&shared.config.home, |s| s.default_agent = agent.into()).map_err(
+        |_| {
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "The setting couldn't be kept.",
+            )
+        },
+    )?;
+    let data = json!({"defaultAgent": agent});
+    shared.events.send("settings", data.clone());
+    Ok(json(StatusCode::OK, data))
+}
+
 /// The jobs' settings as `GET` and `PUT /v1/settings/jobs` answer them.
 fn job_settings_json(shared: &Shared) -> Value {
     json!({"maxRunning": shared.jobs.max_running(), "accountFailover": shared.jobs.account_failover()})

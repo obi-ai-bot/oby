@@ -855,6 +855,55 @@ fn the_cap_is_in_status_and_settings() {
     assert_eq!(call(&obid, "GET", "/v1/status", None).body["maxRunning"], 3);
 }
 
+#[test]
+fn default_agent_is_validated_and_kept() {
+    let folder = Folder::new("default-agent");
+    let (mut obid, config) = obid(&folder);
+    assert_eq!(
+        call_with_token(
+            &obid,
+            "wrong-token",
+            "PUT",
+            "/v1/settings/default-agent",
+            Some(&json!({"defaultAgent": "codex"}))
+        )
+        .status,
+        401
+    );
+    assert_eq!(
+        call(&obid, "GET", "/v1/status", None).body["defaultAgent"],
+        "auto"
+    );
+    for body in [
+        json!({}),
+        json!({"defaultAgent": "gemini"}),
+        json!({"defaultAgent": null}),
+        json!({"defaultAgent": 1}),
+    ] {
+        assert_eq!(
+            call(&obid, "PUT", "/v1/settings/default-agent", Some(&body)).status,
+            422
+        );
+    }
+    for agent in ["auto", "claude", "cursor", "codex"] {
+        let body = json!({"defaultAgent": agent});
+        let answer = call(&obid, "PUT", "/v1/settings/default-agent", Some(&body));
+        assert_eq!(answer.status, 200, "{}", answer.text);
+        assert_eq!(answer.body, body);
+        assert_eq!(
+            call(&obid, "GET", "/v1/status", None).body["defaultAgent"],
+            agent
+        );
+    }
+    assert!(obid.stop().success());
+    drop(obid);
+    let obid = start(&folder.0, &config, None);
+    assert_eq!(
+        call(&obid, "GET", "/v1/status", None).body["defaultAgent"],
+        "codex"
+    );
+}
+
 /// With the cap lowered to one, a second job waits for the slot, and raising the cap starts it at
 /// once (runner-api.md, "GET /v1/settings/jobs and PUT /v1/settings/jobs").
 #[test]

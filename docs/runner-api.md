@@ -1236,6 +1236,12 @@ The chat's set_setting action uses those same choices. It changes one tool's mod
  "cursor": {"models": [{"id": "auto", "name": "Auto"}, {"id": "gpt-5", "name": "GPT-5"}], "efforts": [], "complexEfforts": []}}
 ```
 
+### `PUT /v1/settings/default-agent` (obid)
+
+Sets the default for new conversation tasks: `{"defaultAgent":"auto"}`, `"claude"`, `"codex"` or `"cursor"`. The default is `"auto"` (the planner's automatic choice). The runner persists this in `home/settings.json`, exposes it as `defaultAgent` in `GET /v1/status`, and answers `200` with `{"defaultAgent":"codex"}` after a successful update. It emits a `settings` event with that same setting payload. Missing, unknown or non-string values are `422`; malformed JSON is `400`. It uses the same owner authentication as the other settings routes.
+
+When the owner's task names an agent explicitly, the planner's selection takes precedence. Otherwise the default is used if it has a signed-in, usable account with room under the existing usage limits; a disconnected default, no usable account or a full default falls back to the planner's current automatic choice. `auto` always keeps that choice. Existing jobs and follow-ups retain their agent.
+
 ### `GET /v1/settings/jobs` and `PUT /v1/settings/jobs`
 
 How many jobs run at once, as in `status.maxRunning`: `{"maxRunning": 6}`, 1 to 20 (anything else is `422`). The runner keeps it across restarts. Raising it starts waiting jobs at once; lowering it stops nothing, and new jobs wait until fewer than the new cap run.

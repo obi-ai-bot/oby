@@ -17,6 +17,8 @@ pub const ACCOUNT_FAILOVER: bool = true;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Settings {
+    #[serde(default = "default_agent")]
+    pub default_agent: String,
     /// How many jobs run at once (`status.maxRunning`).
     #[serde(default = "default_max_running")]
     pub max_running: u32,
@@ -70,9 +72,18 @@ fn default_max_running() -> u32 {
     crate::api::MAX_RUNNING
 }
 
+fn default_agent() -> String {
+    "auto".into()
+}
+
+pub fn valid_default_agent(agent: &str) -> bool {
+    agent == "auto" || crate::agent::Tool::from_id(agent).is_some()
+}
+
 impl Default for Settings {
     fn default() -> Settings {
         Settings {
+            default_agent: default_agent(),
             max_running: default_max_running(),
             check_in: None,
             check_in_sent: None,
@@ -109,6 +120,10 @@ pub fn load(home: &Path) -> Settings {
             settings.max_running
         );
         settings.max_running = default_max_running();
+    }
+    if !valid_default_agent(&settings.default_agent) {
+        tracing::warn!("{} has an unknown defaultAgent", file.display());
+        settings.default_agent = default_agent();
     }
     settings
 }
@@ -151,6 +166,11 @@ mod tests {
         let _ = std::fs::remove_dir_all(&home);
         std::fs::create_dir_all(&home).unwrap();
         assert_eq!(load(&home).max_running, 6);
+        assert_eq!(load(&home).default_agent, "auto");
+        update(&home, |s| s.default_agent = "codex".into()).unwrap();
+        assert_eq!(load(&home).default_agent, "codex");
+        update(&home, |s| s.default_agent = "unknown".into()).unwrap();
+        assert_eq!(load(&home).default_agent, "auto");
         save(
             &home,
             &Settings {
