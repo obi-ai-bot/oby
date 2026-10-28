@@ -88,20 +88,28 @@ export async function signInAgent(a: Agent) {
   if (setup.agents[a] !== 'out' || signedIn(a)) return;
   const mine = (attempts[a] = (attempts[a] ?? 0) + 1);
   set(() => agentSign(a, 'waiting'));
+  // the account this try made, if it did: taken off again when the sign-in doesn't take (the tool
+  // not on this Mac, its page closed), so only what was connected shows in Settings › Agents
+  let made: string | undefined;
+  const unmake = () => { if (made) void api.removeAccount(made).catch(() => { /* still there: Settings shows it signed out */ }); };
   try {
     const s = liveState().status;
     if (s?.availableLogins?.some((l) => l.agent === a)) {
       await api.addAccount({ agent: a, default: true });
     } else {
-      const account = s?.accounts.find((x) => x.agent === a)?.id ?? (await api.addAccount({ agent: a, name: 'Personal' })).id;
+      const account = s?.accounts.find((x) => x.agent === a)?.id ?? (made = (await api.addAccount({ agent: a, name: 'Personal' })).id);
       const page = await api.signIn(account);
       set((x) => ({ codes: { ...x.codes, [a]: { userCode: page.userCode, paste: page.pasteCode ? account : undefined } } }));
       open(page.url);
     }
     // a login that didn't take (its page closed, an expired login adopted): the button again,
     // unless a later try took over
-    if (!(await until(async () => signedIn(a) || attempts[a] !== mine))) set((x) => ({ ...agentSign(a, 'out'), codes: { ...x.codes, [a]: undefined } }));
+    if (!(await until(async () => signedIn(a) || attempts[a] !== mine))) {
+      unmake();
+      set((x) => ({ ...agentSign(a, 'out'), codes: { ...x.codes, [a]: undefined } }));
+    }
   } catch (e) {
+    unmake();
     failed(e, () => set(() => agentSign(a, 'out')));
   }
 }
@@ -189,6 +197,16 @@ const choose = (step: SetupStep, idle?: string) => new Promise<string>((r) => {
 export const typedFirst = (text: string) => setup.at === 'first' && !!text.trim() && (pick(text.trim()), true);
 
 export const FIRST_TASK = 'Find a small bug in obi and fix it';
+
+// The new onboarding's agents step (FirstRun.tsx): how each tool really stands, at once (no
+// staged looking). On obid, once it answers (setting up opens before it has): until then each
+// row shows a spinner
+export async function findAgents() {
+  set(() => ({ found: 0 }));
+  while (onObid && !liveState().status) await wait(250);
+  void already();
+  set(() => ({ found: 3 }));
+}
 
 let started = false;
 // open: show a conversation (Home's), for the first task's own on obid

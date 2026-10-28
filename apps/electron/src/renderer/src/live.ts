@@ -265,6 +265,11 @@ function publish() {
       id: a.id, agent: a.agent, name: a.name, payer: a.payer ?? 'You', signedIn: a.signedIn, label: a.label ?? null, used: used == null ? null : Math.round(used * 100),
       resets: !a.signedIn ? a.label ?? 'Not signed in' : a.agent === 'cursor' ? 'Cursor doesn’t report usage' : used == null ? 'No use reported yet'
         : a.sevenDayResets ? `Resets ${new Date(a.sevenDayResets).toLocaleDateString([], { weekday: 'long' })}` : 'No reset reported',
+      // the 5-hour session (signed in only), and when it starts over (Settings › Agents' bar, the
+      // usage panel's); weekly: whether used is the week's
+      session: a.agent === 'cursor' || !a.signedIn || a.fiveHour == null ? null : Math.round(a.fiveHour * 100),
+      sessionResets: a.fiveHourResets ? new Date(a.fiveHourResets).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : null,
+      weekly: a.sevenDay != null,
     };
   }));
 }

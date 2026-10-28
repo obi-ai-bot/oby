@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, screen, shell } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, screen, shell } from 'electron';
 import { createRequire } from 'node:module';
 import { lstatSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -46,6 +46,9 @@ if (dev) app.commandLine.appendSwitch('disable-backgrounding-occluded-windows');
 
 // the size the window opens at
 const WIDTH = 994, HEIGHT = 670;
+// while setting up (the page's FirstRun.tsx, Sangam's): narrower, and held at that size; done,
+// it grows to WIDTH, around its middle
+const SETUP_WIDTH = 700;
 
 let win: BrowserWindow | null = null;
 let chrome: Chrome | null = null;
@@ -60,9 +63,37 @@ ipcMain.on('full-screen', (e) => { e.returnValue = win?.isFullScreen() ?? false;
 const trusted: Trusted = (e) => !!win && e.sender === win.webContents && e.senderFrame === win.webContents.mainFrame;
 bridge(trusted);
 confirming(trusted);
+// setting up, or not: the page says so (synchronously, before the window first shows) and the
+// window takes the setup's size, held there (no resizing, zooming or full screen), or its own back.
+// The answer: the width it's on its way to, so the page knows when it's there (null: it's there)
+ipcMain.on('setup-window', (e, on: unknown) => {
+  e.returnValue = null;
+  if (!trusted(e) || !win || win.isDestroyed() || win.isFullScreen()) return;
+  const setup = on === true;
+  const b = win.getBounds(), width = setup ? SETUP_WIDTH : WIDTH;
+  win.setResizable(true);
+  if (b.width !== width) {
+    win.setBounds({ x: Math.round(b.x + (b.width - width) / 2), y: b.y, width, height: b.height }, win.isVisible());
+    e.returnValue = width;
+  }
+  win.setResizable(!setup);
+  win.setMaximizable(!setup);
+  win.setFullScreenable(!setup);
+});
 // a sign-in page (an agent's, GitHub's, Tetrix's) in the person's browser: https only
 ipcMain.on('open-external', (e, url: unknown) => {
   if (trusted(e) && typeof url === 'string' && url.startsWith('https://')) void shell.openExternal(url);
+});
+// the folders the work is in (the message box's Select working folder…): the Mac's own folder
+// picker over the window, several at once; the paths picked, none when it's cancelled
+// (from: where it opens, the folder the last one was picked in)
+ipcMain.handle('pick-folders', async (e, from: unknown) => {
+  if (!trusted(e) || !win || win.isDestroyed()) return [];
+  const r = await dialog.showOpenDialog(win, {
+    properties: ['openDirectory', 'multiSelections', 'createDirectory'], buttonLabel: 'Select', message: 'Choose the folders the work is in',
+    ...(typeof from === 'string' && from.startsWith('/') ? { defaultPath: from } : {}),
+  });
+  return r.canceled ? [] : r.filePaths;
 });
 
 function track(on: boolean) {

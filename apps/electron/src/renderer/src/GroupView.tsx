@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useScrollThumb } from './useScrollThumb';
 import TaskCard from './TaskCard';
+import { CommandWindow } from './Connectors';
 import { BrandMark, BRANDS } from './brands';
 import { ago, ASK_LABEL, type GitHubItem } from './mock';
 import { columnsOf, gitHubError, hasToDo, openOnGitHub, putOff, startGitHub, tasksIn, toDoOf, useTasks, type Tab, type TaskType } from './tasks';
@@ -33,6 +34,9 @@ export default function GroupView({ group, tab: startTab, leaving, covered = fal
   const { list, onScroll, thumbProps } = useScrollThumb<HTMLElement>();
   // re-render whenever the tasks change
   useTasks();
+  // gh's login without read:project: no board columns (obid's words for it name the scope)
+  const noBoards = !!gitHubError()?.includes('read:project');
+  const [boardsHelp, setBoardsHelp] = useState(false);
   const [tab, setTab] = useState<Tab>(startTab);
   // after the first tab, cards come in quicker: no waiting for Oby to fade
   const [switched, setSwitched] = useState(false);
@@ -91,8 +95,9 @@ export default function GroupView({ group, tab: startTab, leaving, covered = fal
         className="group"
         aria-label={group.label}
         onScroll={onScroll}
-        // a click anywhere that isn't the title, the tabs, a card or the archive link closes the group
-        onClick={(e) => { if (!(e.target as Element).closest('.group-title, .line-tabs, .card, .group-archived')) onClose(); }}
+        // a click on the room either side of the list closes the group; one in the list's own column
+        // (between cards, on its words) doesn't, nor the end of selecting text
+        onClick={(e) => { if (!(e.target as Element).closest('.group-column') && !getSelection()?.toString()) onClose(); }}
       >
         <div className="group-column">
           <h1 className="group-title rise" style={{ '--i': 0 } as React.CSSProperties}>{group.label}</h1>
@@ -115,7 +120,7 @@ export default function GroupView({ group, tab: startTab, leaving, covered = fal
           {/* keyed by tab, so switching brings the new cards in fresh */}
           <div key={tab} className="group-cards" role="tabpanel">
             {/* why GitHub's work couldn't be read last (obid's words); what was read before stays */}
-            {tab === 'todo' && gitHubError() && <p className="group-empty rise" style={{ '--i': 2 } as React.CSSProperties}>{gitHubError()}</p>}
+            {tab === 'todo' && gitHubError() && !noBoards && <p className="group-empty rise" style={{ '--i': 2 } as React.CSSProperties}>{gitHubError()}</p>}
             {columns.map((c) => (
               <div key={`${c.project ?? ''}/${c.name ?? ''}`} className="group-board">
                 {named && <h2 className="group-board-name rise" style={{ '--i': at++ } as React.CSSProperties}>{c.name ?? 'Not on a board'}</h2>}
@@ -125,9 +130,29 @@ export default function GroupView({ group, tab: startTab, leaving, covered = fal
             {cards.map((c, i) => (
               <TaskCard key={c.id} task={c} onOpen={onOpenTask} style={{ '--i': i + 2 } as React.CSSProperties} />
             ))}
-            {!cards.length && !columns.length && <p className="group-empty rise" style={{ '--i': 2 } as React.CSSProperties}>Nothing {tab === 'done' ? 'completed yet' : tab === 'todo' ? 'to do' : tab}</p>}
+            {/* nothing in this tab: its words in the middle of the window's height, as the side panel's
+                (with completed ones' way to the archive under them) */}
+            {!cards.length && !columns.length && (
+              <div className="group-none">
+                <div className="rise" style={{ '--i': 2 } as React.CSSProperties}>
+                  <p>Nothing {tab === 'done' ? 'completed yet' : tab === 'todo' ? 'to do' : tab}</p>
+                  {/* the archive's way in, as the side panel's Archived (there from the start) */}
+                  {tab === 'done' && <p>Older ones are in <button className="group-none-link" onClick={onOpenArchive}>Archived</button></p>}
+                </div>
+              </div>
+            )}
+            {/* gh's login can't read project boards (obid says so in the feed's error, naming the
+                read:project scope): the items are all here, just not under their board columns, so
+                not a problem to show over them; the way to get the columns, after them */}
+            {tab === 'todo' && noBoards && columns.length > 0 && (
+              <button className="group-archived rise" style={{ '--i': at } as React.CSSProperties} onClick={() => setBoardsHelp(true)}>Group by board column</button>
+            )}
+            {boardsHelp && (
+              <CommandWindow brand={BRANDS.github} title="Group by board column" command="gh auth refresh -s read:project" onClose={() => setBoardsHelp(false)}
+                text="To show these under their GitHub project board columns, let gh read your boards. Run this in Terminal, then come back." />
+            )}
             {/* completed ones leave Home after a while (Archive completed, in Home's ⋮) */}
-            {tab === 'done' && (
+            {tab === 'done' && cards.length > 0 && (
               <button className="group-archived rise" style={{ '--i': cards.length + 2 } as React.CSSProperties} onClick={onOpenArchive}>
                 Older ones are in Archived
               </button>
