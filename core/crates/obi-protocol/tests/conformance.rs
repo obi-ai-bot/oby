@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use obi_protocol::jcs::canonicalize;
-use obi_protocol::keys::Keypair;
+use obi_protocol::keys::{Keypair, b64url};
 use serde_json::{Value, json};
 
 fn spec() -> PathBuf {
@@ -91,6 +91,15 @@ fn card_cases() -> Vec<(String, Value)> {
         card["signatures"] = json!([{"protected": protected, "signature": signature}]);
         card
     };
+    // Signed over a protected header given as raw bytes, which the spec's generator writes directly
+    // when the header isn't the one `jwt::header` makes (a member twice, or a byte that isn't UTF-8).
+    let signed_with_header = |card: &Value, owner: &Keypair, header: &[u8]| -> Value {
+        let protected = b64url(header);
+        let signature = owner.sign(&obi_protocol::card::signing_input(card, &protected).unwrap());
+        let mut card = card.clone();
+        card["signatures"] = json!([{"protected": protected, "signature": signature}]);
+        card
+    };
     let context = json!({"now": NOW, "bound_owner_key": oa.public_key()});
     let mut cases = Vec::new();
     let mut add = |name: &str,
@@ -125,6 +134,35 @@ fn card_cases() -> Vec<(String, Value)> {
         tampered,
         "reject",
         Some("bad_signature"),
+        &context,
+    );
+    // A protected header that names `kid` twice (an object with a member twice isn't JSON), the
+    // owner key's id last; and one with a byte that isn't UTF-8 after the opening brace. Both are
+    // signed by the owner over that header, and both are card_invalid (the header is not JSON).
+    let repeated_header = format!(
+        r#"{{"alg":"EdDSA","kid":"{}","kid":"{}","typ":"JOSE"}}"#,
+        a.key_id(),
+        oa.key_id()
+    );
+    add(
+        "invalid-card-header-repeated-member",
+        signed_with_header(
+            &card_for("obi-a", "owner-a", &a, &oa),
+            &oa,
+            repeated_header.as_bytes(),
+        ),
+        "reject",
+        Some("card_invalid"),
+        &context,
+    );
+    let plain_header = format!(r#"{{"alg":"EdDSA","kid":"{}","typ":"JOSE"}}"#, oa.key_id());
+    let mut not_utf8 = vec![b'{', 0xFF];
+    not_utf8.extend_from_slice(&plain_header.as_bytes()[1..]);
+    add(
+        "invalid-card-header-not-utf8",
+        signed_with_header(&card_for("obi-a", "owner-a", &a, &oa), &oa, &not_utf8),
+        "reject",
+        Some("card_invalid"),
         &context,
     );
     add(
