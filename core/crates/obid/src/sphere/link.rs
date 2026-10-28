@@ -62,6 +62,18 @@ const OBID_VERSION: &str = "0.3.0+card-runtime";
 /// without the build metadata.
 const RUNTIME_ID: &str = "oby";
 const RUNTIME_VERSION: &str = "0.3.0";
+/// The additions obid takes, as its card lists them once it may (identity.md section 2.3): it reads
+/// a card's runtime, vendors, classes and topics, verifies a chain with follow-ups, cancels and
+/// introductions, and stops what a received request's cancel calls off. Its card accepts no
+/// introduction, says no topics, and claims no conformance class until a report backs one.
+const FEATURES: [&str; 6] = [
+    "cancel",
+    "card_classes",
+    "card_runtime",
+    "card_topics",
+    "follow_up",
+    "introduction",
+];
 /// How often obid asks a Sphere that didn't list `card_runtime` again (`GET /v0.1/features`), once
 /// its team takes it: at once when the team first does.
 const FEATURES_EVERY: i64 = 600;
@@ -195,6 +207,7 @@ fn runtime_card_needed(state: &State, vendors: &[&str]) -> bool {
         && params.is_some_and(|p| {
             p.get("runtime") != Some(&json!({"id": RUNTIME_ID, "version": RUNTIME_VERSION}))
                 || p.get("vendors") != Some(&json!(vendors))
+                || p.get("features") != Some(&json!(FEATURES))
         });
     !takes_card_runtime(card)
         || stale
@@ -1813,7 +1826,7 @@ impl Link {
         };
         let vendors = vendors(&self.config);
         let runtime = runtime.then_some(obi_protocol::identity::CardRuntime {
-            features: &[obi_protocol::identity::CARD_RUNTIME],
+            features: &FEATURES,
             id: RUNTIME_ID,
             version: RUNTIME_VERSION,
             vendors: &vendors,
@@ -2520,6 +2533,12 @@ impl Link {
                 exchange.state = "done".into();
                 exchange.result = Some(envelope["body"].clone());
             }
+            // Its sender called a request obid received off (protocol.md section 5.17): nothing
+            // more goes out in that exchange.
+            "cancel" => {
+                exchange.state = "cancelled".into();
+                exchange.outbox.clear();
+            }
             _ => {}
         }
         exchange.updated = time::now();
@@ -2527,6 +2546,42 @@ impl Link {
         state.seen.insert(id);
         drop(state);
         self.save_exchange(&exchange);
+        if kind == "cancel" {
+            self.cancelled(&exchange);
+        }
+    }
+
+    /// A request obid received was called off by its sender (protocol.md section 11, "Calling a
+    /// request off"): its work stops, its inbox item is settled, and nothing is approved for it.
+    fn cancelled(&self, exchange: &Exchange) {
+        let now = time::now();
+        let item = {
+            let mut state = self.lock();
+            exchange
+                .inbox_item
+                .as_ref()
+                .and_then(|id| state.inbox.get_mut(id))
+                .filter(|i| i.done.is_none())
+                .map(|i| {
+                    i.done = Some(now);
+                    i.clone()
+                })
+        };
+        if let Some(item) = item {
+            self.save_item(&item);
+        }
+        if let Some(job) = exchange.job.as_deref() {
+            self.jobs.stop(job);
+        }
+        let cid = exchange.correlation_id.clone();
+        self.settle_host_approvals(
+            |i| {
+                i.confirm
+                    .as_ref()
+                    .is_some_and(|c| c.payload["correlationId"] == cid.as_str())
+            },
+            "Its sender called the review off: nothing was approved.",
+        );
     }
 
     /// A request (protocol.md section 11, steps 4 to 6): declined when the card doesn't accept its
@@ -7424,22 +7479,26 @@ mod tests {
     }
 
     /// A card that carries obid's runtime is signed again when it says other vendors than obid
-    /// would now (its owner moved the conversation to Codex, say), or another runtime version.
+    /// would now (its owner moved the conversation to Codex, say), another runtime version, or
+    /// other features.
     #[tokio::test]
     async fn a_card_with_stale_vendors_is_signed_again() {
         let (link, _home, _stop) = sender_link("stale-vendors", Some("joined"));
         let mut state = link.lock();
-        let card = |runtime_version: &str| {
+        let card = |runtime_version: &str, features: Value| {
             json!({"version": OBID_VERSION, "capabilities": {"extensions": [{"params": {
-                "features": ["card_runtime"],
+                "features": features,
                 "runtime": {"id": RUNTIME_ID, "version": runtime_version},
                 "vendors": ["anthropic"],
             }}]}})
         };
-        state.membership.as_mut().unwrap().card = card(RUNTIME_VERSION);
+        state.membership.as_mut().unwrap().card = card(RUNTIME_VERSION, json!(FEATURES));
         assert!(!runtime_card_needed(&state, &["anthropic"]));
         assert!(runtime_card_needed(&state, &["anthropic", "openai"]));
-        state.membership.as_mut().unwrap().card = card("0.2.9");
+        state.membership.as_mut().unwrap().card = card("0.2.9", json!(FEATURES));
+        assert!(runtime_card_needed(&state, &["anthropic"]));
+        // A card from an obid that took fewer features is signed again too.
+        state.membership.as_mut().unwrap().card = card(RUNTIME_VERSION, json!(["card_runtime"]));
         assert!(runtime_card_needed(&state, &["anthropic"]));
     }
 

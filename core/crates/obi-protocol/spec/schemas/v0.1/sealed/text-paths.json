@@ -23,6 +23,9 @@
     "share_offer": [
       "/account"
     ],
+    "introduction": [
+      "/note"
+    ],
     "status": [
       "/note"
     ],
@@ -42,6 +45,7 @@
     "run_return": [],
     "run_cancel": [],
     "share_status": [],
-    "share_revoke": []
+    "share_revoke": [],
+    "cancel": []
   }
 }

@@ -124,7 +124,7 @@
     "skills": {
       "type": "array",
       "minItems": 1,
-      "maxItems": 5,
+      "maxItems": 6,
       "items": {
         "$ref": "#/$defs/skill"
       },
@@ -197,6 +197,53 @@
               }
             }
           },
+          "allOf": [
+            {
+              "if": {
+                "required": [
+                  "topics"
+                ]
+              },
+              "then": {
+                "required": [
+                  "features"
+                ],
+                "properties": {
+                  "features": {
+                    "contains": {
+                      "const": "card_topics"
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "required": [
+                  "accepts"
+                ],
+                "properties": {
+                  "accepts": {
+                    "contains": {
+                      "const": "introduction"
+                    }
+                  }
+                }
+              },
+              "then": {
+                "required": [
+                  "features"
+                ],
+                "properties": {
+                  "features": {
+                    "contains": {
+                      "const": "introduction"
+                    }
+                  }
+                }
+              }
+            }
+          ],
           "properties": {
             "protocol": {
               "$ref": "common.schema.json#/$defs/protocol"
@@ -233,7 +280,7 @@
             "accepts": {
               "type": "array",
               "minItems": 1,
-              "maxItems": 5,
+              "maxItems": 6,
               "uniqueItems": true,
               "items": {
                 "$ref": "common.schema.json#/$defs/request_type"
@@ -302,6 +349,16 @@
                 "$ref": "common.schema.json#/$defs/class_id"
               },
               "description": "The conformance classes this member claims, as its owner declares them (spec/identity.md section 2.3). A claim, not a result: a report backs it. Comes with the feature card_classes, which features then names."
+            },
+            "topics": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 32,
+              "uniqueItems": true,
+              "items": {
+                "$ref": "common.schema.json#/$defs/topic_id"
+              },
+              "description": "What this member can help with, as ids its owner chose (spec/identity.md section 2.3). Comes with the feature card_topics, which features then names."
             }
           }
         }

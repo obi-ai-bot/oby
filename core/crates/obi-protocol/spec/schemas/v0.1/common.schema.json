@@ -242,11 +242,11 @@
     },
     "action_type": {
       "description": "Every action type. There is no free-text message type.",
-      "enum": ["review_request", "question", "handoff", "run_request", "status", "accept", "decline", "result", "answer", "run_progress", "run_return", "run_cancel", "share_offer", "share_status", "share_revoke"]
+      "enum": ["review_request", "question", "handoff", "run_request", "status", "accept", "decline", "result", "answer", "run_progress", "run_return", "run_cancel", "share_offer", "share_status", "share_revoke", "cancel", "introduction"]
     },
     "request_type": {
       "description": "The action types that start an exchange.",
-      "enum": ["review_request", "question", "handoff", "run_request", "share_offer"]
+      "enum": ["review_request", "question", "handoff", "run_request", "share_offer", "introduction"]
     },
     "agent": {
       "description": "The coding agent a run_request runs: its own CLI, with the member's own account.",
@@ -265,6 +265,17 @@
       "minLength": 1,
       "maxLength": 64,
       "pattern": "^[a-z][a-z0-9_]{0,63}$"
+    },
+    "topic_id": {
+      "description": "What a member can help with, as an id: a lower-case letter or digit, then up to 63 lower-case letters, digits and - (spec/identity.md section 2.3). An identifier, not words: it can be matched, never followed.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[a-z0-9][a-z0-9-]{0,63}$"
+    },
+    "follows": {
+      "description": "The id of an earlier request between the same two members, in either direction, that this request follows up (spec/protocol.md section 5.19). Comes with the feature follow_up.",
+      "$ref": "#/$defs/uuid"
     },
     "runtime_id": {
       "description": "The id of an agent runtime: the program that acts as a member's agent (spec/identity.md section 2.3, which lists the known ones). Any id that matches is valid.",

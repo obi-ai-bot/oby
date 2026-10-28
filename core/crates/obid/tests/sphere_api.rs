@@ -85,6 +85,48 @@ fn kinds(exchange: &Value) -> Vec<(String, String)> {
         .collect()
 }
 
+/// A request its sender calls off (protocol.md section 5.17): obid settles its inbox item, sends
+/// nothing more in that exchange, and a later reply to it is never queued.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_request_its_sender_cancels_leaves_the_inbox_and_gets_nothing_more() {
+    let folder = Folder::new("cancel");
+    let (_sphere, obid, ernesto) = setup(&folder, &stub_agent(), None).await;
+    let request = ernesto.request("obi-wellington", "review_request", brief(), 3600);
+    let cid = request["id"].as_str().unwrap().to_owned();
+    ernesto.send(&request).await;
+    let item = tokio::task::block_in_place(|| wait_item(&obid));
+    assert_eq!(item["id"], format!("obi-{cid}"));
+    let now = obi_protocol::time::now();
+    let cancel = ernesto.sign(json!({"protocol": "obi/0.1", "id": uuid::Uuid::new_v4().to_string(),
+        "type": "cancel", "from": "obi-ernesto", "to": "obi-wellington", "sphere": SPHERE,
+        "correlation_id": cid, "in_reply_to": cid, "created_at": obi_protocol::time::format(now),
+        "expires_at": obi_protocol::time::format(now + 3600), "key_id": ernesto.key.key_id(), "body": {}}));
+    ernesto.send(&cancel).await;
+    tokio::task::block_in_place(|| {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        loop {
+            let e = exchange(&obid, &cid);
+            if e["state"] == "cancelled" {
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline, "not cancelled: {e}");
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        // Its inbox item is settled: the owner's answer finds nothing to do.
+        let answered = call(
+            &obid,
+            "POST",
+            &format!("/v1/inbox/obi-{cid}/answer"),
+            Some(&json!({"option": "Accept"})),
+        );
+        assert_ne!(answered.status, 200, "{}", answered.text);
+        let e = exchange(&obid, &cid);
+        assert_eq!(e["state"], "cancelled");
+    });
+    // Nothing went back to its sender.
+    assert!(ernesto.waiting_after(1).await.is_empty());
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_request_waits_for_the_owner_and_the_remembered_decision_answers_the_next() {
     let folder = Folder::new("remember");
@@ -2499,7 +2541,17 @@ async fn a_card_says_its_runtime_once_the_sphere_and_the_team_take_it() {
     tokio::task::block_in_place(|| {
         let card = read_directory_now(&obid, &sphere);
         let p = params(&card);
-        assert_eq!(p["features"], json!(["card_runtime"]));
+        assert_eq!(
+            p["features"],
+            json!([
+                "cancel",
+                "card_classes",
+                "card_runtime",
+                "card_topics",
+                "follow_up",
+                "introduction"
+            ])
+        );
         assert_eq!(p["runtime"], json!({"id": "oby", "version": "0.3.0"}));
         assert_eq!(
             p["vendors"],
