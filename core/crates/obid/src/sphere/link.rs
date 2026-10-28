@@ -74,9 +74,20 @@ const FEATURES: [&str; 6] = [
     "follow_up",
     "introduction",
 ];
-/// How often obid asks a Sphere that didn't list `card_runtime` again (`GET /v0.1/features`), once
-/// its team takes it: at once when the team first does.
+/// How often obid reads the Sphere's `GET /v0.1/features` again: for a token exchange, and, once
+/// its team takes `card_runtime`, for a Sphere that didn't list it (at once when the team first does).
 const FEATURES_EVERY: i64 = 600;
+/// How long obid waits for the Sphere's `GET /v0.1/features`; no answer by then counts as none.
+const FEATURES_WAIT: Duration = Duration::from_secs(10);
+
+/// Whether obid is still a member through `client`'s server: what it learnt of one server says
+/// nothing of the next.
+fn same_server(state: &State, client: &Client) -> bool {
+    state
+        .client
+        .as_ref()
+        .is_some_and(|c| c.base() == client.base())
+}
 
 /// The model vendors obid's card declares (identity.md section 2.3): those whose models write what
 /// it sends another member. A review, and a question it answers by itself, run on Claude Code; an
@@ -2098,7 +2109,10 @@ impl Link {
                 // alone from then on.
                 Err(ClientError::Refused { code, .. }) if code == "invalid_request" => {
                     let token = client.token(&delegation, &actor(&plain)?).await?;
-                    self.lock().url_aud_refused = true;
+                    let mut state = self.lock();
+                    if same_server(&state, &client) {
+                        state.url_aud_refused = true;
+                    }
                     token
                 }
                 answer => answer?,
@@ -2124,8 +2138,17 @@ impl Link {
             return list;
         }
         let at = Instant::now();
-        let list = client.features().await.unwrap_or_default();
-        self.lock().features = Some((at, list.clone()));
+        // Bounded well inside the token's last minute, which a token exchange may be waiting on.
+        let list = tokio::time::timeout(FEATURES_WAIT, client.features())
+            .await
+            .ok()
+            .and_then(Result::ok)
+            .unwrap_or_default();
+        let mut state = self.lock();
+        // Kept only for the server it was read from: obid may have left and joined another since.
+        if same_server(&state, client) {
+            state.features = Some((at, list.clone()));
+        }
         list
     }
 

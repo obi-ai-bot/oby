@@ -241,9 +241,18 @@ pub fn check_delegation(token: &str, check: &DelegationCheck<'_>) -> Result<Valu
             check.owner
         ));
     }
-    // Either form names this Obysphere: alone, or with its server's URL (identity.md 4.1).
+    // Either form names this Obysphere: alone, or with its server's URL (identity.md 4.1), whose
+    // origin is compared as the server reads it (an explicit default port is the same origin).
     let url = url_audience(check.sphere_url, check.sphere);
-    if text("aud") != audience(check.sphere) && Some(text("aud")) != url.as_deref() {
+    let by_url = text("aud")
+        .strip_suffix(&format!("/v0.1/spheres/{}", check.sphere))
+        .filter(|origin| {
+            origin
+                .split_once("://")
+                .is_some_and(|(_, host)| !host.contains('/'))
+        })
+        .is_some_and(|origin| url.is_some() && url_audience(origin, check.sphere) == url);
+    if text("aud") != audience(check.sphere) && !by_url {
         return Err(format!(
             "the delegation's audience is {}, not {}{}",
             text("aud"),
@@ -438,11 +447,18 @@ mod tests {
         // The Obysphere's own URL names it too (identity.md 4.1); another server's doesn't.
         let mut by_url = good.clone();
         by_url["aud"] = json!("https://sphere.example.com/v0.1/spheres/e2e");
+        check_delegation(&delegation(&owner, by_url.clone()), &check).unwrap();
+        by_url["aud"] = json!("https://sphere.example.com:443/v0.1/spheres/e2e");
         check_delegation(&delegation(&owner, by_url), &check).unwrap();
-        assert!(
-            wrong(&|c| c["aud"] = json!("https://elsewhere.example/v0.1/spheres/e2e"))
-                .contains("audience")
-        );
+        for aud in [
+            "https://elsewhere.example/v0.1/spheres/e2e",
+            "https://sphere.example.com/v0.1/spheres/other",
+            "https://sphere.example.com/x/v0.1/spheres/e2e",
+            "http://sphere.example.com/v0.1/spheres/e2e",
+        ] {
+            // The schema refuses some of these, the check the rest: either says it's the `aud`.
+            assert!(wrong(&|c| c["aud"] = json!(aud)).contains("aud"), "{aud}");
+        }
         assert!(wrong(&|c| c["exp"] = json!(now - 1)).contains("expired"));
         assert!(wrong(&|c| c["scope"] = json!("send:review_request receive")).contains("reply"));
         assert!(wrong(&|c| c["sub"] = json!("ernesto")).contains("not the owner"));
