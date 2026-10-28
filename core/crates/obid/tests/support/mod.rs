@@ -1185,6 +1185,8 @@ impl FakeSphere {
 
     /// Neither records nor delivers the next send of type `kind`, and breaks off its answer after
     /// the status: the post reaches obid as one that didn't answer (`ClientError::Unreachable`).
+    /// With `answer_next_with_last` set for the same kind too, that one answers first, and this
+    /// waits for the send after it.
     pub fn break_next_send(&self, kind: &str) {
         self.lock().break_send = Some(kind.to_owned());
     }
