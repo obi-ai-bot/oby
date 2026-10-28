@@ -435,6 +435,18 @@ fn oby_checks_in_by_itself_an_opt_in_morning_summary_and_the_away_recap_as_a_not
             .find(|t| t["who"] == "oby" && t["text"] == summary)
     });
     assert_eq!(turn["jobs"], json!([job]), "{turn}");
+    let usage = call(&obid, "GET", "/v1/brain/usage", None);
+    assert_eq!(usage.status, 200, "{}", usage.text);
+    assert!(
+        usage.body["kinds"]["recap"]["calls"].as_u64().unwrap_or(0) >= 1,
+        "{}",
+        usage.text
+    );
+    let records = std::fs::read_to_string(obid.home.join("brain-turns.jsonl")).unwrap();
+    assert!(
+        !records.contains(summary),
+        "the recap text entered usage records"
+    );
     // The day's summary is kept by its due time: a minute ago, to the minute.
     let kept = settings_kept(&obid);
     let at = kept["checkIn"]["from"].as_i64().unwrap();

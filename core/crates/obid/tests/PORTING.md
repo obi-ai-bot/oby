@@ -1,5 +1,7 @@
 # RunnerTests, ported to obid
 
+The planner and Lead references below record the original Swift-to-obid port. The plan loop and Lead were retired on 2026-10-27; their removed files and tests are historical references, not current coverage. The conversation and event harness tests cover the replacement behavior.
+
 The Rust core's done-when includes "the ported API-level tests from `RunnerTests` pass" (docs/ARCHITECTURE.md, section 6). This lists every test in `RunnerTests/` (the Swift runner's, frozen) and what became of it. Each Rust test names the Swift test it ports.
 
 **API-level** means the test asks the runner through its HTTP API (`client.execute` on the router, or the API's own handlers), or checks what the API puts on the wire (a job's or account's JSON, the gate in front of every request). obid is checked the same way: the real binary, asked over HTTP (tests/*.rs), or a unit test of the same rule where the Swift test was one. Everything else is **Swift-internal**: it drives Swift types (Desk, the brain, the agent fakes, the stores), so it doesn't carry over; obid's own behaviour behind those is covered by its own tests.

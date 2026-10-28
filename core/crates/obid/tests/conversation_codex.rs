@@ -82,7 +82,7 @@ fn turns(obid: &Obid) -> Vec<Value> {
     all
 }
 
-/// What the plan loop answered: a reply's or a question's words.
+/// What the conversation answered: a reply's or a question's words.
 fn words(answer: &Answer) -> String {
     answer.body["text"]
         .as_str()
@@ -283,7 +283,7 @@ fn codex_tokens_never_reach_what_obid_sends() {
 
 /// A command item is never part of a conversation: Codex's shell is off, and if one runs anyway
 /// (a setting Codex stopped knowing) the turn ends at once, isn't tried again, its thread is never
-/// picked up again, and the plan loop says why (G1).
+/// picked up again, and obid says why (G1).
 #[test]
 fn a_command_ends_a_codex_turn() {
     let (_folder, obid) = obid("codex-conv-command", true);
@@ -295,7 +295,7 @@ fn a_command_ends_a_codex_turn() {
     let conversation = answer.body["conversation"].as_str().unwrap().to_owned();
     assert!(
         words(&answer).ends_with(
-            "\n(Oby's plan loop answered: Codex ran a command (echo hi), which a conversation never does, so obid stopped it.)"
+            "I couldn't answer: Codex ran a command (echo hi), which a conversation never does, so obid stopped it."
         ),
         "{}",
         answer.text
@@ -367,7 +367,7 @@ fn whatever_runs_outside_obys_tools_ends_a_codex_turn() {
         let answer = said(&obid, json!({"said": words_said, "new": true}));
         assert!(
             words(&answer).ends_with(&format!(
-                "\n(Oby's plan loop answered: {why}, which a conversation never does, so obid stopped it.)"
+                "I couldn't answer: {why}, which a conversation never does, so obid stopped it."
             )),
             "{words_said}: {}",
             answer.text
@@ -409,7 +409,7 @@ fn codex_that_keeps_a_feature_on_is_refused() {
         let answer = said(&obid, json!({"said": "HELLO", "new": true}));
         assert!(
             words(&answer).ends_with(&format!(
-                "\n(Oby's plan loop answered: Codex's features list says {feature} is on whatever obid sets, so a conversation doesn't run on it.)"
+                "I couldn't answer: Codex's features list says {feature} is on whatever obid sets, so a conversation doesn't run on it."
             )),
             "{}",
             answer.text
@@ -448,7 +448,7 @@ fn codex_login_copies_have_no_refresh_token() {
     let ending = said(&obid, json!({"said": "COPY", "new": true}));
     assert!(
         words(&ending).ends_with(
-            "\n(Oby's plan loop answered: The Mac's Codex login for Codex stub needs refreshing: run codex once.)"
+            "I couldn't answer: The Mac's Codex login for Codex stub needs refreshing: run codex once."
         ),
         "{}",
         ending.text
@@ -656,18 +656,35 @@ fn codex_approvals_follow_the_conversation_rule() {
     );
 }
 
-/// With no Codex account signed in, or a thread that fails twice, the plan loop answers, and says
-/// so in one line.
+/// A Codex turn's run is kept as the brain's with the tokens Codex's `tokenUsage` reported: the
+/// input not read from the cache, the cache's, and the output.
 #[test]
-fn the_plan_loop_answers_when_codex_cant_run() {
+fn a_codex_turns_usage_is_kept_from_its_token_usage() {
+    let (_folder, obid) = obid("codex-conv-usage", true);
+    let answer = said(&obid, json!({"said": "USAGE", "new": true}));
+    assert_eq!(words(&answer), "used", "{}", answer.text);
+    let record: Value = std::fs::read_to_string(obid.home.join("brain-turns.jsonl"))
+        .unwrap()
+        .lines()
+        .map(|l| serde_json::from_str::<Value>(l).unwrap())
+        .rfind(|r| r["kind"] == "conversation")
+        .expect("the turn's record");
+    let call = &record["calls"][0];
+    assert_eq!(call["adapter"], "codex", "{record}");
+    assert_eq!(call["model"], Value::Null, "Codex's own model: {record}");
+    assert_eq!(call["input_tokens"], 20, "{record}");
+    assert_eq!(call["cache_read_input_tokens"], 100, "{record}");
+    assert_eq!(call["output_tokens"], 9, "{record}");
+}
+
+/// With no Codex account signed in, or a thread that fails twice, the turn says why in one line.
+#[test]
+fn a_codex_turn_says_why_when_codex_cant_run() {
     let (_folder, obid) = obid("codex-conv-fallback", false);
-    // What the plan loop says depends on whether its brain can run (with no usable login it's
-    // keyword rules, #651); its answer, a reply or a question, ends with the line saying why.
     let answer = said(&obid, json!({"said": "HELLO", "new": true}));
-    assert!(
-        words(&answer).ends_with(
-            "\n(Oby's plan loop answered: no Codex account is signed in for conversations.)"
-        ),
+    assert_eq!(
+        words(&answer),
+        "I couldn't answer: no Codex account is signed in for conversations.",
         "{}",
         answer.text
     );
@@ -675,8 +692,9 @@ fn the_plan_loop_answers_when_codex_cant_run() {
 
     std::fs::write(obid.home.join("accounts/codex/auth.json"), "{}").unwrap();
     let failed = said(&obid, json!({"said": "FAIL", "new": true}));
-    assert!(
-        words(&failed).ends_with("\n(Oby's plan loop answered: its agent session failed twice.)"),
+    assert_eq!(
+        words(&failed),
+        "I couldn't answer: its agent session failed twice.",
         "{}",
         failed.text
     );

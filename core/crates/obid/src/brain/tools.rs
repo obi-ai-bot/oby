@@ -1,7 +1,7 @@
 //! Oby's own tools for a conversation's session (docs/conversation-harness.md, section 3): the MCP
 //! server `oby` at `POST /v1/agent/mcp/conversation-<id>`, reached with the turn's own token
-//! ([`super::harness::Sessions`]). Every call is the plan loop's action, checked as the plan loop
-//! checks it (`Plan::problems` with the briefing's ids) and carried out by `brain::actions`, so what
+//! ([`super::harness::Sessions`]). Every call that acts is a typed plan, checked first
+//! (`Plan::problems` with the briefing's ids) and carried out by `brain::actions`, so what
 //! persists, widens trust or starts work in Bypass becomes a `confirm` item only the owner's answer
 //! runs, and an owner's own decision is refused with why. What agents wrote comes back quoted, the
 //! turn's fences around it, and every secret obid knows is taken out of every answer. Its read
@@ -19,13 +19,12 @@ use serde_json::{Value, json};
 use super::actions::{self, Asked, Outcome, Talk};
 use super::harness::{Place, Session};
 use super::plan::{Action, Dispatch, Plan};
-use super::planner::Planned;
 use crate::api::Shared;
 
 const VERSIONS: &[&str] = &["2025-06-18", "2025-03-26", "2024-11-05"];
 
 /// Oby's tools, as `tools/list` gives them.
-fn list() -> Value {
+pub(super) fn list() -> Value {
     let id = json!({"type": "string", "description": "The job's id, as oby_jobs gives it."});
     // What a job is: oby_dispatch starts one, oby_offer offers one.
     let start = json!({"type": "object", "properties": {
@@ -189,6 +188,10 @@ pub async fn handle(shared: &Arc<Shared>, session: &Session, body: Value) -> Opt
     let id = body.get("id").cloned().filter(|id| !id.is_null())?;
     let params = body.get("params").cloned().unwrap_or_else(|| json!({}));
     let result = match method {
+        // A turn nobody watches about an event lists only what it may call (super::orchestrator).
+        "tools/list" if session.event.is_some() => {
+            json!({"tools": super::orchestrator::tools(&list())})
+        }
         "tools/call" => {
             let name = params["name"].as_str().unwrap_or("");
             let args = params
@@ -262,6 +265,13 @@ async fn call(
     // A turn nobody watches reads only its own job, and archives nothing (super::supervisor).
     if let Some(why) = super::supervisor::refused(session, name, &args) {
         return Err(why.into());
+    }
+    // An event turn calls only its allow-list, within its bounds (super::orchestrator); its read
+    // of the event's job is answered as any.
+    if let Some(watch) = &session.event
+        && let Some(answered) = super::orchestrator::call(shared, watch, name, &args).await
+    {
+        return answered;
     }
     if let Some(why) = reads_foreign(shared, name, &args) {
         shared.conversations.mark(&session.conversation, why);
@@ -1284,7 +1294,7 @@ fn quoted(session: &Session, from: &str, text: &str) -> String {
     )
 }
 
-/// What the plan loop's checks say of `plan`, with the briefing's ids as they are now; for an
+/// What obid's checks say of `plan`, with the briefing's ids as they are now; for an
 /// inbox answer every waiting item counts, so `actions` itself says why a confirm is the owner's.
 fn problems(shared: &Shared, session: &Session, plan: &Plan) -> Result<(), String> {
     let mut context = super::context(shared, &session.conversation, &[], &session.nonce);
@@ -1305,7 +1315,7 @@ fn problems(shared: &Shared, session: &Session, plan: &Plan) -> Result<(), Strin
     }
 }
 
-/// An action that changes something, as the plan loop does it.
+/// An action that changes something, as `brain::actions` does it.
 async fn act(
     shared: &Arc<Shared>,
     session: &Session,
@@ -1355,8 +1365,7 @@ fn outcome_answer(session: &Session, outcome: Outcome) -> Result<String, String>
     }
 }
 
-/// The most times one turn's tools start jobs, or tell them something: the plan loop's most
-/// dispatches in one plan.
+/// The most times one turn's tools start jobs, or tell them something: a plan's most dispatches.
 const MOST: usize = super::plan::MOST_DISPATCHES;
 
 /// One more of what `count` counts this turn, or why not.
@@ -1522,7 +1531,7 @@ async fn tell(
     outcome_answer(session, actions::follow_up(shared, &job, new))
 }
 
-/// oby_dispatch: the plan loop's dispatch of one job, linked to the conversation.
+/// oby_dispatch: a plan's dispatch of one job, linked to the conversation.
 async fn dispatch(shared: &Arc<Shared>, session: &Session, args: Value) -> Result<String, String> {
     capped(&session.dispatched, "starts jobs")?;
     let start: Start = parse(args)?;
@@ -1578,20 +1587,13 @@ async fn dispatch(shared: &Arc<Shared>, session: &Session, args: Value) -> Resul
     let mut plan = Plan::of(Action::Dispatch, "");
     plan.dispatches = vec![dispatch];
     problems(shared, session, &plan)?;
-    let planned = Planned {
-        plan,
-        by: "harness".into(),
-        refused: vec![],
-        calls: vec![],
-        failed: None,
-    };
     let control = session.control.clone();
     let live = move || control.live();
     // A turn that read something untrusted starts the work marked untrusted, in the owner's mode
     // (the owner's decision of 2026-10-27).
     let researched = session.web.load(Ordering::SeqCst);
     let Talk::Reply { text, jobs } =
-        actions::answer(shared, &planned, &asked(session), researched, &live).await
+        actions::answer(shared, &plan, &asked(session), researched, &live).await
     else {
         return Err("The turn ended before the job started.".into());
     };

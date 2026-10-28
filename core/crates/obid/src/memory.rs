@@ -41,7 +41,7 @@ use serde_json::{Value, json};
 
 use crate::api::{ApiError, Shared};
 use crate::brain::briefing::{fence, fence_rule, nonce};
-use crate::brain::planner::{Adapter, Failure, Planner, QUOTED_FILE, Room};
+use crate::brain::calls::{Failure, QUOTED_FILE};
 
 /// The question every suggestion asks (docs/onboarding.md section 5).
 pub const QUESTION: &str = "Can I remember that?";
@@ -1770,19 +1770,9 @@ pub async fn find(State(shared): State<Arc<Shared>>) -> Result<Response, ApiErro
     };
     let home = shared.config.home.clone();
     let unavailable = |why: String| ApiError::new(StatusCode::SERVICE_UNAVAILABLE, why);
-    let room = Room {
-        root: home.join("plans"),
-        jobs: shared.jobs.clone(),
-    };
-    let brain = Planner::of(&shared.config, &room)
-        .into_iter()
-        .find_map(|adapter| match adapter {
-            Adapter::Claude(claude) => Some(claude),
-            _ => None,
-        })
-        .ok_or_else(|| {
-            unavailable("Finding needs a Claude Code account: Oby asks it to read.".into())
-        })?;
+    let brain = crate::brain::calls::quick(&shared, "memory").ok_or_else(|| {
+        unavailable("Finding needs a Claude Code account: Oby asks it to read.".into())
+    })?;
     let mut said = own_words(&shared);
     let conversations: BTreeSet<Place> = said.iter().map(|s| s.place.clone()).collect();
     let repos = repos(&shared);
@@ -1840,17 +1830,9 @@ pub async fn find(State(shared): State<Arc<Shared>>) -> Result<Response, ApiErro
         ))
     })?;
     let known = list(&home);
-    let mut calls = vec![];
     let found = suggest(&said, &repos, &known, |system, user, quoted| async move {
         brain
-            .side_call(
-                &system,
-                &user,
-                Some(&quoted),
-                SCHEMA,
-                FIND_TIMEOUT,
-                &mut calls,
-            )
+            .side_call(&system, &user, Some(&quoted), SCHEMA, FIND_TIMEOUT)
             .await
     })
     .await

@@ -2080,12 +2080,12 @@ async fn agent(
         .unwrap_or("");
     let value = serde_json::from_slice::<Value>(&body).unwrap_or(Value::Null);
     let answer = if job.starts_with("conversation-") {
-        // Never a turn nobody watches (crate::brain::supervisor). Its Claude Code waiting for a
-        // turn connects and lists, and calls nothing.
+        // Never a turn nobody watches (crate::brain::supervisor, crate::brain::orchestrator). Its
+        // Claude Code waiting for a turn connects and lists, and calls nothing.
         let session = shared
             .harness
             .session(&job, token)
-            .filter(|s| s.supervising.is_none());
+            .filter(|s| !s.unwatched());
         if session.is_none() && !shared.harness.waiting_with(&job, token) {
             return ApiError::new(StatusCode::UNAUTHORIZED, crate::api::NO_TOKEN).into_response();
         }

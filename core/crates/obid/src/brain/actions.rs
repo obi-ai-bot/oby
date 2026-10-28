@@ -7,7 +7,6 @@ use std::sync::Arc;
 use serde_json::Value;
 
 use super::plan::{Action, Plan, Question};
-use super::planner::Planned;
 use crate::api::Shared;
 use crate::job::Job;
 use crate::jobs::{NewJob, Source};
@@ -79,12 +78,11 @@ pub struct Asked<'a> {
 /// owner's mode, inside Oby's box (the owner's decision of 2026-10-27).
 pub async fn answer(
     shared: &Arc<Shared>,
-    planned: &Planned,
+    plan: &Plan,
     asked: &Asked<'_>,
     researched: bool,
     live: &(dyn Fn() -> bool + Send + Sync),
 ) -> Talk {
-    let plan = &planned.plan;
     match plan.action {
         Action::Dispatch => dispatch(shared, plan, asked, researched, live).await,
         Action::AskUser => match &plan.question {

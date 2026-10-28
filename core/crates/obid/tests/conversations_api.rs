@@ -3,22 +3,19 @@
 //! becoming the first conversation, and apps that send no conversation.
 mod support;
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use serde_json::{Value, json};
 use support::*;
 
-fn planner() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/agents/fake-planner")
-}
-
-fn obid(folder: &Folder) -> (Obid, Value) {
+fn harness_obid(folder: &Folder) -> (Obid, Value) {
     let remote = fixture(&folder.0.join("fixture"));
-    let config = config(&folder.0, &remote, &planner());
-    (
-        start(&folder.0, &config, Some(planner().parent().unwrap())),
-        config,
-    )
+    let harness = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/agents/fake-harness");
+    let config = config(&folder.0, &remote, &harness);
+    let account = folder.0.join("home/accounts/stub");
+    std::fs::create_dir_all(&account).unwrap();
+    std::fs::write(account.join(".credentials.json"), "{}").unwrap();
+    (start(&folder.0, &config, None), config)
 }
 
 /// `POST /v1/plans` with `body`, answered `200`.
@@ -69,7 +66,7 @@ fn texts(list: &[Value]) -> Vec<&str> {
 #[test]
 fn conversations_are_listed_paged_renamed_pinned_and_deleted() {
     let folder = Folder::new("conversations");
-    let (mut obid, config) = obid(&folder);
+    let (mut obid, config) = harness_obid(&folder);
     let events = follow_events(&obid);
 
     let first = plan(&obid, json!({"said": "first question", "new": true}));
@@ -86,7 +83,7 @@ fn conversations_are_listed_paged_renamed_pinned_and_deleted() {
         .unwrap()
         .to_owned();
     assert_eq!(first["kind"], "reply");
-    assert_eq!(first["text"], "Fine.");
+    assert_eq!(first["text"], "Nothing to do.");
     assert!(a != b && b != c && a != c);
     // Each turn comes after its conversation as it is with it: the user's, then Oby's.
     let made = events_named(&events, "conversation", 10, |got| got.len() == 6);
@@ -162,23 +159,35 @@ fn conversations_are_listed_paged_renamed_pinned_and_deleted() {
     let thread = turns(&obid, &format!("?id={a}"));
     assert_eq!(
         texts(&thread),
-        ["first question", "Fine.", "follow-up", "Fine."]
+        [
+            "first question",
+            "Nothing to do.",
+            "follow-up",
+            "Nothing to do."
+        ]
     );
     assert!(thread.iter().all(|t| t["conversation"] == a.as_str()));
-    let prompt = std::fs::read_to_string(folder.0.join("env-home/plan-input")).unwrap();
-    assert!(prompt.contains("User: first question"), "{prompt}");
-    assert!(!prompt.contains("second question"), "{prompt}");
+    let other = turns(&obid, &format!("?id={b}"));
+    assert!(!texts(&other).contains(&"first question"));
     assert_eq!(
         texts(&turns(&obid, &format!("?id={b}"))),
-        ["second question\nwith more", "Fine.", "b again", "Fine."]
+        [
+            "second question\nwith more",
+            "Nothing to do.",
+            "b again",
+            "Nothing to do."
+        ]
     );
     // No id: the latest.
     assert_eq!(texts(&turns(&obid, "")), texts(&thread));
-    assert_eq!(texts(&turns(&obid, &format!("?id={a}&limit=1"))), ["Fine."]);
+    assert_eq!(
+        texts(&turns(&obid, &format!("?id={a}&limit=1"))),
+        ["Nothing to do."]
+    );
     let before = thread[2]["id"].as_str().unwrap();
     assert_eq!(
         texts(&turns(&obid, &format!("?id={a}&before={before}"))),
-        ["first question", "Fine."]
+        ["first question", "Nothing to do."]
     );
     assert_eq!(
         call(
@@ -311,7 +320,7 @@ fn conversations_are_listed_paged_renamed_pinned_and_deleted() {
         let mode = std::fs::metadata(&file).unwrap().permissions().mode();
         assert_eq!(mode & 0o777, 0o600, "{}", file.display());
     }
-    let restarted = start(&folder.0, &config, Some(planner().parent().unwrap()));
+    let restarted = start(&folder.0, &config, None);
     assert_eq!(conversations(&restarted, ""), listed);
     assert_eq!(
         texts(&turns(&restarted, &format!("?id={a}"))),
@@ -323,14 +332,17 @@ fn conversations_are_listed_paged_renamed_pinned_and_deleted() {
 #[test]
 fn jobs_and_their_events_land_in_the_conversation_that_started_them() {
     let folder = Folder::new("conversation-jobs");
-    let (obid, _) = obid(&folder);
+    let (obid, _) = harness_obid(&folder);
     let events = follow_events(&obid);
 
     let other = plan(&obid, json!({"said": "how is it going?", "new": true}))["conversation"]
         .as_str()
         .unwrap()
         .to_owned();
-    let dispatched = plan(&obid, json!({"said": "fix oby #176 and #198", "new": true}));
+    let dispatched = plan(
+        &obid,
+        json!({"said": r#"REPEAT 2 OBY oby_dispatch {"repo": "obi-e2e/fixture-app", "task": "Add a greeting", "kind": "build"}"#, "new": true}),
+    );
     let started = dispatched["conversation"].as_str().unwrap().to_owned();
     assert_ne!(other, started);
     let jobs = dispatched["jobs"].as_array().unwrap();
@@ -489,7 +501,11 @@ fn put_old_thread(home: &Path) {
 fn the_single_thread_from_before_becomes_the_first_conversation() {
     let folder = Folder::new("conversation-migration");
     let remote = fixture(&folder.0.join("fixture"));
-    let config = config(&folder.0, &remote, &planner());
+    let harness = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/agents/fake-harness");
+    let config = config(&folder.0, &remote, &harness);
+    let account = folder.0.join("home/accounts/stub");
+    std::fs::create_dir_all(&account).unwrap();
+    std::fs::write(account.join(".credentials.json"), "{}").unwrap();
     let home = folder.0.join("home");
     put_old_thread(&home);
     let mut obid = start(&folder.0, &config, None);
@@ -520,9 +536,13 @@ fn the_single_thread_from_before_becomes_the_first_conversation() {
     // An app from before carries it on, and the brain reads it, each turn on one line.
     let answer = plan(&obid, json!({"said": "hello"}));
     assert_eq!(answer["conversation"], id);
-    let prompt = std::fs::read_to_string(folder.0.join("env-home/plan-input")).unwrap();
+    let recorded =
+        std::fs::read_to_string(home.join(format!("conversations/{id}/config/turns.jsonl")))
+            .unwrap();
+    let turn: Value = serde_json::from_str(recorded.lines().next().unwrap()).unwrap();
+    let prompt = turn["prompt"].as_str().unwrap();
     assert!(
-        prompt.contains("User: review oby PR #33 please\nOby: On it.\nUser: and the vault one?"),
+        prompt.contains("Owner: review oby PR #33 please\nOby: On it.\nOwner: and the vault one?"),
         "{prompt}"
     );
     assert_eq!(turns(&obid, "").len(), 5);
@@ -540,7 +560,7 @@ fn the_single_thread_from_before_becomes_the_first_conversation() {
 #[test]
 fn apps_that_send_no_conversation_keep_one_thread() {
     let folder = Folder::new("conversation-old-apps");
-    let (obid, _) = obid(&folder);
+    let (obid, _) = harness_obid(&folder);
     assert!(turns(&obid, "").is_empty());
     assert!(conversations(&obid, "").is_empty());
 
@@ -551,10 +571,13 @@ fn apps_that_send_no_conversation_keep_one_thread() {
     let id = first["conversation"].as_str().unwrap().to_owned();
     assert_eq!(ids(&conversations(&obid, "")), [&id]);
     let thread = turns(&obid, "");
-    assert_eq!(texts(&thread), ["hello", "Fine.", "again", "Fine."]);
+    assert_eq!(
+        texts(&thread),
+        ["hello", "Nothing to do.", "again", "Nothing to do."]
+    );
     // Its paging, as before.
     let last = turns(&obid, "?limit=1");
-    assert_eq!(texts(&last), ["Fine."]);
+    assert_eq!(texts(&last), ["Nothing to do."]);
     let before = last[0]["id"].as_str().unwrap().to_owned();
     assert_eq!(
         texts(&turns(&obid, &format!("?before={before}&limit=1"))),
@@ -568,7 +591,10 @@ fn apps_that_send_no_conversation_keep_one_thread() {
         .unwrap()
         .to_owned();
     assert_ne!(newer, id);
-    assert_eq!(texts(&turns(&obid, "")), ["something else", "Fine."]);
+    assert_eq!(
+        texts(&turns(&obid, "")),
+        ["something else", "Nothing to do."]
+    );
     assert_eq!(
         texts(&turns(&obid, &format!("?before={before}&limit=1"))),
         ["again"]
@@ -582,24 +608,18 @@ fn apps_that_send_no_conversation_keep_one_thread() {
     assert_eq!(ids(&conversations(&obid, "")), [&newer, &id]);
 }
 
-/// A plan obid refuses twice is never a `422` any more (#546): rules stand in, and they never
-/// act on the user's first words. The conversation keeps the words and Oby's answer.
+/// A session that fails twice says so without starting work; a later turn can still answer.
 #[test]
-fn a_plan_refused_twice_falls_back_to_rules_which_never_act() {
+fn a_failed_session_says_why_and_starts_no_jobs() {
     let folder = Folder::new("conversation-refused");
-    let (obid, _) = obid(&folder);
-    // The fake planner answers an action that doesn't exist, twice: rules would start a job on
-    // the fixture's issue, which obid refuses to guess.
-    let answer = plan(
-        &obid,
-        json!({"said": "unsupported-case: fix fixture-app #3", "new": true}),
-    );
+    let (obid, _) = harness_obid(&folder);
+    let answer = plan(&obid, json!({"said": "FAIL", "new": true}));
     assert_eq!(
-        answer["text"], "Oby couldn't think that through: say it again",
-        "{answer}"
+        answer["text"],
+        "I couldn't answer: its agent session failed twice."
     );
     assert_eq!(answer["jobs"], json!([]));
-    let id = answer["conversation"].as_str().unwrap().to_owned();
+    let id = answer["conversation"].as_str().unwrap();
     assert!(
         call(&obid, "GET", "/v1/jobs", None)
             .body
@@ -609,25 +629,17 @@ fn a_plan_refused_twice_falls_back_to_rules_which_never_act() {
     );
     assert_eq!(
         texts(&turns(&obid, &format!("?id={id}"))),
-        [
-            "unsupported-case: fix fixture-app #3",
-            "Oby couldn't think that through: say it again"
-        ]
+        ["FAIL", "I couldn't answer: its agent session failed twice."]
     );
-    // Words naming no repository: rules ask which.
-    let asked = plan(
-        &obid,
-        json!({"said": "unsupported-case again", "conversation": id}),
-    );
-    assert_eq!(asked["kind"], "question", "{asked}");
-    assert_eq!(asked["question"]["text"], "Which repository?");
-    assert_eq!(ids(&conversations(&obid, "")), [&id]);
+    let next = plan(&obid, json!({"said": "SAY Back", "conversation": id}));
+    assert_eq!(next["text"], "Back");
+    assert_eq!(ids(&conversations(&obid, "")), [id]);
 }
 
 #[test]
 fn a_conversation_deleted_while_its_turn_runs_stays_deleted() {
     let folder = Folder::new("conversation-deleted-mid-turn");
-    let (obid, _) = obid(&folder);
+    let (obid, _) = harness_obid(&folder);
     let id = plan(&obid, json!({"said": "hello", "new": true}))["conversation"]
         .as_str()
         .unwrap()
@@ -637,7 +649,7 @@ fn a_conversation_deleted_while_its_turn_runs_stays_deleted() {
         let id = id.clone();
         std::thread::spawn(move || {
             let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
-            let body = json!({"said": "slow-case", "conversation": id}).to_string();
+            let body = json!({"said": "LINGER 3000", "conversation": id}).to_string();
             std::io::Write::write_all(
                 &mut stream,
                 format!(
@@ -655,7 +667,13 @@ fn a_conversation_deleted_while_its_turn_runs_stays_deleted() {
     };
     // The user's words are in; the brain takes 3 seconds.
     within(5, "the slow turn begins", || {
-        (turns(&obid, &format!("?id={id}")).len() == 3).then_some(())
+        let log = obid
+            .home
+            .join(format!("conversations/{id}/config/turns.jsonl"));
+        std::fs::read_to_string(log)
+            .ok()?
+            .contains("LINGER 3000")
+            .then_some(())
     });
     assert_eq!(
         call(&obid, "DELETE", &format!("/v1/conversations/{id}"), None).status,
@@ -664,7 +682,7 @@ fn a_conversation_deleted_while_its_turn_runs_stays_deleted() {
     let raw = asking.join().unwrap();
     assert!(raw.starts_with("HTTP/1.1 200"), "{raw}");
     let answer: Value = serde_json::from_str(raw.split_once("\r\n\r\n").unwrap().1).unwrap();
-    assert_eq!(answer["text"], "Late.");
+    assert_eq!(answer["text"], "waited");
     assert_eq!(answer["conversation"], id.as_str());
     // Oby's late answer didn't bring it back.
     assert!(conversations(&obid, "").is_empty());
@@ -697,7 +715,11 @@ fn kept_conversation(home: &Path, n: u64, pinned: bool) -> String {
 fn past_200_conversations_the_oldest_unpinned_are_forgotten() {
     let folder = Folder::new("conversation-cap");
     let remote = fixture(&folder.0.join("fixture"));
-    let config = config(&folder.0, &remote, &planner());
+    let harness = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/agents/fake-harness");
+    let config = config(&folder.0, &remote, &harness);
+    let account = folder.0.join("home/accounts/stub");
+    std::fs::create_dir_all(&account).unwrap();
+    std::fs::write(account.join(".credentials.json"), "{}").unwrap();
     let home = folder.0.join("home");
     {
         use std::os::unix::fs::DirBuilderExt;
@@ -754,7 +776,7 @@ fn past_200_conversations_the_oldest_unpinned_are_forgotten() {
 #[test]
 fn failed_turn_write_does_not_change_the_existing_conversation() {
     let folder = Folder::new("conversation-write-failure");
-    let (mut obid, config) = obid(&folder);
+    let (mut obid, config) = harness_obid(&folder);
     let id = plan(&obid, json!({"said": "kept words", "new": true}))["conversation"]
         .as_str()
         .unwrap()
@@ -807,10 +829,15 @@ fn failed_turn_write_does_not_change_the_existing_conversation() {
     let after = turns(&obid, &query);
     assert_eq!(
         texts(&after),
-        ["kept words", "Fine.", "accepted after recovery", "Fine."]
+        [
+            "kept words",
+            "Nothing to do.",
+            "accepted after recovery",
+            "Nothing to do."
+        ]
     );
     obid.stop();
-    let mut restarted = start(&folder.0, &config, Some(planner().parent().unwrap()));
+    let mut restarted = start(&folder.0, &config, None);
     assert_eq!(turns(&restarted, &query), after);
     restarted.stop();
 }
@@ -857,7 +884,11 @@ const DECIDED: &str = "Decided: the Watch target stays off-limits until the Mac 
 /// target; "Watch target notes", which says so only in its title; and one about something else.
 fn watch_talks(folder: &Folder) -> (Obid, String, String, String) {
     let remote = fixture(&folder.0.join("fixture"));
-    let config = config(&folder.0, &remote, &planner());
+    let harness = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/agents/fake-harness");
+    let config = config(&folder.0, &remote, &harness);
+    let account = folder.0.join("home/accounts/stub");
+    std::fs::create_dir_all(&account).unwrap();
+    std::fs::write(account.join(".credentials.json"), "{}").unwrap();
     let home = folder.0.join("home");
     {
         use std::os::unix::fs::DirBuilderExt;
@@ -870,7 +901,7 @@ fn watch_talks(folder: &Folder) -> (Obid, String, String, String) {
     let (release, turns) = kept_talk(&home, 1, "Release planning", 41, Some((40, DECIDED)));
     let (notes, _) = kept_talk(&home, 2, "Watch target notes", 2, None);
     kept_talk(&home, 3, "Lunch", 2, Some((1, "watch the oven")));
-    let obid = start(&folder.0, &config, Some(planner().parent().unwrap()));
+    let obid = start(&folder.0, &config, None);
     (obid, release, turns[39].clone(), notes)
 }
 
@@ -916,53 +947,20 @@ fn conversations_are_found_by_what_was_said_in_them() {
     assert!(conversations(&obid, "?q=off-limits").is_empty());
 }
 
-/// The fake planner's account folder: its queue of plans and what each call got.
-fn brain(obid: &Obid) -> PathBuf {
-    obid.home.join("accounts/stub")
-}
-
-fn queue(obid: &Obid, lines: &[String]) {
-    std::fs::create_dir_all(brain(obid)).unwrap();
-    std::fs::write(brain(obid).join("plans"), lines.join("\n") + "\n").unwrap();
-}
-
-/// #593: "What did we decide about the Watch target?" finds the conversation where it was said
-/// and the brain answers from the quoted turn, naming its conversation.
+/// The harness finds a past conversation and receives its words as quoted data.
 #[test]
 fn the_brain_answers_from_a_conversation_it_found() {
     let folder = Folder::new("conversation-find-brain");
     let (obid, release, fortieth, _) = watch_talks(&folder);
-    let find = json!({"action": "find_conversation", "reply": "", "dispatches": [],
-                      "question": null, "jobs": [], "message": "Watch target"});
-    queue(
-        &obid,
-        &[find.to_string(), "QUOTE watch target stays".into()],
-    );
-
     let answer = plan(
         &obid,
-        json!({"said": "What did we decide about the Watch target?", "new": true}),
+        json!({"said": r#"OBY oby_conversations {"query":"watch target"}"#, "new": true}),
     );
     let text = answer["text"].as_str().unwrap();
     assert!(text.contains("Release planning"), "{text}");
     assert!(text.contains(DECIDED), "{text}");
+    assert!(text.contains(&fortieth), "{text}");
+    assert!(text.contains(&release), "{text}");
+    assert!(text.contains("<<<quoted-"), "{text}");
     assert_ne!(answer["conversation"], release.as_str());
-
-    // What it found was in the second call's work.md, fenced, with the turn's id; the first
-    // call had none of it.
-    let calls = brain(&obid).join("calls");
-    let first = std::fs::read_to_string(calls.join("1/work.md")).unwrap_or_default();
-    assert!(!first.contains(DECIDED), "{first}");
-    let second = std::fs::read_to_string(calls.join("2/work.md")).unwrap();
-    let block = second
-        .split("\n<<<quoted-")
-        .nth(1)
-        .unwrap_or_else(|| panic!("no fence in {second}"));
-    assert!(block.contains(DECIDED), "{second}");
-    assert!(block.contains(&fortieth), "{second}");
-    assert!(block.contains(&release), "{second}");
-    // The user's own question, in the conversation the turn is in, isn't a match.
-    assert!(!second.contains("What did we decide"), "{second}");
-    let input = std::fs::read_to_string(calls.join("2/input")).unwrap();
-    assert!(input.contains("Oby found 2 conversations"), "{input}");
 }

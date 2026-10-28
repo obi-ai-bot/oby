@@ -4213,7 +4213,7 @@ impl Link {
         };
         Some(match sent {
             Ok(sent) => {
-                self.keep_receipt(&sent);
+                self.keep_receipt(cid, &sent);
                 self.lock().unconfirmed.remove(cid);
                 self.lock().seen.insert(cid.to_owned());
                 let updated = self.update_exchange(cid, |x| {

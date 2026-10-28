@@ -1,0 +1,7 @@
+#!/bin/sh
+# Conversation turns use the harness; jobs and quick calls use the established stand-ins.
+case " $* " in
+  *" --json-schema "*) exec "$(dirname "$0")/fake-planner" "$@" ;;
+  *oby-mcp.json*) exec "$(dirname "$0")/fake-harness" "$@" ;;
+  *) exec "$(dirname "$0")/fake-claude" "$@" ;;
+esac

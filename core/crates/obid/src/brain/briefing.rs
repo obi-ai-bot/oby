@@ -36,7 +36,7 @@ pub const NOT_YET: [&str; 3] = [
     "the weekly reserves",
 ];
 /// The quoted file's name, as the briefing points to it.
-const FILE: &str = super::planner::QUOTED_FILE;
+const FILE: &str = super::calls::QUOTED_FILE;
 
 /// One account, as the briefing tells it.
 #[derive(Debug, Clone, PartialEq)]
@@ -1431,50 +1431,6 @@ mod tests {
         ), "{text}");
     }
 
-    /// #591's acceptance at the plan level: with two failure records, what the model is sent names
-    /// both causes and quotes both records, and the system prompt and schema stay the same (#534).
-    #[tokio::test]
-    async fn the_brain_is_sent_both_causes_and_the_same_system_prompt() {
-        use super::super::planner::{Adapter, LEAST, Planner, tests::Fake};
-        use std::sync::Arc;
-        let fake = Arc::new(Fake::default());
-        let planner = Planner {
-            adapters: vec![Adapter::Fake(fake.clone())],
-            falls_back_to_rules: true,
-            deadline: None,
-            least: LEAST,
-        };
-        let context = |briefing: &Briefing| super::super::plan::Context {
-            accounts: std::collections::BTreeMap::from([("claude".into(), vec!["default".into()])]),
-            repos: briefing.repos.clone(),
-            briefing: Some(briefing.text()),
-            quoted: briefing.quoted(),
-            ..Default::default()
-        };
-        let quiet = briefing(vec![], vec![]);
-        let mut failing = quiet.clone();
-        failing.failures = vec![
-            record("fa11ed00", Trigger::Limit, 3600, 3),
-            record("d0ne0000", Trigger::Failed, 7200, 1),
-        ];
-        let halted = || false;
-        let said = "why did jobs fail this week?";
-        planner.plan(said, &context(&quiet), &halted).await;
-        planner.plan(said, &context(&failing), &halted).await;
-        let sent = fake.sent.lock().unwrap().clone();
-        assert_eq!(sent.len(), 2);
-        assert_eq!(sent[0][0], sent[1][0], "the system prompt changed");
-        assert_eq!(sent[0][1], sent[1][1], "the schema changed");
-        let user = &sent[1][2];
-        assert!(user.contains("1 failed, 1 stopped at a limit"), "{user}");
-        assert!(
-            user.contains("fa11ed00-stopped-at-a-limit-") && user.contains("d0ne0000-failed-"),
-            "{user}"
-        );
-        let quoted = context(&failing).quoted.unwrap();
-        assert_eq!(quoted.matches("Post-mortem: none yet.").count(), 2);
-    }
-
     /// The brain reads the latest 50 turns, each cut to 500 characters (#505).
     #[test]
     fn the_briefing_keeps_the_last_50_turns_each_cut_to_500() {
@@ -1798,9 +1754,6 @@ mod tests {
             "{file}"
         );
         assert!(file.contains("## o/long's own instructions (quoted)\nIts AGENTS.md on main, as Oby last fetched it.\n\n<<<quoted-n0nce\nLong.\nquoted-n0nce>>>\n(The rest is cut: Oby quotes 4 KB of a repository's instructions at most, 8 KB a turn.)"), "{file}");
-        // The system prompt says what it's for, and that it's quoted.
-        let system = super::super::planner::system(false);
-        assert!(system.contains("own instructions (quoted)") && system.contains("`check`"));
     }
 
     #[test]

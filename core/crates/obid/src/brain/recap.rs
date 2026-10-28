@@ -26,7 +26,7 @@ use crate::sphere::inbox::Item;
 
 use super::actions::Talk;
 use super::briefing::{fence, fence_rule, nonce};
-use super::planner::{Adapter, Failure, Planner, Room};
+use super::calls::Failure;
 
 /// How long the owner is away before their next message or tap gets a recap: 30 minutes.
 pub const AWAY: i64 = 30 * 60;
@@ -397,22 +397,9 @@ async fn quick(
     since: i64,
     now: i64,
 ) -> Option<String> {
-    let room = Room {
-        root: shared.config.home.join("plans"),
-        jobs: shared.jobs.clone(),
-    };
-    let brain =
-        Planner::of(&shared.config, &room)
-            .into_iter()
-            .find_map(|adapter| match adapter {
-                Adapter::Claude(claude) => Some(claude),
-                _ => None,
-            })?;
-    let mut calls = vec![];
+    let brain = super::calls::quick(shared, "recap")?;
     write(system, facts, since, now, |system, user| async move {
-        brain
-            .background(&system, &user, None, SCHEMA, &mut calls)
-            .await
+        brain.background(&system, &user, None, SCHEMA).await
     })
     .await
 }

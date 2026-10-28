@@ -1,19 +1,21 @@
-//! The event orchestrator (#590, Engine/Orchestrator.swift and the orchestrator branch of
-//! `Desk.plan`): when something happens to a job (it fails or is cut off, its account hits its
-//! limit, its review errs, a Mac check fails, an inbox item comes for it), obid's brain reads the
-//! job first and then either takes one action from a short allow-list or leaves the owner one
-//! clear decision. obid builds the typed events itself from its own job, check and inbox changes,
-//! never from what an agent wrote; the turn's checks ([`Orchestration::check`]) are obid's, not
-//! the prompt's: read before acting, the allow-list, the event's own job, at most
-//! [`DAILY_ACTIONS`] automatic actions per job per day, and a repeated failure escalates.
+//! The event orchestrator (#590, Engine/Orchestrator.swift): when something happens to a job (it
+//! fails or is cut off, its account hits its limit, its review errs, a Mac check fails, an inbox
+//! item comes for it), a turn nobody watches runs on the conversation harness (super::harness,
+//! like super::supervisor's), reads the job first and then either takes one action from a short
+//! allow-list or leaves the owner one clear decision. obid builds the typed events itself from its
+//! own job, check and inbox changes, never from what an agent wrote, and they reach the turn
+//! quoted. The turn's checks ([`call`]) are obid's, not the prompt's: only the allow-list's tools,
+//! only the event's own jobs, read before acting, at most [`DAILY_ACTIONS`] automatic actions per
+//! job per day, and a repeated failure escalates. Past them, obid leaves the owner the decision.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use super::actions::Asked;
+use serde_json::{Value, json};
+
+use super::actions::{Asked, Outcome, Talk};
 use super::plan::{Action, Plan};
-use super::turn::End;
 use crate::api::Shared;
 use crate::events::Event as BusEvent;
 use crate::job::Job;
@@ -25,19 +27,6 @@ pub const CONVERSATION: &str = "orchestrator";
 pub const DAILY_ACTIONS: usize = 3;
 /// Event turns in one hour; more wait for the next hour.
 pub const TURNS_PER_HOUR: usize = 10;
-/// What the orchestrator may do, besides reading and answering.
-pub const ALLOWED: [Action; 10] = [
-    Action::ReadJob,
-    Action::RetryJob,
-    Action::AnswerInbox,
-    Action::StartNow,
-    Action::MoveJob,
-    Action::MessageJob,
-    Action::FixFailure,
-    Action::AskReviewAgain,
-    Action::ReplyOnly,
-    Action::Ignore,
-];
 /// The inbox options it may pick on its own.
 pub const INBOX_OPTIONS: [&str; 4] = [
     "Try again",
@@ -45,17 +34,18 @@ pub const INBOX_OPTIONS: [&str; 4] = [
     "Rebase now",
     "Wait for the reset",
 ];
-/// Actions obid's brain can't carry out yet (obid only: the brain): planned by the orchestrator,
-/// they become the owner's decision, with the action as Oby's recommendation.
-const NOT_YET: [Action; 4] = [
-    Action::StartNow,
-    Action::MoveJob,
-    Action::FixFailure,
-    Action::AskReviewAgain,
+/// Oby's tools an event turn has: it reads the event's job, tries it again, tells it, answers its
+/// inbox item, or leaves it for the owner.
+const TOOLS: [&str; 5] = [
+    "oby_job",
+    "oby_continue_job",
+    "oby_tell_job",
+    "oby_answer",
+    "oby_escalate",
 ];
 
 /// What the orchestrator's turn is told, before the events.
-pub const POLICY: &str = "An Oby event woke this turn; no person is waiting. Read the event's job with read_job before deciding. Then take one allowed action: retry_job, message_job (telling the job's agent the concrete error and the change to make), answer_inbox with only Try again, One more round, Rebase now or Wait for the reset, start_now, move_job to an account with room, fix_failure only for a studied fixable cause, ask_review_again for a retryable review error; or reply_only when nothing needs doing. Never merge, publish, push, dismiss committed work, change settings, expose credentials, or answer a permission or a product decision: for those, and whenever you are unsure, ask_user with your diagnosis and the option you recommend, and Oby leaves it for the owner.";
+pub const POLICY: &str = "Oby here, not the owner: an Oby event woke this turn, and no one is waiting for an answer. Read the event's job with oby_job before deciding: you can read only the event's jobs. Then take one allowed action by yourself: oby_continue_job tries a failed, stopped or cut-off job again; oby_tell_job tells a running job's agent the concrete error and the change to make; oby_answer answers the job's inbox item with only Try again, One more round, Rebase now or Wait for the reset. Or do nothing when nothing needs doing. Never merge, publish, push, dismiss committed work, change settings, expose credentials, or answer a permission or a product decision: for those, and whenever you are unsure, call oby_escalate with your diagnosis and the option you recommend, and Oby leaves it for the owner. Answer in one short line: what you did and why.";
 
 /// One typed event, written by obid. Evidence is addressed by job id and read from obid's own
 /// stores only when the brain asks (`read_job`).
@@ -391,7 +381,7 @@ impl Orchestration {
         }
     }
 
-    /// The policy and the events, for the brain: the events inside the turn's fence.
+    /// What the turn is told: the policy, then the events inside the turn's fence.
     pub fn context(&self, nonce: &str) -> String {
         let lines: Vec<String> = self
             .events
@@ -412,148 +402,6 @@ impl Orchestration {
             super::briefing::fence_rule(nonce, "obid's own event records"),
             super::briefing::fence(nonce, &lines.join("\n"))
         )
-    }
-
-    /// Whether the plan may go ahead, given the jobs read this turn; `Err` leaves it to the
-    /// owner. `item`, `failure_job` and `signature` read obid's own stores.
-    pub fn check(
-        &self,
-        plan: &Plan,
-        read: &HashSet<String>,
-        now: i64,
-        item: impl Fn(&str) -> Option<ItemView>,
-        failure_job: impl Fn(&str) -> Option<String>,
-        signature: impl Fn(&str) -> Option<String>,
-    ) -> Result<(), Escalation> {
-        let action = plan.action;
-        if read.is_empty() && action != Action::ReadJob {
-            return Err(escalate(
-                "Oby couldn't verify the event by reading its job first. Oby recommends reviewing the job before choosing a next step.",
-                "I couldn't safely act on that event because I didn't read its job first. I left it for you to review.",
-            ));
-        }
-        if !ALLOWED.contains(&action) {
-            let question = plan
-                .question
-                .as_ref()
-                .map_or(plan.reply.as_str(), |q| q.text.as_str());
-            let recommended = plan.question.as_ref().and_then(|q| {
-                let index = usize::try_from(q.recommended?).ok()?;
-                q.options.get(index).cloned()
-            });
-            let ask = if question.is_empty() {
-                "This needs your decision.".to_owned()
-            } else {
-                super::briefing::line(question, 300)
-            };
-            let recommends = recommended.map_or_else(
-                || " Oby recommends that you review the evidence and choose.".to_owned(),
-                |r| format!(" Oby recommends: {}.", super::briefing::line(&r, 120)),
-            );
-            return Err(escalate(
-                format!("Oby read the job. {ask}{recommends}"),
-                "I read the job, but this needs your decision. I left it in Needs you.",
-            ));
-        }
-        let named = plan.named();
-        if action == Action::ReadJob {
-            if named.iter().any(|id| !self.jobs.contains(id)) {
-                return Err(escalate(
-                    "Oby couldn't match the job read to this event. Oby recommends reviewing the related job.",
-                    "I couldn't verify that event against its job, so I left it for you.",
-                ));
-            }
-            return Ok(());
-        }
-        if named.iter().any(|id| !self.jobs.contains(id)) {
-            return Err(escalate(
-                "Oby couldn't match the proposed action to this event. Oby recommends reviewing the related job.",
-                "I couldn't match my decision to the event's job, so I left it for you.",
-            ));
-        }
-        if matches!(action, Action::ReplyOnly | Action::Ignore) {
-            return Ok(());
-        }
-        if action == Action::AnswerInbox {
-            let id = plan.item.as_deref().unwrap_or_default();
-            let Some(item) = item(id).filter(|i| i.open) else {
-                return Err(escalate(
-                    "The inbox item changed while Oby was considering it. Oby recommends reviewing it again before choosing.",
-                    "That inbox item changed before I could answer it. I left the event for you.",
-                ));
-            };
-            let belongs = item.job.is_empty() || self.jobs.contains(&item.job);
-            let picked = plan
-                .option
-                .and_then(|o| usize::try_from(o).ok()?.checked_sub(1))
-                .and_then(|o| item.options.get(o));
-            let permitted = plan.answer.is_none()
-                && !matches!(
-                    item.kind.as_str(),
-                    "permission" | "plan" | "question" | crate::sphere::inbox::QUESTION_KIND
-                )
-                && picked.is_some_and(|o| INBOX_OPTIONS.contains(&o.as_str()));
-            if !(belongs && permitted) {
-                return Err(escalate(
-                    "Oby read the job but this inbox answer is outside the automatic allow-list. Oby recommends that you choose an option.",
-                    "That inbox item needs your answer. I left it in Needs you.",
-                ));
-            }
-        }
-        if action == Action::FixFailure {
-            let matched = plan
-                .item
-                .as_deref()
-                .and_then(&failure_job)
-                .is_some_and(|job| self.jobs.contains(&job));
-            if !matched {
-                return Err(escalate(
-                    "Oby couldn't match the failure record to this event. Oby recommends reviewing the failure evidence.",
-                    "I couldn't match the failure record to this event, so I left it for you.",
-                ));
-            }
-        }
-        if NOT_YET.contains(&action) {
-            return Err(escalate(
-                format!(
-                    "Oby read the job and recommends {}, which obid can't do by itself yet.",
-                    action.as_str()
-                ),
-                "I read the job, but this needs your decision. I left it in Needs you.",
-            ));
-        }
-        // Words for a job that ended start a follow-up, which only the owner's own words start
-        // (the owner's decision of 2026-10-18). The signature starts with the job's status.
-        let ended = |id: &String| {
-            signature(id).is_some_and(|s| !s.starts_with("queued|") && !s.starts_with("running|"))
-        };
-        if action == Action::MessageJob && named.first().is_some_and(ended) {
-            let words = plan.message.as_deref().unwrap_or_default();
-            return Err(escalate(
-                format!(
-                    "Oby read the job and recommends telling it: {}. It ended, so that starts a follow-up, which only your own words start.",
-                    super::briefing::line(words, 300)
-                ),
-                "I read the job, but this needs your decision. I left it in Needs you.",
-            ));
-        }
-        let job = named.first().cloned().or_else(|| {
-            self.events
-                .iter()
-                .find(|e| !e.job.is_empty())
-                .map(|e| e.job.clone())
-        });
-        if let Some(job) = job {
-            let signature = signature(&job).unwrap_or_else(|| job.clone());
-            let mut ledger = self.ledger.lock().unwrap_or_else(|e| e.into_inner());
-            ledger.take(&job, &signature, now).map_err(|why| {
-                escalate(
-                    why,
-                    "The automatic action limit was reached. I left the job in Needs you.",
-                )
-            })?;
-        }
-        Ok(())
     }
 
     /// Leaves the owner one clear decision: an open `question` item about the event's job, with
@@ -597,6 +445,330 @@ impl Orchestration {
         };
         tracing::info!("orchestrator escalates: {}", escalation.why);
         shared.link.add_confirm(item)
+    }
+}
+
+/// Why an event turn's call didn't happen: one the turn can mend (it read nothing yet), or the
+/// owner's decision, which obid leaves them once a turn.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Refused {
+    Again(String),
+    Owner(Escalation),
+}
+
+/// An event turn under way: its events, the jobs it read, what it did by itself, and whether it
+/// left the event for the owner.
+pub struct Watch {
+    pub turn: Orchestration,
+    read: Mutex<HashSet<String>>,
+    done: Mutex<Vec<String>>,
+    /// The item it left the owner, once it did: one a turn, and nothing more happens after it.
+    escalated: Mutex<Option<String>>,
+}
+
+/// What an event turn hears once it left the event for the owner.
+const OWNERS_NOW: &str =
+    "This event is the owner's now: Oby left it in Needs you. Do nothing more for it.";
+
+impl Watch {
+    pub fn new(turn: Orchestration) -> Watch {
+        Watch {
+            turn,
+            read: Mutex::default(),
+            done: Mutex::default(),
+            escalated: Mutex::default(),
+        }
+    }
+
+    fn read(&self) -> std::sync::MutexGuard<'_, HashSet<String>> {
+        self.read.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn escalated(&self) -> bool {
+        self.escalated
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_some()
+    }
+
+    /// Whether the turn did nothing: no action of its own, and nothing left for the owner.
+    fn untouched(&self) -> bool {
+        !self.escalated()
+            && self
+                .done
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .is_empty()
+    }
+
+    /// Whether the turn may read `job`: one of its event's own. Kept, as what it read first.
+    pub fn reading(&self, job: &str) -> Result<(), String> {
+        if !self.turn.jobs.contains(job) {
+            let mut jobs: Vec<&str> = self.turn.jobs.iter().map(String::as_str).collect();
+            jobs.sort();
+            return Err(format!(
+                "An event turn reads only its event's jobs: {}.",
+                if jobs.is_empty() {
+                    "none".to_owned()
+                } else {
+                    jobs.join(", ")
+                }
+            ));
+        }
+        self.read().insert(job.to_owned());
+        Ok(())
+    }
+
+    /// Whether the turn may act on `job` now: one of its event's, which it read first, while it
+    /// hasn't left the event for the owner.
+    pub fn acting(&self, job: &str) -> Result<(), Refused> {
+        if self.escalated() {
+            return Err(Refused::Again(OWNERS_NOW.into()));
+        }
+        if !self.turn.jobs.contains(job) {
+            return Err(Refused::Owner(escalate(
+                "Oby couldn't match the proposed action to this event. Oby recommends reviewing the related job.",
+                "That isn't the event's job, so I left the event for the owner.",
+            )));
+        }
+        if !self.read().contains(job) {
+            return Err(Refused::Again(format!(
+                "Read job {job} with oby_job first: an event turn acts only on what it read."
+            )));
+        }
+        Ok(())
+    }
+
+    /// Takes one of the day's automatic actions on `job` (in the state `signature` says), or
+    /// says why it's the owner's.
+    pub fn take(&self, job: &str, signature: &str, now: i64) -> Result<(), Refused> {
+        self.turn
+            .ledger
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take(job, signature, now)
+            .map_err(|why| {
+                Refused::Owner(escalate(
+                    why,
+                    "The automatic action limit was reached. I left the job in Needs you.",
+                ))
+            })
+    }
+
+    /// The option an inbox answer picks, counted from 1: only an allowed one of an open item of
+    /// the event's job (or of no job), which no person's own decision waits on.
+    pub fn option(&self, item: Option<ItemView>, answer: &str) -> Result<i64, Refused> {
+        let Some(item) = item.filter(|i| i.open) else {
+            return Err(Refused::Owner(escalate(
+                "The inbox item changed while Oby was considering it. Oby recommends reviewing it again before choosing.",
+                "That inbox item changed before I could answer it. I left the event for the owner.",
+            )));
+        };
+        if !item.job.is_empty() {
+            self.acting(&item.job)?;
+        } else if self.read().is_empty() {
+            return Err(Refused::Again(
+                "Read the event's job with oby_job first: an event turn acts only on what it read."
+                    .into(),
+            ));
+        }
+        let picked = item.options.iter().position(|o| o == answer.trim());
+        let permitted = !matches!(
+            item.kind.as_str(),
+            "permission" | "plan" | "question" | crate::sphere::inbox::QUESTION_KIND
+        ) && INBOX_OPTIONS.contains(&answer.trim());
+        match picked {
+            Some(at) if permitted => Ok(at as i64 + 1),
+            _ => Err(Refused::Owner(escalate(
+                "Oby read the job but this inbox answer is outside the automatic allow-list. Oby recommends that you choose an option.",
+                "That inbox item needs the owner's answer. I left it in Needs you.",
+            ))),
+        }
+    }
+
+    /// Leaves the event for the owner, once a turn: what the turn's tool answers.
+    fn leave(&self, shared: &Shared, escalation: &Escalation) -> String {
+        let mut escalated = self.escalated.lock().unwrap_or_else(|e| e.into_inner());
+        if escalated.is_none() {
+            *escalated = Some(self.turn.escalate(shared, escalation).id);
+        }
+        format!("{} Do nothing more for this event.", escalation.reply)
+    }
+}
+
+/// Oby's tools as an event turn lists them: [`TOOLS`] only.
+pub fn tools(all: &Value) -> Value {
+    let mut tools: Vec<Value> = all
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|t| TOOLS.contains(&t["name"].as_str().unwrap_or_default()))
+        .cloned()
+        .collect();
+    tools.push(json!({"name": "oby_escalate", "description": "Leaves this event for the owner in Needs you, with what you found and the option you recommend. Once a turn: nothing more happens for the event after it.",
+        "inputSchema": {"type": "object", "properties": {
+            "why": {"type": "string", "description": "What you found and why it's the owner's, in one or two sentences."},
+            "recommend": {"type": "string", "description": "The option you recommend, in a few words."}},
+            "required": ["why"]}}));
+    Value::Array(tools)
+}
+
+/// One of Oby's tools in an event turn, within its bounds: none for a read of the event's job,
+/// which `oby_job` answers as on any turn.
+pub(super) async fn call(
+    shared: &Arc<Shared>,
+    watch: &Watch,
+    name: &str,
+    args: &Value,
+) -> Option<Result<String, String>> {
+    let text = |key: &str| args[key].as_str().unwrap_or_default().trim().to_owned();
+    let refused = |refused: Refused| match refused {
+        Refused::Again(why) => why,
+        Refused::Owner(escalation) => watch.leave(shared, &escalation),
+    };
+    let now = obi_protocol::time::now();
+    let signature = |id: &str| {
+        shared
+            .jobs
+            .get(id)
+            .map_or_else(|| id.to_owned(), |job| signature(&job))
+    };
+    let plan = match name {
+        "oby_job" => return watch.reading(&text("id")).err().map(Err),
+        "oby_escalate" => {
+            if watch.escalated() {
+                return Some(Ok(OWNERS_NOW.into()));
+            }
+            let why = super::briefing::line(&text("why"), 300);
+            let recommends = match text("recommend") {
+                r if r.is_empty() => {
+                    " Oby recommends that you review the evidence and choose.".to_owned()
+                }
+                r => format!(" Oby recommends: {}.", super::briefing::line(&r, 120)),
+            };
+            let read = if watch.read().is_empty() {
+                ""
+            } else {
+                "Oby read the job. "
+            };
+            let escalation = Escalation {
+                why: format!("{read}{why}{recommends}"),
+                reply: "Oby left it for the owner in Needs you.",
+            };
+            watch.leave(shared, &escalation);
+            return Some(Ok(escalation.reply.into()));
+        }
+        "oby_continue_job" => {
+            let id = text("id");
+            if let Err(why) = watch
+                .acting(&id)
+                .and_then(|()| watch.take(&id, &signature(&id), now))
+            {
+                return Some(Err(refused(why)));
+            }
+            let mut plan = Plan::of(Action::RetryJob, "");
+            plan.jobs = Some(vec![id]);
+            plan
+        }
+        "oby_tell_job" => {
+            let id = text("id");
+            let words = text("words");
+            if let Err(why) = watch.acting(&id) {
+                return Some(Err(refused(why)));
+            }
+            // Words for a job that ended start a follow-up, which only the owner's own words
+            // start (the owner's decision of 2026-10-18).
+            let ended = shared
+                .jobs
+                .get(&id)
+                .is_some_and(|job| !job.status.is_active());
+            if ended {
+                let escalation = escalate(
+                    format!(
+                        "Oby read the job and recommends telling it: {}. It ended, so that starts a follow-up, which only your own words start.",
+                        super::briefing::line(&words, 300)
+                    ),
+                    "It ended, so telling it starts a follow-up, which only the owner's words start. I left it in Needs you.",
+                );
+                return Some(Err(watch.leave(shared, &escalation)));
+            }
+            if let Err(why) = watch.take(&id, &signature(&id), now) {
+                return Some(Err(refused(why)));
+            }
+            let mut plan = Plan::of(Action::MessageJob, "");
+            plan.jobs = Some(vec![id]);
+            plan.message = Some(words);
+            plan
+        }
+        "oby_answer" => {
+            let id = text("item");
+            let item = shared.link.item(&id);
+            let job = item
+                .as_ref()
+                .map(|i| i.job.clone())
+                .filter(|j| !j.is_empty())
+                .or_else(|| {
+                    watch
+                        .turn
+                        .events
+                        .iter()
+                        .find(|e| !e.job.is_empty())
+                        .map(|e| e.job.clone())
+                });
+            let view = item.map(|i| ItemView {
+                open: i.done.is_none(),
+                job: i.job,
+                kind: i.kind,
+                options: i.options,
+            });
+            let option = watch.option(view, &text("answer")).and_then(|option| {
+                match &job {
+                    Some(job) => watch.take(job, &signature(job), now),
+                    None => Ok(()),
+                }
+                .map(|()| option)
+            });
+            let option = match option {
+                Ok(option) => option,
+                Err(why) => return Some(Err(refused(why))),
+            };
+            let mut plan = Plan::of(Action::AnswerInbox, "");
+            plan.item = Some(id);
+            plan.option = Some(option);
+            plan
+        }
+        _ => {
+            return Some(Err(
+                "An event turn only reads its event's jobs, tries one again, tells a running one something, answers its inbox item, or leaves it for the owner with oby_escalate.".into(),
+            ));
+        }
+    };
+    if watch.escalated() {
+        return Some(Err(OWNERS_NOW.into()));
+    }
+    // The orchestrator's message to a job is its own, about the error it read: an event's words
+    // are never the owner's (#542).
+    let words = plan.message.clone().unwrap_or_default();
+    let outcome = super::actions::act(
+        shared,
+        &plan,
+        &words,
+        crate::jobs::Source::Event,
+        CONVERSATION,
+        "",
+    )
+    .await;
+    let done = !matches!(outcome, Outcome::Failed(_) | Outcome::NeedsWhich(_));
+    let text = outcome.text().to_owned();
+    if done {
+        watch
+            .done
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(text.clone());
+        Some(Ok(text))
+    } else {
+        Some(Err(text))
     }
 }
 
@@ -676,30 +848,52 @@ pub fn spawn(shared: Arc<Shared>) {
     });
 }
 
-/// One event turn. False when a user's words cut it short before it did anything.
+/// One event turn, in its own session on the conversation harness, nobody watching. False when a
+/// user's words cut it short before it did anything: its events come again.
 async fn run(shared: &Arc<Shared>, batch: Vec<Event>, ledger: Arc<Mutex<Ledger>>) -> bool {
     let turn = uuid::Uuid::new_v4().to_string();
+    let watch = Arc::new(Watch::new(Orchestration::new(batch, ledger)));
+    let failed = |why: &str| Escalation {
+        why: format!(
+            "Oby's brain couldn't answer this event: {}. Oby recommends reviewing the job.",
+            why.trim_end_matches('.')
+        ),
+        reply: "",
+    };
+    let tool = shared.config.conversation.agent;
+    let Some(account) = shared.jobs.thinking_accounts(tool).into_iter().next() else {
+        watch.leave(shared, &failed(&shared.jobs.none_signed_in(tool)));
+        return true;
+    };
     let control = shared.turns.begin(&turn, CONVERSATION);
-    let orchestration = Orchestration::new(batch, ledger);
+    let said = watch.turn.context(&super::briefing::nonce());
     let asked = Asked {
-        said: "",
+        said: &said,
         attachments: &[],
         jobs: &[],
         conversation: CONVERSATION,
         turn: "",
     };
-    let answered = super::turn::run_event(shared, &orchestration, &asked, &control).await;
+    let ran = super::harness::event(shared, &account, &asked, &control, watch.clone()).await;
     shared.turns.end(&control);
-    let reply = match &answered.talk {
-        super::actions::Talk::Reply { text, .. } => text.clone(),
-        _ => String::new(),
+    let cut = !control.live();
+    let reply = match ran {
+        Ok(answered) => match answered.talk {
+            Talk::Reply { text, .. } => text,
+            _ => String::new(),
+        },
+        Err(why) => {
+            if !cut {
+                watch.leave(shared, &failed(&crate::secrets::known().redact(&why)));
+            }
+            why
+        }
     };
     tracing::info!(
         "orchestrator turn {turn} ({} events): {reply}",
-        orchestration.events.len()
+        watch.turn.events.len()
     );
-    !(matches!(answered.end, End::Stopped | End::Cancelled)
-        && answered.talk == super::actions::Talk::None)
+    !(cut && watch.untouched())
 }
 
 #[cfg(test)]
@@ -723,84 +917,67 @@ mod tests {
         )
     }
 
-    fn plan(action: Action, jobs: &[&str]) -> Plan {
-        let mut plan = Plan::of(action, "");
-        plan.jobs = Some(jobs.iter().map(|j| (*j).to_owned()).collect());
-        plan
+    fn why(refused: Refused) -> String {
+        match refused {
+            Refused::Owner(escalation) => escalation.why,
+            Refused::Again(why) => format!("again: {why}"),
+        }
     }
 
-    fn read(jobs: &[&str]) -> HashSet<String> {
-        jobs.iter().map(|j| (*j).to_owned()).collect()
-    }
-
-    fn check(turn: &Orchestration, plan: &Plan, read: &HashSet<String>) -> Result<(), Escalation> {
-        turn.check(
-            plan,
-            read,
-            1_000_000,
-            |_| None,
-            |_| None,
-            |_| Some("failed|||boom".into()),
-        )
-    }
-
-    /// The turn must read the job before acting, and only the event's own job.
+    /// The turn must read the job before acting, and reads only the event's own jobs.
     #[test]
     fn it_reads_the_events_job_before_acting() {
-        let turn = turn(&["j1"]);
-        let unread = check(&turn, &plan(Action::RetryJob, &["j1"]), &read(&[])).unwrap_err();
-        assert!(unread.why.contains("reading its job first"), "{unread:?}");
-        assert!(check(&turn, &plan(Action::ReadJob, &["j1"]), &read(&[])).is_ok());
-        let other = check(&turn, &plan(Action::ReadJob, &["j9"]), &read(&[])).unwrap_err();
+        let watch = Watch::new(turn(&["j1"]));
+        let unread = why(watch.acting("j1").unwrap_err());
         assert!(
-            other.why.contains("couldn't match the job read"),
-            "{other:?}"
+            unread.starts_with("again: Read job j1 with oby_job first"),
+            "{unread}"
         );
-        assert!(check(&turn, &plan(Action::RetryJob, &["j1"]), &read(&["j1"])).is_ok());
+        assert_eq!(
+            watch.reading("j9").unwrap_err(),
+            "An event turn reads only its event's jobs: j1."
+        );
+        assert!(watch.reading("j1").is_ok());
+        assert!(watch.acting("j1").is_ok());
+        assert!(watch.untouched());
     }
 
-    /// An event whose job can't be matched escalates and changes nothing.
+    /// An action on a job the event isn't about leaves the event for the owner, and nothing is
+    /// counted against either job.
     #[test]
     fn an_action_on_another_job_escalates() {
-        let turn = turn(&["j1"]);
-        let mismatch = check(&turn, &plan(Action::RetryJob, &["j2"]), &read(&["j1"])).unwrap_err();
-        assert!(mismatch.why.contains("couldn't match the proposed action"));
-        // Nothing was counted against either job.
-        assert!(turn.ledger.lock().unwrap().actions.is_empty());
+        let watch = Watch::new(turn(&["j1"]));
+        watch.reading("j1").unwrap();
+        let mismatch = why(watch.acting("j2").unwrap_err());
+        assert!(
+            mismatch.starts_with("Oby couldn't match the proposed action"),
+            "{mismatch}"
+        );
+        assert!(watch.turn.ledger.lock().unwrap().actions.is_empty());
     }
 
-    /// Only the allow-list: anything else (dispatch, dismiss, a setting, a question) is left to
-    /// the owner, with Oby's recommendation.
+    /// An event turn lists only the allow-list's tools, oby_escalate among them.
     #[test]
-    fn actions_off_the_allow_list_escalate_with_a_recommendation() {
-        let turn = turn(&["j1"]);
-        for action in [
-            Action::Dispatch,
-            Action::DismissJob,
-            Action::SetSetting,
-            Action::StopAgent,
-            Action::SetMode,
-        ] {
-            assert!(
-                check(&turn, &plan(action, &["j1"]), &read(&["j1"])).is_err(),
-                "{action:?}"
-            );
-        }
-        let mut ask = plan(Action::AskUser, &[]);
-        ask.question = Some(super::super::plan::Question {
-            text: "Retry on Codex?".into(),
-            options: vec!["Retry on Codex".into(), "Leave it".into()],
-            details: None,
-            recommended: Some(0),
-            plan: None,
-        });
-        let asked = check(&turn, &ask, &read(&["j1"])).unwrap_err();
+    fn an_event_turn_lists_only_its_tools() {
+        let all = serde_json::json!([{"name": "oby_job"}, {"name": "oby_dispatch"},
+            {"name": "oby_continue_job"}, {"name": "oby_shell"}, {"name": "oby_tell_job"},
+            {"name": "oby_answer"}, {"name": "oby_stop_job"}, {"name": "oby_change_job"}]);
+        let names: Vec<String> = tools(&all)
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["name"].as_str().unwrap().to_owned())
+            .collect();
         assert_eq!(
-            asked.why,
-            "Oby read the job. Retry on Codex? Oby recommends: Retry on Codex."
+            names,
+            [
+                "oby_job",
+                "oby_continue_job",
+                "oby_tell_job",
+                "oby_answer",
+                "oby_escalate"
+            ]
         );
-        let move_job = check(&turn, &plan(Action::MoveJob, &["j1"]), &read(&["j1"])).unwrap_err();
-        assert!(move_job.why.contains("recommends move_job"), "{move_job:?}");
     }
 
     /// A fourth automatic action on the same job in a day escalates instead of acting; so does
@@ -823,11 +1000,12 @@ mod tests {
         assert!(ledger.take("j1", "d", day + 86_400).is_ok());
     }
 
-    /// answer_inbox picks only an allowed option of an open item of the event's job.
+    /// An inbox answer picks only an allowed option of an open item of the event's job, never a
+    /// person's own decision.
     #[test]
     fn inbox_answers_are_limited_to_the_allow_list() {
-        let turn = turn(&["j1"]);
-        let item = |id: &str| {
+        let watch = Watch::new(turn(&["j1"]));
+        let item = |id: &str, kind: &str| {
             Some(ItemView {
                 open: id != "closed",
                 job: if id == "other" {
@@ -835,25 +1013,33 @@ mod tests {
                 } else {
                     "j1".into()
                 },
-                kind: "failed".into(),
-                options: vec!["Try again".into(), "Dismiss".into()],
+                kind: kind.into(),
+                options: vec!["Dismiss".into(), "Try again".into()],
             })
         };
-        let answer = |id: &str, option: i64| {
-            let mut plan = plan(Action::AnswerInbox, &[]);
-            plan.item = Some(id.into());
-            plan.option = Some(option);
-            turn.check(&plan, &read(&["j1"]), 1, item, |_| None, |_| None)
-        };
-        assert!(answer("i1", 1).is_ok());
-        assert!(
-            answer("i1", 2)
-                .unwrap_err()
-                .why
-                .contains("outside the automatic allow-list")
-        );
-        assert!(answer("other", 1).is_err());
-        assert!(answer("closed", 1).unwrap_err().why.contains("changed"));
+        let unread = why(watch.option(item("i1", "failed"), "Try again").unwrap_err());
+        assert!(unread.starts_with("again: Read job j1"), "{unread}");
+        watch.reading("j1").unwrap();
+        assert_eq!(watch.option(item("i1", "failed"), "Try again"), Ok(2));
+        for (id, kind, answer) in [
+            ("i1", "failed", "Dismiss"),
+            ("i1", "permission", "Try again"),
+        ] {
+            let refused = why(watch.option(item(id, kind), answer).unwrap_err());
+            assert!(
+                refused.contains("outside the automatic allow-list"),
+                "{refused}"
+            );
+        }
+        let other = why(watch
+            .option(item("other", "failed"), "Try again")
+            .unwrap_err());
+        assert!(other.contains("couldn't match"), "{other}");
+        let closed = why(watch
+            .option(item("closed", "failed"), "Try again")
+            .unwrap_err());
+        assert!(closed.contains("changed"), "{closed}");
+        assert!(why(watch.option(None, "Try again").unwrap_err()).contains("changed"));
     }
 
     /// Events come from obid's own changes, once: a job that ends failed, a Mac check that fails,

@@ -419,13 +419,7 @@ async fn supervise(shared: &Arc<Shared>, job: &Job) -> bool {
         return true;
     }
     let tool = shared.config.conversation.agent;
-    let account = shared
-        .config
-        .conversation
-        .harness
-        .then(|| shared.jobs.thinking_accounts(tool).into_iter().next())
-        .flatten();
-    let Some(account) = account else {
+    let Some(account) = shared.jobs.thinking_accounts(tool).into_iter().next() else {
         ask_owner(
             shared,
             job,
@@ -607,6 +601,7 @@ mod tests {
             room: "/nowhere/room".into(),
             artifacts: Mutex::new(vec![]),
             supervising,
+            event: None,
             shell_out: Mutex::default(),
         }
     }
