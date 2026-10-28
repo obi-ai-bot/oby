@@ -71,7 +71,7 @@ const FEATURES_EVERY: i64 = 600;
 /// answer the owner confirms may be drafted by the conversation's agent.
 fn vendors(config: &Config) -> Vec<&'static str> {
     // The conversation's agent is Claude Code or Codex (configuration refuses Cursor there).
-    if config.conversation.harness && config.conversation.agent == crate::agent::Tool::Codex {
+    if config.conversation.agent == crate::agent::Tool::Codex {
         vec!["anthropic", "openai"]
     } else {
         vec!["anthropic"]
