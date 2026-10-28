@@ -16,9 +16,24 @@ pub const ACTOR_ASSERTION_SECONDS: i64 = 300;
 /// A card's description when the owner gives none.
 pub const DEFAULT_DESCRIPTION: &str = "A personal delegate for an engineer.";
 
-/// The `audience` every assertion for `sphere` names.
+/// The `audience` an assertion for `sphere` names when it names the Obysphere alone.
 pub fn audience(sphere: &str) -> String {
     format!("obi-sphere:{sphere}")
+}
+
+/// The feature an Obysphere lists in `GET /v0.1/features` when it takes [`url_audience`].
+pub const SPHERE_URL_AUD: &str = "sphere_url_aud";
+
+/// The Obysphere's own URL as an assertion's audience, `<origin>/v0.1/spheres/<sphere>`
+/// (identity.md 4.1): it names the server too, so only that server takes it. `None` when `base`
+/// isn't an http or https URL.
+pub fn url_audience(base: &str, sphere: &str) -> Option<String> {
+    let url = reqwest::Url::parse(base).ok()?;
+    if !matches!(url.scheme(), "http" | "https") {
+        return None;
+    }
+    let origin = url.origin().ascii_serialization();
+    (origin != "null").then(|| format!("{origin}/v0.1/spheres/{sphere}"))
 }
 
 /// The skill a card lists for a request type it accepts: `{id, name, description, tags}`.
@@ -155,7 +170,8 @@ pub fn unsigned_card_problems(card: &Map<String, Value>) -> Vec<String> {
 }
 
 /// An actor assertion (identity.md 4.1): `iss` and `sub` the Obi, signed with its current key,
-/// living [`ACTOR_ASSERTION_SECONDS`] from `now`, with the single-use `jti` given (a UUID).
+/// living [`ACTOR_ASSERTION_SECONDS`] from `now`, with the single-use `jti` given (a UUID), for
+/// the Obysphere `sphere` named alone ([`audience`]).
 pub fn actor_assertion(
     obi_id: &str,
     sphere: &str,
@@ -163,8 +179,20 @@ pub fn actor_assertion(
     now: i64,
     jti: &str,
 ) -> Result<String, crate::jcs::JcsError> {
+    actor_assertion_for(obi_id, &audience(sphere), key, now, jti)
+}
+
+/// An actor assertion for the audience `aud`: [`audience`], or [`url_audience`] for a server that
+/// takes it.
+pub fn actor_assertion_for(
+    obi_id: &str,
+    aud: &str,
+    key: &Keypair,
+    now: i64,
+    jti: &str,
+) -> Result<String, crate::jcs::JcsError> {
     jwt::sign(
-        &json!({"iss": obi_id, "sub": obi_id, "aud": audience(sphere), "iat": now,
+        &json!({"iss": obi_id, "sub": obi_id, "aud": aud, "iat": now,
                 "exp": now + ACTOR_ASSERTION_SECONDS, "jti": jti}),
         key,
     )
@@ -177,6 +205,8 @@ pub struct DelegationCheck<'a> {
     pub owner_key: &'a str,
     pub owner: &'a str,
     pub sphere: &'a str,
+    /// The Obysphere's base URL: a delegation may name it ([`url_audience`]) as well as the Sphere.
+    pub sphere_url: &'a str,
     pub obi_id: &'a str,
     pub now: i64,
     /// Scopes it must grant, at least.
@@ -211,11 +241,23 @@ pub fn check_delegation(token: &str, check: &DelegationCheck<'_>) -> Result<Valu
             check.owner
         ));
     }
-    if text("aud") != audience(check.sphere) {
+    // Either form names this Obysphere: alone, or with its server's URL (identity.md 4.1), whose
+    // origin is compared as the server reads it (an explicit default port is the same origin).
+    let url = url_audience(check.sphere_url, check.sphere);
+    let by_url = text("aud")
+        .strip_suffix(&format!("/v0.1/spheres/{}", check.sphere))
+        .filter(|origin| {
+            origin
+                .split_once("://")
+                .is_some_and(|(_, host)| !host.contains('/'))
+        })
+        .is_some_and(|origin| url.is_some() && url_audience(origin, check.sphere) == url);
+    if text("aud") != audience(check.sphere) && !by_url {
         return Err(format!(
-            "the delegation's audience is {}, not {}",
+            "the delegation's audience is {}, not {}{}",
             text("aud"),
-            audience(check.sphere)
+            audience(check.sphere),
+            url.map(|u| format!(" or {u}")).unwrap_or_default()
         ));
     }
     if claims["may_act"]["sub"].as_str() != Some(check.obi_id) {
@@ -389,6 +431,7 @@ mod tests {
             owner_key: &owner_key,
             owner: "wellington",
             sphere: "e2e",
+            sphere_url: "https://Sphere.Example.com:443",
             obi_id: "obi-wellington",
             now,
             needs: &["receive", "reply"],
@@ -401,6 +444,21 @@ mod tests {
         };
         assert!(wrong(&|c| c["may_act"]["sub"] = json!("obi-ernesto")).contains("may_act"));
         assert!(wrong(&|c| c["aud"] = json!("obi-sphere:other")).contains("audience"));
+        // The Obysphere's own URL names it too (identity.md 4.1); another server's doesn't.
+        let mut by_url = good.clone();
+        by_url["aud"] = json!("https://sphere.example.com/v0.1/spheres/e2e");
+        check_delegation(&delegation(&owner, by_url.clone()), &check).unwrap();
+        by_url["aud"] = json!("https://sphere.example.com:443/v0.1/spheres/e2e");
+        check_delegation(&delegation(&owner, by_url), &check).unwrap();
+        for aud in [
+            "https://elsewhere.example/v0.1/spheres/e2e",
+            "https://sphere.example.com/v0.1/spheres/other",
+            "https://sphere.example.com/x/v0.1/spheres/e2e",
+            "http://sphere.example.com/v0.1/spheres/e2e",
+        ] {
+            // The schema refuses some of these, the check the rest: either says it's the `aud`.
+            assert!(wrong(&|c| c["aud"] = json!(aud)).contains("aud"), "{aud}");
+        }
         assert!(wrong(&|c| c["exp"] = json!(now - 1)).contains("expired"));
         assert!(wrong(&|c| c["scope"] = json!("send:review_request receive")).contains("reply"));
         assert!(wrong(&|c| c["sub"] = json!("ernesto")).contains("not the owner"));
@@ -411,6 +469,36 @@ mod tests {
                 .contains("kid")
         );
         assert!(check_delegation("not.a.jwt", &check).is_err());
+    }
+
+    #[test]
+    fn a_url_audience_is_the_servers_origin_and_the_sphere() {
+        assert_eq!(
+            url_audience("https://Sphere.Example.com:443/", "e2e").as_deref(),
+            Some("https://sphere.example.com/v0.1/spheres/e2e")
+        );
+        assert_eq!(
+            url_audience("http://127.0.0.1:8787", "e2e").as_deref(),
+            Some("http://127.0.0.1:8787/v0.1/spheres/e2e")
+        );
+        // A default port is left out; an IPv6 host keeps its brackets.
+        assert_eq!(
+            url_audience("http://sphere.example.com:80/x?y", "e2e").as_deref(),
+            Some("http://sphere.example.com/v0.1/spheres/e2e")
+        );
+        assert_eq!(
+            url_audience("http://[::1]:8787", "e2e").as_deref(),
+            Some("http://[::1]:8787/v0.1/spheres/e2e")
+        );
+        assert_eq!(url_audience("file:///tmp/x", "e2e"), None);
+        assert_eq!(url_audience("not a url", "e2e"), None);
+        let obi = Keypair::from_seed_string("obi");
+        let aud = url_audience("https://sphere.example.com", "e2e").unwrap();
+        let parts =
+            jwt::parse(&actor_assertion_for("obi-wellington", &aud, &obi, 100, UUID).unwrap())
+                .unwrap();
+        assert_eq!(parts.claims["aud"], aud.as_str());
+        assert!(schema::is_valid("wire/actor.claims", &parts.claims));
     }
 
     #[test]

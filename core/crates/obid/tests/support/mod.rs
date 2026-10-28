@@ -1086,6 +1086,13 @@ pub struct SphereState {
     /// A Sphere that takes a card's `features`, `runtime` and `vendors`: its `GET /v0.1/features`
     /// lists `card_runtime` (identity.md section 2.3).
     pub takes_card_runtime: bool,
+    /// The URL form of `aud` this Sphere takes (identity.md 4.1), when it lists `sphere_url_aud`:
+    /// an actor assertion naming anything but this or `obi-sphere:<id>` is `invalid_request`.
+    pub url_aud: Option<String>,
+    /// Every actor assertion's `aud`, in the order exchanged.
+    pub actor_auds: Vec<String>,
+    /// The `token_type` the token endpoint answers, when not `Bearer`.
+    pub token_type: Option<String>,
     /// What `GET /v0.1/features` answers instead, as a status and a body.
     pub features_answer: Option<(u16, Value)>,
     /// What `GET /v0.1/features` answers instead, `200` with this body as written: JSON a
@@ -1371,6 +1378,11 @@ async fn token(
     if !subject.verifies_with(owner_key) {
         return oauth("invalid_grant");
     }
+    let aud = actor.claims["aud"].as_str().unwrap_or("").to_owned();
+    state.actor_auds.push(aud.clone());
+    if aud != format!("obi-sphere:{SPHERE}") && state.url_aud.as_deref() != Some(aud.as_str()) {
+        return oauth("invalid_request");
+    }
     let obi = actor.claims["sub"].as_str().unwrap_or("").to_owned();
     if subject.claims["may_act"]["sub"] != obi.as_str() {
         return oauth("invalid_grant");
@@ -1394,8 +1406,9 @@ async fn token(
     let token = new_token();
     state.tokens.insert(token.clone(), obi);
     let lifetime = state.token_lifetime.unwrap_or(3600);
+    let token_type = state.token_type.clone().unwrap_or_else(|| "Bearer".into());
     axum::Json(json!({"access_token": token, "issued_token_type": "urn:ietf:params:oauth:token-type:access_token",
-                      "token_type": "Bearer", "expires_in": lifetime, "scope": OBI_SCOPES}))
+                      "token_type": token_type, "expires_in": lifetime, "scope": OBI_SCOPES}))
         .into_response()
 }
 
@@ -1426,10 +1439,17 @@ async fn features(State(state): State<Arc<Mutex<SphereState>>>) -> Response {
     if let Some((status, body)) = state.features_answer.clone() {
         return (StatusCode::from_u16(status).unwrap(), axum::Json(body)).into_response();
     }
+    let mut listed = Vec::new();
     if state.takes_card_runtime {
-        axum::Json(json!({"features": ["card_runtime"]})).into_response()
-    } else {
+        listed.push("card_runtime");
+    }
+    if state.url_aud.is_some() {
+        listed.push("sphere_url_aud");
+    }
+    if listed.is_empty() {
         sphere_error(StatusCode::NOT_FOUND, "not_found", "no such endpoint")
+    } else {
+        axum::Json(json!({"features": listed})).into_response()
     }
 }
 
