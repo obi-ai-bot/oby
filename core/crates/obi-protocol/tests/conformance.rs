@@ -736,13 +736,14 @@ fn the_copy_matches_obi_sphere_when_given_one() {
             .into_iter()
             .map(|p| p.strip_prefix(spec().join(mine)).unwrap().to_path_buf())
             .collect();
-        // The card cases are made here, not copied: compared below. The wire cases aren't obid's.
+        // The card cases are made here, not copied: compared below. The wire and A2A binding cases
+        // aren't obid's: they judge what the Sphere takes.
         let their_files: Vec<PathBuf> = files(&theirs.join(source))
             .into_iter()
             .map(|p| p.strip_prefix(theirs.join(source)).unwrap().to_path_buf())
             .filter(|p| {
                 source != "conformance/fixtures"
-                    || !(p.starts_with("card") || p.starts_with("wire"))
+                    || !(p.starts_with("card") || p.starts_with("wire") || p.starts_with("a2a"))
             })
             .collect();
         if mine_files != their_files {
