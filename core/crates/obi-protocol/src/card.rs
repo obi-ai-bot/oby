@@ -122,9 +122,9 @@ pub fn verify(card: &Value, context: &Context) -> Result<(), Rejection> {
     }
     let signature = &card["signatures"][0];
     let protected = signature["protected"].as_str().unwrap_or("");
-    let header: Option<Value> = from_b64url(protected)
-        .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
-        .and_then(|text| serde_json::from_str(&text).ok());
+    // Read strictly (protocol.md section 2): bytes that aren't UTF-8, or a member twice, aren't JSON.
+    let header: Option<Value> =
+        from_b64url(protected).and_then(|bytes| crate::json::from_slice(&bytes).ok());
     let Some(header) = header else {
         return invalid("the protected header is not JSON");
     };

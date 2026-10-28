@@ -12,6 +12,7 @@ pub mod envelope;
 pub mod host_approval;
 pub mod identity;
 pub mod jcs;
+pub mod json;
 pub mod jwt;
 pub mod keys;
 pub mod schema;

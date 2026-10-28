@@ -168,7 +168,9 @@ impl Client {
                 }
                 bytes.extend_from_slice(&chunk);
             }
-            let body: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+            // Read strictly (protocol.md section 2): an answer that isn't, a member twice
+            // included, is no JSON at all.
+            let body: Value = crate::json::from_slice(&bytes).unwrap_or(Value::Null);
             if status == 429 && tries < RATE_LIMIT_TRIES {
                 // Nothing was recorded: the same request again, once the Sphere says.
                 let wait = Duration::from_secs(retry_after.unwrap_or(1)).min(RETRY_AFTER_MAX);
