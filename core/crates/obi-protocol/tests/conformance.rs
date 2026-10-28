@@ -469,6 +469,102 @@ fn card_cases() -> Vec<(String, Value)> {
         Some("bad_signature"),
         &context,
     );
+    // Topics, and taking introductions (identity.md section 2.3; protocol.md section 5.18).
+    let topics = json!({"features": ["card_runtime", "card_topics"], "topics": ["rust", "payments", "ios-release"]});
+    let with_topics = |over: Value| {
+        let mut params = topics.clone();
+        for (k, v) in over.as_object().unwrap() {
+            params[k] = v.clone();
+        }
+        with_seal(params)
+    };
+    add(
+        "valid-card-with-topics",
+        with_seal(topics.clone()),
+        "accept",
+        None,
+        &context,
+    );
+    let topic_cases: [(&str, Value); 4] = [
+        (
+            "invalid-card-topics-without-card-topics",
+            with_seal(json!({"features": ["card_runtime"], "topics": ["rust"]})),
+        ),
+        (
+            "invalid-card-topics-without-features",
+            with_seal(json!({"topics": ["rust"]})),
+        ),
+        (
+            "invalid-card-topic-not-an-id",
+            with_topics(json!({"topics": ["Rust and payments"]})),
+        ),
+        (
+            "invalid-card-topic-repeated",
+            with_topics(json!({"topics": ["rust", "rust"]})),
+        ),
+    ];
+    for (name, card) in topic_cases {
+        add(name, card, "reject", Some("card_invalid"), &context);
+    }
+    add(
+        "valid-card-thirty-two-topics",
+        with_topics(json!({"topics": ids(32, "topic-")})),
+        "accept",
+        None,
+        &context,
+    );
+    add(
+        "invalid-card-thirty-three-topics",
+        with_topics(json!({"topics": ids(33, "topic-")})),
+        "reject",
+        Some("card_invalid"),
+        &context,
+    );
+    add(
+        "valid-card-topic-sixty-four",
+        with_topics(json!({"topics": ["a".repeat(64)]})),
+        "accept",
+        None,
+        &context,
+    );
+    add(
+        "invalid-card-topic-sixty-five",
+        with_topics(json!({"topics": ["a".repeat(65)]})),
+        "reject",
+        Some("card_invalid"),
+        &context,
+    );
+    let introducing = |features: Option<Value>| {
+        let mut card = card_for("obi-a", "owner-a", &a, &oa);
+        let ids = ["review_request", "question", "introduction"];
+        card["skills"] = json!(ids.iter().map(|id| json!({"id": id, "name": "Take it", "description": "Takes it for its owner.", "tags": ["obi-action"]})).collect::<Vec<_>>());
+        card["capabilities"]["extensions"][0]["params"]["accepts"] = json!(ids);
+        if let Some(f) = features {
+            card["capabilities"]["extensions"][0]["params"]["features"] = f;
+        }
+        sign(&card, &oa, &oa.key_id())
+    };
+    add(
+        "valid-card-accepts-introductions",
+        introducing(Some(json!(["card_runtime", "introduction"]))),
+        "accept",
+        None,
+        &context,
+    );
+    add(
+        "invalid-card-accepts-introductions-without-the-feature",
+        introducing(Some(json!(["card_runtime"]))),
+        "reject",
+        Some("card_invalid"),
+        &context,
+    );
+    add(
+        "invalid-card-accepts-introductions-without-features",
+        introducing(None),
+        "reject",
+        Some("card_invalid"),
+        &context,
+    );
     let mut vendors_changed = with_seal(runtime.clone());
     vendors_changed["capabilities"]["extensions"][0]["params"]["vendors"] =
         json!(["anthropic", "openai"]);

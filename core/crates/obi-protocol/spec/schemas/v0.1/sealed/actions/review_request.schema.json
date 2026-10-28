@@ -53,6 +53,9 @@
     "approve_on_host": {
       "const": true,
       "description": "Asks the receiver to post an approving review of head_sha on pull request pr on the code host, as its owner, when its review approves. The receiver does so only when its own owner confirmed this exchange at this commit on their own device, or next to a code owner's approval under a standing permission its owner gave (protocol.md section 11, \"Approving on the code host\"), never because of this field. Needs pr."
+    },
+    "follows": {
+      "$ref": "../common.schema.json#/$defs/follows"
     }
   },
   "if": {

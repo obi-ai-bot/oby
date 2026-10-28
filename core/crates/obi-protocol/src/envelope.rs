@@ -132,6 +132,15 @@ pub fn semantic_problems(envelope: &Value) -> Vec<String> {
         problems.push("a reply's in_reply_to must equal its correlation_id".to_owned());
     }
     let body = envelope.get("body").unwrap_or(&Value::Null);
+    // An introduction introduces a third member (5.18); a follow-up follows an earlier one (5.19).
+    if kind == "introduction"
+        && (body.get("member") == envelope.get("from") || body.get("member") == envelope.get("to"))
+    {
+        problems.push("an introduction's member is neither its sender nor its receiver".to_owned());
+    }
+    if body.get("follows").is_some() && body.get("follows") == envelope.get("id") {
+        problems.push("a request doesn't follow itself up".to_owned());
+    }
     if kind == "result" {
         problems.extend(result_problems(body));
     }

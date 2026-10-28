@@ -46,6 +46,20 @@ fn text<'a>(value: &'a Value, key: &str) -> &'a str {
     value.get(key).and_then(Value::as_str).unwrap_or("")
 }
 
+/// What's wrong with a request's `follows` (protocol.md section 5.19), given the earlier message it
+/// names (if the chain has one): it must be a request between the same two members, in either
+/// direction. `None` when it has no `follows`, or names one.
+pub fn follow_up_problem(request: &Value, earlier: Option<&Value>) -> Option<String> {
+    request["body"].get("follows")?;
+    let Some(earlier) = earlier.filter(|e| REQUEST_TYPES.contains(&text(e, "type"))) else {
+        return Some("follows no earlier request".into());
+    };
+    let (from, to) = (request.get("from"), request.get("to"));
+    let same = (earlier.get("from") == from && earlier.get("to") == to)
+        || (earlier.get("from") == to && earlier.get("to") == from);
+    (!same).then(|| "follows an exchange between other members".into())
+}
+
 /// The exchange rules, as the Sphere applies them at send and a chain's verifier at each reply:
 /// why `reply` breaks them, given the request its `in_reply_to` names (if any) and the replies to
 /// that request that came before it, in order; `None` when it doesn't.
@@ -59,8 +73,8 @@ pub fn exchange_problem(
     };
     let kind = text(reply, "type");
     let asked = text(request, "type");
-    // run_cancel, share_status and share_revoke are the replies the request's own sender sends,
-    // to its receiver.
+    // run_cancel, share_status, share_revoke and cancel are the replies the request's own sender
+    // sends, to its receiver.
     if SENDER_REPLY_TYPES.contains(&kind) {
         if request.get("from") != reply.get("from") || request.get("to") != reply.get("to") {
             return Some(format!(
@@ -81,6 +95,12 @@ pub fn exchange_problem(
     if asked != "share_offer" && kind != "decline" && SHARE_REPLY_TYPES.contains(&kind) {
         return Some(format!("a {kind} belongs to a share_offer, not a {asked}"));
     }
+    // A cancel calls off a review_request, a question, a handoff or an introduction (rule 10).
+    if kind == "cancel" && !crate::CANCELLABLE_TYPES.contains(&asked) {
+        return Some(format!(
+            "a cancel calls off a review_request, question, handoff or introduction, not a {asked}"
+        ));
+    }
     if earlier
         .iter()
         .any(|e| TERMINAL_TYPES.contains(&text(e, "type")))
@@ -88,6 +108,10 @@ pub fn exchange_problem(
         return Some("the exchange already ended".into());
     }
     let accepted = earlier.iter().any(|e| text(e, "type") == "accept");
+    // An introduction's accept ends its exchange: nothing follows it (rule 10).
+    if asked == "introduction" && accepted {
+        return Some("the exchange already ended".into());
+    }
     if kind == "accept" && accepted {
         return Some("accepted twice".into());
     }
@@ -285,6 +309,11 @@ pub fn verify(chain: &Value, keys: &Keys) -> Result<(), Rejection> {
             if let Some(problem) = exchange_problem(env, by_id.get(in_reply_to), &earlier) {
                 return Err(Rejection::new("bad_reply", format!("{at}: {problem}")));
             }
+        }
+        if REQUEST_TYPES.contains(&text(env, "type"))
+            && let Some(problem) = follow_up_problem(env, by_id.get(text(&env["body"], "follows")))
+        {
+            return Err(Rejection::new("bad_reply", format!("{at}: {problem}")));
         }
         by_id.insert(id.clone(), env.clone());
         order.push(id);

@@ -39,6 +39,9 @@
       "x-obi-text": "sealed",
       "minLength": 23,
       "maxLength": 10688
+    },
+    "follows": {
+      "$ref": "../common.schema.json#/$defs/follows"
     }
   }
 }

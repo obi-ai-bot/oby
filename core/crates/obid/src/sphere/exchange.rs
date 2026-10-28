@@ -57,6 +57,11 @@ pub struct Exchange {
     /// Never in the API's answer.
     #[serde(default)]
     pub tried: Option<String>,
+    /// The approval obid posted on GitHub for this incoming review (`job`, `repo`, `pr`, `id`,
+    /// `url`), so that a cancel arriving after it dismisses it (protocol.md section 11, "Calling a
+    /// request off"). Never in the API's answer.
+    #[serde(default)]
+    pub host_approval: Option<Value>,
 }
 
 impl Exchange {
@@ -89,6 +94,7 @@ impl Exchange {
             outbox: Vec::new(),
             self_answered: None,
             tried: None,
+            host_approval: None,
         }
     }
 

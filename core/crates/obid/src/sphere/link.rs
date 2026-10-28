@@ -62,6 +62,18 @@ const OBID_VERSION: &str = "0.3.0+card-runtime";
 /// without the build metadata.
 const RUNTIME_ID: &str = "oby";
 const RUNTIME_VERSION: &str = "0.3.0";
+/// The additions obid takes, as its card lists them once it may (identity.md section 2.3): it reads
+/// a card's runtime, vendors, classes and topics, verifies a chain with follow-ups, cancels and
+/// introductions, and stops what a received request's cancel calls off. Its card accepts no
+/// introduction, says no topics, and claims no conformance class until a report backs one.
+const FEATURES: [&str; 6] = [
+    "cancel",
+    "card_classes",
+    "card_runtime",
+    "card_topics",
+    "follow_up",
+    "introduction",
+];
 /// How often obid asks a Sphere that didn't list `card_runtime` again (`GET /v0.1/features`), once
 /// its team takes it: at once when the team first does.
 const FEATURES_EVERY: i64 = 600;
@@ -195,6 +207,7 @@ fn runtime_card_needed(state: &State, vendors: &[&str]) -> bool {
         && params.is_some_and(|p| {
             p.get("runtime") != Some(&json!({"id": RUNTIME_ID, "version": RUNTIME_VERSION}))
                 || p.get("vendors") != Some(&json!(vendors))
+                || p.get("features") != Some(&json!(FEATURES))
         });
     !takes_card_runtime(card)
         || stale
@@ -1813,7 +1826,7 @@ impl Link {
         };
         let vendors = vendors(&self.config);
         let runtime = runtime.then_some(obi_protocol::identity::CardRuntime {
-            features: &[obi_protocol::identity::CARD_RUNTIME],
+            features: &FEATURES,
             id: RUNTIME_ID,
             version: RUNTIME_VERSION,
             vendors: &vendors,
@@ -2467,7 +2480,7 @@ impl Link {
 
     /// A reply: matched to the outgoing request it names, sent to the reply's sender, keeping the
     /// exchange rules; else dropped.
-    fn handle_reply(&self, delivery: Delivery) {
+    fn handle_reply(self: &Arc<Self>, delivery: Delivery) {
         let envelope = &delivery.envelope;
         let id = envelope["id"].as_str().unwrap_or("").to_owned();
         let cid = envelope["in_reply_to"].as_str().unwrap_or("");
@@ -2520,6 +2533,12 @@ impl Link {
                 exchange.state = "done".into();
                 exchange.result = Some(envelope["body"].clone());
             }
+            // Its sender called a request obid received off (protocol.md section 5.17): nothing
+            // more goes out in that exchange.
+            "cancel" => {
+                exchange.state = "cancelled".into();
+                exchange.outbox.clear();
+            }
             _ => {}
         }
         exchange.updated = time::now();
@@ -2527,6 +2546,95 @@ impl Link {
         state.seen.insert(id);
         drop(state);
         self.save_exchange(&exchange);
+        if kind == "cancel" {
+            self.cancelled(&exchange);
+        }
+    }
+
+    /// A request obid received was called off by its sender (protocol.md section 11, "Calling a
+    /// request off"): its work stops, its inbox item is settled, and nothing is approved for it.
+    fn cancelled(self: &Arc<Self>, exchange: &Exchange) {
+        let now = time::now();
+        let cid = exchange.correlation_id.clone();
+        let (item, posted) = {
+            let mut state = self.lock();
+            let item = exchange
+                .inbox_item
+                .as_ref()
+                .and_then(|id| state.inbox.get_mut(id))
+                .filter(|i| i.done.is_none())
+                .map(|i| {
+                    i.done = Some(now);
+                    i.text = format!("{} Its sender called it off.", i.text);
+                    i.clone()
+                });
+            // An approval obid already posted for it: taken here, so only one of this and
+            // [`Link::post_approval`] dismisses it.
+            let posted = state
+                .exchanges
+                .get_mut(&cid)
+                .and_then(|e| e.host_approval.take());
+            (item, posted)
+        };
+        if let Some(item) = item {
+            self.save_item(&item);
+        }
+        if let Some(job) = exchange.job.as_deref() {
+            self.jobs.stop(job);
+        }
+        self.settle_host_approvals(
+            |i| {
+                i.confirm
+                    .as_ref()
+                    .is_some_and(|c| c.payload["correlationId"] == cid.as_str())
+                    || i.obi
+                        .as_ref()
+                        .is_some_and(|o| o["correlationId"] == cid.as_str())
+            },
+            "Its sender called the review off: nothing was approved.",
+        );
+        // The receiver dismisses an approval it posted before the cancel came (section 11).
+        if let Some(posted) = posted {
+            let link = Arc::clone(self);
+            tokio::spawn(async move {
+                link.dismiss_approval(&cid, &posted, "its sender called the review off")
+                    .await;
+            });
+        }
+    }
+
+    /// Dismisses the approval obid posted on GitHub for exchange `cid` (`posted`, as
+    /// [`Exchange::host_approval`] keeps it), saying `why`; one GitHub doesn't let it dismiss is
+    /// the owner's to remove, as an inbox item says ([`approval::dismissal_item`]).
+    async fn dismiss_approval(&self, cid: &str, posted: &Value, why: &str) {
+        let text = |key: &str| posted[key].as_str().unwrap_or("").to_owned();
+        let (job, repo, url) = (text("job"), text("repo"), text("url"));
+        let pr = posted["pr"].as_u64().unwrap_or(0);
+        let dismissed = match (crate::github::gh(), posted["id"].as_u64()) {
+            (Some(gh), Some(id)) => approval::dismiss(&gh, &repo, pr, id).await,
+            (None, _) => Err("gh isn't installed".into()),
+            (_, None) => Err("GitHub didn't say which review it was".into()),
+        };
+        match dismissed {
+            Ok(()) => self.jobs.dismissed_on_github(&job, &repo, &url),
+            Err(failed) => {
+                tracing::error!(
+                    "sphere: exchange {cid}: obid approved {repo}#{pr} and couldn't dismiss it ({failed}) though {why}: the owner removes {url} on GitHub"
+                );
+                let item = approval::dismissal_item(cid, &job, &repo, pr, &url, time::now());
+                self.lock().inbox.insert(item.id.clone(), item.clone());
+                self.save_item(&item);
+            }
+        }
+    }
+
+    /// Whether incoming exchange `cid` is there and its sender hasn't called it off. Its expiry and
+    /// obid's membership are checked apart.
+    fn not_called_off(&self, cid: &str) -> bool {
+        self.lock()
+            .exchanges
+            .get(cid)
+            .is_some_and(|e| e.state != "cancelled")
     }
 
     /// A request (protocol.md section 11, steps 4 to 6): declined when the card doesn't accept its
@@ -3087,9 +3195,13 @@ impl Link {
                 .as_str()
                 .and_then(time::parse)
                 .unwrap_or(0);
+            let first = next["id"].clone();
             if expires <= time::now() {
                 self.update_exchange(cid, |e| {
-                    e.outbox.remove(0);
+                    // A cancel may have cleared the outbox meanwhile.
+                    if e.outbox.first().is_some_and(|f| f["id"] == first) {
+                        e.outbox.remove(0);
+                    }
                     e.error = Some("A reply expired before the Sphere took it.".into());
                 });
                 continue;
@@ -3175,7 +3287,10 @@ impl Link {
                     self.keep_receipt(&id, &sent);
                     self.lock().seen.insert(id);
                     self.update_exchange(cid, |e| {
-                        e.outbox.remove(0);
+                        // A cancel may have cleared the outbox while it was sent.
+                        if e.outbox.first().is_some_and(|f| f["id"] == first) {
+                            e.outbox.remove(0);
+                        }
                         e.tried = None;
                         e.messages.push(Message {
                             direction: "sent".into(),
@@ -3970,20 +4085,51 @@ impl Link {
             .home
             .join("tmp")
             .join(format!("approve-{}", uuid::Uuid::new_v4().simple()));
-        let still = || self.is_joined() && time::now() < until;
+        // Not once its sender called the review off (protocol.md section 11).
+        let still = || self.is_joined() && time::now() < until && self.not_called_off(cid);
         let posted = approval::post(&gh, &scratch, repo, pr, base, sha, still).await;
         let _ = std::fs::remove_dir_all(&scratch);
         let posted = posted?;
         self.jobs.approved_on_github(job, repo, &posted.url);
-        let mut checked = self.recheck(&gh, cid, repo, pr, base, sha, next_to).await;
-        if let Err(Recheck::Unread(why)) = &checked {
-            tracing::info!("sphere: exchange {cid}: reading {repo}#{pr} again ({why})");
-            checked = self.recheck(&gh, cid, repo, pr, base, sha, next_to).await;
-        }
-        let why = match checked {
-            Ok(()) => return Ok(()),
-            Err(Recheck::Changed(why)) => why,
-            Err(Recheck::Unread(why)) => format!("obid couldn't read it again ({why})"),
+        // Kept with the exchange, for a cancel that comes after it; a cancel that came while it was
+        // posted means it goes at once.
+        let ours = json!({"job": job, "repo": repo, "pr": pr, "id": posted.id, "url": posted.url});
+        let kept = {
+            let mut state = self.lock();
+            match state.exchanges.get_mut(cid) {
+                Some(e) if e.state != "cancelled" => {
+                    e.host_approval = Some(ours);
+                    Some(e.clone())
+                }
+                _ => None,
+            }
+        };
+        let why = match kept {
+            None => "its sender called the review off".to_owned(),
+            Some(exchange) => {
+                self.save_exchange(&exchange);
+                let mut checked = self.recheck(&gh, cid, repo, pr, base, sha, next_to).await;
+                if let Err(Recheck::Unread(why)) = &checked {
+                    tracing::info!("sphere: exchange {cid}: reading {repo}#{pr} again ({why})");
+                    checked = self.recheck(&gh, cid, repo, pr, base, sha, next_to).await;
+                }
+                let why = match checked {
+                    Ok(()) => return Ok(()),
+                    Err(Recheck::Changed(why)) => why,
+                    Err(Recheck::Unread(why)) => format!("obid couldn't read it again ({why})"),
+                };
+                // A cancel that came meanwhile took it, and dismisses it.
+                let mine = self
+                    .lock()
+                    .exchanges
+                    .get_mut(cid)
+                    .and_then(|e| e.host_approval.take())
+                    .is_some();
+                if !mine {
+                    return Err(format!("{why} right after obid approved it"));
+                }
+                why
+            }
         };
         let dismissed = match posted.id {
             Some(id) => approval::dismiss(&gh, repo, pr, id).await,
@@ -4142,7 +4288,9 @@ impl Link {
         let kind = text_field(&map, "type")?.to_owned();
         // run_request and share_offer went with compute sharing (refused below, once the Obi is
         // known, as before).
-        if !obi_protocol::REQUEST_TYPES.contains(&kind.as_str()) {
+        // Introductions and follow-ups are additions obid reads but doesn't send in this version:
+        // one goes only once every active member takes it (protocol.md section 5).
+        if !obi_protocol::REQUEST_TYPES.contains(&kind.as_str()) || kind == "introduction" {
             return Err(invalid(format!(
                 "type is review_request, question or handoff, not {kind}."
             )));
@@ -4151,6 +4299,11 @@ impl Link {
             .get("body")
             .ok_or_else(|| invalid("body is the action's fields, and it's required.".into()))?
             .clone();
+        if action.get("follows").is_some() {
+            return Err(invalid(
+                "obid doesn't send follow-ups yet: body has no follows.".into(),
+            ));
+        }
         let errors = obi_protocol::schema::errors(&format!("actions/{kind}"), &action, 5);
         if !errors.is_empty() {
             return Err(invalid(format!(
@@ -7424,22 +7577,26 @@ mod tests {
     }
 
     /// A card that carries obid's runtime is signed again when it says other vendors than obid
-    /// would now (its owner moved the conversation to Codex, say), or another runtime version.
+    /// would now (its owner moved the conversation to Codex, say), another runtime version, or
+    /// other features.
     #[tokio::test]
     async fn a_card_with_stale_vendors_is_signed_again() {
         let (link, _home, _stop) = sender_link("stale-vendors", Some("joined"));
         let mut state = link.lock();
-        let card = |runtime_version: &str| {
+        let card = |runtime_version: &str, features: Value| {
             json!({"version": OBID_VERSION, "capabilities": {"extensions": [{"params": {
-                "features": ["card_runtime"],
+                "features": features,
                 "runtime": {"id": RUNTIME_ID, "version": runtime_version},
                 "vendors": ["anthropic"],
             }}]}})
         };
-        state.membership.as_mut().unwrap().card = card(RUNTIME_VERSION);
+        state.membership.as_mut().unwrap().card = card(RUNTIME_VERSION, json!(FEATURES));
         assert!(!runtime_card_needed(&state, &["anthropic"]));
         assert!(runtime_card_needed(&state, &["anthropic", "openai"]));
-        state.membership.as_mut().unwrap().card = card("0.2.9");
+        state.membership.as_mut().unwrap().card = card("0.2.9", json!(FEATURES));
+        assert!(runtime_card_needed(&state, &["anthropic"]));
+        // A card from an obid that took fewer features is signed again too.
+        state.membership.as_mut().unwrap().card = card(RUNTIME_VERSION, json!(["card_runtime"]));
         assert!(runtime_card_needed(&state, &["anthropic"]));
     }
 
