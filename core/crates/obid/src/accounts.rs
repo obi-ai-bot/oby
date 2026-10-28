@@ -1160,13 +1160,15 @@ pub async fn sign_in(
         .and_then(|agent| crate::process::resolve_bin(&agent.bin))
         .filter(|bin| bin.is_absolute())
         .ok_or_else(|| {
-            ApiError::new(
-                StatusCode::SERVICE_UNAVAILABLE,
-                format!(
+            // Cursor's agent obid sets up itself, on Connect (crate::tools).
+            let why = match tool {
+                Tool::Cursor => crate::tools::CURSOR_MISSING.to_owned(),
+                _ => format!(
                     "obid can't find {}'s binary by an absolute path, which is how it runs a sign-in.",
                     tool.name()
                 ),
-            )
+            };
+            ApiError::new(StatusCode::SERVICE_UNAVAILABLE, why)
         })?;
     let changing = shared
         .jobs

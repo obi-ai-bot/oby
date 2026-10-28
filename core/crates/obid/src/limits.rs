@@ -178,7 +178,10 @@ mod tests {
         ));
         // A day that isn't one, or a limit with no date, names no reset.
         assert_eq!(cycle_end("cycle ends on 13/40/2026"), None);
-        assert_eq!(reset_in("You've hit your usage limit. Try again later.", now), None);
+        assert_eq!(
+            reset_in("You've hit your usage limit. Try again later.", now),
+            None
+        );
     }
 
     #[test]
