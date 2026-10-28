@@ -24,6 +24,11 @@ const RATE_LIMIT_TRIES: u32 = 5;
 const MAX_ANSWER: usize = 16 * 1024 * 1024;
 /// The longest the client waits on one `Retry-After`.
 const RETRY_AFTER_MAX: Duration = Duration::from_secs(30);
+/// The members of `GET /v0.1/health` this copy of the spec knows (wire/health.response's
+/// `properties`). The spec keeps health closed and lists new features at `GET /v0.1/features`
+/// (sphere-api.md section 2); obid ignores any other member all the same, so a Sphere that adds
+/// one doesn't stop it learning that the Sphere seals.
+const HEALTH_MEMBERS: [&str; 3] = ["ok", "protocol", "seal"];
 
 /// Why a call didn't give what was asked.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -219,11 +224,16 @@ impl Client {
         Ok(body)
     }
 
-    /// `GET /v0.1/health`.
+    /// `GET /v0.1/health`: unsigned liveness, its known members checked (`known_health`).
     pub async fn health(&self) -> Result<Value, ClientError> {
         let url = format!("{}/v0.1/health", self.base);
         let (status, body) = self.call(|| self.http.get(&url)).await?;
-        Client::expect(status, body, &[200], "wire/health.response")
+        Client::expect(
+            status,
+            known_health(status, body),
+            &[200],
+            "wire/health.response",
+        )
     }
 
     /// `GET /v0.1/features`: the additions to obi/0.1 the Sphere takes (spec README, "Versions").
@@ -466,9 +476,68 @@ impl Client {
     }
 }
 
+/// A health answer with only the members this copy knows (`HEALTH_MEMBERS`), which are then
+/// checked against its schema; any other answer (an error, or one that isn't an object) as it came.
+fn known_health(status: u16, mut body: Value) -> Value {
+    if status == 200
+        && let Value::Object(members) = &mut body
+    {
+        members.retain(|name, _| HEALTH_MEMBERS.contains(&name.as_str()));
+    }
+    body
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn health_ignores_members_it_doesnt_know_and_still_checks_the_ones_it_does() {
+        let later = json!({"ok": true, "protocol": "obi/0.1", "seal": true, "a_later_member": [1]});
+        let kept = known_health(200, later);
+        assert_eq!(
+            kept,
+            json!({"ok": true, "protocol": "obi/0.1", "seal": true})
+        );
+        assert!(Client::expect(200, kept, &[200], "wire/health.response").is_ok());
+        // What it knows is still checked: another protocol, or a seal that isn't `true`.
+        for wrong in [
+            json!({"ok": true, "protocol": "obi/0.2", "x": 1}),
+            json!({"ok": true, "protocol": "obi/0.1", "seal": false, "x": 1}),
+        ] {
+            assert!(
+                Client::expect(
+                    200,
+                    known_health(200, wrong),
+                    &[200],
+                    "wire/health.response"
+                )
+                .is_err()
+            );
+        }
+        // An error answer reaches `expect` as it came.
+        let refused = json!({"error": {"code": "internal", "message": "m"}, "extra": 1});
+        assert_eq!(known_health(503, refused.clone()), refused);
+    }
+
+    #[test]
+    fn the_health_members_kept_are_the_schemas() {
+        let (_, text) = schema::SCHEMAS
+            .iter()
+            .find(|(name, _)| *name == "wire/health.response")
+            .unwrap();
+        let schema: Value = serde_json::from_str(text).unwrap();
+        let mut known: Vec<&str> = schema["properties"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        let mut kept = HEALTH_MEMBERS.to_vec();
+        known.sort_unstable();
+        kept.sort_unstable();
+        assert_eq!(kept, known);
+    }
 
     #[test]
     fn refusals_quote_the_spec_error_or_the_oauth_one() {
