@@ -168,9 +168,18 @@ impl Client {
                 }
                 bytes.extend_from_slice(&chunk);
             }
-            // Read strictly (protocol.md section 2): an answer that isn't, a member twice
-            // included, is no JSON at all.
-            let body: Value = crate::json::from_slice(&bytes).unwrap_or(Value::Null);
+            // Read strictly (protocol.md section 2): a success that isn't JSON, a member twice
+            // included, is refused with why; an error answer that isn't JSON says no code.
+            let read = crate::json::from_slice(&bytes);
+            if (200..300).contains(&status)
+                && !bytes.is_empty()
+                && let Err(why) = &read
+            {
+                return Err(ClientError::Protocol(format!(
+                    "the Sphere's answer isn't JSON as the spec reads it: {why}"
+                )));
+            }
+            let body: Value = read.unwrap_or(Value::Null);
             if status == 429 && tries < RATE_LIMIT_TRIES {
                 // Nothing was recorded: the same request again, once the Sphere says.
                 let wait = Duration::from_secs(retry_after.unwrap_or(1)).min(RETRY_AFTER_MAX);

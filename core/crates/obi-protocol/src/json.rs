@@ -1,7 +1,7 @@
 //! JSON as the protocol reads it (protocol.md section 2): UTF-8 without a byte order mark, and no
 //! object with two members of the same name. `serde_json`'s own `Value` keeps the last of two such
 //! members; a receiver MUST refuse the document instead, so everything obid reads from an Obysphere
-//! or another member goes through [`from_slice`].
+//! or another member goes through [`from_slice`] (or [`from_str`], for text already decoded).
 
 use serde::de::{self, Deserialize, Deserializer, MapAccess, SeqAccess, Visitor};
 use serde_json::{Map, Number, Value};
@@ -85,10 +85,16 @@ impl<'de> Visitor<'de> for StrictVisitor {
         let mut out = Map::new();
         while let Some(key) = access.next_key::<String>()? {
             let Strict(v) = access.next_value()?;
-            if out.insert(key.clone(), v).is_some() {
-                return Err(de::Error::custom(format!(
-                    "the member name {key:?} appears twice"
-                )));
+            match out.entry(key) {
+                serde_json::map::Entry::Vacant(slot) => {
+                    slot.insert(v);
+                }
+                serde_json::map::Entry::Occupied(slot) => {
+                    return Err(de::Error::custom(format!(
+                        "the member name {:?} appears twice",
+                        slot.key()
+                    )));
+                }
             }
         }
         Ok(Value::Object(out))
@@ -123,6 +129,10 @@ mod tests {
             from_str(r#"{"a":[{"b":1,"b":1}]}"#).is_err(),
             "nested, the same value"
         );
+        assert!(
+            from_str(r#"{"a":1,"\u0061":1}"#).is_err(),
+            "the same name, spelt with an escape"
+        );
         assert_eq!(
             from_str(r#"{"a":{"b":1},"b":{"a":1}}"#).unwrap(),
             json!({"a": {"b": 1}, "b": {"a": 1}})
@@ -143,5 +153,16 @@ mod tests {
         assert!(from_slice(&bom).is_err());
         assert!(from_str(r#"{"a":"\ud800"}"#).is_err());
         assert!(from_str(r#"{"a":1} {"a":2}"#).is_err());
+    }
+
+    /// serde_json's `raw_value` reads one member name as a marker; this reader takes it as the
+    /// object it is.
+    #[test]
+    fn serde_jsons_raw_value_marker_is_an_object_here() {
+        let marked = r#"{"$serde_json::private::RawValue":"[1,2]"}"#;
+        assert_eq!(
+            from_str(marked).unwrap(),
+            json!({"$serde_json::private::RawValue": "[1,2]"})
+        );
     }
 }

@@ -2725,6 +2725,34 @@ async fn a_features_answer_that_isnt_the_list_means_none() {
     }
 }
 
+/// An Obysphere answer is read strictly (protocol.md section 2): a features list whose object names
+/// `features` twice isn't JSON to obid, so the Sphere takes none and the card stays without its
+/// runtime (a reader that keeps the last member would take `card_runtime`).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_features_answer_with_a_member_twice_means_none() {
+    let folder = Folder::new("card-runtime-twice");
+    let sphere = FakeSphere::start().await;
+    sphere.lock().features_raw =
+        Some(r#"{"features":["card_runtime"],"features":["card_runtime"]}"#.into());
+    let _sangam = TestObi::join(&sphere, "obi-sangam", "sangam").await;
+    tag_card_runtime(&sphere, "obi-sangam", "sangam");
+    let remote = fixture(&folder.0.join("fixture"));
+    let obid = start(&folder.0, &config(&folder.0, &remote, &stub_agent()), None);
+    let owner = Owner::new("wellington");
+    tokio::task::block_in_place(|| {
+        join_a_accepting(&obid, &sphere, &owner, &["review_request", "question"]);
+        let card = read_directory_now(&obid, &sphere);
+        assert!(
+            card["capabilities"]["extensions"][0]["params"]
+                .get("runtime")
+                .is_none(),
+            "{card}"
+        );
+    });
+    let asked = sphere.lock().features_asked;
+    assert_eq!(asked, 1);
+}
+
 /// An obid upgraded from 0.2.0 whose card carries its seal key asks for a card that says it takes
 /// `card_runtime`, and the new card keeps the seal key; one that drops a card's `card_runtime`, or
 /// names another runtime, isn't kept.
