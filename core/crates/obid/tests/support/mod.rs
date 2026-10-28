@@ -1088,6 +1088,9 @@ pub struct SphereState {
     /// The next send of this type is neither recorded nor delivered, and its answer is the receipt
     /// of the chain's last entry, another envelope's (`FakeSphere::answer_next_with_last`).
     pub answer_with_last: Option<String>,
+    /// The next send of this type is neither recorded nor delivered, and its answer breaks off
+    /// mid-body: to obid, a post that didn't answer (`FakeSphere::break_next_send`).
+    pub break_send: Option<String>,
 }
 
 pub type RelaySender = tokio::sync::mpsc::UnboundedSender<axum::extract::ws::Message>;
@@ -1178,6 +1181,12 @@ impl FakeSphere {
     /// entry by then (with none, the send is answered `500`).
     pub fn answer_next_with_last(&self, kind: &str) {
         self.lock().answer_with_last = Some(kind.to_owned());
+    }
+
+    /// Neither records nor delivers the next send of type `kind`, and breaks off its answer after
+    /// the status: the post reaches obid as one that didn't answer (`ClientError::Unreachable`).
+    pub fn break_next_send(&self, kind: &str) {
+        self.lock().break_send = Some(kind.to_owned());
     }
 
     /// An invitation for `obi` of `owner`: its id and secret.
@@ -2030,6 +2039,17 @@ fn record(state: &Mutex<SphereState>, headers: &HeaderMap, body: &[u8]) -> Respo
             StatusCode::ACCEPTED,
             (StatusCode::ACCEPTED, axum::Json(receipt)).into_response(),
         );
+    }
+    if state.break_send.take_if(|named| *named == kind).is_some() {
+        let broken = futures_util::stream::once(async {
+            Err::<axum::body::Bytes, _>(std::io::Error::other("the answer broke off"))
+        });
+        let response = Response::builder()
+            .status(StatusCode::ACCEPTED)
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from_stream(broken))
+            .unwrap();
+        return answer(&mut state, StatusCode::ACCEPTED, response);
     }
     let recorded_at = time::format(time::now());
     let entries = chain::append(&state.entries, SPHERE, &env, &recorded_at).unwrap();
