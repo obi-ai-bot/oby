@@ -212,10 +212,16 @@ final class ChatWindow: NSObject, NSWindowDelegate {
     /// What the window's top page is about, for alerts (#862).
     private var shownPlace: AlertPlace? { AlertPlace.shown(state.trail.top, conversation: island.feed.conversations.shown) }
 
+    /// The window is in front, on any page: Oby is the app in front and the window is up, not in the
+    /// Dock. The gate (`Alerts.notifies`) lets nothing alert meanwhile.
+    var inFront: Bool {
+        guard NSApp.isActive, let window, window.isVisible, !window.isMiniaturized else { return false }
+        return true
+    }
+
     /// The window is in front, on `place`'s page: an alert for it would only repeat what's on screen.
     func shows(_ place: AlertPlace) -> Bool {
-        guard NSApp.isActive, let window, window.isVisible, !window.isMiniaturized else { return false }
-        return shownPlace == place
+        inFront && shownPlace == place
     }
 
     /// The window is in front on the conversation page: the talk key's words carry on in it (#493).

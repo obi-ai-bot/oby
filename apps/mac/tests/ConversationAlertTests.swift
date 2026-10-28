@@ -2,11 +2,26 @@ import Foundation
 import Testing
 @testable import Oby
 
-/// When the Mac alerts and when it doesn't (#862, #613, the owner's rule of 2026-10-23): what needs
-/// the owner, a job they started that ends, Oby's answer away from the window, an outside item that
-/// needs them. Never progress, an FYI or what the window shows; gone once it's settled anywhere.
+/// When the Mac alerts and when it doesn't (#862, #613, the owner's rule of 2026-10-28): nothing
+/// while the window is in front; away from it, what needs the owner (an ask, a Confirm, a Start, a
+/// question, a job that failed or couldn't publish, an outside item that needs them). Never
+/// progress, a job that ended with nothing to decide, or Oby's own answer; gone once it's settled
+/// anywhere.
 struct ConversationAlertTests {
     let now = Date(timeIntervalSince1970: 1_792_800_000)
+
+    /// The one gate: in front, nothing; away, only what needs the owner. Done is FYI, the rest of a
+    /// job's notices wait on the owner.
+    @Test func theGateLetsOnlyWhatNeedsTheOwnerThroughAwayFromTheWindow() {
+        #expect(Alerts.notifies(.owner, windowInFront: false))
+        #expect(!Alerts.notifies(.owner, windowInFront: true), "in front: the window shows it")
+        #expect(!Alerts.notifies(.fyi, windowInFront: false), "nothing to decide")
+        #expect(!Alerts.notifies(.fyi, windowInFront: true))
+        #expect(Alerts.need(.done) == .fyi)
+        for notice in [RunnerFeed.Notice.ready, .failed, .interrupted, .review, .permission, .question, .merge] {
+            #expect(Alerts.need(notice) == .owner, "\(notice)")
+        }
+    }
 
     func item(_ id: String, _ kind: InboxItem.Kind, job: String = "", title: String = "Run npm install",
               text: String = "It installs software or reaches the network.\n\nnpm install", options: [String] = ["Allow", "Always allow", "Deny"],
@@ -260,14 +275,16 @@ struct ConversationAlertTests {
 
     final class Box<T> { var list: [T] = [] }
 
-    /// An ask the window shows waits, untold, and alerts once the window goes; once.
-    @Test func whatTheWindowShowsAlertsWhenItGoes() {
+    /// An ask that comes while the window is in front, on any page, waits untold, and alerts once the
+    /// window goes; once.
+    @Test func whatComesWithTheWindowInFrontAlertsWhenItGoes() {
         let (feed, shown, withdrawn) = Self.following()
-        var showing = true
-        feed.windowShows = { showing && $0 == .conversation("c1") }
+        var inFront = true
+        feed.windowInFront = { inFront }
+        feed.windowShows = { _ in false }
         feed.apply(item("shell-c1-p1", .permission, created: .now), words: nil)
-        #expect(shown.list.isEmpty)
-        showing = false
+        #expect(shown.list.isEmpty, "in front, on another page")
+        inFront = false
         feed.windowLeft()
         feed.windowLeft()
         #expect(shown.list.map(\.id) == ["shell-c1-p1"])
@@ -278,71 +295,37 @@ struct ConversationAlertTests {
         #expect(withdrawn.list == ["shell-c1-p1"])
     }
 
-    /// Oby's answer alerts once; the owner's words anywhere take it away; beside an ask, the ask says it.
-    @Test func oneThingOneAlert() {
+    /// Oby's answer asks nothing: it never alerts, in front or away (the window and the pill have it).
+    /// An ask beside it does, once; the owner's words anywhere settle what was said.
+    @Test func obysAnswerIsFYIAndTheAskBesideItAlerts() {
         let (feed, shown, withdrawn) = Self.following()
         feed.conversations.take([RunnerConversation(id: "c1", title: "Vault tests")])
         let answer = Turn(id: "t-\(UUID().uuidString)", date: .now, who: .oby, text: "The tests pass.", conversation: "c1")
         feed.heard(answer, TurnExtras())
         feed.heard(answer, TurnExtras())
-        #expect(shown.list.map(\.id) == ["turn-c1"] && shown.list.first?.subtitle == "Vault tests")
+        #expect(shown.list.isEmpty, "nothing to decide")
         feed.heard(Turn(date: .now, who: .user, text: "thanks", conversation: "c1"), TurnExtras())
-        #expect(withdrawn.list == ["turn-c1"])
-        // "It waits for your Start" then its Start it?: the ask takes the answer's place.
+        #expect(withdrawn.list == ["turn-c1"], "settled anywhere: its alert, had it one, goes")
+        // "It waits for your Start" then its Start it?: only the ask alerts.
         feed.heard(Turn(date: .now, who: .oby, text: "Oby looked into it: it waits for your Start.", conversation: "c1"), TurnExtras())
         feed.apply(item("start-1", .start, title: "Greeting fix", text: "Start it?", options: ["Start", "Cancel"], created: .now),
                    words: InboxWords(conversation: "c1"))
-        #expect(shown.list.map(\.id) == ["turn-c1", "turn-c1", "start-1"] && withdrawn.list == ["turn-c1", "turn-c1"])
+        #expect(shown.list.map(\.id) == ["start-1"])
         // And the other way round: the ask first, Oby's words beside it say nothing more.
         feed.heard(Turn(date: .now, who: .oby, text: "It waits for your Start.", conversation: "c1"), TurnExtras())
-        #expect(shown.list.count == 3)
-    }
-
-    /// The talk key's words, with the pill up: Oby's answer in their conversation shows in the pill
-    /// (workstream V), so it doesn't alert as well; another conversation's does, and so does theirs
-    /// once the pill is gone.
-    @Test func anAnswerThePillShowsDoesntAlert() {
-        let (feed, shown, _) = Self.following()
-        feed.conversations.take([RunnerConversation(id: "c1", title: "Vault tests"), RunnerConversation(id: "c2", title: "Deploy")])
-        var pill = true
-        feed.pillShowsTalk = { pill }
-        feed.talking("how are the vault tests ")
-        feed.heard(Turn(date: .now, who: .user, text: "how are the vault tests", conversation: "c1"), TurnExtras())
-        feed.heard(Turn(id: "t-\(UUID().uuidString)", date: .now, who: .oby, text: "They pass on dev.", conversation: "c1"), TurnExtras())
-        #expect(shown.list.isEmpty, "the pill shows it")
-        feed.heard(Turn(id: "t-\(UUID().uuidString)", date: .now, who: .oby, text: "Deployed.", conversation: "c2"), TurnExtras())
-        #expect(shown.list.map(\.id) == ["turn-c2"], "not the pill's conversation")
-        pill = false
-        feed.heard(Turn(id: "t-\(UUID().uuidString)", date: .now, who: .oby, text: "Two were slow.", conversation: "c1"), TurnExtras())
-        #expect(shown.list.map(\.id) == ["turn-c2", "turn-c1"], "the pill is gone")
-    }
-
-    /// The pill silences the turn's one answer, not a stretch of time: a second answer there alerts,
-    /// and once new words are on their way (`talking(nil)` at the next send) the old conversation's do.
-    @Test func thePillSilencesOneAnswerOnly() {
-        let (feed, shown, _) = Self.following()
-        feed.conversations.take([RunnerConversation(id: "c1", title: "Vault tests")])
-        feed.pillShowsTalk = { true }
+        #expect(shown.list.count == 1)
+        // The talk key's words, their answer: the same, in any conversation.
         feed.talking("how are the vault tests")
         feed.heard(Turn(date: .now, who: .user, text: "how are the vault tests", conversation: "c1"), TurnExtras())
         feed.heard(Turn(id: "t-\(UUID().uuidString)", date: .now, who: .oby, text: "They pass on dev.", conversation: "c1"), TurnExtras())
-        #expect(shown.list.isEmpty)
-        feed.heard(Turn(id: "t-\(UUID().uuidString)", date: .now, who: .oby, text: "Started a job on the slow ones.", conversation: "c1"), TurnExtras())
-        #expect(shown.list.map(\.id) == ["turn-c1"], "a second answer isn't the pill's")
-        feed.talking("and the deploy")
-        feed.heard(Turn(date: .now, who: .user, text: "and the deploy", conversation: "c1"), TurnExtras())
-        feed.talking(nil)
-        feed.heard(Turn(id: "t-\(UUID().uuidString)", date: .now, who: .oby, text: "The job finished.", conversation: "c1"), TurnExtras())
-        #expect(shown.list.map(\.id) == ["turn-c1", "turn-c1"], "new words are being written down: not the pill's")
+        feed.heard(Turn(id: "t-\(UUID().uuidString)", date: .now, who: .oby, text: "Deployed.", conversation: "c2"), TurnExtras())
+        #expect(shown.list.count == 1)
     }
 
-    /// The turn's answer alerted (the pill wasn't up yet): the next answer there is news too. And the
-    /// pill knows whether the window shows the conversation the words joined.
-    @Test func anAnswerThatAlertedIsTheTurnsOne() {
-        let (feed, shown, _) = Self.following()
+    /// The pill knows whether the window shows the conversation the talk key's words joined.
+    @Test func thePillKnowsWhereTheReplyShows() {
+        let (feed, _, _) = Self.following()
         feed.conversations.take([RunnerConversation(id: "c1", title: "Vault tests")])
-        var pill = false
-        feed.pillShowsTalk = { pill }
         var front: AlertPlace? = .conversation("c2")
         feed.windowShows = { $0 == front }
         var listed = 0
@@ -354,16 +337,11 @@ struct ConversationAlertTests {
         #expect(!feed.talkShown, "another conversation in front")
         front = .conversation("c1")
         #expect(feed.talkShown)
-        front = nil
-        feed.heard(Turn(id: "t-\(UUID().uuidString)", date: .now, who: .oby, text: "They pass.", conversation: "c1"), TurnExtras())
-        pill = true
-        feed.heard(Turn(id: "t-\(UUID().uuidString)", date: .now, who: .oby, text: "Two were slow.", conversation: "c1"), TurnExtras())
-        #expect(shown.list.map(\.id) == ["turn-c1", "turn-c1"])
     }
 
-    /// Oby asks back about the talk key's words: the pill shows the question, and the alert still goes,
-    /// with its options, whether the question comes after its turn or before it.
-    @MainActor @Test func aQuestionThePillShowsStillAlerts() async throws {
+    /// Oby asks back about the talk key's words: the alert goes, with its options, whether the
+    /// question comes after its turn or before it, and not while the window is in front.
+    @MainActor @Test func aQuestionAlertsWithItsOptions() async throws {
         let asks: @Sendable (RunnerStub.Request) -> (Int, String) = { request in
             request.path.hasSuffix("/plans")
                 ? (200, #"{"kind":"question","said":"Which one?","question":{"text":"Which one?","options":["A","B"]},"conversation":"c1"}"#)
@@ -372,7 +350,6 @@ struct ConversationAlertTests {
         for turnFirst in [true, false] {
             let (feed, shown, _, _) = Self.following(answer: asks)
             feed.conversations.take([RunnerConversation(id: "c1", title: "Repos")])
-            feed.pillShowsTalk = { true }
             feed.talking("fix the web one")
             feed.heard(Turn(date: .now, who: .user, text: "fix the web one", conversation: "c1"), TurnExtras())
             let turn = Turn(id: "t-\(UUID().uuidString)", date: .now, who: .oby, text: "Which one?", conversation: "c1")
@@ -385,6 +362,13 @@ struct ConversationAlertTests {
             #expect(shown.list.count == 1, "turn first: \(turnFirst)")
             #expect(shown.list.last?.title == "Oby asks" && shown.list.last?.options == ["A", "B"] && shown.list.last?.sound == true)
         }
+        // In front: the window shows the question; nothing alerts.
+        let (feed, shown, _, _) = Self.following(answer: asks)
+        feed.conversations.take([RunnerConversation(id: "c1", title: "Repos")])
+        feed.windowInFront = { true }
+        try await feed.say("fix the web one", in: "c1")
+        feed.heard(Turn(id: "t-\(UUID().uuidString)", date: .now, who: .oby, text: "Which one?", conversation: "c1"), TurnExtras())
+        #expect(shown.list.isEmpty)
     }
 
     /// Words from an alert go to its conversation; the window's own new conversation isn't touched.

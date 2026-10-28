@@ -1052,12 +1052,14 @@ final class RunnerFeed {
             case .clear: withdraw([job.id])
             case .post:
                 guard let notice else { continue }
-                // On screen: nothing. What needs the owner alerts once the window goes (`windowLeft`).
-                let conversation = extras[job.id]?.conversation
-                if windowShows(.job(job.id)) || conversation.map({ windowShows(.conversation($0)) }) == true {
-                    if notice != .done { kept[job.id] = nil }
+                // The gate. What needs the owner while the window is in front stays unsaid, so it
+                // alerts once the window goes (`windowLeft`); what needs nothing is said and never alerts.
+                let need = Alerts.need(notice)
+                guard Alerts.notifies(need, windowInFront: windowInFront()) else {
+                    if need == .owner { kept[job.id] = nil }
                     continue
                 }
+                let conversation = extras[job.id]?.conversation
                 show(Alerts.alert(notice, for: job, conversation: conversation))
                 onNotice(job, notice)
             }
@@ -1281,7 +1283,8 @@ final class RunnerFeed {
     /// A notification with obid's own words (who, where), never what was written, for a notice
     /// that `WatchNotice.shows` (new, open, recent).
     private func tell(_ notice: WatchNotice) {
-        guard WatchNotice.shows(notice, told: told) else { return }
+        // `shows` is what needs the owner; the gate adds the window (in front: the next event about it asks again).
+        guard WatchNotice.shows(notice, told: told), Alerts.notifies(.owner, windowInFront: windowInFront()) else { return }
         told.insert(notice.id)
         let content = UNMutableNotificationContent()
         content.title = notice.title
@@ -1298,7 +1301,11 @@ final class RunnerFeed {
 
     // MARK: What needs the owner away from the window (#862)
 
-    /// Whether the window is in front on that page now (the app sets it): nothing alerts for what it shows.
+    /// Whether the window is in front now, on any page (the app sets it): the gate (`Alerts.notifies`)
+    /// lets nothing alert meanwhile; what needs the owner alerts once it goes (`windowLeft`).
+    @ObservationIgnored var windowInFront: () -> Bool = { false }
+    /// Whether the window is in front on that page now (the app sets it): its alerts go (`seen`), and
+    /// the talk key's pill knows where the reply shows (`talkShown`).
     @ObservationIgnored var windowShows: (AlertPlace) -> Bool = { _ in false }
     /// Shows an alert, takes alerts away, and lists the delivered alerts of inbox items: Notification
     /// Center's, or a test's.
@@ -1315,24 +1322,19 @@ final class RunnerFeed {
     @ObservationIgnored private var inboxListed = false
     /// Oby's questions to this Mac's words, by conversation, until their turn's alert takes them.
     @ObservationIgnored private var asked: [String: (said: String, question: Plan.Question, at: Date)] = [:]
-    /// Each conversation's last answer that alerted, for a question that comes after its turn.
-    @ObservationIgnored private var answered: [String: (turn: Turn, at: Date)] = [:]
-    /// The talk key's turn shows Oby's reply now: on its way (Thinking), or in the pill (the app sets it).
-    @ObservationIgnored var pillShowsTalk: () -> Bool = { false }
-    /// The talk key's last words, until obid lists them, and the conversation they joined: Oby's
-    /// answer there shows in the pill, so that one answer doesn't alert (`talkAnswered`: it came).
+    /// Each conversation's last answer (`alerted`: it passed the gate; else the window has it), for
+    /// a question that comes after its turn.
+    @ObservationIgnored private var answered: [String: (turn: Turn, at: Date, alerted: Bool)] = [:]
+    /// The talk key's last words, until obid lists them, and the conversation they joined: the pill
+    /// knows whether the window shows the reply there (`talkShown`).
     @ObservationIgnored private var talkWords: String?
     @ObservationIgnored private var talkConversation: String?
-    @ObservationIgnored private var talkAnswered = false
-    /// The answer the pill showed instead of an alert: a question that comes after it alerts with it.
-    @ObservationIgnored private var pillAnswer: (conversation: String, turn: Turn, at: Date)?
 
     /// The talk key's words are on their way to obid; nil: written down still, or the turn ended,
     /// so no conversation's answer is the pill's.
     func talking(_ said: String?) {
         talkWords = said?.trimmingCharacters(in: .whitespacesAndNewlines)
         talkConversation = nil
-        talkAnswered = false
     }
 
     /// The window in front shows the conversation the talk key's words joined, where their reply shows.
@@ -1340,17 +1342,18 @@ final class RunnerFeed {
     /// The talk key's words were listed, so `talkShown` can answer now: the pill decides again (the app sets it).
     @ObservationIgnored var onTalkListed: () -> Void = {}
 
-    /// An alert for each inbox ask that waits for the owner and isn't told yet (`Alerts.alerts`). One
-    /// the window shows stays untold, and alerts once the window goes (`windowLeft`).
+    /// An alert for each inbox ask that waits for the owner and isn't told yet (`Alerts.alerts`). While
+    /// the window is in front it stays untold, and alerts once the window goes (`windowLeft`).
     private func alertInbox() {
         guard inboxListed else { return }
         let asking = Set(jobs.filter { Self.notice(for: $0) == .question }.map(\.id))
         for item in inbox {
             let kind = kind(of: item)
             guard Alerts.alerts(item, kind: kind, jobAlerts: asking.contains(item.job), told: told, now: .now) else { continue }
+            // Every ask `Alerts.alerts` lets through waits on the owner: the gate asks only about the window.
+            guard Alerts.notifies(.owner, windowInFront: windowInFront()) else { continue }
             let conversation = inboxWords[item.id]?.conversation
             let place = Alerts.place(of: item, conversation: conversation)
-            guard !windowShows(place) else { continue }
             told.insert(item.id)
             show(Alerts.alert(for: item, kind: kind, conversation: conversation, quotes: inboxWords[item.id]?.confirm?.words != nil))
             // One thing, one alert: Oby's words beside the ask ("It waits for your Start") give way to it.
@@ -1361,17 +1364,17 @@ final class RunnerFeed {
             }
             if let about {
                 askedAt[about] = .now
-                if let (_, at) = answered[about], at > .now.addingTimeInterval(-60) {
+                if let was = answered[about], was.at > .now.addingTimeInterval(-60) {
                     answered[about] = nil
-                    withdraw([Alerts.answerID(about)])
+                    if was.alerted { withdraw([Alerts.answerID(about)]) }
                 }
             }
         }
     }
 
     /// A turn of any conversation. The owner's words, from any app, settle the alert of Oby's answer
-    /// there; Oby's answer alerts unless the window shows that conversation, or the talk key's pill
-    /// shows it (the talk key's words went there, and it's the turn's answer).
+    /// there. Oby's answer asks nothing (FYI: the window has it) unless a question of its own rides
+    /// with it (`noteQuestion`), which alerts with its options, away from the window.
     func heard(_ turn: Turn, _ extras: TurnExtras) {
         guard let conversation = turn.conversation else { return }
         if turn.who == .user, let words = talkWords, turn.text.trimmingCharacters(in: .whitespacesAndNewlines) == words {
@@ -1382,7 +1385,6 @@ final class RunnerFeed {
         if let settled = Alerts.settled(by: turn) {
             asked[conversation] = nil
             answered[conversation] = nil
-            if pillAnswer?.conversation == conversation { pillAnswer = nil }
             withdraw([settled])
             return
         }
@@ -1390,34 +1392,27 @@ final class RunnerFeed {
         guard Alerts.answers(turn, extras: extras, known: known, told: told, asked: askedAt[conversation], now: .now) else { return }
         told.insert(turn.id)
         let question = asked.removeValue(forKey: conversation).flatMap { $0.at > .now.addingTimeInterval(-60) ? ($0.said, $0.question) : nil }
-        // The talk key's turn has one answer, this one, alerted or not: later ones there are news.
-        let turnsAnswer = conversation == talkConversation && !talkAnswered
-        if turnsAnswer { talkAnswered = true }
-        guard !windowShows(.conversation(conversation)) else { return }
-        // The talk key's reply shows in the pill: its answer doesn't alert. A question with it does,
-        // for its options.
-        if turnsAnswer, question == nil, pillShowsTalk() {
-            pillAnswer = (conversation, turn, .now)
+        // The gate. An answer it keeps in is remembered, so a question noted after it alerts with it.
+        guard Alerts.notifies(question == nil ? .fyi : .owner, windowInFront: windowInFront()) else {
+            if question == nil { answered[conversation] = (turn, .now, alerted: false) }
             return
         }
-        answered[conversation] = (turn, .now)
+        answered[conversation] = (turn, .now, alerted: true)
         show(Alerts.answer(turn.text, in: conversation, title: title(of: conversation), question: question))
     }
 
     /// Oby asked something back about this Mac's words: its answer's alert gets the options, at once
-    /// when the turn came first (quietly, replacing it), else when it comes.
+    /// when the turn came first (quietly replacing its alert, if it had one), else when it comes.
     private func noteQuestion(_ question: Plan.Question, said: String, in conversation: String) {
-        guard !windowShows(.conversation(conversation)) else { return }
-        let alerted = answered.removeValue(forKey: conversation)
-        let shown = pillAnswer?.conversation == conversation ? pillAnswer : nil
-        if shown != nil { pillAnswer = nil }
-        guard let (turn, at) = alerted ?? shown.map({ ($0.turn, $0.at) }), at > .now.addingTimeInterval(-60) else {
+        // The gate: in front, the window shows the question itself.
+        guard Alerts.notifies(.owner, windowInFront: windowInFront()) else { return }
+        guard let was = answered.removeValue(forKey: conversation), was.at > .now.addingTimeInterval(-60) else {
             asked[conversation] = (said, question, .now)
             return
         }
-        var alert = Alerts.answer(turn.text, in: conversation, title: title(of: conversation), question: (said, question))
-        // It replaces the answer's alert quietly; in place of the answer the pill showed, it's the first.
-        alert.sound = alerted == nil
+        var alert = Alerts.answer(was.turn.text, in: conversation, title: title(of: conversation), question: (said, question))
+        // It replaces the answer's alert quietly; the first alert for an answer the window had, it sounds.
+        alert.sound = !was.alerted
         show(alert)
     }
 
