@@ -747,8 +747,11 @@ pub fn account_json(
         agent: tool.id(),
         name: account.name.clone(),
         payer: account.payer.clone(),
-        // Why a login that's there can't run: Codex's token is ending.
-        label: crate::jobs::login_note(tool, account, home.as_deref()).map(str::to_owned),
+        // Why a login that's there can't run: Codex's token is ending. Else the plan the tool
+        // named (Cursor's `about`, crate::usage).
+        label: crate::jobs::login_note(tool, account, home.as_deref())
+            .map(str::to_owned)
+            .or_else(|| usage.plan.clone()),
         // Whether its login is there and a run can use it (#626).
         signed_in: crate::jobs::signed_in(tool, account, home.as_deref()),
         five_hour: usage.five_hour_at(now),

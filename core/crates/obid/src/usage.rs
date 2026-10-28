@@ -41,6 +41,9 @@ pub struct Usage {
     pub reserve_lifted_until: Option<i64>,
     /// How the account pays, as its tool said (`api` or `plan`, crate::usage::Tokens): asked once.
     pub priced: Option<String>,
+    /// The plan the account is on, as its tool names it (Cursor's `about`: `Pro`, `Ultra`,
+    /// `Teams`): the apps' `label` when nothing else is to be said of the login.
+    pub plan: Option<String>,
 }
 
 /// A window's share now: one whose reset has passed starts again from nothing.
@@ -228,6 +231,9 @@ impl Usages {
             }
             if usage.priced.is_some() {
                 kept.priced.clone_from(&usage.priced);
+            }
+            if usage.plan.is_some() {
+                kept.plan.clone_from(&usage.plan);
             }
         });
         if let Err(error) = saved {
@@ -432,6 +438,21 @@ pub fn codex(limits: &Value) -> Option<Usage> {
         None,
     );
     (usage != Usage::default()).then_some(usage)
+}
+
+/// Cursor's `cursor-agent about --format json` (2026.10.22): its `subscriptionTier` is the plan's
+/// name (`Pro`, `Ultra`, `Teams`), null while signed out or with a login copy that has no refresh
+/// token (Cursor asks its server with both). That is all Cursor's CLI says of the account: no
+/// usage, no windows, no reset (docs/cursor.md, "Usage and limits"). `None` with no plan.
+pub fn cursor_about(answer: &Value) -> Option<Usage> {
+    let plan = answer["subscriptionTier"]
+        .as_str()
+        .map(str::trim)
+        .filter(|p| !p.is_empty() && p.len() <= 60 && !p.chars().any(char::is_control))?;
+    Some(Usage {
+        plan: Some(plan.to_owned()),
+        ..Usage::default()
+    })
 }
 
 /// The answer to `account/rateLimits/read`: Codex's own bucket from `rateLimitsByLimitId` when the
@@ -808,6 +829,35 @@ mod tests {
             .full_until
             .unwrap();
         assert!(refused > time::now() && refused <= time::now() + UNKNOWN_RESET);
+    }
+
+    /// What `cursor-agent about --format json` 2026.10.22 answers (its email left out): only the
+    /// plan's name, and none while signed out.
+    #[test]
+    fn cursors_about_says_only_the_plan() {
+        let about = json!({"cliVersion": "2026.10.22-27dcf5f", "status": "up_to_date", "latestVersion": "2026.10.22-27dcf5f", "model": "Auto", "subscriptionTier": "Pro", "osPlatform": "darwin", "osArch": "arm64", "userEmail": "someone@example.com", "terminalProgram": "unknown", "shell": "zsh"});
+        let usage = cursor_about(&about).unwrap();
+        assert_eq!(usage.plan.as_deref(), Some("Pro"));
+        assert_eq!(
+            (usage.five_hour, usage.seven_day, usage.full_until),
+            (None, None, None)
+        );
+        assert_eq!(cursor_about(&json!({"subscriptionTier": null})), None);
+        assert_eq!(cursor_about(&json!({"subscriptionTier": " "})), None);
+        // Kept with the account's usage, and a report without one keeps the last.
+        let home = Home::new("cursor-plan");
+        let usages = Usages::open(&home.0);
+        usages.record("c", &usage);
+        usages.record(
+            "c",
+            &Usage {
+                full_until: Some(i64::MAX),
+                ..Usage::default()
+            },
+        );
+        let kept = Usages::open(&home.0).get("c");
+        assert_eq!(kept.plan.as_deref(), Some("Pro"));
+        assert_eq!(kept.full_until, Some(i64::MAX));
     }
 
     /// The `usage_report` `claude -p /usage` 2.1.302 sent on 2026-10-27; any other line has none.

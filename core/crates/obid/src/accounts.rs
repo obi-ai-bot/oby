@@ -1574,6 +1574,75 @@ fn command(
     Ok(command)
 }
 
+/// How long Cursor's `about` may take: it asks Cursor's server.
+const ABOUT_WITHIN: Duration = Duration::from_secs(30);
+
+/// Cursor's plan for `account` (crate::jobs, `read_usage`): `cursor-agent about --format json`,
+/// run as its sign-in is ([`command`]): unboxed, on the account's own folders, with its environment
+/// made from scratch and its caches in a folder of obid's. Cursor asks its server with the login's
+/// own tokens (a copy without the refresh token says no plan; a refresh it does goes to the
+/// account's own file, as any run of its does), and obid reads only its answer's plan name
+/// ([`crate::usage::cursor_about`]: never the email beside it). Only an account with a folder of
+/// its own, whose login is a file: Cursor's own login may be a Keychain item, which a `cursor-agent`
+/// updated since could make macOS ask about, from a run nobody watches. The only account fact
+/// Cursor's CLI gives (docs/cursor.md, "Usage and limits").
+pub async fn cursor_plan(
+    home: &Path,
+    bin: &Path,
+    account: &Account,
+) -> Result<crate::usage::Asked, String> {
+    use crate::usage::Asked;
+    let Some(dir) = account.config_dir.as_deref() else {
+        return Ok(Asked::Silent);
+    };
+    static RUNS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = RUNS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    // Under the sign-ins' prefix: swept with theirs at obid's next start.
+    let scratch = home
+        .join("tmp")
+        .join(format!("{SCRATCH_PREFIX}about-{}-{n}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    make_folder(&scratch)
+        .map_err(|e| format!("obid can't make a folder for Cursor's about: {e}"))?;
+    let mut command = tokio::process::Command::new(bin);
+    command
+        .args(["about", "--format", "json"])
+        .env_clear()
+        .envs(crate::process::kept(|name| std::env::var_os(name)))
+        .env("PATH", login_path(bin))
+        .env("TMPDIR", &scratch)
+        .env("BROWSER", "true")
+        .env("NO_OPEN_BROWSER", "1")
+        .env("NODE_COMPILE_CACHE", &scratch)
+        .env("XDG_CACHE_HOME", &scratch)
+        .envs(crate::acp::cursor::environment(dir))
+        .current_dir(&scratch)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .kill_on_drop(true)
+        .process_group(0);
+    let out = tokio::time::timeout(ABOUT_WITHIN, command.output()).await;
+    let _ = std::fs::remove_dir_all(&scratch);
+    let out = out
+        .map_err(|_| {
+            format!(
+                "Cursor's about didn't answer within {} seconds.",
+                ABOUT_WITHIN.as_secs()
+            )
+        })?
+        .map_err(|e| format!("obid couldn't run Cursor's about: {e}"))?;
+    if !out.status.success() {
+        return Err(format!("Cursor's about ended with {}.", out.status));
+    }
+    // Its answer is the JSON object; a line before it (a notice of Cursor's) is skipped.
+    let text = String::from_utf8_lossy(&out.stdout);
+    let json = text.find('{').map_or("", |at| &text[at..]);
+    let answer: Value =
+        serde_json::from_str(json).map_err(|e| format!("Cursor's about isn't JSON: {e}"))?;
+    Ok(crate::usage::cursor_about(&answer).map_or(Asked::Silent, Asked::Said))
+}
+
 /// [`SYSTEM_PATH`], then the folder the tool's binary is in (links followed: Cursor's runs the
 /// `node` beside it), then, for a script that starts `#!/usr/bin/env <program>` (a CLI installed
 /// with npm: `#!/usr/bin/env node`), the folder of that program as obid finds it.
