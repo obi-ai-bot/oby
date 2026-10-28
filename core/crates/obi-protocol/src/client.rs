@@ -175,8 +175,10 @@ impl Client {
                 && !bytes.is_empty()
                 && let Err(why) = &read
             {
+                // The reason may quote a member name the Sphere chose: one short line of it.
                 return Err(ClientError::Protocol(format!(
-                    "the Sphere's answer isn't JSON as the spec reads it: {why}"
+                    "the Sphere's answer isn't JSON as the spec reads it: {}",
+                    one_line(why)
                 )));
             }
             let body: Value = read.unwrap_or(Value::Null);
