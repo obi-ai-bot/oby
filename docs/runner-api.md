@@ -930,9 +930,9 @@ The event turn uses the same brain account routing as a user turn, including Cod
 
 | Action | Automatic policy |
 | --- | --- |
-| `retry_job` | Retry the job's offered Try again or One more round action. |
+| `retry_job` | Retry the job's offered Try again or One more round action, except an interrupted job with an open usage-limit item, a scheduled reset retry, or a reason naming a usage limit. |
 | `message_job` | Send the agent Oby's concrete findings and requested correction. |
-| `answer_inbox` | Use only Try again, One more round, Rebase now or Wait for the reset. Permission and product questions stay with the owner. |
+| `answer_inbox` | Use only Try again, One more round or Rebase now. Usage-limit items, permissions and product questions stay with the owner. |
 | `start_now` | Start a job whose start condition can safely be skipped. |
 | `move_job` | Move work to an account with room. |
 | `fix_failure` | Start a fix for a studied record marked `obyCouldHandle`, with cause `oby-bug`, `agent-mistake` or `flaky-test`. |

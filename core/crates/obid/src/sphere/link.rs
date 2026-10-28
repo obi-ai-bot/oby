@@ -1075,6 +1075,14 @@ impl Link {
         }
     }
 
+    /// Whether a usage-limit decision for this job is still the owner's to answer.
+    pub fn has_open_limit_item(&self, job: &str) -> bool {
+        self.lock()
+            .inbox
+            .values()
+            .any(|item| item.kind == "limit" && item.job == job && item.done.is_none())
+    }
+
     /// The job `job`'s item about Oby's review that couldn't run now (`inbox::review_item`): `item`,
     /// when there is one, added, and the job's other open ones done, with no answer.
     pub fn review_items(&self, job: &str, item: Option<Item>) {
