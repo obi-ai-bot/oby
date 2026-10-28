@@ -73,8 +73,8 @@ pub fn exchange_problem(
     };
     let kind = text(reply, "type");
     let asked = text(request, "type");
-    // run_cancel, share_status and share_revoke are the replies the request's own sender sends,
-    // to its receiver.
+    // run_cancel, share_status, share_revoke and cancel are the replies the request's own sender
+    // sends, to its receiver.
     if SENDER_REPLY_TYPES.contains(&kind) {
         if request.get("from") != reply.get("from") || request.get("to") != reply.get("to") {
             return Some(format!(

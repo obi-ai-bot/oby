@@ -127,6 +127,66 @@ async fn a_request_its_sender_cancels_leaves_the_inbox_and_gets_nothing_more() {
     assert!(ernesto.waiting_after(1).await.is_empty());
 }
 
+/// Only a request's own sender calls it off: a cancel from the receiver of a request obid sent is
+/// dropped, and the exchange goes on. obid sends no introduction and no follow-up in this version
+/// (protocol.md section 5: one goes only once every active member takes it).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn only_its_sender_cancels_a_request_and_obid_sends_no_additions() {
+    let folder = Folder::new("cancel-receiver");
+    let (sphere, obid, ernesto) = setup(&folder, &stub_agent(), None).await;
+    let ask = |body: Value| {
+        tokio::task::block_in_place(|| call(&obid, "POST", "/v1/obid/sphere/requests", Some(&body)))
+    };
+    let sent = ask(
+        json!({"to": "obi-ernesto", "type": "review_request", "body": brief(), "expiresIn": 3600}),
+    );
+    assert_eq!(sent.status, 202, "{}", sent.text);
+    let cid = sent.body["correlationId"].as_str().unwrap().to_owned();
+    assert_eq!(ernesto.receive(1, 20).await.len(), 1);
+    let now = obi_protocol::time::now();
+    let cancel = ernesto.sign(json!({"protocol": "obi/0.1", "id": uuid::Uuid::new_v4().to_string(),
+        "type": "cancel", "from": "obi-ernesto", "to": "obi-wellington", "sphere": SPHERE,
+        "correlation_id": cid, "in_reply_to": cid, "created_at": obi_protocol::time::format(now),
+        "expires_at": obi_protocol::time::format(now + 3600), "key_id": ernesto.key.key_id(), "body": {}}));
+    // A Sphere that follows the spec refuses it (check 12): one that doesn't relays it anyway.
+    sphere.inject("obi-wellington", cancel);
+    let accept = ernesto.sign(json!({"protocol": "obi/0.1", "id": uuid::Uuid::new_v4().to_string(),
+        "type": "accept", "from": "obi-ernesto", "to": "obi-wellington", "sphere": SPHERE,
+        "correlation_id": cid, "in_reply_to": cid, "created_at": obi_protocol::time::format(now),
+        "expires_at": obi_protocol::time::format(now + 3600), "key_id": ernesto.key.key_id(), "body": {}}));
+    ernesto.send(&accept).await;
+    let accepted = within(20, "the accept after the dropped cancel", || {
+        let e = tokio::task::block_in_place(|| exchange(&obid, &cid));
+        (e["state"] == "accepted").then_some(e)
+    });
+    let types: Vec<&str> = accepted["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| m["envelope"]["type"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        types,
+        ["review_request", "accept"],
+        "the cancel was dropped"
+    );
+
+    let introduction = ask(json!({"to": "obi-ernesto", "type": "introduction",
+        "body": {"member": "obi-wellington"}, "expiresIn": 3600}));
+    assert_eq!(introduction.status, 422, "{}", introduction.text);
+    let mut follows = brief();
+    follows["follows"] = json!(cid);
+    let follow_up = ask(
+        json!({"to": "obi-ernesto", "type": "review_request", "body": follows, "expiresIn": 3600}),
+    );
+    assert_eq!(follow_up.status, 422, "{}", follow_up.text);
+    assert!(follow_up.text.contains("follow-ups"), "{}", follow_up.text);
+    assert!(
+        ernesto.waiting_after(1).await.is_empty(),
+        "neither went out"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_request_waits_for_the_owner_and_the_remembered_decision_answers_the_next() {
     let folder = Folder::new("remember");
