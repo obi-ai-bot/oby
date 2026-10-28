@@ -2609,7 +2609,8 @@ async fn a_card_says_its_runtime_once_the_sphere_and_the_team_take_it() {
                 "card_runtime",
                 "card_topics",
                 "follow_up",
-                "introduction"
+                "introduction",
+                "policy_classes"
             ])
         );
         assert_eq!(p["runtime"], json!({"id": "oby", "version": "0.3.0"}));

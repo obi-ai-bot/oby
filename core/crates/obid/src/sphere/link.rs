@@ -69,15 +69,17 @@ const RUNTIME_ID: &str = "oby";
 const RUNTIME_VERSION: &str = "0.3.0";
 /// The additions obid takes, as its card lists them once it may (identity.md section 2.3): it reads
 /// a card's runtime, vendors, classes and topics, verifies a chain with follow-ups, cancels and
-/// introductions, and stops what a received request's cancel calls off. Its card accepts no
-/// introduction, says no topics, and claims no conformance class until a report backs one.
-const FEATURES: [&str; 6] = [
+/// introductions, reads a policy's class rules, and stops what a received request's cancel calls
+/// off. Its card accepts no introduction, says no topics, and claims no conformance class until a
+/// report backs one.
+const FEATURES: [&str; 7] = [
     "cancel",
     "card_classes",
     "card_runtime",
     "card_topics",
     "follow_up",
     "introduction",
+    "policy_classes",
 ];
 /// How often obid reads the Sphere's `GET /v0.1/features` again: for a token exchange, and, once
 /// its team takes `card_runtime`, for a Sphere that didn't list it (at once when the team first does).
