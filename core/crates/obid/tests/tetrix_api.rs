@@ -365,31 +365,51 @@ fn obid_signs_in_to_tetrix_once_and_agents_use_it_without_its_login() {
     config["repos"][0]["check"] = Value::Null;
     let obid = start(&folder.0, &config, None);
 
-    // Signed out, with the preset offered.
+    // Signed out, with no Tetrix of obid's own to offer: the owner gives their own's URL. (The
+    // `preset` and `presets` keys stay, empty, for the apps that still read them: add-only API.)
     let status = call(&obid, "GET", "/v1/tetrix", None);
     assert_eq!(status.status, 200);
     assert_eq!(status.body["connected"], false);
-    assert_eq!(status.body["presets"][0]["id"], "dogfood");
-    assert_eq!(status.body["presets"][0]["name"], "Tetrix Dogfood");
+    assert_eq!(status.body["url"], Value::Null);
+    assert_eq!(status.body["preset"], Value::Null);
+    assert_eq!(status.body["presets"], json!([]));
+    assert!(
+        !status.text.to_lowercase().contains("dogfood"),
+        "{}",
+        status.text
+    );
     // Only with the API token.
     assert_eq!(
         call_with_token(&obid, "not-the-token", "GET", "/v1/tetrix", None).status,
         401
     );
-    // A URL that would carry the login in the clear, or a preset that isn't, is refused.
+    // No URL, a URL that isn't one, one that would carry the login in the clear, or a preset (an
+    // older app's) is refused, saying what to send.
     for body in [
         json!({"url": "http://tetrix.example/mcp"}),
         json!({"url": "https://tetrix.example/mcp?token=x"}),
+        json!({"url": "tetrix.example"}),
+        json!({"url": ""}),
+        json!({"url": "   "}),
         json!({"preset": "nope"}),
-        json!({"preset": "dogfood", "url": format!("{base}/mcp")}),
+        json!({"preset": "something", "url": format!("{base}/mcp")}),
         json!({"other": 1}),
+        json!({}),
     ] {
-        assert_eq!(
-            call(&obid, "POST", "/v1/tetrix/sign-in", Some(&body)).status,
-            422,
-            "{body}"
-        );
+        let refused = call(&obid, "POST", "/v1/tetrix/sign-in", Some(&body));
+        assert_eq!(refused.status, 422, "{body}: {}", refused.text);
     }
+    let which = call(&obid, "POST", "/v1/tetrix/sign-in", Some(&json!({})));
+    assert!(
+        which.text.contains("the address of your own Tetrix"),
+        "{}",
+        which.text
+    );
+    // Nothing was tried: the status still names no server.
+    assert_eq!(
+        call(&obid, "GET", "/v1/tetrix", None).body["url"],
+        Value::Null
+    );
 
     // Metadata for another server: a token minted for it would go to this one.
     let evil = call(

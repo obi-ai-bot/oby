@@ -112,7 +112,7 @@ For Dmytro and Wellington.
 - [ ] UniFFI, or HTTP only, between the Rust core and the Swift shells.
 - [ ] Whether the Cloudflare control plane (`cloud/control-plane/`) merges into the Sphere or stays in `obi`.
 - [ ] Android timing relative to launch.
-- [ ] Which Deskree repos run on Oby during dogfood.
+- [ ] Which Deskree repos run on Oby while Deskree uses it day to day, before launch.
 - [ ] Trademark attorney.
 
 ## 8. Where things are

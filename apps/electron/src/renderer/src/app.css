@@ -1766,6 +1766,10 @@ button.sphere-logo-badge:hover { color: var(--ink); background: #3a3a39; }
 .setup-row > svg:first-child, .setup-row > :first-child { flex: none; }
 .setup-row .wl-two { flex: 1; }
 .setup-row .wl-sub { white-space: normal; }
+/* a row's field (the Tetrix address), under its line, and why what's typed isn't one yet */
+.setup-row .setup-field { display: flex; flex-direction: column; gap: 4px; margin-top: 6px; }
+.setup-row .setup-field .set-field { width: min(100%, 360px); }
+.setup-row .setup-problem { color: var(--danger); }
 .setup .tc-options { margin-top: 10px; }
 .setup-rows + .tc-options { margin-top: 12px; }
 /* Claude Code's code, pasted from its sign-in page (on obid) */

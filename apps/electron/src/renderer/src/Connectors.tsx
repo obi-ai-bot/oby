@@ -1,10 +1,11 @@
 import { useEffect, useState } from 'react';
 import { Check, Search } from 'lucide-react';
 import { BRANDS, BrandMark, type Brand } from './brands';
-import { Group, Row, Select, TextField, useSetting } from './SettingsView';
+import { Group, Row, TextField, useSetting } from './SettingsView';
 import { onObid } from './lean';
 import { api, type GitHub, type Tetrix, type TetrixTarget } from './obid';
 import { say, useLive } from './live';
+import { tetrixUrl, tetrixUrlProblem } from '../../shared/tetrix-url';
 
 // Settings › Connectors: what's connected, then what's available, with a search over both. On obid
 // (lean.ts) the ones obid has, as they stand; elsewhere Sangam's demo list.
@@ -76,13 +77,13 @@ function Live() {
   const [problem, setProblem] = useState<string | null>(null);
   // each connector's sign-in on its way, apart (gh takes a few seconds to give its code)
   const [busy, setBusy] = useState({ GitHub: false, Tetrix: false });
-  // the Tetrix picked below, while it isn't the one Oby uses (null: that one)
-  const [draft, setDraft] = useState<{ pick: string; url: string } | null>(null);
+  // the Tetrix address typed below, while it isn't the one Oby uses (null: that one)
+  const [draft, setDraft] = useState<string | null>(null);
   const repos = useLive().repos.length;
   const read = () => Promise.all([api.github(), api.tetrix()]).then(([g, t]) => { setGitHub(g); setTetrix(t); setProblem(null); }, (e: Error) => setProblem(e.message));
   useEffect(() => { void read(); }, []);
-  // signed in somewhere new: the pick starts from there again
-  useEffect(() => setDraft(null), [tetrix?.url, tetrix?.preset]);
+  // signed in somewhere new: the field starts from there again
+  useEffect(() => setDraft(null), [tetrix?.url]);
   const signingIn = !!(github?.signIn || tetrix?.signIn);
   useEffect(() => {
     if (!signingIn) return;
@@ -120,12 +121,14 @@ function Live() {
     gitHub.control = <button className="set-button" onClick={act(async () => open(await api.githubSignIn()), 'GitHub')}>Connect</button>;
   }
 
-  // the Tetrix to connect to: as picked, else the one Oby signed in to last (kept after
-  // Disconnect), else the first preset. One Connect at a time: the row's, or, while Oby is
-  // connected, the server group's for another one.
-  const d = draft ?? { pick: t.preset ?? (t.url ? 'url' : t.presets[0]?.id ?? 'url'), url: t.preset ? '' : t.url ?? '' };
-  const chosen: TetrixTarget | null = d.pick === 'url' ? (d.url.trim() ? { url: d.url.trim() } : null) : { preset: d.pick };
-  const same = d.pick === 'url' ? !t.preset && d.url.trim() === t.url : d.pick === t.preset;
+  // the Tetrix to connect to: the address typed below, else the one Oby signed in to last (kept
+  // after Disconnect). Oby has no built-in Tetrix and no default: with nothing typed yet there's
+  // nothing to connect, and the row says so (not an error: Oby runs without Tetrix until then).
+  // One Connect at a time: the row's, or, while Oby is connected, the server group's for another one.
+  const address = draft ?? t.url ?? '';
+  const addressProblem = tetrixUrlProblem(address);
+  const chosen: TetrixTarget | null = addressProblem ? null : { url: tetrixUrl(address) };
+  const same = !!t.url && tetrixUrl(address) === t.url;
   const connect = (label: string) => <button className="set-button" disabled={!chosen} onClick={chosen ? act(async () => open(await api.tetrixSignIn(chosen)), 'Tetrix') : undefined}>{label}</button>;
   const tetrixRow: Connector = { name: 'Tetrix', brand: BRANDS.tetrix, connected: t.connected, about: t.error ?? 'Project knowledge and blast radius', control: null };
   const disconnect = <button className="set-button is-danger" onClick={act(api.tetrixDisconnect)}>Disconnect</button>;
@@ -138,11 +141,12 @@ function Live() {
     if (!t.error) tetrixRow.about = `${serverName(t)} · for every agent`;
     tetrixRow.control = <>{t.error ? connect(same ? 'Reconnect' : 'Connect') : connected}{disconnect}</>;
   } else {
-    tetrixRow.control = connect('Connect');
+    if (!t.error) tetrixRow.about = t.url ? `${serverName(t)} · not signed in` : 'Not connected · enter your Tetrix’s address below';
+    tetrixRow.control = connect(t.url && same ? 'Reconnect' : 'Connect');
   }
 
   return <List connectors={[gitHub, tetrixRow]} after={(shown) => shown.includes(tetrixRow) && (
-    <TetrixServer tetrix={t} draft={d} onDraft={setDraft}>
+    <TetrixServer address={address} problem={address.trim() ? addressProblem : null} onAddress={setDraft}>
       {settled && t.connected && !t.error && !same && connect('Connect')}
     </TetrixServer>
   )} />;
@@ -153,24 +157,20 @@ function at(url?: string) {
   try { return url ? ` at ${new URL(url).host}` : ''; } catch { return ''; }
 }
 
-// what the person calls the Tetrix Oby uses: its preset's name, else its address's host
+// what the person calls the Tetrix Oby uses: its address's host
 function serverName(t: Tetrix) {
-  const preset = t.presets.find((p) => p.id === t.preset);
-  if (preset) return preset.name;
   try { return new URL(t.url ?? '').host; } catch { return 'Tetrix'; }
 }
 
-// Which Tetrix Oby signs in to: a preset, or another server's MCP address (obid checks it: HTTPS,
-// plain HTTP only on 127.0.0.1). Connecting to another signs Oby in there in place of the one
-// before (which obid signs out of, when it's another sign-in server's). children: its Connect,
-// when it's the one to click.
-function TetrixServer({ tetrix: t, draft, onDraft, children }: { tetrix: Tetrix; draft: { pick: string; url: string }; onDraft: (d: { pick: string; url: string }) => void; children: React.ReactNode }) {
+// Which Tetrix Oby signs in to: the owner's own, by its MCP server's address (shared/tetrix-url.ts
+// checks it as the person types; obid checks it again). Oby has no built-in Tetrix and no default.
+// Another address signs Oby in there in place of the one before (which obid signs out of, when
+// it's another sign-in server's). problem: why the address isn't one yet, under the field;
+// children: its Connect, when it's the one to click.
+function TetrixServer({ address, problem, onAddress, children }: { address: string; problem: string | null; onAddress: (address: string) => void; children: React.ReactNode }) {
   return (
-    <Group i={4} title="Tetrix server" footer="Oby signs in to Tetrix once, for every agent. Connecting to another server signs Oby in there instead.">
-      <Row label="Server">
-        <Select value={draft.pick} onChange={(pick) => onDraft({ ...draft, pick })} label="Tetrix server" options={[...t.presets.map((p) => [p.id, p.name] as const), ['url', 'Another server']]} />
-      </Row>
-      {draft.pick === 'url' && <Row label="Address"><TextField value={draft.url} onChange={(url) => onDraft({ ...draft, url })} placeholder="https://tetrix.example.com/mcp" label="Tetrix server address" /></Row>}
+    <Group i={4} title="Tetrix server" footer={problem ?? 'Oby has no built-in Tetrix: enter yours, its MCP server’s address, starting with https://. Oby signs in there once, for every agent; another address signs Oby in there instead.'}>
+      <Row label="Address"><TextField value={address} onChange={onAddress} placeholder="https://tetrix.example.com/mcp" label="Tetrix server address" /></Row>
       {children && <Row label="">{children}</Row>}
     </Group>
   );

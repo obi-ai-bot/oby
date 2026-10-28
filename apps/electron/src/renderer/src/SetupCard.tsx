@@ -8,8 +8,9 @@ import { SAMPLE_TALK, Sphere, SphereHowTo, still } from './Welcome';
 import { AGENTS, type Agent, type SetupStep } from './mock';
 import { FIRST_TASK, accountOf, connectTetrix, pick, sceneDone, sceneReplayed, sendAgentCode, signInAgent, signInGitHub, useSetup, type Code } from './onboarding';
 import { onObid } from './lean';
-import { PasteCode } from './SettingsView';
+import { PasteCode, TextField } from './SettingsView';
 import { useLive } from './live';
+import { tetrixUrlProblem } from '../../shared/tetrix-url';
 
 // a sign-in's code to type on its page, after what the row says
 const typed = (c?: Code) => (c?.userCode ? ` · enter ${c.userCode}` : '');
@@ -29,6 +30,8 @@ export default function SetupCard({ step }: { step: SetupStep }) {
   const ended = () => { PLAYED.add(step); setHeard(true); setReplaying(false); };
   // Show me: Replay plays it again (a new key) without moving the tour; Skip goes to its end
   const [run, setRun] = useState(0), [skipped, setSkipped] = useState(false), [replaying, setReplaying] = useState(false);
+  // Tetrix: the address of the person's own Tetrix, as they type it (Oby has no built-in one)
+  const [tetrixAddress, setTetrixAddress] = useState('');
   // (picks come in under the conversation's end, so they're brought into view)
   const end = useRef<HTMLDivElement>(null);
   useEffect(() => { if (waiting) end.current?.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); }, [waiting, heard]);
@@ -57,9 +60,21 @@ export default function SetupCard({ step }: { step: SetupStep }) {
         : s.github === 'waiting' ? `Finish in your browser${typed(s.codes.github)}` : 'Not signed in'} />;
     picks = [{ label: 'Continue', ok: s.github === 'in' }, { label: 'Not now', quiet: true }];
   } else if (step === 'extras') {
+    // Oby has no built-in Tetrix and no default: the person enters their own's address, and Connect
+    // waits until it's one (https, a host, no login, query or fragment). Skipped, Oby runs without
+    // Tetrix; Settings › Connectors takes the address later.
+    const problem = tetrixUrlProblem(tetrixAddress);
+    const host = (() => { try { return s.tetrixUrl ? new URL(s.tetrixUrl).host : ''; } catch { return ''; } })();
     rows = <>
-      <Row mark={mark(BRANDS.tetrix)} name="Tetrix" state={s.tetrix} act="Connect" onAct={connectTetrix}
-        sub={s.tetrix === 'in' ? 'Connected · every agent gets your code graph' : s.tetrix === 'waiting' ? 'Finish in your browser' : 'Your code as a graph, for every agent'} />
+      <Row mark={mark(BRANDS.tetrix)} name="Tetrix" state={s.tetrix} act="Connect" onAct={() => connectTetrix(tetrixAddress)} actOk={!problem}
+        sub={s.tetrix === 'in' ? `Connected${host ? ` · ${host}` : ''} · every agent gets your code graph`
+          : s.tetrix === 'waiting' ? `Finish in your browser${host ? ` · ${host}` : ''}`
+          : 'Your code as a graph, for every agent · enter your Tetrix’s address'}>
+        {s.tetrix === 'out' && <span className="setup-field">
+          <TextField value={tetrixAddress} onChange={setTetrixAddress} placeholder="https://tetrix.example.com/mcp" label="Your Tetrix’s address" />
+          {tetrixAddress.trim() && problem && <span className="wl-sub setup-problem">{problem}</span>}
+        </span>}
+      </Row>
     </>;
     picks = s.tetrix === 'in' ? [{ label: 'Continue' }] : [{ label: 'Skip for now', quiet: true }];
   } else if (step === 'sphere') {
@@ -125,8 +140,9 @@ const CUES: Record<string, string> = {
 };
 
 // one thing to connect: its mark, its name and how it stands (and anything it needs from you
-// there), and its button until it's ready (none: nothing to do there)
-const Row = ({ mark, name, sub, state, act, onAct, children }: { mark: ReactNode; name: string; sub: string; state: 'out' | 'waiting' | 'in' | 'looking'; act?: string; onAct?: () => void; children?: ReactNode }) => (
+// there), and its button until it's ready (none: nothing to do there; actOk false: not yet, what
+// it needs isn't typed)
+const Row = ({ mark, name, sub, state, act, onAct, actOk, children }: { mark: ReactNode; name: string; sub: string; state: 'out' | 'waiting' | 'in' | 'looking'; act?: string; onAct?: () => void; actOk?: boolean; children?: ReactNode }) => (
   <li className="setup-row">
     {mark}
     <span className="wl-two">
@@ -135,7 +151,7 @@ const Row = ({ mark, name, sub, state, act, onAct, children }: { mark: ReactNode
       {children}
     </span>
     {state === 'in' ? <span className="wl-ready"><Check size={14} strokeWidth={2} />Ready</span>
-      : state !== 'looking' && act && <button className="set-button" disabled={state === 'waiting'} onClick={onAct}>{state === 'waiting' ? 'Waiting…' : act}</button>}
+      : state !== 'looking' && act && <button className="set-button" disabled={state === 'waiting' || actOk === false} onClick={onAct}>{state === 'waiting' ? 'Waiting…' : act}</button>}
   </li>
 );
 

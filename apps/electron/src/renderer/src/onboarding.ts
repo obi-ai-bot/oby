@@ -6,6 +6,7 @@ import { onObid } from './lean';
 import { CAN_CREATE } from './spheres';
 import { api } from './obid';
 import { ask, liveState, say, useLive } from './live';
+import { tetrixUrl, tetrixUrlProblem } from '../../shared/tetrix-url';
 import type { Agent, SetupStep } from './mock';
 
 // Setting up, in Oby's first conversation: no wizard, Oby talks you through it
@@ -32,6 +33,7 @@ export type Setup = {
   agents: Record<Agent, Sign>;
   github: Sign;
   tetrix: Sign;
+  tetrixUrl?: string;   // the Tetrix Oby is signed in to (or signing in to): the address the person gave
   sphere: Tour;
   member?: string;      // in the sample: whose conversation is showing (or Knowledge)
   call?: string;        // in the sample: who's called next (or Knowledge)
@@ -138,15 +140,17 @@ export async function signInGitHub() {
     failed(e, () => set(() => ({ github: 'out' })));
   }
 }
-// Tetrix: Oby signs in once, for every agent; its page in the browser
-export async function connectTetrix() {
-  if (!onObid) return signIn((s) => s.tetrix, (tetrix) => ({ tetrix }));
+// Tetrix: Oby signs in once, for every agent, to the Tetrix whose address the person typed (Oby
+// has no built-in Tetrix and no default; shared/tetrix-url.ts says what an address is); its page
+// in the browser. Skipped, Oby runs without Tetrix until one is entered in Settings › Connectors.
+export async function connectTetrix(address: string) {
+  if (tetrixUrlProblem(address)) return;
+  const url = tetrixUrl(address);
+  if (!onObid) return signIn((s) => s.tetrix, (tetrix) => ({ tetrix, tetrixUrl: url }));
   if (setup.tetrix !== 'out') return;
-  set(() => ({ tetrix: 'waiting' }));
+  set(() => ({ tetrix: 'waiting', tetrixUrl: url }));
   try {
-    const preset = (await api.tetrix()).presets[0];
-    if (!preset) throw new Error('Oby has no Tetrix to sign in to.');
-    open((await api.tetrixSignIn({ preset: preset.id })).url);
+    open((await api.tetrixSignIn({ url })).url);
     if (!(await until(async () => (await api.tetrix()).connected, 10))) set(() => ({ tetrix: 'out' }));
     else set(() => ({ tetrix: 'in' }));
   } catch (e) {
@@ -158,7 +162,10 @@ export async function connectTetrix() {
 async function already() {
   if (!onObid) return;
   const [g, t] = await Promise.all([api.github().catch(() => null), api.tetrix().catch(() => null)]);
-  set(() => ({ ...(g?.signedIn ? { github: 'in' as const, githubUser: g.user ?? undefined } : {}), ...(t?.connected ? { tetrix: 'in' as const } : {}) }));
+  set(() => ({
+    ...(g?.signedIn ? { github: 'in' as const, githubUser: g.user ?? undefined } : {}),
+    ...(t?.connected ? { tetrix: 'in' as const, tetrixUrl: t.url ?? undefined } : {}),
+  }));
 }
 
 // your pick on the step waiting: it goes in as your words, and Oby carries on.
