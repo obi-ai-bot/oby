@@ -772,18 +772,15 @@ pub struct Jobs {
     usage_reads: Mutex<UsageReads>,
     /// What the meter last read: the machine's memory, and each running job's ([`Jobs::meter`]).
     measured: Mutex<Measured>,
-    /// Wakes the meter: a job started, or waits for memory.
+    /// Wakes the meter: a job started.
     metering: Notify,
-    /// Told when a job starts waiting for memory: obid lets go of what it holds only to be quick
-    /// (a conversation's waiting Claude Code, crate::brain::harness).
-    short_of_memory: std::sync::OnceLock<Box<dyn Fn() + Send + Sync>>,
 }
 
 /// The most sites one job's agent waits for the owner's answer about at once, through obid's
 /// egress proxy ([`Jobs::ask_about`]): more would flood the inbox.
 const MOST_SITES_ASKED: usize = 3;
 
-/// How often the meter reads while jobs run or wait for memory ([`Jobs::meter`]).
+/// How often the meter reads while jobs run ([`Jobs::meter`]).
 const METER_TICK: Duration = Duration::from_secs(5);
 /// How often at most each account's usage is asked of its tool ([`Jobs::want_usage`]): every 10
 /// minutes, or `OBID_USAGE_EVERY_SECONDS` (obid's tests set less). A running job's own reports
@@ -838,20 +835,15 @@ pub const DEFAULT_BUDGET: u64 = 1536 * 1024 * 1024;
 const PEAK_STEP: u64 = 128 * 1024 * 1024;
 /// How many of the latest measured jobs of a tool and repository its budget is learned from.
 const BUDGET_FROM: usize = 10;
-/// The most a check waits for memory before it runs anyway, its build sized to what's there.
-const CHECK_MEMORY_WAIT: Duration = Duration::from_secs(10 * 60);
 
 /// What the meter last read ([`Jobs::meter`]).
 #[derive(Default)]
 struct Measured {
     machine: Option<(std::time::Instant, crate::meter::Machine)>,
     jobs: HashMap<String, JobMemory>,
-    /// The queued jobs waiting for memory: since when, and the budget they wait to fit.
-    waiting: HashMap<String, (i64, u64)>,
     /// What each job's agent turn was told to build with, in bytes ([`process::BUILD_JOB_MEMORY`]
     /// a job), until its check's build or its worker ends: the other builds hold it back as at
-    /// least that much ([`Jobs::build_env`]). Admission never weighs it: a grant never keeps a job
-    /// waiting.
+    /// least that much ([`Jobs::build_env`]). It only narrows builds: no job ever waits on it.
     granted: HashMap<String, u64>,
 }
 
@@ -863,15 +855,6 @@ impl Measured {
             .map(|(id, m)| (id.clone(), (m.agent_rss, m.check_rss)))
             .collect()
     }
-}
-
-/// A queued job waiting for memory (`status.memory.waiting`): the room it waits for, in bytes,
-/// and since when.
-#[derive(Debug, Clone, PartialEq, serde::Serialize)]
-pub struct MemoryWait {
-    pub id: String,
-    pub budget: u64,
-    pub since: String,
 }
 
 /// A running job's processes' resident memory, in bytes (`status.memory.jobs`): now, and the most
@@ -1034,7 +1017,6 @@ impl Jobs {
             usage_reads: Mutex::default(),
             measured: Mutex::new(Measured::default()),
             metering: Notify::new(),
-            short_of_memory: std::sync::OnceLock::new(),
         });
         let legacy: Vec<String> = made
             .lock()
@@ -1093,12 +1075,6 @@ impl Jobs {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .clone()
-    }
-
-    /// What obid lets go of when a job starts waiting for memory (once; a second call changes
-    /// nothing).
-    pub fn on_short_of_memory(&self, hook: Box<dyn Fn() + Send + Sync>) {
-        let _ = self.short_of_memory.set(hook);
     }
 
     pub fn use_connections(&self, connections: Arc<crate::connections::Connections>) {
@@ -1706,20 +1682,16 @@ impl Jobs {
     }
 
     /// Reads the machine's memory and each running job's processes every [`METER_TICK`] while
-    /// any job runs or waits for memory, and nothing otherwise (crate::meter).
+    /// any job runs, and nothing otherwise (crate::meter).
     pub async fn meter(self: Arc<Self>, mut stopping: watch::Receiver<bool>) {
         loop {
-            if self.running() == 0 && self.measured().waiting.is_empty() {
+            if self.running() == 0 {
                 tokio::select! {
                     () = self.metering.notified() => continue,
                     _ = stopping.changed() => return,
                 }
             }
             self.measure().await;
-            // Memory may have freed up: a job waiting for it starts once it fits.
-            if !self.measured().waiting.is_empty() {
-                self.schedule();
-            }
             tokio::select! {
                 () = tokio::time::sleep(METER_TICK) => {}
                 _ = stopping.changed() => return,
@@ -1947,12 +1919,13 @@ impl Jobs {
     }
 
     /// [`process::build_env`] for a build of job `id` (its check's with `check`, else its agent's),
-    /// as wide as the room admission leaves it: what's spare less what the other running agents
-    /// here may still take ([`agents_held`]), each at least what its turn was told to build with,
-    /// and, for an agent, one of the other jobs' checks ([`check_held`]): any of them may start
-    /// its check during the turn; its own can't. Worked out at every turn and every check, so a
-    /// turn that starts next to others builds narrower. Nothing when memory can't be read: the
-    /// build keeps its own defaults.
+    /// as wide as the room memory leaves it: what's spare ([`spare`]) less what the other running
+    /// agents here may still take ([`agents_held`]), each at least what its turn was told to build
+    /// with, and, for an agent, one of the other jobs' checks ([`check_held`]): any of them may
+    /// start its check during the turn; its own can't. Worked out at every turn and every check,
+    /// so a turn that starts next to others builds narrower. Nothing when memory can't be read:
+    /// the build keeps its own defaults. Memory only narrows a build this way: it never holds a
+    /// job or a check back (jobs start as soon as a slot is free, docs/runner-api.md).
     fn build_env(&self, id: &str, check: bool) -> Vec<(&'static str, OsString)> {
         let Some(machine) = self.reading() else {
             return Vec::new();
@@ -2008,7 +1981,7 @@ impl Jobs {
 
     /// The machine's memory, as the meter last read it or now when that's older than a tick
     /// (nothing runs, so the meter sleeps), and each running job's; `None` when it can't be read.
-    pub async fn memory(&self) -> Option<(crate::meter::Machine, Vec<JobMemory>, Vec<MemoryWait>)> {
+    pub async fn memory(&self) -> Option<(crate::meter::Machine, Vec<JobMemory>)> {
         let fresh = self
             .measured()
             .machine
@@ -2026,22 +1999,12 @@ impl Jobs {
         let measured = self.measured();
         let mut jobs: Vec<JobMemory> = measured.jobs.values().cloned().collect();
         jobs.sort_by(|a, b| a.id.cmp(&b.id));
-        let mut waiting: Vec<MemoryWait> = measured
-            .waiting
-            .iter()
-            .map(|(id, (since, budget))| MemoryWait {
-                id: id.clone(),
-                budget: *budget,
-                since: obi_protocol::time::format(*since),
-            })
-            .collect();
-        waiting.sort_by(|a, b| (&a.since, &a.id).cmp(&(&b.since, &b.id)));
-        Some((machine, jobs, waiting))
+        Some((machine, jobs))
     }
 
-    /// The machine's memory to admit work by: the meter's reading while it's at most two ticks
+    /// The machine's memory to size builds by: the meter's reading while it's at most two ticks
     /// old, else read now. ponytail: a few milliseconds of `sysctl` and `vm_stat` on the caller's
-    /// thread, only when the meter sleeps (nothing runs or waits).
+    /// thread, only when the meter sleeps (nothing runs).
     fn reading(&self) -> Option<crate::meter::Machine> {
         if let Some((at, machine)) = self.measured().machine
             && at.elapsed() < 2 * METER_TICK
@@ -2051,29 +2014,6 @@ impl Jobs {
         let machine = crate::meter::machine()?;
         self.measured().machine = Some((std::time::Instant::now(), machine));
         Some(machine)
-    }
-
-    /// Whether the check of job `id` may start now, as far as memory goes ([`admits`]): room for
-    /// what its repository's checks hold at most ([`check_budget`]) in what's spare. The room the
-    /// running agents may still take isn't held back from it: one of them may be waiting on it.
-    /// Another job here running makes it more than the first of obid's; one on a teammate's Mac
-    /// doesn't.
-    fn check_fits(&self, id: &str) -> bool {
-        let machine = self.reading();
-        let (need, others) = {
-            let state = self.lock();
-            let Some(job) = state.jobs.get(id) else {
-                return true;
-            };
-            let others = state
-                .workers
-                .keys()
-                .filter(|w| *w != id)
-                .filter(|w| state.jobs.contains_key(*w))
-                .count();
-            (check_budget(state.jobs.values(), job), others)
-        };
-        admits(machine, others, machine.map_or(0, |m| spare(&m)), need)
     }
 
     /// Marks `account` as being signed in or removed, unless a job that hasn't ended (queued or
@@ -2883,8 +2823,9 @@ impl Jobs {
         Ok(job)
     }
 
-    /// Starts the queued jobs, oldest first, while slots are free and memory has room for them
-    /// ([`admits`]); the others say they wait.
+    /// Starts the queued jobs, oldest first, while slots are free (`maxRunning`); the others say
+    /// they wait for one. The machine's memory never holds a job back: every job starts as soon as
+    /// it has a slot, and memory only sizes its builds ([`Jobs::build_env`]).
     fn schedule(self: &Arc<Self>) {
         if self
             .shutting_down
@@ -2893,25 +2834,10 @@ impl Jobs {
             return;
         }
         self.room_for_waiting();
-        let queued = self
-            .lock()
-            .jobs
-            .values()
-            .any(|j| j.status == Status::Queued);
-        let machine = if queued { self.reading() } else { None };
-        // What the running jobs' agents and checks hold now ([`Load`]).
-        let held = self.measured().held();
         let mut start = Vec::new();
         let mut waiting = Vec::new();
-        let mut short = Vec::new();
         {
             let mut state = self.lock();
-            let mut running: Vec<Load> = state
-                .workers
-                .keys()
-                .filter_map(|id| state.jobs.get(id))
-                .map(|job| Load::of(&state.jobs, job, &held))
-                .collect();
             // One waiting for an account with room takes no slot ([`Jobs::room_for_waiting`]).
             let mut queued: Vec<(i64, String)> = state
                 .jobs
@@ -2935,45 +2861,15 @@ impl Jobs {
                     waiting.push(id);
                     continue;
                 }
-                let Some(job) = state.jobs.get(&id) else {
-                    continue;
-                };
-                let load = Load::of(&state.jobs, job, &held);
-                // Oldest first: once one here waits for memory, the younger ones here wait behind
-                // it. One on a teammate's Mac takes nothing of this Mac's but its check.
-                if load.here && (!short.is_empty() || !fits(machine, &running, &load)) {
-                    short.push((id, load.agent));
+                if !state.jobs.contains_key(&id) {
                     continue;
                 }
-                running.push(load);
                 let (sender, receiver) = watch::channel(Signal::Run);
                 state.workers.insert(id.clone(), sender);
                 start.push((id, receiver));
             }
         }
-        let now = obi_protocol::time::now();
-        let newly_short = {
-            let mut measured = self.measured();
-            let kept: HashMap<String, (i64, u64)> = short
-                .iter()
-                .map(|(id, budget)| {
-                    let since = measured.waiting.get(id).map_or(now, |(since, _)| *since);
-                    (id.clone(), (since, *budget))
-                })
-                .collect();
-            let grew = kept.keys().any(|id| !measured.waiting.contains_key(id));
-            measured.waiting = kept;
-            grew
-        };
-        if !short.is_empty() {
-            // The meter reads while they wait, and starts them once memory frees up.
-            self.metering.notify_one();
-        }
-        if newly_short && let Some(hook) = self.short_of_memory.get() {
-            hook();
-        }
-        // Each said once: the meter schedules every few seconds while a job waits for memory, and
-        // every update is a write and an event.
+        // Each said once: every update is a write and an event.
         let wait_for = |id: &str, kind: &str, text: &str, step: String| {
             let wait = Waiting {
                 kind: kind.into(),
@@ -2994,9 +2890,6 @@ impl Jobs {
             }
         };
         // `cap` as the apps know it (their job decodes no other kind), with what it waits for.
-        for (id, _) in &short {
-            wait_for(id, "cap", "memory frees up", "Waiting for memory".into());
-        }
         let running = self.running();
         let max = self.max_running();
         for id in waiting {
@@ -6115,7 +6008,7 @@ impl Jobs {
             spec.proxied = true;
         }
         extra.extend(process::show_rust(&spec.temp));
-        // Its builds take what admission leaves them next to the other jobs (crate::meter).
+        // Its builds take what memory leaves them next to the other jobs (crate::meter).
         extra.extend(self.build_env(&job.id, false));
         let tetrix = self.tetrix_mcp(job);
         if tool == Tool::Codex
@@ -7071,39 +6964,17 @@ impl Jobs {
             });
         }
         let mut stop = signal.clone();
-        // A check is new work too: it runs once memory has room for it ([`Jobs::check_fits`]). It
-        // waits without its turn, so another check (a smaller one) runs meanwhile, and
-        // CHECK_MEMORY_WAIT at most from the first time memory had no room (a wait for the turn
-        // isn't one): then it runs as it is. A stop ends either wait.
-        let mut give_up_at = None;
-        let mut short = false;
-        let _turn = loop {
-            let turn = tokio::select! {
-                turn = self.checking.acquire() => {
-                    turn.map_err(|e| format!("obid couldn't run the check: {e}"))?
-                }
-                _ = async { while *stop.borrow_and_update() == Signal::Run && stop.changed().await.is_ok() {} } => {
-                    return Ok(CheckRun { passed: false, output: String::new() });
-                }
-            };
-            if give_up_at.is_some_and(|at| tokio::time::Instant::now() >= at) || self.check_fits(id)
-            {
-                break turn;
+        // Memory never holds a check back: it runs as soon as it has its turn, its build sized to
+        // what's there ([`Jobs::build_env`]). A stop ends the wait for the turn.
+        let _turn = tokio::select! {
+            turn = self.checking.acquire() => {
+                turn.map_err(|e| format!("obid couldn't run the check: {e}"))?
             }
-            drop(turn);
-            give_up_at.get_or_insert(tokio::time::Instant::now() + CHECK_MEMORY_WAIT);
-            if !short {
-                short = true;
-                self.update(id, |job| job.step = "Waiting for memory".into());
-            }
-            tokio::select! {
-                () = tokio::time::sleep(METER_TICK) => {}
-                _ = async { while *stop.borrow_and_update() == Signal::Run && stop.changed().await.is_ok() {} } => {
-                    return Ok(CheckRun { passed: false, output: String::new() });
-                }
+            _ = async { while *stop.borrow_and_update() == Signal::Run && stop.changed().await.is_ok() {} } => {
+                return Ok(CheckRun { passed: false, output: String::new() });
             }
         };
-        if waiting || short {
+        if waiting {
             self.update(id, |job| job.step = step);
         }
         // Each step between its top-level `&&`s timed, its tests counted, live (#734).
@@ -11498,9 +11369,9 @@ fn learned(mut peaks: Vec<(i64, u64)>) -> u64 {
     most.get(usize::from(most.len() >= 5)).copied().unwrap_or(0)
 }
 
-/// What admission weighs of a job: what its agent and its check may hold at once, what they hold
-/// now, and whether its agent runs here (not on a teammate's Mac, where it takes none of this
-/// Mac's memory; its check runs here all the same).
+/// What a build's width weighs of a running job ([`Jobs::build_env`]): what its agent and its
+/// check may hold at once, what they hold now, and whether its agent runs here (not on a
+/// teammate's Mac, where it takes none of this Mac's memory; its check runs here all the same).
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 struct Load {
     agent: u64,
@@ -11525,20 +11396,6 @@ impl Load {
     }
 }
 
-/// Whether a job of `load` may start next to `running` ([`admits`]): one on a teammate's Mac
-/// always may; one here when its agent's budget fits in what's spare once the running agents here
-/// may still take theirs (their budget less what they hold), and one check the largest check
-/// budget of them and it, less what the check running holds: checks run one at a time.
-fn fits(machine: Option<crate::meter::Machine>, running: &[Load], load: &Load) -> bool {
-    if !load.here {
-        return true;
-    }
-    let here = running.iter().filter(|l| l.here).count();
-    let held = agents_held(running) + check_held(running, load.check);
-    let room = machine.map_or(0, |m| spare(&m).saturating_sub(held));
-    admits(machine, here, room, load.agent)
-}
-
 /// What the agents of `running` jobs here may still take: each one's budget less what it holds.
 fn agents_held(running: &[Load]) -> u64 {
     running
@@ -11561,26 +11418,13 @@ fn check_held(running: &[Load], more: u64) -> u64 {
         .saturating_sub(check_now)
 }
 
-/// What new work may take of `machine`'s available memory: all but a fifth of the machine, kept
-/// free for the person's own apps. macOS compresses and swaps well before what's available runs
-/// out: on a 16 GB Mac, 3 jobs of 2 GB that fit with a tenth kept free took it to 13.9 GB used and
-/// swapped 437 MB (2026-10-25). ponytail: one share for every Mac; learned from swapouts if a
-/// fifth proves wrong.
+/// What a build may take of `machine`'s available memory ([`Jobs::build_env`]): all but a fifth of
+/// the machine, kept free for the person's own apps. macOS compresses and swaps well before what's
+/// available runs out: on a 16 GB Mac, 3 jobs of 2 GB that fit with a tenth kept free took it to
+/// 13.9 GB used and swapped 437 MB (2026-10-25). ponytail: one share for every Mac; learned from
+/// swapouts if a fifth proves wrong.
 fn spare(machine: &crate::meter::Machine) -> u64 {
     machine.available.saturating_sub(machine.total / 5)
-}
-
-/// Whether new work of `budget` bytes may start, with `running` jobs at work and `room` bytes free
-/// once what they may still take is held back: when the machine isn't pressed and has the room.
-/// The first job of obid's always may, unless the machine is critical: nothing of obid's would
-/// free memory for it. Unreadable memory admits everything, as before obid measured it.
-fn admits(machine: Option<crate::meter::Machine>, running: usize, room: u64, budget: u64) -> bool {
-    use crate::meter::Pressure;
-    match machine {
-        None => true,
-        Some(machine) if running == 0 => machine.pressure != Pressure::Critical,
-        Some(machine) => machine.pressure == Pressure::Normal && room >= budget,
-    }
 }
 
 /// Whether `job` is settled, as far as obid's records tell (docs/runner-api.md, `cleanup`): it
@@ -14715,128 +14559,11 @@ mod tests {
         assert_eq!(budget(light.iter(), &fix), DEFAULT_BUDGET);
     }
 
-    /// What admission holds back: the running agents' budgets less what they hold, and one check,
-    /// the largest of theirs and the new job's, less what the check running holds; nothing for a
-    /// job on a teammate's Mac, which always starts.
-    #[test]
-    fn a_job_fits_next_to_what_runs() {
-        use crate::meter::{Machine, Pressure};
-        let gib = 1024 * 1024 * 1024;
-        // 12 GiB available on a 20 GiB Mac: 8 GiB spare once a fifth is kept free.
-        let machine = Some(Machine {
-            total: 20 * gib,
-            available: 12 * gib,
-            pressure: Pressure::Normal,
-        });
-        let here = |agent, check, agent_now, check_now| Load {
-            agent,
-            check,
-            agent_now,
-            check_now,
-            here: true,
-        };
-        let new = here(2 * gib, 2 * gib, 0, 0);
-        // Two agents that may take 2 GiB more each, and one 2 GiB check: 6, 2 left.
-        let running = [
-            here(3 * gib, 2 * gib, gib, 0),
-            here(3 * gib, 2 * gib, gib, 0),
-        ];
-        assert!(fits(machine, &running, &new));
-        // A third leaves 0: the check is held once, not once a job.
-        let three = [running[0], running[1], here(2 * gib, 2 * gib, 0, 0)];
-        assert!(!fits(machine, &three, &new));
-        // The check running holds 1 GiB of its 2 already: 1 GiB less held back.
-        let checking = [running[0], here(3 * gib, 2 * gib, gib, gib)];
-        assert!(fits(machine, &checking, &here(3 * gib, 0, 0, 0)));
-        assert!(!fits(machine, &running, &here(3 * gib, 0, 0, 0)));
-        // A job on a teammate's Mac starts whatever is left, and its agent holds nothing back
-        // here; its check counts as anyone's.
-        let away = Load {
-            agent: 0,
-            check: 4 * gib,
-            here: false,
-            ..Load::default()
-        };
-        assert!(fits(machine, &three, &away));
-        assert!(fits(machine, &[away], &here(2 * gib, 0, 0, 0)));
-        assert!(!fits(machine, &[away, running[0]], &here(3 * gib, 0, 0, 0)));
-        // Alone here, the first job starts whatever its budget.
-        assert!(fits(machine, &[away], &here(64 * gib, 0, 0, 0)));
-    }
-
-    /// A check runs once memory has room for its repository's checks' budget; alone here it runs
-    /// whatever, as the first job of obid's does, and a job on a teammate's Mac doesn't count.
-    #[tokio::test]
-    async fn a_check_waits_for_room_unless_its_job_is_alone() {
-        use crate::meter::{Machine, Pressure};
-        let (root, _clone, _base, jobs) = cleanup_home("check-room", false);
-        let gib = 1024 * 1024 * 1024;
-        let job = |id: &str| {
-            let mut job = Job::new(
-                id.into(),
-                "o/r".into(),
-                "fix".into(),
-                "Fix it".into(),
-                "claude".into(),
-                "a".into(),
-            );
-            job.check = Some("make test".into());
-            job
-        };
-        jobs.insert(job("checking"));
-        jobs.insert(job("other"));
-        // 3 GiB available on 10: 1 GiB spare, less than a check's 1.5 GiB until one is measured.
-        let tight = Machine {
-            total: 10 * gib,
-            available: 3 * gib,
-            pressure: Pressure::Normal,
-        };
-        let worker = |id: &str| {
-            jobs.lock()
-                .workers
-                .insert(id.into(), watch::channel(Signal::Run).0);
-        };
-        worker("checking");
-        jobs.measured().machine = Some((std::time::Instant::now(), tight));
-        assert!(jobs.check_fits("checking"), "alone here, it runs");
-        worker("other");
-        assert!(!jobs.check_fits("checking"));
-        jobs.measured().machine = Some((
-            std::time::Instant::now(),
-            Machine {
-                available: 4 * gib,
-                ..tight
-            },
-        ));
-        assert!(jobs.check_fits("checking"));
-        let _ = std::fs::remove_dir_all(&root);
-    }
-
-    /// New work starts only when the machine isn't pressed and has room; the first job of obid's
-    /// unless it's critical; anything when memory can't be read.
-    #[test]
-    fn work_starts_only_where_memory_has_room() {
-        use crate::meter::{Machine, Pressure};
-        let at = |pressure| {
-            Some(Machine {
-                total: 16,
-                available: 8,
-                pressure,
-            })
-        };
-        assert!(admits(at(Pressure::Normal), 2, 4, 4));
-        assert!(!admits(at(Pressure::Normal), 2, 3, 4));
-        assert!(!admits(at(Pressure::Warn), 2, 8, 4));
-        assert!(admits(at(Pressure::Warn), 0, 0, 4));
-        assert!(!admits(at(Pressure::Critical), 0, 8, 4));
-        assert!(admits(None, 5, 0, 4));
-    }
-
-    /// A build is as wide as what admission leaves it: the other running agents' room, each at
+    /// A build is as wide as what memory leaves it: the other running agents' room, each at
     /// least what its turn was told to build with, and, for an agent, one of the other jobs'
     /// checks are held back; a check isn't held back from itself.
     #[tokio::test]
-    async fn a_build_is_as_wide_as_admission_leaves_it() {
+    async fn a_build_is_as_wide_as_memory_leaves_it() {
         use crate::meter::{Machine, Pressure};
         let (root, _clone, _base, jobs) = cleanup_home("build-width", false);
         let gib = 1024 * 1024 * 1024;
