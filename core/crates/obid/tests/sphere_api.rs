@@ -1855,10 +1855,14 @@ async fn a_chain_rolled_back_or_forked_doesnt_check_out() {
     );
 }
 
-/// The receipts obid keeps for its sends (sphere-api.md 7.1), by envelope id: `(seq, hash)`.
+/// The receipts obid keeps for its sends (sphere-api.md 7.1), by envelope id: `(seq, hash)`; none
+/// before it first keeps one.
 fn kept_receipts(folder: &Folder) -> Value {
-    let chain = std::fs::read(folder.0.join("home/sphere/chain.json")).unwrap();
-    serde_json::from_slice::<Value>(&chain).unwrap()["sends"].clone()
+    match std::fs::read(folder.0.join("home/sphere/chain.json")) {
+        Ok(chain) => serde_json::from_slice::<Value>(&chain).unwrap()["sends"].clone(),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => json!({}),
+        Err(e) => panic!("{e}"),
+    }
 }
 
 /// A send's receipt is taken only when it names the envelope sent. A reply answered with another
@@ -2718,6 +2722,125 @@ async fn the_council_convener_sends_one_review_request_per_seat() {
     // Nothing went for any refused call.
     let list = tokio::task::block_in_place(|| get(&obid, "/v1/obid/sphere/exchanges"));
     assert_eq!(list.as_array().unwrap().len(), 2);
+}
+
+/// A seat's request whose post didn't answer goes again, the same bytes, on the next call (the
+/// convener's instant expiry), and its receipt is taken only when it names that envelope, as for any
+/// send: answered with another entry's receipt, the resend is refused and nothing is kept; answered
+/// with its own, the receipt is kept under the request's own id.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_resent_seat_request_keeps_only_its_own_receipt() {
+    let folder = Folder::new("council-resend");
+    let sphere = FakeSphere::start().await;
+    let remote = fixture(&folder.0.join("fixture"));
+    let mut settings = config(&folder.0, &remote, &stub_agent());
+    settings["council"] = json!(true);
+    let obid = start(&folder.0, &settings, None);
+    let wellington = Owner::new("wellington");
+    let joined = tokio::task::block_in_place(|| join_a(&obid, &sphere, &wellington));
+    assert_eq!(joined["state"], "joined");
+    let ernesto = TestObi::join(&sphere, "obi-ernesto", "ernesto").await;
+    // Another entry in the chain first: the receipt a wrong answer names.
+    let question = ernesto.request(
+        "obi-wellington",
+        "question",
+        json!({"text": "Should average() round to two decimals?"}),
+        3600,
+    );
+    ernesto.send(&question).await;
+    // obid replies to the question by itself, in the background: once it has kept that receipt,
+    // the chain's last entry is obid's reply, and nothing else is sent until the convener's call.
+    let reply = within(60, "obid's reply to the question, kept", || {
+        let reply = sphere.lock().entries.iter().find(|e| {
+            e["envelope"]["from"] == "obi-wellington"
+                && e["envelope"]["in_reply_to"] == question["id"]
+        })?["envelope"]["id"]
+            .as_str()?
+            .to_owned();
+        kept_receipts(&folder)
+            .get(&reply)
+            .is_some()
+            .then_some(reply)
+    });
+    // Every receipt obid keeps names one of its own envelopes, at the seq and hash recorded.
+    let all_right = |kept: &Value| {
+        for (id, receipt) in kept.as_object().unwrap() {
+            let entry = sphere
+                .lock()
+                .entries
+                .iter()
+                .find(|e| e["envelope"]["id"] == json!(id))
+                .cloned()
+                .unwrap_or_else(|| panic!("{id} isn't in the chain"));
+            assert_eq!(entry["envelope"]["from"], "obi-wellington", "{id}");
+            assert_eq!(receipt, &json!([entry["seq"], entry["hash"]]), "{id}");
+        }
+    };
+    // The same motion every time: the same seat, review and instant.
+    let at = obi_protocol::time::format(obi_protocol::time::now() + 7200);
+    let body = json!({"seats": ["obi-ernesto"], "review": brief(), "expiresAt": at});
+    let convene = || {
+        tokio::task::block_in_place(|| call(&obid, "POST", "/v1/obid/sphere/council", Some(&body)))
+    };
+
+    sphere.break_next_send("review_request");
+    let unanswered = convene();
+    assert_eq!(unanswered.status, 504, "{}", unanswered.text);
+    let list = tokio::task::block_in_place(|| get(&obid, "/v1/obid/sphere/exchanges"));
+    let cid = list
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["direction"] == "outgoing")
+        .and_then(|e| e["correlationId"].as_str())
+        .expect("the seat's exchange stays, not confirmed yet")
+        .to_owned();
+    assert!(kept_receipts(&folder).get(&cid).is_none());
+
+    sphere.answer_next_with_last("review_request");
+    let refused = convene();
+    assert_eq!(refused.status, 502, "{}", refused.text);
+    assert!(
+        refused
+            .text
+            .contains("the send's receipt names an envelope other than the one sent"),
+        "{}",
+        refused.text
+    );
+    // The receipt it was answered with is obid's reply's: it stays kept under the reply's id, never
+    // under the request's.
+    let kept = kept_receipts(&folder);
+    assert!(kept.get(&cid).is_none(), "{kept}");
+    assert!(kept.get(&reply).is_some(), "{kept}");
+    all_right(&kept);
+
+    let sent = convene();
+    assert_eq!(sent.status, 202, "{}", sent.text);
+    let recorded = sphere
+        .lock()
+        .entries
+        .iter()
+        .find(|e| e["envelope"]["id"] == json!(cid))
+        .cloned()
+        .expect("recorded once resent");
+    assert_eq!(
+        kept_receipts(&folder)[&cid],
+        json!([recorded["seq"], recorded["hash"]])
+    );
+    all_right(&kept_receipts(&folder));
+    let done = tokio::task::block_in_place(|| exchange(&obid, &cid));
+    assert_eq!(done["messages"][0]["seq"], recorded["seq"]);
+    // Delivered once, whichever calls posted it (obid's status for the question comes too).
+    let mut got = ernesto.receive(1, 20).await;
+    got.extend(ernesto.waiting_after(1).await);
+    let reviews: Vec<&Value> = got
+        .iter()
+        .filter(|e| e["type"] == "review_request")
+        .collect();
+    assert_eq!(reviews.len(), 1, "one request, not two: {got:?}");
+    assert_eq!(reviews[0]["id"], json!(cid));
+    let audit = tokio::task::block_in_place(|| get(&obid, "/v1/obid/sphere/audit"));
+    assert_eq!(audit["verified"], true, "{audit}");
 }
 
 /// Without `council` in its configuration, obid convenes nothing.

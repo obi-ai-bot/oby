@@ -4213,7 +4213,10 @@ impl Link {
         };
         Some(match sent {
             Ok(sent) => {
-                self.keep_receipt(cid, &sent);
+                // Under the resent envelope's own id: Client::send took the receipt because it names
+                // that envelope, never because its id happens to be `cid`.
+                let id = envelope["id"].as_str().unwrap_or_default();
+                self.keep_receipt(id, &sent);
                 self.lock().unconfirmed.remove(cid);
                 self.lock().seen.insert(cid.to_owned());
                 let updated = self.update_exchange(cid, |x| {
