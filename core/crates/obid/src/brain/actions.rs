@@ -161,7 +161,12 @@ fn planned_job(
         attachments: (!asked.attachments.is_empty()).then(|| asked.attachments.to_vec()),
         conversation: Some(asked.conversation.to_owned()),
         base: d.base_branch.clone(),
-        mode: d.mode.map(|m| m.as_str().to_owned()),
+        // Bypass named where it's the owner's own default is the default, not a wider choice:
+        // the job gets it as any job does, with no Confirm (`Jobs::bypass_widens`).
+        mode: d
+            .mode
+            .filter(|m| !(*m == super::plan::Mode::Bypass && !shared.jobs.bypass_widens()))
+            .map(|m| m.as_str().to_owned()),
         brief: d.brief(),
         ..NewJob::default()
     };
@@ -178,7 +183,8 @@ fn planned_job(
 /// would start it, then kept as a `start` item of the conversation, which only the owner's own
 /// Start (Dispatch on its card) starts. `offer` groups items into one card (the turn's); the
 /// turn goes on each job, so once started its card shows under the words that asked. Bypass is
-/// refused: only the owner's Confirm starts a job in it, which `oby_dispatch` asks for.
+/// refused, unless it's the owner's own default: only the owner's Confirm starts a job in it,
+/// which `oby_dispatch` asks for.
 pub async fn offer(
     shared: &Arc<Shared>,
     plan: &Plan,
@@ -187,10 +193,11 @@ pub async fn offer(
     researched: bool,
     live: &(dyn Fn() -> bool + Send + Sync),
 ) -> Result<Vec<Item>, String> {
-    if plan
-        .dispatches
-        .iter()
-        .any(|d| matches!(d.mode, Some(super::plan::Mode::Bypass)))
+    if shared.jobs.bypass_widens()
+        && plan
+            .dispatches
+            .iter()
+            .any(|d| matches!(d.mode, Some(super::plan::Mode::Bypass)))
     {
         return Err(
             "A job in Bypass mode starts only on the owner's own Confirm: oby_dispatch it, and Oby asks them.".into(),
@@ -256,6 +263,7 @@ async fn dispatch(
         let new = planned_job(shared, d, asked, files, researched);
         // A job that would never ask the owner anything widens trust: only their own Confirm
         // starts it (the owner's decision of 2026-10-16; review on #551), untrusted or not.
+        // Not where Bypass is their own default: `planned_job` left the mode out then.
         if new.mode.as_deref() == Some("bypass") {
             let what = describe(&new);
             confirm(
@@ -1160,6 +1168,23 @@ fn set_mode(shared: &Arc<Shared>, plan: &Plan) -> Outcome {
             .filter_map(|id| shared.jobs.get(id))
             .filter(|j| j.status.is_active())
             .collect();
+        // A job in Bypass already asks nothing: there's nothing to widen, so nothing to confirm.
+        let already: Vec<String> = jobs
+            .iter()
+            .filter(|j| crate::jobs::Jobs::mode_of(j) == crate::permissions::Mode::Bypass)
+            .map(crate::job::Job::short_title)
+            .collect();
+        let jobs: Vec<crate::job::Job> = jobs
+            .into_iter()
+            .filter(|j| crate::jobs::Jobs::mode_of(j) != crate::permissions::Mode::Bypass)
+            .collect();
+        if jobs.is_empty() && !already.is_empty() {
+            return Outcome::Done(format!(
+                "{} {} in Bypass mode already: it asks you nothing.",
+                already.join(", "),
+                if already.len() == 1 { "is" } else { "are" }
+            ));
+        }
         if jobs.is_empty() {
             return Outcome::Done("That job isn't running any more.".into());
         }
