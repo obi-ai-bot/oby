@@ -1396,9 +1396,11 @@ async fn token(
         .into_response()
 }
 
-/// `GET /v0.1/health`: `seal: true` but for a Sphere from before sealing.
+/// `GET /v0.1/health`: `seal: true` but for a Sphere from before sealing. It also carries a member
+/// no copy of the spec has: the spec keeps health closed, but obid ignores what it doesn't know, so
+/// sealing still starts against a Sphere that adds one.
 async fn health(State(state): State<Arc<Mutex<SphereState>>>) -> Response {
-    let mut health = json!({"ok": true, "protocol": "obi/0.1"});
+    let mut health = json!({"ok": true, "protocol": "obi/0.1", "a_later_member": {"any": "thing"}});
     if !state.lock().unwrap().predates_sealing {
         health["seal"] = json!(true);
     }
