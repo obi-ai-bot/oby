@@ -742,18 +742,20 @@ pub fn account_json(
     let home = crate::jobs::login_home();
     let usage = shared.jobs.usage.get(&account.id);
     let now = time::now();
+    // Whether its login is there and a run can use it (#626).
+    let signed_in = crate::jobs::signed_in(tool, account, home.as_deref());
     AccountJson {
         id: account.id.clone(),
         agent: tool.id(),
         name: account.name.clone(),
         payer: account.payer.clone(),
-        // Why a login that's there can't run: Codex's token is ending. Else the plan the tool
-        // named (Cursor's `about`, crate::usage).
+        // Why a login that's there can't run: Codex's token is ending. Else, while signed in, the
+        // plan the tool named (Cursor's `about`, crate::usage): a kept plan says nothing of a
+        // login that's gone.
         label: crate::jobs::login_note(tool, account, home.as_deref())
             .map(str::to_owned)
-            .or_else(|| usage.plan.clone()),
-        // Whether its login is there and a run can use it (#626).
-        signed_in: crate::jobs::signed_in(tool, account, home.as_deref()),
+            .or_else(|| signed_in.then(|| usage.plan.clone()).flatten()),
+        signed_in,
         five_hour: usage.five_hour_at(now),
         seven_day: usage.seven_day_at(now),
         five_hour_resets: usage.five_hour_resets.map(time::format),
