@@ -24,18 +24,16 @@ import { askOby, chatOfTask, renameChat, tellAbout, useChats } from './chats';
 import { useConvos } from './peers';
 import { AvatarStack } from './ObyFace';
 import { convoTitle, hasAttachments, type Attachments } from './mock';
-import { TYPES, renameTask, tell, countOf, runningCount, memoryCount, firstTab, hasFresh, useTasks, asksWaiting, type Tab } from './tasks';
+import { TYPES, renameTask, tell, countOf, runningCount, firstTab, hasFresh, useTasks, asksWaiting, type Tab } from './tasks';
 
 // the line over the chips: what's running and what needs you; with neither,
-// Oby asking for something to do. Between them, only while some do, the tasks
-// waiting for the Mac's memory, which aren't running
-function attention(running: number, needs: number, memory = 0) {
+// Oby asking for something to do
+function attention(running: number, needs: number) {
   const r = `${running} running task${running === 1 ? '' : 's'}`;
   const n = `${needs} need${needs === 1 ? 's' : ''} you`;
-  const m = memory ? `${memory} waiting for memory` : undefined;
-  if (running) return [r, m, needs ? n : 'nothing needs you'].filter(Boolean).join(' · ');
-  if (needs) return [m, n].filter(Boolean).join(' · ');
-  return m ?? 'All quiet. Give me something to work on';
+  if (running) return [r, needs ? n : 'nothing needs you'].join(' · ');
+  if (needs) return n;
+  return 'All quiet. Give me something to work on';
 }
 
 // side panel width limits, icons (48px) included
@@ -76,7 +74,7 @@ export default function Home() {
   const convos = useConvos();
   const spheres = useSpheres();
   // what needs you: the tasks', and what obid asks with no task (a GitHub offer, a Confirm)
-  const running = runningCount(), needsYou = countOf('needs') + asksWaiting().length + limitCount, memory = memoryCount();
+  const running = runningCount(), needsYou = countOf('needs') + asksWaiting().length + limitCount;
 
   const [layers, setLayers] = useState<Layer[]>([]);
   const live = layers.filter((l) => !l.leaving);
@@ -397,7 +395,7 @@ export default function Home() {
         <Oby paused={away} glance={onChips && !away} />
         {TYPES.length > 0 && (
           <section className="attention" aria-label="Your tasks">
-            <span className={`attention-label${running || needsYou || memory ? '' : ' is-idle'}`}>{attention(running, needsYou, memory)}</span>
+            <span className={`attention-label${running || needsYou ? '' : ' is-idle'}`}>{attention(running, needsYou)}</span>
             <LimitDecisions />
             {/* what Oby is asking you, answered here; opening one goes to its task's page */}
             <AskStack active={!away} onOpen={openTask} onOpenTalk={(id) => start({ kind: 'talk', id })} />
