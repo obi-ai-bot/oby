@@ -379,13 +379,26 @@ impl Client {
     }
 
     /// Sends a signed envelope. A retry of one already recorded answers its original place (`200`).
+    /// The receipt is the envelope's only when it names it: one with another `id` is refused.
     pub async fn send(&self, token: &str, envelope: &Value) -> Result<Sent, ClientError> {
         let url = self.sphere_path("/messages");
         let (status, body) = self
             .call(|| self.http.post(&url).bearer_auth(token).json(envelope))
             .await?;
         let body = Client::expect(status, body, &[200, 202], "wire/send.response")?;
-        serde_json::from_value(body).map_err(|e| ClientError::Protocol(e.to_string()))
+        Client::receipt(envelope, body)
+    }
+
+    /// The receipt in a send's answer, `body`, when it names `envelope`.
+    fn receipt(envelope: &Value, body: Value) -> Result<Sent, ClientError> {
+        let sent: Sent =
+            serde_json::from_value(body).map_err(|e| ClientError::Protocol(e.to_string()))?;
+        if envelope["id"].as_str() != Some(sent.id.as_str()) {
+            return Err(ClientError::Protocol(
+                "the send's receipt names an envelope other than the one sent".into(),
+            ));
+        }
+        Ok(sent)
     }
 
     /// The deliveries waiting for the Obi, oldest first; the Sphere may hold the call up to `wait`
@@ -454,5 +467,24 @@ mod tests {
         assert_eq!(e.code(), Some("invalid_grant"));
         let e = Client::refused(502, &Value::Null);
         assert_eq!(e.code(), Some("http_502"));
+    }
+
+    /// A send's receipt is taken only when it names the envelope sent.
+    #[test]
+    fn a_receipt_names_the_envelope_sent() {
+        let sent = "0b6f2a4e-8c1d-4e3f-9a5b-7c2d1e0f3a4b";
+        let envelope = json!({"id": sent});
+        let receipt = |id: &str| {
+            json!({"id": id, "seq": 4, "entry_hash": "ab".repeat(32),
+                   "recorded_at": "2026-10-27T09:00:00Z"})
+        };
+        assert_eq!(Client::receipt(&envelope, receipt(sent)).unwrap().id, sent);
+        assert_eq!(
+            Client::receipt(&envelope, receipt("5d3c1b2a-6e4f-4a7b-8c9d-0e1f2a3b4c5d")),
+            Err(ClientError::Protocol(
+                "the send's receipt names an envelope other than the one sent".into()
+            ))
+        );
+        assert!(Client::receipt(&json!({}), receipt(sent)).is_err());
     }
 }

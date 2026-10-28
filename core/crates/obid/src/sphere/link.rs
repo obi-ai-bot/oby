@@ -231,11 +231,13 @@ impl ChainKept {
 }
 
 impl Link {
-    /// Keeps the seq and hash the Sphere answered for a send of this Obi's.
-    fn keep_receipt(&self, sent: &obi_protocol::client::Sent) {
+    /// Keeps the seq and hash the Sphere answered for a send of this Obi's, under the id of the
+    /// envelope sent, `id`: never under one the Sphere named (Client::send refuses a receipt that
+    /// names another envelope).
+    fn keep_receipt(&self, id: &str, sent: &obi_protocol::client::Sent) {
         let mut kept = self.chain.lock().unwrap();
         kept.sends
-            .insert(sent.id.clone(), (sent.seq, sent.entry_hash.clone()));
+            .insert(id.to_owned(), (sent.seq, sent.entry_hash.clone()));
         kept.save(&self.config.home);
     }
 }
@@ -3044,7 +3046,7 @@ impl Link {
             }
             match sent {
                 Ok(sent) => {
-                    self.keep_receipt(&sent);
+                    self.keep_receipt(&id, &sent);
                     self.lock().seen.insert(id);
                     self.update_exchange(cid, |e| {
                         e.outbox.remove(0);
@@ -4372,7 +4374,7 @@ impl Link {
             };
             match sent {
                 Ok(sent) => {
-                    self.keep_receipt(&sent);
+                    self.keep_receipt(&cid, &sent);
                     self.lock().seen.insert(cid.clone());
                     let updated = self.update_exchange(&cid, |e| {
                         e.messages.insert(
