@@ -441,7 +441,7 @@ where
                 );
                 let user = format!(
                     "Read {} with the Read tool, then sort each of its {} items with the schema.",
-                    crate::brain::planner::QUOTED_FILE,
+                    crate::brain::calls::QUOTED_FILE,
                     sent.len()
                 );
                 match ask(user, file.join("\n\n"))
@@ -501,20 +501,12 @@ pub fn spawn(shared: Arc<Shared>) {
                 if at <= now {
                     let batch = &waiting[..waiting.len().min(BATCH)];
                     let (said, asked) = sort(batch, &scratch, |user, file| async move {
-                        use crate::brain::planner::Failure;
+                        use crate::brain::calls::Failure;
                         brain
-                            .side_call(
-                                SYSTEM,
-                                &user,
-                                Some(&file),
-                                SCHEMA,
-                                MODEL_TIMEOUT,
-                                &mut vec![],
-                            )
+                            .side_call(SYSTEM, &user, Some(&file), SCHEMA, MODEL_TIMEOUT)
                             .await
                             .map_err(|failure| match failure {
                                 Failure::Failed(why) | Failure::TimedOut(why) => why,
-                                Failure::Halted => "it was stopped".into(),
                             })
                     })
                     .await;
@@ -570,17 +562,8 @@ pub fn spawn(shared: Arc<Shared>) {
 }
 
 /// The brain's quick model, as the listener and the watcher ask it: none with no Claude Code account.
-fn quick_model(shared: &Shared) -> Option<crate::brain::planner::ClaudeBrain> {
-    let room = crate::brain::planner::Room {
-        root: shared.config.home.join("plans"),
-        jobs: shared.jobs.clone(),
-    };
-    crate::brain::planner::Planner::of(&shared.config, &room)
-        .into_iter()
-        .find_map(|adapter| match adapter {
-            crate::brain::planner::Adapter::Claude(claude) => Some(claude),
-            _ => None,
-        })
+fn quick_model(shared: &Shared) -> Option<crate::brain::calls::Quick> {
+    crate::brain::calls::quick(shared, "triage")
 }
 
 #[cfg(test)]

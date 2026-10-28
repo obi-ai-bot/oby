@@ -160,11 +160,10 @@ impl Obid {
 
 /// obid's configuration: owner wellington, the fixture repository with `node --test` (its
 /// `file://` remote's pull requests on whatever `gh` the test puts first on `PATH`), and
-/// `agent` as Claude Code's binary. Conversations run on obid's plan loop, which these tests
-/// drive; tests/conversation_harness.rs turns the agent session on.
+/// `agent` as Claude Code's binary, which conversations run on too (tests/agents/fake-harness
+/// stands in for both).
 pub fn config(folder: &Path, remote: &Path, agent: &Path) -> Value {
     json!({
-        "conversation": {"agent": "plan"},
         "listen": "127.0.0.1:0",
         "home": folder.join("home"),
         "owner": "wellington",

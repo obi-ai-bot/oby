@@ -2,7 +2,7 @@
 
 The owner's decision (2026-10-17): talking to Oby works like talking to Claude Code, ChatGPT or Codex. A conversation is a real agent session with the agent's own harness (reading and searching code, the web, running things, sub-agents) plus Oby's own tools, and what it makes to be looked at is an artifact the apps show. Sangam's design stays as it is: this is the logic under it. Whichever agent runs the conversation (Claude Code first, then Codex, then anything over ACP), it gets the same Oby tools, so it works the same.
 
-What it replaces: obid's plan loop (`brain/`), where each step is a fresh model call that proposes one typed action. That loop stays as the fallback when no agent account can run, and as the event orchestrator's (#590).
+This replaces obid's plan loop. Conversation turns and event orchestration both use the harness; side calls still use a short, separate model call.
 
 ## 1. Talking and work stay apart
 
@@ -23,23 +23,23 @@ As in Sangam's design (design/app `chats.ts`, `tasks.ts`):
 - **Oby's tools** (section 3), from obid's MCP endpoint for the conversation, `POST /v1/agent/mcp/conversation-<id>` with a token of the session's own, like a job's connected-app broker.
 - **Tetrix**, while Oby is signed in to it: obid's Tetrix server, `POST /v1/agent/tetrix/conversation-<id>` with the same token, as every job's agent has it, but the reads only (no `save_session`: a conversation keeps no outgoing list). Each call's arguments pass the secret scan, each answer is scrubbed and quoted as data, and a call makes the turn count as having read something untrusted. Oby's Tetrix login never reaches the session, and a turn nobody watches has no Tetrix. The orientation says to ask Tetrix first (code, ownership, impact, earlier sessions) and `oby_github` for live GitHub state, which Tetrix doesn't track (the owner's rule of 2026-10-27: Tetrix first, GitHub only for what it doesn't have).
 - **The model.** The account's Claude Code default (Sonnet for talking unless the owner picks another in Settings › Models › Conversations); Opus when the owner asks for it in words for that conversation.
-- **When it can't run** (no agent account signed in, the agent fails twice), the turn falls back to the plan loop and says so in one line.
+- **When it can't run** (no agent account signed in, the agent fails twice), the turn says why in one line.
 
 ## 3. Oby's tools (MCP server `oby`)
 
-The same for every agent. obid checks every call against the same rules the plan loop's actions follow today (`brain/actions.rs`), and anything that persists, widens trust or starts work in Bypass is a `confirm` item only the owner's answer runs.
+The same for every agent. obid checks every call against the same action rules (`brain/actions.rs`), and anything that persists, widens trust or starts work in Bypass is a `confirm` item only the owner's answer runs.
 
 | Tool | Input | Does |
 |---|---|---|
 | `oby_jobs` | `{status?, repo?, limit?}` | Lists jobs, newest first: id, title, status, step, repo, agent, account, PR. |
 | `oby_job` | `{id}` | One job: its request, summary, report, pipeline, PR, files changed, what it's waiting for. Agent-written text is returned as quoted data. |
-| `oby_dispatch` | `{repo, task, kind?, agent?, account?, mode?, issue?, pr?, title?}` | Starts a job from this conversation (`conversation` set on the job, its card on the turn). Same validation as the plan loop's dispatch. After the turn read something untrusted the job is marked `untrusted` and still runs in the owner's mode, Bypass too, inside Oby's box (the owner's decision of 2026-10-27); a Bypass the agent names waits for the owner's Confirm either way. |
+| `oby_dispatch` | `{repo, task, kind?, agent?, account?, mode?, issue?, pr?, title?}` | Starts a job from this conversation (`conversation` set on the job, its card on the turn). The dispatch uses obid's action validation. After the turn read something untrusted the job is marked `untrusted` and still runs in the owner's mode, Bypass too, inside Oby's box (the owner's decision of 2026-10-27); a Bypass the agent names waits for the owner's Confirm either way. |
 | `oby_offer` | as `oby_dispatch` | Offers the job instead of starting it, where the agent would otherwise ask "shall I start…?": planned and checked as `oby_dispatch`'s (the turn's untrusted state, foreign words and check go with it; it counts against the turn's ten), then kept as a `start` inbox item of this conversation with `offer` (docs/runner-api.md, "Inbox item"). One turn's offers are one card under its answer, showing each job in obid's words, the task Oby planned (quoted) and whether the turn had read something untrusted: Dispatch is the owner's own `Start` of each, Skip their `Cancel`, Later puts it off an hour. Nothing starts until that tap; the agent's own `Start` (`oby_answer`) only becomes a `confirm` item. The job it starts names the turn it was offered in (`turn`), so its card goes under that answer. An offer closes by itself after 24 hours, or when its conversation is deleted. Bypass is refused (only the owner's Confirm starts one: `oby_dispatch` asks it), and so is a turn nobody watches. |
 | `oby_tell_job` | `{id, words}` | The owner's words to a job (#542), the agent's quoted after them: running, at its next turn; ended, a follow-up with the same kind, agent, account, repository and conversation, the owner's words its request and what the first job did quoted in its first prompt, its card on the turn (Sangam's design, the owner's decision of 2026-10-18, which replaced #644's one more round). After the turn read something untrusted, the follow-up is a `start` item for the owner's Start. A follow-up counts against the turn's ten jobs, at most one per job a turn. |
 | `oby_stop_job` | `{id}` | Stops a running job. |
 | `oby_inbox` | `{}` | What waits for the owner, what needs them first, each item with its `triage`. |
 | `oby_github` | `{list?}` | What GitHub wants from the owner, as obid's own `gh` login last read it (`mine`, `reviews`, `assigned`); titles quoted. |
-| `oby_answer` | `{item, answer}` | Answers an inbox item the plan loop may answer; the owner's own decisions (permissions, confirms, publishing) are refused with why. |
+| `oby_answer` | `{item, answer}` | Answers an inbox item the brain may answer; the owner's own decisions (permissions, confirms, publishing) are refused with why. |
 | `oby_conversations` | `{query}` | Finds past conversations by what was said (#593). |
 | `oby_artifact` | `{title, path, kind?, artifact?}` | Publishes a file or folder from the room as an artifact, or a new version of `artifact` (section 4). |
 | `oby_read` | `{path, offset?, limit?}` | A text file of the room (`repos/` included), its lines numbered: at most 2,000 lines and 256 KB at a time. Quoted data. |

@@ -1,22 +1,19 @@
-//! `POST /v1/plans`: one turn of the conversation with Oby (Engine/Brain.swift and
-//! `Desk.plan`). The brain plans with a typed schema; obid checks every plan
-//! ([`plan::Plan::problems`]), tells the brain why it refused one and lets it try again, falls
-//! back to Codex and then to keyword rules (which never act on the first step), and does what the
-//! plan says: a reply, a question, the jobs it starts, or an action on the work.
+//! `POST /v1/plans`: one turn of the conversation with Oby. The conversation is a Claude Code (or
+//! Codex) session on the conversation harness ([`harness`]), with Oby's own tools over MCP
+//! ([`tools`]); every action a tool takes is checked as a typed plan ([`plan::Plan::problems`])
+//! and carried out by [`actions`]. The turns nobody watches run there too: a stalled job's
+//! ([`supervisor`]) and obid's own events' ([`orchestrator`]).
 
 pub mod actions;
 pub mod briefing;
+pub mod calls;
 pub mod find;
 pub mod harness;
 pub mod harness_codex;
-pub mod lead;
 pub mod orchestrator;
 pub mod plan;
-pub mod planner;
 pub mod read;
 pub mod recap;
-pub mod research;
-pub mod rules;
 pub mod shell;
 pub mod supervisor;
 pub mod tools;
@@ -336,11 +333,20 @@ pub async fn cancel(State(shared): State<Arc<Shared>>, body: Bytes) -> Result<Re
 fn respond(
     shared: &Shared,
     conversation: &str,
-    talk: Talk,
+    mut talk: Talk,
     details: Option<String>,
     recap: Option<String>,
     artifacts: Vec<Value>,
 ) -> Result<Response, ApiError> {
+    if let Talk::Reply { text, jobs } = &mut talk
+        && jobs.is_empty()
+        && briefing::contradicts(text)
+    {
+        let running = shared.jobs.list(usize::MAX);
+        if briefing::working(&running) > 0 {
+            *text = briefing::working_line(&running, &shared.host);
+        }
+    }
     // The recap is Oby's first line, never a turn the user wrote; an answer with no words keeps
     // it for the next one.
     let recap = match (&talk, recap) {
@@ -454,8 +460,9 @@ pub(super) fn acknowledge(shared: &Shared, control: &turn::Control, text: &str) 
     true
 }
 
-/// What the brain may choose from (`Desk.brainContext`): the accounts, the repositories, the ids
-/// each action may name, and the briefing with `turns` as the conversation so far, `conversation`'s.
+/// What a tool's action may name (`Desk.brainContext`), as [`plan::Plan::problems`] checks it: the
+/// accounts, the repositories and the ids each action may name, `conversation`'s jobs and inbox as
+/// they are now.
 pub(super) fn context(shared: &Shared, conversation: &str, turns: &[Turn], nonce: &str) -> Context {
     let config = &shared.config;
     let now = obi_protocol::time::now();
@@ -520,8 +527,6 @@ pub(super) fn context(shared: &Shared, conversation: &str, turns: &[Turn], nonce
     Context {
         accounts,
         repos: config.repos.names(),
-        briefing: Some(briefing.text()),
-        quoted: briefing.quoted(),
         jobs: briefing.stoppable(),
         movable: briefing.jobs().iter().map(|j| j.id.clone()).collect(),
         models,
@@ -547,26 +552,6 @@ pub(super) fn context(shared: &Shared, conversation: &str, turns: &[Turn], nonce
             .collect(),
         ..Context::default()
     }
-}
-
-/// The own instructions of the repositories the turn's words or its briefing name, the words
-/// first (#543): quoted in the brain's file, never in its prompt.
-pub(super) async fn own(
-    shared: &Shared,
-    said: &str,
-    turns: &[Turn],
-    nonce: &str,
-) -> Vec<briefing::Own> {
-    // Only the repositories it names count: whose conversation doesn't.
-    let briefing = context(shared, "", turns, nonce)
-        .briefing
-        .unwrap_or_default();
-    briefing::own_instructions(
-        &shared.config.home,
-        &shared.config.repos.get(),
-        &[said, &briefing],
-    )
-    .await
 }
 
 /// A job that failed, was stopped or ran out of rounds in the last two days, and wasn't let go:
@@ -616,7 +601,7 @@ fn tool_accounts(
 }
 
 /// The runner reads issue text with its own `gh` login. The body is data: this only extracts and
-/// validates the issue's declared `Files:` paths; it is never added to the planner prompt.
+/// validates the issue's declared `Files:` paths; it never reaches the brain.
 async fn issue_files(repo: &str, issue: u64) -> Option<Vec<String>> {
     let gh = crate::process::resolve_bin("gh")?;
     let output = tokio::time::timeout(
@@ -739,8 +724,8 @@ fn validate_turns(input: Option<Vec<InputTurn>>) -> Result<Option<Vec<Turn>>, Ap
 const ATTACHED_JOBS: usize = 20;
 
 /// What a turn answers when Claude Code found the prompt more than its model can read at once
-/// ([`too_long`]): a message that long, or a conversation grown that long. Neither trying again nor
-/// the plan loop helps.
+/// ([`too_long`]): a message that long, or a conversation grown that long. Trying again doesn't
+/// help.
 pub const TOO_LONG: &str = "That's more than Oby's model can read at once, so nothing was started. Attach long text as a file (+) instead, or send it in parts; if this conversation has grown long, start a new one.";
 
 /// Whether Claude Code ended because the prompt didn't fit its model (its result's

@@ -12108,7 +12108,7 @@ fn file_login_ready(account: &crate::config::Account) -> Result<(), String> {
 }
 
 /// An account's login as obid copies it for a run that must not read the account's folder (the
-/// unboxed brain, `crate::brain::planner`): the Keychain's ([`keychain_login`]), else its
+/// unboxed brain, `crate::brain::calls`): the Keychain's ([`keychain_login`]), else its
 /// `.credentials.json` when that's a regular file, only what calls the API ([`without_refresh`]).
 pub(crate) fn account_login(config_dir: &Path) -> Option<Vec<u8>> {
     keychain_login(Some(config_dir)).or_else(|| folder_login(config_dir))
@@ -16042,7 +16042,7 @@ mod tests {
 
     /// Fail closed on where a job came from: only the owner's own words through Oby's apps (the
     /// jobs API, `vetted`) make a job eligible; a job anything else starts (an event, a routine,
-    /// the brain from an inbox offer or the Lead's brief) isn't, nor a follow-up of one that
+    /// the brain from an inbox offer) isn't, nor a follow-up of one that
     /// isn't; a vetted job stays eligible, and a vetted follow-up of it too.
     #[tokio::test]
     async fn only_the_owners_own_words_make_a_job_eligible() {

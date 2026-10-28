@@ -1,12 +1,13 @@
 //! What the brain may decide (Engine/Brain.swift, `Plan`): schema v1 from #31, every action with
-//! its fields, the JSON schema the model fills with the choices it has right now, and why obid
-//! refuses a plan (`Plan.problems`, the same refusal texts). There is no merge, push, approve or
-//! publish action, and obid checks every plan before anything happens for it.
+//! its fields, and why obid refuses a plan (`Plan.problems`, the same refusal texts). Oby's tools
+//! (super::tools) and the event orchestrator's (super::orchestrator) act through a plan, checked
+//! here first. There is no merge, push, approve or publish action, and obid checks every plan
+//! before anything happens for it.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::Value;
 
 /// How long a reply may be: a few short sentences, which the Mac also speaks.
 pub const REPLY_LENGTH: usize = 400;
@@ -470,10 +471,6 @@ pub struct Context {
     pub repos: Vec<String>,
     /// Handles for untrusted inputs. None yet.
     pub handles: Vec<String>,
-    /// What the brain is told before the user's words.
-    pub briefing: Option<String>,
-    /// What agents wrote, for the brain to read as a quoted file, never in the prompt.
-    pub quoted: Option<String>,
     /// The jobs the brain may stop by id: the briefing's queued and running ones.
     pub jobs: Vec<String>,
     /// The jobs the brain may move or read by id: every job in the briefing.
@@ -489,16 +486,13 @@ pub struct Context {
     pub permissions: Vec<String>,
     /// Pull requests Oby authored (`owner/name#n`) and the jobs that own their review.
     pub review_authors: BTreeMap<String, String>,
-    /// Routing hints for choosing the brain's model; they are not the user's instructions.
-    pub turn_step: usize,
-    pub turn_length: Option<usize>,
     /// The inbox items waiting for the user, by id.
     pub inbox: Vec<String>,
     /// Failure records whose post-mortems permit an automatic fix.
     pub fixable_failures: Vec<String>,
-    /// These additional actions are available only while processing a runner event.
+    /// The plan loop's event orchestrator's (#590): never on a harness turn, so the actions only it
+    /// planned are refused.
     pub orchestrator: bool,
-    pub orchestrator_context: Option<String>,
     /// The user's own words this turn, where "new job", "from scratch" or "start over" is read
     /// (#541). Never the brain's restatement.
     pub said: String,
@@ -1458,135 +1452,10 @@ pub fn is_title(title: &str) -> bool {
     !trimmed.is_empty() && count(trimmed) <= 60 && !trimmed.contains(['\n', '\r'])
 }
 
-fn nullable(object: Value) -> Value {
-    json!({"anyOf": [{"type": "null"}, object]})
-}
-
-/// The JSON schema the model has to fill. It's the same from turn to turn (#534): the schema is
-/// the first thing the model's server reads, so a job or an inbox item in it would undo the cache
-/// on every call. Ids, accounts, models and repositories are strings, checked by
-/// [`Plan::problems`], whose refusal goes back to the model; only the event orchestrator, a
-/// caller of its own, has other actions.
-pub fn schema(context: &Context) -> Value {
-    let modes = json!(["ask", "acceptEdits", "plan", "bypass"]);
-    let tools = json!(["auto", "claude", "codex", "cursor"]);
-    let string = json!({"type": "string"});
-    let dispatch = json!({
-        "type": "object", "additionalProperties": false,
-        "required": ["agent", "account", "repo", "base_branch", "pr", "issue", "epic", "kind", "title", "task", "inputs", "rounds", "check", "complexity", "start_when", "mode", "reads", "findings", "done"],
-        "properties": {
-            "agent": {"enum": tools},
-            "account": string,
-            "repo": string,
-            "base_branch": {"type": ["string", "null"]},
-            "pr": {"type": ["integer", "null"]},
-            "issue": {"type": ["integer", "null"]},
-            // obid can't make one job per sub-issue, or let a job read other repositories, yet.
-            "epic": {"type": "null"},
-            "complexity": {"enum": ["routine", "complex"]},
-            "rounds": {"type": "integer", "minimum": 1, "maximum": 10},
-            "check": {"type": ["string", "null"], "maxLength": 200},
-            "kind": {"enum": Kind::ALL.iter().map(|k| k.as_str()).collect::<Vec<_>>()},
-            "title": {"type": "string", "maxLength": 60},
-            "task": {"type": "string", "maxLength": 2000},
-            "inputs": {"type": "array", "items": string},
-            // obid can't hold a job until something happens yet (#455).
-            "start_when": {"type": "array", "maxItems": 0},
-            "mode": nullable(json!({"enum": modes})),
-            "reads": {"type": "null"},
-            "findings": {"type": "array", "maxItems": MOST_FINDINGS, "items": {
-                "type": "object", "additionalProperties": false, "required": ["path", "lines", "note"],
-                "properties": {"path": {"type": "string", "maxLength": 300},
-                               "lines": {"type": ["string", "null"], "maxLength": 15},
-                               "note": {"type": "string", "maxLength": NOTE_LENGTH}}}},
-            "done": {"type": ["string", "null"], "maxLength": DONE_LENGTH},
-        },
-    });
-    let question = json!({
-        "type": "object", "additionalProperties": false, "required": ["text", "options", "recommended"],
-        "properties": {"text": {"type": "string"},
-                       "options": {"type": "array", "items": {"type": "string"}, "maxItems": MOST_OPTIONS},
-                       "recommended": {"type": ["integer", "null"], "minimum": 0, "maximum": MOST_OPTIONS - 1}},
-    });
-    let setting = json!({
-        "type": "object", "additionalProperties": false,
-        "required": ["agent", "model", "effort", "complex_effort", "max_running", "account", "lift"],
-        "properties": {
-            "agent": nullable(json!({"enum": ["claude", "codex", "cursor"]})),
-            "model": {"type": ["string", "null"]},
-            "effort": {"type": ["string", "null"]},
-            "complex_effort": {"type": ["string", "null"]},
-            "max_running": {"type": ["integer", "null"], "minimum": 1, "maximum": 20},
-            "account": {"type": ["string", "null"]},
-            "lift": {"type": ["boolean", "null"]},
-        },
-    });
-    let lookup = json!({
-        "type": "object", "additionalProperties": false,
-        "required": ["tool", "repo", "ref", "query", "path", "start_line", "end_line", "number", "url"],
-        "properties": {
-            "tool": {"enum": ["search_code", "list_files", "read_file", "git_log", "view_issue", "view_pr", "fetch_url"]},
-            "repo": {"type": ["string", "null"]}, "ref": {"type": ["string", "null"]},
-            "query": {"type": ["string", "null"], "maxLength": 200}, "path": {"type": ["string", "null"], "maxLength": 300},
-            "start_line": {"type": ["integer", "null"], "minimum": 1}, "end_line": {"type": ["integer", "null"], "minimum": 1},
-            "number": {"type": ["integer", "null"], "minimum": 1}, "url": {"type": ["string", "null"]},
-        },
-    });
-    let destination = json!({
-        "type": "object", "additionalProperties": false, "required": ["agent", "account", "model"],
-        "properties": {"agent": {"enum": tools}, "account": string, "model": string},
-    });
-    let mut actions: Vec<&str> = vec![
-        "dispatch",
-        "ask_user",
-        "reply_only",
-        "stop_agent",
-        "move_job",
-        "ignore",
-        "answer_permission",
-        "set_mode",
-        "read_job",
-        "set_setting",
-        "retry_job",
-        "dismiss_job",
-        "answer_inbox",
-        "start_now",
-    ];
-    if !context.orchestrator {
-        actions.extend(["research", "message_job", "find_conversation"]);
-    } else {
-        actions.extend(["message_job", "fix_failure"]);
-    }
-    // Offered whether or not the briefing has an Oby-authored pull request: problems refuses it
-    // for a job that has none.
-    actions.push("ask_review_again");
-    json!({
-        "type": "object", "additionalProperties": false,
-        "required": ["action", "reply", "dispatches", "question", "jobs", "all", "move", "decision", "message", "mode", "setting", "item", "option", "answer", "lookups", "details"],
-        "properties": {
-            "action": {"enum": actions},
-            "reply": {"type": "string", "maxLength": REPLY_LENGTH},
-            "dispatches": {"type": "array", "items": dispatch, "maxItems": MOST_DISPATCHES},
-            "question": nullable(question),
-            "jobs": {"type": "array", "items": string, "maxItems": 10},
-            "all": {"type": "boolean"},
-            "move": nullable(destination),
-            "decision": nullable(json!({"enum": ["allow", "always", "deny"]})),
-            "message": {"type": ["string", "null"], "maxLength": 2000},
-            "mode": nullable(json!({"enum": modes})),
-            "setting": nullable(setting),
-            "item": {"type": ["string", "null"]},
-            "option": {"type": ["integer", "null"], "minimum": 1, "maximum": 20},
-            "answer": {"type": ["string", "null"], "maxLength": 2000},
-            "lookups": {"type": "array", "items": lookup, "maxItems": 4},
-            "details": {"type": ["string", "null"], "maxLength": 4000},
-        },
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     fn reply(text: &str) -> Plan {
         Plan::decode(
@@ -1611,7 +1480,6 @@ mod tests {
         Context {
             accounts: BTreeMap::from([("claude".into(), vec!["default".into()])]),
             repos: vec!["deskree-inc/oby".into()],
-            briefing: Some("# What Oby knows".into()),
             jobs: vec!["ab12cd34".into()],
             ..Context::default()
         }
@@ -1659,15 +1527,6 @@ mod tests {
                 .jobs,
             None
         );
-        // The schema names no job (#534): problems checks them, so it's the same with or without.
-        let schema = schema(&context);
-        assert_eq!(
-            schema["properties"]["jobs"]["items"],
-            json!({"type": "string"})
-        );
-        let required = schema["required"].as_array().unwrap();
-        assert!(required.contains(&json!("jobs")) && required.contains(&json!("all")));
-        assert_eq!(super::schema(&Context::default()), schema);
         let long = Plan::of(Action::ReplyOnly, &"x".repeat(REPLY_LENGTH + 1));
         assert_eq!(
             long.problems(&context, "zq9"),
@@ -1716,24 +1575,6 @@ mod tests {
 
     /// BrainTests.cursorInDispatchEnum: the schema offers Cursor as a tool wherever one is named;
     /// every tool, connected or not (#534), and problems refuses one that isn't connected.
-    #[test]
-    fn cursor_in_dispatch_enum() {
-        let context = Context {
-            accounts: BTreeMap::from([
-                ("auto".into(), vec!["auto".into(), "Work".into()]),
-                ("cursor".into(), vec!["auto".into(), "Work".into()]),
-            ]),
-            repos: vec!["deskree-inc/oby".into()],
-            ..Context::default()
-        };
-        let schema = schema(&context);
-        let dispatch = &schema["properties"]["dispatches"]["items"]["properties"]["agent"]["enum"];
-        assert_eq!(dispatch, &json!(["auto", "claude", "codex", "cursor"]));
-        let setting =
-            &schema["properties"]["setting"]["anyOf"][1]["properties"]["agent"]["anyOf"][1]["enum"];
-        assert_eq!(setting, &json!(["claude", "codex", "cursor"]));
-    }
-
     /// The other actions' fields, with Swift's refusal texts.
     #[test]
     fn job_actions_settings_and_lookups_are_checked() {
@@ -1854,9 +1695,6 @@ mod tests {
         assert!(plan.problems(&context, "zq9").contains(
             &"reads is null: obid's research jobs can't read other repositories yet".to_owned()
         ));
-        let dispatch = &schema(&context)["properties"]["dispatches"]["items"]["properties"];
-        assert_eq!(dispatch["epic"], json!({"type": "null"}));
-        assert_eq!(dispatch["reads"], json!({"type": "null"}));
     }
 
     /// JobActionTests.swiftChecksWhatTheBrainNames
@@ -1928,21 +1766,6 @@ mod tests {
             stray.problems(&context, "c4n4ry"),
             ["only answer_inbox has an item, an option or an answer"]
         );
-        // The schema offers the actions; the items are the briefing's, checked above (#534).
-        let schema = schema(&context).to_string();
-        for part in [
-            "\"retry_job\"",
-            "\"dismiss_job\"",
-            "\"answer_inbox\"",
-            "\"start_now\"",
-        ] {
-            assert!(schema.contains(part), "{part}");
-        }
-        assert!(!schema.contains("fa11ed00-failed-1"));
-        let prompt = crate::brain::planner::system(false);
-        for action in ["retry_job", "dismiss_job", "answer_inbox", "start_now"] {
-            assert!(prompt.contains(action), "{action}");
-        }
     }
 
     /// ReadJobTests.readJobPlansAreChecked
@@ -1964,7 +1787,6 @@ mod tests {
         );
         read.jobs = Some(vec!["aaaa1111".into(), "bbbb2222".into()]);
         assert_eq!(read.problems(&context, "zq9"), ["read_job names one job"]);
-        assert!(schema(&context).to_string().contains("read_job"));
         // It changes nothing, so the loop doesn't count it as an action that did something.
         assert!(!Action::ReadJob.acts() && !Action::Research.acts());
     }
@@ -1992,15 +1814,7 @@ mod tests {
         find.message = Some("the Watch target".into());
         assert!(find.problems(&context, "zq9").is_empty());
         assert!(!Action::FindConversation.acts());
-        assert!(
-            schema(&context)
-                .to_string()
-                .contains("\"find_conversation\"")
-        );
-        assert!(crate::brain::planner::system(false).contains("- find_conversation:"));
         context.orchestrator = true;
-        assert!(!schema(&context).to_string().contains("find_conversation"));
-        assert!(!crate::brain::planner::system(true).contains("- find_conversation:"));
         assert_eq!(
             find.problems(&context, "zq9"),
             ["find_conversation is only for the chat"]
@@ -2032,8 +1846,6 @@ mod tests {
             ]
         );
         assert!(!finish("investigate").is_empty());
-        let system = crate::brain::planner::system(false);
-        assert!(system.contains("finish #19 from PR #124") && !system.contains("(never both)"));
     }
 
     /// #541: work on the issue or pull request of a job that failed, stopped or ran out of rounds
@@ -2122,8 +1934,6 @@ mod tests {
         ] {
             assert!(!starts_over(words), "{words}");
         }
-        let system = crate::brain::planner::system(false);
-        assert!(system.contains("retry_job on it, never a new fix, build or test dispatch"));
     }
 
     /// #540: a job is handed what this turn's lookups showed, and only that.
@@ -2212,17 +2022,6 @@ mod tests {
                 .is_empty()
         );
         assert_eq!(plain.dispatches[0].brief(), None);
-        let schema = schema(&context);
-        let dispatch = &schema["properties"]["dispatches"]["items"];
-        assert_eq!(dispatch["properties"]["findings"]["maxItems"], 10);
-        assert!(
-            dispatch["required"]
-                .as_array()
-                .unwrap()
-                .contains(&json!("done"))
-        );
-        let system = crate::brain::planner::system(false);
-        assert!(system.contains("Never write \"based on your findings\""));
     }
 
     /// #542: the user may tell a job of the briefing something, one whose pull request merged too
@@ -2269,11 +2068,6 @@ mod tests {
             fix.problems(&context, "zq9")
                 .contains(&"fix_failure is only available to Oby's event orchestrator".to_owned())
         );
-        let actions = schema(&context)["properties"]["action"]["enum"].clone();
-        assert!(actions.as_array().unwrap().contains(&json!("message_job")));
-        assert!(!actions.as_array().unwrap().contains(&json!("fix_failure")));
-        let system = crate::brain::planner::system(false);
-        assert!(system.contains("Oby passes on the user's own words, not yours"));
     }
 
     #[test]

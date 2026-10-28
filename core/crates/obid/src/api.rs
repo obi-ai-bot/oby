@@ -236,6 +236,7 @@ pub fn router(shared: Arc<Shared>) -> Router {
         )
         .route("/v1/plans", post(crate::brain::plan))
         .route("/v1/plans/cancel", post(crate::brain::cancel))
+        .route("/v1/brain/usage", get(crate::brain::calls::usage))
         .route("/v1/conversation/stop", post(crate::brain::stop))
         .route("/v1/github/work", get(crate::github_work::get))
         .route("/v1/github/work/refresh", post(crate::github_work::refresh))

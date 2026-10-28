@@ -8,8 +8,10 @@
 //! lives as long as the turn, and Tetrix's reads from obid's Tetrix server (crate::tetrix) with
 //! the same token while Oby is signed in to Tetrix. The words stream as `delta` events, each tool
 //! call is a `step` with its `tool` and `detail`, and the turn ends with Oby's `turn`. When no
-//! Claude Code account is signed in, or the session fails twice, the plan loop answers and says so
-//! in one line.
+//! account is signed in, or the session fails twice, the turn answers why in one line. Each run is
+//! kept with what its CLI said it spent (super::calls). The turns nobody watches run here too, each
+//! in a session of its own: a supervisor's (super::supervisor) and an event's
+//! (super::orchestrator).
 
 use std::collections::{BTreeMap, HashMap};
 use std::ffi::OsString;
@@ -57,9 +59,7 @@ const UNATTENDED: &str =
 const SUPERVISOR_KEPT: &str = "supervisor-session.json";
 /// The file in the session's `HOME` that gives it Oby's MCP server.
 const MCP_FILE: &str = "oby-mcp.json";
-/// The line the plan loop's answer ends with when there was no Claude Code account to talk with.
-pub const NO_ACCOUNT: &str = "no Claude Code account is signed in for conversations";
-/// The line it ends with when the session failed twice.
+/// Why a turn couldn't answer when its session failed twice.
 pub const FAILED_TWICE: &str = "its agent session failed twice";
 /// The most earlier turns a new session is handed, quoted.
 const EARLIER: usize = 20;
@@ -96,12 +96,19 @@ pub struct Session {
     /// A supervisor turn's stalled job, and what it decided (super::supervisor); none for the
     /// owner's own turns.
     pub supervising: Option<Arc<super::supervisor::Watch>>,
+    /// An event turn's events, and what it did (super::orchestrator); none for the owner's turns.
+    pub event: Option<Arc<super::orchestrator::Watch>>,
     /// The end of what each shell call's command wrote, by the command (or its id) the call named,
     /// for its step's `output` (obid only: the conversation's shell).
     pub shell_out: Mutex<HashMap<String, String>>,
 }
 
 impl Session {
+    /// A turn nobody watches: a supervisor's or an event's.
+    pub fn unwatched(&self) -> bool {
+        self.supervising.is_some() || self.event.is_some()
+    }
+
     /// Keeps the end of what a shell call's command wrote, for its step.
     pub fn shell_said(&self, key: &str, tail: String) {
         self.shell_out
@@ -409,9 +416,7 @@ fn may_wait(shared: &Shared, warm: &Warm) -> bool {
 fn prestart(shared: &Arc<Shared>) {
     static STARTING: AtomicBool = AtomicBool::new(false);
     let config = &shared.config.conversation;
-    if !config.harness
-        || config.agent != Tool::Claude
-        || std::env::var_os("OBID_PRESTART").is_some_and(|v| v == "off")
+    if config.agent != Tool::Claude || std::env::var_os("OBID_PRESTART").is_some_and(|v| v == "off")
     {
         return;
     }
@@ -617,9 +622,8 @@ fn new_token() -> String {
     )
 }
 
-/// Runs one conversation turn: in its session when conversations are on the harness and a Claude
-/// Code account is signed in, else (or when the session fails twice) on the plan loop, whose answer
-/// then says why in one line. Roadmap work stays the Lead's (#589), on the plan loop.
+/// Runs one conversation turn in its session; when no account can run it (none signed in, every
+/// one full) or the session fails twice, the answer says why in one line.
 pub async fn run(
     shared: &Arc<Shared>,
     said: &str,
@@ -627,9 +631,6 @@ pub async fn run(
     asked: &Asked<'_>,
     control: &Arc<Control>,
 ) -> Answered {
-    if !shared.config.conversation.harness || super::lead::leads(said) {
-        return turn::run(shared, said, given, asked, control).await;
-    }
     // The agent the configuration names: Claude Code, or Codex (super::harness_codex), on the
     // accounts it thinks with, best first (#874); the one its session is on first while that one
     // has room, so it keeps its session. Another is tried only when a turn's account filled: at
@@ -661,7 +662,7 @@ pub async fn run(
     // One account only while the owner keeps failover off (`accountFailover`, #871).
     let most = if shared.jobs.account_failover() { 3 } else { 1 };
     for account in accounts.iter().take(most) {
-        match session(shared, account, said, given, asked, control, None).await {
+        match session(shared, account, said, given, asked, control, None, None).await {
             Ok(mut answered) => {
                 if !full.is_empty() {
                     let on = format!("Oby answered on {} · {}", tool.name(), account.name);
@@ -693,7 +694,6 @@ pub async fn run(
             end: End::Cancelled,
         };
     }
-    // The plan loop's model reads the same words: it would fail the same way.
     if why == super::TOO_LONG {
         return Answered {
             talk: Talk::reply(super::TOO_LONG),
@@ -701,21 +701,20 @@ pub async fn run(
             end: End::BrainFailed,
         };
     }
-    tracing::info!(
-        "conversation {}: the plan loop answers: {why}",
-        control.conversation
-    );
-    let mut answered = turn::run(shared, said, given, asked, control).await;
     if !full.is_empty() {
         why = full.join("; ");
     }
     let why = placed(&crate::secrets::known().redact(&why), &homes(shared));
-    answered.talk = said_why(answered.talk, "Oby's plan loop answered", &why);
-    answered
+    tracing::info!("conversation {}: no answer: {why}", control.conversation);
+    Answered {
+        talk: Talk::reply(format!("I couldn't answer: {}.", why.trim_end_matches('.'))),
+        details: None,
+        end: End::BrainFailed,
+    }
 }
 
-/// A supervisor turn (super::supervisor) in its conversation's session, on `account`: never the
-/// plan loop, which would read obid's words as the owner's. `Err` says why it couldn't run.
+/// A supervisor turn (super::supervisor) in a session of its own in its conversation's place, on
+/// `account`. `Err` says why it couldn't run.
 pub(super) async fn supervise(
     shared: &Arc<Shared>,
     account: &crate::config::Account,
@@ -731,12 +730,35 @@ pub(super) async fn supervise(
         asked,
         control,
         Some(watch),
+        None,
     )
     .await
 }
 
-/// The plan loop's answer (or another account's, #874), with the line that says who answered and
-/// why: `(<who>: <why>.)`.
+/// An event turn (super::orchestrator) in a session of its own, in the orchestrator's place, on
+/// `account`. `Err` says why it couldn't run.
+pub(super) async fn event(
+    shared: &Arc<Shared>,
+    account: &crate::config::Account,
+    asked: &Asked<'_>,
+    control: &Arc<Control>,
+    watch: Arc<super::orchestrator::Watch>,
+) -> Result<Answered, String> {
+    session(
+        shared,
+        account,
+        asked.said,
+        &[],
+        asked,
+        control,
+        None,
+        Some(watch),
+    )
+    .await
+}
+
+/// Another account's answer (#874), with the line that says who answered and why:
+/// `(<who>: <why>.)`.
 fn said_why(talk: Talk, who: &str, why: &str) -> Talk {
     let line = format!("({who}: {}.)", why.trim_end_matches('.'));
     match talk {
@@ -1078,6 +1100,7 @@ impl Stopwatch {
 }
 
 /// One turn in the conversation's session, tried twice. Why it couldn't answer, when it couldn't.
+#[allow(clippy::too_many_arguments)]
 async fn session(
     shared: &Arc<Shared>,
     account: &crate::config::Account,
@@ -1086,6 +1109,7 @@ async fn session(
     asked: &Asked<'_>,
     control: &Arc<Control>,
     supervising: Option<Arc<super::supervisor::Watch>>,
+    event: Option<Arc<super::orchestrator::Watch>>,
 ) -> Result<Answered, String> {
     let watch = Stopwatch::new();
     let place = Place::of(&shared.config.home, &control.conversation);
@@ -1102,9 +1126,9 @@ async fn session(
     checkouts(shared, &place, &|| control.live()).await;
     watch.mark("repositories");
     super::thinking(shared, control, 1, "Thinking", State::Running);
-    // A supervisor turn runs in a session of its own, never the conversation's: nothing of the
-    // owner's history is in it (super::supervisor), and its id is kept apart.
-    let unattended = supervising.is_some();
+    // A turn nobody watches runs in a session of its own, never the conversation's: nothing of
+    // the owner's history is in it (super::supervisor), and its id is kept apart.
+    let unattended = supervising.is_some() || event.is_some();
     let resumed = kept(&place, &account.id).filter(|_| !unattended);
     let session = Arc::new(Session {
         conversation: control.conversation.clone(),
@@ -1126,11 +1150,12 @@ async fn session(
         room: place.room.clone(),
         artifacts: Mutex::new(vec![]),
         supervising,
+        event,
         shell_out: Mutex::default(),
     });
-    // A supervisor turn is about what an agent wrote: nothing it does counts as the owner's own
-    // words, except what super::supervisor lets it do by itself.
-    if session.supervising.is_some() {
+    // A turn nobody watches is about what an agent wrote: nothing it does counts as the owner's
+    // own words, except what super::supervisor or super::orchestrator lets it do by itself.
+    if session.unwatched() {
         session.taint();
     }
     // Its Claude Code still running from the turn before, on the same session and account.
@@ -1246,7 +1271,7 @@ async fn attempts(
     let deadline = Instant::now() + config.budget;
     let (mcp, url, tetrix) = mcp_config(shared, place, &control.conversation);
     // A turn nobody watches has no Tetrix (super::supervisor).
-    let tetrix = tetrix.filter(|_| session.supervising.is_none());
+    let tetrix = tetrix.filter(|_| !session.unwatched());
     // Codex is given the servers in its arguments instead.
     if tool == Tool::Claude {
         write_mcp(&mcp, &url, tetrix.as_deref(), token)?;
@@ -1297,8 +1322,8 @@ async fn attempts(
         session.taint();
     }
     // Its own task list while something on it is still to do, so a summarized session keeps it;
-    // never a supervisor turn's, which knows only its stalled job (super::supervisor).
-    let (listed, tainted) = if session.supervising.is_some() {
+    // never one nobody watches, which knows only its own job (super::supervisor).
+    let (listed, tainted) = if session.unwatched() {
         Default::default()
     } else {
         shared
@@ -1346,7 +1371,7 @@ async fn attempts(
             None => first.clone(),
         };
         let mut flags = claude_flags(shared, tetrix.is_some());
-        if session.supervising.is_some()
+        if session.unwatched()
             && let Some(at) = flags.iter().position(|f| f == TOOLS)
         {
             flags[at] = UNATTENDED_TOOLS.into();
@@ -1400,7 +1425,7 @@ async fn attempts(
                         tetrix.as_deref(),
                         token,
                         &resume,
-                        session.supervising.is_none(),
+                        !session.unwatched(),
                     )
                     .await?;
                     (Run::Cold(launch), codex)
@@ -1421,6 +1446,7 @@ async fn attempts(
             },
         };
         watch.mark("starting");
+        let began = Instant::now();
         let turn = one(
             shared,
             place,
@@ -1442,7 +1468,32 @@ async fn attempts(
                 continue;
             }
         };
-        let (turn, streamed, running) = turn;
+        let (turn, streamed, running, tokens) = turn;
+        // What the run spent, as its CLI reported it (super::calls).
+        let mut call = super::calls::Call::read(
+            tool.id(),
+            Some(config.model.as_str()),
+            turn.result.as_ref(),
+            began,
+        )
+        .with(tokens.as_ref());
+        if !turn.succeeded() {
+            call.outcome = super::calls::CallOutcome::Failed;
+        }
+        let kind = if session.supervising.is_some() {
+            "supervisor"
+        } else if session.event.is_some() {
+            "event"
+        } else {
+            "conversation"
+        };
+        super::calls::Record::new(
+            kind,
+            Some(&control.conversation),
+            Some(&control.turn),
+            vec![call],
+        )
+        .keep(&shared.config.home);
         // Ended for good (Codex ran a command): not tried again, and its session never picked up,
         // but what ran taints the conversation, and the mark is kept (finding 5).
         if let Some(why) = turn.fatal.clone() {
@@ -1473,7 +1524,7 @@ async fn attempts(
         // supervisor turn's session is never the conversation's (super::supervisor).
         let kept_for = match (running, &turn.session) {
             (Some(conn), Some(id))
-                if turn.succeeded() && control.live() && session.supervising.is_none() =>
+                if turn.succeeded() && control.live() && !session.unwatched() =>
             {
                 Some(Warm {
                     conn,
@@ -1515,7 +1566,7 @@ async fn attempts(
             return Ok((text, End::Answered));
         }
         let why = turn.text().lines().next().unwrap_or("").trim().to_owned();
-        // More than the model can read at once: not tried again, here or on the plan loop (`run`).
+        // More than the model can read at once: not tried again (`run`).
         if super::too_long(&why) {
             return Err(super::TOO_LONG.into());
         }
@@ -1759,7 +1810,12 @@ async fn one(
     limit: Duration,
     codex: Option<&crate::codex::Options>,
     watch: &Stopwatch,
-) -> std::io::Result<(agent::Turn, String, Option<crate::conn::Conn>)> {
+) -> std::io::Result<(
+    agent::Turn,
+    String,
+    Option<crate::conn::Conn>,
+    Option<crate::usage::Tokens>,
+)> {
     let control = &session.control;
     let bounds = place.bounds();
     // Stop and cancel reach the agent: it ends with everything it started.
@@ -1787,7 +1843,12 @@ async fn one(
     let mut steps: HashMap<String, (usize, String, String, String)> = HashMap::new();
     // A shell call's step, by its call: what its command's output is kept under.
     let mut shell_keys: HashMap<String, String> = HashMap::new();
+    // What the run used so far, as its agent said (Codex's `tokenUsage`), stopped or not.
+    let mut tokens = None;
     let on_event = |event: Event| {
+        if let Event::Tokens(used) = &event {
+            tokens = Some(used.clone());
+        }
         if !control.live() {
             return;
         }
@@ -1860,7 +1921,7 @@ async fn one(
         }
     };
     let decide = |tool: &str, input: &Value| {
-        if session.supervising.is_some()
+        if session.unwatched()
             && !tool.starts_with("mcp__oby__")
             && !UNATTENDED_TOOLS.split(',').any(|t| t == tool)
         {
@@ -1889,7 +1950,7 @@ async fn one(
     };
     watching.abort();
     delta(streamed.finish(&secrets));
-    ran.map(|(turn, running)| (turn, streamed.raw, running))
+    ran.map(|(turn, running)| (turn, streamed.raw, running, tokens))
 }
 
 /// What a turn's attempt runs on: an agent it starts, or its conversation's waiting Claude Code.
@@ -2897,6 +2958,7 @@ mod tests {
             room: place.room.clone(),
             artifacts: Mutex::new(vec![]),
             supervising: None,
+            event: None,
             shell_out: Mutex::default(),
         };
         // The run names its session: kept at once, unmarked.
@@ -3161,15 +3223,19 @@ mod tests {
     }
 
     #[test]
-    fn the_plan_loop_says_why_it_answered() {
+    fn another_account_says_why_it_answered() {
+        let full = "Claude Code · Deskree 100%";
         assert_eq!(
-            said_why(Talk::reply("Fine."), "Oby's plan loop answered", NO_ACCOUNT),
-            Talk::reply(format!("Fine.\n(Oby's plan loop answered: {NO_ACCOUNT}.)"))
+            said_why(
+                Talk::reply("Fine."),
+                "Oby answered on Claude Code · Personal",
+                full
+            ),
+            Talk::reply(format!(
+                "Fine.\n(Oby answered on Claude Code · Personal: {full}.)"
+            ))
         );
-        assert_eq!(
-            said_why(Talk::None, "Oby's plan loop answered", NO_ACCOUNT),
-            Talk::None
-        );
+        assert_eq!(said_why(Talk::None, "Oby answered", full), Talk::None);
     }
 
     #[test]
@@ -3192,6 +3258,7 @@ mod tests {
             room: PathBuf::from("/nowhere/room"),
             artifacts: Mutex::new(vec![]),
             supervising: None,
+            event: None,
             shell_out: Mutex::default(),
         }));
         assert!(sessions.session("conversation-c1", &token).is_some());

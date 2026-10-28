@@ -31,6 +31,8 @@
 //   COPY               says which tokens its CODEX_HOME's auth.json holds: "copy: access=… refresh=…"
 //   LEAK               says the tokens of its CODEX_HOME's auth.json and of OBY_MCP_TOKEN
 //   FAIL               the turn fails
+//   USAGE              reports the turn's tokens (thread/tokenUsage/updated: 120 in, 100 of them
+//                      cached, 9 out), then says "used"
 //   anything else      "Nothing to do."
 // It fails the turn when its environment holds a Claude Code, Anthropic or GitHub variable, or
 // obid's API token, and when a thread isn't danger-full-access with untrusted approvals.
@@ -225,6 +227,11 @@ async function act(turnId, words) {
     event(words.slice(7).trim(), turnId, {});
     await new Promise((r) => setTimeout(r, 300));
     return say(turnId, "notice sent");
+  }
+  if (words.startsWith("USAGE")) {
+    const used = { inputTokens: 120, cachedInputTokens: 100, outputTokens: 9, reasoningOutputTokens: 0, totalTokens: 129 };
+    event("thread/tokenUsage/updated", turnId, { tokenUsage: { total: used, last: used } });
+    return say(turnId, "used");
   }
   if (words.startsWith("HELLO")) {
     const search = { type: "webSearch", id: randomUUID(), query: "greetings" };

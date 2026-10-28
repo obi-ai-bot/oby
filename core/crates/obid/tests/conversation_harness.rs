@@ -1251,25 +1251,15 @@ fn the_room_cannot_write_outside_itself() {
     );
 }
 
-/// With no Claude Code account signed in, or a session that fails twice, the plan loop answers,
-/// and says so in one line.
+/// With no Claude Code account signed in, or a session that fails twice, the turn says why in one
+/// line: there's no other brain to answer instead (the plan loop retired on 2026-10-27).
 #[test]
-fn the_plan_loop_answers_when_the_session_cant_run() {
+fn a_turn_says_why_when_the_session_cant_run() {
     let (_folder, obid) = obid("harness-fallback", false);
-    // What the plan loop says depends on whether its brain can run (with no usable login it's
-    // keyword rules, #651); its answer, a reply or a question, ends with the line saying why.
-    let words = |answer: &Answer| {
-        answer.body["text"]
-            .as_str()
-            .or(answer.body["question"]["text"].as_str())
-            .unwrap_or("")
-            .to_owned()
-    };
     let answer = said(&obid, json!({"said": "HELLO", "new": true}));
-    assert!(
-        words(&answer).ends_with(
-            "\n(Oby's plan loop answered: no Claude Code account is signed in for conversations.)"
-        ),
+    assert_eq!(
+        answer.body["text"],
+        "I couldn't answer: no Claude Code account is signed in for conversations.",
         "{}",
         answer.text
     );
@@ -1277,23 +1267,65 @@ fn the_plan_loop_answers_when_the_session_cant_run() {
 
     std::fs::write(obid.home.join("accounts/stub/.credentials.json"), "{}").unwrap();
     let failed = said(&obid, json!({"said": "FAIL", "new": true}));
-    assert!(
-        words(&failed).ends_with("\n(Oby's plan loop answered: its agent session failed twice.)"),
+    assert_eq!(
+        failed.body["text"], "I couldn't answer: its agent session failed twice.",
         "{}",
         failed.text
     );
     assert_eq!(turns(&obid).len(), 2);
 
-    // More than the model can read at once: said plainly, after one try (its third run) and no
-    // plan loop, whose model would read the same words.
+    // More than the model can read at once: said plainly, after one try (its third run).
     let long = said(&obid, json!({"said": "TOOLONG", "new": true}));
     assert_eq!(
-        words(&long),
+        long.body["text"],
         "That's more than Oby's model can read at once, so nothing was started. Attach long text as a file (+) instead, or send it in parts; if this conversation has grown long, start a new one.",
         "{}",
         long.text
     );
     assert_eq!(turns(&obid).len(), 3);
+}
+
+/// Each run of a turn is kept as the brain's, with the numbers Claude Code's `result` line
+/// reported and never the words, and `GET /v1/brain/usage` adds them up by kind.
+#[test]
+fn a_turns_usage_is_kept_from_its_result_line() {
+    let (_folder, obid) = obid("harness-usage", true);
+    let answer = said(&obid, json!({"said": "USAGE", "new": true}));
+    assert_eq!(answer.body["text"], "used", "{}", answer.text);
+    let records: Vec<Value> = std::fs::read_to_string(obid.home.join("brain-turns.jsonl"))
+        .unwrap()
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    let record = records.last().unwrap();
+    assert_eq!(record["kind"], "conversation", "{record}");
+    assert_eq!(record["conversation"], answer.body["conversation"]);
+    let call = &record["calls"][0];
+    assert_eq!(call["adapter"], "claude");
+    assert_eq!(call["model"], "claude-sonnet-5-5");
+    assert_eq!(call["outcome"], "answered");
+    assert_eq!(call["num_turns"], 2);
+    for (key, n) in [
+        ("input_tokens", 11),
+        ("output_tokens", 7),
+        ("cache_read_input_tokens", 5),
+        ("cache_creation_input_tokens", 3),
+    ] {
+        assert_eq!(call[key], n, "{key} in {record}");
+    }
+    assert!(!record.to_string().contains("USAGE"), "{record}");
+    let usage = call_api(&obid);
+    assert_eq!(usage["calls"], 1, "{usage}");
+    assert_eq!(usage["inputTokens"], 11, "{usage}");
+    assert_eq!(usage["cacheReadInputTokens"], 5, "{usage}");
+    assert_eq!(usage["kinds"]["conversation"]["outputTokens"], 7, "{usage}");
+    assert_eq!(usage["since"], record["at"], "{usage}");
+}
+
+fn call_api(obid: &Obid) -> Value {
+    let answer = call(obid, "GET", "/v1/brain/usage", None);
+    assert_eq!(answer.status, 200, "{}", answer.text);
+    answer.body
 }
 
 /// The one job `answer` started, after its turn read something untrusted: marked so, in the

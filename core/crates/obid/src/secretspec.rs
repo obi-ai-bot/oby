@@ -33,15 +33,15 @@
 //!   the jobs API (`Job::vetted`), the owner's words sent to it, and what Oby's conversation plans
 //!   from them while it has read nothing off this list (below). Anything else holding obid's token
 //!   (oby-mcp, a script, an agent, an app that doesn't sign) sends words that aren't: a job they
-//!   start, and one they reach, gets nothing. Not a job an event, a routine, the Lead or an inbox
+//!   start, and one they reach, gets nothing. Not a job an event, a routine or an inbox
 //!   offer started, nor words from an event, the orchestrator or a Confirm of what Oby proposed
 //!   (obid's own Try again aside).
 //! - **Oby's conversation, while clean** (`crate::conversation`, `foreign`): it fails closed the
 //!   same way. The owner's signed words, Oby's own answers, room files outside the repositories'
 //!   checkouts, its own list and a job's end that's clean throughout keep it so; anything else
-//!   marks it for good: words no app signed, turns its client wrote, attachments, the plan loop's
-//!   briefing, the Lead's board, a supervisor's turn, a recap, a check-in, a routine's run, another
-//!   job's report or words, the inbox, past conversations, the web, a command, a helper, any tool
+//!   marks it for good: words no app signed, turns its client wrote, attachments, a supervisor's
+//!   turn, a recap, a check-in, a routine's run, another job's report or words, the inbox, past
+//!   conversations, the web, a command, a helper, any tool
 //!   it doesn't know (`crate::brain::tools`, `reads_foreign`; `crate::brain::harness`,
 //!   `known_safe`). What a marked conversation starts is someone else's from the start, in a clone
 //!   apart; its words, a tell, a continue or a no's, make the job they reach someone else's

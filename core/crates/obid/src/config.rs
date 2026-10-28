@@ -70,13 +70,6 @@ struct File {
     /// Whether this obid may convene a Council review panel (`POST /v1/obid/sphere/council`).
     #[serde(default)]
     council: bool,
-    /// How long one conversation turn may act, in seconds: 1 to 110, 110 when left out.
-    #[serde(default)]
-    turn_budget: Option<u64>,
-    /// The least time a brain is asked to think in, in seconds: 1 to 110, 1 when left out. For
-    /// tests, which widen it so a busy machine can't miss it.
-    #[serde(default)]
-    least_think: Option<u64>,
     orchestrator_delay: Option<u64>,
     /// How long a job may go without progress before it stalls, in seconds: 1 to 86,400, 900
     /// when left out.
@@ -120,8 +113,8 @@ struct File {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ConversationSetting {
-    /// `claude` (a Claude Code session, the default), `codex` (a Codex thread) or `plan` (obid's
-    /// plan loop only).
+    /// `claude` (a Claude Code session, the default) or `codex` (a Codex thread); `plan`, the plan
+    /// loop retired on 2026-10-27, is ignored and named.
     #[serde(default)]
     agent: Option<String>,
     /// The agent's model for conversations; left out, [`CONVERSATION_MODEL`] on Claude Code and
@@ -139,9 +132,6 @@ pub const CONVERSATION_MODEL: &str = "claude-sonnet-5-5";
 /// How conversations run (docs/runner-api.md, "obid only: the conversation harness").
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Conversation {
-    /// True: each conversation is an agent session in its room (the default); false: obid's
-    /// plan loop answers (`"agent": "plan"`).
-    pub harness: bool,
     /// The session's agent: Claude Code (the default) or Codex.
     pub agent: crate::agent::Tool,
     /// Its model; empty for Codex's own.
@@ -236,12 +226,6 @@ pub struct Config {
     pub council: bool,
     /// Where the owner's vault is (crate::vault).
     pub vault: crate::vault::Location,
-    /// How long one conversation turn may plan and act (`Desk.turnBudget`): 110 seconds unless
-    /// `turnBudget` says less, under the apps' 120-second wait.
-    pub turn_budget: std::time::Duration,
-    /// The least time a brain is asked to think in (#615): with less of the turn left, none is.
-    /// [`crate::brain::planner::LEAST`] unless `leastThink` says otherwise, which only tests do.
-    pub least_think: std::time::Duration,
     /// How long the event orchestrator waits for nearby events to come together before its
     /// turn (#590): 30 seconds unless `orchestratorDelay` says otherwise (1 to 600).
     pub orchestrator_delay: std::time::Duration,
@@ -462,13 +446,6 @@ impl Config {
                 }
             }
         };
-        let turn_budget = file.turn_budget.unwrap_or(110);
-        if !(1..=110).contains(&turn_budget) {
-            return invalid(format!(
-                "turnBudget is {turn_budget}: it is 1 to 110 seconds, under the apps' 120-second wait."
-            ));
-        }
-
         let gateway = match file.gateway.as_deref().map(str::parse::<SocketAddr>) {
             None => None,
             Some(Ok(address)) if address.ip() == Ipv4Addr::LOCALHOST => Some(address),
@@ -476,19 +453,6 @@ impl Config {
                 return invalid(format!(
                     "gateway is {:?}: it must be an address on 127.0.0.1 with a port, like 127.0.0.1:8810; put `tailscale serve` in front of it.",
                     file.gateway.unwrap_or_default()
-                ));
-            }
-        };
-
-        let least_think = match file.least_think {
-            None => crate::brain::planner::LEAST,
-            // Less than the whole budget: a turn no brain may ever think in is no turn.
-            Some(least) if (1..turn_budget).contains(&least) => {
-                std::time::Duration::from_secs(least)
-            }
-            Some(least) => {
-                return invalid(format!(
-                    "leastThink is {least}: it is 1 second to less than turnBudget ({turn_budget})."
                 ));
             }
         };
@@ -528,13 +492,18 @@ impl Config {
 
         let setting = file.conversation.as_ref();
         use crate::agent::Tool;
-        let (harness, agent) = match setting.and_then(|c| c.agent.as_deref()) {
-            None | Some("claude") => (true, Tool::Claude),
-            Some("codex") => (true, Tool::Codex),
-            Some("plan") => (false, Tool::Claude),
+        // `plan`, obid's plan loop, retired on 2026-10-27: Claude Code's session answers instead.
+        let mut inside = inside;
+        let agent = match setting.and_then(|c| c.agent.as_deref()) {
+            None | Some("claude") => Tool::Claude,
+            Some("codex") => Tool::Codex,
+            Some("plan") => {
+                inside.push("conversation.agent".into());
+                Tool::Claude
+            }
             Some(other) => {
                 return invalid(format!(
-                    "conversation.agent is {other:?}: it is \"claude\", \"codex\" or \"plan\"."
+                    "conversation.agent is {other:?}: it is \"claude\" or \"codex\"."
                 ));
             }
         };
@@ -573,8 +542,6 @@ impl Config {
             telemetry: file.telemetry,
             council: file.council,
             vault,
-            turn_budget: std::time::Duration::from_secs(turn_budget),
-            least_think,
             orchestrator_delay: std::time::Duration::from_secs(orchestrator_delay),
             stall_after: std::time::Duration::from_secs(stall_after),
             park_after: std::time::Duration::from_secs(park_after),
@@ -587,7 +554,6 @@ impl Config {
             claude_own_sandbox: file.claude_own_sandbox,
             push_relay,
             conversation: Conversation {
-                harness,
                 agent,
                 model,
                 budget: std::time::Duration::from_secs(budget),
@@ -843,25 +809,12 @@ mod tests {
         assert!(config.telemetry);
     }
 
-    /// A conversation turn plans and acts for 110 seconds, or less when `turnBudget` says so.
-    #[test]
-    fn the_turn_budget_is_1_to_110_seconds() {
-        let config = Config::parse(&with(serde_json::json!({}))).unwrap();
-        assert_eq!(config.turn_budget, std::time::Duration::from_secs(110));
-        let config = Config::parse(&with(serde_json::json!({"turnBudget": 5}))).unwrap();
-        assert_eq!(config.turn_budget, std::time::Duration::from_secs(5));
-        for wrong in [0, 111] {
-            let text = with(serde_json::json!({"turnBudget": wrong}));
-            assert!(problem(&text).contains("turnBudget"), "{wrong}");
-        }
-    }
-
     /// Conversations are agent sessions on Sonnet for 10 minutes a turn unless the owner says
-    /// otherwise; `plan` keeps obid's plan loop.
+    /// otherwise; `plan`, the retired plan loop, is Claude Code's session too, and named.
     #[test]
-    fn conversations_are_sessions_unless_the_owner_says_plan() {
+    fn conversations_are_sessions_and_plan_is_retired() {
         let config = Config::parse(&with(serde_json::json!({}))).unwrap();
-        assert!(config.conversation.harness);
+        assert_eq!(config.conversation.agent, crate::agent::Tool::Claude);
         assert_eq!(config.conversation.model, CONVERSATION_MODEL);
         assert_eq!(
             config.conversation.budget,
@@ -870,14 +823,14 @@ mod tests {
         let set = with(serde_json::json!({"conversation":
             {"agent": "plan", "model": "claude-opus-5-5", "budget": 60}}));
         let config = Config::parse(&set).unwrap();
-        assert!(!config.conversation.harness);
+        assert_eq!(config.conversation.agent, crate::agent::Tool::Claude);
+        assert!(config.ignored.contains(&"conversation.agent".to_owned()));
         assert_eq!(config.conversation.model, "claude-opus-5-5");
         let codex = Config::parse(&with(
             serde_json::json!({"conversation": {"agent": "codex"}}),
         ))
         .unwrap()
         .conversation;
-        assert!(codex.harness);
         assert_eq!(codex.agent, crate::agent::Tool::Codex);
         assert_eq!(codex.model, "", "Codex's own model");
         assert_eq!(
@@ -1065,31 +1018,6 @@ mod tests {
             let text = with(serde_json::json!({"orchestratorDelay": wrong}));
             assert!(problem(&text).contains("orchestratorDelay"), "{wrong}");
         }
-    }
-
-    /// #763: tests may give a brain more than a second as the least it thinks in.
-    #[test]
-    fn the_least_think_time_is_1_second_to_under_the_budget() {
-        let config = Config::parse(&with(serde_json::json!({}))).unwrap();
-        assert_eq!(config.least_think, std::time::Duration::from_secs(1));
-        let config = Config::parse(&with(serde_json::json!({"leastThink": 10}))).unwrap();
-        assert_eq!(config.least_think, std::time::Duration::from_secs(10));
-        for wrong in [0, 111] {
-            let text = with(serde_json::json!({"leastThink": wrong}));
-            assert!(problem(&text).contains("leastThink"), "{wrong}");
-        }
-        let text = with(serde_json::json!({"turnBudget": 10, "leastThink": 10}));
-        assert!(
-            problem(&text).contains("less than turnBudget (10)"),
-            "{text}"
-        );
-        let config = Config::parse(&with(
-            serde_json::json!({"turnBudget": 10, "leastThink": 9}),
-        ));
-        assert_eq!(
-            config.unwrap().least_think,
-            std::time::Duration::from_secs(9)
-        );
     }
 
     #[test]
