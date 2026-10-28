@@ -281,6 +281,8 @@ function apply(s: Live, e: Event): Live {
   switch (e.kind) {
     case 'job':
       return { ...s, jobs: { ...s.jobs, [e.job.id]: e.job } };
+    case 'jobGone':
+      return { ...s, jobs: without(s.jobs, e.id) };
     case 'inbox': {
       const rest = s.inbox.filter((i) => i.id !== e.item.id);
       return { ...s, inbox: e.item.state === 'done' ? rest : [...rest, e.item].sort((a, b) => a.created.localeCompare(b.created)) };

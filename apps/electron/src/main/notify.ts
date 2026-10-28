@@ -199,7 +199,7 @@ function post(key: string, a: Alert) {
     done();
     const b = a.buttons[actionIndex];
     // nothing is answered from a locked Mac's alert: the window opens, behind its login
-    if (!b || locked) return open(a.place);
+    if (!b || locked || powerMonitor.getSystemIdleState(60) === 'locked') return open(a.place);
     // not taken (answered elsewhere meanwhile, obid away): the window, on it
     const r = await b.does();
     if (r.status < 200 || r.status >= 300) open(a.place);
@@ -261,11 +261,15 @@ function heard(t: Turn) {
 
 function take(e: Event) {
   if (e.kind === 'job') jobs.set(e.job.id, e.job as ObidJob);
+  else if (e.kind === 'jobGone') jobs.delete(e.id);
   else if (e.kind === 'inbox' && e.item.state === 'done') inbox.delete(e.item.id);
   else if (e.kind === 'inbox') inbox.set(e.item.id, e.item);
   else if (e.kind === 'turn') heard(e.turn);
   else if (e.kind === 'conversation') return void titles.set(e.conversation.id, e.conversation.title);
-  else return;
+  else if (e.kind === 'conversationGone') {
+    titles.delete(e.id); lastAnswer.delete(e.id); answers.delete(e.id); askedAt.delete(e.id);
+    return void withdraw(`turn:${e.id}`);
+  } else return;
   later();
 }
 
@@ -277,12 +281,14 @@ const json = <T>(a: Answer): T | null => { try { return a.status === 200 ? JSON.
 
 // What obid has now: the jobs, the inbox and the conversations' titles
 async function sync(): Promise<boolean> {
-  const [js, items, cs] = await Promise.all(['/v1/jobs?limit=100', '/v1/inbox', '/v1/conversations?limit=200'].map((p) => obid('GET', p)));
+  const [js, items, cs] = await Promise.all(['/v1/jobs', '/v1/inbox', '/v1/conversations?limit=200'].map((p) => obid('GET', p)));
   const listed = json<ObidJob[]>(js), open = json<InboxItem[]>(items);
   if (!listed || !open) return false;
+  jobs.clear();
   for (const j of listed) jobs.set(j.id, j);
   inbox.clear();
   for (const i of open) if (i.state !== 'done') inbox.set(i.id, i);
+  titles.clear();
   for (const c of json<Conversation[]>(cs) ?? []) titles.set(c.id, c.title);
   return true;
 }
