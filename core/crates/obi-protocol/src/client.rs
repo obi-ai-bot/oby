@@ -301,6 +301,13 @@ impl Client {
         ];
         let (status, body) = self.call(|| self.http.post(&url).form(&form)).await?;
         let body = Client::expect(status, body, &[200], "wire/token.response")?;
+        // obid sends its tokens as Bearer: one bound to a key (DPoP) is no token it can use.
+        if body["token_type"] != "Bearer" {
+            return Err(ClientError::Protocol(format!(
+                "the token endpoint answered token_type {}, not Bearer",
+                body["token_type"]
+            )));
+        }
         serde_json::from_value(body).map_err(|e| ClientError::Protocol(e.to_string()))
     }
 

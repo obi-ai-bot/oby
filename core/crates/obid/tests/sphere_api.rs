@@ -3274,3 +3274,102 @@ async fn council_panels_are_off_unless_the_configuration_turns_them_on() {
     assert!(list.as_array().unwrap().is_empty());
     drop(ernesto);
 }
+
+// ---------------------------------------------------------------------------------------------
+// obid's assertions name the server too, where the Obysphere takes that (identity.md 4.1).
+
+/// Waits up to 20 seconds for the fake Sphere to have seen `n` token exchanges.
+fn wait_exchanges(sphere: &FakeSphere, n: usize) -> Vec<String> {
+    for _ in 0..200 {
+        let auds = sphere.lock().actor_auds.clone();
+        if auds.len() >= n {
+            return auds;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    panic!("{} of {n} token exchanges", sphere.lock().actor_auds.len());
+}
+
+/// A Sphere that lists `sphere_url_aud` gets actor assertions that name its URL; one that doesn't,
+/// `obi-sphere:<id>`, as before.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_actor_assertion_names_the_server_where_the_sphere_takes_it() {
+    for binds in [true, false] {
+        let folder = Folder::new(&format!("bound-aud-{binds}"));
+        let sphere = FakeSphere::start().await;
+        let by_url = format!("{}/v0.1/spheres/{SPHERE}", sphere.url);
+        if binds {
+            sphere.lock().url_aud = Some(by_url.clone());
+        }
+        let remote = fixture(&folder.0.join("fixture"));
+        let obid = start(&folder.0, &config(&folder.0, &remote, &stub_agent()), None);
+        let owner = Owner::new("wellington");
+        let auds = tokio::task::block_in_place(|| {
+            join_a(&obid, &sphere, &owner);
+            wait_exchanges(&sphere, 1)
+        });
+        let want = if binds {
+            by_url.clone()
+        } else {
+            format!("obi-sphere:{SPHERE}")
+        };
+        assert_eq!(auds[0], want, "binds {binds}");
+    }
+}
+
+/// A Sphere that lists `sphere_url_aud` but knows itself by another address refuses obid's URL:
+/// obid names the Sphere alone, then and from then on.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_refused_url_audience_falls_back_to_the_sphere_alone() {
+    let folder = Folder::new("bound-aud-refused");
+    let sphere = FakeSphere::start().await;
+    sphere.lock().url_aud = Some("https://another-name.example/v0.1/spheres/e2e".into());
+    sphere.lock().token_lifetime = Some(61);
+    let remote = fixture(&folder.0.join("fixture"));
+    let obid = start(&folder.0, &config(&folder.0, &remote, &stub_agent()), None);
+    let owner = Owner::new("wellington");
+    let auds = tokio::task::block_in_place(|| {
+        join_a(&obid, &sphere, &owner);
+        wait_exchanges(&sphere, 3)
+    });
+    assert!(auds[0].starts_with("http"), "{auds:?}");
+    assert_eq!(auds[1], format!("obi-sphere:{SPHERE}"));
+    assert_eq!(
+        auds[2],
+        format!("obi-sphere:{SPHERE}"),
+        "the next exchange names the Sphere alone at once"
+    );
+}
+
+/// A token endpoint that answers a token bound to a key (DPoP) gives obid no token it can use: the
+/// next exchange fails, and obid says why.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_token_that_isnt_bearer_is_no_token() {
+    let folder = Folder::new("token-type-dpop");
+    let sphere = FakeSphere::start().await;
+    sphere.lock().token_lifetime = Some(61);
+    let remote = fixture(&folder.0.join("fixture"));
+    let obid = start(&folder.0, &config(&folder.0, &remote, &stub_agent()), None);
+    let owner = Owner::new("wellington");
+    let said = tokio::task::block_in_place(|| {
+        join_a(&obid, &sphere, &owner);
+        wait_exchanges(&sphere, 1);
+        // From now on the token endpoint answers a token bound to a key.
+        sphere.lock().token_type = Some("DPoP".into());
+        for _ in 0..200 {
+            let me = get(&obid, "/v1/obid/sphere");
+            if let Some(e) = me["lastError"]
+                .as_str()
+                .filter(|e| e.contains("token_type"))
+            {
+                return e.to_owned();
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        panic!(
+            "obid never said the token isn't Bearer: {}",
+            get(&obid, "/v1/obid/sphere")
+        );
+    });
+    assert!(said.contains("not Bearer"), "{said}");
+}

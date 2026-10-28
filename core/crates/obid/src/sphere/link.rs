@@ -143,6 +143,9 @@ struct State {
     team_takes_card_runtime: bool,
     /// When obid last asked the Sphere's `GET /v0.1/features`, while it didn't list `card_runtime`.
     features_read: i64,
+    /// Whether the Sphere takes an actor assertion that names its URL (`sphere_url_aud`,
+    /// identity.md 4.1), once obid has asked; obid's assertions then name the server too.
+    binds_aud: Option<bool>,
     membership: Option<Membership>,
     delegation: Option<String>,
     client: Option<Client>,
@@ -773,6 +776,7 @@ impl Link {
             team_reads_seal_keys: false,
             sphere_takes_card_runtime: false,
             team_takes_card_runtime: false,
+            binds_aud: None,
             features_read: 0,
             membership,
             delegation,
@@ -1619,6 +1623,7 @@ impl Link {
             state.sphere_takes_card_runtime = false;
             state.team_takes_card_runtime = false;
             state.features_read = 0;
+            state.binds_aud = None;
         }
         *self.chain.lock().unwrap_or_else(|e| e.into_inner()) = ChainKept::default();
         self.pins.forget_all();
@@ -1971,6 +1976,7 @@ impl Link {
                 owner_key: &owner_key,
                 owner: &owner,
                 sphere: &sphere,
+                sphere_url: &url,
                 obi_id: &obi_id,
                 now,
                 needs: &NEEDED_SCOPES,
@@ -2054,15 +2060,48 @@ impl Link {
             )
         };
         let now = time::now();
-        let actor = obi_protocol::identity::actor_assertion(
-            &membership.obi_id,
-            &membership.sphere,
-            &key,
-            now,
-            &new_uuid(),
-        )
-        .map_err(|e| ClientError::Protocol(e.to_string()))?;
-        let token = client.token(&delegation, &actor).await?;
+        // The actor assertion names the server too when the Sphere takes that (identity.md 4.1).
+        let known = self.lock().binds_aud;
+        let binds = match known {
+            Some(known) => known,
+            None => match client.features().await {
+                Ok(features) => {
+                    let binds = features
+                        .iter()
+                        .any(|f| f == obi_protocol::identity::SPHERE_URL_AUD);
+                    self.lock().binds_aud = Some(binds);
+                    binds
+                }
+                // Asked again at the next exchange.
+                Err(_) => false,
+            },
+        };
+        let by_url = binds
+            .then(|| obi_protocol::identity::url_audience(client.base(), &membership.sphere))
+            .flatten();
+        let actor = |aud: &str| {
+            obi_protocol::identity::actor_assertion_for(
+                &membership.obi_id,
+                aud,
+                &key,
+                now,
+                &new_uuid(),
+            )
+            .map_err(|e| ClientError::Protocol(e.to_string()))
+        };
+        let plain = obi_protocol::identity::audience(&membership.sphere);
+        let token = match by_url {
+            Some(aud) => match client.token(&delegation, &actor(&aud)?).await {
+                // A Sphere whose own address isn't the one obid joined by refuses its URL: name
+                // the Sphere alone from now on.
+                Err(ClientError::Refused { code, .. }) if code == "invalid_request" => {
+                    self.lock().binds_aud = Some(false);
+                    client.token(&delegation, &actor(&plain)?).await?
+                }
+                answer => answer?,
+            },
+            None => client.token(&delegation, &actor(&plain)?).await?,
+        };
         crate::secrets::known().learn(SPHERE_TOKEN_SECRET, &token.access_token);
         self.lock().token = Some((token.access_token.clone(), now + token.expires_in));
         Ok(token.access_token)
@@ -6652,6 +6691,7 @@ impl Link {
                         owner_key: &owner_key,
                         owner: &owner,
                         sphere: &membership.sphere,
+                        sphere_url: &membership.url,
                         obi_id: &membership.obi_id,
                         now,
                         needs: &NEEDED_SCOPES,
