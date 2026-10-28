@@ -1,6 +1,6 @@
 import { useSyncExternalStore } from 'react';
 
-// The working folders a conversation's work is in (the message box's Select Working Folder…,
+// The working folders a conversation's work is in (the message box's Select working folder…,
 // the Mac's own picker: main's pick-folders), by conversation, remembered across launches. obid
 // takes none yet (Wellington decides how: asked 2026-10-28), so for now they're the app's only.
 const KEY = 'oby.folders';
@@ -18,13 +18,23 @@ const subscribe = (l: () => void) => { listeners.add(l); return () => { listener
 const NONE: string[] = [];
 
 export const foldersOf = (conversation: string) => all[conversation] ?? NONE;
+// A conversation started here goes by 'new:…' (numbered from 1 again each launch) till obid names
+// it: saved, its folders go under obid's id (live.ts says which: realOf, and saves again once it
+// knows), so the next launch finds them there; still unnamed, they're kept this launch only
+let realOf = (id: string) => id;
+export const nameFoldersBy = (f: (id: string) => string) => { realOf = f; };
+export function saveFolders() {
+  const kept: Record<string, string[]> = {};
+  for (const [c, f] of Object.entries(all)) {
+    const id = c.startsWith('new:') ? realOf(c) : c;
+    if (!id.startsWith('new:')) kept[id] = f;
+  }
+  try { localStorage.setItem(KEY, JSON.stringify(kept)); } catch { /* this launch only, that's all */ }
+}
 export function setFolders(conversation: string, folders: string[]) {
   all = { ...all, [conversation]: folders };
   if (!folders.length) delete all[conversation];
-  // a conversation obid hasn't named yet ('new:…', numbered from 1 again each launch) is kept this
-  // launch only: saved, it'd be the next launch's first new conversation's
-  const kept = Object.fromEntries(Object.entries(all).filter(([c]) => !c.startsWith('new:')));
-  try { localStorage.setItem(KEY, JSON.stringify(kept)); } catch { /* this launch only, that's all */ }
+  saveFolders();
   listeners.forEach((l) => l());
 }
 export const useFolders = (conversation?: string) => useSyncExternalStore(subscribe, () => (conversation ? foldersOf(conversation) : NONE));

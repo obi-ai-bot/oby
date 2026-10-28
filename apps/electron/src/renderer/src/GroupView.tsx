@@ -97,7 +97,8 @@ export default function GroupView({ group, tab: startTab, leaving, covered = fal
         onScroll={onScroll}
         // a click on the room either side of the list closes the group; one in the list's own column
         // (between cards, on its words) doesn't, nor the end of selecting text
-        onClick={(e) => { if (!(e.target as Element).closest('.group-column') && !getSelection()?.toString()) onClose(); }}
+        // (a click in a window it opened, portaled out of it, still bubbles here: not its own)
+        onClick={(e) => { if (e.currentTarget.contains(e.target as Node) && !(e.target as Element).closest('.group-column') && !getSelection()?.toString()) onClose(); }}
       >
         <div className="group-column">
           <h1 className="group-title rise" style={{ '--i': 0 } as React.CSSProperties}>{group.label}</h1>

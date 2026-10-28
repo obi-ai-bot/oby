@@ -49,6 +49,15 @@ export function useSetting<T>(key: string, initial: T): [T, (v: T) => void] {
   );
   return [value, (v) => { values.set(key, v); listeners.forEach((l) => l()); }];
 }
+// The same, kept across launches (localStorage, oby.setting.<key>): what's set here and nowhere
+// else yet (obid has no such setting), so it isn't lost each time the app quits
+export function useKeptSetting<T>(key: string, initial: T): [T, (v: T) => void] {
+  if (!values.has(key)) {
+    try { const kept = localStorage.getItem(`oby.setting.${key}`); if (kept != null) values.set(key, JSON.parse(kept)); } catch { /* the default */ }
+  }
+  const [value, put] = useSetting(key, initial);
+  return [value, (v) => { try { localStorage.setItem(`oby.setting.${key}`, JSON.stringify(v)); } catch { /* this launch only */ } put(v); }];
+}
 
 // How freely a job's agent works, each with its line (RunnerMode in his app)
 const MODES = [
@@ -263,8 +272,9 @@ export type Account = { id: string; agent: Agent; name: string; payer: string; u
 // how full an account (or an agent) is: past 80% yellow, past 90% red
 export const fullness = (used: number) => (used > 90 ? 'is-over' : used > 80 ? 'is-high' : '');
 // an account's week in words, under its session's bar: its share when the tool reported one, else
-// what obid says (not signed in, none reported yet, Cursor's none)
-export const weekWords = (a: Account) => (a.weekly && a.used != null ? `This week ${a.used}% · ${a.resets.replace(/^Resets/, 'resets')}` : a.resets);
+// what obid says (not signed in, none reported yet, Cursor's none); a session but no week: says so
+export const weekWords = (a: Account) => (a.weekly && a.used != null ? `This week ${a.used}% · ${a.resets.replace(/^Resets/, 'resets')}`
+  : a.weekly === false && a.session != null ? 'No weekly use reported yet' : a.resets);
 const ACCOUNTS: Account[] = [
   { id: 'a1', agent: 'claude', name: 'Deskree', payer: 'Deskree', used: 36, resets: 'Resets Thursday', plan: 'seat', session: 12, sessionResets: '4:10 PM', weekly: true },
   { id: 'a2', agent: 'claude', name: 'Personal', payer: 'Doti', used: 82, resets: 'Resets in 2 days', plan: 'personal', session: 86, sessionResets: '2:14 PM', weekly: true },
@@ -605,7 +615,7 @@ type Tuning = { model: string; effort?: string; complexEffort?: string };
 // the mock's
 function useModels(): [(x: Account) => Tuning, ModelOptions, (id: string, change: Partial<Tuning>) => void] {
   const live = useLive().status?.models as Partial<Models> | undefined;
-  const [mine, setMine] = useSetting<Record<string, Partial<Tuning>>>('models.mine', {});
+  const [mine, setMine] = useKeptSetting<Record<string, Partial<Tuning>>>('models.mine', {});
   // each tool's on its own: what obid says it runs over the mock's, so a key obid leaves out isn't lost
   const base = Object.fromEntries((Object.keys(MOCK_MODELS) as Agent[]).map((a) => [a, { ...MOCK_MODELS[a], ...(onObid ? live?.[a] : undefined) }])) as Models;
   const of = (x: Account): Tuning => ({ ...(base[x.agent] ?? { model: 'auto' }), ...mine[x.id] });
@@ -621,7 +631,7 @@ const effortChoices = (list: string[] | undefined, set: string | undefined) =>
 function Agents() {
   const [accounts, setAccounts] = useAccounts();
   const [tuning, options, tune] = useModels();
-  const [chosen, setChosen] = useSetting<string | null>('agent.default', null);
+  const [chosen, setChosen] = useKeptSetting<string | null>('agent.default', null);
   // signing in, as Settings › Accounts does (useSignIns): its states, its problems, the tool's own login
   const { offered, look, signing, put, problems, busy, tried, signIn, sendCode, cancel } = useSignIns(accounts);
   // taking one off, after saying what that does (as Settings › Accounts does)
@@ -751,7 +761,7 @@ function Vault() {
 function About() {
   // updating is the mock's for now: the app has no updater yet (main has none). Checking says it's
   // up to date while it updates itself; with that off, it finds 0.9.3, to show how that looks
-  const [auto, setAuto] = useSetting('updates.auto', true);
+  const [auto, setAuto] = useKeptSetting('updates.auto', true);
   const [found, setFound] = useState<'none' | 'current' | 'update'>('none');
   return <>
     <Group i={1} footer={auto ? 'Oby downloads updates in the background and installs them when you quit.' : undefined}>

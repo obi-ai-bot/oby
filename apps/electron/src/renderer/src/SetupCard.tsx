@@ -116,10 +116,10 @@ export function AgentRows({ bare = false }: { bare?: boolean }) {
   return <>{(Object.keys(AGENTS) as Agent[]).map((a, i) => {
     const st = s.found <= i ? 'looking' : s.agents[a];
     // on obid: the account obid signed in, the code its page wants, Claude Code's code to paste
-    const sub = st === 'looking' ? 'Looking' : st === 'waiting' ? `Finish on ${AGENTS[a].name}’s sign-in page${typed(s.codes[a])}`
+    const sub = bare ? undefined : st === 'looking' ? 'Looking' : st === 'waiting' ? `Finish on ${AGENTS[a].name}’s sign-in page${typed(s.codes[a])}`
       : onObid && st === 'in' ? `Signed in · ${accountOf(a) ?? AGENTS[a].name}` : AGENT_SUB[a][st === 'in' ? 0 : 1];
     return <Row key={a} mark={<BrandMark brand={AGENTS[a].brand} size={22} />} name={AGENTS[a].name} state={st} act={bare ? 'Connect' : 'Sign in'} onAct={() => signInAgent(a)}
-      sub={bare ? undefined : sub} code={bare ? s.codes[a]?.userCode ?? undefined : undefined} bare={bare}>
+      sub={sub} code={bare ? s.codes[a]?.userCode ?? undefined : undefined} bare={bare}>
       {st === 'waiting' && s.codes[a]?.paste ? <PasteCode onCode={(code) => sendAgentCode(a, code)} /> : undefined}
     </Row>;
   })}</>;

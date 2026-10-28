@@ -3,6 +3,7 @@ import { ApiError, api, parseEvent, sseReader, type Conversation, type Event, ty
 import { AGENTS, type Ask, type AskKind, type Job as JobView, type Message, type Offer, type StageId } from './mock';
 import { replaceChats, type Chat } from './chats';
 import { replaceTasks, type Asking, type Task } from './tasks';
+import { nameFoldersBy, saveFolders } from './folders';
 import { replaceAccounts } from './SettingsView';
 import { BRANDS } from './brands';
 import type { GitHubItem } from './mock';
@@ -65,6 +66,9 @@ const without = <T,>(r: Record<string, T>, key: string) => { const { [key]: _, .
 // the app's id for one of obid's conversations, and back
 export const shownId = (c: string) => state.alias[c] ?? c;
 export const realId = (shown: string) => Object.keys(state.alias).find((k) => state.alias[k] === shown) ?? shown;
+// a new conversation's working folders, saved under obid's id once it has one (folders.ts)
+nameFoldersBy(realId);
+let aliasSeen: Live['alias'] | undefined;
 
 // --- obid's state as the screens' conversations and tasks
 
@@ -245,7 +249,9 @@ const tasksOf = (s: Live) => Object.values(s.jobs).sort((a, b) => b.created.loca
 // into the stores the screens read
 let waking: ReturnType<typeof setTimeout> | undefined;
 let accountsFrom: Status | null = null;
+let sessionTurn: ReturnType<typeof setTimeout> | undefined;
 function publish() {
+  if (state.alias !== aliasSeen) { aliasSeen = state.alias; saveFolders(); }
   replaceChats(chatsOf(state));
   replaceTasks(tasksOf(state), { asks: asksOf(state), work: workOf(state.github), error: state.github?.error ?? undefined });
   // what's put off comes back when its time comes, which obid sends no event for: look again then
@@ -259,16 +265,24 @@ function publish() {
   // for each list.
   if (!state.status || state.status === accountsFrom) return;
   accountsFrom = state.status;
+  // a 5-hour window past its reset reads as empty (docs/runner-api.md): drawn again at the soonest
+  // reset still ahead, which obid sends no event for
+  const now = Date.now();
+  clearTimeout(sessionTurn);
+  const ahead = state.status.accounts.map((a) => Date.parse(a.fiveHourResets ?? '')).filter((t) => t > now);
+  if (ahead.length) sessionTurn = setTimeout(() => { accountsFrom = null; publish(); }, Math.min(...ahead) - now + 500);
   replaceAccounts(state.status.accounts.map((a) => {
     const used = a.agent === 'cursor' ? null : a.sevenDay ?? a.fiveHour;
+    const over = !!a.fiveHourResets && Date.parse(a.fiveHourResets) <= now;
+    const session = a.agent === 'cursor' || !a.signedIn || a.fiveHour == null ? null : over ? 0 : Math.round(a.fiveHour * 100);
     return {
       id: a.id, agent: a.agent, name: a.name, payer: a.payer ?? 'You', signedIn: a.signedIn, label: a.label ?? null, used: used == null ? null : Math.round(used * 100),
       resets: !a.signedIn ? a.label ?? 'Not signed in' : a.agent === 'cursor' ? 'Cursor doesn’t report usage' : used == null ? 'No use reported yet'
         : a.sevenDayResets ? `Resets ${new Date(a.sevenDayResets).toLocaleDateString([], { weekday: 'long' })}` : 'No reset reported',
       // the 5-hour session (signed in only), and when it starts over (Settings › Agents' bar, the
       // usage panel's); weekly: whether used is the week's
-      session: a.agent === 'cursor' || !a.signedIn || a.fiveHour == null ? null : Math.round(a.fiveHour * 100),
-      sessionResets: a.fiveHourResets ? new Date(a.fiveHourResets).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : null,
+      session,
+      sessionResets: session != null && !over && a.fiveHourResets ? new Date(a.fiveHourResets).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : null,
       weekly: a.sevenDay != null,
     };
   }));

@@ -91,7 +91,8 @@ export async function signInAgent(a: Agent) {
   // the account this try made, if it did: taken off again when the sign-in doesn't take (the tool
   // not on this Mac, its page closed), so only what was connected shows in Settings › Agents
   let made: string | undefined;
-  const unmake = () => { if (made) void api.removeAccount(made).catch(() => { /* still there: Settings shows it signed out */ }); };
+  // (awaited before the row's button is back: a retry straight after mustn't find it and sign it in)
+  const unmake = async () => { if (made) await api.removeAccount(made).catch(() => { /* still there: Settings shows it signed out */ }); };
   try {
     const s = liveState().status;
     if (s?.availableLogins?.some((l) => l.agent === a)) {
@@ -105,11 +106,11 @@ export async function signInAgent(a: Agent) {
     // a login that didn't take (its page closed, an expired login adopted): the button again,
     // unless a later try took over
     if (!(await until(async () => signedIn(a) || attempts[a] !== mine))) {
-      unmake();
+      await unmake();
       set((x) => ({ ...agentSign(a, 'out'), codes: { ...x.codes, [a]: undefined } }));
     }
   } catch (e) {
-    unmake();
+    await unmake();
     failed(e, () => set(() => agentSign(a, 'out')));
   }
 }
@@ -201,9 +202,12 @@ export const FIRST_TASK = 'Find a small bug in obi and fix it';
 // The new onboarding's agents step (FirstRun.tsx): how each tool really stands, at once (no
 // staged looking). On obid, once it answers (setting up opens before it has): until then each
 // row shows a spinner
+// (one search at a time: a newer one, the step opened again, ends the one before)
+let searches = 0;
 export async function findAgents() {
+  const mine = ++searches;
   set(() => ({ found: 0 }));
-  while (onObid && !liveState().status) await wait(250);
+  while (onObid && !liveState().status) { await wait(250); if (mine !== searches) return; }
   void already();
   set(() => ({ found: 3 }));
 }

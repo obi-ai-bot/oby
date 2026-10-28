@@ -438,20 +438,23 @@ export default function Home() {
                 kind with nothing open opens on its completed ones), so the kinds
                 show here even while the side panel groups by status */}
             <div className={`chips${enterIn ? (arriving ? ' is-waiting' : ' is-arrival') : ''}`} onPointerEnter={() => setOnChips(true)} onPointerLeave={() => setOnChips(false)}>
-                {TYPES.map((c) => (
-                  <button key={c.id} className="chip" onClick={() => start({ kind: 'group', id: c.id, tab: firstTab(c.id) })}>
-                    {/* blue: holds a new task; orange: something in it needs you (a task's decision, or
-                        GitHub's work waiting on you under To do: a review asked of you, an issue of yours);
-                        both can show */}
-                    {(hasFresh(c.id) || countOf('needs', c.id) > 0 || toDoOf(c.id).length > 0) && (
-                      <span className="chip-dots">
-                        {hasFresh(c.id) && <span className="is-fresh" role="img" aria-label="New" />}
-                        {(countOf('needs', c.id) > 0 || toDoOf(c.id).length > 0) && <span className="is-needs" role="img" aria-label="Needs you" />}
-                      </span>
-                    )}
-                    {c.label}
-                  </button>
-                ))}
+                {TYPES.map((c) => {
+                  // blue: holds a new task; orange: something in it needs you (a task's decision, or
+                  // GitHub's work waiting on you under To do: a review asked of you, an issue of yours);
+                  // both can show
+                  const fresh = hasFresh(c.id), needs = countOf('needs', c.id) > 0 || toDoOf(c.id).length > 0;
+                  return (
+                    <button key={c.id} className="chip" onClick={() => start({ kind: 'group', id: c.id, tab: firstTab(c.id) })}>
+                      {(fresh || needs) && (
+                        <span className="chip-dots">
+                          {fresh && <span className="is-fresh" role="img" aria-label="New" />}
+                          {needs && <span className="is-needs" role="img" aria-label="Needs you" />}
+                        </span>
+                      )}
+                      {c.label}
+                    </button>
+                  );
+                })}
             </div>
           </section>
         )}

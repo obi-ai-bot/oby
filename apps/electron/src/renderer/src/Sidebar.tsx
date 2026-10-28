@@ -322,7 +322,9 @@ export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOp
               menu (name, email, Log out) with ?everything */}
           {!everything ? (
             <button className={`rail-button rail-settings${inSettings ? ' is-on' : ''}`} data-tip="Settings" aria-label="Settings" aria-pressed={inSettings}
-              onClick={() => { pick('settings'); if (!activeSetting) onOpenSetting('general'); }}>
+              // a Settings page open: the gear again closes the panel (as a tab's icon does); else it opens
+              // Settings (General), staying on the Settings list if that's showing
+              onClick={() => { if (inSettings && activeSetting) return pick('settings'); if (!inSettings) pick('settings'); if (!activeSetting) onOpenSetting('general'); }}>
               <GearSixIcon size={20} weight={inSettings ? 'fill' : 'regular'} />
             </button>
           ) : (

@@ -934,12 +934,13 @@ button.crumb:hover { color: var(--ink); background: var(--hover); }
 @keyframes add-panel-in { from { opacity: 0; transform: translateY(6px) scale(0.94); } }
 .add-panel.is-opening > button[role], .add-panel.is-opening .add-list > button[role], .add-panel.is-opening .add-foot { animation: add-row-in 200ms var(--warm) both; animation-delay: 50ms; }
 @keyframes add-row-in { from { opacity: 0; transform: translateY(4px); } }
-:is(.add-panel > button[role], .add-list > button[role]):nth-child(2) { animation-delay: 75ms; }
-:is(.add-panel > button[role], .add-list > button[role]):nth-child(3) { animation-delay: 100ms; }
-:is(.add-panel > button[role], .add-list > button[role]):nth-child(4) { animation-delay: 125ms; }
-:is(.add-panel > button[role], .add-list > button[role]):nth-child(5) { animation-delay: 150ms; }
-:is(.add-panel > button[role], .add-list > button[role]):nth-child(n + 6), .add-foot { animation-delay: 175ms; }
-@media (prefers-reduced-motion: reduce) { .add-panel, .add-panel > button[role], .add-list > button[role], .add-foot { animation: none; } }
+/* (each delay as specific as the rule above, or a list's rows would all come at 50ms) */
+.add-panel.is-opening :is(.add-panel > button[role], .add-list > button[role]):nth-child(2) { animation-delay: 75ms; }
+.add-panel.is-opening :is(.add-panel > button[role], .add-list > button[role]):nth-child(3) { animation-delay: 100ms; }
+.add-panel.is-opening :is(.add-panel > button[role], .add-list > button[role]):nth-child(4) { animation-delay: 125ms; }
+.add-panel.is-opening :is(.add-panel > button[role], .add-list > button[role]):nth-child(5) { animation-delay: 150ms; }
+.add-panel.is-opening :is(.add-panel > button[role], .add-list > button[role]):nth-child(n + 6), .add-panel.is-opening .add-foot { animation-delay: 175ms; }
+@media (prefers-reduced-motion: reduce) { .add-panel, .add-panel > button[role], .add-list > button[role], .add-foot { animation: none !important; } }
 .add-panel button[role] { height: 34px; padding: 0 10px; display: flex; align-items: center; gap: 10px; border-radius: 10px; color: var(--text); font-size: var(--text-base); text-align: left; transition: background-color var(--fade), color var(--fade); }
 .add-panel button[role]:is(:hover, :focus-visible) { background: var(--hover); color: var(--ink); }
 .add-panel button[role]:focus-visible { outline: 0; }  /* lit like a hover, as a macOS menu's rows are */

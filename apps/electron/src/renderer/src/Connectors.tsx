@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Check, Copy, Search, X } from 'lucide-react';
 import { BRANDS, BrandMark, type Brand } from './brands';
@@ -78,7 +78,7 @@ function Mock() {
 // What obid last said about both, kept: the page opens on it at once and reads again behind it.
 // Settings reads it as it opens (SettingsView), as obid's first GitHub answer takes a moment (it
 // asks gh: ~600ms; then it's quick)
-let last: { github: GitHub; tetrix: Tetrix } | null = null;
+let last: { github: GitHub; tetrix: Tetrix } | null = null, lastAt = 0;
 let reading: Promise<{ github: GitHub; tetrix: Tetrix }> | null = null;
 // A read already on its way is shared; fresh (after a change: a Disconnect, a sign-in started) waits
 // for it and reads again, so what it shows is from after the change
@@ -87,11 +87,12 @@ function readBoth(fresh = false) {
   const before = reading?.catch(() => {}) ?? Promise.resolve();
   const mine: Promise<{ github: GitHub; tetrix: Tetrix }> = before
     .then(() => Promise.all([api.github(), api.tetrix()]))
-    .then(([github, tetrix]) => (last = { github, tetrix }))
+    .then(([github, tetrix]) => { lastAt = Date.now(); return (last = { github, tetrix }); })
     .finally(() => { if (reading === mine) reading = null; });
   return (reading = mine);
 }
-export const readConnectors = () => { if (onObid) void readBoth().catch(() => { /* the page says why when it opens */ }); };
+// (as Settings opens: each of its pages is a view of its own, so once in 30s, not at each)
+export const readConnectors = () => { if (onObid && Date.now() - lastAt > 30_000) void readBoth().catch(() => { /* the page says why when it opens */ }); };
 
 function Live() {
   const [github, setGitHub] = useState<GitHub | null>(last?.github ?? null);
@@ -156,7 +157,8 @@ function Live() {
         onConnect={(to) => act(async () => page(await api.tetrixSignIn(to)), 'Tetrix')()}
         onCancel={() => { act(api.tetrixCancel)(); setOpen(null); }} />
     )}
-    {open === 'github-off' && <GitHubOffWindow onClose={() => setOpen(null)} />}
+    {/* (closed: read again, in case gh was signed out meanwhile) */}
+    {open === 'github-off' && <GitHubOffWindow onClose={() => { setOpen(null); void read(true); }} />}
   </>;
 }
 
@@ -174,11 +176,14 @@ function serverName(t: Tetrix) {
 
 // A connector's window: its logo and title, a ×, Esc or a click outside closes it
 function Window({ brand, title, onClose, children }: { brand: Brand; title: string; onClose: () => void; children: React.ReactNode }) {
+  // (its latest onClose, listened for once)
+  const close = useRef(onClose);
+  close.current = onClose;
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') { e.stopImmediatePropagation(); onClose(); } };
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') { e.stopImmediatePropagation(); close.current(); } };
     addEventListener('keydown', onKey, true);
     return () => removeEventListener('keydown', onKey, true);
-  }, [onClose]);
+  }, []);
   return createPortal(
     <div className="modal-backdrop" onPointerDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
       <div className="modal is-small" role="dialog" aria-modal="true" aria-label={title}>
@@ -204,11 +209,16 @@ function TetrixWindow({ tetrix: t, waiting, onConnect, onCancel, onClose }: {
   // starting from the one Oby uses (or used last), else the first preset
   const [pick, setPick] = useState(t.preset ?? (t.url ? 'url' : t.presets[0]?.id ?? 'url'));
   const [url, setUrl] = useState(t.preset ? '' : t.url ?? '');
-  const [started, setStarted] = useState(false);
+  // the server Continue was for: the window closes once obid is signed in there (an Edit's old
+  // server being connected already says nothing); a sign-in that didn't take shows the form again
+  const [aim, setAim] = useState<TetrixTarget | null>(null);
   const chosen: TetrixTarget | null = pick === 'url' ? (url.trim() ? { url: url.trim() } : null) : { preset: pick };
   const same = t.connected && !t.error && (pick === 'url' ? !t.preset && url.trim() === t.url : pick === t.preset);
-  // its sign-in done: closed, the row shows it
-  useEffect(() => { if (started && !waiting && t.connected) onClose(); }, [started, waiting, t.connected]);
+  useEffect(() => {
+    if (!aim || waiting) return;
+    const there = 'preset' in aim ? t.preset === aim.preset : !t.preset && t.url === aim.url;
+    if (t.connected && !t.error && there) onClose(); else setAim(null);
+  }, [aim, waiting, t.connected, t.error, t.preset, t.url]);
   const server = pick === 'url' ? (() => { try { return new URL(url).host; } catch { return 'the server'; } })() : t.presets.find((p) => p.id === pick)?.name ?? 'Tetrix';
   // waiting: closing it ends the sign-in, once obid has one to end (while it starts, there's none yet)
   return (
@@ -223,7 +233,7 @@ function TetrixWindow({ tetrix: t, waiting, onConnect, onCancel, onClose }: {
         {pick === 'url' && <input className="modal-field connector-address" value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://tetrix.example.com/mcp" aria-label="Tetrix server address" autoComplete="off" spellCheck={false} autoFocus />}
         <div className="modal-actions">
           <button type="button" className="set-button" onClick={onClose}>Cancel</button>
-          <button type="button" className="modal-primary" disabled={!chosen || same} onClick={() => { if (chosen) { setStarted(true); onConnect(chosen); } }}>Continue in Browser</button>
+          <button type="button" className="modal-primary" disabled={!chosen || same} onClick={() => { if (chosen) { setAim(chosen); onConnect(chosen); } }}>Continue in Browser</button>
         </div>
       </>}
     </Window>
@@ -234,7 +244,14 @@ function TetrixWindow({ tetrix: t, waiting, onConnect, onCancel, onClose }: {
 // gh's login (it's the person's own): GitHub's way out here, board columns (GroupView)
 export function CommandWindow({ brand, title, text, command, onClose }: { brand: Brand; title: string; text: string; command: string; onClose: () => void }) {
   const [copied, setCopied] = useState(false);
-  const copy = () => void navigator.clipboard.writeText(command).then(() => { setCopied(true); setTimeout(() => setCopied(false), 1500); });
+  const back = useRef(0);
+  useEffect(() => () => clearTimeout(back.current), []);
+  // (a refused clipboard: nothing changes, the command's there to select)
+  const copy = () => void navigator.clipboard.writeText(command).then(() => {
+    setCopied(true);
+    clearTimeout(back.current);
+    back.current = window.setTimeout(() => setCopied(false), 1500);
+  }, () => {});
   return (
     <Window brand={brand} title={title} onClose={onClose}>
       <p className="modal-lede">{text}</p>

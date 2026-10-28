@@ -15,14 +15,14 @@ export function useGlide(box: RefObject<HTMLElement | null>, sig: string) {
     const row = box.current;
     // (those on their way out are left to their leave: cancelling it would keep them)
     const els = row ? [...row.querySelectorAll<HTMLElement>('[data-glide]:not([data-leaving])')] : [];
-    // where each is now, against the row (the row itself may move, as a box anchored at its bottom
-    // grows a line): any glide still going is ended first, so it's where it really is; all read
+    // where each is now, against the row and its scroll (the row itself may move, as a box anchored
+    // at its bottom grows a line; past 3 lines it scrolls): any glide still going is ended first, so it's where it really is; all read
     // before anything moves
     els.forEach((el) => el.getAnimations().forEach((a) => a.cancel()));
     const origin = row?.getBoundingClientRect();
     const now = new Map<string, DOMRect>(els.map((el) => {
       const r = el.getBoundingClientRect();
-      return [el.dataset.glide!, new DOMRect(r.left - origin!.left, r.top - origin!.top, r.width, r.height)];
+      return [el.dataset.glide!, new DOMRect(r.left - origin!.left + row!.scrollLeft, r.top - origin!.top + row!.scrollTop, r.width, r.height)];
     }));
     if (!still()) els.forEach((el) => {
       const key = el.dataset.glide!, at = now.get(key)!, was = last.current.get(key);

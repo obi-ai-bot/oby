@@ -15,7 +15,7 @@ import { resetSettingsTip } from './SettingsTip';
 // grows to its usual size. Wellington's setup in Oby's first conversation
 // (onboarding.ts) stays as it is for now; this one opens from the control
 // center (dev/ControlCenter.tsx), and on every launch until it's done (below).
-export type Step = 'hello' | 'tools' | 'knowledge' | 'sphere';
+type Step = 'hello' | 'tools' | 'knowledge' | 'sphere';
 const STEPS: Step[] = ['hello', 'tools', 'knowledge', 'sphere'];
 
 // it opens on every launch until it's been gone through to the end (finishOnboarding);
@@ -41,7 +41,7 @@ export const closeOnboarding = () => { try { localStorage.setItem('oby.setUp', '
 // underneath, and Oby jumps into its place on it ('home'); then this is gone
 export type Handover = null | 'leaving' | 'home';
 let handover: Handover = null;
-export const setHandover = (h: Handover) => { handover = h; listeners.forEach((l) => l()); };
+const setHandover = (h: Handover) => { handover = h; listeners.forEach((l) => l()); };
 export const useHandover = () => useSyncExternalStore(subscribe, () => handover);
 export const finishOnboarding = () => {
   try {

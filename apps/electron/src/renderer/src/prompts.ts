@@ -2,7 +2,7 @@ import { useLayoutEffect, useRef, useState } from 'react';
 
 // What Home's box says while it's empty: Oby asking. No names: there's no account
 // to take one from.
-export const PROMPTS = [
+const PROMPTS = [
   'What should I work on?',
   'Fix a bug, ship a feature, review a PR…',
   'Tell me about any issue',
