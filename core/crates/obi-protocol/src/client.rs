@@ -226,6 +226,26 @@ impl Client {
         Client::expect(status, body, &[200], "wire/health.response")
     }
 
+    /// `GET /v0.1/features`: the additions to obi/0.1 the Sphere takes (spec README, "Versions").
+    /// A Sphere from before answers `404`, which means it takes none.
+    pub async fn features(&self) -> Result<Vec<String>, ClientError> {
+        let url = format!("{}/v0.1/features", self.base);
+        let (status, body) = self.call(|| self.http.get(&url)).await?;
+        if status == 404 {
+            return Ok(Vec::new());
+        }
+        let body = Client::expect(status, body, &[200], "wire/features.response")?;
+        Ok(body["features"]
+            .as_array()
+            .map(|f| {
+                f.iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_owned)
+                    .collect()
+            })
+            .unwrap_or_default())
+    }
+
     /// Redeems an invitation with the owner key and the owner-signed card, and the owner's sign-in
     /// (`{"state", "code"}`) for an invitation limited to a domain (sphere-api.md section 3.1):
     /// answers the member.

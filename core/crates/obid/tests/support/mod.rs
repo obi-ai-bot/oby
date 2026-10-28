@@ -895,6 +895,7 @@ impl TestObi {
                 .map(|s| (s.key_id(), s.public_key()))
                 .as_ref()
                 .map(|(id, public)| (id.as_str(), public.as_str())),
+            runtime: None,
         });
         let signed = card::sign(&unsigned, &owner.key).unwrap();
         let client = obi_protocol::client::Client::new(&sphere.url, SPHERE).unwrap();
@@ -1082,6 +1083,13 @@ pub struct SphereState {
     pub token_lifetime: Option<i64>,
     /// A Sphere from before sealing: its health doesn't say `seal`.
     pub predates_sealing: bool,
+    /// A Sphere that takes a card's `features`, `runtime` and `vendors`: its `GET /v0.1/features`
+    /// lists `card_runtime` (identity.md section 2.3).
+    pub takes_card_runtime: bool,
+    /// What `GET /v0.1/features` answers instead, as a status and a body.
+    pub features_answer: Option<(u16, Value)>,
+    /// How many times `GET /v0.1/features` was asked.
+    pub features_asked: usize,
     /// The next send of this type is recorded and delivered, and its answer is lost: `503`, once
     /// the test lets it go (`FakeSphere::lose_next_answer`).
     pub lose: Option<(String, Arc<tokio::sync::Notify>)>,
@@ -1125,6 +1133,7 @@ impl FakeSphere {
             )
             .route("/v0.1/oauth/token", post(token))
             .route("/v0.1/health", get(health))
+            .route("/v0.1/features", get(features))
             .route("/v0.1/spheres/{sphere}/members", get(members))
             .route("/v0.1/spheres/{sphere}/messages", post(send))
             .route("/v0.1/spheres/{sphere}/deliveries", get(deliveries))
@@ -1396,6 +1405,21 @@ async fn health(State(state): State<Arc<Mutex<SphereState>>>) -> Response {
     axum::Json(health).into_response()
 }
 
+/// `GET /v0.1/features`: `card_runtime` for a Sphere that takes it; `404` from one from before;
+/// or `features_answer`, when a test sets one.
+async fn features(State(state): State<Arc<Mutex<SphereState>>>) -> Response {
+    let mut state = state.lock().unwrap();
+    state.features_asked += 1;
+    if let Some((status, body)) = state.features_answer.clone() {
+        return (StatusCode::from_u16(status).unwrap(), axum::Json(body)).into_response();
+    }
+    if state.takes_card_runtime {
+        axum::Json(json!({"features": ["card_runtime"]})).into_response()
+    } else {
+        sphere_error(StatusCode::NOT_FOUND, "not_found", "no such endpoint")
+    }
+}
+
 async fn members(State(state): State<Arc<Mutex<SphereState>>>, headers: HeaderMap) -> Response {
     let state = state.lock().unwrap();
     if bearer(&state, &headers).is_none() {
@@ -1474,6 +1498,26 @@ async fn put_card(
     if !same_key {
         return sphere_error(StatusCode::BAD_REQUEST, "card_invalid", "another key");
     }
+    // A card that brings card_runtime's members while its own card didn't, and another active
+    // member doesn't take it, waits (spec sphere-api.md section 4: 409 feature_not_taken).
+    let brings = |c: &Value| card::params(c).is_some_and(|p| p.contains_key("features"));
+    if brings(new) && !brings(&member["card"]) {
+        let behind = state.members.iter().any(|m| {
+            m["obi"] != obi.as_str()
+                && m["status"] == "active"
+                && !obi_protocol::identity::takes_card_runtime(&m["card"])
+        });
+        if behind {
+            return sphere_error(
+                StatusCode::CONFLICT,
+                "feature_not_taken",
+                "a member doesn't take card_runtime",
+            );
+        }
+    }
+    let Some(member) = state.members.iter_mut().find(|m| m["obi"] == obi.as_str()) else {
+        return sphere_error(StatusCode::NOT_FOUND, "not_found", "no such member");
+    };
     member["card"] = new.clone();
     axum::Json(member.clone()).into_response()
 }
