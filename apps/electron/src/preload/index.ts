@@ -25,6 +25,21 @@ contextBridge.exposeInMainWorld('app', {
   openExternal: (url: string) => ipcRenderer.send('open-external', url),
   // System Settings › General › Login Items, where macOS asks to approve obid
   openLoginItems: () => ipcRenderer.send('open-login-items'),
+  // Oby's alerts (main/notify.ts): what the page shows (a job's page, a conversation, {} for
+  // Home), so nothing alerts for it; where a clicked alert opens, asked of main whenever it says
+  // one was (and once now, for the click that opened the window); and Settings › Notifications
+  showing: (place: { job?: string; conversation?: string } | null) => ipcRenderer.send('showing', place),
+  onOpen(fn: (place: { job?: string; conversation?: string }) => void) {
+    const pull = () => void ipcRenderer.invoke('opened').then((place) => { if (place) fn(place); });
+    ipcRenderer.on('open', pull);
+    pull();
+    return () => { ipcRenderer.off('open', pull); };
+  },
+  notifications: {
+    // on or off; with a value, turned to it
+    alerts: (on?: boolean) => ipcRenderer.invoke('notifications', on) as Promise<boolean | null>,
+    openSystemSettings: () => ipcRenderer.send('open-notification-settings'),
+  },
   // obid, through main, which holds its token (main/obid.ts): one call, and the event stream's
   // text as it comes, then how it ended. Following again replaces the stream before.
   obid: {

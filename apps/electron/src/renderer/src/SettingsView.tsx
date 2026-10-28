@@ -125,9 +125,7 @@ function General() {
         <Select value={language} onChange={setLanguage} label="Speech language" options={[['system', 'Mac language'], ['en-US', 'English'], ['pt-BR', 'Português (Brasil)'], ['pt-PT', 'Português (Portugal)']]} />
       </Row>
     </Group>
-    <Group i={4} title="Notifications" footer="Oby alerts you when a job needs you: ready to publish, failed or interrupted, a question for you, out of reviews or not merged. An alert opens its job.">
-      <Row label="Alerts"><Value>Allowed</Value></Row>
-    </Group>
+    <Notifications />
   </>;
 }
 
@@ -159,6 +157,24 @@ function MockMacPermissions() {
       { decision: 'Denied', repo: 'deskree-inc/tetrix-ee', rule: 'Bash(git push --force:*)' },
     ]} />
   </>;
+}
+
+// Notifications: on obid, Oby's alerts on this Mac on or off (main/notify.ts keeps it in the app's
+// own folder), and macOS's own settings for them (allowed, banners, sounds, Focus); otherwise
+// Sangam's demo row
+function Notifications() {
+  const bridge = onObid ? window.app?.notifications : undefined;
+  const [alerts, setAlerts] = useState<boolean | null>(null);
+  useEffect(() => { void bridge?.alerts().then(setAlerts); }, []);
+  const turn = (on: boolean) => { setAlerts(on); void bridge?.alerts(on).then(setAlerts); };
+  return (
+    <Group i={4} title="Notifications" footer="Oby alerts you when a job needs you: ready to publish, failed or interrupted, a question for you, out of reviews or not merged. An alert opens its job.">
+      {bridge ? <>
+        <Row label="Alerts"><Switch on={alerts ?? true} onChange={turn} label="Alerts" /></Row>
+        <Row label="Banners, sounds and Focus"><button className="set-button" onClick={bridge.openSystemSettings}>Open System Settings</button></Row>
+      </> : <Row label="Alerts"><Value>Allowed</Value></Row>}
+    </Group>
+  );
 }
 
 // Runner: the always-on runner and how this Mac reaches it, keeping this Mac

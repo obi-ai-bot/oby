@@ -17,7 +17,7 @@ const O = constants;
 const keyFile = () => join(app.getPath('userData'), 'device-key');
 
 // A file written fresh, 0600, never through a link
-function writeOwn(path: string, data: string | Buffer, flags: number) {
+export function writeOwn(path: string, data: string | Buffer, flags: number) {
   const fd = openSync(path, O.O_WRONLY | O.O_CREAT | O.O_NOFOLLOW | flags, 0o600);
   try { writeSync(fd, typeof data === 'string' ? Buffer.from(data) : data); } finally { closeSync(fd); }
 }
