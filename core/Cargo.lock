@@ -1481,8 +1481,6 @@ dependencies = [
  "p256",
  "regex",
  "reqwest",
- "rustls",
- "rustls-platform-verifier",
  "security-framework",
  "serde",
  "serde_json",

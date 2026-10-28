@@ -15,10 +15,9 @@ repository = "https://github.com/obi-ai-bot/obi"
 publish = false
 
 [workspace.dependencies]
-# Async runtime and traits (the plug-in traits in docs/ARCHITECTURE.md 5.5 are async-trait).
+# Async runtime.
 tokio = { version = "1.53", features = ["full"] }
-async-trait = "0.1.92"
-# JSON everywhere: the runner API, the plug-in wire protocol, the Obi-to-Obi protocol.
+# JSON everywhere: the runner API and the Obi-to-Obi protocol.
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 # Errors and logs.
@@ -55,7 +54,7 @@ futures-util = { version = "0.3.34", default-features = false, features = ["std"
 tokio-stream = { version = "0.1.19", features = ["sync"] }
 # Routines' times in the owner's IANA zone, daylight saving included, from the system's tz database.
 jiff = "0.2.37"
-# The job channel (native roots) and the Slack listener (#839) share one version.
+# The Sphere relay (crates/obid/src/relay): WebSocket over native roots.
 tokio-tungstenite = { version = "0.30.0", default-features = false, features = ["connect", "__rustls-tls", "rustls-tls-native-roots"] }
 
 # obid ships inside Oby.app without symbols: 58.9 MB for both architectures, against 73.6 MB with

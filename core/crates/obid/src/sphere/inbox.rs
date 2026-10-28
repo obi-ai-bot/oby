@@ -932,14 +932,6 @@ pub fn review_item(job: &crate::job::Job, review: &str, error: &str) -> Item {
     }
 }
 
-/// A `watch` item's id: `watch-` and 16 hex characters of its notice's key.
-pub fn watch_item_id(key: &str) -> String {
-    format!(
-        "watch-{}",
-        &hex::encode(obi_protocol::keys::sha256(key.as_bytes()))[..16]
-    )
-}
-
 /// A permission item's id: `<job>-permission-<permission>`.
 pub fn permission_item_id(job: &str, permission: &str) -> String {
     format!("{job}-permission-{permission}")

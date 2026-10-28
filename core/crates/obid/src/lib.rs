@@ -123,12 +123,7 @@ pub const START_ERROR: &str = "last-start-error";
 
 /// Keeps `reason` in `home/last-start-error` (making `home`, 0700, when it isn't there yet).
 pub fn note_start_error(home: &std::path::Path, reason: &str) {
-    let mut builder = std::fs::DirBuilder::new();
-    builder.recursive(true);
-    #[cfg(unix)]
-    std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
-    let written = builder
-        .create(home)
+    let written = store::make_private_dir(home)
         .and_then(|()| std::fs::write(home.join(START_ERROR), format!("{reason}\n")));
     if let Err(e) = written {
         eprintln!(
@@ -165,14 +160,7 @@ pub fn prepare_home(config: &Config) -> Result<(), StartError> {
     if home.is_dir() {
         return keep_private(home).map_err(err);
     }
-    let mut builder = std::fs::DirBuilder::new();
-    builder.recursive(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::DirBuilderExt;
-        builder.mode(0o700);
-    }
-    builder.create(home).map_err(err)?;
+    store::make_private_dir(home).map_err(err)?;
     // `recursive` makes missing parents with the umask's mode; `home` itself gets 0700 even
     // when it raced into existence another way.
     keep_private(home).map_err(err)

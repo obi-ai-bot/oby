@@ -537,17 +537,7 @@ impl Transcripts {
             return entries;
         }
         let path = self.path(job);
-        let written = (|| -> std::io::Result<()> {
-            crate::store::make_private_dir(path.parent().expect("a folder"))?;
-            let mut options = std::fs::OpenOptions::new();
-            options.append(true).create(true);
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::OpenOptionsExt;
-                options.mode(0o600);
-            }
-            options.open(&path)?.write_all(text.as_bytes())
-        })();
+        let written = append(&path, &text);
         match written {
             Ok(()) => {
                 live.bytes += text.len() as u64;
