@@ -41,8 +41,8 @@ pub fn parse(token: &str) -> Option<Parts> {
     if parts.next().is_some() {
         return None;
     }
-    let header: Value = serde_json::from_slice(&from_b64url(head)?).ok()?;
-    let claims: Value = serde_json::from_slice(&from_b64url(body)?).ok()?;
+    let header: Value = crate::json::from_slice(&from_b64url(head)?).ok()?;
+    let claims: Value = crate::json::from_slice(&from_b64url(body)?).ok()?;
     if !schema::is_valid("wire/jws-header", &header) || header["typ"] != "JWT" {
         return None;
     }

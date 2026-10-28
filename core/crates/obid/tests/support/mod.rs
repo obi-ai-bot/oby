@@ -1088,6 +1088,9 @@ pub struct SphereState {
     pub takes_card_runtime: bool,
     /// What `GET /v0.1/features` answers instead, as a status and a body.
     pub features_answer: Option<(u16, Value)>,
+    /// What `GET /v0.1/features` answers instead, `200` with this body as written: JSON a
+    /// `Value` can't hold, a member twice say.
+    pub features_raw: Option<String>,
     /// How many times `GET /v0.1/features` was asked.
     pub features_asked: usize,
     /// The next send of this type is recorded and delivered, and its answer is lost: `503`, once
@@ -1412,6 +1415,14 @@ async fn health(State(state): State<Arc<Mutex<SphereState>>>) -> Response {
 async fn features(State(state): State<Arc<Mutex<SphereState>>>) -> Response {
     let mut state = state.lock().unwrap();
     state.features_asked += 1;
+    if let Some(raw) = state.features_raw.clone() {
+        return (
+            StatusCode::OK,
+            [(axum::http::header::CONTENT_TYPE, "application/json")],
+            raw,
+        )
+            .into_response();
+    }
     if let Some((status, body)) = state.features_answer.clone() {
         return (StatusCode::from_u16(status).unwrap(), axum::Json(body)).into_response();
     }

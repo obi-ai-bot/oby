@@ -59,9 +59,10 @@ impl Frame {
         })
     }
 
-    /// The payload as JSON, for `open` frames and the control stream.
+    /// The payload as JSON, for `open` frames and the control stream, read strictly (protocol.md
+    /// section 2).
     pub fn value(&self) -> Option<Value> {
-        serde_json::from_slice(&self.payload).ok()
+        obi_protocol::json::from_slice(&self.payload).ok()
     }
 }
 

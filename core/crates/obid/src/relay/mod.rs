@@ -843,7 +843,7 @@ fn heard(shared: &Arc<Shared>, gateway: &Router, message: Message) -> Result<Hea
         }
         Message::Text(text) if text.as_str() == "pong" => return Ok(Heard::Pong),
         Message::Text(text) => {
-            let said: Value = serde_json::from_str(text.as_str()).unwrap_or_default();
+            let said: Value = obi_protocol::json::from_str(text.as_str()).unwrap_or_default();
             if said["peer"] == "left"
                 && let Some(device) = said["device"].as_str()
             {
