@@ -4,6 +4,7 @@ import { lstatSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { bridge, startObid, stopFollowing, type Trusted } from './obid';
 import { confirming } from './device';
+import { notifying, windowLeft, windowSeen } from './notify';
 
 // One small window: Oby, what needs you, and a way to talk. The renderer gets
 // the cursor's position wherever it is on screen, so Oby can watch it outside
@@ -114,7 +115,10 @@ function createWindow() {
   win.on('restore', () => track(true));
   win.on('hide', () => track(false));
   win.on('minimize', () => track(false));
-  win.on('closed', () => { track(false); stopFollowing(); win = null; });
+  win.on('closed', () => { track(false); stopFollowing(); win = null; windowLeft(); });
+  // Oby's alerts (notify.ts): none for what the window shows while it's in front
+  win.on('focus', windowSeen);
+  for (const ev of ['blur', 'hide', 'minimize'] as const) win.on(ev as 'blur', windowLeft);
   // the page holds obid's API through main: it never leaves for another page or opens one (in dev,
   // only to itself with other words after ?, like ?welcome)
   win.webContents.on('will-navigate', (e, url) => {
@@ -135,6 +139,14 @@ app.whenReady().then(() => {
   // the Dock icon while developing (a packaged app takes apps/icon/AppIcon.icon, electron-builder.yml)
   if (process.platform === 'darwin' && !app.isPackaged) app.dock?.setIcon(join(__dirname, '../../../icon/exports/oby-1024.png'));
   startObid();
+  // a clicked alert: the window, opened again if it was closed, in front
+  notifying(trusted, () => win, () => {
+    if (!win) createWindow();
+    if (win!.isMinimized()) win!.restore();
+    win!.show();
+    win!.focus();
+    return win!;
+  });
   createWindow();
   app.on('activate', () => { if (!win) createWindow(); });
 });

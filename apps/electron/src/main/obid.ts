@@ -10,10 +10,13 @@ import { promisify } from 'node:util';
 // call ('obid') and for the event stream ('obid-follow'), and main adds the bearer. Nothing but
 // obid's /v1 API is reachable this way, and only from this app's own page (trusted).
 
-// fixed: obid never moves to another port, and neither does the app
-const BASE = 'http://127.0.0.1:7777';
+// fixed: obid never moves to another port, and neither does the app. In development only,
+// OBID_PORT and OBID_HOME point it at a scratch obid run by hand (a live check's), never the
+// installed one's; a packaged app ignores them.
+const PORT = (!app.isPackaged && Number(process.env.OBID_PORT)) || 7777;
+const BASE = `http://127.0.0.1:${PORT}`;
 // ponytail: macOS only, as the Swift app's runner home; follows obid's `home` when the app starts it
-export const HOME = join(homedir(), 'Library/Application Support/Oby/Runner');
+export const HOME = (!app.isPackaged && process.env.OBID_HOME) || join(homedir(), 'Library/Application Support/Oby/Runner');
 const METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
 
 // A file in obid's home, read only when it's a regular file of this user's, never through a link;
@@ -61,7 +64,7 @@ async function listener(): Promise<'mine' | 'foreign' | 'none'> {
   if (Date.now() < mineUntil) return 'mine';
   let pids: string[] = [];
   try {
-    pids = (await run('/usr/sbin/lsof', ['-nP', '-a', '-iTCP@127.0.0.1:7777', '-sTCP:LISTEN', '-t'])).stdout.split('\n').filter(Boolean);
+    pids = (await run('/usr/sbin/lsof', ['-nP', '-a', `-iTCP@127.0.0.1:${PORT}`, '-sTCP:LISTEN', '-t'])).stdout.split('\n').filter(Boolean);
   } catch { /* exit 1: no process of this user's listens there */ }
   if (!pids.length) return await answers() ? 'foreign' : 'none';
   const launchds = await Promise.all([LABEL, SESSION, ...Object.keys(OTHERS)].map(async (label) => field(await launchd(label), 'pid')));
@@ -75,7 +78,7 @@ async function listener(): Promise<'mine' | 'foreign' | 'none'> {
 // What a call or the stream came back with: obid's status and body, or (status 0) why it didn't answer
 export type Answer = { status: number; text: string; why?: 'waiting' | 'approval' };
 
-async function send(method: string, path: string, body: unknown, signal?: AbortSignal): Promise<Response | Answer> {
+export async function send(method: string, path: string, body: unknown, signal?: AbortSignal): Promise<Response | Answer> {
   // only obid's API: never another host, never another path
   if (!METHODS.has(method) || !/^\/v1\/[^\s#]*$/.test(path) || !new URL(BASE + path).pathname.startsWith('/v1/')) return { status: 400, text: JSON.stringify({ error: 'Not an obid call.' }) };
   const t = token();

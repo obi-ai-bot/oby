@@ -10,6 +10,10 @@ declare global {
       onFullScreen(fn: (on: boolean) => void): () => void;
       openExternal(url: string): void;
       openLoginItems(): void;
+      // Oby's alerts (preload, main/notify.ts)
+      showing(place: { job?: string; conversation?: string } | null): void;
+      onOpen(fn: (place: { job?: string; conversation?: string }) => void): () => void;
+      notifications: { alerts(on?: boolean): Promise<boolean | null>; openSystemSettings(): void };
       // obid, through main (preload, main/obid.ts)
       obid: {
         call(method: string, path: string, body?: unknown): Promise<{ status: number; text: string }>;

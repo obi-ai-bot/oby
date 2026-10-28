@@ -35,7 +35,17 @@ obid's `last-start-error`, else launchd's last exit code and the end of
 `~/Library/Logs/obid.log`. macOS 26 often doesn't start a just-registered agent
 until the next login (launchd exits 78: `copy_bundle_path … not a bundle`); the app
 then runs the same obid as a job of this login session only. In development
-(`npm run dev`) it starts nothing.
+(`npm run dev`) it starts nothing; `OBID_PORT` and `OBID_HOME` point it at a
+scratch obid run by hand instead of 7777 (a packaged app ignores them).
+
+Oby alerts on the Mac as the Swift app did (`src/main/notify.ts`): main follows
+obid's event stream by itself, from launch until Oby quits, window closed or not,
+and alerts for what obid pushes to the phones (`core/crates/obid/src/push.rs`,
+`wanted`), plus Oby's answer in a conversation the window isn't showing. A click
+opens the job or the conversation; Allow, Deny and Start answer from the alert as
+the same tap in the window does, never from a locked Mac; a Confirm only opens the
+window. Settings › Notifications turns them off (`settings.json` in the app's own
+folder). macOS delivers no notification from the unsigned development build.
 
 It shows only the conversation: a new user starts empty, Oby sets them up in
 its first conversation (the tools on this Mac, GitHub, then Tetrix and the

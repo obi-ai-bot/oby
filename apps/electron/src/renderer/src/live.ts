@@ -63,8 +63,8 @@ const byAt = (a: Turn, b: Turn) => a.at.localeCompare(b.at);
 const merged = (had: Turn[], more: Turn[]) => [...had.filter((t) => !more.some((m) => m.id === t.id)), ...more].sort(byAt);
 const without = <T,>(r: Record<string, T>, key: string) => { const { [key]: _, ...rest } = r; return rest; };
 // the app's id for one of obid's conversations, and back
-const shownId = (c: string) => state.alias[c] ?? c;
-const realId = (shown: string) => Object.keys(state.alias).find((k) => state.alias[k] === shown) ?? shown;
+export const shownId = (c: string) => state.alias[c] ?? c;
+export const realId = (shown: string) => Object.keys(state.alias).find((k) => state.alias[k] === shown) ?? shown;
 
 // --- obid's state as the screens' conversations and tasks
 
@@ -281,6 +281,8 @@ function apply(s: Live, e: Event): Live {
   switch (e.kind) {
     case 'job':
       return { ...s, jobs: { ...s.jobs, [e.job.id]: e.job } };
+    case 'jobGone':
+      return { ...s, jobs: without(s.jobs, e.id) };
     case 'inbox': {
       const rest = s.inbox.filter((i) => i.id !== e.item.id);
       return { ...s, inbox: e.item.state === 'done' ? rest : [...rest, e.item].sort((a, b) => a.created.localeCompare(b.created)) };

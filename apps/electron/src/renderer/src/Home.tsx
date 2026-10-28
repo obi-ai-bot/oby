@@ -17,7 +17,7 @@ import SphereSettings, { sphereSettingsLabel } from './SphereSettings';
 import KnowledgeView, { knowledgeLabel } from './KnowledgeView';
 import { useSpheres } from './spheres';
 import { everything, onObid, welcome } from './lean';
-import { useLive } from './live';
+import { realId, shownId, useLive } from './live';
 import { WELCOME, setUp, startOnboarding } from './onboarding';
 import { askOby, chatOfTask, renameChat, tellAbout, useChats } from './chats';
 import { useConvos } from './peers';
@@ -173,6 +173,23 @@ export default function Home() {
     startOnboarding((id) => start({ kind: 'talk', id }));
     start({ kind: 'talk', id: WELCOME });
   }, [fresh]);
+
+  // Oby's alerts (main/notify.ts): main hears what's on top (a task's page, a conversation, or Home),
+  // so nothing alerts for it; a clicked alert opens its task, its conversation, or Home, once
+  // that's here (a closed window opens again first)
+  useEffect(() => {
+    window.app?.showing?.(!top ? {} : top.kind === 'task' || top.kind === 'thread' ? { job: top.id } : top.kind === 'talk' ? { conversation: realId(top.id) } : null);
+  }, [top?.kind, top?.id]);
+  const [opening, setOpening] = useState<{ job?: string; conversation?: string } | null>(null);
+  useEffect(() => window.app?.onOpen?.(setOpening), []);
+  useEffect(() => {
+    if (!opening) return;
+    const talk = opening.conversation && shownId(opening.conversation);
+    if (opening.job) { if (!tasks.some((t) => t.id === opening.job)) return; start({ kind: 'task', id: opening.job }); }
+    else if (talk) { if (!chats.some((c) => c.id === talk)) return; start({ kind: 'talk', id: talk }); }
+    else closeAll();
+    setOpening(null);
+  }, [opening, tasks, chats]);
 
   // the pointer arriving on the chips: Oby glances over
   const [onChips, setOnChips] = useState(false);

@@ -155,6 +155,7 @@ export type Delta = { turn: string; conversation: string; text: string };
 // The events this app follows; any other is ignored.
 export type Event =
   | { kind: 'job'; job: Job }
+  | { kind: 'jobGone'; id: string }
   | { kind: 'inbox'; item: InboxItem }
   | { kind: 'turn'; turn: Turn }
   | { kind: 'step'; step: Step }
@@ -281,7 +282,10 @@ export function parseEvent(name: string, data: string): Event | null {
   if (!value || typeof value !== 'object') return null;
   const v = value as Record<string, unknown>;
   switch (name) {
-    case 'job': return typeof v.id === 'string' ? { kind: 'job', job: value as Job } : null;
+    case 'job':
+      if (typeof v.id !== 'string') return null;
+      if (v.deleted === true) return { kind: 'jobGone', id: v.id };
+      return typeof v.title === 'string' && typeof v.status === 'string' ? { kind: 'job', job: value as Job } : null;
     case 'inbox': return typeof v.id === 'string' ? { kind: 'inbox', item: value as InboxItem } : null;
     case 'turn': return typeof v.id === 'string' ? { kind: 'turn', turn: value as Turn } : null;
     // a step of the turn, and its brain's thinking: both say what it's on
