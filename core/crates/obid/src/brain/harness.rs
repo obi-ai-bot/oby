@@ -80,8 +80,8 @@ pub struct Session {
     /// The turn's own word, which fences what agents wrote in a tool's answer.
     pub nonce: String,
     /// The turn read something untrusted (the web, a file, a command's output, an attachment): the
-    /// jobs its tools start, follow-ups too, run in Sandbox mode at most and publish only when the
-    /// owner does (the owner's decision of 2026-10-23).
+    /// jobs its tools start, follow-ups too, are marked untrusted (the owner's decision of
+    /// 2026-10-27: still in the owner's mode, inside Oby's box).
     pub web: AtomicBool,
     /// How many times this turn's tools started a job, and told one something.
     pub dispatched: AtomicUsize,

@@ -622,6 +622,20 @@ const QUIET: [&str; 8] = [
     "Agent",
 ];
 
+/// git's commands that only read, as [`only_reads`] takes them.
+const GIT_READS: [&str; 10] = [
+    "status",
+    "diff",
+    "log",
+    "show",
+    "rev-parse",
+    "ls-files",
+    "merge-base",
+    "blame",
+    "shortlog",
+    "describe",
+];
+
 /// File edits: allowed in Accept edits, refused in Plan.
 const EDITS: [&str; 4] = ["Edit", "MultiEdit", "Write", "NotebookEdit"];
 
@@ -1997,6 +2011,60 @@ fn reads_outside(command: &str, bounds: &Bounds) -> bool {
     })
 }
 
+/// Whether `command` only reads, as Read and Grep do, so it asks in no mode, Plan too: Codex reads
+/// through its shell (`cat`, `rg`, `git diff`). Each simple command is a program the conversation's
+/// shell runs as a read (crate::brain::shell::reads_only), one of git's [`GIT_READS`] from the
+/// worktree's top (where git finds the job's own git folder, never one the agent could have made)
+/// with no option that writes a file or runs a program, `sed -n` printing lines, or `if`'s own
+/// words around them; and nothing is written to a file. Best-effort; what passes still runs boxed.
+fn only_reads(command: &str, bounds: &Bounds) -> bool {
+    static LINES: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let lines =
+        LINES.get_or_init(|| regex::Regex::new(r"^([0-9]+|\$)(,([0-9]+|\$))?p$").expect("a regex"));
+    use crate::brain::shell::{reads_only, system_program, writes_a_file};
+    let Some(commands) = simple_commands(command).filter(|c| !c.is_empty()) else {
+        return false;
+    };
+    !writes_a_file(command)
+        && with_folders(&commands, bounds).iter().all(|(words, at)| {
+            let keywords = ["if", "then", "elif", "else", "!"];
+            let words: Vec<String> = words
+                .iter()
+                .skip_while(|w| keywords.contains(&w.as_str()))
+                .cloned()
+                .collect();
+            match words.first().map(String::as_str) {
+                None => true,
+                Some("fi") => words.len() == 1,
+                Some("git") => {
+                    let rest = &words[if words.get(1).is_some_and(|w| w == "--no-pager") {
+                        2
+                    } else {
+                        1
+                    }..];
+                    at.as_deref() == Some(bounds.worktree.as_path())
+                        && rest
+                            .first()
+                            .is_some_and(|w| GIT_READS.contains(&w.as_str()))
+                        && rest.iter().all(|w| {
+                            !["--output", "--ext-diff", "-O", "--open-files"]
+                                .iter()
+                                .any(|o| w.starts_with(o))
+                        })
+                        && system_program("git")
+                }
+                Some("sed") => {
+                    words.len() > 3
+                        && words[1] == "-n"
+                        && lines.is_match(&words[2])
+                        && words[3..].iter().all(|w| !w.starts_with('-'))
+                        && system_program("sed")
+                }
+                _ => reads_only(&words),
+            }
+        })
+}
+
 /// What takes `call` out of the job's sandbox, or none when it stays inside: the files of the
 /// worktree and the job's temporary folder, commands, tests.
 pub fn reach(call: &Call, bounds: &Bounds) -> Option<Reach> {
@@ -2054,7 +2122,8 @@ pub fn decide(call: &Call, mode: Mode, rules: &[Rule], bounds: &Bounds) -> Verdi
     // Secrets, a login or the vault: in every mode, only the owner's own answer lets one through
     // (the security review of #586): no mode and no saved rule does, so a mode the brain sets
     // can't settle one. What else leaves the sandbox matters only in Sandbox mode.
-    let reach = match reach(call, bounds) {
+    let reached = reach(call, bounds);
+    let reach = match reached {
         Some(Reach::Secrets) => Some(Reach::Secrets),
         other if mode == Mode::Sandbox => other,
         _ => None,
@@ -2085,6 +2154,16 @@ pub fn decide(call: &Call, mode: Mode, rules: &[Rule], bounds: &Bounds) -> Verdi
     // rule is checked before the card is made, never here).
     if call.tool == REPOSITORY_HOOKS {
         return Verdict::Ask;
+    }
+    // A command that only reads, inside the sandbox, is a read: it never asks.
+    if call.tool == "Bash"
+        && reached.is_none()
+        && call
+            .command
+            .as_deref()
+            .is_some_and(|c| only_reads(c, bounds))
+    {
+        return Verdict::Allow;
     }
     let edit = EDITS.contains(&call.tool.as_str());
     if mode == Mode::Plan && edit {
@@ -2660,6 +2739,52 @@ mod tests {
         }
         assert_eq!(Mode::parse("acceptEdits"), Some(Mode::AcceptEdits));
         assert_eq!(Mode::parse("nope"), None);
+    }
+
+    /// A command that only reads is a read, as Codex's reviews run them (2026-10-27, the owner was
+    /// asked for each): it asks in no mode, Plan too. One that may write a file, run a program or
+    /// leave the worktree still asks in Plan, and a deny rule still refuses one that reads.
+    #[test]
+    fn a_command_that_only_reads_never_asks() {
+        for command in [
+            "cat .obi/inputs/asked.md .obi/inputs/base-rules.md; git diff --stat origin/dev...HEAD",
+            "pwd && git status --short && if test -f .obi/context/tetrix.md; then cat .obi/context/tetrix.md; fi",
+            "grep -nE 'want_usage|600' core/src/jobs.rs | head -35; sed -n '1,120p' apps/Usage.swift",
+            "git --no-pager log -1 --format='%h %s'; nl -ba notes.md | head -12",
+        ] {
+            for mode in Mode::ALL {
+                assert_eq!(
+                    decide_in(&bash(command), mode, &[]),
+                    Verdict::Allow,
+                    "{mode:?}: {command}"
+                );
+            }
+        }
+        for command in [
+            "sed -i s/a/b/ notes.md",
+            "sed -n '1w copy.md' notes.md",
+            "cat notes.md > copy.md",
+            "git diff --output=x.patch",
+            "git branch new",
+            "git -C sub log",
+            "cd sub && git log",
+            "rg --pre ./x foo",
+            "cat /Users/someone/notes.txt",
+        ] {
+            assert_eq!(
+                decide_in(&bash(command), Mode::Plan, &[]),
+                Verdict::Ask,
+                "{command}"
+            );
+        }
+        assert!(matches!(
+            decide_in(
+                &bash("cat notes.md"),
+                Mode::Bypass,
+                &[rule("Bash(cat:*)", "deny")]
+            ),
+            Verdict::Deny(_)
+        ));
     }
 
     /// PermissionTests.rulesDenyBeatsAllow.

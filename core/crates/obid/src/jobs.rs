@@ -2830,8 +2830,8 @@ impl Jobs {
             .filter(|b| new.follow_up_of.is_some() && git::is_branch_name(b));
         job.follow_up_of = new.follow_up_of;
         job.routine = new.routine;
-        // A follow-up of a rule's job is the rule's too (#1314): never Bypass. A Start item's job
-        // never carries `rule` (it's never from the API): found here. So is an untrusted one's.
+        // A follow-up of a rule's job is the rule's too (#1314). A Start item's job never carries
+        // `rule` (it's never from the API): found here. So is an untrusted one's.
         let of = job.follow_up_of.as_deref().and_then(|of| self.get(of));
         job.untrusted = new.untrusted || of.as_ref().is_some_and(|of| of.untrusted);
         // Someone else's code from the start keeps to a clone apart; a follow-up to its job's.
@@ -2869,15 +2869,11 @@ impl Jobs {
         job.mode = Some(if job.read_only() {
             Mode::Plan.as_str().to_owned()
         } else {
-            let mode = new
-                .mode
-                .unwrap_or_else(|| self.default_mode().as_str().to_owned());
-            // Text Oby didn't write led its conversation: never Bypass, whatever the default.
-            if job.untrusted && mode == Mode::Bypass.as_str() {
-                Mode::Sandbox.as_str().to_owned()
-            } else {
-                mode
-            }
+            // The owner's mode, Bypass too, even once text Oby didn't write led its conversation
+            // (the owner's decision of 2026-10-27, replacing 2026-10-23's Sandbox at most): it
+            // stays `untrusted` and in Oby's box.
+            new.mode
+                .unwrap_or_else(|| self.default_mode().as_str().to_owned())
         });
         job.base = Some(new.base.unwrap_or_else(|| repo.default_branch.clone()));
         job.branch = match new
@@ -9174,8 +9170,8 @@ impl Jobs {
             let made_now = before_head.as_deref() != Some(head.as_str());
             // A job a standing rule started (#1314), or one whose conversation read something
             // untrusted, publishes by itself like any other, after its checks and the secret scan
-            // (the owner's decision of 2026-10-24, replacing 2026-10-23's by hand): what it read
-            // only keeps it out of Bypass, and merging still waits for a review.
+            // (the owner's decision of 2026-10-24, replacing 2026-10-23's by hand), and merging
+            // still waits for a review.
             if !ended.can_publish() || (!made_now && job.publish_error.is_some()) {
                 // Still waiting for Publish by hand: why its own publish failed still holds.
                 let waiting = ended.can_publish();

@@ -630,6 +630,26 @@ async fn a_received_reviews_check_gets_nothing() {
     );
     assert!(!home.join("clones/obi-e2e/fixture-app").exists());
     jobs.stop(&untrusted.id);
+
+    // The owner's chosen Bypass applies after a foreign read too (the owner's decision of
+    // 2026-10-27): the job keeps its mark, its clone apart, and a check its words can't have
+    // the owner's secrets for.
+    jobs.set_default_mode(obid::permissions::Mode::Bypass)
+        .unwrap();
+    let bypassed = jobs
+        .create(obid::jobs::NewJob {
+            repo: "obi-e2e/fixture-app".into(),
+            kind: "build".into(),
+            task: "Fix what the pull request says".into(),
+            untrusted: true,
+            foreign: Some("Oby's conversation that wrote its words read GitHub".into()),
+            ..Default::default()
+        })
+        .unwrap();
+    assert_eq!(bypassed.mode.as_deref(), Some("bypass"));
+    assert!(bypassed.untrusted && bypassed.apart);
+    assert!(bypassed.check_refuses_secrets().is_some());
+    jobs.stop(&bypassed.id);
 }
 
 /// Words that no app of the owner's signed (anything else holding obid's token: oby-mcp, a script,

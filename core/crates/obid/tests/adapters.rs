@@ -1115,6 +1115,96 @@ fn codex_and_cursor_ask_the_owner_in_ask_mode() {
     assert_eq!(summary(&ended(&obid, &cursor)), "answer: reject-once");
 }
 
+/// What a Codex job asks the owner, by mode (2026-10-27: the owner, on Bypass, was asked for each
+/// read of Codex's reviews). Settings' Bypass (`PUT /v1/settings/permissions`) reaches new jobs:
+/// the thread keeps obid's full access with every approval coming to obid, which answers the file
+/// change, the commit and the network without the owner. A review, in Plan, runs Codex's
+/// read-only commands without the owner. In Sandbox, git's local reads and tests go through, and
+/// the network waits for the owner.
+#[test]
+fn codex_asks_the_owner_only_what_its_mode_keeps() {
+    let folder = Folder::new("codex-modes");
+    let obid = obid(&folder, false);
+    let set = call(
+        &obid,
+        "PUT",
+        "/v1/settings/permissions",
+        Some(&json!({"mode": "bypass"})),
+    );
+    assert_eq!(set.body, json!({"mode": "bypass"}));
+    let bypass = dispatch(
+        &obid,
+        json!({"agent": "codex", "task": "COMMIT: hello.txt"}),
+    );
+    let fetch = dispatch(
+        &obid,
+        json!({"agent": "codex", "task": "ASK: curl -s https://example.com"}),
+    );
+    let review = dispatch(
+        &obid,
+        json!({"agent": "codex", "kind": "review",
+               "task": "ASK: git status --short && git diff --stat HEAD && grep -n e README.md | head -5; sed -n '1,20p' README.md"}),
+    );
+    let sandbox = |task: &str| {
+        dispatch(
+            &obid,
+            json!({"agent": "codex", "task": task, "mode": "sandbox"}),
+        )
+    };
+    let local = sandbox("ASK: git status --short; git check-ignore .obi/x; node --test");
+    let network = sandbox("ASK: curl -s https://example.com");
+
+    let job = ended(&obid, &bypass);
+    assert_eq!(job["mode"], "bypass", "{job}");
+    assert_eq!(job["commits"], 1, "{job}");
+    let answered: Vec<(&str, &str)> = job["answered"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|a| (a["tool"].as_str().unwrap(), a["decision"].as_str().unwrap()))
+        .collect();
+    assert_eq!(
+        answered,
+        [("Edit", "allowed"), ("Bash", "allowed")],
+        "{job}"
+    );
+    let thread = job["session"].as_str().unwrap();
+    let kept: Value = serde_json::from_str(
+        &std::fs::read_to_string(
+            obid.home
+                .join("logins")
+                .join(&bypass)
+                .join(format!("threads/{thread}.json")),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(kept["sandbox"], "danger-full-access");
+    assert_eq!(kept["approvalPolicy"], "untrusted");
+    for id in [&fetch, &review, &local] {
+        let job = ended(&obid, id);
+        assert_eq!(summary(&job), "answer: accept", "{job}");
+    }
+    assert_eq!(ended(&obid, &review)["mode"], "plan");
+
+    let job = within(60, "Sandbox asks about the network", || {
+        let job = call(&obid, "GET", &format!("/v1/jobs/{network}"), None).body;
+        job["permission"].is_object().then_some(job)
+    });
+    assert_eq!(job["permission"]["title"], "Run curl");
+    let answered = call(
+        &obid,
+        "POST",
+        &format!("/v1/jobs/{network}/permission"),
+        Some(&json!({"id": job["permission"]["id"], "decision": "deny"})),
+    );
+    assert_eq!(answered.status, 200, "{}", answered.text);
+    assert!(
+        summary(&ended(&obid, &network)).starts_with("answer: decline"),
+        "the owner's no"
+    );
+}
+
 /// Codex's and Cursor's approvals and questions park their jobs as Claude Code's do
 /// (docs/runner-api.md, "Parked"): past `parkAfter` the agent ends, its thread or session kept,
 /// having heard no answer, and the job keeps its card. An allow picks it up and its same call goes

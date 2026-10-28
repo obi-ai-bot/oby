@@ -5,7 +5,7 @@ import { AGENTS, type Agent } from './mock';
 import { OwnerAvatar } from './ObyFace';
 import { useSpheres } from './spheres';
 import { onObid } from './lean';
-import { ApiError, api, type SignIn, type Status } from './obid';
+import { ApiError, api, type SavedRule, type SignIn, type Status } from './obid';
 import Connectors from './Connectors';
 
 // how long the way out takes (the sink animation in app.css)
@@ -47,6 +47,12 @@ const MODES = [
   { id: 'acceptEdits', label: 'Accept edits', help: 'Edits files without asking; asks before commands' },
   { id: 'plan', label: 'Plan', help: 'Plans first, and works once you approve the plan' },
   { id: 'bypass', label: 'Bypass', help: 'Asks nothing' },
+];
+// obid's own fifth, its default (docs/runner-api.md, "permissions answered without the owner")
+const OBID_MODES = [
+  ...MODES.slice(0, 3),
+  { id: 'sandbox', label: 'Sandbox', help: 'Asks only before it reaches the network, secrets or files outside its worktree' },
+  MODES[3],
 ];
 const EFFORTS = [['low', 'Low'], ['medium', 'Medium'], ['high', 'High'], ['xhigh', 'Extra high'], ['max', 'Max']] as const;
 
@@ -104,7 +110,6 @@ export function SettingsPage({ title, label = title, leaving, covered = false, o
 // General: opening at login, how much this Mac's own jobs ask, Voice, Notifications
 function General() {
   const [login, setLogin] = useSetting('login', true);
-  const [mode, setMode] = useSetting('mac.mode', 'bypass');
   const [speaks, setSpeaks] = useSetting('voice.speaks', true);
   const [language, setLanguage] = useSetting('voice.language', 'system');
   return <>
@@ -112,11 +117,7 @@ function General() {
       <Row label="Open at login"><Switch on={login} onChange={setLogin} label="Open at login" /></Row>
     </Group>
     <Group i={2} title="Permissions on this Mac" footer="How much the jobs this Mac runs itself ask. Each job’s Mode menu changes it while it runs. Always allow saves a rule, so it doesn’t ask again; remove the rule to be asked again. The runner’s jobs follow Runner › Permissions.">
-      <ModeRow mode={mode} setMode={setMode} />
-      <Rules id="mac.rules" initial={[
-        { decision: 'Allowed', repo: 'deskree-inc/oby', rule: 'Bash(npm test:*)' },
-        { decision: 'Denied', repo: 'deskree-inc/tetrix-ee', rule: 'Bash(git push --force:*)' },
-      ]} />
+      {onObid ? <MacPermissions /> : <MockMacPermissions />}
     </Group>
     <Group i={3} title="Voice" footer="When you talk to Oby with fn, it answers out loud and, after fn + Space, listens again for your answer until you press fn or say “stop”. Typed messages are answered in writing. Pressing fn stops it mid-sentence.">
       <Row label="Speak replies to spoken requests"><Switch on={speaks} onChange={setSpeaks} label="Speak replies to spoken requests" /></Row>
@@ -127,6 +128,36 @@ function General() {
     <Group i={4} title="Notifications" footer="Oby alerts you when a job needs you: ready to publish, failed or interrupted, a question for you, out of reviews or not merged. An alert opens its job.">
       <Row label="Alerts"><Value>Allowed</Value></Row>
     </Group>
+  </>;
+}
+
+// On obid, its own: the mode new jobs get, and the rules Always allow saved; Remove forgets one
+function MacPermissions() {
+  const [mode, setMode] = useState<string | null>(null);
+  const [rules, setRules] = useState<SavedRule[]>([]);
+  const [problem, setProblem] = useState<string | null>(null);
+  const failed = (e: Error) => setProblem(e.message);
+  useEffect(() => {
+    Promise.all([api.permissions(), api.rules()]).then(([p, r]) => { setMode(p.mode); setRules(r); }, failed);
+  }, []);
+  const change = (m: string) => api.setPermissions(m).then((p) => { setMode(p.mode); setProblem(null); }, failed);
+  const forget = (r: Rule) => api.forgetRule(r.id!).then((left) => { setRules(left); setProblem(null); }, failed);
+  return <>
+    {mode && <ModeRow mode={mode} setMode={change} modes={OBID_MODES} />}
+    <RuleRows rules={rules.map((r) => ({ ...r, decision: r.decision === 'deny' ? 'Denied' : 'Allowed' }))} onRemove={forget} />
+    {problem && <Row label={<span className="set-problem" role="alert">{problem}</span>} />}
+  </>;
+}
+
+// The mock's (?everything), kept while the app runs
+function MockMacPermissions() {
+  const [mode, setMode] = useSetting('mac.mode', 'bypass');
+  return <>
+    <ModeRow mode={mode} setMode={setMode} />
+    <Rules id="mac.rules" initial={[
+      { decision: 'Allowed', repo: 'deskree-inc/oby', rule: 'Bash(npm test:*)' },
+      { decision: 'Denied', repo: 'deskree-inc/tetrix-ee', rule: 'Bash(git push --force:*)' },
+    ]} />
   </>;
 }
 
@@ -550,22 +581,25 @@ function About() {
 const PAGES: Record<string, () => React.ReactNode> = { general: General, runner: Runner, sharing: Sharing, remote: Remote, accounts: Accounts, models: Models, connectors: Connectors, vault: Vault, about: About };
 
 // The default mode, with what it lets the agent do under it
-function ModeRow({ mode, setMode }: { mode: string; setMode: (m: string) => void }) {
+function ModeRow({ mode, setMode, modes = MODES }: { mode: string; setMode: (m: string) => void; modes?: typeof MODES }) {
   return (
-    <Row label="Default mode" about={MODES.find((m) => m.id === mode)?.help}>
-      <Select value={mode} onChange={setMode} label="Default mode" options={MODES.map((m) => [m.id, m.label] as const)} />
+    <Row label="Default mode" about={modes.find((m) => m.id === mode)?.help}>
+      <Select value={mode} onChange={setMode} label="Default mode" options={modes.map((m) => [m.id, m.label] as const)} />
     </Row>
   );
 }
 
 // The rules Always allow (or a deny) saved, each with Remove
-type Rule = { decision: 'Allowed' | 'Denied'; repo: string; rule: string };
+type Rule = { id?: string; decision: 'Allowed' | 'Denied'; repo: string; rule: string };
 function Rules({ id, initial }: { id: string; initial: Rule[] }) {
   const [rules, setRules] = useSetting(id, initial);
+  return <RuleRows rules={rules} onRemove={(r) => setRules(rules.filter((x) => x !== r))} />;
+}
+function RuleRows({ rules, onRemove }: { rules: Rule[]; onRemove: (r: Rule) => void }) {
   if (!rules.length) return <Row label={<span className="set-none">No saved rules</span>} />;
   return rules.map((r) => (
-    <Row key={r.rule} label={<span className="tok tok-code">{r.rule}</span>} about={`${r.decision} · ${r.repo}`}>
-      <button className="set-button is-danger" onClick={() => setRules(rules.filter((x) => x !== r))}>Remove</button>
+    <Row key={r.id ?? `${r.repo} ${r.rule}`} label={<span className="tok tok-code">{r.rule}</span>} about={`${r.decision} · ${r.repo}`}>
+      <button className="set-button is-danger" onClick={() => onRemove(r)}>Remove</button>
     </Row>
   ));
 }

@@ -32,7 +32,7 @@ export function OfferBlock({ offer, onAnswer }: { offer: Offer; onAnswer?: (opti
           <pre className="tc-code">{j.task}</pre>
         </div>
       ))}
-      {offer.untrusted && <p className="tc-ask-text">Oby planned this after reading something it didn’t write, so it never runs in Bypass mode.</p>}
+      {offer.untrusted && <p className="tc-ask-text">Oby planned this after reading something it didn’t write.</p>}
       <div className="tc-options">
         <button className="tc-option is-primary" disabled={busy} onClick={() => pick('Dispatch')}>Dispatch</button>
         <button className="tc-option" disabled={busy} onClick={() => pick('Skip')}>Skip</button>

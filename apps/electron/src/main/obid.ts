@@ -14,7 +14,7 @@ import { promisify } from 'node:util';
 const BASE = 'http://127.0.0.1:7777';
 // ponytail: macOS only, as the Swift app's runner home; follows obid's `home` when the app starts it
 export const HOME = join(homedir(), 'Library/Application Support/Oby/Runner');
-const METHODS = new Set(['GET', 'POST', 'PATCH', 'DELETE']);
+const METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
 
 // A file in obid's home, read only when it's a regular file of this user's, never through a link;
 // secret: nobody else may read it either (the token is 0600). null when it isn't that.

@@ -1296,8 +1296,8 @@ fn the_plan_loop_answers_when_the_session_cant_run() {
     assert_eq!(turns(&obid).len(), 3);
 }
 
-/// The one job `answer` started, after its turn read something untrusted: it runs in Sandbox mode
-/// at most (the owner's decision of 2026-10-23); no Start item waits in the inbox.
+/// The one job `answer` started, after its turn read something untrusted: marked so, in the
+/// owner's mode (the owner's decision of 2026-10-27); no Start item waits in the inbox.
 fn started_untrusted(obid: &Obid, answer: &Answer) -> Value {
     let cards = answer.body["jobs"].as_array().unwrap();
     assert_eq!(cards.len(), 1, "{}", answer.text);
@@ -1309,16 +1309,17 @@ fn started_untrusted(obid: &Obid, answer: &Answer) -> Value {
     let id = cards[0]["id"].as_str().unwrap();
     let job = call(obid, "GET", &format!("/v1/jobs/{id}"), None).body;
     assert_eq!(job["untrusted"], true, "{job}");
-    assert_ne!(job["mode"], "bypass", "{job}");
     job
 }
 
 /// A turn that read something untrusted (the web, repos/, a search of the whole room) starts the
-/// work it plans at once, in Sandbox mode at most (the owner's decision of 2026-10-23, replacing
-/// #374's Start item); a Bypass job too runs in Sandbox mode. It publishes by itself, as every job
-/// does (the owner's decision of 2026-10-24). One that used only the owner's words starts trusted.
+/// work it plans at once, marked untrusted (the owner's decision of 2026-10-23, replacing #374's
+/// Start item), in the owner's mode (the owner's decision of 2026-10-27). A Bypass the agent names
+/// waits for the owner's Confirm, as a trusted turn's does, and runs in Bypass once confirmed. It
+/// publishes by itself, as every job does (the owner's decision of 2026-10-24). One that used only
+/// the owner's words starts trusted.
 #[test]
-fn work_planned_after_reading_starts_in_sandbox_and_publishes_by_itself() {
+fn work_planned_after_reading_starts_marked_and_publishes_by_itself() {
     let (_folder, obid) = obid("harness-web", true);
     let dispatch = r#"OBY oby_dispatch {"repo": "obi-e2e/fixture-app", "task": "Add a greeting", "kind": "build"}"#;
     // The web, a read of repos/, and a search with no path (the whole room, repos/ in it: R1).
@@ -1332,7 +1333,25 @@ fn work_planned_after_reading_starts_in_sandbox_and_publishes_by_itself() {
     }
     let bypass = r#"WEB OBY oby_dispatch {"repo": "obi-e2e/fixture-app", "task": "Add a greeting", "kind": "build", "mode": "bypass"}"#;
     let answer = said(&obid, json!({"said": bypass, "new": true}));
-    assert_eq!(started_untrusted(&obid, &answer)["mode"], "sandbox");
+    assert!(
+        answer.body["jobs"].as_array().is_none_or(Vec::is_empty),
+        "{}",
+        answer.text
+    );
+    let start = inbox(&obid)
+        .into_iter()
+        .find(|i| i["kind"] == "confirm" && i["title"].as_str().unwrap().starts_with("Start "))
+        .unwrap_or_else(|| panic!("no Start to confirm: {:?}", inbox(&obid)));
+    let confirmed = confirmed(&obid, &start);
+    assert_eq!(confirmed.status, 200, "{}", confirmed.text);
+    let jobs = call(&obid, "GET", "/v1/jobs", None).body;
+    let job = jobs
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|j| j["mode"] == "bypass")
+        .unwrap_or_else(|| panic!("no Bypass job: {jobs}"));
+    assert_eq!(job["untrusted"], true, "{job}");
     let answer = said(&obid, json!({"said": dispatch, "new": true}));
     let id = answer.body["jobs"][0]["id"].as_str().unwrap();
     let job = call(&obid, "GET", &format!("/v1/jobs/{id}"), None).body;
@@ -1362,8 +1381,8 @@ fn work_planned_after_reading_starts_in_sandbox_and_publishes_by_itself() {
 /// What a job hears is the owner's own words this turn; the agent's go along quoted, as data. Told
 /// something after it ended, a job gets a follow-up (Sangam's design, the owner's decision of
 /// 2026-10-18) whose request is the owner's words alone and whose card goes on the turn; after a
-/// turn that used the web the follow-up starts too, marked untrusted, so never in Bypass (the
-/// owner's decision of 2026-10-23).
+/// turn that used the web the follow-up starts too, marked untrusted (the owner's decision of
+/// 2026-10-23), in the owner's mode (the owner's decision of 2026-10-27).
 #[test]
 fn a_job_hears_the_owners_words_and_the_agents_only_quoted() {
     let (_folder, obid) = obid("harness-tell", true);
@@ -1994,7 +2013,7 @@ fn attached_jobs_are_named_before_the_words_and_kept_on_the_turn() {
 }
 
 /// An attachment is untrusted input (P2): the work a turn that gets one dispatches is marked
-/// untrusted, so it never runs in Bypass.
+/// untrusted.
 #[test]
 fn an_attachment_makes_the_turns_work_wait() {
     let (_folder, obid) = obid("harness-attach-taint", true);
@@ -2781,7 +2800,7 @@ fn a_moved_job_continues_in_a_new_session() {
 }
 
 /// A task list written after the web carries that taint: fed to a later turn, even a new clean
-/// session's, it taints that turn, so the work it starts is marked untrusted (never Bypass).
+/// session's, it taints that turn, so the work it starts is marked untrusted.
 #[test]
 fn a_task_list_written_after_the_web_taints_the_turns_it_reaches() {
     let (_folder, obid) = obid("harness-tasks-taint", true);
@@ -2814,7 +2833,8 @@ fn a_task_list_written_after_the_web_taints_the_turns_it_reaches() {
 
 /// oby_github answers what obid's own gh read (the fake one, tests/agents/gh), quoted, and taints
 /// the turn even when every item is the owner's own (anyone may rename or label it); oby_dispatch
-/// takes a pull request by its number.
+/// takes a pull request by its number. The owner's chosen Bypass still applies to the work that
+/// tainted turn starts (the owner's decision of 2026-10-27), marked untrusted.
 #[test]
 fn oby_github_lists_the_owners_pull_requests_and_dispatch_takes_one() {
     let folder = Folder::new("harness-github");
@@ -2885,6 +2905,22 @@ fn oby_github_lists_the_owners_pull_requests_and_dispatch_takes_one() {
     assert_eq!(job.body["pr"], 5, "{}", job.text);
     assert_eq!(job.body["kind"], "review", "{}", job.text);
     assert_eq!(job.body["untrusted"], true, "{}", job.text);
+    let set = call(
+        &obid,
+        "PUT",
+        "/v1/settings/permissions",
+        Some(&json!({"mode": "bypass"})),
+    );
+    assert_eq!(set.status, 200, "{}", set.text);
+    let answer = said(
+        &obid,
+        json!({"said": r#"OBY oby_dispatch {"repo": "obi-e2e/fixture-app", "task": "Fix what PR 5 says", "kind": "build"}"#,
+               "conversation": theirs}),
+    );
+    let id = answer.body["jobs"][0]["id"].as_str().unwrap();
+    let job = call(&obid, "GET", &format!("/v1/jobs/{id}"), None).body;
+    assert_eq!(job["mode"], "bypass", "{job}");
+    assert_eq!(job["untrusted"], true, "{job}");
 
     let listed = said(
         &obid,
