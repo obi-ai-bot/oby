@@ -6,6 +6,7 @@ import { OwnerAvatar } from './ObyFace';
 import { useSpheres } from './spheres';
 import { onObid } from './lean';
 import { ApiError, api, type SavedRule, type SignIn, type Status } from './obid';
+import { ensureCursor } from './live';
 import Connectors from './Connectors';
 
 // how long the way out takes (the sink animation in app.css)
@@ -279,9 +280,10 @@ function Accounts() {
   const [agent, setAgent] = useState<Account['agent']>('claude');
   const [name, setName] = useState('');
   const [payer, setPayer] = useState('');
-  // sign-ins under way, by account: opening, then its page (with Codex's code, or Claude Code's to
-  // paste), then that code on its way ('sending') or sent with no answer in time ('sent')
-  type Signing = 'opening' | (SignIn & { code?: 'sending' | 'sent' });
+  // sign-ins under way, by account: opening (for Cursor, first getting its agent onto this Mac when
+  // it isn't there: 'installing'), then its page (with Codex's code, or Claude Code's to paste),
+  // then that code on its way ('sending') or sent with no answer in time ('sent')
+  type Signing = 'opening' | 'installing' | (SignIn & { code?: 'sending' | 'sent' });
   const [signing, setSigning] = useState<Record<string, Signing>>({});
   const put = (id: string, v?: Signing) => setSigning(({ [id]: _, ...rest }) => (v ? { ...rest, [id]: v } : rest));
   // what obid said went wrong, where it went wrong: on the account's row, or under Add an account
@@ -292,9 +294,11 @@ function Accounts() {
     if (where === ADD) setBusy(true);
     try { await f(); } catch (e) { setProblems((p) => ({ ...p, [where]: e instanceof Error ? e.message : String(e) })); } finally { if (where === ADD) setBusy(false); }
   };
-  const signIn = (id: string) => tried(id, async () => {
+  const signIn = (id: string, agent: Agent) => tried(id, async () => {
     put(id, 'opening');
     try {
+      // Cursor's agent first, set up by obid when it isn't on this Mac (live.ts, ensureCursor)
+      if (agent === 'cursor') await ensureCursor(() => put(id, 'installing'));
       const page = await api.signIn(id);
       put(id, page);
       window.app?.openExternal(page.url);
@@ -314,11 +318,12 @@ function Accounts() {
   });
   const cancel = (id: string) => { put(id); void tried(id, () => api.endSignIn(id)); };
   const add = () => tried(ADD, async () => {
-    const n = name.trim(), p = payer.trim();
+    // Connect Cursor needs no name: the first account is Personal
+    const n = name.trim() || (agent === 'cursor' ? 'Personal' : ''), p = payer.trim();
     const a = onObid ? await api.addAccount({ agent, name: n, ...(p ? { payer: p } : {}) }) : null;
     setName(''); setPayer('');
     // its sign-in's errors show on its row
-    if (a) return void signIn(a.id);
+    if (a) return void signIn(a.id, agent);
     setAccounts([...accounts, { id: `a${Date.now()}`, agent, name: n, payer: p || 'You', used: 0, resets: 'Resets in 7 days' }]);
   });
   const remove = (a: Account) => {
@@ -350,11 +355,12 @@ function Accounts() {
               <BrandMark brand={AGENTS[g].brand} size={16} mono />
               <span className="set-label">
                 {a.name}
-                <span className="set-about">{!s ? `Paid by ${a.payer} · ${a.resets}${own && a.signedIn === false && !a.label ? `: sign in with ${tool} itself on this Mac` : ''}`
+                <span className="set-about">{!s ? `Paid by ${a.payer} · ${a.resets}${own && a.signedIn === false && !a.label && g !== 'cursor' ? `: sign in with ${tool} itself on this Mac` : ''}`
                   : s === 'opening' ? `Opening ${tool}’s sign-in page`
+                  : s === 'installing' ? 'Getting Cursor’s agent onto this Mac (one time, about 200 MB)'
                   : s.code ? `Signing in to ${tool}`
                   : `Finish on ${tool}’s sign-in page${s.userCode ? ` · enter ${s.userCode}` : ''}`}</span>
-                {s !== 'opening' && s?.pasteCode && !s.code && <PasteCode onCode={(code) => sendCode(a.id, s, code)} />}
+                {typeof s === 'object' && s.pasteCode && !s.code && <PasteCode onCode={(code) => sendCode(a.id, s, code)} />}
                 {problems[a.id] && <span className="set-about set-problem" role="alert">{problems[a.id]}</span>}
                 {a.used != null && <span className="set-meter" role="meter" aria-valuenow={a.used} aria-valuemin={0} aria-valuemax={100} aria-label={`${a.used}% used`}>
                   <span className={fullness(a.used)} style={{ width: `${a.used}%` }} />
@@ -363,9 +369,9 @@ function Accounts() {
               <span className="set-control set-control-top">
                 {a.used != null && <span className="set-value">{a.used}% used</span>}
                 {/* (obid signs in only accounts with a folder of their own) */}
-                {a.signedIn === false && !own && (s && s !== 'opening' && s.code !== 'sending'
+                {a.signedIn === false && !own && (s && s !== 'opening' && s !== 'installing' && s.code !== 'sending'
                   ? <button className="set-button" onClick={() => cancel(a.id)}>Cancel</button>
-                  : <button className="set-button" disabled={!!s} onClick={() => signIn(a.id)}>{s ? 'Waiting…' : 'Sign In'}</button>)}
+                  : <button className="set-button" disabled={!!s} onClick={() => signIn(a.id, g)}>{s ? 'Waiting…' : g === 'cursor' ? 'Connect' : 'Sign In'}</button>)}
                 <button className="set-button is-danger" onClick={() => remove(a)}>Remove</button>
               </span>
             </div>
@@ -373,7 +379,8 @@ function Accounts() {
         })}
       </Group>
     ))}
-    <Group i={5} title="Add an account" footer={problems[ADD] && <span className="set-problem" role="alert">{problems[ADD]}</span>}>
+    <Group i={5} title="Add an account" footer={problems[ADD] ? <span className="set-problem" role="alert">{problems[ADD]}</span>
+      : agent === 'cursor' && onObid ? 'Connect sets Cursor’s agent up on this Mac when it isn’t there, then signs you in on Cursor’s page. Nothing of Cursor needs to be installed or signed in first.' : undefined}>
       <Row label="Tool"><Select value={agent} onChange={(v) => setAgent(v as Account['agent'])} label="Tool" options={(Object.keys(AGENTS) as Agent[]).map((id) => [id, AGENTS[id].name] as const)} /></Row>
       <Row label="Name"><TextField value={name} onChange={setName} placeholder="Personal" label="Account name" /></Row>
       <Row label="Paid by"><TextField value={payer} onChange={setPayer} placeholder="Wellington" label="Paid by" /></Row>
@@ -381,7 +388,7 @@ function Accounts() {
         {onObid && offered.some((l) => l.agent === agent) && (
           <button className="set-button" disabled={busy} onClick={() => tried(ADD, () => api.addAccount({ agent, default: true }).then(look))}>Use {AGENTS[agent].name}’s Own Login</button>
         )}
-        <button className="set-button" disabled={!name.trim() || busy} onClick={add}>Add Account</button>
+        <button className="set-button" disabled={(!name.trim() && !(agent === 'cursor' && onObid)) || busy} onClick={add}>{agent === 'cursor' && onObid ? 'Connect Cursor' : 'Add Account'}</button>
       </Row>
     </Group>
   </>;

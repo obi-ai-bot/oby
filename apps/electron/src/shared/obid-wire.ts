@@ -96,13 +96,20 @@ export type Account = {
   fiveHour: number | null;
   sevenDay: number | null;
   sevenDayResets: string | null;
+  // until when a job of its hit its usage limit (Cursor's: the day its monthly cycle ends), or null
+  fullUntil?: string | null;
   running: number;
 };
+// obid only: a tool obid sets up itself (Cursor's agent): whether it's on this Mac, where, and
+// how a set-up stands ("obid only: tools")
+export type ToolSetup = { state: 'installed' | 'missing' | 'installing' | 'failed'; path: string | null; version: string | null; error: string | null };
 export type Status = {
   runner: { version: string; host: string; engine?: string };
   accounts: Account[];
   // obid only: the tools' own logins found on this Mac that aren't accounts yet
   availableLogins?: { agent: Agent; id: string; name: string }[];
+  // obid only: the tools obid sets up itself; an older obid sends none
+  tools?: { cursor?: ToolSetup };
   models: Record<string, { model: string }>;
   maxRunning: number;
   running: number;
@@ -159,6 +166,7 @@ export type Event =
   | { kind: 'step'; step: Step }
   | { kind: 'delta'; delta: Delta }
   | { kind: 'accounts'; accounts: Account[] }
+  | { kind: 'tools'; tools: NonNullable<Status['tools']> }
   | { kind: 'conversation'; conversation: Conversation }
   | { kind: 'conversationGone'; id: string }
   | { kind: 'github'; work: GitHubWork };
@@ -207,6 +215,8 @@ export function parseEvent(name: string, data: string): Event | null {
     case 'step': case 'thinking': return typeof v.text === 'string' && typeof v.turn === 'string' ? { kind: 'step', step: value as Step } : null;
     case 'delta': return typeof v.text === 'string' && typeof v.conversation === 'string' ? { kind: 'delta', delta: value as Delta } : null;
     case 'accounts': return Array.isArray(value) ? { kind: 'accounts', accounts: value as Account[] } : null;
+    // a set-up obid ran ended: the tools as status has them
+    case 'tools': return typeof v.cursor === 'object' ? { kind: 'tools', tools: value as NonNullable<Status['tools']> } : null;
     case 'conversation':
       if (typeof v.id !== 'string') return null;
       if (v.deleted === true) return { kind: 'conversationGone', id: v.id };

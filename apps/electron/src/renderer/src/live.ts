@@ -254,19 +254,51 @@ function publish() {
   const due = Math.min(...state.inbox.map((i) => (i.later ? Date.parse(i.later) : Infinity)).filter((t) => t > Date.now()));
   if (due < Infinity) waking = setTimeout(() => set({}), Math.min(due - Date.now() + 500, 3600_000));
   // the week's share, else the 5-hour window's; unknown until the tool says (never a made-up 0%).
-  // Cursor's CLI reports no usage at all. Only when obid's status changed: publish runs at every
-  // change, each word of Oby's included, and Settings › Accounts and the usage gauge draw again
-  // for each list.
+  // Cursor's CLI publishes no usage to obid (docs/cursor.md, "Usage and limits"): its card says
+  // its plan, where its usage is, and, once a job hit its limit, until when (its monthly cycle).
+  // Only when obid's status changed: publish runs at every change, each word of Oby's included,
+  // and Settings › Accounts and the usage gauge draw again for each list.
   if (!state.status || state.status === accountsFrom) return;
   accountsFrom = state.status;
   replaceAccounts(state.status.accounts.map((a) => {
     const used = a.agent === 'cursor' ? null : a.sevenDay ?? a.fiveHour;
     return {
       id: a.id, agent: a.agent, name: a.name, payer: a.payer ?? 'You', signedIn: a.signedIn, label: a.label ?? null, used: used == null ? null : Math.round(used * 100),
-      resets: !a.signedIn ? a.label ?? 'Not signed in' : a.agent === 'cursor' ? 'Cursor doesn’t report usage' : used == null ? 'No use reported yet'
+      resets: a.agent === 'cursor' ? cursorStanding(a)
+        : !a.signedIn ? a.label ?? 'Not signed in' : used == null ? 'No use reported yet'
         : a.sevenDayResets ? `Resets ${new Date(a.sevenDayResets).toLocaleDateString([], { weekday: 'long' })}` : 'No reset reported',
     };
   }));
+}
+
+// A Cursor account's one line: not connected, its login expired (obid's note), or connected with
+// its plan (obid's label, from `cursor-agent about`), at its limit until its cycle ends, else
+// where Cursor shows what's used (its CLI gives obid no usage numbers)
+const day = (iso: string) => new Date(iso).toLocaleDateString([], { month: 'short', day: 'numeric' });
+function cursorStanding(a: Status['accounts'][number]): string {
+  if (!a.signedIn) {
+    if (a.label === 'Run cursor-agent once') return 'Cursor’s login on this Mac has expired: run cursor-agent once in Terminal, or Connect an account of Oby’s own';
+    return a.label ?? 'Not connected · Connect signs you in on Cursor’s page';
+  }
+  if (a.fullUntil && Date.parse(a.fullUntil) > Date.now()) return `${a.label ? `${a.label} · ` : ''}At its limit until ${day(a.fullUntil)}, when Cursor’s cycle ends`;
+  return `${a.label ?? 'Connected'} · usage on cursor.com/dashboard`;
+}
+
+// Cursor's agent on this Mac, set up by obid when it isn't there (docs/runner-api.md, "obid only:
+// tools"), before a Cursor sign-in: `step` hears what's going on meanwhile. An older obid (no
+// `tools` in its status) is left to say so at the sign-in.
+export async function ensureCursor(step: (text: string) => void): Promise<void> {
+  const look = async () => (await api.status()).tools?.cursor;
+  let cursor = state.status?.tools?.cursor ?? (await look());
+  if (!cursor || cursor.state === 'installed') return;
+  if (cursor.state !== 'installing') await api.installTool('cursor');
+  step('Getting Cursor’s agent (one time, about 200 MB)');
+  for (const end = Date.now() + 20 * 60_000; Date.now() < end; await new Promise((r) => setTimeout(r, 2000))) {
+    cursor = await look().catch(() => undefined);
+    if (cursor?.state === 'installed') return;
+    if (cursor?.state === 'failed') throw new Error(cursor.error ?? 'Cursor’s agent couldn’t be set up.');
+  }
+  throw new Error('Cursor’s agent is still being set up: try Connect again in a moment.');
 }
 
 // the usage panel opened: obid asks the tools for usage it hasn't read in 10 minutes, which comes
@@ -315,6 +347,8 @@ function apply(s: Live, e: Event): Live {
     }
     case 'accounts':
       return s.status ? { ...s, status: { ...s.status, accounts: e.accounts } } : s;
+    case 'tools':
+      return s.status ? { ...s, status: { ...s.status, tools: e.tools } } : s;
     case 'conversation': {
       // not taken as the one this app's words start: another device may start one meanwhile (the
       // words' own turn, or the plan's answer, says which is this app's)

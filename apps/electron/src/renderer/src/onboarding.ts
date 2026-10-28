@@ -5,7 +5,7 @@ import { wait } from './stream';
 import { onObid } from './lean';
 import { CAN_CREATE } from './spheres';
 import { api } from './obid';
-import { ask, liveState, say, useLive } from './live';
+import { ask, ensureCursor, liveState, say, useLive } from './live';
 import type { Agent, SetupStep } from './mock';
 
 // Setting up, in Oby's first conversation: no wizard, Oby talks you through it
@@ -22,8 +22,9 @@ import type { Agent, SetupStep } from './mock';
 export const WELCOME = 'welcome';
 type Sign = 'out' | 'waiting' | 'in';
 // what a sign-in under way needs from you: the code to type on its page (Codex's, GitHub's), or
-// the one its page shows, to paste back (Claude Code's: account, the account it signs in)
-export type Code = { userCode?: string | null; paste?: string };
+// the one its page shows, to paste back (Claude Code's: account, the account it signs in); or
+// what Oby is at before the page opens (step: getting Cursor's agent)
+export type Code = { userCode?: string | null; paste?: string; step?: string };
 // where the Obysphere tour is: explaining, showing how, the sample out (calling you, then you
 // inside it), the sample on its way out, then gone (or skipped)
 type Tour = 'off' | 'explain' | 'showme' | 'sample' | 'inside' | 'leaving' | 'gone';
@@ -81,7 +82,8 @@ const failed = (e: unknown, back: () => void) => { back(); say(e); };
 
 // An agent: its login already on this Mac becomes an account (availableLogins); else an account
 // of its own, signed in with the tool's own login on its page. obid's `accounts` event says when
-// it's in.
+// it's in. Cursor's Connect first has obid set its agent up on this Mac when it isn't there
+// (ensureCursor): no Cursor install or login of the person's is needed.
 const attempts: Partial<Record<Agent, number>> = {};
 export async function signInAgent(a: Agent) {
   if (!onObid) return signIn((s) => s.agents[a], (v) => agentSign(a, v));
@@ -93,7 +95,8 @@ export async function signInAgent(a: Agent) {
     if (s?.availableLogins?.some((l) => l.agent === a)) {
       await api.addAccount({ agent: a, default: true });
     } else {
-      const account = s?.accounts.find((x) => x.agent === a)?.id ?? (await api.addAccount({ agent: a, name: 'Personal' })).id;
+      if (a === 'cursor') await ensureCursor((step) => set((x) => ({ codes: { ...x.codes, cursor: { step } } })));
+      const account = s?.accounts.find((x) => x.agent === a && x.id !== 'cursor')?.id ?? (await api.addAccount({ agent: a, name: 'Personal' })).id;
       const page = await api.signIn(account);
       set((x) => ({ codes: { ...x.codes, [a]: { userCode: page.userCode, paste: page.pasteCode ? account : undefined } } }));
       open(page.url);

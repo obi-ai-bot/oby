@@ -39,14 +39,16 @@ export default function SetupCard({ step }: { step: SetupStep }) {
     const AGENT_SUB: Record<Agent, [ready: string, out: string]> = {
       claude: ['Signed in · Personal', 'On this Mac, not signed in'],
       codex: ['Signed in · Deskree', 'On this Mac, not signed in'],
-      cursor: ['Signed in · Personal', 'On this Mac, not signed in'],
+      // Cursor needs nothing on this Mac: Connect sets its agent up and signs in on Cursor's page
+      cursor: ['Signed in · Personal', onObid ? 'Not connected · Connect signs you in on Cursor’s page' : 'On this Mac, not signed in'],
     };
     rows = (Object.keys(AGENTS) as Agent[]).map((a, i) => {
       const st = s.found <= i ? 'looking' : s.agents[a];
-      // on obid: the account obid signed in, the code its page wants, Claude Code's code to paste
-      const sub = st === 'looking' ? 'Looking' : st === 'waiting' ? `Finish on ${AGENTS[a].name}’s sign-in page${typed(s.codes[a])}`
+      // on obid: the account obid signed in, the code its page wants, Claude Code's code to paste,
+      // or what Oby is at before the page opens (getting Cursor's agent)
+      const sub = st === 'looking' ? 'Looking' : st === 'waiting' ? s.codes[a]?.step ?? `Finish on ${AGENTS[a].name}’s sign-in page${typed(s.codes[a])}`
         : onObid && st === 'in' ? `Signed in · ${accountOf(a) ?? AGENTS[a].name}` : AGENT_SUB[a][st === 'in' ? 0 : 1];
-      return <Row key={a} mark={mark(AGENTS[a].brand)} name={AGENTS[a].name} state={st} act="Sign in" onAct={() => signInAgent(a)} sub={sub}>
+      return <Row key={a} mark={mark(AGENTS[a].brand)} name={AGENTS[a].name} state={st} act={a === 'cursor' && onObid ? 'Connect' : 'Sign in'} onAct={() => signInAgent(a)} sub={sub}>
         {st === 'waiting' && s.codes[a]?.paste && <PasteCode onCode={(code) => sendAgentCode(a, code)} />}
       </Row>;
     });
