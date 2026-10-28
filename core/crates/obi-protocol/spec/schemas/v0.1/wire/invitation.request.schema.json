@@ -27,7 +27,7 @@
       "maximum": 1000
     },
     "domain": {
-      "description": "An open invitation only: each redeem carries a sign-in from this Workspace.",
+      "description": "An open invitation only: each redeem carries a sign-in from an account of this domain.",
       "$ref": "../common.schema.json#/$defs/domain"
     },
     "label": {
