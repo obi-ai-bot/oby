@@ -193,6 +193,19 @@ fn after_restart(name: &str, known_reset: bool, choice: Option<&str>, disconnect
             },
         );
         assert_eq!(pending[0]["jobs"][0]["id"], "aaaa0123");
+        assert!(
+            pending[0]["options"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|option| option["kind"] != "resume")
+        );
+        assert!(
+            pending[0]["problem"]
+                .as_str()
+                .unwrap()
+                .contains("isn't connected")
+        );
         let stopped = call(&obid, "GET", "/v1/jobs/aaaa0123", None).body;
         assert_eq!(stopped["status"], "interrupted");
         assert_eq!(stopped["round"], 1);

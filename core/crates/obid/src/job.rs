@@ -1173,7 +1173,9 @@ impl Job {
         value["runsOn"] = Value::Null;
         value["nextStep"] = json!(self.next_step);
         value["resumesAt"] = json!(date(self.resumes_at));
-        value["accountLimit"] = if self.account_limit_blocked {
+        value["accountLimit"] = if self.account_limit_blocked
+            && self.account_limit_episode.is_some()
+        {
             json!({"decision": self.account_limit_episode,
                 "state": self.account_limit_choice.unwrap_or(crate::account_limits::Choice::Pending),
                 "resetAt": date(self.account_limit_reset)})

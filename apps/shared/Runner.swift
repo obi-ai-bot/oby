@@ -758,6 +758,7 @@ nonisolated struct RunnerLimitDecision: Decodable, Identifiable, Equatable, Send
     let resetAt: Int?
     let jobs: [Work]
     let options: [Option]
+    let problem: String?
 }
 #endif
 

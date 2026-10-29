@@ -49,13 +49,7 @@ impl Jobs {
             }
             // A disconnected source cannot produce a fresh usage report. Reconcile it before
             // waiting for usage, otherwise an accepted choice would disappear indefinitely.
-            let source_connected = Tool::from_id(&decision.agent).is_some_and(|tool| {
-                self.accounts(tool).iter().any(|account| {
-                    account.id == decision.account
-                        && signed_in(tool, account, login_home().as_deref())
-                })
-            });
-            if !source_connected {
+            if !self.limit_source_connected(&decision) {
                 for id in &decision.jobs {
                     self.reask_limit_job(
                         &decision,
@@ -106,6 +100,15 @@ impl Jobs {
                 }
             }
         }
+    }
+
+    fn limit_source_connected(&self, decision: &crate::account_limits::Decision) -> bool {
+        let home = login_home();
+        Tool::from_id(&decision.agent).is_some_and(|tool| {
+            self.accounts(tool).iter().any(|account| {
+                account.id == decision.account && signed_in(tool, account, home.as_deref())
+            })
+        })
     }
 
     /// Record a stopped job's durable decision. A failed write leaves it stopped and is retried
@@ -247,15 +250,28 @@ impl Jobs {
                 continue;
             }
             let mut options = self.limit_destinations(&decision).await;
-            if options.is_empty() {
+            let source_connected = self.limit_source_connected(&decision);
+            if options.is_empty() && source_connected {
                 options.push(json!({"kind":"resume"}));
             }
             options.push(json!({"kind":"stop"}));
             let snapshot = json!({"jobs":jobs,"options":options}).to_string();
-            let Ok(decision) = self.limit_decisions.refresh(&decision.id, &snapshot) else {
-                continue;
+            let (decision, problem) = match self.limit_decisions.refresh(&decision.id, &snapshot) {
+                Ok(saved) => (saved, (!source_connected).then_some("The original account isn't connected. Connect it or choose another available account.")),
+                Err(error) => {
+                    tracing::error!("can't keep account-limit options: {error}");
+                    // Fail closed while retaining the visible question. No option may be
+                    // approved until its exact scope can be kept durably.
+                    options.clear();
+                    (
+                        decision,
+                        Some(
+                            "Oby couldn't save this decision. Your jobs remain stopped. Restore disk space or access and try again.",
+                        ),
+                    )
+                }
             };
-            result.push(json!({"id":decision.id,"revision":decision.revision,"account":decision.account,"agent":decision.agent,"resetAt":decision.reset_at,"jobs":jobs,"options":options}));
+            result.push(json!({"id":decision.id,"revision":decision.revision,"account":decision.account,"agent":decision.agent,"resetAt":decision.reset_at,"jobs":jobs,"options":options,"problem":problem}));
         }
         result
     }

@@ -910,6 +910,14 @@ pub async fn message(
     let job = if typed {
         job
     } else {
+        // Unsigned API follow-ups are born untrusted, before their scheduler can run. Keep
+        // the same audit evidence even when there is no vetted state left to revoke.
+        if !job.vetted {
+            tracing::info!(
+                "job {}: words no app of the owner's signed reached it",
+                job.id
+            );
+        }
         shared
             .jobs
             .unvet(&job.id, "words no app of the owner's signed reached it")

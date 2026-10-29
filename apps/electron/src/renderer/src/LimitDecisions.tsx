@@ -46,7 +46,7 @@ function Decision({ decision }: { decision: LimitDecision }) {
           ))}
         </div>
         {busy && <p className="tc-ask-text" role="status">Saving your choice…</p>}
-        {error && <p className="tc-ask-text" role="alert">{error}</p>}
+        {(error || decision.problem) && <p className="tc-ask-text" role="alert">{error || decision.problem}</p>}
       </div>
     </article>
   );

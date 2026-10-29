@@ -73,7 +73,7 @@ export type InboxItem = {
 
 // One owner decision for all jobs stopped by the same account's limit (#1563).
 export type LimitDecision = {
-  id: string; revision: number; account: string; agent: string; resetAt: number | null;
+  id: string; revision: number; account: string; agent: string; resetAt: number | null; problem?: string | null;
   jobs: { id: string; title: string }[];
   options: ({ kind: 'move'; account: string; agent: string; name: string } | { kind: 'resume' | 'stop' })[];
 };

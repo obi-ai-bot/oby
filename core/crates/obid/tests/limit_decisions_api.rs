@@ -104,6 +104,9 @@ fn only_one_signed_answer_wins_for_a_real_pending_group() {
         )
         .unwrap();
     }
+    let account = home.join("accounts/stub");
+    std::fs::create_dir_all(&account).unwrap();
+    std::fs::write(account.join(".credentials.json"), json!({"claudeAiOauth":{"accessToken":"test-limit-login","expiresAt":(obi_protocol::time::now()+86400)*1000}}).to_string()).unwrap();
     let obid = start(&folder.0, &config, None);
     let unsigned_retry = call(
         &obid,
@@ -114,6 +117,24 @@ fn only_one_signed_answer_wins_for_a_real_pending_group() {
     assert_eq!(unsigned_retry.status, 403, "{}", unsigned_retry.text);
     let pending = call(&obid, "GET", "/v1/limit-decisions", None);
     assert_eq!(pending.status, 200, "{}", pending.text);
+    // A storage failure keeps the group visible, but exposes no executable choices.
+    let file = home.join("limit-decisions.json");
+    let saved = std::fs::read(&file).unwrap();
+    std::fs::remove_file(&file).unwrap();
+    std::fs::create_dir(&file).unwrap();
+    let blocked = call(&obid, "GET", "/v1/limit-decisions", None);
+    assert_eq!(blocked.status, 200, "{}", blocked.text);
+    assert_eq!(blocked.body[0]["jobs"].as_array().unwrap().len(), 2);
+    assert!(blocked.body[0]["options"].as_array().unwrap().is_empty());
+    assert!(
+        blocked.body[0]["problem"]
+            .as_str()
+            .unwrap()
+            .contains("remain stopped")
+    );
+    std::fs::remove_dir(&file).unwrap();
+    std::fs::write(&file, saved).unwrap();
+    assert!(call(&obid, "GET", "/v1/limit-decisions", None).body[0]["problem"].is_null());
     let list = pending.body.as_array().unwrap();
     assert_eq!(list.len(), 1, "{}", pending.text);
     let decision = &list[0];

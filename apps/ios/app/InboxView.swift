@@ -107,7 +107,7 @@ struct AccountLimitDecision: View {
                         CardOption(label: $0.element.label, answer: String($0.offset))
                     }, busy: busy, onChoose: choose)
             if busy { Text("Saving your choice…").font(Tokens.font(Tokens.textSm)).foregroundStyle(Tokens.muted).padding(.top, 8) }
-            if let problem {
+            if let problem = problem ?? decision.problem {
                 Text(problem).font(Tokens.font(Tokens.textSm)).foregroundStyle(Tokens.danger).padding(.top, 8)
                     .accessibilityLabel("Couldn’t save your choice. \(problem)")
             }
