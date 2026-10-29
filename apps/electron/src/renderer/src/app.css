@@ -2096,11 +2096,10 @@ button.sphere-logo-badge:hover { color: var(--ink); background: #3a3a39; }
 /* under way, on the right: the code to type on its page, then a spinner */
 .wl-busy { flex: none; display: inline-flex; align-items: center; gap: 10px; color: var(--text); }
 .wl-code { font: 500 var(--text-base)/1 ui-monospace, "SF Mono", Menlo, monospace; letter-spacing: 0.04em; color: var(--ink); user-select: text; }
-.onb-rows .setup-code { margin: 0; flex: none; }
+.onb-rows .setup-code { margin: 0; }
 /* Claude Code's field for its code, under its name, across the row (its Cancel stays up right) */
 .onb-rows .setup-row:has(> .wl-below) { flex-wrap: wrap; row-gap: 8px; padding-bottom: 10px; }
 .onb-rows .wl-below { flex-basis: 100%; padding-left: 34px; }
-.onb-rows .wl-below .setup-code { flex: 1; }
 .spinner { display: block; animation: spin 800ms linear infinite; }
 @keyframes spin { to { transform: rotate(1turn); } }
 @media (prefers-reduced-motion: reduce) { .spinner { animation: none; } }

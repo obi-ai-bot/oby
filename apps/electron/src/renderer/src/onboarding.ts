@@ -4,9 +4,9 @@ import { addTask } from './tasks';
 import { wait } from './stream';
 import { onObid } from './lean';
 import { CAN_CREATE } from './spheres';
-import { api } from './obid';
+import { ApiError, api } from './obid';
 import { ask, liveState, say, useLive } from './live';
-import type { Agent, SetupStep } from './mock';
+import { AGENTS, type Agent, type SetupStep } from './mock';
 
 // Setting up, in Oby's first conversation: no wizard, Oby talks you through it
 // (as Grok Bot and OpenMausBot do). Oby says what it found and what's next, a
@@ -100,15 +100,23 @@ const reason = (e: unknown) => (e instanceof Error ? e.message : String(e));
 export async function signInAgent(a: Agent) {
   if (!onObid) return signIn((s) => s.agents[a], (v) => agentSign(a, v));
   if (setup.agents[a] !== 'out' || signedIn(a)) return;
+  // (one before it still being undone: undone first)
+  const old = tries[a];
   const t: Try = {};
   tries[a] = t;
   // (cancelled meanwhile: what this try started is ended)
   const gone = () => tries[a] !== t;
   set((x) => ({ ...agentSign(a, 'waiting'), problems: { ...x.problems, [a]: undefined } }));
   try {
+    if (old) await unmake(old);
     const s = liveState().status;
-    if (s?.availableLogins?.some((l) => l.agent === a)) {
-      await api.addAccount({ agent: a, default: true });
+    // its own login on this Mac, not an account yet: adopted; signed out (expired), there's no page
+    // of Oby's to open, the tool signs in itself
+    const own = s?.availableLogins?.find((l) => l.agent === a && !s.accounts.some((x) => x.id === l.id));
+    if (own) {
+      const account = await api.addAccount({ agent: a, default: true });
+      if (gone()) return;
+      if (!account.signedIn) { delete tries[a]; return back(a, account.label ?? `Sign in with ${AGENTS[a].name} itself on this Mac, then Connect again.`); }
     } else {
       t.account = s?.accounts.find((x) => x.agent === a)?.id ?? (t.made = (await api.addAccount({ agent: a, name: 'Personal' })).id);
       if (gone()) return void unmake(t);
@@ -117,14 +125,17 @@ export async function signInAgent(a: Agent) {
       open(page.url);
       set((x) => ({ codes: { ...x.codes, [a]: { userCode: page.userCode, paste: page.pasteCode ? t.account : undefined } } }));
     }
-    // (a code, even none: under way, so Cancel shows)
+    // (a code, even none: under way, so Cancel is on)
     set((x) => ({ codes: { ...x.codes, [a]: x.codes[a] ?? {} } }));
     const done = await until(async () => signedIn(a) || gone());
     if (gone()) return;
     delete tries[a];
-    if (!done) { await unmake(t); back(a, 'Didn’t finish signing in. Try again.'); }
+    // signed in: obid says so (useSetup); the row's own state back to rest under that
+    if (done) set((x) => ({ ...agentSign(a, 'out'), codes: { ...x.codes, [a]: undefined } }));
+    else { await unmake(t); back(a, 'Didn’t finish signing in. Try again.'); }
   } catch (e) {
-    if (gone()) return void unmake(t);
+    // (cancelled: Cancel undid it)
+    if (gone()) return;
     delete tries[a];
     await unmake(t);
     back(a, reason(e));
@@ -133,23 +144,24 @@ export async function signInAgent(a: Agent) {
 // Cancel, while its page is open
 export async function cancelAgent(a: Agent) {
   const t = tries[a];
-  if (!t) return;
   delete tries[a];
-  await unmake(t);
+  if (t) await unmake(t);
   back(a);
 }
-// Claude Code's code, pasted from its page
+// Claude Code's code, pasted from its page: while it goes, the field steps aside (Cancel stays).
+// Refused (422): that sign-in is over, Connect again for a new link. No answer in time (504) or
+// a code sent already (409): it may still sign in, so it waits on, till its page runs out or Cancel
+// (as Settings' sendCode)
 export async function sendAgentCode(a: Agent, code: string) {
-  const account = setup.codes[a]?.paste;
+  const c = setup.codes[a], account = c?.paste, t = tries[a];
   if (!account || !code.trim()) return;
+  set((x) => ({ codes: { ...x.codes, [a]: { ...c, paste: undefined } } }));
   try {
     await api.signInCode(account, code.trim());
-    set((x) => ({ codes: { ...x.codes, [a]: undefined } }));
   } catch (e) {
-    // the sign-in ended: Connect again for a new link
-    const t = tries[a];
+    if (!t || tries[a] !== t || !(e instanceof ApiError && e.status === 422)) return;
     delete tries[a];
-    if (t) await unmake(t);
+    await unmake(t);
     back(a, reason(e));
   }
 }

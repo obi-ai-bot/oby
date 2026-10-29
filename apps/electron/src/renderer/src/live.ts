@@ -431,15 +431,13 @@ function down(mine: number, problem: string, why?: Live['why']) {
 
 async function sync(mine: number, pending: Event[], onSynced: () => void) {
   try {
-    const [status, jobs, inbox, conversations, github] = await Promise.all([
+    const [status, jobs, inbox, { list: conversations, complete }, github] = await Promise.all([
       api.status(), api.jobs(100), api.inbox().catch(() => []), allConversations(),
       // GitHub's work: not read, the last read stands, with why (as obid keeps its last lists)
       api.githubWork().catch((e) => (state.github ? { ...state.github, error: e instanceof Error ? e.message : String(e) } : null)),
     ]);
     if (mine !== generation) return;
     retry = 0;
-    // (a list cut short at allConversations' last page isn't all of them: nothing's dropped then)
-    if (conversations.complete) keepFoldersOf(new Set(conversations.map((c) => c.id)));
     let next: Live = {
       ...state, connection: 'live', problem: null, why: undefined, status, inbox: inbox.filter((i) => i.state !== 'done'), conversations, github,
       jobs: { ...state.jobs, ...Object.fromEntries(jobs.map((j) => [j.id, j])) },
@@ -447,6 +445,10 @@ async function sync(mine: number, pending: Event[], onSynced: () => void) {
     };
     for (const e of pending) next = apply(next, e);
     pending.length = 0;
+    // the folders of conversations deleted since (folders.ts); with the ones that moved up a page
+    // while it was read (their events, just applied). A list cut short at allConversations' last
+    // page isn't all of them: nothing's dropped then
+    if (complete) keepFoldersOf(new Set(next.conversations.map((c) => c.id)));
     set(next);
     onSynced();
     // where work can start: GitHub's list takes a moment, so the rest doesn't wait for it
@@ -472,7 +474,7 @@ async function allConversations() {
     if (list.length < 200) { complete = true; break; }
     after = list.at(-1)!.cursor;
   }
-  return Object.assign([...all.values()], { complete });
+  return { list: [...all.values()], complete };
 }
 
 // what went wrong with something the app did, for a moment

@@ -120,7 +120,7 @@ export function AgentRows({ bare = false }: { bare?: boolean }) {
       : onObid && st === 'in' ? `Signed in · ${accountOf(a) ?? AGENTS[a].name}` : AGENT_SUB[a][st === 'in' ? 0 : 1];
     return <Row key={a} mark={<BrandMark brand={AGENTS[a].brand} size={22} />} name={AGENTS[a].name} state={st} act={bare ? 'Connect' : 'Sign in'} onAct={() => signInAgent(a)}
       sub={sub} why={s.problems[a]} code={bare ? s.codes[a]?.userCode ?? undefined : undefined} bare={bare}
-      onCancel={bare && st === 'waiting' && s.codes[a] ? () => cancelAgent(a) : undefined}>
+      onCancel={bare && st === 'waiting' ? () => cancelAgent(a) : undefined} canCancel={!!s.codes[a]}>
       {st === 'waiting' && s.codes[a]?.paste ? <PasteCode onCode={(code) => sendAgentCode(a, code)} /> : undefined}
     </Row>;
   })}</>;
@@ -143,8 +143,8 @@ const busy = (name: string, state: 'looking' | 'waiting', code?: string) => <>
 </>;
 // one thing to connect: its mark, its name and how it stands (and anything it needs from you
 // there, why its last try didn't take), and its button until it's ready (none: nothing to do
-// there); under way, its Cancel once there's something to cancel
-const Row = ({ mark, name, sub, why, code, state, act, onAct, onCancel, bare = false, children }: { mark: ReactNode; name: string; sub?: string; why?: string; code?: string; state: 'out' | 'waiting' | 'in' | 'looking'; act?: string; onAct?: () => void; onCancel?: () => void; bare?: boolean; children?: ReactNode }) => (
+// there); under way, its Cancel where the button was (on once there's something to cancel)
+const Row = ({ mark, name, sub, why, code, state, act, onAct, onCancel, canCancel = true, bare = false, children }: { mark: ReactNode; name: string; sub?: string; why?: string; code?: string; state: 'out' | 'waiting' | 'in' | 'looking'; act?: string; onAct?: () => void; onCancel?: () => void; canCancel?: boolean; bare?: boolean; children?: ReactNode }) => (
   <li className="setup-row">
     {mark}
     <span className="wl-two">
@@ -155,9 +155,9 @@ const Row = ({ mark, name, sub, why, code, state, act, onAct, onCancel, bare = f
     </span>
     {bare && (state === 'looking' || state === 'waiting') ? (onCancel
       // (Claude Code's field for its code: a line of its own under the rest)
-      ? <><span className="wl-busy">{busy(name, state, code)}<button className="set-button" onClick={onCancel}>Cancel</button></span>
+      ? <><span className="wl-busy">{busy(name, state, code)}<button className="set-button" disabled={!canCancel} aria-label={`Cancel signing in to ${name}`} onClick={onCancel}>Cancel</button></span>
         {children && <div className="wl-below">{children}</div>}</>
-      : children ?? <span className="wl-busy wl-slot">{busy(name, state, code)}</span>)
+      : <span className="wl-busy wl-slot">{busy(name, state, code)}</span>)
     : state === 'in' ? (bare
       ? <span className="wl-ready is-bare wl-slot" role="img" aria-label="Ready"><Check size={20} strokeWidth={2.25} /></span>
       : <span className="wl-ready"><Check size={14} strokeWidth={2} />Ready</span>)

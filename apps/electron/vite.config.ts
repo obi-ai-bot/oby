@@ -31,8 +31,6 @@ export default defineConfig({
   root: resolve(__dirname, 'src/renderer'),
   base: './',
   plugins: [react(), oby()],
-  // the app's version, for Settings › About
-  define: { __OBY_VERSION__: JSON.stringify(JSON.parse(readFileSync(resolve(__dirname, 'package.json'), 'utf8')).version) },
   server: { port: Number(process.env.PORT) || 5175, strictPort: true },
   // the favicons, from Oby's icon folder (apps/icon/exports/web): served in dev, copied by a build
   publicDir: resolve(__dirname, '../icon/exports/web'),

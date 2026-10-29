@@ -10,6 +10,7 @@ import { ApiError, api, type ModelOptions, type Models, type SavedRule, type Sig
 import Connectors, { ConfirmWindow, readConnectors } from './Connectors';
 import { Menu } from './Menu';
 import { useLive } from './live';
+import { version } from '../../../package.json';
 
 // how long the way out takes (the sink animation in app.css)
 const LEAVE_MS = 220;
@@ -299,7 +300,7 @@ const ADD = 'add';
 // offers, each account's sign-in under way and what went wrong where (an account's row, or ADD:
 // adding one)
 type Signing = 'opening' | (SignIn & { code?: 'sending' | 'sent' });
-function useSignIns(accounts: Account[]) {
+function useSignIns(accounts: Account[], setAccounts: (a: Account[]) => void) {
   // the tools' own logins on this Mac that aren't accounts (found, or removed here): only
   // GET /v1/status has them, read as the page opens and after a change (obid also reads the usage
   // shown here then, which comes in its `accounts` event)
@@ -349,12 +350,18 @@ function useSignIns(accounts: Account[]) {
     });
     return () => timers.forEach(clearTimeout);
   }, [signing]);
-  return { offered, look, signing, put, problems, busy, tried, signIn, sendCode, cancel };
+  // taking one off, after its window says what that does (by id: one gone meanwhile has no window)
+  const [removing, setRemoving] = useState<string | null>(null);
+  const remove = (a: Account) => (onObid ? setRemoving(a.id) : setAccounts(accounts.filter((x) => x.id !== a.id)));
+  const gone = accounts.find((x) => x.id === removing);
+  const removeWindow = gone && <ConfirmWindow brand={AGENTS[gone.agent].brand} title={`Remove ${gone.name}?`} text={removeNote(gone)} action="Remove"
+    onConfirm={() => void tried(gone.id, () => api.removeAccount(gone.id).then(() => { put(gone.id); look(); }))} onClose={() => setRemoving(null)} />;
+  return { offered, look, signing, put, problems, busy, tried, signIn, sendCode, cancel, remove, removeWindow };
 }
 
 function Accounts() {
   const [accounts, setAccounts] = useAccounts();
-  const { offered, look, signing, put, problems, busy, tried, signIn, sendCode, cancel } = useSignIns(accounts);
+  const { offered, look, signing, problems, busy, tried, signIn, sendCode, cancel, remove, removeWindow } = useSignIns(accounts, setAccounts);
   const [agent, setAgent] = useState<Account['agent']>('claude');
   const [name, setName] = useState('');
   const [payer, setPayer] = useState('');
@@ -366,10 +373,6 @@ function Accounts() {
     if (a) return void signIn(a.id);
     setAccounts([...accounts, { id: `a${Date.now()}`, agent, name: n, payer: p || 'You', used: 0, resets: 'Resets in 7 days' }]);
   });
-  // taking one off, after its window says what that does
-  const [removing, setRemoving] = useState<Account | null>(null);
-  const remove = (a: Account) => (onObid ? setRemoving(a) : setAccounts(accounts.filter((x) => x.id !== a.id)));
-  const removed = (a: Account) => void tried(a.id, () => api.removeAccount(a.id).then(() => { put(a.id); look(); }));
   const roomiest = accounts.filter((a) => a.used != null).sort((a, b) => a.used! - b.used!)[0];
   return <>
     <Group i={1} title="Accounts on this Mac">
@@ -418,8 +421,7 @@ function Accounts() {
         <button className="set-button" disabled={!name.trim() || busy} onClick={add}>Add Account</button>
       </Row>
     </Group>
-    {removing && <ConfirmWindow brand={AGENTS[removing.agent].brand} title={`Remove ${removing.name}?`} text={removeNote(removing)}
-      action="Remove" onConfirm={() => removed(removing)} onClose={() => setRemoving(null)} />}
+    {removeWindow}
   </>;
 }
 
@@ -635,11 +637,7 @@ function Agents() {
   const [tuning, options, tune] = useModels();
   const [chosen, setChosen] = useKeptSetting<string | null>('agent.default', null);
   // signing in, as Settings › Accounts does (useSignIns): its states, its problems, the tool's own login
-  const { offered, look, signing, put, problems, busy, tried, signIn, sendCode, cancel } = useSignIns(accounts);
-  // taking one off, after its window says what that does (as Settings › Accounts does)
-  const [removing, setRemoving] = useState<Account | null>(null);
-  const remove = (x: Account) => (onObid ? setRemoving(x) : setAccounts(accounts.filter((y) => y.id !== x.id)));
-  const removed = (x: Account) => void tried(x.id, () => api.removeAccount(x.id).then(() => { put(x.id); look(); }));
+  const { offered, look, signing, problems, busy, tried, signIn, sendCode, cancel, remove, removeWindow } = useSignIns(accounts, setAccounts);
   // Add an agent: a provider, and an alias of your own for it (several of one are fine)
   const [agent, setAgent] = useState<Agent>('claude');
   const [name, setName] = useState('');
@@ -727,8 +725,7 @@ function Agents() {
         )}
       </div>
     </Group>
-    {removing && <ConfirmWindow brand={AGENTS[removing.agent].brand} title={`Remove ${removing.name}?`} text={removeNote(removing)}
-      action="Remove" onConfirm={() => removed(removing)} onClose={() => setRemoving(null)} />}
+    {removeWindow}
   </>;
 }
 
@@ -766,7 +763,7 @@ function About() {
   // to date while it updates itself; with that off, it finds 0.9.3
   const [auto, setAuto] = useKeptSetting('updates.auto', true);
   const [found, setFound] = useState<'none' | 'current' | 'update'>('none');
-  if (onObid) return <Group i={1}><Row label="Version"><Value>{__OBY_VERSION__}</Value></Row></Group>;
+  if (onObid) return <Group i={1}><Row label="Version"><Value>{version}</Value></Row></Group>;
   return <>
     <Group i={1} footer={auto ? 'Oby downloads updates in the background and installs them when you quit.' : undefined}>
       <Row label="Version"><Value>0.9.2 (412)</Value></Row>

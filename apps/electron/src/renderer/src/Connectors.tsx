@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Check, Copy, Search, X } from 'lucide-react';
 import { BRANDS, BrandMark, type Brand } from './brands';
@@ -174,8 +174,9 @@ function serverName(t: Tetrix) {
   try { return new URL(t.url ?? '').host; } catch { return 'Tetrix'; }
 }
 
-// A connector's window: its logo and title, a ×, Esc or a click outside closes it
-export function Window({ brand, title, onClose, children }: { brand: Brand; title: string; onClose: () => void; children: React.ReactNode }) {
+// A window over Settings (a connector's, or asking before a Remove): its logo and title, a ×, Esc
+// or a click outside closes it. alert: a question, its lede read out with it (describedBy)
+function Window({ brand, title, onClose, alert, children }: { brand: Brand; title: string; onClose: () => void; alert?: string; children: React.ReactNode }) {
   // (its latest onClose, listened for once)
   const close = useRef(onClose);
   close.current = onClose;
@@ -186,7 +187,7 @@ export function Window({ brand, title, onClose, children }: { brand: Brand; titl
   }, []);
   return createPortal(
     <div className="modal-backdrop" onPointerDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
-      <div className="modal is-small" role="dialog" aria-modal="true" aria-label={title}>
+      <div className="modal is-small" role={alert ? 'alertdialog' : 'dialog'} aria-modal="true" aria-label={title} aria-describedby={alert}>
         <header className="modal-head">
           <span className="connector-window-title"><BrandMark brand={brand} size={22} /><h2>{title}</h2></span>
           <button type="button" className="icon-button" aria-label="Close" onClick={onClose}><X size={16} strokeWidth={1.6} /></button>
@@ -266,16 +267,17 @@ export function CommandWindow({ brand, title, text, command, onClose }: { brand:
   );
 }
 
-// A window asking before something that can't be undone here (Settings › Agents' Remove): what
-// it does, Cancel, and the red button that does it
+// A window asking before something that can't be undone here (Settings › Agents' and Accounts'
+// Remove): what it does, Cancel (focused, as SphereSettings' confirm), and the red button that does it
 export function ConfirmWindow({ brand, title, text, action, onConfirm, onClose }: {
   brand: Brand; title: string; text: string; action: string; onConfirm: () => void; onClose: () => void;
 }) {
+  const what = useId();
   return (
-    <Window brand={brand} title={title} onClose={onClose}>
-      <p className="modal-lede">{text}</p>
+    <Window brand={brand} title={title} onClose={onClose} alert={what}>
+      <p id={what} className="modal-lede">{text}</p>
       <div className="modal-actions">
-        <button type="button" className="set-button" onClick={onClose}>Cancel</button>
+        <button type="button" className="set-button" autoFocus onClick={onClose}>Cancel</button>
         <button type="button" className="modal-primary is-danger" onClick={() => { onClose(); onConfirm(); }}>{action}</button>
       </div>
     </Window>
