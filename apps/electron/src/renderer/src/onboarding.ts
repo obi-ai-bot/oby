@@ -37,11 +37,12 @@ export type Setup = {
   call?: string;        // in the sample: who's called next (or Knowledge)
   at: SetupStep | null; // the step waiting on your pick
   codes: Partial<Record<Agent | 'github', Code>>;
+  problems: Partial<Record<Agent, string>>; // why an agent's last sign-in didn't take, till the next try
   githubUser?: string;
 };
 let setup: Setup = {
   found: 0, agents: onObid ? { claude: 'out', codex: 'out', cursor: 'out' } : { claude: 'in', codex: 'in', cursor: 'out' },
-  github: 'out', tetrix: 'out', sphere: 'off', at: null, codes: {},
+  github: 'out', tetrix: 'out', sphere: 'off', at: null, codes: {}, problems: {},
 };
 const listeners = new Set<() => void>();
 const set = (fn: (s: Setup) => Partial<Setup>) => { setup = { ...setup, ...fn(setup) }; listeners.forEach((l) => l()); };
@@ -81,38 +82,61 @@ const failed = (e: unknown, back: () => void) => { back(); say(e); };
 
 // An agent: its login already on this Mac becomes an account (availableLogins); else an account
 // of its own, signed in with the tool's own login on its page. obid's `accounts` event says when
-// it's in.
-const attempts: Partial<Record<Agent, number>> = {};
+// it's in. One that doesn't take (its page closed, an error) puts Connect back with why under it
+// (problems); Cancel (cancelAgent) puts it back with nothing said.
+// (a try: the account it signs in, and the one it made for that, if it did)
+type Try = { account?: string; made?: string };
+const tries: Partial<Record<Agent, Try>> = {};
+// a try ended: its sign-in ended at obid, and the account it made taken off again, so only what
+// was connected shows in Settings › Agents (awaited before the row's button is back: a retry
+// straight after mustn't find it and sign it in)
+async function unmake(t: Try) {
+  if (t.account) await api.endSignIn(t.account).catch(() => { /* ended already */ });
+  if (t.made) await api.removeAccount(t.made).catch(() => { /* still there: Settings shows it signed out */ });
+}
+// the row's button again, with why if it failed
+const back = (a: Agent, why?: string) => set((x) => ({ ...agentSign(a, 'out'), codes: { ...x.codes, [a]: undefined }, problems: { ...x.problems, [a]: why } }));
+const reason = (e: unknown) => (e instanceof Error ? e.message : String(e));
 export async function signInAgent(a: Agent) {
   if (!onObid) return signIn((s) => s.agents[a], (v) => agentSign(a, v));
   if (setup.agents[a] !== 'out' || signedIn(a)) return;
-  const mine = (attempts[a] = (attempts[a] ?? 0) + 1);
-  set(() => agentSign(a, 'waiting'));
-  // the account this try made, if it did: taken off again when the sign-in doesn't take (the tool
-  // not on this Mac, its page closed), so only what was connected shows in Settings › Agents
-  let made: string | undefined;
-  // (awaited before the row's button is back: a retry straight after mustn't find it and sign it in)
-  const unmake = async () => { if (made) await api.removeAccount(made).catch(() => { /* still there: Settings shows it signed out */ }); };
+  const t: Try = {};
+  tries[a] = t;
+  // (cancelled meanwhile: what this try started is ended)
+  const gone = () => tries[a] !== t;
+  set((x) => ({ ...agentSign(a, 'waiting'), problems: { ...x.problems, [a]: undefined } }));
   try {
     const s = liveState().status;
     if (s?.availableLogins?.some((l) => l.agent === a)) {
       await api.addAccount({ agent: a, default: true });
     } else {
-      const account = s?.accounts.find((x) => x.agent === a)?.id ?? (made = (await api.addAccount({ agent: a, name: 'Personal' })).id);
-      const page = await api.signIn(account);
-      set((x) => ({ codes: { ...x.codes, [a]: { userCode: page.userCode, paste: page.pasteCode ? account : undefined } } }));
+      t.account = s?.accounts.find((x) => x.agent === a)?.id ?? (t.made = (await api.addAccount({ agent: a, name: 'Personal' })).id);
+      if (gone()) return void unmake(t);
+      const page = await api.signIn(t.account);
+      if (gone()) return void unmake(t);
       open(page.url);
+      set((x) => ({ codes: { ...x.codes, [a]: { userCode: page.userCode, paste: page.pasteCode ? t.account : undefined } } }));
     }
-    // a login that didn't take (its page closed, an expired login adopted): the button again,
-    // unless a later try took over
-    if (!(await until(async () => signedIn(a) || attempts[a] !== mine))) {
-      await unmake();
-      set((x) => ({ ...agentSign(a, 'out'), codes: { ...x.codes, [a]: undefined } }));
-    }
+    // (a code, even none: under way, so Cancel shows)
+    set((x) => ({ codes: { ...x.codes, [a]: x.codes[a] ?? {} } }));
+    const done = await until(async () => signedIn(a) || gone());
+    if (gone()) return;
+    delete tries[a];
+    if (!done) { await unmake(t); back(a, 'Didn’t finish signing in. Try again.'); }
   } catch (e) {
-    await unmake();
-    failed(e, () => set(() => agentSign(a, 'out')));
+    if (gone()) return void unmake(t);
+    delete tries[a];
+    await unmake(t);
+    back(a, reason(e));
   }
+}
+// Cancel, while its page is open
+export async function cancelAgent(a: Agent) {
+  const t = tries[a];
+  if (!t) return;
+  delete tries[a];
+  await unmake(t);
+  back(a);
 }
 // Claude Code's code, pasted from its page
 export async function sendAgentCode(a: Agent, code: string) {
@@ -122,8 +146,11 @@ export async function sendAgentCode(a: Agent, code: string) {
     await api.signInCode(account, code.trim());
     set((x) => ({ codes: { ...x.codes, [a]: undefined } }));
   } catch (e) {
-    // the sign-in ended: start again for a new link
-    failed(e, () => set((x) => ({ ...agentSign(a, 'out'), codes: { ...x.codes, [a]: undefined } })));
+    // the sign-in ended: Connect again for a new link
+    const t = tries[a];
+    delete tries[a];
+    if (t) await unmake(t);
+    back(a, reason(e));
   }
 }
 

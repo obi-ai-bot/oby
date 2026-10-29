@@ -6,7 +6,7 @@ import { SAMPLE, memberCount } from './spheres';
 import { tetrixFor } from './knowledge';
 import { SAMPLE_TALK, Sphere, SphereHowTo, still } from './Welcome';
 import { AGENTS, type Agent, type SetupStep } from './mock';
-import { FIRST_TASK, accountOf, connectTetrix, pick, sceneDone, sceneReplayed, sendAgentCode, signInAgent, signInGitHub, useSetup, type Code } from './onboarding';
+import { FIRST_TASK, accountOf, cancelAgent, connectTetrix, pick, sceneDone, sceneReplayed, sendAgentCode, signInAgent, signInGitHub, useSetup, type Code } from './onboarding';
 import { onObid } from './lean';
 import { PasteCode } from './SettingsView';
 import { useLive } from './live';
@@ -119,7 +119,8 @@ export function AgentRows({ bare = false }: { bare?: boolean }) {
     const sub = bare ? undefined : st === 'looking' ? 'Looking' : st === 'waiting' ? `Finish on ${AGENTS[a].name}’s sign-in page${typed(s.codes[a])}`
       : onObid && st === 'in' ? `Signed in · ${accountOf(a) ?? AGENTS[a].name}` : AGENT_SUB[a][st === 'in' ? 0 : 1];
     return <Row key={a} mark={<BrandMark brand={AGENTS[a].brand} size={22} />} name={AGENTS[a].name} state={st} act={bare ? 'Connect' : 'Sign in'} onAct={() => signInAgent(a)}
-      sub={sub} code={bare ? s.codes[a]?.userCode ?? undefined : undefined} bare={bare}>
+      sub={sub} why={s.problems[a]} code={bare ? s.codes[a]?.userCode ?? undefined : undefined} bare={bare}
+      onCancel={bare && st === 'waiting' && s.codes[a] ? () => cancelAgent(a) : undefined}>
       {st === 'waiting' && s.codes[a]?.paste ? <PasteCode onCode={(code) => sendAgentCode(a, code)} /> : undefined}
     </Row>;
   })}</>;
@@ -135,20 +136,28 @@ const CUES: Record<string, string> = {
   Knowledge: 'Last one: Knowledge, what Deskree’s Obys can look up.',
 };
 
+// under way: the code to type on its page, if any, and a spinner
+const busy = (name: string, state: 'looking' | 'waiting', code?: string) => <>
+  {code && <span className="wl-code" aria-label={`Enter ${code} on its page`}>{code}</span>}
+  <Spinner label={state === 'looking' ? `Looking for ${name}` : `Signing in to ${name}`} />
+</>;
 // one thing to connect: its mark, its name and how it stands (and anything it needs from you
-// there), and its button until it's ready (none: nothing to do there)
-const Row = ({ mark, name, sub, code, state, act, onAct, bare = false, children }: { mark: ReactNode; name: string; sub?: string; code?: string; state: 'out' | 'waiting' | 'in' | 'looking'; act?: string; onAct?: () => void; bare?: boolean; children?: ReactNode }) => (
+// there, why its last try didn't take), and its button until it's ready (none: nothing to do
+// there); under way, its Cancel once there's something to cancel
+const Row = ({ mark, name, sub, why, code, state, act, onAct, onCancel, bare = false, children }: { mark: ReactNode; name: string; sub?: string; why?: string; code?: string; state: 'out' | 'waiting' | 'in' | 'looking'; act?: string; onAct?: () => void; onCancel?: () => void; bare?: boolean; children?: ReactNode }) => (
   <li className="setup-row">
     {mark}
     <span className="wl-two">
       <span className="wl-name">{name}</span>
       {sub && <span className={`wl-sub${state === 'looking' ? ' msg-step' : ''}`}>{sub}</span>}
+      {why && state === 'out' && <span className="wl-sub is-problem" role="alert">{why}</span>}
       {!bare && children}
     </span>
-    {bare && (state === 'looking' || state === 'waiting') ? (children ?? <span className="wl-busy wl-slot">
-      {code && <span className="wl-code" aria-label={`Enter ${code} on its page`}>{code}</span>}
-      <Spinner label={state === 'looking' ? `Looking for ${name}` : `Signing in to ${name}`} />
-    </span>)
+    {bare && (state === 'looking' || state === 'waiting') ? (onCancel
+      // (Claude Code's field for its code: a line of its own under the rest)
+      ? <><span className="wl-busy">{busy(name, state, code)}<button className="set-button" onClick={onCancel}>Cancel</button></span>
+        {children && <div className="wl-below">{children}</div>}</>
+      : children ?? <span className="wl-busy wl-slot">{busy(name, state, code)}</span>)
     : state === 'in' ? (bare
       ? <span className="wl-ready is-bare wl-slot" role="img" aria-label="Ready"><Check size={20} strokeWidth={2.25} /></span>
       : <span className="wl-ready"><Check size={14} strokeWidth={2} />Ready</span>)
