@@ -7,7 +7,7 @@ import { HistoryPlugin } from '@lexical/react/LexicalHistoryPlugin';
 import { PlainTextPlugin } from '@lexical/react/LexicalPlainTextPlugin';
 import { registerLexicalTextEntity } from '@lexical/text';
 import {
-  $createParagraphNode, $getRoot, $getSelection, $isRangeSelection, $isTextNode, $setSelection, COMMAND_PRIORITY_HIGH,
+  $createLineBreakNode, $createParagraphNode, $createTextNode, $getRoot, $getSelection, $isRangeSelection, $isTextNode, $setSelection, COMMAND_PRIORITY_HIGH,
   KEY_ARROW_DOWN_COMMAND, KEY_ARROW_UP_COMMAND, KEY_ENTER_COMMAND, KEY_ESCAPE_COMMAND, KEY_TAB_COMMAND, PASTE_COMMAND, type LexicalCommand,
 } from 'lexical';
 import { $createTokenNode, findToken, TokenNode } from './textTokens';
@@ -23,6 +23,7 @@ import { useScrollThumb } from './useScrollThumb';
 export type MentionKey = 'up' | 'down' | 'pick' | 'close';
 export type EditorHandle = {
   text(): string; clear(): void; focus(): void; blur(): void;
+  setText(text: string): void;  // the words put back (a draft), the cursor at their end
   mention(name: string): void;  // @name in place of the @ being typed (or at the cursor)
 };
 // the @ being typed, right before the cursor: what's after it so far
@@ -85,6 +86,18 @@ function Behaviour({ autoFocus, onText, onEnter, onHeight, onPasteFiles, onMenti
   useImperativeHandle(handle, () => ({
     text: () => editor.getEditorState().read(() => $getRoot().getTextContent()),
     clear: () => editor.update(() => { const root = $getRoot(); root.clear(); root.append($createParagraphNode()); }),
+    // in place of whatever was there, as one step with it in the undo history
+    // (Cmd+Z doesn't take a draft back out)
+    setText: (text) => editor.update(() => {
+      const root = $getRoot(), p = $createParagraphNode();
+      root.clear();
+      text.split('\n').forEach((line, i) => {
+        if (i) p.append($createLineBreakNode());
+        if (line) p.append($createTextNode(line));
+      });
+      root.append(p);
+      p.selectEnd();
+    }, { tag: 'history-merge' }),
     focus: () => editor.focus(),
     // no cursor left behind to put back, so the editor doesn't take focus again
     blur: () => { editor.update(() => $setSelection(null)); editor.blur(); },

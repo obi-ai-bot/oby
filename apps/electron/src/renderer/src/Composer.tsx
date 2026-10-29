@@ -12,6 +12,7 @@ import { BrandMark } from './brands';
 import { fullness, useAccounts } from './SettingsView';
 import { lookAtUsage, useRepos } from './live';
 import { useScrollThumb } from './useScrollThumb';
+import { keeper } from './drafts';
 
 // What a message carries besides its words: files or photos (a photo with a
 // small preview of itself), tasks attached. (Other Obys are brought in by name,
@@ -39,7 +40,9 @@ const keyOf = (a: Attached) => (a.kind === 'task' ? `task:${a.id}` : `${a.kind}:
 // the Obys over the box, narrowing as you type (arrows move, Enter or Tab
 // picks, Esc closes it). The text grows with what you type; the up arrow sends (lit once
 // there's something to send), as does Enter; Shift+Enter starts a new line.
-export default function Composer({ placeholder, label, onSend, home = false, hidden = false, autoFocus = !home, className = '', style, repos: withRepos = false, conversation }: {
+// Words typed and not sent stay (drafts.ts): back in the box, the cursor at
+// their end, when it shows again, after a relaunch too.
+export default function Composer({ placeholder, label, onSend, home = false, hidden = false, autoFocus = !home, className = '', style, repos: withRepos = false, conversation, draft }: {
   placeholder: string;
   label: string;
   onSend: (text: string, attached: Attachments) => void;  // its words, and what went with them
@@ -48,6 +51,7 @@ export default function Composer({ placeholder, label, onSend, home = false, hid
   // conversation's last one until another is picked or it's taken out (+ › Choose a repository)
   repos?: boolean;
   conversation?: string;
+  draft?: string;    // the box its unsent words are kept as (drafts.ts, box); none: not kept
   hidden?: boolean;
   autoFocus?: boolean;  // focused on opening (a conversation's is; Home's and a task page's aren't)
   className?: string;  // a page's own spacing around it
@@ -127,6 +131,19 @@ export default function Composer({ placeholder, label, onSend, home = false, hid
     }));
     if (picked.length) add(...picked);
   };
+  // The box's draft: put back when it shows (or when it's another box's), and
+  // kept as it's typed, a moment after the last keystroke; what's pending is
+  // written when the box goes, or the window closes (pagehide), so a quick
+  // quit loses nothing. Sending empties the box, which lets its draft go.
+  const drafts = useRef<ReturnType<typeof keeper>>(null);
+  drafts.current ??= keeper();
+  useLayoutEffect(() => {
+    const d = drafts.current!, b = box.current;
+    const text = d.show(draft ?? null);
+    if (b && draft !== undefined && (text || b.text())) b.setText(text);
+    addEventListener('pagehide', d.flush);
+    return () => { removeEventListener('pagehide', d.flush); d.flush(); };
+  }, [draft]);
   // Home's box stepping aside (a page opened over it) puts its panel away
   useEffect(() => { if (hidden) setView(null); }, [hidden]);
   // a click outside the box and its panel closes the panel (anywhere in the window)
@@ -266,7 +283,7 @@ export default function Composer({ placeholder, label, onSend, home = false, hid
             autoFocus={autoFocus}
             placeholder={placeholder}
             label={label}
-            onText={(t) => { setFilled(!!t.trim()); setNamed(mentioned(t)); }}
+            onText={(t) => { setFilled(!!t.trim()); setNamed(mentioned(t)); drafts.current!.typed(t); }}
             // each change narrows the list, so the first is lit again
             onMention={(q) => { setAt(q); setLit(0); if (q === null) setAtClosed(false); }}
             onMentionKey={onMentionKey}

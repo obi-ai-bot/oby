@@ -24,6 +24,7 @@ import { askOby, chatOfTask, renameChat, tellAbout, useChats } from './chats';
 import { useConvos } from './peers';
 import { AvatarStack } from './ObyFace';
 import { convoTitle, hasAttachments, type Attachments } from './mock';
+import { box as draftBox } from './drafts';
 import { TYPES, renameTask, tell, countOf, runningCount, memoryCount, firstTab, hasFresh, useTasks, asksWaiting, type Tab } from './tasks';
 
 // the line over the chips: what's running and what needs you; with neither,
@@ -432,6 +433,7 @@ export default function Home() {
         label="Message Oby"
         onSend={ask}
         repos
+        draft={draftBox.home}
       />
       {/* what's open, each over the one before; the one on top is live, the rest
           covered (and still, under it); one leaving fades out, then it's gone */}
