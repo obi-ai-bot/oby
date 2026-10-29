@@ -106,6 +106,8 @@ const ROUTES: &[(&str, &str)] = &[
     ("POST", "/v1/github/work/*/start"),
     ("GET", "/v1/inbox"),
     ("POST", "/v1/inbox/*/answer"),
+    ("GET", "/v1/limit-decisions"),
+    ("POST", "/v1/limit-decisions/*/answer"),
     ("GET", "/v1/failures"),
     ("GET", "/v1/failures/*"),
     ("POST", "/v1/failures/*/fix"),
@@ -119,6 +121,8 @@ const ROUTES: &[(&str, &str)] = &[
     ("GET", "/v1/permissions/rules"),
     ("DELETE", "/v1/permissions/rules/*"),
     ("POST", "/v1/devices"),
+    ("GET", "/v1/devices/*/pairing"),
+    ("POST", "/v1/devices/*/pairing"),
     ("POST", "/v1/activities"),
     ("POST", "/v1/notifications"),
     ("GET", "/v1/watches"),
@@ -1038,6 +1042,14 @@ mod tests {
         }
         // `**` is the rest of the path, at the end of a pattern only.
         assert!(!allows(&Method::GET, "/v1/jobs/abc/def/wait"));
+    }
+
+    #[test]
+    fn paired_devices_can_read_and_answer_limit_decisions_only() {
+        assert!(allows(&Method::GET, "/v1/limit-decisions"));
+        assert!(allows(&Method::POST, "/v1/limit-decisions/abc/answer"));
+        assert!(!allows(&Method::POST, "/v1/limit-decisions/abc/def/answer"));
+        assert!(!allows(&Method::DELETE, "/v1/limit-decisions/abc"));
     }
 
     /// Ports GatewayTests.pairingSecretAndCodeWorkOnceAndExpire.

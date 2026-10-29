@@ -7,6 +7,31 @@ import Testing
 struct DecisionTests {
     let job = #"{"id": "9f08fd10", "request": "Fix it", "agent": "claude", "account": "default", "repo": "deskree-inc/oby", "branch": "oby/fix-12", "base": "dev", "pr": null, "kind": "fix", "task": "Fix it", "status": "running", "step": "Waiting for your OK", "summary": "", "session": "e6a24229", "created": "2026-10-09T21:42:53Z", "started": "2026-10-09T21:42:55Z", "finished": null, "commits": null, "published": null"#
 
+    @Test func groupedLimitsDecodeProvidersWithoutClosedEnumsAndBindExactChoice() throws {
+        let body = #"{"id":"limit-1","revision":3,"account":"personal","agent":"claude","resetAt":1793300000,"jobs":[{"id":"a","title":"Fix it"},{"id":"b","title":"Review it"}],"options":[{"kind":"move","account":"other","agent":"future-tool","name":"Work"},{"kind":"stop"}]}"#
+        let decision = try Runner.decoder.decode(RunnerLimitDecision.self, from: Data(body.utf8))
+        #expect(decision.jobs.map(\.id) == ["a", "b"])
+        #expect(decision.options[0].isSupported)
+        #expect(decision.options[0].label == "Move all to Work · future-tool")
+        let time = "2026-10-29T12:00:00Z"
+        let message = Approval.limitMessage(id: decision.id, revision: decision.revision, choice: "move", account: "other", signedAt: time)
+        #expect(String(decoding: message, as: UTF8.self) == "oby-limit-decision\nlimit-1\n3\nmove\nother\n2026-10-29T12:00:00Z")
+        #expect(message != Approval.limitMessage(id: decision.id, revision: 4, choice: "move", account: "other", signedAt: time))
+        #expect(message != Approval.limitMessage(id: decision.id, revision: 3, choice: "move", account: "third", signedAt: time))
+        let binding = Approval.pairingBindingMessage(id: "d1", pairing: "p1", nonce: "n1", signedAt: time)
+        #expect(String(decoding: binding, as: UTF8.self) == "oby-device-pairing\nd1\np1\nn1\n2026-10-29T12:00:00Z")
+    }
+
+    @Test func groupedAccountLimitDoesNotRepeatTheGenericInterruptionAsk() throws {
+        let body = job + #", "reason":"Usage limit reached", "accountLimit":{"decision":"l1","state":"resume","resetAt":null}}"#
+        var decoded = try Runner.decoder.decode(Job.self, from: Data(body.utf8))
+        decoded.status = .interrupted
+        #expect(!decoded.needsYou)
+        decoded.permission = RunnerPermission(id: "p1", tool: "Bash", title: "Run?", detail: "swift test")
+        decoded.status = .running
+        #expect(decoded.waitsForPermission)
+    }
+
     @Test func modeAndPermissionDecode() throws {
         let sent = job + #", "mode": "ask", "permission": {"id": "p1", "tool": "Bash", "title": "Run swift test", "detail": "swift test --filter SpeechTests", "rule": "Bash(swift test:*)", "always": "Yes, and don't ask again for swift test in deskree-inc/oby"}}"#
         let decoded = try Runner.decoder.decode(Job.self, from: Data(sent.utf8))

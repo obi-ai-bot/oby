@@ -425,6 +425,18 @@ pub struct Job {
     /// in seconds since the epoch: a minute after the reset its tool named. None otherwise.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resumes_at: Option<i64>,
+    /// This job stopped at an account limit and awaits an owner decision (#1563).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub account_limit_blocked: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_limit_episode: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_limit_nonce: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_limit_reset: Option<i64>,
+    /// The owner's durable choice, mirrored from the decision store for truthful client display.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_limit_choice: Option<crate::account_limits::Choice>,
     /// What the job it follows up did, for its first prompt, quoted there. Never in the API's job.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub earlier: Option<String>,
@@ -770,6 +782,11 @@ impl Job {
             reason: None,
             next_step: None,
             resumes_at: None,
+            account_limit_blocked: false,
+            account_limit_episode: None,
+            account_limit_nonce: None,
+            account_limit_reset: None,
+            account_limit_choice: None,
             earlier: None,
             start_from: None,
             supervised: Vec::new(),
@@ -810,7 +827,8 @@ impl Job {
     pub fn snapshot(&self) -> Value {
         json!({"round": self.current_round(), "status": self.status.as_str(),
                "commits": self.commits, "unpublished": self.unpublished(),
-               "mode": self.mode, "agent": self.agent, "account": self.account})
+               "mode": self.mode, "agent": self.agent, "account": self.account,
+               "accountLimitNonce": self.account_limit_nonce})
     }
 
     /// Adds `what` to its changes, dated now.
@@ -1155,6 +1173,13 @@ impl Job {
         value["runsOn"] = Value::Null;
         value["nextStep"] = json!(self.next_step);
         value["resumesAt"] = json!(date(self.resumes_at));
+        value["accountLimit"] = if self.account_limit_blocked {
+            json!({"decision": self.account_limit_episode,
+                "state": self.account_limit_choice.unwrap_or(crate::account_limits::Choice::Pending),
+                "resetAt": date(self.account_limit_reset)})
+        } else {
+            Value::Null
+        };
         if let Some(step) = self.publish_step {
             value["publishStep"] = json!(step.as_str());
         }
@@ -1705,14 +1730,15 @@ mod tests {
             "reason",
             "nextStep",
             "resumesAt",
+            "accountLimit",
             "routine",
             "runsOn",
             "teammates",
         ] {
             assert_eq!(object.get(key), Some(&Value::Null), "{key}");
         }
-        // The Swift runner's 65 keys, obid's eighteen, and `supervised`.
-        assert_eq!(object.len(), 84);
+        // The Swift runner's 65 keys, obid's nineteen, and `supervised`.
+        assert_eq!(object.len(), 85);
         assert_eq!(value["supervised"], json!([]));
         assert_eq!(value["archived"], Value::Null);
         assert_eq!(value["changes"], json!([]));

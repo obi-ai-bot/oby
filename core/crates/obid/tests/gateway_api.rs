@@ -278,6 +278,137 @@ fn the_gateway_needs_a_device_token_and_passes_only_its_routes() {
     );
 }
 
+#[test]
+fn an_older_endorsed_phone_key_binds_only_with_private_key_proof_for_its_pairing() {
+    use base64::Engine as _;
+    use p256::ecdsa::signature::Signer as _;
+    use p256::elliptic_curve::sec1::ToEncodedPoint as _;
+    let folder = Folder::new("gateway-old-key-binding");
+    let obid = started(&folder);
+    let phone = paired(&obid);
+    let other = paired(&obid);
+    let secret = p256::SecretKey::from_slice(&[19; 32]).unwrap();
+    let public = base64::engine::general_purpose::STANDARD
+        .encode(secret.public_key().to_encoded_point(false).as_bytes());
+    let key = p256::ecdsa::SigningKey::from(secret);
+    std::fs::write(obid.home.join("pairing"), &public).unwrap();
+    let registered = call(
+        &obid,
+        "POST",
+        "/v1/devices",
+        Some(&json!({"name":"Older iPhone","publicKey":public})),
+    );
+    assert_eq!(registered.status, 200, "{}", registered.text);
+    let id = registered.body["id"].as_str().unwrap();
+    let path = format!("/v1/devices/{id}/pairing");
+    assert_eq!(call(&obid, "GET", &path, None).status, 403);
+    let challenge = through(&obid, Some(&phone), "GET", &path, None);
+    assert_eq!(challenge.status, 200, "{}", challenge.text);
+    let pairing = challenge.body["pairing"].as_str().unwrap();
+    let nonce = challenge.body["nonce"].as_str().unwrap();
+    let signed_at = obi_protocol::time::format(obi_protocol::time::now());
+    let signature: p256::ecdsa::Signature =
+        key.sign(format!("oby-device-pairing\n{id}\n{pairing}\n{nonce}\n{signed_at}").as_bytes());
+    let proof = json!({"pairing":pairing,"nonce":nonce,"approval":{"device":id,"action":"bind-pairing","signedAt":signed_at,"signature":base64::engine::general_purpose::STANDARD.encode(signature.to_der())}});
+    assert_eq!(
+        through(&obid, Some(&other), "POST", &path, Some(&proof)).status,
+        403
+    );
+    let mut wrong = proof.clone();
+    wrong["approval"]["signature"] = json!("not-a-signature");
+    assert_eq!(
+        through(&obid, Some(&phone), "POST", &path, Some(&wrong)).status,
+        403
+    );
+    let bound = through(&obid, Some(&phone), "POST", &path, Some(&proof));
+    assert_eq!(bound.status, 200, "{}", bound.text);
+    assert_eq!(
+        through(&obid, Some(&phone), "POST", &path, Some(&proof)).status,
+        403
+    );
+    assert_eq!(through(&obid, Some(&other), "GET", &path, None).status, 409);
+    let signed_at = obi_protocol::time::format(obi_protocol::time::now());
+    let signature: p256::ecdsa::Signature =
+        key.sign(format!("oby-limit-decision\ne1\n1\nstop\n\n{signed_at}").as_bytes());
+    let answer = json!({"revision":1,"choice":"stop","approval":{"device":id,"action":"stop","signedAt":signed_at,"signature":base64::engine::general_purpose::STANDARD.encode(signature.to_der())}});
+    let result = through(
+        &obid,
+        Some(&phone),
+        "POST",
+        "/v1/limit-decisions/e1/answer",
+        Some(&answer),
+    );
+    assert_eq!(result.status, 409, "{}", result.text); // The signature now reaches domain validation.
+    assert_eq!(
+        through(
+            &obid,
+            Some(&other),
+            "POST",
+            "/v1/limit-decisions/e1/answer",
+            Some(&answer)
+        )
+        .status,
+        403
+    );
+}
+
+#[test]
+fn a_paired_phone_cannot_answer_with_a_different_devices_limit_approval() {
+    use base64::Engine as _;
+    use p256::ecdsa::signature::Signer as _;
+    use p256::elliptic_curve::sec1::ToEncodedPoint as _;
+    let folder = Folder::new("gateway-limit-device");
+    let obid = started(&folder);
+    let token = paired(&obid);
+    let signed_at = obi_protocol::time::format(obi_protocol::time::now());
+    let mut approval = owner_signs(
+        &obid,
+        &format!("oby-limit-decision\ne1\n1\nstop\n\n{signed_at}"),
+        &signed_at,
+    );
+    approval["action"] = json!("stop");
+    let result = through(
+        &obid,
+        Some(&token),
+        "POST",
+        "/v1/limit-decisions/e1/answer",
+        Some(&json!({"revision":1,"choice":"stop","approval":approval})),
+    );
+    assert_eq!(result.status, 403, "{}", result.text);
+    assert!(
+        result.body["error"]
+            .as_str()
+            .unwrap()
+            .contains("different device")
+    );
+    // A phone's own registered key reaches domain validation instead of being rejected as a
+    // mismatched device. A fresh owner-endorsed pairing may register its own signing key.
+    let phone = owner_paired(&obid);
+    let secret = p256::SecretKey::from_slice(&[17; 32]).unwrap();
+    let public = base64::engine::general_purpose::STANDARD
+        .encode(secret.public_key().to_encoded_point(false).as_bytes());
+    let registered = through(
+        &obid,
+        Some(&phone),
+        "POST",
+        "/v1/devices",
+        Some(&json!({"name":"Phone", "publicKey":public})),
+    );
+    assert_eq!(registered.status, 200, "{}", registered.text);
+    let key = p256::ecdsa::SigningKey::from(secret);
+    let signature: p256::ecdsa::Signature =
+        key.sign(format!("oby-limit-decision\ne1\n1\nstop\n\n{signed_at}").as_bytes());
+    let approval = json!({"device":registered.body["id"], "action":"stop", "signedAt":signed_at, "signature":base64::engine::general_purpose::STANDARD.encode(signature.to_der())});
+    let result = through(
+        &obid,
+        Some(&phone),
+        "POST",
+        "/v1/limit-decisions/e1/answer",
+        Some(&json!({"revision":1,"choice":"stop","approval":approval})),
+    );
+    assert_eq!(result.status, 409, "{}", result.text);
+}
+
 /// Ports GatewayTests.gatewayRouterRedactsSecretsInFiniteAndSSEResponses and
 /// gatewayScrubsSessionIDsAndAccountHomes on obid's own answers: a job whose request holds a vault
 /// secret and an account's home, run by an agent that has a session, comes back through the

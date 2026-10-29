@@ -83,6 +83,50 @@ struct InboxDecision: View {
     }
 }
 
+/// One owner choice for every job in obid's account-limit episode. The server's options and
+/// revision are authoritative; arbitrary new providers require no client-specific branching.
+struct AccountLimitDecision: View {
+    @Environment(Phone.self) private var phone
+    let decision: RunnerLimitDecision
+    @State private var busy = false
+    @State private var problem: String?
+
+    private var source: String { phone.accounts.first { $0.id == decision.account }?.name ?? decision.agent }
+    private var happened: String {
+        let reset = decision.resetAt.map { Date(timeIntervalSince1970: TimeInterval($0)).formatted(date: .abbreviated, time: .shortened) }
+        let usage = phone.accounts.first { $0.id == decision.account }?.fiveHour.map { " Five-hour usage: \(Int(($0 * 100).rounded()))%." } ?? ""
+        let tasks = decision.jobs.count == 1 ? "1 task is waiting" : "\(decision.jobs.count) tasks are waiting"
+        return tasks + " · " + (reset.map { "resets \($0)" } ?? "reset time unknown") + usage
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            AskCard(kind: "Usage limit", shown: decision.jobs.map(\.title).joined(separator: "\n"),
+                    title: "\(source) reached its limit", happened: happened,
+                    options: decision.options.enumerated().filter { $0.element.isSupported }.map {
+                        CardOption(label: $0.element.label, answer: String($0.offset))
+                    }, busy: busy, onChoose: choose)
+            if busy { Text("Saving your choice…").font(Tokens.font(Tokens.textSm)).foregroundStyle(Tokens.muted).padding(.top, 8) }
+            if let problem {
+                Text(problem).font(Tokens.font(Tokens.textSm)).foregroundStyle(Tokens.danger).padding(.top, 8)
+                    .accessibilityLabel("Couldn’t save your choice. \(problem)")
+            }
+        }
+        .modifier(AskInset(on: true))
+    }
+
+    private func choose(_ option: CardOption) {
+        guard !busy, let index = Int(option.answer), decision.options.indices.contains(index) else { return }
+        busy = true
+        problem = nil
+        Task {
+            defer { busy = false }
+            do { try await phone.answerLimit(decision, option: decision.options[index]) }
+            catch { problem = error.localizedDescription }
+        }
+    }
+}
+
 /// A job's own question or permission when the runner has no inbox item for it (an older runner):
 /// the same block, answered on the job.
 struct JobDecision: View {

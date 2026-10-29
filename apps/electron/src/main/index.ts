@@ -3,7 +3,7 @@ import { createRequire } from 'node:module';
 import { lstatSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { bridge, startObid, stopFollowing, type Trusted } from './obid';
-import { confirming } from './device';
+import { confirming, messageJob } from './device';
 import { notifying, windowLeft, windowSeen } from './notify';
 
 // One small window: Oby, what needs you, and a way to talk. The renderer gets
@@ -58,7 +58,7 @@ ipcMain.on('full-screen', (e) => { e.returnValue = win?.isFullScreen() ?? false;
 // obid, through main (obid.ts): only for the window's own page, never a frame in it; and its
 // Confirm, signed with this Mac's device key (device.ts)
 const trusted: Trusted = (e) => !!win && e.sender === win.webContents && e.senderFrame === win.webContents.mainFrame;
-bridge(trusted);
+bridge(trusted, messageJob);
 confirming(trusted);
 // a sign-in page (an agent's, GitHub's, Tetrix's) in the person's browser: https only
 ipcMain.on('open-external', (e, url: unknown) => {
