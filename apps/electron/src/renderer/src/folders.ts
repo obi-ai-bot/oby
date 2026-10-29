@@ -37,6 +37,15 @@ export function setFolders(conversation: string, folders: string[]) {
   saveFolders();
   listeners.forEach((l) => l());
 }
+// Only the conversations still there keep theirs: given obid's whole list (live.ts, on each sync),
+// the folders of ones deleted since are dropped (a new one not yet named keeps its own)
+export function keepFoldersOf(conversations: Set<string>) {
+  const gone = Object.keys(all).filter((c) => !c.startsWith('new:') && !conversations.has(c));
+  if (!gone.length) return;
+  all = Object.fromEntries(Object.entries(all).filter(([c]) => !gone.includes(c)));
+  saveFolders();
+  listeners.forEach((l) => l());
+}
 export const useFolders = (conversation?: string) => useSyncExternalStore(subscribe, () => (conversation ? foldersOf(conversation) : NONE));
 
 // a folder as its tag shows it: its own name (the path in its tooltip)

@@ -3,7 +3,7 @@ import { ApiError, api, parseEvent, sseReader, type Conversation, type Event, ty
 import { AGENTS, type Ask, type AskKind, type Job as JobView, type Message, type Offer, type StageId } from './mock';
 import { replaceChats, type Chat } from './chats';
 import { replaceTasks, type Asking, type Task } from './tasks';
-import { nameFoldersBy, saveFolders } from './folders';
+import { keepFoldersOf, nameFoldersBy, saveFolders } from './folders';
 import { replaceAccounts } from './SettingsView';
 import { BRANDS } from './brands';
 import type { GitHubItem } from './mock';
@@ -438,6 +438,8 @@ async function sync(mine: number, pending: Event[], onSynced: () => void) {
     ]);
     if (mine !== generation) return;
     retry = 0;
+    // (a list cut short at allConversations' last page isn't all of them: nothing's dropped then)
+    if (conversations.complete) keepFoldersOf(new Set(conversations.map((c) => c.id)));
     let next: Live = {
       ...state, connection: 'live', problem: null, why: undefined, status, inbox: inbox.filter((i) => i.state !== 'done'), conversations, github,
       jobs: { ...state.jobs, ...Object.fromEntries(jobs.map((j) => [j.id, j])) },
@@ -463,13 +465,14 @@ async function sync(mine: number, pending: Event[], onSynced: () => void) {
 // every conversation, a page at a time (obid keeps 200, more when pinned)
 async function allConversations() {
   const all = new Map<string, Conversation>();
+  let complete = false;
   for (let after: string | undefined, page = 0; page < 10; page++) {
     const list = await api.conversations({ after, limit: 200 });
     for (const c of list) if (!all.has(c.id)) all.set(c.id, c);
-    if (list.length < 200) break;
+    if (list.length < 200) { complete = true; break; }
     after = list.at(-1)!.cursor;
   }
-  return [...all.values()];
+  return Object.assign([...all.values()], { complete });
 }
 
 // what went wrong with something the app did, for a moment

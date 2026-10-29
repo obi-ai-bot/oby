@@ -7,7 +7,7 @@ import { OwnerAvatar } from './ObyFace';
 import { useSpheres } from './spheres';
 import { everything, onObid } from './lean';
 import { ApiError, api, type ModelOptions, type Models, type SavedRule, type SignIn, type Status } from './obid';
-import Connectors, { readConnectors } from './Connectors';
+import Connectors, { ConfirmWindow, readConnectors } from './Connectors';
 import { Menu } from './Menu';
 import { useLive } from './live';
 
@@ -366,11 +366,10 @@ function Accounts() {
     if (a) return void signIn(a.id);
     setAccounts([...accounts, { id: `a${Date.now()}`, agent, name: n, payer: p || 'You', used: 0, resets: 'Resets in 7 days' }]);
   });
-  const remove = (a: Account) => {
-    if (!onObid) return setAccounts(accounts.filter((x) => x.id !== a.id));
-    if (!confirm(removeNote(a))) return;
-    void tried(a.id, () => api.removeAccount(a.id).then(() => { put(a.id); look(); }));
-  };
+  // taking one off, after its window says what that does
+  const [removing, setRemoving] = useState<Account | null>(null);
+  const remove = (a: Account) => (onObid ? setRemoving(a) : setAccounts(accounts.filter((x) => x.id !== a.id)));
+  const removed = (a: Account) => void tried(a.id, () => api.removeAccount(a.id).then(() => { put(a.id); look(); }));
   const roomiest = accounts.filter((a) => a.used != null).sort((a, b) => a.used! - b.used!)[0];
   return <>
     <Group i={1} title="Accounts on this Mac">
@@ -419,16 +418,19 @@ function Accounts() {
         <button className="set-button" disabled={!name.trim() || busy} onClick={add}>Add Account</button>
       </Row>
     </Group>
+    {removing && <ConfirmWindow brand={AGENTS[removing.agent].brand} title={`Remove ${removing.name}?`} text={removeNote(removing)}
+      action="Remove" onConfirm={() => removed(removing)} onClose={() => setRemoving(null)} />}
   </>;
 }
 
-// What removing one of obid's accounts does, and what it leaves (the Swift app's words)
+// What removing one of obid's accounts does, and what it leaves (the Swift app's words), under
+// its window's Remove X?
 function removeNote(a: Account) {
   const tool = AGENTS[a.agent].name, provider = { claude: 'Anthropic', codex: 'OpenAI', cursor: 'Cursor' }[a.agent];
-  if (ownLogin(a)) return `Remove ${a.name}? Oby stops using ${tool}’s own login on this Mac; nothing of it is deleted. Bring it back with Use ${tool}’s Own Login.`;
+  if (ownLogin(a)) return `Oby stops using ${tool}’s own login on this Mac; nothing of it is deleted. Bring it back with Use ${tool}’s Own Login.`;
   // one obid made has eight hex digits; any other is in obid's configuration, whose folder stays
   const made = /^[0-9a-f]{8}$/.test(a.id);
-  return `Remove ${a.name}? Oby stops using it, and deletes the folder it made for it, if any. Your account with ${provider} stays signed in there until you sign it out.`
+  return `Oby stops using it, and deletes the folder it made for it, if any. Your account with ${provider} stays signed in there until you sign it out.`
     + (a.agent === 'claude' ? ' Its Keychain item stays too; Keychain Access removes it.' : '')
     + (made ? '' : ' It’s in obid’s configuration, so it can’t be added back here.');
 }
@@ -634,12 +636,10 @@ function Agents() {
   const [chosen, setChosen] = useKeptSetting<string | null>('agent.default', null);
   // signing in, as Settings › Accounts does (useSignIns): its states, its problems, the tool's own login
   const { offered, look, signing, put, problems, busy, tried, signIn, sendCode, cancel } = useSignIns(accounts);
-  // taking one off, after saying what that does (as Settings › Accounts does)
-  const remove = (x: Account) => {
-    if (!onObid) return setAccounts(accounts.filter((y) => y.id !== x.id));
-    if (!confirm(removeNote(x))) return;
-    void tried(x.id, () => api.removeAccount(x.id).then(() => { put(x.id); look(); }));
-  };
+  // taking one off, after its window says what that does (as Settings › Accounts does)
+  const [removing, setRemoving] = useState<Account | null>(null);
+  const remove = (x: Account) => (onObid ? setRemoving(x) : setAccounts(accounts.filter((y) => y.id !== x.id)));
+  const removed = (x: Account) => void tried(x.id, () => api.removeAccount(x.id).then(() => { put(x.id); look(); }));
   // Add an agent: a provider, and an alias of your own for it (several of one are fine)
   const [agent, setAgent] = useState<Agent>('claude');
   const [name, setName] = useState('');
@@ -727,6 +727,8 @@ function Agents() {
         )}
       </div>
     </Group>
+    {removing && <ConfirmWindow brand={AGENTS[removing.agent].brand} title={`Remove ${removing.name}?`} text={removeNote(removing)}
+      action="Remove" onConfirm={() => removed(removing)} onClose={() => setRemoving(null)} />}
   </>;
 }
 
@@ -759,10 +761,12 @@ function Vault() {
 }
 
 function About() {
-  // updating is the mock's for now: the app has no updater yet (main has none). Checking says it's
-  // up to date while it updates itself; with that off, it finds 0.9.3, to show how that looks
+  // Updating: the app has no updater yet (main has none), so on obid the card says only which
+  // version this is. The rest is the mock's, to show how it looks till then: checking says it's up
+  // to date while it updates itself; with that off, it finds 0.9.3
   const [auto, setAuto] = useKeptSetting('updates.auto', true);
   const [found, setFound] = useState<'none' | 'current' | 'update'>('none');
+  if (onObid) return <Group i={1}><Row label="Version"><Value>{__OBY_VERSION__}</Value></Row></Group>;
   return <>
     <Group i={1} footer={auto ? 'Oby downloads updates in the background and installs them when you quit.' : undefined}>
       <Row label="Version"><Value>0.9.2 (412)</Value></Row>

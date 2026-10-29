@@ -175,7 +175,7 @@ function serverName(t: Tetrix) {
 }
 
 // A connector's window: its logo and title, a ×, Esc or a click outside closes it
-function Window({ brand, title, onClose, children }: { brand: Brand; title: string; onClose: () => void; children: React.ReactNode }) {
+export function Window({ brand, title, onClose, children }: { brand: Brand; title: string; onClose: () => void; children: React.ReactNode }) {
   // (its latest onClose, listened for once)
   const close = useRef(onClose);
   close.current = onClose;
@@ -262,6 +262,22 @@ export function CommandWindow({ brand, title, text, command, onClose }: { brand:
         </button>
       </div>
       <div className="modal-actions"><button type="button" className="set-button" onClick={onClose}>Done</button></div>
+    </Window>
+  );
+}
+
+// A window asking before something that can't be undone here (Settings › Agents' Remove): what
+// it does, Cancel, and the red button that does it
+export function ConfirmWindow({ brand, title, text, action, onConfirm, onClose }: {
+  brand: Brand; title: string; text: string; action: string; onConfirm: () => void; onClose: () => void;
+}) {
+  return (
+    <Window brand={brand} title={title} onClose={onClose}>
+      <p className="modal-lede">{text}</p>
+      <div className="modal-actions">
+        <button type="button" className="set-button" onClick={onClose}>Cancel</button>
+        <button type="button" className="modal-primary is-danger" onClick={() => { onClose(); onConfirm(); }}>{action}</button>
+      </div>
     </Window>
   );
 }
