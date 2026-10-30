@@ -199,12 +199,13 @@ function Window({ brand, title, onClose, alert, children }: { brand: Brand; titl
   );
 }
 
-// Which Tetrix Oby signs in to, and the sign-in: a preset (obid's own list: today Tetrix Dogfood,
-// GET /v1/tetrix's presets), or another server's MCP address (obid checks it: HTTPS, plain HTTP
+// Which Tetrix Oby signs in to, and the sign-in: a preset (config.json's tetrixPresets, none by
+// default: GET /v1/tetrix's presets), or the owner's own Tetrix's MCP address (obid checks it: HTTPS, plain HTTP
 // only on 127.0.0.1). Connecting to another signs Oby in there in place of the one before. Picked,
 // Continue opens its page in the browser and this waits, until obid says it's in (then it closes
-// itself, and the row is under Connected) or Cancel.
-function TetrixWindow({ tetrix: t, waiting, onConnect, onCancel, onClose }: {
+// itself, and the row is under Connected) or Cancel. Setting up opens it too (SetupCard's
+// TetrixRow), so the person gives their Tetrix's address there.
+export function TetrixWindow({ tetrix: t, waiting, onConnect, onCancel, onClose }: {
   tetrix: Tetrix; waiting: boolean; onConnect: (to: TetrixTarget) => void; onCancel: () => void; onClose: () => void;
 }) {
   // starting from the one Oby uses (or used last), else the first preset
