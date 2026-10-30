@@ -962,19 +962,12 @@ fn a_new_sign_in_forgets_how_the_account_paid() {
     assert_eq!(kept[&id]["fiveHour"], 0.3);
 }
 
-/// A Claude Code account obid added stays signed in (#877): with its token near its end, the
-/// Mac's own Claude Code refreshes the account's own Keychain item before a job's run (the
-/// stand-in `security` finds the items a test puts in `$TMPDIR/obid-test-keychain`), and the job
-/// runs on the renewed login, in a copy of its own.
+/// A stand-in claude its refresh can run with only the system's PATH (node by its path), outside
+/// the person's home a job's box hides.
 #[cfg(target_os = "macos")]
-#[test]
-fn an_added_claude_accounts_login_is_kept_fresh() {
+fn system_claude(folder: &Path) -> PathBuf {
     use std::os::unix::fs::PermissionsExt;
-    let folder = Folder::new("added-fresh");
-    let remote = fixture(&folder.0.join("fixture"));
-    // A stand-in claude its refresh can run with only the system's PATH (node by its path), outside
-    // the person's home a job's box hides.
-    let bin = folder.0.join("bin");
+    let bin = folder.join("bin");
     std::fs::create_dir_all(&bin).unwrap();
     for name in ["fake-claude", "fake-login.mjs"] {
         std::fs::copy(agent(name), bin.join(name)).unwrap();
@@ -995,26 +988,47 @@ fn an_added_claude_accounts_login_is_kept_fresh() {
     )
     .unwrap();
     std::fs::set_permissions(&claude, std::fs::Permissions::from_mode(0o755)).unwrap();
-    let mut config = config(&folder.0, &remote, &claude);
-    config["claudeKeychain"] = json!(true);
-    let obid = start(&folder.0, &config, None);
-    let added = add(&obid, json!({"agent": "claude", "name": "Second"}));
+    claude
+}
+
+/// A Claude Code account obid adds, its Keychain item (where the stand-in `security` finds it)
+/// holding a login whose token ends `seconds` from now (before now, when negative): its id and
+/// the item's file.
+#[cfg(target_os = "macos")]
+fn added_keychain_login(folder: &Path, obid: &Obid, seconds: i64) -> (String, PathBuf) {
+    let added = add(obid, json!({"agent": "claude", "name": "Second"}));
     assert_eq!(added.status, 201, "{}", added.text);
     let id = added.body["id"].as_str().unwrap().to_owned();
     let dir = obid.home.join("accounts").join(&id);
     let digest = obi_protocol::keys::sha256(dir.as_os_str().as_encoded_bytes());
-    let item = folder.0.join(format!(
+    let item = folder.join(format!(
         "tmp/obid-test-keychain/Claude Code-credentials-{}",
         &hex::encode(digest)[..8]
     ));
     std::fs::create_dir_all(item.parent().unwrap()).unwrap();
-    let ends = (obi_protocol::time::now() as u64 + 60) * 1000;
+    let ends = (obi_protocol::time::now() + seconds) * 1000;
     // Put together here, so this file holds no value a secret scan takes for a credential.
     let refresh = ["refresh", "plain", "test", "value"].join("-");
     let login = json!({"claudeAiOauth": {"accessToken": "tok-old-plain-test-login",
                                          "refreshToken": refresh, "expiresAt": ends}});
     std::fs::write(&item, login.to_string()).unwrap();
-    assert_eq!(account(&obid, &id).unwrap()["signedIn"], true);
+    assert_eq!(account(obid, &id).unwrap()["signedIn"], true);
+    (id, item)
+}
+
+/// A Claude Code account obid added stays signed in (#877): with its token near its end, the
+/// Mac's own Claude Code refreshes the account's own Keychain item before a job's run (the
+/// stand-in `security` finds the items a test puts in `$TMPDIR/obid-test-keychain`), and the job
+/// runs on the renewed login, in a copy of its own.
+#[cfg(target_os = "macos")]
+#[test]
+fn an_added_claude_accounts_login_is_kept_fresh() {
+    let folder = Folder::new("added-fresh");
+    let remote = fixture(&folder.0.join("fixture"));
+    let mut config = config(&folder.0, &remote, &system_claude(&folder.0));
+    config["claudeKeychain"] = json!(true);
+    let obid = start(&folder.0, &config, None);
+    let (_, item) = added_keychain_login(&folder.0, &obid, 60);
 
     let job = call(
         &obid,
@@ -1040,11 +1054,36 @@ fn an_added_claude_accounts_login_is_kept_fresh() {
     );
 }
 
-/// An app's look (`GET /v1/status`) asks each signed-in Claude Code account's usage of Claude
+/// USAGE-2: a Mac whose Claude Code login in the Keychain ended days ago (the person runs Claude
+/// Code from elsewhere) shows the account's usage before any task: the read has the Mac's own
+/// Claude Code refresh it first, with its own `/usage`, which asks no model, then reads boxed.
+#[cfg(target_os = "macos")]
+#[test]
+fn usage_2_an_ended_keychain_login_is_refreshed_free_then_read() {
+    let folder = Folder::new("usage-ended");
+    let remote = folder.0.join("remote.git");
+    let mut config = config(&folder.0, &remote, &system_claude(&folder.0));
+    config["claudeKeychain"] = json!(true);
+    let obid = start_with(&folder.0, &config, None, &[("OBID_USAGE_READS", "on")]);
+    let (id, item) = added_keychain_login(&folder.0, &obid, -3 * 86_400);
+    let read = within(30, "the account's usage", || {
+        account(&obid, &id).filter(|a| !a["sevenDay"].is_null())
+    });
+    assert_eq!(
+        (&read["fiveHour"], &read["sevenDay"]),
+        (&json!(0.33), &json!(0.44))
+    );
+    assert!(std::fs::read_to_string(&item).unwrap().contains("renewed"));
+    // The refresh was Claude Code's own `/usage`, never a prompt to a model.
+    let asked = std::fs::read_to_string(folder.0.join("tmp/obid-test-refreshes")).unwrap();
+    assert!(asked.lines().all(|line| line == "/usage"), "{asked}");
+}
+
+/// USAGE-1: an app's look (`GET /v1/status`) asks each signed-in Claude Code account's usage of Claude
 /// Code's own `/usage` (the stand-in's), which reaches the Account; the read's folder, with its
 /// login copy, is gone after. With `OBID_USAGE_READS=off`, nothing is read.
 #[test]
-fn an_apps_look_reads_each_accounts_usage() {
+fn usage_1_an_apps_look_reads_each_accounts_usage() {
     for on in [true, false] {
         let folder = Folder::new(if on { "usage-read" } else { "usage-off" });
         let mut config = config(
@@ -1085,11 +1124,12 @@ fn an_apps_look_reads_each_accounts_usage() {
     }
 }
 
-/// A read never uses a Claude Code login copy within 10 minutes of its end. An account whose
+/// USAGE-3, USAGE-4, USAGE-5: a read never uses a Claude Code login copy obid may not refresh
+/// within 10 minutes of its end. An account whose
 /// Claude Code asked a model for `/usage` isn't asked again until obid restarts; one that answered
 /// with no usage, or failed (offline), is asked again once the interval passed.
 #[test]
-fn usage_reads_retry_but_never_after_a_model_ran() {
+fn usage_3_4_5_usage_reads_retry_but_never_after_a_model_ran() {
     let folder = Folder::new("usage-retry");
     let mut config = config(
         &folder.0,
