@@ -39,18 +39,6 @@ export type CheckRow = {
   name: string; mono?: boolean; state: 'done' | 'running' | 'upcoming' | 'failed' | 'skipped';
   result?: string; took?: string; progress?: number;
 };
-// How freely a job's agent works, each with its line (RunnerMode in his app): Settings' Default
-// mode and a task's Mode menu
-export const MODES = [
-  { id: 'ask', label: 'Ask', help: 'Asks before it edits a file or runs a command' },
-  { id: 'acceptEdits', label: 'Accept edits', help: 'Edits files without asking; asks before commands' },
-  { id: 'plan', label: 'Plan', help: 'Plans first, and works once you approve the plan' },
-  { id: 'bypass', label: 'Bypass', help: 'Asks nothing' },
-];
-// obid's fifth, its default before #1570: shown only where an install or a job still has it, never
-// offered (his design has four)
-export const SANDBOX = { id: 'sandbox', label: 'Sandbox', help: 'Asks only before it reaches the network, secrets or files outside its worktree' };
-export const modeLabel = (id: string) => [...MODES, SANDBOX].find((m) => m.id === id)?.label ?? id;
 
 export type Page = {
   mode?: string;  // Ask, Accept edits, Plan, Bypass
@@ -121,6 +109,7 @@ export type Job = {
   log?: LogLine[];
   page?: Page;         // the job page's extra data, once obid serves it
   conversation?: string;  // obid's: the conversation whose words started it
+  archived?: boolean;  // obid's: archived (POST /v1/jobs/{id}/archive), in Archive whenever it ended
   created: number;     // minutes ago
   finished?: number;   // minutes ago
 };
@@ -614,7 +603,7 @@ export type Offer = { id: string; title: string; jobs: { what: string; task: str
 export type SetupStep = 'agents' | 'github' | 'extras' | 'first' | 'sphere' | 'showme' | 'sample' | `convo:${'Ernesto' | 'Dima' | 'Wellington'}` | 'knowledge';
 // What went with a message from the message box besides its words
 // repo: the repository picked for it (obid's, Composer's repository tag)
-// folders: the working folders picked (v1: kept by the app, folders.ts; obid takes none yet)
+// folders: the working folders picked (folders.ts: obid's once it takes them, else the app's)
 export type Attachments = { files?: { name: string; preview?: string }[]; obys?: string[]; jobs?: string[]; on?: string; repo?: string; folders?: string[] };
 export const hasAttachments = (a?: Attachments) => !!(a?.files?.length || a?.obys?.length || a?.jobs?.length);
 const SOURCE = new Map<Brand, string>([[github, 'GitHub'], [slack, 'Slack'], [gmail, 'Gmail'], [deskree, 'Deskree Ops']]);

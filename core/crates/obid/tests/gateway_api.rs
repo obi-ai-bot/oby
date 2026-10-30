@@ -1499,3 +1499,164 @@ async fn a_new_token_replaces_the_relays_socket_and_the_phone_sees_nothing() {
     let (status, _) = phone.call("GET", "/v1/status", Some(&token), None).await;
     assert_eq!(status, 200);
 }
+
+/// FOLDERS-7 (docs/contracts/folders.md): only the owner's Mac app adds a folder. Through the
+/// gateway, words carrying `folders` are refused and nothing is kept, and `PATCH` may take a folder
+/// off a conversation but never add one.
+#[test]
+fn folders_7_a_paired_phone_adds_no_folder() {
+    let folder = Folder::new("gateway-folders");
+    let remote = fixture(&folder.0.join("fixture"));
+    let harness = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/agents/fake-harness");
+    let mut config = config(&folder.0, &remote, &harness);
+    config["gateway"] = json!("127.0.0.1:0");
+    let account = folder.0.join("home/accounts/stub");
+    std::fs::create_dir_all(&account).unwrap();
+    std::fs::write(account.join(".credentials.json"), "{}").unwrap();
+    // The test's own home is the person's (`OBID_PERSON_HOMES`), and its folders are made there:
+    // never this Mac's home, wherever cargo's folders are.
+    let home = folder.0.join("env-home");
+    std::fs::create_dir_all(&home).unwrap();
+    let obid = start_with(
+        &folder.0,
+        &config,
+        None,
+        &[("OBID_PERSON_HOMES", home.to_str().unwrap())],
+    );
+    let token = paired(&obid);
+    let picked = folder.0.join("env-home/Projects");
+    let _ = std::fs::remove_dir_all(&picked);
+    let [api, web] = ["api", "web"].map(|name| {
+        let path = picked.join(name);
+        std::fs::create_dir_all(&path).unwrap();
+        path.canonicalize().unwrap().to_str().unwrap().to_owned()
+    });
+
+    let refused = through(
+        &obid,
+        Some(&token),
+        "POST",
+        "/v1/plans",
+        Some(&json!({"said": "tidy up", "new": true, "folders": [api]})),
+    );
+    assert_eq!(refused.status, 422, "{}", refused.text);
+    assert_eq!(refused.body["error"], "Folders are added only on the Mac.");
+    let listed = call(&obid, "GET", "/v1/conversations", None);
+    assert_eq!(listed.body, json!([]), "{}", listed.text);
+    // An empty list is none: the words go, with no folder.
+    let none = through(
+        &obid,
+        Some(&token),
+        "POST",
+        "/v1/plans",
+        Some(&json!({"said": "how is it going", "new": true, "folders": []})),
+    );
+    assert_eq!(none.status, 200, "{}", none.text);
+
+    let made = call(
+        &obid,
+        "POST",
+        "/v1/plans",
+        Some(&json!({"said": "tidy up", "new": true, "folders": [api]})),
+    );
+    assert_eq!(made.status, 200, "{}", made.text);
+    let id = made.body["conversation"].as_str().unwrap().to_owned();
+    let path = format!("/v1/conversations/{id}");
+
+    let adding = through(
+        &obid,
+        Some(&token),
+        "PATCH",
+        &path,
+        Some(&json!({"folders": [api, web]})),
+    );
+    assert_eq!(adding.status, 422, "{}", adding.text);
+    assert_eq!(
+        adding.body["error"],
+        "Folders are added only on the Mac: from here you can take one off."
+    );
+    let removing = through(
+        &obid,
+        Some(&token),
+        "PATCH",
+        &path,
+        Some(&json!({"folders": []})),
+    );
+    assert_eq!(removing.status, 200, "{}", removing.text);
+    assert_eq!(removing.body["folders"], json!([]));
+}
+
+/// FOLDERS-7 over the phone relay (#1277): a phone paired through the owner's Obysphere adds no
+/// folder either, and may take one off.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn folders_7_a_phone_on_the_relay_adds_no_folder() {
+    let folder = Folder::new("relay-folders");
+    let sphere = FakeSphere::start().await;
+    let remote = fixture(&folder.0.join("fixture"));
+    let harness = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/agents/fake-harness");
+    let mut config = config(&folder.0, &remote, &harness);
+    config["gateway"] = json!("127.0.0.1:0");
+    let account = folder.0.join("home/accounts/stub");
+    std::fs::create_dir_all(&account).unwrap();
+    std::fs::write(account.join(".credentials.json"), "{}").unwrap();
+    // The test's own home is the person's (`OBID_PERSON_HOMES`), and its folders are made there:
+    // never this Mac's home, wherever cargo's folders are.
+    let home = folder.0.join("env-home");
+    std::fs::create_dir_all(&home).unwrap();
+    let obid = start_with(
+        &folder.0,
+        &config,
+        None,
+        &[("OBID_PERSON_HOMES", home.to_str().unwrap())],
+    );
+    let membership =
+        tokio::task::block_in_place(|| join_a(&obid, &sphere, &Owner::new("wellington")));
+    assert_eq!(membership["state"], "joined");
+    let (mut phone, token, _) = relay_paired(&obid, &sphere, "Alice's iPhone").await;
+    let picked = folder.0.join("env-home/Projects");
+    let _ = std::fs::remove_dir_all(&picked);
+    let [api, web] = ["api", "web"].map(|name| {
+        let path = picked.join(name);
+        std::fs::create_dir_all(&path).unwrap();
+        path.canonicalize().unwrap().to_str().unwrap().to_owned()
+    });
+
+    let (status, body) = phone
+        .call(
+            "POST",
+            "/v1/plans",
+            Some(&token),
+            Some(&json!({"said": "tidy up", "new": true, "folders": [api]})),
+        )
+        .await;
+    assert_eq!(status, 422, "{body}");
+    assert_eq!(body["error"], "Folders are added only on the Mac.");
+
+    let made = tokio::task::block_in_place(|| {
+        call(
+            &obid,
+            "POST",
+            "/v1/plans",
+            Some(&json!({"said": "tidy up", "new": true, "folders": [api]})),
+        )
+    });
+    assert_eq!(made.status, 200, "{}", made.text);
+    let path = format!(
+        "/v1/conversations/{}",
+        made.body["conversation"].as_str().unwrap()
+    );
+    let (status, body) = phone
+        .call(
+            "PATCH",
+            &path,
+            Some(&token),
+            Some(&json!({"folders": [api, web]})),
+        )
+        .await;
+    assert_eq!(status, 422, "{body}");
+    let (status, body) = phone
+        .call("PATCH", &path, Some(&token), Some(&json!({"folders": []})))
+        .await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["folders"], json!([]));
+}

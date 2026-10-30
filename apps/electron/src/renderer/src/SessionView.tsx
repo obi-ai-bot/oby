@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { ArrowDown, Check, ChevronRight, ShieldCheck } from 'lucide-react';
 import Composer, { typingIn } from './Composer';
 import Formatted from './Formatted';
@@ -9,6 +9,9 @@ import { AGENTS, type Attachments } from './mock';
 import { SESSIONS, type Detail, type Entry } from './session';
 import { useTasks, type Task } from './tasks';
 import { box as draftBox } from './drafts';
+import { onObid } from './lean';
+import { loadSession, useLive } from './live';
+import { sessionOf } from './jobPage';
 
 // how long the way out takes (the sink animation in app.css)
 const LEAVE_MS = 220;
@@ -44,7 +47,11 @@ export default function SessionView({ id, leaving, covered = false, onBack, onGo
   const kept = useRef<Task>(null);
   const task = tasks.find((t) => t.id === id) ?? kept.current!;
   kept.current = task;
-  const entries = SESSIONS[id] ?? [];
+  // on obid, its transcript, fetched on opening and again at each of the job's events
+  const live = onObid ? useLive() : undefined;
+  const wire = live?.jobs[id], had = live?.sessions[id];
+  useEffect(() => { if (onObid) void loadSession(id); }, [id, wire]);
+  const entries = useMemo(() => (onObid ? sessionOf(had ?? []) : SESSIONS[id] ?? []), [id, had]);
   const running = task.status === 'running' || task.status === 'needs';
   const [filter, setFilter] = useState('all');
   const { list, onScroll, thumbProps } = useScrollThumb<HTMLElement>();

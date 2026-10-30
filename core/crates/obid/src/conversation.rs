@@ -93,6 +93,9 @@ struct Thread {
     /// kept before obid marked it reads as marked ([`kept_before_marks`]).
     #[serde(default = "kept_before_marks")]
     foreign: Option<String>,
+    /// The folders its work is in (crate::folders): canonical paths, in the order picked.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    folders: Vec<String>,
 }
 
 /// A conversation kept before obid marked what each one read: its turns' words may be anyone's.
@@ -210,6 +213,7 @@ impl Thread {
             "lastActivity": self.last_activity(),
             "cursor": self.key().to_string(),
             "tasks": self.tasks,
+            "folders": self.folders,
         })
     }
 }
@@ -290,6 +294,42 @@ pub enum Error {
     IdTaken,
     /// It couldn't be written.
     Io(std::io::Error),
+    /// It would work in more than [`crate::folders::MOST`] folders.
+    TooManyFolders,
+    /// A folder it doesn't have was refused (crate::folders::check), and why.
+    Folder(String),
+    /// A paired device's change would add a folder: only the owner's Mac app adds one.
+    AddsFolders,
+}
+
+/// The folders a `PATCH` asks a conversation to work in: each path as sent, with its check
+/// (crate::folders::check), and whether the change came through the gateway or the phone relay.
+pub struct FolderChange {
+    pub asked: Vec<(String, Result<String, String>)>,
+    pub remote: bool,
+}
+
+impl FolderChange {
+    /// The conversation's folders from now on, given those it has: one it has stays as kept (gone
+    /// from disk since, it can still be taken off); any other is its check's canonical path, or
+    /// refused, and refused from a paired device whatever its check said.
+    fn apply(self, had: &[String]) -> Result<Vec<String>, Error> {
+        let mut kept: Vec<String> = Vec::new();
+        for (path, checked) in self.asked {
+            let folder = match had.iter().find(|h| crate::folders::same(h, &path)) {
+                Some(h) => h.clone(),
+                None if self.remote => return Err(Error::AddsFolders),
+                None => checked.map_err(Error::Folder)?,
+            };
+            if !kept.iter().any(|k| crate::folders::same(k, &folder)) {
+                kept.push(folder);
+            }
+        }
+        if kept.len() > crate::folders::MOST {
+            return Err(Error::TooManyFolders);
+        }
+        Ok(kept)
+    }
 }
 
 impl From<Error> for ApiError {
@@ -310,6 +350,18 @@ impl From<Error> for ApiError {
             Error::Io(_) => ApiError::new(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "The conversation couldn't be kept.",
+            ),
+            Error::Folder(why) => ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, why),
+            Error::AddsFolders => ApiError::new(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "Folders are added only on the Mac: from here you can take one off.",
+            ),
+            Error::TooManyFolders => ApiError::new(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                format!(
+                    "A conversation works in at most {} folders.",
+                    crate::folders::MOST
+                ),
             ),
         }
     }
@@ -404,6 +456,7 @@ impl Conversations {
                     tasks: vec![],
                     tasks_tainted: false,
                     foreign: kept_before_marks(),
+                    folders: vec![],
                 };
                 // The conversation's name in its folder must be on disk before the old file goes.
                 if let Err(e) = self.write(&thread).and_then(|()| sync_dir(&self.dir)) {
@@ -441,6 +494,9 @@ impl Conversations {
     /// `jobs`: the jobs the owner attached to the words (Sangam's Attach tasks), kept on their turn.
     /// `foreign`: why the words aren't the owner's own, typed in Oby's apps (crate::secretspec),
     /// which marks the conversation; `None` only for words an app of the owner's signed.
+    /// `folders`: checked folders (crate::folders) the conversation works in from now on, added to
+    /// those it has, or why they were refused. Words that are a repeat are `repeated` whatever
+    /// their folders were, and add none; otherwise a refusal is `Folder`, and nothing is added.
     pub fn begin(
         &self,
         target: Target,
@@ -448,6 +504,7 @@ impl Conversations {
         jobs: Vec<String>,
         id: Option<String>,
         foreign: Option<String>,
+        folders: Result<Vec<String>, String>,
     ) -> Result<Begun, Error> {
         let mut threads = self.lock();
         if let Some(id) = id.as_deref()
@@ -475,6 +532,7 @@ impl Conversations {
                 repeated: true,
             });
         }
+        let folders = folders.map_err(Error::Folder)?;
         let found = match target {
             Target::Id(id) => Some(
                 threads
@@ -496,9 +554,24 @@ impl Conversations {
                 tasks: vec![],
                 tasks_tainted: false,
                 foreign: None,
+                folders: vec![],
             });
             threads.len() - 1
         });
+        let had = threads[index].folders.clone();
+        let mut more = had.clone();
+        for folder in folders {
+            if !more.iter().any(|f| crate::folders::same(f, &folder)) {
+                more.push(folder);
+            }
+        }
+        if more.len() > crate::folders::MOST {
+            if found.is_none() {
+                threads.remove(index);
+            }
+            return Err(Error::TooManyFolders);
+        }
+        threads[index].folders = more;
         let added = self.add(
             &mut threads,
             index,
@@ -516,6 +589,8 @@ impl Conversations {
             Err(e) => {
                 if found.is_none() {
                     threads.remove(index);
+                } else {
+                    threads[index].folders = had;
                 }
                 return Err(e);
             }
@@ -619,6 +694,7 @@ impl Conversations {
             tasks: vec![],
             tasks_tainted: false,
             foreign: None,
+            folders: vec![],
         };
         self.write(&thread).map_err(Error::Io)?;
         self.events.send("conversation", thread.summary());
@@ -943,24 +1019,30 @@ impl Conversations {
             .collect()
     }
 
-    /// Renames or pins the conversation `id`.
+    /// Renames or pins the conversation `id`, or changes its folders: merged with those it has
+    /// under the same lock that writes them, so a change can't put back one just taken off.
     fn change(
         &self,
         id: &str,
         title: Option<String>,
         pinned: Option<bool>,
+        folders: Option<FolderChange>,
     ) -> Result<Value, Error> {
         let mut threads = self.lock();
         let thread = threads
             .iter_mut()
             .find(|t| t.id == id)
             .ok_or(Error::NoConversation)?;
+        let folders = folders.map(|f| f.apply(&thread.folders)).transpose()?;
         let kept = thread.clone();
         if let Some(title) = title {
             thread.title = title;
         }
         if let Some(pinned) = pinned {
             thread.pinned = pinned;
+        }
+        if let Some(folders) = folders {
+            thread.folders = folders;
         }
         if let Err(e) = self.write(thread) {
             *thread = kept;
@@ -1385,26 +1467,49 @@ pub async fn list(
 struct Change {
     title: Option<String>,
     pinned: Option<bool>,
+    folders: Option<Vec<String>>,
 }
 
-/// `PATCH /v1/conversations/{id}`: a new title, pinned or not.
+/// `PATCH /v1/conversations/{id}`: a new title, pinned or not, or the folders it works in from now
+/// on (an empty list clears them). Through the gateway or the phone relay, `folders` may only leave
+/// out folders the conversation has: only the owner's Mac app adds one (crate::folders).
 pub async fn update(
     State(shared): State<std::sync::Arc<Shared>>,
     UrlPath(id): UrlPath<String>,
+    paired: Option<axum::Extension<crate::gateway::PairedDevice>>,
+    relayed: Option<axum::Extension<crate::gateway::Relayed>>,
     body: Bytes,
 ) -> Result<Response, ApiError> {
     let change: Change = serde_json::from_slice(&body).map_err(|_| {
         ApiError::new(
             StatusCode::BAD_REQUEST,
-            "The body is {\"title\": \"…\", \"pinned\": true or false}.",
+            "The body is {\"title\": \"…\", \"pinned\": true or false, \"folders\": [\"/path\"]}.",
         )
     })?;
-    if change.title.is_none() && change.pinned.is_none() {
+    if change.title.is_none() && change.pinned.is_none() && change.folders.is_none() {
         return Err(ApiError::new(
             StatusCode::UNPROCESSABLE_ENTITY,
-            "Send a title, pinned, or both.",
+            "Send a title, pinned, folders, or more than one.",
         ));
     }
+    // Checked here, outside the conversations' lock; merged with those it has under it.
+    let remote = paired.is_some() || relayed.is_some();
+    let places = crate::folders::Places::of(&shared);
+    let folders = change.folders.map(|asked| FolderChange {
+        asked: asked
+            .into_iter()
+            .map(|path| {
+                // A paired device adds none: what it names isn't looked for on disk.
+                let checked = if remote {
+                    Err(String::new())
+                } else {
+                    crate::folders::check(&places, &path)
+                };
+                (path, checked)
+            })
+            .collect(),
+        remote,
+    });
     let title = change.title.map(|t| t.trim().to_owned());
     if title.as_ref().is_some_and(|t| {
         t.is_empty()
@@ -1416,7 +1521,9 @@ pub async fn update(
             "title is one line of 1 to 100 characters.",
         ));
     }
-    let summary = shared.conversations.change(&id, title, change.pinned)?;
+    let summary = shared
+        .conversations
+        .change(&id, title, change.pinned, folders)?;
     Ok((StatusCode::OK, axum::Json(summary)).into_response())
 }
 
@@ -1434,7 +1541,33 @@ pub async fn remove(
 
 #[cfg(test)]
 mod tests {
-    use super::{Cursor, Task, checked_tasks, job_report, titled};
+    use super::{Cursor, Error, FolderChange, Task, checked_tasks, job_report, titled};
+
+    /// A PATCH merged against the folders as they are under the lock: one taken off meanwhile
+    /// comes back only through its own check, so a stale list never puts back a refused folder.
+    #[test]
+    fn a_stale_folder_change_puts_back_nothing_unchecked() {
+        let change = |asked: Vec<(&str, Result<&str, &str>)>, remote| FolderChange {
+            asked: asked
+                .into_iter()
+                .map(|(p, c)| (p.to_owned(), c.map(str::to_owned).map_err(str::to_owned)))
+                .collect(),
+            remote,
+        };
+        let gone = || vec![("/a", Err("\"a\" isn't at /a."))];
+        assert_eq!(
+            change(gone(), false).apply(&["/a".into()]).unwrap(),
+            vec!["/a".to_owned()]
+        );
+        assert!(matches!(
+            change(gone(), false).apply(&[]),
+            Err(Error::Folder(why)) if why == "\"a\" isn't at /a."
+        ));
+        assert!(matches!(
+            change(vec![("/b", Ok("/b"))], true).apply(&["/a".into()]),
+            Err(Error::AddsFolders)
+        ));
+    }
     use serde_json::json;
 
     /// A task list is at most 50 one-line tasks with a known status; ids are given to those left
@@ -1577,7 +1710,14 @@ mod tests {
         let events = crate::events::Events::new();
         let conversations = super::Conversations::open(&home, events.clone());
         let id = conversations
-            .begin(super::Target::New, "Fix it".into(), vec![], None, None)
+            .begin(
+                super::Target::New,
+                "Fix it".into(),
+                vec![],
+                None,
+                None,
+                Ok(vec![]),
+            )
             .unwrap()
             .conversation;
         conversations
@@ -1614,6 +1754,7 @@ mod tests {
                 vec![],
                 None,
                 Some("words no app of the owner's signed".into()),
+                Ok(vec![]),
             )
             .unwrap()
             .conversation;
@@ -1684,7 +1825,14 @@ mod tests {
         let events = crate::events::Events::new();
         let conversations = super::Conversations::open(&home, events.clone());
         let id = conversations
-            .begin(super::Target::New, "first".into(), vec![], None, None)
+            .begin(
+                super::Target::New,
+                "first".into(),
+                vec![],
+                None,
+                None,
+                Ok(vec![]),
+            )
             .unwrap()
             .conversation;
         {

@@ -163,6 +163,7 @@ pub fn router(shared: Arc<Shared>) -> Router {
                 .delete(crate::routes::delete),
         )
         .route("/v1/jobs/{id}/archive", post(crate::routes::archive))
+        .route("/v1/jobs/{id}/delete", post(crate::routes::delete_asked))
         .route("/v1/jobs/{id}/wait", get(crate::routes::wait))
         .route("/v1/jobs/{id}/transcript", get(crate::routes::transcript))
         .route(
@@ -595,6 +596,9 @@ pub struct Status {
     /// The machine's memory and each running job's (crate::meter); left out when it can't be read.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub memory: Option<MemoryJson>,
+    /// obid takes working folders (crate::folders): `folders` on `POST /v1/plans`, conversations
+    /// and `PATCH /v1/conversations/{id}`. Older obids don't send it.
+    pub folders: bool,
 }
 
 /// `status.memory`, in bytes.
@@ -840,6 +844,7 @@ async fn status(State(shared): State<Arc<Shared>>) -> Result<axum::Json<Status>,
                 jobs,
                 waiting: serde_json::json!([]),
             }),
+        folders: true,
     }))
 }
 

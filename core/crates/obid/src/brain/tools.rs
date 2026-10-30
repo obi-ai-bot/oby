@@ -641,20 +641,10 @@ fn delete_job(shared: &Shared, id: &str) -> Result<String, String> {
     if let Some(refused) = shared.jobs.undeletable(id) {
         return Err(format!("Couldn't delete {name}: {}", refused.0));
     }
-    let lost = match job.unpublished() {
-        0 => String::new(),
-        1 => "; 1 commit that isn't published is lost".into(),
-        n => format!("; {n} commits that aren't published are lost"),
-    };
-    let goes = if shared.jobs.branch_stays(id) {
-        "its worktree goes; its branch stays, another job uses it"
-    } else {
-        "its worktree and local branch go"
-    };
     confirm_waits(
         shared,
         &job,
-        format!("Delete {name} ({goes}{lost})"),
+        delete_title(shared, &job),
         "deleting a job can't be undone",
         None,
         Confirmed {
@@ -663,6 +653,22 @@ fn delete_job(shared: &Shared, id: &str) -> Result<String, String> {
             payload: Value::Null,
         },
     )
+}
+
+/// What Delete's Confirm says goes, for `oby_delete_job` and the apps' `POST /v1/jobs/{id}/delete`:
+/// `Delete <title> (its worktree and local branch go; 2 commits that aren't published are lost)`.
+pub(crate) fn delete_title(shared: &Shared, job: &crate::job::Job) -> String {
+    let lost = match job.unpublished() {
+        0 => String::new(),
+        1 => "; 1 commit that isn't published is lost".into(),
+        n => format!("; {n} commits that aren't published are lost"),
+    };
+    let goes = if shared.jobs.branch_stays(&job.id) {
+        "its worktree goes; its branch stays, another job uses it"
+    } else {
+        "its worktree and local branch go"
+    };
+    format!("Delete {} ({goes}{lost})", job.short_title())
 }
 
 /// oby_change_job: a mode at once when it asks no less and the turn may act; another tool or

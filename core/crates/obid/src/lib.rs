@@ -28,6 +28,7 @@ pub mod egress;
 pub mod events;
 pub mod facts;
 pub mod failures;
+pub mod folders;
 pub mod gateway;
 pub mod git;
 pub mod github;
