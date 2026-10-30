@@ -1017,6 +1017,7 @@ fn busy(account: &Account) -> ApiError {
             account.name
         ),
     )
+    .because("busy")
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1137,23 +1138,32 @@ pub async fn sign_in(
     if let Some(sign_in) = shared.sign_ins.get(&id) {
         return Ok(answer(StatusCode::OK, sign_in.to_json()));
     }
-    let conflict = |message: String| Err(ApiError::new(StatusCode::CONFLICT, message));
+    // Each refusal carries its stable reason (docs/contracts/sign-in.md, SIGN-IN-1 to SIGN-IN-7).
+    let conflict = |reason: &'static str, message: String| {
+        Err(ApiError::new(StatusCode::CONFLICT, message).because(reason))
+    };
     let Some(dir) = account.config_dir.clone() else {
-        return conflict(format!(
-            "{} is {}'s own login, the person's: obid signs in only accounts with a folder of their own. Sign in with {} itself on this machine.",
-            account.name,
-            tool.name(),
-            tool.name()
-        ));
+        return conflict(
+            "ownLogin",
+            format!(
+                "{} is {}'s own login, the person's: obid signs in only accounts with a folder of their own. Sign in with {} itself on this machine.",
+                account.name,
+                tool.name(),
+                tool.name()
+            ),
+        );
     };
     if let Err(why) = login_paths_safe(tool, &dir) {
-        return conflict(format!(
-            "{}'s folder has {why}: obid never runs a sign-in through it.",
-            account.name
-        ));
+        return conflict(
+            "folderUnsafe",
+            format!(
+                "{}'s folder has {why}: obid never runs a sign-in through it.",
+                account.name
+            ),
+        );
     }
     if tool == Tool::Claude && cfg!(target_os = "macos") && !crate::jobs::keychain_on() {
-        return conflict("On macOS Claude Code keeps its login in the Keychain, which obid uses only with claudeKeychain on: obid turns it on by itself when it's left out and Claude Code's login is only in the Keychain, or set it to true in its configuration.".into());
+        return conflict("keychainOff", "On macOS Claude Code keeps its login in the Keychain, which obid uses only with claudeKeychain on: obid turns it on by itself when it's left out and Claude Code's login is only in the Keychain, or set it to true in its configuration.".into());
     }
     let bin = agent_of(&agents, tool)
         .as_ref()
@@ -1167,6 +1177,7 @@ pub async fn sign_in(
                     tool.name()
                 ),
             )
+            .because("notInstalled")
         })?;
     let changing = shared
         .jobs
@@ -1176,7 +1187,7 @@ pub async fn sign_in(
     shared.harness.end_warm_on(&id);
     let sign_in = start(&shared, tool, &account, &bin, &dir, changing)
         .await
-        .map_err(|why| ApiError::new(StatusCode::BAD_GATEWAY, why))?;
+        .map_err(|why| ApiError::new(StatusCode::BAD_GATEWAY, why).because("didNotStart"))?;
     Ok(answer(StatusCode::OK, sign_in.to_json()))
 }
 
@@ -1283,7 +1294,8 @@ pub async fn sign_in_code(
         Some(false) => Err(unprocessable(format!(
             "{} didn't sign in with that code. Start again for a new link.",
             tool.name()
-        ))),
+        ))
+        .because("codeRefused")),
         None => Err(ApiError::new(
             StatusCode::GATEWAY_TIMEOUT,
             format!(

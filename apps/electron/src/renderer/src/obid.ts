@@ -36,8 +36,9 @@ export type ModelOptions = Record<Agent, { models: { id: string; name: string; e
 
 // {"error": "One line a person can read."} with its status; status 0: obid didn't answer, and
 // the message is why (its own reason when it has one, main/obid.ts)
+// reason: obid's stable word for why (docs/contracts/sign-in.md), where it gives one
 export class ApiError extends Error {
-  constructor(readonly status: number, message: string) {
+  constructor(readonly status: number, message: string, readonly reason?: string) {
     super(message);
   }
 }
@@ -51,8 +52,8 @@ async function call<T>(method: string, path: string, body?: unknown, via = (b: B
   let value: unknown = null;
   try { value = text ? JSON.parse(text) : null; } catch { /* not JSON: said below */ }
   if (status < 200 || status >= 300) {
-    const said = (value as { error?: unknown } | null)?.error;
-    throw new ApiError(status, typeof said === 'string' ? said : `Oby answered ${status}.`);
+    const { error: said, reason } = (value ?? {}) as { error?: unknown; reason?: unknown };
+    throw new ApiError(status, typeof said === 'string' ? said : `Oby answered ${status}.`, typeof reason === 'string' ? reason : undefined);
   }
   return value as T;
 }

@@ -375,7 +375,8 @@ async fn sign_in_as(shared: &Arc<Shared>, who: Who) -> Result<Response, ApiError
                 return Err(ApiError::new(
                     StatusCode::CONFLICT,
                     "GitHub's sign-in is starting: ask again in a moment.",
-                ));
+                )
+                .because("busy"));
             }
             _ => *slot = Slot::Starting,
         }
@@ -389,10 +390,11 @@ async fn sign_in_as(shared: &Arc<Shared>, who: Who) -> Result<Response, ApiError
                 StatusCode::SERVICE_UNAVAILABLE,
                 "obid has no GitHub CLI (gh) to sign in with.",
             )
+            .because("notInstalled")
         })?;
     let started = start(shared, &gh, who)
         .await
-        .map_err(|why| ApiError::new(StatusCode::BAD_GATEWAY, why))?;
+        .map_err(|why| ApiError::new(StatusCode::BAD_GATEWAY, why).because("didNotStart"))?;
     let answer = started.to_json();
     {
         let mut slot = login.slot();

@@ -25,7 +25,7 @@ A Mac runner (below) keeps its API on loopback and starts one more listener, the
   - **The local token.** The first time it starts, the runner makes a token of its own, 64 hex characters, and keeps it in the macOS keychain; `OBY_HOME` defaults to `~/Library/Application Support/Oby/Runner` on a Mac, inside the app's own folder but never the same (each has its own `oby.sqlite`, clones and worktrees). The Oby app on the same Mac reads that keychain item and sends the token on every request, `Authorization: Bearer <token>`. Anything else is `401` (`This runner answers only Oby on this Mac.`). `/v1/agent/…` carries its job's token, as above. The token never leaves the Mac: it's not in any answer, event or log.
   - **Loopback only.** A Mac runner binds `127.0.0.1` and, before anything else, refuses with `403` (`This runner answers only on 127.0.0.1.`) every request whose `Host` isn't `127.0.0.1`, `localhost` or `[::1]`, with or without a port: a web page the user opens can't have their browser reach it through a name that resolves to 127.0.0.1 (DNS rebinding), and a request with no `Host` isn't let in either. Remote devices reach a Mac runner only through the gateway (F18), never directly.
   - A Mac runner doesn't update itself (Sparkle updates the app, #282) and runs agents in their own sandboxes rather than bubblewrap (`Agents.sandboxed`). Everything else in this document holds. Its keychain items are its own (`com.deskree.oby.runner.vault`), apart from the app's.
-- **JSON** everywhere, camelCase keys, dates as ISO 8601 strings (`2026-10-09T21:43:30Z`). Errors are `{"error": "One line a person can read."}` with a 4xx or 5xx status.
+- **JSON** everywhere, camelCase keys, dates as ISO 8601 strings (`2026-10-09T21:43:30Z`). Errors are `{"error": "One line a person can read."}` with a 4xx or 5xx status. obid's sign-in routes add `"reason"`, a stable word an app shows its own sentence for ([Sign-in reasons](#obid-only-sign-in-reasons)); an app that doesn't know a reason shows its own plain sentence.
 - **No vault secret** in an answer or an event: every string has the vault's secrets, plain or encoded, taken out. When the runner can't read its vault, answers are `503` with the reason, and events aren't sent.
 - **The Apple Watch** can't run Tailscale, so without its iPhone it uses a second, smaller API through a Cloudflare Tunnel: [The Watch API](#the-watch-api), below.
 
@@ -1678,6 +1678,8 @@ The owner adds, renames and removes the agents' accounts, and signs them in, fro
 
 **`DELETE /v1/accounts/{id}/sign-in`** ends the account's sign-in under way, with everything its login started: `204`, also when none was under way. `404` for an unknown account; `409` when it didn't end within 5 seconds.
 
+Every refusal above carries its `reason` ([Sign-in reasons](#obid-only-sign-in-reasons)): `ownLogin`, `folderUnsafe`, `busy` (also on `DELETE /v1/accounts/{id}`'s job `409`) and `keychainOff` for the `409`s, `notInstalled` for the `503`, `didNotStart` for the `502`, and `codeRefused` for `POST`'s `422` of a code Claude Code refused.
+
 When a sign-in ends, every app gets `accounts`, with `signedIn` as obid finds it (the login file, or the Keychain item with `claudeKeychain`, or Cursor's own login's with `cursorKeychain`).
 
 ### obid only: GitHub's sign-in
@@ -1696,6 +1698,8 @@ The owner signs obid's `gh` in to GitHub from the Mac (Settings › Connectors �
 - It runs `gh auth login --hostname github.com --git-protocol https --web --skip-ssh-key`, unboxed (it must reach the Keychain and the network), by its absolute path, with obid's kept environment (no token, no agent variable), the person's `HOME` (where gh keeps its settings), `GH_BROWSER` and `BROWSER` set to `true` (nothing opens on the runner), prompts off, and `GIT_CONFIG_GLOBAL` a file in the sign-in's own folder (`home/tmp/github-sign-in-…`, removed when it ends), so gh never changes the person's global git settings. obid needs no `gh auth setup-git`: it gives git gh's login itself (obid only: publishing).
 - obid reads what gh prints only for its one-time code (`! One-time code (AB12-CD34) …` or `! First copy your one-time code: AB12-CD34`); nothing else is kept, answered or logged. The page is always GitHub's device page.
 - One at a time. It ends when gh does (signed in, or not), after 15 minutes (a device code's life), with `DELETE`, or when obid stops; its process group is killed with it. `502` when gh gave no code within 30 seconds; `503` without a gh.
+
+The `503` carries `reason` `notInstalled`, the `502` `didNotStart`, and the `409` while a sign-in is starting `busy` (the reviewer's sign-in too). A sign-in that ended without a login shows as `signedIn` false and `signIn` null.
 
 **`DELETE /v1/github/sign-in`** ends the sign-in under way, if any: `204`.
 
@@ -1717,6 +1721,22 @@ What the reviewer's token can do and where it lives:
 - It lives only in `home/github/reviewer/hosts.yml` (0600, in a 0700 folder): obid's home, which every job's and conversation's box hides. obid learns it as the secret `github reviewer` at start, after a sign-in and at every read of the reviewer's status (gh may refresh it), so it's taken out of every answer, log line and push like obid's other secrets, and the secret scan stops a push that holds it.
 - It never reaches an agent: jobs keep their empty `GH_CONFIG_DIR`, no job's environment, prompt, file or argument has it, and the reviewer's gh is started only by obid itself, for one thing: posting Oby's review of the owner's own pull request (obid only: GitHub work, "Oby's verdict"). Every other GitHub call stays the owner's.
 - None of these endpoints is on the gateway's allowlist.
+
+### obid only: sign-in reasons
+
+Why a sign-in didn't start, as one stable word beside the `error` of `GET` and `POST /v1/accounts/{id}/sign-in`, `POST /v1/github/sign-in` (and the reviewer's) and `POST /v1/tetrix/sign-in` (#1579, docs/contracts/sign-in.md): `{"error": "…", "reason": "notInstalled"}`. The apps show their own words for it under the row, never `error`, which can name a folder. Reasons are add-only: never renamed or removed, and an app shows its plain sentence for one it doesn't know.
+
+| `reason` | When |
+|---|---|
+| `notInstalled` | the tool's CLI, or gh, isn't found by an absolute path (`503`) |
+| `ownLogin` | the tool's own login, signed in with the tool itself (`409`) |
+| `folderUnsafe` | the account's login file, its lock or its folder is a link or not the person's (`409`) |
+| `keychainOff` | Claude Code on macOS without `claudeKeychain` (`409`) |
+| `busy` | a job of the account is queued or running, it's being removed, or GitHub's sign-in is starting (`409`) |
+| `didNotStart` | the login, or gh, gave no link or code, or couldn't start (`502`) |
+| `codeRefused` | Claude Code didn't sign in with the code sent (`422`) |
+| `badAddress` | a Tetrix URL that breaks a connection's rules, or an unknown preset (`422`) |
+| `noSignIn` | that Tetrix's metadata, sign-in server or client can't be found or used (`502`) |
 
 ### obid only: repositories
 
@@ -1770,6 +1790,8 @@ The owner connects Tetrix once, in Oby, and every agent on every account (Claude
 - The login (access token, refresh token, expiry) goes into obid's vault as `oby.tetrix.access` and `oby.tetrix.refresh` (a connection can't name an `oby.` secret), so it lives where the vault lives (the login Keychain on the Mac app's runner home, else `home/vault/secrets.json`) and is taken out of every answer, log line and push like every vault secret (obid only: the vault). Everything else (`url`, the client id, the endpoints, the expiry, the granted scopes) is in `home/tetrix.json` (0600).
 - Until a sign-in finishes, the login before it stays in use. One that finishes on another sign-in server than the login it replaces (another token endpoint: another Tetrix's) has the old one take that login back, as `DELETE /v1/tetrix` does (its `revocation_endpoint`, the refresh token), in the background once the new login is kept; a failure there is only logged. On the same sign-in server nothing is taken back: there the old and new logins can share one session (Keycloak's client session), and revoking the old would end the new.
 - obid refreshes the access token itself when it has less than a minute left, or when Tetrix answers `401`, and keeps the rotated refresh token. A refresh Tetrix refuses (`invalid_grant`) signs Oby out (`error` says so). One the sign-in server doesn't answer (it can't be reached, or answers 5xx) while the token can't be used (it ended, or Tetrix answered `401`) keeps the login, fails that call, and says so in `error` (`Oby couldn't refresh its Tetrix login: Tetrix's sign-in server answered HTTP 503. It tries again at the next call.`); the next call refreshes again.
+
+Its `422`s carry `reason` `badAddress` and its `502`s `noSignIn`. A sign-in that ended without a login shows as `connected` false and `signIn` null.
 
 **`DELETE /v1/tetrix/sign-in`** ends the sign-in under way, if any: `204`.
 
