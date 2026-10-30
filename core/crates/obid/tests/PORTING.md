@@ -38,9 +38,9 @@ The Rust core's done-when includes "the ported API-level tests from `RunnerTests
 | NoDispatchCardTests.startedJobsKeepTheirMode | runner_api.rs `dispatched_jobs_keep_their_mode` | its API half; the brain half needs `POST /v1/plans` |
 | NoDispatchCardTests.theAPIAnswersTheJobsItStartedAndRefusesDrafts | jobs_api.rs `dispatch_takes_only_whole_jobs` | the draft refused with 410 only; the jobs a plan started need `POST /v1/plans` |
 | OldJobsTests.theAPIFindsAndDismissesJob60 | runner_api.rs `the_api_finds_and_dismisses_job_60` |  |
-| ParallelTests.aSeventhJobWaitsWhileSixRunAndStartsWhenOneEnds | runner_api.rs `a_seventh_job_waits_for_a_slot_and_says_so` | as the API shows it |
+| ParallelTests.aSeventhJobWaitsWhileSixRunAndStartsWhenOneEnds | runner_api.rs `admission_3_a_seventh_job_waits_for_a_slot_and_says_so` | as the API shows it |
 | ParallelTests.theCapIsInStatusAndSettings | runner_api.rs `the_cap_is_in_status_and_settings` | and kept across a restart (`home/settings.json`); raising it starts a waiting job at once in `raising_the_cap_starts_a_waiting_job_at_once` |
-| PipelineTests.oldJobsDecodeAndAPISendsDerivedStages | runner_api.rs `a_seventh_job_waits_for_a_slot_and_says_so` | the API half: the stages sent on running jobs |
+| PipelineTests.oldJobsDecodeAndAPISendsDerivedStages | runner_api.rs `admission_3_a_seventh_job_waits_for_a_slot_and_says_so` | the API half: the stages sent on running jobs |
 | ReviewJobTests.theRunnerSaysAReviewMadeNoCommits | runner_api.rs `the_runner_says_a_review_made_no_commits` |  |
 | RunnerTests.dispatchBodiesAreWholeJobs | runner_api.rs `dispatch_bodies_are_whole_jobs` | through the API instead of the body's decoder |
 | RunnerTests.dispatchTakesOnlyWholeJobs | jobs_api.rs `dispatch_takes_only_whole_jobs` |  |
@@ -62,7 +62,7 @@ The Rust core's done-when includes "the ported API-level tests from `RunnerTests
 | GatewayTests.gatewayForwardsTheRunnersTokenToTheMacRunner | gateway_api.rs `the_gateway_needs_a_device_token_and_passes_only_its_routes` | obid forwards to its own router in process, with its API token |
 | GatewayTests.gatewayRouterRedactsSecretsInFiniteAndSSEResponses | gateway_api.rs `gateway_answers_lose_vault_secrets_session_ids_and_account_homes` | on obid's own answers and event stream |
 | GatewayTests.gatewayScrubsSessionIDsAndAccountHomes | gateway_api.rs `gateway_answers_lose_vault_secrets_session_ids_and_account_homes`; src/gateway.rs `answers_lose_session_ids_and_account_homes` | the Swift test's own answers in the unit test |
-| WaitingTests.theAPISendsWhatItWaitsFor | runner_api.rs `a_seventh_job_waits_for_a_slot_and_says_so` | and the null half in `jobs_have_iso_dates_and_every_key` |
+| WaitingTests.theAPISendsWhatItWaitsFor | runner_api.rs `admission_3_a_seventh_job_waits_for_a_slot_and_says_so` | and the null half in `jobs_have_iso_dates_and_every_key` |
 
 Also from the Mac app's side: tests/mac_app.rs builds the Mac app's own client (apps/shared/Runner.swift and the Engine/ and apps/shared/ files it needs) and follows obid as apps/mac/app/RunnerFeed.swift does.
 
