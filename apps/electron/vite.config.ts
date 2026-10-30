@@ -7,7 +7,7 @@ import react from '@vitejs/plugin-react';
 // stays standalone. In dev it's served at /oby/; a build copies the page and
 // three.js in next to the app.
 const OBY = resolve(__dirname, '../../design/oby');
-const OBY_FILES = ['oby.html', 'vendor/three.module.js'];
+const OBY_FILES = ['oby.html', 'obys.html', 'vendor/three.module.js'];
 const TYPES: Record<string, string> = { '.html': 'text/html', '.js': 'text/javascript' };
 
 function oby(): Plugin {

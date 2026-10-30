@@ -1,7 +1,7 @@
 import { Fragment, useEffect, useRef, useState } from 'react';
 import { BookOpen, Check, Mail, UserPlus, ChevronDown, EllipsisVertical, Plus, Search, type LucideIcon } from 'lucide-react';
 // the icon strip uses Phosphor: it has outline and filled versions of each icon
-import { ChatsCircleIcon, HouseIcon, PlusIcon } from '@phosphor-icons/react';
+import { ChatsCircleIcon, GearSixIcon, HouseIcon, PlusIcon } from '@phosphor-icons/react';
 import { BrandMark } from './brands';
 import { ARCHIVE_AFTER, TYPES, archivedTasks, asksWaiting, countOf, getArchiveAfter, markSeen, openOf, renameTask, setArchiveAfter, tasksOf, tasksWith, useTasks, type Task } from './tasks';
 import { OBYS, ago } from './mock';
@@ -56,12 +56,14 @@ const convoAbout = (c: Chat) => {
 // Settings from your account picture at the foot), the column beside
 // them shows it. Search, on the tabs that have it, sits by the panel icon.
 // It opens from the left and pushes the view over.
-export default function Sidebar({ open, onNewChat, onHome, onOpenTask, onOpenChat, onOpenOby, onOpenTalk, onOpenArchive, onOpenSetting, onOpenSphereSetting, onOpenKnowledge, activeOby = null, activeTalk = null, activeSetting = null, activeSphereSetting = null, activeKnowledge = null, active = null, width, onResize }: {
+export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOpenTask, onOpenChat, onOpenOby, onOpenTalk, onOpenArchive, onOpenSetting, onOpenSphereSetting, onOpenKnowledge, activeOby = null, activeTalk = null, activeSetting = null, activeSphereSetting = null, activeKnowledge = null, active = null, width, onResize }: {
   open: boolean;
+  onClose: () => void;  // the panel closes (its tab's icon again, while that tab is showing)
   onNewChat: () => void;
   onHome: () => void;  // back to Home's own page, closing whatever is open over it
+  atHome: boolean;  // on Home's own page, nothing open over it
   onOpenTask: (id: string) => void;  // a task's page, on its own
-  onOpenChat: (id: string) => void;  // a task's conversation, from its menu
+  onOpenChat: (id: string) => void;  // a task's conversation, from its menu or its row's icon
   onOpenOby: (name: string) => void;  // someone else's Oby, from the Obysphere: its conversations
   onOpenTalk: (id: string) => void;  // a conversation with Oby, from Conversations
   onOpenArchive: () => void;  // the archived tasks, as a page
@@ -174,7 +176,10 @@ export default function Sidebar({ open, onNewChat, onHome, onOpenTask, onOpenCha
   const [inviting, setInviting] = useState(false);
   const archiveAfter = getArchiveAfter();
   // Home's groups: by kind of work (the default) or by status; remembered
+  // (lean: by status only, needs you, running, completed; the kinds of work came from sources
+  // that aren't there yet)
   const [groupBy, setGroupBy] = useState<'type' | 'status'>(() => {
+    if (!everything) return 'status';
     try { return localStorage.getItem('oby.groupBy') === 'status' ? 'status' : 'type'; } catch { return 'type'; }
   });
   const pickGroupBy = (by: 'type' | 'status') => {
@@ -202,8 +207,11 @@ export default function Sidebar({ open, onNewChat, onHome, onOpenTask, onOpenCha
   const archivedCount = archivedTasks().length;
   const { list, onScroll, thumbProps } = useScrollThumb<HTMLDivElement>();
   const pick = (id: Section) => {
-    // Home again, while it's showing: back to Home's own page (the dashboard)
-    if (id === 'home' && section === 'home') onHome();
+    // Home again, while it's showing: back to Home's own page if something's open over it,
+    // else (already there) the panel closes; any other tab again, while it's showing: the
+    // panel closes, as its toggle does
+    if (id === 'home' && section === 'home' && !atHome) onHome();
+    else if (id === section) { onClose(); return; }
     setSection(id); setSearching(false); setQuery('');
     if (list.current) list.current.scrollTop = 0;
   };
@@ -309,16 +317,28 @@ export default function Sidebar({ open, onNewChat, onHome, onOpenTask, onOpenCha
             <PlusIcon size={20} />
           </button>}
           {/* you, at the foot: your picture opens your account's menu (Settings is in it) */}
+          {/* lean (Sangam's call of 2026-10-28): no account, no sign-in, nothing but this Mac, so
+              Settings itself, the gear filled while it's open; the design's account picture and its
+              menu (name, email, Log out) with ?everything */}
+          {!everything ? (
+            <button className={`rail-button rail-settings${inSettings ? ' is-on' : ''}`} data-tip="Settings" aria-label="Settings" aria-pressed={inSettings}
+              // a Settings page open: the gear again closes the panel (as a tab's icon does); else it opens
+              // Settings (General), staying on the Settings list if that's showing
+              onClick={() => { if (inSettings && activeSetting) return pick('settings'); if (!inSettings) pick('settings'); if (!activeSetting) onOpenSetting('general'); }}>
+              <GearSixIcon size={20} weight={inSettings ? 'fill' : 'regular'} />
+            </button>
+          ) : (
           <button
-            className={`rail-button rail-account${inSettings || accountMenu ? ' is-on' : ''}`}
-            data-tip={accountMenu ? undefined : 'Account'}
-            aria-label={`${ME.name}’s account`}
-            aria-haspopup="menu"
-            aria-expanded={!!accountMenu}
-            onClick={(e) => setAccountMenu(accountMenu ? null : e.currentTarget.getBoundingClientRect())}
-          >
-            <OwnerAvatar name={ME.name} size={24} badge={false} />
-          </button>
+              className={`rail-button rail-account${inSettings || accountMenu ? ' is-on' : ''}`}
+              data-tip={accountMenu ? undefined : 'Account'}
+              aria-label={`${ME.name}’s account`}
+              aria-haspopup="menu"
+              aria-expanded={!!accountMenu}
+              onClick={(e) => setAccountMenu(accountMenu ? null : e.currentTarget.getBoundingClientRect())}
+            >
+              <OwnerAvatar name={ME.name} size={24} badge={false} />
+            </button>
+          )}
         </div>
 
         <div className="sidebar-content">
@@ -406,22 +426,30 @@ export default function Sidebar({ open, onNewChat, onHome, onOpenTask, onOpenCha
             {pinned.map(convoRow)}
             {pinned.length > 0 && pinned.length < talks.length && <h3 className="sidebar-convo-head">Recent</h3>}
             {talks.filter((c) => !c.pinned).map(convoRow)}
-            {!talks.length && <p className="sidebar-empty">{query.trim() ? `No conversations match “${query.trim()}”` : 'No conversations yet'}</p>}
+            {/* none at all: in the middle, as Home's; none matching a search: at the top, under it */}
+            {!talks.length && (query.trim()
+              ? <p className="sidebar-empty">{`No conversations match “${query.trim()}”`}</p>
+              : <p className="sidebar-empty is-middle">No conversations yet</p>)}
           </div>
         )}
         {/* Home: each kind of work folds open to its tasks (running / needs you
             counted on the right) */}
         {section === 'home' && (
           <div className="sidebar-plain">
-            {groups.map((t) => (
+            {/* nothing open, instead of three empty groups: never any tasks yet (just set up), or
+                every one done and archived (the Archived button below has them) */}
+            {groups.every((t) => !t.tasks.length) && <p className="sidebar-empty is-middle">
+              {archivedCount > 0 ? 'All caught up.\nFinished tasks are in Archived.' : 'No tasks yet.\nThey’ll show up here\nonce you give me one.'}
+            </p>}
+            {groups.some((t) => t.tasks.length) && groups.map((t) => (
               <section key={t.id} className={`sidebar-group${folded.has(t.id) ? ' is-folded' : ''}`}>
                 <button className="sidebar-group-head" aria-expanded={!folded.has(t.id)} onClick={() => toggleGroup(t.id)}>
                   <h3>{t.label}</h3>
                   <ChevronDown size={12} strokeWidth={1.8} className="sidebar-chevron" />
                   {/* folded, the orange dot still says something in it needs you */}
                   {t.needs > 0 && <span className="sidebar-group-needs" aria-label={`${t.needs} need${t.needs === 1 ? 's' : ''} you`} />}
-                  {/* nothing open in it: no count (a 0 says nothing) */}
-                  {t.count > 0 && <span className="sidebar-group-count" aria-label={`${t.count} ${t.countLabel}`}>{t.count}</span>}
+                  {/* its count: not in v1 (Sangam: the rows say it); nothing open in it: none (a 0 says nothing) */}
+                  {everything && t.count > 0 && <span className="sidebar-group-count" aria-label={`${t.count} ${t.countLabel}`}>{t.count}</span>}
                 </button>
                 <div className="sidebar-group-body">
                   <div>
@@ -460,8 +488,16 @@ export default function Sidebar({ open, onNewChat, onHome, onOpenTask, onOpenCha
                           </span>
                         )}
                         {/* at the row's end, its state: new, needs you, working, queued or done;
-                            on hover, its ⋮ in the same spot */}
+                            on hover, its ⋮ in the same spot, and its conversation before it */}
                         <StatusDot task={k} />
+                        <button
+                          className="sidebar-item-more task-row-chat"
+                          aria-label={`Go to the conversation of ${k.title}`}
+                          data-tip="Go to conversation"
+                          onClick={(e) => { e.stopPropagation(); markSeen(k.id); onOpenChat(k.id); }}
+                        >
+                          <ChatsCircleIcon size={14} />
+                        </button>
                         <button
                           className="sidebar-item-more"
                           aria-label={`More for ${k.title}`}
@@ -558,8 +594,9 @@ export default function Sidebar({ open, onNewChat, onHome, onOpenTask, onOpenCha
         </div>
         {/* Home's foot, held at the bottom under a line, however it's grouped:
             the archive, done tasks that have left Home; it opens as a page */}
-        {section === 'home' && archivedCount > 0 && (
-          <button className="sidebar-archived" onClick={onOpenArchive}>
+        {/* there from the start, its count 0 till something's archived (Sangam, 2026-10-28) */}
+        {section === 'home' && (
+          <button className={`sidebar-archived${archivedCount ? '' : ' is-empty'}`} onClick={onOpenArchive}>
             Archived
             <span className="sidebar-group-count">{archivedCount}</span>
           </button>
@@ -633,15 +670,17 @@ export default function Sidebar({ open, onNewChat, onHome, onOpenTask, onOpenCha
         </Menu>
       )}
       {archiveMenu && (
-        <Menu at={archiveMenu} onClose={() => setArchiveMenu(null)} height={290} width={180}>
-          <span className="menu-label">Group by</span>
-          {(['type', 'status'] as const).map((by) => (
-            <button key={by} role="menuitemradio" aria-checked={groupBy === by} onClick={() => pickGroupBy(by)}>
-              {by === 'type' ? 'Type' : 'Status'}
-              {groupBy === by && <Check size={14} strokeWidth={1.8} className="menu-check" />}
-            </button>
-          ))}
-          <hr />
+        <Menu at={archiveMenu} onClose={() => setArchiveMenu(null)} height={everything ? 290 : 170} width={180}>
+          {everything && <>
+            <span className="menu-label">Group by</span>
+            {(['type', 'status'] as const).map((by) => (
+              <button key={by} role="menuitemradio" aria-checked={groupBy === by} onClick={() => pickGroupBy(by)}>
+                {by === 'type' ? 'Type' : 'Status'}
+                {groupBy === by && <Check size={14} strokeWidth={1.8} className="menu-check" />}
+              </button>
+            ))}
+            <hr />
+          </>}
           <span className="menu-label">Archive completed</span>
           {ARCHIVE_AFTER.map((a) => (
             <button key={a.id} role="menuitemradio" aria-checked={archiveAfter === a.id} onClick={() => pickArchive(a.id)}>

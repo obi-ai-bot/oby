@@ -5,6 +5,7 @@ import TaskCard from './TaskCard';
 import { SESSIONS } from './session';
 import { markSeen, useTasks, type Task } from './tasks';
 import type { Attachments } from './mock';
+import { box as draftBox } from './drafts';
 
 // how long the way out takes (the sink animation in app.css)
 const LEAVE_MS = 220;
@@ -81,6 +82,7 @@ export default function TaskView({ id, leaving, covered = false, onBack, onHome,
         placeholder="Tell Oby about this task…"
         label={`Tell Oby about ${task.title}`}
         onSend={(text, att) => onTell(task.id, text, att)}
+        draft={draftBox.task(task.id)}
       />
     </div>
   );

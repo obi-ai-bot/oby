@@ -123,13 +123,11 @@ func inside(_ text: String) -> [String] {
     }
 
     @Test func runnerURL() {
-        #expect(RunnerAPI.url(environment: [:], settings: nil, localObid: false) == "https://tetrix-lab.tail8de49b.ts.net:8443")
+        #expect(RunnerAPI.url(environment: [:], settings: nil) == "http://127.0.0.1:7777")
         #expect(RunnerAPI.url(environment: [:], settings: "https://mac.test:8443/") == "https://mac.test:8443")
         #expect(RunnerAPI.url(environment: ["OBY_RUNNER_URL": "http://127.0.0.1:7777"], settings: "https://mac.test") == "http://127.0.0.1:7777")
-        #expect(RunnerAPI.url(environment: ["OBY_RUNNER_URL": " "], settings: "", localObid: false) == RunnerAPI.defaultURL)
-        // With nothing set, obid on this Mac when its token is there.
-        #expect(RunnerAPI.url(environment: [:], settings: nil, localObid: true) == "http://127.0.0.1:7777")
-        #expect(RunnerAPI.url(environment: [:], settings: "https://mac.test", localObid: true) == "https://mac.test")
+        // With nothing set, obid on this machine.
+        #expect(RunnerAPI.url(environment: ["OBY_RUNNER_URL": " "], settings: "") == RunnerAPI.localURL)
     }
 
     /// obid answers only its token (401 without it): oby-mcp reads it from obid's home as the Mac
@@ -145,7 +143,7 @@ func inside(_ text: String) -> [String] {
 
         #expect(RunnerAPI.token(for: "http://127.0.0.1:7777", homes: [home]) == token)
         #expect(RunnerAPI.token(for: "http://localhost:7777", homes: [home]) == token)
-        #expect(RunnerAPI.token(for: "https://tetrix-lab.tail8de49b.ts.net:8443", homes: [home]) == nil)
+        #expect(RunnerAPI.token(for: "https://mac.tail0000.ts.net:8443", homes: [home]) == nil)
         #expect(RunnerAPI.token(for: "http://127.0.0.1.evil.test:7777", homes: [home]) == nil)
         // A file others can read isn't taken, as the Mac app doesn't take it.
         try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: file.path)

@@ -1,0 +1,57 @@
+name: Bug
+description: Something in Oby broke. File it the same day.
+title: "fix: "
+body:
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps
+      description: What you did, in order.
+      placeholder: |
+        1.
+        2.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Oby and obid version or commit
+      placeholder: Oby 0.4.5 (605), or obid at 83d5b209
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - electron
+        - obid
+        - design
+        - docs
+        - iPhone or Watch
+        - not sure
+    validations:
+      required: true
+  - type: textarea
+    id: log
+    attributes:
+      label: obid log
+      description: The relevant lines, redacted. Take out tokens, keys, private hosts and anything you wouldn't post publicly.
+      render: text
+  - type: input
+    id: since
+    attributes:
+      label: Regression since
+      description: The last version or commit where it worked, if you know it.

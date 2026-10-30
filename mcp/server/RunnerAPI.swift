@@ -26,7 +26,6 @@ struct RunnerAPI: Sendable {
 
     /// The Mac app's bundle id and its Settings › Runner key (apps/mac/app/Settings.swift).
     static let macApp = "com.deskree.oby"
-    static let defaultURL = "https://tetrix-lab.tail8de49b.ts.net:8443"
     static let localURL = "http://127.0.0.1:7777"
 
     /// Where obid keeps its token: the Mac app's runner home on a Mac, `~/.local/share/obid`
@@ -37,12 +36,11 @@ struct RunnerAPI: Sendable {
     }
 
     /// Where the runner is: `OBY_RUNNER_URL`, else the address Oby's Settings on this Mac use,
-    /// else obid on this machine when its token is there, else tetrix-lab's.
+    /// else obid on this machine.
     static func url(environment: [String: String] = ProcessInfo.processInfo.environment,
-                    settings: String? = UserDefaults(suiteName: macApp)?.string(forKey: "runnerURL"),
-                    localObid: Bool = token(for: localURL, homes: obidHomes) != nil) -> String {
+                    settings: String? = UserDefaults(suiteName: macApp)?.string(forKey: "runnerURL")) -> String {
         let given = [environment["OBY_RUNNER_URL"], settings].compactMap { $0?.trimmingCharacters(in: .whitespaces) }.first { !$0.isEmpty }
-        var url = given ?? (localObid ? localURL : defaultURL)
+        var url = given ?? localURL
         while url.hasSuffix("/") { url.removeLast() }
         return url
     }

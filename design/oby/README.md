@@ -11,6 +11,9 @@ The folder works on its own with no network or build step.
 ```
 oby/
   oby.html                 Oby: one page with all the code
+  obys.html                several Obys together, for the chat margin (see package/README.md)
+  group.html               obys.html's test page: every scene and the app's calls on buttons
+  censor-lab.html          the swearing censor six ways (obys.html?lab)
   vendor/three.module.js   three.js 0.170 (MIT), the only dependency
   mac/                     sample macOS menu bar app that hosts Oby
   package/                 builds and publishes the handoff package (see below)
@@ -68,6 +71,7 @@ oby.look(x, y)                      // look at a point in the page's CSS px, eve
 oby.look(null)                      // let go: Oby looks around on its own
 oby.notice(x, y)                    // something happened there (a click): a glance, then back to its business
 oby.attend(true)                    // watch the pointer the whole time; false goes back to its own rhythm
+oby.enter()                         // opened with ?enter: hop up out of the floor ('hop', then 'landed')
                                     // once you call look(), Oby ignores the pointer over its own frame
 oby.on('poke', ({ count }) => {})   // events, see below; returns an unsubscribe function
 
@@ -119,12 +123,13 @@ Any of these can be passed to `play()`:
 | Listening | 3.8 s | turns an ear to you, eyes on you, a nod |
 | Agree | 2.4 s | three clear nods |
 | Disagree | 3.0 s | disappointed "no": droopy eyes, slow head shake, a sigh |
+| Nope | 1.6 s | a light "no": the same shake, eyes open and looking up at you, no sigh |
 | Thinking | 4.6 s | looks up left, then up right, thought dots |
 | Working | 3.8 s | spins all the way round, busy dots |
 | Loading | 6.0 s | melts into three bouncing dots, then back into the cube |
 | Grin | 3.0 s | happy squint with a little chuckle |
 | Wink | 2.2 s | winks |
-| Laugh | 3.0 s | shakes with laughter |
+| Laugh | 3.6 s | shakes with laughter, then winds down: the giggle slows, one last chuckle, the smile lingers |
 | Surprised | 2.8 s | jumps, eyes wide |
 | Confused | 3.2 s | tilts, small round eyes, a question mark |
 | Unwilling | 3.8 s | "no thanks": nose up, turns away, one side-eye back |
@@ -194,7 +199,17 @@ webView.evaluateJavaScript("oby.setState('thinking')")
 
 **Web (iframe).** Add `?embed` to the URL to hide the controls and make the
 background transparent. Add `&size=1.4` to make Oby bigger in a small frame;
-the default is `1`.
+the default is `1`. Add `&simple` for Oby alone: no effects drawn round it but
+the fly (no !, ?, sparkles, huffs or z's, pokes included), and only the quieter
+idle fidgets (Distracted, Wink, Grin), and the pointer only bothers it right
+over its face (not beside it, where a host's buttons may be). Add `&enter` to have it wait under the
+floor, out of sight, until `{ enter: true }` (or `oby.enter()`): then it hops up
+out of it and lands, as the Obys of a conversation hop back up in `obys.html`.
+`{ duck: 0.3 }` (or `oby.duck(0.3)`) hops it down to stand that many bodies
+lower, its top peeking over the frame's edge; `{ duck: 0 }` hops it back up.
+Add `soft: true` to rise or sink there smoothly instead (about 0.4s, no hop).
+`&gravity=30` slows the hops (52 bodies/s² by default, the Obys' own): the same
+arc, stretched in time, for an Oby drawn much bigger than theirs.
 
 ```html
 <iframe src="oby/oby.html?embed&size=1.4" style="width:120px;height:120px;border:0"></iframe>
@@ -261,5 +276,5 @@ once after 1.2 s, as if waiting, then back at the cursor; after 6 s still it
 looks around on its own until the cursor moves again. While it's watching the
 cursor in `idle`, it doesn't fidget (Yawn, Distracted…): starting to watch
 cuts a fidget short, and the next waits for its break. `oby.look(null)` lets
-go at once. `app/src/renderer/src/Oby.tsx` does this with the cursor position
+go at once. `mockup/src/renderer/src/Oby.tsx` does this with the cursor position
 the Electron app sends it.

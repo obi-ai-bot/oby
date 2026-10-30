@@ -792,7 +792,7 @@ fn a_cursor_plan_waits_for_the_owners_approval() {
     answer("3. Do it.", "Approve");
     let job = ended(&obid, &id);
     assert_eq!(job["status"], "done", "{job}");
-    assert_eq!(job["mode"], "ask");
+    assert_eq!(job["mode"], "sandbox", "the owner's default mode");
     assert_eq!(
         summary(&job),
         "mode agent after rejected in mode plan (The owner didn't approve the plan yet: keep \

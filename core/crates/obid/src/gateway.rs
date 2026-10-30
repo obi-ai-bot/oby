@@ -847,9 +847,9 @@ async fn scrubbed(
     out
 }
 
-/// Events about logins and the watcher, which only the Mac's own Settings uses: Tetrix's,
-/// Slack's and Sentry's sign-ins, and the watcher's rules and runs (what people wrote, quoted).
-const MAC_ONLY_EVENTS: &[&str] = &["tetrix", "slack", "sentry", "hooks", "watch", "listen"];
+/// Events about logins and the watcher, which only the Mac's own Settings uses: Tetrix's
+/// sign-in, and the watcher's rules and runs (what people wrote, quoted).
+const MAC_ONLY_EVENTS: &[&str] = &["tetrix", "hooks", "watch"];
 
 /// `text`, a piece of the event stream, without the frames of [`MAC_ONLY_EVENTS`]. The stream
 /// comes a frame at a time, each ending with a blank line.
@@ -971,9 +971,9 @@ mod tests {
         assert!(allows(&Method::POST, "/v1/github/work/abc/start"));
         assert!(!allows(&Method::POST, "/v1/github/work"));
         assert!(!allows(&Method::GET, "/v1/github/work/abc"));
-        // Slack's login and the watcher are the Mac's alone, their events too.
+        // Tetrix's login and the watcher are the Mac's alone, their events too.
         let scrubber = Scrubber { homes: vec![] };
-        let stream = "event: job\ndata: {\"id\":\"j1\"}\n\nevent: watch\ndata: {\"rules\":{}}\n\nevent: slack\ndata: {}\n\nevent: tetrix\ndata: {}\n\nevent: inbox\ndata: {\"id\":\"i1\"}\n\n";
+        let stream = "event: job\ndata: {\"id\":\"j1\"}\n\nevent: watch\ndata: {\"rules\":{}}\n\nevent: tetrix\ndata: {}\n\nevent: inbox\ndata: {\"id\":\"i1\"}\n\n";
         assert_eq!(
             scrubber.frame(stream),
             "event: job\ndata: {\"id\":\"j1\"}\n\nevent: inbox\ndata: {\"id\":\"i1\"}\n\n"

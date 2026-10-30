@@ -61,6 +61,7 @@ pub mod store;
 pub mod teammates;
 pub mod tetrix;
 pub mod token;
+pub mod tools;
 pub mod transcript;
 pub mod triage;
 pub mod usage;
@@ -423,6 +424,7 @@ pub async fn serve(
     jobs.use_connections(connections.clone());
     let tetrix = tetrix::Tetrix::open(
         &config.home,
+        config.tetrix_presets.clone(),
         vault::shared().expect("the vault is installed first"),
         events.clone(),
     );
@@ -470,6 +472,7 @@ pub async fn serve(
         presence: brain::recap::Presence::default(),
         link: link.clone(),
         sign_ins: accounts::SignIns::default(),
+        tools: tools::Tools::default(),
         github: github_login::GitHubLogin::default(),
         tetrix,
         github_work: github.clone(),

@@ -119,6 +119,7 @@ const PRESET = {
   melt:   [55, 13],   // cube shrinking into / growing out of the dots
   spread: [70, 7],    // dots pulling apart: a little wobble as they pinch off
   ear:    [200, 11],  // ears: light, a beat behind the head, a small flick before they settle
+  ease:   [90, 19],   // the face easing back when what it was doing is cut short (about 0.6s, no overshoot)
 };
 
 const DEFAULTS = {
@@ -691,6 +692,11 @@ function flyAt(t) {
   return v;
 }
 FX.fly = () => spawn('fly', { life: 3.6, path: flyAt });
+// ?simple (an app's own screen, as when setting up): Oby and its face alone. No
+// effects round it but the fly (no !, ?, sparkles, huffs or z's, a poke included),
+// only the quieter idle fidgets, and a pointer is icky only right over its face
+// (the screen's buttons are close by)
+const SIMPLE = new URLSearchParams(location.search).has('simple');
 const easeOutBack = (t) => 1 + 2.7 * Math.pow(t - 1, 3) + 1.7 * Math.pow(t - 1, 2);
 
 let fxDirty = false;
@@ -883,6 +889,26 @@ const EXPRESSIONS = [
     },
   },
   {
+    // a light "nope": Disagree's shake without its sigh, eyes open, quicker, and looking up at
+    // you while it says so (a screen's "not yet, pick one first": Oby isn't let down, it's
+    // telling you); back level as the shake dies away
+    name: 'Nope', dur: 1.6,
+    keys: [
+      [0, { ry: 0 }, 'fast'],
+      [0, { rx: -0.1, gy: -12 }, 'body'],
+      [1.1, { rx: 0, gy: 0 }, 'body'],
+    ],
+    proc(t, add) {
+      const k = t - 0.05;
+      if (k > 0 && k < 1.2) {
+        const decay = 1 - k / 1.2;
+        add('ry', Math.sin(k * 12) * 0.32 * decay);
+        add('rz', Math.sin(k * 12 + 0.6) * 0.025 * decay);
+        add('eLO', Math.sin(k * 12 + 1.2) * 0.18 * decay); add('eRO', -Math.sin(k * 12 + 1.2) * 0.18 * decay);
+      }
+    },
+  },
+  {
     name: 'Thinking', dur: 4.6,
     keys: [
       [0, { gx: -30, gy: -30, rz: 0.11, ry: -0.38, eL: 0.82, lidT: 0.12, fx: 'dots', earL: [0.05, 0.3, 0.5], earR: [-0.05, -0.1, 0] }],
@@ -948,17 +974,24 @@ const EXPRESSIONS = [
     ],
   },
   {
-    name: 'Laugh', dur: 3.0,
+    // it winds down rather than stopping: the giggle tapers off over a second, slowing as it
+    // goes, one last little chuckle, and the smile lingers a while after
+    name: 'Laugh', dur: 3.6,
     keys: [
       [0, { rx: -0.14, happy: 1, eyeH: 74, eyeW: 82 }],
-      [2.3, { rx: 0, happy: 0, eyeH: 112, eyeW: 64 }],
+      [1.9, { rx: -0.05, happy: 0.55, eyeH: 92, eyeW: 72 }, 'slow'],
+      [2.8, { rx: 0, happy: 0, eyeH: 112, eyeW: 64 }, 'slow'],
     ],
     proc(t, add) {
-      const e = env(t, 0.1, 2.3, 0.2);
-      const b = Math.abs(Math.sin(t * 17));
+      const fade = Math.max(0, Math.min(1, (2.6 - t) / 1.1));
+      const e = Math.min(1, Math.max(0, (t - 0.1) / 0.2)) * fade ** 1.5;
+      const ph = 17 * t - 3.5 * Math.max(0, t - 1.5) ** 2;   // slowing as it fades
+      const b = Math.abs(Math.sin(ph));
       add('y', b * 0.045 * e); add('sq', (b - 0.5) * 0.07 * e);
       add('rz', Math.sin(t * 8.5) * 0.035 * e);
       add('eLO', (0.15 + b * 0.2) * e); add('eRO', (0.15 + b * 0.2) * e);
+      // one last little chuckle
+      if (t > 2.75 && t < 3.05) { const c = Math.sin((t - 2.75) / 0.3 * Math.PI); add('y', c * 0.012); add('sq', -c * 0.015); }
     },
   },
   {
@@ -1180,7 +1213,7 @@ function wander(secs) { attn.watching = false; attn.until = clock + (secs ?? ran
 function applyKey(k) {
   const [, vals, preset] = k;
   for (const [name, val] of Object.entries(vals)) {
-    if (name === 'fx') { FX[val]?.(); continue; }
+    if (name === 'fx') { if (!SIMPLE || val === 'fly') FX[val]?.(); continue; }
     if (name === 'ears' || name === 'earL' || name === 'earR') {
       // [back, out, turn]; ears keep their own spring whatever the key's preset
       for (const c of name === 'ears' ? 'LR' : name[3]) val.forEach((v, i) => { if (v != null) P['e' + c + 'BOT'[i]].base = v; });
@@ -1199,7 +1232,11 @@ function play(expr) {
     emit('end', { name: cur.name, completed });
   }
   cur.end?.();
+  // cut short mid-way (a half-shut eye, a squint): the face eases back rather than snapping
+  // open on its own springs; whatever the new one sets at its start takes its own pace
+  const cut = cur !== IDLE && curT < cur.dur;
   resetTargets();
+  if (cut) for (const [k, [, preset]] of Object.entries(DEFAULTS)) if (preset === 'face') [P[k].k, P[k].d] = PRESET.ease;
   cur = expr; curT = 0;
   expr.start?.();
   if (expr !== IDLE) { particles.length = 0; emit('expression', { name: expr.name }); }
@@ -1222,7 +1259,7 @@ function wrapUp() {
    idles: breathes, blinks, follows the pointer. Change them here.
 --------------------------------------------------------------------------- */
 const STATES = {
-  idle:      { pool: ['Distracted', 'Wink', 'Grin', 'Yawn', 'Hiding', 'Sleepy'], gap: [7, 16] },
+  idle:      { pool: SIMPLE ? ['Distracted', 'Wink', 'Grin'] : ['Distracted', 'Wink', 'Grin', 'Yawn', 'Hiding', 'Sleepy'], gap: [7, 16] },
   listening: { pool: ['Listening'], gap: [0, 0] },
   thinking:  { pool: ['Thinking'], gap: [0, 0] },
   working:   { pool: ['Working', 'Loading'], gap: [0.3, 0.8] },
@@ -1241,6 +1278,172 @@ function nextFromState() {
   play(e);
   fidget = state === 'idle';
 }
+// Coming in (?enter): it waits under the floor, out of sight, until enter(), then
+// springs up out of it and lands where it stands, as the Obys of a conversation
+// hop back up (obys.html's away): from as deep as it is to about half a body
+// over, at their gravity (52 bodies/s²), stretched as it goes and squashed as it
+// lands. Ducking (duck(depth), in bodies): a little hop, and down to stand that
+// far under where it stood (only its top peeking over the frame's edge, say),
+// landing there the same way; duck(0) hops back up. The floor it stands on is
+// where it lands; set before enter(), it comes up to that instead. { soft: true }:
+// no hop, it rises or sinks there smoothly (to show a little more of itself a
+// moment, say, while it nods)
+// (?gravity=30: a slower hop, the same arc stretched in time, for an Oby much bigger than theirs)
+const HOP_G = parseFloat(new URLSearchParams(location.search).get('gravity')) || 52, BODY = 0.93, HOP_DEPTH = 2.4 * BODY;
+const hop = { y: 0, vy: 0, air: false, floor: 0, soft: false, held: new URLSearchParams(location.search).has('enter') };
+if (hop.held) hop.y = -HOP_DEPTH;
+function launch() {
+  hop.held = false; hop.air = true;
+  if (hop.floor < hop.y) {
+    hop.vy = Math.sqrt(2 * HOP_G * BODY * 0.12);   // down: a little hop first, as the Obys going away
+  } else {
+    hop.vy = Math.sqrt(2 * HOP_G * (hop.floor - hop.y + BODY * rand(0.3, 0.5)));   // up: from as deep as it is
+    P.sq.vel += 4;
+  }
+  emit('hop');
+}
+function enter() { if (hop.held) launch(); }
+function duck(depth = 0, { soft = false } = {}) {
+  hop.floor = -Math.max(0, depth);
+  // whatever it was on the way to doing (a walk, a move's later beats) is dropped: ducking wins
+  walk.to = null; soon.length = 0;
+  if (hop.held || hop.air || hop.y === hop.floor) return;   // (coming in, or on the way: it lands there)
+  if (soft) { hop.soft = true; return; }
+  hop.soft = false;
+  launch();
+}
+// soft: a critically damped spring to the floor, about 0.4s, no bounce
+const SOFT_K = 90, SOFT_C = 2 * Math.sqrt(SOFT_K);
+function stepHop(dt) {
+  if (hop.soft) {
+    hop.vy += (SOFT_K * (hop.floor - hop.y) - SOFT_C * hop.vy) * dt; hop.y += hop.vy * dt;
+    if (Math.abs(hop.floor - hop.y) < 1e-4 && Math.abs(hop.vy) < 1e-3) { hop.y = hop.floor; hop.vy = 0; hop.soft = false; }
+    return;
+  }
+  if (!hop.air) return;
+  hop.vy -= HOP_G * dt; hop.y += hop.vy * dt; hop.ox += (hop.vx || 0) * dt; hop.oz += (hop.vz || 0) * dt;
+  if (hop.y <= hop.floor && hop.vy < 0) {
+    P.sq.vel -= Math.min(9, -hop.vy * 0.9);
+    hop.y = hop.floor; hop.vy = 0; hop.air = false;
+    if (hop.vx || hop.vz) { hop.ox = hop.tx; hop.oz = hop.tz; hop.vx = hop.vz = 0; if (walk.to != null) walk.next = clock + rand(0.04, 0.12); }
+    emit('landed');
+  }
+}
+// Moving about, for an app's own little scene of a few Obys, each in a frame of its own laid
+// over the others (the same size and place, so they share one stage), the app saying who does
+// what, as the Obys of a conversation do it (obys.html): it stands ?x= bodies from the middle
+// (?scale= its size); walkTo(x) goes over in small hops, turned the way it goes; shove(dir)
+// crouches and lunges at the one beside it; shoved(dir, dist) is knocked off its feet and
+// skids that far, wide-eyed; scaleTo(s) grows or shrinks. 'arrived' once a walk ends
+const QS = new URLSearchParams(location.search);
+const placeAt = new THREE.Vector3(), placeHome = new THREE.Vector3();   // (where it stands, for aiming at the pointer)
+hop.ox = (parseFloat(QS.get('x')) || 0) * BODY; hop.vx = 0; hop.tx = hop.ox; hop.oz = 0; hop.vz = 0; hop.tz = 0;
+const walk = { to: null, next: 0, side: false };
+const soon = [];   // [{ t, fn }]: a move's later beats, by the clock
+const sz = { v: parseFloat(QS.get('scale')) || 1, vel: 0, to: parseFloat(QS.get('scale')) || 1 };
+// a hop over to x (world units), h bodies high; quick: no stretch going up (knocked, not jumping)
+// (z: and back or forward to that depth, world units, negative further away)
+function hopTo(x, h = 0.16, quick = false, z = hop.oz) {
+  hop.held = false; hop.soft = false; hop.air = true;
+  hop.vy = Math.sqrt(2 * HOP_G * BODY * h);
+  const T = 2 * hop.vy / HOP_G;
+  hop.tx = x; hop.vx = (x - hop.ox) / T;
+  hop.tz = z; hop.vz = (z - hop.oz) / T;
+  if (!quick) P.sq.vel += 2;
+  emit('hop');
+}
+// side: a sidestep, still facing where it was (scooting over), not turned the way it goes
+function walkTo(x, side = false) { walk.to = x * BODY; walk.next = clock; walk.side = side; }
+function stepWalk() {
+  for (let i = soon.length - 1; i >= 0; i--) if (clock >= soon[i].t) soon.splice(i, 1)[0].fn();
+  if (walk.to == null || hop.air || clock < walk.next) return;
+  const d = walk.to - hop.ox;
+  if (Math.abs(d) < 0.005) { walk.to = null; if (!walk.side) P.ry.base = 0; emit('arrived'); return; }
+  if (!walk.side) P.ry.base = Math.sign(d) * 0.55;   // turned the way it goes
+  hopTo(hop.ox + Math.sign(d) * Math.min(Math.abs(d), BODY * 0.55), 0.12);
+}
+// its size, on a soft spring (about 0.5s, no overshoot)
+function stepSize(dt) { sz.vel += (120 * (sz.to - sz.v) - 22 * sz.vel) * dt; sz.v += sz.vel * dt; }
+function shove(dir) {
+  dir = Math.sign(dir) || 1;
+  // squints, crouches back, then lunges into it
+  play({ name: 'Shove', dur: 1.1, keys: [
+    [0, { ry: dir * 0.35, lidT: 0.2, lidA: 0.3, ears: [0.6, 0.2, 0] }, 'face'],
+    [0, { sq: 0.84, lean: -dir * 0.12 }, 'body'],
+    [0.35, { sq: 1, lean: dir * 0.15 }, 'fast'],
+    [0.8, { ry: 0, lean: 0, lidT: 0, lidA: 0, ears: [0.1, 0, 0] }, 'body'],
+  ] });
+  soon.push({ t: clock + 0.35, fn: () => hopTo(hop.ox + dir * BODY * 0.25, 0.06, true) });
+}
+function shoved(dir, dist = 0.5) {
+  dir = Math.sign(dir) || 1;
+  // eyes wide, off its feet, a spin, and it skids that far
+  play({ name: 'Shoved', dur: 1.3, keys: [
+    [0, { eyeH: 126, eyeW: 92, eyeR: 1, ears: [0.8, 0.3, 0] }, 'fast'],
+    [0.9, { eyeH: 112, eyeW: 64, eyeR: 0.92, ears: [0.1, 0, 0] }],
+  ] });
+  P.rz.vel += dir * 6; P.lean.vel -= dir * 3;
+  hopTo(hop.ox + dir * BODY * dist, 0.16, true);
+}
+// Looking at one of the others (bodies from the middle, at its face's height): its eyes there,
+// and its head turned a little that way (its own spring, so it holds through a smile), held
+// whatever the cursor does until lookAt(null) gives it back: then it watches you again
+let looking = false;
+// how far it turns its head to look (radians); face(a) turns it further for a while, as the two
+// either side of a huddle facing in toward each other (face(0.35) back to usual)
+let turnBy = 0.35;
+const turn = { v: 0, vel: 0, to: 0 };
+function stepTurn(dt) { turn.vel += (90 * (turn.to - turn.v) - 19 * turn.vel) * dt; turn.v += turn.vel * dt; }
+function lookAtX(xb) {
+  if (xb == null) { looking = false; turn.to = 0; oby.attend(false); oby.look(null); return; }
+  const v = new THREE.Vector3(xb * BODY, BASE_Y + 0.15, 0.3).project(camera);
+  looking = false;
+  oby.look((v.x * 0.5 + 0.5) * innerWidth, (-v.y * 0.5 + 0.5) * innerHeight);
+  oby.attend(true);
+  looking = true;
+  turn.to = Math.sign(xb * BODY - hop.ox) * turnBy;
+}
+// Leaning in to whisper to the one that way (dir), turned to it, a little bob as it talks
+function whisper(dir) {
+  dir = Math.sign(dir) || 1;
+  play({ name: 'Whisper', dur: 2.6,
+    keys: [
+      [0, { ry: dir * 0.45, lean: dir * 0.12, lidT: 0.12, happy: 0.35, ears: [0.35, 0.25, 0] }, 'body'],
+      [2.2, { ry: 0, lean: 0, lidT: 0, happy: 0, ears: [0.1, 0, 0] }, 'body'],
+    ],
+    proc(t, add) { if (t > 0.3 && t < 2.1) add('sq', Math.max(0, Math.sin(t * 15)) * 0.025); },
+  });
+}
+// Talking it over, as the Obys of a conversation do (obys.html's discussion). talkTo(x, secs):
+// to the one at x, leaning toward it, head tilted, a small mouth going and a little bob as it
+// talks. listenTo(x, secs, told): eyes on the one talking, nodding now and then; the one it's
+// talking to (told) tilts its head to listen. stepBack(depth): hops that far back (bodies; 0,
+// back into line), smaller for being further off, as the middle of a huddle
+function talkTo(xb, secs = 2.5) {
+  const dir = Math.sign(xb * BODY - hop.ox) || 1, end = Math.max(0.6, secs - 0.25);
+  lookAtX(xb);
+  play({ name: 'Talk', dur: secs,
+    keys: [
+      [0, { lean: dir * 0.1, rz: -dir * 0.06, mouthOn: 1, mW: 30, mO: 0.2 }, 'body'],
+      [end, { lean: 0, rz: 0, mouthOn: 0, mW: 0, mO: 0 }, 'body'],
+    ],
+    proc(t, add) {
+      if (t > end) return;
+      const flap = Math.max(0, Math.sin(t * 17) * Math.sin(t * 5.3 + 1));
+      add('mO', flap * 0.45); add('sq', flap * 0.025);
+    },
+  });
+}
+function listenTo(xb, secs = 2.5, told = false) {
+  const dir = Math.sign(xb * BODY - hop.ox) || 1, seed = Math.random();
+  lookAtX(xb);
+  play({ name: 'Listen', dur: secs,
+    keys: told ? [[0, { rz: dir * 0.08, ears: [-0.12, 0.1, 0] }, 'body'], [Math.max(0.5, secs - 0.3), { rz: 0, ears: [0.1, 0, 0] }, 'body']] : [],
+    // a nod about every 0.9s, each its own moment
+    proc(t, add) { const ph = (t * 1.1 + seed) % 1; if (ph < 0.25) add('rx', Math.sin(ph / 0.25 * Math.PI) * 0.12); },
+  });
+}
+function stepBack(depth) { hopTo(hop.ox, 0.12, false, -depth * BODY); }
 // after an expression: pause as long as the state says, then pick the next
 function rest() { const [a, b] = STATES[state].gap; goIdle(rand(a, b)); }
 function enterState() { if (STATES[state].gap[0] === 0) nextFromState(); else rest(); }
@@ -1250,7 +1453,9 @@ function enterState() { if (STATES[state].gap[0] === 0) nextFromState(); else re
    evaluateJavaScript("oby.setState('thinking')"). From a parent page around
    an <iframe>: postMessage({ setState: 'thinking' }), { play: 'Agree' },
    { pause: true }, { look: { x, y } } or { look: null }, { notice: { x, y } },
-   { attend: true }. Events go out to oby.on() listeners, to
+   { attend: true }, { enter: true }, { duck: 0.3 }, { walk: 0.8 }, { shove: -1 },
+   { shoved: { dir: -1, dist: 0.5 } }, { scale: 0.8 }, { lookAt: -0.8 }, { whisper: 1 },
+   { pokeAt: { x, y } }, { talk: { to, secs } }, { listen: { to, secs, told } }, { back: 0.5 }. Events go out to oby.on() listeners, to
    webkit.messageHandlers.oby (native), and to the parent page as { oby: event, ... }.
 --------------------------------------------------------------------------- */
 const listeners = {};
@@ -1312,6 +1517,35 @@ const oby = {
     attn.held = !!on;
     if (attn.held) watch(); else if (attn.watching) attn.until = clock + rand(...AFTER_HOLD);
   },
+  // Opened with ?enter: it hops up out of the floor now ('hop', then 'landed')
+  enter() { enter(); },
+  // Stand `depth` bodies under where it stands (0: back up): a hop there ('hop', then 'landed');
+  // { soft: true }, smoothly instead
+  duck(depth, opts) { duck(depth, opts); },
+  // Moving about (see walkTo above): in bodies from the middle; dir -1 left, 1 right
+  walkTo(x, side) { walkTo(x, side); },
+  shove(dir) { shove(dir); },
+  shoved(dir, dist) { shoved(dir, dist); },
+  scaleTo(s) { sz.to = s; },
+  // Look at one of the others (bodies from the middle), or at you again (null)
+  lookAt(xb) { lookAtX(xb); },
+  // Lean in and whisper to the one that way (dir -1 left, 1 right)
+  whisper(dir) { whisper(dir); },
+  // Talking it over (see talkTo above): x in bodies from the middle
+  talkTo(x, secs) { talkTo(x, secs); },
+  listenTo(x, secs, told) { listenTo(x, secs, told); },
+  stepBack(depth) { stepBack(depth); },
+  // Where it stands on screen, in this page's CSS px: its body's middle and width (for a host
+  // moving it from one frame to another, as setting up hands it over to Home)
+  where() {
+    const c = new THREE.Vector3(hop.ox, BASE_Y + hop.y, hop.oz).project(camera);
+    const e = new THREE.Vector3(hop.ox + 0.5 * LOOK.width * sz.v, BASE_Y + hop.y, hop.oz).project(camera);
+    return { x: (c.x * 0.5 + 0.5) * innerWidth, y: (-c.y * 0.5 + 0.5) * innerHeight, w: (e.x - c.x) * innerWidth };
+  },
+  // A jump where it stands, h bodies high ('landed' when it's down): how long it's in the air
+  jump(h = 0.5) { hopTo(hop.ox, h); return 2 * hop.vy / HOP_G; },
+  // How far it turns its head to look at one of the others (radians; 0.35 usually)
+  face(a) { turnBy = a; if (looking) turn.to = Math.sign(turn.to) * a; },
   on(event, fn) { (listeners[event] ||= []).push(fn); return () => { listeners[event] = listeners[event].filter((f) => f !== fn); }; },
 };
 window.oby = oby;
@@ -1324,9 +1558,26 @@ addEventListener('message', (e) => {
     if (d.setState) oby.setState(d.setState, d);
     if (d.play) oby.play(d.play).catch(() => {});
     if ('pause' in d) oby.pause(d.pause);
-    if ('look' in d) d.look ? oby.look(d.look.x, d.look.y) : oby.look(null);
+    // (looking at one of the others, the cursor's place doesn't take it away)
+    if ('look' in d && !looking) d.look ? oby.look(d.look.x, d.look.y) : oby.look(null);
+    if ('lookAt' in d) oby.lookAt(d.lookAt);
+    // a click the host caught over a few of these frames laid on one another (only the top one
+    // would get it): a poke, if it's on this one
+    if (d.pokeAt && onMascot(d.pokeAt.x, d.pokeAt.y)) poke();
+    if (d.whisper) oby.whisper(d.whisper);
+    if (d.talk) oby.talkTo(d.talk.to, d.talk.secs);
+    if (d.listen) oby.listenTo(d.listen.to, d.listen.secs, !!d.listen.told);
+    if ('back' in d) oby.stepBack(d.back);
+    if ('face' in d) oby.face(d.face);
+    if (d.jump) oby.jump(d.jump);
     if (d.notice) oby.notice(d.notice.x, d.notice.y);
     if ('attend' in d) oby.attend(d.attend);
+    if ('duck' in d) oby.duck(d.duck, { soft: !!d.soft });
+    if ('scale' in d) oby.scaleTo(d.scale);
+    if ('walk' in d) oby.walkTo(d.walk, !!d.side);
+    if (d.shove) oby.shove(d.shove);
+    if (d.shoved) oby.shoved(d.shoved.dir, d.shoved.dist);
+    if (d.enter) oby.enter();
   } catch (err) { console.warn(err.message); }
 });
 
@@ -1558,13 +1809,19 @@ function update(dt) {
       else if (still > STILL_GLANCE && !glanced) { glanced = true; glanceEnd = clock + 1 + Math.random() * 0.8; }
       if (glanceEnd > 0 && clock > glanceEnd) glanceEnd = -1;
       const f = glanceEnd > 0 ? 0 : 1;
+      // the pointer as it is from where Oby stands: placed off the middle (moving about with others,
+      // ducked, coming in) its eyes and head aim from there, not from the middle of the frame
+      // (where it usually stands, so there it's the pointer itself)
+      placeAt.set(hop.ox, BASE_Y + hop.y, hop.oz + 0.5 * U.uH.value).project(camera);
+      placeHome.set(0, BASE_Y, 0.5 * U.uH.value).project(camera);
+      const px = pointer.x - (placeAt.x - placeHome.x), py = pointer.y - (placeAt.y - placeHome.y);
       // eyes stop near the edge of the face; past that only the head keeps turning
-      const ex = THREE.MathUtils.clamp(pointer.x, -1.1, 1.1), ey = THREE.MathUtils.clamp(pointer.y, -1.1, 1.1);
+      const ex = THREE.MathUtils.clamp(px, -1.1, 1.1), ey = THREE.MathUtils.clamp(py, -1.1, 1.1);
       add('gx', ex * 34 * f); add('gy', -ey * 22 * f);
       // the head turns to the pointer too, but not to an icky one up close:
       // then the head turns away and the eyes side-eye it instead
       const turn = f * Math.max(0, 1 - ick.k * 2);
-      add('ry', pointer.x * 0.28 * turn); add('rx', -pointer.y * 0.16 * turn);
+      add('ry', px * 0.28 * turn); add('rx', -py * 0.16 * turn);
       add('gx', ick.x * 12 * ICK_GAIN); add('gy', -ick.y * 8 * ICK_GAIN);
       // pointer right on the face: each eye turns toward it, the farther eye more,
       // like ours converge on something up close
@@ -1576,7 +1833,8 @@ function update(dt) {
       add('eRx', THREE.MathUtils.clamp(10 * (ux - eyeU), -7, 7) * near);
       // as if the pointer had something icky on it: full strength over the
       // face, fading out gradually to ~1.3 face-widths outside it (applied below, eased)
-      ickT = (1 - THREE.MathUtils.smoothstep(hd, 0.6, 2.3)) * (1 - THREE.MathUtils.smoothstep(pointerSpeed, ICK_SLOW, ICK_FAST));
+      // (?simple, an app's own screen with its buttons close by: only over the face itself)
+      ickT = (1 - THREE.MathUtils.smoothstep(hd, 0.6, SIMPLE ? 1.1 : 2.3)) * (1 - THREE.MathUtils.smoothstep(pointerSpeed, ICK_SLOW, ICK_FAST));
       if (ickT > 0.001) {
         // towards the pointer; over the middle of the face it fades to nothing,
         // so small moves across the centre don't swing it from side to side
@@ -1612,6 +1870,9 @@ function update(dt) {
   // now and then, idle, one ear flicks
   if (cur === IDLE && clock > nextFlick) { P[Math.random() < 0.5 ? 'eLB' : 'eRB'].vel += 7; nextFlick = clock + rand(4, 11); }
 
+  stepHop(dt);
+  stepWalk();
+  for (let i = 0, n = Math.ceil(dt * 240); i < n; i++) { stepSize(dt / n); stepTurn(dt / n); }
   // integrate at 240 Hz for stable stiff springs
   const n = Math.ceil(dt / (1 / 240));
   for (let i = 0; i < n; i++) stepSprings(dt / n);
@@ -1622,12 +1883,12 @@ function applyToScene() {
   U.uSq.value = Math.max(0.3, V('sq')); U.uLean.value = V('lean'); U.uLeanZ.value = V('leanZ');
   // keeping its distance from an icky pointer: backs away from it and a little
   // further from you, with a slight tilt away
-  const g = ICK_GAIN;
-  rig.position.set(V('x') - ick.x * 0.22 * g, BASE_Y + V('y') - ick.y * 0.1 * g, V('z') - ick.k * 0.12 * g);
-  rig.rotation.set(V('rx') + ick.y * 0.08 * g, V('ry') + V('gx') * 0.0018 - ick.x * 0.3 * g, V('rz') + ick.x * 0.09 * g, 'YXZ');
-  rig.scale.setScalar(V('scale'));
-  home.position.set(V('x'), BASE_Y + V('y'), V('z'));
-  home.rotation.set(V('rx'), V('ry') + V('gx') * 0.0018, V('rz'), 'YXZ');
+  const g = ICK_GAIN, hy = hop.y, hx = hop.ox;   // (coming in, ducking, moving about: off where it stands)
+  rig.position.set(hx + V('x') - ick.x * 0.22 * g, BASE_Y + hy + V('y') - ick.y * 0.1 * g, hop.oz + V('z') - ick.k * 0.12 * g);
+  rig.rotation.set(V('rx') + ick.y * 0.08 * g, V('ry') + turn.v + V('gx') * 0.0018 - ick.x * 0.3 * g, V('rz') + ick.x * 0.09 * g, 'YXZ');
+  rig.scale.setScalar(V('scale') * sz.v);
+  home.position.set(hx + V('x'), BASE_Y + hy + V('y'), hop.oz + V('z'));
+  home.rotation.set(V('rx'), V('ry') + turn.v + V('gx') * 0.0018, V('rz'), 'YXZ');
   home.scale.copy(rig.scale);
   for (const e of ears) {
     const l = e.userData.u.uEarSide.value < 0;

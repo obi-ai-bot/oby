@@ -54,11 +54,37 @@ nonisolated struct Alert: Equatable, Sendable {
 }
 
 /// What Oby alerts for, and what an alert's buttons do (#862, #863, #613). The owner's rule of
-/// 2026-10-23: an alert only when something needs the owner, when a job they started ends, when Oby
-/// answers away from the window, or when an outside item needs them; never for progress, an FYI, or
-/// what the window shows. One alert per thing, replaced in place, gone once it's settled anywhere.
-/// An alert says only obid's own words (an item's `title` and `text`), never a quoted field.
+/// 2026-10-28 (`notifies`, the one gate): nothing while the window is in front, on any page; away
+/// from it, only what waits on the owner to decide or act (an agent's ask, a Confirm, a Start, a
+/// question, a job that failed or couldn't publish, an outside item that needs them); never
+/// progress, a job that ended with nothing to decide, or Oby's own answer. One alert per thing,
+/// replaced in place, gone once it's settled anywhere. An alert says only obid's own words (an
+/// item's `title` and `text`), never a quoted field.
 enum Alerts {
+    // MARK: The gate (the owner's rule of 2026-10-28)
+
+    /// What an alert asks of the owner: the one thing the gate reads.
+    nonisolated enum Need: Equatable, Sendable {
+        /// A click settles it (Allow or Deny, Confirm, Start, Publish, an answer), or what stopped
+        /// waits on them (failed, interrupted, a review or a merge left to them).
+        case owner
+        /// Nothing to decide: a result, progress, Oby's own words. The window says it; no alert does.
+        case fyi
+    }
+
+    /// The one gate every alert passes: nothing while the window is in front (what's there is on
+    /// screen, the rest a click away), and away from it only what needs the owner. What each thing
+    /// needs is decided where its alert is built (`need`, `alerts`, `RunnerFeed.heard`); change
+    /// what alerts here, in one place.
+    nonisolated static func notifies(_ need: Need, windowInFront: Bool) -> Bool {
+        !windowInFront && need == .owner
+    }
+
+    /// What a job's notice asks of the owner: done with nothing to decide is FYI, the rest waits on them.
+    nonisolated static func need(_ notice: RunnerFeed.Notice) -> Need {
+        notice == .done ? .fyi : .owner
+    }
+
     static let inboxKey = "inbox"
     static let conversationKey = "conversation"
     static let saidKey = "said"
