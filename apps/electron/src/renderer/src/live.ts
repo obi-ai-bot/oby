@@ -5,7 +5,7 @@ import { AGENTS, TELL, type Ask, type AskKind, type Job as JobView, type Attachm
 import { replaceChats, type Chat } from './chats';
 import { replaceTasks, type Asking, type Task } from './tasks';
 import { keepFoldersOf, nameFoldersBy, saveFolders, sendFoldersBy, takeFolders } from './folders';
-import { moveKeptChoices, replaceAccounts } from './SettingsView';
+import { accountRow, moveKeptChoices, replaceAccounts } from './SettingsView';
 import { BRANDS } from './brands';
 import { onObid } from './lean';
 import type { GitHubItem } from './mock';
@@ -348,21 +348,7 @@ function publish() {
   clearTimeout(sessionTurn);
   const ahead = state.status.accounts.map((a) => Date.parse(a.fiveHourResets ?? '')).filter((t) => t > now);
   if (ahead.length) sessionTurn = setTimeout(() => { accountsFrom = null; publish(); }, Math.min(...ahead) - now + 500);
-  replaceAccounts(state.status.accounts.map((a) => {
-    const used = a.agent === 'cursor' ? null : a.sevenDay ?? a.fiveHour;
-    const over = !!a.fiveHourResets && Date.parse(a.fiveHourResets) <= now;
-    const session = a.agent === 'cursor' || !a.signedIn || a.fiveHour == null ? null : over ? 0 : Math.round(a.fiveHour * 100);
-    return {
-      id: a.id, agent: a.agent, name: a.name, payer: a.payer ?? 'You', signedIn: a.signedIn, label: a.label ?? null, used: used == null ? null : Math.round(used * 100),
-      resets: !a.signedIn ? a.label ?? 'Not signed in' : a.agent === 'cursor' ? 'Cursor doesn’t report usage' : used == null ? 'No use reported yet'
-        : a.sevenDayResets ? `Resets ${new Date(a.sevenDayResets).toLocaleDateString([], { weekday: 'long' })}` : 'No reset reported',
-      // the 5-hour session (signed in only), and when it starts over (Settings › Agents' bar, the
-      // usage panel's); weekly: whether used is the week's
-      session,
-      sessionResets: session != null && !over && a.fiveHourResets ? new Date(a.fiveHourResets).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : null,
-      weekly: a.sevenDay != null,
-    };
-  }));
+  replaceAccounts(state.status.accounts.map((a) => accountRow(a, now)));
 }
 
 // what a Settings change obid answered changes in its status, shown at once

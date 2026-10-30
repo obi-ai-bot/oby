@@ -275,6 +275,22 @@ export const fullness = (used: number) => (used > 90 ? 'is-over' : used > 80 ? '
 // what obid says (not signed in, none reported yet, Cursor's none); a session but no week: says so
 export const weekWords = (a: Account) => (a.weekly && a.used != null ? `This week ${a.used}% · ${a.resets.replace(/^Resets/, 'resets')}`
   : a.weekly === false && a.session != null ? 'No weekly use reported yet' : a.resets);
+// an account as obid's status says it (docs/contracts/usage.md, USAGE-1 and USAGE-6): its week's
+// share (else its session's), its 5-hour session (signed in only; a session past its reset reads
+// 0) and when it starts over, and what to say when there's no figure
+export function accountRow(a: Status['accounts'][number], now: number): Account {
+  const used = a.agent === 'cursor' ? null : a.sevenDay ?? a.fiveHour;
+  const over = !!a.fiveHourResets && Date.parse(a.fiveHourResets) <= now;
+  const session = a.agent === 'cursor' || !a.signedIn || a.fiveHour == null ? null : over ? 0 : Math.round(a.fiveHour * 100);
+  return {
+    id: a.id, agent: a.agent, name: a.name, payer: a.payer ?? 'You', signedIn: a.signedIn, label: a.label ?? null, used: used == null ? null : Math.round(used * 100),
+    resets: !a.signedIn ? a.label ?? 'Not signed in' : a.agent === 'cursor' ? 'Cursor doesn’t report usage' : used == null ? 'No use reported yet'
+      : a.sevenDayResets ? `Resets ${new Date(a.sevenDayResets).toLocaleDateString([], { weekday: 'long' })}` : 'No reset reported',
+    session,
+    sessionResets: session != null && !over && a.fiveHourResets ? new Date(a.fiveHourResets).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : null,
+    weekly: a.sevenDay != null,
+  };
+}
 const ACCOUNTS: Account[] = [
   { id: 'a1', agent: 'claude', name: 'Deskree', payer: 'Deskree', used: 36, resets: 'Resets Thursday', plan: 'seat', session: 12, sessionResets: '4:10 PM', weekly: true },
   { id: 'a2', agent: 'claude', name: 'Personal', payer: 'Doti', used: 82, resets: 'Resets in 2 days', plan: 'personal', session: 86, sessionResets: '2:14 PM', weekly: true },

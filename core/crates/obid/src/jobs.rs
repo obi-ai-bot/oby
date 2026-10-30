@@ -1791,15 +1791,20 @@ impl Jobs {
     }
 
     /// One account's usage, from its tool boxed as the brain's run is, in a folder of its own in
-    /// `home/plans` with its own copy of the account's login, removed however the read ends. It
-    /// never refreshes a login: a Claude Code copy that ends within 10 minutes isn't read with (a
-    /// run refreshes in its last 5, rotating the Mac's own away), and the Keychain keeper doesn't
-    /// count a read as the login's use (`claude_login_ready` isn't asked).
+    /// `home/plans` with its own copy of the account's login, removed however the read ends. A
+    /// Claude Code login is made ready first as a job's is ([`Jobs::claude_login_ready`]): one in
+    /// the Keychain that ended or ends within 5 minutes is refreshed by the Mac's own Claude Code
+    /// running its own `/usage`, which asks no model (USAGE-2), so a Mac whose CLI hasn't run in
+    /// days shows its usage too. The boxed read itself never refreshes: a copy that ends within
+    /// 10 minutes isn't read with (a run refreshes in its last 5, rotating the Mac's own away).
     async fn read_usage(
         &self,
         tool: Tool,
         account: &crate::config::Account,
     ) -> Result<crate::usage::Asked, String> {
+        if tool == Tool::Claude {
+            self.claude_login_ready(Some(account)).await?;
+        }
         let dir = ReadFolder(
             self.config
                 .home

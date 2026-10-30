@@ -1105,8 +1105,11 @@ pub fn keep_keychain_logins() {
 }
 
 /// The command that has the Mac's own Claude Code (`bin`, by its absolute path) refresh the login
-/// whose Keychain item `storage` names (none: the default one), as it does before it calls the
-/// model: `claude -p ok` with haiku, no tools and none of the person's settings. It never reads a
+/// whose Keychain item `storage` names (none: the default one), as it does before it calls its API:
+/// its own `/usage` (`claude -p /usage`), which refreshes an ended login and asks no model (Claude
+/// Code 2.1.302: `num_turns` 0, `total_cost_usd` 0), with no tools and none of the person's
+/// settings; haiku and one turn bound a Claude Code without its own `/usage`, which takes it for a
+/// prompt and refreshes before it asks, as `-p ok` did before (USAGE-2). It never reads a
 /// folder a job can write: its config folder is `scratch`, a new empty one of obid's (Claude Code
 /// applies a `.claude.json`'s `env` from its config folder whatever `--setting-sources` says), and
 /// `storage` reaches it only as `CLAUDE_SECURESTORAGE_CONFIG_DIR`, which names the Keychain item.
@@ -1124,7 +1127,7 @@ pub(super) fn refresh_command(
     command
         .args([
             "-p",
-            "ok",
+            "/usage",
             "--model",
             "haiku",
             "--max-turns",
@@ -1153,8 +1156,9 @@ pub(super) fn refresh_command(
 }
 
 /// Has the Mac's own Claude Code (`bin`, not boxed, so it reaches the Keychain) refresh its
-/// default login ([`refresh_command`]) within 60 seconds. Claude Code 2.1.296 has no command that
-/// only refreshes (`claude auth status` reads the login without refreshing it). What it says is
+/// default login ([`refresh_command`]) within 60 seconds. Claude Code 2.1.302 has no command that
+/// only refreshes (`claude auth status` reads the login without refreshing it); its `/usage` is the
+/// nearest, refreshing without asking a model. What it says is
 /// never kept. For an account with a folder of its own (`config_dir`), only one obid added itself
 /// ([`keychain_ready`]'s `made`, #877): on a Mac the Swift engine still runs agents unboxed with
 /// the folders it knows ([`SHARED_FOLDER_ISSUE`]'s open item), never with obid's own. Claude Code
