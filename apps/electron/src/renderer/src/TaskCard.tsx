@@ -94,7 +94,7 @@ export default function TaskCard({ task, alone = false, onOpen, onSession, style
                 <div className="tc-out">
                   <h4>What went out</h4>
                   <ul className="tc-tools">
-                    {page.outgoing.map((o) => <li key={o.text}><Check size={12} strokeWidth={2} /><span className="tc-tool-text">{o.text}</span><span className="tc-took">{o.at}</span></li>)}
+                    {page.outgoing.map((o, i) => <li key={`${i}-${o.at}`}><Check size={12} strokeWidth={2} /><span className="tc-tool-text">{o.text}</span><span className="tc-took">{o.at}</span></li>)}
                   </ul>
                 </div>
               )}

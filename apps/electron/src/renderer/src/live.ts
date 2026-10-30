@@ -690,6 +690,8 @@ export async function stopJob(id: string) {
 // still open) shows in obid's own words and leaves the task as it was.
 export async function renameJob(id: string, title: string) {
   const had = state.jobs[id];
+  // the same name again (a blur with nothing changed): nothing to tell obid
+  if (had?.title === title) return;
   if (had) set({ jobs: { ...state.jobs, [id]: { ...had, title } } });
   try { const j = await api.rename(id, title); set({ jobs: { ...state.jobs, [j.id]: j } }); } catch (e) {
     const now = state.jobs[id];
@@ -710,20 +712,25 @@ export async function deleteJob(id: string) {
 }
 
 // A job's session, for Full session: fetched when it opens and again at each of the job's events
-// (at most once a second while its agent works), only what came or changed since (?after=), by n
+// (at most once a second while its agent works), only what came or changed since (?after=), by n,
+// page after page (obid sends at most 1,000 at a time) until obid's `next` is null
 const loading = new Map<string, boolean>();  // in flight; true: asked again meanwhile
-export async function loadSession(id: string) {
+export async function loadSession(id: string): Promise<void> {
   if (loading.has(id)) { loading.set(id, true); return; }
   loading.set(id, false);
   try {
     const had = state.sessions[id] ?? [];
-    const { entries } = await api.transcript(id, had.length ? Math.max(...had.map((e) => e.n)) : undefined);
-    const now = state.sessions[id] ?? [];
-    set({ sessions: { ...state.sessions, [id]: [...now.filter((e) => !entries.some((m) => m.n === e.n)), ...entries] } });
+    let after: number | null | undefined = had.length ? Math.max(...had.map((e) => e.n)) : undefined;
+    do {
+      const page = await api.transcript(id, after ?? undefined);
+      const now = state.sessions[id] ?? [];
+      set({ sessions: { ...state.sessions, [id]: [...now.filter((e) => !page.entries.some((m) => m.n === e.n)), ...page.entries] } });
+      after = page.next;
+    } while (after != null);
   } catch (e) { say(e); }
   const again = loading.get(id);
   loading.delete(id);
-  if (again) void loadSession(id);
+  if (again) return loadSession(id);
 }
 
 // Work on a GitHub item, on the owner's tap (POST /v1/github/work/{id}/start): its job comes back,

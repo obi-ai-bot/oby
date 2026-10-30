@@ -116,9 +116,12 @@ export function prUrl(ref: string) {
 }
 
 const clock = (iso: string) => new Date(iso).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
-// Every outgoing action, in words ("Pushed oby/fix-75 to deskree-inc/oby")
-export function outgoingText(o: Outgoing) {
-  const on = prName(o.id ?? o.repo ?? '');
+// Every outgoing action, in words ("Pushed oby/fix-75 to deskree-inc/oby"). A check run's id is
+// its own URL, so it's named by the job's pull request (published); any other action shows as
+// obid names it, with its id (docs/runner-api.md, `outgoing`).
+export function outgoingText(o: Outgoing, published?: string | null) {
+  const own = o.id && /\/(pull|issues)\/\d+/.test(o.id) ? prName(o.id) : undefined;
+  const on = own ?? (published ? prName(published) : o.repo ?? '');
   switch (o.action) {
     case 'push': return `Pushed ${o.branch} to ${o.repo}`;
     case 'pullRequest': return `Opened pull request ${on}, ready for review`;
@@ -128,7 +131,7 @@ export function outgoingText(o: Outgoing) {
     case 'merge': return o.branch ? `Merged ${on} into ${o.branch}` : `Merged ${on}`;
     case 'branchDelete': return `Deleted the branch ${o.branch ?? on}`;
     case 'pullRequestApproval': return `Approved ${on}`;
-    default: return `Updated ${on}`;
+    default: return [o.action, o.id].filter(Boolean).join(' ');
   }
 }
 
@@ -141,7 +144,7 @@ export function pageOf(j: Job, account?: Account, needs = false, now = Date.now(
     counts: counts.length ? counts : undefined,
     groups: j.activity?.groups.length ? groupsOf(j.activity, now) : undefined,
     usage: usageOf(j, account),
-    outgoing: j.outgoing?.length ? j.outgoing.map((o) => ({ text: outgoingText(o), at: clock(o.date) })) : undefined,
+    outgoing: j.outgoing?.length ? j.outgoing.map((o) => ({ text: outgoingText(o, j.published), at: clock(o.date) })) : undefined,
   };
 }
 

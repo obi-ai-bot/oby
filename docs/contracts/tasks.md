@@ -19,7 +19,7 @@ The business behavior contract for a task's menu and its page in the Electron ap
 
 | Action | Sends | On success | On refusal |
 |---|---|---|---|
-| Rename (menu, side panel, title bar) | `PATCH /v1/jobs/{id}` `{"title"}`, trimmed | The new title shows at once, and obid's job replaces it | The old title comes back; obid's words show (`422`: not one line of 1 to 60 characters) |
+| Rename (menu, side panel, title bar) | `PATCH /v1/jobs/{id}` `{"title"}`, trimmed; nothing when it's the name it has | The new title shows at once, and obid's job replaces it | The old title comes back; obid's words show (`422`: not one line of 1 to 60 characters) |
 | Stop | `POST /v1/jobs/{id}/stop` (as before) | obid's job | obid's words |
 | Archive task (done tasks) | `POST /v1/jobs/{id}/archive` `{"archived": true}` | The job's `archived` is set: off Home, under Archive | Stays where it was; obid's words (`409`: `Dismiss it first, or publish it.`) |
 | Delete task | `DELETE /v1/jobs/{id}` | Gone from Home and Archive, its unsent words too | Stays; obid's words (`409`: running, publishing, pull request open, a follow-up on its branch) |
@@ -34,10 +34,10 @@ What obid has goes into Sangam's `Page` (`mock.ts`) and stages, in `jobPage.ts`;
 - **Timeline:** from `estimate` and the stage times. Running: "10m in · done in about 2–10m", the track's done, from and to, paused while the task needs the owner, and `basis` under it; past the range, "25m in · jobs like this: 12–20m". Done: "Took 25m · estimated 10–18m" (the range first given). Failed or stopped: "Ran 25m · jobs like this: 12–20m". With no estimate, the section stays "Stages".
 - **Activity:** `activity.counts` as Sangam counts them ("31 read · 6 edits · 2 test runs"), kinds with none left out; `activity.groups` with their time, the running one's last file and diff, and its tools.
 - **Usage:** only when a plan covers it (`usage.priced` `plan`), the tool gave a cost and the account's 5-hour and weekly windows are known, since Sangam's line says "covered by your plan": every token count summed ("3.0M"), the cost, each window's use and the job's share from `windowShare` ("11%", "<1%" under one point or when no report rose).
-- **What went out:** each `outgoing` action in words, with its clock time: "Pushed oby/fix-75 to deskree-inc/oby", "Opened pull request oby#375, ready for review", "Merged oby#375 into dev", and the rest.
+- **What went out:** each `outgoing` action in words, with its clock time: "Pushed oby/fix-75 to deskree-inc/oby", "Opened pull request oby#375, ready for review", "Merged oby#375 into dev". A check run (its id is its own URL) is named by the job's pull request; a comment by the pull request its URL is on. Any other action shows as obid names it, with its id (`issueLabels https://github.com/…/issues/12`).
 - **Mode:** the job's `mode` as Sangam names it (Ask, Accept edits, Plan, Bypass; Sandbox for an older job).
 - **Pull request link:** the short name ("oby#375"), opening `published` on GitHub in the browser (only `https://github.com/…`).
-- **Full session:** `GET /v1/jobs/{id}/transcript` when it opens, then `?after=` the highest `n` it has at each of the job's events, updated by `n`. Each entry as Sangam's session line: a round's start, the agent's words, its thinking, the owner's words, its to-do list, and each tool call (verb and target from obid's summary, its time, a failed command's exit code, an edit's lines added and removed).
+- **Full session:** `GET /v1/jobs/{id}/transcript` when it opens, page after page (`?after=` obid's `next`, at most 1,000 entries each) until `next` is null; then `?after=` the highest `n` it has at each of the job's events, updated by `n`. Each entry as Sangam's session line: a round's start, the agent's words, its thinking, the owner's words, its to-do list, and each tool call (verb and target from obid's summary, its time, a failed command's exit code, an edit's lines added and removed).
 
 ### Failures and recovery
 
@@ -53,15 +53,15 @@ What obid has goes into Sangam's `Page` (`mock.ts`) and stages, in `jobPage.ts`;
 
 ## Acceptance scenarios
 
-- **TASKS-1** Rename sends `PATCH /v1/jobs/{id}` with the trimmed title, shows it at once and keeps obid's; refused, the old title comes back and obid's words show.
+- **TASKS-1** Rename sends `PATCH /v1/jobs/{id}` with the trimmed title, shows it at once and keeps obid's; the same name again sends nothing; refused, the old title comes back and obid's words show.
 - **TASKS-2** Archive sends `POST /v1/jobs/{id}/archive`; the archived job is off Home and in Archive; a `409` leaves it on Home with obid's words.
 - **TASKS-3** Delete sends `DELETE /v1/jobs/{id}`; a `409` leaves the task with obid's words; `204` or `404`, it's gone.
 - **TASKS-4** The result line's pull request shows its short name and opens its GitHub page.
 - **TASKS-5** The stages' times and the timeline come from obid's stage times and estimate, running, paused, done and failed.
 - **TASKS-6** Activity counts and groups show under Work, with the agent's latest words.
 - **TASKS-7** Usage shows only when a plan covers it, with the job's share of each window.
-- **TASKS-8** What went out lists every outgoing action in words.
-- **TASKS-9** Full session shows obid's transcript in order, as Sangam's lines.
+- **TASKS-8** What went out lists every outgoing action in words; a check run by the job's pull request; any other action as obid names it, with its id.
+- **TASKS-9** Full session shows obid's transcript in order, as Sangam's lines: every page until `next` is null, then only what came since (`?after=` the highest `n`), merged by `n`, with events during a fetch making one more fetch.
 - **TASKS-10** On the mock, the menu works in place and calls nothing.
 
 **On a real Mac (Test it when it's done):** rename a task from its menu and from the side panel, then quit and reopen: the name stays. Archive a done task: it's under Archive after a reopen. Delete a task whose pull request is open: obid's words show and it stays. Open a done task's page: its pull request opens in the browser; Timeline, Usage and What went out show the job's own numbers. Open Full session on a running task: lines come in as the agent works.

@@ -59,6 +59,12 @@ describe('the task menu on obid', () => {
     expect(calls).toEqual([{ method: 'PATCH', path: '/v1/jobs/j1', body: { title: 'Vault tests' } }]);
     expect(tasks.dev!.get()[0].title).toBe('Vault tests');
 
+    // the same name again (a blur with nothing changed): obid isn't told
+    calls.length = 0;
+    tasks.renameTask('j1', 'Vault tests ');
+    await flush();
+    expect(calls).toEqual([]);
+
     answers['PATCH /v1/jobs/j1'] = { status: 422, body: { error: 'A title is one line of 1 to 60 characters.' } };
     tasks.renameTask('j1', 'x'.repeat(61));
     await flush();
@@ -105,6 +111,32 @@ describe('the task menu on obid', () => {
     tasks.deleteTask('j1');
     await flush();
     expect(tasks.dev!.get()).toEqual([]);
+  });
+
+  it('TASKS-9: the session loads page after page, then only what came since, by n, one fetch at a time', async () => {
+    const { live } = await load(true);
+    const tool = (n: number, state = 'done') => ({ n, at: '2026-10-30T10:00:00Z', kind: 'tool', tool: 'Read', summary: `Reading f${n}.rs`, state });
+    // obid's first page stops at entry 2; next says where the rest starts
+    answers['GET /v1/jobs/j1/transcript'] = { status: 200, body: { next: 2, entries: [tool(1), tool(2)] } };
+    answers['GET /v1/jobs/j1/transcript?after=2'] = { status: 200, body: { next: null, entries: [tool(3, 'running')] } };
+    await live.loadSession('j1');
+    expect(calls.map((c) => c.path)).toEqual(['/v1/jobs/j1/transcript', '/v1/jobs/j1/transcript?after=2']);
+    expect(live.liveState().sessions.j1.map((e) => e.n)).toEqual([1, 2, 3]);
+
+    // the next event: after the highest n; entry 3 ended, so it comes again, in place
+    calls.length = 0;
+    answers['GET /v1/jobs/j1/transcript?after=3'] = { status: 200, body: { next: null, entries: [tool(3), tool(4)] } };
+    const first = live.loadSession('j1');
+    // two more events while that fetch is out: one more fetch, not two
+    void live.loadSession('j1');
+    void live.loadSession('j1');
+    answers['GET /v1/jobs/j1/transcript?after=4'] = { status: 200, body: { next: null, entries: [] } };
+    await first;
+    await flush();
+    expect(calls.map((c) => c.path)).toEqual(['/v1/jobs/j1/transcript?after=3', '/v1/jobs/j1/transcript?after=4']);
+    const session = live.liveState().sessions.j1;
+    expect(session.map((e) => e.n).sort()).toEqual([1, 2, 3, 4]);
+    expect(session.find((e) => e.n === 3)!.state).toBe('done');
   });
 
   it('TASKS-10: on the mock (npm run web), the menu works in place and calls nothing', async () => {

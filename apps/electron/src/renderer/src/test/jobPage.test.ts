@@ -81,6 +81,12 @@ describe('the task page on obid data', () => {
     expect(outgoingText({ action: 'push', repo: 'deskree-inc/oby', branch: 'oby/fix-75', id: 'abc', date: ago(60) })).toBe('Pushed oby/fix-75 to deskree-inc/oby');
     expect(outgoingText({ action: 'pullRequest', id: 'https://github.com/deskree-inc/oby/pull/375', date: ago(60) })).toBe('Opened pull request oby#375, ready for review');
     expect(outgoingText({ action: 'merge', id: 'https://github.com/deskree-inc/oby/pull/375', branch: 'dev', date: ago(60) })).toBe('Merged oby#375 into dev');
+    // a check run's id is its own URL: named by the job's pull request; a comment's by its own
+    expect(outgoingText({ action: 'checkRun', id: 'https://github.com/deskree-inc/oby/runs/987', date: ago(60) }, 'https://github.com/deskree-inc/oby/pull/375')).toBe('Posted a check on oby#375');
+    expect(outgoingText({ action: 'comment', id: 'https://github.com/deskree-inc/oby/pull/375#issuecomment-12', date: ago(60) })).toBe('Commented on oby#375');
+    // any other action, as obid names it, with its id
+    expect(outgoingText({ action: 'issueLabels', id: 'https://github.com/deskree-inc/oby/issues/12', date: ago(60) })).toBe('issueLabels https://github.com/deskree-inc/oby/issues/12');
+    expect(outgoingText({ action: 'somethingNew', date: ago(60) })).toBe('somethingNew');
     const page = pageOf(job({ outgoing: [{ action: 'push', repo: 'deskree-inc/oby', branch: 'oby/fix-75', date: ago(60) }] }), account, false, NOW);
     expect(page.outgoing).toHaveLength(1);
     expect(page.outgoing![0].at).toMatch(/\d/);
