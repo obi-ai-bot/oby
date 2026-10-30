@@ -79,7 +79,7 @@ export const api = {
   deleteJob: (j: string) => call<{ deleted: boolean; ask: InboxItem | null }>('POST', `/v1/jobs/${id(j)}/delete`),
   // obid only: the job's session (Full session), the entries that came or changed after entry `after`
   transcript: (j: string, after?: number) => call<{ next: number | null; entries: TranscriptEntry[] }>('GET', `/v1/jobs/${id(j)}/transcript${q({ after })}`),
-  message: (j: string, text: string) => call<Job>('POST', `/v1/jobs/${id(j)}/messages`, { text }),
+  message: (j: string, text: string, attachments?: string[]) => call<Job>('POST', `/v1/jobs/${id(j)}/messages`, { text, ...(attachments?.length ? { attachments } : {}) }),
   // a job's waiting permission (POST /v1/jobs/{id}/permission)
   permission: (j: string, body: { id: string; decision: 'allow' | 'always' | 'deny'; message?: string }) =>
     call<Job>('POST', `/v1/jobs/${id(j)}/permission`, body),
@@ -95,9 +95,17 @@ export const api = {
       (b) => b.limitAnswer(decision.id, decision.revision, option.kind, option.kind === 'move' ? option.account : undefined)),
   // one conversation's turns
   conversation: (opts: { id?: string; before?: string; limit?: number } = {}) => call<Turn[]>('GET', `/v1/conversation${q(opts)}`),
-  // words to Oby: in a conversation, or starting a new one
-  plan: (said: string, answer: { question: string; option: string } | undefined, where: { conversation: string } | { new: true }, folders?: string[]) =>
-    call<PlanAnswer>('POST', '/v1/plans', { said, ...(answer ? { answer } : {}), ...where, ...(folders?.length ? { folders } : {}) }),
+  // words to Oby: in a conversation, or starting a new one. with: the words' id (sent again with
+  // the same id, nothing happens twice), the files uploaded for them and the tasks attached
+  plan: (said: string, answer: { question: string; option: string } | undefined, where: { conversation: string } | { new: true }, folders?: string[],
+    with_: { id?: string; attachments?: string[]; jobs?: string[] } = {}) =>
+    call<PlanAnswer>('POST', '/v1/plans', {
+      said, ...(answer ? { answer } : {}), ...where, ...(folders?.length ? { folders } : {}), ...(with_.id ? { id: with_.id } : {}),
+      ...(with_.attachments?.length ? { attachments: with_.attachments } : {}), ...(with_.jobs?.length ? { jobs: with_.jobs } : {}),
+    }),
+  // a file picked or pasted, kept by obid for the words it goes with: its path there
+  upload: async (file: File) =>
+    call<{ path: string; name: string }>('POST', `/v1/attachments${q({ name: file.name || 'Pasted image' })}`, new Uint8Array(await file.arrayBuffer())),
   repos: () => call<{ repos: Repo[] }>('GET', '/v1/repos'),
   // Settings › Permissions: the mode new jobs get, and the rules Always allow saved
   permissions: () => call<{ mode: string }>('GET', '/v1/settings/permissions'),

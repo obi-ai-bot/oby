@@ -23,7 +23,7 @@ import { keeper } from './drafts';
 // in the words: @Wellington.) place: the Mac it runs on, when not this one
 // (one at a time: picking another replaces it). repo: the repository the work is
 // in (obid's), one at a time too.
-type Attached = { kind: 'file'; name: string; preview?: string } | { kind: 'task'; id: string } | { kind: 'place'; name: string } | { kind: 'repo'; name: string };
+type Attached = { kind: 'file'; name: string; preview?: string; file?: File } | { kind: 'task'; id: string } | { kind: 'place'; name: string } | { kind: 'repo'; name: string };
 type View = 'root' | 'oby' | 'task' | 'where' | 'repo' | 'folder' | 'usage';
 const same = (a: Attached, b: Attached) =>
   a.kind === 'task' ? b.kind === 'task' && a.id === b.id : a.kind === b.kind && a.name === (b as { name: string }).name;
@@ -171,7 +171,7 @@ export default function Composer({ placeholder, prompts = false, note, label, on
   // files picked or pasted: each a tag, a photo with its preview
   const addFiles = (list: File[]) => {
     const picked = list.map((f): Attached => ({
-      kind: 'file', name: f.name || 'Pasted image', preview: f.type.startsWith('image/') ? URL.createObjectURL(f) : undefined,
+      kind: 'file', name: f.name || 'Pasted image', preview: f.type.startsWith('image/') ? URL.createObjectURL(f) : undefined, file: f,
     }));
     if (picked.length) add(...picked);
   };
@@ -206,7 +206,7 @@ export default function Composer({ placeholder, prompts = false, note, label, on
       // words, or something attached, or both
       if (!b.text().trim() && !attached.length) return;
       onSend(b.text(), {
-        files: attached.flatMap((a) => (a.kind === 'file' ? [{ name: a.name, preview: a.preview }] : [])),
+        files: attached.flatMap((a) => (a.kind === 'file' ? [{ name: a.name, preview: a.preview, file: a.file }] : [])),
         obys: mentioned(b.text()),
         jobs: attached.flatMap((a) => (a.kind === 'task' ? [a.id] : [])),
         on: attached.find((a) => a.kind === 'place')?.name,

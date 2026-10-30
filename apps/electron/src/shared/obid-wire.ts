@@ -111,7 +111,8 @@ export type LimitDecision = {
 
 // "GET /v1/conversation"
 // ended: the turn that tells how a job ended; routine: a routine's run's (neither answers you)
-export type Turn = { id: string; who: 'user' | 'oby'; text: string; at: string; jobs: string[]; conversation?: string; ended?: boolean; routine?: unknown };
+// attachments: on your turn, the names of the files that went with the words (obid only)
+export type Turn = { id: string; who: 'user' | 'oby'; text: string; at: string; jobs: string[]; conversation?: string; ended?: boolean; routine?: unknown; attachments?: string[] };
 // obid only: conversations
 // tasks: the jobs it started; folders: the working folders its work is in (an obid that takes folders)
 export type Conversation = { id: string; title: string; pinned: boolean; created: string; lastActivity: string; cursor: string; tasks?: string[]; folders?: string[] };

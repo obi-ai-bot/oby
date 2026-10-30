@@ -57,6 +57,10 @@ pub struct Turn {
     /// answer must name exactly to stay this conversation's words ([`Conversations::oby_asked`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub asked: Option<Asked>,
+    /// On the owner's turn: the names of the files attached to the words (`POST /v1/plans`'s
+    /// `attachments`), for the tags under them. Left out when none were.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attachments: Vec<String>,
 }
 
 /// The question an Oby turn asked, and its options.
@@ -497,11 +501,13 @@ impl Conversations {
     /// `folders`: checked folders (crate::folders) the conversation works in from now on, added to
     /// those it has, or why they were refused. Words that are a repeat are `repeated` whatever
     /// their folders were, and add none; otherwise a refusal is `Folder`, and nothing is added.
+    #[allow(clippy::too_many_arguments)]
     pub fn begin(
         &self,
         target: Target,
         said: String,
         jobs: Vec<String>,
+        attachments: Vec<String>,
         id: Option<String>,
         foreign: Option<String>,
         folders: Result<Vec<String>, String>,
@@ -546,7 +552,13 @@ impl Conversations {
         let index = found.unwrap_or_else(|| {
             threads.push(Thread {
                 id: self.take_next().unwrap_or_else(new_id),
-                title: titled(&said),
+                // Files with no words: named after the first.
+                title: titled(
+                    attachments
+                        .first()
+                        .filter(|_| said.trim().is_empty())
+                        .unwrap_or(&said),
+                ),
                 pinned: false,
                 created: obi_protocol::time::format(obi_protocol::time::now()),
                 sequence: 0,
@@ -572,7 +584,7 @@ impl Conversations {
             return Err(Error::TooManyFolders);
         }
         threads[index].folders = more;
-        let added = self.add(
+        let added = self.add_asking(
             &mut threads,
             index,
             "user",
@@ -583,6 +595,8 @@ impl Conversations {
             id,
             None,
             foreign,
+            None,
+            attachments,
         );
         let turn = match added {
             Ok(turn) => turn.id,
@@ -665,6 +679,7 @@ impl Conversations {
             None,
             None,
             asked,
+            vec![],
         )
     }
 
@@ -850,7 +865,18 @@ impl Conversations {
         foreign: Option<String>,
     ) -> Result<Turn, Error> {
         self.add_asking(
-            threads, index, who, text, jobs, ended, artifacts, id, routine, foreign, None,
+            threads,
+            index,
+            who,
+            text,
+            jobs,
+            ended,
+            artifacts,
+            id,
+            routine,
+            foreign,
+            None,
+            vec![],
         )
     }
 
@@ -869,6 +895,7 @@ impl Conversations {
         routine: Option<Value>,
         foreign: Option<String>,
         asked: Option<Asked>,
+        attachments: Vec<String>,
     ) -> Result<Turn, Error> {
         let sequence = next_sequence(threads);
         let thread = &mut threads[index];
@@ -893,6 +920,7 @@ impl Conversations {
             artifacts,
             routine,
             asked,
+            attachments,
         };
         thread.turns.push(turn.clone());
         let excess = thread.turns.len().saturating_sub(KEPT);
@@ -1714,6 +1742,7 @@ mod tests {
                 super::Target::New,
                 "Fix it".into(),
                 vec![],
+                vec![],
                 None,
                 None,
                 Ok(vec![]),
@@ -1751,6 +1780,7 @@ mod tests {
             .begin(
                 super::Target::New,
                 "Fix it".into(),
+                vec![],
                 vec![],
                 None,
                 Some("words no app of the owner's signed".into()),
@@ -1828,6 +1858,7 @@ mod tests {
             .begin(
                 super::Target::New,
                 "first".into(),
+                vec![],
                 vec![],
                 None,
                 None,

@@ -1,7 +1,7 @@
 import { useSyncExternalStore } from 'react';
 import { ApiError, api, parseEvent, sseReader, type Conversation, type Event, type InboxItem, type Job, type LimitDecision, type Question, type Repo, type Status, type TranscriptEntry, type Turn } from './obid';
 import { pageOf, stagesOf } from './jobPage';
-import { AGENTS, TELL, type Ask, type AskKind, type Job as JobView, type Message, type Offer } from './mock';
+import { AGENTS, TELL, type Ask, type AskKind, type Job as JobView, type Attachments, type Message, type Offer } from './mock';
 import { replaceChats, type Chat } from './chats';
 import { replaceTasks, type Asking, type Task } from './tasks';
 import { keepFoldersOf, nameFoldersBy, saveFolders, sendFoldersBy, takeFolders } from './folders';
@@ -38,7 +38,7 @@ type Live = {
   waiting: Record<string, Question & { said: string }>;  // Oby's question back, by conversation
   // words to Oby starting a new conversation, shown at once under an id of the app's own
   // ('new:1'); obid's id for it, once known, maps onto that one (alias), so its page stays open
-  starting: { id: string; said: string } | null;
+  starting: { id: string; said: string; turn?: string; files?: { name: string; preview?: string }[] } | null;
   alias: Record<string, string>;
   // decisions answered here, by job: what was asked, the pick, and the inbox item it settles.
   // The cards keep showing it answered (as the mock's do), and the stack lets it go.
@@ -48,11 +48,13 @@ type Live = {
   // the repository last picked for words sent here, by conversation (its app id), and when
   picked: Record<string, { repo: string; at: string }>;
   sessions: Record<string, TranscriptEntry[]>;  // each job's session opened (Full session), by job
+  // the files your words took, by their turn: the name obid kept, the one picked, a photo's preview
+  previews: Record<string, { name: string; shown: string; preview?: string }[]>;
 };
 
 let state: Live = {
   connection: 'connecting', problem: null, status: null, repos: [], github: null, jobs: {}, firstJobs: new Set(), seen: new Set(), inbox: [], limits: [],
-  conversations: [], turns: {}, loaded: new Set(), working: {}, words: {}, pace: {}, waiting: {}, starting: null, alias: {}, answered: {}, answering: new Set(), picked: {}, sessions: {},
+  conversations: [], turns: {}, loaded: new Set(), working: {}, words: {}, pace: {}, waiting: {}, starting: null, alias: {}, answered: {}, answering: new Set(), picked: {}, sessions: {}, previews: {},
 };
 const listeners = new Set<() => void>();
 const set = (patch: Partial<Live>) => {
@@ -111,7 +113,9 @@ function chatOf(s: Live, c: Conversation): Chat {
     const answer = t.who === 'oby' && !t.ended && !t.routine ? asked : undefined;
     const mine = answer ? byTurn.filter((j) => j.turn === answer).map((j) => j.id) : [];
     const jobs = [...t.jobs, ...mine].filter((j) => !carded.has(j) && carded.add(j));
-    said.push({ who: t.who === 'user' ? 'you' : 'oby', text: t.text, ago: minutesAgo(t.at), ...(jobs.length ? { jobs } : {}) });
+    // the files that went with your words: their tags (a photo's preview while this app has it)
+    const files = t.attachments?.map((name) => { const p = s.previews[t.id]?.find((f) => f.name === name); return { name: p?.shown ?? name, preview: p?.preview }; });
+    said.push({ who: t.who === 'user' ? 'you' : 'oby', text: t.text, ago: minutesAgo(t.at), ...(jobs.length ? { jobs } : {}), ...(files?.length ? { files } : {}) });
     for (const offer of offers.filter((o) => o.id === answer)) said.push({ who: 'oby', text: '', ago: minutesAgo(t.at), offer });
     if (t.who === 'user') asked = t.id;
     else if (answer) asked = undefined;
@@ -136,7 +140,7 @@ function chatsOf(s: Live): Chat[] {
   const real = Object.keys(s.alias).find((k) => s.alias[k] === st.id);
   const now = new Date().toISOString();
   const shown = chatOf(s, { id: real ?? st.id, title: st.said.split('\n')[0].slice(0, 48), pinned: false, created: now, lastActivity: now, cursor: '' });
-  return [{ ...shown, id: st.id, said: shown.said.length ? shown.said : [{ who: 'you', text: st.said, ago: 0 }], typing: true, step: shown.step ?? 'Thinking' }, ...chats];
+  return [{ ...shown, id: st.id, said: shown.said.length ? shown.said : [{ who: 'you', text: st.said, ago: 0, ...(st.files?.length ? { files: st.files } : {}) }], typing: true, step: shown.step ?? 'Thinking' }, ...chats];
 }
 
 // The decision a job's card shows, of its open inbox items: what its agent waits on first (a
@@ -383,7 +387,7 @@ function apply(s: Live, e: Event): Live {
       if (!c) return s;
       let alias = s.alias;
       // the words this app sent to start one: that conversation is the one shown for them
-      if (s.starting && e.turn.who === 'user' && e.turn.text.trim() === s.starting.said && !(c in s.alias) && !s.turns[c]?.length) {
+      if (s.starting && e.turn.who === 'user' && (e.turn.id === s.starting.turn || e.turn.text.trim() === s.starting.said) && !(c in s.alias) && !s.turns[c]?.length) {
         alias = { ...alias, [c]: s.starting.id };
       }
       const next = { ...s, alias, turns: { ...s.turns, [c]: merged(s.turns[c] ?? [], [e.turn]) } };
@@ -633,32 +637,40 @@ export async function openConversation(shown: string) {
 
 // Words to Oby (POST /v1/plans): in a conversation (its app id), or starting one (none). Your
 // words, its answer and the jobs it starts come back as events. Oby's question back waits over
-// the message box; your next words answer it.
+// the message box; your next words answer it. The files that go with them are uploaded first
+// (POST /v1/attachments), and the words carry an id of their own: sent again while obid doesn't
+// answer, obid takes them once, files and tasks included.
 let made = 0;
-export function ask(said: string, shown?: string, repo?: string, folders?: string[]): string | undefined {
-  if (!said.trim()) return;
+export function ask(said: string, shown?: string, repo?: string, folders?: string[], att?: Pick<Attachments, 'files' | 'jobs'>): string | undefined {
+  const files = att?.files?.filter((f) => f.file) ?? [], jobs = att?.jobs ?? [];
+  if (!said.trim() && !files.length && !jobs.length) return;
   const id = shown ?? `new:${++made}`;
   const c = shown ? realId(shown) : null;
   const q = c ? state.waiting[c] : undefined;
+  const turn = crypto.randomUUID();
   // an answer to Oby's question is only the answer
-  const words = q ? said.trim() : inRepo(said.trim(), repo, shown);
+  const words = q ? said.trim() : said.trim() ? inRepo(said.trim(), repo, shown) : '';
   if (repo && !q) set({ picked: { ...state.picked, [id]: { repo, at: new Date().toISOString() } } });
   // (the rest of Oby's last answer, if it's still being shown, shows whole)
   if (c) set({ waiting: without(state.waiting, c), working: { ...state.working, [c]: 'Thinking' }, ...(state.pace[c]?.turn ? { pace: without(state.pace, c) } : {}) });
-  else set({ starting: { id, said: words } });
+  else set({ starting: { id, said: words, turn, files: files.map(({ name, preview }) => ({ name, preview })) } });
   let failed = false;
   void (async () => {
     try {
+      const kept: { path: string; name: string; shown: string; preview?: string }[] = [];
+      for (const f of files) kept.push({ ...(await api.upload(f.file!)), shown: f.name, preview: f.preview });
+      if (kept.length) set({ previews: { ...state.previews, [turn]: kept } });
       // the working folders go with words that start a conversation, once obid takes them (an
       // older one refuses the key); a conversation's own are obid's already (sendFoldersBy)
-      const a = await api.plan(q ? q.said : words, q ? { question: q.text, option: words } : undefined, c ? { conversation: c } : { new: true }, state.status?.folders && !c ? folders : undefined);
+      const a = await sent(() => api.plan(q ? q.said : words, q ? { question: q.text, option: words } : undefined, c ? { conversation: c } : { new: true },
+        state.status?.folders && !c ? folders : undefined, { id: turn, attachments: kept.map((k) => k.path), jobs }));
       const where = a.conversation ?? c;
       // the plan's answer is the one: it replaces a guess from the words' turn
       const alias = !c && a.conversation ? { ...Object.fromEntries(Object.entries(state.alias).filter(([, v]) => v !== id)), [a.conversation]: id } : state.alias;
       // the one it started, listed at once (its own event may come later), so its page stays
       const now = new Date().toISOString();
       const listed = !where || state.conversations.some((x) => x.id === where) ? state.conversations
-        : [...state.conversations, { id: where, title: words.split('\n')[0].slice(0, 48), pinned: false, created: now, lastActivity: now, cursor: '' }];
+        : [...state.conversations, { id: where, title: (words || files[0]?.name || '').split('\n')[0].slice(0, 48), pinned: false, created: now, lastActivity: now, cursor: '' }];
       set({
         alias, conversations: listed, jobs: { ...Object.fromEntries(a.jobs.map((j) => [j.id, j])), ...state.jobs },
         ...(a.kind === 'question' && where ? { waiting: { ...state.waiting, [where]: { ...a.question, said: a.said } } } : {}),
@@ -676,6 +688,16 @@ export function ask(said: string, shown?: string, repo?: string, folders?: strin
   })();
   return id;
 }
+// A send obid didn't answer (status 0: the connection went, or obid restarted) is sent again, the
+// same request with the same id, a few times a second apart; any answer of obid's is final.
+export async function sent<T>(send: () => Promise<T>, tries = 3, pause = 1000): Promise<T> {
+  for (let n = 1; ; n++) {
+    try { return await send(); } catch (e) {
+      if (!(e instanceof ApiError && e.status === 0) || n >= tries) throw e;
+      await new Promise((done) => setTimeout(done, pause));
+    }
+  }
+}
 
 export async function renameConversation(shown: string, title: string) {
   const t = title.trim();
@@ -692,8 +714,13 @@ export async function deleteConversation(shown: string) {
 }
 
 // Told a job's agent something (POST /v1/jobs/{id}/messages)
-export async function tellJob(id: string, text: string) {
-  try { const j = await api.message(id, text.trim()); set({ jobs: { ...state.jobs, [j.id]: j } }); } catch (e) { say(e); }
+export async function tellJob(id: string, text: string, files: { file?: File }[] = []) {
+  try {
+    const kept = [];
+    for (const f of files) if (f.file) kept.push((await api.upload(f.file)).path);
+    const j = await api.message(id, text.trim(), kept);
+    set({ jobs: { ...state.jobs, [j.id]: j } });
+  } catch (e) { say(e); }
 }
 // A task's Mode menu: how much it asks from now on (POST /v1/jobs/{id}/mode)
 export async function changeMode(id: string, mode: string) {

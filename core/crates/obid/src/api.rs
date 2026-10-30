@@ -244,6 +244,10 @@ pub fn router(shared: Arc<Shared>) -> Router {
             get(crate::artifacts::file),
         )
         .route("/v1/plans", post(crate::brain::plan))
+        .route(
+            "/v1/attachments",
+            post(crate::brain::upload).layer(crate::brain::upload_limit()),
+        )
         .route("/v1/plans/cancel", post(crate::brain::cancel))
         .route("/v1/brain/usage", get(crate::brain::calls::usage))
         .route("/v1/conversation/stop", post(crate::brain::stop))

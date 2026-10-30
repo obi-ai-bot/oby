@@ -64,7 +64,7 @@ pub const FAILED_TWICE: &str = "its agent session failed twice";
 /// The most earlier turns a new session is handed, quoted.
 const EARLIER: usize = 20;
 /// The largest attachment copied into the room, in bytes (P3): a larger one is left out.
-const ATTACHMENT_CAP: u64 = 25_000_000;
+pub(crate) const ATTACHMENT_CAP: u64 = 25_000_000;
 
 /// A conversation turn under way in its session: what Oby's tools act for.
 pub struct Session {
@@ -1682,7 +1682,7 @@ fn attach(
 
 /// A file name the room can hold: letters, digits, `.`, `_` and `-`, anything else `_`, no
 /// leading dot, at most 100 characters.
-fn clean(name: &str) -> String {
+pub(crate) fn clean(name: &str) -> String {
     let cleaned: String = name
         .chars()
         .map(|c| {
