@@ -1,7 +1,7 @@
 import { useSyncExternalStore } from 'react';
 import { BRANDS, type Brand } from './brands';
 import { OBYS } from './mock';
-import { everything } from './lean';
+import { everything, onObid } from './lean';
 
 // The Obyspheres you're in: each a place where your Oby works with other
 // people's. Its picture in the icon strip is its logo (an image you gave it,
@@ -13,11 +13,13 @@ import { everything } from './lean';
 export type Sphere = {
   id: string; name: string; slug: string; brand?: Brand; image?: string;
   admin: boolean; members: string[]; invited: string[]; domain?: string; sample?: true;
+  // live: the one obid is in (docs/contracts/obysphere.md), at its own address
+  live?: true; url?: string;
 };
 // you (until there's sign-in)
 export const ME = { name: 'Doti', email: 'doti@deskree.com' };
 export const SUFFIX = '.obysphere.com';
-export const urlOf = (s: Sphere) => `${s.slug}${SUFFIX}`;
+export const urlOf = (s: Sphere) => (s.url ? new URL(s.url).host : `${s.slug}${SUFFIX}`);
 
 let spheres: Sphere[] = [
   { id: 'deskree', name: 'Deskree', slug: 'deskree', brand: BRANDS.deskree, admin: true, members: OBYS.map((o) => o.name), invited: [], domain: 'deskree.com' },
@@ -66,6 +68,8 @@ export function addSphere(s: Omit<Sphere, 'id' | 'admin' | 'members'>) {
 export const updateSphere = (id: string, patch: Partial<Pick<Sphere, 'name' | 'slug' | 'image'>>) =>
   set(spheres.map((s) => (s.id === id ? { ...s, ...patch } : s)));
 export const deleteSphere = (id: string) => {
+  // the live one: obid leaves it (main/sphere.ts), then what obid says shows
+  if (spheres.find((s) => s.id === id)?.live) void window.app?.sphereLeave?.().finally(loadLive);
   const image = spheres.find((s) => s.id === id)?.image;
   if (image) URL.revokeObjectURL(image);
   set(spheres.filter((s) => s.id !== id));
@@ -75,3 +79,33 @@ export const removeMember = (id: string, name: string) => set(spheres.map((s) =>
 export const cancelInvite = (id: string, email: string) => set(spheres.map((s) => (s.id === id ? { ...s, invited: s.invited.filter((e) => e !== email) } : s)));
 export const invite = (id: string, emails: string[]) =>
   set(spheres.map((s) => (s.id === id ? { ...s, invited: [...s.invited, ...emails.filter((e) => !s.invited.some((x) => x.toLowerCase() === e.toLowerCase()))] } : s)));
+
+// The Obysphere obid is in (SPHERE-3), from GET /v1/obid/sphere and its members: in the side panel
+// as any other, by the name its invite link gave (kept here: obid knows only its id), its members
+// the other Obys' owners. Not its admin: its admin made it on the Obysphere's own server.
+const LIVE = 'live:';
+const NAMES = 'oby.sphereNames';
+type Membership = { state: string; url: string | null; sphere: string | null };
+export function liveSphere(m: Membership, members: { owner: string }[], names: Record<string, string>): Sphere | null {
+  if (m.state !== 'joined' || !m.sphere || !m.url) return null;
+  return { id: LIVE + m.sphere, name: names[m.sphere] ?? m.sphere, slug: m.sphere, admin: false, members: members.map((x) => x.owner), invited: [], live: true, url: m.url };
+}
+const names = (): Record<string, string> => { try { return JSON.parse(localStorage.getItem(NAMES) ?? '{}'); } catch { return {}; } };
+async function loadLive() {
+  const call = window.app!.obid.call;
+  const m = await call('GET', '/v1/obid/sphere');
+  if (m.status !== 200) return;
+  const membership = JSON.parse(m.text) as Membership;
+  const r = membership.state === 'joined' ? await call('GET', '/v1/obid/sphere/members') : null;
+  const live = liveSphere(membership, r?.status === 200 ? JSON.parse(r.text) : [], names());
+  set([...spheres.filter((s) => !s.live), ...(live ? [live] : [])]);
+}
+if (onObid && window.app?.onSphere) {
+  window.app.onSphere(({ sphere, name }) => {
+    try { localStorage.setItem(NAMES, JSON.stringify({ ...names(), [sphere]: name })); } catch { /* its id shows */ }
+    void loadLive();
+  });
+  void loadLive();
+  // ponytail: a teammate who just joined shows within a minute; obid has no event for the directory
+  setInterval(() => void loadLive(), 60_000);
+}

@@ -20,6 +20,9 @@ declare global {
       updates?(ask?: 'check' | 'install' | boolean): Promise<{ auto: boolean; update: Update } | null>;
       onUpdate?(fn: (update: Update) => void): () => void;
       setupWindow?(on: boolean): number | null;  // the width the window's growing to (null: already there)
+      // an Obysphere joined by its invite link, and Leave (preload, main/sphere.ts)
+      onSphere?(fn: (joined: { sphere: string; name: string }) => void): () => void;
+      sphereLeave?(): Promise<string | null>;
       // obid, through main (preload, main/obid.ts)
       obid: {
         call(method: string, path: string, body?: unknown): Promise<{ status: number; text: string }>;

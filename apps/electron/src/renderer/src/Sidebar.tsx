@@ -528,7 +528,7 @@ export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOp
                 in Members), each folding as Home's groups do */}
             <SphereGroup id={`members:${sphere.id}`} label="Members" folded={folded} onToggle={toggleGroup}>
             {!sphere.members.length && <p className="sidebar-empty">Just you so far</p>}
-            {(sphere.sample ? sphere.members.map((name) => ({ name })) : OBYS.filter((o) => sphere.members.includes(o.name))).filter((o) => matches(o.name)).map((o) => {
+            {(sphere.sample || sphere.live ? sphere.members.map((name) => ({ name })) : OBYS.filter((o) => sphere.members.includes(o.name))).filter((o) => matches(o.name)).map((o) => {
               // in the sample: the tour's conversations, the one showing lit, the one it calls dotted
               const n = sphere.sample ? (SAMPLE_TALK[o.name] ? 1 : 0) : convosWith(convos, o.name).length;
               const unread = sphere.sample ? tour.call === o.name : hasUnread(convos, o.name);

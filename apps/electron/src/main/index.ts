@@ -6,6 +6,7 @@ import { bridge, startObid, stopFollowing, type Trusted } from './obid';
 import { confirming, messageJob } from './device';
 import { notifying, windowLeft, windowSeen } from './notify';
 import { updating } from './updates';
+import { sphering } from './sphere';
 
 // One small window: Oby, what needs you, and a way to talk. The renderer gets
 // the cursor's position wherever it is on screen, so Oby can watch it outside
@@ -171,17 +172,21 @@ app.whenReady().then(() => {
   // the Dock icon while developing (a packaged app takes apps/icon/AppIcon.icon, electron-builder.yml)
   if (process.platform === 'darwin' && !app.isPackaged) app.dock?.setIcon(join(__dirname, '../../../icon/exports/oby-1024.png'));
   startObid();
-  // a clicked alert: the window, opened again if it was closed, in front
-  notifying(trusted, () => win, () => {
+  // the window, opened again if it was closed, in front
+  const front = () => {
     if (!win) createWindow();
     if (win!.isMinimized()) win!.restore();
     win!.show();
     win!.focus();
     return win!;
-  });
+  };
+  // a clicked alert opens it
+  notifying(trusted, () => win, front);
   // Oby's own updates (updates.ts), told to About while the window is there
   updating(trusted, () => win);
   createWindow();
+  // an Obysphere's invite link (sphere.ts), joined on the owner's click
+  sphering(trusted, front);
   app.on('activate', () => { if (!win) createWindow(); });
 });
 

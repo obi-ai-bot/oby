@@ -14,7 +14,6 @@ import { HOME, obid, type Answer, type Trusted } from './obid';
 // obid's own sentence for it and sends the answer.
 
 const O = constants;
-const keyFile = () => join(app.getPath('userData'), 'device-key');
 
 // A file written fresh, 0600, never through a link
 export function writeOwn(path: string, data: string | Buffer, flags: number) {
@@ -22,29 +21,33 @@ export function writeOwn(path: string, data: string | Buffer, flags: number) {
   try { writeSync(fd, typeof data === 'string' ? Buffer.from(data) : data); } finally { closeSync(fd); }
 }
 
-let key: KeyObject | null = null;
-export function deviceKey(): KeyObject {
-  if (key) return key;
+// A key made here in main, kept encrypted by safeStorage in the app's own folder as `file`: this
+// Mac's device key, and the owner key (main/sphere.ts)
+export function keptKey(file: string, make: () => KeyObject): KeyObject {
+  const path = join(app.getPath('userData'), file);
   if (!safeStorage.isEncryptionAvailable()) throw new Error('This Mac’s Keychain isn’t available to Oby, so it can’t keep a key to confirm with.');
   let sealed: Buffer | null = null;
   try {
-    const fd = openSync(keyFile(), O.O_RDONLY | O.O_NOFOLLOW);
+    const fd = openSync(path, O.O_RDONLY | O.O_NOFOLLOW);
     try { sealed = readFileSync(fd); } finally { closeSync(fd); }
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e;
   }
   if (sealed) {
-    try { return (key = createPrivateKey(safeStorage.decryptString(sealed))); } catch {
+    try { return createPrivateKey(safeStorage.decryptString(sealed)); } catch {
       // sealed by a key this app can't open anymore (another signature, a Keychain reset): set
       // aside, and a new one, which pairs on the owner's click as the first did
-      renameSync(keyFile(), `${keyFile()}.unreadable-${Date.now()}`);
+      renameSync(path, `${path}.unreadable-${Date.now()}`);
     }
   }
-  const made = generateKeyPairSync('ec', { namedCurve: 'prime256v1' }).privateKey;
+  const made = make();
   // O_EXCL: never over a key that's there
-  writeOwn(keyFile(), safeStorage.encryptString(made.export({ type: 'pkcs8', format: 'pem' }) as string), O.O_EXCL);
-  return (key = made);
+  writeOwn(path, safeStorage.encryptString(made.export({ type: 'pkcs8', format: 'pem' }) as string), O.O_EXCL);
+  return made;
 }
+
+let key: KeyObject | null = null;
+export const deviceKey = (): KeyObject => (key ??= keptKey('device-key', () => generateKeyPairSync('ec', { namedCurve: 'prime256v1' }).privateKey));
 
 // X9.63 (65 bytes, uncompressed), base64, as obid takes it
 export function publicKey() {

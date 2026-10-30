@@ -25,6 +25,10 @@ electronFuses:
   enableEmbeddedAsarIntegrityValidation: true
   onlyLoadAppFromAsar: true
   enableCookieEncryption: true
+# Open in Oby on an Obysphere's join page (oby://join/<host>#…, main/sphere.ts)
+protocols:
+  - name: Oby
+    schemes: [oby]
 mac:
   target: dir
   # the Swift Oby's Icon Composer icon (apps/icon): actool makes Assets.car and icon.icns from
