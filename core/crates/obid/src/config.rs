@@ -1322,7 +1322,8 @@ mod tests {
         // Tetrix's login may go to.
         let presets = |extra| Config::parse(&with(extra)).unwrap().tetrix_presets;
         assert!(presets(serde_json::json!({})).is_empty());
-        let one = serde_json::json!({"id": "t", "name": "Tetrix", "url": "https://tetrix.example/mcp"});
+        let one =
+            serde_json::json!({"id": "t", "name": "Tetrix", "url": "https://tetrix.example/mcp"});
         assert_eq!(
             presets(serde_json::json!({ "tetrixPresets": [one] }))[0].url,
             "https://tetrix.example/mcp"
@@ -1333,7 +1334,8 @@ mod tests {
             serde_json::json!([{"id": "t", "name": "T", "url": "http://tetrix.example/mcp"}]),
         ] {
             assert!(
-                problem(&with(serde_json::json!({ "tetrixPresets": bad }))).contains("tetrixPresets"),
+                problem(&with(serde_json::json!({ "tetrixPresets": bad })))
+                    .contains("tetrixPresets"),
                 "{bad}"
             );
         }
