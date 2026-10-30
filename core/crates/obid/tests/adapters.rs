@@ -973,7 +973,11 @@ fn cursor_asks_you_before_it_runs_a_repositorys_hooks() {
         json!({"agent": "cursor", "task": "anything", "mode": "bypass"}),
     );
     let job = ended(&obid, &id);
-    assert_eq!((job["status"].as_str(), job["mode"].as_str()), (Some("done"), Some("bypass")), "{job}");
+    assert_eq!(
+        (job["status"].as_str(), job["mode"].as_str()),
+        (Some("done"), Some("bypass")),
+        "{job}"
+    );
 }
 
 /// A repository whose `.cursor/cli.json` lets commands through without asking: Cursor doesn't

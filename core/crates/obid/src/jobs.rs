@@ -3796,7 +3796,9 @@ impl Jobs {
         let detail = hooks.join("\n");
         let digest = hex::encode(obi_protocol::keys::sha256(detail.as_bytes()));
         let rule = format!("{}({})", permissions::REPOSITORY_HOOKS, &digest[..16]);
-        if self.get(id).is_some_and(|j| Self::mode_of(&j) == Mode::Bypass)
+        if self
+            .get(id)
+            .is_some_and(|j| Self::mode_of(&j) == Mode::Bypass)
             || self
                 .rules_for(repo)
                 .iter()
