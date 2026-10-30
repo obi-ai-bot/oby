@@ -4,7 +4,28 @@
 export type Agent = 'claude' | 'codex' | 'cursor';
 export type JobStatus = 'queued' | 'running' | 'done' | 'failed' | 'stopped' | 'interrupted';
 export type StageState = 'done' | 'current' | 'upcoming' | 'failed' | 'skipped';
-export type Stage = { id: string; title: string; state: StageState; detail?: string | null };
+// obid only (#733): a reached stage's times, in RFC 3339 and seconds; estimate, a range in seconds
+export type Stage = {
+  id: string; title: string; state: StageState; detail?: string | null;
+  started?: string; finished?: string; seconds?: number; waited?: number; estimate?: { low: number; high: number };
+};
+export type ActivityCounts = Partial<Record<'read' | 'search' | 'edit' | 'command' | 'test' | 'tetrix' | 'web' | 'mcp', number>>;
+// obid only (#730): what the agent did, at a glance, from its transcript
+export type Activity = {
+  counts: ActivityCounts;
+  groups: {
+    id: string; title: string; by: 'agent' | 'obid'; state: 'running' | 'done' | 'failed'; started: string; finished?: string | null;
+    files?: string[]; diff?: { added: number; removed: number } | null;
+    tools?: { tool: string; kind: string; summary: string; state: string; started: string; seconds?: number | null }[];
+  }[];
+};
+// One entry of a job's session (GET /v1/jobs/{id}/transcript, obid only)
+export type TranscriptEntry = {
+  n: number; at: string; kind: 'tool' | 'said' | 'thought' | 'you' | 'plan' | 'start'; summary: string; text?: string;
+  tool?: string; activity?: string; state?: 'running' | 'done' | 'failed' | 'declined'; seconds?: number; exit?: number; added?: number; removed?: number;
+  todos?: { text: string; state: 'pending' | 'running' | 'done' }[];
+};
+export type Outgoing = { action: string; repo?: string; id?: string; branch?: string; date: string };
 
 // "Job": the keys this app reads
 export type Job = {
@@ -40,6 +61,16 @@ export type Job = {
   // words started it or offered it (oby_offer)
   conversation?: string | null;
   turn?: string | null;
+  // obid only, the task page's: its mode, when it was archived, what went out, what it did and
+  // used (#730-#733), and how long it should take
+  mode?: string;
+  archived?: string | null;
+  outgoing?: Outgoing[];
+  activity?: Activity;
+  context?: string;
+  usage?: { input?: number; output?: number; cacheRead?: number; cacheWrite?: number; costUsd?: number; priced?: 'plan' | 'api' };
+  windowShare?: { fiveHour: number | null; sevenDay: number | null; estimate: true };
+  estimate?: { low: number; high: number; basis: string; samples: number; firstGiven?: { low: number; high: number } };
 };
 
 // "Inbox item"

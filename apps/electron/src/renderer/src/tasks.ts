@@ -176,19 +176,25 @@ export function stop(id: string) {
   }));
 }
 
-// the task renamed (its title on cards, rows and the trail)
+// the task renamed (its title on cards, rows and the trail); on obid, its job (live.renameJob)
 export function renameTask(id: string, title: string) {
   const t = title.trim();
-  if (t) update(id, () => ({ title: t }));
+  if (!t) return;
+  if (onObid) return void live.renameJob(id, t);
+  update(id, () => ({ title: t }));
 }
-// out of Home: archived (it stays in Archive) or deleted (gone from Archive too)
+// out of Home: archived (it stays in Archive) or deleted (gone from Archive too); on obid, its job
+// is, and a refusal shows in obid's words with the task left where it was (live.ts)
 export function remove(id: string) {
+  if (onObid) return void live.archiveJob(id);
   set(tasks.filter((k) => k.id !== id));
 }
 const deleted = new Set<string>();
 export function deleteTask(id: string) {
+  // its unsent words go with it
+  if (onObid) return void live.deleteJob(id).then((gone) => { if (gone) forget(draftBox.task(id)); });
   deleted.add(id);
-  forget(draftBox.task(id));  // its unsent words go with it
+  forget(draftBox.task(id));
   remove(id);
 }
 
@@ -207,7 +213,8 @@ export function setArchiveAfter(id: string) {
   try { localStorage.setItem('oby.archiveAfter', id); } catch { /* not remembered, that's all */ }
   set([...tasks]);
 }
-const isArchived = (t: Task) => t.status === 'done' && (t.job.finished ?? t.job.created) > (ARCHIVE_AFTER.find((a) => a.id === archiveAfter)?.min ?? Infinity);
+// (on obid, an archived job too)
+const isArchived = (t: Task) => t.status === 'done' && (!!t.job.archived || (t.job.finished ?? t.job.created) > (ARCHIVE_AFTER.find((a) => a.id === archiveAfter)?.min ?? Infinity));
 // what's on Home: everything not archived
 const onHome = () => tasks.filter((t) => !isArchived(t));
 // The archive: tasks done longer ago than that, with the ones archived before

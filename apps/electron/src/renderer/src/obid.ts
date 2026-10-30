@@ -17,6 +17,7 @@ import type {
   SavedRule,
   SignIn,
   Status,
+  TranscriptEntry,
   Tetrix,
   TetrixTarget,
   Turn,
@@ -70,6 +71,13 @@ export const api = {
   job: (j: string) => call<Job>('GET', `/v1/jobs/${id(j)}`),
   stop: (j: string) => call<Job>('POST', `/v1/jobs/${id(j)}/stop`),
   dismiss: (j: string) => call<Job>('POST', `/v1/jobs/${id(j)}/dismiss`),
+  // obid only, the task's menu: rename (whatever it's doing), archive or unarchive (ended, needing
+  // nothing), delete (ended, for good: obid's 409 says why not)
+  rename: (j: string, title: string) => call<Job>('PATCH', `/v1/jobs/${id(j)}`, { title }),
+  archive: (j: string, archived = true) => call<Job>('POST', `/v1/jobs/${id(j)}/archive`, { archived }),
+  deleteJob: (j: string) => call<null>('DELETE', `/v1/jobs/${id(j)}`),
+  // obid only: the job's session (Full session), the entries that came or changed after entry `after`
+  transcript: (j: string, after?: number) => call<{ next: number | null; entries: TranscriptEntry[] }>('GET', `/v1/jobs/${id(j)}/transcript${q({ after })}`),
   message: (j: string, text: string) => call<Job>('POST', `/v1/jobs/${id(j)}/messages`, { text }),
   // a job's waiting permission (POST /v1/jobs/{id}/permission)
   permission: (j: string, body: { id: string; decision: 'allow' | 'always' | 'deny'; message?: string }) =>

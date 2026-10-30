@@ -3,7 +3,8 @@ import { Check, ChevronDown, ChevronRight, Info } from 'lucide-react';
 import { BrandMark } from './brands';
 import StatusDot from './StatusDot';
 import { AGENTS, ASK_LABEL, ago, type CheckRow, type Page, type Stage, type ToolGroup } from './mock';
-import { answer, changeCheck, markSeen, type Task } from './tasks';
+import { answer, changeCheck, markSeen, openOnGitHub, type Task } from './tasks';
+import { prName, prUrl } from './jobPage';
 
 // A task as a card in its group: where it came from and what it is, which
 // agent has it where, then what's happening now: the live step while it runs,
@@ -26,6 +27,8 @@ export default function TaskCard({ task, alone = false, onOpen, onSession, style
   // Change check, open on Details' "Done when"
   const [changing, setChanging] = useState(false);
   const setLog = (on: boolean) => (onSession && on ? onSession() : setLogOpen(on));
+  // a session to open: the mock's log, or obid's (onSession)
+  const hasLog = !!j.log || !!onSession;
   const repo = j.repo.includes('/') ? j.repo.split('/')[1] : null;
   // top right: how long an open task has been going; when a done one finished
   const done = task.status === 'done';
@@ -130,7 +133,7 @@ export default function TaskCard({ task, alone = false, onOpen, onSession, style
                       {s.activity && page?.counts && (
                         state === 'done' || !page.groups
                           // done, its activity folds to one line of counts
-                          ? <button className="tc-folded" onClick={() => setLog(true)} disabled={!j.log}>{page.counts.map(([n, k]) => `${n} ${k}`).join(' · ')}{j.log && <ChevronRight size={12} strokeWidth={1.8} />}</button>
+                          ? <button className="tc-folded" onClick={() => setLog(true)} disabled={!hasLog}>{page.counts.map(([n, k]) => `${n} ${k}`).join(' · ')}{hasLog && <ChevronRight size={12} strokeWidth={1.8} />}</button>
                           : <Activity counts={page.counts} groups={page.groups} />
                       )}
                       {s.checks && <Checks rows={s.checks} />}
@@ -148,7 +151,7 @@ export default function TaskCard({ task, alone = false, onOpen, onSession, style
             </Section>
           )}
 
-          <Section title="Details" aside={page && j.log && !log ? <button className="tc-link" onClick={() => setLog(true)}>Full session<ChevronRight size={12} strokeWidth={1.8} /></button> : undefined}>
+          <Section title="Details" aside={page && hasLog && !log ? <button className="tc-link" onClick={() => setLog(true)}>Full session<ChevronRight size={12} strokeWidth={1.8} /></button> : undefined}>
             <dl className="tc-facts">
               {repo && <><dt>Repository</dt><dd>{j.repo}</dd></>}
               {j.branch !== '—' && <><dt>Branch</dt><dd className="is-mono">{j.branch}</dd></>}
@@ -364,7 +367,8 @@ export function resultLine({ job: j }: Task) {
     <p className="tc-result">
       {[
         j.commits ? `${j.commits} commit${j.commits > 1 ? 's' : ''} on ${j.branch}` : null,
-        j.published ? <a key="pr" href="#" onClick={(e) => e.preventDefault()}>{j.published.replace('deskree-inc/', '')}</a> : null,
+        // its pull request, on GitHub in the browser
+        j.published ? <a key="pr" href={prUrl(j.published) ?? '#'} onClick={(e) => { e.preventDefault(); openOnGitHub(prUrl(j.published!)); }}>{prName(j.published)}</a> : null,
         took ? `Took ${took}` : null,
       ].filter(Boolean).flatMap((part, i) => (i ? [' · ', part] : [part]))}
     </p>
