@@ -121,6 +121,15 @@ async fn files_of(plan: &Plan) -> Vec<Option<Vec<String>>> {
     files
 }
 
+/// Agent names in the owner's own words take precedence over their saved default.
+fn names_agent(words: &str) -> bool {
+    words.split(|c: char| !c.is_alphanumeric()).any(|word| {
+        ["claude", "codex", "cursor"]
+            .iter()
+            .any(|agent| word.eq_ignore_ascii_case(agent))
+    })
+}
+
 /// The job `d` plans, as obid keeps it, linked to the conversation.
 fn planned_job(
     shared: &Shared,
@@ -129,6 +138,11 @@ fn planned_job(
     files: Option<Vec<String>>,
     researched: bool,
 ) -> NewJob {
+    // An account the plan names is a choice of agent too: only an `auto` one takes the saved
+    // default (runner-api.md, `PUT /v1/settings/default-agent`).
+    let preferred = (d.account.eq_ignore_ascii_case("auto") && !names_agent(asked.said))
+        .then(|| shared.jobs.preferred_agent())
+        .flatten();
     // An issue and a pull request is the issue's work started from the pull request (#219):
     // obid has no `fromPR` yet, so the job is the issue's, from its repository's base.
     let new = NewJob {
@@ -144,7 +158,7 @@ fn planned_job(
         },
         issue: d.issue.map(|issue| issue as u64),
         account: Some(d.account.clone()),
-        agent: Some(d.agent.clone()),
+        agent: Some(preferred.unwrap_or_else(|| d.agent.clone())),
         // The plan's 1 is "no number named": obid's own default (Jobs::create, #958).
         rounds: (d.rounds > 1).then_some(d.rounds as u32),
         check: kept_check(
@@ -1423,6 +1437,16 @@ pub fn step_text(shared: &Shared, plan: &Plan) -> String {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn explicit_agent_names_override_the_default() {
+        for words in ["Use Claude Code", "send to CODEX", "with Cursor."] {
+            assert!(names_agent(words), "{words}");
+        }
+        for words in ["fix the bug", "update the cursorPosition field"] {
+            assert!(!names_agent(words), "{words}");
+        }
+    }
 
     fn item(kind: &str, id: &str, title: &str, options: &[&str]) -> Item {
         Item {
