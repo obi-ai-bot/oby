@@ -3,7 +3,8 @@
 //!
 //! - **Where** ([`Location`]). On a Mac whose obid runs in the Mac app's runner home, the Swift
 //!   runner's own Keychain items (service `com.deskree.oby.runner.vault`), so the owner's secrets
-//!   carry over; anywhere else `home/vault/secrets.json`, as the Swift runner's `FileVault` keeps
+//!   carry over, as long as the login Keychain file is there (a Mac with none gets the file, so
+//!   the vault can be read); anywhere else `home/vault/secrets.json`, as the Swift runner's `FileVault` keeps
 //!   them: a folder only obid's user may open (0700) holding a file only that user may read (0600).
 //!   A folder or file anyone else may read, that someone else owns, or that is a link isn't read:
 //!   the vault can't be read until it's fixed, and then nothing goes out. The configuration's
@@ -165,16 +166,40 @@ pub enum Location {
     Keychain { service: String },
 }
 
+/// The owner's login Keychain, by its path from the user database (`getpwuid`), never through
+/// `$HOME`: an obid started with another `HOME` would otherwise look in the wrong place. None when
+/// obid can't find its user's home folder.
+pub fn login_keychain() -> Option<PathBuf> {
+    nix::unistd::User::from_uid(nix::unistd::getuid())
+        .ok()
+        .flatten()
+        .map(|user| user.dir.join("Library/Keychains/login.keychain-db"))
+}
+
 impl Location {
     /// Where the vault is when the configuration doesn't say: on a Mac whose obid runs in the Mac
     /// app's runner home (`~/Library/Application Support/Oby/Runner`, runner-api.md "The Mac app on
     /// the same Mac"), the Swift runner's Keychain items; anywhere else a file in `home`, so another
     /// obid on the same Mac (a test's, a second home) never reads or changes the owner's secrets.
+    ///
+    /// A Mac with no login Keychain file (a user made with no Keychain, one reset or moved aside:
+    /// macOS answers errSecNoSuchKeychain, "A keychain cannot be found to store …") gets the file
+    /// too, even in the runner home: a Keychain vault there could never be read, and obid would
+    /// answer 503 and publish nothing. The file is plaintext at rest, guarded by the Unix user and
+    /// the same permission checks as everywhere else (docs/ARCHITECTURE.md 4, "Secrets stay in
+    /// the vault"). The configuration's `vault` still says `keychain` where the owner wants it.
     pub fn default_for(home: &Path) -> Location {
         let runner_home = nix::unistd::User::from_uid(nix::unistd::getuid())
             .ok()
             .flatten()
             .map(|user| user.dir.join("Library/Application Support/Oby/Runner"));
+        let keychain = login_keychain().is_some_and(|path| path.is_file());
+        Location::default_in(home, runner_home.as_deref(), keychain)
+    }
+
+    /// [`Location::default_for`] with what it looks at given: whether `home` is `runner_home` and
+    /// whether the login Keychain file is there (`keychain`). Off a Mac it is always the file.
+    fn default_in(home: &Path, runner_home: Option<&Path>, keychain: bool) -> Location {
         // The same folder however it is written: links resolved, and letter case ignored, as a
         // Mac's file system ignores it by default.
         let same = |a: &Path, b: &Path| {
@@ -182,7 +207,10 @@ impl Location {
             let b = std::fs::canonicalize(b).unwrap_or_else(|_| b.to_path_buf());
             a.to_string_lossy().to_lowercase() == b.to_string_lossy().to_lowercase()
         };
-        if cfg!(target_os = "macos") && runner_home.is_some_and(|runner| same(&runner, home)) {
+        if cfg!(target_os = "macos")
+            && keychain
+            && runner_home.is_some_and(|runner| same(runner, home))
+        {
             Location::Keychain {
                 service: RUNNER_SERVICE.into(),
             }
@@ -511,13 +539,9 @@ mod keychain {
 
         /// The owner's login Keychain, by its path.
         fn login(&self) -> Result<SecKeychain, String> {
-            let path: PathBuf = nix::unistd::User::from_uid(nix::unistd::getuid())
-                .ok()
-                .flatten()
-                .map(|user| user.dir.join("Library/Keychains/login.keychain-db"))
-                .ok_or(
-                    "obid can't find its user's home folder, so it can't find the login Keychain.",
-                )?;
+            let path: PathBuf = super::login_keychain().ok_or(
+                "obid can't find its user's home folder, so it can't find the login Keychain.",
+            )?;
             if !path.is_file() {
                 return Err(format!("There's no login Keychain at {}.", path.display()));
             }
@@ -1965,22 +1989,52 @@ mod tests {
         );
     }
 
-    /// The Swift runner's Keychain items when obid runs in the Mac app's runner home; a file in
-    /// `home` anywhere else, unless the configuration says.
+    /// The Swift runner's Keychain items when obid runs in the Mac app's runner home and the Mac
+    /// has a login Keychain; a file in `home` anywhere else, unless the configuration says.
     #[test]
     fn where_the_vault_is() {
         let user = nix::unistd::User::from_uid(nix::unistd::getuid())
             .unwrap()
             .unwrap();
         let runner_home = user.dir.join("Library/Application Support/Oby/Runner");
-        let expected = if cfg!(target_os = "macos") {
-            Location::Keychain {
-                service: RUNNER_SERVICE.into(),
-            }
+        let keychain = Location::Keychain {
+            service: RUNNER_SERVICE.into(),
+        };
+        let login = login_keychain().unwrap();
+        assert_eq!(login.file_name().unwrap(), "login.keychain-db");
+        let expected = if cfg!(target_os = "macos") && login.is_file() {
+            keychain.clone()
         } else {
             Location::File
         };
         assert_eq!(Location::default_for(&runner_home), expected);
+        // With no login Keychain file (errSecNoSuchKeychain) the runner home gets the file too;
+        // with one, the Keychain, on a Mac only.
+        assert_eq!(
+            Location::default_in(&runner_home, Some(&runner_home), false),
+            Location::File
+        );
+        assert_eq!(
+            Location::default_in(&runner_home, Some(&runner_home), true),
+            if cfg!(target_os = "macos") {
+                keychain.clone()
+            } else {
+                Location::File
+            }
+        );
+        assert_eq!(
+            Location::default_in(Path::new("/tmp/obid-home"), Some(&runner_home), true),
+            Location::File
+        );
+        assert_eq!(
+            Location::default_in(&runner_home, None, true),
+            Location::File
+        );
+        let expected = if cfg!(target_os = "macos") {
+            keychain
+        } else {
+            Location::File
+        };
         assert_eq!(
             Location::default_for(Path::new("/tmp/obid-home")),
             Location::File
@@ -2001,12 +2055,18 @@ mod tests {
             assert!(Location::parse("keychain", Some("com.example.test ")).is_err());
             // The runner home however it is written: another letter case, or through a link.
             let upper = PathBuf::from(runner_home.to_string_lossy().to_uppercase());
-            assert_eq!(Location::default_for(&upper), expected);
+            assert_eq!(
+                Location::default_in(&upper, Some(&runner_home), true),
+                expected
+            );
             let scratch = Scratch::new();
             let link = scratch.0.join("runner-link");
             if runner_home.is_dir() {
                 std::os::unix::fs::symlink(&runner_home, &link).unwrap();
-                assert_eq!(Location::default_for(&link), expected);
+                assert_eq!(
+                    Location::default_in(&link, Some(&runner_home), true),
+                    expected
+                );
             }
         } else {
             assert!(Location::parse("keychain", None).is_err());

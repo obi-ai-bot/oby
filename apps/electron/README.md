@@ -163,6 +163,8 @@ tasks.ts, peers.ts  the tasks and the conversations with other Obys, as small st
 spheres.ts          the Obyspheres you're in, their members and invites
 knowledge.ts        each Obysphere's knowledge sources
 stream.ts           Oby's words coming in a word at a time
+drafts.ts           each message box's unsent words, kept on this Mac (localStorage)
+                    until sent, its conversation or task deleted, or a week untouched
 obid.ts             obid's API: its types and calls (copied from apps/web/src/api.ts), through main
 live.ts             what obid has, kept live by its event stream, put into the stores
                     above as conversations, tasks and accounts; and what the app asks of it
