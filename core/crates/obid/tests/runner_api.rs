@@ -469,12 +469,12 @@ fn the_api_finds_and_dismisses_job_60() {
     );
 }
 
-/// WaitingTests.theAPISendsWhatItWaitsFor, and ParallelTests.aSeventhJobWaitsWhileSixRunAndStartsWhenOneEnds
+/// ADMISSION-3 (docs/contracts/admission.md), WaitingTests.theAPISendsWhatItWaitsFor, and ParallelTests.aSeventhJobWaitsWhileSixRunAndStartsWhenOneEnds
 /// as the API shows it (with PipelineTests.oldJobsDecodeAndAPISendsDerivedStages on the running ones): six jobs run at once (`maxRunning`); the seventh is queued with
 /// `waiting` `{"kind": "cap", "text": "a slot opens"}` and no job named, and starts once one of
 /// the six ends, its `waiting` then null.
 #[test]
-fn a_seventh_job_waits_for_a_slot_and_says_so() {
+fn admission_3_a_seventh_job_waits_for_a_slot_and_says_so() {
     let folder = Folder::new("slot");
     let (obid, _) = obid(&folder);
     assert_eq!(call(&obid, "GET", "/v1/status", None).body["maxRunning"], 6);
