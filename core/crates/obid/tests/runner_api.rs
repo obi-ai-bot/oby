@@ -828,7 +828,10 @@ fn the_cap_is_in_status_and_settings() {
         Some(&json!({"maxRunning": 3})),
     );
     assert_eq!(set.status, 200, "{}", set.text);
-    assert_eq!(set.body, json!({"maxRunning": 3, "accountFailover": true}));
+    assert_eq!(
+        set.body,
+        json!({"maxRunning": 3, "accountFailover": true, "defaultAccount": null})
+    );
     for refused in [json!({"accountFailover": "no"}), json!({})] {
         let answer = call(&obid, "PUT", "/v1/settings/jobs", Some(&refused));
         assert_eq!(answer.status, 422, "{refused}: {}", answer.text);
@@ -839,10 +842,13 @@ fn the_cap_is_in_status_and_settings() {
         "/v1/settings/jobs",
         Some(&json!({"accountFailover": false})),
     );
-    assert_eq!(off.body, json!({"maxRunning": 3, "accountFailover": false}));
+    assert_eq!(
+        off.body,
+        json!({"maxRunning": 3, "accountFailover": false, "defaultAccount": null})
+    );
     assert_eq!(
         call(&obid, "GET", "/v1/settings/jobs", None).body,
-        json!({"maxRunning": 3, "accountFailover": false})
+        json!({"maxRunning": 3, "accountFailover": false, "defaultAccount": null})
     );
     assert_eq!(call(&obid, "GET", "/v1/status", None).body["maxRunning"], 3);
     assert!(obid.stop().success());
@@ -850,7 +856,7 @@ fn the_cap_is_in_status_and_settings() {
     let obid = start(&folder.0, &config, None);
     assert_eq!(
         call(&obid, "GET", "/v1/settings/jobs", None).body,
-        json!({"maxRunning": 3, "accountFailover": false})
+        json!({"maxRunning": 3, "accountFailover": false, "defaultAccount": null})
     );
     assert_eq!(call(&obid, "GET", "/v1/status", None).body["maxRunning"], 3);
 }
@@ -901,6 +907,148 @@ fn default_agent_is_validated_and_kept() {
     assert_eq!(
         call(&obid, "GET", "/v1/status", None).body["defaultAgent"],
         "codex"
+    );
+}
+
+/// AGENTS-4 (docs/contracts/agents.md): the account new tasks go to is set and cleared on
+/// `PUT /v1/settings/jobs`, only to an account obid has, said by `GET` and status, kept across a
+/// restart, and cleared when its account is removed.
+#[test]
+fn agents_4_the_default_account_is_validated_kept_and_cleared() {
+    let folder = Folder::new("default-account");
+    let (mut obid, config) = obid(&folder);
+    let put = |obid: &Obid, body: Value| call(obid, "PUT", "/v1/settings/jobs", Some(&body));
+    assert_eq!(
+        call(&obid, "GET", "/v1/status", None).body["defaultAccount"],
+        Value::Null
+    );
+    for refused in [
+        json!({"defaultAccount": "nobody"}),
+        json!({"defaultAccount": 1}),
+    ] {
+        let answer = put(&obid, refused.clone());
+        assert_eq!(answer.status, 422, "{refused}: {}", answer.text);
+    }
+    let set = put(&obid, json!({"defaultAccount": "stub"}));
+    assert_eq!(set.status, 200, "{}", set.text);
+    assert_eq!(set.body["defaultAccount"], "stub");
+    assert_eq!(set.body["maxRunning"], 6, "the rest stays");
+    assert_eq!(
+        call(&obid, "GET", "/v1/settings/jobs", None).body["defaultAccount"],
+        "stub"
+    );
+    assert!(obid.stop().success());
+    drop(obid);
+    let obid = start(&folder.0, &config, None);
+    assert_eq!(
+        call(&obid, "GET", "/v1/status", None).body["defaultAccount"],
+        "stub"
+    );
+    assert_eq!(
+        put(&obid, json!({"defaultAccount": null})).body["defaultAccount"],
+        Value::Null
+    );
+    put(&obid, json!({"defaultAccount": "stub"}));
+    let tuned = call(
+        &obid,
+        "PATCH",
+        "/v1/accounts/stub",
+        Some(&json!({"model": "claude-sonnet-5-5"})),
+    );
+    assert_eq!(tuned.status, 200, "{}", tuned.text);
+    let gone = call(&obid, "DELETE", "/v1/accounts/stub", None);
+    assert_eq!(gone.status, 204, "{}", gone.text);
+    assert_eq!(
+        call(&obid, "GET", "/v1/status", None).body["defaultAccount"],
+        Value::Null
+    );
+    // AGENTS-5: its model and efforts went with it.
+    let kept = std::fs::read_to_string(folder.0.join("home/settings.json")).unwrap();
+    assert!(!kept.contains("stub"), "{kept}");
+}
+
+/// AGENTS-5 and AGENTS-6 (docs/contracts/agents.md): an account's model, effort and complex-task
+/// effort are set on `PATCH /v1/accounts/{id}`, checked against the tool's choices, shown on the
+/// account, and cleared with null; a job with no model of its own runs on the account's, at its
+/// effort, and a model the job names wins.
+#[test]
+fn agents_5_6_jobs_run_on_their_accounts_model_and_effort() {
+    let folder = Folder::new("account-models");
+    let (obid, _) = obid(&folder);
+    let patch = |body: Value| call(&obid, "PATCH", "/v1/accounts/stub", Some(&body));
+    for refused in [
+        json!({"effort": "ultra"}),
+        json!({"complexEffort": "huge"}),
+        json!({"model": "a b"}),
+        json!({"model": "--dangerously-skip-permissions"}),
+        json!({"model": "gpt-6.1-sol"}),
+        json!({"effort": 3}),
+        // A name that can't be: the model with it isn't kept either.
+        json!({"name": "", "model": "claude-sonnet-5-5"}),
+    ] {
+        let answer = patch(refused.clone());
+        assert_eq!(answer.status, 422, "{refused}: {}", answer.text);
+    }
+    let account = &call(&obid, "GET", "/v1/status", None).body["accounts"][0];
+    assert!(account.get("model").is_none(), "{account}");
+    let set =
+        patch(json!({"model": "claude-sonnet-5-5", "effort": "high", "complexEffort": "max"}));
+    assert_eq!(set.status, 200, "{}", set.text);
+    assert_eq!(set.body["model"], "claude-sonnet-5-5");
+    assert_eq!(set.body["effort"], "high");
+    assert_eq!(set.body["complexEffort"], "max");
+    assert_eq!(set.body["name"], "Stub", "the rest stays");
+    let account = &call(&obid, "GET", "/v1/status", None).body["accounts"][0];
+    assert_eq!(account["model"], "claude-sonnet-5-5");
+    let ran = |job: Value| {
+        let mut whole =
+            json!({"repo": "obi-e2e/fixture-app", "kind": "research", "task": "SHOW_MODEL"});
+        whole
+            .as_object_mut()
+            .unwrap()
+            .extend(job.as_object().unwrap().clone());
+        let id = dispatch(&obid, whole)["id"].as_str().unwrap().to_owned();
+        ended(&obid, &id)["summary"].as_str().unwrap().to_owned()
+    };
+    assert_eq!(ran(json!({})), "model=claude-sonnet-5-5 effort=high");
+    assert_eq!(
+        ran(json!({"model": "claude-haiku-5-5"})),
+        "model=claude-haiku-5-5 effort=high"
+    );
+    let cleared = patch(json!({"model": null, "effort": null, "complexEffort": null}));
+    assert_eq!(cleared.status, 200, "{}", cleared.text);
+    assert!(cleared.body.get("model").is_none(), "{}", cleared.body);
+    assert_eq!(ran(json!({})), "model=none effort=none");
+}
+
+/// AGENTS-8 (docs/contracts/agents.md): the models and efforts Settings › Agents offers, and each
+/// tool's own, as status has them.
+#[test]
+fn agents_8_the_choices_are_listed() {
+    let folder = Folder::new("model-options");
+    let (obid, _) = obid(&folder);
+    let options = call(&obid, "GET", "/v1/settings/models/options", None);
+    assert_eq!(options.status, 200, "{}", options.text);
+    let options = options.body;
+    assert!(
+        options["claude"]["models"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|m| m["id"] == "claude-opus-5-5")
+    );
+    assert_eq!(
+        options["claude"]["efforts"],
+        json!(["low", "medium", "high", "xhigh", "max"])
+    );
+    assert_eq!(
+        options["codex"]["models"][0]["efforts"],
+        json!(["low", "medium", "high", "xhigh"])
+    );
+    assert_eq!(options["cursor"]["efforts"], json!([]));
+    assert_eq!(
+        call(&obid, "GET", "/v1/settings/models", None).body,
+        call(&obid, "GET", "/v1/status", None).body["models"]
     );
 }
 

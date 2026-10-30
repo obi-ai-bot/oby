@@ -112,6 +112,44 @@ fn beats(obid: &Obid, id: &str) {
     within(30, "the agent beats", || path.exists().then_some(()));
 }
 
+/// AGENTS-6 (docs/contracts/agents.md): a Codex job runs its turn on its account's model and effort;
+/// Cursor takes no effort.
+#[test]
+fn agents_6_codex_runs_on_its_accounts_model_and_effort() {
+    let folder = Folder::new("codex-effort");
+    let obid = obid(&folder, false);
+    let set = call(
+        &obid,
+        "PATCH",
+        "/v1/accounts/work",
+        Some(&json!({"model": "gpt-6-astra", "effort": "low"})),
+    );
+    assert_eq!(set.status, 200, "{}", set.text);
+    let refused = call(
+        &obid,
+        "PATCH",
+        "/v1/accounts/cursor",
+        Some(&json!({"effort": "low"})),
+    );
+    assert_eq!(refused.status, 422, "{}", refused.text);
+    let id = dispatch(&obid, json!({"agent": "codex", "task": "ENV"}));
+    let job = ended(&obid, &id);
+    assert_eq!(job["status"], "done", "{job}");
+    let thread = job["session"].as_str().unwrap();
+    let kept: Value = serde_json::from_str(
+        &std::fs::read_to_string(
+            obid.home
+                .join("logins")
+                .join(&id)
+                .join(format!("threads/{thread}.json")),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(kept["model"], "gpt-6-astra");
+    assert_eq!(kept["effort"], "low");
+}
+
 /// A Codex job: the thread starts in obid's sandbox with every approval coming to obid, its file
 /// change and its commit are approved, its commit counts, and its words are the summary. Its
 /// CODEX_HOME is a folder of the job's own (#655), never the account's: a box never writes it.

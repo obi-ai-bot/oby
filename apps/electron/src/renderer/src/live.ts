@@ -5,7 +5,7 @@ import { AGENTS, TELL, type Ask, type AskKind, type Job as JobView, type Attachm
 import { replaceChats, type Chat } from './chats';
 import { replaceTasks, type Asking, type Task } from './tasks';
 import { keepFoldersOf, nameFoldersBy, saveFolders, sendFoldersBy, takeFolders } from './folders';
-import { replaceAccounts } from './SettingsView';
+import { moveKeptChoices, replaceAccounts } from './SettingsView';
 import { BRANDS } from './brands';
 import { onObid } from './lean';
 import type { GitHubItem } from './mock';
@@ -365,6 +365,11 @@ function publish() {
   }));
 }
 
+// what a Settings change obid answered changes in its status, shown at once
+export function patchStatus(patch: Partial<Status>) {
+  if (state.status) set({ status: { ...state.status, ...patch } });
+}
+
 // the usage panel opened: obid asks the tools for usage it hasn't read in 10 minutes, which comes
 // in an `accounts` event a few seconds later
 export function lookAtUsage() {
@@ -559,6 +564,8 @@ async function sync(mine: number, pending: Event[], onSynced: () => void) {
     if (complete) keepFoldersOf(new Set(next.conversations.map((c) => c.id)));
     set(next);
     onSynced();
+    // Settings › Agents' choices kept here before obid kept them: moved to it once (AGENTS-7)
+    void moveKeptChoices(status).then((moved) => { if (moved && mine === generation) lookAtUsage(); });
     // where work can start: GitHub's list takes a moment, so the rest doesn't wait for it
     void api.repos().then(({ repos }) => { if (mine === generation) set({ repos }); }, () => {});
     // the conversations opened before: what they missed while obid was away; and the latest

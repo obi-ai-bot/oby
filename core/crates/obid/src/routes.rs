@@ -708,6 +708,7 @@ fn new_job(job: &Map<String, Value>) -> Result<NewJob, String> {
         rounds: rounds.map(|r| u32::try_from(r).unwrap_or(u32::MAX)),
         check: text("check")?,
         model: text("model")?,
+        complex: false,
         files,
         attachments: None,
         mode: text("mode")?,
@@ -851,7 +852,11 @@ pub async fn set_default_agent(
 
 /// The jobs' settings as `GET` and `PUT /v1/settings/jobs` answer them.
 fn job_settings_json(shared: &Shared) -> Value {
-    json!({"maxRunning": shared.jobs.max_running(), "accountFailover": shared.jobs.account_failover()})
+    json!({
+        "maxRunning": shared.jobs.max_running(),
+        "accountFailover": shared.jobs.account_failover(),
+        "defaultAccount": crate::settings::load(&shared.config.home).default_account,
+    })
 }
 
 /// `GET /v1/settings/jobs`: how many jobs run at once, and whether work moves on past an
@@ -860,9 +865,9 @@ pub async fn job_settings(State(shared): State<Arc<Shared>>) -> Response {
     json(StatusCode::OK, job_settings_json(&shared))
 }
 
-/// `PUT /v1/settings/jobs`: `{"maxRunning": 1…20, "accountFailover": true|false}`, either or both,
-/// kept across restarts. Raising `maxRunning` starts waiting jobs at once; lowering it stops
-/// nothing.
+/// `PUT /v1/settings/jobs`: `{"maxRunning": 1…20, "accountFailover": true|false, "defaultAccount":
+/// "<account id>"|null}`, any of them, kept across restarts. Raising `maxRunning` starts waiting
+/// jobs at once; lowering it stops nothing.
 pub async fn set_job_settings(
     State(shared): State<Arc<Shared>>,
     body: Bytes,
@@ -872,7 +877,7 @@ pub async fn set_job_settings(
     let bad = || {
         ApiError::new(
             StatusCode::UNPROCESSABLE_ENTITY,
-            "The body is {\"maxRunning\": 1 to 20, \"accountFailover\": true or false}, either or both.",
+            "The body is {\"maxRunning\": 1 to 20, \"accountFailover\": true or false, \"defaultAccount\": an account's id or null}, any of them.",
         )
     };
     let max = match value.get("maxRunning") {
@@ -887,7 +892,22 @@ pub async fn set_job_settings(
         None => None,
         Some(on) => Some(on.as_bool().ok_or_else(bad)?),
     };
-    if max.is_none() && failover.is_none() {
+    // Some(None) clears it: routing's own order again.
+    let default_account = match value.get("defaultAccount") {
+        None => None,
+        Some(Value::Null) => Some(None),
+        Some(id) => {
+            let id = id.as_str().ok_or_else(bad)?;
+            if crate::accounts::find(&shared.config.agents.get(), id).is_none() {
+                return Err(ApiError::new(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    format!("There's no account {id}."),
+                ));
+            }
+            Some(Some(id.to_owned()))
+        }
+    };
+    if max.is_none() && failover.is_none() && default_account.is_none() {
         return Err(bad());
     }
     use crate::jobs::SettingsError;
@@ -897,6 +917,11 @@ pub async fn set_job_settings(
     }
     .and_then(|()| match failover {
         Some(on) => crate::settings::update(&shared.config.home, |s| s.account_failover = Some(on))
+            .map_err(SettingsError::Unkept),
+        None => Ok(()),
+    })
+    .and_then(|()| match default_account {
+        Some(id) => crate::settings::update(&shared.config.home, |s| s.default_account = id)
             .map_err(SettingsError::Unkept),
         None => Ok(()),
     });

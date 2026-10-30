@@ -140,6 +140,10 @@ export type Account = {
   sevenDayResets: string | null;
   fiveHourResets?: string | null;
   running: number;
+  // obid only: the model and efforts its jobs run on, each only when the owner chose it (#1574)
+  model?: string;
+  effort?: string;
+  complexEffort?: string;
 };
 export type Status = {
   runner: { version: string; host: string; engine?: string };
@@ -151,6 +155,9 @@ export type Status = {
   running: number;
   // obid only: it takes working folders (on plans and conversations); an older obid sends none
   folders?: boolean;
+  // obid only: the account new tasks go to (#1573), null for routing's own order; an older obid
+  // sends none, and keeps no account's model either (#1574)
+  defaultAccount?: string | null;
 };
 
 // obid only: "GET /v1/repos", the repositories a job may start in: the listed ones first, then

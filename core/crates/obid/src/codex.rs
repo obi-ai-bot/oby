@@ -27,6 +27,8 @@ pub struct Options {
     pub resume: Option<String>,
     /// The job's own model, or `None` for Codex's.
     pub model: Option<String>,
+    /// The job's reasoning effort (its account's, #1574), or `None` for Codex's.
+    pub effort: Option<String>,
     /// The job is in Plan mode: Codex reads and plans, and obid declines its file changes.
     pub plan: bool,
     /// What the thread is told after Codex's own instructions (`developerInstructions`): a
@@ -301,6 +303,9 @@ impl<D: Fn(&str, &Value) -> Ruling, E: FnMut(Event)> Run<D, E> {
         let mut params = json!({"threadId": thread, "input": [text(prompt)]});
         if let Some(model) = options.model.as_deref().filter(|m| !m.is_empty()) {
             params["model"] = json!(model);
+        }
+        if let Some(effort) = &options.effort {
+            params["effort"] = json!(effort);
         }
         let started = self
             .call("turn/start", params)
