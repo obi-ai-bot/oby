@@ -53,6 +53,14 @@ contextBridge.exposeInMainWorld('app', {
     ipcRenderer.on('update', listener);
     return () => { ipcRenderer.off('update', listener); };
   },
+  // an Obysphere joined by its invite link (main/sphere.ts), and Leave from its settings: main
+  // holds the owner key; Leave answers why the Obysphere wasn't told, or null
+  onSphere(fn: (joined: { sphere: string; name: string }) => void) {
+    const listener = (_: unknown, joined: { sphere: string; name: string }) => fn(joined);
+    ipcRenderer.on('sphere', listener);
+    return () => { ipcRenderer.off('sphere', listener); };
+  },
+  sphereLeave: () => ipcRenderer.invoke('sphere-leave') as Promise<string | null>,
   // obid, through main, which holds its token (main/obid.ts): one call, and the event stream's
   // text as it comes, then how it ended. Following again replaces the stream before.
   obid: {

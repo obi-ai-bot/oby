@@ -118,14 +118,17 @@ function Settings({ sphere }: { sphere: Sphere }) {
         admin can take someone out (Remove) or an invite back (Cancel invite) */}
     <Group i={2} title={`Members · ${memberCount(sphere)}`}>
       <div className="set-row set-member">
-        <OwnerAvatar name={ME.name} size={28} badge={false} />
-        <span className="set-label">{ME.name} (you)<span className="set-about">{ME.email}</span></span>
+        {/* a live Obysphere's: only what obid knows, your owner id (no name or address yet) */}
+        <OwnerAvatar name={sphere.live ? sphere.me ?? 'You' : ME.name} size={28} badge={false} />
+        {sphere.live
+          ? <span className="set-label">{sphere.me ? `${sphere.me} (you)` : 'You'}</span>
+          : <span className="set-label">{ME.name} (you)<span className="set-about">{ME.email}</span></span>}
         <span className="set-role">{admin ? 'Admin' : 'Member'}</span>
       </div>
       {sphere.members.map((m) => (
         <div key={m} className="set-row set-member">
           <OwnerAvatar name={m} size={28} badge={false} />
-          <span className="set-label">{m}<span className="set-about">{m.toLowerCase()}@{sphere.domain ?? 'deskree.com'}</span></span>
+          <span className="set-label">{m}{!sphere.live && <span className="set-about">{m.toLowerCase()}@{sphere.domain ?? 'deskree.com'}</span>}</span>
           <span className="set-role">Member</span>
           {admin && <button className="set-button is-danger set-member-action" onClick={() => removeMember(sphere.id, m)} aria-label={`Remove ${m}`}>Remove</button>}
         </div>

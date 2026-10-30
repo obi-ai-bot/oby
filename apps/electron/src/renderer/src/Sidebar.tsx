@@ -12,7 +12,7 @@ import { SETTINGS_PAGES } from './SettingsView';
 import InviteModal from './InviteModal';
 import CreateSphereModal from './CreateSphereModal';
 import SphereTile from './SphereTile';
-import { CAN_CREATE, ME, SAMPLE, cancelInvite, invite, memberCount, urlOf, useSpheres, type Sphere } from './spheres';
+import { CAN_CREATE, ME, SAMPLE, canChat, cancelInvite, invite, memberCount, urlOf, useSpheres, type Sphere } from './spheres';
 import TaskMenu from './TaskMenu';
 import ConvoMenu from './ConvoMenu';
 import StatusDot from './StatusDot';
@@ -528,11 +528,18 @@ export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOp
                 in Members), each folding as Home's groups do */}
             <SphereGroup id={`members:${sphere.id}`} label="Members" folded={folded} onToggle={toggleGroup}>
             {!sphere.members.length && <p className="sidebar-empty">Just you so far</p>}
-            {(sphere.sample ? sphere.members.map((name) => ({ name })) : OBYS.filter((o) => sphere.members.includes(o.name))).filter((o) => matches(o.name)).map((o) => {
+            {(sphere.sample || sphere.live ? sphere.members.map((name) => ({ name })) : OBYS.filter((o) => sphere.members.includes(o.name))).filter((o) => matches(o.name)).map((o) => {
               // in the sample: the tour's conversations, the one showing lit, the one it calls dotted
               const n = sphere.sample ? (SAMPLE_TALK[o.name] ? 1 : 0) : convosWith(convos, o.name).length;
               const unread = sphere.sample ? tour.call === o.name : hasUnread(convos, o.name);
               const lit = sphere.sample ? tour.member === o.name : activeOby === o.name;
+              // a live Obysphere's: just who's in it (spheres.ts, canChat)
+              if (!canChat(sphere)) return (
+                <div key={o.name} className="connector oby-row">
+                  <OwnerAvatar name={o.name} size={22} />
+                  <span className="connector-text"><span className="connector-name">{o.name}</span></span>
+                </div>
+              );
               return (
                 <button key={o.name} className={`connector oby-row${lit ? ' is-active' : ''}`} aria-current={lit || undefined} onClick={() => (sphere.sample ? tourDid(o.name) : onOpenOby(o.name))} aria-label={`Chat with ${o.name}’s Oby${sphere.sample ? ', a sample' : ''}${unread ? ', new messages' : ''}`}>
                   <OwnerAvatar name={o.name} size={22} />
