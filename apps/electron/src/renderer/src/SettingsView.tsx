@@ -826,10 +826,11 @@ function Updates() {
           <button className="set-button is-primary" disabled={found.state === 'downloading' && found.restart} onClick={() => ask('install')}>Update and Restart</button>
         </Row>
       )}
-      {/* the card's own action: on the left */}
+      {/* the card's own action: on the left, always there to look again (Wellington, 2026-10-30), and
+          what the last look found beside it */}
       <div className="set-row is-action">
-        {u.state === 'current' ? <Value>Oby is up to date</Value>
-          : <button className="set-button" disabled={u.state !== 'idle'} onClick={() => ask('check')}>Check for Updates</button>}
+        <button className="set-button" disabled={u.state !== 'idle' && u.state !== 'current'} onClick={() => ask('check')}>Check for Updates</button>
+        {u.state === 'current' && <Value>Oby is up to date</Value>}
       </div>
     </Group>
   );
@@ -851,10 +852,10 @@ function About() {
           <button className="set-button is-primary" onClick={() => setFound('current')}>Update and Restart</button>
         </Row>
       )}
-      {/* the card's own action: on the left */}
+      {/* the card's own action: on the left, always there to look again, and what it found beside it */}
       <div className="set-row is-action">
-        {found === 'current' ? <Value>Oby is up to date</Value>
-          : <button className="set-button" disabled={found === 'update'} onClick={() => setFound(auto ? 'current' : 'update')}>Check for Updates</button>}
+        <button className="set-button" disabled={found === 'update'} onClick={() => setFound(auto ? 'current' : 'update')}>Check for Updates</button>
+        {found === 'current' && <Value>Oby is up to date</Value>}
       </div>
     </Group>
   </>;
