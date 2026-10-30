@@ -157,12 +157,8 @@ final class Notifications: NSObject, UIApplicationDelegate, UNUserNotificationCe
     /// other: only what waits on the owner is pushed): with Oby in front, nothing shows. Home has
     /// what it asks; the alert is delivered to Notification Center for the Lock Screen and later.
     func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification) async -> UNNotificationPresentationOptions {
-        Self.presentation(inFront: true)
-    }
-
-    /// How an alert shows while Oby is in front: not at all (no banner, no sound; it stays listed).
-    nonisolated static func presentation(inFront: Bool) -> UNNotificationPresentationOptions {
-        inFront ? [.list] : [.banner, .list, .sound]
+        // iOS asks only while Oby is in front: no banner, no sound; it stays listed.
+        [.list]
     }
 }
 
