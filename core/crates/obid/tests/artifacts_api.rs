@@ -160,12 +160,15 @@ fn a_jobs_artifacts_are_published_when_it_ends() {
         "{job}"
     );
     let published = events_named(&events, "artifact", 30, |got| got.len() >= 3);
+    // the job's own conversation (a task started on its own has one: TASKCONV-1)
+    let conversation = job["conversation"].clone();
+    assert!(conversation.is_string(), "{job}");
     for (title, artifact) in &artifacts {
         assert_eq!(artifact["job"], job_id);
-        assert_eq!(artifact["conversation"], Value::Null);
+        assert_eq!(artifact["conversation"], conversation);
         assert!(
             published.contains(&json!({"id": artifact["id"], "version": 1, "title": title,
-                "kind": artifact["kind"], "conversation": null, "job": job_id})),
+                "kind": artifact["kind"], "conversation": conversation, "job": job_id})),
             "{published:?}"
         );
     }

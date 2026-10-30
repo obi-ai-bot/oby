@@ -15,7 +15,8 @@
     "build:native": "node-gyp rebuild --directory native/window-style --target=$(node -p \"require('electron/package.json').version\") --dist-url=https://electronjs.org/headers",
     "postinstall": "install-electron && (node -e \"process.platform==='darwin'&&process.exit(1)\" || npm run build:native)",
     "test:account-limits": "node scripts/test-account-limits.mjs",
-    "test:sphere": "node scripts/test-sphere.mjs"
+    "test:sphere": "node scripts/test-sphere.mjs",
+    "test:core": "node scripts/test-core.mjs"
   },
   "dependencies": {
     "@lexical/react": "0.52.0",

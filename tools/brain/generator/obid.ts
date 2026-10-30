@@ -1,5 +1,4 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import type { BrainConfig } from './config.js';
 
@@ -22,26 +21,15 @@ export interface RustExtract {
   errors: Array<{ file: string; message: string }>;
 }
 
-const newest = (dir: string): number => {
-  let t = 0;
-  for (const name of readdirSync(dir)) {
-    if (name === 'target' || name.startsWith('.')) continue;
-    const full = join(dir, name);
-    const s = statSync(full);
-    t = Math.max(t, s.isDirectory() ? newest(full) : s.mtimeMs);
-  }
-  return t;
-};
-
-/** Builds the extractor when its source is newer than its binary (the first run takes a minute), then runs it. */
+/** Builds the extractor (the first run takes a minute; then cargo rebuilds only what changed), then runs it. */
 export function extractObid(config: BrainConfig): RustExtract {
   const dir = join(config.root, config.obid.extractor);
   const bin = join(dir, 'target', 'release', 'obid-extract');
-  if (!existsSync(bin) || statSync(bin).mtimeMs < newest(dir)) {
-    execFileSync('cargo', ['build', '--release', '--quiet', '--manifest-path', join(dir, 'Cargo.toml')], {
-      stdio: ['ignore', 'ignore', 'pipe'], env: { ...process.env, CARGO_TARGET_DIR: join(dir, 'target') },
-    });
-  }
+  // ponytail: cargo decides what's stale (its own fingerprints; a no-op build is well under a
+  // second): a check on mtimes here once left a binary older than its source in place
+  execFileSync('cargo', ['build', '--release', '--quiet', '--manifest-path', join(dir, 'Cargo.toml')], {
+    stdio: ['ignore', 'ignore', 'pipe'], env: { ...process.env, CARGO_TARGET_DIR: join(dir, 'target') },
+  });
   const out = execFileSync(bin, [config.root], { maxBuffer: 256 * 1024 * 1024, encoding: 'utf8' });
   return JSON.parse(out) as RustExtract;
 }

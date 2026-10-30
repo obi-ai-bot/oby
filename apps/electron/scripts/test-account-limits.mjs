@@ -204,6 +204,8 @@ try {
 
   {
     const s = await setup('unrelated-permission');
+    // a mode that asks: a new install runs in Bypass (#1602), which asks nothing about the network
+    await s.call('PUT', '/v1/settings/permissions', { mode: 'ask' });
     let app;
     try {
       const posted = await s.call('POST', '/v1/jobs', { job: { repo: 'obi-e2e/fixture-app', kind: 'research', agent: 'claude', account: 'stub',
