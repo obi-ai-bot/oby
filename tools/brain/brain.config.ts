@@ -31,7 +31,7 @@ export const config: BrainConfig = {
   // The eleven areas of the 2026-10-29 plan. Domain areas may not import adapters.
   areas: [
     { id: 'planning', title: 'Planning', summary: 'The plan schema and its problems: what a turn may dispatch.', domain: true, modules: [] },
-    { id: 'conversation', title: 'Conversation', summary: 'Conversations, the brain\'s turns, transcripts, artifacts and memory.', modules: ['brain', 'conversation', 'transcript', 'activity', 'detail', 'artifacts', 'memory'] },
+    { id: 'conversation', title: 'Conversation', summary: 'Conversations, the brain\'s turns, transcripts, artifacts and memory.', modules: ['brain', 'conversation', 'task_conversation', 'transcript', 'activity', 'detail', 'artifacts', 'memory'] },
     { id: 'jobs', title: 'Jobs', summary: 'Starting, scheduling and running jobs, their records and checks.', modules: ['jobs', 'job', 'store', 'groups', 'facts', 'failures', 'routines', 'obi_dir', 'clear', 'meter'] },
     { id: 'agents', title: 'Agents', summary: 'The agent CLIs: Claude Code, Codex, Cursor, and how obid talks to them.', modules: ['agent', 'codex', 'acp', 'conn', 'process'] },
     { id: 'accounts', title: 'Accounts and limits', summary: 'Accounts, sign-ins, usage, limits and the owner\'s limit decisions.', modules: ['accounts', 'usage', 'limits', 'account_limits'] },

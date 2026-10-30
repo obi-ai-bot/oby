@@ -209,10 +209,12 @@ fn the_mac_app_follows_obid_and_lists_its_jobs() {
     assert_eq!(next(&lines, "extras ", 30, &mut seen), "extras 1");
     assert_eq!(next(&lines, "inbox ", 30, &mut seen), "inbox 0");
     assert_eq!(next(&lines, "inbox-done ", 30, &mut seen), "inbox-done 0");
-    // obid has no conversation (no brain): the app reads its 404 as an empty thread.
+    // The latest conversation is the job's own (a task started on its own has one, TASKCONV-1):
+    // the owner's words, Oby's line saying it started, and how it ended. The app reads it as its
+    // one thread.
     assert_eq!(
         next(&lines, "conversation ", 30, &mut seen),
-        "conversation 0"
+        "conversation 3"
     );
     assert_eq!(
         next(&lines, "job ", 30, &mut seen),
