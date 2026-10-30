@@ -1728,11 +1728,12 @@ impl Jobs {
     }
 
     /// An app looks at the accounts (`GET /v1/status`, its event stream opening): each signed-in
-    /// Claude Code and Codex account not asked in the last [`usage_every`] is asked of its tool
-    /// now, one after another in the background, so the apps show its usage before any job runs
-    /// on it: Claude Code's own `/usage` and Codex's `account/rateLimits/read`, neither asking a
-    /// model. While no app looks, nothing is read: a running job reports its own. Cursor's CLI
-    /// reports no usage. `OBID_USAGE_READS=off` (obid's tests set it) reads none.
+    /// account not asked in the last [`usage_every`] is asked of its tool now, one after another
+    /// in the background, so the apps show its usage before any job runs on it: Claude Code's own
+    /// `/usage` and Codex's `account/rateLimits/read`, neither asking a model, and Cursor's
+    /// `about` (its plan: Cursor's CLI reports no usage, `crate::usage::cursor_about`). While no
+    /// app looks, nothing is read: a running job reports its own. `OBID_USAGE_READS=off` (obid's
+    /// tests set it) reads none.
     pub fn want_usage(self: &Arc<Self>) {
         if std::env::var_os("OBID_USAGE_READS").is_some_and(|v| v == "off")
             || self.shutting_down.load(Ordering::Relaxed)
@@ -1756,7 +1757,7 @@ impl Jobs {
         use crate::usage::Asked;
         let home = login_home();
         let every = usage_every();
-        for tool in [Tool::Claude, Tool::Codex] {
+        for tool in Tool::ALL {
             for account in self.accounts(tool) {
                 if self.shutting_down.load(Ordering::Relaxed) {
                     return;
@@ -1810,6 +1811,14 @@ impl Jobs {
         tool: Tool,
         account: &crate::config::Account,
     ) -> Result<crate::usage::Asked, String> {
+        if tool == Tool::Cursor {
+            // Unboxed, on the account's own folder, as its sign-in runs (crate::accounts):
+            // Cursor's `about` asks its server with the login's refresh token, which no copy has.
+            let bin = self
+                .agent_bin(tool)
+                .ok_or_else(|| "obid can't find Cursor's binary.".to_owned())?;
+            return crate::accounts::cursor_plan(&self.config.home, &bin, account).await;
+        }
         let dir = ReadFolder(
             self.config
                 .home

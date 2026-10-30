@@ -62,6 +62,8 @@ pub struct Shared {
     pub link: Arc<crate::sphere::Link>,
     /// The accounts' sign-ins under way (crate::accounts).
     pub sign_ins: crate::accounts::SignIns,
+    /// The tools obid sets up itself, Cursor's agent (crate::tools).
+    pub tools: crate::tools::Tools,
     /// The GitHub login and its sign-in (crate::github_login).
     pub github: crate::github_login::GitHubLogin,
     /// Oby's Tetrix login, and agents' Tetrix through obid (crate::tetrix).
@@ -134,6 +136,7 @@ pub fn router(shared: Arc<Shared>) -> Router {
             axum::routing::patch(crate::accounts::change).delete(crate::accounts::remove),
         )
         .route("/v1/accounts/{id}/reserve", post(crate::accounts::reserve))
+        .route("/v1/tools/{tool}/install", post(crate::tools::install))
         .route("/v1/github", get(crate::github_login::get))
         .route("/v1/repos", get(crate::repos::list))
         .route("/v1/repos/check", post(crate::repos::change_check))
@@ -578,6 +581,8 @@ pub struct Status {
     pub claude_keychain: KeychainJson,
     /// The same for Cursor's own login.
     pub cursor_keychain: KeychainJson,
+    /// The tools obid sets up itself (crate::tools): `{"cursor": {state, path, version, error}}`.
+    pub tools: serde_json::Value,
     /// The tunnel phones reach this Mac through (crate::tunnel): `{state, detail}`.
     pub tunnel: serde_json::Value,
     /// The gateway (crate::gateway): `{state, address, detail}`; left out with none configured.
@@ -746,15 +751,20 @@ pub fn account_json(
     let home = crate::jobs::login_home();
     let usage = shared.jobs.usage.get(&account.id);
     let now = time::now();
+    // Whether its login is there and a run can use it (#626).
+    let signed_in = crate::jobs::signed_in(tool, account, home.as_deref());
     AccountJson {
         id: account.id.clone(),
         agent: tool.id(),
         name: account.name.clone(),
         payer: account.payer.clone(),
-        // Why a login that's there can't run: Codex's token is ending.
-        label: crate::jobs::login_note(tool, account, home.as_deref()).map(str::to_owned),
-        // Whether its login is there and a run can use it (#626).
-        signed_in: crate::jobs::signed_in(tool, account, home.as_deref()),
+        // Why a login that's there can't run: Codex's token is ending. Else, while signed in, the
+        // plan the tool named (Cursor's `about`, crate::usage): a kept plan says nothing of a
+        // login that's gone.
+        label: crate::jobs::login_note(tool, account, home.as_deref())
+            .map(str::to_owned)
+            .or_else(|| signed_in.then(|| usage.plan.clone()).flatten()),
+        signed_in,
         five_hour: usage.five_hour_at(now),
         seven_day: usage.seven_day_at(now),
         five_hour_resets: usage.five_hour_resets.map(time::format),
@@ -818,6 +828,7 @@ async fn status(State(shared): State<Arc<Shared>>) -> Result<axum::Json<Status>,
             on: crate::jobs::cursor_keychain_on(),
             auto: crate::jobs::cursor_keychain_auto(),
         },
+        tools: crate::tools::status_json(&shared),
         // Remote access through a Cloudflare Tunnel is gone (#896): always off, for the apps that
         // still decode it.
         tunnel: serde_json::json!({"state": "off", "detail": null}),

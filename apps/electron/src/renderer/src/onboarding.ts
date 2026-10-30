@@ -5,7 +5,7 @@ import { wait } from './stream';
 import { onObid } from './lean';
 import { CAN_CREATE } from './spheres';
 import { ApiError, api, type TetrixTarget } from './obid';
-import { ask, liveState, say, useLive } from './live';
+import { ask, ensureCursor, liveState, say, useLive } from './live';
 import { AGENTS, type Agent, type SetupStep } from './mock';
 
 // Setting up, in Oby's first conversation: no wizard, Oby talks you through it
@@ -118,7 +118,11 @@ export async function signInAgent(a: Agent) {
       if (gone()) return;
       if (!account.signedIn) { delete tries[a]; return back(a, account.label ?? `Sign in with ${AGENTS[a].name} itself on this Mac, then Connect again.`); }
     } else {
-      t.account = s?.accounts.find((x) => x.agent === a)?.id ?? (t.made = (await api.addAccount({ agent: a, name: 'Personal' })).id);
+      // Cursor's agent first, set up by obid when it isn't on this Mac: nothing of Cursor's needs
+      // installing or signing in before Connect (its own login, id `cursor`, isn't obid's to sign in)
+      if (a === 'cursor') await ensureCursor();
+      if (gone()) return;
+      t.account = s?.accounts.find((x) => x.agent === a && x.id !== 'cursor')?.id ?? (t.made = (await api.addAccount({ agent: a, name: 'Personal' })).id);
       if (gone()) return void unmake(t);
       const page = await api.signIn(t.account);
       if (gone()) return void unmake(t);
