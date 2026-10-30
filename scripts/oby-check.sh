@@ -33,7 +33,7 @@
 # not verified: they're verified outside a job's sandbox only.
 #
 # Builds and tests run as many jobs at once as obid says the Mac's memory leaves them (OBY_BUILD_JOBS,
-# CARGO_BUILD_JOBS, RUST_TEST_THREADS: one per 1.5 GiB of the room admission leaves, at most half the
+# CARGO_BUILD_JOBS, RUST_TEST_THREADS: one per 1.5 GiB of the room memory leaves, at most half the
 # cores), for Cargo, Rust's tests, swift test (-j) and xcodebuild (-jobs). Run by hand, outside obid,
 # every one gets 4, on purpose: obid runs one check at a time, and a Mac has other work.
 set -eo pipefail

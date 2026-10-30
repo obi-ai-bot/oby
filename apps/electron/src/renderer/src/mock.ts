@@ -90,8 +90,6 @@ export type LogLine = { tool: 'Read' | 'Edit' | 'Bash' | 'Grep' | 'Say'; text: s
 // what a queued job waits for: `kind` as the runner's (cap, update, schedule, limit), `text`
 // what follows "Waiting"
 export type Waiting = { kind: string; text: string };
-// obid holds it back until the Mac has room for it (docs/runner-api.md, admission by memory)
-export const MEMORY_WAIT: Waiting = { kind: 'cap', text: 'memory frees up' };
 
 export type Job = {
   id: string;

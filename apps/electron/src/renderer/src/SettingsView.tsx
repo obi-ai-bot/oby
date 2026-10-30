@@ -9,7 +9,7 @@ import { everything, onObid } from './lean';
 import { ApiError, api, type ModelOptions, type Models, type SavedRule, type SignIn, type Status } from './obid';
 import Connectors, { ConfirmWindow, readConnectors } from './Connectors';
 import { Menu } from './Menu';
-import { ensureCursor, useLive } from './live';
+import { useLive } from './live';
 import { version } from '../../../package.json';
 
 // how long the way out takes (the sink animation in app.css)
@@ -310,8 +310,6 @@ function useSignIns(accounts: Account[], setAccounts: (a: Account[]) => void) {
   const signIn = (id: string) => tried(id, async () => {
     put(id, 'opening');
     try {
-      // Cursor's agent first, set up by obid when it isn't on this Mac (live.ts, ensureCursor)
-      if (accounts.find((a) => a.id === id)?.agent === 'cursor') await ensureCursor();
       const page = await api.signIn(id);
       put(id, page);
       window.app?.openExternal(page.url);

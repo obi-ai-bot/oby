@@ -11,50 +11,9 @@ What a Cursor job does in the launch build, on obid:
 
 - Its file edits can't be gated yet ("Edits are not gated", below), so Ask mode behaves as Accept
   edits on Cursor.
-- It shows no usage meter: Cursor's CLI gives obid no usage ("Usage and limits", below), so
-  routing gives it work last (docs/runner-api.md, "Routing"). Its card shows its plan, and, once
-  a job hit its limit, until when (the day its monthly cycle ends).
-- Connecting it needs nothing of Cursor's on the Mac (the owner's ask of 2026-10-28): Connect has
-  obid set Cursor's agent up when it isn't there (docs/runner-api.md, "obid only: tools"), then
-  runs Cursor's own browser sign-in for an account of obid's.
+- It shows no usage meter: Cursor reports no usage, so routing gives it work last
+  (docs/runner-api.md, "Routing").
 - It doesn't review: Oby's review of a finished job never runs on Cursor.
-
-## Usage and limits
-
-What Cursor exposes of an account, checked against cursor-agent 2026.10.22-27dcf5f on 2026-10-28
-(its package read, and its `login`, `status` and `about` run in a scratch home; the signed-in
-half, `about` and `/usage` with a real account, is still to be run on a Mac with one):
-
-| Surface | What it gives | What obid does |
-| --- | --- | --- |
-| `cursor-agent about --format json` | `subscriptionTier` (the plan's name: `Pro`, `Ultra`, `Teams`), the email, the CLI version. Null while signed out, and with a login copy without the refresh token (it asks its server with both). No usage. | Reads the plan every 10 minutes while an app looks, on the account's own folder (never a copy, never Cursor's own Keychain login), keeps only the plan (`usage.json`, `plan`), shows it as the account's label. |
-| `cursor-agent status --format json` | Whether it's signed in, the user id. | Nothing: `signedIn` comes from the login file (docs/runner-api.md, Account). |
-| A limit mid-job (ACP `session/prompt` error) | `You've hit your usage limit. Try again later.`; `You've hit your usage limit for Opus … Your usage limits will reset when your monthly cycle ends on 4/12/2026`; `You're out of usage. Switch to Auto…`; `You've hit your free requests limit… ends on 11/17/2025`. | Marks the account full until that day (00:00 UTC), else for an hour; failover moves the job to another Cursor account with room (`crate::limits`). The soft `Increase limits for faster responses… slow pool… switch to Auto` isn't a limit. |
-| The CLI's own `/usage` (interactive only: "Show plan and on-demand usage") | Cursor's `DashboardService/GetCurrentPeriodUsage`, `GetHardLimit` and `GetPlanInfo`, with the login's token: the plan, `Resets <Mon D>` (the billing cycle's end), included usage as percents (`totalPercentUsed`, `autoPercentUsed`, `apiPercentUsed`) and on-demand spend in dollars (`usedDollars`, `limitDollars`; `fixed`, `unlimited`, `disabled`). On some plans it says `Usage details are not available for this plan in the CLI.` | Nothing. It runs only inside Cursor's interactive terminal UI (no flag, no `--print` form, nothing over ACP), so obid would have to call those endpoints itself with the account's token: obid never uses an agent's login outside the tool (AGENTS.md, "Rules Oby never breaks"), so that waits for the owner's decision, or for Cursor to put `/usage` on `about` or ACP. |
-| ACP `usage_update`, `PromptResponse.usage` | Not sent by Cursor's ACP (forum 171923, 165358), and session tokens, not the account's pools, when they come. | Counted as the job's tokens when they come (`crate::usage::acp_tokens`). |
-| Team and Enterprise Admin API (`/teams/spend`, `/teams/daily-usage-data`) | Per-member spend and events for a team admin key. Nothing for a Pro account. | Nothing (docs/research/cursor-usage.md, option 1). |
-
-So a Cursor card says: its plan (`Pro`), `usage on cursor.com/dashboard`, and once a job hit its
-limit `At its limit until Nov 12, when Cursor's cycle ends`. The numbers the dashboard and the
-CLI's `/usage` show (percent of the included pool, on-demand dollars) stay there until one of the
-two above happens.
-
-## Connecting
-
-`cursor-agent login` prints `Open a browser and navigate to this link:
-https://cursor.com/loginDeepControl?challenge=…&uuid=…&mode=login&redirectTarget=cli&supportsSelectedTeamLogin=true`
-with `NO_OPEN_BROWSER=1` and no terminal, then polls `api2.cursor.sh/auth/poll` (up to 150 polls,
-1 to 10 seconds apart) and writes the login, with `AGENT_CLI_CREDENTIAL_STORE=file`, to
-`$HOME/.cursor/auth.json` on macOS and `$XDG_CONFIG_HOME/cursor/auth.json` elsewhere (the package's
-`getAuthFilePath`): where obid looks. Every command of its, `login` too, makes `/tmp/.cursor/<cwd>`
-whatever `TMPDIR` says: a box that denies `/tmp` stops it ("Launch", `SOCKET_ROOM`), which is why
-the sign-in and `about` run unboxed.
-
-Why connecting failed before 2026-10-28: Oby's Connect ran the tool's own login, so a Mac with no
-`cursor-agent` installed got `obid can't find Cursor's binary by an absolute path` and nothing to
-do about it, and a Mac whose own Cursor login had expired in the Keychain got `Run cursor-agent
-once` with no way to a login of Oby's own. Now Connect sets the agent up first and signs an account
-of obid's in on Cursor's page; the Mac's own Cursor install and login are never needed.
 - Its questions reach the owner and wait for the answer (#1456), its Plan mode waits for the
   owner's OK (#1452), and a repository's hooks ask before Cursor starts (#1454, "A repository's
   hooks", below).

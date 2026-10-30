@@ -111,8 +111,8 @@ pub fn sandbox_env(
 pub const BUILD_JOB_MEMORY: u64 = 1536 * 1024 * 1024;
 
 /// How many jobs a build runs at once, and its tests' threads, with `room` bytes of memory left it
-/// (crate::jobs, admission's room): one for each [`BUILD_JOB_MEMORY`], at most half the cores (the
-/// Mac has other work), at least 1.
+/// (crate::jobs, `build_env`): one for each [`BUILD_JOB_MEMORY`], at most half the cores (the Mac
+/// has other work), at least 1.
 pub fn build_jobs(room: u64) -> usize {
     let cores = std::thread::available_parallelism().map_or(2, std::num::NonZero::get);
     let fits = room / BUILD_JOB_MEMORY;

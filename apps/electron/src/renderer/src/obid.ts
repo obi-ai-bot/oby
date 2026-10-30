@@ -108,8 +108,6 @@ export const api = {
   signIn: (a: string) => call<SignIn>('GET', `/v1/accounts/${id(a)}/sign-in`),
   signInCode: (a: string, code: string) => call<Account>('POST', `/v1/accounts/${id(a)}/sign-in`, { code }),
   endSignIn: (a: string) => call<null>('DELETE', `/v1/accounts/${id(a)}/sign-in`),
-  // obid only: sets a tool up on this Mac (Cursor's agent), in the background; status.tools says how it stands
-  installTool: (tool: Agent) => call<NonNullable<Status['tools']>>('POST', `/v1/tools/${id(tool)}/install`),
   // obid only: GitHub's sign-in (gh's device flow), and Tetrix's
   github: () => call<GitHub>('GET', '/v1/github'),
   githubSignIn: () => call<SignIn>('POST', '/v1/github/sign-in'),
