@@ -48,10 +48,16 @@ pub struct Places {
 }
 
 impl Places {
+    /// This Mac's: `OBID_PERSON_HOMES` (paths joined as `PATH` joins them) names the person's
+    /// homes instead, so obid's tests have a home of their own wherever their folders are made
+    /// (cargo's temporary folder may be in `/private/tmp` or `~/Library/Caches`, as in Oby's own
+    /// jobs). The checks stay the same.
     pub fn of(shared: &Shared) -> Places {
         let agents = shared.config.agents.get();
         Places {
-            homes: crate::jobs::person_homes(),
+            homes: std::env::var_os("OBID_PERSON_HOMES")
+                .map(|homes| std::env::split_paths(&homes).collect())
+                .unwrap_or_else(crate::jobs::person_homes),
             obid: shared.config.home.clone(),
             accounts: [agents.claude, agents.codex, agents.cursor]
                 .into_iter()
@@ -135,21 +141,29 @@ fn refused(places: &Places, real: &Path) -> Option<&'static str> {
     if real == key(Path::new("/Volumes")) {
         return Some("holds your Mac's disks: pick a folder on one.");
     }
+    let mut in_home = false;
     for home in &places.homes {
-        if real == resolved(home) {
+        let home_key = resolved(home);
+        if real == home_key {
             return Some("is your whole home folder: pick a folder inside it.");
         }
         if within(&real, &resolved(&home.join("Library"))) {
             return Some("is where your Mac keeps its own settings, so Oby doesn't work there.");
         }
+        in_home |= within(&real, &home_key);
     }
-    for root in SYSTEM {
-        if within(&real, &key(Path::new(root))) {
-            return Some("is where your Mac keeps its own files, so Oby doesn't work there.");
+    // A folder in the person's home is theirs: only the home's own guards (its Library above, the
+    // logins and keys below) apply there, never the system's folders it may sit under (a home in
+    // `/private/var`, as a test's is).
+    if !in_home {
+        for root in SYSTEM {
+            if within(&real, &key(Path::new(root))) {
+                return Some("is where your Mac keeps its own files, so Oby doesn't work there.");
+            }
         }
-    }
-    if cfg!(target_os = "linux") && LINUX.iter().any(|root| within(&real, root)) {
-        return Some("is where the system keeps its own files, so Oby doesn't work there.");
+        if cfg!(target_os = "linux") && LINUX.iter().any(|root| within(&real, root)) {
+            return Some("is where the system keeps its own files, so Oby doesn't work there.");
+        }
     }
     if touches(&places.obid) {
         return Some("holds Oby's own files, so Oby doesn't work there.");

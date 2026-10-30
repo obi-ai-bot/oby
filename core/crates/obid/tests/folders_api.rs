@@ -16,14 +16,31 @@ fn harness_obid(folder: &Folder) -> Obid {
     let account = folder.0.join("home/accounts/stub");
     std::fs::create_dir_all(&account).unwrap();
     std::fs::write(account.join(".credentials.json"), "{}").unwrap();
-    start(&folder.0, &config, None)
+    start_at_home(folder, &config)
 }
 
-/// Folders the owner picks, made for the test outside the system's temporary folder (on macOS
-/// `/private/var/…`, where Oby never works): under cargo's own for integration tests.
-fn picked(test: &str, names: &[&str]) -> Vec<PathBuf> {
-    let root = Path::new(env!("CARGO_TARGET_TMPDIR"))
-        .join(format!("folders-{test}-{}", std::process::id()));
+/// The test's own home (obid's `HOME` in tests): the person's home its obid checks folders against.
+fn home_of(folder: &Folder) -> PathBuf {
+    folder.0.join("env-home")
+}
+
+/// obid with the test's home as the person's only one (`OBID_PERSON_HOMES`), so the folders it
+/// picks there pass wherever the test runs: never this Mac's own home, whose `~/Library` or
+/// `/private/tmp` may hold cargo's folders (as in Oby's own jobs).
+fn start_at_home(folder: &Folder, config: &Value) -> Obid {
+    let home = home_of(folder);
+    std::fs::create_dir_all(&home).unwrap();
+    start_with(
+        &folder.0,
+        config,
+        None,
+        &[("OBID_PERSON_HOMES", home.to_str().unwrap())],
+    )
+}
+
+/// Folders the owner picks, in the test's home.
+fn picked(folder: &Folder, names: &[&str]) -> Vec<PathBuf> {
+    let root = home_of(folder).join("Projects");
     let _ = std::fs::remove_dir_all(&root);
     names
         .iter()
@@ -62,7 +79,7 @@ fn folders_of(obid: &Obid, id: &str) -> Value {
 fn folders_6_a_conversation_keeps_its_folders_for_later_words() {
     let folder = Folder::new("folders-6");
     let obid = harness_obid(&folder);
-    let [api, web] = <[PathBuf; 2]>::try_from(picked("6", &["api", "web"])).unwrap();
+    let [api, web] = <[PathBuf; 2]>::try_from(picked(&folder, &["api", "web"])).unwrap();
     let status = call(&obid, "GET", "/v1/status", None);
     assert_eq!(status.body["folders"], true, "{}", status.text);
 
@@ -106,7 +123,7 @@ fn folders_9_refused_paths_keep_nothing() {
     let folder = Folder::new("folders-9");
     let remote = fixture(&folder.0.join("fixture"));
     let [login, file_parent, agent, keys] = <[PathBuf; 4]>::try_from(picked(
-        "9",
+        &folder,
         &["login", "parent", "agent/claude-real", "keys/ssh-real"],
     ))
     .unwrap();
@@ -116,14 +133,14 @@ fn folders_9_refused_paths_keep_nothing() {
         .unwrap()
         .push(json!({"id": "other", "name": "Other", "configDir": login}));
     // The person's ~/.claude and ~/.ssh are links to elsewhere: where they lead is guarded too.
-    let env_home = folder.0.join("env-home");
-    std::fs::create_dir_all(&env_home).unwrap();
+    let env_home = home_of(&folder);
+    std::fs::create_dir_all(env_home.join("Library")).unwrap();
     std::os::unix::fs::symlink(&agent, env_home.join(".claude")).unwrap();
     std::os::unix::fs::symlink(&keys, env_home.join(".ssh")).unwrap();
-    let obid = start(&folder.0, &config, None);
+    let obid = start_at_home(&folder, &config);
     let file = file_parent.join("notes.txt");
     std::fs::write(&file, "notes").unwrap();
-    let home = std::env::var("HOME").unwrap();
+    let home = text(&env_home);
     let obid_home = folder.0.join("home");
     let holding = folder.0.file_name().unwrap().to_str().unwrap();
     // On macOS the test's own folders are in /private/var, the system's.
@@ -205,7 +222,7 @@ fn folders_9_refused_paths_keep_nothing() {
 fn folders_10_a_link_is_kept_as_the_folder_it_points_to() {
     let folder = Folder::new("folders-10");
     let obid = harness_obid(&folder);
-    let [api] = <[PathBuf; 1]>::try_from(picked("10", &["api"])).unwrap();
+    let [api] = <[PathBuf; 1]>::try_from(picked(&folder, &["api"])).unwrap();
     let work = api.parent().unwrap().join("work");
     std::os::unix::fs::symlink(&api, &work).unwrap();
 
@@ -221,7 +238,7 @@ fn folders_10_a_link_is_kept_as_the_folder_it_points_to() {
 fn folders_22_the_same_words_twice_add_nothing() {
     let folder = Folder::new("folders-22");
     let obid = harness_obid(&folder);
-    let [api, web] = <[PathBuf; 2]>::try_from(picked("22", &["api", "web"])).unwrap();
+    let [api, web] = <[PathBuf; 2]>::try_from(picked(&folder, &["api", "web"])).unwrap();
     let words = "11111111-2222-4333-8444-555555555555";
 
     let first = plan(
@@ -254,7 +271,7 @@ fn folders_a_conversation_works_in_at_most_20() {
     let obid = harness_obid(&folder);
     let names: Vec<String> = (0..21).map(|n| format!("f{n}")).collect();
     let names: Vec<&str> = names.iter().map(String::as_str).collect();
-    let all: Vec<String> = picked("most", &names).iter().map(|p| text(p)).collect();
+    let all: Vec<String> = picked(&folder, &names).iter().map(|p| text(p)).collect();
     let at_most = "A conversation works in at most 20 folders.";
 
     let too_many = call(

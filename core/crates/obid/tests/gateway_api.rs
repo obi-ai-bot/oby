@@ -1513,10 +1513,18 @@ fn folders_7_a_paired_phone_adds_no_folder() {
     let account = folder.0.join("home/accounts/stub");
     std::fs::create_dir_all(&account).unwrap();
     std::fs::write(account.join(".credentials.json"), "{}").unwrap();
-    let obid = start(&folder.0, &config, None);
+    // The test's own home is the person's (`OBID_PERSON_HOMES`), and its folders are made there:
+    // never this Mac's home, wherever cargo's folders are.
+    let home = folder.0.join("env-home");
+    std::fs::create_dir_all(&home).unwrap();
+    let obid = start_with(
+        &folder.0,
+        &config,
+        None,
+        &[("OBID_PERSON_HOMES", home.to_str().unwrap())],
+    );
     let token = paired(&obid);
-    let picked = Path::new(env!("CARGO_TARGET_TMPDIR"))
-        .join(format!("gateway-folders-{}", std::process::id()));
+    let picked = folder.0.join("env-home/Projects");
     let _ = std::fs::remove_dir_all(&picked);
     let [api, web] = ["api", "web"].map(|name| {
         let path = picked.join(name);
@@ -1591,13 +1599,21 @@ async fn folders_7_a_phone_on_the_relay_adds_no_folder() {
     let account = folder.0.join("home/accounts/stub");
     std::fs::create_dir_all(&account).unwrap();
     std::fs::write(account.join(".credentials.json"), "{}").unwrap();
-    let obid = start(&folder.0, &config, None);
+    // The test's own home is the person's (`OBID_PERSON_HOMES`), and its folders are made there:
+    // never this Mac's home, wherever cargo's folders are.
+    let home = folder.0.join("env-home");
+    std::fs::create_dir_all(&home).unwrap();
+    let obid = start_with(
+        &folder.0,
+        &config,
+        None,
+        &[("OBID_PERSON_HOMES", home.to_str().unwrap())],
+    );
     let membership =
         tokio::task::block_in_place(|| join_a(&obid, &sphere, &Owner::new("wellington")));
     assert_eq!(membership["state"], "joined");
     let (mut phone, token, _) = relay_paired(&obid, &sphere, "Alice's iPhone").await;
-    let picked = Path::new(env!("CARGO_TARGET_TMPDIR"))
-        .join(format!("relay-folders-{}", std::process::id()));
+    let picked = folder.0.join("env-home/Projects");
     let _ = std::fs::remove_dir_all(&picked);
     let [api, web] = ["api", "web"].map(|name| {
         let path = picked.join(name);
