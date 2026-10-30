@@ -402,8 +402,11 @@ impl Tetrix {
     /// Starts a sign-in to `target` (a preset's id or a URL), in place of the one under way, and
     /// gives the page the person opens.
     async fn start(self: &Arc<Self>, target: Target) -> Result<Value, ApiError> {
-        let bad = |text: String| ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, text);
-        let gateway = |text: String| ApiError::new(StatusCode::BAD_GATEWAY, text);
+        let bad = |text: String| {
+            ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, text).because("badAddress")
+        };
+        let gateway =
+            |text: String| ApiError::new(StatusCode::BAD_GATEWAY, text).because("noSignIn");
         let (url, preset, client) = match (target.preset, target.url) {
             (Some(id), None) => {
                 let preset = self
@@ -588,7 +591,10 @@ impl Tetrix {
                 let id = self
                     .register(register, &redirect, &scopes)
                     .await
-                    .map_err(gateway)?;
+                    // (it said where to sign in: registering there failed, or was refused)
+                    .map_err(|why| {
+                        ApiError::new(StatusCode::BAD_GATEWAY, why).because("didNotStart")
+                    })?;
                 let mut saved = self.saved();
                 saved.clients.insert(
                     issuer_text.clone(),

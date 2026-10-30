@@ -5,7 +5,8 @@ import { wait } from './stream';
 import { onObid } from './lean';
 import { CAN_CREATE } from './spheres';
 import { ApiError, api, type TetrixTarget } from './obid';
-import { ask, liveState, say, useLive } from './live';
+import { ask, liveState, useLive } from './live';
+import { UNFINISHED, signInSaid, signInWhy } from './signInWhy';
 import { AGENTS, type Agent, type SetupStep } from './mock';
 
 // Setting up, in Oby's first conversation: no wizard, Oby talks you through it
@@ -37,7 +38,7 @@ export type Setup = {
   call?: string;        // in the sample: who's called next (or Knowledge)
   at: SetupStep | null; // the step waiting on your pick
   codes: Partial<Record<Agent | 'github', Code>>;
-  problems: Partial<Record<Agent, string>>; // why an agent's last sign-in didn't take, till the next try
+  problems: Partial<Record<Agent | 'github' | 'tetrix', string>>; // why its last sign-in didn't take, till the next try (signInWhy.ts)
   githubUser?: string;
 };
 let setup: Setup = {
@@ -77,8 +78,8 @@ async function signIn(get: (s: Setup) => Sign, put: (v: Sign) => Partial<Setup>)
 }
 const agentSign = (a: Agent, v: Sign) => ({ agents: { ...setup.agents, [a]: v } });
 const open = (url: string) => window.app?.openExternal(url);
-// what went wrong, said, and the row back to its button
-const failed = (e: unknown, back: () => void) => { back(); say(e); };
+// GitHub's or Tetrix's row: how it stands, with why under it once it's back to its button
+const row = (k: 'github' | 'tetrix', v: Sign, why?: string) => set((x) => ({ [k]: v, problems: { ...x.problems, [k]: why } }));
 
 // An agent: its login already on this Mac becomes an account (availableLogins); else an account
 // of its own, signed in with the tool's own login on its page. obid's `accounts` event says when
@@ -96,7 +97,7 @@ async function unmake(t: Try) {
 }
 // the row's button again, with why if it failed
 const back = (a: Agent, why?: string) => set((x) => ({ ...agentSign(a, 'out'), codes: { ...x.codes, [a]: undefined }, problems: { ...x.problems, [a]: why } }));
-const reason = (e: unknown) => (e instanceof Error ? e.message : String(e));
+const reason = (a: Agent, e: unknown) => signInWhy(AGENTS[a].name, e);
 export async function signInAgent(a: Agent) {
   if (!onObid) return signIn((s) => s.agents[a], (v) => agentSign(a, v));
   if (setup.agents[a] !== 'out' || signedIn(a)) return;
@@ -116,7 +117,7 @@ export async function signInAgent(a: Agent) {
     if (own) {
       const account = await api.addAccount({ agent: a, default: true });
       if (gone()) return;
-      if (!account.signedIn) { delete tries[a]; return back(a, account.label ?? `Sign in with ${AGENTS[a].name} itself on this Mac, then Connect again.`); }
+      if (!account.signedIn) { delete tries[a]; return back(a, account.label ?? signInSaid(AGENTS[a].name, 'ownLogin')); }
     } else {
       t.account = s?.accounts.find((x) => x.agent === a)?.id ?? (t.made = (await api.addAccount({ agent: a, name: 'Personal' })).id);
       if (gone()) return void unmake(t);
@@ -132,13 +133,13 @@ export async function signInAgent(a: Agent) {
     delete tries[a];
     // signed in: obid says so (useSetup); the row's own state back to rest under that
     if (done) set((x) => ({ ...agentSign(a, 'out'), codes: { ...x.codes, [a]: undefined } }));
-    else { await unmake(t); back(a, 'Didn’t finish signing in. Try again.'); }
+    else { await unmake(t); back(a, UNFINISHED); }
   } catch (e) {
     // (cancelled: Cancel undid it)
     if (gone()) return;
     delete tries[a];
     await unmake(t);
-    back(a, reason(e));
+    back(a, reason(a, e));
   }
 }
 // Cancel, while its page is open
@@ -162,7 +163,7 @@ export async function sendAgentCode(a: Agent, code: string) {
     if (!t || tries[a] !== t || !(e instanceof ApiError && e.status === 422)) return;
     delete tries[a];
     await unmake(t);
-    back(a, reason(e));
+    back(a, reason(a, e));
   }
 }
 
@@ -171,19 +172,21 @@ async function until(done: () => Promise<boolean>, minutes = 15) {
   for (const end = Date.now() + minutes * 60_000; Date.now() < end; await wait(3000)) if (await done().catch(() => false)) return true;
   return false;
 }
-// GitHub, with gh's own device sign-in: its code to type on GitHub's page
+// GitHub, with gh's own device sign-in: its code to type on GitHub's page. gh ending without a
+// login (its sign-in gone, not signed in) or running out puts Connect back with why
 export async function signInGitHub() {
   if (!onObid) return signIn((s) => s.github, (github) => ({ github }));
   if (setup.github !== 'out') return;
-  set(() => ({ github: 'waiting' }));
+  row('github', 'waiting');
   try {
     const page = await api.githubSignIn();
     set((x) => ({ codes: { ...x.codes, github: { userCode: page.userCode } } }));
     open(page.url);
-    const ok = await until(async () => { const g = await api.github(); if (g.signedIn) set(() => ({ github: 'in', githubUser: g.user ?? undefined })); return g.signedIn; });
-    if (!ok) set(() => ({ github: 'out' }));
+    let signed = false;
+    await until(async () => { const g = await api.github(); if ((signed = g.signedIn)) set(() => ({ github: 'in', githubUser: g.user ?? undefined })); return signed || !g.signIn; });
+    if (!signed) row('github', 'out', UNFINISHED);
   } catch (e) {
-    failed(e, () => set(() => ({ github: 'out' })));
+    row('github', 'out', signInWhy('GitHub', e));
   }
 }
 // Tetrix: Oby signs in once, for every agent, to the Tetrix the person picked in Connect Tetrix
@@ -191,15 +194,19 @@ export async function signInGitHub() {
 export async function connectTetrix(to?: TetrixTarget) {
   if (!onObid) return signIn((s) => s.tetrix, (tetrix) => ({ tetrix }));
   if (!to || setup.tetrix !== 'out') return;
-  set(() => ({ tetrix: 'waiting' }));
+  row('tetrix', 'waiting');
   try {
     open((await api.tetrixSignIn(to)).url);
-    if (!(await until(async () => (await api.tetrix()).connected, 10))) set(() => ({ tetrix: 'out' }));
-    else set(() => ({ tetrix: 'in' }));
+    let connected = false;
+    await until(async () => { const t = await api.tetrix(); connected = t.connected; return connected || !t.signIn; }, 10);
+    if (connected) row('tetrix', 'in');
+    else row('tetrix', 'out', UNFINISHED);
   } catch (e) {
-    failed(e, () => set(() => ({ tetrix: 'out' })));
+    row('tetrix', 'out', signInWhy('Tetrix', e));
   }
 }
+// Tetrix's Connect window couldn't open (obid didn't answer): why, under its row
+export const tetrixFailed = (e: unknown) => row('tetrix', 'out', signInWhy('Tetrix', e));
 
 // On obid, what's signed in already shows so at once
 async function already() {

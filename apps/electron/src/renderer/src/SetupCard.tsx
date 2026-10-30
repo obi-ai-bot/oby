@@ -6,10 +6,10 @@ import { SAMPLE, memberCount } from './spheres';
 import { tetrixFor } from './knowledge';
 import { SAMPLE_TALK, Sphere, SphereHowTo, still } from './Welcome';
 import { AGENTS, type Agent, type SetupStep } from './mock';
-import { FIRST_TASK, accountOf, cancelAgent, connectTetrix, pick, sceneDone, sceneReplayed, sendAgentCode, signInAgent, signInGitHub, useSetup, type Code } from './onboarding';
+import { FIRST_TASK, accountOf, cancelAgent, connectTetrix, pick, sceneDone, sceneReplayed, sendAgentCode, signInAgent, signInGitHub, tetrixFailed, useSetup, type Code } from './onboarding';
 import { onObid } from './lean';
 import { PasteCode } from './SettingsView';
-import { say, useLive } from './live';
+import { useLive } from './live';
 import { api, type Tetrix } from './obid';
 import { TetrixWindow } from './Connectors';
 
@@ -41,7 +41,7 @@ export default function SetupCard({ step }: { step: SetupStep }) {
     rows = <AgentRows />;
     picks = [{ label: 'Continue', ok: Object.values(s.agents).includes('in') && s.found >= 3 }];
   } else if (step === 'github') {
-    rows = <Row mark={mark(BRANDS.github)} name="GitHub" state={s.github} act="Sign in" onAct={signInGitHub}
+    rows = <Row mark={mark(BRANDS.github)} name="GitHub" state={s.github} act="Sign in" onAct={signInGitHub} why={s.problems.github}
       sub={s.github === 'in' ? (onObid ? `${s.githubUser ?? 'Signed in'}${repos ? ` · ${repos} repositories` : ''}` : 'well-prado · 189 repositories')
         : s.github === 'waiting' ? `Finish in your browser${typed(s.codes.github)}` : 'Not signed in'} />;
     picks = [{ label: 'Continue', ok: s.github === 'in' }, { label: 'Not now', quiet: true }];
@@ -172,7 +172,7 @@ const Row = ({ mark, name, sub, why, code, state, act, onAct, onCancel, canCance
 export function GitHubRow() {
   const s = useSetup();
   return <Row mark={<BrandMark brand={BRANDS.github} size={22} />} name="GitHub" state={s.github} act="Connect" onAct={signInGitHub}
-    code={s.codes.github?.userCode ?? undefined} bare />;
+    why={s.problems.github} code={s.codes.github?.userCode ?? undefined} bare />;
 }
 
 // Tetrix on the new onboarding's knowledge step, the same way: a spinner while it's under way, then
@@ -181,9 +181,9 @@ export function GitHubRow() {
 export function TetrixRow({ sub, bare = true }: { sub?: string; bare?: boolean }) {
   const s = useSetup();
   const [asking, setAsking] = useState<Tetrix | null>(null);
-  const connect = onObid ? () => void api.tetrix().then(setAsking, say) : () => void connectTetrix();
+  const connect = onObid ? () => void api.tetrix().then(setAsking, tetrixFailed) : () => void connectTetrix();
   return <>
-    <Row mark={<BrandMark brand={BRANDS.tetrix} size={22} />} name="Tetrix" sub={sub} state={s.tetrix} act="Connect" onAct={connect} bare={bare} />
+    <Row mark={<BrandMark brand={BRANDS.tetrix} size={22} />} name="Tetrix" sub={sub} why={s.problems.tetrix} state={s.tetrix} act="Connect" onAct={connect} bare={bare} />
     {asking && <TetrixWindow tetrix={asking} waiting={false} onConnect={(to) => { setAsking(null); void connectTetrix(to); }}
       onCancel={() => setAsking(null)} onClose={() => setAsking(null)} />}
   </>;

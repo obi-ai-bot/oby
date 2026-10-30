@@ -356,11 +356,13 @@ pub fn router(shared: Arc<Shared>) -> Router {
         .with_state(shared)
 }
 
-/// `{"error": "One line a person can read."}` with a 4xx or 5xx status.
+/// `{"error": "One line a person can read."}` with a 4xx or 5xx status, and `"reason"`, a stable
+/// word an app can show its own words for, where one is given (docs/contracts/sign-in.md).
 #[derive(Debug)]
 pub struct ApiError {
     pub status: StatusCode,
     pub message: String,
+    pub reason: Option<&'static str>,
 }
 
 impl ApiError {
@@ -368,7 +370,14 @@ impl ApiError {
         ApiError {
             status,
             message: message.into(),
+            reason: None,
         }
+    }
+
+    /// The same error with its stable `reason` (add-only: a reason is never renamed or removed).
+    pub fn because(mut self, reason: &'static str) -> ApiError {
+        self.reason = Some(reason);
+        self
     }
 }
 
@@ -376,7 +385,10 @@ impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         (
             self.status,
-            axum::Json(serde_json::json!({ "error": self.message })),
+            axum::Json(match self.reason {
+                Some(reason) => serde_json::json!({ "error": self.message, "reason": reason }),
+                None => serde_json::json!({ "error": self.message }),
+            }),
         )
             .into_response()
     }
