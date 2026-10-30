@@ -132,6 +132,9 @@ if (process.argv[process.argv.indexOf("-p") + 1] === "/usage") {
     { kind: "session", group: "session", percent: 33, resets_at: at(0.1), scope: null },
     { kind: "weekly_all", group: "weekly", percent: 44, resets_at: at(2), scope: null },
   ];
+  if (token.includes("zero-no-reset")) {
+    for (const limit of limits) { limit.percent = 0; limit.resets_at = null; }
+  }
   const line = (value) => process.stdout.write(JSON.stringify(value) + "\n");
   const result = { type: "result", subtype: "success", is_error: false, num_turns: 0, total_cost_usd: 0, usage: { output_tokens: 0 }, modelUsage: {} };
   if (token.includes("asks-model")) {

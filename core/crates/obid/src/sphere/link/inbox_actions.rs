@@ -484,10 +484,13 @@ impl Link {
                 let words = confirmed.payload["words"].as_str();
                 // Words Oby proposed, from a conversation the Confirm doesn't name (crate::secretspec).
                 let foreign = Some("words Oby proposed, confirmed in the inbox".to_owned());
-                match self
-                    .jobs
-                    .continue_job(target, words, "on your Confirm", foreign)
-                {
+                match self.jobs.continue_job(
+                    target,
+                    words,
+                    "on your Confirm",
+                    crate::jobs::Source::Confirmed,
+                    foreign,
+                ) {
                     Some(Ok(_)) => Ok(()),
                     Some(Err(refused)) => Err(api(StatusCode::CONFLICT, refused.0)),
                     None => Err(api(StatusCode::CONFLICT, "That job is gone.")),
@@ -520,6 +523,7 @@ impl Link {
                         text("agent"),
                         text("account"),
                         "on your Confirm",
+                        crate::jobs::Source::Confirmed,
                     ) {
                         Some(Ok(_)) => {}
                         Some(Err(refused)) => return Err(api(StatusCode::CONFLICT, refused.0)),
@@ -870,6 +874,21 @@ impl Link {
             }
             _ => return Err(api(StatusCode::UNPROCESSABLE_ENTITY, one_of)),
         };
+        // Legacy interruption/limit cards are not a way around the grouped, signed decision.
+        // Check before any item is claimed so a refused automatic answer leaves it untouched.
+        if approved.is_none()
+            && matches!(&given, Given::Answer(answer) if answer == crate::job::TRY_AGAIN || answer == "One more round")
+            && self.item(id).is_some_and(|item| {
+                self.jobs
+                    .get(&item.job)
+                    .is_some_and(|job| job.account_limit_blocked)
+            })
+        {
+            return Err(api(
+                StatusCode::CONFLICT,
+                "This account limit needs the owner's signed choice for the affected jobs.",
+            ));
+        }
         // What Oby's brain planned that only the owner may do: carried out on their Confirm.
         // A Confirm claims the item under the lock, so a second one at the same moment finds it
         // done and carries out nothing (review on #552).
@@ -1125,7 +1144,7 @@ impl Link {
                     Some(crate::job::TRY_AGAIN) => self.jobs.message(
                         &item.job,
                         crate::brain::actions::TRY_AGAIN,
-                        crate::jobs::Source::Owner,
+                        crate::jobs::Source::Event,
                     ),
                     Some(_) => self.jobs.dismiss(&item.job),
                     None => return Ok(item.to_json()),
@@ -1205,7 +1224,7 @@ impl Link {
                     Some(crate::job::TRY_AGAIN) => self.jobs.message(
                         &item.job,
                         crate::brain::actions::TRY_AGAIN,
-                        crate::jobs::Source::Owner,
+                        crate::jobs::Source::Event,
                     ),
                     Some(_) => self.jobs.dismiss(&item.job),
                     None => return Ok(item.to_json()),

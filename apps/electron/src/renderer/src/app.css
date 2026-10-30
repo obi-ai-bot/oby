@@ -1919,3 +1919,7 @@ button.sphere-logo-badge:hover { color: var(--ink); background: #3a3a39; }
 @media (prefers-reduced-motion: reduce) {
   .splash-face, .splash-line, #root.is-revealed > * { animation: none; }
 }
+.limit-decision { margin: 12px 0; width: min(100%, 440px); }
+.limit-decision .tc-ask { margin-top: 0; padding-top: 0; }
+.limit-jobs { margin: 8px 0 12px; padding-left: 20px; color: var(--muted); max-height: 100px; overflow-y: auto; }
+.limit-decision .tc-option:disabled { opacity: .5; cursor: wait; }

@@ -73,6 +73,7 @@ pub struct Devices {
     file: PathBuf,
     pairing: PathBuf,
     saved: Mutex<Saved>,
+    binding_challenges: Mutex<HashMap<String, (String, String, i64)>>,
 }
 
 impl Devices {
@@ -97,6 +98,7 @@ impl Devices {
             file,
             pairing: home.join("pairing"),
             saved: Mutex::new(saved),
+            binding_challenges: Mutex::new(HashMap::new()),
         }
     }
 
@@ -109,6 +111,90 @@ impl Devices {
             .iter()
             .find(|d| d.id == id)
             .map(|d| d.public_key.clone())
+    }
+
+    /// Whether the registered signing key belongs to this gateway pairing. The signing-device
+    /// identifier and the gateway pairing identifier are distinct, independent UUIDs.
+    pub fn belongs_to_pairing(&self, id: &str, pairing: &str) -> bool {
+        self.saved
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .devices
+            .iter()
+            .any(|d| d.id == id && d.paired.as_deref() == Some(pairing))
+    }
+
+    /// An older endorsed phone key has no pairing recorded. A fresh challenge lets its holder
+    /// prove possession of that already trusted private key without changing registration.
+    pub fn pairing_challenge(&self, id: &str, pairing: &str, now: i64) -> Result<String, String> {
+        let saved = self.saved.lock().unwrap_or_else(|e| e.into_inner());
+        let device = saved
+            .devices
+            .iter()
+            .find(|d| d.id == id)
+            .ok_or("Unknown signing key.")?;
+        if device.paired.is_some()
+            || saved
+                .devices
+                .iter()
+                .any(|d| d.paired.as_deref() == Some(pairing))
+        {
+            return Err("This key or pairing is already linked to a device.".into());
+        }
+        let nonce = uuid::Uuid::new_v4().to_string();
+        let mut challenges = self
+            .binding_challenges
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        challenges.retain(|_, (_, _, at)| now.saturating_sub(*at) <= 120);
+        challenges.insert(id.to_owned(), (pairing.to_owned(), nonce.clone(), now));
+        Ok(nonce)
+    }
+
+    /// Called only after the registered key signed the exact challenge for the authenticated
+    /// pairing. No public-key-only request can bind or replace a pairing's key.
+    pub fn bind_pairing(
+        &self,
+        id: &str,
+        pairing: &str,
+        nonce: &str,
+        now: i64,
+    ) -> Result<(), String> {
+        let mut saved = self.saved.lock().unwrap_or_else(|e| e.into_inner());
+        let mut challenges = self
+            .binding_challenges
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let valid = challenges.get(id).is_some_and(|(p, n, at)| {
+            p == pairing && n == nonce && now >= *at && now.saturating_sub(*at) <= 120
+        });
+        if !valid {
+            return Err("The device-link challenge changed or expired. Try again.".into());
+        }
+        if saved
+            .devices
+            .iter()
+            .any(|d| d.paired.as_deref() == Some(pairing))
+        {
+            return Err("This pairing already has an approval key.".into());
+        }
+        let device = saved
+            .devices
+            .iter_mut()
+            .find(|d| d.id == id)
+            .ok_or("Unknown signing key.")?;
+        if device.paired.is_some() {
+            return Err("This approval key is already linked to another pairing.".into());
+        }
+        device.paired = Some(pairing.to_owned());
+        if let Err(error) = self.keep(&saved) {
+            if let Some(device) = saved.devices.iter_mut().find(|d| d.id == id) {
+                device.paired = None;
+            }
+            return Err(format!("Could not keep this device link: {error}"));
+        }
+        challenges.remove(id);
+        Ok(())
     }
 
     /// Registers a device's publishing key and answers its id: the one it has for a key it knows;
@@ -372,6 +458,53 @@ mod tests {
         let _ = std::fs::remove_dir_all(&path);
         std::fs::create_dir_all(&path).unwrap();
         path
+    }
+
+    #[test]
+    fn older_unbound_key_requires_exact_fresh_pairing_challenge_and_survives_restart() {
+        let home = folder("bind-old-key");
+        std::fs::write(home.join("pairing"), key(12)).unwrap();
+        let devices = Devices::open(&home);
+        let id = devices
+            .register("Phone", &key(12), None, Origin::Api, SystemTime::now())
+            .unwrap();
+        let nonce = devices.pairing_challenge(&id, "phone-pair", 1000).unwrap();
+        assert!(
+            devices
+                .bind_pairing(&id, "another-pair", &nonce, 1001)
+                .is_err()
+        );
+        assert!(
+            devices
+                .bind_pairing(&id, "phone-pair", "wrong-nonce", 1001)
+                .is_err()
+        );
+        assert!(
+            devices
+                .bind_pairing(&id, "phone-pair", &nonce, 1121)
+                .is_err()
+        );
+        assert!(
+            devices
+                .bind_pairing(&id, "phone-pair", &nonce, 1001)
+                .is_ok()
+        );
+        assert!(devices.belongs_to_pairing(&id, "phone-pair"));
+        assert!(
+            devices
+                .bind_pairing(&id, "phone-pair", &nonce, 1002)
+                .is_err()
+        );
+        assert!(
+            devices
+                .pairing_challenge(&id, "another-pair", 1002)
+                .is_err()
+        );
+        let again = Devices::open(&home);
+        assert!(again.belongs_to_pairing(&id, "phone-pair"));
+        again.forget_paired("phone-pair").unwrap();
+        assert!(again.public_key(&id).is_none());
+        let _ = std::fs::remove_dir_all(&home);
     }
 
     #[test]

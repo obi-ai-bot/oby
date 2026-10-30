@@ -10,6 +10,7 @@ import TaskMenu from './TaskMenu';
 import ConvoMenu from './ConvoMenu';
 import Composer from './Composer';
 import AskStack from './AskStack';
+import LimitDecisions from './LimitDecisions';
 import ObyView from './ObyView';
 import ArchiveView from './ArchiveView';
 import SettingsView, { settingsLabel } from './SettingsView';
@@ -17,7 +18,7 @@ import SphereSettings, { sphereSettingsLabel } from './SphereSettings';
 import KnowledgeView, { knowledgeLabel } from './KnowledgeView';
 import { useSpheres } from './spheres';
 import { everything, onObid, welcome } from './lean';
-import { realId, shownId, useLive } from './live';
+import { realId, shownId, useLimitCount, useLive } from './live';
 import { WELCOME, setUp, startOnboarding } from './onboarding';
 import { askOby, chatOfTask, renameChat, tellAbout, useChats } from './chats';
 import { useConvos } from './peers';
@@ -70,11 +71,12 @@ let made = 0;
 
 export default function Home() {
   const tasks = useTasks();  // counts and dots follow tasks being added and opened
+  const limitCount = useLimitCount();
   const chats = useChats();
   const convos = useConvos();
   const spheres = useSpheres();
   // what needs you: the tasks', and what obid asks with no task (a GitHub offer, a Confirm)
-  const running = runningCount(), needsYou = countOf('needs') + asksWaiting().length, memory = memoryCount();
+  const running = runningCount(), needsYou = countOf('needs') + asksWaiting().length + limitCount, memory = memoryCount();
 
   const [layers, setLayers] = useState<Layer[]>([]);
   const live = layers.filter((l) => !l.leaving);
@@ -396,6 +398,7 @@ export default function Home() {
         {TYPES.length > 0 && (
           <section className="attention" aria-label="Your tasks">
             <span className={`attention-label${running || needsYou || memory ? '' : ' is-idle'}`}>{attention(running, needsYou, memory)}</span>
+            <LimitDecisions />
             {/* what Oby is asking you, answered here; opening one goes to its task's page */}
             <AskStack active={!away} onOpen={openTask} onOpenTalk={(id) => start({ kind: 'talk', id })} />
             {/* every kind of work, in its usual order, whatever's going on in it (a

@@ -1,6 +1,6 @@
 //! A registered device's approval to publish one job by hand (docs/runner-api.md, `POST
 //! /v1/jobs/{id}/publish`), as Runner/Devices.swift checks it: the device's P-256 key signed
-//! `"oby-publish\n<job id>\n<action>\n<signedAt>"` behind Face ID or Touch ID (ECDSA with
+//! `"oby-publish\n<job id>\n<action>\n<signedAt>"` on the owner’s click (ECDSA with
 //! SHA-256, DER, base64). obid lets it through once: from a registered device, with a signature
 //! that matches its key, for exactly obid's own sentence, signed within two minutes, and never
 //! used before. The API token alone can't publish by hand: agents run on the same machine.
@@ -37,6 +37,14 @@ pub struct Approval {
     pub action: String,
     pub signed_at: String,
     pub signature: String,
+}
+
+/// The exact business choice covered by an account-limit approval.
+pub struct LimitChoice<'a> {
+    pub id: &'a str,
+    pub revision: u64,
+    pub choice: &'a str,
+    pub account: &'a str,
 }
 
 /// The approvals used in the last 10 minutes: the hash of each device's id and signed message,
@@ -107,6 +115,58 @@ impl Approvals {
             approval.action, approval.signed_at
         );
         self.check_signed(approval, &message, title, key, now)
+    }
+
+    /// Approve exactly one revision and choice of an account-limit decision. The account is
+    /// included even when empty, so an approval for a move cannot authorize another destination.
+    pub fn check_limit_decision(
+        &self,
+        approval: &Approval,
+        intent: LimitChoice<'_>,
+        key: Option<&str>,
+        now: i64,
+    ) -> Result<(), String> {
+        let LimitChoice {
+            id,
+            revision,
+            choice,
+            account,
+        } = intent;
+        if [id, choice, account]
+            .iter()
+            .any(|s| s.contains(['\n', '\r']))
+        {
+            return Err("Invalid limit decision.".into());
+        }
+        let message = format!(
+            "oby-limit-decision\n{id}\n{revision}\n{choice}\n{account}\n{}",
+            approval.signed_at
+        );
+        self.check_signed(approval, &message, choice, key, now)
+    }
+
+    /// Proof that the authenticated phone holds an already registered, previously unbound key.
+    pub fn check_pairing_binding(
+        &self,
+        approval: &Approval,
+        id: &str,
+        pairing: &str,
+        nonce: &str,
+        key: Option<&str>,
+        now: i64,
+    ) -> Result<(), String> {
+        if approval.device != id
+            || [id, pairing, nonce]
+                .iter()
+                .any(|s| s.contains(['\n', '\r']))
+        {
+            return Err("Invalid device-link proof.".into());
+        }
+        let message = format!(
+            "oby-device-pairing\n{id}\n{pairing}\n{nonce}\n{}",
+            approval.signed_at
+        );
+        self.check_signed(approval, &message, "bind-pairing", key, now)
     }
 
     /// Lets the request `method` `path` with `body` through once as words the owner typed in Oby's
@@ -400,6 +460,128 @@ mod tests {
                 .unwrap_err()
                 .contains("already used")
         );
+    }
+
+    #[test]
+    fn pairing_binding_proof_is_for_one_key_pairing_and_nonce_and_cannot_replay() {
+        let home = home("binding-proof");
+        let approvals = Approvals::open(&home);
+        let (key, public) = device(13);
+        let signed_at = obi_protocol::time::format(NOW);
+        let signature: p256::ecdsa::Signature =
+            key.sign(format!("oby-device-pairing\nd1\np1\nn1\n{signed_at}").as_bytes());
+        let proof = Approval {
+            device: "d1".into(),
+            action: "bind-pairing".into(),
+            signed_at,
+            signature: base64::engine::general_purpose::STANDARD.encode(signature.to_der()),
+        };
+        for (id, pairing, nonce) in [("d2", "p1", "n1"), ("d1", "p2", "n1"), ("d1", "p1", "n2")] {
+            assert!(
+                approvals
+                    .check_pairing_binding(&proof, id, pairing, nonce, Some(&public), NOW)
+                    .is_err()
+            );
+        }
+        assert!(
+            approvals
+                .check_pairing_binding(&proof, "d1", "p1", "n1", None, NOW)
+                .is_err()
+        );
+        assert!(
+            approvals
+                .check_pairing_binding(&proof, "d1", "p1", "n1", Some(&public), NOW)
+                .is_ok()
+        );
+        assert!(
+            Approvals::open(&home)
+                .check_pairing_binding(&proof, "d1", "p1", "n1", Some(&public), NOW)
+                .is_err()
+        );
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn limit_approval_binds_revision_choice_and_account_and_cannot_be_replayed() {
+        let home = home("limit-decision");
+        let approvals = Approvals::open(&home);
+        let (key, public) = device(11);
+        let signed_at = obi_protocol::time::format(NOW);
+        let signature: p256::ecdsa::Signature =
+            key.sign(format!("oby-limit-decision\ne1\n2\nmove\na2\n{signed_at}").as_bytes());
+        let approval = Approval {
+            device: "d1".into(),
+            action: "move".into(),
+            signed_at,
+            signature: base64::engine::general_purpose::STANDARD.encode(signature.to_der()),
+        };
+        for (id, revision, choice, account) in [
+            ("e2", 2, "move", "a2"),
+            ("e1", 3, "move", "a2"),
+            ("e1", 2, "resume", ""),
+            ("e1", 2, "move", "a3"),
+        ] {
+            assert!(
+                approvals
+                    .check_limit_decision(
+                        &approval,
+                        LimitChoice {
+                            id,
+                            revision,
+                            choice,
+                            account
+                        },
+                        Some(&public),
+                        NOW
+                    )
+                    .is_err()
+            );
+        }
+        assert!(
+            approvals
+                .check_limit_decision(
+                    &approval,
+                    LimitChoice {
+                        id: "e1",
+                        revision: 2,
+                        choice: "move",
+                        account: "a2"
+                    },
+                    None,
+                    NOW
+                )
+                .is_err()
+        );
+        assert_eq!(
+            approvals.check_limit_decision(
+                &approval,
+                LimitChoice {
+                    id: "e1",
+                    revision: 2,
+                    choice: "move",
+                    account: "a2"
+                },
+                Some(&public),
+                NOW
+            ),
+            Ok(())
+        );
+        assert!(
+            Approvals::open(&home)
+                .check_limit_decision(
+                    &approval,
+                    LimitChoice {
+                        id: "e1",
+                        revision: 2,
+                        choice: "move",
+                        account: "a2"
+                    },
+                    Some(&public),
+                    NOW
+                )
+                .is_err()
+        );
+        let _ = std::fs::remove_dir_all(&home);
     }
 
     #[test]

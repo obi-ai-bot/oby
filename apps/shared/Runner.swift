@@ -94,6 +94,13 @@ nonisolated struct Job: Codable, Identifiable, Equatable, Sendable {
     var tetrix: TetrixJobReport?
     /// Why it stopped without ending done, apart from its agent's summary (obid only), or nil.
     var reason: String?
+    /// A grouped account decision owns this interruption; older runners omit it.
+    struct AccountLimit: Codable, Equatable, Sendable {
+        let decision: String?
+        let state: String
+        let resetAt: Date?
+    }
+    var accountLimit: AccountLimit?
     /// Interrupted on obid: its one next step, as its button says it ("One more round", "Try
     /// again"), or nil.
     var nextStep: String?
@@ -172,7 +179,7 @@ nonisolated struct Job: Codable, Identifiable, Equatable, Sendable {
              started, finished, commits, published, pushed, publishError, issue, rounds, round, check, model, notes, pipeline,
              pullRequest, pullRequestError, dismissed, reviewing, review, reviewError, reviewOf, outgoing, question, mode, permission, moves, waiting, report,
              conversation, turn, artifacts, followUpOf, routine, tetrix, activity, usage, windowShare, estimate, checks, scan, diff, context,
-             reason, nextStep, resumesAt, stalled
+             reason, nextStep, resumesAt, stalled, accountLimit
         case stoppedMerge = "mergeNeedsYou"
         case stoppedReview = "reviewNeedsYou"
         case stoppedCloud = "cloudNeedsYou"
@@ -250,7 +257,7 @@ nonisolated struct Job: Codable, Identifiable, Equatable, Sendable {
     /// rounds, stranded or its merge stopped, and not dismissed: what the runner sends an alert for,
     /// and what Dismiss takes.
     var needsYou: Bool {
-        dismissed == nil && (canPublish || stranded || status == .failed || status == .interrupted || reviewNeedsYou || mergeNeedsYou || cloudNeedsYou)
+        dismissed == nil && (canPublish || stranded || status == .failed || (status == .interrupted && accountLimit == nil) || reviewNeedsYou || mergeNeedsYou || cloudNeedsYou)
     }
 
     /// "Round 2 of 5 · Fable 5.1", or empty for a one-round job on the usual model.
@@ -724,6 +731,37 @@ nonisolated struct StoppedJobs: Decodable, Sendable {
 }
 
 /// One thing the runner reports while the app is open.
+#if os(iOS)
+/// A grouped owner choice for jobs stopped by one account limit (obid #1563).
+nonisolated struct RunnerLimitDecision: Decodable, Identifiable, Equatable, Sendable {
+    struct Work: Decodable, Identifiable, Equatable, Sendable { let id: String; let title: String }
+    struct Option: Decodable, Equatable, Sendable {
+        let kind: String
+        let account: String?
+        let agent: String?
+        let name: String?
+
+        var isSupported: Bool { kind == "resume" || kind == "stop" || (kind == "move" && account != nil && agent != nil && name != nil) }
+        var label: String {
+            switch kind {
+            case "move": "Move all to \(name ?? "Account") · \(agent ?? "")"
+            case "resume": "Resume when available"
+            case "stop": "Keep stopped"
+            default: "Update Oby to use this choice"
+            }
+        }
+    }
+    let id: String
+    let revision: Int
+    let account: String
+    let agent: String
+    let resetAt: Int?
+    let jobs: [Work]
+    let options: [Option]
+    let problem: String?
+}
+#endif
+
 nonisolated enum RunnerEvent: Equatable, Sendable {
     /// The runner is following this app now: fetch what's there. Whatever changes meanwhile
     /// arrives after this, so applying it over the fetched lists loses nothing.
@@ -737,6 +775,9 @@ nonisolated enum RunnerEvent: Equatable, Sendable {
     case job(Job)
     #endif
     case accounts([RunnerAccount])
+    #if os(iOS)
+    case limitDecision
+    #endif
     /// Clear done was pressed, here or on another app: jobs that finished by then are hidden.
     case cleared(Date)
     /// An inbox item came, was answered, done or put off, here or on another app.
@@ -1804,6 +1845,28 @@ nonisolated struct Runner: Sendable {
         try Self.decoder.decode(Answer.self, from: try await send(method, path, body: body, timeout: timeout, signs: signs))
     }
 
+    #if os(iOS)
+    func limitDecisions() async throws -> [RunnerLimitDecision] {
+        try await call("GET", "v1/limit-decisions")
+    }
+
+    struct DevicePairingChallenge: Decodable, Sendable { let pairing: String; let nonce: String }
+
+    func devicePairingChallenge(_ id: String) async throws -> DevicePairingChallenge {
+        try await call("GET", "v1/devices/\(Self.inboxSegment(id))/pairing")
+    }
+
+    func bindDevicePairing(_ id: String, challenge: DevicePairingChallenge, approval: Approval) async throws {
+        struct Body: Encodable { let pairing: String; let nonce: String; let approval: Approval }
+        _ = try await send("POST", "v1/devices/\(Self.inboxSegment(id))/pairing", body: Body(pairing: challenge.pairing, nonce: challenge.nonce, approval: approval))
+    }
+
+    func answerLimit(_ id: String, revision: Int, choice: String, account: String?, approval: Approval) async throws {
+        struct Body: Encodable { let revision: Int; let choice: String; let account: String?; let approval: Approval }
+        _ = try await send("POST", "v1/limit-decisions/\(Self.inboxSegment(id))/answer", body: Body(revision: revision, choice: choice, account: account, approval: approval))
+    }
+    #endif
+
     /// The answer's body, unread: for a call whose answer says nothing the app needs.
     @discardableResult
     /// `json`, when given, is the body as it is (an Obi-to-Obi object keeps its snake_case keys).
@@ -2118,6 +2181,9 @@ nonisolated struct EventParser {
             case "job": return (try? Runner.decoder.decode(Job.self, from: json)).map(RunnerEvent.job)
             #endif
             case "accounts": return (try? Runner.decoder.decode([RunnerAccount].self, from: json)).map(RunnerEvent.accounts)
+            #if os(iOS)
+            case "limitDecision": return .limitDecision
+            #endif
             case "clear": return (try? Runner.decoder.decode(ClearedAt.self, from: json)).map { .cleared($0.clearedAt) }
             #if os(macOS)
             case "inbox":

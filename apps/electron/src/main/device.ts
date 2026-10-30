@@ -1,5 +1,5 @@
 import { app, ipcMain, safeStorage } from 'electron';
-import { createPrivateKey, createPublicKey, generateKeyPairSync, sign, type KeyObject } from 'node:crypto';
+import { createHash, createPrivateKey, createPublicKey, generateKeyPairSync, sign, type KeyObject } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { closeSync, constants, openSync, readFileSync, renameSync, rmSync, writeSync } from 'node:fs';
 import { hostname } from 'node:os';
@@ -85,6 +85,42 @@ export async function register(): Promise<string> {
 
 type Item = { id: string; kind: string; title: string; state: string };
 
+// An explicit manual continuation of a limit-stopped job is also an owner decision. Sign the
+// exact request on the trusted window's action, preserving the policy for ordinary messages.
+export async function messageJob(path: string, body: unknown): Promise<Answer> {
+  try {
+    const current = await obid('GET', path.replace(/\/messages$/, ''));
+    if (current.status !== 200) return current;
+    if (!(JSON.parse(current.text) as { accountLimit?: unknown }).accountLimit) return obid('POST', path, body);
+    const device = await register(), signedAt = new Date().toISOString();
+    const digest = createHash('sha256').update(JSON.stringify(body) ?? '').digest('hex');
+    const signature = signed(`oby-words\nPOST\n${path}\n${digest}\n${signedAt}`);
+    return obid('POST', path, body, `${device} ${signedAt} ${signature}`);
+  } catch (err) {
+    return { status: 500, text: JSON.stringify({ error: err instanceof Error ? err.message : String(err) }) };
+  }
+}
+
+// Fetch and verify the current options before signing; the revision and destination are covered.
+export async function answerLimit(id: string, revision: number, choice: string, account?: string): Promise<Answer> {
+  try {
+    const current = await obid('GET', '/v1/limit-decisions');
+    if (current.status !== 200) return current;
+    const decisions = JSON.parse(current.text) as { id: string; revision: number; options: { kind: string; account?: string }[] }[];
+    const decision = decisions.find((d) => d.id === id && d.revision === revision);
+    if (!decision || !decision.options.some((o) => o.kind === choice && (o.account ?? '') === (account ?? ''))) {
+      return { status: 409, text: JSON.stringify({ error: 'This choice changed. Review the current options and try again.' }) };
+    }
+    const device = await register(), signedAt = now();
+    const signature = signed(`oby-limit-decision\n${id}\n${revision}\n${choice}\n${account ?? ''}\n${signedAt}`);
+    return obid('POST', `/v1/limit-decisions/${encodeURIComponent(id)}/answer`, {
+      revision, choice, ...(account ? { account } : {}), approval: { device, action: choice, signedAt, signature },
+    });
+  } catch (err) {
+    return { status: 500, text: JSON.stringify({ error: err instanceof Error ? err.message : String(err) }) };
+  }
+}
+
 // Confirm, on the owner's click in the window: the open `confirm` item, by its id, with this
 // device's signature over obid's sentence for it (POST /v1/inbox/{id}/answer, "Confirm takes the
 // owner's tap")
@@ -102,5 +138,15 @@ export function confirming(trusted: Trusted) {
     } catch (err) {
       return { status: 500, text: JSON.stringify({ error: err instanceof Error ? err.message : String(err) }) };
     }
+  });
+
+  // A usage-limit answer is bound to the exact decision revision, option and destination.
+  // Read the options from obid in main; never sign an arbitrary renderer-provided sentence.
+  ipcMain.handle('obid-limit-answer', async (e, id: unknown, revision: unknown, choice: unknown, account: unknown): Promise<Answer> => {
+    if (!trusted(e) || typeof id !== 'string' || !Number.isSafeInteger(revision) || typeof choice !== 'string' ||
+      !['move', 'resume', 'stop'].includes(choice) || (account !== undefined && typeof account !== 'string')) {
+      return { status: 403, text: '' };
+    }
+    return answerLimit(id, revision as number, choice, account as string | undefined);
   });
 }

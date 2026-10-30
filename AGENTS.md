@@ -12,6 +12,13 @@ Oby is a native macOS app (SwiftUI, macOS 26 and later) that lives in a window a
 - Update the issue at every step, in the same turn: `status:in-progress` and the branch name when work starts; `status:in-review` and the pull request link when it's open; `status:blocked` and what it waits on; status labels off when it's merged. Move it on the project board too.
 - Commits follow Conventional Commits. Agents commit unsigned in their worktree (they have no signing key); commits are signed when Oby pushes them. Report the checks you actually ran and what they printed.
 
+## Business behavior contracts and code design
+
+- Every new feature has a business behavior contract before implementation, using [docs/business-contract-template.md](docs/business-contract-template.md). Put it in the feature issue; document the implemented runner API and its behavior in `docs/runner-api.md` in the same change. Plans, epics and unscheduled ideas stay in `obi-ai-bot/oby-plan`. Link the contract from the issue and implementation; update it when the owner's decisions change. Mark proposed behavior separately from what is implemented. A bug fix updates the affected contract when it changes or clarifies a promised behavior.
+- The contract names the user outcome, triggers, states, decisions, observable results, failure and recovery behavior, invariants, and acceptance scenarios. It identifies what obid owns and what clients display or send. Apply existing security, API compatibility and Sangam design rules; a contract does not override them.
+- **Clean Architecture:** keep business decisions in obid's domain and application logic, independent of UI, transport, persistence and provider-specific details. Those outer adapters translate inputs and outputs through explicit boundaries; dependencies point toward the business rules. Use the existing architecture where it serves the feature, and introduce boundaries when they reduce coupling rather than adding layers for their own sake.
+- **Clean Code:** use clear names, focused responsibilities, explicit state and errors, and small cohesive changes. Avoid duplicated policy and hidden side effects; preserve existing behavior outside the contract. Test observable business outcomes and meaningful failures at the appropriate boundary, and keep the contract and API documentation in step with the code.
+
 ## Sangam's design leads (the owner's decision of 2026-10-18)
 
 - Sangam's design (`design/app`, the Electron project; run it with the `sangam-design` configuration in `.claude/launch.json`) is the source of truth for how Oby looks and behaves, on the Mac and the iPhone alike: its screens, its words and its logic. When something here or in a doc disagrees with it about what the user sees or does, the design wins, and the doc changes.
@@ -35,7 +42,8 @@ Oby launches lean, and where this differs from Sangam's design, this wins until 
   - Settings › Vault and General › Permissions are hidden for launch: under obid they do nothing.
   - The launch download leaves out cloudflared and obi-vm (Remote access and Mac share are hidden), strips obid and drops the bundled web app; Deskree's Macs get them in their own builds or on demand.
   - Deskree's Obysphere relays phones for its members only; anyone else pairs through their own Sphere.
-- Account failover is on by default (the owner's decision of 2026-10-24, replacing #871's opt-in until the provider-terms review #29): when a job's account hits its usage limit, Oby moves the job to another signed-in account of the same tool with room, by itself, and a conversation's turn moves the same way. The owner turns it off in Settings (`accountFailover`); a job sent to an account by name stays on it.
+- Conversation account failover is on by default (the owner's decision of 2026-10-24): a conversation turn that hits its account's limit moves to another signed-in account of the same tool with room. The owner turns this off in Settings (`accountFailover`).
+- Jobs at an account limit follow [#1563](https://github.com/obi-ai-bot/oby/issues/1563), the owner's decision of 2026-10-28: obid asks once for the affected jobs, offers eligible connected accounts across supported tools, and, if none is available, asks whether to resume when room returns. The owner's signed choice covers the exact displayed jobs and destination; no background agent or unsigned retry can approve it. Existing worktrees and branches are preserved. Older installed releases may retain automatic job failover and reset retries; their scheduled waits become pending owner decisions when upgraded.
 
 ## Rules Oby never breaks
 
