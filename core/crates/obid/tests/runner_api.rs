@@ -949,12 +949,22 @@ fn agents_4_the_default_account_is_validated_kept_and_cleared() {
         Value::Null
     );
     put(&obid, json!({"defaultAccount": "stub"}));
+    let tuned = call(
+        &obid,
+        "PATCH",
+        "/v1/accounts/stub",
+        Some(&json!({"model": "claude-sonnet-5-5"})),
+    );
+    assert_eq!(tuned.status, 200, "{}", tuned.text);
     let gone = call(&obid, "DELETE", "/v1/accounts/stub", None);
     assert_eq!(gone.status, 204, "{}", gone.text);
     assert_eq!(
         call(&obid, "GET", "/v1/status", None).body["defaultAccount"],
         Value::Null
     );
+    // AGENTS-5: its model and efforts went with it.
+    let kept = std::fs::read_to_string(folder.0.join("home/settings.json")).unwrap();
+    assert!(!kept.contains("stub"), "{kept}");
 }
 
 /// AGENTS-5 and AGENTS-6 (docs/contracts/agents.md): an account's model, effort and complex-task
@@ -970,11 +980,17 @@ fn agents_5_6_jobs_run_on_their_accounts_model_and_effort() {
         json!({"effort": "ultra"}),
         json!({"complexEffort": "huge"}),
         json!({"model": "a b"}),
+        json!({"model": "--dangerously-skip-permissions"}),
+        json!({"model": "gpt-6.1-sol"}),
         json!({"effort": 3}),
+        // A name that can't be: the model with it isn't kept either.
+        json!({"name": "", "model": "claude-sonnet-5-5"}),
     ] {
         let answer = patch(refused.clone());
         assert_eq!(answer.status, 422, "{refused}: {}", answer.text);
     }
+    let account = &call(&obid, "GET", "/v1/status", None).body["accounts"][0];
+    assert!(account.get("model").is_none(), "{account}");
     let set =
         patch(json!({"model": "claude-sonnet-5-5", "effort": "high", "complexEffort": "max"}));
     assert_eq!(set.status, 200, "{}", set.text);

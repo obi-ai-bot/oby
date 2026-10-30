@@ -10,7 +10,7 @@ import { everything, onObid } from './lean';
 import { ApiError, api, type ModelOptions, type Models, type SavedRule, type SignIn, type Status } from './obid';
 import Connectors, { ConfirmWindow, readConnectors } from './Connectors';
 import { Menu } from './Menu';
-import { patchStatus, useLive } from './live';
+import { patchStatus, say, useLive } from './live';
 import { version } from '../../../package.json';
 import type { Update } from '../../shared/updates';
 
@@ -289,10 +289,8 @@ export const replaceAccounts = (next: Account[]) => { values.set('accounts', nex
 // folder of obid's, so obid never signs it in (the tool itself does)
 const OWN_LOGIN: Record<Agent, string> = { claude: 'default', codex: 'codex', cursor: 'cursor' };
 const ownLogin = (a: Account) => OWN_LOGIN[a.agent] === a.id;
-// where an error of Add an account's shows (a row's shows on its row, by the account's id), and
-// one of New tasks go to's
+// where an error of Add an account's shows (a row's shows on its row, by the account's id)
 const ADD = 'add';
-const DEFAULT = 'default-agent';
 // On obid they're obid's (docs/runner-api.md, "obid only: accounts"): Add Account adds one (obid
 // makes its folder) and opens its tool's own sign-in page at once; Sign In opens it again, Remove
 // removes it. Each tool keeps its own login; Oby only learns that it worked. Leaving the page
@@ -640,7 +638,8 @@ function useModels(): [(x: Account) => Tuning, ModelOptions, (id: string, change
   };
   return [of, options, tune];
 }
-// the account new tasks go to: obid's, else kept here
+// the account new tasks go to: obid's, else kept here. A change obid refuses is reported as any
+// failure of the app's is (live.ts, say), and the menu stays on obid's
 function useDefaultAccount(): [string | null, (id: string) => Promise<void>] {
   const status = useLive().status;
   const [chosen, setChosen] = useKeptSetting<string | null>('agent.default', null);
@@ -701,10 +700,10 @@ function Agents() {
   const ready = agents.filter((x) => x.signedIn !== false);
   const fallback = ready.find((x) => x.id === chosen) ?? ready[0];
   return <>
-    <Group i={1} title="Default agent" footer={problems[DEFAULT] ? <span className="set-problem" role="alert">{problems[DEFAULT]}</span> : undefined}>
+    <Group i={1} title="Default agent">
       {fallback
         ? <Row label="New tasks go to">
-            <Select wide value={fallback.id} onChange={(v) => void tried(DEFAULT, () => setChosen(v))} label="Default agent" options={ready.map((x) => [x.id, `${x.name} · ${AGENTS[x.agent].name}`] as const)} />
+            <Select wide value={fallback.id} onChange={(v) => void setChosen(v).catch(say)} label="Default agent" options={ready.map((x) => [x.id, `${x.name} · ${AGENTS[x.agent].name}`] as const)} />
           </Row>
         : <Row label={<span className="set-none">No agents yet</span>} />}
     </Group>
@@ -746,11 +745,11 @@ function Agents() {
           </div>
           {/* the model and, after it in grey, how hard it thinks (one menu for both); complex tasks get an effort of their own */}
           <Row label="Model">
-            <ModelPicker label={`${x.name} model and effort`} models={choices(o?.models ?? [], t.model)} model={t.model} onModel={(v) => void tried(x.id, () => tune(x.id, { model: v }))}
-              efforts={a === 'cursor' ? [] : effortChoices(efforts, t.effort)} effort={t.effort} onEffort={(v) => void tried(x.id, () => tune(x.id, { effort: v }))} />
+            <ModelPicker label={`${x.name} model and effort`} models={choices(o?.models ?? [], t.model)} model={t.model} onModel={(v) => void tune(x.id, { model: v }).catch(say)}
+              efforts={a === 'cursor' ? [] : effortChoices(efforts, t.effort)} effort={t.effort} onEffort={(v) => void tune(x.id, { effort: v }).catch(say)} />
           </Row>
           {a !== 'cursor' && <Row label="Effort on complex tasks">
-            <Select wide value={t.complexEffort ?? ''} onChange={(v) => void tried(x.id, () => tune(x.id, { complexEffort: v }))} label={`${x.name} complex task effort`} options={effortChoices(o?.complexEfforts, t.complexEffort)} />
+            <Select wide value={t.complexEffort ?? ''} onChange={(v) => void tune(x.id, { complexEffort: v }).catch(say)} label={`${x.name} complex task effort`} options={effortChoices(o?.complexEfforts, t.complexEffort)} />
           </Row>}
           {/* the card's own action, on the left; red: it can't be undone (its sign-in goes with it) */}
           <div className="set-row is-action">

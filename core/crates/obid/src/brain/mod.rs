@@ -529,7 +529,8 @@ pub(super) fn context(shared: &Shared, conversation: &str, turns: &[Turn], nonce
         jobs: shared.jobs.list(usize::MAX),
         inbox: shared.link.waiting_items(now),
         accounts: told,
-        default_account: crate::settings::load(&config.home).default_account,
+        // Only while routing would use it: never a full or signed-out account for the plan to pin.
+        default_account: shared.jobs.preferred_account().map(|(_, id)| id),
         repos: config.repos.names(),
         max_running: shared.jobs.max_running(),
         default_mode: shared.jobs.default_mode().as_str(),

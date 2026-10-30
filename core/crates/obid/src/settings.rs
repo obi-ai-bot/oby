@@ -85,8 +85,9 @@ pub fn efforts(tool: crate::agent::Tool) -> &'static [&'static str] {
 }
 
 /// The models Settings › Agents offers for each tool, `(id, name)`, as Sangam's screen lists them.
-// ponytail: a fixed list; each account's own (Codex's `model/list`, `cursor-agent models`) when
-// the screen needs models this list doesn't have.
+// ponytail: a fixed list, and an account's model must be on it (no other tool's model reaches a
+// CLI); each account's own (Codex's `model/list`, `cursor-agent models`) when the screen needs
+// models this list doesn't have.
 pub fn models(tool: crate::agent::Tool) -> &'static [(&'static str, &'static str)] {
     use crate::agent::Tool;
     match tool {
@@ -108,9 +109,11 @@ pub fn models(tool: crate::agent::Tool) -> &'static [(&'static str, &'static str
     }
 }
 
-/// A model id obid passes on as one argument: letters, digits, `-`, `.` and `_`.
+/// A model id obid passes on as one argument: letters, digits, `-`, `.` and `_`, and never a
+/// leading `-`, which a CLI would read as a flag.
 pub fn valid_model(model: &str) -> bool {
     !model.trim().is_empty()
+        && !model.starts_with('-')
         && model
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_'))

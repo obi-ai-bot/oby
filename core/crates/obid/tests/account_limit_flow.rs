@@ -66,6 +66,14 @@ fn owner_moves_a_limit_stopped_job_to_a_connected_account_of_another_tool() {
         &signed_at,
     );
     approval["action"] = json!("move");
+    // AGENTS-6: the job takes the account it moves to's model and effort (docs/contracts/agents.md).
+    let tuned = call(
+        &obid,
+        "PATCH",
+        "/v1/accounts/codex",
+        Some(&json!({"model": "gpt-6-astra", "effort": "low"})),
+    );
+    assert_eq!(tuned.status, 200, "{}", tuned.text);
     let answer = call(
         &obid,
         "POST",
@@ -79,6 +87,8 @@ fn owner_moves_a_limit_stopped_job_to_a_connected_account_of_another_tool() {
     });
     assert_eq!(moved["branch"], branch);
     assert_eq!(moved["account"], "codex");
+    assert_eq!(moved["model"], "gpt-6-astra");
+    assert_eq!(moved["effort"], "low");
     assert_eq!(moved["moves"].as_array().unwrap().len(), 1);
     let threads = home.join("logins").join(&id).join("threads");
     let text = std::fs::read_dir(&threads)
@@ -89,6 +99,10 @@ fn owner_moves_a_limit_stopped_job_to_a_connected_account_of_another_tool() {
         .join("\n");
     assert!(
         text.contains("hit its account's usage limit") && text.contains("same worktree and branch"),
+        "{text}"
+    );
+    assert!(
+        text.contains(r#""model":"gpt-6-astra""#) && text.contains(r#""effort":"low""#),
         "{text}"
     );
     assert!(matches!(moved["resumesAt"], Value::Null));

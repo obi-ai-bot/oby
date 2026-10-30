@@ -855,6 +855,36 @@ pub async fn change(
     let new_payer = map.contains_key("payer").then(|| payer(map.get("payer")));
     let (tool, _) = find(&shared.config.agents.get(), &id).ok_or_else(|| no_account(&id))?;
     let tuned = tuning(&map, tool)?;
+    // The name and payer first: a refused one keeps the model and efforts as they were too.
+    let (tool, account) = if text.is_none() && new_payer.is_none() {
+        find(&shared.config.agents.get(), &id).ok_or_else(|| no_account(&id))?
+    } else {
+        shared.config.agents.change(|agents, saved| {
+            let (tool, mut account) = find(agents, &id).ok_or_else(|| no_account(&id))?;
+            if let Some(text) = text {
+                account.name = name(agents, tool, text, Some(&id))?;
+            }
+            if let Some(new_payer) = new_payer {
+                account.payer = new_payer?;
+            }
+            match saved.added.iter_mut().find(|a| a.id == id) {
+                Some(added) => {
+                    added.name = account.name.clone();
+                    added.payer = account.payer.clone();
+                }
+                None => {
+                    saved.changed.insert(
+                        id.clone(),
+                        Change {
+                            name: account.name.clone(),
+                            payer: account.payer.clone(),
+                        },
+                    );
+                }
+            }
+            Ok((tool, account))
+        })?
+    };
     if !tuned.is_empty() {
         crate::settings::update(&shared.config.home, |s| {
             let kept = s.tuning.entry(id.clone()).or_default();
@@ -871,40 +901,6 @@ pub async fn change(
         })
         .map_err(|e| unkept(Path::new("settings.json"), e))?;
     }
-    if text.is_none() && new_payer.is_none() {
-        let (tool, account) =
-            find(&shared.config.agents.get(), &id).ok_or_else(|| no_account(&id))?;
-        send_accounts(&shared).await;
-        return Ok(answer(
-            StatusCode::OK,
-            json_now(&shared, tool, account).await,
-        ));
-    }
-    let (tool, account) = shared.config.agents.change(|agents, saved| {
-        let (tool, mut account) = find(agents, &id).ok_or_else(|| no_account(&id))?;
-        if let Some(text) = text {
-            account.name = name(agents, tool, text, Some(&id))?;
-        }
-        if let Some(new_payer) = new_payer {
-            account.payer = new_payer?;
-        }
-        match saved.added.iter_mut().find(|a| a.id == id) {
-            Some(added) => {
-                added.name = account.name.clone();
-                added.payer = account.payer.clone();
-            }
-            None => {
-                saved.changed.insert(
-                    id.clone(),
-                    Change {
-                        name: account.name.clone(),
-                        payer: account.payer.clone(),
-                    },
-                );
-            }
-        }
-        Ok((tool, account))
-    })?;
     // A conversation's Claude Code waiting on the account starts anew on it as it is now.
     shared.harness.end_warm_on(&id);
     send_accounts(&shared).await;
@@ -914,8 +910,8 @@ pub async fn change(
     ))
 }
 
-/// The model and efforts a `PATCH` sets, each a value or null (the tool's own): a model obid can
-/// pass on, and an effort `tool` takes ([`crate::settings::efforts`]).
+/// The model and efforts a `PATCH` sets, each a value or null (the tool's own): a model `tool`
+/// offers ([`crate::settings::models`]), and an effort it takes ([`crate::settings::efforts`]).
 fn tuning(
     map: &Map<String, Value>,
     tool: Tool,
@@ -925,16 +921,23 @@ fn tuning(
         let value = match map.get(key) {
             None => continue,
             Some(Value::Null) => None,
-            Some(Value::String(v)) if key == "model" && crate::settings::valid_model(v) => {
-                Some(v.trim().to_owned())
+            Some(Value::String(v))
+                if key == "model" && crate::settings::models(tool).iter().any(|(m, _)| m == v) =>
+            {
+                Some(v.clone())
             }
             Some(Value::String(v)) if crate::settings::efforts(tool).contains(&v.as_str()) => {
                 Some(v.clone())
             }
             Some(_) if key == "model" => {
+                let ids: Vec<_> = crate::settings::models(tool)
+                    .iter()
+                    .map(|(m, _)| *m)
+                    .collect();
                 return Err(unprocessable(format!(
-                    "model is a model id of {}, or null.",
-                    tool.name()
+                    "model is one of {}'s: {}, or null.",
+                    tool.name(),
+                    ids.join(", ")
                 )));
             }
             Some(_) => {

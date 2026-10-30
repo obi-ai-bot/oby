@@ -71,7 +71,7 @@ pub struct Briefing {
     /// The inbox items waiting for the owner, the longest-waiting first.
     pub inbox: Vec<Item>,
     pub accounts: Vec<Account>,
-    /// The account new tasks go to (Settings › Agents, `defaultAccount`), when the owner chose one.
+    /// The account new tasks go to (Settings › Agents, `defaultAccount`), while routing would use it.
     pub default_account: Option<String>,
     /// The repositories jobs can work in, from the configuration.
     pub repos: Vec<String>,
