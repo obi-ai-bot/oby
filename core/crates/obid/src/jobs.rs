@@ -2294,8 +2294,19 @@ impl Jobs {
             .unwrap_or_else(|| format!("no {} account is signed in for conversations", tool.name()))
     }
 
+    /// The owner's preferred tool only while it has a signed-in account with room. The caller
+    /// retains the planner's automatic choice when this returns none.
+    pub(crate) fn preferred_agent(&self) -> Option<String> {
+        let agent = crate::settings::load(&self.config.home).default_agent;
+        if agent == "auto" {
+            return None;
+        }
+        let (tool, account) = self.pick(Some(&agent), None).ok()?;
+        signed_in(tool, &account, login_home().as_deref()).then_some(agent)
+    }
+
     /// The tool and account a job runs on: the tool named (`claude`, `codex`, `cursor`; `auto` or
-    /// none for any), and the account named (by id or name), or the first [`signed_in`] account
+    /// none for any), and the account named (by id or name), or the first signed-in account
     /// of the tools in order (Claude Code, then Codex, then Cursor), else the first account.
     fn pick(
         &self,
@@ -13754,6 +13765,33 @@ mod tests {
             ..Default::default()
         };
         jobs.usage.record("c", &reserved);
+        jobs.usage.record("x", &reserved);
+        assert_eq!(jobs.preferred_agent(), None);
+        crate::settings::update(&jobs.config.home, |s| s.default_agent = "codex".into()).unwrap();
+        assert_eq!(jobs.preferred_agent(), None, "a full default falls back");
+        jobs.usage.record(
+            "x",
+            &crate::usage::Usage {
+                five_hour: Some(0.1),
+                seven_day: Some(0.1),
+                ..Default::default()
+            },
+        );
+        assert_eq!(jobs.preferred_agent().as_deref(), Some("codex"));
+        std::fs::remove_file(codex.join("auth.json")).unwrap();
+        assert_eq!(
+            jobs.preferred_agent(),
+            None,
+            "an unsigned-in default falls back"
+        );
+        std::fs::write(codex.join("auth.json"), "{}").unwrap();
+        crate::settings::update(&jobs.config.home, |s| s.default_agent = "cursor".into()).unwrap();
+        assert_eq!(
+            jobs.preferred_agent(),
+            None,
+            "a disconnected default falls back"
+        );
+        crate::settings::update(&jobs.config.home, |s| s.default_agent = "auto".into()).unwrap();
         jobs.usage.record("x", &reserved);
         let made = jobs
             .create(NewJob {

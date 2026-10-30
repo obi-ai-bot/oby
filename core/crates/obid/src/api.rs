@@ -212,6 +212,10 @@ pub fn router(shared: Arc<Shared>) -> Router {
             "/v1/settings/jobs",
             get(crate::routes::job_settings).put(crate::routes::set_job_settings),
         )
+        .route(
+            "/v1/settings/default-agent",
+            axum::routing::put(crate::routes::set_default_agent),
+        )
         .route("/v1/events", get(crate::routes::events))
         .route("/v1/conversation", get(crate::conversation::get))
         .route("/v1/conversations", get(crate::conversation::list))
@@ -569,6 +573,7 @@ pub struct Status {
     pub available_logins: Vec<serde_json::Value>,
     pub models: Models,
     pub max_running: u32,
+    pub default_agent: String,
     pub running: u32,
     pub cleared_at: Option<String>,
     pub github: &'static str,
@@ -806,6 +811,7 @@ async fn status(State(shared): State<Arc<Shared>>) -> Result<axum::Json<Status>,
             .collect(),
         models: Models::defaults(),
         max_running: shared.jobs.max_running() as u32,
+        default_agent: crate::settings::load(&shared.config.home).default_agent,
         running: shared.jobs.running() as u32,
         cleared_at: shared.cleared.at().map(obi_protocol::time::format),
         // obid has no GitHub app: its own GitHub calls, once it makes any, go as the owner.
