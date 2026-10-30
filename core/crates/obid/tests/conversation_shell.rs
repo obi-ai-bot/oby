@@ -153,16 +153,17 @@ fn the_box_has_no_login_and_no_network() {
     });
 }
 
-/// An install asks even on Bypass, with only Allow and Deny; only the owner answers it, and a no
-/// keeps it from running.
+/// An install asks outside Bypass (in Bypass it runs with the network, #1592's
+/// `bypass_7_installs_and_the_network_ask_in_every_mode_but_bypass`), with only Allow and Deny; only the
+/// owner answers it, and a no keeps it from running.
 #[test]
-fn an_install_asks_even_on_bypass() {
+fn bypass_7_an_install_asks_outside_bypass() {
     let (_folder, obid) = obid("shell-install");
     let set = call(
         &obid,
         "PUT",
         "/v1/settings/permissions",
-        Some(&json!({"mode": "bypass"})),
+        Some(&json!({"mode": "acceptEdits"})),
     );
     assert_eq!(set.status, 200, "{}", set.text);
     scope(|turns| {

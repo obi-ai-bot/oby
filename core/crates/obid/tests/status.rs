@@ -336,7 +336,8 @@ fn status_answers_with_engine_obid() {
     assert_eq!(status["clearedAt"], Value::Null);
     assert_eq!(status["github"], "owner");
     assert_eq!(status["checks"], "no app");
-    assert_eq!(status["permissions"], json!({"mode": "sandbox"}));
+    // A new install starts in Bypass (#1570, BYPASS-1).
+    assert_eq!(status["permissions"], json!({"mode": "bypass"}));
     // Remote access is gone: the tunnel is always off (#896), for the apps that still decode it.
     assert_eq!(status["tunnel"], json!({"state": "off", "detail": null}));
     // claudeKeychain left out: obid decided, and the stand-in Keychain holds no Claude login.

@@ -1,7 +1,7 @@
 import { useSyncExternalStore } from 'react';
 import { ApiError, api, parseEvent, sseReader, type Conversation, type Event, type InboxItem, type Job, type LimitDecision, type Question, type Repo, type Status, type TranscriptEntry, type Turn } from './obid';
 import { pageOf, stagesOf } from './jobPage';
-import { AGENTS, type Ask, type AskKind, type Job as JobView, type Message, type Offer } from './mock';
+import { AGENTS, TELL, type Ask, type AskKind, type Job as JobView, type Message, type Offer } from './mock';
 import { replaceChats, type Chat } from './chats';
 import { replaceTasks, type Asking, type Task } from './tasks';
 import { keepFoldersOf, nameFoldersBy, saveFolders, sendFoldersBy, takeFolders } from './folders';
@@ -140,10 +140,12 @@ function chatsOf(s: Live): Chat[] {
 }
 
 // The decision a job's card shows, of its open inbox items: what its agent waits on first (a
-// permission or a question), else the oldest (an offer like a check to keep). The card holds one.
+// permission or a question, its agent's own among them), else the oldest (an offer like a check to
+// keep). The card holds one.
+const WAITS = new Set(['permission', 'question', 'agentQuestion']);
 const itemOf = (s: Live, job: string) => {
   const items = s.inbox.filter((i) => i.job === job);
-  return items.find((i) => i.kind === 'permission' || i.kind === 'question') ?? items[0];
+  return items.find((i) => WAITS.has(i.kind)) ?? items[0];
 };
 
 // What a job needs from you: that decision (a permission's command as its detail); or, failed or
@@ -160,9 +162,12 @@ function askOf(s: Live, j: Job): Ask | undefined {
 
 // An item's decision as a card shows it; detail: a permission's command, else the review a ready
 // review's Approve posts (as text). A GitHub offer is Sangam's "Start it?", as on To do's cards,
-// and an Oby failure his "Failed".
-const LABELLED: Record<string, AskKind> = { github: 'start', failure: 'failed' };
-const itemAsk = (item: InboxItem, detail?: string): Ask => {
+// an Oby failure his "Failed", and the agent's own question (#858) his Question, the question its
+// headline as on his cards, quoted as the agent wrote it, its options and his Tell it something
+// for the owner's own words (obid takes any words as the answer), so one with no options is
+// answered too.
+const LABELLED: Record<string, AskKind> = { github: 'start', failure: 'failed', agentQuestion: 'question' };
+export const itemAsk = (item: InboxItem, detail?: string): Ask => {
   // Oby's ask for a repository's check (set_check): the command under the question, and the
   // answers in plain words (answerJob turns them into obid's Confirm and Cancel)
   // (Cancel keeps the check a repository has; with none it's No check)
@@ -171,6 +176,7 @@ const itemAsk = (item: InboxItem, detail?: string): Ask => {
     const options = ['Use it', 'Edit', item.confirm!.payload?.was ? 'Keep it' : 'No check'];
     return { kind: 'check', headline: `Use this as ${item.confirm!.target}’s check before publishing?`, text: item.text, options, detail: check };
   }
+  if (item.kind === 'agentQuestion') return { kind: 'question', headline: item.text, text: '', options: [...item.options, TELL] };
   return {
     kind: LABELLED[item.kind] ?? item.kind as AskKind, headline: item.headline ?? item.title, text: item.headline ? item.text : '',
     options: item.options, recommended: item.recommended ?? undefined, detail: detail ?? item.watch?.review ?? undefined,
@@ -689,6 +695,10 @@ export async function deleteConversation(shown: string) {
 export async function tellJob(id: string, text: string) {
   try { const j = await api.message(id, text.trim()); set({ jobs: { ...state.jobs, [j.id]: j } }); } catch (e) { say(e); }
 }
+// A task's Mode menu: how much it asks from now on (POST /v1/jobs/{id}/mode)
+export async function changeMode(id: string, mode: string) {
+  try { const j = await api.mode(id, mode); set({ jobs: { ...state.jobs, [j.id]: j } }); } catch (e) { say(e); }
+}
 export async function stopJob(id: string) {
   try { const j = await api.stop(id); set({ jobs: { ...state.jobs, [j.id]: j } }); } catch (e) { say(e); }
 }
@@ -766,7 +776,7 @@ const DECISIONS: Record<string, 'allow' | 'always' | 'deny'> = { Allow: 'allow',
 export async function answerJob(id: string, option: string, words?: string) {
   if (id.startsWith('limit:')) return answerLimitAsk(id, option).catch(say);
   const j = state.jobs[id], item = itemOf(state, id) ?? state.inbox.find((i) => i.id === id), ask = j && askOf(state, j);
-  const shown = option === 'Edit' && words ? `Use ${words}` : option;
+  const shown = option === 'Edit' && words ? `Use ${words}` : option === TELL && words ? words : option;
   if (ask) set({ answered: { ...state.answered, [id]: { ask, option: shown, item: item?.id } } });
   else if (item) answering(item.id, true);
   try {
@@ -786,7 +796,10 @@ export async function answerJob(id: string, option: string, words?: string) {
       const next = await api.permission(id, { id: j.permission.id, decision: DECISIONS[option] });
       set({ jobs: { ...state.jobs, [next.id]: next } });
     } else if (item) {
-      const body = option === 'Later' ? { later: new Date(Date.now() + 3600_000).toISOString().replace(/\.\d+Z$/, 'Z') } : { answer: option };
+      // (an agent's question by its own item, never the job's permission, which can lag behind the
+      // inbox: Tell it something sends the owner's words as its answer)
+      const said = option === TELL && words ? words : option;
+      const body = option === 'Later' ? { later: new Date(Date.now() + 3600_000).toISOString().replace(/\.\d+Z$/, 'Z') } : { answer: said };
       set(apply(state, { kind: 'inbox', item: await api.answer(item.id, body) }));
     } else if (option === 'Dismiss') {
       // a failed job with no item: let go

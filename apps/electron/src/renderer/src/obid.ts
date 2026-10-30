@@ -83,6 +83,8 @@ export const api = {
   // a job's waiting permission (POST /v1/jobs/{id}/permission)
   permission: (j: string, body: { id: string; decision: 'allow' | 'always' | 'deny'; message?: string }) =>
     call<Job>('POST', `/v1/jobs/${id(j)}/permission`, body),
+  // how much it asks from now on (a task's Mode menu)
+  mode: (j: string, mode: string) => call<Job>('POST', `/v1/jobs/${id(j)}/mode`, { mode }),
   inbox: () => call<InboxItem[]>('GET', '/v1/inbox'),
   answer: (i: string, body: { answer: string } | { later: string }) => call<InboxItem>('POST', `/v1/inbox/${id(i)}/answer`, body),
   // Confirm on a confirm item: main signs it with this Mac's device key (main/device.ts)

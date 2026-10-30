@@ -64,8 +64,9 @@ export default function TaskView({ id, leaving, covered = false, onBack, onHome,
           className="chat task-scroll"
           aria-label={task.title}
           onScroll={onScroll}
-          // a click anywhere off the card goes back to Home, like the title bar's back
-          onClick={(e) => { if (!(e.target as Element).closest('.card')) onHome(); }}
+          // a click anywhere off the card goes back to Home, like the title bar's back (not one in
+          // the card's own menus, which React hands up from their portal)
+          onClick={(e) => { if (!(e.target as Element).closest('.card, .row-menu')) onHome(); }}
         >
           <div className="chat-column">
             <TaskCard task={task} alone onSession={onSession && (onObid || SESSIONS[task.id]) ? () => onSession(task.id) : undefined} style={{ '--i': 0 } as React.CSSProperties} />

@@ -1,5 +1,6 @@
 import type { Account, Job, Outgoing, TranscriptEntry } from './obid';
 import type { Page, Stage, StageId, ToolGroup } from './mock';
+import { modeLabel } from './modes';
 import type { Entry, ToolKind } from './session';
 
 // obid's job as Sangam's task page shows it (TaskCard.tsx, mock.ts's Page): the stages with their
@@ -24,7 +25,6 @@ function range(low: number, high: number) {
 const since = (iso: string, now: number) => (now - Date.parse(iso)) / 1000;
 
 const ENDED = new Set(['done', 'failed', 'stopped', 'interrupted']);
-const MODES: Record<string, string> = { ask: 'Ask', acceptEdits: 'Accept edits', plan: 'Plan', bypass: 'Bypass', sandbox: 'Sandbox' };
 
 // The stages, with how long each took (or should: "≈ 6m"), and the agent's activity and latest
 // words under Work
@@ -139,7 +139,7 @@ export function outgoingText(o: Outgoing, published?: string | null) {
 export function pageOf(j: Job, account?: Account, needs = false, now = Date.now()): Page {
   const counts = j.activity ? KINDS.filter(([k]) => j.activity!.counts[k]).map(([k, one, many]): [number, string] => [j.activity!.counts[k]!, j.activity!.counts[k] === 1 ? one : many]) : [];
   return {
-    mode: j.mode ? MODES[j.mode] : undefined,
+    mode: j.mode ? modeLabel(j.mode) : undefined,
     time: timeOf(j, needs, now),
     counts: counts.length ? counts : undefined,
     groups: j.activity?.groups.length ? groupsOf(j.activity, now) : undefined,

@@ -39,6 +39,7 @@ export type CheckRow = {
   name: string; mono?: boolean; state: 'done' | 'running' | 'upcoming' | 'failed' | 'skipped';
   result?: string; took?: string; progress?: number;
 };
+
 export type Page = {
   mode?: string;  // Ask, Accept edits, Plan, Bypass
   // the time track: how far in (done), when it should be done (from–to), as
@@ -64,6 +65,8 @@ export type Ask = {
   recommended?: number;
   detail?: string;    // the command, the diff stat, the plan
 };
+// a Question's own words for the agent, in place of its options (as on his "Go with this plan?")
+export const TELL = 'Tell it something';
 export const ASK_LABEL: Record<AskKind, string> = {
   question: 'Question', permission: 'Permission', review: 'Out of reviews', failed: 'Failed',
   limit: 'Out of usage', start: 'Start it?', merge: 'Not merged', back: 'Came back', check: 'Check', remember: 'Remember?',

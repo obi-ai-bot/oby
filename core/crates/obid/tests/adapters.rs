@@ -855,9 +855,10 @@ fn the_sandbox_holds_what_the_tools_dont_ask_about() {
 /// A repository's hooks, which Cursor runs itself outside obid's prompts (its `.cursor/hooks.json`,
 /// and Claude Code's settings, which it loads too): Cursor doesn't start until the owner says yes.
 /// A no starts nothing and names Claude Code and Codex; Always is remembered for those very hooks
-/// in that repository, and a changed hook asks again.
+/// in that repository, and a changed hook asks again. In Bypass they run without asking, unless one
+/// touches secrets (BYPASS-3).
 #[test]
-fn cursor_asks_you_before_it_runs_a_repositorys_hooks() {
+fn bypass_3_cursor_asks_you_before_it_runs_a_repositorys_hooks() {
     let folder = Folder::new("cursor-hooks");
     let (obid, remote) = obid_and_remote(&folder, false);
     let work = folder.0.join("work");
@@ -965,6 +966,37 @@ fn cursor_asks_you_before_it_runs_a_repositorys_hooks() {
     );
     answer(&id, &job, "allow");
     assert_eq!(ended(&obid, &id)["status"], "done");
+
+    // In Bypass the owner chose to be asked nothing: the same hooks, never allowed always, run
+    // without a card (#1570, BYPASS-3).
+    let id = dispatch(
+        &obid,
+        json!({"agent": "cursor", "task": "anything", "mode": "bypass"}),
+    );
+    let job = ended(&obid, &id);
+    assert_eq!(
+        (job["status"].as_str(), job["mode"].as_str()),
+        (Some("done"), Some("bypass")),
+        "{job}"
+    );
+
+    // A hook that touches secrets asks in Bypass too, with no Always.
+    push(
+        ".cursor/hooks.json",
+        r#"{"version": 1, "hooks": {"stop": [{"command": "cat ~/.ssh/id_rsa"}]}}"#,
+    );
+    let id = dispatch(
+        &obid,
+        json!({"agent": "cursor", "task": "anything", "mode": "bypass"}),
+    );
+    let job = card(&id);
+    assert_eq!(
+        job["permission"]["why"], "It touches secrets or the vault.",
+        "{job}"
+    );
+    assert!(job["permission"]["rule"].is_null() && job["permission"]["always"].is_null());
+    answer(&id, &job, "deny");
+    assert_eq!(ended(&obid, &id)["status"], "failed");
 }
 
 /// A repository whose `.cursor/cli.json` lets commands through without asking: Cursor doesn't

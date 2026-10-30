@@ -2,9 +2,11 @@ import { useState } from 'react';
 import { Check, ChevronDown, ChevronRight, Info } from 'lucide-react';
 import { BrandMark } from './brands';
 import StatusDot from './StatusDot';
-import { AGENTS, ASK_LABEL, ago, type CheckRow, type Page, type Stage, type ToolGroup } from './mock';
-import { answer, changeCheck, markSeen, openOnGitHub, type Task } from './tasks';
+import { MODES } from './modes';
+import { AGENTS, ASK_LABEL, TELL, ago, type CheckRow, type Page, type Stage, type ToolGroup } from './mock';
+import { answer, changeCheck, changeMode, markSeen, openOnGitHub, type Task } from './tasks';
 import { prName, prUrl } from './jobPage';
+import { Menu } from './Menu';
 
 // A task as a card in its group: where it came from and what it is, which
 // agent has it where, then what's happening now: the live step while it runs,
@@ -26,6 +28,8 @@ export default function TaskCard({ task, alone = false, onOpen, onSession, style
   const [log, setLogOpen] = useState(false);
   // Change check, open on Details' "Done when"
   const [changing, setChanging] = useState(false);
+  // the Mode menu, open under its button
+  const [modeAt, setModeAt] = useState<DOMRect | null>(null);
   const setLog = (on: boolean) => (onSession && on ? onSession() : setLogOpen(on));
   // a session to open: the mock's log, or obid's (onSession)
   const hasLog = !!j.log || !!onSession;
@@ -62,7 +66,22 @@ export default function TaskCard({ task, alone = false, onOpen, onSession, style
       <p className="tc-meta">
         {AGENTS[j.agent].name} · {j.account}{j.on && <> · on {j.on}</>}{repo && <> · {repo}</>}
         {/* on its page, how much the agent may do on its own; a click changes it */}
-        {page?.mode && !done && <button className="tc-mode">{page.mode}<ChevronDown size={12} strokeWidth={1.8} /></button>}
+        {page?.mode && !done && (
+          <button className="tc-mode" aria-haspopup="menu" aria-expanded={!!modeAt}
+            onClick={(e) => setModeAt(modeAt ? null : e.currentTarget.getBoundingClientRect())}>
+            {page.mode}<ChevronDown size={12} strokeWidth={1.8} />
+          </button>
+        )}
+        {modeAt && (
+          <Menu at={modeAt} align="left" onClose={() => setModeAt(null)} height={150}>
+            {MODES.map((m) => (
+              <button key={m.id} role="menuitemradio" aria-checked={m.label === page?.mode}
+                onClick={() => { setModeAt(null); if (m.label !== page?.mode) changeMode(task.id, m.id); }}>
+                {m.label}
+              </button>
+            ))}
+          </Menu>
+        )}
       </p>
 
       {task.status === 'running' && (
@@ -216,7 +235,10 @@ export function AskBlock({ task, inChat = false, onAnswer }: { task: Pick<Task, 
       {task.answer ? (
         !inChat && <p className="tc-answered"><Check size={14} strokeWidth={1.8} />{task.answer}</p>
       ) : editing !== null ? (
-        <CheckField initial={editing} onUse={(check) => check && pick('Edit', check)} onCancel={() => setEditing(null)} />
+        ask.kind === 'question'
+          // Tell it something: the owner's own words, as the agent's answer
+          ? <CheckField initial="" label="Your answer" use="Send" max={2000} onUse={(words) => words && pick(TELL, words)} onCancel={() => setEditing(null)} />
+          : <CheckField initial={editing} onUse={(check) => check && pick('Edit', check)} onCancel={() => setEditing(null)} />
       ) : (
         <div className="tc-options">
           {ask.options.map((o, i) => (
@@ -225,7 +247,7 @@ export function AskBlock({ task, inChat = false, onAnswer }: { task: Pick<Task, 
               // a Confirm looks preferred only when Oby recommends it (obid never does), and a
               // check's Use it is one
               className={`tc-option${i === (ask.kind === 'confirm' || ask.kind === 'check' ? ask.recommended : ask.recommended ?? 0) ? ' is-primary' : ''}${o === 'Deny' ? ' is-danger' : ''}`}
-              onClick={() => (ask.kind === 'check' && o === 'Edit' ? setEditing(ask.detail ?? '') : pick(o))}
+              onClick={() => (ask.kind === 'check' && o === 'Edit' ? setEditing(ask.detail ?? '') : ask.kind === 'question' && o === TELL ? setEditing('') : pick(o))}
             >
               {o}
             </button>
@@ -238,17 +260,20 @@ export function AskBlock({ task, inChat = false, onAnswer }: { task: Pick<Task, 
 }
 
 // A check's command in Settings' field, in place of the choices: Use it keeps what's typed; with
-// empty (Change check's) an empty field is allowed, that button its label, and gives null.
-function CheckField({ initial, empty, onUse, onCancel }: { initial: string; empty?: string; onUse: (check: string | null) => void; onCancel: () => void }) {
+// empty (Change check's) an empty field is allowed, that button its label, and gives null. A
+// question's own answer takes the same field (label, use, max).
+function CheckField({ initial, empty, label = 'The check’s command', use = 'Use it', max = 200, onUse, onCancel }: {
+  initial: string; empty?: string; label?: string; use?: string; max?: number; onUse: (check: string | null) => void; onCancel: () => void;
+}) {
   const [value, setValue] = useState(initial);
   const typed = value.trim();
   return (
     <form className="tc-options" onSubmit={(e) => { e.preventDefault(); if (typed || empty) onUse(typed || null); }}>
       <input
-        className="set-field" autoFocus value={value} maxLength={200} spellCheck={false} aria-label="The check’s command"
+        className="set-field" autoFocus value={value} maxLength={max} spellCheck={false} aria-label={label}
         onChange={(e) => setValue(e.target.value)} onKeyDown={(e) => { if (e.key === 'Escape') onCancel(); }}
       />
-      <button type="submit" className="tc-option" disabled={!typed && !empty}>{typed || !empty ? 'Use it' : empty}</button>
+      <button type="submit" className="tc-option" disabled={!typed && !empty}>{typed || !empty ? use : empty}</button>
       <button type="button" className="tc-option is-quiet" onClick={onCancel}>Cancel</button>
     </form>
   );

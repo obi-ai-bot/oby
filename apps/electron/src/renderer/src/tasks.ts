@@ -1,6 +1,7 @@
 import { useSyncExternalStore } from 'react';
 import { BRANDS, type Brand } from './brands';
-import { AGENTS, ARCHIVE, GITHUB_WORK, JOBS, hasAttachments, type Archived, type Ask, type Attachments, type GitHubItem, type Job, type Message, type Offer } from './mock';
+import { AGENTS, ARCHIVE, GITHUB_WORK, JOBS, hasAttachments, TELL, type Archived, type Ask, type Attachments, type GitHubItem, type Job, type Message, type Offer } from './mock';
+import { modeLabel } from './modes';
 import { streamWords, wait } from './stream';
 import { everything, onObid } from './lean';
 import * as live from './live';
@@ -154,8 +155,10 @@ export function answer(id: string, option: string, words?: string) {
   if (onObid) return void live.answerJob(id, option, words);
   const k = tasks.find((x) => x.id === id);
   if (!k) return;
-  update(id, () => ({ answer: option, status: option === 'Later' ? k.status : k.job.status === 'done' ? 'done' : 'running' }));
-  say(id, { who: 'you', text: option, ago: 0 });
+  // Tell it something: the owner's own words are the answer
+  const said = option === TELL && words ? words : option;
+  update(id, () => ({ answer: said, status: option === 'Later' ? k.status : k.job.status === 'done' ? 'done' : 'running' }));
+  say(id, { who: 'you', text: said, ago: 0 });
   const agent = AGENTS[k.job.agent].name;
   reply(id, () => (option === 'Later' ? 'Okay, it’ll wait. I’ll bring it back up in an hour.' : `Got it. ${agent} will go with that.`));
 }
@@ -168,6 +171,12 @@ export function changeCheck(repo: string, check: string | null) {
 }
 
 // Stopped by you: it ends where it was, with nothing left to decide, and moves to Done
+// A task's Mode menu: how much it asks from now on (on obid, its own; on the mock, at once)
+export function changeMode(id: string, mode: string) {
+  if (onObid) return void live.changeMode(id, mode);
+  update(id, (k) => ({ job: { ...k.job, page: { ...k.job.page, mode: modeLabel(mode) } } }));
+}
+
 export function stop(id: string) {
   if (onObid) return void live.stopJob(id);
   update(id, (k) => ({
