@@ -172,13 +172,39 @@ pub const CURSOR_MISSING: &str = "Cursor's agent isn't on this Mac yet: Connect 
 async fn set_up() -> Result<String, String> {
     let home = crate::jobs::login_home()
         .ok_or("obid can't find the person's home to put Cursor's agent in.")?;
-    let installer = std::env::var("OBID_CURSOR_INSTALLER").ok();
+    // The stand-in is for obid's tests only: a release build always reads Cursor's own script.
+    let installer = if cfg!(debug_assertions) {
+        std::env::var("OBID_CURSOR_INSTALLER").ok()
+    } else {
+        None
+    };
+    let stand_in = installer
+        .as_deref()
+        .and_then(|i| reqwest::Url::parse(i).ok());
+    // reqwest follows redirects: every hop stays on Cursor's site over HTTPS, as the first does.
+    let redirects = reqwest::redirect::Policy::custom(move |attempt| {
+        if attempt.previous().len() >= 10 {
+            return attempt.error("too many redirects");
+        }
+        if follows(attempt.url(), stand_in.as_ref()) {
+            return attempt.follow();
+        }
+        let to = attempt.url().to_string();
+        attempt.error(format!("a redirect to {to}, off Cursor's site: not taken"))
+    });
     let client = reqwest::Client::builder()
         .timeout(DOWNLOAD_WITHIN)
+        .redirect(redirects)
+        .https_only(installer.is_none())
         .build()
         .map_err(|e| format!("obid can't make an HTTP client: {e}"))?;
-    let (version, url) = package(&client, installer.as_deref()).await?;
     let versions = home.join(".local/share/cursor-agent/versions");
+    let bin = home.join(".local/bin");
+    // Checked before the download too, so a set-up it stops leaves nothing behind.
+    if !ours_to_point(&bin.join("cursor-agent"), &versions) {
+        return Err(left_alone(&bin.join("cursor-agent")));
+    }
+    let (version, url) = package(&client, installer.as_deref()).await?;
     std::fs::create_dir_all(&versions)
         .map_err(|e| format!("obid can't make {}: {e}", versions.display()))?;
     let staging = versions.join(format!(".tmp-{version}-obid-{}", std::process::id()));
@@ -202,22 +228,58 @@ async fn set_up() -> Result<String, String> {
         let _ = std::fs::remove_dir_all(&staging);
         format!("obid can't move the package to {}: {e}", kept.display())
     })?;
-    let bin = home.join(".local/bin");
     std::fs::create_dir_all(&bin).map_err(|e| format!("obid can't make {}: {e}", bin.display()))?;
     for name in ["cursor-agent", "agent"] {
         let link = bin.join(name);
-        match std::fs::symlink_metadata(&link) {
-            Ok(meta) if meta.is_dir() => {
-                return Err(format!("{} is a folder: move it aside.", link.display()));
+        if !ours_to_point(&link, &versions) {
+            // obid runs `cursor-agent` only: another tool's `agent` stays the person's.
+            if name == "agent" {
+                tracing::warn!("Cursor's agent: {}", left_alone(&link));
+                continue;
             }
-            Ok(_) => std::fs::remove_file(&link)
-                .map_err(|e| format!("obid can't replace {}: {e}", link.display()))?,
-            Err(_) => {}
+            return Err(left_alone(&link));
+        }
+        if std::fs::symlink_metadata(&link).is_ok() {
+            std::fs::remove_file(&link)
+                .map_err(|e| format!("obid can't replace {}: {e}", link.display()))?;
         }
         std::os::unix::fs::symlink(kept.join("cursor-agent"), &link)
             .map_err(|e| format!("obid can't make {}: {e}", link.display()))?;
     }
     Ok(version)
+}
+
+/// Whether obid follows a redirect to `to`: over HTTPS to cursor.com or a site under it, or, in
+/// obid's tests, to the stand-in's own site.
+fn follows(to: &reqwest::Url, stand_in: Option<&reqwest::Url>) -> bool {
+    if let Some(site) = stand_in {
+        return (site.scheme(), site.host_str(), site.port())
+            == (to.scheme(), to.host_str(), to.port());
+    }
+    to.scheme() == "https"
+        && to
+            .host_str()
+            .is_some_and(|h| h == "cursor.com" || h.ends_with(".cursor.com"))
+}
+
+/// Whether obid may point `link` at the package it set up: nothing is there, or a link into
+/// Cursor's `versions` (its installer's, or obid's). Anything else is the person's, and stays.
+fn ours_to_point(link: &Path, versions: &Path) -> bool {
+    match std::fs::symlink_metadata(link) {
+        Err(e) => e.kind() == std::io::ErrorKind::NotFound,
+        Ok(meta) => {
+            meta.file_type().is_symlink()
+                && std::fs::read_link(link).is_ok_and(|to| to.starts_with(versions))
+        }
+    }
+}
+
+/// What obid says of a file in the way of Cursor's links: it leaves it as it is.
+fn left_alone(link: &Path) -> String {
+    format!(
+        "{} is there and isn't Cursor's: obid left it as it is. Move it aside, then Connect again.",
+        link.display()
+    )
 }
 
 /// The package Cursor's install script names for this machine: its version and its address.
@@ -440,6 +502,50 @@ mod tests {
         );
         std::fs::write(root.join("bin/other"), "").unwrap();
         assert_eq!(installed_version(&root.join("bin/other")), None);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Redirects stay on Cursor's site over HTTPS (or, in tests, on the stand-in's).
+    #[test]
+    fn only_redirects_to_cursors_site_are_followed() {
+        let url = |u: &str| reqwest::Url::parse(u).unwrap();
+        assert!(follows(
+            &url("https://downloads.cursor.com/lab/x.tgz"),
+            None
+        ));
+        assert!(follows(&url("https://cursor.com/install"), None));
+        assert!(!follows(
+            &url("http://downloads.cursor.com/lab/x.tgz"),
+            None
+        ));
+        assert!(!follows(&url("https://evilcursor.com/x"), None));
+        assert!(!follows(&url("https://cursor.com.evil.example/x"), None));
+        let site = url("http://127.0.0.1:4000/install");
+        assert!(follows(&url("http://127.0.0.1:4000/lab/x"), Some(&site)));
+        assert!(!follows(&url("http://127.0.0.1:4001/lab/x"), Some(&site)));
+        assert!(!follows(
+            &url("https://downloads.cursor.com/x"),
+            Some(&site)
+        ));
+    }
+
+    /// Only nothing, or a link into Cursor's `versions`, is (re)pointed; the person's own stays.
+    #[test]
+    fn only_cursors_own_links_are_replaced() {
+        let root = std::env::temp_dir().join(format!("obid-cursor-links-{}", std::process::id()));
+        let versions = root.join("versions");
+        let bin = root.join("bin");
+        std::fs::create_dir_all(versions.join("1")).unwrap();
+        std::fs::create_dir_all(&bin).unwrap();
+        assert!(ours_to_point(&bin.join("none"), &versions));
+        std::os::unix::fs::symlink(versions.join("1/cursor-agent"), bin.join("cursors")).unwrap();
+        assert!(ours_to_point(&bin.join("cursors"), &versions));
+        std::os::unix::fs::symlink("/usr/bin/true", bin.join("other")).unwrap();
+        assert!(!ours_to_point(&bin.join("other"), &versions));
+        std::fs::write(bin.join("file"), "#!/bin/sh\n").unwrap();
+        assert!(!ours_to_point(&bin.join("file"), &versions));
+        std::fs::create_dir(bin.join("folder")).unwrap();
+        assert!(!ours_to_point(&bin.join("folder"), &versions));
         let _ = std::fs::remove_dir_all(&root);
     }
 }

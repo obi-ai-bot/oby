@@ -274,7 +274,8 @@ function publish() {
 // A Cursor account's one line: not connected, its login expired (obid's note), or connected with
 // its plan (obid's label, from `cursor-agent about`), at its limit until its cycle ends, else
 // where Cursor shows what's used (its CLI gives obid no usage numbers)
-const day = (iso: string) => new Date(iso).toLocaleDateString([], { month: 'short', day: 'numeric' });
+// obid keeps the cycle's last day at 00:00 UTC: read in UTC, it's Cursor's day anywhere.
+const day = (iso: string) => new Date(iso).toLocaleDateString([], { month: 'short', day: 'numeric', timeZone: 'UTC' });
 function cursorStanding(a: Status['accounts'][number]): string {
   if (!a.signedIn) {
     if (a.label === 'Run cursor-agent once') return 'Cursor’s login on this Mac has expired: run cursor-agent once in Terminal, or Connect an account of Oby’s own';

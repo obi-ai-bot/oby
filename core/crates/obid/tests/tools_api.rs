@@ -187,6 +187,12 @@ fn a_cursor_sign_in_without_the_agent_says_how_it_is_set_up() {
     let remote = folder.0.join("remote.git");
     let config = config(&folder.0, &remote, &agent_path("fake-claude"));
     let obid = start(&folder.0, &config, None);
+    // A Mac with one on its login shell's PATH can't run this: obid finds that one.
+    let before = tools(&obid);
+    if before["state"] == "installed" {
+        eprintln!("skipped: this machine has {}", before["path"]);
+        return;
+    }
     let added = call(
         &obid,
         "POST",
