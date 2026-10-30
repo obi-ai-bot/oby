@@ -296,6 +296,40 @@ pub enum Error {
     Io(std::io::Error),
     /// It would work in more than [`crate::folders::MOST`] folders.
     TooManyFolders,
+    /// A folder it doesn't have was refused (crate::folders::check), and why.
+    Folder(String),
+    /// A paired device's change would add a folder: only the owner's Mac app adds one.
+    AddsFolders,
+}
+
+/// The folders a `PATCH` asks a conversation to work in: each path as sent, with its check
+/// (crate::folders::check), and whether the change came through the gateway or the phone relay.
+pub struct FolderChange {
+    pub asked: Vec<(String, Result<String, String>)>,
+    pub remote: bool,
+}
+
+impl FolderChange {
+    /// The conversation's folders from now on, given those it has: one it has stays as kept (gone
+    /// from disk since, it can still be taken off); any other is its check's canonical path, or
+    /// refused, and refused from a paired device whatever its check said.
+    fn apply(self, had: &[String]) -> Result<Vec<String>, Error> {
+        let mut kept: Vec<String> = Vec::new();
+        for (path, checked) in self.asked {
+            let folder = match had.iter().find(|h| crate::folders::same(h, &path)) {
+                Some(h) => h.clone(),
+                None if self.remote => return Err(Error::AddsFolders),
+                None => checked.map_err(Error::Folder)?,
+            };
+            if !kept.iter().any(|k| crate::folders::same(k, &folder)) {
+                kept.push(folder);
+            }
+        }
+        if kept.len() > crate::folders::MOST {
+            return Err(Error::TooManyFolders);
+        }
+        Ok(kept)
+    }
 }
 
 impl From<Error> for ApiError {
@@ -316,6 +350,11 @@ impl From<Error> for ApiError {
             Error::Io(_) => ApiError::new(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "The conversation couldn't be kept.",
+            ),
+            Error::Folder(why) => ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, why),
+            Error::AddsFolders => ApiError::new(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "Folders are added only on the Mac: from here you can take one off.",
             ),
             Error::TooManyFolders => ApiError::new(
                 StatusCode::UNPROCESSABLE_ENTITY,
@@ -456,7 +495,8 @@ impl Conversations {
     /// `foreign`: why the words aren't the owner's own, typed in Oby's apps (crate::secretspec),
     /// which marks the conversation; `None` only for words an app of the owner's signed.
     /// `folders`: checked folders (crate::folders) the conversation works in from now on, added to
-    /// those it has; none are added when the words are a repeat.
+    /// those it has, or why they were refused. Words that are a repeat are `repeated` whatever
+    /// their folders were, and add none; otherwise a refusal is `Folder`, and nothing is added.
     pub fn begin(
         &self,
         target: Target,
@@ -464,7 +504,7 @@ impl Conversations {
         jobs: Vec<String>,
         id: Option<String>,
         foreign: Option<String>,
-        folders: Vec<String>,
+        folders: Result<Vec<String>, String>,
     ) -> Result<Begun, Error> {
         let mut threads = self.lock();
         if let Some(id) = id.as_deref()
@@ -492,6 +532,7 @@ impl Conversations {
                 repeated: true,
             });
         }
+        let folders = folders.map_err(Error::Folder)?;
         let found = match target {
             Target::Id(id) => Some(
                 threads
@@ -978,19 +1019,21 @@ impl Conversations {
             .collect()
     }
 
-    /// Renames or pins the conversation `id`, or replaces its folders with checked ones.
+    /// Renames or pins the conversation `id`, or changes its folders: merged with those it has
+    /// under the same lock that writes them, so a change can't put back one just taken off.
     fn change(
         &self,
         id: &str,
         title: Option<String>,
         pinned: Option<bool>,
-        folders: Option<Vec<String>>,
+        folders: Option<FolderChange>,
     ) -> Result<Value, Error> {
         let mut threads = self.lock();
         let thread = threads
             .iter_mut()
             .find(|t| t.id == id)
             .ok_or(Error::NoConversation)?;
+        let folders = folders.map(|f| f.apply(&thread.folders)).transpose()?;
         let kept = thread.clone();
         if let Some(title) = title {
             thread.title = title;
@@ -1008,15 +1051,6 @@ impl Conversations {
         let summary = thread.summary();
         self.events.send("conversation", summary.clone());
         Ok(summary)
-    }
-
-    /// The folders the conversation `id` works in.
-    pub fn folders(&self, id: &str) -> Result<Vec<String>, Error> {
-        self.lock()
-            .iter()
-            .find(|t| t.id == id)
-            .map(|t| t.folders.clone())
-            .ok_or(Error::NoConversation)
     }
 
     /// The task list of the conversation `id`, and whether a turn that read something untrusted
@@ -1458,13 +1492,24 @@ pub async fn update(
             "Send a title, pinned, folders, or more than one.",
         ));
     }
-    let folders = match change.folders {
-        None => None,
-        Some(asked) => {
-            let remote = paired.is_some() || relayed.is_some();
-            Some(changed_folders(&shared, &id, &asked, remote)?)
-        }
-    };
+    // Checked here, outside the conversations' lock; merged with those it has under it.
+    let remote = paired.is_some() || relayed.is_some();
+    let places = crate::folders::Places::of(&shared);
+    let folders = change.folders.map(|asked| FolderChange {
+        asked: asked
+            .into_iter()
+            .map(|path| {
+                // A paired device adds none: what it names isn't looked for on disk.
+                let checked = if remote {
+                    Err(String::new())
+                } else {
+                    crate::folders::check(&places, &path)
+                };
+                (path, checked)
+            })
+            .collect(),
+        remote,
+    });
     let title = change.title.map(|t| t.trim().to_owned());
     if title.as_ref().is_some_and(|t| {
         t.is_empty()
@@ -1482,43 +1527,6 @@ pub async fn update(
     Ok((StatusCode::OK, axum::Json(summary)).into_response())
 }
 
-/// The folders `asked` for the conversation `id`, as it keeps them: one it has already stays as
-/// kept (gone from disk since, it can still be taken off); any other is checked, and refused when
-/// `remote` (a paired device adds none).
-fn changed_folders(
-    shared: &Shared,
-    id: &str,
-    asked: &[String],
-    remote: bool,
-) -> Result<Vec<String>, ApiError> {
-    let had = shared.conversations.folders(id)?;
-    let mut kept: Vec<String> = Vec::new();
-    let mut new = Vec::new();
-    for path in asked {
-        match had.iter().find(|h| crate::folders::same(h, path)) {
-            Some(h) if !kept.contains(h) => kept.push(h.clone()),
-            Some(_) => {}
-            None if remote => {
-                return Err(ApiError::new(
-                    StatusCode::UNPROCESSABLE_ENTITY,
-                    "Folders are added only on the Mac: from here you can take one off.",
-                ));
-            }
-            None => new.push(path.clone()),
-        }
-    }
-    let places = crate::folders::Places::of(shared);
-    for folder in crate::folders::checked(&places, &new)? {
-        if !kept.iter().any(|k| crate::folders::same(k, &folder)) {
-            kept.push(folder);
-        }
-    }
-    if kept.len() > crate::folders::MOST {
-        return Err(Error::TooManyFolders.into());
-    }
-    Ok(kept)
-}
-
 /// `DELETE /v1/conversations/{id}`: the conversation goes, and the offers made in it close; the
 /// jobs it started stay.
 pub async fn remove(
@@ -1533,7 +1541,33 @@ pub async fn remove(
 
 #[cfg(test)]
 mod tests {
-    use super::{Cursor, Task, checked_tasks, job_report, titled};
+    use super::{Cursor, Error, FolderChange, Task, checked_tasks, job_report, titled};
+
+    /// A PATCH merged against the folders as they are under the lock: one taken off meanwhile
+    /// comes back only through its own check, so a stale list never puts back a refused folder.
+    #[test]
+    fn a_stale_folder_change_puts_back_nothing_unchecked() {
+        let change = |asked: Vec<(&str, Result<&str, &str>)>, remote| FolderChange {
+            asked: asked
+                .into_iter()
+                .map(|(p, c)| (p.to_owned(), c.map(str::to_owned).map_err(str::to_owned)))
+                .collect(),
+            remote,
+        };
+        let gone = || vec![("/a", Err("\"a\" isn't at /a."))];
+        assert_eq!(
+            change(gone(), false).apply(&["/a".into()]).unwrap(),
+            vec!["/a".to_owned()]
+        );
+        assert!(matches!(
+            change(gone(), false).apply(&[]),
+            Err(Error::Folder(why)) if why == "\"a\" isn't at /a."
+        ));
+        assert!(matches!(
+            change(vec![("/b", Ok("/b"))], true).apply(&["/a".into()]),
+            Err(Error::AddsFolders)
+        ));
+    }
     use serde_json::json;
 
     /// A task list is at most 50 one-line tasks with a known status; ids are given to those left
@@ -1682,7 +1716,7 @@ mod tests {
                 vec![],
                 None,
                 None,
-                vec![],
+                Ok(vec![]),
             )
             .unwrap()
             .conversation;
@@ -1720,7 +1754,7 @@ mod tests {
                 vec![],
                 None,
                 Some("words no app of the owner's signed".into()),
-                vec![],
+                Ok(vec![]),
             )
             .unwrap()
             .conversation;
@@ -1797,7 +1831,7 @@ mod tests {
                 vec![],
                 None,
                 None,
-                vec![],
+                Ok(vec![]),
             )
             .unwrap()
             .conversation;

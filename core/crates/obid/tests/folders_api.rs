@@ -105,44 +105,85 @@ fn folders_6_a_conversation_keeps_its_folders_for_later_words() {
 fn folders_9_refused_paths_keep_nothing() {
     let folder = Folder::new("folders-9");
     let remote = fixture(&folder.0.join("fixture"));
-    let [login, file_parent] = <[PathBuf; 2]>::try_from(picked("9", &["login", "parent"])).unwrap();
+    let [login, file_parent, agent, keys] = <[PathBuf; 4]>::try_from(picked(
+        "9",
+        &["login", "parent", "agent/claude-real", "keys/ssh-real"],
+    ))
+    .unwrap();
     let mut config = config(&folder.0, &remote, &stub_agent());
     config["agents"]["claude"]["accounts"]
         .as_array_mut()
         .unwrap()
         .push(json!({"id": "other", "name": "Other", "configDir": login}));
+    // The person's ~/.claude and ~/.ssh are links to elsewhere: where they lead is guarded too.
+    let env_home = folder.0.join("env-home");
+    std::fs::create_dir_all(&env_home).unwrap();
+    std::os::unix::fs::symlink(&agent, env_home.join(".claude")).unwrap();
+    std::os::unix::fs::symlink(&keys, env_home.join(".ssh")).unwrap();
     let obid = start(&folder.0, &config, None);
     let file = file_parent.join("notes.txt");
     std::fs::write(&file, "notes").unwrap();
     let home = std::env::var("HOME").unwrap();
     let obid_home = folder.0.join("home");
+    let holding = folder.0.file_name().unwrap().to_str().unwrap();
+    // On macOS the test's own folders are in /private/var, the system's.
+    let ours = |name: &str| {
+        if cfg!(target_os = "macos") {
+            format!("\"{name}\" is where your Mac keeps its own files")
+        } else {
+            format!("\"{name}\" holds Oby's own files")
+        }
+    };
 
-    let refused = [
-        ("/".to_owned(), "\"/\""),
-        (home.clone(), "is your whole home folder"),
+    let mut refused = vec![
+        ("/".to_owned(), "\"/\" is your whole disk".to_owned()),
+        (home.clone(), "is your whole home folder".to_owned()),
         (
             format!("{home}/Library"),
-            "\"Library\" is where your Mac keeps its own settings",
+            "\"Library\" is where your Mac keeps its own settings".to_owned(),
         ),
-        (text(&obid_home), "\"home\""),
-        (text(&folder.0), "\""),
-        (text(&login), "\"login\" holds an agent's login"),
-        (text(&login.join("..")), "holds an agent's login"),
-        ("/usr/local".to_owned(), "\"local\""),
-        (text(&file), "\"notes.txt\" is a file, not a folder."),
+        (text(&obid_home), ours("home")),
+        (text(&folder.0), ours(holding)),
+        (text(&login), "\"login\" holds an agent's login".to_owned()),
+        (text(&login.join("..")), "holds an agent's login".to_owned()),
+        (
+            text(&agent),
+            "\"claude-real\" holds an agent's login".to_owned(),
+        ),
+        (
+            text(agent.parent().unwrap()),
+            "\"agent\" holds an agent's login".to_owned(),
+        ),
+        (
+            text(&keys),
+            "\"ssh-real\" holds your keys or logins".to_owned(),
+        ),
+        (
+            text(keys.parent().unwrap()),
+            "\"keys\" holds your keys or logins".to_owned(),
+        ),
+        (
+            "/usr/local".to_owned(),
+            "\"local\" is where your Mac keeps its own files".to_owned(),
+        ),
+        (
+            text(&file),
+            "\"notes.txt\" is a file, not a folder.".to_owned(),
+        ),
         (
             "Projects/api".to_owned(),
-            "\"api\" isn't a folder's full path.",
+            "\"api\" isn't a folder's full path.".to_owned(),
         ),
-        (text(&file_parent.join("gone")), "\"gone\" isn't at"),
+        (
+            text(&file_parent.join("gone")),
+            "\"gone\" isn't at".to_owned(),
+        ),
     ];
-    let mut refused = refused.to_vec();
     if cfg!(target_os = "macos") {
         refused.push((
             format!("{home}/LIBRARY"),
-            "\"LIBRARY\" is where your Mac keeps",
+            "\"LIBRARY\" is where your Mac keeps".to_owned(),
         ));
-        refused.push((format!("{home}/.claude"), "\".claude\""));
     }
     for (path, why) in refused {
         let answer = call(
@@ -153,7 +194,7 @@ fn folders_9_refused_paths_keep_nothing() {
         );
         assert_eq!(answer.status, 422, "{path}: {}", answer.text);
         let error = answer.body["error"].as_str().unwrap();
-        assert!(error.contains(why), "{path}: {error}");
+        assert!(error.contains(&why), "{path}: {error}");
     }
     // Nothing of a refused request happened: no conversation.
     let list = call(&obid, "GET", "/v1/conversations", None);
@@ -195,4 +236,56 @@ fn folders_22_the_same_words_twice_add_nothing() {
     assert_eq!(again["repeated"], true, "{again}");
     assert_eq!(again["conversation"], id.as_str());
     assert_eq!(folders_of(&obid, &id), json!([text(&api)]));
+    // A retry whose folder is refused now is still the same words: repeated, never a 422.
+    let gone = call(
+        &obid,
+        "POST",
+        "/v1/plans",
+        Some(&json!({"said": "tidy up", "new": true, "id": words, "folders": ["/usr"]})),
+    );
+    assert_eq!(gone.status, 200, "{}", gone.text);
+    assert_eq!(gone.body["repeated"], true, "{}", gone.text);
+    assert_eq!(folders_of(&obid, &id), json!([text(&api)]));
+}
+
+#[test]
+fn folders_a_conversation_works_in_at_most_20() {
+    let folder = Folder::new("folders-most");
+    let obid = harness_obid(&folder);
+    let names: Vec<String> = (0..21).map(|n| format!("f{n}")).collect();
+    let names: Vec<&str> = names.iter().map(String::as_str).collect();
+    let all: Vec<String> = picked("most", &names).iter().map(|p| text(p)).collect();
+    let at_most = "A conversation works in at most 20 folders.";
+
+    let too_many = call(
+        &obid,
+        "POST",
+        "/v1/plans",
+        Some(&json!({"said": "tidy up", "new": true, "folders": all})),
+    );
+    assert_eq!(too_many.status, 422, "{}", too_many.text);
+    assert_eq!(too_many.body["error"], at_most);
+
+    let first = plan(
+        &obid,
+        json!({"said": "tidy up", "new": true, "folders": all[..20]}),
+    );
+    let id = first["conversation"].as_str().unwrap().to_owned();
+    let one_more = call(
+        &obid,
+        "POST",
+        "/v1/plans",
+        Some(&json!({"said": "and this", "conversation": id, "folders": [all[20]]})),
+    );
+    assert_eq!(one_more.status, 422, "{}", one_more.text);
+    assert_eq!(one_more.body["error"], at_most);
+    let patched = call(
+        &obid,
+        "PATCH",
+        &format!("/v1/conversations/{id}"),
+        Some(&json!({"folders": all})),
+    );
+    assert_eq!(patched.status, 422, "{}", patched.text);
+    assert_eq!(patched.body["error"], at_most);
+    assert_eq!(folders_of(&obid, &id), json!(all[..20]));
 }

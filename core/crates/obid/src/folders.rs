@@ -5,9 +5,7 @@
 
 use std::path::{Path, PathBuf};
 
-use axum::http::StatusCode;
-
-use crate::api::{ApiError, Shared};
+use crate::api::Shared;
 
 /// The most folders a conversation keeps.
 pub const MOST: usize = 20;
@@ -28,6 +26,16 @@ const SYSTEM: &[&str] = &[
     "/cores",
     "/dev",
 ];
+
+/// Linux's own folders besides those: refused, and everything inside them.
+const LINUX: &[&str] = &["/proc", "/sys", "/root", "/run", "/boot"];
+
+/// The folders in a home that hold an agent's login: refused, inside them or holding them.
+const AGENT_LOGINS: &[&str] = &[".claude", ".codex", ".cursor"];
+
+/// The folders in a home that hold the person's keys and other logins: refused, inside them or
+/// holding them.
+const CREDENTIALS: &[&str] = &[".ssh", ".config/gh", ".aws", ".gnupg", ".docker", ".kube"];
 
 /// The places a folder is checked against, besides the system's own.
 pub struct Places {
@@ -55,22 +63,18 @@ impl Places {
     }
 }
 
-/// `paths`, each checked and canonicalized, the same folder kept once, in the order given; or `422`
-/// naming the first that's refused and why.
-pub fn checked(places: &Places, paths: &[String]) -> Result<Vec<String>, ApiError> {
+/// `paths`, each checked and canonicalized, the same folder kept once, in the order given; or why
+/// the first that's refused is.
+pub fn checked(places: &Places, paths: &[String]) -> Result<Vec<String>, String> {
     let mut kept: Vec<String> = Vec::new();
     for path in paths {
-        let real = check(places, path)
-            .map_err(|why| ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, why))?;
+        let real = check(places, path)?;
         if !kept.iter().any(|k| same(k, &real)) {
             kept.push(real);
         }
     }
     if kept.len() > MOST {
-        return Err(ApiError::new(
-            StatusCode::UNPROCESSABLE_ENTITY,
-            format!("A conversation works in at most {MOST} folders."),
-        ));
+        return Err(format!("A conversation works in at most {MOST} folders."));
     }
     Ok(kept)
 }
@@ -114,10 +118,17 @@ pub fn name(path: &str) -> &str {
         .unwrap_or(path)
 }
 
-/// Why Oby never works in the canonical folder `real`, or none.
+/// Why Oby never works in the canonical folder `real`, or none. Every place it's checked against
+/// is resolved through links first, as `real` is: a login folder that's a link to elsewhere guards
+/// where it leads.
 fn refused(places: &Places, real: &Path) -> Option<&'static str> {
     let real = key(real);
-    let canonical = |p: &Path| key(&std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf()));
+    let resolved = |p: &Path| key(&std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf()));
+    // `real` is the guarded folder, inside it, or holds it.
+    let touches = |guarded: &Path| {
+        let guarded = resolved(guarded);
+        within(&real, &guarded) || within(&guarded, &real)
+    };
     if real == "/" {
         return Some("is your whole disk: pick a folder inside it.");
     }
@@ -125,17 +136,11 @@ fn refused(places: &Places, real: &Path) -> Option<&'static str> {
         return Some("holds your Mac's disks: pick a folder on one.");
     }
     for home in &places.homes {
-        let home = std::fs::canonicalize(home).unwrap_or_else(|_| home.clone());
-        if real == key(&home) {
+        if real == resolved(home) {
             return Some("is your whole home folder: pick a folder inside it.");
         }
-        if within(&real, &key(&home.join("Library"))) {
+        if within(&real, &resolved(&home.join("Library"))) {
             return Some("is where your Mac keeps its own settings, so Oby doesn't work there.");
-        }
-        for login in [".claude", ".codex", ".cursor"] {
-            if within(&real, &key(&home.join(login))) {
-                return Some("holds an agent's login, so Oby doesn't work there.");
-            }
         }
     }
     for root in SYSTEM {
@@ -143,14 +148,27 @@ fn refused(places: &Places, real: &Path) -> Option<&'static str> {
             return Some("is where your Mac keeps its own files, so Oby doesn't work there.");
         }
     }
-    let obid = canonical(&places.obid);
-    if within(&real, &obid) || within(&obid, &real) {
+    if cfg!(target_os = "linux") && LINUX.iter().any(|root| within(&real, root)) {
+        return Some("is where the system keeps its own files, so Oby doesn't work there.");
+    }
+    if touches(&places.obid) {
         return Some("holds Oby's own files, so Oby doesn't work there.");
     }
-    for account in &places.accounts {
-        let account = canonical(account);
-        if within(&real, &account) || within(&account, &real) {
+    let agent_logins = places
+        .homes
+        .iter()
+        .flat_map(|home| AGENT_LOGINS.iter().map(move |name| home.join(name)))
+        .chain(places.accounts.iter().cloned());
+    for login in agent_logins {
+        if touches(&login) {
             return Some("holds an agent's login, so Oby doesn't work there.");
+        }
+    }
+    for home in &places.homes {
+        for name in CREDENTIALS {
+            if touches(&home.join(name)) {
+                return Some("holds your keys or logins, so Oby doesn't work there.");
+            }
         }
     }
     None

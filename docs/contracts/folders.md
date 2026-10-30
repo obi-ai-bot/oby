@@ -40,10 +40,10 @@ On `POST /v1/plans` and `PATCH /v1/conversations/{id}`, and again at every task'
 
 1. absolute, and canonicalized (`realpath`: links resolved, `..` gone); the canonical path is what's kept;
 2. there, and a directory;
-3. none of: `/`; the person's home folder itself; obid's home or any folder holding it; `~/Library` or anything inside it; `~/.claude`, `~/.codex`, `~/.cursor` or anything inside them; any account's `configDir` or a folder holding one; `/System`, `/Library`, `/Applications`, `/usr`, `/bin`, `/sbin`, `/etc`, `/var`, `/private`, `/opt`, `/Volumes` itself, `/cores`, `/dev` and anything inside them (a folder on another volume, `/Volumes/X/…`, is fine);
+3. none of: `/`; the person's home folder itself; `~/Library` or anything inside it; `/System`, `/Library`, `/Applications`, `/usr`, `/bin`, `/sbin`, `/etc`, `/var`, `/private`, `/opt`, `/Volumes` itself, `/cores`, `/dev` and anything inside them, and on Linux `/proc`, `/sys`, `/root`, `/run`, `/boot` and anything inside them (a folder on another volume, `/Volumes/X/…`, is fine); and, inside them or holding them, each resolved through links first (a `~/.ssh` that's a link guards where it leads): obid's home; the agents' logins, `~/.claude`, `~/.codex`, `~/.cursor` and every account's `configDir`; the person's keys and other logins, `~/.ssh`, `~/.config/gh`, `~/.aws`, `~/.gnupg`, `~/.docker` and `~/.kube`;
 4. compared case-insensitively on macOS (APFS and HFS+ ignore case by default), so `~/LIBRARY` is `~/Library`.
 
-A path that fails is refused with `422` naming the folder by its name and why, in Sangam's words to come: `"Library" is where your Mac keeps its own settings, so Oby doesn't work there.` Nothing of the request happens (no turn, no conversation). The same path twice is kept once.
+A path that fails is refused with `422` naming the folder by its name and why, in Sangam's words to come: `"Library" is where your Mac keeps its own settings, so Oby doesn't work there.` Nothing of the request happens (no turn, no conversation). The same path twice is kept once. Words sent again with the same `id` are the same words (`repeated`) whatever their folders say now, and add none. A `PATCH` is merged with the conversation's folders as they are when it's written, so a folder taken off meanwhile comes back only if it passes its own check.
 
 ### What a conversation keeps
 
@@ -121,7 +121,7 @@ All add-only. No new value in any enum the Swift apps decode as closed: job `sta
 
 **Still Sangam's to design** (asked): the task card's meta line for a folder task and the words for its result (`landed`: "On branch oby/… in api" or "7 files changed in api"); how a missing or refused folder's tag looks in the box; the clash question's look in the AskStack. obid's words above are placeholders until he does.
 
-**Open for the owner:** whether a local folder's check is learned only in words or also from a file in the folder; the snapshot's size limit.
+**Open for the owner:** whether a local folder's check is learned only in words or also from a file in the folder; the snapshot's size limit; whether adding a folder needs the owner's signed words (`X-Oby-Words`, as Confirm needs a signed approval) rather than only loopback with the API token, which oby-mcp or a script also hold: to decide before folders reach jobs.
 
 ## Acceptance scenarios
 

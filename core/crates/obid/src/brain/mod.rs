@@ -108,15 +108,14 @@ pub async fn plan(
         req.attachments.as_deref().unwrap_or(&[]),
     )?;
     let jobs = attached_jobs(&shared, req.jobs.unwrap_or_default())?;
+    // An empty list is none. The verdict waits for the conversations' lock (begin): words sent
+    // again with the same id are a repeat, whatever their folders.
     let folders = match req.folders.filter(|f| !f.is_empty()) {
-        None => vec![],
+        None => Ok(vec![]),
         Some(_) if paired.is_some() || relayed.is_some() => {
-            return Err(ApiError::new(
-                StatusCode::UNPROCESSABLE_ENTITY,
-                "Folders are added only on the Mac.",
-            ));
+            Err("Folders are added only on the Mac.".to_owned())
         }
-        Some(asked) => crate::folders::checked(&crate::folders::Places::of(&shared), &asked)?,
+        Some(asked) => crate::folders::checked(&crate::folders::Places::of(&shared), &asked),
     };
     // Left out, a request joins the latest conversation, as it did when there was only one: the
     // apps from before #493 send none and show one thread.
@@ -138,6 +137,10 @@ pub async fn plan(
     // A bare "never mind", "stop" or "cancel" never reaches the brain: it stops the turn under
     // way, after the action it's doing, and is answered with nothing (no job stops on a word).
     if req.answer.is_none() && turn::cancels(words) {
+        // Refused folders: nothing of the request happens, a stop neither.
+        if let Err(why) = &folders {
+            return Err(ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, why.clone()));
+        }
         // The turn under way in the conversation the words name, else in the latest one; words
         // that start a new conversation have no turn to stop.
         let underway = match &target {

@@ -75,10 +75,9 @@ nameFoldersBy(realId);
 // once obid takes folders, a conversation's go to it (one not yet named keeps its own meanwhile)
 sendFoldersBy((shown, folders) => {
   const c = realId(shown);
-  if (!state.status?.folders || c.startsWith('new:')) return false;
-  void api.editConversation(c, { folders }).then((conversation) => set(apply(state, { kind: 'conversation', conversation })), say);
-  return true;
-});
+  if (!state.status?.folders || c.startsWith('new:')) return undefined;
+  return api.editConversation(c, { folders }).then((conversation) => set(apply(state, { kind: 'conversation', conversation })));
+}, say);
 let aliasSeen: Live['alias'] | undefined;
 
 // --- obid's state as the screens' conversations and tasks
