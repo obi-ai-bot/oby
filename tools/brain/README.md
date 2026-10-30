@@ -25,8 +25,20 @@ make brain
 
 or `cd tools/brain && npm install && npm run dev`, or the `oby-brain` launch configuration, then open
 <http://127.0.0.1:4320>. While it runs, saving a file of obid, the app, `docs/runner-api.md` or `AGENTS.md` reads the
-code again and the page updates. `⌘K` searches everything. The states it links to open on the mock, so run the
-renderer too (`npm run web` in `apps/electron`, or `oby-app-web`, on port 5176).
+code again and the page updates. `⌘K` searches everything.
+
+**States** shows each state of the app on its mock: first run's steps, and the Control Center's scenarios
+(`apps/electron/src/renderer/src/dev/ControlCenter.tsx`), Home, a task's page and each v1 Settings page included. A click
+opens it live, so `make brain` starts the renderer's mock beside the Brain on port 5176 (`with-mock.sh`; one already
+running there, as `oby-app-web`, is used instead). For a screenshot of each:
+
+```bash
+make brain-shots
+```
+
+It reads the code, then has the app's own Electron draw every state in a fresh session of its own, four at a time,
+into `tools/brain/.brain/shots` (out of git): about 40 s for 31 states. A new screen needs no work here: give it a
+scenario in the Control Center, and the next `make brain-shots` takes it.
 
 The first run builds the Rust extractor (about 15 s); after that a full read takes about 5 s.
 

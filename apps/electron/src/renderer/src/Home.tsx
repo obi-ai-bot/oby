@@ -274,6 +274,12 @@ export default function Home() {
     addEventListener('oby:open-setting', open);
     return () => removeEventListener('oby:open-setting', open);
   }, []);
+  // the control center's scenarios (dev builds) open a page as a click would: a fresh start
+  useEffect(() => {
+    const open = (e: Event) => { e.preventDefault(); start((e as CustomEvent<Step>).detail); };
+    addEventListener('oby:open', open);
+    return () => removeEventListener('oby:open', open);
+  }, []);
   // New task: back Home, and into its message box once what was open has gone
   // (the box can't take the focus while a page is still over it)
   const [focusHome, setFocusHome] = useState(false);

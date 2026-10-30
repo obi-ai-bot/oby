@@ -232,9 +232,10 @@ export function generateBrain(config: BrainConfig): BrainData {
 
   // ---- states to jump to on the mock
   const states: JumpState[] = [
-    ...config.app.flags.map(f => ({ group: 'URL flags', label: f.label, url: `${config.app.webUrl}?${f.flag}`, note: f.note ?? null })),
-    ...design.steps.map(s => ({ group: 'First run', label: s, url: `${config.app.webUrl}?onboarding=${s}`, note: null })),
-    ...design.scenarios.map(s => ({ group: 'Control Center scenarios', label: s.label, url: `${config.app.webUrl}?dev=${s.id}`, note: null })),
+    ...config.app.flags.map(f => ({ id: `flag-${f.flag}`, group: 'URL flags', label: f.label, url: `${config.app.webUrl}?${f.flag}`, note: f.note ?? null })),
+    ...design.steps.map(s => ({ id: `step-${s}`, group: 'First run', label: s, url: `${config.app.webUrl}?onboarding=${s}`, note: null })),
+    // a scenario's own address, else the Control Center's default (dev/ControlCenter.tsx, hrefOf)
+    ...design.scenarios.map(s => ({ id: `dev-${s.id}`, group: 'Control Center scenarios', label: s.label, url: `${config.app.webUrl}${s.href ?? `?welcome&dev=${s.id}`}`, note: null })),
   ];
 
   const used = new Set(routes.filter(r => r.callers.length).map(r => r.id));

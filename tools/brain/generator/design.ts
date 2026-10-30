@@ -14,7 +14,7 @@ export interface DesignScan {
   screens: Screen[];
   mainCalls: Array<{ method: string; path: string; file: string; line: number }>;
   steps: string[];
-  scenarios: Array<{ id: string; label: string }>;
+  scenarios: Array<{ id: string; label: string; href: string | null }>;
   wire: Array<{ name: string; file: string; line: number; keys: Array<{ key: string; optional: boolean }> }>;
 }
 
@@ -295,7 +295,7 @@ export function scanDesign(config: BrainConfig): DesignScan {
     if (!Node.isObjectLiteralExpression(e)) continue;
     const get = (k: string) => { const p = e.getProperty(k); const v = p && Node.isPropertyAssignment(p) ? p.getInitializer() : undefined; return v && Node.isStringLiteral(v) ? v.getLiteralText() : null; };
     const id = get('id'); const label = get('label');
-    if (id && label) scenarios.push({ id, label });
+    if (id && label) scenarios.push({ id, label, href: get('href') });
   }
 
   // ---- obid-wire.ts: each interface / object type and its keys

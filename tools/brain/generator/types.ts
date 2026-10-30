@@ -125,7 +125,8 @@ export interface LocalKey {
   note: string | null;
 }
 
-export interface JumpState { label: string; group: string; url: string; note: string | null }
+/** id: a file name for its screenshot (`make brain-shots`, .brain/shots/<id>.png). */
+export interface JumpState { id: string; label: string; group: string; url: string; note: string | null }
 
 // ---- checks ----------------------------------------------------------------------------------------------------------
 

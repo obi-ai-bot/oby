@@ -1,4 +1,5 @@
-import { relative, sep } from 'node:path';
+import { existsSync, readFileSync } from 'node:fs';
+import { join, relative, sep } from 'node:path';
 import type { Plugin, ViteDevServer } from 'vite';
 import type { BrainConfig } from './generator/config.js';
 import { generateBrain } from './generator/index.js';
@@ -53,6 +54,16 @@ export function brainPlugin(config: BrainConfig): Plugin {
         }
         res.setHeader('Content-Type', 'application/json; charset=utf-8');
         res.end(JSON.stringify(error ? { ...data, checks: [{ kind: 'extract', message: `The last run failed; this is the previous Brain. ${error.split('\n')[0]}` }, ...data.checks] } : data));
+      });
+      // make brain-shots' screenshots (.brain/shots): each state's PNG, and index.json
+      const shots = join(config.root, 'tools/brain/.brain/shots');
+      server.middlewares.use('/shots/', (req, res) => {
+        const name = (req.url ?? '').split('?')[0].replace(/^\//, '');
+        const file = join(shots, name);
+        if (!/^[\w.-]+\.(png|json)$/.test(name) || !existsSync(file)) { res.statusCode = 404; res.end(); return; }
+        res.setHeader('Cache-Control', 'no-store');
+        res.setHeader('Content-Type', name.endsWith('.png') ? 'image/png' : 'application/json');
+        res.end(readFileSync(file));
       });
       server.middlewares.use('/brain/regenerate', (req, res) => {
         if (req.method !== 'POST') { res.statusCode = 405; res.end(); return; }

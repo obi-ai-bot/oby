@@ -48,7 +48,10 @@ const DEFAULT: Record<SetupStep, string> = {
   // the Obysphere tour (onboarding.ts)
   sphere: 'Skip', showme: 'Continue', sample: 'Not now', 'convo:Ernesto': 'Done looking', 'convo:Dima': 'Done looking', 'convo:Wellington': 'Done looking', knowledge: 'Continue',
 };
-type Scenario = { id: string; label: string; to?: SetupStep | 'task'; go?: Partial<Record<SetupStep, string>>; then?: () => void; href?: string };
+// open: a page of Home's to open once it gets there, as a click would (Home's oby:open); home:
+// straight to Home, setting up skipped (its address has no ?welcome)
+type Open = { kind: 'settings' | 'task'; id: string };
+type Scenario = { id: string; label: string; to?: SetupStep | 'task'; go?: Partial<Record<SetupStep, string>>; then?: () => void; open?: () => Open; home?: true; href?: string };
 const first = () => tk.get().at(-1);
 const SCENARIOS: Scenario[] = [
   { id: 'fresh-install', label: 'Fresh install' },
@@ -68,6 +71,13 @@ const SCENARIOS: Scenario[] = [
   { id: 'merge-waiting', label: 'Merge waiting', to: 'task', then: () => decide(first()!, 'merge', 4) },
   { id: 'remember', label: 'Remember?', to: 'task', then: () => decide(first()!, 'remember', 5) },
   { id: 'task-done', label: 'Task done', to: 'task', then: () => finish(first()!) },
+  // Home and Settings' pages, setting up skipped (v1's pages: SettingsView.tsx, SETTINGS_PAGES)
+  { id: 'home', label: 'Home', home: true, href: '?dev=home' },
+  { id: 'task-page', label: 'Task page', home: true, then: () => { const id = addTask(FIRST_TASK)!; setStage(tk.get().find((t) => t.id === id)!, 2); }, open: () => ({ kind: 'task', id: first()!.id }), href: '?dev=task-page' },
+  { id: 'settings-general', label: 'Settings › General', home: true, open: () => ({ kind: 'settings', id: 'general' }), href: '?dev=settings-general' },
+  { id: 'settings-agents', label: 'Settings › Agents', home: true, open: () => ({ kind: 'settings', id: 'agents' }), href: '?dev=settings-agents' },
+  { id: 'settings-connectors', label: 'Settings › Connectors', home: true, open: () => ({ kind: 'settings', id: 'connectors' }), href: '?dev=settings-connectors' },
+  { id: 'settings-about', label: 'Settings › About', home: true, open: () => ({ kind: 'settings', id: 'about' }), href: '?dev=settings-about' },
   { id: 'everything', label: 'Everything', href: '?everything' },
 ];
 const hrefOf = (s: Scenario) => s.href ?? `?welcome&dev=${s.id}`;
@@ -96,12 +106,19 @@ async function play(s: Scenario) {
   // ponytail: polled, as tasks.ts has no subscribe outside React
   if (s.to === 'task') while (!first() && !late()) await new Promise((r) => setTimeout(r, 20));
   if (late()) console.warn(`Control center: ${s.id} didn't get there in ${GIVE_UP_MS / 1000}s`);
-  else s.then?.();
+  else { s.then?.(); if (s.open) void openPage(s.open()); }
   clock.speed = Number(store('oby.dev.speed')) || 1;
   changed();
 }
+// a page of Home's, once Home is there and listening (it isn't while setting up shows): Home takes
+// the event (preventDefault), else it's sent again a beat later, for 10s at most
+async function openPage(o: Open) {
+  for (const end = Date.now() + GIVE_UP_MS; Date.now() < end; await new Promise((r) => setTimeout(r, 50))) {
+    if (!dispatchEvent(new CustomEvent('oby:open', { detail: o, cancelable: true }))) return;
+  }
+  console.warn(`Control center: Home didn't open ${o.kind} ${o.id}`);
+}
 const playing = SCENARIOS.find((s) => s.id === new URLSearchParams(location.search).get('dev'));
-if (playing?.to) void play(playing);
 
 // --- connections, as obid's events would set them
 type AgentState = 'looking' | 'out' | 'waiting' | 'code' | 'in';
@@ -364,3 +381,9 @@ document.head.append(style);
 const root = document.createElement('div');
 document.body.append(root);
 createRoot(root).render(<ControlCenter />);
+
+// The scenario in the address plays once everything above is defined. (The setup they script is
+// the conversation's, onboarding.ts: Sangam's first run, which a dev build opens every time, closes
+// first so Home and it are there.)
+if (playing?.to) { closeOnboarding(); void play(playing); }
+else if (playing?.home) { closeOnboarding(); playing.then?.(); if (playing.open) void openPage(playing.open()); }
