@@ -170,7 +170,7 @@ impl Decisions {
         destination: Option<&str>,
     ) -> Result<Decision, String> {
         let choice = Choice::answer(choice)?;
-        if (choice == Choice::Move && !destination.is_some_and(|id| !id.is_empty()))
+        if (choice == Choice::Move && destination.is_none_or(|id| id.is_empty()))
             || (choice != Choice::Move && destination.is_some())
         {
             return Err("A move requires a destination; other actions take none.".into());

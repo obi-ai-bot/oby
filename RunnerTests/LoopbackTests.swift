@@ -33,7 +33,7 @@ struct LoopbackTests {
     }
 
     @Test func refusesEveryHostThatIsntLoopback() {
-        let hosts: [String?] = ["evil.example", "evil.example:7777", "tetrix-lab.tail8de49b.ts.net:8443", "127.0.0.1.evil.example",
+        let hosts: [String?] = ["evil.example", "evil.example:7777", "mac.tail0000.ts.net:8443", "127.0.0.1.evil.example",
                                 "localhost.evil.example", "[::2]", "[::1]:x", "127.0.0.1:x", "", "   ", nil]
         for host in hosts {
             let error = refusal(request(host: host, headers: bearer), access)

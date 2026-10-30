@@ -59,6 +59,12 @@
      of cubic-bezier(0.3, 1.3, 0.6, 1) over 400ms, then the last bit of the
      return eased out over 200ms instead of 80ms, so it lands gently */
   --settle: 520ms linear(0.0000 0.0%, 0.1047 1.9%, 0.2021 3.8%, 0.2926 5.8%, 0.3762 7.7%, 0.4534 9.6%, 0.5242 11.5%, 0.5890 13.5%, 0.6480 15.4%, 0.7015 17.3%, 0.7498 19.2%, 0.7931 21.2%, 0.8317 23.1%, 0.8659 25.0%, 0.8960 26.9%, 0.9222 28.8%, 0.9448 30.8%, 0.9642 32.7%, 0.9804 34.6%, 0.9939 36.5%, 1.0048 38.5%, 1.0134 40.4%, 1.0200 42.3%, 1.0247 44.2%, 1.0278 46.2%, 1.0295 48.1%, 1.0299 50.0%, 1.0293 51.9%, 1.0279 53.8%, 1.0259 55.8%, 1.0233 57.7%, 1.0203 59.6%, 1.0172 61.5%, 1.0135 63.9%, 1.0104 66.3%, 1.0077 68.8%, 1.0056 71.2%, 1.0038 73.6%, 1.0024 76.0%, 1.0014 78.4%, 1.0006 80.8%, 1.0001 83.2%, 0.9998 85.6%, 0.9997 88.0%, 0.9997 90.4%, 0.9998 92.8%, 0.9999 95.2%, 1.0000 97.6%, 1.0000 100.0%);
+  /* the side panel coming to rest (opening, or let go after a resize): no overshoot, a long
+     soft finish (expo out), most of the way in the first 40% and easing in slowly after */
+  --panel-settle: 640ms cubic-bezier(0.16, 1, 0.3, 1);
+  /* and going: the same curve as coming (away at once, slowing as it ends), so it never feels slower
+     than opening (Sangam, 2026-10-28) */
+  --panel-close: var(--panel-settle);
 
   --radius-pill: 999px;
   --gutter: 20px;

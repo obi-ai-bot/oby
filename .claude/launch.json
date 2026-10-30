@@ -1,0 +1,63 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "sangam-design",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "--prefix",
+        "design/app",
+        "run",
+        "web"
+      ],
+      "port": 5175
+    },
+    {
+      "name": "oby-app-web",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "--prefix",
+        "apps/electron",
+        "run",
+        "web",
+        "--",
+        "--port",
+        "5176",
+        "--strictPort"
+      ],
+      "port": 5176
+    },
+    {
+      "name": "oby-electron",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "--prefix",
+        "apps/electron",
+        "run",
+        "web",
+        "--",
+        "--port",
+        "5177",
+        "--strictPort"
+      ],
+      "port": 5177
+    },
+    {
+      "name": "oby-electron-lan",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "--prefix",
+        "apps/electron",
+        "run",
+        "web",
+        "--",
+        "--port",
+        "5177",
+        "--strictPort",
+        "--host",
+        "0.0.0.0"
+      ],
+      "port": 5177
+    }
+  ]
+}

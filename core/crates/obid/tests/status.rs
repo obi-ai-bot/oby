@@ -484,7 +484,7 @@ fn refuses_every_host_that_isnt_loopback() {
     for host in [
         "evil.example",
         "evil.example:7777",
-        "tetrix-lab.tail8de49b.ts.net:8443",
+        "mac.tail0000.ts.net:8443",
         "127.0.0.1.evil.example",
         "localhost.evil.example",
         "[::2]",

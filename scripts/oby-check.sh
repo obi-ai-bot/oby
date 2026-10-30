@@ -21,6 +21,7 @@
 #                         the touched iOSTests suites on a Simulator, else a build-for-testing
 #   Engine/, Runner/, RunnerTests/, mcp/, Package.*
 #                         swift test (only the touched RunnerTests suites when only they changed)
+#   apps/electron/        npm run typecheck and npm run build there (its node_modules from npm install)
 #
 # Inside a job's sandbox (where Seatbelt can't make another: a no-op sandbox-exec fails), the Apple
 # apps aren't built and swift test doesn't run: SwiftPM evaluates every package manifest in a
@@ -63,7 +64,7 @@ suites() {
 }
 
 # What each part needs, one per line.
-rust='' lib='' lib_all='' tests='' crates='' mac='' mac_suites='' ios='' ios_suites='' swift='' swift_suites=''
+rust='' electron='' lib='' lib_all='' tests='' crates='' mac='' mac_suites='' ios='' ios_suites='' swift='' swift_suites=''
 add() { printf '%s\n%s' "$1" "$2"; }
 while IFS= read -r file; do
     case "$file" in
@@ -104,6 +105,9 @@ while IFS= read -r file; do
     case "$file" in
         RunnerTests/*.swift) swift_suites=$(add "$swift_suites" "$(suites '' "$file")") ;;
         Engine/* | Runner/* | RunnerTests/* | mcp/* | Package.swift | Package.resolved) swift=1 ;;
+    esac
+    case "$file" in
+        apps/electron/*) electron=1 ;;
     esac
 done <<< "$changed"
 
@@ -168,6 +172,12 @@ if [[ -z "$nested" ]]; then
     fi
 elif [[ -n "$mac$ios$swift$swift_suites" ]]; then
     echo "oby-check: the Apple apps and swift test don't run in a job's sandbox (SwiftPM's own can't nest in it): run them on the Mac before merging"
+fi
+
+if [[ -n "$electron" ]]; then
+    [[ -d apps/electron/node_modules ]] || echo "oby-check: apps/electron has no node_modules: run npm install there first" >&2
+    step npm --prefix apps/electron run --silent typecheck
+    step npm --prefix apps/electron run --silent build
 fi
 
 # What changed, committed or not, scanned for secrets with this repository's rules.

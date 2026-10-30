@@ -5,6 +5,7 @@ import './app.css';
 import Home from './Home';
 import Welcome from './Welcome';
 import Splash from './Splash';
+import FirstRun, { sizeWindow, useHandover, useOnboarding } from './FirstRun';
 import { everything, onObid } from './lean';
 import { connect, useLive } from './live';
 
@@ -31,12 +32,29 @@ function App() {
   // on obid: the splash until it answers and its status and conversations are in, then the chat
   // fades in (app.css, .is-revealed)
   const { status } = useLive();
+  // setting up, Sangam's way (FirstRun.tsx): in place of everything while it's open, in a
+  // narrower window held at its size, which grows to its own once it's done (main)
+  const onboarding = useOnboarding(), handover = useHandover();
+  // (handing over to Home: the window grows, and Home is there under setting up, for Oby to jump into)
+  const home = !onboarding || handover === 'home';
+  // (opening on Home, the window keeps the size it has: only setting up, or leaving it, sizes it;
+  // so a reload doesn't undo a size you gave it)
+  const sized = useRef(false);
+  useLayoutEffect(() => {
+    if (sized.current || !home) sizeWindow(!home);
+    sized.current = true;
+  }, [home]);
   const ready = !onObid || !!status;
   const splashed = useRef(false);
-  if (!ready) splashed.current = true;
+  // (only a splash that showed: setting up never had one, so nothing fades in again)
+  if (!ready && !onboarding) splashed.current = true;
   useLayoutEffect(() => { if (ready && splashed.current) document.getElementById('root')!.classList.add('is-revealed'); }, [ready]);
-  if (!ready) return <Splash />;
-  return welcome ? <Welcome onDone={done} /> : <Home />;
+  // setting up comes first, before the splash: its first step needs nothing of obid's, and Oby
+  // hopping up is the opening (the agents step waits for obid itself)
+  if (!onboarding && !ready) return <Splash />;
+  if (!onboarding && welcome) return <Welcome onDone={done} />;
+  // (keyed, so neither starts over as the other comes or goes)
+  return <>{home && <Home key="home" />}{onboarding && <FirstRun key="setup" />}</>;
 }
 
 if (onObid) connect();

@@ -104,6 +104,9 @@ struct File {
     /// The control plane the iPhone's pushes go through (crate::push).
     #[serde(default)]
     push_relay: Option<String>,
+    /// The Tetrix servers Settings offers by name (crate::tetrix); left out, none.
+    #[serde(default)]
+    tetrix_presets: Vec<crate::tetrix::Preset>,
     /// How conversations run (crate::brain::harness): `{"agent", "model", "budget"}`.
     #[serde(default)]
     conversation: Option<ConversationSetting>,
@@ -268,6 +271,9 @@ pub struct Config {
     /// (crate::push); Deskree's, `https://oby-control.deskree.com`, when left out. An iPhone's
     /// registration with any other is refused.
     pub push_relay: String,
+    /// `tetrixPresets`: the Tetrix servers Settings offers by name before a URL field (crate::tetrix);
+    /// none when left out, so an open-source build names no one's server.
+    pub tetrix_presets: Vec<crate::tetrix::Preset>,
 }
 
 impl Config {
@@ -436,6 +442,17 @@ impl Config {
                 }
             },
         };
+        for (i, preset) in file.tetrix_presets.iter().enumerate() {
+            if preset.id.trim().is_empty() || preset.name.trim().is_empty() {
+                return invalid("tetrixPresets: every preset needs an id and a name.".into());
+            }
+            if file.tetrix_presets[..i].iter().any(|p| p.id == preset.id) {
+                return invalid(format!("tetrixPresets: {:?} is named twice.", preset.id));
+            }
+            if let Some(problem) = crate::tetrix::url_problem(&preset.url) {
+                return invalid(format!("tetrixPresets: {}'s url: {problem}", preset.id));
+            }
+        }
 
         let vault = match &file.vault {
             None => crate::vault::Location::default_for(&file.home),
@@ -553,6 +570,7 @@ impl Config {
             cursor_keychain: file.cursor_keychain,
             claude_own_sandbox: file.claude_own_sandbox,
             push_relay,
+            tetrix_presets: file.tetrix_presets,
             conversation: Conversation {
                 agent,
                 model,
@@ -1297,6 +1315,27 @@ mod tests {
             assert!(
                 problem(&with(serde_json::json!({"pushRelay": bad})))
                     .contains("it must be an https:// origin"),
+                "{bad}"
+            );
+        }
+        // Tetrix presets: none unless the file names them, each with an id, a name and a URL
+        // Tetrix's login may go to.
+        let presets = |extra| Config::parse(&with(extra)).unwrap().tetrix_presets;
+        assert!(presets(serde_json::json!({})).is_empty());
+        let one =
+            serde_json::json!({"id": "t", "name": "Tetrix", "url": "https://tetrix.example/mcp"});
+        assert_eq!(
+            presets(serde_json::json!({ "tetrixPresets": [one] }))[0].url,
+            "https://tetrix.example/mcp"
+        );
+        for bad in [
+            serde_json::json!([one, one]),
+            serde_json::json!([{"id": "t", "name": "", "url": "https://tetrix.example/mcp"}]),
+            serde_json::json!([{"id": "t", "name": "T", "url": "http://tetrix.example/mcp"}]),
+        ] {
+            assert!(
+                problem(&with(serde_json::json!({ "tetrixPresets": bad })))
+                    .contains("tetrixPresets"),
                 "{bad}"
             );
         }

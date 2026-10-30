@@ -2822,11 +2822,11 @@ mod tests {
     fn claude_codes_keychain_items_are_named_as_it_names_them() {
         assert_eq!(keychain_service(None), "Claude Code-credentials");
         let folder = Path::new(
-            "/Users/wellprado/Library/Application Support/Oby/accounts/32203c5b-b24c-4353-bdcb-f34797790d0a",
+            "/Users/example/Library/Application Support/Oby/accounts/32203c5b-b24c-4353-bdcb-f34797790d0a",
         );
         assert_eq!(
             keychain_service(Some(folder)),
-            "Claude Code-credentials-2e25c0fb"
+            "Claude Code-credentials-d5b15a4f"
         );
     }
 }
