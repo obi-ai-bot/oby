@@ -12,9 +12,9 @@ export function tetrixUrlProblem(text: string): string | null {
   try {
     url = new URL(typed);
   } catch {
-    return 'That isn’t a web address. It looks like https://tetrix.example.com/mcp.';
+    return 'An https:// address';
   }
-  if (url.protocol !== 'https:') return 'The address must start with https://.';
+  if (url.protocol !== 'https:') return 'An https:// address';
   if (!url.hostname) return 'The address needs a host, like tetrix.example.com.';
   if (url.username || url.password) return 'Leave the login out of the address: you sign in on Tetrix’s own page.';
   if (url.search || url.hash || typed.includes('?') || typed.includes('#')) return 'Leave the ? and # parts out of the address.';

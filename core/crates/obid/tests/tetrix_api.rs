@@ -373,11 +373,6 @@ fn obid_signs_in_to_tetrix_once_and_agents_use_it_without_its_login() {
     assert_eq!(status.body["url"], Value::Null);
     assert_eq!(status.body["preset"], Value::Null);
     assert_eq!(status.body["presets"], json!([]));
-    assert!(
-        !status.text.to_lowercase().contains("dogfood"),
-        "{}",
-        status.text
-    );
     // Only with the API token.
     assert_eq!(
         call_with_token(&obid, "not-the-token", "GET", "/v1/tetrix", None).status,

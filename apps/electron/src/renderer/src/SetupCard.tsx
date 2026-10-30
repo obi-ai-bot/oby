@@ -69,9 +69,9 @@ export default function SetupCard({ step }: { step: SetupStep }) {
       <Row mark={mark(BRANDS.tetrix)} name="Tetrix" state={s.tetrix} act="Connect" onAct={() => connectTetrix(tetrixAddress)} actOk={!problem}
         sub={s.tetrix === 'in' ? `Connected${host ? ` · ${host}` : ''} · every agent gets your code graph`
           : s.tetrix === 'waiting' ? `Finish in your browser${host ? ` · ${host}` : ''}`
-          : 'Your code as a graph, for every agent · enter your Tetrix’s address'}>
+          : 'Your code as a graph, for every agent · enter your Tetrix’s MCP server URL'}>
         {s.tetrix === 'out' && <span className="setup-field">
-          <TextField value={tetrixAddress} onChange={setTetrixAddress} placeholder="https://tetrix.example.com/mcp" label="Your Tetrix’s address" />
+          <TextField value={tetrixAddress} onChange={setTetrixAddress} placeholder="https://tetrix.example.com/mcp" label="MCP server URL" />
           {tetrixAddress.trim() && problem && <span className="wl-sub setup-problem">{problem}</span>}
         </span>}
       </Row>

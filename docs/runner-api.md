@@ -1757,7 +1757,7 @@ The owner connects Tetrix once, in Oby, and every agent on every account (Claude
 
 **`DELETE /v1/tetrix/sign-in`** ends the sign-in under way, if any: `204`.
 
-**`DELETE /v1/tetrix`** signs Oby out: it asks the authorization server to revoke the refresh token when it offers `revocation_endpoint` (and goes on if that fails), removes both vault secrets, and keeps `url` and `preset`: `204`. Jobs that are running lose Tetrix at their next call (`Oby isn't signed in to Tetrix.`).
+**`DELETE /v1/tetrix`** signs Oby out: it asks the authorization server to revoke the refresh token when it offers `revocation_endpoint` (and goes on if that fails), removes both vault secrets, and keeps `url`: `204`. Jobs that are running lose Tetrix at their next call (`Oby isn't signed in to Tetrix.`).
 
 **The `tetrix` event** comes on `/v1/events` with the same body as `GET /v1/tetrix` whenever any of its fields change. The gateway leaves it out of a phone's event stream.
 

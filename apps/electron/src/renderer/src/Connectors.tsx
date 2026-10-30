@@ -141,7 +141,7 @@ function Live() {
     if (!t.error) tetrixRow.about = `${serverName(t)} · for every agent`;
     tetrixRow.control = <>{t.error ? connect(same ? 'Reconnect' : 'Connect') : connected}{disconnect}</>;
   } else {
-    if (!t.error) tetrixRow.about = t.url ? `${serverName(t)} · not signed in` : 'Not connected · enter your Tetrix’s address below';
+    if (!t.error) tetrixRow.about = t.url ? `${serverName(t)} · not signed in` : 'Not connected · enter your Tetrix’s MCP server URL below';
     tetrixRow.control = connect(t.url && same ? 'Reconnect' : 'Connect');
   }
 
@@ -170,7 +170,7 @@ function serverName(t: Tetrix) {
 function TetrixServer({ address, problem, onAddress, children }: { address: string; problem: string | null; onAddress: (address: string) => void; children: React.ReactNode }) {
   return (
     <Group i={4} title="Tetrix server" footer={problem ?? 'Oby has no built-in Tetrix: enter yours, its MCP server’s address, starting with https://. Oby signs in there once, for every agent; another address signs Oby in there instead.'}>
-      <Row label="Address"><TextField value={address} onChange={onAddress} placeholder="https://tetrix.example.com/mcp" label="Tetrix server address" /></Row>
+      <Row label="MCP server URL"><TextField value={address} onChange={onAddress} placeholder="https://tetrix.example.com/mcp" label="MCP server URL" /></Row>
       {children && <Row label="">{children}</Row>}
     </Group>
   );
