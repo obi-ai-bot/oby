@@ -85,14 +85,6 @@ pub async fn plan(
     let req: Request = serde_json::from_slice(&body)
         .map_err(|_| ApiError::new(StatusCode::BAD_REQUEST, "That isn't a plan request."))?;
     let words = req.said.trim();
-    // No length of obid's own, as in Claude Code: the request's body is at most axum's 2 MB, and
-    // the model says when words are more than it can read at once ([`TOO_LONG`]).
-    if words.is_empty() {
-        return Err(ApiError::new(
-            StatusCode::UNPROCESSABLE_ENTITY,
-            "There's no message to send.",
-        ));
-    }
     let id = req.id.clone();
     if id
         .as_deref()
@@ -108,6 +100,15 @@ pub async fn plan(
         req.attachments.as_deref().unwrap_or(&[]),
     )?;
     let jobs = attached_jobs(&shared, req.jobs.unwrap_or_default())?;
+    // No length of obid's own, as in Claude Code: the request's body is at most axum's 2 MB, and
+    // the model says when words are more than it can read at once ([`TOO_LONG`]). Files or tasks
+    // attached are a message without words too (Sangam's message box sends them alone).
+    if words.is_empty() && attachments.is_empty() && jobs.is_empty() {
+        return Err(ApiError::new(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "There's no message to send.",
+        ));
+    }
     // An empty list is none. The verdict waits for the conversations' lock (begin): words sent
     // again with the same id are a repeat, whatever their folders.
     let folders = match req.folders.filter(|f| !f.is_empty()) {
@@ -189,10 +190,17 @@ pub async fn plan(
     } else {
         None
     };
-    let begun =
-        shared
-            .conversations
-            .begin(target, said.clone(), jobs.clone(), id, foreign, folders)?;
+    // The files go with the conversation; their names on the turn, for the tags under the words.
+    let begun = shared.conversations.begin(
+        target,
+        said.clone(),
+        jobs.clone(),
+        attachments.clone(),
+        id,
+        foreign,
+        folders,
+    )?;
+    drop_uploads(&shared, begun.forgotten.clone()).await;
     // An answer to a question Oby asked elsewhere (the Watch answers in the latest conversation)
     // brings that conversation's words here.
     if let Some((question, option)) = &question
@@ -511,19 +519,15 @@ pub(super) fn context(shared: &Shared, conversation: &str, turns: &[Turn], nonce
     // What a job may move to: each tool's models (Engine/Move.swift, `Moves.models`).
     let mut models: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for (tool, _) in &tools {
-        let ids: &[&str] = match *tool {
-            "claude" => &[
-                "claude-fable-5-1",
-                "claude-opus-5-5",
-                "claude-sonnet-5-5",
-                "claude-haiku-5-5",
-            ],
-            "codex" => &["gpt-6.1-sol", "gpt-6-astra"],
+        let ids = match crate::agent::Tool::from_id(tool) {
+            Some(t @ (crate::agent::Tool::Claude | crate::agent::Tool::Codex)) => {
+                crate::settings::models(t)
+            }
             _ => &[],
         };
         models.insert(
             (*tool).into(),
-            ids.iter().map(|m| (*m).to_owned()).collect(),
+            ids.iter().map(|(m, _)| (*m).to_owned()).collect(),
         );
     }
     let briefing = briefing::Briefing {
@@ -533,6 +537,8 @@ pub(super) fn context(shared: &Shared, conversation: &str, turns: &[Turn], nonce
         jobs: shared.jobs.list(usize::MAX),
         inbox: shared.link.waiting_items(now),
         accounts: told,
+        // Only while routing would use it: never a full or signed-out account for the plan to pin.
+        default_account: shared.jobs.preferred_account().map(|(_, id)| id),
         repos: config.repos.names(),
         max_running: shared.jobs.max_running(),
         default_mode: shared.jobs.default_mode().as_str(),
@@ -735,6 +741,7 @@ fn validate_turns(input: Option<Vec<InputTurn>>) -> Result<Option<Vec<Turn>>, Ap
             artifacts: vec![],
             routine: None,
             asked: None,
+            attachments: vec![],
         });
     }
     Ok(Some(out))
@@ -777,7 +784,184 @@ fn attached_jobs(shared: &Shared, ids: Vec<String>) -> Result<Vec<String>, ApiEr
     Ok(out)
 }
 
+/// The most files one message attaches.
+const ATTACHED_FILES: usize = 20;
+/// The uploads obid keeps (`POST /v1/attachments`); past it the oldest go. ponytail: a count, not
+/// a size; the rooms and jobs keep copies of their own, so only words not sent yet lose a file.
+const UPLOADS: usize = 200;
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Upload {
+    name: String,
+}
+
+/// `POST /v1/attachments?name=<file name>`: a file the owner picked or pasted in the Mac app, the
+/// request's body as it is, kept in obid's attachments folder (`attachments/app/<uuid>/<name>`,
+/// the name cleaned as the room's are) for `attachments` on `POST /v1/plans` and
+/// `POST /v1/jobs/{id}/messages`. Only on the Mac: the gateway doesn't list it.
+pub async fn upload(
+    State(shared): State<Arc<Shared>>,
+    axum::extract::Query(asked): axum::extract::Query<Upload>,
+    body: Result<Bytes, axum::extract::rejection::BytesRejection>,
+) -> Result<Response, ApiError> {
+    let name = harness::clean(&asked.name);
+    let too_big = || {
+        ApiError::new(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            format!(
+                "{name} is larger than {} MB, so Oby can't take it.",
+                harness::ATTACHMENT_CAP / 1_000_000
+            ),
+        )
+    };
+    let body = body.map_err(|_| too_big())?;
+    if body.len() as u64 > harness::ATTACHMENT_CAP {
+        return Err(too_big());
+    }
+    if body.is_empty() {
+        return Err(ApiError::new(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            format!("{name} is empty."),
+        ));
+    }
+    let home = shared.config.home.clone();
+    let file = name.clone();
+    let kept = tokio::task::spawn_blocking(move || {
+        let path = crate::github_work::keep_attachment(&home, "app", &file, &body)?;
+        prune_uploads(&home.join("attachments/app"), UPLOADS);
+        Ok::<_, std::io::Error>(path)
+    })
+    .await;
+    let path = match kept {
+        Ok(Ok(path)) => path,
+        Ok(Err(e)) => {
+            tracing::warn!("an attachment couldn't be kept: {e}");
+            return Err(ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("{name} couldn't be kept on this Mac."),
+            ));
+        }
+        Err(_) => {
+            return Err(ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("{name} couldn't be kept on this Mac."),
+            ));
+        }
+    };
+    Ok((
+        StatusCode::CREATED,
+        axum::Json(json!({"path": path.to_string_lossy(), "name": name})),
+    )
+        .into_response())
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Unload {
+    path: String,
+}
+
+/// `DELETE /v1/attachments?path=<path>`: an upload whose words never went (another upload, or the
+/// words, were refused) goes now. Only one of `POST /v1/attachments`'s, and only while no
+/// conversation or active job holds it (`409`); one already gone is `204` too.
+pub async fn unload(
+    State(shared): State<Arc<Shared>>,
+    axum::extract::Query(asked): axum::extract::Query<Unload>,
+) -> Result<Response, ApiError> {
+    let Some(folder) = upload_folder(&shared.config.home, &asked.path) else {
+        return Err(ApiError::new(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "That isn't a file the Oby app uploaded.",
+        ));
+    };
+    if in_use(&shared, &asked.path) {
+        return Err(ApiError::new(
+            StatusCode::CONFLICT,
+            "Words or a task still use that file.",
+        ));
+    }
+    let _ = tokio::task::spawn_blocking(move || std::fs::remove_dir_all(folder)).await;
+    Ok(StatusCode::NO_CONTENT.into_response())
+}
+
+/// The folder `path` was uploaded into (`attachments/app/<uuid>/`), when it's one of those and no
+/// link: what goes with it. Anything else, none.
+fn upload_folder(home: &Path, path: &str) -> Option<PathBuf> {
+    let app = home.join("attachments/app");
+    let file = Path::new(path);
+    let folder = file.parent()?;
+    let named = folder.file_name()?.to_str()?;
+    (folder.parent()? == app
+        && !named.is_empty()
+        && named.chars().all(|c| c.is_ascii_hexdigit())
+        && folder.symlink_metadata().is_ok_and(|m| m.is_dir()))
+    .then(|| folder.to_owned())
+}
+
+/// Whether a conversation, or a job that hasn't ended, still holds the file `path`.
+fn in_use(shared: &Shared, path: &str) -> bool {
+    shared.conversations.holds_upload(path)
+        || shared.jobs.list(usize::MAX).iter().any(|job| {
+            job.status.is_active()
+                && job
+                    .attachments
+                    .as_ref()
+                    .is_some_and(|paths| paths.iter().any(|p| p == path))
+        })
+}
+
+/// Removes the uploads of conversations that went (`paths`), each with its folder, but one a job
+/// that hasn't ended still holds, which the uploads' own bound ([`UPLOADS`]) takes later.
+pub async fn drop_uploads(shared: &Shared, paths: Vec<String>) {
+    let folders: Vec<PathBuf> = paths
+        .iter()
+        .filter(|path| !in_use(shared, path))
+        .filter_map(|path| upload_folder(&shared.config.home, path))
+        .collect();
+    if folders.is_empty() {
+        return;
+    }
+    let _ = tokio::task::spawn_blocking(move || {
+        for folder in folders {
+            let _ = std::fs::remove_dir_all(folder);
+        }
+    })
+    .await;
+}
+
+/// The bound on `POST /v1/attachments`'s body: a megabyte past the largest file, so a file just
+/// over it is read whole and answered in obid's words.
+pub fn upload_limit() -> axum::extract::DefaultBodyLimit {
+    axum::extract::DefaultBodyLimit::max(harness::ATTACHMENT_CAP as usize + (1 << 20))
+}
+
+/// Keeps the newest `keep` uploads in `folder` (one folder each), never following a link.
+fn prune_uploads(folder: &Path, keep: usize) {
+    let Ok(entries) = std::fs::read_dir(folder) else {
+        return;
+    };
+    let mut kept: Vec<(std::time::SystemTime, PathBuf)> = entries
+        .flatten()
+        .filter_map(|e| {
+            let meta = e.path().symlink_metadata().ok()?;
+            meta.is_dir().then_some((meta.modified().ok()?, e.path()))
+        })
+        .collect();
+    kept.sort();
+    let excess = kept.len().saturating_sub(keep);
+    for (_, old) in kept.into_iter().take(excess) {
+        let _ = std::fs::remove_dir_all(old);
+    }
+}
+
 pub(crate) fn validate_attachments(home: &Path, paths: &[String]) -> Result<Vec<String>, ApiError> {
+    if paths.len() > ATTACHED_FILES {
+        return Err(ApiError::new(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "A message attaches at most 20 files.",
+        ));
+    }
     let path = home.join("attachments");
     let root = path.canonicalize().unwrap_or(path);
     let mut out = vec![];

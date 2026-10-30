@@ -86,16 +86,18 @@ export async function send(method: string, path: string, body: unknown, signal?:
   if (!t) return problem || starting || readOwn('last-start-error', false) ? reason() : { status: 0, text: `No token of obid’s in ${HOME}/api-token: is obid set up on this Mac?` };
   const who = await listener();
   if (who !== 'mine') return who === 'foreign' ? { status: 0, text: TAKEN } : reason();
+  // a file's bytes (POST /v1/attachments) go as they are; anything else as JSON
+  const raw = body instanceof Uint8Array;
   try {
     const r = await fetch(BASE + path, {
       method, signal, cache: 'no-store',
       headers: {
         Authorization: `Bearer ${t}`,
         Accept: path === '/v1/events' ? 'text/event-stream' : 'application/json',
-        ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
+        ...(body === undefined ? {} : { 'Content-Type': raw ? 'application/octet-stream' : 'application/json' }),
         ...(words ? { 'X-Oby-Words': words } : {}),
       },
-      body: body === undefined ? undefined : JSON.stringify(body),
+      body: body === undefined ? undefined : raw ? Buffer.from(body) : JSON.stringify(body),
     });
     // it answers: whatever kept it away is over
     problem = null;
