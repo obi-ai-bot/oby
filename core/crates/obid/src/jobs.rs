@@ -3889,7 +3889,8 @@ impl Jobs {
     /// the owner's yes, which Cursor would otherwise run as its own children, outside obid's
     /// prompts: a card like any permission's, allowed once, or always for these very hooks in this
     /// repository (the rule `RepositoryHooks(<digest>)`: a changed hook asks again). A no starts
-    /// nothing, and says Claude Code and Codex don't run them; a stop ends the wait.
+    /// nothing, and says Claude Code and Codex don't run them; a stop ends the wait. In Bypass
+    /// they run without a card, as the owner chose (#1570).
     async fn allow_repository_hooks(
         &self,
         id: &str,
@@ -3900,10 +3901,11 @@ impl Jobs {
         let detail = hooks.join("\n");
         let digest = hex::encode(obi_protocol::keys::sha256(detail.as_bytes()));
         let rule = format!("{}({})", permissions::REPOSITORY_HOOKS, &digest[..16]);
-        if self
-            .rules_for(repo)
-            .iter()
-            .any(|r| r.rule == rule && r.decision == "allow")
+        if self.get(id).is_some_and(|j| Self::mode_of(&j) == Mode::Bypass)
+            || self
+                .rules_for(repo)
+                .iter()
+                .any(|r| r.rule == rule && r.decision == "allow")
         {
             return Ok(());
         }
@@ -15485,8 +15487,9 @@ mod tests {
         jobs.answer_permission("j", &again, Decision::Allow, None)
             .unwrap();
         assert_eq!(approved.await.unwrap(), Answer::Allow);
-        // Approved, it goes on in the owner's default mode (Sandbox here), as a new job would.
-        assert_eq!(jobs.get("j").unwrap().mode.as_deref(), Some("sandbox"));
+        // Approved, it goes on in the owner's default mode (a new install's Bypass), as a new job
+        // would.
+        assert_eq!(jobs.get("j").unwrap().mode.as_deref(), Some("bypass"));
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -15507,9 +15510,10 @@ mod tests {
             Err("no sandbox".into()),
         )
         .unwrap();
-        assert_eq!(jobs.default_mode(), Mode::Sandbox);
-        assert_eq!(jobs.approved_mode(), Mode::Sandbox);
-        assert!(jobs.bypass_widens());
+        // A new install starts in Bypass (#1570).
+        assert_eq!(jobs.default_mode(), Mode::Bypass);
+        assert_eq!(jobs.approved_mode(), Mode::Bypass);
+        assert!(!jobs.bypass_widens());
         for (default, approved, widens) in [
             (Mode::Ask, Mode::Ask, true),
             (Mode::AcceptEdits, Mode::AcceptEdits, true),

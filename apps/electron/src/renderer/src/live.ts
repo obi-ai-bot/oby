@@ -1,6 +1,6 @@
 import { useSyncExternalStore } from 'react';
 import { ApiError, api, parseEvent, sseReader, type Conversation, type Event, type InboxItem, type Job, type LimitDecision, type Question, type Repo, type Status, type Turn } from './obid';
-import { AGENTS, type Ask, type AskKind, type Job as JobView, type Message, type Offer, type StageId } from './mock';
+import { AGENTS, modeLabel, type Ask, type AskKind, type Job as JobView, type Message, type Offer, type StageId } from './mock';
 import { replaceChats, type Chat } from './chats';
 import { replaceTasks, type Asking, type Task } from './tasks';
 import { keepFoldersOf, nameFoldersBy, saveFolders } from './folders';
@@ -132,10 +132,12 @@ function chatsOf(s: Live): Chat[] {
 }
 
 // The decision a job's card shows, of its open inbox items: what its agent waits on first (a
-// permission or a question), else the oldest (an offer like a check to keep). The card holds one.
+// permission or a question, its agent's own among them), else the oldest (an offer like a check to
+// keep). The card holds one.
+const WAITS = new Set(['permission', 'question', 'agentQuestion']);
 const itemOf = (s: Live, job: string) => {
   const items = s.inbox.filter((i) => i.job === job);
-  return items.find((i) => i.kind === 'permission' || i.kind === 'question') ?? items[0];
+  return items.find((i) => WAITS.has(i.kind)) ?? items[0];
 };
 
 // What a job needs from you: that decision (a permission's command as its detail); or, failed or
@@ -152,9 +154,10 @@ function askOf(s: Live, j: Job): Ask | undefined {
 
 // An item's decision as a card shows it; detail: a permission's command, else the review a ready
 // review's Approve posts (as text). A GitHub offer is Sangam's "Start it?", as on To do's cards,
-// and an Oby failure his "Failed".
-const LABELLED: Record<string, AskKind> = { github: 'start', failure: 'failed' };
-const itemAsk = (item: InboxItem, detail?: string): Ask => {
+// an Oby failure his "Failed", and the agent's own question (#858) his Question, the question its
+// headline as on his cards, quoted as the agent wrote it.
+const LABELLED: Record<string, AskKind> = { github: 'start', failure: 'failed', agentQuestion: 'question' };
+export const itemAsk = (item: InboxItem, detail?: string): Ask => {
   // Oby's ask for a repository's check (set_check): the command under the question, and the
   // answers in plain words (answerJob turns them into obid's Confirm and Cancel)
   // (Cancel keeps the check a repository has; with none it's No check)
@@ -163,6 +166,7 @@ const itemAsk = (item: InboxItem, detail?: string): Ask => {
     const options = ['Use it', 'Edit', item.confirm!.payload?.was ? 'Keep it' : 'No check'];
     return { kind: 'check', headline: `Use this as ${item.confirm!.target}’s check before publishing?`, text: item.text, options, detail: check };
   }
+  if (item.kind === 'agentQuestion') return { kind: 'question', headline: item.text, text: '', options: item.options };
   return {
     kind: LABELLED[item.kind] ?? item.kind as AskKind, headline: item.headline ?? item.title, text: item.headline ? item.text : '',
     options: item.options, recommended: item.recommended ?? undefined, detail: detail ?? item.watch?.review ?? undefined,
@@ -290,6 +294,7 @@ function taskOf(s: Live, j: Job): Task {
     round: j.rounds > 1 ? [j.round, j.rounds] : undefined,
     stages: (j.pipeline?.stages ?? []).map((st) => ({ id: st.id as StageId, title: st.title, state: st.state, detail: st.detail ?? undefined })),
     ask, summary: j.summary || undefined, commits: j.commits ?? undefined, published: j.published ?? undefined,
+    page: j.mode ? { mode: modeLabel(j.mode) } : undefined,
     created: minutesAgo(j.created), finished: j.finished ? minutesAgo(j.finished) : undefined, conversation: j.conversation ? shownId(j.conversation) : undefined,
   };
   return {
@@ -706,6 +711,10 @@ export async function deleteConversation(shown: string) {
 export async function tellJob(id: string, text: string) {
   try { const j = await api.message(id, text.trim()); set({ jobs: { ...state.jobs, [j.id]: j } }); } catch (e) { say(e); }
 }
+// A task's Mode menu: how much it asks from now on (POST /v1/jobs/{id}/mode)
+export async function changeMode(id: string, mode: string) {
+  try { const j = await api.mode(id, mode); set({ jobs: { ...state.jobs, [j.id]: j } }); } catch (e) { say(e); }
+}
 export async function stopJob(id: string) {
   try { const j = await api.stop(id); set({ jobs: { ...state.jobs, [j.id]: j } }); } catch (e) { say(e); }
 }
@@ -746,6 +755,11 @@ export async function answerJob(id: string, option: string, words?: string) {
     } else if (item?.kind === 'confirm' && option === 'Confirm') set(apply(state, { kind: 'inbox', item: await api.confirm(item.id) }));
     else if (item?.kind === 'permission' && j?.permission && DECISIONS[option]) {
       const next = await api.permission(id, { id: j.permission.id, decision: DECISIONS[option] });
+      set({ jobs: { ...state.jobs, [next.id]: next } });
+    } else if (item?.kind === 'agentQuestion' && j?.permission && option !== 'Later') {
+      // the agent's question: its option, as the agent hears it (the call's next question, if any,
+      // comes back in its place)
+      const next = await api.permission(id, { id: j.permission.id, answer: option });
       set({ jobs: { ...state.jobs, [next.id]: next } });
     } else if (item) {
       const body = option === 'Later' ? { later: new Date(Date.now() + 3600_000).toISOString().replace(/\.\d+Z$/, 'Z') } : { answer: option };

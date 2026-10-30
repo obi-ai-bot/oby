@@ -2,8 +2,8 @@
 //! job asks its owner. Whatever the mode, obid's fixed denials come first (`crate::policy`: no
 //! publishing, the worktree only, no background work, only Tetrix's reads among MCP tools); then
 //! the owner's saved rules for the repository (deny beats allow); then the mode allows, refuses or
-//! asks. Reads and the agent's own bookkeeping never ask, except in Sandbox mode (the default),
-//! where obid answers whatever stays inside the job's OS sandbox and asks only about what leaves
+//! asks. Reads and the agent's own bookkeeping never ask, except in Sandbox mode (the default
+//! before #1570, which made it Bypass), where obid answers whatever stays inside the job's OS sandbox and asks only about what leaves
 //! it or sticks (`reach`).
 //!
 //! The rules and Settings › Permissions' default mode are kept in `home/permissions.json` (0600).
@@ -22,12 +22,13 @@ pub enum Mode {
     AcceptEdits,
     /// The agent only reads; everything else asks, and edits are refused.
     Plan,
-    /// obid answers everything by its rules, the network and secrets too.
+    /// obid answers everything by its rules, the network too, but secrets: the default (Sangam's
+    /// design, the owner's decision of 2026-10-27, #1570).
     Bypass,
     /// obid answers what stays inside the job's OS sandbox (edits in the worktree, commands, tests,
     /// reads) by its rules and records it on the job; it asks about what leaves the sandbox
-    /// (the network beyond the model's API, secrets and the vault, a read outside the worktree):
-    /// the default.
+    /// (the network beyond the model's API, secrets and the vault, a read outside the worktree).
+    /// The default before #1570, kept for the installs that saved it and the jobs that have it.
     Sandbox,
 }
 
@@ -2155,9 +2156,10 @@ pub fn decide(call: &Call, mode: Mode, rules: &[Rule], bounds: &Bounds) -> Verdi
     if call.tool == ASK_USER_QUESTION {
         return Verdict::Ask;
     }
-    // A repository's hooks run outside obid's prompts: no mode answers for the owner (its saved
-    // rule is checked before the card is made, never here).
-    if call.tool == REPOSITORY_HOOKS {
+    // A repository's hooks run outside obid's prompts: only Bypass answers for the owner, who
+    // chose to be asked nothing (#1570; its saved rule is checked before the card is made, never
+    // here). They still run in the job's box.
+    if call.tool == REPOSITORY_HOOKS && mode != Mode::Bypass {
         return Verdict::Ask;
     }
     // A command that only reads, inside the sandbox, is a read: it never asks.
@@ -2602,7 +2604,7 @@ pub fn new_rule_id() -> String {
 /// What `home/permissions.json` keeps.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct Kept {
-    /// Settings › Permissions: the mode new jobs get; sandbox until the owner picks another.
+    /// Settings › Permissions: the mode new jobs get; bypass until the owner picks another.
     #[serde(default)]
     pub mode: Option<String>,
     /// The saved rules, oldest first.
@@ -2615,7 +2617,7 @@ impl Kept {
         self.mode
             .as_deref()
             .and_then(Mode::parse)
-            .unwrap_or(Mode::Sandbox)
+            .unwrap_or(Mode::Bypass)
     }
 }
 
@@ -2689,24 +2691,20 @@ mod tests {
         decide(call, mode, rules, &Bounds::of(Path::new(WORKTREE)))
     }
 
-    /// A repository's hooks wait for the owner in every mode, and no saved rule answers them here.
+    /// A repository's hooks wait for the owner in every mode but Bypass, and no saved rule answers
+    /// them here (#1570).
     #[test]
-    fn a_repositorys_hooks_ask_in_every_mode() {
+    fn a_repositorys_hooks_ask_in_every_mode_but_bypass() {
         let call = Call {
             tool: REPOSITORY_HOOKS.into(),
             command: Some(".cursor/hooks.json (stop): ./x.sh".into()),
             ..Call::default()
         };
         let saved = [rule("RepositoryHooks(0123456789abcdef)", "allow")];
-        for mode in [
-            Mode::Ask,
-            Mode::AcceptEdits,
-            Mode::Plan,
-            Mode::Bypass,
-            Mode::Sandbox,
-        ] {
+        for mode in [Mode::Ask, Mode::AcceptEdits, Mode::Plan, Mode::Sandbox] {
             assert_eq!(decide_in(&call, mode, &saved), Verdict::Ask, "{mode:?}");
         }
+        assert_eq!(decide_in(&call, Mode::Bypass, &saved), Verdict::Allow);
     }
 
     /// PermissionTests.eachModeAllowsOrAsks.
@@ -3141,7 +3139,7 @@ mod tests {
             (None, None, Some("It touches secrets or the vault."))
         );
         assert_eq!(Mode::parse("sandbox"), Some(Mode::Sandbox));
-        assert_eq!(Kept::default().default_mode(), Mode::Sandbox);
+        assert_eq!(Kept::default().default_mode(), Mode::Bypass);
     }
 
     /// Commands are read as a shell reads them: what a message or a pattern only says doesn't

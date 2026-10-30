@@ -2,8 +2,9 @@ import { useState } from 'react';
 import { Check, ChevronDown, ChevronRight, Info } from 'lucide-react';
 import { BrandMark } from './brands';
 import StatusDot from './StatusDot';
-import { AGENTS, ASK_LABEL, ago, type CheckRow, type Page, type Stage, type ToolGroup } from './mock';
-import { answer, changeCheck, markSeen, type Task } from './tasks';
+import { AGENTS, ASK_LABEL, MODES, ago, type CheckRow, type Page, type Stage, type ToolGroup } from './mock';
+import { answer, changeCheck, changeMode, markSeen, type Task } from './tasks';
+import { Menu } from './Menu';
 
 // A task as a card in its group: where it came from and what it is, which
 // agent has it where, then what's happening now: the live step while it runs,
@@ -25,6 +26,8 @@ export default function TaskCard({ task, alone = false, onOpen, onSession, style
   const [log, setLogOpen] = useState(false);
   // Change check, open on Details' "Done when"
   const [changing, setChanging] = useState(false);
+  // the Mode menu, open under its button
+  const [modeAt, setModeAt] = useState<DOMRect | null>(null);
   const setLog = (on: boolean) => (onSession && on ? onSession() : setLogOpen(on));
   const repo = j.repo.includes('/') ? j.repo.split('/')[1] : null;
   // top right: how long an open task has been going; when a done one finished
@@ -59,7 +62,22 @@ export default function TaskCard({ task, alone = false, onOpen, onSession, style
       <p className="tc-meta">
         {AGENTS[j.agent].name} · {j.account}{j.on && <> · on {j.on}</>}{repo && <> · {repo}</>}
         {/* on its page, how much the agent may do on its own; a click changes it */}
-        {page?.mode && !done && <button className="tc-mode">{page.mode}<ChevronDown size={12} strokeWidth={1.8} /></button>}
+        {page?.mode && !done && (
+          <button className="tc-mode" aria-haspopup="menu" aria-expanded={!!modeAt}
+            onClick={(e) => setModeAt(modeAt ? null : e.currentTarget.getBoundingClientRect())}>
+            {page.mode}<ChevronDown size={12} strokeWidth={1.8} />
+          </button>
+        )}
+        {modeAt && (
+          <Menu at={modeAt} align="left" onClose={() => setModeAt(null)} height={150}>
+            {MODES.map((m) => (
+              <button key={m.id} role="menuitemradio" aria-checked={m.label === page?.mode}
+                onClick={() => { setModeAt(null); if (m.label !== page?.mode) changeMode(task.id, m.id); }}>
+                {m.label}
+              </button>
+            ))}
+          </Menu>
+        )}
       </p>
 
       {task.status === 'running' && (

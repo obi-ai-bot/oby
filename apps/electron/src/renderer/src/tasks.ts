@@ -1,6 +1,6 @@
 import { useSyncExternalStore } from 'react';
 import { BRANDS, type Brand } from './brands';
-import { AGENTS, ARCHIVE, GITHUB_WORK, JOBS, MEMORY_WAIT, hasAttachments, type Archived, type Ask, type Attachments, type GitHubItem, type Job, type Message, type Offer } from './mock';
+import { AGENTS, ARCHIVE, GITHUB_WORK, JOBS, MEMORY_WAIT, hasAttachments, modeLabel, type Archived, type Ask, type Attachments, type GitHubItem, type Job, type Message, type Offer } from './mock';
 import { streamWords, wait } from './stream';
 import { everything, onObid } from './lean';
 import * as live from './live';
@@ -168,6 +168,12 @@ export function changeCheck(repo: string, check: string | null) {
 }
 
 // Stopped by you: it ends where it was, with nothing left to decide, and moves to Done
+// A task's Mode menu: how much it asks from now on (on obid, its own; on the mock, at once)
+export function changeMode(id: string, mode: string) {
+  if (onObid) return void live.changeMode(id, mode);
+  update(id, (k) => ({ job: { ...k.job, page: { ...k.job.page, mode: modeLabel(mode) } } }));
+}
+
 export function stop(id: string) {
   if (onObid) return void live.stopJob(id);
   update(id, (k) => ({

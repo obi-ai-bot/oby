@@ -2,7 +2,7 @@ import { useEffect, useState, useSyncExternalStore } from 'react';
 import { Check } from 'lucide-react';
 import { BrandMark } from './brands';
 import { useScrollThumb } from './useScrollThumb';
-import { AGENTS, type Agent } from './mock';
+import { AGENTS, MODES, SANDBOX, type Agent } from './mock';
 import { OwnerAvatar } from './ObyFace';
 import { useSpheres } from './spheres';
 import { everything, onObid } from './lean';
@@ -60,19 +60,6 @@ export function useKeptSetting<T>(key: string, initial: T): [T, (v: T) => void] 
   return [value, (v) => { try { localStorage.setItem(`oby.setting.${key}`, JSON.stringify(v)); } catch { /* this launch only */ } put(v); }];
 }
 
-// How freely a job's agent works, each with its line (RunnerMode in his app)
-const MODES = [
-  { id: 'ask', label: 'Ask', help: 'Asks before it edits a file or runs a command' },
-  { id: 'acceptEdits', label: 'Accept edits', help: 'Edits files without asking; asks before commands' },
-  { id: 'plan', label: 'Plan', help: 'Plans first, and works once you approve the plan' },
-  { id: 'bypass', label: 'Bypass', help: 'Asks nothing' },
-];
-// obid's own fifth, its default (docs/runner-api.md, "permissions answered without the owner")
-const OBID_MODES = [
-  ...MODES.slice(0, 3),
-  { id: 'sandbox', label: 'Sandbox', help: 'Asks only before it reaches the network, secrets or files outside its worktree' },
-  MODES[3],
-];
 const EFFORTS = [['low', 'Low'], ['medium', 'Medium'], ['high', 'High'], ['xhigh', 'Extra high'], ['max', 'Max']] as const;
 
 export default function SettingsView({ page, ...frame }: {
@@ -163,7 +150,8 @@ function MacPermissions() {
   const change = (m: string) => api.setPermissions(m).then((p) => { setMode(p.mode); setProblem(null); }, failed);
   const forget = (r: Rule) => api.forgetRule(r.id!).then((left) => { setRules(left); setProblem(null); }, failed);
   return <>
-    {mode && <ModeRow mode={mode} setMode={change} modes={OBID_MODES} />}
+    {/* Sangam's four; obid's old Sandbox only while it's the one saved, until another is picked */}
+    {mode && <ModeRow mode={mode} setMode={change} modes={mode === SANDBOX.id ? [...MODES, SANDBOX] : MODES} />}
     <RuleRows rules={rules.map((r) => ({ ...r, decision: r.decision === 'deny' ? 'Denied' : 'Allowed' }))} onRemove={forget} />
     {problem && <Row label={<span className="set-problem" role="alert">{problem}</span>} />}
   </>;

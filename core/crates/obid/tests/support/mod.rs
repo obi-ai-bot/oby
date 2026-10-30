@@ -197,6 +197,18 @@ pub fn put_token(config: &Value, token: &str) {
     std::io::Write::write_all(&mut file, format!("{token}\n").as_bytes()).unwrap();
 }
 
+/// These tests were written when Sandbox was obid's default (#586) and pin its asks, so each
+/// starts in it unless its home saved a mode of its own. A new install starts in Bypass (#1570):
+/// jobs_api's `start_fresh` and status.rs show that.
+pub fn keep_sandbox(config: &Value) {
+    use std::os::unix::fs::PermissionsExt;
+    let path = Path::new(config["home"].as_str().expect("home")).join("permissions.json");
+    if !path.exists() {
+        std::fs::write(&path, r#"{"mode": "sandbox"}"#).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    }
+}
+
 /// The e2e stub agent.
 pub fn stub_agent() -> PathBuf {
     obi().join("e2e/stub-agent/stub-agent")
@@ -246,6 +258,7 @@ pub fn start_with(
         }
     }
     put_token(config, TOKEN);
+    keep_sandbox(config);
     std::fs::write(&path, config.to_string()).unwrap();
     std::fs::create_dir_all(folder.join("tmp")).unwrap();
     let stderr = folder.join("obid.stderr");

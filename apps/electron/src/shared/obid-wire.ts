@@ -28,6 +28,8 @@ export type Job = {
   round: number;
   check: string | null;
   model: string | null;
+  // how much it asks: ask, acceptEdits, plan, bypass, or sandbox (obid's old default)
+  mode?: string | null;
   dismissed: string | null;
   permission: { id: string; tool: string; title: string; detail: string; rule: string | null; always: string | null } | null;
   pipeline: { number: number; total: number; stages: Stage[] } | null;
