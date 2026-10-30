@@ -88,7 +88,8 @@ JIT as the only entitlement, Electron's fuses closed), and the script checks it,
 scans it with gitleaks, notarizes and staples it (keychain profile
 `oby-notary`), and makes `dist/Oby-Electron-<version>-<arch>.dmg`, signed, notarized and
 stapled too. It needs the Developer ID Application identity of team
-`3UV9W5SV7W` and both Rust targets (`rustup target add aarch64-apple-darwin
+`3UV9W5SV7W` (another team's: set `OBY_TEAM_ID` and `OBY_SIGN_IDENTITY`, its
+name as in `"Name (TEAMID)"`) and both Rust targets (`rustup target add aarch64-apple-darwin
 x86_64-apple-darwin`); `OBY_CARGO_TARGET_DIR` reuses a cargo target directory.
 obid, gh and gitleaks are staged again only when `core/`, `plugins/` or the bundle
 scripts changed since (`build/helpers/stamp`). `scripts/vm-test.sh [dmg]` then

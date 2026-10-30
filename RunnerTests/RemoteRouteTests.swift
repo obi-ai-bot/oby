@@ -8,16 +8,16 @@ struct RemoteRouteTests {
         #expect(MacLink.isHostname("oby-abcdefghij0123456789.tetrix.pro"))
         #expect(MacLink.isHostname("oby-abcdefghijklmnop.tetrix.pro"))
         // The Mac's Tailscale name, with or without the port `tailscale serve` gives the gateway (#621).
-        #expect(MacLink.isHostname("tetrix-lab.tail8de49b.ts.net"))
-        #expect(MacLink.isHostname("tetrix-lab.tail8de49b.ts.net:8443"))
+        #expect(MacLink.isHostname("mac.tail0000.ts.net"))
+        #expect(MacLink.isHostname("mac.tail0000.ts.net:8443"))
         // Too short an opaque part, capitals, a deeper name (no certificate for it), the Worker, or nothing like it.
         #expect(!MacLink.isHostname("oby-abc.tetrix.pro"))
         #expect(!MacLink.isHostname("oby-ABCDEFGHIJ0123456789.tetrix.pro"))
         #expect(!MacLink.isHostname("abcdefghij0123456789.oby.tetrix.pro"))
         #expect(!MacLink.isHostname("oby-control.tetrix.pro"))
-        #expect(!MacLink.isHostname("a.b.tail8de49b.ts.net"))
-        #expect(!MacLink.isHostname("tail8de49b.ts.net"))
-        #expect(!MacLink.isHostname("tetrix-lab.tail8de49b.ts.net.evil.example.com"))
+        #expect(!MacLink.isHostname("a.b.tail0000.ts.net"))
+        #expect(!MacLink.isHostname("tail0000.ts.net"))
+        #expect(!MacLink.isHostname("mac.tail0000.ts.net.evil.example.com"))
         #expect(!MacLink.isHostname("evil.example.com:8443"))
         #expect(!MacLink.isHostname(""))
     }
@@ -25,7 +25,7 @@ struct RemoteRouteTests {
     @Test func takesAHostnameAsTypedOrScanned() {
         #expect(MacLink.hostname(from: "  OBY-abcdefghij0123456789.Tetrix.pro\n") == "oby-abcdefghij0123456789.tetrix.pro")
         #expect(MacLink.hostname(from: "https://oby-abcdefghij0123456789.tetrix.pro/v1/status") == "oby-abcdefghij0123456789.tetrix.pro")
-        #expect(MacLink.hostname(from: "https://tetrix-lab.tail8de49b.ts.net:8443") == "tetrix-lab.tail8de49b.ts.net:8443")
+        #expect(MacLink.hostname(from: "https://mac.tail0000.ts.net:8443") == "mac.tail0000.ts.net:8443")
         #expect(MacLink.hostname(from: "https://evil.example.com:8443") == nil)
         #expect(MacLink.hostname(from: "") == nil)
     }

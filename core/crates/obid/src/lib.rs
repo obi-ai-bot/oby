@@ -423,6 +423,7 @@ pub async fn serve(
     jobs.use_connections(connections.clone());
     let tetrix = tetrix::Tetrix::open(
         &config.home,
+        config.tetrix_presets.clone(),
         vault::shared().expect("the vault is installed first"),
         events.clone(),
     );
