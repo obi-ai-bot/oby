@@ -35,7 +35,7 @@ export const config: BrainConfig = {
     { id: 'jobs', title: 'Jobs', summary: 'Starting, scheduling and running jobs, their records and checks.', modules: ['jobs', 'job', 'store', 'groups', 'facts', 'failures', 'routines', 'obi_dir', 'clear', 'meter'] },
     { id: 'agents', title: 'Agents', summary: 'The agent CLIs: Claude Code, Codex, Cursor, and how obid talks to them.', modules: ['agent', 'codex', 'acp', 'conn', 'process'] },
     { id: 'accounts', title: 'Accounts and limits', summary: 'Accounts, sign-ins, usage, limits and the owner\'s limit decisions.', modules: ['accounts', 'usage', 'limits', 'account_limits'] },
-    { id: 'workspace', title: 'Workspace', summary: 'Clones, worktrees, repositories and, next, working folders.', modules: ['git', 'repos'] },
+    { id: 'workspace', title: 'Workspace', summary: 'Clones, worktrees, repositories and working folders.', modules: ['git', 'repos', 'folders'] },
     { id: 'publish', title: 'Publish and review', summary: 'Publishing, reviews, merging and the decision checks before them.', modules: ['publish', 'merge', 'review', 'decisions', 'teammates'] },
     { id: 'connectors', title: 'Connectors', summary: 'GitHub, Tetrix and the MCP broker agents reach them through.', modules: ['github', 'github_login', 'github_work', 'tetrix', 'connections'] },
     { id: 'security', title: 'Security', summary: 'The box, egress, the secret scan, permissions, policy, the vault and approvals.', modules: ['sandbox', 'egress', 'scan', 'secrets', 'secretspec', 'permissions', 'policy', 'vault', 'approval', 'devices', 'token'] },
@@ -47,7 +47,7 @@ export const config: BrainConfig = {
   local: [
     { key: 'agent.default', owner: 'obid', issue: 1573, note: 'Settings › Agents › New tasks go to' },
     { key: 'models.mine', owner: 'obid', issue: 1574, note: 'Settings › Agents: model and effort per account' },
-    { key: 'oby.folders', owner: 'obid', issue: 1572, note: 'Working folders, per conversation' },
+    { key: 'oby.folders', owner: 'obid', issue: 1572, note: 'Working folders, per conversation: obid\'s once its status says folders; kept here only for an older obid' },
     { key: 'oby.archiveAfter', owner: 'obid', issue: 1580, note: 'Home › Archive completed after…' },
     { key: 'updates.auto', owner: 'obid', issue: 1577, note: 'About › Update automatically (the Electron updater)' },
     { key: 'login', owner: 'app', note: 'General › Open at login: Electron main\'s, held in memory until main has a bridge' },

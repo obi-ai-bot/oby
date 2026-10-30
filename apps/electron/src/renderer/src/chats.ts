@@ -156,7 +156,7 @@ export const deleteChat = (id: string) => {
 let made = 0;
 export function askOby(text: string, att?: Attachments) {
   // ponytail: words only to obid; attachments wait for its uploads (POST /v1/attachments)
-  if (onObid) return live.ask(text, undefined, att?.repo);
+  if (onObid) return live.ask(text, undefined, att?.repo, att?.folders);
   const t = text.trim();
   if (!t && !hasAttachments(att)) return;
   const id = `c${++made}`;
@@ -168,7 +168,7 @@ export function askOby(text: string, att?: Attachments) {
 // you: its question goes into the conversation, your words under it as the answer
 export function tellChat(id: string, text: string, att?: Attachments) {
   // the app's own (setting up): only its picks carry it on
-  if (onObid) return void (ofObid(id) ? live.ask(text, id, att?.repo) : live.say('Pick one above to go on.'));
+  if (onObid) return void (ofObid(id) ? live.ask(text, id, att?.repo, att?.folders) : live.say('Pick one above to go on.'));
   const t = text.trim();
   if (!t && !hasAttachments(att)) return;
   update(id, (c) => ({

@@ -1,0 +1,198 @@
+//! Working folders at obid's API boundary (docs/contracts/folders.md): `status.folders`, the folders
+//! `POST /v1/plans` adds to a conversation, kept for later words and replaced with `PATCH`, every
+//! path checked and canonicalized, and the places Oby never works in refused with nothing kept.
+//! Each test is named after the contract's scenario it proves. Through the gateway: gateway_api.rs.
+mod support;
+
+use std::path::{Path, PathBuf};
+
+use serde_json::{Value, json};
+use support::*;
+
+fn harness_obid(folder: &Folder) -> Obid {
+    let remote = fixture(&folder.0.join("fixture"));
+    let harness = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/agents/fake-harness");
+    let config = config(&folder.0, &remote, &harness);
+    let account = folder.0.join("home/accounts/stub");
+    std::fs::create_dir_all(&account).unwrap();
+    std::fs::write(account.join(".credentials.json"), "{}").unwrap();
+    start(&folder.0, &config, None)
+}
+
+/// Folders the owner picks, made for the test outside the system's temporary folder (on macOS
+/// `/private/var/…`, where Oby never works): under cargo's own for integration tests.
+fn picked(test: &str, names: &[&str]) -> Vec<PathBuf> {
+    let root = Path::new(env!("CARGO_TARGET_TMPDIR"))
+        .join(format!("folders-{test}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    names
+        .iter()
+        .map(|name| {
+            let path = root.join(name);
+            std::fs::create_dir_all(&path).unwrap();
+            path.canonicalize().unwrap()
+        })
+        .collect()
+}
+
+fn text(path: &Path) -> String {
+    path.to_str().unwrap().to_owned()
+}
+
+fn plan(obid: &Obid, body: Value) -> Value {
+    let answer = call(obid, "POST", "/v1/plans", Some(&body));
+    assert_eq!(answer.status, 200, "{}", answer.text);
+    answer.body
+}
+
+fn folders_of(obid: &Obid, id: &str) -> Value {
+    let answer = call(obid, "GET", "/v1/conversations", None);
+    assert_eq!(answer.status, 200, "{}", answer.text);
+    answer
+        .body
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["id"] == id)
+        .unwrap_or_else(|| panic!("no conversation {id} in {}", answer.text))["folders"]
+        .clone()
+}
+
+#[test]
+fn folders_6_a_conversation_keeps_its_folders_for_later_words() {
+    let folder = Folder::new("folders-6");
+    let obid = harness_obid(&folder);
+    let [api, web] = <[PathBuf; 2]>::try_from(picked("6", &["api", "web"])).unwrap();
+    let status = call(&obid, "GET", "/v1/status", None);
+    assert_eq!(status.body["folders"], true, "{}", status.text);
+
+    let first = plan(
+        &obid,
+        json!({"said": "rename the User type everywhere", "new": true,
+               "folders": [text(&api), text(&web), format!("{}/", text(&api))]}),
+    );
+    let id = first["conversation"].as_str().unwrap().to_owned();
+    // The same folder twice is kept once, in the order picked.
+    assert_eq!(folders_of(&obid, &id), json!([text(&api), text(&web)]));
+
+    // Later words with no folders keep them.
+    plan(
+        &obid,
+        json!({"said": "and the tests too", "conversation": id}),
+    );
+    assert_eq!(folders_of(&obid, &id), json!([text(&api), text(&web)]));
+
+    // PATCH replaces the list; an empty one clears it.
+    let patched = call(
+        &obid,
+        "PATCH",
+        &format!("/v1/conversations/{id}"),
+        Some(&json!({"folders": [text(&web)]})),
+    );
+    assert_eq!(patched.status, 200, "{}", patched.text);
+    assert_eq!(patched.body["folders"], json!([text(&web)]));
+    assert_eq!(folders_of(&obid, &id), json!([text(&web)]));
+    let cleared = call(
+        &obid,
+        "PATCH",
+        &format!("/v1/conversations/{id}"),
+        Some(&json!({"folders": []})),
+    );
+    assert_eq!(cleared.body["folders"], json!([]), "{}", cleared.text);
+}
+
+#[test]
+fn folders_9_refused_paths_keep_nothing() {
+    let folder = Folder::new("folders-9");
+    let remote = fixture(&folder.0.join("fixture"));
+    let [login, file_parent] = <[PathBuf; 2]>::try_from(picked("9", &["login", "parent"])).unwrap();
+    let mut config = config(&folder.0, &remote, &stub_agent());
+    config["agents"]["claude"]["accounts"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({"id": "other", "name": "Other", "configDir": login}));
+    let obid = start(&folder.0, &config, None);
+    let file = file_parent.join("notes.txt");
+    std::fs::write(&file, "notes").unwrap();
+    let home = std::env::var("HOME").unwrap();
+    let obid_home = folder.0.join("home");
+
+    let refused = [
+        ("/".to_owned(), "\"/\""),
+        (home.clone(), "is your whole home folder"),
+        (
+            format!("{home}/Library"),
+            "\"Library\" is where your Mac keeps its own settings",
+        ),
+        (text(&obid_home), "\"home\""),
+        (text(&folder.0), "\""),
+        (text(&login), "\"login\" holds an agent's login"),
+        (text(&login.join("..")), "holds an agent's login"),
+        ("/usr/local".to_owned(), "\"local\""),
+        (text(&file), "\"notes.txt\" is a file, not a folder."),
+        (
+            "Projects/api".to_owned(),
+            "\"api\" isn't a folder's full path.",
+        ),
+        (text(&file_parent.join("gone")), "\"gone\" isn't at"),
+    ];
+    let mut refused = refused.to_vec();
+    if cfg!(target_os = "macos") {
+        refused.push((
+            format!("{home}/LIBRARY"),
+            "\"LIBRARY\" is where your Mac keeps",
+        ));
+        refused.push((format!("{home}/.claude"), "\".claude\""));
+    }
+    for (path, why) in refused {
+        let answer = call(
+            &obid,
+            "POST",
+            "/v1/plans",
+            Some(&json!({"said": "tidy up", "new": true, "folders": [path]})),
+        );
+        assert_eq!(answer.status, 422, "{path}: {}", answer.text);
+        let error = answer.body["error"].as_str().unwrap();
+        assert!(error.contains(why), "{path}: {error}");
+    }
+    // Nothing of a refused request happened: no conversation.
+    let list = call(&obid, "GET", "/v1/conversations", None);
+    assert_eq!(list.body, json!([]), "{}", list.text);
+}
+
+#[test]
+fn folders_10_a_link_is_kept_as_the_folder_it_points_to() {
+    let folder = Folder::new("folders-10");
+    let obid = harness_obid(&folder);
+    let [api] = <[PathBuf; 1]>::try_from(picked("10", &["api"])).unwrap();
+    let work = api.parent().unwrap().join("work");
+    std::os::unix::fs::symlink(&api, &work).unwrap();
+
+    let first = plan(
+        &obid,
+        json!({"said": "look at it", "new": true, "folders": [text(&work)]}),
+    );
+    let id = first["conversation"].as_str().unwrap();
+    assert_eq!(folders_of(&obid, id), json!([text(&api)]));
+}
+
+#[test]
+fn folders_22_the_same_words_twice_add_nothing() {
+    let folder = Folder::new("folders-22");
+    let obid = harness_obid(&folder);
+    let [api, web] = <[PathBuf; 2]>::try_from(picked("22", &["api", "web"])).unwrap();
+    let words = "11111111-2222-4333-8444-555555555555";
+
+    let first = plan(
+        &obid,
+        json!({"said": "tidy up", "new": true, "id": words, "folders": [text(&api)]}),
+    );
+    let id = first["conversation"].as_str().unwrap().to_owned();
+    let again = plan(
+        &obid,
+        json!({"said": "tidy up", "new": true, "id": words, "folders": [text(&web)]}),
+    );
+    assert_eq!(again["repeated"], true, "{again}");
+    assert_eq!(again["conversation"], id.as_str());
+    assert_eq!(folders_of(&obid, &id), json!([text(&api)]));
+}

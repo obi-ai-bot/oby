@@ -1,8 +1,10 @@
 import { useSyncExternalStore } from 'react';
 
 // The working folders a conversation's work is in (the message box's Select working folder…,
-// the Mac's own picker: main's pick-folders), by conversation, remembered across launches. obid
-// takes none yet (Wellington decides how: asked 2026-10-28), so for now they're the app's only.
+// the Mac's own picker: main's pick-folders), by conversation. Once obid takes them (its status
+// says folders: true, docs/contracts/folders.md) they're obid's: shown from its conversations
+// (live.ts: takeFolders) and changed there (PATCH, sendFoldersBy). An older obid takes none, and
+// the app keeps them itself, remembered across launches.
 const KEY = 'oby.folders';
 // (only lists of paths: anything else that's there is dropped rather than trusted)
 const paths = (x: unknown): string[] => (Array.isArray(x) ? x.filter((p): p is string => typeof p === 'string') : []);
@@ -23,7 +25,13 @@ export const foldersOf = (conversation: string) => all[conversation] ?? NONE;
 // knows), so the next launch finds them there; still unnamed, they're kept this launch only
 let realOf = (id: string) => id;
 export const nameFoldersBy = (f: (id: string) => string) => { realOf = f; };
+// obid's (live.ts): a conversation's new folders sent to obid, true when it took them there (it
+// takes folders, and knows the conversation); its answer comes back through takeFolders
+let send: (conversation: string, folders: string[]) => boolean = () => false;
+export const sendFoldersBy = (f: typeof send) => { send = f; };
+let obidKeeps = false;
 export function saveFolders() {
+  if (obidKeeps) return;
   const kept: Record<string, string[]> = {};
   for (const [c, f] of Object.entries(all)) {
     const id = c.startsWith('new:') ? realOf(c) : c;
@@ -32,6 +40,7 @@ export function saveFolders() {
   try { localStorage.setItem(KEY, JSON.stringify(kept)); } catch { /* this launch only, that's all */ }
 }
 export function setFolders(conversation: string, folders: string[]) {
+  if (send(conversation, folders)) return;
   all = { ...all, [conversation]: folders };
   if (!folders.length) delete all[conversation];
   saveFolders();
@@ -44,6 +53,24 @@ export function keepFoldersOf(conversations: Set<string>) {
   if (!gone.length) return;
   all = Object.fromEntries(Object.entries(all).filter(([c]) => !gone.includes(c)));
   saveFolders();
+  listeners.forEach((l) => l());
+}
+// obid's folders for every conversation it lists, by the app's id, whenever they may have changed:
+// they replace the app's own. The first time, folders the app kept for a conversation obid has none
+// for are sent to it, and the app's copy goes (the recent list stays the app's).
+let taken = '';
+export function takeFolders(byConversation: Record<string, string[]>, storage: Storage = localStorage) {
+  if (!obidKeeps) {
+    obidKeeps = true;
+    for (const [c, f] of Object.entries(all)) if (!c.startsWith('new:') && f.length && !byConversation[c]?.length && send(c, f)) byConversation[c] = f;
+    try { storage.removeItem(KEY); } catch { /* nothing kept to drop */ }
+  }
+  const seen = JSON.stringify(byConversation);
+  if (seen === taken) return;
+  taken = seen;
+  // (one started here and not yet named keeps the folders it was given)
+  const unnamed = Object.entries(all).filter(([c]) => c.startsWith('new:') && !(c in byConversation));
+  all = Object.fromEntries([...unnamed, ...Object.entries(byConversation).filter(([, f]) => f.length)]);
   listeners.forEach((l) => l());
 }
 export const useFolders = (conversation?: string) => useSyncExternalStore(subscribe, () => (conversation ? foldersOf(conversation) : NONE));

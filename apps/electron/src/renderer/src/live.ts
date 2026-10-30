@@ -3,7 +3,7 @@ import { ApiError, api, parseEvent, sseReader, type Conversation, type Event, ty
 import { AGENTS, type Ask, type AskKind, type Job as JobView, type Message, type Offer, type StageId } from './mock';
 import { replaceChats, type Chat } from './chats';
 import { replaceTasks, type Asking, type Task } from './tasks';
-import { keepFoldersOf, nameFoldersBy, saveFolders } from './folders';
+import { keepFoldersOf, nameFoldersBy, saveFolders, sendFoldersBy, takeFolders } from './folders';
 import { replaceAccounts } from './SettingsView';
 import { BRANDS } from './brands';
 import type { GitHubItem } from './mock';
@@ -72,6 +72,13 @@ export const shownId = (c: string) => state.alias[c] ?? c;
 export const realId = (shown: string) => Object.keys(state.alias).find((k) => state.alias[k] === shown) ?? shown;
 // a new conversation's working folders, saved under obid's id once it has one (folders.ts)
 nameFoldersBy(realId);
+// once obid takes folders, a conversation's go to it (one not yet named keeps its own meanwhile)
+sendFoldersBy((shown, folders) => {
+  const c = realId(shown);
+  if (!state.status?.folders || c.startsWith('new:')) return false;
+  void api.editConversation(c, { folders }).then((conversation) => set(apply(state, { kind: 'conversation', conversation })), say);
+  return true;
+});
 let aliasSeen: Live['alias'] | undefined;
 
 // --- obid's state as the screens' conversations and tasks
@@ -306,6 +313,7 @@ let accountsFrom: Status | null = null;
 let sessionTurn: ReturnType<typeof setTimeout> | undefined;
 function publish() {
   if (state.alias !== aliasSeen) { aliasSeen = state.alias; saveFolders(); }
+  if (state.status?.folders) takeFolders(Object.fromEntries(state.conversations.map((c) => [shownId(c.id), c.folders ?? []])));
   replaceChats(chatsOf(state));
   replaceTasks(tasksOf(state), { asks: asksOf(state), work: workOf(state.github), error: state.github?.error ?? undefined });
   // what's put off comes back when its time comes, which obid sends no event for: look again then
@@ -648,7 +656,7 @@ export async function openConversation(shown: string) {
 // words, its answer and the jobs it starts come back as events. Oby's question back waits over
 // the message box; your next words answer it.
 let made = 0;
-export function ask(said: string, shown?: string, repo?: string): string | undefined {
+export function ask(said: string, shown?: string, repo?: string, folders?: string[]): string | undefined {
   if (!said.trim()) return;
   const id = shown ?? `new:${++made}`;
   const c = shown ? realId(shown) : null;
@@ -662,7 +670,9 @@ export function ask(said: string, shown?: string, repo?: string): string | undef
   let failed = false;
   void (async () => {
     try {
-      const a = await api.plan(q ? q.said : words, q ? { question: q.text, option: words } : undefined, c ? { conversation: c } : { new: true });
+      // the working folders go with words that start a conversation, once obid takes them (an
+      // older one refuses the key); a conversation's own are obid's already (sendFoldersBy)
+      const a = await api.plan(q ? q.said : words, q ? { question: q.text, option: words } : undefined, c ? { conversation: c } : { new: true }, state.status?.folders && !c ? folders : undefined);
       const where = a.conversation ?? c;
       // the plan's answer is the one: it replaces a guess from the words' turn
       const alias = !c && a.conversation ? { ...Object.fromEntries(Object.entries(state.alias).filter(([, v]) => v !== id)), [a.conversation]: id } : state.alias;

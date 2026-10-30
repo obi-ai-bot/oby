@@ -85,8 +85,8 @@ export const api = {
   // one conversation's turns
   conversation: (opts: { id?: string; before?: string; limit?: number } = {}) => call<Turn[]>('GET', `/v1/conversation${q(opts)}`),
   // words to Oby: in a conversation, or starting a new one
-  plan: (said: string, answer: { question: string; option: string } | undefined, where: { conversation: string } | { new: true }) =>
-    call<PlanAnswer>('POST', '/v1/plans', { said, ...(answer ? { answer } : {}), ...where }),
+  plan: (said: string, answer: { question: string; option: string } | undefined, where: { conversation: string } | { new: true }, folders?: string[]) =>
+    call<PlanAnswer>('POST', '/v1/plans', { said, ...(answer ? { answer } : {}), ...where, ...(folders?.length ? { folders } : {}) }),
   repos: () => call<{ repos: Repo[] }>('GET', '/v1/repos'),
   // Settings › Permissions: the mode new jobs get, and the rules Always allow saved
   permissions: () => call<{ mode: string }>('GET', '/v1/settings/permissions'),
@@ -118,6 +118,6 @@ export const api = {
   // signs Oby out of Tetrix (its refresh token revoked where the server offers it)
   tetrixDisconnect: () => call<null>('DELETE', '/v1/tetrix'),
   conversations: (opts: { after?: string; limit?: number } = {}) => call<Conversation[]>('GET', `/v1/conversations${q(opts)}`),
-  editConversation: (c: string, change: { title?: string; pinned?: boolean }) => call<Conversation>('PATCH', `/v1/conversations/${id(c)}`, change),
+  editConversation: (c: string, change: { title?: string; pinned?: boolean; folders?: string[] }) => call<Conversation>('PATCH', `/v1/conversations/${id(c)}`, change),
   deleteConversation: (c: string) => call<null>('DELETE', `/v1/conversations/${id(c)}`),
 };

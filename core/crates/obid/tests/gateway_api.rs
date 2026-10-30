@@ -1499,3 +1499,67 @@ async fn a_new_token_replaces_the_relays_socket_and_the_phone_sees_nothing() {
     let (status, _) = phone.call("GET", "/v1/status", Some(&token), None).await;
     assert_eq!(status, 200);
 }
+
+/// FOLDERS-7 (docs/contracts/folders.md): only the owner's Mac app adds a folder. Through the
+/// gateway, words carrying `folders` are refused and nothing is kept, and `PATCH` may take a folder
+/// off a conversation but never add one.
+#[test]
+fn folders_7_a_paired_phone_adds_no_folder() {
+    let folder = Folder::new("gateway-folders");
+    let remote = fixture(&folder.0.join("fixture"));
+    let harness = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/agents/fake-harness");
+    let mut config = config(&folder.0, &remote, &harness);
+    config["gateway"] = json!("127.0.0.1:0");
+    let account = folder.0.join("home/accounts/stub");
+    std::fs::create_dir_all(&account).unwrap();
+    std::fs::write(account.join(".credentials.json"), "{}").unwrap();
+    let obid = start(&folder.0, &config, None);
+    let token = paired(&obid);
+    let picked = Path::new(env!("CARGO_TARGET_TMPDIR"))
+        .join(format!("gateway-folders-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&picked);
+    let [api, web] = ["api", "web"].map(|name| {
+        let path = picked.join(name);
+        std::fs::create_dir_all(&path).unwrap();
+        path.canonicalize().unwrap().to_str().unwrap().to_owned()
+    });
+
+    let refused = through(
+        &obid,
+        Some(&token),
+        "POST",
+        "/v1/plans",
+        Some(&json!({"said": "tidy up", "new": true, "folders": [api]})),
+    );
+    assert_eq!(refused.status, 422, "{}", refused.text);
+    let listed = call(&obid, "GET", "/v1/conversations", None);
+    assert_eq!(listed.body, json!([]), "{}", listed.text);
+
+    let made = call(
+        &obid,
+        "POST",
+        "/v1/plans",
+        Some(&json!({"said": "tidy up", "new": true, "folders": [api]})),
+    );
+    assert_eq!(made.status, 200, "{}", made.text);
+    let id = made.body["conversation"].as_str().unwrap().to_owned();
+    let path = format!("/v1/conversations/{id}");
+
+    let adding = through(
+        &obid,
+        Some(&token),
+        "PATCH",
+        &path,
+        Some(&json!({"folders": [api, web]})),
+    );
+    assert_eq!(adding.status, 422, "{}", adding.text);
+    let removing = through(
+        &obid,
+        Some(&token),
+        "PATCH",
+        &path,
+        Some(&json!({"folders": []})),
+    );
+    assert_eq!(removing.status, 200, "{}", removing.text);
+    assert_eq!(removing.body["folders"], json!([]));
+}
