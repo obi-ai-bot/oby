@@ -29,7 +29,7 @@ The business behavior contract for Settings › About's updater rows in the Elec
 |---|---|---|
 | Check for Updates | `idle` | Launch; a failure. Check for Updates → `checking`. |
 | Check for Updates (disabled) | `checking` | Nothing newer → `current`; newer → `downloading` (on) or `available` (off); a failure → `idle`. |
-| Oby is up to date | `current` | Check for Updates is gone until the next launch; with it on, the 6-hour look runs again. |
+| Check for Updates · Oby is up to date | `current` | Check for Updates stays, so the owner can look again at any time (Wellington, 2026-10-30); with it on, the 6-hour look runs again. |
 | Oby X is available, Released Mon D · Update and Restart | `available` | Update and Restart → `downloading` and restarts once it's downloaded and checked; turning Update automatically on downloads it. |
 | Oby X is available · Update and Restart | `downloading` | Downloaded and its checksum matches → `ready`. Update and Restart while it downloads restarts once it's ready (the button disables). |
 | Oby X is available · Update and Restart | `ready` | Update and Restart → Oby quits and opens the new build. Otherwise it installs when Oby quits. |
