@@ -20,8 +20,10 @@ root=${app_dir:h:h}
 cd "$app_dir"
 profile=${OBY_NOTARY_PROFILE:-oby-notary}
 team=${OBY_TEAM_ID:-3UV9W5SV7W}
-# electron-builder.yml's identity: another team's Developer ID sets both
+# the identity electron-builder signs with (CSC_NAME: electron-builder.yml names none): another
+# team's Developer ID sets both
 export OBY_SIGN_IDENTITY=${OBY_SIGN_IDENTITY:-"Deskree Technologies Inc. (3UV9W5SV7W)"}
+export CSC_NAME=$OBY_SIGN_IDENTITY
 archs=("$@")
 (( ${#archs} )) || archs=(arm64 x64)
 version=$(node -p "require('./package.json').version")

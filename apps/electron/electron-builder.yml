@@ -36,8 +36,8 @@ mac:
   icon: ../icon/AppIcon.icon
   category: public.app-category.developer-tools
   minimumSystemVersion: "26.0"
-  # scripts/package.sh sets it: OBY_SIGN_IDENTITY, Deskree's Developer ID when that's unset
-  identity: ${env.OBY_SIGN_IDENTITY}
+  # the identity is scripts/package.sh's CSC_NAME (OBY_SIGN_IDENTITY, Deskree's Developer ID when
+  # that's unset): electron-builder doesn't expand ${env.…} here, and would leave the app unsigned
   hardenedRuntime: true
   entitlements: build/entitlements.mac.plist
   entitlementsInherit: build/entitlements.mac.plist
