@@ -4,8 +4,8 @@ import { addTask } from './tasks';
 import { wait } from './stream';
 import { onObid } from './lean';
 import { CAN_CREATE } from './spheres';
-import { ApiError, api } from './obid';
-import { ask, liveState, say, useLive } from './live';
+import { ApiError, api, type TetrixTarget } from './obid';
+import { ask, ensureCursor, liveState, say, useLive } from './live';
 import { AGENTS, type Agent, type SetupStep } from './mock';
 
 // Setting up, in Oby's first conversation: no wizard, Oby talks you through it
@@ -118,7 +118,11 @@ export async function signInAgent(a: Agent) {
       if (gone()) return;
       if (!account.signedIn) { delete tries[a]; return back(a, account.label ?? `Sign in with ${AGENTS[a].name} itself on this Mac, then Connect again.`); }
     } else {
-      t.account = s?.accounts.find((x) => x.agent === a)?.id ?? (t.made = (await api.addAccount({ agent: a, name: 'Personal' })).id);
+      // Cursor's agent first, set up by obid when it isn't on this Mac: nothing of Cursor's needs
+      // installing or signing in before Connect (its own login, id `cursor`, isn't obid's to sign in)
+      if (a === 'cursor') await ensureCursor();
+      if (gone()) return;
+      t.account = s?.accounts.find((x) => x.agent === a && x.id !== 'cursor')?.id ?? (t.made = (await api.addAccount({ agent: a, name: 'Personal' })).id);
       if (gone()) return void unmake(t);
       const page = await api.signIn(t.account);
       if (gone()) return void unmake(t);
@@ -186,15 +190,14 @@ export async function signInGitHub() {
     failed(e, () => set(() => ({ github: 'out' })));
   }
 }
-// Tetrix: Oby signs in once, for every agent; its page in the browser
-export async function connectTetrix() {
+// Tetrix: Oby signs in once, for every agent, to the Tetrix the person picked in Connect Tetrix
+// (Connectors' TetrixWindow: their own's address; Oby has none built in); its page in the browser
+export async function connectTetrix(to?: TetrixTarget) {
   if (!onObid) return signIn((s) => s.tetrix, (tetrix) => ({ tetrix }));
-  if (setup.tetrix !== 'out') return;
+  if (!to || setup.tetrix !== 'out') return;
   set(() => ({ tetrix: 'waiting' }));
   try {
-    const preset = (await api.tetrix()).presets[0];
-    if (!preset) throw new Error('Oby has no Tetrix to sign in to.');
-    open((await api.tetrixSignIn({ preset: preset.id })).url);
+    open((await api.tetrixSignIn(to)).url);
     if (!(await until(async () => (await api.tetrix()).connected, 10))) set(() => ({ tetrix: 'out' }));
     else set(() => ({ tetrix: 'in' }));
   } catch (e) {

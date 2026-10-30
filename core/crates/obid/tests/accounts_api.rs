@@ -303,6 +303,50 @@ fn a_cursor_keychain_login_that_ended_says_run_cursor_agent_once() {
     );
 }
 
+/// A Cursor account's plan (its `about`, kept in `usage.json`) is its label only while it's signed
+/// in: signed out, the label is null, so the apps say "Not connected" rather than a stale plan.
+#[test]
+fn a_cursor_accounts_plan_is_its_label_only_while_signed_in() {
+    let folder = Folder::new("accounts-cursor-plan");
+    let remote = fixture(&folder.0.join("fixture"));
+    let mut config = config(&folder.0, &remote, &agent("fake-claude"));
+    let dir = folder.0.join("cursor-work");
+    config["agents"]["cursor"] = json!({"bin": agent("fake-cursor"),
+        "accounts": [{"id": "work", "name": "Work", "configDir": dir}]});
+    let home = folder.0.join("home");
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::write(
+        home.join("usage.json"),
+        json!({"work": {"plan": "Pro"}}).to_string(),
+    )
+    .unwrap();
+    let obid = start(&folder.0, &config, None);
+    let out = account(&obid, "work").unwrap();
+    assert_eq!(
+        (out["signedIn"].clone(), out["label"].clone()),
+        (json!(false), Value::Null),
+        "{out}"
+    );
+    // Signed in (its login file holds a token): the plan shows.
+    let login = dir.join(if cfg!(target_os = "macos") {
+        ".cursor/auth.json"
+    } else {
+        ".config/cursor/auth.json"
+    });
+    std::fs::create_dir_all(login.parent().unwrap()).unwrap();
+    std::fs::write(
+        &login,
+        json!({"accessToken": (["fake", "-access"].concat())}).to_string(),
+    )
+    .unwrap();
+    let now = account(&obid, "work").unwrap();
+    assert_eq!(
+        (now["signedIn"].clone(), now["label"].clone()),
+        (json!(true), json!("Pro")),
+        "{now}"
+    );
+}
+
 /// An obid that ran before keeps its accounts as they are: the logins it finds on the Mac are only
 /// offered, and listed on the owner's word.
 #[test]

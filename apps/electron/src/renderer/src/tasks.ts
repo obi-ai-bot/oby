@@ -4,6 +4,7 @@ import { AGENTS, ARCHIVE, GITHUB_WORK, JOBS, hasAttachments, type Archived, type
 import { streamWords, wait } from './stream';
 import { everything, onObid } from './lean';
 import * as live from './live';
+import { box as draftBox, forget } from './drafts';
 
 // Tasks are Oby's jobs (mock.ts) as Home shows them. Each belongs to a kind of
 // work (the chips on Home, the groups in the side panel) and is running,
@@ -187,6 +188,7 @@ export function remove(id: string) {
 const deleted = new Set<string>();
 export function deleteTask(id: string) {
   deleted.add(id);
+  forget(draftBox.task(id));  // its unsent words go with it
   remove(id);
 }
 

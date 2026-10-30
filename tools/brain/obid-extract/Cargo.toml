@@ -1,0 +1,19 @@
+[package]
+name = "obid-extract"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Reads obid's source with syn and prints the Brain's JSON map of it."
+
+# Standalone: never part of core/'s workspace.
+[workspace]
+
+[dependencies]
+syn = { version = "2.0.119", features = ["full", "visit", "extra-traits"] }
+proc-macro2 = { version = "1", features = ["span-locations"] }
+quote = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[profile.release]
+debug = false

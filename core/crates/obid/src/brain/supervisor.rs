@@ -8,7 +8,8 @@
 //! What it may do by itself is obid's to say, never the note's: the turn counts as untrusted from
 //! its start, so every tool works as after reading the web (work is proposed, gated actions wait
 //! for the owner's Confirm), except [`allowed`]'s one decision about the stalled job itself, in its
-//! own conversation, its own repository, agent, account and mode (never Bypass), at most [`MOST`]
+//! own conversation, its own repository, agent, account and mode (Bypass only where it's the
+//! owner's own default), at most [`MOST`]
 //! times along the job and the jobs it follows up. Past that, or when no agent session can run,
 //! the owner is asked. Every decision is kept on the job (`supervised`) and said in the
 //! conversation, with its count.
@@ -145,7 +146,12 @@ pub fn allowed(
     kind: Kind,
 ) -> Option<Result<(), String>> {
     let watch = session.supervising.as_ref()?;
-    let mode = job.mode.as_deref().filter(|m| *m != "bypass");
+    // A job in Bypass is carried on by itself only where Bypass is the owner's own default: then
+    // its restart or split runs in it as any new job does (`Jobs::bypass_widens`).
+    let mode = job
+        .mode
+        .as_deref()
+        .filter(|m| *m != "bypass" || !shared.jobs.bypass_widens());
     if job.id != watch.job
         || stalled(job).is_none()
         || job.conversation.as_deref() != Some(session.conversation.as_str())

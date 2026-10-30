@@ -153,9 +153,12 @@ final class Notifications: NSObject, UIApplicationDelegate, UNUserNotificationCe
         return UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
     }
 
-    /// With Oby open, the alert still shows, so it isn't missed.
+    /// The phone's half of the owner's rule of 2026-10-28 (obid's `push.rs`, `notifies`, has the
+    /// other: only what waits on the owner is pushed): with Oby in front, nothing shows. Home has
+    /// what it asks; the alert is delivered to Notification Center for the Lock Screen and later.
     func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification) async -> UNNotificationPresentationOptions {
-        [.banner, .list, .sound]
+        // iOS asks only while Oby is in front: no banner, no sound; it stays listed.
+        [.list]
     }
 }
 

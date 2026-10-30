@@ -2017,7 +2017,7 @@ fn a_plan_waits_for_the_owners_approval() {
         job["summary"],
         "answers: deny: Cover an empty list too, allow"
     );
-    assert_eq!(job["mode"], "ask");
+    assert_eq!(job["mode"], "sandbox", "the owner's default mode");
 }
 
 /// The review's probe: answering another Obi's request with "Accept, and remember for this

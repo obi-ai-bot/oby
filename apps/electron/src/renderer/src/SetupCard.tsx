@@ -9,7 +9,9 @@ import { AGENTS, type Agent, type SetupStep } from './mock';
 import { FIRST_TASK, accountOf, cancelAgent, connectTetrix, pick, sceneDone, sceneReplayed, sendAgentCode, signInAgent, signInGitHub, useSetup, type Code } from './onboarding';
 import { onObid } from './lean';
 import { PasteCode } from './SettingsView';
-import { useLive } from './live';
+import { say, useLive } from './live';
+import { api, type Tetrix } from './obid';
+import { TetrixWindow } from './Connectors';
 
 // a sign-in's code to type on its page, after what the row says
 const typed = (c?: Code) => (c?.userCode ? ` · enter ${c.userCode}` : '');
@@ -45,7 +47,7 @@ export default function SetupCard({ step }: { step: SetupStep }) {
     picks = [{ label: 'Continue', ok: s.github === 'in' }, { label: 'Not now', quiet: true }];
   } else if (step === 'extras') {
     rows = <>
-      <Row mark={mark(BRANDS.tetrix)} name="Tetrix" state={s.tetrix} act="Connect" onAct={connectTetrix}
+      <TetrixRow bare={false}
         sub={s.tetrix === 'in' ? 'Connected · every agent gets your code graph' : s.tetrix === 'waiting' ? 'Finish in your browser' : 'Your code as a graph, for every agent'} />
     </>;
     picks = s.tetrix === 'in' ? [{ label: 'Continue' }] : [{ label: 'Skip for now', quiet: true }];
@@ -173,11 +175,18 @@ export function GitHubRow() {
     code={s.codes.github?.userCode ?? undefined} bare />;
 }
 
-// Tetrix on the new onboarding's knowledge step, the same way: Connect (its page in the browser,
-// through obid), a spinner while that's under way, then a check
-export function TetrixRow() {
+// Tetrix on the new onboarding's knowledge step, the same way: a spinner while it's under way, then
+// a check. On obid, Connect opens Settings' own Connect Tetrix window, where the person gives their
+// Tetrix's address (Oby has none built in); Continue in Browser signs in from the row
+export function TetrixRow({ sub, bare = true }: { sub?: string; bare?: boolean }) {
   const s = useSetup();
-  return <Row mark={<BrandMark brand={BRANDS.tetrix} size={22} />} name="Tetrix" state={s.tetrix} act="Connect" onAct={connectTetrix} bare />;
+  const [asking, setAsking] = useState<Tetrix | null>(null);
+  const connect = onObid ? () => void api.tetrix().then(setAsking, say) : () => void connectTetrix();
+  return <>
+    <Row mark={<BrandMark brand={BRANDS.tetrix} size={22} />} name="Tetrix" sub={sub} state={s.tetrix} act="Connect" onAct={connect} bare={bare} />
+    {asking && <TetrixWindow tetrix={asking} waiting={false} onConnect={(to) => { setAsking(null); void connectTetrix(to); }}
+      onCancel={() => setAsking(null)} onClose={() => setAsking(null)} />}
+  </>;
 }
 
 // something under way: a ring going round (still, with reduced motion: app.css)

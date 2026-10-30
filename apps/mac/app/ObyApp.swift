@@ -128,7 +128,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         island.windowShowsConversation = { [weak self] in self?.chat.showsConversation ?? false }
         // A dropped runner is tried again within seconds while the window shows.
         island.feed.windowOpen = { [weak self] in self?.chat.isOpen ?? false }
-        // Nothing alerts for what the window shows in front (#862).
+        // Nothing alerts while the window is in front (the owner's rule of 2026-10-28, `Alerts.notifies`);
+        // what it shows loses its alerts (#862).
+        island.feed.windowInFront = { [weak self] in self?.chat.inFront ?? false }
         island.feed.windowShows = { [weak self] place in self?.chat.shows(place) ?? false }
         RunnerFeed.settleThisMac()
         island.start()
