@@ -32,7 +32,12 @@ async function load(withObid: boolean) {
     const a = answers[`${method} ${path}`] ?? { status: 404, body: { error: 'Not found.' } };
     return { status: a.status, text: a.body === undefined ? '' : JSON.stringify(a.body) };
   };
-  vi.stubGlobal('window', withObid ? { app: { obid: { call } } } : {});
+  // Confirm on a confirm item: main signs it with this Mac's device key (main/device.ts)
+  const confirm = async (item: string) => {
+    calls.push({ method: 'CONFIRM', path: item });
+    return { status: 200, text: JSON.stringify(answers[`CONFIRM ${item}`]?.body ?? {}) };
+  };
+  vi.stubGlobal('window', withObid ? { app: { obid: { call, confirm } } } : {});
   const tasks = await import('../tasks');
   const live = await import('../live');
   return { tasks, live };
@@ -89,17 +94,17 @@ describe('the task menu on obid', () => {
     expect(tasks.archivedTasks().map((a) => a.id)).toEqual(['j1']);
   });
 
-  it('TASKS-3: Delete sends DELETE /v1/jobs/{id}; a 409 leaves the task, in obid\'s words; once deleted it\'s gone', async () => {
+  it('TASKS-3: Delete sends POST /v1/jobs/{id}/delete; a 409 leaves the task, in obid\'s words; once deleted it\'s gone', async () => {
     const { tasks, live } = await load(true);
     await seed(tasks);
-    answers['DELETE /v1/jobs/j1'] = { status: 409, body: { error: 'Its pull request is still open: close or merge it first, or archive the job.' } };
+    answers['POST /v1/jobs/j1/delete'] = { status: 409, body: { error: 'Its pull request is still open: close or merge it first, or archive the job.' } };
     tasks.deleteTask('j1');
     await flush();
-    expect(calls).toEqual([{ method: 'DELETE', path: '/v1/jobs/j1', body: undefined }]);
+    expect(calls).toEqual([{ method: 'POST', path: '/v1/jobs/j1/delete', body: undefined }]);
     expect(live.liveState().problem).toBe('Its pull request is still open: close or merge it first, or archive the job.');
     expect(tasks.dev!.get().map((t) => t.id)).toEqual(['j1']);
 
-    answers['DELETE /v1/jobs/j1'] = { status: 204 };
+    answers['POST /v1/jobs/j1/delete'] = { status: 200, body: { deleted: true, ask: null } };
     tasks.deleteTask('j1');
     await flush();
     expect(tasks.dev!.get()).toEqual([]);
@@ -111,6 +116,34 @@ describe('the task menu on obid', () => {
     tasks.deleteTask('j1');
     await flush();
     expect(tasks.dev!.get()).toEqual([]);
+  });
+
+  it('TASKS-11: with commits that aren\'t published, Delete asks first on the Confirm card, and only its Confirm deletes', async () => {
+    const { tasks, live } = await load(true);
+    await seed(tasks, { commits: 2 });
+    const ask = {
+      id: 'confirm-1', kind: 'confirm', job: 'j1', title: 'Delete Fix it (its worktree and local branch go; 2 commits that aren’t published are lost)',
+      text: 'Deleting a job can’t be undone: it happens only if you confirm.', options: ['Confirm', 'Cancel'], details: null,
+      created: '2026-10-30T11:00:00Z', state: 'open', later: null, headline: null, recommended: null,
+      confirm: { action: 'delete_job', target: 'j1', payload: { snapshot: {} } },
+    };
+    answers['POST /v1/jobs/j1/delete'] = { status: 200, body: { deleted: false, ask } };
+    tasks.deleteTask('j1');
+    await flush();
+    // still there, waiting on the owner: obid's Confirm on its card, naming the commits lost
+    const [task] = tasks.dev!.get();
+    expect(task.id).toBe('j1');
+    expect(task.status).toBe('needs');
+    expect(task.job.ask).toMatchObject({ kind: 'confirm', headline: ask.title, options: ['Confirm', 'Cancel'] });
+
+    // the owner's click: the signed Confirm of that item, nothing else (obid deletes it, and its
+    // event takes the task away)
+    calls.length = 0;
+    answers['CONFIRM confirm-1'] = { status: 200, body: { ...ask, state: 'done' } };
+    tasks.answer('j1', 'Confirm');
+    await flush();
+    expect(calls).toEqual([{ method: 'CONFIRM', path: 'confirm-1' }]);
+    expect(live.liveState().inbox).toEqual([]);
   });
 
   it('TASKS-9: the session loads page after page, then only what came since, by n, one fetch at a time', async () => {

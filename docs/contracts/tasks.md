@@ -5,7 +5,7 @@ The business behavior contract for a task's menu and its page in the Electron ap
 ## Feature and status
 
 - **Outcome:** The owner renames, archives and deletes a task, and reads its page (Result, What went out, Timeline, Usage, Details, Full session), and what they see is what obid has: an action holds after the next update, and the page shows the job's own times, activity, usage and session instead of the mock's.
-- **Status:** **Implemented** in the Electron app (this change). obid's routes and job keys already existed (`docs/runner-api.md`); nothing was added to obid.
+- **Status:** **Implemented** in the Electron app (this change). obid's routes and job keys already existed (`docs/runner-api.md`), but for one added for Delete's ask-first (`POST /v1/jobs/{id}/delete`).
 - **Scope:** Sangam's TaskMenu (Rename, Stop, Archive, Delete), the task page (`TaskCard.tsx` with `alone`, `TaskView.tsx`, `SessionView.tsx`) and the result line's pull request link. **Out of scope:** the page's Mode menu (#1570 wires it to `POST /v1/jobs/{id}/mode`; this change only shows the job's mode), a tool call's detail in the session (`GET /v1/jobs/{id}/transcript/{n}`: the lines don't open yet on obid), check rows under Check and Publish (obid's job has no per-check rows), Unarchive (Sangam's Archive has no control for it).
 
 ## Behavior
@@ -22,9 +22,9 @@ The business behavior contract for a task's menu and its page in the Electron ap
 | Rename (menu, side panel, title bar) | `PATCH /v1/jobs/{id}` `{"title"}`, trimmed; nothing when it's the name it has | The new title shows at once, and obid's job replaces it | The old title comes back; obid's words show (`422`: not one line of 1 to 60 characters) |
 | Stop | `POST /v1/jobs/{id}/stop` (as before) | obid's job | obid's words |
 | Archive task (done tasks) | `POST /v1/jobs/{id}/archive` `{"archived": true}` | The job's `archived` is set: off Home, under Archive | Stays where it was; obid's words (`409`: `Dismiss it first, or publish it.`) |
-| Delete task | `DELETE /v1/jobs/{id}` | Gone from Home and Archive, its unsent words too | Stays; obid's words (`409`: running, publishing, pull request open, a follow-up on its branch) |
+| Delete task | `POST /v1/jobs/{id}/delete` | Nothing unpublished: gone from Home and Archive at once, its unsent words too. Commits that aren't published: obid's Confirm on the task's card (and Home's stack), naming them (`Delete Vault tests (its worktree and local branch go; 2 commits that aren't published are lost)`); only the owner's Confirm there deletes it | Stays; obid's words (`409`: running, publishing, pull request open, a follow-up on its branch) |
 
-A delete of a job obid no longer has (`404`) counts as gone. The job's `job` event (`deleted: true` for a delete) keeps every other open app in step.
+A delete of a job obid no longer has (`404`) counts as gone. Asking first only when something would be lost is the owner's decision of 2026-10-30 ("Yes, ask first"); otherwise Delete stays one click, as in Sangam's design. The Confirm is obid's own `delete_job` item, the one `oby_delete_job` raises, shown on Sangam's existing Confirm card: no new dialog. Its Confirm is signed by this Mac's device key (main), and obid refuses it once the job changed (another round, a commit). The job's `job` event (`deleted: true` for a delete) keeps every other open app in step.
 
 ### The page
 
@@ -47,7 +47,7 @@ What obid has goes into Sangam's `Page` (`mock.ts`) and stages, in `jobPage.ts`;
 
 ### Invariants
 
-- obid's API is unchanged (add-only, nothing added): the Swift apps are untouched.
+- obid's API only grows: one route added, `POST /v1/jobs/{id}/delete` (docs/runner-api.md); `DELETE /v1/jobs/{id}` is unchanged, and the Swift apps are untouched.
 - The mock (`npm run web`, `?everything`, `?dev=`) keeps working in place and calls nothing.
 - What came from GitHub stays data: only an `https://github.com/` link opens.
 
@@ -55,7 +55,7 @@ What obid has goes into Sangam's `Page` (`mock.ts`) and stages, in `jobPage.ts`;
 
 - **TASKS-1** Rename sends `PATCH /v1/jobs/{id}` with the trimmed title, shows it at once and keeps obid's; the same name again sends nothing; refused, the old title comes back and obid's words show.
 - **TASKS-2** Archive sends `POST /v1/jobs/{id}/archive`; the archived job is off Home and in Archive; a `409` leaves it on Home with obid's words.
-- **TASKS-3** Delete sends `DELETE /v1/jobs/{id}`; a `409` leaves the task with obid's words; `204` or `404`, it's gone.
+- **TASKS-3** Delete sends `POST /v1/jobs/{id}/delete`; a `409` leaves the task with obid's words; deleted, or `404`, it's gone.
 - **TASKS-4** The result line's pull request shows its short name and opens its GitHub page.
 - **TASKS-5** The stages' times and the timeline come from obid's stage times and estimate, running, paused, done and failed.
 - **TASKS-6** Activity counts and groups show under Work, with the agent's latest words.
@@ -64,4 +64,6 @@ What obid has goes into Sangam's `Page` (`mock.ts`) and stages, in `jobPage.ts`;
 - **TASKS-9** Full session shows obid's transcript in order, as Sangam's lines: every page until `next` is null, then only what came since (`?after=` the highest `n`), merged by `n`, with events during a fetch making one more fetch.
 - **TASKS-10** On the mock, the menu works in place and calls nothing.
 
-**On a real Mac (Test it when it's done):** rename a task from its menu and from the side panel, then quit and reopen: the name stays. Archive a done task: it's under Archive after a reopen. Delete a task whose pull request is open: obid's words show and it stays. Open a done task's page: its pull request opens in the browser; Timeline, Usage and What went out show the job's own numbers. Open Full session on a running task: lines come in as the agent works.
+- **TASKS-11** Delete on a task with commits that aren't published deletes nothing yet: obid's Confirm, naming the commits lost, comes onto the task's card, and only the owner's Confirm there deletes it (`tasks_11_delete_asks_first_when_commits_arent_published` in obid's `conversation_harness`, TASKS-11 in `taskActions.test.ts`).
+
+**On a real Mac (Test it when it's done):** rename a task from its menu and from the side panel, then quit and reopen: the name stays. Archive a done task: it's under Archive after a reopen. Delete a task whose pull request is open: obid's words show and it stays. Delete a task whose commits weren't published: its card asks Confirm, naming the commits; Cancel keeps it, Confirm deletes it. Open a done task's page: its pull request opens in the browser; Timeline, Usage and What went out show the job's own numbers. Open Full session on a running task: lines come in as the agent works.

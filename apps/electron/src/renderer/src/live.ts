@@ -702,9 +702,15 @@ export async function renameJob(id: string, title: string) {
 export async function archiveJob(id: string) {
   try { const j = await api.archive(id); set({ jobs: { ...state.jobs, [j.id]: j } }); } catch (e) { say(e); }
 }
-// true once it's gone (obid deleted it, or had no such job)
+// true once it's gone (obid deleted it, or had no such job). With commits that aren't published,
+// obid asks first: its Confirm comes onto the task's card (and Home's stack), naming the commits
+// lost, and only the owner's click there deletes it (answerJob, signed by main).
 export async function deleteJob(id: string) {
-  try { await api.deleteJob(id); } catch (e) {
+  try {
+    const { deleted, ask } = await api.deleteJob(id);
+    if (ask) set(apply(state, { kind: 'inbox', item: ask }));
+    if (!deleted) return false;
+  } catch (e) {
     if (!(e instanceof ApiError && e.status === 404)) { say(e); return false; }
   }
   set(apply(state, { kind: 'jobGone', id }));
