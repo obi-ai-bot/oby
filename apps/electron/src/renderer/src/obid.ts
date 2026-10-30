@@ -64,6 +64,8 @@ const q = (params: Record<string, string | number | undefined>) => {
   return text ? `?${text}` : '';
 };
 const id = encodeURIComponent;
+// obid's largest file (POST /v1/attachments)
+const UPLOAD_MAX = 25_000_000;
 
 export const api = {
   status: () => call<Status>('GET', '/v1/status'),
@@ -79,7 +81,7 @@ export const api = {
   deleteJob: (j: string) => call<{ deleted: boolean; ask: InboxItem | null }>('POST', `/v1/jobs/${id(j)}/delete`),
   // obid only: the job's session (Full session), the entries that came or changed after entry `after`
   transcript: (j: string, after?: number) => call<{ next: number | null; entries: TranscriptEntry[] }>('GET', `/v1/jobs/${id(j)}/transcript${q({ after })}`),
-  message: (j: string, text: string) => call<Job>('POST', `/v1/jobs/${id(j)}/messages`, { text }),
+  message: (j: string, text: string, attachments?: string[]) => call<Job>('POST', `/v1/jobs/${id(j)}/messages`, { text, ...(attachments?.length ? { attachments } : {}) }),
   // a job's waiting permission (POST /v1/jobs/{id}/permission)
   permission: (j: string, body: { id: string; decision: 'allow' | 'always' | 'deny'; message?: string }) =>
     call<Job>('POST', `/v1/jobs/${id(j)}/permission`, body),
@@ -95,9 +97,22 @@ export const api = {
       (b) => b.limitAnswer(decision.id, decision.revision, option.kind, option.kind === 'move' ? option.account : undefined)),
   // one conversation's turns
   conversation: (opts: { id?: string; before?: string; limit?: number } = {}) => call<Turn[]>('GET', `/v1/conversation${q(opts)}`),
-  // words to Oby: in a conversation, or starting a new one
-  plan: (said: string, answer: { question: string; option: string } | undefined, where: { conversation: string } | { new: true }, folders?: string[]) =>
-    call<PlanAnswer>('POST', '/v1/plans', { said, ...(answer ? { answer } : {}), ...where, ...(folders?.length ? { folders } : {}) }),
+  // words to Oby: in a conversation, or starting a new one. with: the words' id (sent again with
+  // the same id, nothing happens twice), the files uploaded for them and the tasks attached
+  plan: (said: string, answer: { question: string; option: string } | undefined, where: { conversation: string } | { new: true }, folders?: string[],
+    with_: { id?: string; attachments?: string[]; jobs?: string[] } = {}) =>
+    call<PlanAnswer>('POST', '/v1/plans', {
+      said, ...(answer ? { answer } : {}), ...where, ...(folders?.length ? { folders } : {}), ...(with_.id ? { id: with_.id } : {}),
+      ...(with_.attachments?.length ? { attachments: with_.attachments } : {}), ...(with_.jobs?.length ? { jobs: with_.jobs } : {}),
+    }),
+  // a file picked or pasted, kept by obid for the words it goes with: its path there; one over
+  // obid's 25 MB isn't read at all, and says so in obid's words
+  upload: async (file: File, name: string) => {
+    if (file.size > UPLOAD_MAX) throw new ApiError(413, `${name} is larger than 25 MB, so Oby can't take it.`);
+    return call<{ path: string; name: string }>('POST', `/v1/attachments${q({ name })}`, new Uint8Array(await file.arrayBuffer()));
+  },
+  // one uploaded for words that never went: it goes (obid keeps one that words or a task use)
+  unload: (path: string) => call<null>('DELETE', `/v1/attachments${q({ path })}`),
   repos: () => call<{ repos: Repo[] }>('GET', '/v1/repos'),
   // Settings › Permissions: the mode new jobs get, and the rules Always allow saved
   permissions: () => call<{ mode: string }>('GET', '/v1/settings/permissions'),

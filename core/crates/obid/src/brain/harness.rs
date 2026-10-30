@@ -64,7 +64,7 @@ pub const FAILED_TWICE: &str = "its agent session failed twice";
 /// The most earlier turns a new session is handed, quoted.
 const EARLIER: usize = 20;
 /// The largest attachment copied into the room, in bytes (P3): a larger one is left out.
-const ATTACHMENT_CAP: u64 = 25_000_000;
+pub(crate) const ATTACHMENT_CAP: u64 = 25_000_000;
 
 /// A conversation turn under way in its session: what Oby's tools act for.
 pub struct Session {
@@ -1624,8 +1624,16 @@ fn attach(
     let mut named = vec![];
     let mut left_out = vec![];
     let mut too_big = vec![];
+    let mut gone = vec![];
     for path in paths {
+        // Gone since the words came (its conversation deleted, or past the uploads' bound): said.
         let Ok(source) = std::path::Path::new(path).canonicalize() else {
+            gone.push(clean(
+                &std::path::Path::new(path)
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy(),
+            ));
             continue;
         };
         if !source.starts_with(&root) || !source.is_file() {
@@ -1670,6 +1678,10 @@ fn attach(
             ATTACHMENT_CAP / 1_000_000
         )
     }));
+    list.extend(
+        gone.iter()
+            .map(|n| format!("(left out: {n}, it is no longer on this Mac)")),
+    );
     if list.is_empty() {
         return Ok(None);
     }
@@ -1682,7 +1694,7 @@ fn attach(
 
 /// A file name the room can hold: letters, digits, `.`, `_` and `-`, anything else `_`, no
 /// leading dot, at most 100 characters.
-fn clean(name: &str) -> String {
+pub(crate) fn clean(name: &str) -> String {
     let cleaned: String = name
         .chars()
         .map(|c| {

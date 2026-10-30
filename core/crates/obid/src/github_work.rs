@@ -1291,7 +1291,7 @@ async fn begin(
     } else {
         None
     };
-    let path = keep_attachment(config, "github", &file, &quoted).map_err(|e| {
+    let path = keep_attachment(&config.home, "github", &file, quoted.as_bytes()).map_err(|e| {
         ApiError::new(
             StatusCode::INTERNAL_SERVER_ERROR,
             format!("obid couldn't keep GitHub's text: {e}"),
@@ -1383,21 +1383,21 @@ pub async fn start_adding(
     Ok(started)
 }
 
-/// Keeps `text` as `file` in a folder of its own under `home/attachments/<what>/` (0600 in 0700
+/// Keeps `data` as `file` in a folder of its own under `home/attachments/<what>/` (0600 in 0700
 /// folders): a job's attachment, which obid copies into its worktree's `.obi/inputs/`.
 pub(crate) fn keep_attachment(
-    config: &Config,
+    home: &std::path::Path,
     what: &str,
     file: &str,
-    text: &str,
+    data: &[u8],
 ) -> std::io::Result<std::path::PathBuf> {
-    let kind = config.home.join("attachments").join(what);
+    let kind = home.join("attachments").join(what);
     let folder = kind.join(uuid::Uuid::new_v4().simple().to_string());
     let path = folder.join(file);
-    crate::store::make_private_dir(&config.home.join("attachments"))?;
+    crate::store::make_private_dir(&home.join("attachments"))?;
     crate::store::make_private_dir(&kind)?;
     crate::store::make_private_dir(&folder)?;
-    crate::store::write_private(&path, text.as_bytes())?;
+    crate::store::write_private(&path, data)?;
     Ok(path)
 }
 

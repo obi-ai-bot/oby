@@ -1109,6 +1109,7 @@ mod tests {
             artifacts: vec![],
             routine: None,
             asked: None,
+            attachments: vec![],
         };
         Briefing {
             turns: vec![turn("user", "how is it going?"), turn("oby", "Fine.")],
@@ -1474,6 +1475,7 @@ mod tests {
                 artifacts: vec![],
                 routine: None,
                 asked: None,
+                attachments: vec![],
             })
             .collect();
         let text = briefing.text();
