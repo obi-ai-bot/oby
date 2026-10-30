@@ -556,7 +556,7 @@ struct WindowScreens {
         suite.set(true, forKey: Launch.everythingKey)
         suite.set(true, forKey: "ObySidebarOpen")
         suite.set(Double(Tokens.sidebar), forKey: "ObySidebarWidth")
-        let tetrixURL = URL(string: "https://tetrix.example.com/mcp")!
+        let dogfood = TetrixStatus.Server(preset: "dogfood", name: "Tetrix Dogfood", url: URL(string: "https://mcp.tetrix.dev/mcp")!)
         func account(_ id: String, _ agent: String, _ name: String, week: Double, jobs: Int, used: Int) -> AccountState {
             AccountState(account: Account(id: id, agent: agent, name: name, payer: "", home: nil), label: nil, sevenDay: week,
                          sevenDayResets: now + 3 * 86_400, tetrix: true, tetrixJobs: jobs, tetrixUsed: used, runnerSignedIn: true)
@@ -573,7 +573,8 @@ struct WindowScreens {
                                         saved: ["ses_8f2a"],
                                         gaps: .init(noResults: ["deskree-inc/tetrix-ee#398"], unknownFiles: ["src/graph/fixtures.ts"],
                                                     sent: now, session: "ses_c41d"))
-        model.feed.stage(tetrix: on ? TetrixStatus(connected: true, url: tetrixURL) : TetrixStatus(),
+        model.feed.stage(tetrix: on ? TetrixStatus(connected: true, url: dogfood.url, preset: "dogfood", presets: [dogfood])
+                                    : TetrixStatus(presets: [dogfood]),
                          lists: Connectors.Lists(plugins: [], connections: nil, gitHub: GitHubLogin(gh: true, signedIn: true, user: "you", signIn: nil)),
                          extras: ["r3": report])
         let state = ChatState()
@@ -608,7 +609,8 @@ struct WindowScreens {
                    models: ModelSettings(claude: ModelChoice(model: "claude-opus-5-5", effort: "xhigh"), codex: ModelChoice(model: "gpt-6.1-sol", effort: "high"),
                                          cursor: CursorModelChoice(model: "auto")),
                    options: ModelOptions(claude: .init(models: [], efforts: []), codex: .init(models: []), cursor: .init(models: [])))
-        feed.stage(tetrix: TetrixStatus(connected: true, url: URL(string: "https://tetrix.example.com/mcp")!),
+        let dogfood = TetrixStatus.Server(preset: "dogfood", name: "Tetrix Dogfood", url: URL(string: "https://mcp.tetrix.dev/mcp")!)
+        feed.stage(tetrix: TetrixStatus(connected: true, url: dogfood.url, preset: "dogfood", presets: [dogfood]),
                    lists: Connectors.Lists(plugins: [], connections: nil, gitHub: GitHubLogin(gh: true, signedIn: true, user: "you", signIn: nil)))
         let model = IslandModel(feed: feed, availability: MacAvailability())
         let state = ChatState(defaults: .scratch)

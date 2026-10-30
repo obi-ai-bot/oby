@@ -5,22 +5,28 @@ import Foundation
 /// connected and to which server, and the Mac opens Tetrix's own sign-in page in the browser. No
 /// token ever reaches them. Not on the gateway: the iPhone sees it through accounts and jobs.
 nonisolated struct TetrixStatus: Decodable, Equatable, Sendable {
-    /// The Tetrix obid signs in to: the MCP address the owner typed, named by its host. Oby has
-    /// no built-in Tetrix and no default: until the owner enters theirs, Oby runs without one.
-    struct Server: Equatable, Sendable, Identifiable {
+    /// A Tetrix obid can sign in to: a preset ("Tetrix Dogfood", by its id), or an address typed.
+    struct Server: Codable, Equatable, Sendable, Identifiable {
+        /// The preset's id, or nil for an address the owner typed.
+        var preset: String?
         var name: String
         var url: URL
         var id: URL { url }
+
+        private enum CodingKeys: String, CodingKey {
+            case preset = "id", name, url
+        }
     }
 
     /// What it does, as Sangam's Connectors says it.
     static let about = "Project knowledge and blast radius"
-    /// The row's line while no Tetrix has been entered yet.
-    static let notConfigured = "Not connected. Enter your Tetrix's MCP address: every agent on every account uses it, and you sign in once, on Tetrix's own page."
 
     var connected: Bool
-    /// The MCP server obid signed in to, or last tried; nil until the owner enters one.
+    /// The MCP server obid signed in to, or last tried; and its preset's id, or nil.
     var url: URL?
+    var preset: String?
+    /// What Settings offers first: "Tetrix Dogfood".
+    var presets: [Server]
     /// When the sign-in finished, or nil.
     var connectedAt: Date?
     /// The sign-in under way, or nil.
@@ -28,24 +34,28 @@ nonisolated struct TetrixStatus: Decodable, Equatable, Sendable {
     /// Why the last sign-in or refresh failed, in obid's words, or nil.
     var error: String?
 
-    private enum Keys: String, CodingKey { case connected, url, connectedAt, signIn, error }
+    private enum Keys: String, CodingKey { case connected, url, preset, presets, connectedAt, signIn, error }
 
-    init(connected: Bool = false, url: URL? = nil, connectedAt: Date? = nil, signIn: TetrixSignIn? = nil, error: String? = nil) {
-        (self.connected, self.url, self.connectedAt, self.signIn, self.error) = (connected, url, connectedAt, signIn, error)
+    init(connected: Bool = false, url: URL? = nil, preset: String? = nil, presets: [Server] = [], connectedAt: Date? = nil,
+         signIn: TetrixSignIn? = nil, error: String? = nil) {
+        (self.connected, self.url, self.preset, self.presets, self.connectedAt, self.signIn, self.error) = (connected, url, preset, presets, connectedAt, signIn, error)
     }
 
     init(from decoder: any Decoder) throws {
         let keys = try decoder.container(keyedBy: Keys.self)
         connected = (try? keys.decodeIfPresent(Bool.self, forKey: .connected)) ?? false
         url = try? keys.decodeIfPresent(URL.self, forKey: .url)
+        preset = try? keys.decodeIfPresent(String.self, forKey: .preset)
+        presets = (try? keys.decodeIfPresent([Server].self, forKey: .presets)) ?? []
         connectedAt = try? keys.decodeIfPresent(Date.self, forKey: .connectedAt)
         signIn = try? keys.decodeIfPresent(TetrixSignIn.self, forKey: .signIn)
         error = try? keys.decodeIfPresent(String.self, forKey: .error)
     }
 
-    /// The server it's signed in to or signing in to: the owner's address, by its host.
+    /// The server it's signed in to or signing in to: its preset, or the address by its host.
     var server: Server? {
-        url.map { Server(name: $0.host() ?? "Tetrix", url: $0) }
+        guard let url else { return nil }
+        return presets.first { $0.preset != nil && $0.preset == preset } ?? Server(preset: nil, name: url.host() ?? "Tetrix", url: url)
     }
 
     /// What the connector row shows (Sangam's Connectors: Connected, or Connect).
@@ -61,14 +71,15 @@ nonisolated struct TetrixStatus: Decodable, Equatable, Sendable {
         return .available
     }
 
-    /// "Signed in to tetrix.example.com. Every agent on every account uses it.", or what's under
-    /// way. A refresh obid couldn't do says so while it's still signed in. With no Tetrix entered
-    /// yet, it says to enter one: nothing is wrong, Oby just runs without Tetrix until then.
+    /// "Signed in to Tetrix Dogfood. Every agent on every account uses it.", or what's under way. A
+    /// refresh obid couldn't do says so while it's still signed in.
     var how: String {
         switch state {
         case .connected(let server): error ?? "Signed in to \(server.name). Every agent on every account uses it."
         case .signingIn(let server): "Signing in to \(server.name) in your browser…"
-        case .available: error ?? Self.notConfigured
+        case .available:
+            error ?? (presets.first.map { "\($0.name): every agent on every account uses it. You sign in once, on Tetrix's own page." }
+                      ?? "Every agent on every account uses it. You sign in once, on Tetrix's own page.")
         }
     }
 
@@ -80,11 +91,10 @@ nonisolated struct TetrixStatus: Decodable, Equatable, Sendable {
             && url.query() == nil && url.fragment() == nil
     }
 
-    /// The owner's Tetrix as typed, named by its host so the row says where it is; nil for text
-    /// that isn't an address obid takes.
+    /// Another Tetrix, named by its host so the row says where it is.
     static func custom(_ text: String) -> Server? {
         guard isServerURL(text), let url = URL(string: text.trimmingCharacters(in: .whitespaces)), let host = url.host() else { return nil }
-        return Server(name: host, url: url)
+        return Server(preset: nil, name: host, url: url)
     }
 }
 
@@ -239,10 +249,11 @@ extension Runner {
         }
     }
 
-    /// Starts signing obid in to `server`, by its address. A second one ends the one under way.
+    /// Starts signing obid in to `server`: a preset by its id, else its address. A second one ends
+    /// the one under way.
     func startTetrixSignIn(_ server: TetrixStatus.Server) async throws -> TetrixSignIn {
-        struct Body: Encodable { var url: URL }
-        return try await call("POST", "v1/tetrix/sign-in", body: Body(url: server.url))
+        struct Body: Encodable { var preset: String?; var url: URL? }
+        return try await call("POST", "v1/tetrix/sign-in", body: server.preset.map { Body(preset: $0) } ?? Body(url: server.url))
     }
 
     /// Ends the sign-in under way, if any.

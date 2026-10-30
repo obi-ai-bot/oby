@@ -643,8 +643,7 @@ struct ConnectorsSettingsView: View {
     @State private var confirming: Connector?
     /// The plug-in whose Connect asks for Tetrix's MCP URL, and the URL typed.
     @State private var asking: String?
-    /// "Connect…" and "Another Tetrix…" ask for the owner's Tetrix's MCP URL in the same field
-    /// (Oby has no built-in Tetrix).
+    /// "Another Tetrix…" asks for its MCP URL in the same field.
     @State private var askingTetrix = false
     /// The sign-in obid started, while its sheet waits for Tetrix's page.
     @State private var tetrixSignIn: ShownTetrixSignIn?
@@ -703,13 +702,13 @@ struct ConnectorsSettingsView: View {
             }
             .task { await waitForTetrix() }
         }
-        .alert("Your Tetrix", isPresented: $askingTetrix) {
+        .alert("Another Tetrix", isPresented: $askingTetrix) {
             TextField("MCP URL", text: $url, prompt: Text("https://"))
             Button("Connect") { if let server = TetrixStatus.custom(typedURL) { signInToTetrix(server, row: "tetrix") } }
                 .disabled(!TetrixStatus.isServerURL(typedURL))
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("Your Tetrix's MCP server address, starting with https://. You sign in on its own page, once, for every agent on \(feed.name).")
+            Text("Its MCP server's address, starting with https://. You sign in on its own page, once, for every agent on \(feed.name).")
         }
         .alert("Connect Tetrix", isPresented: Binding(get: { asking != nil }, set: { if !$0 { asking = nil } })) {
             TextField("MCP URL", text: $url, prompt: Text("https://"))

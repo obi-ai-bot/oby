@@ -67,48 +67,48 @@ struct ConnectorsTests {
         #expect(row?.how == "Signed in with Claude Code's own login: Personal, Deskree")
     }
 
-    /// The owner's own Tetrix, by its address: obid has no built-in one.
-    let own = TetrixStatus.Server(name: "tetrix.example.com", url: URL(string: "https://tetrix.example.com/mcp")!)
+    let dogfood = TetrixStatus.Server(preset: "dogfood", name: "Tetrix Dogfood", url: URL(string: "https://mcp.tetrix.dev/mcp")!)
 
-    /// Tetrix is one row, Sangam's "Tetrix", held by obid for every agent: not connected, it says to
-    /// enter the owner's Tetrix's address, with Connect… (no default, nothing broken); signing in,
-    /// Open the Page Again and Cancel; connected, Disconnect. No per-account rows, and obid's older
-    /// tetrix plug-in isn't listed beside it.
+    /// Tetrix is one row, Sangam's "Tetrix", held by obid for every agent: not connected, it names
+    /// "Tetrix Dogfood" with Connect and Another Tetrix…; signing in, Open the Page Again and Cancel;
+    /// connected, Disconnect. No per-account rows, and obid's older tetrix plug-in isn't listed beside it.
     @Test func tetrixOnceForEveryAgent() throws {
         var runner = Connectors.RunnerState(name: "This Mac", local: true, accounts: [], plugins: [plugin("tetrix", enabled: false, state: "disabled")])
-        runner.tetrix = TetrixStatus()
+        runner.tetrix = TetrixStatus(presets: [dogfood])
         let list = Connectors.list(accounts: [personal, deskree], runner: runner)
         #expect(list.filter { $0.about == Connectors.tetrixAbout }.map(\.id) == ["tetrix"])
         let ready = try #require(list.first { $0.id == "tetrix" })
         #expect(ready.name == "Tetrix" && ready.state == .available && ready.place == "This Mac" && ready.brand == "tetrix")
-        #expect(ready.how == "Not connected. Enter your Tetrix's MCP address: every agent on every account uses it, and you sign in once, on Tetrix's own page.")
-        #expect(ready.way == .button("Connect…", .connectOtherTetrix) && ready.also == nil)
+        #expect(ready.how == "Tetrix Dogfood: every agent on every account uses it. You sign in once, on Tetrix's own page.")
+        #expect(ready.way == .button("Connect", .connectTetrix(dogfood)) && ready.also == .button("Another Tetrix…", .connectOtherTetrix))
 
-        let signingIn = TetrixStatus(url: own.url,
-                                     signIn: TetrixSignIn(url: URL(string: "https://auth.example.com/authorize?x=1")!, server: URL(string: "https://auth.example.com")))
+        let signingIn = TetrixStatus(url: dogfood.url, preset: "dogfood", presets: [dogfood],
+                                     signIn: TetrixSignIn(url: URL(string: "https://auth.tetrix.dev/authorize?x=1")!, server: URL(string: "https://auth.tetrix.dev")))
         let signing = Connectors.tetrix(signingIn, place: "This Mac", local: true)
-        #expect(signing.state == .unconfirmed && signing.how == "Signing in to tetrix.example.com in your browser…")
+        #expect(signing.state == .unconfirmed && signing.how == "Signing in to Tetrix Dogfood in your browser…")
         #expect(signing.way == .button("Open the Page Again", .reopenTetrixSignIn) && signing.also == .button("Cancel", .cancelTetrixSignIn))
 
-        let connected = TetrixStatus(connected: true, url: own.url)
+        let connected = TetrixStatus(connected: true, url: dogfood.url, preset: "dogfood", presets: [dogfood])
         let on = Connectors.tetrix(connected, place: "This Mac", local: true)
-        #expect(on.state == .connected && on.name == "Tetrix" && on.how == "Signed in to tetrix.example.com. Every agent on every account uses it.")
+        #expect(on.state == .connected && on.name == "Tetrix" && on.how == "Signed in to Tetrix Dogfood. Every agent on every account uses it.")
         #expect(on.way == .button("Disconnect…", .disconnectTetrix) && on.also == nil)
 
-        // A failed sign-in says why, and asks for an address again.
-        let failed = Connectors.tetrix(TetrixStatus(error: "Tetrix refused the sign-in."), place: "This Mac", local: true)
+        // A failed sign-in says why; a runner that knows no server asks for one.
+        let failed = Connectors.tetrix(TetrixStatus(presets: [dogfood], error: "Tetrix refused the sign-in."), place: "This Mac", local: true)
         #expect(failed.state == .broken && failed.how == "Tetrix refused the sign-in.")
-        #expect(failed.way == .button("Connect…", .connectOtherTetrix) && failed.also == nil)
+        #expect(Connectors.tetrix(TetrixStatus(), place: "This Mac", local: true).way == .button("Connect…", .connectOtherTetrix))
 
         // A login obid couldn't refresh needs attention, with Reconnect, while it's still held; one
-        // Tetrix signed out reconnects to the same Tetrix, or another.
+        // Tetrix signed out reconnects to the same Tetrix.
         let refresh = "Oby couldn't refresh its Tetrix login: Tetrix's sign-in server answered HTTP 503. It tries again at the next call."
-        let stale = Connectors.tetrix(TetrixStatus(connected: true, url: own.url, error: refresh), place: "This Mac", local: true)
+        let stale = Connectors.tetrix(TetrixStatus(connected: true, url: dogfood.url, preset: "dogfood", presets: [dogfood], error: refresh),
+                                      place: "This Mac", local: true)
         #expect(stale.state == .broken && stale.how == refresh)
-        #expect(stale.way == .button("Reconnect", .connectTetrix(own)) && stale.also == .button("Disconnect…", .disconnectTetrix))
-        let out = Connectors.tetrix(TetrixStatus(url: own.url, error: "Tetrix signed Oby out: sign in again."), place: "This Mac", local: true)
+        #expect(stale.way == .button("Reconnect", .connectTetrix(dogfood)) && stale.also == .button("Disconnect…", .disconnectTetrix))
+        let out = Connectors.tetrix(TetrixStatus(url: dogfood.url, preset: "dogfood", presets: [dogfood], error: "Tetrix signed Oby out: sign in again."),
+                                    place: "This Mac", local: true)
         #expect(out.state == .broken && out.how == "Tetrix signed Oby out: sign in again.")
-        #expect(out.way == .button("Reconnect", .connectTetrix(own)) && out.also == .button("Another Tetrix…", .connectOtherTetrix))
+        #expect(out.way == .button("Reconnect", .connectTetrix(dogfood)) && out.also == .button("Another Tetrix…", .connectOtherTetrix))
     }
 
     /// Connect takes only what looks like each kind of token.
@@ -123,9 +123,9 @@ struct ConnectorsTests {
     /// that machine, so it's done there.
     @Test func aRemoteRunnersTetrixIsDoneThere() throws {
         var runner = lab()
-        for status in [TetrixStatus(),
-                       TetrixStatus(url: own.url, signIn: TetrixSignIn(url: URL(string: "https://tetrix.example.com/a")!, server: own.url)),
-                       TetrixStatus(connected: true, url: own.url)] {
+        for status in [TetrixStatus(presets: [dogfood]),
+                       TetrixStatus(url: dogfood.url, preset: "dogfood", signIn: TetrixSignIn(url: URL(string: "https://mcp.tetrix.dev/a")!, server: dogfood.url)),
+                       TetrixStatus(connected: true, url: dogfood.url, preset: "dogfood")] {
             runner.tetrix = status
             let row = try #require(Connectors.list(accounts: [], runner: runner).first { $0.id == "tetrix" })
             #expect(row.way == .steps("Connect or disconnect it on tetrix-lab itself, with Oby there: Tetrix's sign-in comes back to that machine.") && row.also == nil)
@@ -283,11 +283,11 @@ struct ConnectorsTests {
         let app = try #require(Connectors.list(accounts: [], runner: lab()).first { $0.id == "github" })
         #expect(app.connected && app.tip.contains("OBY_GITHUB_APP_ID"))
         var runner = lab()
-        runner.tetrix = TetrixStatus(connected: true, url: own.url)
+        runner.tetrix = TetrixStatus(connected: true, url: dogfood.url, preset: "dogfood")
         let tetrix = try #require(Connectors.list(accounts: [], runner: runner).first { $0.id == "tetrix" })
         #expect(tetrix.connected && tetrix.tip.hasSuffix("Connect or disconnect it on tetrix-lab itself, with Oby there: Tetrix's sign-in comes back to that machine."))
         // A row with a button keeps it in the context menu, so the tooltip is only how it's signed in.
-        let local = Connectors.tetrix(TetrixStatus(connected: true, url: own.url), place: "This Mac", local: true)
+        let local = Connectors.tetrix(TetrixStatus(connected: true, url: dogfood.url, preset: "dogfood"), place: "This Mac", local: true)
         #expect(local.tip == local.how)
         #expect(Connectors.list(accounts: [], runner: nil).first { $0.id == "zoom" }?.tip == "Oby can't connect Zoom yet.")
     }
