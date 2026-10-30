@@ -1,8 +1,10 @@
 import { useSyncExternalStore } from 'react';
 
 // The working folders a conversation's work is in (the message box's Select working folder…,
-// the Mac's own picker: main's pick-folders), by conversation, remembered across launches. obid
-// takes none yet (Wellington decides how: asked 2026-10-28), so for now they're the app's only.
+// the Mac's own picker: main's pick-folders), by conversation. Once obid takes them (its status
+// says folders: true, docs/contracts/folders.md) they're obid's: shown from its conversations
+// (live.ts: takeFolders) and changed there (PATCH, sendFoldersBy). An older obid takes none, and
+// the app keeps them itself, remembered across launches.
 const KEY = 'oby.folders';
 // (only lists of paths: anything else that's there is dropped rather than trusted)
 const paths = (x: unknown): string[] => (Array.isArray(x) ? x.filter((p): p is string => typeof p === 'string') : []);
@@ -23,7 +25,15 @@ export const foldersOf = (conversation: string) => all[conversation] ?? NONE;
 // knows), so the next launch finds them there; still unnamed, they're kept this launch only
 let realOf = (id: string) => id;
 export const nameFoldersBy = (f: (id: string) => string) => { realOf = f; };
+// obid's (live.ts): a conversation's new folders sent to obid, when it takes folders and knows the
+// conversation (else nothing: undefined), settled once obid answered; its answer comes back
+// through takeFolders. A change it refuses is said (report).
+let send: (conversation: string, folders: string[]) => Promise<unknown> | undefined = () => undefined;
+let report: (e: unknown) => void = () => {};
+export const sendFoldersBy = (f: typeof send, r: typeof report) => { send = f; report = r; };
+let obidKeeps = false;
 export function saveFolders() {
+  if (obidKeeps) return;
   const kept: Record<string, string[]> = {};
   for (const [c, f] of Object.entries(all)) {
     const id = c.startsWith('new:') ? realOf(c) : c;
@@ -32,6 +42,8 @@ export function saveFolders() {
   try { localStorage.setItem(KEY, JSON.stringify(kept)); } catch { /* this launch only, that's all */ }
 }
 export function setFolders(conversation: string, folders: string[]) {
+  const sent = send(conversation, folders);
+  if (sent) return void sent.catch(report);
   all = { ...all, [conversation]: folders };
   if (!folders.length) delete all[conversation];
   saveFolders();
@@ -45,6 +57,46 @@ export function keepFoldersOf(conversations: Set<string>) {
   all = Object.fromEntries(Object.entries(all).filter(([c]) => !gone.includes(c)));
   saveFolders();
   listeners.forEach((l) => l());
+}
+// The folders of `conversation` obid refused of `folders`: all of them sent at once, else (one
+// refused fails the whole change) one at a time, so every folder obid takes moves
+async function moved(conversation: string, folders: string[]): Promise<string[]> {
+  const tries = async (f: string[]) => {
+    const sent = send(conversation, f);
+    if (!sent) return false;
+    try { await sent; return true; } catch { return false; }
+  };
+  if (await tries(folders)) return [];
+  const took: string[] = [], refused: string[] = [];
+  for (const f of folders) (await tries([...took, f]) ? took : refused).push(f);
+  return refused;
+}
+// obid's folders for every conversation it lists, by the app's id, whenever they may have changed:
+// they replace the app's own. The first time, folders the app kept for a conversation obid has none
+// for are sent to it; the app's copy goes once they're all there, and keeps only what obid refused
+// (tried again at the next launch). The recent list stays the app's. Settles once they're sent.
+let taken = '';
+export function takeFolders(byConversation: Record<string, string[]>, storage: Storage = localStorage): Promise<void> {
+  let moving = Promise.resolve();
+  if (!obidKeeps) {
+    obidKeeps = true;
+    const kept = Object.entries(all).filter(([c, f]) => !c.startsWith('new:') && f.length && !byConversation[c]?.length);
+    moving = Promise.all(kept.map(async ([c, f]) => [c, await moved(c, f)] as const)).then((results) => {
+      const refused = results.filter(([, f]) => f.length);
+      try {
+        if (refused.length) storage.setItem(KEY, JSON.stringify(Object.fromEntries(refused)));
+        else storage.removeItem(KEY);
+      } catch { /* kept as it was */ }
+    });
+  }
+  const seen = JSON.stringify(byConversation);
+  if (seen === taken) return moving;
+  taken = seen;
+  // (one started here and not yet named keeps the folders it was given)
+  const unnamed = Object.entries(all).filter(([c]) => c.startsWith('new:') && !(c in byConversation));
+  all = Object.fromEntries([...unnamed, ...Object.entries(byConversation).filter(([, f]) => f.length)]);
+  listeners.forEach((l) => l());
+  return moving;
 }
 export const useFolders = (conversation?: string) => useSyncExternalStore(subscribe, () => (conversation ? foldersOf(conversation) : NONE));
 

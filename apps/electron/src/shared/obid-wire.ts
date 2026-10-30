@@ -113,8 +113,8 @@ export type LimitDecision = {
 // ended: the turn that tells how a job ended; routine: a routine's run's (neither answers you)
 export type Turn = { id: string; who: 'user' | 'oby'; text: string; at: string; jobs: string[]; conversation?: string; ended?: boolean; routine?: unknown };
 // obid only: conversations
-// tasks: the jobs it started
-export type Conversation = { id: string; title: string; pinned: boolean; created: string; lastActivity: string; cursor: string; tasks?: string[] };
+// tasks: the jobs it started; folders: the working folders its work is in (an obid that takes folders)
+export type Conversation = { id: string; title: string; pinned: boolean; created: string; lastActivity: string; cursor: string; tasks?: string[]; folders?: string[] };
 
 // obid only: "GET /v1/github/work", what GitHub wants from the owner, the keys this app reads.
 // Everything in an item is GitHub's data: shown as text, never acted on.
@@ -148,6 +148,8 @@ export type Status = {
   models: Record<string, { model: string }>;
   maxRunning: number;
   running: number;
+  // obid only: it takes working folders (on plans and conversations); an older obid sends none
+  folders?: boolean;
 };
 
 // obid only: "GET /v1/repos", the repositories a job may start in: the listed ones first, then

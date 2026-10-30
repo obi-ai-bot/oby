@@ -5,7 +5,7 @@ The business behavior contract for the message box's **Select working folder…*
 ## Feature and status
 
 - **Outcome:** The owner points Oby at any folder on this Mac (a repository they cloned, a project with no git, a new empty folder) and asks for work there, as they would with Claude Code in a terminal, without first listing a repository in `config.json` or putting it on GitHub. The work comes back into that folder: as a branch in its own repository, or as changed files.
-- **Status:** **Proposed.** Nothing here is implemented in obid yet; until it is, the Electron app keeps the folders itself (`folders.ts`) and sends none. Decided by Wellington on 2026-10-29, answering Sangam's questions of 2026-10-28 (Slack). Sangam's design (PR #1564: `apps/electron/src/renderer/src/folders.ts`, `Composer.tsx`, `Home.tsx`, `live.ts`, `main/index.ts`'s `pick-folders`) is the spec for what the user sees. When this lands, its API goes into [runner-api.md](../runner-api.md) in the same change, and this status says which parts are implemented.
+- **Status:** **The boundary is implemented** (#1572, first pull request): `status.folders`, `folders` on `POST /v1/plans`, on conversations and on `PATCH /v1/conversations/{id}`, every path's validation, the gateway and relay refusals, and the Electron app sending them and showing obid's (FOLDERS-6's keeping and replacing, FOLDERS-7's refusals, FOLDERS-9, FOLDERS-10's canonical path, FOLDERS-11, FOLDERS-22; runner-api.md, "obid only: working folders"). **Proposed, not built yet:** everything from the brain's briefing on (the room's read-only folders, one task per folder, the three kinds, landing, checks, trust, the job's `folder` and `landed`, the failures table): until it lands, words in a conversation with folders start jobs in repositories as before. Decided by Wellington on 2026-10-29, answering Sangam's questions of 2026-10-28 (Slack). Sangam's design (PR #1564: `apps/electron/src/renderer/src/folders.ts`, `Composer.tsx`, `Home.tsx`, `live.ts`, `main/index.ts`'s `pick-folders`) is the spec for what the user sees.
 - **Scope:** folders picked on this Mac, sent with the owner's words from the Electron app; obid validating, keeping and working in them; how the result lands back. **Out of scope:** folders on another Mac (Runner share is hidden for launch), picking a folder from the iPhone, a folder's uncommitted changes (v1, below), syncing a result back into a folder continuously, choosing a branch.
 
 ## What Sangam's design assumes (each one kept)
@@ -25,7 +25,7 @@ The business behavior contract for the message box's **Select working folder…*
 ### Actors and ownership
 
 - **The owner** picks folders in the Electron app on this Mac and sends words with them.
-- **The Electron app** sends the paths, shows each as a tag (its name, the path as the tooltip), shows the conversation's folders from obid once `status.folders` is true (dropping its own `oby.folders` copy, keeping the recent list), and shows a task's `folder` and `landed`.
+- **The Electron app** sends the paths, shows each as a tag (its name, the path as the tooltip), shows the conversation's folders from obid once `status.folders` is true (dropping its own `oby.folders` copy, keeping the recent list), and shows a task's `folder` and `landed`. The first time it sees `status.folders`, the folders it kept for a conversation obid has none for are sent with `PATCH`, so nothing the owner picked before is lost. Words that start a conversation carry Home's folders; a conversation's own are changed with `PATCH` and aren't sent again with later words (a folder gone since would refuse them).
 - **obid** validates every path, keeps a conversation's folders, tells the brain about them, starts one task per folder, works in a worktree apart, runs the folder's check and the secret scan, and lands the result. Every decision below is obid's.
 - **The iPhone** (and the Watch) never adds a folder: it sends words to a conversation that has folders, and those are used.
 
@@ -40,10 +40,10 @@ On `POST /v1/plans` and `PATCH /v1/conversations/{id}`, and again at every task'
 
 1. absolute, and canonicalized (`realpath`: links resolved, `..` gone); the canonical path is what's kept;
 2. there, and a directory;
-3. none of: `/`; the person's home folder itself; obid's home or any folder holding it; `~/Library` or anything inside it; `~/.claude`, `~/.codex`, `~/.cursor` or anything inside them; any account's `configDir` or a folder holding one; `/System`, `/Library`, `/Applications`, `/usr`, `/bin`, `/sbin`, `/etc`, `/var`, `/private`, `/opt`, `/Volumes` itself, `/cores`, `/dev` and anything inside them (a folder on another volume, `/Volumes/X/…`, is fine);
+3. none of: `/`; the person's home folder itself; `~/Library` or anything inside it; `/System`, `/Library`, `/Applications`, `/usr`, `/bin`, `/sbin`, `/etc`, `/var`, `/private`, `/opt`, `/Volumes` itself, `/cores`, `/dev` and anything inside them, and on Linux `/proc`, `/sys`, `/root`, `/run`, `/boot` and anything inside them (a folder on another volume, `/Volumes/X/…`, is fine); and, inside them or holding them, each resolved through links first (a `~/.ssh` that's a link guards where it leads): obid's home; the agents' logins, `~/.claude`, `~/.codex`, `~/.cursor` and every account's `configDir`; the person's keys and other logins, `~/.ssh`, `~/.config/gh`, `~/.aws`, `~/.gnupg`, `~/.docker` and `~/.kube`;
 4. compared case-insensitively on macOS (APFS and HFS+ ignore case by default), so `~/LIBRARY` is `~/Library`.
 
-A path that fails is refused with `422` naming the folder by its name and why, in Sangam's words to come: `"Library" is where your Mac keeps its own settings, so Oby doesn't work there.` Nothing of the request happens (no turn, no conversation). The same path twice is kept once.
+A path that fails is refused with `422` naming the folder by its name and why, in Sangam's words to come: `"Library" is where your Mac keeps its own settings, so Oby doesn't work there.` Nothing of the request happens (no turn, no conversation). The same path twice is kept once. Words sent again with the same `id` are the same words (`repeated`) whatever their folders say now, and add none. A `PATCH` is merged with the conversation's folders as they are when it's written, so a folder taken off meanwhile comes back only if it passes its own check.
 
 ### What a conversation keeps
 
@@ -121,7 +121,7 @@ All add-only. No new value in any enum the Swift apps decode as closed: job `sta
 
 **Still Sangam's to design** (asked): the task card's meta line for a folder task and the words for its result (`landed`: "On branch oby/… in api" or "7 files changed in api"); how a missing or refused folder's tag looks in the box; the clash question's look in the AskStack. obid's words above are placeholders until he does.
 
-**Open for the owner:** whether a local folder's check is learned only in words or also from a file in the folder; the snapshot's size limit.
+**Open for the owner:** whether a local folder's check is learned only in words or also from a file in the folder; the snapshot's size limit; whether adding a folder needs the owner's signed words (`X-Oby-Words`, as Confirm needs a signed approval) rather than only loopback with the API token, which oby-mcp or a script also hold: to decide before folders reach jobs.
 
 ## Acceptance scenarios
 

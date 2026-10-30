@@ -57,6 +57,9 @@ struct Request {
     /// ignored, since every job runs on this Mac now.
     #[serde(rename = "runsOn")]
     _runs_on: Option<serde::de::IgnoredAny>,
+    /// Folders on this Mac the conversation works in from now on (crate::folders): absolute paths,
+    /// added to those it has. Only from the owner's Mac app: refused through the gateway or relay.
+    folders: Option<Vec<String>>,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -75,6 +78,8 @@ pub async fn plan(
     State(shared): State<Arc<Shared>>,
     uri: axum::http::Uri,
     headers: axum::http::HeaderMap,
+    paired: Option<axum::Extension<crate::gateway::PairedDevice>>,
+    relayed: Option<axum::Extension<crate::gateway::Relayed>>,
     body: Bytes,
 ) -> Result<Response, ApiError> {
     let req: Request = serde_json::from_slice(&body)
@@ -103,6 +108,15 @@ pub async fn plan(
         req.attachments.as_deref().unwrap_or(&[]),
     )?;
     let jobs = attached_jobs(&shared, req.jobs.unwrap_or_default())?;
+    // An empty list is none. The verdict waits for the conversations' lock (begin): words sent
+    // again with the same id are a repeat, whatever their folders.
+    let folders = match req.folders.filter(|f| !f.is_empty()) {
+        None => Ok(vec![]),
+        Some(_) if paired.is_some() || relayed.is_some() => {
+            Err("Folders are added only on the Mac.".to_owned())
+        }
+        Some(asked) => crate::folders::checked(&crate::folders::Places::of(&shared), &asked),
+    };
     // Left out, a request joins the latest conversation, as it did when there was only one: the
     // apps from before #493 send none and show one thread.
     let target = match (req.conversation, req.new.unwrap_or(false)) {
@@ -123,6 +137,10 @@ pub async fn plan(
     // A bare "never mind", "stop" or "cancel" never reaches the brain: it stops the turn under
     // way, after the action it's doing, and is answered with nothing (no job stops on a word).
     if req.answer.is_none() && turn::cancels(words) {
+        // Refused folders: nothing of the request happens, a stop neither.
+        if let Err(why) = &folders {
+            return Err(ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, why.clone()));
+        }
         // The turn under way in the conversation the words name, else in the latest one; words
         // that start a new conversation have no turn to stop.
         let underway = match &target {
@@ -171,9 +189,10 @@ pub async fn plan(
     } else {
         None
     };
-    let begun = shared
-        .conversations
-        .begin(target, said.clone(), jobs.clone(), id, foreign)?;
+    let begun =
+        shared
+            .conversations
+            .begin(target, said.clone(), jobs.clone(), id, foreign, folders)?;
     // An answer to a question Oby asked elsewhere (the Watch answers in the latest conversation)
     // brings that conversation's words here.
     if let Some((question, option)) = &question
