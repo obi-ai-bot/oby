@@ -4,10 +4,9 @@ import { addTask } from './tasks';
 import { wait } from './stream';
 import { onObid } from './lean';
 import { CAN_CREATE } from './spheres';
-import { api } from './obid';
+import { ApiError, api, type TetrixTarget } from './obid';
 import { ask, liveState, say, useLive } from './live';
-import { tetrixUrl, tetrixUrlProblem } from '../../shared/tetrix-url';
-import type { Agent, SetupStep } from './mock';
+import { AGENTS, type Agent, type SetupStep } from './mock';
 
 // Setting up, in Oby's first conversation: no wizard, Oby talks you through it
 // (as Grok Bot and OpenMausBot do). Oby says what it found and what's next, a
@@ -33,17 +32,17 @@ export type Setup = {
   agents: Record<Agent, Sign>;
   github: Sign;
   tetrix: Sign;
-  tetrixUrl?: string;   // the Tetrix Oby is signed in to (or signing in to): the address the person gave
   sphere: Tour;
   member?: string;      // in the sample: whose conversation is showing (or Knowledge)
   call?: string;        // in the sample: who's called next (or Knowledge)
   at: SetupStep | null; // the step waiting on your pick
   codes: Partial<Record<Agent | 'github', Code>>;
+  problems: Partial<Record<Agent, string>>; // why an agent's last sign-in didn't take, till the next try
   githubUser?: string;
 };
 let setup: Setup = {
   found: 0, agents: onObid ? { claude: 'out', codex: 'out', cursor: 'out' } : { claude: 'in', codex: 'in', cursor: 'out' },
-  github: 'out', tetrix: 'out', sphere: 'off', at: null, codes: {},
+  github: 'out', tetrix: 'out', sphere: 'off', at: null, codes: {}, problems: {},
 };
 const listeners = new Set<() => void>();
 const set = (fn: (s: Setup) => Partial<Setup>) => { setup = { ...setup, ...fn(setup) }; listeners.forEach((l) => l()); };
@@ -83,40 +82,87 @@ const failed = (e: unknown, back: () => void) => { back(); say(e); };
 
 // An agent: its login already on this Mac becomes an account (availableLogins); else an account
 // of its own, signed in with the tool's own login on its page. obid's `accounts` event says when
-// it's in.
-const attempts: Partial<Record<Agent, number>> = {};
+// it's in. One that doesn't take (its page closed, an error) puts Connect back with why under it
+// (problems); Cancel (cancelAgent) puts it back with nothing said.
+// (a try: the account it signs in, and the one it made for that, if it did)
+type Try = { account?: string; made?: string };
+const tries: Partial<Record<Agent, Try>> = {};
+// a try ended: its sign-in ended at obid, and the account it made taken off again, so only what
+// was connected shows in Settings › Agents (awaited before the row's button is back: a retry
+// straight after mustn't find it and sign it in)
+async function unmake(t: Try) {
+  if (t.account) await api.endSignIn(t.account).catch(() => { /* ended already */ });
+  if (t.made) await api.removeAccount(t.made).catch(() => { /* still there: Settings shows it signed out */ });
+}
+// the row's button again, with why if it failed
+const back = (a: Agent, why?: string) => set((x) => ({ ...agentSign(a, 'out'), codes: { ...x.codes, [a]: undefined }, problems: { ...x.problems, [a]: why } }));
+const reason = (e: unknown) => (e instanceof Error ? e.message : String(e));
 export async function signInAgent(a: Agent) {
   if (!onObid) return signIn((s) => s.agents[a], (v) => agentSign(a, v));
   if (setup.agents[a] !== 'out' || signedIn(a)) return;
-  const mine = (attempts[a] = (attempts[a] ?? 0) + 1);
-  set(() => agentSign(a, 'waiting'));
+  // (one before it still being undone: undone first)
+  const old = tries[a];
+  const t: Try = {};
+  tries[a] = t;
+  // (cancelled meanwhile: what this try started is ended)
+  const gone = () => tries[a] !== t;
+  set((x) => ({ ...agentSign(a, 'waiting'), problems: { ...x.problems, [a]: undefined } }));
   try {
+    if (old) await unmake(old);
     const s = liveState().status;
-    if (s?.availableLogins?.some((l) => l.agent === a)) {
-      await api.addAccount({ agent: a, default: true });
+    // its own login on this Mac, not an account yet: adopted; signed out (expired), there's no page
+    // of Oby's to open, the tool signs in itself
+    const own = s?.availableLogins?.find((l) => l.agent === a && !s.accounts.some((x) => x.id === l.id));
+    if (own) {
+      const account = await api.addAccount({ agent: a, default: true });
+      if (gone()) return;
+      if (!account.signedIn) { delete tries[a]; return back(a, account.label ?? `Sign in with ${AGENTS[a].name} itself on this Mac, then Connect again.`); }
     } else {
-      const account = s?.accounts.find((x) => x.agent === a)?.id ?? (await api.addAccount({ agent: a, name: 'Personal' })).id;
-      const page = await api.signIn(account);
-      set((x) => ({ codes: { ...x.codes, [a]: { userCode: page.userCode, paste: page.pasteCode ? account : undefined } } }));
+      t.account = s?.accounts.find((x) => x.agent === a)?.id ?? (t.made = (await api.addAccount({ agent: a, name: 'Personal' })).id);
+      if (gone()) return void unmake(t);
+      const page = await api.signIn(t.account);
+      if (gone()) return void unmake(t);
       open(page.url);
+      set((x) => ({ codes: { ...x.codes, [a]: { userCode: page.userCode, paste: page.pasteCode ? t.account : undefined } } }));
     }
-    // a login that didn't take (its page closed, an expired login adopted): the button again,
-    // unless a later try took over
-    if (!(await until(async () => signedIn(a) || attempts[a] !== mine))) set((x) => ({ ...agentSign(a, 'out'), codes: { ...x.codes, [a]: undefined } }));
+    // (a code, even none: under way, so Cancel is on)
+    set((x) => ({ codes: { ...x.codes, [a]: x.codes[a] ?? {} } }));
+    const done = await until(async () => signedIn(a) || gone());
+    if (gone()) return;
+    delete tries[a];
+    // signed in: obid says so (useSetup); the row's own state back to rest under that
+    if (done) set((x) => ({ ...agentSign(a, 'out'), codes: { ...x.codes, [a]: undefined } }));
+    else { await unmake(t); back(a, 'Didn’t finish signing in. Try again.'); }
   } catch (e) {
-    failed(e, () => set(() => agentSign(a, 'out')));
+    // (cancelled: Cancel undid it)
+    if (gone()) return;
+    delete tries[a];
+    await unmake(t);
+    back(a, reason(e));
   }
 }
-// Claude Code's code, pasted from its page
+// Cancel, while its page is open
+export async function cancelAgent(a: Agent) {
+  const t = tries[a];
+  delete tries[a];
+  if (t) await unmake(t);
+  back(a);
+}
+// Claude Code's code, pasted from its page: while it goes, the field steps aside (Cancel stays).
+// Refused (422): that sign-in is over, Connect again for a new link. No answer in time (504) or
+// a code sent already (409): it may still sign in, so it waits on, till its page runs out or Cancel
+// (as Settings' sendCode)
 export async function sendAgentCode(a: Agent, code: string) {
-  const account = setup.codes[a]?.paste;
+  const c = setup.codes[a], account = c?.paste, t = tries[a];
   if (!account || !code.trim()) return;
+  set((x) => ({ codes: { ...x.codes, [a]: { ...c, paste: undefined } } }));
   try {
     await api.signInCode(account, code.trim());
-    set((x) => ({ codes: { ...x.codes, [a]: undefined } }));
   } catch (e) {
-    // the sign-in ended: start again for a new link
-    failed(e, () => set((x) => ({ ...agentSign(a, 'out'), codes: { ...x.codes, [a]: undefined } })));
+    if (!t || tries[a] !== t || !(e instanceof ApiError && e.status === 422)) return;
+    delete tries[a];
+    await unmake(t);
+    back(a, reason(e));
   }
 }
 
@@ -140,17 +186,14 @@ export async function signInGitHub() {
     failed(e, () => set(() => ({ github: 'out' })));
   }
 }
-// Tetrix: Oby signs in once, for every agent, to the Tetrix whose address the person typed (Oby
-// has no built-in Tetrix and no default; shared/tetrix-url.ts says what an address is); its page
-// in the browser. Skipped, Oby runs without Tetrix until one is entered in Settings › Connectors.
-export async function connectTetrix(address: string) {
-  if (tetrixUrlProblem(address)) return;
-  const url = tetrixUrl(address);
-  if (!onObid) return signIn((s) => s.tetrix, (tetrix) => ({ tetrix, tetrixUrl: url }));
-  if (setup.tetrix !== 'out') return;
-  set(() => ({ tetrix: 'waiting', tetrixUrl: url }));
+// Tetrix: Oby signs in once, for every agent, to the Tetrix the person picked in Connect Tetrix
+// (Connectors' TetrixWindow: their own's address; Oby has none built in); its page in the browser
+export async function connectTetrix(to?: TetrixTarget) {
+  if (!onObid) return signIn((s) => s.tetrix, (tetrix) => ({ tetrix }));
+  if (!to || setup.tetrix !== 'out') return;
+  set(() => ({ tetrix: 'waiting' }));
   try {
-    open((await api.tetrixSignIn({ url })).url);
+    open((await api.tetrixSignIn(to)).url);
     if (!(await until(async () => (await api.tetrix()).connected, 10))) set(() => ({ tetrix: 'out' }));
     else set(() => ({ tetrix: 'in' }));
   } catch (e) {
@@ -162,10 +205,7 @@ export async function connectTetrix(address: string) {
 async function already() {
   if (!onObid) return;
   const [g, t] = await Promise.all([api.github().catch(() => null), api.tetrix().catch(() => null)]);
-  set(() => ({
-    ...(g?.signedIn ? { github: 'in' as const, githubUser: g.user ?? undefined } : {}),
-    ...(t?.connected ? { tetrix: 'in' as const, tetrixUrl: t.url ?? undefined } : {}),
-  }));
+  set(() => ({ ...(g?.signedIn ? { github: 'in' as const, githubUser: g.user ?? undefined } : {}), ...(t?.connected ? { tetrix: 'in' as const } : {}) }));
 }
 
 // your pick on the step waiting: it goes in as your words, and Oby carries on.
@@ -196,6 +236,19 @@ const choose = (step: SetupStep, idle?: string) => new Promise<string>((r) => {
 export const typedFirst = (text: string) => setup.at === 'first' && !!text.trim() && (pick(text.trim()), true);
 
 export const FIRST_TASK = 'Find a small bug in obi and fix it';
+
+// The new onboarding's agents step (FirstRun.tsx): how each tool really stands, at once (no
+// staged looking). On obid, once it answers (setting up opens before it has): until then each
+// row shows a spinner
+// (one search at a time: a newer one, the step opened again, ends the one before)
+let searches = 0;
+export async function findAgents() {
+  const mine = ++searches;
+  set(() => ({ found: 0 }));
+  while (onObid && !liveState().status) { await wait(250); if (mine !== searches) return; }
+  void already();
+  set(() => ({ found: 3 }));
+}
 
 let started = false;
 // open: show a conversation (Home's), for the first task's own on obid

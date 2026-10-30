@@ -1,5 +1,5 @@
 import { useEffect, useId, useRef, useState } from 'react';
-import { ObyFace } from './ObyFace';
+import { OBY_PATH, OBY_PLACE, ObyFace } from './ObyFace';
 
 // Oby's face in a conversation while it works: the flat face doing what the
 // mascot's Loading does (oby/oby.html), in 2D. It spins round as it shrinks into
@@ -37,10 +37,11 @@ const KEYS: [number, Partial<Record<Name, number>>, Preset][] = [
 // words land it comes back (QUICK, or Sangam's full spin from WRAP_UP), and is
 // done after the last key, once settled
 const WRAP_UP = 4.0;
-// Oby starting to talk: the dots spring back into the face in about 250ms, facing
-// you, instead of the full spin. The control center's (dev only), to compare:
-// fullSpin, Sangam's spin; the balloon as three dots, or none. Read as Oby next talks.
-export const dev = { fullSpin: false, balloon: 'gx' as 'gx' | 'dots' | 'off' };
+// Sangam's (2026-10-27): as his design has it, the full spin back from the dots
+// and no balloon. The quick return (the dots springing back into the face in about
+// 250ms) and the balloon stay, to compare in the control center (dev only).
+// Read as Oby next talks.
+export const dev = { fullSpin: true, balloon: 'off' as 'gx' | 'dots' | 'off' };
 const QUICK: typeof KEYS = [
   [0, { dBounce: 0, dSpread: 0, sq: 1 }, 'fast'],  // the dots run together
   [0.05, { scale: 1, inflate: 0.17 }, 'fast'],  // and spring back into the face
@@ -55,7 +56,7 @@ const QUICK: typeof KEYS = [
 const GX = ['@!#?@!', '#$!%?', '?@*!#', '%!&?!', '!?#@$'];  // all fit its fixed width
 const SAY = { at: 120, glyph: 480, hold: 1400, linger: 800, out: 480 };
 
-// The face in its 24-unit square (as ObyFace): body 21 × 16.5 centred here
+// The face in its 24-unit square (as ObyFace): the rounding square it puffs into, 21 × 16.5, centred here
 const CX = 12, CY = 14.25;
 // the dots, in the mascot's proportions to its body: 0.4 apart, 0.1 across
 const GAP = 8.4, DOT_R = 2.1, HOP = 3;
@@ -66,7 +67,9 @@ type Spring = { v: number; vel: number; to: number; k: number; c: number };
 
 // talk: Oby's words coming in (their length; each change is a word); undefined once they stop.
 // While its balloon's up the face talks; at work (working) it's the dots again once that's down
-export default function ObyFaceLive({ live: working, talk, size = 22 }: { live: boolean; talk?: number; size?: number }) {
+export default function ObyFaceLive({ live: working, talk: words, size = 22 }: { live: boolean; talk?: number; size?: number }) {
+  // no balloon: Oby doesn't talk, its face just comes back from its dots
+  const talk = dev.balloon === 'off' ? undefined : words;
   // the balloon: off; in (there, closed, about to grow); open; out (deflating)
   const [say, setSay] = useState<'off' | 'in' | 'open' | 'out'>('off');
   const live = working && say === 'off';
@@ -120,7 +123,7 @@ export default function ObyFaceLive({ live: working, talk, size = 22 }: { live: 
     if (!active || still) return;
     const root = svg.current!;
     const q = (s: string) => root.querySelector(s) as SVGElement;
-    const body = q('[data-body]'), shape = q('[data-shape]'), ears = q('[data-ears]'), eyes = q('[data-eyes]');
+    const body = q('[data-body]'), shape = q('[data-shape]'), outline = q('[data-outline]'), eyes = q('[data-eyes]');
     const blob = q('[data-goo]');
     const dots = [...root.querySelectorAll('[data-dot]')] as SVGCircleElement[];
 
@@ -153,8 +156,11 @@ export default function ObyFaceLive({ live: working, talk, size = 22 }: { live: 
       shape.setAttribute('x', String(CX - w / 2)); shape.setAttribute('y', String(CY - h / 2));
       shape.setAttribute('width', String(w)); shape.setAttribute('height', String(h));
       shape.setAttribute('rx', String(lerp(5, 8.5, b)));
-      // the ears fold down into the ball
-      ears.setAttribute('transform', `translate(0 6.6) scale(1 ${1 - b}) translate(0 -6.6)`);
+      // Oby's own outline (its ears in its shoulders) gives way to the rounding
+      // square as it puffs up into the ball, early on, while it's turning edge-on
+      const ball = clamp01(b * 4);
+      outline.setAttribute('opacity', String(1 - ball));
+      shape.setAttribute('opacity', String(ball));
       // eyes: only on the front, and gone as it melts
       eyes.setAttribute('opacity', String(clamp01(cos * 3) * (1 - melt)));
       // the dots, bunched up bigger so together they fill the ball they came from
@@ -226,10 +232,8 @@ export default function ObyFaceLive({ live: working, talk, size = 22 }: { live: 
       </defs>
       <g data-goo="" fill="#f1f1ee">
         <g data-body="">
-          <g data-ears="" stroke="#f1f1ee" strokeWidth="1.2" strokeLinejoin="round">
-            <path d="M5 6.6 L7.9 3.6 L8.9 6.6 Z" /><path d="M19 6.6 L16.1 3.6 L15.1 6.6 Z" />
-          </g>
-          <rect data-shape="" x="1.5" y="6" width="21" height="16.5" rx="5" />
+          <path data-outline="" d={OBY_PATH} transform={OBY_PLACE} />
+          <rect data-shape="" x="1.5" y="6" width="21" height="16.5" rx="5" opacity="0" />
         </g>
         <circle data-dot="" cx={CX} cy={CY} r="0" /><circle data-dot="" cx={CX} cy={CY} r="0" /><circle data-dot="" cx={CX} cy={CY} r="0" />
       </g>

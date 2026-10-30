@@ -34,7 +34,7 @@ Before the redesign, in three tabs (Home, Chat, Settings); all of it still works
   ```
 
 - **Tests:** `iOSTests`, with `xcodebuild … -scheme ObyPhone -destination '<an iOS 27 simulator>' test`.
-- **Reaching the runner:** the iPhone needs Tailscale on. The default runner is `https://tetrix-lab.tail8de49b.ts.net:8443`, and it answers only its owner's Tailscale login.
+- **Reaching the runner:** the iPhone needs Tailscale on. There is no default runner: set its address (`https://<the runner's tailnet name>:8443`), and it answers only its owner's Tailscale login.
 
 ## Signing and TestFlight
 

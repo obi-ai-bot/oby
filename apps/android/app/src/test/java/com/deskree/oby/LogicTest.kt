@@ -13,9 +13,9 @@ class LogicTest {
     private fun job(json: String) = wire.decodeFromString(Job.serializer(), json)
 
     @Test fun anInvitationMustPointAtTheMacItNames() {
-        val good = """{"url":"https://mac.tail8de49b.ts.net:8443","link":{"name":"Wellington's MacBook Pro","hostname":"mac.tail8de49b.ts.net:8443"},"secret":"s3"}"""
+        val good = """{"url":"https://mac.tail0000.ts.net:8443","link":{"name":"Wellington's MacBook Pro","hostname":"mac.tail0000.ts.net:8443"},"secret":"s3"}"""
         assertEquals("s3", GatewayEnvelope.decode(good).secret)
-        val elsewhere = """{"url":"https://evil.example.com","link":{"name":"Mac","hostname":"mac.tail8de49b.ts.net:8443"},"secret":"s3"}"""
+        val elsewhere = """{"url":"https://evil.example.com","link":{"name":"Mac","hostname":"mac.tail0000.ts.net:8443"},"secret":"s3"}"""
         assertEquals("That invitation doesn't point at the Mac it names, so Oby won't pair with it.", runCatching { GatewayEnvelope.decode(elsewhere) }.exceptionOrNull()?.message)
         val home = """{"url":"http://192.168.1.20:8810","link":{"name":"Mac","hostname":"oby-abcdefghijklmnop.tetrix.pro"},"secret":"s3"}"""
         assertNotNull(GatewayEnvelope.decode(home))
@@ -26,7 +26,7 @@ class LogicTest {
 
     @Test fun hostnamesAreTheControlPlanesOrTailscales() {
         assertTrue(MacLink.isHostname("oby-abcdefghijklmnop.tetrix.pro"))
-        assertTrue(MacLink.isHostname("tetrix-lab.tail8de49b.ts.net:8443"))
+        assertTrue(MacLink.isHostname("mac.tail0000.ts.net:8443"))
         assertFalse(MacLink.isHostname("oby-short.tetrix.pro"))
         assertFalse(MacLink.isHostname("example.com"))
     }

@@ -106,6 +106,7 @@ export type Account = {
   fiveHour: number | null;
   sevenDay: number | null;
   sevenDayResets: string | null;
+  fiveHourResets?: string | null;
   running: number;
 };
 export type Status = {
@@ -136,16 +137,15 @@ export type SignIn = { account?: string; url: string; userCode?: string | null; 
 export type GitHub = { gh: boolean; signedIn: boolean; user: string | null; signIn: SignIn | null };
 export type Tetrix = {
   connected: boolean;
-  // the MCP address the owner gave; null until they give one (Oby has no built-in Tetrix and no
-  // default: until then Oby runs without Tetrix)
   url: string | null;
+  preset: string | null;
+  presets: { id: string; name: string; url: string }[];
   connectedAt: string | null;
   // the sign-in under way: its page, and the sign-in server it's on
   signIn: { url: string; server: string } | null;
   error: string | null;
 };
-// "POST /v1/tetrix/sign-in": the owner's Tetrix's MCP address (shared/tetrix-url.ts checks it first)
-export type TetrixTarget = { url: string };
+export type TetrixTarget = { preset: string } | { url: string };
 
 // "POST /v1/plans"
 export type Question = { text: string; options: string[]; recommended: number | null };
