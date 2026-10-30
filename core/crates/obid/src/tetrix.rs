@@ -591,7 +591,10 @@ impl Tetrix {
                 let id = self
                     .register(register, &redirect, &scopes)
                     .await
-                    .map_err(gateway)?;
+                    // (it said where to sign in: registering there failed, or was refused)
+                    .map_err(|why| {
+                        ApiError::new(StatusCode::BAD_GATEWAY, why).because("didNotStart")
+                    })?;
                 let mut saved = self.saved();
                 saved.clients.insert(
                     issuer_text.clone(),

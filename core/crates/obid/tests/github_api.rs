@@ -11,7 +11,8 @@ use std::path::Path;
 use serde_json::json;
 use support::*;
 
-/// A stand-in gh: signed in once `$HOME/signed` is there; its sign-in prints a code and waits for
+/// A stand-in gh: signed in once `$HOME/signed` is there (its status said 2 seconds late while
+/// `$HOME/slow-status` is); its sign-in prints a code and waits for
 /// `$HOME/approve`, as the real one waits for the person on GitHub's page, and gives up once obid
 /// or the test's folder is gone, so a test that ends leaves none behind. With `GH_CONFIG_DIR` (the
 /// reviewer's), its sign-in waits for `$HOME/approve-reviewer`, then signs in as the login in
@@ -44,10 +45,12 @@ fi
 case "$1 $2" in
   "auth status")
     if [ -f "$HOME/signed" ]; then
-      echo '{"hosts":{"github.com":[{"state":"success","active":true,"host":"github.com","login":"octo-cat","tokenSource":"keyring"}]}}'
+      said='{"hosts":{"github.com":[{"state":"success","active":true,"host":"github.com","login":"octo-cat","tokenSource":"keyring"}]}}'
     else
-      echo '{"hosts":{}}'
-    fi ;;
+      said='{"hosts":{}}'
+    fi
+    if [ -f "$HOME/slow-status" ]; then sleep 2; fi
+    echo "$said" ;;
   "auth login")
     echo $$ > "$HOME/gh-pid"
     if [ -f "$HOME/slow" ]; then sleep 3; fi
@@ -389,4 +392,42 @@ fn a_reviewer_obid_cant_record_isnt_kept() {
         false
     );
     assert!(!folder.0.join("home/github/reviewer").exists());
+}
+
+/// SIGN-IN-13 (docs/contracts/sign-in.md): a status read that began before gh's sign-in ended
+/// keeps nothing, so a sign-in that just succeeded is never shown as one that ended without a
+/// login (`signedIn` false, `signIn` null).
+#[test]
+fn sign_in_13_a_finished_sign_in_is_never_read_as_unfinished() {
+    let folder = Folder::new("github-status-race");
+    let remote = folder.0.join("remote.git");
+    let config = config(&folder.0, &remote, &stub_agent());
+    let bin = stand_in_gh(&folder.0);
+    let obid = std::sync::Arc::new(start(&folder.0, &config, Some(&bin)));
+    let home = folder.0.join("env-home");
+    std::fs::create_dir_all(&home).unwrap();
+    let started = call(&obid, "POST", "/v1/github/sign-in", None);
+    assert_eq!(started.status, 200, "{}", started.text);
+
+    // A read that sees gh signed out, and answers only after the sign-in has ended.
+    std::fs::write(home.join("slow-status"), "").unwrap();
+    let early = {
+        let obid = obid.clone();
+        std::thread::spawn(move || call(&obid, "GET", "/v1/github", None))
+    };
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    std::fs::remove_file(home.join("slow-status")).unwrap();
+    std::fs::write(home.join("approve"), "").unwrap();
+    within(10, "gh signed in", || {
+        home.join("signed").exists().then_some(())
+    });
+    let early = early.join().unwrap();
+    assert_eq!(early.status, 200, "{}", early.text);
+
+    let after = within(10, "the sign-in to end", || {
+        let now = call(&obid, "GET", "/v1/github", None);
+        now.body["signIn"].is_null().then_some(now.body)
+    });
+    assert_eq!(after["signedIn"], true, "{after}");
+    assert_eq!(after["user"], "octo-cat", "{after}");
 }

@@ -6,7 +6,7 @@ import { onObid } from './lean';
 import { CAN_CREATE } from './spheres';
 import { ApiError, api, type TetrixTarget } from './obid';
 import { ask, liveState, useLive } from './live';
-import { UNFINISHED, signInWhy } from './signInWhy';
+import { UNFINISHED, signInSaid, signInWhy } from './signInWhy';
 import { AGENTS, type Agent, type SetupStep } from './mock';
 
 // Setting up, in Oby's first conversation: no wizard, Oby talks you through it
@@ -117,7 +117,7 @@ export async function signInAgent(a: Agent) {
     if (own) {
       const account = await api.addAccount({ agent: a, default: true });
       if (gone()) return;
-      if (!account.signedIn) { delete tries[a]; return back(a, account.label ?? `Sign in with ${AGENTS[a].name} itself on this Mac, then Connect again.`); }
+      if (!account.signedIn) { delete tries[a]; return back(a, account.label ?? signInSaid(AGENTS[a].name, 'ownLogin')); }
     } else {
       t.account = s?.accounts.find((x) => x.agent === a)?.id ?? (t.made = (await api.addAccount({ agent: a, name: 'Personal' })).id);
       if (gone()) return void unmake(t);

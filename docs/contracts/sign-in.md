@@ -1,6 +1,6 @@
 # Sign-in errors
 
-The business behavior contract for why a sign-in didn't take, shown under its own row of Sangam's first run (#1579), from [the template](../business-contract-template.md). Scenarios are numbered `SIGN-IN-n`; the tests that prove them are named after them (`sign_in_1_…` in `core/crates/obid/tests/sign_in_reasons.rs`, `SIGN-IN-10:` and on in `apps/electron/src/renderer/src/test/signIn.test.ts`).
+The business behavior contract for why a sign-in didn't take, shown under its own row of Sangam's first run (#1579), from [the template](../business-contract-template.md). Scenarios are numbered `SIGN-IN-n`; the tests that prove them are named after them (`sign_in_1_…` in `core/crates/obid/tests/sign_in_reasons.rs`, `sign_in_13_…` in `core/crates/obid/tests/github_api.rs`, `SIGN-IN-10:` to `SIGN-IN-12:` in `apps/electron/src/renderer/src/test/signIn.test.ts`).
 
 ## Feature and status
 
@@ -19,17 +19,17 @@ The business behavior contract for why a sign-in didn't take, shown under its ow
 
 | `reason` | When | Status | The row says |
 |---|---|---|---|
-| `notInstalled` | the tool's CLI (or gh) isn't found by an absolute path | `503` | `Cursor isn’t on this Mac.` |
+| `notInstalled` | the tool's CLI (or gh) isn't found by an absolute path | `503` | `Cursor isn’t on this Mac.`; GitHub: `GitHub’s own tool (gh) isn’t on this Mac.` |
 | `ownLogin` | the account is the tool's own login, which the tool signs in itself | `409` | `Sign in with Claude Code itself on this Mac, then Connect again.` |
-| `folderUnsafe` | the account's login file, its lock or folder is a link or not the person's | `409` | `Codex’s login folder isn’t one Oby can sign in through.` |
+| `folderUnsafe` | the account's login file, its lock or folder is a link or not the person's (`409`), or its folder isn't one or can't be made (`502`) | `409`, `502` | `Codex’s login folder isn’t one Oby can sign in through.` |
 | `keychainOff` | Claude Code on macOS with `claudeKeychain` off | `409` | `Oby can’t use Claude Code’s login in your Keychain yet.` |
-| `busy` | a task of the account is queued or running, it's being removed, or GitHub's sign-in is starting | `409` | `Codex is busy with a task. Try again when it’s done.` |
-| `didNotStart` | the login (or gh) gave no link or code, or couldn't start | `502` | `GitHub’s sign-in didn’t start. Try again.` |
+| `busy` | a task of the account is queued or running, it's being removed, or GitHub's sign-in is starting | `409` | `Codex is busy with a task. Try again when it’s done.`; GitHub: `GitHub’s sign-in is already starting. Try again in a moment.` |
+| `didNotStart` | the login (or gh) gave no link or code, or couldn't start; Tetrix's sign-in server didn't register Oby | `502` | `GitHub’s sign-in didn’t start. Try again.` |
 | `codeRefused` | Claude Code didn't sign in with the code pasted | `422` | `That code didn’t work. Connect again for a new one.` |
 | `badAddress` | a Tetrix address that isn't HTTPS (or loopback HTTP), or an unknown preset | `422` | `That isn’t a Tetrix address Oby can use.` |
 | `noSignIn` | that Tetrix's metadata, sign-in server or client can't be found or used | `502` | `That Tetrix doesn’t say where to sign in.` |
 
-A sign-in that started and then ended without signing in (its page closed, gh or the Tetrix exchange failing, 15 minutes for an agent or GitHub, 10 for Tetrix) puts Connect back with `Didn’t finish signing in. Try again.` The app knows it ended when `GET /v1/github` or `GET /v1/tetrix` says no sign-in is under way and nothing is signed in.
+A sign-in that started and then ended without signing in (its page closed, gh or the Tetrix exchange failing, 15 minutes for an agent or GitHub, 10 for Tetrix) puts Connect back with `Didn’t finish signing in. Try again.` The app knows it ended when `GET /v1/github` or `GET /v1/tetrix` says no sign-in is under way and nothing is signed in. obid makes that answer true only once it is: `GET /v1/github` reads the sign-in before gh's status, and a sign-in's end forgets the status before it shows as ended, so a status read that began before the end keeps nothing.
 
 ### Invariants
 
@@ -55,5 +55,6 @@ A sign-in that started and then ended without signing in (its page closed, gh or
 - **SIGN-IN-10:** the app shows the reason's sentence under the agent's, GitHub's and Tetrix's rows, and none of obid's `error` (a path, a code, a token).
 - **SIGN-IN-11:** no reason, an unknown one, or obid not answering → `Couldn’t connect <name>. Try again.`
 - **SIGN-IN-12:** GitHub's or Tetrix's sign-in that ends without signing in → the row back to Connect with `Didn’t finish signing in. Try again.`; the next try clears it.
+- **SIGN-IN-13:** a `gh auth status` read that began while gh's sign-in was under way and answers after it ended → the next `GET /v1/github` with no sign-in under way says `signedIn` true.
 
 **Test it when it's done (real Mac):** on first run, rename `cursor-agent` out of the PATH and Connect Cursor (`Cursor isn’t on this Mac.`); start GitHub's sign-in and close the browser's page, then cancel gh's device code (`Didn’t finish signing in. Try again.`); type `http://tetrix.example/mcp` in Connect Tetrix (`That isn’t a Tetrix address Oby can use.`).

@@ -16,9 +16,19 @@ const WORDS: Record<string, (name: string) => string> = {
   noSignIn: () => 'That Tetrix doesn’t say where to sign in.',
 };
 
+// GitHub's own, where what's missing or busy is gh, not an agent
+const GITHUB: Record<string, string> = {
+  notInstalled: 'GitHub’s own tool (gh) isn’t on this Mac.',
+  busy: 'GitHub’s sign-in is already starting. Try again in a moment.',
+};
+
 export const UNFINISHED = 'Didn’t finish signing in. Try again.';
 
-export function signInWhy(name: string, e: unknown): string {
-  const words = e instanceof ApiError && e.reason ? WORDS[e.reason] : undefined;
-  return words ? words(name) : `Couldn’t connect ${name}. Try again.`;
+// the sentence for a reason, or the plain one
+export function signInSaid(name: string, reason?: string): string {
+  const own = name === 'GitHub' && reason ? GITHUB[reason] : undefined;
+  const words = reason ? WORDS[reason] : undefined;
+  return own ?? (words ? words(name) : `Couldn’t connect ${name}. Try again.`);
 }
+
+export const signInWhy = (name: string, e: unknown) => signInSaid(name, e instanceof ApiError ? e.reason : undefined);

@@ -58,6 +58,10 @@ describe('sign-in errors under first run’s rows', () => {
     expect(why.signInWhy('Codex', new obid.ApiError(409, RAW, 'somethingNew'))).toBe('Couldn’t connect Codex. Try again.');
     expect(why.signInWhy('Codex', new obid.ApiError(0, RAW))).toBe('Couldn’t connect Codex. Try again.');
     expect(why.signInWhy('Codex', new Error(RAW))).toBe('Couldn’t connect Codex. Try again.');
+    // GitHub's own: gh missing, or its sign-in already starting
+    expect(why.signInWhy('GitHub', new obid.ApiError(503, RAW, 'notInstalled'))).toBe('GitHub’s own tool (gh) isn’t on this Mac.');
+    expect(why.signInWhy('GitHub', new obid.ApiError(409, RAW, 'busy'))).toBe('GitHub’s sign-in is already starting. Try again in a moment.');
+    expect(why.signInWhy('GitHub', new obid.ApiError(502, RAW, 'didNotStart'))).toBe('GitHub’s sign-in didn’t start. Try again.');
   });
 
   it('SIGN-IN-12: GitHub’s or Tetrix’s sign-in that ended without signing in puts Connect back with why', async () => {

@@ -1678,7 +1678,7 @@ The owner adds, renames and removes the agents' accounts, and signs them in, fro
 
 **`DELETE /v1/accounts/{id}/sign-in`** ends the account's sign-in under way, with everything its login started: `204`, also when none was under way. `404` for an unknown account; `409` when it didn't end within 5 seconds.
 
-Every refusal above carries its `reason` ([Sign-in reasons](#obid-only-sign-in-reasons)): `ownLogin`, `folderUnsafe`, `busy` (also on `DELETE /v1/accounts/{id}`'s job `409`) and `keychainOff` for the `409`s, `notInstalled` for the `503`, `didNotStart` for the `502`, and `codeRefused` for `POST`'s `422` of a code Claude Code refused.
+These refusals carry a `reason` ([Sign-in reasons](#obid-only-sign-in-reasons)); the others (`404`, `POST`'s other `409`s, `504` and its `422` for a code that isn't one line) carry none. `GET …/sign-in`: `ownLogin` for the tool's own login, `folderUnsafe` for a login file, lock or folder that is a link or not the person's (`409`), and for the account's folder that isn't a folder or can't be made (`502`), `busy` for a job queued or running or the account being removed (also on `DELETE /v1/accounts/{id}`'s job `409`), `keychainOff` for Claude Code without `claudeKeychain`, `notInstalled` for the `503`, and `didNotStart` for a login that couldn't start or gave no link (`502`). `POST …/sign-in`: `codeRefused` for the `422` of a code Claude Code didn't sign in with.
 
 When a sign-in ends, every app gets `accounts`, with `signedIn` as obid finds it (the login file, or the Keychain item with `claudeKeychain`, or Cursor's own login's with `cursorKeychain`).
 
@@ -1699,7 +1699,7 @@ The owner signs obid's `gh` in to GitHub from the Mac (Settings › Connectors �
 - obid reads what gh prints only for its one-time code (`! One-time code (AB12-CD34) …` or `! First copy your one-time code: AB12-CD34`); nothing else is kept, answered or logged. The page is always GitHub's device page.
 - One at a time. It ends when gh does (signed in, or not), after 15 minutes (a device code's life), with `DELETE`, or when obid stops; its process group is killed with it. `502` when gh gave no code within 30 seconds; `503` without a gh.
 
-The `503` carries `reason` `notInstalled`, the `502` `didNotStart`, and the `409` while a sign-in is starting `busy` (the reviewer's sign-in too). A sign-in that ended without a login shows as `signedIn` false and `signIn` null.
+The `503` carries `reason` `notInstalled`, the `502` `didNotStart`, and the `409` while a sign-in is starting `busy` (the reviewer's sign-in too). A sign-in that ended without a login shows as `signedIn` false and `signIn` null: `GET /v1/github` reads the sign-in before the status, and a sign-in's end forgets the status before it shows as ended, so a status read that began before the end keeps nothing and a login that just succeeded never shows that way.
 
 **`DELETE /v1/github/sign-in`** ends the sign-in under way, if any: `204`.
 
@@ -1730,10 +1730,10 @@ Why a sign-in didn't start, as one stable word beside the `error` of `GET` and `
 |---|---|
 | `notInstalled` | the tool's CLI, or gh, isn't found by an absolute path (`503`) |
 | `ownLogin` | the tool's own login, signed in with the tool itself (`409`) |
-| `folderUnsafe` | the account's login file, its lock or its folder is a link or not the person's (`409`) |
+| `folderUnsafe` | the account's login file, its lock or its folder is a link or not the person's (`409`), or its folder isn't one or can't be made (`502`) |
 | `keychainOff` | Claude Code on macOS without `claudeKeychain` (`409`) |
 | `busy` | a job of the account is queued or running, it's being removed, or GitHub's sign-in is starting (`409`) |
-| `didNotStart` | the login, or gh, gave no link or code, or couldn't start (`502`) |
+| `didNotStart` | the login, or gh, gave no link or code, or couldn't start; Tetrix's sign-in server refused to register Oby or couldn't be reached to (`502`) |
 | `codeRefused` | Claude Code didn't sign in with the code sent (`422`) |
 | `badAddress` | a Tetrix URL that breaks a connection's rules, or an unknown preset (`422`) |
 | `noSignIn` | that Tetrix's metadata, sign-in server or client can't be found or used (`502`) |
@@ -1791,7 +1791,7 @@ The owner connects Tetrix once, in Oby, and every agent on every account (Claude
 - Until a sign-in finishes, the login before it stays in use. One that finishes on another sign-in server than the login it replaces (another token endpoint: another Tetrix's) has the old one take that login back, as `DELETE /v1/tetrix` does (its `revocation_endpoint`, the refresh token), in the background once the new login is kept; a failure there is only logged. On the same sign-in server nothing is taken back: there the old and new logins can share one session (Keycloak's client session), and revoking the old would end the new.
 - obid refreshes the access token itself when it has less than a minute left, or when Tetrix answers `401`, and keeps the rotated refresh token. A refresh Tetrix refuses (`invalid_grant`) signs Oby out (`error` says so). One the sign-in server doesn't answer (it can't be reached, or answers 5xx) while the token can't be used (it ended, or Tetrix answered `401`) keeps the login, fails that call, and says so in `error` (`Oby couldn't refresh its Tetrix login: Tetrix's sign-in server answered HTTP 503. It tries again at the next call.`); the next call refreshes again.
 
-Its `422`s carry `reason` `badAddress` and its `502`s `noSignIn`. A sign-in that ended without a login shows as `connected` false and `signIn` null.
+Its `422`s carry `reason` `badAddress`; its `502`s `noSignIn`, but `didNotStart` when registering a client with the sign-in server failed or was refused. A sign-in that ended without a login shows as `connected` false and `signIn` null.
 
 **`DELETE /v1/tetrix/sign-in`** ends the sign-in under way, if any: `204`.
 

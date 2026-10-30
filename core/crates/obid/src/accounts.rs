@@ -1185,6 +1185,14 @@ pub async fn sign_in(
         .ok_or_else(|| busy(&account))?;
     // A conversation's Claude Code waiting on the old login ends: the next turn copies the new one.
     shared.harness.end_warm_on(&id);
+    // The account's own folder, checked as it's made: a link or a file in its place is the
+    // folder's problem, not the login's.
+    crate::jobs::not_a_link(&dir)
+        .and_then(|()| {
+            crate::store::make_private_dir(&dir)
+                .map_err(|e| format!("obid can't make the account's folder: {e}"))
+        })
+        .map_err(|why| ApiError::new(StatusCode::BAD_GATEWAY, why).because("folderUnsafe"))?;
     let sign_in = start(&shared, tool, &account, &bin, &dir, changing)
         .await
         .map_err(|why| ApiError::new(StatusCode::BAD_GATEWAY, why).because("didNotStart"))?;
@@ -1329,9 +1337,6 @@ async fn start(
     dir: &Path,
     changing: crate::jobs::Changing,
 ) -> Result<Arc<SignIn>, String> {
-    crate::jobs::not_a_link(dir)?;
-    crate::store::make_private_dir(dir)
-        .map_err(|e| format!("obid can't make the account's folder: {e}"))?;
     static RUNS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let n = RUNS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let scratch = shared

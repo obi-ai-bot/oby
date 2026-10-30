@@ -49,7 +49,11 @@ pub struct GitHubLogin {
 /// One GitHub login: its status as last read, and its sign-in under way.
 #[derive(Default)]
 struct Login {
+    /// The status as last read, with the [`Login::forgotten`] count it was read under.
     status: Mutex<Option<(Instant, Status)>>,
+    /// How many times the status was forgotten: a read that started before the last time keeps
+    /// nothing, so a sign-in that just ended is never shown with what gh said before it.
+    forgotten: std::sync::atomic::AtomicU64,
     /// Never held across an await: GET and obid's stop read it while gh starts.
     sign_in: Mutex<Slot>,
     /// Why the last sign-in kept no login (the reviewer's: the owner's own account), until the next.
@@ -142,7 +146,10 @@ impl Login {
     }
 
     fn forget_status(&self) {
-        *self.status.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        let mut status = self.status.lock().unwrap_or_else(|e| e.into_inner());
+        *status = None;
+        self.forgotten
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     }
 
     fn refused(&self) -> std::sync::MutexGuard<'_, Option<String>> {
@@ -157,12 +164,15 @@ impl Login {
         {
             return status.clone();
         }
+        let since = self.forgotten.load(std::sync::atomic::Ordering::SeqCst);
         let status = match gh {
             Some(gh) => read_status_of(gh, reviewer).await,
             None => Status::signed_out(),
         };
-        *self.status.lock().unwrap_or_else(|e| e.into_inner()) =
-            Some((Instant::now(), status.clone()));
+        let mut kept = self.status.lock().unwrap_or_else(|e| e.into_inner());
+        if self.forgotten.load(std::sync::atomic::Ordering::SeqCst) == since {
+            *kept = Some((Instant::now(), status.clone()));
+        }
         status
     }
 }
@@ -292,18 +302,21 @@ pub fn decode_status(said: &str) -> Status {
 /// under way; the same for the reviewer, with why its last sign-in kept no login.
 pub async fn get(State(shared): State<Arc<Shared>>) -> Result<Response, ApiError> {
     let gh = crate::github::gh();
+    // The sign-in first, then the status: once a sign-in is seen ended, its status was forgotten
+    // already, so `signedIn` false with no `signIn` means it ended without a login.
+    let sign_in = shared.github.owner.running().map(|s| s.to_json());
     let status = shared.github.owner.status(gh.as_deref(), None).await;
     // GitHub's repositories stay only the signed-in account's (crate::repos): another one's are
     // read now.
     if shared.config.repos.follow(status.user.as_deref()) && status.signed_in {
         shared.config.repos.nudge();
     }
-    let sign_in = shared.github.owner.running().map(|s| s.to_json());
     let reviewer = &shared.github.reviewer;
     let folder = reviewer_folder(&shared.config.home);
+    let reviewer_sign_in = reviewer.running().map(|s| s.to_json());
     let reviewing = reviewer.status(gh.as_deref(), Some(&folder)).await;
     let reviewer = json!({"signedIn": reviewing.signed_in, "user": reviewing.user,
-                          "signIn": reviewer.running().map(|s| s.to_json()),
+                          "signIn": reviewer_sign_in,
                           "error": reviewer.refused().clone()});
     Ok(
         axum::Json(json!({"gh": gh.is_some(), "signedIn": status.signed_in,
@@ -545,9 +558,10 @@ async fn start(shared: &Arc<Shared>, gh: &Path, who: Who) -> Result<Arc<SignIn>,
         // group id, which may be someone else's by now, and a sign-in started after this one ended
         // never finds its folder being removed.
         let _ = std::fs::remove_dir_all(&scratch);
-        let _ = ended_tx.send(true);
+        // Its status forgotten before it's seen ended (`get` reads the sign-in first).
         let login = shared.github.of(who);
         login.forget_status();
+        let _ = ended_tx.send(true);
         {
             let mut slot = login.slot();
             if matches!(&*slot, Slot::Running(s) if Arc::ptr_eq(s, &watched)) {
