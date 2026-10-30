@@ -576,10 +576,13 @@ fn continue_job(shared: &Arc<Shared>, session: &Session, args: Value) -> Result<
             None => None,
         };
         let foreign = super::written_after(shared, &session.conversation);
-        return match shared
-            .jobs
-            .continue_job(&id, words.as_deref(), BY_OBY, foreign)
-        {
+        return match shared.jobs.continue_job(
+            &id,
+            words.as_deref(),
+            BY_OBY,
+            crate::jobs::Source::Event,
+            foreign,
+        ) {
             Some(Ok(job)) => {
                 super::supervisor::record(
                     shared,
@@ -613,7 +616,13 @@ fn continue_job(shared: &Arc<Shared>, session: &Session, args: Value) -> Result<
         );
     }
     let foreign = super::written_after(shared, &session.conversation);
-    match shared.jobs.continue_job(&id, Some(&added), BY_OBY, foreign) {
+    match shared.jobs.continue_job(
+        &id,
+        Some(&added),
+        BY_OBY,
+        crate::jobs::Source::Event,
+        foreign,
+    ) {
         Some(Ok(job)) => Ok(format!("Continuing {name}: round {}.", job.current_round())),
         Some(Err(refused)) => Err(format!("Couldn't continue {name}: {}", refused.0)),
         None => Err("That job isn't here any more.".into()),
@@ -749,10 +758,13 @@ fn change_job(shared: &Arc<Shared>, session: &Session, args: Value) -> Result<St
         done.push(format!("{name} is in {} mode now.", mode.title()));
     }
     if moving {
-        match shared
-            .jobs
-            .change(&id, agent.as_deref(), account.as_deref(), BY_OBY)
-        {
+        match shared.jobs.change(
+            &id,
+            agent.as_deref(),
+            account.as_deref(),
+            BY_OBY,
+            crate::jobs::Source::Event,
+        ) {
             Some(Ok(job)) => done.push(format!(
                 "Moved {name} to {}: continue it to start there.",
                 job.moves.last().map_or("", |m| m.to.as_str())

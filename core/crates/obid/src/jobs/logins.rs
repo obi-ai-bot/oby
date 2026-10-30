@@ -1753,39 +1753,6 @@ pub(crate) fn forget_login_secrets(login: &Path) {
     }
 }
 
-/// Copies `from` over `to`: a job's Claude Code sessions, from one account's place in its folder
-/// to another's ([`Jobs::move_on`]), what `from` has replacing what `to` had (it's the session as
-/// it went on). Only folders and regular files: a link the job left is never followed, nor
-/// written through (one in `to`'s place is removed first), and nothing goes into a folder that
-/// is a link.
-pub(super) fn copy_tree(from: &Path, to: &Path) {
-    let Ok(what) = std::fs::symlink_metadata(from) else {
-        return;
-    };
-    if from == to {
-        return;
-    }
-    if what.is_dir() {
-        if std::fs::symlink_metadata(to).is_ok_and(|m| !m.is_dir()) {
-            let _ = std::fs::remove_file(to);
-        }
-        let parent_real = to
-            .parent()
-            .is_some_and(|p| std::fs::symlink_metadata(p).is_ok_and(|m| m.is_dir()));
-        if !parent_real || store::make_private_dir(to).is_err() {
-            return;
-        }
-        for entry in std::fs::read_dir(from).into_iter().flatten().flatten() {
-            copy_tree(&entry.path(), &to.join(entry.file_name()));
-        }
-    } else if what.is_file() {
-        let _ = std::fs::remove_file(to);
-        if let Ok(bytes) = std::fs::read(from) {
-            let _ = write_login(to, &bytes);
-        }
-    }
-}
-
 /// What a new session hears first when it takes over a job from `was`, which hit its usage limit
 /// (#871): where the work is, and what the earlier rounds reported, quoted, with every secret obid
 /// knows taken out.

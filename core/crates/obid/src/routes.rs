@@ -34,6 +34,165 @@ fn json(status: StatusCode, value: Value) -> Response {
     (status, axum::Json(value)).into_response()
 }
 
+/// An explicit proof-of-possession migration for older endorsed iPhone keys.
+/// Only the gateway supplies the authenticated pairing; the API token cannot invent one.
+pub async fn device_pairing_challenge(
+    State(shared): State<Arc<Shared>>,
+    device: Option<axum::Extension<crate::gateway::PairedDevice>>,
+    Path(id): Path<String>,
+) -> Result<Response, ApiError> {
+    let pairing = device
+        .ok_or_else(|| {
+            ApiError::new(
+                StatusCode::FORBIDDEN,
+                "This request must come from your paired iPhone.",
+            )
+        })?
+        .0
+        .0;
+    let nonce = shared
+        .devices
+        .pairing_challenge(&id, &pairing, obi_protocol::time::now())
+        .map_err(|why| ApiError::new(StatusCode::CONFLICT, why))?;
+    Ok(json(
+        StatusCode::OK,
+        json!({"pairing":pairing,"nonce":nonce}),
+    ))
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DevicePairingProof {
+    pairing: String,
+    nonce: String,
+    approval: crate::approval::Approval,
+}
+
+pub async fn bind_device_pairing(
+    State(shared): State<Arc<Shared>>,
+    device: Option<axum::Extension<crate::gateway::PairedDevice>>,
+    Path(id): Path<String>,
+    body: Bytes,
+) -> Result<Response, ApiError> {
+    let pairing = device
+        .ok_or_else(|| {
+            ApiError::new(
+                StatusCode::FORBIDDEN,
+                "This request must come from your paired iPhone.",
+            )
+        })?
+        .0
+        .0;
+    let proof: DevicePairingProof = serde_json::from_slice(&body).map_err(|_| {
+        ApiError::new(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "A signed device-link proof is required.",
+        )
+    })?;
+    if proof.pairing != pairing {
+        return Err(ApiError::new(
+            StatusCode::FORBIDDEN,
+            "This proof is for a different pairing.",
+        ));
+    }
+    let key = shared.devices.public_key(&id);
+    let now = obi_protocol::time::now();
+    shared
+        .jobs
+        .approvals()
+        .check_pairing_binding(
+            &proof.approval,
+            &id,
+            &pairing,
+            &proof.nonce,
+            key.as_deref(),
+            now,
+        )
+        .map_err(|why| ApiError::new(StatusCode::FORBIDDEN, why))?;
+    shared
+        .devices
+        .bind_pairing(&id, &pairing, &proof.nonce, now)
+        .map_err(|why| ApiError::new(StatusCode::CONFLICT, why))?;
+    Ok(json(StatusCode::OK, json!({"id":id})))
+}
+
+/// The grouped, owner-decided account limit incidents (#1563).
+pub async fn limit_decisions(State(shared): State<Arc<Shared>>) -> Response {
+    json(
+        StatusCode::OK,
+        Value::Array(shared.jobs.limit_decisions().await),
+    )
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LimitDecisionAnswer {
+    revision: u64,
+    choice: String,
+    account: Option<String>,
+    approval: crate::approval::Approval,
+}
+
+/// Only an owner's registered device can choose the exact revision and destination it signed.
+pub async fn answer_limit_decision(
+    State(shared): State<Arc<Shared>>,
+    device: Option<axum::Extension<crate::gateway::PairedDevice>>,
+    Path(id): Path<String>,
+    body: Bytes,
+) -> Result<Response, ApiError> {
+    let answer: LimitDecisionAnswer = serde_json::from_slice(&body).map_err(|_| {
+        ApiError::new(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "A limit decision requires a revision, choice and device approval.",
+        )
+    })?;
+    if !matches!(answer.choice.as_str(), "move" | "resume" | "stop")
+        || (answer.choice == "move") != answer.account.as_deref().is_some_and(|a| !a.is_empty())
+    {
+        return Err(ApiError::new(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "Choose an offered action and, for a move, its account.",
+        ));
+    }
+    if device.is_some_and(|device| {
+        !shared
+            .devices
+            .belongs_to_pairing(&answer.approval.device, &device.0.0)
+    }) {
+        return Err(ApiError::new(
+            StatusCode::FORBIDDEN,
+            "This approval belongs to a different device.",
+        ));
+    }
+    let key = shared.devices.public_key(&answer.approval.device);
+    shared
+        .jobs
+        .approvals()
+        .check_limit_decision(
+            &answer.approval,
+            crate::approval::LimitChoice {
+                id: &id,
+                revision: answer.revision,
+                choice: &answer.choice,
+                account: answer.account.as_deref().unwrap_or_default(),
+            },
+            key.as_deref(),
+            obi_protocol::time::now(),
+        )
+        .map_err(|why| ApiError::new(StatusCode::FORBIDDEN, why))?;
+    let result = shared
+        .jobs
+        .answer_limit_decision(
+            &id,
+            answer.revision,
+            &answer.choice,
+            answer.account.as_deref(),
+        )
+        .await
+        .map_err(|why| ApiError::new(StatusCode::CONFLICT, why))?;
+    Ok(json(StatusCode::OK, result))
+}
+
 #[derive(serde::Deserialize)]
 pub struct Limit {
     limit: Option<String>,
@@ -722,9 +881,23 @@ pub async fn message(
     };
     let say = value.get("conversation").and_then(Value::as_bool) == Some(true);
     let first = shared.jobs.get(&id);
-    let answer = shared
-        .jobs
-        .message_attaching(&id, text, crate::jobs::Source::Owner, &attachments);
+    let typed = typed_by_owner(&shared, "POST", &uri, &headers, &body);
+    if first.as_ref().is_some_and(|job| job.account_limit_blocked) && !typed {
+        return Err(ApiError::new(
+            StatusCode::FORBIDDEN,
+            "Continuing a limit-stopped job needs your app's signed choice.",
+        ));
+    }
+    let answer = shared.jobs.message_attaching(
+        &id,
+        text,
+        if typed {
+            crate::jobs::Source::Owner
+        } else {
+            crate::jobs::Source::Api
+        },
+        &attachments,
+    );
     let job = match answer {
         None => return Err(ApiError::new(StatusCode::NOT_FOUND, NO_JOB)),
         Some(Err(refused)) => {
@@ -734,10 +907,17 @@ pub async fn message(
     };
     // Words no app of the owner's signed: the job that heard them (or the follow-up they started)
     // is no longer the owner's own words alone (crate::secretspec).
-    let typed = typed_by_owner(&shared, "POST", &uri, &headers, &body);
     let job = if typed {
         job
     } else {
+        // Unsigned API follow-ups are born untrusted, before their scheduler can run. Keep
+        // the same audit evidence even when there is no vetted state left to revoke.
+        if !job.vetted {
+            tracing::info!(
+                "job {}: words no app of the owner's signed reached it",
+                job.id
+            );
+        }
         shared
             .jobs
             .unvet(&job.id, "words no app of the owner's signed reached it")

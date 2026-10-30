@@ -11,6 +11,7 @@ import type {
   GitHubWork,
   InboxItem,
   Job,
+  LimitDecision,
   PlanAnswer,
   Repo,
   SavedRule,
@@ -77,6 +78,10 @@ export const api = {
   answer: (i: string, body: { answer: string } | { later: string }) => call<InboxItem>('POST', `/v1/inbox/${id(i)}/answer`, body),
   // Confirm on a confirm item: main signs it with this Mac's device key (main/device.ts)
   confirm: (i: string) => call<InboxItem>('POST', `/v1/inbox/${id(i)}/answer`, undefined, (b) => b.confirm(i)),
+  limitDecisions: () => call<LimitDecision[]>('GET', '/v1/limit-decisions'),
+  answerLimit: (decision: LimitDecision, option: LimitDecision['options'][number]) =>
+    call<unknown>('POST', `/v1/limit-decisions/${id(decision.id)}/answer`, undefined,
+      (b) => b.limitAnswer(decision.id, decision.revision, option.kind, option.kind === 'move' ? option.account : undefined)),
   // one conversation's turns
   conversation: (opts: { id?: string; before?: string; limit?: number } = {}) => call<Turn[]>('GET', `/v1/conversation${q(opts)}`),
   // words to Oby: in a conversation, or starting a new one

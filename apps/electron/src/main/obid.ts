@@ -78,7 +78,7 @@ async function listener(): Promise<'mine' | 'foreign' | 'none'> {
 // What a call or the stream came back with: obid's status and body, or (status 0) why it didn't answer
 export type Answer = { status: number; text: string; why?: 'waiting' | 'approval' };
 
-export async function send(method: string, path: string, body: unknown, signal?: AbortSignal): Promise<Response | Answer> {
+export async function send(method: string, path: string, body: unknown, signal?: AbortSignal, words?: string): Promise<Response | Answer> {
   // only obid's API: never another host, never another path
   if (!METHODS.has(method) || !/^\/v1\/[^\s#]*$/.test(path) || !new URL(BASE + path).pathname.startsWith('/v1/')) return { status: 400, text: JSON.stringify({ error: 'Not an obid call.' }) };
   const t = token();
@@ -93,6 +93,7 @@ export async function send(method: string, path: string, body: unknown, signal?:
         Authorization: `Bearer ${t}`,
         Accept: path === '/v1/events' ? 'text/event-stream' : 'application/json',
         ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
+        ...(words ? { 'X-Oby-Words': words } : {}),
       },
       body: body === undefined ? undefined : JSON.stringify(body),
     });
@@ -297,18 +298,21 @@ let following: AbortController | null = null;
 export const stopFollowing = () => { following?.abort(); following = null; };
 
 // One call, read whole
-export async function obid(method: string, path: string, body?: unknown): Promise<Answer> {
-  const r = await send(method, path, body);
+export async function obid(method: string, path: string, body?: unknown, words?: string): Promise<Answer> {
+  const r = await send(method, path, body, undefined, words);
   return r instanceof Response ? { status: r.status, text: await r.text() } : r;
 }
 
 // The page's own frame only: no other page, or frame in it, gets obid
 export type Trusted = (e: IpcMainEvent | IpcMainInvokeEvent) => boolean;
 
-export function bridge(trusted: Trusted) {
+export function bridge(trusted: Trusted, messageJob: (path: string, body: unknown) => Promise<Answer>) {
   // one call: obid's status and body, or why it didn't answer
   ipcMain.handle('obid', async (e, method: string, path: string, body?: unknown): Promise<Answer> => {
     if (!trusted(e)) return { status: 403, text: '' };
+    if (method === 'POST' && /^\/v1\/jobs\/[^/]+\/messages$/.test(path)) {
+      return messageJob(path, body);
+    }
     return obid(method, path, body);
   });
 

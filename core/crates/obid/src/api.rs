@@ -195,6 +195,10 @@ pub fn router(shared: Arc<Shared>) -> Router {
         .route("/v1/clear", post(crate::routes::clear))
         .route("/v1/devices", post(crate::routes::register_device))
         .route(
+            "/v1/devices/{id}/pairing",
+            get(crate::routes::device_pairing_challenge).post(crate::routes::bind_device_pairing),
+        )
+        .route(
             "/v1/devices/{id}",
             axum::routing::delete(crate::routes::revoke_device),
         )
@@ -249,6 +253,11 @@ pub fn router(shared: Arc<Shared>) -> Router {
         .route("/v1/failures/{id}", get(crate::failures::get_route))
         .route("/v1/failures/{id}/fix", post(crate::failures::fix_route))
         .route("/v1/inbox/{id}/answer", post(crate::sphere::routes::answer))
+        .route("/v1/limit-decisions", get(crate::routes::limit_decisions))
+        .route(
+            "/v1/limit-decisions/{id}/answer",
+            post(crate::routes::answer_limit_decision),
+        )
         .route(
             "/v1/obid/sphere",
             get(crate::sphere::routes::membership).delete(crate::sphere::routes::leave),

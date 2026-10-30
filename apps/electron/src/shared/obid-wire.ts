@@ -33,6 +33,9 @@ export type Job = {
   pipeline: { number: number; total: number; stages: Stage[] } | null;
   title: string;
   waiting?: { kind: string; text: string } | null;
+  // The account-wide question is shown once. Its settled choice remains authoritative while
+  // the job is stopped, so an ordinary interruption card must not ask the owner again.
+  accountLimit?: { decision: string | null; state: 'pending' | 'resume' | 'stop' | 'move'; resetAt: string | null } | null;
   // obid only: the conversation whose words started it (#493), and the user's turn there whose
   // words started it or offered it (oby_offer)
   conversation?: string | null;
@@ -66,6 +69,13 @@ export type InboxItem = {
   // obid only: what a confirm item's Confirm carries out; set_check's target is the repository,
   // its payload the command (null: take `was` out) and the check it has now (Oby's ask, #1062)
   confirm?: { action: string; target: string; payload: { check?: string | null; was?: string | null } | null } | null;
+};
+
+// One owner decision for all jobs stopped by the same account's limit (#1563).
+export type LimitDecision = {
+  id: string; revision: number; account: string; agent: string; resetAt: number | null; problem?: string | null;
+  jobs: { id: string; title: string }[];
+  options: ({ kind: 'move'; account: string; agent: string; name: string } | { kind: 'resume' | 'stop' })[];
 };
 
 // "GET /v1/conversation"

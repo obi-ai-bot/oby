@@ -12,7 +12,8 @@
     "web": "vite",
     "typecheck": "tsc --noEmit",
     "build:native": "node-gyp rebuild --directory native/window-style --target=$(node -p \"require('electron/package.json').version\") --dist-url=https://electronjs.org/headers",
-    "postinstall": "install-electron && (node -e \"process.platform==='darwin'&&process.exit(1)\" || npm run build:native)"
+    "postinstall": "install-electron && (node -e \"process.platform==='darwin'&&process.exit(1)\" || npm run build:native)",
+    "test:account-limits": "node scripts/test-account-limits.mjs"
   },
   "dependencies": {
     "@lexical/react": "0.52.0",
@@ -33,6 +34,7 @@
     "electron-builder": "26.17.0",
     "electron-vite": "^5.0.0",
     "node-gyp": "^12.4.0",
+    "playwright-core": "1.64.1",
     "typescript": "^7.0.2",
     "vite": "^7.3.7"
   }

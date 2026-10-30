@@ -28,12 +28,7 @@ pub const DAILY_ACTIONS: usize = 3;
 /// Event turns in one hour; more wait for the next hour.
 pub const TURNS_PER_HOUR: usize = 10;
 /// The inbox options it may pick on its own.
-pub const INBOX_OPTIONS: [&str; 4] = [
-    "Try again",
-    "One more round",
-    "Rebase now",
-    "Wait for the reset",
-];
+pub const INBOX_OPTIONS: [&str; 3] = ["Try again", "One more round", "Rebase now"];
 /// Oby's tools an event turn has: it reads the event's job, tries it again, tells it, answers its
 /// inbox item, or leaves it for the owner.
 const TOOLS: [&str; 5] = [
@@ -45,7 +40,7 @@ const TOOLS: [&str; 5] = [
 ];
 
 /// What the orchestrator's turn is told, before the events.
-pub const POLICY: &str = "Oby here, not the owner: an Oby event woke this turn, and no one is waiting for an answer. Read the event's job with oby_job before deciding: you can read only the event's jobs. Then take one allowed action by yourself: oby_continue_job tries a failed, stopped or cut-off job again; oby_tell_job tells a running job's agent the concrete error and the change to make; oby_answer answers the job's inbox item with only Try again, One more round, Rebase now or Wait for the reset. Or do nothing when nothing needs doing. Never merge, publish, push, dismiss committed work, change settings, expose credentials, or answer a permission or a product decision: for those, and whenever you are unsure, call oby_escalate with your diagnosis and the option you recommend, and Oby leaves it for the owner. Answer in one short line: what you did and why.";
+pub const POLICY: &str = "Oby here, not the owner: an Oby event woke this turn, and no one is waiting for an answer. Read the event's job with oby_job before deciding: you can read only the event's jobs. Then take one allowed action by yourself: oby_continue_job tries a failed, stopped or cut-off job again; oby_tell_job tells a running job's agent the concrete error and the change to make; oby_answer answers the job's inbox item with only Try again, One more round or Rebase now. Usage limit choices belong to the owner. Or do nothing when nothing needs doing. Never merge, publish, push, dismiss committed work, change settings, expose credentials, or answer a permission or a product decision: for those, and whenever you are unsure, call oby_escalate with your diagnosis and the option you recommend, and Oby leaves it for the owner. Answer in one short line: what you did and why.";
 
 /// One typed event, written by obid. Evidence is addressed by job id and read from obid's own
 /// stores only when the brain asks (`read_job`).
@@ -237,7 +232,7 @@ impl Seen {
             || item.done.is_some()
             || item.id.starts_with("orchestrator-")
             // Already the owner's to decide: escalating would only leave a second item for it.
-            || matches!(item.kind.as_str(), "confirm" | "start" | "permission" | "plan" | "question" | "github" | "merge" | crate::sphere::inbox::QUESTION_KIND)
+            || matches!(item.kind.as_str(), "confirm" | "start" | "permission" | "plan" | "question" | "github" | "merge" | "limit" | crate::sphere::inbox::QUESTION_KIND)
             // obid's own bug's item is the owner's too (#914): an answer from Oby would loop it.
             || crate::sphere::inbox::is_crash_item(item)
             // So is a review no reviewer could give: obid fell back already.
@@ -470,6 +465,14 @@ pub struct Watch {
 const OWNERS_NOW: &str =
     "This event is the owner's now: Oby left it in Needs you. Do nothing more for it.";
 
+/// A usage-limit retry is the owner's decision, including when no reset time was reported.
+fn usage_limit_wait(job: &Job, open_item: bool) -> bool {
+    job.status == crate::job::Status::Interrupted
+        && (open_item
+            || job.resumes_at.is_some()
+            || job.reason.as_deref().is_some_and(crate::limits::is_limit))
+}
+
 impl Watch {
     pub fn new(turn: Orchestration) -> Watch {
         Watch {
@@ -575,7 +578,7 @@ impl Watch {
         let picked = item.options.iter().position(|o| o == answer.trim());
         let permitted = !matches!(
             item.kind.as_str(),
-            "permission" | "plan" | "question" | crate::sphere::inbox::QUESTION_KIND
+            "permission" | "plan" | "question" | "limit" | crate::sphere::inbox::QUESTION_KIND
         ) && INBOX_OPTIONS.contains(&answer.trim());
         match picked {
             Some(at) if permitted => Ok(at as i64 + 1),
@@ -660,6 +663,16 @@ pub(super) async fn call(
         }
         "oby_continue_job" => {
             let id = text("id");
+            if shared
+                .jobs
+                .get(&id)
+                .is_some_and(|job| usage_limit_wait(&job, shared.link.has_open_limit_item(&id)))
+            {
+                return Some(Err(
+                    "This job stopped at a usage limit; its next step is the owner's decision."
+                        .into(),
+                ));
+            }
             if let Err(why) = watch
                 .acting(&id)
                 .and_then(|()| watch.take(&id, &signature(&id), now))
@@ -1024,6 +1037,7 @@ mod tests {
         for (id, kind, answer) in [
             ("i1", "failed", "Dismiss"),
             ("i1", "permission", "Try again"),
+            ("i1", "limit", "Try again"),
         ] {
             let refused = why(watch.option(item(id, kind), answer).unwrap_err());
             assert!(
@@ -1040,6 +1054,41 @@ mod tests {
             .unwrap_err());
         assert!(closed.contains("changed"), "{closed}");
         assert!(why(watch.option(None, "Try again").unwrap_err()).contains("changed"));
+        for answer in ["Wait for the reset", "Move all jobs", "Don't retry"] {
+            let limit = Some(ItemView {
+                open: true,
+                job: "j1".into(),
+                kind: "limit".into(),
+                options: vec![answer.into()],
+            });
+            assert!(
+                why(watch.option(limit, answer).unwrap_err())
+                    .contains("outside the automatic allow-list")
+            );
+        }
+    }
+
+    #[test]
+    fn usage_limit_jobs_cannot_be_retried_by_the_orchestrator() {
+        let mut job = Job::new(
+            "j1".into(),
+            "repo".into(),
+            "fix".into(),
+            "Fix".into(),
+            "claude".into(),
+            "a".into(),
+        );
+        job.status = crate::job::Status::Interrupted;
+        assert!(!usage_limit_wait(&job, false));
+        assert!(usage_limit_wait(&job, true));
+        job.reason = Some("You've hit your usage limit.".into());
+        assert!(usage_limit_wait(&job, false));
+        job.reason = Some("A check failed.".into());
+        assert!(!usage_limit_wait(&job, false));
+        job.resumes_at = Some(123);
+        assert!(usage_limit_wait(&job, false));
+        job.status = crate::job::Status::Done;
+        assert!(!usage_limit_wait(&job, true));
     }
 
     /// Events come from obid's own changes, once: a job that ends failed, a Mac check that fails,
@@ -1085,6 +1134,8 @@ mod tests {
         assert!(seen.item(&item("confirm-1", "confirm")).is_empty());
         // A merge card is the owner's to answer (#853): no event, nothing for the brain.
         assert!(seen.item(&item("merge-j1-abc", "merge")).is_empty());
+        // A usage-limit choice is already for the owner; do not create another escalation.
+        assert!(seen.item(&item("limit-j1", "limit")).is_empty());
         let new = seen.item(&item("i2", "failed"));
         assert_eq!(new.len(), 1);
         assert_eq!(new[0].item.as_deref(), Some("i2"));

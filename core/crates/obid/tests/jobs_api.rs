@@ -1333,230 +1333,37 @@ fn a_check_that_keeps_failing_stops_at_a_limit() {
     assert_eq!(publish["detail"], "Dismissed");
 }
 
-/// A usage limit stops the round: it needs you with Try again, and obid tries it again by itself
-/// a minute after the reset Claude Code named, from the same session. A reset already a minute
-/// gone by (a stale one) arms nothing, so nothing loops.
+/// A provider limit stops work and groups jobs on that account for one owner decision (#1563).
 #[test]
-fn a_usage_limit_is_tried_again_after_its_reset() {
-    let folder = Folder::new("reset");
+fn usage_limit_jobs_wait_for_one_owner_decision() {
+    let folder = Folder::new("limit-owner-decision");
     let remote = fixture(&folder.0.join("fixture"));
     let obid = start(&folder.0, &config(&folder.0, &remote));
-    let post = |task: &str| {
-        post_job(
-            &obid,
-            json!({"repo": "obi-e2e/fixture-app", "kind": "research", "task": task}),
-        )
-        .body["id"]
-            .as_str()
-            .unwrap()
-            .to_owned()
+    let post = || {
+        post_job(&obid, json!({"repo":"obi-e2e/fixture-app", "kind":"research", "task":"LIMITED: 3600", "account":"Stub"})).body["id"].as_str().unwrap().to_owned()
     };
-    // Reset 55 seconds ago: obid tries again 5 seconds from now.
-    let id = post("LIMITED: -55");
-    let job = wait(&obid, &id);
+    let first = post();
+    let job = wait(&obid, &first);
     assert_eq!(job["status"], "interrupted", "{job}");
-    assert_eq!(job["nextStep"], "Try again", "{job}");
-    assert_eq!(
-        job["reason"],
-        "Claude AI usage limit reached. Oby tries again by itself after the reset."
-    );
-    assert!(job["resumesAt"].as_str().unwrap().ends_with('Z'), "{job}");
-    let session = job["session"].clone();
-    let again = until(&obid, &id, |j| {
-        j["round"] == 2 && j["status"] != "queued" && j["status"] != "running"
+    assert!(job["resumesAt"].is_null(), "{job}");
+    assert!(job["moves"].as_array().unwrap().is_empty(), "{job}");
+    let second = post();
+    let job = wait(&obid, &second);
+    assert_eq!(job["status"], "interrupted", "{job}");
+    let decisions = until(&obid, &first, |_| {
+        let response = request(&obid, "GET", "/v1/limit-decisions", None);
+        response.body.as_array().is_some_and(|ds| {
+            ds.iter()
+                .any(|d| d["jobs"].as_array().is_some_and(|jobs| jobs.len() == 2))
+        })
     });
-    assert_eq!(again["status"], "done", "{again}");
-    assert_eq!(again["session"], session, "{again}");
-    assert_eq!(again["resumesAt"], Value::Null, "{again}");
-    assert_eq!(again["reason"], Value::Null, "{again}");
-
-    let stale = post("LIMITED: -120");
-    let job = wait(&obid, &stale);
-    assert_eq!(job["status"], "interrupted", "{job}");
-    assert_eq!(job["nextStep"], "Try again", "{job}");
-    assert_eq!(job["resumesAt"], Value::Null, "{job}");
-    assert_eq!(job["reason"], "Claude AI usage limit reached.");
-}
-
-/// A job whose account hits its usage limit goes on by itself on another account of the tool with
-/// room (#871): the same session, worktree, branch and round, its agent told why, the move on the
-/// job. The full account is marked full, so routing passes it by. A window whose reset passed
-/// reads empty: a turn that merely failed there moves nothing. A job named to its account stays
-/// there; with `accountFailover` off nothing moves. While another account has room nobody is told
-/// every account is full; when every account is, the job waits for the first reset and the owner
-/// gets one `limit` item saying when.
-#[test]
-fn a_job_at_its_limit_goes_on_on_an_account_with_room() {
-    let folder = Folder::new("failover");
-    let remote = fixture(&folder.0.join("fixture"));
-    let mut config = config(&folder.0, &remote);
-    let accounts = folder.0.join("home/accounts");
-    config["agents"]["claude"]["accounts"] = json!([
-        {"id": "full", "name": "Full", "configDir": accounts.join("full")},
-        {"id": "room", "name": "Room", "configDir": accounts.join("room")},
-        {"id": "spare", "name": "Spare", "configDir": accounts.join("spare")}
-    ]);
-    let ends = (obi_protocol::time::now() + 10 * 86_400) * 1000;
-    for account in ["full", "room", "spare"] {
-        std::fs::create_dir_all(accounts.join(account)).unwrap();
-        let login = json!({"claudeAiOauth": {"accessToken": format!("tok-{account}-plain-test-login"), "expiresAt": ends}});
-        std::fs::write(
-            accounts.join(account).join(".credentials.json"),
-            login.to_string(),
-        )
-        .unwrap();
-    }
-    // Full's 5-hour window was full, and has reset since.
-    let gone = obi_protocol::time::now() - 600;
-    std::fs::write(
-        folder.0.join("home/usage.json"),
-        json!({"full": {"fiveHour": 1.0, "fiveHourResets": gone}}).to_string(),
-    )
-    .unwrap();
-    let obid = start(&folder.0, &config);
-    let post = |task: &str, account: Option<&str>| {
-        let mut job = json!({"repo": "obi-e2e/fixture-app", "kind": "research", "task": task});
-        if let Some(account) = account {
-            job["account"] = json!(account);
-        }
-        post_job(&obid, job)
-    };
-    let full_until = |id: &str| {
-        request(&obid, "GET", "/v1/status", None).body["accounts"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|a| a["id"] == id)
-            .cloned()
-            .unwrap()["fullUntil"]
-            .clone()
-    };
-    let limits = || -> Vec<Value> {
-        request(&obid, "GET", "/v1/inbox", None)
-            .body
-            .as_array()
-            .unwrap()
-            .iter()
-            .filter(|i| i["kind"] == "limit")
-            .cloned()
-            .collect()
-    };
-
-    // A turn that failed on Full, whose old window reads empty now: nothing moves.
-    let failed = post("FAIL", None).body["id"].as_str().unwrap().to_owned();
-    let job = wait(&obid, &failed);
-    assert_eq!(job["status"], "interrupted", "{job}");
-    assert_eq!(job["account"], "full", "{job}");
-    assert!(job["moves"].as_array().unwrap().is_empty(), "{job}");
-    assert_eq!(full_until("full"), Value::Null);
-
-    let id = post("LIMITED ON: full", None).body["id"]
-        .as_str()
-        .unwrap()
-        .to_owned();
-    let job = wait(&obid, &id);
-    assert_eq!(job["status"], "done", "{job}");
-    assert_eq!(job["account"], "room", "{job}");
-    assert_eq!(job["round"], 1, "{job}");
-    let session = job["session"].as_str().unwrap();
+    assert_eq!(decisions["status"], "interrupted");
+    let response = request(&obid, "GET", "/v1/limit-decisions", None);
     assert_eq!(
-        job["summary"],
-        format!("went on: resume={session} told=true"),
-        "{job}"
-    );
-    assert_eq!(job["moves"][0]["from"], "Claude Code · Full", "{job}");
-    assert_eq!(job["moves"][0]["to"], "Claude Code · Room", "{job}");
-    assert!(
-        job["moves"][0]["why"]
-            .as_str()
-            .unwrap()
-            .starts_with("Full hit its usage limit until "),
-        "{job}"
-    );
-    assert!(full_until("full").is_string());
-
-    // Named to Full by the owner, it stays there; Room and Spare have room, so no `limit` item.
-    let named = post("LIMITED ON: full", Some("Full")).body["id"]
-        .as_str()
-        .unwrap()
-        .to_owned();
-    let job = wait(&obid, &named);
-    assert_eq!(job["status"], "interrupted", "{job}");
-    assert_eq!(job["account"], "full", "{job}");
-    assert!(job["moves"].as_array().unwrap().is_empty(), "{job}");
-    assert!(limits().is_empty());
-
-    // Failover off: Room fills, and the job waits there although Spare has room.
-    let off = request(
-        &obid,
-        "PUT",
-        "/v1/settings/jobs",
-        Some(&json!({"accountFailover": false}).to_string()),
-    );
-    assert_eq!(off.status, 200, "{}", off.text);
-    assert_eq!(off.body["accountFailover"], false, "{}", off.text);
-    assert_eq!(
-        request(&obid, "GET", "/v1/settings/jobs", None).body["accountFailover"],
-        false
-    );
-    let stayed = post("LIMITED ON: room", None);
-    assert_eq!(stayed.body["account"], "room", "{}", stayed.text);
-    let stayed = stayed.body["id"].as_str().unwrap().to_owned();
-    let job = wait(&obid, &stayed);
-    assert_eq!(job["status"], "interrupted", "{job}");
-    assert!(job["moves"].as_array().unwrap().is_empty(), "{job}");
-    assert!(limits().is_empty());
-    let on = request(
-        &obid,
-        "PUT",
-        "/v1/settings/jobs",
-        Some(&json!({"accountFailover": true}).to_string()),
-    );
-    assert_eq!(on.status, 200, "{}", on.text);
-
-    // Every account full: the job waits for the first reset, and one `limit` item says when.
-    let last = post("LIMITED ON: tok", None);
-    assert_eq!(last.body["account"], "spare", "{}", last.text);
-    let id = last.body["id"].as_str().unwrap().to_owned();
-    let job = wait(&obid, &id);
-    assert_eq!(job["status"], "interrupted", "{job}");
-    assert!(job["resumesAt"].is_string(), "{job}");
-    assert!(job["moves"].as_array().unwrap().is_empty(), "{job}");
-    let limits = limits();
-    assert_eq!(limits.len(), 1, "{limits:?}");
-    assert_eq!(limits[0]["job"], id.as_str(), "{limits:?}");
-    assert!(
-        limits[0]["text"].as_str().unwrap().starts_with(
-            "Every Claude Code account is full. The first with room again is Full, at "
-        ),
-        "{limits:?}"
-    );
-    assert_eq!(
-        limits[0]["options"],
-        json!(["Try again", "Dismiss"]),
-        "{limits:?}"
-    );
-
-    // Named to Room with every account full: it stays there, and its item says so.
-    let named = post("LIMITED ON: tok", Some("Room")).body["id"]
-        .as_str()
-        .unwrap()
-        .to_owned();
-    assert_eq!(wait(&obid, &named)["status"], "interrupted");
-    // Made before the job ended.
-    let item = request(&obid, "GET", "/v1/inbox", None)
-        .body
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|i| i["kind"] == "limit" && i["job"] == named.as_str())
-        .cloned()
-        .unwrap();
-    assert!(
-        item["text"].as_str().unwrap().starts_with(
-            "Every Claude Code account is full. This job stays on Room, which has room again at "
-        ),
-        "{item}"
+        response.body.as_array().unwrap().len(),
+        1,
+        "{}",
+        response.text
     );
 }
 

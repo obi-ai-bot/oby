@@ -731,7 +731,7 @@ fn message_job(
         }
         let new = crate::jobs::follow_up(&job, &words);
         return match source {
-            Source::Owner | Source::Confirmed | Source::Untrusted => follow_up(
+            Source::Owner | Source::Api | Source::Confirmed | Source::Untrusted => follow_up(
                 shared,
                 &job,
                 NewJob {
