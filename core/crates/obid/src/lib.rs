@@ -59,6 +59,7 @@ pub mod secretspec;
 pub mod settings;
 pub mod sphere;
 pub mod store;
+pub mod task_conversation;
 pub mod teammates;
 pub mod tetrix;
 pub mod token;

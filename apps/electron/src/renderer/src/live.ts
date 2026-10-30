@@ -725,12 +725,17 @@ export async function deleteConversation(shown: string) {
   try { await api.deleteConversation(c); } catch (e) { if (!(e instanceof ApiError && e.status === 404)) say(e); }
 }
 
-// Told a job's agent something (POST /v1/jobs/{id}/messages)
-export async function tellJob(id: string, text: string, files: { path?: string }[] = []) {
+// Told a job's agent something (POST /v1/jobs/{id}/messages). conversation: from its page, so the
+// words go into the task's conversation, which obid makes now for a task that has none
+// (TASKCONV-4); the job, which names it, comes back
+export async function tellJob(id: string, text: string, files: { path?: string }[] = [], conversation = false): Promise<Job | undefined> {
   const paths = files.flatMap((f) => (f.path ? [f.path] : []));
   try {
-    const j = await api.message(id, text.trim(), paths);
-    set({ jobs: { ...state.jobs, [j.id]: j } });
+    const j = await api.message(id, text.trim(), paths, conversation);
+    // the follow-up it started, and the task itself, now in the conversation
+    const told = j.id === id ? j : await api.job(id).catch(() => undefined);
+    set({ jobs: { ...state.jobs, [j.id]: j, ...(told && told.id !== j.id ? { [told.id]: told } : {}) } });
+    return j;
   } catch (e) {
     // obid refused (files go only with a follow-up of a finished task): its files go too
     if (e instanceof ApiError && e.status) forgetUploads(paths);

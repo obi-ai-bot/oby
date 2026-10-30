@@ -2112,6 +2112,23 @@ impl Jobs {
         }
     }
 
+    /// Puts the job `id` in the conversation `conversation` (crate::task_conversation), its card
+    /// under the turn `turn` when the owner's words that started it are there. `None` for a job
+    /// obid doesn't have.
+    pub fn join_conversation(
+        &self,
+        id: &str,
+        conversation: &str,
+        turn: Option<String>,
+    ) -> Option<Job> {
+        self.update(id, |job| {
+            job.conversation = Some(conversation.to_owned());
+            if turn.is_some() {
+                job.turn = turn;
+            }
+        })
+    }
+
     /// Changes the job `id` with `change`, keeps it and tells the apps. `None` for a job obid
     /// doesn't have.
     fn update(&self, id: &str, change: impl FnOnce(&mut Job)) -> Option<Job> {
