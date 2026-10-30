@@ -1,6 +1,6 @@
 import { useSyncExternalStore } from 'react';
 import { ApiError, api, parseEvent, sseReader, type Conversation, type Event, type InboxItem, type Job, type LimitDecision, type Question, type Repo, type Status, type Turn } from './obid';
-import { AGENTS, modeLabel, type Ask, type AskKind, type Job as JobView, type Message, type Offer, type StageId } from './mock';
+import { AGENTS, TELL, modeLabel, type Ask, type AskKind, type Job as JobView, type Message, type Offer, type StageId } from './mock';
 import { replaceChats, type Chat } from './chats';
 import { replaceTasks, type Asking, type Task } from './tasks';
 import { keepFoldersOf, nameFoldersBy, saveFolders } from './folders';
@@ -155,7 +155,9 @@ function askOf(s: Live, j: Job): Ask | undefined {
 // An item's decision as a card shows it; detail: a permission's command, else the review a ready
 // review's Approve posts (as text). A GitHub offer is Sangam's "Start it?", as on To do's cards,
 // an Oby failure his "Failed", and the agent's own question (#858) his Question, the question its
-// headline as on his cards, quoted as the agent wrote it.
+// headline as on his cards, quoted as the agent wrote it, its options and his Tell it something
+// for the owner's own words (obid takes any words as the answer), so one with no options is
+// answered too.
 const LABELLED: Record<string, AskKind> = { github: 'start', failure: 'failed', agentQuestion: 'question' };
 export const itemAsk = (item: InboxItem, detail?: string): Ask => {
   // Oby's ask for a repository's check (set_check): the command under the question, and the
@@ -166,7 +168,7 @@ export const itemAsk = (item: InboxItem, detail?: string): Ask => {
     const options = ['Use it', 'Edit', item.confirm!.payload?.was ? 'Keep it' : 'No check'];
     return { kind: 'check', headline: `Use this as ${item.confirm!.target}’s check before publishing?`, text: item.text, options, detail: check };
   }
-  if (item.kind === 'agentQuestion') return { kind: 'question', headline: item.text, text: '', options: item.options };
+  if (item.kind === 'agentQuestion') return { kind: 'question', headline: item.text, text: '', options: [...item.options, TELL] };
   return {
     kind: LABELLED[item.kind] ?? item.kind as AskKind, headline: item.headline ?? item.title, text: item.headline ? item.text : '',
     options: item.options, recommended: item.recommended ?? undefined, detail: detail ?? item.watch?.review ?? undefined,
@@ -706,7 +708,7 @@ const DECISIONS: Record<string, 'allow' | 'always' | 'deny'> = { Allow: 'allow',
 export async function answerJob(id: string, option: string, words?: string) {
   if (id.startsWith('limit:')) return answerLimitAsk(id, option).catch(say);
   const j = state.jobs[id], item = itemOf(state, id) ?? state.inbox.find((i) => i.id === id), ask = j && askOf(state, j);
-  const shown = option === 'Edit' && words ? `Use ${words}` : option;
+  const shown = option === 'Edit' && words ? `Use ${words}` : option === TELL && words ? words : option;
   if (ask) set({ answered: { ...state.answered, [id]: { ask, option: shown, item: item?.id } } });
   else if (item) answering(item.id, true);
   try {
@@ -725,13 +727,11 @@ export async function answerJob(id: string, option: string, words?: string) {
     else if (item?.kind === 'permission' && j?.permission && DECISIONS[option]) {
       const next = await api.permission(id, { id: j.permission.id, decision: DECISIONS[option] });
       set({ jobs: { ...state.jobs, [next.id]: next } });
-    } else if (item?.kind === 'agentQuestion' && j?.permission && option !== 'Later') {
-      // the agent's question: its option, as the agent hears it (the call's next question, if any,
-      // comes back in its place)
-      const next = await api.permission(id, { id: j.permission.id, answer: option });
-      set({ jobs: { ...state.jobs, [next.id]: next } });
     } else if (item) {
-      const body = option === 'Later' ? { later: new Date(Date.now() + 3600_000).toISOString().replace(/\.\d+Z$/, 'Z') } : { answer: option };
+      // (an agent's question by its own item, never the job's permission, which can lag behind the
+      // inbox: Tell it something sends the owner's words as its answer)
+      const said = option === TELL && words ? words : option;
+      const body = option === 'Later' ? { later: new Date(Date.now() + 3600_000).toISOString().replace(/\.\d+Z$/, 'Z') } : { answer: said };
       set(apply(state, { kind: 'inbox', item: await api.answer(item.id, body) }));
     } else if (option === 'Dismiss') {
       // a failed job with no item: let go

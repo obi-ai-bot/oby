@@ -1477,7 +1477,7 @@ fn ended_ok(obid: &Obid, id: &str) {
 /// stopping a waiting job drops its permission and settles its inbox item; in `acceptEdits` a
 /// file edit in the worktree goes through and a command asks; in `plan` an edit is refused.
 #[test]
-fn modes_answer_what_they_allow_and_stopping_drops_the_permission() {
+fn bypass_6_modes_answer_what_they_allow_and_stopping_drops_the_permission() {
     let folder = Folder::new("modes");
     let (obid, _) = obid(&folder);
 

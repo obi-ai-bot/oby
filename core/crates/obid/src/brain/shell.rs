@@ -1238,7 +1238,7 @@ mod tests {
     /// owner's own choice that nothing asks, it runs with the network at once, tainted or not; a
     /// deny rule still refuses it, and a secret still asks.
     #[test]
-    fn installs_and_the_network_ask_in_every_mode_but_bypass() {
+    fn bypass_7_installs_and_the_network_ask_in_every_mode_but_bypass() {
         let allow_all = [
             rule("Bash(brew install:*)", "allow"),
             rule("Bash(curl:*)", "allow"),

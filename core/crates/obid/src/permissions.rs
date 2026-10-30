@@ -2613,11 +2613,13 @@ pub struct Kept {
 }
 
 impl Kept {
+    /// No saved mode is a new install's Bypass (#1570); a saved one obid can't read (a newer obid's,
+    /// a hand edit) fails closed to Ask, as a job's does (`Jobs::mode_of`).
     pub fn default_mode(&self) -> Mode {
-        self.mode
-            .as_deref()
-            .and_then(Mode::parse)
-            .unwrap_or(Mode::Bypass)
+        match self.mode.as_deref() {
+            None => Mode::Bypass,
+            Some(mode) => Mode::parse(mode).unwrap_or(Mode::Ask),
+        }
     }
 }
 
@@ -2625,13 +2627,17 @@ pub fn path(home: &Path) -> PathBuf {
     home.join("permissions.json")
 }
 
-/// What `home` keeps, or nothing yet. A file that doesn't read is logged and taken as empty.
+/// What `home` keeps, or nothing yet (no file: a new install, Bypass). A file that doesn't read is
+/// logged and fails closed: no rules, and Ask until the owner picks a mode again (#1570).
 pub fn load(home: &Path) -> Kept {
     match std::fs::read(path(home)) {
         Err(_) => Kept::default(),
         Ok(bytes) => serde_json::from_slice(&bytes).unwrap_or_else(|e| {
             tracing::warn!("{} doesn't read: {e}", path(home).display());
-            Kept::default()
+            Kept {
+                mode: Some(Mode::Ask.as_str().to_owned()),
+                rules: Vec::new(),
+            }
         }),
     }
 }
@@ -2694,7 +2700,7 @@ mod tests {
     /// A repository's hooks wait for the owner in every mode but Bypass, and no saved rule answers
     /// them here (#1570).
     #[test]
-    fn a_repositorys_hooks_ask_in_every_mode_but_bypass() {
+    fn bypass_3_a_repositorys_hooks_ask_in_every_mode_but_bypass() {
         let call = Call {
             tool: REPOSITORY_HOOKS.into(),
             command: Some(".cursor/hooks.json (stop): ./x.sh".into()),
@@ -2705,6 +2711,15 @@ mod tests {
             assert_eq!(decide_in(&call, mode, &saved), Verdict::Ask, "{mode:?}");
         }
         assert_eq!(decide_in(&call, Mode::Bypass, &saved), Verdict::Allow);
+        // A hook that touches secrets asks in Bypass too, and no rule answers it.
+        let secret = Call {
+            tool: REPOSITORY_HOOKS.into(),
+            command: Some("cat ~/.ssh/id_rsa".into()),
+            ..Call::default()
+        };
+        for mode in Mode::ALL {
+            assert_eq!(decide_in(&secret, mode, &saved), Verdict::Ask, "{mode:?}");
+        }
     }
 
     /// PermissionTests.eachModeAllowsOrAsks.
@@ -3139,7 +3154,27 @@ mod tests {
             (None, None, Some("It touches secrets or the vault."))
         );
         assert_eq!(Mode::parse("sandbox"), Some(Mode::Sandbox));
-        assert_eq!(Kept::default().default_mode(), Mode::Bypass);
+    }
+
+    /// BYPASS-1: no file, or a file with no saved mode, is a new install's Bypass; a saved mode is
+    /// kept (BYPASS-2); one obid can't read, or a file that doesn't read, fails closed to Ask.
+    #[test]
+    fn bypass_1_a_missing_mode_is_bypass_and_an_unreadable_one_is_ask() {
+        let home = std::env::temp_dir().join(format!("obid-kept-{}", new_id()));
+        std::fs::create_dir_all(&home).unwrap();
+        assert_eq!(load(&home).default_mode(), Mode::Bypass, "no file");
+        for (text, mode) in [
+            (r#"{"rules": []}"#, Mode::Bypass),
+            (r#"{"mode": "sandbox"}"#, Mode::Sandbox),
+            (r#"{"mode": "acceptEdits"}"#, Mode::AcceptEdits),
+            (r#"{"mode": "yolo"}"#, Mode::Ask),
+            (r#"{"mode": 3}"#, Mode::Ask),
+            ("not json", Mode::Ask),
+        ] {
+            std::fs::write(path(&home), text).unwrap();
+            assert_eq!(load(&home).default_mode(), mode, "{text}");
+        }
+        let _ = std::fs::remove_dir_all(&home);
     }
 
     /// Commands are read as a shell reads them: what a message or a pattern only says doesn't
@@ -3968,7 +4003,7 @@ mod tests {
     /// that variable, as `echo $NAME` does, and `git config`'s keys and patterns aren't files.
     /// Dumping the environment, a secret's name and a secret's file still ask.
     #[test]
-    fn only_what_touches_secrets_asks_in_bypass() {
+    fn bypass_4_only_what_touches_secrets_asks_in_bypass() {
         for command in [
             "printenv HTTPS_PROXY",
             "printenv -0 PATH HOME",

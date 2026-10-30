@@ -3318,7 +3318,7 @@ fn only_the_owner_saves_a_rule_and_never_for_secrets() {
 /// Upgrading doesn't change a mode the owner saved: `sandbox` (#586's old default) stays, and its
 /// jobs ask.
 #[test]
-fn a_new_install_starts_in_bypass_and_a_saved_mode_stays() {
+fn bypass_1_2_a_new_install_starts_in_bypass_and_a_saved_mode_stays() {
     for (kept, mode) in [
         (None, "bypass"),
         (Some(json!({"rules": []})), "bypass"),
@@ -3379,7 +3379,7 @@ fn a_new_install_starts_in_bypass_and_a_saved_mode_stays() {
 /// any mode, Bypass too, doesn't settle its card, and the agent hears nothing until the owner
 /// answers it.
 #[test]
-fn a_mode_change_never_settles_a_secret() {
+fn bypass_4_a_mode_change_never_settles_a_secret() {
     let folder = Folder::new("sandbox-secret-mode");
     let remote = fixture(&folder.0.join("fixture"));
     let obid = start(&folder.0, &config(&folder.0, &remote));

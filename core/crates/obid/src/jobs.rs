@@ -3784,8 +3784,9 @@ impl Jobs {
     /// the owner's yes, which Cursor would otherwise run as its own children, outside obid's
     /// prompts: a card like any permission's, allowed once, or always for these very hooks in this
     /// repository (the rule `RepositoryHooks(<digest>)`: a changed hook asks again). A no starts
-    /// nothing, and says Claude Code and Codex don't run them; a stop ends the wait. In Bypass
-    /// they run without a card, as the owner chose (#1570).
+    /// nothing, and says Claude Code and Codex don't run them; a stop ends the wait. The mode
+    /// decides first (`permissions::decide`): in Bypass they run without a card, as the owner
+    /// chose, unless they touch secrets, which ask in every mode and no rule answers (#1570).
     async fn allow_repository_hooks(
         &self,
         id: &str,
@@ -3796,22 +3797,42 @@ impl Jobs {
         let detail = hooks.join("\n");
         let digest = hex::encode(obi_protocol::keys::sha256(detail.as_bytes()));
         let rule = format!("{}({})", permissions::REPOSITORY_HOOKS, &digest[..16]);
-        if self
-            .get(id)
-            .is_some_and(|j| Self::mode_of(&j) == Mode::Bypass)
-            || self
-                .rules_for(repo)
+        let runs: Vec<&str> = hooks
+            .iter()
+            .map(|h| h.split_once(": ").map_or(h.as_str(), |(_, run)| run))
+            .collect();
+        // What the hooks run, one command a line, read as the agent's commands are: the mode
+        // decides, as `reconsider` does when it changes, and secrets ask in every mode (#1570).
+        let call = Call {
+            tool: permissions::REPOSITORY_HOOKS.into(),
+            command: Some(runs.join("\n")),
+            ..Call::default()
+        };
+        let Some(job) = self.get(id) else {
+            return Err(End::Failed("It stopped before Cursor started.".into()));
+        };
+        let bounds = self.bounds(&job, &self.worktree_path(id));
+        let rules = self.rules_for(repo);
+        let secret = permissions::reach(&call, &bounds) == Some(permissions::Reach::Secrets);
+        match permissions::decide(&call, Self::mode_of(&job), &rules, &bounds) {
+            permissions::Verdict::Allow => return Ok(()),
+            permissions::Verdict::Deny(why) => {
+                return Err(End::Failed(format!("Cursor didn't start: {why}")));
+            }
+            permissions::Verdict::Ask => {}
+        }
+        // The owner's Always for these very hooks; never for one that touches secrets.
+        if !secret
+            && rules
                 .iter()
                 .any(|r| r.rule == rule && r.decision == "allow")
         {
             return Ok(());
         }
-        let runs = hooks
-            .iter()
-            .map(|h| h.split_once(": ").map_or(h.as_str(), |(_, run)| run))
-            .collect::<Vec<_>>()
-            .join(", ");
-        let title = format!("Let Cursor run this repository's hooks: {runs}");
+        let title = format!(
+            "Let Cursor run this repository's hooks: {}",
+            runs.join(", ")
+        );
         let permission = Permission {
             id: permissions::new_id(),
             tool: permissions::REPOSITORY_HOOKS.into(),
@@ -3821,17 +3842,15 @@ impl Jobs {
                 title
             },
             detail: detail.chars().take(2000).collect(),
-            rule: Some(rule),
-            always: Some(format!(
-                "Yes, and don't ask again for these hooks in {repo}"
-            )),
-            why: Some("Cursor runs a repository's hooks itself, outside obid's prompts.".into()),
+            rule: (!secret).then_some(rule),
+            always: (!secret)
+                .then(|| format!("Yes, and don't ask again for these hooks in {repo}")),
+            why: Some(if secret {
+                permissions::Reach::Secrets.why().into()
+            } else {
+                "Cursor runs a repository's hooks itself, outside obid's prompts.".into()
+            }),
             question: None,
-        };
-        let call = Call {
-            tool: permissions::REPOSITORY_HOOKS.into(),
-            command: Some(detail),
-            ..Call::default()
         };
         let (reply, mut answer) = tokio::sync::oneshot::channel();
         let first = {
@@ -15256,7 +15275,7 @@ mod tests {
     /// trust (the brain's naming it, continuing or carrying on a job in it waits for a Confirm)
     /// only where it isn't the owner's default.
     #[test]
-    fn an_approved_plan_goes_on_in_the_owners_default_mode() {
+    fn bypass_7_an_approved_plan_goes_on_in_the_owners_default_mode() {
         let root = std::env::temp_dir().join(format!("obid-approved-{}", uuid::Uuid::new_v4()));
         let config = crate::config::Config::parse(
             &json!({"listen": "127.0.0.1:0", "home": root.join("home"), "owner": "o"}).to_string(),
@@ -15290,7 +15309,7 @@ mod tests {
     /// too: they chose it for this work. A Confirm's words (what Oby proposed) start it in the
     /// owner's default, as `follow_up` has it.
     #[tokio::test]
-    async fn the_owners_words_carry_a_jobs_bypass_into_its_follow_up() {
+    async fn bypass_7_the_owners_words_carry_a_jobs_bypass_into_its_follow_up() {
         let root = std::env::temp_dir().join(format!("obid-follow-mode-{}", uuid::Uuid::new_v4()));
         let account = root.join("accounts/c");
         std::fs::create_dir_all(&account).unwrap();
@@ -15347,7 +15366,7 @@ mod tests {
     /// agent hears them all as the tool's input. A new mode, an allow or untrusted words don't
     /// answer it; a no declines it; a stop drops it.
     #[tokio::test]
-    async fn the_agents_question_waits_for_the_owners_answer() {
+    async fn bypass_5_the_agents_question_waits_for_the_owners_answer() {
         let root = std::env::temp_dir().join(format!("obid-question-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         let config = crate::config::Config::parse(
