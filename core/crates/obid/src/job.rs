@@ -294,6 +294,15 @@ pub struct Job {
     pub check_asked: bool,
     pub model: Option<String>,
     pub effort: Option<String>,
+    /// `model` is its account's (Settings › Agents, #1574), not one the job named: on another
+    /// account it's that one's. Kept in its file, never in the API; a job from before reads as
+    /// naming its own.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub model_from_account: bool,
+    /// Its plan called it complex: it runs at its account's complex-task effort (#1574). Kept in
+    /// its file, never in the API.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub complex: bool,
     pub notes: Option<Vec<String>>,
     pub files: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -739,6 +748,8 @@ impl Job {
             check_asked: false,
             model: None,
             effort: None,
+            model_from_account: false,
+            complex: false,
             notes: None,
             files: None,
             attachments: None,
@@ -1088,7 +1099,8 @@ impl Job {
             "check": self.check,
             "model": self.model,
             "effort": self.effort,
-            "complexity": null,
+            // obid (#1574): `complex` when the plan called it so, else null.
+            "complexity": self.complex.then_some("complex"),
             "notes": self.notes,
             "pullRequest": self.pull_request.as_ref().map(crate::github::PullRequest::to_json),
             "pullRequestError": self.pull_request_error,

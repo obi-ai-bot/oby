@@ -477,6 +477,9 @@ pub struct NewJob {
     pub rounds: Option<u32>,
     pub check: Option<String>,
     pub model: Option<String>,
+    /// The plan called it complex: it runs at its account's complex-task effort (#1574).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub complex: bool,
     pub files: Option<Vec<String>>,
     pub attachments: Option<Vec<String>>,
     pub mode: Option<String>,
@@ -569,7 +572,20 @@ fn on_tool(job: &mut Job, tool: Tool) {
     if job.agent != tool.id() {
         job.agent = tool.id().into();
         job.model = None;
+        job.model_from_account = false;
     }
+}
+
+/// The model and effort `job` runs on, on its account as it is now (#1574): a model it named
+/// itself stays; else its account's, as Settings › Agents set them (`tuning`, by account); neither,
+/// the tool's own. Again whenever it changes account.
+fn tune(job: &mut Job, tuning: &std::collections::BTreeMap<String, crate::settings::Tuning>) {
+    let kept = tuning.get(&job.account).cloned().unwrap_or_default();
+    if job.model.is_none() || job.model_from_account {
+        job.model_from_account = kept.model.is_some();
+        job.model = kept.model.clone();
+    }
+    job.effort = kept.effort(job.complex).map(str::to_owned);
 }
 
 /// Who adds the inbox's Confirm items (crate::sphere::link).
@@ -2227,7 +2243,21 @@ impl Jobs {
 
     /// The owner's preferred tool only while it has a signed-in account with room. The caller
     /// retains the planner's automatic choice when this returns none.
+    /// The account new tasks go to (`defaultAccount`, #1573), only while routing would put a task
+    /// on it: signed in, with room, not being changed. What the brain is told, and what
+    /// [`Jobs::preferred_agent`] takes first.
+    pub(crate) fn preferred_account(&self) -> Option<(Tool, String)> {
+        let id = crate::settings::load(&self.config.home).default_account?;
+        let (tool, account) = self.pick(None, None).ok()?;
+        (account.id == id && signed_in(tool, &account, login_home().as_deref()))
+            .then_some((tool, id))
+    }
+
+    /// The account new tasks go to comes first ([`Jobs::preferred_account`]): its tool.
     pub(crate) fn preferred_agent(&self) -> Option<String> {
+        if let Some((tool, _)) = self.preferred_account() {
+            return Some(tool.id().into());
+        }
         let agent = crate::settings::load(&self.config.home).default_agent;
         if agent == "auto" {
             return None;
@@ -2238,7 +2268,8 @@ impl Jobs {
 
     /// The tool and account a job runs on: the tool named (`claude`, `codex`, `cursor`; `auto` or
     /// none for any), and the account named (by id or name), or the first signed-in account
-    /// of the tools in order (Claude Code, then Codex, then Cursor), else the first account.
+    /// of the tools in order (Claude Code, then Codex, then Cursor), else the first account. With
+    /// none named, the account new tasks go to (`defaultAccount`, #1573) is tried first.
     fn pick(
         &self,
         agent: Option<&str>,
@@ -2273,12 +2304,24 @@ impl Jobs {
         let named = named
             .map(str::trim)
             .filter(|n| !n.is_empty() && !n.eq_ignore_ascii_case("auto"));
+        // The owner's default goes first; signed out or without room, it's passed over as any is.
+        let preferred = named
+            .is_none()
+            .then(|| crate::settings::load(&self.config.home).default_account)
+            .flatten();
+        let mut tools = tools;
+        if let Some(id) = &preferred {
+            tools.sort_by_key(|t| !self.accounts(*t).iter().any(|a| &a.id == id));
+        }
         let home = login_home();
         let now = obi_protocol::time::now();
         let mut first = None;
         let mut held = Vec::new();
         for tool in &tools {
             let mut accounts = self.accounts(*tool);
+            if let Some(id) = &preferred {
+                accounts.sort_by_key(|a| &a.id != id);
+            }
             if let Some(changing) = named.and_then(|named| {
                 accounts
                     .iter()
@@ -2485,10 +2528,7 @@ impl Jobs {
             return Err(Refused("That isn't a base branch obid can use.".into()));
         }
         if let Some(model) = &new.model
-            && (model.trim().is_empty()
-                || !model
-                    .bytes()
-                    .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_')))
+            && !crate::settings::valid_model(model)
         {
             return Err(Refused(format!(
                 "{model} isn't a model of {}.",
@@ -2581,9 +2621,11 @@ impl Jobs {
                 if let Some((tool, first, Some(now))) = self.in_reserve(asked.as_deref())
                     && (job.waiting.as_ref() != Some(&now) || job.account != first.id)
                 {
+                    let tuning = crate::settings::load(&self.config.home).tuning;
                     self.update(&job.id, |job| {
                         on_tool(job, tool);
                         job.account = first.id.clone();
+                        tune(job, &tuning);
                         job.step = room_step(&now);
                         job.waiting = Some(now);
                     });
@@ -2591,9 +2633,11 @@ impl Jobs {
                 continue;
             };
             let on = format!("{} · {}", tool.name(), account.name);
+            let tuning = crate::settings::load(&self.config.home).tuning;
             self.update(&job.id, |job| {
                 on_tool(job, tool);
                 job.account = account.id.clone();
+                tune(job, &tuning);
                 job.waiting = None;
                 job.step = "Starting".into();
                 job.changed(format!("Started when an account had room: {on}"));
@@ -2655,6 +2699,8 @@ impl Jobs {
             (COMMITTING.contains(&job.kind.as_str()) && job.check.is_some()).then_some(CHECK_ROUNDS)
         });
         job.model = new.model.map(|m| m.trim().to_owned());
+        job.complex = new.complex;
+        tune(&mut job, &crate::settings::load(&self.config.home).tuning);
         job.files = files;
         job.attachments = new.attachments;
         job.conversation = new.conversation;
@@ -5037,23 +5083,21 @@ impl Jobs {
         };
         let from = place(&job.agent, &job.account);
         let to = format!("{} · {}", tool.name(), chosen.name);
-        let tool_changed = tool.id() != job.agent;
         let named =
             account.is_some_and(|a| !a.trim().is_empty() && !a.eq_ignore_ascii_case("auto"));
         let mut blocked = false;
+        let tuning = crate::settings::load(&self.config.home).tuning;
         let changed = self.update(id, |job| {
             if job.account_limit_blocked && !source.approves_limit() {
                 blocked = true;
                 return;
             }
-            job.agent = tool.id().to_owned();
             job.account = chosen.id.clone();
             job.named = named;
             // A new session on the new choice; another tool runs its own model.
             job.session = None;
-            if tool_changed {
-                job.model = None;
-            }
+            on_tool(job, tool);
+            tune(job, &tuning);
             job.moves.push(crate::job::Move {
                 from: from.clone(),
                 to: to.clone(),
@@ -6764,6 +6808,7 @@ impl Jobs {
                     let options = codex::Options {
                         resume: job.session.clone(),
                         model: job.model.clone(),
+                        effort: job.effort.clone(),
                         plan,
                         instructions: None,
                         no_commands: false,
@@ -8490,6 +8535,9 @@ impl Jobs {
                 .collect();
                 if let Some(model) = &job.model {
                     flags.extend(["--model".into(), model.into()]);
+                }
+                if let Some(effort) = &job.effort {
+                    flags.extend(["--effort".into(), effort.into()]);
                 }
                 if let Some(session) = &job.session {
                     flags.extend(["--resume".into(), session.into()]);
@@ -11712,7 +11760,8 @@ pub fn follow_up(job: &Job, words: &str) -> NewJob {
         agent: Some(job.agent.clone()),
         base: job.base.clone(),
         check: job.check.clone(),
-        model: job.model.clone(),
+        model: job.model.clone().filter(|_| !job.model_from_account),
+        complex: job.complex,
         mode: job.mode.clone().filter(|m| m != "bypass"),
         conversation: job.conversation.clone(),
         branch: (unmerged && job.published.is_some() && job.pull_request_open())
@@ -13594,6 +13643,207 @@ mod tests {
         .unwrap();
         let jobs = Jobs::open(config, crate::events::Events::new(), sandbox).unwrap();
         (root, clone, base, jobs)
+    }
+
+    /// AGENTS-1, AGENTS-2 and AGENTS-6 (docs/contracts/agents.md): with no account named, new work
+    /// goes to the account new tasks go to, and the planner's agent follows it; signed out, out of
+    /// room or unset, routing's own order; a job takes its account's model and effort, a complex
+    /// one its complex-task effort.
+    #[tokio::test]
+    async fn agents_1_2_6_new_tasks_go_to_the_default_account_on_its_model() {
+        let root =
+            std::env::temp_dir().join(format!("obid-default-account-{}", uuid::Uuid::new_v4()));
+        let folder = |id: &str| root.join("accounts").join(id);
+        for id in ["c1", "c2"] {
+            std::fs::create_dir_all(folder(id)).unwrap();
+            std::fs::write(folder(id).join(".credentials.json"), "{}").unwrap();
+        }
+        std::fs::create_dir_all(folder("x")).unwrap();
+        std::fs::write(folder("x").join("auth.json"), "{}").unwrap();
+        let config = crate::config::Config::parse(
+            &json!({"listen": "127.0.0.1:0", "home": root.join("home"), "owner": "o",
+                "repos": [{"repo": "o/r", "remote": "https://example.com/o/r.git"}],
+                "agents": {"claude": {"bin": "/usr/bin/true", "accounts": [
+                               {"id": "c1", "name": "One", "configDir": folder("c1")},
+                               {"id": "c2", "name": "Two", "configDir": folder("c2")}]},
+                           "codex": {"bin": "/usr/bin/true", "accounts": [{"id": "x", "name": "Codex", "configDir": folder("x")}]}}})
+            .to_string(),
+        )
+        .unwrap();
+        let jobs = Jobs::open(
+            config,
+            crate::events::Events::new(),
+            Err("no sandbox".into()),
+        )
+        .unwrap();
+        let home = jobs.config.home.clone();
+        let picked =
+            |agent: Option<&str>, named: Option<&str>| jobs.pick(agent, named).unwrap().1.id;
+        let default = |id: Option<&str>| {
+            crate::settings::update(&home, |s| s.default_account = id.map(str::to_owned)).unwrap()
+        };
+        assert_eq!(picked(None, None), "c1", "unset: routing's own order");
+        assert_eq!(jobs.preferred_agent(), None);
+
+        // AGENTS-1: the default, whatever its tool; the planner's agent follows it.
+        default(Some("x"));
+        assert_eq!(picked(None, None), "x");
+        assert_eq!(jobs.preferred_agent().as_deref(), Some("codex"));
+        default(Some("c2"));
+        assert_eq!(picked(None, None), "c2");
+        assert_eq!(picked(Some("claude"), None), "c2");
+        assert_eq!(picked(Some("codex"), None), "x", "another tool asked for");
+        assert_eq!(picked(None, Some("c1")), "c1", "an account named");
+        assert_eq!(jobs.preferred_agent().as_deref(), Some("claude"));
+        assert_eq!(jobs.preferred_account(), Some((Tool::Claude, "c2".into())));
+        crate::settings::update(&home, |s| s.default_agent = "codex".into()).unwrap();
+        assert_eq!(
+            jobs.preferred_agent().as_deref(),
+            Some("claude"),
+            "the default account before the default agent"
+        );
+
+        // AGENTS-2: out of room, then signed out, it's passed over.
+        let now = obi_protocol::time::now();
+        jobs.mark_full("c2", None, now);
+        assert_eq!(picked(None, None), "c1");
+        assert_eq!(
+            jobs.preferred_account(),
+            None,
+            "the brain isn't told a full one"
+        );
+        assert_eq!(
+            jobs.preferred_agent().as_deref(),
+            Some("codex"),
+            "then the default agent (#1568)"
+        );
+        crate::settings::update(&home, |s| s.default_agent = "auto".into()).unwrap();
+        assert_eq!(jobs.preferred_agent(), None);
+        let room = crate::usage::Usage {
+            five_hour: Some(0.1),
+            seven_day: Some(0.1),
+            full_until: Some(now - 1),
+            ..Default::default()
+        };
+        jobs.usage.record("c2", &room);
+        assert_eq!(picked(None, None), "c2");
+        std::fs::remove_file(folder("c2").join(".credentials.json")).unwrap();
+        assert_eq!(picked(None, None), "c1");
+        assert_eq!(jobs.preferred_agent(), None);
+        std::fs::write(folder("c2").join(".credentials.json"), "{}").unwrap();
+
+        // AGENTS-6: the account's model and effort, a complex task's own effort, a named model.
+        crate::settings::update(&home, |s| {
+            s.tuning.insert(
+                "c2".into(),
+                crate::settings::Tuning {
+                    model: Some("claude-sonnet-5-5".into()),
+                    effort: Some("high".into()),
+                    complex_effort: Some("max".into()),
+                },
+            )
+        })
+        .unwrap();
+        let made = |model: Option<&str>, complex: bool| {
+            let job = jobs
+                .create(NewJob {
+                    repo: "o/r".into(),
+                    kind: "research".into(),
+                    task: "Look".into(),
+                    model: model.map(str::to_owned),
+                    complex,
+                    ..Default::default()
+                })
+                .unwrap();
+            (job.account, job.model, job.effort)
+        };
+        let some = |s: &str| Some(s.to_owned());
+        assert_eq!(
+            made(None, false),
+            ("c2".into(), some("claude-sonnet-5-5"), some("high"))
+        );
+        assert_eq!(
+            made(None, true),
+            ("c2".into(), some("claude-sonnet-5-5"), some("max"))
+        );
+        assert_eq!(
+            made(Some("claude-haiku-5-5"), false),
+            ("c2".into(), some("claude-haiku-5-5"), some("high"))
+        );
+        default(None);
+        assert_eq!(
+            made(None, false),
+            ("c1".into(), None, None),
+            "no choice: the tool's own"
+        );
+
+        // AGENTS-6, a move: the new account's model and effort; a model the job named stays; on
+        // another tool, that tool's.
+        let on = |id: &str| {
+            let job = jobs.get(id).unwrap();
+            (job.account, job.model, job.effort)
+        };
+        let queued = jobs
+            .create(NewJob {
+                repo: "o/r".into(),
+                kind: "research".into(),
+                task: "Look".into(),
+                complex: true,
+                ..Default::default()
+            })
+            .unwrap()
+            .id;
+        jobs.stop(&queued);
+        let moved = |account: &str| {
+            jobs.change(&queued, None, Some(account), "by test", Source::Owner)
+                .unwrap()
+                .unwrap();
+            on(&queued)
+        };
+        assert_eq!(
+            moved("c2"),
+            ("c2".into(), some("claude-sonnet-5-5"), some("max"))
+        );
+        assert_eq!(moved("c1"), ("c1".into(), None, None));
+        jobs.update(&queued, |job| job.model = Some("claude-haiku-5-5".into()));
+        assert_eq!(
+            moved("c2"),
+            ("c2".into(), some("claude-haiku-5-5"), some("max"))
+        );
+        jobs.change(&queued, Some("codex"), None, "by test", Source::Owner)
+            .unwrap()
+            .unwrap();
+        assert_eq!(on(&queued), ("x".into(), None, None));
+
+        // AGENTS-6, a job that waited for room: it starts on the account with room on that one's.
+        let reserved = crate::usage::Usage {
+            five_hour: Some(0.1),
+            seven_day: Some(0.85),
+            five_hour_resets: Some(now + 3600),
+            seven_day_resets: Some(now + 86_400),
+            ..Default::default()
+        };
+        for id in ["c1", "c2", "x"] {
+            jobs.usage.record(id, &reserved);
+        }
+        let waiting = jobs
+            .create(NewJob {
+                repo: "o/r".into(),
+                kind: "research".into(),
+                task: "Wait".into(),
+                agent: Some("claude".into()),
+                ..Default::default()
+            })
+            .unwrap();
+        assert!(waiting.waiting.is_some(), "{waiting:?}");
+        assert_eq!(on(&waiting.id), ("c1".into(), None, None));
+        jobs.usage.record("c2", &room);
+        jobs.room_for_waiting();
+        assert_eq!(
+            on(&waiting.id),
+            ("c2".into(), some("claude-sonnet-5-5"), some("high"))
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// A job waiting for room (#872) keeps saying what holds it as the accounts change, on the

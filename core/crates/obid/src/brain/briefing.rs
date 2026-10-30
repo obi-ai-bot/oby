@@ -71,6 +71,8 @@ pub struct Briefing {
     /// The inbox items waiting for the owner, the longest-waiting first.
     pub inbox: Vec<Item>,
     pub accounts: Vec<Account>,
+    /// The account new tasks go to (Settings › Agents, `defaultAccount`), while routing would use it.
+    pub default_account: Option<String>,
     /// The repositories jobs can work in, from the configuration.
     pub repos: Vec<String>,
     pub max_running: usize,
@@ -203,6 +205,12 @@ impl Briefing {
         }
         for account in &self.accounts {
             let mut parts = vec!["no usage reported yet".to_owned()];
+            if self.default_account.as_ref() == Some(&account.id) {
+                parts.insert(
+                    0,
+                    "new tasks go here unless the user names another agent".into(),
+                );
+            }
             if account.running > 0 {
                 parts.push(format!(
                     "{} job{} running",
@@ -1075,6 +1083,20 @@ mod tests {
         );
     }
 
+    /// AGENTS-3 (docs/contracts/agents.md): the brain is told which account new tasks go to.
+    #[test]
+    fn agents_3_the_briefing_marks_the_default_account() {
+        let mut told = briefing(vec![], vec![]);
+        assert!(!told.text().contains("new tasks go here"));
+        told.default_account = Some("work".into());
+        assert!(
+            told.text()
+                .contains("- Codex · Work: new tasks go here unless the user names another agent; no usage reported yet"),
+            "{}",
+            told.text()
+        );
+    }
+
     fn briefing(jobs: Vec<Job>, inbox: Vec<Item>) -> Briefing {
         let turn = |who: &str, text: &str| Turn {
             id: String::new(),
@@ -1094,6 +1116,7 @@ mod tests {
             place: "tetrix-lab".into(),
             jobs,
             inbox,
+            default_account: None,
             accounts: vec![
                 Account {
                     id: "default".into(),

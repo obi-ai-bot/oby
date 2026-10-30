@@ -210,6 +210,8 @@ pub fn router(shared: Arc<Shared>) -> Router {
             "/v1/settings/jobs",
             get(crate::routes::job_settings).put(crate::routes::set_job_settings),
         )
+        .route("/v1/settings/models", get(models))
+        .route("/v1/settings/models/options", get(model_options))
         .route(
             "/v1/settings/default-agent",
             axum::routing::put(crate::routes::set_default_agent),
@@ -572,6 +574,8 @@ pub struct Status {
     pub models: Models,
     pub max_running: u32,
     pub default_agent: String,
+    /// The account new tasks go to (#1573), or null for routing's own order.
+    pub default_account: Option<String>,
     pub running: u32,
     pub cleared_at: Option<String>,
     pub github: &'static str,
@@ -648,6 +652,9 @@ pub struct AccountJson {
     pub tetrix_used: u32,
     pub reserved: bool,
     pub reserve_lifted_until: Option<String>,
+    /// Its `model`, `effort` and `complexEffort`, each only when the owner chose it (#1574).
+    #[serde(flatten)]
+    pub tuning: crate::settings::Tuning,
 }
 
 #[derive(Serialize)]
@@ -778,7 +785,34 @@ pub fn account_json(
         tetrix_used: shared.jobs.tetrix_counts(&account.id).1,
         reserved: usage.reserved(now),
         reserve_lifted_until: usage.lifted_until(now).map(time::format),
+        tuning: crate::settings::load(&shared.config.home)
+            .tuning
+            .remove(&account.id)
+            .unwrap_or_default(),
     }
+}
+
+/// `GET /v1/settings/models`: each tool's own model and efforts, as in `status.models`.
+async fn models() -> axum::Json<Models> {
+    axum::Json(Models::defaults())
+}
+
+/// `GET /v1/settings/models/options`: the models and efforts Settings › Agents offers each tool
+/// ([`crate::settings::models`], [`crate::settings::efforts`]); each model lists its efforts too,
+/// as Codex's do.
+async fn model_options() -> axum::Json<serde_json::Value> {
+    let options = crate::agent::Tool::ALL.map(|tool| {
+        let efforts = crate::settings::efforts(tool);
+        let models: Vec<_> = crate::settings::models(tool)
+            .iter()
+            .map(|(id, name)| serde_json::json!({"id": id, "name": name, "efforts": efforts}))
+            .collect();
+        (
+            tool.id().to_owned(),
+            serde_json::json!({"models": models, "efforts": efforts, "complexEfforts": efforts}),
+        )
+    });
+    axum::Json(serde_json::Value::Object(options.into_iter().collect()))
 }
 
 async fn status(State(shared): State<Arc<Shared>>) -> Result<axum::Json<Status>, ApiError> {
@@ -808,6 +842,7 @@ async fn status(State(shared): State<Arc<Shared>>) -> Result<axum::Json<Status>,
         models: Models::defaults(),
         max_running: shared.jobs.max_running() as u32,
         default_agent: crate::settings::load(&shared.config.home).default_agent,
+        default_account: crate::settings::load(&shared.config.home).default_account,
         running: shared.jobs.running() as u32,
         cleared_at: shared.cleared.at().map(obi_protocol::time::format),
         // obid has no GitHub app: its own GitHub calls, once it makes any, go as the owner.

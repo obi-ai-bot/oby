@@ -645,6 +645,37 @@ fn rooms_never_wait_for_a_checkout_obid_could_keep_ready() {
     );
 }
 
+/// AGENTS-6 (docs/contracts/agents.md): a task the conversation calls complex runs at its account's
+/// complex-task effort, and a routine one at its effort.
+#[test]
+fn agents_6_a_complex_task_from_a_conversation_runs_at_its_complex_effort() {
+    let (_folder, obid) = obid("harness-complex", true);
+    let set = call(
+        &obid,
+        "PATCH",
+        "/v1/accounts/stub",
+        Some(&json!({"effort": "low", "complexEffort": "max"})),
+    );
+    assert_eq!(set.status, 200, "{}", set.text);
+    let started = |complexity: &str| {
+        let words = format!(
+            r#"OBY oby_dispatch {{"repo": "obi-e2e/fixture-app", "task": "Look around", "kind": "research", "complexity": "{complexity}"}}"#
+        );
+        let answer = said(&obid, json!({"said": words, "new": true}));
+        let id = answer.body["jobs"][0]["id"]
+            .as_str()
+            .unwrap_or_else(|| panic!("{}", answer.text))
+            .to_owned();
+        call(&obid, "GET", &format!("/v1/jobs/{id}"), None).body
+    };
+    let complex = started("complex");
+    assert_eq!(complex["effort"], "max", "{complex}");
+    assert_eq!(complex["complexity"], "complex");
+    let routine = started("routine");
+    assert_eq!(routine["effort"], "low", "{routine}");
+    assert_eq!(routine["complexity"], Value::Null);
+}
+
 /// oby_dispatch starts a job from the conversation, with the plan loop's checks: the job names the
 /// conversation, and its card is on the turn. A tool's list is Oby's own.
 #[test]
