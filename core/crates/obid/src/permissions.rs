@@ -2627,18 +2627,21 @@ pub fn path(home: &Path) -> PathBuf {
     home.join("permissions.json")
 }
 
-/// What `home` keeps, or nothing yet (no file: a new install, Bypass). A file that doesn't read is
-/// logged and fails closed: no rules, and Ask until the owner picks a mode again (#1570).
+/// What `home` keeps, or nothing yet (no file: a new install, Bypass). A file that can't be read
+/// (its permissions, a folder in its place) or doesn't parse is logged and fails closed: no rules,
+/// and Ask until the owner picks a mode again (#1570).
 pub fn load(home: &Path) -> Kept {
+    let unreadable = |e: &dyn std::fmt::Display| {
+        tracing::warn!("{} doesn't read: {e}", path(home).display());
+        Kept {
+            mode: Some(Mode::Ask.as_str().to_owned()),
+            rules: Vec::new(),
+        }
+    };
     match std::fs::read(path(home)) {
-        Err(_) => Kept::default(),
-        Ok(bytes) => serde_json::from_slice(&bytes).unwrap_or_else(|e| {
-            tracing::warn!("{} doesn't read: {e}", path(home).display());
-            Kept {
-                mode: Some(Mode::Ask.as_str().to_owned()),
-                rules: Vec::new(),
-            }
-        }),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Kept::default(),
+        Err(e) => unreadable(&e),
+        Ok(bytes) => serde_json::from_slice(&bytes).unwrap_or_else(|e| unreadable(&e)),
     }
 }
 
@@ -3157,7 +3160,8 @@ mod tests {
     }
 
     /// BYPASS-1: no file, or a file with no saved mode, is a new install's Bypass; a saved mode is
-    /// kept (BYPASS-2); one obid can't read, or a file that doesn't read, fails closed to Ask.
+    /// kept (BYPASS-2); one obid can't read, a file that doesn't parse, or one that can't be read
+    /// at all, fails closed to Ask.
     #[test]
     fn bypass_1_a_missing_mode_is_bypass_and_an_unreadable_one_is_ask() {
         let home = std::env::temp_dir().join(format!("obid-kept-{}", new_id()));
@@ -3174,6 +3178,11 @@ mod tests {
             std::fs::write(path(&home), text).unwrap();
             assert_eq!(load(&home).default_mode(), mode, "{text}");
         }
+        // A file there that can't be read isn't a new install: a folder in its place (an error
+        // that isn't NotFound, as EACCES is, whoever runs the test).
+        std::fs::remove_file(path(&home)).unwrap();
+        std::fs::create_dir(path(&home)).unwrap();
+        assert_eq!(load(&home).default_mode(), Mode::Ask, "can't be read");
         let _ = std::fs::remove_dir_all(&home);
     }
 

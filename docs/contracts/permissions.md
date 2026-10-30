@@ -37,7 +37,7 @@ The app offers the first four. Sandbox stays in obid's API, add-only, for the in
 
 ### Failures and recovery
 
-- A `permissions.json` that doesn't read is logged and taken as no rules and Ask, until the owner picks a mode again.
+- A `permissions.json` that can't be read (its permissions, a folder in its place) or doesn't parse is logged and taken as no rules and Ask, until the owner picks a mode again. Only a missing file is a new install.
 - A Mode or an answer obid refuses (an unknown job, a mode that isn't one, a question already answered) shows obid's words in the app, and the card stays.
 
 ### Invariants
