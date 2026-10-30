@@ -60,18 +60,12 @@ final class IslandController {
         model.vault = .shared
         // A restart never interrupts a check this Mac runs for the runner.
         updater.busy = { [weak feed] in feed?.checks.current != nil }
-        // Oby's answer the pill shows doesn't alert as well (#862).
-        feed.pillShowsTalk = { [weak self] in self?.showsTalkReply ?? false }
         // A reply that came before its words were listed: the pill decides again where it shows.
         feed.onTalkListed = { [weak self] in
             guard let self, model.reply != nil, let turn = model.turn else { return }
             setTurn(turn)
         }
     }
-
-    /// The talk key's turn shows Oby's reply: it's on its way (Thinking: the pill shows it, unless the
-    /// conversation page in front does), or the pill shows it now.
-    private var showsTalkReply: Bool { model.turn == .thinking || (model.reply != nil && pill?.isVisible == true) }
 
     func start() {
         availability.startMonitoring()

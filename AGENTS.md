@@ -2,6 +2,16 @@
 
 Oby is a native macOS app (SwiftUI, macOS 26 and later) that lives in a window and the menu bar and hands coding work to the user's own Claude Code, Codex and Cursor CLIs (Gemini later). Its desktop app is moving to Electron (`apps/electron`, Dmytro and Wellington's call of 2026-10-26): it started as a copy of Sangam's design, carries his v1 (#1564: his first run, Home, the message box and Settings), is mocked until the experience is right, and then talks to obid, which stays in Rust. The Swift Mac app gets no new work meanwhile. The product is described in [README.md](README.md); what is being built, and in which order, is the GitHub project "Oby — Roadmap" (Now, Next, Later, In review, Done, with a weekly Sprint field; the F1 to F16 milestones are retired).
 
+## The social contract (Dmytro, the call of 2026-10-28)
+
+Every decision, here and in a contract, is checked against these three, for Oby, the Obysphere and Oby Cloud alike:
+
+- **Vendor agnostic, no lock-in.** Oby works with any agent, any model and any code host (GitHub is one adapter, never a requirement); the Obysphere is a protocol any agent can speak, not only Oby; Oby Cloud, when it comes, is one registry among any others. Nothing is hard-coded to one provider.
+- **Privacy first, local first.** Oby works fully with no account and nothing stored off the Mac (like Obsidian): no sign-in, no user name, its data under obid's home. An Oby is a UUID with the name it's given, never a global identity; Obyspheres are joined by private links. Tying an Oby to an identity (Oby Cloud: settings sync, a global registry) is the owner's choice, later, never forced.
+- **A movement, not a product.** All three are open source for others to build on, as Cursor was built on VS Code; a stranger can read obid, run it and change it.
+
+Three directions follow, in this order: **Oby as a flexible dispatcher** the owner adjusts through Oby itself (after the MVP: Home sections a person shapes, such as runtime artifacts for a developer, a manager or a CTO; basic features people adjust over an opinionated UX); **the Obysphere**, the rules for agents talking and working together (Dmytro's); **Oby Cloud**, an insanely secure global registry of agents (deferred). For now the MVP stays small: what launches is what works; anything extra that breaks goes.
+
 ## How we work
 
 - Branch from `dev` and open pull requests into `dev`. `dev` is merged into `main` only when a feature's "Test it when it's done" list passes on a real Mac.

@@ -41,7 +41,11 @@ scratch obid run by hand instead of 7777 (a packaged app ignores them).
 Oby alerts on the Mac as the Swift app did (`src/main/notify.ts`): main follows
 obid's event stream by itself, from launch until Oby quits, window closed or not,
 and alerts for what obid pushes to the phones (`core/crates/obid/src/push.rs`,
-`wanted`), plus Oby's answer in a conversation the window isn't showing. A click
+`wanted`), through one gate (`notifies`, the owner's rule of 2026-10-28): nothing
+while the window is in front, on any page, and away from it only what waits on
+the owner to decide or act (an ask, a Confirm, a Start, a question, a job that
+failed or couldn't publish); never a job that ended with nothing to decide, nor
+Oby's own answer. What the owner was shown alerts once the window goes. A click
 opens the job or the conversation; Allow, Deny and Start answer from the alert as
 the same tap in the window does, never from a locked Mac; a Confirm only opens the
 window. Settings › Notifications turns them off (`settings.json` in the app's own
@@ -163,6 +167,8 @@ tasks.ts, peers.ts  the tasks and the conversations with other Obys, as small st
 spheres.ts          the Obyspheres you're in, their members and invites
 knowledge.ts        each Obysphere's knowledge sources
 stream.ts           Oby's words coming in a word at a time
+drafts.ts           each message box's unsent words, kept on this Mac (localStorage)
+                    until sent, its conversation or task deleted, or a week untouched
 obid.ts             obid's API: its types and calls (copied from apps/web/src/api.ts), through main
 live.ts             what obid has, kept live by its event stream, put into the stores
                     above as conversations, tasks and accounts; and what the app asks of it

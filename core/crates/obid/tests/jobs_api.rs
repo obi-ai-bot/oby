@@ -3192,7 +3192,8 @@ fn parked_questions_and_plans_resume_and_a_stop_drops_them() {
     );
 
     let approved = answer(&plan, json!({"decision": "allow"}));
-    assert_eq!(approved["mode"], "ask", "{approved}");
+    // Approved, it goes on in the owner's default mode, Sandbox here.
+    assert_eq!(approved["mode"], "sandbox", "{approved}");
     let done = wait(&obid, &plan);
     assert_eq!(done["status"], "done", "{done}");
     assert!(

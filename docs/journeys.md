@@ -66,7 +66,7 @@ J4 and J5 come first: they need no VM. They run against obid with the fake agent
 2. **A one-time setup of `oby-ready`** (about 15 minutes): in the VM, sign in Claude Code, Codex, Cursor and GitHub, and grant the permissions Oby asks for. Snapshotted, so it isn't done again.
 3. **A test GitHub organization** for the fixture repositories (`obi-e2e` is free), owned by the owner.
 4. **A test Obysphere** for J6: a second Sphere on Deskree's Cloudflare, or a test Sphere inside Deskree's.
-5. **A test Tetrix** for J7: the dogfood server, or another.
+5. **A test Tetrix** for J7: any Tetrix whose MCP address you have (Oby has no built-in one).
 
 ## Order
 

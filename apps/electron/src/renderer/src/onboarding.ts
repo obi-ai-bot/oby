@@ -4,7 +4,7 @@ import { addTask } from './tasks';
 import { wait } from './stream';
 import { onObid } from './lean';
 import { CAN_CREATE } from './spheres';
-import { ApiError, api } from './obid';
+import { ApiError, api, type TetrixTarget } from './obid';
 import { ask, ensureCursor, liveState, say, useLive } from './live';
 import { AGENTS, type Agent, type SetupStep } from './mock';
 
@@ -190,15 +190,14 @@ export async function signInGitHub() {
     failed(e, () => set(() => ({ github: 'out' })));
   }
 }
-// Tetrix: Oby signs in once, for every agent; its page in the browser
-export async function connectTetrix() {
+// Tetrix: Oby signs in once, for every agent, to the Tetrix the person picked in Connect Tetrix
+// (Connectors' TetrixWindow: their own's address; Oby has none built in); its page in the browser
+export async function connectTetrix(to?: TetrixTarget) {
   if (!onObid) return signIn((s) => s.tetrix, (tetrix) => ({ tetrix }));
-  if (setup.tetrix !== 'out') return;
+  if (!to || setup.tetrix !== 'out') return;
   set(() => ({ tetrix: 'waiting' }));
   try {
-    const preset = (await api.tetrix()).presets[0];
-    if (!preset) throw new Error('Oby has no Tetrix to sign in to.');
-    open((await api.tetrixSignIn({ preset: preset.id })).url);
+    open((await api.tetrixSignIn(to)).url);
     if (!(await until(async () => (await api.tetrix()).connected, 10))) set(() => ({ tetrix: 'out' }));
     else set(() => ({ tetrix: 'in' }));
   } catch (e) {

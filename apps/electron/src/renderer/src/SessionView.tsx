@@ -8,6 +8,7 @@ import { useScrollThumb } from './useScrollThumb';
 import { AGENTS, type Attachments } from './mock';
 import { SESSIONS, type Detail, type Entry } from './session';
 import { useTasks, type Task } from './tasks';
+import { box as draftBox } from './drafts';
 
 // how long the way out takes (the sink animation in app.css)
 const LEAVE_MS = 220;
@@ -145,6 +146,7 @@ export default function SessionView({ id, leaving, covered = false, onBack, onGo
         placeholder={`Tell ${agent.name}…`}
         label={`Tell Oby about ${task.title}`}
         onSend={(text, att) => onTell(task.id, text, att)}
+        draft={draftBox.task(task.id)}
       />
     </div>
   );

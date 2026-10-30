@@ -16,11 +16,13 @@
 //!   private key and the access tokens it gets are learned as obid's own secrets too.
 //! - **When.** Two seconds after a job, an inbox item or a conversation changes. FCM: each job
 //!   whose need changed gets an alert, or a clear once it needs nothing. The relay, by the owner's
-//!   lean rule ([`wanted`]): what needs the owner (urgent), a job that ended, an inbox item sorted
-//!   `needs_you`, and Oby's messages while no paired device follows the events; one alert per
-//!   thing, replaced in place, and a short "Settled" only for an urgent one. What was last said is
-//!   kept in `home/push/notices.json` and `home/push/said.json`, so a restart doesn't say it
-//!   again; the first time, what is already there isn't news.
+//!   rule ([`wanted`], gated by [`notifies`]): only what waits on the owner to decide or act (an
+//!   agent's ask, a job that failed, stopped or couldn't publish, an inbox item sorted
+//!   `needs_you`); never a result with nothing to decide, progress or Oby's own words. One alert
+//!   per thing, replaced in place, and a short "Settled" only for an urgent one. What was last
+//!   said is kept in `home/push/notices.json` and `home/push/said.json`, so a restart doesn't say
+//!   it again; the first time, what is already there isn't news. The phone's half of the rule
+//!   (nothing while Oby is in front) is the phone's: apps/ios/app/Notifications.swift.
 //! - **What goes out.** Every alert's title and body pass the secret scan first: a finding, or a
 //!   scan that can't run, sends nothing for it. The send never holds up the API.
 
@@ -250,14 +252,42 @@ pub fn sealed_alert(alert: &Alert, at: i64) -> Value {
     sealed
 }
 
-/// What the relay should be saying now, by the owner's lean rule, each with what it says (an alert
-/// is sent again only when that changes): a job's agent waiting for an OK (urgent); a job the
-/// owner started that ended, once, with its result (a job another Obi asked for, a stopped or a
-/// dismissed one, says nothing); and from the open inbox (`GET /v1/inbox`'s items), what Oby's
-/// conversations wait on, Allow for a shell command, a Confirm or a Start, and an item sorted
-/// `"triage": "needs_you"` (urgent). Progress, FYI and unsorted items are never alerts. A job's
-/// permission item is its job's alert.
+/// What an alert asks of the owner: the one thing the gate ([`notifies`]) reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Need {
+    /// A tap settles it: Allow or Deny, Approve, Confirm, Start, Publish, an answer; or what
+    /// stopped and waits on them (failed, interrupted, a review left to them).
+    Owner,
+    /// Nothing to decide: a result that needs nothing, progress, Oby's own words. The app shows
+    /// it; a push never says it.
+    Fyi,
+}
+
+/// The gate every push passes (the owner's rule of 2026-10-28): an alert goes out only when the
+/// thing needs the owner to decide or act. Change what pushes here, in one place; what each thing
+/// needs is decided where it's built ([`wanted`], `look_relay`'s messages).
+pub fn notifies(need: Need) -> bool {
+    need == Need::Owner
+}
+
+/// What the relay should be saying now, each with what it says (an alert is sent again only when
+/// that changes), through [`notifies`]: a job's agent waiting for an OK (urgent); a job the owner
+/// started that failed, was interrupted or couldn't publish, once (a job another Obi asked for, a
+/// stopped or a dismissed one, says nothing; one that ended done with nothing to decide is FYI,
+/// gated out); and from the open inbox (`GET /v1/inbox`'s items), what Oby's conversations wait
+/// on, Allow for a shell command, a Confirm or a Start, and an item sorted `"triage": "needs_you"`
+/// (urgent). Progress, FYI and unsorted items are never alerts. A job's permission item is its
+/// job's alert.
 pub fn wanted(jobs: &[Job], inbox: &[Value]) -> Vec<(String, Alert)> {
+    candidates(jobs, inbox)
+        .into_iter()
+        .filter(|(_, _, need)| notifies(*need))
+        .map(|(key, alert, _)| (key, alert))
+        .collect()
+}
+
+/// Everything the relay could say, each with what it needs of the owner, before the gate.
+fn candidates(jobs: &[Job], inbox: &[Value]) -> Vec<(String, Alert, Need)> {
     let mut wanted = Vec::new();
     for job in jobs
         .iter()
@@ -292,7 +322,7 @@ pub fn wanted(jobs: &[Job], inbox: &[Value]) -> Vec<(String, Alert)> {
                 &job.id,
                 &permission.id,
             ));
-            wanted.push((format!("permission:{}", permission.id), asks));
+            wanted.push((format!("permission:{}", permission.id), asks, Need::Owner));
             continue;
         }
         // Oby's review left it to the owner: no reviewer could review its head, or its changes
@@ -308,22 +338,27 @@ pub fn wanted(jobs: &[Job], inbox: &[Value]) -> Vec<(String, Alert)> {
                 ),
             };
             let head = job.pushed_head().unwrap_or_default();
-            wanted.push((format!("review:{head}"), alert(said, true)));
+            wanted.push((format!("review:{head}"), alert(said, true), Need::Owner));
             continue;
         }
-        let said = match job.status {
-            Status::Done if job.can_publish() => self::alert(job, Notice::Ready),
-            Status::Failed => self::alert(job, Notice::Failed),
-            Status::Interrupted => self::alert(job, Notice::Interrupted),
+        // How it ended: Publish, or what failed, waits on the owner; done with nothing to decide
+        // is FYI (the job's page says it).
+        let (said, need) = match job.status {
+            Status::Done if job.can_publish() => (self::alert(job, Notice::Ready), Need::Owner),
+            Status::Failed => (self::alert(job, Notice::Failed), Need::Owner),
+            Status::Interrupted => (self::alert(job, Notice::Interrupted), Need::Owner),
             Status::Done => (
-                format!("Done: {}", job.short_title()),
-                first_line(&job.summary).unwrap_or("Done").to_owned(),
-                "job",
+                (
+                    format!("Done: {}", job.short_title()),
+                    first_line(&job.summary).unwrap_or("Done").to_owned(),
+                    "job",
+                ),
+                Need::Fyi,
             ),
             Status::Queued | Status::Running | Status::Stopped => continue,
         };
         let ended = job.finished.unwrap_or(job.created);
-        wanted.push((format!("end:{ended}"), alert(said, false)));
+        wanted.push((format!("end:{ended}"), alert(said, false), need));
     }
     let open: Vec<&Value> = inbox.iter().filter(|i| i["state"] == "open").collect();
     // What one turn offered (`oby_offer`) is one alert, however many jobs: its first item's,
@@ -371,6 +406,7 @@ pub fn wanted(jobs: &[Job], inbox: &[Value]) -> Vec<(String, Alert)> {
                 item: Some(id.to_owned()),
                 urgent: true,
             },
+            Need::Owner,
         ));
     }
     wanted
@@ -947,7 +983,7 @@ impl Push {
     }
 
     /// The relay's part of [`Push::look`]: [`wanted`] against what was said, then Oby's messages
-    /// when no paired device follows the events.
+    /// when no paired device follows the events, if the gate lets FYI through ([`notifies`]).
     async fn look_relay(
         &self,
         jobs: &[Job],
@@ -965,7 +1001,8 @@ impl Push {
         };
         let messages =
             std::mem::take(&mut self.talk.lock().unwrap_or_else(|e| e.into_inner()).messages);
-        if self.following.load(Ordering::Relaxed) == 0 {
+        // Oby's words ask nothing: an ask of its own comes as an inbox item, which `wanted` says.
+        if notifies(Need::Fyi) && self.following.load(Ordering::Relaxed) == 0 {
             send.extend(messages.into_values());
         }
         // Only registrations made with the control plane obid pushes through now.
@@ -1365,10 +1402,9 @@ mod tests {
             "abc",
             Some("oby/fix-j1"),
         ));
-        let done = wanted(std::slice::from_ref(&job), &[]);
-        assert_eq!(
-            (done[0].1.title.as_str(), done[0].1.urgent),
-            ("Done: Android push", false)
+        assert!(
+            wanted(std::slice::from_ref(&job), &[]).is_empty(),
+            "done with nothing to decide: FYI, not pushed"
         );
         job.review_error = Some("Oby couldn't review #7: The Mac's Codex login has ended.".into());
         job.review_failed = Some(crate::job::ReviewFailed {
@@ -2102,7 +2138,6 @@ mod tests {
                 ("always", "permissionRule", true),
                 ("planning", "plan", true),
                 ("failed", "job", false),
-                ("done", "job", false),
                 ("ready", "ready", false),
                 (digest.as_str(), "permission", true),
                 ("confirm-1", "confirm", true),
@@ -2127,8 +2162,10 @@ mod tests {
                 urgent: true,
             }
         );
-        assert_eq!(by_id("done").title, "Done: Android push");
-        assert_eq!(by_id("done").body, "Fixed the push.");
+        assert!(
+            wanted.iter().all(|(_, a)| a.collapse != "done"),
+            "FYI: gated out"
+        );
         assert_eq!(by_id("ready").title, "Couldn't publish: Android push");
         let shell = by_id(&digest);
         assert_eq!(shell.item.as_deref(), Some(long.as_str()));
@@ -2144,7 +2181,7 @@ mod tests {
         assert!(told(wanted.clone(), &said).0.is_empty());
         let rest: Vec<(String, Alert)> = wanted
             .iter()
-            .filter(|(_, a)| a.collapse != "asks" && a.collapse != "done")
+            .filter(|(_, a)| a.collapse != "asks" && a.collapse != "failed")
             .cloned()
             .collect();
         let (send, now) = told(rest.clone(), &said);
@@ -2158,7 +2195,7 @@ mod tests {
                 ..by_id("asks").clone()
             }]
         );
-        assert!(!now.contains_key("asks") && !now.contains_key("done"));
+        assert!(!now.contains_key("asks") && !now.contains_key("failed"));
         let mut again = wanted.clone();
         again[0].0 = "permission:p2".into();
         let (send, _) = told(again, &said);
@@ -2168,6 +2205,36 @@ mod tests {
                 .map(|a| (String::new(), a.clone()))
                 .collect::<Vec<_>>()),
             [("asks".to_owned(), "permission".to_owned(), true)]
+        );
+    }
+
+    /// The gate (the owner's rule of 2026-10-28): a job that ended done with nothing to decide
+    /// is FYI and never pushed; one that failed waits on the owner and is.
+    #[test]
+    fn only_what_needs_the_owner_notifies() {
+        assert!(notifies(Need::Owner) && !notifies(Need::Fyi));
+        let mut done = job("done");
+        done.status = Status::Done;
+        done.finished = Some(20);
+        done.summary = "Fixed the push.".into();
+        let mut failed = job("failed");
+        failed.status = Status::Failed;
+        failed.finished = Some(10);
+        let all = candidates(&[done.clone(), failed.clone()], &[]);
+        assert_eq!(
+            all.iter()
+                .map(|(_, a, need)| (a.collapse.as_str(), *need))
+                .collect::<Vec<_>>(),
+            [("done", Need::Fyi), ("failed", Need::Owner)]
+        );
+        assert_eq!(all[0].1.title, "Done: Android push");
+        assert_eq!(all[0].1.body, "Fixed the push.");
+        let said = wanted(&[done, failed], &[]);
+        assert_eq!(
+            said.iter()
+                .map(|(_, a)| a.collapse.as_str())
+                .collect::<Vec<_>>(),
+            ["failed"]
         );
     }
 
@@ -2335,16 +2402,20 @@ mod tests {
             (Some("Settled"), Some("Run swift test?"))
         );
         assert!(!got[0].1);
-        // It ends: one alert with its result, not urgent; never again.
+        // It ends done, with nothing to decide: FYI, nothing. Failed: one alert, not urgent; once.
         j.status = Status::Done;
         j.finished = Some(100);
         j.summary = "Fixed the push.".into();
+        look(vec![j.clone()], vec![], paired.clone()).await;
+        assert!(sent(&heard).is_empty());
+        j.status = Status::Failed;
+        j.finished = Some(101);
         look(vec![j.clone()], vec![], paired.clone()).await;
         let got = sent(&heard);
         assert_eq!(got.len(), 1);
         assert_eq!(
             got[0].0,
-            json!({"collapse": "j1", "title": "Done: Android push", "body": "Fixed the push.",
+            json!({"collapse": "j1", "title": "Failed: Android push", "body": "Fixed the push.",
                                      "thread": "jobs", "category": "job", "job": "j1"})
         );
         assert!(!got[0].1);
@@ -2366,28 +2437,21 @@ mod tests {
         assert_eq!(got.len(), 1);
         assert_eq!((got[0].0["item"].as_str(), got[0].1), (Some("w3"), true));
 
-        // Oby's message: once, while no paired device follows the events.
+        // Oby's message: heard (the pushes look again), but FYI, so nothing goes, with no paired
+        // device following the events or with one.
         assert!(push.heard(&turn("c1", "t1", "oby", "Morning. Two jobs\nneed you.")));
         assert!(!push.heard(&Event {
             name: "step",
             data: json!({})
         }));
         look(vec![j.clone()], needs.clone(), paired.clone()).await;
-        let got = sent(&heard);
-        assert_eq!(got.len(), 1);
-        assert_eq!(
-            got[0].0,
-            json!({"collapse": "c1", "title": "Oby", "body": "Morning. Two jobs need you.",
-                                     "thread": "c1", "category": "message", "conversation": "c1"})
-        );
-        // The same turn sent again (its jobs changed) isn't news, nor an older one.
+        assert!(sent(&heard).is_empty());
         push.heard(&turn("c1", "t1", "oby", "Morning. Two jobs\nneed you."));
         let mut older = turn("c1", "t0", "oby", "Yesterday.");
         older.data["at"] = json!("2026-10-22T12:00:00Z");
         push.heard(&older);
         look(vec![j.clone()], needs.clone(), paired.clone()).await;
         assert!(sent(&heard).is_empty());
-        // A phone with Oby open: nothing. A job's end turn and a routine's run: nothing.
         let following = push.followed();
         push.heard(&turn("c1", "t2", "oby", "Anything else?"));
         look(vec![j.clone()], needs.clone(), paired.clone()).await;
