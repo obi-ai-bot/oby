@@ -14,7 +14,7 @@ import { AreasView, BackgroundView, EndpointsView, ModulesView, PhoneView, Store
 import { ChecksView, RulesView } from '@/views/quality';
 
 const TITLES: Record<string, string> = {
-  '': 'Overview', screens: 'Screens', kept: 'Kept locally', states: 'States to open', words: 'Words',
+  '': 'Overview', screens: 'Screens', kept: 'Kept locally', states: 'States', words: 'Words',
   endpoints: 'Endpoints', phone: 'Phone allowlist', areas: 'Areas', modules: 'Modules', background: 'Background work',
   stored: 'Stored files', wire: 'Wire types', rules: 'Rules', checks: 'Checks',
 };

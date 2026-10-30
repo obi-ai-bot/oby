@@ -19,7 +19,7 @@ OBID_DEFAULT := $(abspath core/target/debug/obid)
 OBID_BIN ?= $(OBID_DEFAULT)
 export OBID_BIN
 
-.PHONY: e2e e2e-live e2e-deps e2e-obid brain
+.PHONY: e2e e2e-live e2e-deps e2e-obid brain brain-shots
 
 # Installs obi-sphere's pinned dependencies (the spec's checker; the server once it exists).
 # A missing checkout is reported by the harness itself, so this never stops the run.
@@ -46,6 +46,11 @@ e2e: e2e-deps e2e-obid
 e2e-live: e2e-deps e2e-obid
 	node e2e/run.mjs --live
 
-# The Brain: a local map of obid and the Electron app, read from the code, on http://127.0.0.1:4320
+# The Brain: a local map of obid and the Electron app, read from the code, on http://127.0.0.1:4320,
+# with the app's mock beside it (tools/brain/with-mock.sh) so its States show each screen live
 brain:
-	cd tools/brain && npm install --silent && npm run dev
+	cd tools/brain && npm install --silent && ./with-mock.sh npm run dev
+
+# A screenshot of every state on the mock, drawn by the app's own Electron (tools/brain/.brain/shots)
+brain-shots:
+	cd tools/brain && npm install --silent && npm run -s generate && ./with-mock.sh ../../apps/electron/node_modules/.bin/electron shots.cjs

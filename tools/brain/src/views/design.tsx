@@ -1,11 +1,12 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { ExternalLink } from 'lucide-react';
 import { Empty, Facts, PageHeader, Section } from '@/components/brain/page';
 import { OriginBadge, OwnerBadge } from '@/components/brain/badges';
 import { IssueLink, RouteLink, ScreenLink } from '@/components/brain/links';
 import { SourceLink } from '@/components/brain/source';
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
-import { shortFile, useBrain, type Screen } from '@/lib/brain';
+import { shortFile, useBrain, type JumpState, type Screen } from '@/lib/brain';
 import { href, Link, type Route as HashRoute } from '@/lib/router';
 import { cn } from '@/lib/utils';
 
@@ -151,28 +152,56 @@ export function KeptView() {
   );
 }
 
-/** States of the app to open on the mock (npm run web, or oby-app-web in the launch configurations). */
+type Shots = { at: string; size: { width: number; height: number }; shots: Record<string, unknown> };
+
+/** The app's states on the mock: each one's screenshot (make brain-shots), opened live on a click. */
 export function StatesView() {
   const { data } = useBrain();
+  const [shots, setShots] = useState<Shots | null>(null);
+  const [open, setOpen] = useState<JumpState | null>(null);
+  useEffect(() => {
+    fetch('/shots/index.json').then(r => (r.ok ? r.json() : null)).then(setShots, () => setShots(null));
+  }, [data.generatedAt]);
   const groups = [...new Set(data.states.map(s => s.group))];
+  const taken = shots ? new Date(shots.at).toLocaleString() : null;
   return (
     <>
-      <PageHeader eyebrow="Sangam's design" title="States to open" description={<>Each link opens the app in that state on the mock. Run <code className="font-mono">npm run web</code> in apps/electron, or oby-app-web from the launch configurations, first.</>} />
-      <div className="grid gap-4 lg:grid-cols-2">
+      <PageHeader eyebrow="Sangam's design" title="States" description={<>
+        Each state of the app on its mock, as the Control Center (<code className="font-mono">dev/ControlCenter.tsx</code>) and first run reach it. A click opens it live: <code className="font-mono">make brain</code> starts the mock beside the Brain.{' '}
+        {taken ? <>Screenshots taken {taken}; <code className="font-mono">make brain-shots</code> takes them again.</> : <>Run <code className="font-mono">make brain-shots</code> for a screenshot of each.</>}
+      </>} />
+      <div className="space-y-4">
         {groups.map(g => (
           <Section key={g} title={g} count={data.states.filter(s => s.group === g).length}>
-            <ul className="space-y-1.5">
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4">
               {data.states.filter(s => s.group === g).map(s => (
-                <li key={s.url} className="flex flex-wrap items-baseline gap-2 text-sm">
-                  <a href={s.url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 hover:underline">{s.label}<ExternalLink className="size-3 text-muted-foreground" /></a>
-                  <span className="font-mono text-[11px] text-muted-foreground">{s.url.replace(/^https?:\/\/[^/]+\//, '/')}</span>
-                  {s.note && <span className="text-xs text-muted-foreground">{s.note}</span>}
-                </li>
+                <button key={s.id} type="button" onClick={() => setOpen(s)} className="group overflow-hidden rounded-lg border text-left transition-colors hover:border-foreground/30">
+                  <div className="aspect-[16/10] bg-muted">
+                    {shots?.shots[s.id]
+                      ? <img src={`/shots/${s.id}.png?${shots.at}`} alt={s.label} loading="lazy" className="size-full object-cover object-top" />
+                      : <div className="flex size-full items-center justify-center p-4 text-center text-xs text-muted-foreground">No screenshot yet</div>}
+                  </div>
+                  <div className="space-y-0.5 px-3 py-2">
+                    <div className="text-sm font-medium group-hover:underline">{s.label}</div>
+                    <div className="truncate font-mono text-[11px] text-muted-foreground">{s.url.replace(/^https?:\/\/[^/]+\//, '/')}</div>
+                    {s.note && <div className="text-xs text-muted-foreground">{s.note}</div>}
+                  </div>
+                </button>
               ))}
-            </ul>
+            </div>
           </Section>
         ))}
       </div>
+      <Dialog open={!!open} onOpenChange={o => { if (!o) setOpen(null); }}>
+        <DialogContent className="flex h-[88vh] w-[92vw] max-w-none flex-col gap-2 sm:max-w-none">
+          <DialogHeader className="flex-row items-center gap-3 pr-8">
+            <DialogTitle>{open?.label}</DialogTitle>
+            {open && <a href={open.url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:underline">Open in a tab<ExternalLink className="size-3" /></a>}
+          </DialogHeader>
+          {/* (keyed: each opening plays its scenario from the start) */}
+          {open && <iframe key={open.id} src={open.url} title={open.label} className="min-h-0 flex-1 rounded-md border bg-background" />}
+        </DialogContent>
+      </Dialog>
     </>
   );
 }

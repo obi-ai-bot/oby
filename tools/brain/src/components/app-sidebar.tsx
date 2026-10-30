@@ -76,7 +76,7 @@ export function AppSidebar({ route }: { route: Route }) {
         {group('Sangam\'s design', <>
           {item('screens', 'Screens', LayoutTemplate, data.screens.filter(s => s.kind === 'screen').length)}
           {item('kept', 'Kept locally', Database, data.localKeys.filter(k => k.owner === 'obid').length)}
-          {item('states', 'States to open', PlayCircle, data.states.length)}
+          {item('states', 'States', PlayCircle, data.states.length)}
           {item('words', 'Words', Type)}
         </>)}
         {group('obid', <>
