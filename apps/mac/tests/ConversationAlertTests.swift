@@ -233,13 +233,13 @@ struct ConversationAlertTests {
         job.summary = "Fixed it."
         job.published = "https://github.com/deskree-inc/oby/pull/8"
         feed.apply(job)
-        #expect(shown.list.map(\.title) == ["Done: \(job.heading)"])
+        #expect(shown.list.isEmpty, "done with nothing to decide: FYI, no alert")
         for status in [Job.Status.running, .done, .running, .done] {
             job.status = status
             job.step = "Oby's review, round 2"
             feed.apply(job)
         }
-        #expect(shown.list.count == 1 && !withdrawn.list.contains(job.id))
+        #expect(shown.list.isEmpty)
 
         var ready = job
         ready.id = "r-\(UUID().uuidString)"
@@ -249,7 +249,7 @@ struct ConversationAlertTests {
         #expect(shown.list.last?.title.hasPrefix("Ready to publish") == true)
         ready.published = "https://github.com/deskree-inc/oby/pull/9"
         feed.apply(ready)
-        #expect(shown.list.count == 2 && withdrawn.list.contains(ready.id), "published on the iPhone: its alert goes, no Done")
+        #expect(shown.list.count == 1 && withdrawn.list.contains(ready.id), "published on the iPhone: its alert goes, no Done")
     }
 
     // MARK: The feed
