@@ -45,6 +45,14 @@ contextBridge.exposeInMainWorld('app', {
     alerts: (on?: boolean) => ipcRenderer.invoke('notifications', on) as Promise<boolean | null>,
     openSystemSettings: () => ipcRenderer.send('open-notification-settings'),
   },
+  // Oby's own updates (main/updates.ts): what About shows and Update automatically, after the
+  // owner's click ('check', 'install') or Update automatically turned; and what it shows as it changes
+  updates: (ask?: 'check' | 'install' | boolean) => ipcRenderer.invoke('updates', ask),
+  onUpdate(fn: (update: unknown) => void) {
+    const listener = (_: unknown, update: unknown) => fn(update);
+    ipcRenderer.on('update', listener);
+    return () => { ipcRenderer.off('update', listener); };
+  },
   // obid, through main, which holds its token (main/obid.ts): one call, and the event stream's
   // text as it comes, then how it ended. Following again replaces the stream before.
   obid: {

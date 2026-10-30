@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import type { Update } from '../../shared/updates';
 
 type Point = { x: number; y: number };
 declare global {
@@ -15,6 +16,9 @@ declare global {
       showing(place: { job?: string; conversation?: string } | null): void;
       onOpen(fn: (place: { job?: string; conversation?: string }) => void): () => void;
       notifications: { alerts(on?: boolean): Promise<boolean | null>; openSystemSettings(): void };
+      // Oby's own updates (preload, main/updates.ts)
+      updates?(ask?: 'check' | 'install' | boolean): Promise<{ auto: boolean; update: Update } | null>;
+      onUpdate?(fn: (update: Update) => void): () => void;
       setupWindow?(on: boolean): number | null;  // the width the window's growing to (null: already there)
       // obid, through main (preload, main/obid.ts)
       obid: {
