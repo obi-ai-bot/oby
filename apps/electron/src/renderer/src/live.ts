@@ -1,8 +1,9 @@
 import { useSyncExternalStore } from 'react';
-import { ApiError, api, parseEvent, sseReader, type Conversation, type Event, type InboxItem, type Job, type Question, type Repo, type Status, type Turn } from './obid';
+import { ApiError, api, parseEvent, sseReader, type Conversation, type Event, type InboxItem, type Job, type LimitDecision, type Question, type Repo, type Status, type Turn } from './obid';
 import { AGENTS, type Ask, type AskKind, type Job as JobView, type Message, type Offer, type StageId } from './mock';
 import { replaceChats, type Chat } from './chats';
 import { replaceTasks, type Asking, type Task } from './tasks';
+import { keepFoldersOf, nameFoldersBy, saveFolders } from './folders';
 import { replaceAccounts } from './SettingsView';
 import { BRANDS } from './brands';
 import type { GitHubItem } from './mock';
@@ -24,6 +25,7 @@ type Live = {
   firstJobs: Set<string>;        // the jobs there when the app opened: never new
   seen: Set<string>;             // jobs opened since
   inbox: InboxItem[];            // open and put off
+  limits: LimitDecision[];       // one decision for the jobs stopped by an account's limit
   conversations: Conversation[];
   turns: Record<string, Turn[]>; // by conversation: each opened one's, and any that came since
   loaded: Set<string>;           // the conversations whose turns were fetched
@@ -47,7 +49,7 @@ type Live = {
 };
 
 let state: Live = {
-  connection: 'connecting', problem: null, status: null, repos: [], github: null, jobs: {}, firstJobs: new Set(), seen: new Set(), inbox: [],
+  connection: 'connecting', problem: null, status: null, repos: [], github: null, jobs: {}, firstJobs: new Set(), seen: new Set(), inbox: [], limits: [],
   conversations: [], turns: {}, loaded: new Set(), working: {}, words: {}, pace: {}, waiting: {}, starting: null, alias: {}, answered: {}, answering: new Set(), picked: {},
 };
 const listeners = new Set<() => void>();
@@ -56,6 +58,9 @@ const set = (patch: Partial<Live>) => {
   if (!pacing && Object.keys(state.pace).length) { ticked = performance.now(); pacing = setInterval(tick, WORD_MS); }
 };
 export const useLive = () => useSyncExternalStore((l) => { listeners.add(l); return () => { listeners.delete(l); }; }, () => state);
+// the limit decisions for a conversation's or a job's work (ChatView), as Home's stack shows them
+export const useLimitAsks = (conversation?: string, job?: string) => { useLive(); return limitAsks(state, conversation, job); };
+export const useLimitCount = () => useSyncExternalStore((l) => { listeners.add(l); return () => { listeners.delete(l); }; }, () => state.limits.length);
 export const liveState = () => state;
 
 const minutesAgo = (iso: string | null | undefined) => (iso ? Math.max(0, (Date.now() - Date.parse(iso)) / 60_000) : 0);
@@ -65,6 +70,9 @@ const without = <T,>(r: Record<string, T>, key: string) => { const { [key]: _, .
 // the app's id for one of obid's conversations, and back
 export const shownId = (c: string) => state.alias[c] ?? c;
 export const realId = (shown: string) => Object.keys(state.alias).find((k) => state.alias[k] === shown) ?? shown;
+// a new conversation's working folders, saved under obid's id once it has one (folders.ts)
+nameFoldersBy(realId);
+let aliasSeen: Live['alias'] | undefined;
 
 // --- obid's state as the screens' conversations and tasks
 
@@ -134,6 +142,8 @@ const itemOf = (s: Live, job: string) => {
 // interrupted and not let go, letting it go
 function askOf(s: Live, j: Job): Ask | undefined {
   const item = itemOf(s, j.id);
+  // The grouped limit appears once, but unrelated permissions or questions still need attention.
+  if ((j.accountLimit || s.limits.some((d) => d.jobs.some((job) => job.id === j.id))) && (!item || item.kind === 'limit')) return undefined;
   if (item) return itemAsk(item, item.kind === 'permission' ? j.permission?.detail : undefined);
   if ((j.status === 'failed' || j.status === 'interrupted') && !j.dismissed) {
     return { kind: 'failed', headline: j.status === 'failed' ? 'It failed' : 'It was interrupted', text: j.summary.split('\n')[0] || j.step, options: ['Dismiss'] };
@@ -188,7 +198,55 @@ function asksOf(s: Live): Asking[] {
       const c = open.find((i) => i.offer?.id === offer.id)?.conversation;
       return { id: offer.id, title: s.conversations.find((x) => x.id === c)?.title ?? offer.title, offer, talk: c ? shownId(c) : undefined };
     }),
+    ...limitAsks(s),
   ];
+}
+
+// An account's limit (#1563): one card for all the jobs it stopped, its answers obid's options. The
+// card's id carries the revision it shows, so a choice covers exactly the jobs and destination on
+// it: once obid's decision changes, the old card's answer is refused (answerJob) and a new card
+// takes its place. conversation/job: only the decisions for that conversation's or job's work.
+const limitLabel = (o: LimitDecision['options'][number]) =>
+  o.kind === 'move' ? `Move all to ${o.name} · ${o.agent}` : o.kind === 'resume' ? 'Resume when available' : 'Keep stopped';
+const limitLater = new Map<string, number>();  // Later: put off an hour, in this window only
+const limitError = new Map<string, string>();  // why the last answer to it didn't go
+export function limitAsks(s: Live, conversation?: string, job?: string): Asking[] {
+  const now = Date.now();
+  return s.limits.filter((d) => (limitLater.get(`${d.id}:${d.revision}`) ?? 0) < now && !s.answering.has(`limit:${d.id}:${d.revision}`)
+    && (!conversation && !job || d.jobs.some((j) => job === j.id || (!!conversation && s.jobs[j.id]?.conversation === realId(conversation)))))
+    .map((d) => {
+      const source = s.status?.accounts.find((a) => a.id === d.account);
+      const reset = d.resetAt != null && Number.isFinite(d.resetAt)
+        ? new Date(d.resetAt * 1000).toLocaleString([], { weekday: 'short', hour: 'numeric', minute: '2-digit' }) : null;
+      const n = d.jobs.length;
+      const text = [
+        `${n} ${n === 1 ? 'task is' : 'tasks are'} waiting: ${d.jobs.map((j) => j.title).join(', ')}.`,
+        reset ? `It resets ${reset}.` : 'Its reset time is unknown.',
+        source?.fiveHour != null ? `Five-hour usage: ${Math.round(source.fiveHour * 100)}%.` : '',
+        limitError.get(d.id) ?? d.problem ?? '',
+      ].filter(Boolean).join(' ');
+      return {
+        id: `limit:${d.id}:${d.revision}`, title: source?.name ?? d.agent,
+        brand: AGENTS[d.agent as keyof typeof AGENTS]?.brand,
+        ask: { kind: 'limit', headline: `${source?.name ?? d.agent} reached its limit`, text, options: d.options.map(limitLabel) },
+      };
+    });
+}
+// its answer: the option shown, sent with the revision shown (signed by main, device.ts)
+async function answerLimitAsk(id: string, option: string) {
+  const [, decisionId, revision] = id.split(':');
+  if (option === 'Later') { limitLater.set(`${decisionId}:${revision}`, Date.now() + 3600_000); set({}); return; }
+  const decision = state.limits.find((d) => d.id === decisionId && String(d.revision) === revision);
+  const picked = decision?.options.find((o) => limitLabel(o) === option);
+  if (!decision || !picked) throw new Error('This choice changed. Look at it again before choosing.');
+  answering(id, true);
+  try {
+    await answerLimit(decision, picked);
+    limitError.delete(decisionId);
+  } catch (e) {
+    limitError.set(decisionId, `Couldn’t save your choice: ${e instanceof Error ? e.message : String(e)}`);
+    throw e;
+  } finally { answering(id, false); }
 }
 
 // GitHub's work no job is on yet (once one is, the job is the task), as To do's cards: reviews and
@@ -245,7 +303,9 @@ const tasksOf = (s: Live) => Object.values(s.jobs).sort((a, b) => b.created.loca
 // into the stores the screens read
 let waking: ReturnType<typeof setTimeout> | undefined;
 let accountsFrom: Status | null = null;
+let sessionTurn: ReturnType<typeof setTimeout> | undefined;
 function publish() {
+  if (state.alias !== aliasSeen) { aliasSeen = state.alias; saveFolders(); }
   replaceChats(chatsOf(state));
   replaceTasks(tasksOf(state), { asks: asksOf(state), work: workOf(state.github), error: state.github?.error ?? undefined });
   // what's put off comes back when its time comes, which obid sends no event for: look again then
@@ -260,40 +320,49 @@ function publish() {
   // and Settings › Accounts and the usage gauge draw again for each list.
   if (!state.status || state.status === accountsFrom) return;
   accountsFrom = state.status;
+  // a 5-hour window past its reset reads as empty (docs/runner-api.md): drawn again at the soonest
+  // reset still ahead, which obid sends no event for
+  const now = Date.now();
+  clearTimeout(sessionTurn);
+  const ahead = state.status.accounts.map((a) => Date.parse(a.fiveHourResets ?? '')).filter((t) => t > now);
+  if (ahead.length) sessionTurn = setTimeout(() => { accountsFrom = null; publish(); }, Math.min(...ahead) - now + 500);
   replaceAccounts(state.status.accounts.map((a) => {
     const used = a.agent === 'cursor' ? null : a.sevenDay ?? a.fiveHour;
+    const over = !!a.fiveHourResets && Date.parse(a.fiveHourResets) <= now;
+    const session = a.agent === 'cursor' || !a.signedIn || a.fiveHour == null ? null : over ? 0 : Math.round(a.fiveHour * 100);
     return {
       id: a.id, agent: a.agent, name: a.name, payer: a.payer ?? 'You', signedIn: a.signedIn, label: a.label ?? null, used: used == null ? null : Math.round(used * 100),
       resets: a.agent === 'cursor' ? cursorStanding(a)
         : !a.signedIn ? a.label ?? 'Not signed in' : used == null ? 'No use reported yet'
         : a.sevenDayResets ? `Resets ${new Date(a.sevenDayResets).toLocaleDateString([], { weekday: 'long' })}` : 'No reset reported',
+      // the 5-hour session (signed in only), and when it starts over (Settings › Agents' bar, the
+      // usage panel's); weekly: whether used is the week's
+      session,
+      sessionResets: session != null && !over && a.fiveHourResets ? new Date(a.fiveHourResets).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : null,
+      weekly: a.sevenDay != null,
     };
   }));
 }
 
-// A Cursor account's one line: not connected, its login expired (obid's note), or connected with
-// its plan (obid's label, from `cursor-agent about`), at its limit until its cycle ends, else
-// where Cursor shows what's used (its CLI gives obid no usage numbers)
+// A Cursor account's one line: signed out as the others say it (obid's note, else Sangam's Not
+// signed in), or connected with its plan (obid's label, from `cursor-agent about`), at its limit
+// until its cycle ends, else where Cursor shows what's used (its CLI gives obid no usage numbers)
 // obid keeps the cycle's last day at 00:00 UTC: read in UTC, it's Cursor's day anywhere.
 const day = (iso: string) => new Date(iso).toLocaleDateString([], { month: 'short', day: 'numeric', timeZone: 'UTC' });
 function cursorStanding(a: Status['accounts'][number]): string {
-  if (!a.signedIn) {
-    if (a.label === 'Run cursor-agent once') return 'Cursor’s login on this Mac has expired: run cursor-agent once in Terminal, or Connect an account of Oby’s own';
-    return a.label ?? 'Not connected · Connect signs you in on Cursor’s page';
-  }
+  if (!a.signedIn) return a.label ?? 'Not signed in';
   if (a.fullUntil && Date.parse(a.fullUntil) > Date.now()) return `${a.label ? `${a.label} · ` : ''}At its limit until ${day(a.fullUntil)}, when Cursor’s cycle ends`;
   return `${a.label ?? 'Connected'} · usage on cursor.com/dashboard`;
 }
 
 // Cursor's agent on this Mac, set up by obid when it isn't there (docs/runner-api.md, "obid only:
-// tools"), before a Cursor sign-in: `step` hears what's going on meanwhile. An older obid (no
-// `tools` in its status) is left to say so at the sign-in.
-export async function ensureCursor(step: (text: string) => void): Promise<void> {
+// tools"), before a Cursor sign-in, under Sangam's own sign-in states (no words of its own). An
+// older obid (no `tools` in its status) is left to say so at the sign-in.
+export async function ensureCursor(): Promise<void> {
   const look = async () => (await api.status()).tools?.cursor;
   let cursor = state.status?.tools?.cursor ?? (await look());
   if (!cursor || cursor.state === 'installed') return;
   if (cursor.state !== 'installing') await api.installTool('cursor');
-  step('Getting Cursor’s agent (one time, about 200 MB)');
   for (const end = Date.now() + 20 * 60_000; Date.now() < end; await new Promise((r) => setTimeout(r, 2000))) {
     cursor = await look().catch(() => undefined);
     if (cursor?.state === 'installed') return;
@@ -401,6 +470,33 @@ let generation = 0;
 let retry = 0;
 let reconnecting: ReturnType<typeof setTimeout> | undefined;
 let unfollow: (() => void) | undefined;
+let limitTimer: ReturnType<typeof setTimeout> | undefined;
+let limitRequest = 0;
+
+// Options can change as accounts become available. Refresh after job/account events and
+// periodically; discard an older response if a newer refresh has already started.
+export async function refreshLimits() {
+  const request = ++limitRequest;
+  try {
+    const limits = await api.limitDecisions();
+    if (request === limitRequest) set({ limits });
+  } catch { /* older obid, or a temporary disconnect: keep the last known decisions */ }
+}
+function queueLimits() {
+  clearTimeout(limitTimer);
+  limitTimer = setTimeout(() => void refreshLimits(), 300);
+}
+setInterval(() => { if (state.connection === 'live') void refreshLimits(); }, 15_000);
+
+export async function answerLimit(decision: LimitDecision, option: LimitDecision['options'][number]) {
+  try {
+    await api.answerLimit(decision, option);
+    await refreshLimits();
+  } catch (e) {
+    await refreshLimits();
+    throw e;
+  }
+}
 
 export function connect() {
   const mine = ++generation;
@@ -409,6 +505,7 @@ export function connect() {
   const pending: Event[] = [];
   let syncing = true;
   const read = sseReader((name, data) => {
+    if (['limitDecision', 'job', 'accounts'].includes(name)) queueLimits();
     const e = parseEvent(name, data);
     if (!e || mine !== generation) return;
     if (syncing) pending.push(e);
@@ -447,20 +544,27 @@ function down(mine: number, problem: string, why?: Live['why']) {
 
 async function sync(mine: number, pending: Event[], onSynced: () => void) {
   try {
-    const [status, jobs, inbox, conversations, github] = await Promise.all([
+    const limitVersion = ++limitRequest;
+    const [status, jobs, inbox, { list: conversations, complete }, github, limits] = await Promise.all([
       api.status(), api.jobs(100), api.inbox().catch(() => []), allConversations(),
       // GitHub's work: not read, the last read stands, with why (as obid keeps its last lists)
       api.githubWork().catch((e) => (state.github ? { ...state.github, error: e instanceof Error ? e.message : String(e) } : null)),
+      api.limitDecisions().catch(() => state.limits),
     ]);
     if (mine !== generation) return;
     retry = 0;
     let next: Live = {
       ...state, connection: 'live', problem: null, why: undefined, status, inbox: inbox.filter((i) => i.state !== 'done'), conversations, github,
+      limits: limitVersion === limitRequest ? limits : state.limits,
       jobs: { ...state.jobs, ...Object.fromEntries(jobs.map((j) => [j.id, j])) },
       firstJobs: state.status ? state.firstJobs : new Set(jobs.map((j) => j.id)),
     };
     for (const e of pending) next = apply(next, e);
     pending.length = 0;
+    // the folders of conversations deleted since (folders.ts); with the ones that moved up a page
+    // while it was read (their events, just applied). A list cut short at allConversations' last
+    // page isn't all of them: nothing's dropped then
+    if (complete) keepFoldersOf(new Set(next.conversations.map((c) => c.id)));
     set(next);
     onSynced();
     // where work can start: GitHub's list takes a moment, so the rest doesn't wait for it
@@ -479,13 +583,14 @@ async function sync(mine: number, pending: Event[], onSynced: () => void) {
 // every conversation, a page at a time (obid keeps 200, more when pinned)
 async function allConversations() {
   const all = new Map<string, Conversation>();
+  let complete = false;
   for (let after: string | undefined, page = 0; page < 10; page++) {
     const list = await api.conversations({ after, limit: 200 });
     for (const c of list) if (!all.has(c.id)) all.set(c.id, c);
-    if (list.length < 200) break;
+    if (list.length < 200) { complete = true; break; }
     after = list.at(-1)!.cursor;
   }
-  return [...all.values()];
+  return { list: [...all.values()], complete };
 }
 
 // what went wrong with something the app did, for a moment
@@ -621,6 +726,7 @@ export async function startGitHubWork(id: string) {
 // place, confirmed here at once with this Mac's signature over that ask's title.
 const DECISIONS: Record<string, 'allow' | 'always' | 'deny'> = { Allow: 'allow', 'Always allow': 'always', Deny: 'deny' };
 export async function answerJob(id: string, option: string, words?: string) {
+  if (id.startsWith('limit:')) return answerLimitAsk(id, option).catch(say);
   const j = state.jobs[id], item = itemOf(state, id) ?? state.inbox.find((i) => i.id === id), ask = j && askOf(state, j);
   const shown = option === 'Edit' && words ? `Use ${words}` : option;
   if (ask) set({ answered: { ...state.answered, [id]: { ask, option: shown, item: item?.id } } });

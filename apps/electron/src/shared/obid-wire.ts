@@ -33,6 +33,9 @@ export type Job = {
   pipeline: { number: number; total: number; stages: Stage[] } | null;
   title: string;
   waiting?: { kind: string; text: string } | null;
+  // The account-wide question is shown once. Its settled choice remains authoritative while
+  // the job is stopped, so an ordinary interruption card must not ask the owner again.
+  accountLimit?: { decision: string | null; state: 'pending' | 'resume' | 'stop' | 'move'; resetAt: string | null } | null;
   // obid only: the conversation whose words started it (#493), and the user's turn there whose
   // words started it or offered it (oby_offer)
   conversation?: string | null;
@@ -68,6 +71,13 @@ export type InboxItem = {
   confirm?: { action: string; target: string; payload: { check?: string | null; was?: string | null } | null } | null;
 };
 
+// One owner decision for all jobs stopped by the same account's limit (#1563).
+export type LimitDecision = {
+  id: string; revision: number; account: string; agent: string; resetAt: number | null; problem?: string | null;
+  jobs: { id: string; title: string }[];
+  options: ({ kind: 'move'; account: string; agent: string; name: string } | { kind: 'resume' | 'stop' })[];
+};
+
 // "GET /v1/conversation"
 // ended: the turn that tells how a job ended; routine: a routine's run's (neither answers you)
 export type Turn = { id: string; who: 'user' | 'oby'; text: string; at: string; jobs: string[]; conversation?: string; ended?: boolean; routine?: unknown };
@@ -96,6 +106,7 @@ export type Account = {
   fiveHour: number | null;
   sevenDay: number | null;
   sevenDayResets: string | null;
+  fiveHourResets?: string | null;
   // until when a job of its hit its usage limit (Cursor's: the day its monthly cycle ends), or null
   fullUntil?: string | null;
   running: number;

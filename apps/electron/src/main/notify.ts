@@ -2,8 +2,8 @@ import { app, ipcMain, Notification, powerMonitor, shell, type BrowserWindow } f
 import { constants, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { obid, send, type Answer, type Trusted } from './obid';
-import { writeOwn } from './device';
-import { parseEvent, sseReader, type Conversation, type Event, type InboxItem, type Job, type Turn } from '../shared/obid-wire';
+import { answerLimit, writeOwn } from './device';
+import { parseEvent, sseReader, type Conversation, type Event, type InboxItem, type Job, type LimitDecision, type Turn } from '../shared/obid-wire';
 
 // Oby's alerts on this Mac, as the Swift app posted them (apps/mac/app/Alerts.swift and
 // RunnerFeed.swift; the owner's rule of 2026-10-23): what needs the owner, a job they started that
@@ -65,6 +65,16 @@ const fits = (text: string) => [...text].length <= 120 && text.split('\n').lengt
 
 const jobs = new Map<string, ObidJob>();
 const inbox = new Map<string, InboxItem>();
+const limits = new Map<string, LimitDecision>();
+let limitsRequest = 0;
+async function refreshLimits() {
+  const request = ++limitsRequest;
+  const active = json<LimitDecision[]>(await obid('GET', '/v1/limit-decisions'));
+  if (request !== limitsRequest || !active) return;
+  limits.clear();
+  for (const d of active) limits.set(d.id, d);
+  later();
+}
 const titles = new Map<string, string>();
 // Oby's last answer heard in each conversation, and the ones to alert at the next look
 const lastAnswer = new Map<string, Turn>();
@@ -117,8 +127,19 @@ function wanted(): Map<string, Alert> {
     const why = (otherwise: string) => firstLine(j.reason) ?? firstLine(j.summary) ?? otherwise;
     if (canPublish(j)) say(end('ready'), true, j.publishError ? 'Couldn’t publish' : 'Ready to publish', firstLine(j.publishError) ?? firstLine(j.summary) ?? 'Done');
     else if (j.status === 'failed') say(end('failed'), true, 'Failed', why('Failed'));
-    else if (j.status === 'interrupted') say(end('interrupted'), true, 'Needs you', why('Interrupted'));
+    else if (j.status === 'interrupted' && !j.accountLimit && ![...limits.values()].some((d) => d.jobs.some((job) => job.id === j.id))) say(end('interrupted'), true, 'Needs you', why('Interrupted'));
     else if (j.status === 'done') say(end('done'), false, 'Done', firstLine(j.summary) ?? 'Done');
+  }
+  for (const d of limits.values()) {
+    // The count and "all" on every action describe the scope in the collapsed banner.
+    // answerLimit re-reads the decision and signs its revision, so a changed set of jobs
+    // cannot be accepted by a click on an older notification.
+    const body = `${d.jobs.length} ${d.jobs.length === 1 ? 'task is' : 'tasks are'} waiting on ${plain(d.agent)}'s limit.`;
+    const buttons = d.options.map((o): Button => ({
+      text: o.kind === 'move' ? `Move all to ${plain(o.name)} · ${plain(o.agent)}` : o.kind === 'resume' ? 'Resume all when available' : 'Keep all stopped',
+      does: () => answerLimit(d.id, d.revision, o.kind, o.kind === 'move' ? o.account : undefined),
+    }));
+    want.set(`limit:${d.id}`, { what: String(d.revision), needs: true, title: 'Usage limit', body, place: {}, thread: 'oby', buttons });
   }
   // From the open inbox: a Confirm, a Start, Allow for the conversation's shell command, and what
   // obid sorts as needing the owner. A job's permission alerts as its job; what one turn offered
@@ -130,6 +151,7 @@ function wanted(): Map<string, Alert> {
     if (offer && offered.has(offer)) continue;
     if (offer) offered.add(offer);
     const job = i.job || undefined;
+    if (i.kind === 'limit' && job && [...limits.values()].some((d) => d.jobs.some((j) => j.id === job))) continue;
     if (i.kind === 'permission' && job) continue;
     if (!['permission', 'confirm', 'start'].includes(i.kind) && i.triage !== 'needs_you') continue;
     const conversation = i.conversation ?? undefined;
@@ -281,13 +303,16 @@ const json = <T>(a: Answer): T | null => { try { return a.status === 200 ? JSON.
 
 // What obid has now: the jobs, the inbox and the conversations' titles
 async function sync(): Promise<boolean> {
-  const [js, items, cs] = await Promise.all(['/v1/jobs', '/v1/inbox', '/v1/conversations?limit=200'].map((p) => obid('GET', p)));
+  const limitVersion = ++limitsRequest;
+  const [js, items, cs, decisions] = await Promise.all(['/v1/jobs', '/v1/inbox', '/v1/conversations?limit=200', '/v1/limit-decisions'].map((p) => obid('GET', p)));
   const listed = json<ObidJob[]>(js), open = json<InboxItem[]>(items);
   if (!listed || !open) return false;
   jobs.clear();
   for (const j of listed) jobs.set(j.id, j);
   inbox.clear();
   for (const i of open) if (i.state !== 'done') inbox.set(i.id, i);
+  const active = json<LimitDecision[]>(decisions);
+  if (active && limitVersion === limitsRequest) { limits.clear(); for (const d of active) limits.set(d.id, d); }
   titles.clear();
   for (const c of json<Conversation[]>(cs) ?? []) titles.set(c.id, c.title);
   return true;
@@ -304,6 +329,9 @@ async function follow() {
     let synced = false;
     const pending: Event[] = [];
     const read = sseReader((name, data) => {
+      if (name === 'limitDecision' || name === 'job' || name === 'accounts') {
+        void refreshLimits();
+      }
       const e = FOLLOWED.has(name) ? parseEvent(name, data) : null;
       if (e && synced) take(e);
       else if (e) pending.push(e);
@@ -376,5 +404,6 @@ export function notifying(trusted: Trusted, window: () => BrowserWindow | null, 
     return on;
   });
   ipcMain.on('open-notification-settings', (e) => { if (trusted(e)) void shell.openExternal(SYSTEM); });
+  setInterval(() => { if (ready) void refreshLimits(); }, 15_000);
   void follow();
 }

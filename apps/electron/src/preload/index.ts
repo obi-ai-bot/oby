@@ -23,6 +23,11 @@ contextBridge.exposeInMainWorld('app', {
   },
   // a sign-in page in the person's browser (https only)
   openExternal: (url: string) => ipcRenderer.send('open-external', url),
+  // the Mac's folder picker, several folders at once, opening in from: their paths (none: cancelled)
+  pickFolders: (from?: string) => ipcRenderer.invoke('pick-folders', from) as Promise<string[]>,
+  // setting up (the page's FirstRun.tsx): the window narrower and held at its size, or its own
+  // size back (it grows); answered once main has done it, so it happens before the window shows
+  setupWindow: (on: boolean): number | null => ipcRenderer.sendSync('setup-window', on),
   // System Settings › General › Login Items, where macOS asks to approve obid
   openLoginItems: () => ipcRenderer.send('open-login-items'),
   // Oby's alerts (main/notify.ts): what the page shows (a job's page, a conversation, {} for
@@ -46,6 +51,8 @@ contextBridge.exposeInMainWorld('app', {
     call: (method: string, path: string, body?: unknown) => ipcRenderer.invoke('obid', method, path, body) as Promise<Answer>,
     // Confirm on an open confirm item, by its id: main signs it with this Mac's device key
     confirm: (item: string) => ipcRenderer.invoke('obid-confirm', item) as Promise<Answer>,
+    limitAnswer: (item: string, revision: number, choice: string, account?: string) =>
+      ipcRenderer.invoke('obid-limit-answer', item, revision, choice, account) as Promise<Answer>,
     follow(onChunk: (text: string) => void, onEnd: (a: Answer) => void) {
       const chunk = (_: unknown, text: string) => onChunk(text);
       const end = (_: unknown, a: Answer) => { stop(); onEnd(a); };

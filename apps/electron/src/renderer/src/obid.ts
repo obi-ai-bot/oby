@@ -11,6 +11,7 @@ import type {
   GitHubWork,
   InboxItem,
   Job,
+  LimitDecision,
   PlanAnswer,
   Repo,
   SavedRule,
@@ -22,6 +23,15 @@ import type {
 } from '../../shared/obid-wire';
 
 export * from '../../shared/obid-wire';
+
+// Each tool's model and efforts, as status.models has them (Settings › Agents), and the choices:
+// Claude Code's efforts are the tool's, Codex's each model's own; Cursor has a model and no effort
+export type Models = {
+  claude: { model: string; effort: string; complexEffort: string };
+  codex: { model: string; effort: string; complexEffort: string };
+  cursor?: { model: string };
+};
+export type ModelOptions = Record<Agent, { models: { id: string; name: string; efforts?: string[] }[]; efforts?: string[]; complexEfforts: string[] }>;
 
 // {"error": "One line a person can read."} with its status; status 0: obid didn't answer, and
 // the message is why (its own reason when it has one, main/obid.ts)
@@ -68,6 +78,10 @@ export const api = {
   answer: (i: string, body: { answer: string } | { later: string }) => call<InboxItem>('POST', `/v1/inbox/${id(i)}/answer`, body),
   // Confirm on a confirm item: main signs it with this Mac's device key (main/device.ts)
   confirm: (i: string) => call<InboxItem>('POST', `/v1/inbox/${id(i)}/answer`, undefined, (b) => b.confirm(i)),
+  limitDecisions: () => call<LimitDecision[]>('GET', '/v1/limit-decisions'),
+  answerLimit: (decision: LimitDecision, option: LimitDecision['options'][number]) =>
+    call<unknown>('POST', `/v1/limit-decisions/${id(decision.id)}/answer`, undefined,
+      (b) => b.limitAnswer(decision.id, decision.revision, option.kind, option.kind === 'move' ? option.account : undefined)),
   // one conversation's turns
   conversation: (opts: { id?: string; before?: string; limit?: number } = {}) => call<Turn[]>('GET', `/v1/conversation${q(opts)}`),
   // words to Oby: in a conversation, or starting a new one

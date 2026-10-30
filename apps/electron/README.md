@@ -65,8 +65,18 @@ npm run web     # the renderer alone in a browser, on port 5175
 npm run build   # into out/
 npm start       # the built app
 npm run typecheck
+npm run test:account-limits  # real Electron signing + scratch obid, after builds below
 scripts/package.sh [arm64] [x64]   # signed, notarized DMGs in dist/ (below)
 ```
+
+The account-limit integration regression runs on macOS with an unlocked login Keychain. Run
+`cargo build --manifest-path ../../core/Cargo.toml -p obid`, `npm run build`, then
+`npm run test:account-limits`. It uses the bundled Electron and stand-in agents, creates isolated
+app and obid data, and exercises the actual preload, IPC, device key, signed HTTP and job
+continuation paths. It checks grouped stop, cross-tool move, reset opt-in, and a visible error
+when secure storage is unavailable. Electron retains the Mac's real `HOME` so macOS safeStorage
+can reach the login Keychain; only its `userData` and obid's home are temporary. No real agent
+login or installed job is used. `OBY_TEST_OBID` can select a separately built obid binary.
 
 `scripts/package.sh` packages the Mac app on this Mac, as `scripts/release.sh`
 does the Swift app's (`docs/release.md`, no CI): `scripts/helpers.sh` builds obid
@@ -78,7 +88,8 @@ JIT as the only entitlement, Electron's fuses closed), and the script checks it,
 scans it with gitleaks, notarizes and staples it (keychain profile
 `oby-notary`), and makes `dist/Oby-Electron-<version>-<arch>.dmg`, signed, notarized and
 stapled too. It needs the Developer ID Application identity of team
-`3UV9W5SV7W` and both Rust targets (`rustup target add aarch64-apple-darwin
+`3UV9W5SV7W` (another team's: set `OBY_TEAM_ID` and `OBY_SIGN_IDENTITY`, its
+name as in `"Name (TEAMID)"`) and both Rust targets (`rustup target add aarch64-apple-darwin
 x86_64-apple-darwin`); `OBY_CARGO_TARGET_DIR` reuses a cargo target directory.
 obid, gh and gitleaks are staged again only when `core/`, `plugins/` or the bundle
 scripts changed since (`build/helpers/stamp`). `scripts/vm-test.sh [dmg]` then

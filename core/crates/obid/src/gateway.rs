@@ -106,6 +106,8 @@ const ROUTES: &[(&str, &str)] = &[
     ("POST", "/v1/github/work/*/start"),
     ("GET", "/v1/inbox"),
     ("POST", "/v1/inbox/*/answer"),
+    ("GET", "/v1/limit-decisions"),
+    ("POST", "/v1/limit-decisions/*/answer"),
     ("GET", "/v1/failures"),
     ("GET", "/v1/failures/*"),
     ("POST", "/v1/failures/*/fix"),
@@ -119,6 +121,8 @@ const ROUTES: &[(&str, &str)] = &[
     ("GET", "/v1/permissions/rules"),
     ("DELETE", "/v1/permissions/rules/*"),
     ("POST", "/v1/devices"),
+    ("GET", "/v1/devices/*/pairing"),
+    ("POST", "/v1/devices/*/pairing"),
     ("POST", "/v1/activities"),
     ("POST", "/v1/notifications"),
     ("GET", "/v1/watches"),
@@ -843,9 +847,9 @@ async fn scrubbed(
     out
 }
 
-/// Events about logins and the watcher, which only the Mac's own Settings uses: Tetrix's,
-/// Slack's and Sentry's sign-ins, and the watcher's rules and runs (what people wrote, quoted).
-const MAC_ONLY_EVENTS: &[&str] = &["tetrix", "slack", "sentry", "hooks", "watch", "listen"];
+/// Events about logins and the watcher, which only the Mac's own Settings uses: Tetrix's
+/// sign-in, and the watcher's rules and runs (what people wrote, quoted).
+const MAC_ONLY_EVENTS: &[&str] = &["tetrix", "hooks", "watch"];
 
 /// `text`, a piece of the event stream, without the frames of [`MAC_ONLY_EVENTS`]. The stream
 /// comes a frame at a time, each ending with a blank line.
@@ -967,9 +971,9 @@ mod tests {
         assert!(allows(&Method::POST, "/v1/github/work/abc/start"));
         assert!(!allows(&Method::POST, "/v1/github/work"));
         assert!(!allows(&Method::GET, "/v1/github/work/abc"));
-        // Slack's login and the watcher are the Mac's alone, their events too.
+        // Tetrix's login and the watcher are the Mac's alone, their events too.
         let scrubber = Scrubber { homes: vec![] };
-        let stream = "event: job\ndata: {\"id\":\"j1\"}\n\nevent: watch\ndata: {\"rules\":{}}\n\nevent: slack\ndata: {}\n\nevent: tetrix\ndata: {}\n\nevent: inbox\ndata: {\"id\":\"i1\"}\n\n";
+        let stream = "event: job\ndata: {\"id\":\"j1\"}\n\nevent: watch\ndata: {\"rules\":{}}\n\nevent: tetrix\ndata: {}\n\nevent: inbox\ndata: {\"id\":\"i1\"}\n\n";
         assert_eq!(
             scrubber.frame(stream),
             "event: job\ndata: {\"id\":\"j1\"}\n\nevent: inbox\ndata: {\"id\":\"i1\"}\n\n"
@@ -1038,6 +1042,14 @@ mod tests {
         }
         // `**` is the rest of the path, at the end of a pattern only.
         assert!(!allows(&Method::GET, "/v1/jobs/abc/def/wait"));
+    }
+
+    #[test]
+    fn paired_devices_can_read_and_answer_limit_decisions_only() {
+        assert!(allows(&Method::GET, "/v1/limit-decisions"));
+        assert!(allows(&Method::POST, "/v1/limit-decisions/abc/answer"));
+        assert!(!allows(&Method::POST, "/v1/limit-decisions/abc/def/answer"));
+        assert!(!allows(&Method::DELETE, "/v1/limit-decisions/abc"));
     }
 
     /// Ports GatewayTests.pairingSecretAndCodeWorkOnceAndExpire.

@@ -38,16 +38,15 @@ fn job(obid: &Obid, id: &str) -> Value {
     call(obid, "GET", &format!("/v1/jobs/{id}"), None).body
 }
 
-/// Kept in the job files before obid starts (a restart): the due job is tried again (Try again, in
-/// its session), its step and note Oby's, never words the owner said; a dismissed one and one a
-/// follow-up took on aren't, and stop waiting.
+/// Old scheduled retries migrate to an owner decision instead of running without consent.
 #[test]
-fn a_reset_job_is_tried_again_after_a_restart_unless_let_go() {
+fn old_automatic_retries_become_one_pending_decision_after_restart() {
     let folder = Folder::new("resets");
     let remote = fixture(&folder.0.join("fixture"));
     let agent = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/agents/fake-claude");
     let config = config(&folder.0, &remote, &agent);
     let due = limited("aaaa0001");
+    let second = limited("aaaa0005");
     let mut dismissed = limited("aaaa0002");
     dismissed.dismissed = Some(obi_protocol::time::now() - 30);
     let followed = limited("aaaa0003");
@@ -55,34 +54,32 @@ fn a_reset_job_is_tried_again_after_a_restart_unless_let_go() {
     follow_up.status = Status::Done;
     follow_up.resumes_at = None;
     follow_up.follow_up_of = Some(followed.id.clone());
-    let dir = folder.0.join("home/jobs");
-    std::fs::create_dir_all(&dir).unwrap();
-    for job in [&due, &dismissed, &followed, &follow_up] {
-        let path = dir.join(format!("{}.json", job.id));
-        std::fs::write(path, serde_json::to_vec(job).unwrap()).unwrap();
-    }
-    let obid = start(&folder.0, &config, None);
-
-    let again = within(60, "the due job was tried again", || {
-        let job = job(&obid, &due.id);
-        (job["round"] == 2 && job["status"] == "done").then_some(job)
-    });
-    assert_eq!(again["resumesAt"], Value::Null, "{again}");
-    assert_eq!(again["reason"], Value::Null, "{again}");
-    assert_eq!(
-        again["notes"],
-        json!(["Oby tried again after the usage reset."]),
-        "{again}"
+    put(
+        &folder.0,
+        &[&due, &second, &dismissed, &followed, &follow_up],
     );
-    for (id, why) in [(&dismissed.id, "dismissed"), (&followed.id, "followed up")] {
-        let job = within(30, &format!("the {why} job stopped waiting"), || {
-            let job = job(&obid, id);
-            job["resumesAt"].is_null().then_some(job)
-        });
-        assert_eq!(job["status"], "interrupted", "{why}: {job}");
-        assert_eq!(job["round"], 1, "{why}: {job}");
-        assert!(job["notes"].is_null(), "{why}: {job}");
+    let obid = start(&folder.0, &config, None);
+    for j in [&due, &second, &dismissed, &followed] {
+        let current = job(&obid, &j.id);
+        assert_eq!(current["status"], "interrupted", "{current}");
+        assert_eq!(current["round"], 1, "{current}");
+        assert!(current["resumesAt"].is_null(), "{current}");
     }
+    let decisions = call(&obid, "GET", "/v1/limit-decisions", None).body;
+    let decisions = decisions.as_array().unwrap();
+    assert_eq!(decisions.len(), 1, "{decisions:?}");
+    let ids: Vec<_> = decisions[0]["jobs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|j| j["id"].as_str().unwrap())
+        .collect();
+    assert!(
+        ids.contains(&due.id.as_str()) && ids.contains(&second.id.as_str()),
+        "{ids:?}"
+    );
+    assert_eq!(ids.len(), 2);
+    assert!(decisions[0]["resetAt"].is_null());
 }
 
 /// A job a restart cut short while it ran its check picks up at that phase ("After any restart"):

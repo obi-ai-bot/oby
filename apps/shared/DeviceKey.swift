@@ -29,6 +29,14 @@ nonisolated struct Approval: Encodable, Equatable, Sendable {
         Data("oby-confirm\n\(item)\n\(title)\n\(signedAt)".utf8)
     }
 
+    static func limitMessage(id: String, revision: Int, choice: String, account: String?, signedAt: String) -> Data {
+        Data("oby-limit-decision\n\(id)\n\(revision)\n\(choice)\n\(account ?? "")\n\(signedAt)".utf8)
+    }
+
+    static func pairingBindingMessage(id: String, pairing: String, nonce: String, signedAt: String) -> Data {
+        Data("oby-device-pairing\n\(id)\n\(pairing)\n\(nonce)\n\(signedAt)".utf8)
+    }
+
     /// What a registered device signs to revoke device `device` (docs/runner-api.md,
     /// "DELETE /v1/devices/{id}"): the Mac's new key, for the key it replaced.
     static func revokeMessage(device: String, signedAt: String) -> Data {
@@ -88,6 +96,18 @@ nonisolated enum DeviceKey {
         let signedAt = ISO8601DateFormatter().string(from: .now)
         return Approval(device: device, action: title, signedAt: signedAt,
                         signature: try sign(Approval.confirmMessage(item: item, title: title, signedAt: signedAt)))
+    }
+
+    static func approveLimit(id: String, revision: Int, choice: String, account: String?, device: String) throws -> Approval {
+        let signedAt = ISO8601DateFormatter().string(from: .now)
+        return Approval(device: device, action: choice, signedAt: signedAt,
+                        signature: try sign(Approval.limitMessage(id: id, revision: revision, choice: choice, account: account, signedAt: signedAt)))
+    }
+
+    static func approvePairingBinding(id: String, pairing: String, nonce: String) throws -> Approval {
+        let signedAt = ISO8601DateFormatter().string(from: .now)
+        return Approval(device: id, action: "bind-pairing", signedAt: signedAt,
+                        signature: try sign(Approval.pairingBindingMessage(id: id, pairing: pairing, nonce: nonce, signedAt: signedAt)))
     }
 
     /// Signs the revocation of device `device`, as `approve` signs a publish: this key is the

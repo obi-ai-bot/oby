@@ -122,11 +122,12 @@ struct HomeView: View {
         // A task waiting for memory is active, but not running: the line says it apart.
         let memory = work.count { $0.job.waitsForMemory }
         let running = work.count { $0.status == .running && !$0.job.waitsForMemory }
-        let needs = WorkList.needsYou(work, loose: phone.loose.count)
+        let needs = WorkList.needsYou(work, loose: phone.loose.count) + phone.limitDecisions.count
         return VStack(spacing: 0) {
             StageOby(character: character)
             Button {
-                if let first = PhoneWork.firstNeeding(work, inbox: phone.answering) { phone.homePath.append(first) }
+                if !phone.limitDecisions.isEmpty { phone.homePath.append(.inbox) }
+                else if let first = PhoneWork.firstNeeding(work, inbox: phone.answering) { phone.homePath.append(first) }
             } label: {
                 Text(HomeLine.attention(running: running, needs: needs, memory: memory))
                     .font(Tokens.font(Tokens.textBase))
@@ -160,9 +161,12 @@ struct HomeView: View {
         let rows = PhoneWork.running(phone.work)
         let recent = phone.conversations.map(PhoneWork.recent) ?? []
         VStack(alignment: .leading, spacing: 0) {
-            if !asks.isEmpty {
+            if !asks.isEmpty || !phone.limitDecisions.isEmpty {
                 ListLabel(title: "Needs you", more: "Inbox") { phone.homePath.append(.inbox) }
-                AskStack(items: asks).padding(.horizontal, 10).padding(.bottom, 12)
+                ForEach(phone.limitDecisions) { decision in
+                    AccountLimitDecision(decision: decision).padding(.horizontal, 10).padding(.bottom, 12)
+                }
+                if !asks.isEmpty { AskStack(items: asks).padding(.horizontal, 10).padding(.bottom, 12) }
             }
             if !rows.isEmpty {
                 ListLabel(title: "Running", more: "See all") { phone.homePath.append(.all) }
@@ -643,13 +647,14 @@ struct InboxPage: View {
                 VStack(alignment: .leading, spacing: 12) {
                     Text("Inbox").font(Tokens.font(28, .semibold)).foregroundStyle(Tokens.ink).padding(.bottom, 8)
                         .accessibilityAddTraits(.isHeader)
+                    ForEach(phone.limitDecisions) { decision in AccountLimitDecision(decision: decision) }
                     ForEach(items) { item in
                         VStack(alignment: .leading, spacing: 6) {
                             Text(item.line(now: context.date)).font(Tokens.font(Tokens.textSm)).foregroundStyle(Tokens.muted).lineLimit(1)
                             InboxDecision(item: item, openTask: true)
                         }
                     }
-                    if items.isEmpty {
+                    if items.isEmpty && phone.limitDecisions.isEmpty {
                         Text("Nothing needs you").font(Tokens.font(Tokens.textBase)).foregroundStyle(Tokens.muted)
                     }
                 }

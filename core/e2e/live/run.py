@@ -29,13 +29,11 @@ import zlib
 
 ACCOUNT_ID = "deskree"
 ACCOUNT_NAME = "Deskree"
-# ponytail: the one Claude account that works on this Mac today; the default/Personal login is
-# revoked, so it's never used. --account-dir to point at another.
-ACCOUNT_DIR = (
-    "/Users/wellprado/Library/Application Support/Oby/accounts/32203c5b-b24c-4353-bdcb-f34797790d0a"
-)
+# The Claude account's configDir and the fixture's remote: OBY_LIVE_ACCOUNT_DIR and
+# OBY_LIVE_REMOTE, or --account-dir and --remote.
+ACCOUNT_DIR = os.environ.get("OBY_LIVE_ACCOUNT_DIR")
 REPO = "field/fixture-app"
-REMOTE = "file:///Users/wellprado/Projects/Deskree/oby-field/remote.git"
+REMOTE = os.environ.get("OBY_LIVE_REMOTE")
 CODEWORD = "PAPAYA-42"
 TURN_TIMEOUT = 700  # the harness's turn budget is 600 s by default
 TERMINAL = {"done", "failed", "stopped", "interrupted"}
@@ -496,8 +494,10 @@ def main():
     ap.add_argument("--label", default="", help="a name for this run in the output (a branch, a sha)")
     ap.add_argument("--only", default="", help="scenario numbers to run, e.g. 1,2,7 (4 and 6 need 4)")
     ap.add_argument("--job-timeout", type=int, default=900, help="seconds scenario 4's job may take (900)")
-    ap.add_argument("--account-dir", default=ACCOUNT_DIR, help="the Claude account's configDir")
-    ap.add_argument("--remote", default=REMOTE, help=f"{REPO}'s remote")
+    ap.add_argument("--account-dir", default=ACCOUNT_DIR, required=ACCOUNT_DIR is None,
+                    help="the Claude account's configDir ($OBY_LIVE_ACCOUNT_DIR)")
+    ap.add_argument("--remote", default=REMOTE, required=REMOTE is None,
+                    help=f"{REPO}'s remote ($OBY_LIVE_REMOTE)")
     ap.add_argument("--json", help="also write the results to this file")
     ap.add_argument("--keep", action="store_true", help="keep the run folder (it holds the API token)")
     args = ap.parse_args()

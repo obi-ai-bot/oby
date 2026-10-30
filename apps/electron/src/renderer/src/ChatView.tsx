@@ -16,7 +16,7 @@ import { obys, ofObid, tellChat, useChats, type Chat } from './chats';
 import SetupCard from './SetupCard';
 import OfferCard from './OfferCard';
 import { WELCOME, typedFirst } from './onboarding';
-import { openConversation } from './live';
+import { openConversation, useLimitAsks } from './live';
 
 // how long the way out takes (the sink animation in app.css)
 const LEAVE_MS = 220;
@@ -62,6 +62,7 @@ export default function ChatView({ id, kind = 'task', leaving, covered = false, 
   const convo = kind === 'peer' ? convos.find((c) => c.id === id)! : null;
   if (task) keptTask.current = task;
   if (talk) keptChat.current = talk;
+  const limitsOf = useLimitAsks(talk?.id, task?.id), limits = talk || task ? limitsOf : [];
   const name = task ? convoTitle(task.job) : talk ? talk.title : convo!.title;
   const j = task?.job;
   const { list, onScroll, thumbProps } = useScrollThumb<HTMLElement>();
@@ -105,7 +106,7 @@ export default function ChatView({ id, kind = 'task', leaving, covered = false, 
     l.scrollTo({ top: l.scrollHeight, behavior: first.current ? 'instant' : 'smooth' });
     first.current = false;
   // (the last, as its words come in, then the card or task it ends with)
-  }, [thread.length, typing, step, (thread.at(-1) as Message | undefined)?.text?.length, (thread.at(-1) as Message | undefined)?.streaming, (thread.at(-1) as Message | undefined)?.jobs?.length]);
+  }, [thread.length, typing, step, limits.length, (thread.at(-1) as Message | undefined)?.text?.length, (thread.at(-1) as Message | undefined)?.streaming, (thread.at(-1) as Message | undefined)?.jobs?.length]);
 
   // a timer, not animationend: animations don't run while the window is hidden
   useEffect(() => {
@@ -211,6 +212,8 @@ export default function ChatView({ id, kind = 'task', leaving, covered = false, 
                 </li>
               )}
             </ol>
+            {/* an account's limit stopping this work: its decision, as on Home's stack */}
+            {limits.map((a) => <div key={a.id} className="msg-ask"><AskBlock task={{ id: a.id, job: { ask: a.ask! } }} inChat /></div>)}
           </div>
         </section>
         <div {...thumbProps} />

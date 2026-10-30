@@ -31,9 +31,9 @@ button { appearance: none; border: 0; background: none; padding: 0; cursor: poin
   transition: left 300ms var(--warm), background-color var(--fade), color var(--fade);
   -webkit-app-region: no-drag;
 }
-/* full screen: no traffic lights, so the panel icon (and the title bar after
-   it) moves to the window's edge */
-.app.is-full-screen { --after-lights: 12px; }
+/* no traffic lights (full screen, or a browser tab), so the panel icon (and the
+   title bar after it) moves to the window's edge */
+.app.no-lights { --after-lights: 12px; }
 /* The window drags from the title bar; anything clickable in it opts out. */
 .bar {
   height: var(--bar);
@@ -44,10 +44,10 @@ button { appearance: none; border: 0; background: none; padding: 0; cursor: poin
   padding-left: calc(var(--after-lights) + 40px);
   /* on the side panel's own timing each way (.sidebar-slot), so what's in the
      bar moves one way only as the panel opens or closes, never out and back */
-  transition: padding-left 260ms var(--ease-in);
+  transition: padding-left var(--panel-close);
   -webkit-app-region: drag;
 }
-.has-sidebar .bar { padding-left: var(--gutter); transition: padding-left var(--settle); }
+.has-sidebar .bar { padding-left: var(--gutter); transition: padding-left var(--panel-settle); }
 .bar button { -webkit-app-region: no-drag; }
 /* the trail on a task's page and in its conversation: group › task › conversation,
    each earlier step a link back to it, the current one plain; long names fade out */
@@ -66,6 +66,11 @@ button.crumb:hover { color: var(--ink); background: var(--hover); }
 .bar-convo:hover { background: var(--chip-hover); color: var(--ink); }
 /* on a task's page: its ⋮ right after its name, and its name as a field while renaming */
 .bar-more { flex: none; width: 28px; height: 28px; margin-left: 2px; }
+/* a task's way into its conversation, beside its ⋮, its name in a tooltip under it after a short
+   hover (as the icons' in the side panel) */
+.bar-chat { position: relative; flex: none; width: 28px; height: 28px; }
+.bar-chat::after, .task-row-chat::after { content: attr(data-tip); position: absolute; top: calc(100% + 6px); left: 50%; z-index: 20; padding: 4px 8px; border: 1px solid var(--surface-edge); border-radius: 6px; background: var(--surface); color: var(--text); font-size: var(--text-sm); white-space: nowrap; pointer-events: none; opacity: 0; transform: translate(-50%, -4px); transition: opacity 160ms var(--warm), transform 160ms var(--warm); }
+:is(.bar-chat, .task-row-chat):is(:hover, :focus-visible)::after { opacity: 1; transform: translate(-50%, 0); transition-delay: 600ms; }
 .crumb-rename { flex: 0 1 280px; min-width: 0; height: 26px; margin-left: -8px; padding: 0 8px; border: 0; border-radius: 6px; background: transparent; color: var(--ink); font-size: var(--text-md); outline: none; user-select: text; -webkit-app-region: no-drag; }
 /* the same 24px chevron as back; its glyph is 6px wide in the middle, so it's
    pulled in 1px each side: 10px from the names either side */
@@ -123,7 +128,7 @@ button.crumb:hover { color: var(--ink); background: var(--hover); }
   align-items: center;
   gap: 16px;
 }
-.attention-label { color: var(--muted); font-size: var(--text-base); }  /* 14px, grey: the chips under it are what you click */
+.attention-label { color: var(--muted); font-size: var(--text-base); white-space: pre-line; text-align: center; line-height: 1.5; }  /* 14px, grey: the chips under it are what you click; a line break in it breaks it */
 /* nothing going on: Oby asking for work, a shade brighter than a status */
 .attention-label.is-idle { color: var(--text); }
 .chips {
@@ -237,6 +242,22 @@ button.crumb:hover { color: var(--ink); background: var(--hover); }
 .stage.is-hidden { opacity: 0; transform: scale(0.98); }
 /* the message box steps aside while a group is open */
 .composer.is-hidden { opacity: 0; transform: translateY(12px); }
+/* Home's Settings tip (SettingsTip.tsx): a bar as wide as the box (480px), 42px tall, 12px
+   over it, out of the flow so nothing moves when it goes. All of it opens Settings
+   (lighter on hover); the × at its end closes it */
+.composer { position: relative; }
+.settings-tip { position: absolute; left: var(--gutter); right: var(--gutter); bottom: calc(100% + 12px); height: 42px; display: flex; align-items: center; border-radius: 21px; background: rgba(255, 255, 255, 0.06); transition: background-color var(--fade); }
+.settings-tip:has(.settings-tip-open:hover) { background: rgba(255, 255, 255, 0.09); }
+/* coming in once Home says so (Home.tsx, tipShown) */
+.settings-tip { animation: tip-in 400ms cubic-bezier(0.33, 1, 0.68, 1) both; }
+@keyframes tip-in { from { opacity: 0; transform: translateY(6px); } }
+/* its 10 minutes up (SettingsTip.tsx): out the way it came */
+.settings-tip.is-leaving { animation: tip-out 400ms var(--ease-in) both; pointer-events: none; }
+@keyframes tip-out { to { opacity: 0; transform: translateY(6px); } }
+@media (prefers-reduced-motion: reduce) { .settings-tip { animation-name: fade-in; } }
+.settings-tip-open { flex: 1; min-width: 0; height: 100%; padding: 0 0 0 16px; border-radius: 21px 0 0 21px; color: rgba(255, 255, 255, 0.55); font-size: var(--text-base); text-align: left; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.settings-tip-close { flex: none; width: 28px; height: 28px; margin: 0 7px 0 8px; display: grid; place-items: center; border-radius: 50%; color: rgba(255, 255, 255, 0.5); transition: color var(--fade), background-color var(--fade); }
+.settings-tip-close:hover { color: rgba(255, 255, 255, 0.85); background: rgba(255, 255, 255, 0.08); }
 /* covers everything under the title bar, the message box's spot included */
 .group-layer { position: absolute; top: var(--bar); right: 0; bottom: 0; left: 0; transition: opacity 220ms cubic-bezier(0.22, 0.61, 0.36, 1), transform 220ms cubic-bezier(0.22, 0.61, 0.36, 1); }
 /* a task's conversation open over the cards: they step back, as Oby does for them */
@@ -329,6 +350,14 @@ button.crumb:hover { color: var(--ink); background: var(--hover); }
 .archive-ago { flex: none; }
 .group-cards { width: 100%; display: flex; flex-direction: column; gap: 8px; }
 .group-empty { margin: 8px 4px; color: var(--muted); font-size: var(--text-base); }
+/* a tab with nothing in it: its words in the middle of the window's height (the view starts under
+   the title bar), across the view, as the side panel's empty words are (.sidebar-empty.is-middle) */
+.group-none { position: absolute; left: 0; right: 0; top: calc(50vh - var(--bar)); transform: translateY(-50%); pointer-events: none; }
+.group-none > div { display: flex; flex-direction: column; align-items: center; gap: 6px; }
+.group-none p { margin: 0; color: rgba(255, 255, 255, 0.3); font-size: var(--text-base); }
+/* Archived in its line: the same type, only brighter, as it's what you click */
+.group-none-link { padding: 0; color: rgba(255, 255, 255, 0.6); font: inherit; pointer-events: auto; transition: color var(--fade); }
+.group-none-link:hover { color: rgba(255, 255, 255, 0.9); }
 /* To do (Review PR, Issues): GitHub's items by board column, each column's name over its cards */
 .group-board { display: contents; }
 .group-board-name { margin: 8px 4px 0; color: var(--muted); font-size: var(--text-sm); font-weight: 500; overflow-wrap: anywhere; }
@@ -842,9 +871,14 @@ button.crumb:hover { color: var(--ink); background: var(--hover); }
    +, fading in as it grows from 40%; emptied, back again (these outrank
    .composer-button's own transition, further down) */
 .composer-grid > .composer-voice, .composer-grid > .composer-send { grid-area: end; }
+/* no talking (v1): send in the gauge's place, the gauge at the end */
+.composer-grid.is-send-first > .composer-send { grid-area: usage; }
+.composer-grid.is-send-first > .composer-usage { grid-area: end; }
 .composer-grid > .composer-voice { transition: opacity 180ms var(--warm) 60ms, transform 320ms var(--spring) 60ms, color var(--fade), background-color var(--fade); }
 .composer-grid > .composer-voice.is-away { opacity: 0; transform: scale(0.4); pointer-events: none; transition: opacity 100ms var(--ease-in), transform 100ms var(--ease-in); }
 .composer-grid > .composer-send { opacity: 0; transform: scale(0.4); pointer-events: none; transition: opacity 100ms var(--ease-in), transform 100ms var(--ease-in), color var(--fade), background-color var(--fade); }
+/* no talking (v1): send stays at the end, dim and still till there's something to send */
+.composer-grid > .composer-send.is-always { opacity: 0.3; transform: scale(1); }
 .composer-grid > .composer-send.is-ready { opacity: 1; transform: scale(1); pointer-events: auto; color: var(--ink); transition: opacity 180ms var(--warm) 60ms, transform 320ms var(--spring) 60ms, color var(--fade), background-color var(--fade); }
 @media (prefers-reduced-motion: reduce) { .composer-send, .composer-voice { transition: none !important; } }
 /* The text (MessageEditor): one line tall to start, growing with what's typed up
@@ -881,18 +915,32 @@ button.crumb:hover { color: var(--ink); background: var(--hover); }
 .composer-button.is-on { color: var(--ink); background: var(--active); }
 /* what's been added, as tags over the text: a row of its own, the box's width */
 /* past 3 rows of tags, the row scrolls instead of the box growing; 10px over the text */
-.composer-tags { flex: none; margin-bottom: 6px; max-height: 92px; overflow-y: auto; scrollbar-width: none; display: flex; flex-wrap: wrap; gap: 6px; padding: 3px 3px 4px; }
+.composer-tags { flex: none; margin-bottom: 6px; max-height: 111px; overflow-y: auto; scrollbar-width: none; display: flex; flex-wrap: wrap; gap: 6px; padding: 3px 3px 4px; }
 /* older tags hidden above: the row's top edge fades out */
 .composer-tags.is-scrolled { mask-image: linear-gradient(transparent, #000 16px); }
-.composer-tag-thumb { flex: none; width: 16px; height: 16px; border-radius: 4px; object-fit: cover; }
-.composer-tag { height: 24px; max-width: 240px; padding: 0 3px 0 5px; display: inline-flex; align-items: center; gap: 6px; border-radius: var(--radius-pill); background: var(--chip-hover); color: var(--item); font-size: var(--text-sm); }
+.composer-tag-thumb { flex: none; width: 18px; height: 18px; border-radius: 4px; object-fit: cover; }
+/* a tag: 30px, its icon 15px, the words 13px, room either side */
+.composer-tag { height: 30px; max-width: 260px; padding: 0 5px 0 10px; display: inline-flex; align-items: center; gap: 7px; border-radius: var(--radius-pill); background: var(--chip-hover); color: var(--item); font-size: var(--text-md); }
 .composer-tag > svg { flex: none; color: var(--muted); }
 .composer-tag-text { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.composer-tag button { flex: none; width: 18px; height: 18px; display: grid; place-items: center; border-radius: 50%; color: var(--muted); transition: color var(--fade), background-color var(--fade); }
+.composer-tag button { flex: none; width: 20px; height: 20px; display: grid; place-items: center; border-radius: 50%; color: var(--muted); transition: color var(--fade), background-color var(--fade); }
 .composer-tag button:hover { color: var(--ink); background: var(--hover); }
 /* The +'s panel: over the box, exactly as wide, opening upward. Its rows each
    lead with an icon; Obys and tasks turn it into a search over a list */
-.add-panel { position: absolute; z-index: 20; left: -1px; right: -1px; bottom: calc(100% + 8px); padding: 4px; display: flex; flex-direction: column; background: var(--surface); border: 1px solid var(--surface-edge); border-radius: 20px; box-shadow: 0 10px 28px rgba(0, 0, 0, 0.45); transform-origin: bottom left; animation: menu-in 160ms var(--warm) both; }
+.add-panel { position: absolute; z-index: 20; left: -1px; right: -1px; bottom: calc(100% + 8px); padding: 4px; display: flex; flex-direction: column; background: var(--surface); border: 1px solid var(--surface-edge); border-radius: 20px; box-shadow: 0 10px 28px rgba(0, 0, 0, 0.45); transform-origin: bottom left; animation: add-panel-in 220ms var(--warm) both; }
+/* the + panel: it grows out of the + (from 94%, up 6px, 220ms), then, as it opens (is-opening),
+   its rows come in one after another, up 4px, 25ms apart from 50ms; moving between its menu and
+   a list in it, the rows are simply there */
+@keyframes add-panel-in { from { opacity: 0; transform: translateY(6px) scale(0.94); } }
+.add-panel.is-opening > button[role], .add-panel.is-opening .add-list > button[role], .add-panel.is-opening .add-foot { animation: add-row-in 200ms var(--warm) both; animation-delay: 50ms; }
+@keyframes add-row-in { from { opacity: 0; transform: translateY(4px); } }
+/* (each delay as specific as the rule above, or a list's rows would all come at 50ms) */
+.add-panel.is-opening :is(.add-panel > button[role], .add-list > button[role]):nth-child(2) { animation-delay: 75ms; }
+.add-panel.is-opening :is(.add-panel > button[role], .add-list > button[role]):nth-child(3) { animation-delay: 100ms; }
+.add-panel.is-opening :is(.add-panel > button[role], .add-list > button[role]):nth-child(4) { animation-delay: 125ms; }
+.add-panel.is-opening :is(.add-panel > button[role], .add-list > button[role]):nth-child(5) { animation-delay: 150ms; }
+.add-panel.is-opening :is(.add-panel > button[role], .add-list > button[role]):nth-child(n + 6), .add-panel.is-opening .add-foot { animation-delay: 175ms; }
+@media (prefers-reduced-motion: reduce) { .add-panel, .add-panel > button[role], .add-list > button[role], .add-foot { animation: none !important; } }
 .add-panel button[role] { height: 34px; padding: 0 10px; display: flex; align-items: center; gap: 10px; border-radius: 10px; color: var(--text); font-size: var(--text-base); text-align: left; transition: background-color var(--fade), color var(--fade); }
 .add-panel button[role]:is(:hover, :focus-visible) { background: var(--hover); color: var(--ink); }
 .add-panel button[role]:focus-visible { outline: 0; }  /* lit like a hover, as a macOS menu's rows are */
@@ -903,12 +951,31 @@ button.crumb:hover { color: var(--ink); background: var(--hover); }
 .add-search-icon { flex: none; margin: 0 2px 0 4px; color: var(--muted); }
 .add-search input { flex: 1; min-width: 0; height: 28px; border: 0; outline: 0; background: none; color: var(--ink); font-size: var(--text-md); user-select: text; }
 .add-search input::placeholder { color: var(--muted); }
-.add-list { max-height: 240px; overflow-y: auto; scrollbar-width: none; display: flex; flex-direction: column; }
+/* Select working folder…'s list: a fixed height (5 rows), room under a short list; each folder on
+   one line, its name (to half the row) then where it is, at the right, 12px from the check's spot;
+   under the list, divided off, any other folder */
+.add-list.is-folders { height: 190px; }
+/* every list of the + panel (tasks, Obys, Macs, folders): at least 5 rows tall, so a short one has
+   room under it rather than a tight box */
+.add-panel.is-search .add-list { min-height: 190px; }
+.add-panel button.add-folder { flex: none; gap: 10px; }
+.add-folder-name { flex: none; max-width: 50%; color: var(--item); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.add-folder-place { flex: 1; min-width: 0; color: var(--muted); font-size: var(--text-sm); text-align: right; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.add-folder-check { flex: none; width: 14px; margin-left: 2px; display: grid; place-items: center; }
+.add-foot { margin: 4px 0 0; padding-top: 4px; border-top: 1px solid var(--surface-edge); }
+.add-foot button { width: 100%; height: 34px; padding: 0 10px; display: flex; align-items: center; gap: 10px; border-radius: 10px; color: var(--text); font-size: var(--text-base); text-align: left; transition: background-color var(--fade), color var(--fade); }
+.add-foot button:is(:hover, :focus-visible) { background: var(--hover); color: var(--ink); outline: 0; }
+.add-foot button > svg { flex: none; color: var(--muted); }
+.add-list { max-height: 240px; overflow-y: auto; scrollbar-width: none; display: flex; flex-direction: column; gap: 2px; }
+/* the + menu's rows 2px apart, as its lists' (and the side panel's) */
+.add-panel[role=menu] { gap: 2px; }
 .add-list button[role] { flex: none; height: 36px; }
 .add-item-text { flex: 1; min-width: 0; color: var(--item); white-space: nowrap; overflow: hidden; mask-image: var(--fade-out); }
 .add-item-who { margin-right: 6px; color: var(--ink); }
 .add-check { flex: none; color: var(--ink); }
 .add-empty { margin: 8px 10px; color: var(--muted); font-size: var(--text-sm); }
+.add-list:has(> .add-empty.is-middle) { justify-content: center; }
+.add-empty.is-middle { margin: 0 10px; text-align: center; }
 /* Run on another Mac (a preview): a Mac's line, and why it's free or not, under its name */
 .add-panel button.add-place { height: 46px; }
 .add-panel button.add-place:disabled { opacity: 0.5; cursor: default; background: none; }
@@ -927,12 +994,15 @@ button.crumb:hover { color: var(--ink); background: var(--hover); }
 .usage-head { margin: 0 0 2px 8px; display: flex; align-items: center; justify-content: space-between; color: var(--label); font-size: var(--text-sm); }
 .usage-row { padding: 8px; display: flex; align-items: flex-start; gap: 10px; }
 .usage-row > svg { flex: none; margin-top: 1px; color: var(--muted); }
-.usage-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
+.usage-text { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 /* its name; then, at the right, when it resets and how much it's used */
 .usage-line { display: flex; align-items: baseline; gap: 10px; }
 .usage-name { flex: 1; min-width: 0; color: var(--ink); font-size: var(--text-base); white-space: nowrap; overflow: hidden; mask-image: var(--fade-out); }
 .usage-about { flex: none; color: var(--muted); font-size: var(--text-sm); }
-.usage-text .set-meter { max-width: none; margin: 0; }
+/* the session's line close over its bar (4px), the week's words further under it (12px); no bar: the week's words 4px under the line */
+.usage-text .set-meter { max-width: none; margin: 4px 0 0; }
+.usage-week { margin-top: 4px; color: var(--muted); font-size: var(--text-sm); }
+.usage-text .set-meter + .usage-week { margin-top: 12px; }
 .usage-used { flex: none; min-width: 32px; text-align: right; color: var(--text); font-size: var(--text-base); font-variant-numeric: tabular-nums; }
 .usage-used.is-high { color: var(--full); }
 .usage-used.is-over { color: var(--over); }
@@ -988,10 +1058,10 @@ button.crumb:hover { color: var(--ink); background: var(--hover); }
   flex: none;
   width: 0;
   overflow: hidden;
-  transition: width 260ms var(--ease-in);
+  transition: width var(--panel-close);
 }
-/* opening and settling after a stretch: a few px past the mark, then back */
-.has-sidebar .sidebar-slot { width: var(--sidebar); transition: width var(--settle); }
+/* opening and settling after a stretch: easing in to the mark, no overshoot (--panel-settle) */
+.has-sidebar .sidebar-slot { width: var(--sidebar); transition: width var(--panel-settle); }
 .sidebar {
   position: relative;
   /* its set width while the slot opens (no reflow), but filling the slot when
@@ -1002,8 +1072,14 @@ button.crumb:hover { color: var(--ink); background: var(--hover); }
   /* no fill of its own: the window's background shows through; its right edge
      still divides it from the view */
   background: transparent;
-  border-right: 1px solid rgba(255, 255, 255, 0.08);  /* a touch stronger than other dividers (5%), with no fill to set the panel apart */
 }
+/* its divider, on the slot's edge rather than the panel's, so it travels with the edge as it
+   opens (in by about halfway: 80ms), closes (out over 60–180ms, by the time it's mostly gone) and
+   is resized. 8%: a
+   touch stronger than other dividers (5%), with no fill to set the panel apart */
+.sidebar-slot { position: relative; }
+.sidebar-slot::after { content: ''; position: absolute; z-index: 3; top: 0; bottom: 0; right: 0; width: 1px; background: rgba(255, 255, 255, 0.08); pointer-events: none; opacity: 0; transition: opacity 120ms linear 60ms; }
+.has-sidebar .sidebar-slot::after { opacity: 1; transition: opacity 80ms linear; }
 /* the empty top strip, under the traffic lights, drags the window */
 .sidebar, .rail, .sidebar-content { -webkit-app-region: drag; }
 .rail-button, .sidebar-content > *, .sidebar-resize { -webkit-app-region: no-drag; }
@@ -1020,8 +1096,8 @@ button.crumb:hover { color: var(--ink); background: var(--hover); }
   width: 8px;
   cursor: col-resize;
 }
-/* the panel opening: it waits until the edge has got there (520ms) */
-.sidebar-resize { animation: handle-in 0s 520ms backwards; }
+/* the panel opening: it waits until the edge has got there (640ms) */
+.sidebar-resize { animation: handle-in 0s 640ms backwards; }
 @keyframes handle-in { from { visibility: hidden; } }
 /* the line it lights: 2px, ending at the panel's edge */
 .sidebar-resize::after {
@@ -1041,8 +1117,9 @@ button.crumb:hover { color: var(--ink); background: var(--hover); }
 /* while dragging: follow the pointer exactly, and keep the resize cursor */
 .is-resizing .sidebar-slot, .is-resizing .bar { transition: none !important; }
 /* dragging and settling after, what's in the panel follows its edge (rows
-   cut at the right, faded), rather than keeping the width it lands on */
-.is-resizing .sidebar, .is-settling .sidebar { width: 100%; }
+   cut at the right, faded), rather than keeping the width it lands on; stretched
+   under its narrowest (252px) it stays 252 and the edge cuts it, no squeezing */
+.is-resizing .sidebar, .is-settling .sidebar { width: max(100%, var(--sidebar-min)); }
 .is-resizing { cursor: col-resize; }
 
 /* far left: one icon per section, your account picture at the bottom */
@@ -1077,7 +1154,7 @@ button.crumb:hover { color: var(--ink); background: var(--hover); }
 }
 .rail-button:hover { color: var(--text); background: var(--hover); }
 .rail-button.is-on { color: var(--ink); background: var(--active); }
-.rail-account { margin-top: auto; }
+.rail-account, .rail-settings { margin-top: auto; }   /* at the foot of the strip */
 /* your picture: dimmed a touch at rest, like the icons, full when hovered or open */
 .rail-account .owner-avatar { font-size: 10px; opacity: 0.85; transition: opacity var(--fade); }
 .rail-account:is(:hover, .is-on) .owner-avatar { opacity: 1; }
@@ -1123,6 +1200,7 @@ button.crumb:hover { color: var(--ink); background: var(--hover); }
 
 /* beside the icons: the chosen section */
 .sidebar-content {
+  position: relative;  /* the window's height: an empty list's words sit in its middle */
   flex: 1;
   min-width: 0;
   display: flex;
@@ -1181,7 +1259,6 @@ button.crumb:hover { color: var(--ink); background: var(--hover); }
 /* the window's background around the badge, following its shape: a stroke
    4px out on each side (2.5px on the small pictures, above) */
 .oby-badge-cut { fill: var(--bg); stroke: var(--bg); stroke-width: 8px; vector-effect: non-scaling-stroke; }
-.oby-badge-cut > * { vector-effect: non-scaling-stroke; }
 .owner-avatar-oby svg { display: block; }
 .connector-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
 .connector-name { color: var(--item); font-size: var(--text-base); }
@@ -1230,6 +1307,10 @@ button.connector { width: 100%; text-align: left; }
 .task-row > .status { margin-right: 1px; transition: opacity var(--fade); }  /* centred under the ⋮ that replaces it */
 .task-row:is(:hover, :focus-visible, :has(:focus-visible), .is-menu-open) > .status { opacity: 0; }
 .task-row:is(:hover, :focus-visible, :has(:focus-visible), .is-menu-open) .sidebar-item-more { opacity: 1; }
+/* a task's conversation, before its ⋮ (22px and 2px apart); the title gives them room on hover;
+   its name in a tooltip under it after a short hover (the rule shared with .bar-chat's) */
+.task-row .task-row-chat { right: 30px; }
+.task-row:is(:hover, :focus-visible, :has(:focus-visible), .is-menu-open) .sidebar-item-title { margin-right: 46px; }
 .task-row.is-menu-open, .task-row:hover { background: var(--hover); }
 /* its card is showing on its own */
 .task-row.is-active, .task-row.is-active:hover { background: var(--active); }
@@ -1313,6 +1394,8 @@ button.connector { width: 100%; text-align: left; }
 .sidebar-search input::placeholder { color: var(--muted); }
 
 .sidebar-scroll { position: relative; flex: 1; min-height: 0; margin: 0 -16px -8px; }
+/* an empty list: nothing to scroll, so its words place themselves in the column (.sidebar-content) */
+.sidebar-scroll:has(.sidebar-empty.is-middle) { position: static; }
 .sidebar-list { height: 100%; overflow-y: auto; scrollbar-width: none; padding: 0 16px 8px; }
 /* folded groups 4px apart; an open one adds 12px under its rows (below), 16px in all */
 .sidebar-group + .sidebar-group { margin-top: 4px; }
@@ -1408,6 +1491,9 @@ button.connector { width: 100%; text-align: left; }
    the panel's padding, its text level with the group names */
 .sidebar-archived { flex: none; height: 44px; margin: 4px 0 -8px; padding: 0 10px; display: flex; align-items: center; justify-content: space-between; border-top: 1px solid var(--line); color: var(--label); font-size: var(--text-base); transition: color var(--fade); }
 .sidebar-archived:hover { color: var(--text); }
+/* nothing archived yet: as dim as a completed task's row (40%), its 0 too */
+.sidebar-archived.is-empty, .sidebar-archived.is-empty .sidebar-group-count { color: rgba(255, 255, 255, 0.4); }
+.sidebar-archived.is-empty:hover { color: var(--text); }
 /* renaming: the title becomes a field in place */
 .sidebar-rename {
   flex: 1;
@@ -1478,7 +1564,18 @@ button.connector { width: 100%; text-align: left; }
 .row-menu hr { width: auto; height: 1px; margin: 4px 6px; border: 0; background: var(--surface-edge); }
 .row-menu .menu-label { padding: 6px 12px 4px; color: var(--label); font-size: var(--text-sm); }
 .row-menu .menu-check { margin-left: auto; color: var(--ink); }
+/* a submenu (Settings › Agents' Effort): its item with its pick and a chevron on the right; the
+   submenu beside the menu, its first item level with that item */
+.row-menu .menu-sub-anchor { position: relative; display: block; }
+.row-menu .menu-sub-anchor > button { width: 100%; }
+.row-menu .menu-sub-anchor > button.is-on { background: rgba(255, 255, 255, 0.08); color: var(--ink); }
+.row-menu .menu-sub-value { margin-left: auto; color: var(--muted); }
+.row-menu .menu-sub-anchor > button > svg { margin-left: 8px; color: var(--muted); }
+.row-menu.row-submenu { position: absolute; left: calc(100% + 12px); top: -8px; min-width: 148px; transform-origin: top left; }
+.row-menu.row-submenu.is-left { left: auto; right: calc(100% + 12px); transform-origin: top right; }
 .sidebar-empty { margin: 8px 10px; color: var(--muted); font-size: var(--text-sm); }
+/* an empty list's words (Home's, Conversations'): in the middle, both ways */
+.sidebar-empty.is-middle { position: absolute; left: 16px; right: 16px; top: 50%; transform: translateY(-50%); margin: 0; color: rgba(255, 255, 255, 0.3); font-size: var(--text-base); white-space: pre-line; text-align: center; line-height: 1.5; pointer-events: none; }  /* same type as Home's attention line; in the middle of the window's height, not of the room under the title */
 
 @media (prefers-reduced-motion: reduce) {
   .sidebar-slot, .has-sidebar .sidebar-slot, .bar, .sidebar-group-body, .sidebar-chevron { transition: none; }
@@ -1517,6 +1614,21 @@ button.connector { width: 100%; text-align: left; }
 .set-select select { appearance: none; height: 32px; padding: 0 34px 0 14px; border: 1px solid var(--line); border-radius: 8px; background: var(--field); color: inherit; font: inherit; font-size: var(--text-base); cursor: default; outline: none; transition: border-color var(--fade), background-color var(--fade); }
 .set-select select:hover, .set-select select:focus-visible { border-color: var(--field-edge-on); }
 .set-select svg { position: absolute; right: 14px; color: var(--muted); pointer-events: none; }
+/* Settings › Agents' model and effort: a pop-up like .set-select's, its menu the app's (Menu.tsx) */
+.set-picker { width: 240px; height: 32px; padding: 0 12px 0 14px; display: inline-flex; align-items: center; gap: 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--field); color: var(--ink); font-size: var(--text-base); white-space: nowrap; transition: border-color var(--fade), background-color var(--fade); }
+.set-picker:hover, .set-picker.is-on, .set-picker:focus-visible { border-color: var(--field-edge-on); }
+.set-picker-sub { color: var(--muted); }
+.set-picker-text { flex: 1; min-width: 0; display: flex; gap: 8px; overflow: hidden; text-align: left; }
+/* Settings › Agents: every pop-up and field one width (240px), its text on the left, its arrow at the right */
+.set-select.is-wide, .set-select.is-wide select { width: 240px; }
+.set-field.is-wide { width: 240px; }
+/* Connectors: Connect and Disconnect one width */
+.set-button.set-connect { width: 100px; padding: 0; }
+/* Tetrix's Edit, beside its Disconnect: a little narrower */
+.set-button.set-connect.is-narrow { width: 72px; }
+.set-picker svg { margin-left: 4px; color: var(--muted); }
+/* a card's own action (Add Agent, Check for Updates): on the left, not a row's control */
+.set-row.is-action { justify-content: flex-start; }
 
 .set-segmented { display: inline-flex; padding: 2px; border-radius: 8px; background: var(--chip); border: 1px solid var(--line); }
 .set-segmented button { height: 26px; padding: 0 12px; border-radius: 6px; color: var(--text); font-size: var(--text-md); transition: background-color var(--fade), color var(--fade); }
@@ -1530,6 +1642,9 @@ button.connector { width: 100%; text-align: left; }
 .set-button:hover:not(:disabled) { background: #29292c; border-color: var(--line-strong); }
 .set-button:disabled { opacity: 0.3; cursor: default; }
 .set-button.is-danger { color: var(--danger); }
+/* the page's one main action (Settings › Agents' Add Agent): white, as onboarding's buttons */
+.set-button.is-primary { background: var(--ink); border-color: var(--ink); color: #111; font-weight: 500; }
+.set-button.is-primary:hover:not(:disabled) { background: #fff; border-color: #fff; }
 /* an Obysphere's avatar, 56px at the row's right; a click changes it, its badge takes the image out */
 .set-avatar .sphere-tile { width: 56px; height: 56px; border-radius: 14px; }
 .set-avatar .sphere-tile svg { width: 30px; height: 30px; }
@@ -1581,6 +1696,13 @@ button.connector { width: 100%; text-align: left; }
 /* an account: what it's used this week, as a bar under its name */
 .set-usage { align-items: flex-start; }
 .set-usage > svg { flex: none; margin-top: 2px; color: var(--muted); }
+/* an account's use (Settings › Agents): its name with the 5-hour session's % at the right, the
+   session's bar under it to the card's edge, and the week in words under that */
+.set-usage .set-label { flex: 1; min-width: 0; }
+.set-usage-name { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+/* the session's words close over its bar (4px), the week's further under it (12px) */
+.set-usage .set-meter { max-width: none; margin-top: 4px; }
+.set-usage .set-about.is-quiet { margin-top: 12px; opacity: 0.75; }
 .set-meter { display: block; width: 100%; max-width: 280px; height: 4px; margin-top: 4px; border-radius: 2px; background: rgba(255, 255, 255, 0.08); overflow: hidden; }
 .set-meter > span { display: block; height: 100%; border-radius: 2px; background: var(--text); }
 .set-meter > span.is-high { background: var(--full); }
@@ -1672,6 +1794,15 @@ button.sphere-logo-badge:hover { color: var(--ink); background: #3a3a39; }
 .set-search { margin-bottom: 24px; }
 .set-connector { display: flex; align-items: center; gap: 12px; }
 .set-connector > svg { flex: none; }
+/* a connector's window (Connectors.tsx): its logo by its title; Tetrix's server pop-up across it,
+   the address under; the wait, a spinner by its words; GitHub's command with its copy button */
+.connector-window-title { display: flex; align-items: center; gap: 10px; }
+.connector-select, .connector-select .set-select, .connector-select select { width: 100%; }
+.connector-select select { height: 40px; border-radius: 10px; }
+.connector-address { margin-top: 10px; }
+.connector-wait { margin: -4px 0 0; display: flex; align-items: center; gap: 10px; color: var(--muted); font-size: var(--text-base); }
+.connector-command { height: 44px; padding: 0 6px 0 14px; display: flex; align-items: center; justify-content: space-between; border: 1px solid var(--line); border-radius: 12px; background: var(--field); }
+.connector-command code { color: var(--ink); font-family: var(--mono, ui-monospace, Menlo, monospace); font-size: var(--text-md); }
 .set-value > svg { color: var(--muted); }
 
 /* reduce motion: menus and panels just appear, switches just switch */
@@ -1703,6 +1834,8 @@ button.sphere-logo-badge:hover { color: var(--ink); background: #3a3a39; }
 .wl-two { min-width: 0; display: flex; flex-direction: column; gap: 1px; }
 .wl-name { color: var(--ink); font-size: var(--text-base); white-space: nowrap; }
 .wl-sub { color: var(--muted); font-size: var(--text-sm); white-space: nowrap; }
+/* why a sign-in didn't take (SetupCard.tsx), till the next try */
+.wl-sub.is-problem { color: var(--danger); }
 .wl-note { margin: 14px 0 0; color: var(--muted); font-size: var(--text-sm); text-align: center; opacity: 0; transition: opacity 420ms var(--warm); }
 .wl-note.is-in { opacity: 1; }
 
@@ -1918,4 +2051,110 @@ button.sphere-logo-badge:hover { color: var(--ink); background: #3a3a39; }
 #root.is-revealed > * { animation: splash-in 320ms var(--warm) backwards; }
 @media (prefers-reduced-motion: reduce) {
   .splash-face, .splash-line, #root.is-revealed > * { animation: none; }
+}
+
+/* Setting up (FirstRun.tsx): a window of its own over everything, dragged by
+   anywhere but its buttons and rows. Oby rises from the bottom edge with about
+   half of it out of sight; the words sit in the upper third */
+.onb { position: fixed; inset: 0; z-index: 50; background: var(--bg); overflow: clip; -webkit-app-region: drag; }
+.onb button, .onb .setup-row, .onb .oby-frame { -webkit-app-region: no-drag; }
+/* round the big buttons, 8px more of it isn't the window's to drag: hovered, a button swells
+   past the box it was left out of, and those edges would drag the window, not press it */
+.onb-hit { -webkit-app-region: no-drag; padding: 8px; margin: -8px; }
+/* (Oby hops up inside its frame, out of the floor: oby.html's ?enter) */
+.onb-oby { position: absolute; left: 50%; bottom: 0; width: 700px; height: 470px; margin-left: -350px; transform: translateY(22%); }
+/* (Oby's size is set by its frame's height, so the frame is the window's width: the Obysphere
+   step's others walk in from past its edges.) Clicks over them land on .onb-poke, above them all,
+   which hands each one the click (FirstRun.tsx) */
+.onb-oby, .onb-oby .oby-frame { pointer-events: none; }
+.onb-poke { position: absolute; left: 50%; bottom: 0; width: 700px; height: 470px; margin-left: -350px; transform: translateY(22%); z-index: 1; -webkit-app-region: no-drag; }
+.onb-oby .oby-frame { width: 100%; height: 100%; }
+.onb-copy { position: absolute; z-index: 2; top: 25%; left: 0; right: 0; padding: 0 40px; display: flex; flex-direction: column; align-items: center; text-align: center; }
+.onb-title { margin: 0; color: var(--ink); font-size: 36px; font-weight: 400; line-height: 1.2; letter-spacing: -0.01em; }
+.onb-text { margin: 0; color: rgba(255, 255, 255, 0.4); font-size: 20px; line-height: 1.55; }
+.onb-title + .onb-text { margin-top: 24px; }
+.onb-rows { width: min(420px, 100%); margin-top: 24px; text-align: left; }
+.onb-rows .setup-row { min-height: 48px; padding-top: 6px; padding-bottom: 6px; }
+/* GitHub, a little apart from the agents; under it, where the other places code lives go */
+.onb-rows.is-apart { margin-top: 16px; }
+.onb-note { width: min(420px, 100%); margin: 12px 0 0; text-align: center; color: rgba(255, 255, 255, 0.4); font-size: var(--text-md); }
+/* each agent by its name alone, bigger; ready, a check alone */
+.onb-rows .wl-name { font-size: 16px; }
+.onb-rows .wl-ready.is-bare { color: var(--ink); }
+/* the right of each row is one size whatever it shows: Connect, the spinner, or the check
+   in a box edged as the button is */
+.onb-rows .set-button, .onb-rows .wl-slot { min-width: 88px; height: 32px; justify-content: center; }
+.onb-rows .wl-ready.wl-slot { display: inline-flex; align-items: center; border: 1px solid var(--line); border-radius: 8px; }
+/* Continue before anything's connected: each row a small shake, top to bottom, 60ms apart */
+.onb-rows.is-nope-0 > li { animation: onb-nope-a 460ms cubic-bezier(0.36, 0.07, 0.19, 0.97) both; }
+.onb-rows.is-nope-1 > li { animation: onb-nope-b 460ms cubic-bezier(0.36, 0.07, 0.19, 0.97) both; }
+.onb-rows > li:nth-child(2) { animation-delay: 60ms; }
+.onb-rows > li:nth-child(3) { animation-delay: 120ms; }
+@keyframes onb-nope-a { 20% { transform: translateX(-5px); } 40% { transform: translateX(4px); } 60% { transform: translateX(-2.5px); } 80% { transform: translateX(1px); } }
+@keyframes onb-nope-b { 20% { transform: translateX(-5px); } 40% { transform: translateX(4px); } 60% { transform: translateX(-2.5px); } 80% { transform: translateX(1px); } }
+@media (prefers-reduced-motion: reduce) { .onb-rows.is-nope-0 > li, .onb-rows.is-nope-1 > li { animation: none; } }
+/* under way, on the right: the code to type on its page, then a spinner */
+.wl-busy { flex: none; display: inline-flex; align-items: center; gap: 10px; color: var(--text); }
+.wl-code { font: 500 var(--text-base)/1 ui-monospace, "SF Mono", Menlo, monospace; letter-spacing: 0.04em; color: var(--ink); user-select: text; }
+.onb-rows .setup-code { margin: 0; }
+/* Claude Code's field for its code, under its name, across the row (its Cancel stays up right) */
+.onb-rows .setup-row:has(> .wl-below) { flex-wrap: wrap; row-gap: 8px; padding-bottom: 10px; }
+.onb-rows .wl-below { flex-basis: 100%; padding-left: 34px; }
+.spinner { display: block; animation: spin 800ms linear infinite; }
+@keyframes spin { to { transform: rotate(1turn); } }
+@media (prefers-reduced-motion: reduce) { .spinner { animation: none; } }
+/* a step with rows to act on starts higher, so its button stays clear of Oby's ears */
+.onb-copy.is-tall { top: 12%; }
+.onb-note + .onb-in .onb-go { margin-top: 32px; }
+/* Continue with a quiet way past under it: Skip for now, just words */
+.onb-buttons { display: flex; flex-direction: column; align-items: center; gap: 10px; }
+.onb-note + .onb-buttons { margin-top: 32px; }
+.onb-note + .onb-buttons .onb-go { margin-top: 0; }
+.onb-skip { height: 32px; padding: 0 8px; color: rgba(255, 255, 255, 0.5); font-size: var(--text-lg); transition: color var(--fade); }
+.onb-skip:hover { color: var(--ink); }
+.onb-skip { transition: color var(--fade), opacity var(--fade), visibility 0s linear 280ms; }
+.onb-skip.is-gone { opacity: 0; visibility: hidden; transition: opacity var(--fade), visibility 0s linear 280ms; }
+/* under the button: what's next, and why (quieter than the line at the top) */
+.onb-why { max-width: 420px; margin: 16px 0 0; color: var(--text); font-size: var(--text-md); }
+.onb-why + .onb-in .onb-go { margin-top: 24px; }
+.onb-go { margin-top: 48px; height: 40px; padding: 0 20px 0 24px; display: inline-flex; align-items: center; gap: 10px; border-radius: var(--radius-pill); background: var(--ink); color: #111; font-size: 17px; font-weight: 500; transition: background-color var(--fade), opacity var(--fade); }
+.onb-go:hover { background: #fff; }
+/* hovered, it swells ever so slightly (3%), on a soft spring; pressed, it gives a little */
+.onb-go { transition: background-color var(--fade), opacity var(--fade), transform 360ms var(--spring); }
+/* on a layer of its own the whole time: otherwise its label is drawn on a fraction of a
+   pixel while it scales, and snaps down a pixel as the scale ends */
+.onb-go { will-change: transform; }
+.onb-go:hover:not(:disabled) { transform: scale(1.03); }
+.onb-go:active:not(:disabled) { transform: scale(0.985); transition-duration: 120ms; }
+/* each piece: up 14px and in, warm, a beat after the one before (--d) */
+.onb-in { animation: onb-rise 640ms var(--warm) var(--d, 0ms) both; }
+@keyframes onb-rise { from { opacity: 0; transform: translateY(14px); } }
+/* the greeting, what Oby is and the button: longer, and a gentler start (ease-out cubic) */
+.onb-in.is-soft { animation-duration: 900ms; animation-timing-function: cubic-bezier(0.33, 1, 0.68, 1); }
+/* on to the next step: what's there lifts away first */
+.onb-copy.is-leaving > .onb-in { animation: none; opacity: 0; transform: translateY(-8px); transition: opacity 200ms var(--ease-in), transform 200ms var(--ease-in); }
+/* Home, coming in from setting up: hidden while Oby waits under the floor, then a beat apart
+   once Oby has hopped up and settled, as setting up's words did: the line under Oby, up 14px and
+   in; the message box the same, 150ms on; the side panel's button, just in, 150ms after that */
+.attention-label.is-waiting, .chips.is-waiting, .composer.is-waiting, .panel-toggle.is-waiting { opacity: 0; }
+/* the chips, between the line over them (500ms) and the box (650ms) */
+.chips.is-arrival { animation: onb-rise 900ms cubic-bezier(0.33, 1, 0.68, 1) 575ms both; }
+.attention-label.is-arrival { animation: onb-rise 900ms cubic-bezier(0.33, 1, 0.68, 1) 500ms both; }
+.composer.is-arrival { animation: onb-rise 900ms cubic-bezier(0.33, 1, 0.68, 1) 650ms both; }
+.panel-toggle.is-arrival { animation: fade-in 500ms var(--warm) 800ms both; }
+@media (prefers-reduced-motion: reduce) {
+  .attention-label.is-arrival, .chips.is-arrival, .composer.is-arrival, .panel-toggle.is-arrival { animation: fade-in 240ms ease-out both; }
+}
+/* handing over to Home (FirstRun.tsx): the words go as the Obys hop away down out of sight;
+   then this screen's dark fades from over Home, whose own Oby then hops up into its place */
+.onb .onb-copy { transition: opacity 300ms var(--ease-in); }
+.onb.is-leaving .onb-copy, .onb.is-home .onb-copy { opacity: 0; pointer-events: none; }
+.onb { transition: background-color 360ms var(--warm); }
+.onb.is-home { background: transparent; pointer-events: none; -webkit-app-region: no-drag; }
+.onb.is-home .onb-poke { display: none; }
+@media (prefers-reduced-motion: reduce) {
+  .onb.is-on .onb-oby { animation: fade-in 240ms ease-out both; }
+  .onb-in, .onb-in.is-soft { animation-name: fade-in; animation-duration: 240ms; }
+  .onb-go:hover:not(:disabled), .onb-go:active:not(:disabled) { transform: none; }
+  .onb-copy.is-leaving > .onb-in { transform: none; }
 }

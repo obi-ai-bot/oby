@@ -311,6 +311,7 @@ final class Phone {
     private(set) var routines: [RunnerRoutine] = []
     /// What waits in the runner's inbox, put-off items too: answered on the Mac, it goes from here too.
     private(set) var inbox: [InboxItem]
+    private(set) var limitDecisions: [RunnerLimitDecision] = []
     private let offlineQueue: OfflineQueue
     private(set) var models: ModelSettings?
     /// The mode new jobs get by default, as the runner last said, or nil from a runner without modes.
@@ -628,6 +629,7 @@ final class Phone {
         defaultMode = RunnerMode(status.permissions?.mode)
         await take(try await runner.jobs())
         inbox = try await runner.inbox()
+        await readLimitDecisions()
         await readGitHub { try await runner.gitHubWork() }
         await readRoutines()
         do { conversations = try await runner.conversations() } catch {
@@ -673,6 +675,7 @@ final class Phone {
         do {
             await take(try await runner.jobs())
             inbox = try await runner.inbox()
+            await readLimitDecisions()
             await readGitHub { try await runner.gitHubWork() }
             loaded = true
         } catch {
@@ -719,6 +722,8 @@ final class Phone {
             if let index = jobs.firstIndex(where: { $0.id == job.id }) { jobs[index] = job } else { jobs.insert(job, at: 0) }
         case .accounts(let accounts):
             self.accounts = accounts
+        case .limitDecision:
+            Task { await readLimitDecisions() }
         case .cleared(let date):
             clearedAt = date
         case .connected:
@@ -1019,6 +1024,53 @@ final class Phone {
     /// that finished by then.
     func clear() async throws {
         clearedAt = try await runner.clear()
+    }
+
+    /// The grouped choice is obid's. A missing endpoint is an older runner; other failures keep
+    /// the last decision visible until a successful refresh rather than hiding unfinished work.
+    func readLimitDecisions() async {
+        do { limitDecisions = try await runner.limitDecisions() }
+        catch let error as RunnerError where error.status == 404 { limitDecisions = [] }
+        catch { Logger.phone.error("Account-limit decisions: \(error.localizedDescription, privacy: .public)") }
+    }
+
+    /// A live tap signs the exact displayed revision and destination. Never queue these approvals
+    /// offline: their scope may change and their signatures expire.
+    func answerLimit(_ decision: RunnerLimitDecision, option: RunnerLimitDecision.Option) async throws {
+        guard connection == .live else { throw RunnerError(message: "This choice needs a connection to your Mac.") }
+        guard DeviceKey.isAvailable else { throw RunnerError(message: Self.noKey) }
+        let latest = try await runner.limitDecisions()
+        limitDecisions = latest
+        guard let current = latest.first(where: { $0.id == decision.id && $0.revision == decision.revision }),
+              current.options.contains(option), option.isSupported else {
+            throw RunnerError(message: "This choice changed. Review the current tasks and options, then choose again.")
+        }
+        let device = try await registerDevice()
+        let approval = try DeviceKey.approveLimit(id: current.id, revision: current.revision, choice: option.kind,
+                                                   account: option.account, device: device)
+        do {
+            try await runner.answerLimit(current.id, revision: current.revision, choice: option.kind,
+                                         account: option.account, approval: approval)
+        } catch let error as RunnerError {
+            await readLimitDecisions()
+            if error.status == 403 && error.message == "This approval belongs to a different device." {
+                // Older keys registered by a Mac endorsement had no pairing recorded. Prove
+                // possession of this key for this authenticated pairing, never by public key alone.
+                let challenge = try await runner.devicePairingChallenge(device)
+                let proof = try DeviceKey.approvePairingBinding(id: device, pairing: challenge.pairing, nonce: challenge.nonce)
+                try await runner.bindDevicePairing(device, challenge: challenge, approval: proof)
+                let renewed = try DeviceKey.approveLimit(id: current.id, revision: current.revision, choice: option.kind,
+                                                       account: option.account, device: device)
+                try await runner.answerLimit(current.id, revision: current.revision, choice: option.kind,
+                                             account: option.account, approval: renewed)
+                await readLimitDecisions()
+                await reload()
+                return
+            }
+            throw error
+        }
+        await readLimitDecisions()
+        await reload()
     }
 
     /// Settles an inbox item: an answer goes to its job, `done` lets it go, `later` puts it off.

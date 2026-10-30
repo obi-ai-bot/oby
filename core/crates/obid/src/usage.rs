@@ -32,11 +32,17 @@ const LAST: i64 = 253_402_300_799;
 #[serde(default, rename_all = "camelCase")]
 pub struct Usage {
     pub five_hour: Option<f64>,
+    /// When obid last received each window, not the time it was loaded from disk.
+    pub five_hour_observed_at: Option<i64>,
+    pub seven_day_observed_at: Option<i64>,
     pub seven_day: Option<f64>,
     pub five_hour_resets: Option<i64>,
     pub seven_day_resets: Option<i64>,
     /// The tool refused work, or a window reached 100%: the account takes nothing until then.
     pub full_until: Option<i64>,
+    /// The hold is a conservative fallback because the provider gave no reset. A later complete
+    /// room report can clear it; it must never be presented as a provider-confirmed reset.
+    pub full_until_inferred: bool,
     /// The owner let it past its weekly reserve until then, its week's reset.
     pub reserve_lifted_until: Option<i64>,
     /// How the account pays, as its tool said (`api` or `plan`, crate::usage::Tokens): asked once.
@@ -216,18 +222,27 @@ impl Usages {
         let (was, now, saved) = self.change(id, false, |kept| {
             if let Some(used) = usage.five_hour {
                 kept.five_hour = Some(used);
+                kept.five_hour_observed_at = Some(obi_protocol::time::now());
                 if usage.five_hour_resets.is_some() {
                     kept.five_hour_resets = usage.five_hour_resets;
                 }
             }
             if let Some(used) = usage.seven_day {
                 kept.seven_day = Some(used);
+                kept.seven_day_observed_at = Some(obi_protocol::time::now());
                 if usage.seven_day_resets.is_some() {
                     kept.seven_day_resets = usage.seven_day_resets;
                 }
             }
             if usage.full_until.is_some() {
                 kept.full_until = usage.full_until;
+                kept.full_until_inferred = usage.full_until_inferred;
+            } else if kept.full_until_inferred
+                && usage.five_hour.is_some_and(|used| used < NEARLY_FULL)
+                && usage.seven_day.is_some_and(|used| used < NEARLY_FULL)
+            {
+                kept.full_until = None;
+                kept.full_until_inferred = false;
             }
             if usage.priced.is_some() {
                 kept.priced.clone_from(&usage.priced);
@@ -740,6 +755,43 @@ mod tests {
         assert!(usages.get("a").reserved(time::now()));
         assert!(usages.lift("a", true).is_err());
         assert!(usages.get("a").reserved(time::now()));
+    }
+
+    #[test]
+    fn a_complete_room_report_clears_only_an_inferred_full_hold() {
+        let home = Home::new("inferred-full");
+        let usages = Usages::open(&home.0);
+        let hold = Usage {
+            full_until: Some(time::now() + UNKNOWN_RESET),
+            full_until_inferred: true,
+            ..Usage::default()
+        };
+        usages.record("a", &hold);
+        usages.record(
+            "a",
+            &Usage {
+                five_hour: Some(0.0),
+                ..Usage::default()
+            },
+        );
+        assert!(usages.get("a").full_until_at(time::now()).is_some());
+        let room = Usage {
+            five_hour: Some(0.0),
+            seven_day: Some(0.0),
+            ..Usage::default()
+        };
+        usages.record("a", &room);
+        assert!(usages.get("a").full_until.is_none());
+        assert!(!Usages::open(&home.0).get("a").full_until_inferred);
+        usages.record(
+            "a",
+            &Usage {
+                full_until_inferred: false,
+                ..hold
+            },
+        );
+        usages.record("a", &room);
+        assert!(usages.get("a").full_until_at(time::now()).is_some());
     }
 
     #[test]
