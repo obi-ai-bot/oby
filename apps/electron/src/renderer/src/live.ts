@@ -1,6 +1,7 @@
 import { useSyncExternalStore } from 'react';
-import { ApiError, api, parseEvent, sseReader, type Conversation, type Event, type InboxItem, type Job, type LimitDecision, type Question, type Repo, type Status, type Turn } from './obid';
-import { AGENTS, type Ask, type AskKind, type Job as JobView, type Message, type Offer, type StageId } from './mock';
+import { ApiError, api, parseEvent, sseReader, type Conversation, type Event, type InboxItem, type Job, type LimitDecision, type Question, type Repo, type Status, type TranscriptEntry, type Turn } from './obid';
+import { pageOf, stagesOf } from './jobPage';
+import { AGENTS, type Ask, type AskKind, type Job as JobView, type Message, type Offer } from './mock';
 import { replaceChats, type Chat } from './chats';
 import { replaceTasks, type Asking, type Task } from './tasks';
 import { keepFoldersOf, nameFoldersBy, saveFolders, sendFoldersBy, takeFolders } from './folders';
@@ -46,11 +47,12 @@ type Live = {
   answering: Set<string>;
   // the repository last picked for words sent here, by conversation (its app id), and when
   picked: Record<string, { repo: string; at: string }>;
+  sessions: Record<string, TranscriptEntry[]>;  // each job's session opened (Full session), by job
 };
 
 let state: Live = {
   connection: 'connecting', problem: null, status: null, repos: [], github: null, jobs: {}, firstJobs: new Set(), seen: new Set(), inbox: [], limits: [],
-  conversations: [], turns: {}, loaded: new Set(), working: {}, words: {}, pace: {}, waiting: {}, starting: null, alias: {}, answered: {}, answering: new Set(), picked: {},
+  conversations: [], turns: {}, loaded: new Set(), working: {}, words: {}, pace: {}, waiting: {}, starting: null, alias: {}, answered: {}, answering: new Set(), picked: {}, sessions: {},
 };
 const listeners = new Set<() => void>();
 const set = (patch: Partial<Live>) => {
@@ -294,13 +296,16 @@ function taskOf(s: Live, j: Job): Task {
     model: j.model ?? s.status?.models[j.agent]?.model ?? 'default', repo: j.repo, branch: j.branch || '—', base: j.base ?? '—',
     check: j.check ?? undefined, repoCheck: s.repos.find((r) => r.repo === j.repo)?.check, status: j.status, step: j.step, waiting: j.waiting ?? undefined,
     round: j.rounds > 1 ? [j.round, j.rounds] : undefined,
-    stages: (j.pipeline?.stages ?? []).map((st) => ({ id: st.id as StageId, title: st.title, state: st.state, detail: st.detail ?? undefined })),
+    stages: stagesOf(j),
     ask, summary: j.summary || undefined, commits: j.commits ?? undefined, published: j.published ?? undefined,
     created: minutesAgo(j.created), finished: j.finished ? minutesAgo(j.finished) : undefined, conversation: j.conversation ? shownId(j.conversation) : undefined,
+    archived: !!j.archived,
   };
+  const needs = (!!now && !answer) || answer === 'Later';
+  job.page = pageOf(j, s.status?.accounts.find((a) => a.id === j.account), needs);
   return {
     id: j.id, type: job.type, title: j.title, brand: AGENTS[j.agent]?.brand ?? AGENTS.claude.brand, job,
-    status: (now && !answer) || answer === 'Later' ? 'needs' : j.status === 'queued' || j.status === 'running' ? 'running' : 'done',
+    status: needs ? 'needs' : j.status === 'queued' || j.status === 'running' ? 'running' : 'done',
     fresh: !s.firstJobs.has(j.id) && !s.seen.has(j.id), answer,
   };
 }
@@ -686,6 +691,61 @@ export async function tellJob(id: string, text: string) {
 }
 export async function stopJob(id: string) {
   try { const j = await api.stop(id); set({ jobs: { ...state.jobs, [j.id]: j } }); } catch (e) { say(e); }
+}
+
+// The task's menu: Rename (PATCH /v1/jobs/{id}), shown at once as the mock does it; Archive
+// (POST /v1/jobs/{id}/archive), off Home into Archive; Delete (DELETE /v1/jobs/{id}), gone for good.
+// obid's job comes back and the task follows it; a refusal (a 409: still running, its pull request
+// still open) shows in obid's own words and leaves the task as it was.
+export async function renameJob(id: string, title: string) {
+  const had = state.jobs[id];
+  // the same name again (a blur with nothing changed): nothing to tell obid
+  if (had?.title === title) return;
+  if (had) set({ jobs: { ...state.jobs, [id]: { ...had, title } } });
+  try { const j = await api.rename(id, title); set({ jobs: { ...state.jobs, [j.id]: j } }); } catch (e) {
+    const now = state.jobs[id];
+    if (had && now?.title === title) set({ jobs: { ...state.jobs, [id]: { ...now, title: had.title } } });
+    say(e);
+  }
+}
+export async function archiveJob(id: string) {
+  try { const j = await api.archive(id); set({ jobs: { ...state.jobs, [j.id]: j } }); } catch (e) { say(e); }
+}
+// true once it's gone (obid deleted it, or had no such job). With commits that aren't published,
+// obid asks first: its Confirm comes onto the task's card (and Home's stack), naming the commits
+// lost, and only the owner's click there deletes it (answerJob, signed by main).
+export async function deleteJob(id: string) {
+  try {
+    const { deleted, ask } = await api.deleteJob(id);
+    if (ask) set(apply(state, { kind: 'inbox', item: ask }));
+    if (!deleted) return false;
+  } catch (e) {
+    if (!(e instanceof ApiError && e.status === 404)) { say(e); return false; }
+  }
+  set(apply(state, { kind: 'jobGone', id }));
+  return true;
+}
+
+// A job's session, for Full session: fetched when it opens and again at each of the job's events
+// (at most once a second while its agent works), only what came or changed since (?after=), by n,
+// page after page (obid sends at most 1,000 at a time) until obid's `next` is null
+const loading = new Map<string, boolean>();  // in flight; true: asked again meanwhile
+export async function loadSession(id: string): Promise<void> {
+  if (loading.has(id)) { loading.set(id, true); return; }
+  loading.set(id, false);
+  try {
+    const had = state.sessions[id] ?? [];
+    let after: number | null | undefined = had.length ? Math.max(...had.map((e) => e.n)) : undefined;
+    do {
+      const page = await api.transcript(id, after ?? undefined);
+      const now = state.sessions[id] ?? [];
+      set({ sessions: { ...state.sessions, [id]: [...now.filter((e) => !page.entries.some((m) => m.n === e.n)), ...page.entries] } });
+      after = page.next;
+    } while (after != null);
+  } catch (e) { say(e); }
+  const again = loading.get(id);
+  loading.delete(id);
+  if (again) return loadSession(id);
 }
 
 // Work on a GitHub item, on the owner's tap (POST /v1/github/work/{id}/start): its job comes back,

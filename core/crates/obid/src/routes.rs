@@ -441,6 +441,46 @@ pub async fn delete(
     }
 }
 
+/// `POST /v1/jobs/{id}/delete` (obid only): the apps' Delete task. A job that ended with nothing
+/// unpublished goes at once, as `DELETE /v1/jobs/{id}` does; one with commits that aren't published
+/// waits for the owner's Confirm (`delete_job`, titled as `oby_delete_job`'s), which it answers.
+pub async fn delete_asked(
+    State(shared): State<Arc<Shared>>,
+    Path(id): Path<String>,
+) -> Result<Response, ApiError> {
+    use crate::sphere::inbox::{Confirmed, action, confirm_item};
+    let job = shared
+        .jobs
+        .get(&id)
+        .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, NO_JOB))?;
+    if let Some(refused) = shared.jobs.undeletable(&id) {
+        return Err(ApiError::new(StatusCode::CONFLICT, refused.0));
+    }
+    if job.unpublished() == 0 {
+        delete(State(shared), Path(id)).await?;
+        return Ok(json(StatusCode::OK, json!({"deleted": true, "ask": null})));
+    }
+    let title = crate::brain::tools::delete_title(&shared, &job);
+    let mut item = confirm_item(
+        &id,
+        title.clone(),
+        "Deleting a job can't be undone: it happens only if you confirm.".into(),
+        // what the job was when asked: a Confirm after another round or commit is refused
+        Confirmed {
+            action: action::DELETE_JOB.into(),
+            target: id.clone(),
+            payload: json!({"snapshot": job.snapshot()}),
+        },
+        obi_protocol::time::now(),
+    );
+    item.details = Some(vec![format!("{title}."), "Keeps the job as it is.".into()]);
+    let item = shared.link.add_confirm_instead(item);
+    Ok(json(
+        StatusCode::OK,
+        json!({"deleted": false, "ask": shared.link.shown(&item)}),
+    ))
+}
+
 /// `GET /v1/jobs/{id}/wait`: the job once it has ended; a space every 15 seconds until then.
 pub async fn wait(
     State(shared): State<Arc<Shared>>,

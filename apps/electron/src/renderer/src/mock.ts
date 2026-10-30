@@ -106,6 +106,7 @@ export type Job = {
   log?: LogLine[];
   page?: Page;         // the job page's extra data, once obid serves it
   conversation?: string;  // obid's: the conversation whose words started it
+  archived?: boolean;  // obid's: archived (POST /v1/jobs/{id}/archive), in Archive whenever it ended
   created: number;     // minutes ago
   finished?: number;   // minutes ago
 };

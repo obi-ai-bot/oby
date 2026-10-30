@@ -2570,6 +2570,66 @@ fn archive_is_at_once_and_delete_waits_for_confirm() {
     );
 }
 
+/// TASKS-11 (docs/contracts/tasks.md): the apps' Delete task (`POST /v1/jobs/{id}/delete`) deletes
+/// a job with nothing unpublished at once; one with commits that aren't published waits for the
+/// owner's Confirm, titled as oby_delete_job's, and only that Confirm deletes it.
+#[test]
+fn tasks_11_delete_asks_first_when_commits_arent_published() {
+    let (_folder, obid) = obid("harness-delete-asks", true);
+    let delete = |id: &str| call(&obid, "POST", &format!("/v1/jobs/{id}/delete"), None);
+
+    // nothing unpublished: gone at once, no Confirm
+    let (plain, _) = ended_job(&obid, None);
+    let gone = delete(&plain);
+    assert_eq!(gone.status, 200, "{}", gone.text);
+    assert_eq!(gone.body, json!({"deleted": true, "ask": null}));
+    assert_eq!(
+        call(&obid, "GET", &format!("/v1/jobs/{plain}"), None).status,
+        404
+    );
+    assert_eq!(delete(&plain).status, 404);
+
+    // a commit the fixture's remote has but no pull request carries yet: unpublished
+    let commits = r#"OBY oby_dispatch {"repo": "obi-e2e/fixture-app", "task": "JOB-COMMITS: b.txt", "title": "Add b", "kind": "build"}"#;
+    let started = said(&obid, json!({"said": commits, "new": true}));
+    let id = started.body["jobs"][0]["id"]
+        .as_str()
+        .unwrap_or_else(|| panic!("{}", started.text))
+        .to_owned();
+    let job = ended(&obid, &id);
+    assert_eq!(job["commits"], 1, "{job}");
+    let asked = delete(&id);
+    assert_eq!(asked.status, 200, "{}", asked.text);
+    assert_eq!(asked.body["deleted"], false, "{}", asked.text);
+    let item = &asked.body["ask"];
+    assert_eq!(item["kind"], "confirm", "{item}");
+    assert_eq!(item["confirm"]["action"], "delete_job", "{item}");
+    assert_eq!(
+        item["title"],
+        "Delete Add b (its worktree and local branch go; 1 commit that isn't published is lost)"
+    );
+    assert_eq!(
+        call(&obid, "GET", &format!("/v1/jobs/{id}"), None).status,
+        200,
+        "nothing yet"
+    );
+    // asked again: still one Confirm
+    delete(&id);
+    assert_eq!(
+        inbox(&obid)
+            .iter()
+            .filter(|i| i["kind"] == "confirm" && i["job"] == id.as_str())
+            .count(),
+        1
+    );
+    let done = confirmed(&obid, &confirm_for(&obid, &id));
+    assert_eq!(done.status, 200, "{}", done.text);
+    assert_eq!(
+        call(&obid, "GET", &format!("/v1/jobs/{id}"), None).status,
+        404
+    );
+}
+
 /// oby_change_job narrows a job's mode at once; Bypass, a mode that asks less, and anything after
 /// the web wait for the owner's Confirm. Moving needs a job that ended and a tool obid has.
 #[test]

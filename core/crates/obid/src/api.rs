@@ -163,6 +163,7 @@ pub fn router(shared: Arc<Shared>) -> Router {
                 .delete(crate::routes::delete),
         )
         .route("/v1/jobs/{id}/archive", post(crate::routes::archive))
+        .route("/v1/jobs/{id}/delete", post(crate::routes::delete_asked))
         .route("/v1/jobs/{id}/wait", get(crate::routes::wait))
         .route("/v1/jobs/{id}/transcript", get(crate::routes::transcript))
         .route(
