@@ -34,8 +34,8 @@ struct TetrixConnectTests {
         let page = { (text: String, server: String?) in TetrixSignIn(url: URL(string: text)!, server: server.flatMap(URL.init(string:))).opens }
         #expect(page("https://auth.example.com/oidc/auth?client_id=obid", "https://auth.example.com/oidc"))
         #expect(page("https://AUTH.example.com/a", "https://auth.example.com"))
-        #expect(page("https://tetrix.34-45-0-97.sslip.io/auth/realms/tetrix/protocol/openid-connect/auth", "https://tetrix.34-45-0-97.sslip.io/auth/realms/tetrix"))
-        #expect(!page("https://tetrix.34-45-0-97.sslip.io/auth", nil))
+        #expect(page("https://tetrix.example.com/auth/realms/tetrix/protocol/openid-connect/auth", "https://tetrix.example.com/auth/realms/tetrix"))
+        #expect(!page("https://tetrix.example.com/auth", nil))
         #expect(!page("https://evil.example.com/authorize", "https://auth.example.com"))
         #expect(!page("https://auth.example.com.evil.dev/authorize", "https://auth.example.com"))
         #expect(!page("https://auth.example.com/a", "http://auth.example.com"))

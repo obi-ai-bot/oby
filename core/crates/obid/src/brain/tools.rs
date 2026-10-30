@@ -33,7 +33,7 @@ pub(super) fn list() -> Value {
         "kind": {"type": "string", "enum": ["review", "fix", "build", "test", "investigate", "research"]},
         "agent": {"type": "string", "enum": ["auto", "claude", "codex", "cursor"]},
         "account": {"type": "string", "description": "An account by name, or auto."},
-        "mode": {"type": "string", "enum": ["ask", "acceptEdits", "plan", "bypass"], "description": "Leave it out for the owner's default mode. Bypass waits for the owner's own OK."},
+        "mode": {"type": "string", "enum": ["ask", "acceptEdits", "plan", "bypass"], "description": "Leave it out for the owner's default mode. Bypass waits for the owner's own OK, unless it's their default already."},
         "issue": {"type": "integer", "description": "The issue the work is about."},
         "pr": {"type": "integer", "description": "The pull request the work is about: a review reads it, and other work starts from its branch. With issue too, the work is the issue's, from the default branch."},
         "title": {"type": "string", "description": "A short title, 3 to 6 words."},
@@ -56,13 +56,13 @@ pub(super) fn list() -> Value {
          "inputSchema": {"type": "object", "properties": {"id": id, "words": {"type": "string"}, "title": {"type": "string", "description": "When the job ended: the follow-up's short title, 3 to 6 words."}}, "required": ["id", "words"]}},
         {"name": "oby_stop_job", "description": "Stops a running job.",
          "inputSchema": {"type": "object", "properties": {"id": id}, "required": ["id"]}},
-        {"name": "oby_continue_job", "description": "Continues a job that failed, was stopped or was cut off, in its own session, worktree and branch, as Try again does: its agent picks up where it left off and hears the owner's words, then yours. For a job that's done, oby_tell_job starts a follow-up instead. Another conversation's job, a job in Bypass mode, or a turn that read something untrusted waits for the owner's Confirm.",
+        {"name": "oby_continue_job", "description": "Continues a job that failed, was stopped or was cut off, in its own session, worktree and branch, as Try again does: its agent picks up where it left off and hears the owner's words, then yours. For a job that's done, oby_tell_job starts a follow-up instead. Another conversation's job, a job in Bypass mode (unless Bypass is the owner's default), or a turn that read something untrusted waits for the owner's Confirm.",
          "inputSchema": {"type": "object", "properties": {"id": id, "words": {"type": "string", "description": "What to tell it as it continues, in a few sentences."}}, "required": ["id"]}},
         {"name": "oby_archive_job", "description": "Archives a job that ended and needs nothing: it leaves Home for Archived. archived false brings it back.",
          "inputSchema": {"type": "object", "properties": {"id": id, "archived": {"type": "boolean", "description": "false to unarchive; true when left out."}}, "required": ["id"]}},
         {"name": "oby_delete_job", "description": "Deletes a job that ended, for good: its record, worktree and local branch. Nothing pushed is touched. Always waits for the owner's Confirm.",
          "inputSchema": {"type": "object", "properties": {"id": id}, "required": ["id"]}},
-        {"name": "oby_change_job", "description": "Changes a job's mode, or moves a job that ended to another tool or account (its next round starts a new session there; continue it with oby_continue_job). Bypass, a mode that asks less, another conversation's job, or a turn that read something untrusted waits for the owner's Confirm.",
+        {"name": "oby_change_job", "description": "Changes a job's mode, or moves a job that ended to another tool or account (its next round starts a new session there; continue it with oby_continue_job). A mode that asks less than the job's (Bypass most), another conversation's job, or a turn that read something untrusted waits for the owner's Confirm.",
          "inputSchema": {"type": "object", "properties": {"id": id,
              "mode": {"type": "string", "enum": ["ask", "acceptEdits", "plan", "sandbox", "bypass"]},
              "agent": {"type": "string", "enum": ["auto", "claude", "codex", "cursor"]},
@@ -554,7 +554,10 @@ fn continue_job(shared: &Arc<Shared>, session: &Session, args: Value) -> Result<
     if actions::TRY_AGAIN.chars().count() + 2 + added.chars().count() > 2000 {
         return Err("What it hears as it continues is at most 2,000 characters: say less.".into());
     }
-    let bypass = crate::jobs::Jobs::mode_of(&job) == crate::permissions::Mode::Bypass;
+    // Continuing a job in Bypass widens trust only where Bypass isn't the owner's own default:
+    // there, every job the turn starts runs in it anyway (`Jobs::bypass_widens`).
+    let bypass = crate::jobs::Jobs::mode_of(&job) == crate::permissions::Mode::Bypass
+        && shared.jobs.bypass_widens();
     // What the owner reads on the card: the words as they were said, never the agent's fences.
     let mut shown = vec![];
     if !said.is_empty() {
@@ -703,7 +706,9 @@ fn change_job(shared: &Arc<Shared>, session: &Session, args: Value) -> Result<St
             "agent is auto, claude, codex or cursor, not {agent}."
         ));
     }
-    let widens = mode.is_some_and(|m| m == Mode::Bypass || m.reach() > was.reach());
+    // A mode that asks less than the job's widens what it may do, Bypass most; the job's own mode
+    // again (a job in Bypass "put in Bypass") widens nothing.
+    let widens = mode.is_some_and(|m| m.reach() > was.reach());
     let why =
         waits(session, &job).or(widens.then_some("it lets the job do more without asking you"));
     if let Some(why) = why {
@@ -1595,7 +1600,8 @@ async fn dispatch(shared: &Arc<Shared>, session: &Session, args: Value) -> Resul
         return Err(UNWATCHED_START.into());
     }
     let dispatch = planned(start)?;
-    let bypass = dispatch.mode.is_some_and(|m| m.as_str() == "bypass");
+    let bypass =
+        dispatch.mode.is_some_and(|m| m.as_str() == "bypass") && shared.jobs.bypass_widens();
     let mut plan = Plan::of(Action::Dispatch, "");
     plan.dispatches = vec![dispatch];
     problems(shared, session, &plan)?;

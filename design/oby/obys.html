@@ -1,0 +1,2584 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Obys</title>
+<!-- The Obys of a conversation, together in the margin beside the chat: yours
+     and the other people's, standing on this page's bottom edge as a floor.
+     Load it in a web view or an iframe sized to the margin (next to
+     vendor/three.module.js); it draws on a transparent background and fits
+     whatever size it's given. Through window.obys (see The conversation,
+     below) the app tells it who's in the conversation, when a reply is being
+     written and which Obys are in on it (they huddle up and talk it over
+     until it's done), and when it can't be seen (pause). Everything else
+     they do on their own.
+     ?px= sets the body's width in CSS px (40); the other URL knobs are for
+     the test page (group.html). The dev blocks are its hooks, and
+     package/build.sh strips them. -->
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: transparent; }
+  body { -webkit-user-select: none; user-select: none; }
+  /* its own size in px (set with the renderer's), on the floor at the left:
+     the page resized, it's never stretched to the new size before it's redrawn
+     (a frame of squashed, widened Obys); new room just shows nothing till then */
+  canvas { position: fixed; left: 0; bottom: 0; display: block; }
+</style>
+<script type="importmap">
+{ "imports": { "three": "./vendor/three.module.js" } }
+</script>
+</head>
+<body>
+<script type="module">
+import * as THREE from 'three';
+
+const params = new URLSearchParams(location.search);
+let N = 0;   // how many are here now (Obys join and leave)
+const BODY_PX = Math.max(8, parseFloat(params.get('px')) || 40);   // body width on screen
+let W = innerWidth, H = innerHeight;                     // the page is their stage
+let STILL = false;  // no life, for comparing the look (test page)
+let LAB = false;    // the first swears at the second on a loop (censor-lab.html)
+let devTick = null; // the test page's per-frame hook
+const num = (k, v) => (params.has(k) ? parseFloat(params.get(k)) : v);
+/* dev:start  the test page's knobs (package/build.sh strips every dev block) */
+STILL = params.has('still'); LAB = params.has('lab');
+/* dev:end */
+const TAU = Math.PI * 2;
+const rand = (a, b) => a + Math.random() * (b - a);
+const clamp = THREE.MathUtils.clamp;
+
+/* Springs, as the mascot's (oby.html): every value chases a target. */
+const PRESET = {
+  body: [120, 16], jelly: [260, 13], face: [300, 30], mouth: [320, 28], gaze: [650, 46], blink: [1600, 75], ear: [200, 11],
+  drowse: [10, 6.5],  // eyes drooping shut, head nodding
+};
+// where it stands and its hops aren't springs: they're thrown and fall (see move)
+const DEFAULTS = {
+  rx: [0, 'body'], ry: [0, 'body'], rz: [0, 'body'],
+  sq: [1, 'jelly'], lean: [0, 'body'],
+  gx: [0, 'gaze'], gy: [0, 'gaze'], blink: [0, 'blink'], open: [1, 'face'], wide: [0, 'face'],
+  lidT: [0, 'face'], lidA: [0, 'face'], happy: [0, 'face'], mouth: [0, 'mouth'], grin: [0, 'mouth'],
+  eLB: [0.1, 'ear'], eRB: [0.1, 'ear'], eLO: [0, 'ear'], eRO: [0, 'ear'], eLT: [0, 'ear'], eRT: [0, 'ear'],
+};
+function springs() {
+  const P = {};
+  for (const [k, [v, p]] of Object.entries(DEFAULTS)) { const [s, d] = PRESET[p]; P[k] = { v, vel: 0, to: v, k: s, d }; }
+  return P;
+}
+function stepSprings(P, dt) {
+  for (const k in P) { const s = P[k]; s.vel += (s.k * (s.to - s.v) - s.d * s.vel) * dt; s.v += s.vel * dt; }
+}
+
+/* The mascot's look (LOOK in oby.html) */
+// round: the corners' radius, as a share of the body's width. The full mascot
+// is 0.23 on a cube, but drawn in perspective and outlined its silhouette
+// measures rounder (about 0.27 of its width across, 0.24 up), and squashed to
+// its height a plain 0.23 would round less up than across: so here the
+// corners are cut to what the mascot looks like (?round= / ?roundy= to try others)
+const LOOK = { round: 0.27, roundY: 0.24, width: 0.93, height: 0.75 };
+const EAR = { x: 0.26, z: -0.04, w: 0.095, d: 0.05, h: 0.14, sink: 0.1, tipIn: 0.55, tipR: 0.004 };
+
+/* One shader for body and ears: the mascot's deform (squash from the bottom,
+   lean), its soft light, and on the body the eyes (rounded pills) and the
+   mouth, in face units (the mascot's 512 face canvas × 0.002). */
+const VERT = /* glsl */`
+uniform float uSq, uLean, uW, uH;
+#ifdef EAR
+uniform vec3 uEarBase, uEarTilt; uniform float uEarSide, uEarH;
+mat3 earRot(vec3 p) {
+  float s = 0.35 + 0.65 * clamp((p.y - uEarBase.y) / uEarH, 0., 1.);
+  float b = -uEarTilt.x * s, o = -uEarTilt.y * uEarSide * s, t = uEarTilt.z * uEarSide;
+  mat3 rx = mat3(1., 0., 0., 0., cos(b), sin(b), 0., -sin(b), cos(b));
+  mat3 rz = mat3(cos(o), sin(o), 0., -sin(o), cos(o), 0., 0., 0., 1.);
+  mat3 ry = mat3(cos(t), 0., -sin(t), 0., 1., 0., sin(t), 0., cos(t));  // swivel, whole ear (to a sound)
+  return rz * rx * ry;
+}
+#endif
+vec3 deformP(vec3 p) {
+  p.x *= uW; p.z *= uH;
+  p.y = (p.y + 0.5) * uH - 0.5;
+  p.y = (p.y + 0.5) * uSq - 0.5;
+  p.xz *= inversesqrt(uSq);
+  float h = p.y + 0.5;
+  p.x += uLean * h * h;
+  return p;
+}
+vec3 deformN(vec3 p, vec3 n) {
+  vec3 r = abs(n.y) < 0.95 ? vec3(0., 1., 0.) : vec3(1., 0., 0.);
+  vec3 t1 = normalize(cross(n, r)), t2 = cross(n, t1);
+  vec3 d0 = deformP(p);
+  return normalize(cross(deformP(p + t1 * 0.003) - d0, deformP(p + t2 * 0.003) - d0));
+}
+varying vec3 vN, vP;
+void main() {
+  vec3 p = position, n = normalize(normal);
+#ifdef EAR
+  mat3 R = earRot(p);
+  p = uEarBase + R * (p - uEarBase); n = R * n;
+#endif
+  vP = p;
+  vN = normalize(normalMatrix * deformN(p, n));
+  gl_Position = projectionMatrix * modelViewMatrix * vec4(deformP(p), 1.);
+}`;
+const FRAG = /* glsl */`
+uniform vec3 uLight, uFill, uInk; uniform float uShade, uW, uH;
+#ifndef EAR
+uniform vec4 uEyes;    // gaze x, gaze y (face units), how open (0 shut, 1 open), how wide (surprise)
+uniform vec4 uFace;    // lids: how far down, slope to the inner corners (+ cross, - worried); happy (^ ^); mouth open
+uniform float uGrin;   // laughing: the mouth wide, flat on top, round below
+#endif
+varying vec3 vN, vP;
+float pill(vec2 p, vec2 b, float r) { vec2 q = abs(p) - b + r; return length(max(q, 0.)) + min(max(q.x, q.y), 0.) - r; }
+#ifndef EAR
+// how much ink the face has at f (face units), its edges px wide
+float faceInk(vec2 f, float px) {
+  float H0 = 0.224 * (1. + 0.2 * uEyes.w);
+  float h = max(H0 * uEyes.z, 0.022);
+  float w = 0.128 * (1. + 0.2 * uEyes.w) * (1. + 0.32 * (1. - h / H0));
+  float lidT = uFace.x, lidA = uFace.y, happy = uFace.z, m = uFace.w;
+  float dr = min(w, h) * 0.17 * clamp((h - 0.06) / 0.08, 0., 1.) * (1. - happy) * (1. - clamp(lidT * 3., 0., 1.));
+  float ink = 0.;
+  for (int i = 0; i < 2; i++) {
+    float inner = i == 0 ? 1. : -1.;  // which way is the middle of the face
+    vec2 q = f - vec2((float(i) * 2. - 1.) * 0.192 + uEyes.x, -0.0687 + uEyes.y);
+    float d = pill(q, vec2(w, h) * 0.5, min(w, h) * 0.46);
+    // lids (as the mascot's): what's above a line lidT down from the top goes,
+    // the line sloping down to the inner corner by lidA
+    d = max(d, q.y - (h * 0.5 - lidT * h - tan(lidA) * q.x * inner));
+    // happy: a disc from below takes the bottom, leaving a ^
+    float rr = w * 0.78;
+    d = max(d, -(length(q - vec2(0., -(h * 0.5 + rr - happy * h * 0.78))) - rr));
+    // the catchlight: a dot cut out of the upper right
+    d = max(d, -(length(q - vec2(w * 0.25, h * 0.28)) - dr));
+    ink = max(ink, 1. - smoothstep(-px, px, d));
+  }
+  // the mouth: a dot that opens into an O (yawning, talking, gasping, swearing);
+  // laughing, it's wide and its top is cut flat
+  float g = uGrin;
+  vec2 mr = vec2(0.014 + 0.02 * m + 0.075 * g, 0.01 + 0.042 * m + 0.03 * g);
+  vec2 mc = vec2(uEyes.x * 0.35, -0.29 + uEyes.y * 0.35 + 0.025 * g);
+  float dm = (length((f - mc) / mr) - 1.) * min(mr.x, mr.y);
+  dm = max(dm, mix(-1., f.y - mc.y - mr.y * 0.15, g));
+  return max(ink, (1. - smoothstep(-px, px, dm)) * smoothstep(0.03, 0.08, m + g));
+}
+#endif
+void main() {
+  float lit = smoothstep(0.15, 0.85, dot(normalize(vN), uLight));
+  vec3 col = uFill * (1. - uShade * (1. - lit));
+#ifndef EAR
+  // no branches around this: fwidth needs its neighbours to run the same code,
+  // or the eyes' edge breaks up into dashes where a branch starts
+  vec2 f = vec2(vP.x * uW, (vP.y + 0.5) * uH - 0.5);  // the face, before squash
+  float px = length(fwidth(f));
+  float front = step(0.3, vP.z);
+  col = mix(col, uInk, faceInk(f, px) * front);
+#endif
+  gl_FragColor = vec4(col, 1.);
+#ifdef DEBUG_N
+  gl_FragColor = vec4(normalize(vN) * 0.5 + 0.5, 1.);
+#endif
+}`;
+
+// rounded cube (as oby.html's), its corners' radius per axis (r: x, y, z) so
+// they stay round once squashed to the body's height
+function roundedCube(size, r, seg = 24) {
+  const g = new THREE.BoxGeometry(size, size, size, seg, seg, seg);
+  const pos = g.attributes.position, nor = g.attributes.normal;
+  const h = new THREE.Vector3(size / 2, size / 2, size / 2).sub(r), p = new THREE.Vector3(), q = new THREE.Vector3(), n = new THREE.Vector3();
+  for (let i = 0; i < pos.count; i++) {
+    p.fromBufferAttribute(pos, i);
+    q.set(clamp(p.x, -h.x, h.x), clamp(p.y, -h.y, h.y), clamp(p.z, -h.z, h.z));
+    n.subVectors(p, q).divide(r).normalize();          // where on the corner, as if it were round
+    p.copy(q).add(n.clone().multiply(r));              // out to the oval corner
+    n.divide(r).normalize();                           // and the oval's normal there
+    pos.setXYZ(i, p.x, p.y, p.z); nor.setXYZ(i, n.x, n.y, n.z);
+  }
+  return g;
+}
+// ears (as oby.html's), 12 round instead of 16
+function earGeometry(side) {
+  const M = 12, pos = [], idx = [], rings = [];
+  const uTip = -EAR.tipIn * EAR.w, R = EAR.tipR;
+  for (const t of [-1, 0, 0.15, 0.3, 0.45, 0.6, 0.72, 0.84, 0.93, 1]) {
+    const k = Math.max(0, t);
+    const uo = EAR.w + (uTip + R - EAR.w) * Math.pow(k, 0.8);
+    const ui = -EAR.w + (uTip - R + EAR.w) * k;
+    rings.push([(uo + ui) / 2, (uo - ui) / 2, Math.max(R * 0.8, EAR.d * Math.pow(1 - k, 0.7)), 0.5 + (t < 0 ? -EAR.sink : t * EAR.h)]);
+  }
+  for (const [uc, hw, hd, y] of rings) for (let i = 0; i < M; i++) {
+    const a = (i / M) * TAU;
+    pos.push(side * (EAR.x + uc + hw * Math.cos(a)), y, EAR.z + hd * Math.sin(a));
+  }
+  for (let r = 0; r < rings.length - 1; r++) for (let i = 0; i < M; i++) {
+    const a = r * M + i, b = r * M + (i + 1) % M, c = a + M, d = b + M;
+    if (side < 0) idx.push(a, b, d, a, d, c); else idx.push(a, d, b, a, c, d);
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setIndex(idx); g.computeVertexNormals();
+  return g;
+}
+
+/* Scene: an orthographic camera in CSS px, y up from the floor (the page's
+   bottom edge), refitted when the page is resized. */
+// multisampled edges: there's no outline to hide the fill's stair-steps, and at
+// this size it measured no dearer than without (?noaa turns it off)
+const renderer = new THREE.WebGLRenderer({ antialias: !params.has('noaa'), alpha: true, premultipliedAlpha: true, powerPreference: 'low-power' });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setClearColor(0x000000, 0);
+renderer.setSize(W, H);
+document.body.appendChild(renderer.domElement);
+const canvas = renderer.domElement;
+const scene = new THREE.Scene();
+const camera = new THREE.OrthographicCamera(0, W, H, 0, -1000, 1000);
+// a new size: anyone now past the sides is put back inside them (collide)
+addEventListener('resize', () => {
+  const was = W;
+  W = innerWidth; H = innerHeight;
+  if (was < 2 * EDGE + GAP) spread(obys.filter((o) => !o.leaving));   // they were piled up at no size at all
+  renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+  renderer.setSize(W, H);
+  camera.right = W; camera.top = H; camera.updateProjectionMatrix();
+  // a new size clears the canvas: redrawn at once, not blank till the next frame
+  if (gone) { renderer.setRenderTarget(null); renderer.clear(); } else draw();
+});
+
+const SHARED = {
+  uLight: { value: new THREE.Vector3(-0.3, 0.45, 1).normalize() },
+  // colours go out as they are (sRGB), as oby.html's
+  uFill: { value: new THREE.Color().setHex(0xf1f1ee, THREE.LinearSRGBColorSpace) },
+  uInk: { value: new THREE.Color().setHex(0x0d0d0e, THREE.LinearSRGBColorSpace) },
+  uShade: { value: 0.16 },
+  uW: { value: LOOK.width }, uH: { value: LOOK.height },
+};
+/* Swearing is censored the TV way: a flat square over its mouth that shows
+   what's behind it in big screen pixels. While anyone swears, the frame is
+   also drawn into a texture, and the square draws that in blocks. */
+// how it looks (Sangam picked #2 in censor-lab.html; each can be set in the URL there): blocks across
+// a body, the square's size and height on the face (in bodies; the face's
+// middle is -0.18, the mouth -0.29), how much lighter or darker each block is
+// (noise), whether the blocks shimmer, how much darker the whole square is
+const CENSOR = { blocks: num('cblocks', 9), w: num('cw', 0.44), h: num('ch', 0.32), y: num('cy', -0.26), noise: num('cnoise', 0.3), shimmer: num('cjit', 1), shade: num('cshade', 0) };
+const BLOCK = Math.max(2, BODY_PX / CENSOR.blocks);   // CSS px
+const censorRT = new THREE.WebGLRenderTarget(1, 1);
+const censorScene = new THREE.Scene();
+const censorMat = new THREE.ShaderMaterial({
+  uniforms: { tScene: { value: censorRT.texture }, uRes: { value: new THREE.Vector2() }, uBlock: { value: 1 },
+    uNoise: { value: CENSOR.noise }, uShimmer: { value: CENSOR.shimmer }, uShade: { value: CENSOR.shade }, uSeed: { value: 0 } },
+  vertexShader: 'void main() { gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.); }',
+  fragmentShader: /* glsl */`
+    uniform sampler2D tScene; uniform vec2 uRes; uniform float uBlock, uNoise, uShimmer, uShade, uSeed;
+    void main() {
+      // the screen in blocks (the grid hops a little as the seed changes, if it shimmers)
+      vec2 off = vec2(fract(uSeed * 0.37), fract(uSeed * 0.61)) * uBlock * uShimmer;
+      vec2 cell = floor((gl_FragCoord.xy - off) / uBlock);
+      vec2 c = (cell + 0.5) * uBlock + off, o = vec2(0.25 * uBlock);
+      // each block the average of four points across it, a touch lighter or darker
+      vec4 a = (texture2D(tScene, (c - o) / uRes) + texture2D(tScene, (c + o) / uRes)
+        + texture2D(tScene, (c + vec2(o.x, -o.y)) / uRes) + texture2D(tScene, (c + vec2(-o.x, o.y)) / uRes)) * 0.25;
+      float n = fract(sin(dot(cell + floor(uSeed) * uShimmer, vec2(12.9898, 78.233))) * 43758.5453);
+      a.rgb *= max(0., 1. - uShade + uNoise * (n - 0.5) * 2.);   // premultiplied: alpha stays
+      gl_FragColor = a;
+    }`,
+  transparent: true, premultipliedAlpha: true, depthTest: false, depthWrite: false,
+});
+const censorGeo = new THREE.PlaneGeometry(1, 1);
+const censorBuf = new THREE.Vector2();
+const faceMid = new THREE.Vector3();
+const DEFS = params.has('normals') ? { DEBUG_N: '' } : {};  // ?normals: shows them as colours
+// the radius before the body's squashed to its height: across as it is, up and
+// back (both squashed by height / width) by that much more
+const ry0 = num('roundy', LOOK.roundY) * LOOK.width / LOOK.height;
+const bodyGeo = roundedCube(1, new THREE.Vector3(num('round', LOOK.round), ry0, ry0), parseInt(params.get('seg')) || 24);
+const earGeo = [earGeometry(-1), earGeometry(1)];
+const S = BODY_PX / LOOK.width;  // CSS px per body unit
+
+// how they stand on the floor, and how they move
+let clock = 0;
+const G = 52 * S;                  // gravity (px/s²): a half-body hop is up and down in about 0.3s
+const GAP = BODY_PX * 1.15;        // where they like to stand, centre to centre
+const TOUCH = BODY_PX * 0.96;      // touching (the rounded corners meet)
+const EDGE = BODY_PX * 0.7;        // closest to the canvas's sides: room to turn without being cut off
+const HEAD = 0.4 * S;              // eye height above the floor
+// Depth: z is how far back from the front row (px). Further back, an Oby is
+// drawn smaller, higher and nearer the middle, as from a camera FAR away and
+// LIFT above the floor, but each one is drawn flat on (a real perspective
+// camera this close would show the sides of the ones near the edges).
+const FAR = BODY_PX * 12, LIFT = BODY_PX * 1.2, ZMAX = BODY_PX * 1.5;
+function project(o) {
+  o.s = FAR / (FAR + o.z);
+  o.sx = W / 2 + (o.x - W / 2) * o.s;
+  o.sy = LIFT * (1 - o.s) + o.y * o.s;
+}
+const pick = (a) => a[Math.floor(Math.random() * a.length)];
+const chance = (p) => Math.random() < p;
+
+let made = 0;
+// a new Oby called name, standing at x (CSS px) in the front row
+function makeOby(name, x) {
+  const i = made++;   // its own phase for the sway and the like
+  const U = { ...SHARED, uSq: { value: 1 }, uLean: { value: 0 } };
+  const rig = new THREE.Group();
+  const eyes = { value: new THREE.Vector4(0, 0, 1, 0) }, face = { value: new THREE.Vector4() }, grin = { value: 0 };
+  rig.add(new THREE.Mesh(bodyGeo, new THREE.ShaderMaterial({ vertexShader: VERT, fragmentShader: FRAG, uniforms: { ...U, uEyes: eyes, uFace: face, uGrin: grin }, defines: DEFS })));
+  const ears = [-1, 1].map((side, j) => {
+    const u = { uEarBase: { value: new THREE.Vector3(side * EAR.x, 0.5, EAR.z) }, uEarTilt: { value: new THREE.Vector3() }, uEarSide: { value: side }, uEarH: { value: EAR.h } };
+    rig.add(new THREE.Mesh(earGeo[j], new THREE.ShaderMaterial({ vertexShader: VERT, fragmentShader: FRAG, uniforms: { ...U, ...u }, defines: { ...DEFS, EAR: '' } })));
+    return u;
+  });
+  rig.scale.setScalar(S);
+  scene.add(rig);
+  const censor = new THREE.Mesh(censorGeo, censorMat);
+  censor.visible = false;
+  censorScene.add(censor);
+  return {
+    censor,
+    i, rig, U, eyes, face, grin, ears, P: springs(), t: rand(0, 10),
+    name,
+    // on the floor: x along it, z back from the front row; y up off it (CSS px)
+    x, z: 0, y: 0, vx: 0, vz: 0, vy: 0,
+    sx: 0, sy: 0, s: 1,         // where it's drawn (see project)
+    air: false, crouch: false, press: 0,
+    look: null, lookUntil: 0,   // { at: an Oby } | { pt: a point (the pointer, the fly, the bee) } | { you: true } | { ry, gy }: a glance away; eyes: only the eyes move (frozen still)
+    pose: {},                   // what it's holding on top of where it looks: head (rx, ry, rz), lean, sq, face, ears; still (no sway), censor (swearing)
+    cast: null,                 // the scene it's in, if any
+    asleep: false, startled: false, busy: 0, pokes: 0, lastPoke: -99,
+    shake: -99, jitter: -99,    // a head shake (till), an angry tremble (till)
+    blinkEnd: -1, nextBlink: rand(0.5, 3), flyCool: 0,
+    queue: [],                  // what it does next, and when: [{ t, fn }]
+  };
+}
+const obys = [];   // on the stage now (see The conversation)
+const others = (o) => obys.filter((b) => b !== o);
+// free for something new: not in a scene (a reply included), asleep, or startled
+const idle = (o) => !o.cast && !o.asleep && !o.startled;
+const grounded = (o) => !o.air && !o.crouch;
+const later = (o, delay, fn) => o.queue.push({ t: clock + delay, fn });
+// left to right, as they stand now (they can pass behind each other)
+const line = () => [...obys].sort((a, b) => a.x - b.x);
+const beside = (o) => { const l = line(), k = l.indexOf(o); return [l[k - 1], l[k + 1]]; };
+// the one beside it, more often than one further off
+const neighbour = (o) => {
+  const side = beside(o).filter(Boolean);
+  return side.length && chance(0.75) ? pick(side) : pick(others(o)) ?? null;   // null: it's on its own
+};
+const near = (a, b, k = 1.6) => Math.abs(a.x - b.x) < BODY_PX * k;
+
+/* ---------------------------------------------------------------------------
+   Small moves
+--------------------------------------------------------------------------- */
+function pose(o, p) { Object.assign(o.pose, p); }
+function unpose(o, ...keys) { if (!keys.length) o.pose = {}; else for (const k of keys) delete o.pose[k]; }
+// a spring on another preset for a while (eyes drooping slowly), and back
+function preset(o, keys, name) { for (const k of keys) [o.P[k].k, o.P[k].d] = PRESET[name ?? DEFAULTS[k][1]]; }
+function blink(o) { if (!o.asleep) { o.P.blink.to = 1; o.blinkEnd = clock + 0.075; } }
+
+// Where it looks. A big turn of the head comes with a blink, as animals do
+// (not when startled: then its eyes stay wide).
+function lookAt(o, look, dur) {
+  if ('at' in look && !look.at) return;   // nobody to look at (it's on its own)
+  if (!o.startled) {
+    const ry = aimAt(o, look).ry;
+    if (Math.abs(ry - o.P.ry.v) > 0.3 && chance(0.6)) blink(o);
+  }
+  o.look = look; o.lookUntil = clock + dur;
+  if (look.at) emit(o, 'look', look.at);
+  else if (look.you) emit(o, 'you');
+}
+// The head and eyes for what it's looking at, worked out every frame, so it
+// keeps following one that moves (up into a hop and back down, a fly, the pointer).
+function aimAt(o, L) {
+  const a = { ry: 0, rx: 0, gx: 0, gy: 0 };
+  // an Oby by where it stands; a point (pointer, fly) by where it is on screen
+  const t = L?.at ? { x: L.at.x, y: L.at.y + HEAD, z: L.at.z } : L?.pt ? { x: L.pt.x, y: L.pt.y, z: o.z } : null;
+  if (t) {
+    const dx = L.at ? t.x - o.x : t.x - o.sx, dy = L.at ? t.y - (o.y + HEAD) : t.y - (o.sy + HEAD * o.s);
+    // one further back takes more of a turn, but never its back to you: past
+    // about 50° the eyes do the rest (actors on a stage do the same)
+    const back = Math.max(0, (t.z - o.z) / BODY_PX);
+    a.ry = clamp(dx / (S * 2.2) * (1 + back * 0.8), -0.85, 0.85);
+    a.gx = clamp(dx / S * 0.04, -0.07, 0.07);
+    a.gy = clamp(dy / S * 0.05, -0.05, 0.08);
+    // the eyes do most of looking up: turned and tipped back a lot, the head reads as tilted
+    a.rx = -clamp(dy / S * 0.07, -0.2, 0.12);
+    // frozen still: only the eyes follow it
+    if (L.eyes) { a.ry *= 0.12; a.rx *= 0.15; a.gx = clamp(dx / S * 0.06, -0.09, 0.09); a.gy = clamp(dy / S * 0.06, -0.05, 0.08); }
+  } else if (L?.you) a.gy = 0.01;
+  else if (L) { a.ry = L.ry; a.gx = L.ry * 0.08; a.gy = L.gy; }
+  else if (o.rest?.toward) { const b = aimAt(o, { at: o.rest.toward }); a.ry = b.ry * 0.4; a.gx = b.gx * 0.5; }
+  else if (o.rest) { a.ry = o.rest.ry; a.gx = o.rest.gx; a.gy = o.rest.gy; }
+  return a;
+}
+// Where it looks when it isn't looking at anything: its own, and changing
+// every few seconds (off to the side, down at the floor, half turned to the
+// one beside it, far off), only now and then straight out at you
+function restLook(o) {
+  const r = Math.random(), side = chance(0.5) ? -1 : 1, nb = N > 1 ? neighbour(o) : null;
+  o.rest = r < 0.3 ? { ry: side * rand(0.12, 0.35), gx: side * rand(0, 0.03), gy: rand(-0.02, 0.02) }
+    : r < 0.5 ? { ry: rand(-0.15, 0.15), gx: 0, gy: -rand(0.02, 0.045) }
+    : r < 0.7 && nb ? { toward: nb }
+    : r < 0.87 ? { ry: side * rand(0.3, 0.5), gx: side * 0.03, gy: rand(0.01, 0.04) }
+    : { ry: rand(-0.06, 0.06), gx: 0, gy: 0 };
+  o.nextRest = clock + rand(3, 8);
+}
+
+// A hop: it crouches, springs up, and lands where it aimed (in place, or a step)
+function hop(o, h, toX = o.x, now = false, toZ = o.z) {
+  if (o.air || o.crouch) return;
+  const go = () => {
+    o.crouch = false; o.on = null; o.climb = null;
+    o.vy = Math.sqrt(2 * G * h * S); o.air = true;
+    const T = 2 * o.vy / G;
+    const lo = o.offstage ? -BODY_PX * 2 : EDGE, hi = o.offstage ? W + BODY_PX * 2 : W - EDGE;  // running off the edge
+    o.vx = (clamp(toX, lo, hi) - o.x) / T;
+    o.vz = (clamp(toZ, 0, ZMAX) - o.z) / T;
+    o.P.sq.vel += 4;  // stretches up off the floor
+    emit(o, 'hop');
+  };
+  if (now) return go();
+  o.crouch = true; o.crouchAt = clock;
+  later(o, 0.13, go);
+}
+// A step: a small hop sideways, keeping its distance from the one beside it
+function step(o) {
+  const [l, r] = beside(o);
+  const lo = l ? l.x + GAP : EDGE, hi = r ? r.x - GAP : W - EDGE;
+  // one that's wandered off from the others steps back toward them
+  const nearest = others(o).sort((a, b) => Math.abs(a.x - o.x) - Math.abs(b.x - o.x))[0];
+  const way = nearest && Math.abs(nearest.x - o.x) > GAP * 1.8 ? Math.sign(nearest.x - o.x) : chance(0.5) ? -1 : 1;
+  const to = clamp(o.x + way * rand(0.4, 0.9) * BODY_PX, lo, hi);
+  if (Math.abs(to - o.x) < 4 && o.z < 2) return lookAt(o, { at: neighbour(o) }, rand(1, 2));
+  lookAt(o, { ry: Math.sign(to - o.x) * 0.45, gy: 0 }, 0.6);  // looks where it's going
+  o.stepping = true;
+  later(o, 0.2, () => hop(o, 0.2, to, false, 0));  // a step brings it back to the front row
+}
+// Pleased: a squint and a little bob
+function smile(o) {
+  pose(o, { happy: 0.8 }); o.P.sq.vel -= 1.5;
+  later(o, 0.5, () => unpose(o, 'happy'));
+}
+// Laughing: eyes squeezed to ^ ^, head thrown back (or doubled over), and the
+// whole body bouncing with each "ha", mouth opening, rocking side to side, the
+// bounces dying away; now and then it starts with a little hop
+function laugh(o, n = 4) {
+  n += 1;
+  pose(o, { happy: 1, grin: 1, rx: chance(0.7) ? -0.16 : 0.2, earO: 0.2 });
+  o.jitter = clock + n * 0.15 + 0.2;   // and a fast little shake all through it
+  for (let k = 0; k < n; k++) later(o, k * 0.15, () => {
+    const f = 1 - k / (n + 1);
+    o.P.sq.vel -= 6 * f; o.P.rz.vel += (k % 2 ? 1 : -1) * 2.2 * f;
+    o.P.eLB.vel += 4 * f; o.P.eRB.vel += 4 * f;
+    o.pose.mouth = 0.8; later(o, 0.08, () => { if (o.pose.grin) o.pose.mouth = 0.15; });   // ha
+    if (k === 0 && grounded(o) && chance(0.4)) hop(o, 0.12, o.x, true);
+  });
+  later(o, n * 0.15 + 0.35, () => unpose(o, 'happy', 'grin', 'rx', 'mouth', 'earO'));
+}
+// knowing: slow deep nods with its eyes half shut (mm-hm)
+function knowing(o) {
+  pose(o, { lidT: 0.35, gy: -0.01 });
+  for (let k = 0; k < 3; k++) later(o, 0.1 + k * 0.42, () => { o.P.rx.vel += 3.2; });
+  later(o, 1.4, () => unpose(o, 'lidT', 'gy'));
+}
+// A yawn, and it's catching: the one beside it often yawns a moment later
+// (one that caught it doesn't pass it on)
+function yawn(o, catching = true) {
+  if (catching) for (const b of beside(o)) if (b && idle(b) && chance(0.4)) later(b, rand(1, 2.2), () => idle(b) && yawn(b, false));
+  pose(o, { mouth: 1, open: 0.3, sq: 1.1, rx: -0.14, earO: 0.25 });
+  later(o, 1.2, () => { unpose(o, 'mouth', 'open', 'sq', 'rx', 'earO'); blink(o); later(o, 0.25, () => blink(o)); });
+}
+const shakeHead = (o, dur = 1) => { o.shake = clock + dur; o.shakeDur = dur; };
+// A head tilt (hm?), which the one watching it now and then copies a beat later
+function tilt(o, side = pick([-1, 1]), copied = false) {
+  pose(o, { rz: side * rand(0.08, 0.14) });
+  if (!copied) lookAt(o, chance(0.5) ? { you: true } : { ry: side * 0.2, gy: 0.02 }, 1.4);
+  later(o, 1.4, () => unpose(o, 'rz'));
+  if (!copied) for (const b of beside(o)) if (b && idle(b) && chance(0.35)) later(b, rand(0.5, 0.9), () => { if (!idle(b)) return; lookAt(b, { at: o }, 1.4); tilt(b, side, true); });
+}
+// Hiccups: little jumps it can't help, every second or so; the ones beside it stare
+function hiccups(o) {
+  const n = 4 + Math.floor(Math.random() * 3);
+  o.busy = o.hiccupUntil = clock + n * 1.5 + 1;
+  for (let k = 0; k < n; k++) later(o, k * rand(1.2, 1.7), () => {
+    if (!idle(o)) return;
+    pose(o, { wide: 1, mouth: 0.35 }); o.P.sq.vel += 5;
+    if (grounded(o)) hop(o, 0.1, o.x, true);
+    later(o, 0.18, () => unpose(o, 'wide', 'mouth'));
+    if (k === 1) for (const b of beside(o)) if (b && idle(b)) lookAt(b, { at: o }, 3);
+    if (k === n - 1) later(o, 0.8, () => { if (idle(o)) { blink(o); later(o, 0.2, () => blink(o)); } });
+  });
+}
+// Solo moves, for whoever's free: most are small
+const SOLO = [
+  [22, (o) => N > 1 && lookAt(o, { at: neighbour(o) }, rand(1.2, 2.5))],
+  [4, (o) => lookAt(o, { you: true }, rand(1, 2))],
+  [9, (o) => lookAt(o, { ry: rand(-0.45, 0.45), gy: rand(0.02, 0.06) }, rand(0.8, 1.6))],   // a glance away, or up
+  [5, (o) => lookAt(o, { ry: rand(-0.2, 0.2), gy: -0.045 }, rand(1, 2))],                   // at the floor
+  [9, (o) => tilt(o)],                                                                      // head tilt: hm?
+  [1, (o) => hiccups(o)],
+  [6, (o) => hop(o, rand(0.35, 0.6))],
+  [9, (o) => step(o)],
+  [5, (o) => { for (let k = 0; k < 4; k++) later(o, k * 0.09, () => { o.P.rz.vel += (k % 2 ? 1 : -1) * 3; }); }],    // a wiggle
+  [6, (o) => { o.P[chance(0.5) ? 'eLB' : 'eRB'].vel += 9; }],                                // an ear flick
+  [4, (o) => yawn(o)],
+  [3, (o) => { pose(o, { ry: TAU }); hop(o, 0.5); later(o, 1.1, () => { o.P.ry.v -= TAU; unpose(o, 'ry'); }); }],  // a spin
+  [5, (o) => { pose(o, { sq: 0.92 }); later(o, rand(2, 4), () => unpose(o, 'sq')); }],       // settles down low for a bit
+  [3, (o) => { blink(o); later(o, 0.22, () => blink(o)); }],
+];
+const SOLO_TOTAL = SOLO.reduce((s, [w]) => s + w, 0);
+function solo(o) {
+  let r = Math.random() * SOLO_TOTAL;
+  for (const [w, fn] of SOLO) if ((r -= w) < 0) return fn(o);
+}
+
+/* ---------------------------------------------------------------------------
+   Awareness: what one does goes out to the rest (emit), and each decides for
+   itself whether to react, a beat later, as you would.
+--------------------------------------------------------------------------- */
+function emit(src, type, target) {
+  if (src.startled) return;  // a startled jump is everyone's, not one to watch
+  for (const o of others(src)) react(o, src, type, target);
+  // now and then one answers a hop with its own (an answer isn't answered)
+  if (type === 'land' && !src.stepping && !src.answering && !src.cast && chance(0.25)) {
+    const free = others(src).filter((o) => idle(o) && grounded(o));
+    if (free.length) { const o = pick(free); later(o, rand(0.35, 0.7), () => { o.answering = true; hop(o, rand(0.3, 0.5)); }); }
+  }
+}
+function react(o, src, type, target) {
+  if (!idle(o)) return;
+  switch (type) {
+    case 'hop':     // watches it go up and come down (and turns an ear to it first)
+      if (near(o, src, 2.4)) o.heard = { side: Math.sign(src.x - o.x) || 1, until: clock + rand(0.6, 1.2) };
+      if (chance(near(o, src) ? 0.85 : 0.55)) later(o, rand(0.1, 0.35), () => idle(o) && lookAt(o, { at: src }, rand(1.1, 1.8)));
+      break;
+    case 'land':    // landed right beside it: leans out of the way and looks
+      if (near(o, src, 2.4) && !o.look) o.heard = { side: Math.sign(src.x - o.x) || 1, until: clock + rand(0.6, 1.2) };
+      if (src.stepping && Math.abs(src.x - o.x) < GAP * 1.12) {
+        later(o, rand(0.03, 0.1), () => {
+          if (!idle(o)) return;
+          o.P.lean.vel += Math.sign(o.x - src.x) * 3;
+          lookAt(o, { at: src }, rand(0.9, 1.5));
+          if (chance(0.3)) later(o, rand(0.6, 1), () => idle(o) && step(o));
+        });
+      }
+      break;
+    case 'look':    // looked at: often looks back, and if they meet, one is pleased
+      if (target === o && chance(0.6)) {
+        later(o, rand(0.3, 0.8), () => {
+          if (!idle(o)) return;
+          lookAt(o, { at: src }, rand(1, 1.8));
+          if (src.look?.at === o) later(o, rand(0.3, 0.6), () => smile(chance(0.5) ? o : src));
+        });
+      }
+      break;
+    case 'you':     // one looks out at you: the ones beside it wonder what at
+      if (chance(near(o, src) ? 0.2 : 0.08)) later(o, rand(0.4, 1), () => idle(o) && lookAt(o, { you: true }, rand(1, 2)));
+      break;
+  }
+}
+// Knocked into: it staggers the way it was pushed, wide-eyed, and looks round
+function bumped(o, by, hard) {
+  const d = Math.sign(o.x - by.x);
+  o.P.rz.vel += d * 4 * hard; o.P.lean.vel -= d * 2 * hard;
+  if (o.asleep) return spook(o, by);
+  if (o.cast) return;
+  pose(o, { wide: 1 });
+  later(o, rand(0.1, 0.25), () => { if (idle(o)) lookAt(o, { at: by }, rand(1, 1.6)); });
+  later(o, 0.45, () => unpose(o, 'wide'));
+}
+// Brushed against: it sways out of the way and glances round
+function nudged(o, by) {
+  o.P.lean.vel += Math.sign(o.x - by.x) * 1.5;
+  if (!o.look) lookAt(o, { at: by }, rand(0.6, 1.1));
+}
+// Woken with a fright: wide eyes, ears back, a jump away from what did it
+function spook(o, by) {
+  wake(o);
+  o.pose = { wide: 1, earB: 0.9, mouth: 0.6 };
+  hop(o, 0.75, o.x + Math.sign(o.x - by.x || 1) * BODY_PX * 0.5, true);
+  o.look = { at: by }; o.lookUntil = clock + 2;
+  later(o, 0.7, () => unpose(o, 'mouth'));
+}
+
+/* ---------------------------------------------------------------------------
+   Scenes: a few of them doing something together, scripted with waits. A
+   scene can be cut short (you poke one in it, or you arrive): its waits then
+   throw, and its cast go back to what they were doing.
+--------------------------------------------------------------------------- */
+const CANCEL = Symbol('cancel');
+const log = [];  // what played, for checking the pacing (test page)
+const scenes = new Set(), waits = [];
+// a wait in a scene: till cond holds, or max seconds. Cut short (the scene was
+// cancelled) it throws, and it checks again on waking: cancelled in the very
+// frame it was due, the scene still mustn't take one more step
+function until(sc, cond, max = 3) {
+  return new Promise((res, rej) => (sc.dead ? rej(CANCEL) : waits.push({ t: clock + max, cond, res, rej, sc })))
+    .then(() => { if (sc.dead) throw CANCEL; });
+}
+const wait = (sc, s) => until(sc, null, s);
+function release(o) {
+  if (o.on) fallOff(o, Math.sign(o.dx) || 1, false);
+  o.dodged = false; o.ghost = false; o.squeeze = false; o.pressZ = 0; o.calm = true; o.jitter = 0; o.climb = null;
+  if (o.offstage) { o.offstage = false; o.x = clamp(o.x, EDGE, W - EDGE); }
+  o.cast = null; o.pose = {}; o.look = null; o.press = 0; o.working = false;
+  if (o.asleep) o.wakeAt = clock + rand(4, 9); else preset(o, ['open', 'rx']);
+}
+// Left asleep with no scene to wake it (one ended, or it nodded off in one):
+// in a while it wakes and yawns (at the back, direct() brings it forward). By
+// the clock in tick, not a plan: plans get cleared (a poke, you arriving), and
+// an asleep Oby isn't idle, so nothing else would ever pick it up.
+function wakeUp(o) { wake(o); yawn(o); }
+function join(sc, o) { o.cast = sc; clearPlans(o); sc.cast.push(o); }
+// its own plans dropped (and anything it was holding, and a spin unwound to the nearest way round)
+function clearPlans(o) {
+  o.queue.length = 0; o.gen = (o.gen ?? 0) + 1; o.pose = {}; o.crouch = false;
+  o.P.ry.v = Math.atan2(Math.sin(o.P.ry.v), Math.cos(o.P.ry.v));
+}
+// woken by something (a poke, you, a scene button)
+function wake(o) { o.asleep = false; o.wakeAt = 0; preset(o, ['open', 'rx']); }
+function start(name, cast, script) {
+  const sc = { name, cast: [], dead: false };
+  for (const o of cast) join(sc, o);
+  scenes.add(sc);
+  lastStart[name] = clock;
+  log.push(`${clock.toFixed(0)}s ${name}`); if (log.length > 200) log.splice(0, log.length - 200);
+  aside(script(sc, ...cast))
+    .finally(() => {
+      sc.dead = true;   // its side moves (aside) stop with it
+      scenes.delete(sc);
+      for (const o of sc.cast) if (o.cast === sc) release(o);
+      if (SCENES[name] && !BACKGROUND.has(name)) nextScene = clock + rand(10, 24);
+      else if (name === 'discussion') nextScene = Math.max(nextScene, clock + rand(8, 16));
+    });
+  return sc;
+}
+// a scene cut short anywhere it wasn't being waited on: that's expected, not an error
+addEventListener('unhandledrejection', (e) => { if (e.reason === CANCEL) e.preventDefault(); });
+// for a scene's moves that run alongside (not waited on): cut short with the scene, quietly
+const aside = (p) => p.catch((e) => { if (e !== CANCEL) console.error(e); });
+// coming, going, and a reply being talked over: these only end by themselves
+const UNSTOPPABLE = new Set(['joins', 'leaves', 'discussion']);
+function cancel(sc) {
+  if (UNSTOPPABLE.has(sc.name)) return;
+  sc.dead = true;
+  for (const o of sc.cast) if (o.cast === sc) release(o);
+}
+// tiptoes or hops over until it's `dist` from t; false if it couldn't get there
+async function approach(sc, o, t, dist, h = 0.16) {
+  for (let k = 0; k < 8; k++) {
+    if (o.cast !== sc) return false;   // taken out of the scene meanwhile
+    if (!grounded(o)) await until(sc, () => grounded(o), 2);
+    // turned, they're wider: close enough is touching, however they're turned
+    const gap = Math.abs(t.x - o.x) - Math.max(dist, extent(o)[0] + extent(t)[0] + 3);
+    if (gap < 4 && Math.abs(t.z - o.z) < 6) return true;
+    const x0 = o.x, z0 = o.z;
+    hop(o, h, o.x + Math.sign(t.x - o.x) * clamp(gap, 0, BODY_PX * 0.7), false, t.z);   // and level with it
+    await until(sc, () => o.air, 0.5);
+    await until(sc, () => grounded(o), 1.5);
+    if (Math.hypot(o.x - x0, o.z - z0) < 3) break;   // got nowhere: it doesn't keep trying
+    await wait(sc, rand(0.04, 0.12));
+  }
+  // close enough: touching it (pressed against it is touching, however they're turned)
+  return Math.abs(t.x - o.x) - Math.max(dist, extent(o)[0] + extent(t)[0] + 3) < 10 && Math.abs(t.z - o.z) < 8;
+}
+async function talk(sc, o, dur, stop = () => false) {
+  const end = clock + dur;
+  while (clock < end && !stop()) {
+    o.pose.mouth = rand(0.35, 0.9); o.P.sq.vel += rand(-0.6, 0.6);
+    await wait(sc, rand(0.07, 0.14));
+    o.pose.mouth = rand(0, 0.12);
+    await wait(sc, rand(0.06, 0.2) + (chance(0.12) ? 0.35 : 0));  // now and then a breath
+  }
+  o.pose.mouth = 0;
+}
+
+// Is someone standing where it would land?
+// (as wide and deep as they are now, turned or not)
+const blockedAt = (o, x, z) => !o.ghost && obys.some((b) => {
+  if (b === o || b.air || b.on) return false;
+  const [ox, oz] = extent(o), [bx, bz] = extent(b);
+  return Math.abs(b.x - x) < ox + bx - 2 && Math.abs(b.z - z) < oz + bz - 2;
+});
+// Gets to a spot on the floor in hops; false if it couldn't (or it was taken
+// out of the scene meanwhile)
+async function goTo(sc, o, x, z, h = 0.14) {
+  x = o.offstage ? clamp(x, -BODY_PX * 2, W + BODY_PX * 2) : clamp(x, EDGE, W - EDGE); z = clamp(z, 0, ZMAX);
+  let waited = 0;
+  for (let k = 0; k < 14; k++) {
+    if (o.cast !== sc) return false;
+    if (!grounded(o)) await until(sc, () => grounded(o), 2);
+    const dx = x - o.x, dz = z - o.z, d = Math.hypot(dx, dz);
+    if (d < 4) return true;
+    const f = Math.min(1, BODY_PX * 0.7 / d);
+    // someone's there: it waits a moment for them to move, rather than hop into them
+    if (blockedAt(o, o.x + dx * f, o.z + dz * f)) { if (++waited > 6) return false; await wait(sc, 0.25); continue; }
+    const x0 = o.x, z0 = o.z;
+    hop(o, h, o.x + dx * f, false, o.z + dz * f);
+    await until(sc, () => o.air, 0.5);
+    await until(sc, () => grounded(o), 1.5);
+    if (Math.hypot(o.x - x0, o.z - z0) < 3) return false;   // that hop got it nowhere: it doesn't keep trying
+    await wait(sc, rand(0.03, 0.1));
+  }
+  return Math.hypot(x - o.x, z - o.z) < 8;
+}
+
+// A discussion: while a reply is being written, the Obys in on it huddle up
+// and talk it over, for as long as it takes, however many they are. They
+// stand in a shallow curve open to you, the middle ones further back (so the
+// ones in front partly hide them: that, and being a touch smaller, is what
+// shows they're further away). They take turns: the one answering most, the
+// rest chipping in; each turn one talks to another, leaning in, and the rest
+// look at whoever's talking, nodding, now and then reacting. A long one has
+// lulls (they all look away, thinking). Someone brought in mid-way hops over
+// and the huddle makes room; one let go steps back out. One on its own gets on
+// with it (eyes down, nodding). When it's done they react, maybe all look at
+// you, and break up. The rest carry on idling, glancing over now and then.
+const BOWL = BODY_PX * 1.35;   // how far back the middle of a huddle stands
+// where each stands, left to right, by how many (bodies from the middle)
+const SPOTS = { 2: [-0.54, 0.54], 3: [-0.85, 0, 0.85], 4: [-1.4, -0.5, 0.5, 1.4], 5: [-1.75, -0.88, 0, 0.88, 1.75] };
+const shuffle = (a) => a.map((v) => [Math.random(), v]).sort((p, q) => p[0] - q[0]).map(([, v]) => v);
+const LONGEST = 600;   // s: a reply nobody ended (the app lost track of it) ends here anyway
+// out of the scene it's in, back to itself, and nobody else in that scene minds
+function drop(o) {
+  const sc = o.cast;
+  if (!sc) return;
+  sc.cast.splice(sc.cast.indexOf(o), 1);
+  release(o);
+}
+// Where everyone stands for a huddle: the huddle in a curve where most of the
+// ones in it are, the others in the front row either side of it, in the order
+// they stand, closer together if need be; and if there's no room even then,
+// the ones furthest from it wait in the back row, off to its side. A huddle
+// wider than the stage is squeezed to fit.
+function huddlePlaces(group) {
+  const k = group.length, avail = W - 2 * EDGE;
+  const fit = Math.min(1, avail / (2 * SPOTS[k][k - 1] * BODY_PX));
+  const xs = SPOTS[k].map((u) => u * BODY_PX * fit), half = xs[k - 1];
+  const mean = group.reduce((t, o) => t + o.x, 0) / k;
+  const front = obys.filter((o) => !group.includes(o) && !o.leaving && !o.offstage && !o.on && !(o.cast && UNSTOPPABLE.has(o.cast.name))).sort((a, b) => a.x - b.x);
+  const back = [], MIN = TOUCH * 1.05;
+  while (front.length && front.length * MIN + 2 * half > avail) {
+    const far = front.reduce((f, o) => (Math.abs(o.x - mean) > Math.abs(f.x - mean) ? o : f));
+    front.splice(front.indexOf(far), 1); back.push(far);
+  }
+  const m = front.length, g = m ? clamp((avail - 2 * half) / m, MIN, GAP) : GAP;
+  const s = front.filter((o) => o.x < mean).length;   // how many stand to its left
+  const cx = clamp(mean, EDGE + s * g + half, W - EDGE - (m - s) * g - half);
+  const places = new Map();
+  front.forEach((o, j) => places.set(o, { x: j < s ? cx - half - (s - j) * g : cx + half + (j - s + 1) * g, z: 0 }));
+  for (const o of back) places.set(o, { x: clamp(cx + (Math.sign(o.x - cx) || 1) * (half + BODY_PX * 0.4), EDGE, W - EDGE), z: BODY_PX * 1.4 });
+  group.forEach((o, j) => places.set(o, { x: cx + xs[j], z: k === 2 ? BODY_PX * 0.12 : BOWL * (1 - (xs[j] / half) ** 2) }));
+  return { cx, places, back };
+}
+// replies being written ({ names, ended, n }); an Oby named in several is in
+// the latest one to name it (n), and back in the other when that one's done
+const live = new Set();
+let claims = 0;
+const ownerOf = (o) => { let best = null; for (const d of live) if (!d.ended && d.names.includes(o.name) && (!best || d.n > best.n)) best = d; return best; };
+async function discussion(sc, d) {
+  let group = [], cx = W / 2, prev = null;
+  const t0 = clock;
+  const over = () => d.ended || clock - t0 > LONGEST;
+  const ours = (o) => o.cast === sc;
+  // who's in it now: the named ones on the stage whose latest reply this is,
+  // unless they're coming or going (worked out once a frame: waits ask every frame)
+  let wantedAt = -1, wantedNow = [];
+  const wanted = () => {
+    if (wantedAt !== clock) {
+      wantedAt = clock;
+      wantedNow = d.names.map(byName).filter((o) => o && ownerOf(o) === d && (!o.cast || o.cast.name === 'discussion' || !UNSTOPPABLE.has(o.cast.name)));
+    }
+    return wantedNow;
+  };
+  const outsiders = () => obys.filter((o) => !group.includes(o));
+
+  // the ones in it take their places (again, if someone came or went)
+  async function regroup(now) {
+    for (const o of group) if (!now.includes(o) && o.cast === sc) {
+      drop(o);
+      if (o.z > 4) hop(o, 0.12, o.x, false, 0);   // steps back out to the front row
+    }
+    const fresh = now.filter((o) => !group.includes(o));
+    for (const o of fresh) { free(o); join(sc, o); }
+    group = [...now];
+    for (const o of group) { o.working = false; unpose(o); }
+    if (group.length < 2) {
+      const [o] = group;
+      if (!o) return;
+      // on its own: it gets on with it, eyes down, nodding (tick nods it)
+      if (o.z > 4) await goTo(sc, o, o.x, 0);
+      if (!ours(o)) return;
+      o.working = true; o.nextNod = clock; o.look = null;
+      o.pose = { lidT: 0.18, gy: -0.035, rx: 0.1, earB: -0.05 };
+      return;
+    }
+    // everyone's place: see huddlePlaces. Those coming from further along step
+    // back out of the row; the rest shuffle along to make room (they keep their
+    // order: nobody passes through anybody); then the ones in it go along
+    // behind the row and come in, the ones going furthest back first. They
+    // face front while they move (turned, they're wider) and pass behind
+    // each other on the way.
+    group.sort((a, b) => a.x - b.x);
+    const { cx: c, places, back } = huddlePlaces(group); cx = c;
+    const BACK = BODY_PX * 1.3;
+    for (const o of group) lookAt(o, { ry: 0, gy: 0.01 }, 60);
+    const shufflers = [...places.keys()].filter((o) => !group.includes(o) && Math.hypot(places.get(o).x - o.x, places.get(o).z - o.z) > 4);
+    // in the way: one that'd be passed on the way to its place
+    const passed = (o) => shufflers.some((b) => Math.min(b.x, places.get(b).x) - TOUCH < o.x && o.x < Math.max(b.x, places.get(b).x) + TOUCH);
+    const along = group.filter((o) => Math.abs(places.get(o).x - o.x) > BODY_PX * 0.5 || (o.z < BACK - 4 && passed(o)));
+    await Promise.all(along.map((o) => goTo(sc, o, o.x, Math.max(o.z, BACK))));
+    if (over()) return;   // done before it got going: discussed() breaks it up
+    // (again: some may have started leaving, or gone into another reply, meanwhile)
+    const movers = shufflers.filter((o) => obys.includes(o) && !o.leaving && !(o.cast && UNSTOPPABLE.has(o.cast.name)));
+    for (const o of movers) free(o);
+    // the ones waiting at the back stay there till it's over (not squeezing into the huddle)
+    for (const o of back) o.parkedBy = sc;
+    if (movers.length) {
+      const mw = start('makeway', movers, async (mw) => {
+        const moves = [];
+        for (const o of [...movers].sort((a, b) => Math.abs(b.x - cx) - Math.abs(a.x - cx))) {
+          lookAt(o, { at: pick(group) }, 1.5);
+          moves.push(goTo(mw, o, places.get(o).x, places.get(o).z, 0.12));
+          await wait(mw, rand(0.05, 0.15));
+        }
+        await Promise.all(moves);
+      });
+      await until(sc, () => mw.dead, 4);
+      if (over()) return;
+    }
+    for (const o of obys) if (!places.has(o) && idle(o) && chance(0.5)) later(o, rand(0.5, 2), () => idle(o) && lookAt(o, { at: pick(group) }, rand(1, 2)));
+    const moves = [];
+    for (const o of [...group].sort((a, b) => places.get(b).z - places.get(a).z)) {
+      const p = places.get(o);
+      o.ghost = true;
+      moves.push((async () => {
+        if (along.includes(o)) await goTo(sc, o, p.x, Math.max(o.z, BACK));
+        await goTo(sc, o, p.x, p.z);
+        if (ours(o)) o.ghost = false;   // (taken out meanwhile: not ours to touch)
+      })());
+      await wait(sc, rand(0.1, 0.25));
+    }
+    await Promise.all(moves);   // one that couldn't get all the way in talks from where it got to
+    const inIt = group.filter(ours);
+    inIt.forEach((o, j) => lookAt(o, { at: inIt[j === 0 ? 1 : j - 1] }, 60));
+    for (const o of inIt) pose(o, { lean: Math.sign(cx - o.x) * 0.05, ry: Math.sign(cx - o.x) * 0.12 });   // turned in a little
+  }
+  const changed = (now) => now.length !== group.length || now.some((o) => !group.includes(o));
+
+  // the first to talk thinks a moment (eyes up and aside)
+  let first = true;
+  while (!over()) {
+    const now = wanted();
+    if (changed(now)) await regroup(now);
+    if (group.length < 2) { await until(sc, () => over() || changed(wanted()), 0.5); continue; }
+
+    // a long one has its lulls: they all look away, thinking
+    if (clock - t0 > 25 && chance(0.12)) {
+      for (const o of group) later(o, rand(0, 0.5), () => { if (o.cast !== sc) return; const side = pick([-1, 1]); lookAt(o, { ry: side * rand(0.25, 0.45), gy: rand(0.03, 0.06) }, 60); });
+      await until(sc, () => over() || changed(wanted()), rand(1.5, 3));
+      continue;
+    }
+    // who talks: the one answering most, not the same one twice running (mostly)
+    const lead = byName(d.names[0]);
+    const turn = group.filter((o) => o !== prev || chance(0.15));
+    const speaker = weighted(turn.map((o) => [o, o === lead ? 2.2 : 1])) ?? group[0];
+    // to whom: often the one that spoke last (an answer), else anyone in it
+    const told = prev && prev !== speaker && group.includes(prev) && chance(0.6) ? prev : pick(group.filter((o) => o !== speaker));
+    const side = Math.sign(told.x - speaker.x) || 1;
+    if (first) {
+      first = false;
+      speaker.look = null; pose(speaker, { gy: 0.05, gx: side * 0.04, rz: side * 0.06, ry: side * 0.15 });
+      for (const o of group) if (o !== speaker) later(o, rand(0.1, 0.5), () => o.cast === sc && lookAt(o, { at: speaker }, 60));
+      await until(sc, over, rand(0.8, 1.4));
+      unpose(speaker, 'gy', 'gx', 'rz', 'ry');
+    }
+    lookAt(speaker, { at: told }, 60);
+    pose(speaker, { lean: side * 0.1, rz: -side * 0.06 });
+    for (const o of group) {
+      if (o === speaker) continue;
+      later(o, rand(0, 0.35), () => o.cast === sc && lookAt(o, { at: speaker }, 60));
+      // the one it's talking to: head tilted to listen
+      if (o === told) pose(o, { rz: side * 0.08, earB: -0.12 }); else unpose(o, 'rz', 'earB');
+    }
+    // and outside it, now and then one glances over
+    for (const o of outsiders()) if (idle(o) && chance(0.15)) later(o, rand(0.2, 1.2), () => idle(o) && lookAt(o, { at: speaker }, rand(1, 2)));
+    lastTalk = clock;
+    const end = clock + rand(1.6, 4.2);
+    const done = () => clock >= end || over() || changed(wanted());
+    // listening: nods, and now and then a glance at you, the pointer, or someone outside it
+    const listen = async (o) => {
+      while (!done()) {
+        await until(sc, done, rand(0.5, 1.1));
+        if (done() || o.cast !== sc) return;
+        if (chance(0.5)) o.P.rx.vel += 2.2;
+        if (!chance(o === told ? 0.05 : 0.12)) continue;
+        const r = Math.random(), out = outsiders();
+        if (r < 0.3 && pointer.active && clock - pointer.t < 2.5) lookAt(o, { pt: pointer }, 9);
+        else if (r < 0.6) lookAt(o, { you: true }, 9);
+        else if (out.length) lookAt(o, { at: pick(out) }, 9);
+        await until(sc, done, rand(0.7, 1.2));
+        if (o.cast === sc) lookAt(o, { at: speaker }, 60);
+      }
+    };
+    await Promise.all([talk(sc, speaker, end - clock, done), ...group.filter((o) => o !== speaker).map(listen)]);
+    unpose(speaker, 'lean', 'rz');
+    prev = speaker;
+    if (over() || changed(wanted())) continue;
+    // and now and then what was said gets a reaction from one or two
+    if (chance(0.35)) {
+      const r = weighted([['knowing', 40], ['smile', 30], ['laugh', 15], ['gasp', 15]]);
+      for (const o of shuffle(group.filter((o) => o !== speaker)).slice(0, chance(0.3) ? 2 : 1)) {
+        if (r === 'gasp') { pose(o, { wide: 1, mouth: 0.6 }); later(o, 0.6, () => unpose(o, 'wide', 'mouth')); }
+        else if (r === 'laugh') laugh(o, 2); else if (r === 'smile') smile(o); else knowing(o);
+      }
+      if (r === 'laugh' && chance(0.5)) smile(speaker);
+    }
+    await until(sc, () => over() || changed(wanted()), rand(0.25, 0.7));
+  }
+  d.ended = true; live.delete(d);
+  for (const o of group) o.ghost = false;
+  return discussed(sc, group, cx);
+}
+// done: they can't believe it, laugh, or knew it all along (most do the same);
+// now and then they all look out at you first, as if it was about you; then
+// they break up. One on its own stretches, and smiles.
+async function discussed(sc, group, cx) {
+  group = group.filter((o) => o.cast === sc);
+  if (group.length === 1) {
+    const [o] = group;
+    o.working = false; o.pose = {};
+    yawn(o, false); later(o, 1.3, () => smile(o));
+    return wait(sc, 1.4);
+  }
+  if (group.length < 2) return;
+  for (const o of group) unpose(o, 'rz', 'earB', 'lean');
+  if (chance(0.25)) {
+    const together = chance(0.5);
+    for (const o of shuffle(group)) { lookAt(o, { you: true }, 60); if (!together) await wait(sc, rand(0.2, 0.4)); }
+    await wait(sc, rand(0.8, 1.2));
+  }
+  const pickOne = () => weighted([['gasp', 30], ['laugh', 30], ['knowing', 40]]);
+  const most = pickOne();
+  for (const o of group) {
+    const r = chance(0.8) ? most : pickOne();
+    if (r === 'gasp') pose(o, { wide: 1, mouth: 0.8 }); else if (r === 'laugh') laugh(o); else knowing(o);
+  }
+  await wait(sc, 1.1);
+  return breakUp(sc, group, cx);
+}
+// Left behind the front row (a huddle broke up in front of it): in a while it
+// looks for a way through. If there's a gap, it goes along behind the others
+// to it and steps forward. If not, the two in front of it shuffle apart to
+// make room; if the row is too full for that, it stays at the back a while,
+// leaning to peek past them, and tries again later. It never hops into anyone.
+async function rejoin(sc, o) {
+  const front = () => obys.filter((b) => b !== o && b.z < BODY_PX * 0.3).sort((a, b) => a.x - b.x);
+  const gap = () => {
+    const f = front(), lo = [EDGE, ...f.map((b) => b.x + TOUCH * 1.05)], hi = [...f.map((b) => b.x - TOUCH * 1.05), W - EDGE];
+    return lo.map((l, k) => (hi[k] >= l ? clamp(o.x, l, hi[k]) : null)).filter((x) => x !== null)
+      .sort((a, b) => Math.abs(a - o.x) - Math.abs(b - o.x))[0];
+  };
+  lookAt(o, { ry: -0.4, gy: 0.02 }, 0.5); await wait(sc, 0.55);
+  lookAt(o, { ry: 0.4, gy: 0.02 }, 0.5); await wait(sc, 0.55);
+  let x = gap();
+  if (x === undefined) {
+    // the ones in front budge outward, if they're free and have room
+    const f = front(), l = f.filter((b) => b.x <= o.x).pop(), r = f.find((b) => b.x > o.x);
+    for (const [b, d] of [[l, -1], [r, 1]]) {
+      if (!b || !idle(b) || !grounded(b) || clock < b.busy || room(b, d) < BODY_PX * 0.15) continue;
+      join(sc, b);
+      lookAt(b, { at: o }, 1);
+      later(b, 0.3, () => b.cast === sc && hop(b, 0.08, b.x + d * Math.min(room(b, d), BODY_PX * 0.4), false, 0));
+    }
+    await wait(sc, 1.1);
+    x = gap();
+  }
+  if (x === undefined) {
+    // nobody made room: it squeezes through between the two in front of it,
+    // pushing them aside; they glance back at it, one now and then cross
+    const f = front(), l = f.filter((b) => b.x <= o.x).pop(), r = f.find((b) => b.x > o.x);
+    const mid = l && r ? (l.x + r.x) / 2 : (l ?? r).x + (l ? 1 : -1) * TOUCH * 0.6;
+    pose(o, { lidT: 0.2, lidA: 0.3 }); lookAt(o, { ry: 0, gy: 0.01 }, 2);
+    if (Math.abs(mid - o.x) > 4) await goTo(sc, o, mid, o.z, 0.08);
+    o.squeeze = true; o.pressZ = -1;
+    pose(o, { lean: 0, sq: 0.95 });
+    for (const b of [l, r]) if (b && idle(b)) later(b, rand(0.2, 0.5), () => { if (!idle(b)) return; lookAt(b, { at: o }, 1.2); if (chance(0.4)) { pose(b, { lidT: 0.25 }); later(b, 1, () => unpose(b, 'lidT')); } });
+    await until(sc, () => o.z < 3, 2.5);
+    o.squeeze = false; o.pressZ = 0;
+    unpose(o); smile(o);
+    return;
+  }
+  if (Math.abs(x - o.x) > 4 && !await goTo(sc, o, x, o.z)) return;   // along behind them
+  await goTo(sc, o, x, 0);
+  lookAt(o, { you: true }, 1);
+}
+// woken with a start, but not a fright: wide eyes, a little jump, a look round
+function startle(o) {
+  wake(o);
+  pose(o, { wide: 1, earB: 0.8 }); o.P.sq.vel += 3;
+  if (grounded(o)) hop(o, 0.2, o.x, true);
+  lookAt(o, { you: true }, 0.6);
+  later(o, 0.7, () => unpose(o, 'wide', 'earB'));
+}
+// back to the front row: they face front (turned, they're wider and block the
+// way), the front ones step out first, the ones at the back come forward
+// after; one asleep stays put
+async function breakUp(sc, group, cx) {
+  const awake = group.filter((o) => !o.asleep);
+  for (const o of awake) { unpose(o); o.look = null; }
+  const moves = [];
+  for (const o of [...awake].sort((a, b) => a.z - b.z)) {
+    moves.push(goTo(sc, o, o.x + Math.sign(o.x - cx) * BODY_PX * 0.45, 0, 0.12));
+    await wait(sc, rand(0.1, 0.25));
+  }
+  await Promise.all(moves);
+}
+
+// How far it could go that way along its row before it meets someone (or the side)
+function room(o, dir) {
+  let r = dir > 0 ? W - EDGE - o.x : o.x - EDGE;
+  for (const b of obys) if (b !== o && Math.abs(b.z - o.z) < BODY_PX * 0.6 && Math.sign(b.x - o.x) === dir) r = Math.min(r, Math.abs(b.x - o.x) - TOUCH);
+  return Math.max(0, r);
+}
+// A shove: a sly look, a wind-up (it backs off a step, crouches, ears back),
+// and it barges into the one beside it, which is knocked off its feet and
+// skids away, into the next one if it's in the way. Then: a shoving match, a
+// huff, the others laughing at it; or it sees it coming and dodges, and the
+// shover lunges at nothing.
+async function shove(sc, A, B) {
+  const dir = Math.sign(B.x - A.x) || 1;
+  lookAt(A, { at: B }, 60); pose(A, { happy: 0.6 });
+  const wary = chance(0.4);   // it notices what's coming
+  if (wary) later(B, rand(0.3, 0.6), () => { if (B.cast !== sc) return; lookAt(B, { at: A }, 60); pose(B, { lidA: -0.3 }); });
+  await wait(sc, 0.7);
+  if (!await approach(sc, A, B, TOUCH * 1.06, 0.12)) return;
+  await push(sc, A, B, dir, wary && chance(0.5));
+  if (B.dodged) return log.push('  dodged');
+  const r = Math.random();
+  log.push('  ' + (r < 0.35 ? 'match' : r < 0.55 ? 'huff' : r < 0.7 ? 'laughed at' : 'swears'));
+  if (r >= 0.7) {
+    // that's it: it storms back up and gives it a piece of its mind (censored)
+    if (!await approach(sc, B, A, TOUCH * 1.08, 0.12)) return;
+    await swear(sc, B, A, rand(1.6, 2.6));
+    if (chance(0.5)) { lookAt(A, { you: true }, 60); A.pose = { wide: 1, lean: -dir * 0.1 }; }   // wide-eyed: well!
+    else { laugh(A, 4); }
+    pose(B, { ry: -dir * 0.7, open: 0.1, rx: -0.12 }); B.look = null;
+    await wait(sc, 1.3);
+    unpose(B); shakeHead(B, 0.6);
+    return wait(sc, 0.6);
+  }
+  if (r < 0.35) {
+    // a shoving match: it shoves back, and now and then it goes a third round
+    await glare(sc, B, A);
+    if (!await approach(sc, B, A, TOUCH * 1.06, 0.12)) return;
+    await push(sc, B, A, -dir, false);
+    if (chance(0.12)) {
+      await glare(sc, A, B);
+      if (await approach(sc, A, B, TOUCH * 1.06, 0.12)) await push(sc, A, B, dir, false);
+      // the third time is one too many
+      if (chance(0.5) && await approach(sc, B, A, TOUCH * 1.08, 0.12)) { await swear(sc, B, A, rand(1.4, 2.2)); unpose(B); return wait(sc, 0.6); }
+    }
+    await wait(sc, 0.4);
+    if (chance(0.3)) { lookAt(A, { at: B }, 60); lookAt(B, { at: A }, 60); laugh(A, 4); laugh(B, 4); await wait(sc, 1.2); }
+    else {
+      for (const [o, d] of [[A, -dir], [B, dir]]) { o.pose = { ry: d * 0.7, open: 0.1, rx: -0.12 }; o.look = null; }
+      await wait(sc, 1.4);
+      unpose(A); unpose(B); shakeHead(B, 0.7);
+      await wait(sc, 0.6);
+    }
+  } else if (r < 0.55) {
+    // a huff, and it turns its back on it
+    await glare(sc, B, A);
+    pose(B, { ry: -dir * 0.7, open: 0.1, rx: -0.12 }); B.look = null; pose(A, { happy: 0.8 });
+    await wait(sc, 1.4);
+    unpose(B); shakeHead(B, 0.7);
+    await wait(sc, 0.8);
+  } else {
+    // the others think it's funny; it glares at them, then looks at you, put out
+    const watchers = others(B).filter((o) => o !== A && idle(o)).sort((a, b) => Math.abs(a.x - B.x) - Math.abs(b.x - B.x)).slice(0, 2);
+    laugh(A, 4);
+    for (const o of watchers) later(o, rand(0.1, 0.4), () => idle(o) && (lookAt(o, { at: B }, 1.5), laugh(o, 4)));
+    await wait(sc, 0.5);
+    await glare(sc, B, watchers[0] ?? A);
+    lookAt(B, { you: true }, 60); B.pose = { open: 0.7, gy: -0.02, rx: 0.08, earO: 0.25 };
+    await wait(sc, 1.3);
+  }
+}
+// Swearing at it: furious eyes, ears flat, head down and trembling, its mouth
+// going like mad, and its mouth pixelated as if censored
+async function swear(sc, o, at, dur) {
+  lookAt(o, { at }, 60);
+  o.pose = { lidT: 0.32, lidA: 0.6, earB: 1, earO: 0.4, rx: 0.14, sq: 0.95, lean: Math.sign(at.x - o.x) * 0.08, censor: true };
+  o.jitter = clock + dur;
+  const end = clock + dur;
+  while (clock < end) {
+    o.pose.mouth = rand(0.4, 1); o.P.sq.vel += rand(-2, 2);
+    if (chance(0.12)) o.P.sq.vel -= 4;   // a stamp
+    await wait(sc, rand(0.05, 0.09));
+    o.pose.mouth = rand(0, 0.2);
+    await wait(sc, rand(0.03, 0.07));
+  }
+  o.pose = { lidT: 0.3, lidA: 0.45, earB: 0.7 };   // done: still cross
+  o.jitter = 0;
+}
+// a cross look at it, ears back
+async function glare(sc, o, at) {
+  lookAt(o, { at }, 60); o.pose = { lidT: 0.3, lidA: 0.45, earB: 0.7 };
+  await wait(sc, 0.7);
+}
+// One shove: the wind-up, the lunge, and the knock (or the dodge)
+async function push(sc, A, B, dir, dodge) {
+  unpose(A, 'happy'); pose(A, { lidT: 0.2, lidA: 0.3, earB: 0.6 });
+  await goTo(sc, A, A.x - dir * BODY_PX * 0.3, A.z, 0.08);
+  pose(A, { sq: 0.84, lean: -dir * 0.12 });
+  if (dodge) later(B, 0.25, () => { if (B.cast === sc && grounded(B)) { B.dodged = true; hop(B, 0.3, B.x, true, Math.min(ZMAX, B.z + BODY_PX * 1.1)); } });
+  await wait(sc, 0.35);
+  unpose(A, 'sq'); pose(A, { lean: dir * 0.15 });
+  A.vx = dir * S * 8.5;
+  if (dodge) {
+    // nothing there: it stumbles on, wobbling, and maybe into the next one
+    await wait(sc, 0.12);
+    A.vx = dir * S * 9; pose(A, { wide: 1, mouth: 0.5 }); A.P.rz.vel += dir * 5;
+    await wait(sc, 0.6);
+    unpose(A); lookAt(A, { at: B }, 60);
+    await until(sc, () => grounded(B), 1);
+    lookAt(B, { at: A }, 60); laugh(B, 5);
+    await wait(sc, 0.9);
+    if (chance(0.5)) await glare(sc, A, B); else { lookAt(A, { you: true }, 60); A.pose = { open: 0.7, gy: -0.02, earO: 0.25 }; await wait(sc, 0.9); }
+    unpose(A);
+    await goTo(sc, B, B.x, 0);   // back to the front row
+    return;
+  }
+  await until(sc, () => Math.abs(B.vx) > S || Math.abs(B.x - A.x) < TOUCH, 0.5);
+  // the knock: off its feet, skidding away with a spin, eyes wide
+  unpose(A, 'lean');
+  B.pose = { wide: 1, mouth: 0.5, earB: 0.8 };
+  B.P.rz.vel += dir * 6; B.P.lean.vel -= dir * 3;
+  // with room, it skids away along the row; packed in, it's knocked back out of
+  // it (behind the others, smaller), and makes its way back later
+  if (room(B, dir) > BODY_PX * 0.8) hop(B, 0.16, B.x + dir * rand(0.8, 1.1) * BODY_PX, true);
+  else hop(B, 0.22, B.x + dir * BODY_PX * 0.5, true, B.z + BODY_PX * rand(0.9, 1.2));
+  await until(sc, () => B.air, 0.3); await until(sc, () => grounded(B), 1.2);
+  B.pose = {};
+}
+
+// A sandwich: the two either side of one share a look over its head; it
+// glances from one to the other, worried; they tiptoe in and squash it
+// between them, leaning in hard with their eyes screwed up, while it goes
+// tall and thin and wriggles. Then one of: it pops up out of it like a cork and
+// the two bonk into each other; it slips out the back and leaves them nose to
+// nose; it decides it likes it (a hug); it pops out and swears at one; or it
+// pops out, they laugh, and it shakes its head and glares.
+async function sandwich(sc, A, B, C) {
+  const end = params.get('sandwich') || weighted([['cork', 25], ['slip', 25], ['hug', 15], ['swear', 15], ['glare', 20]]);   // ?sandwich= one ending, to look at it
+  log.push('  ' + end);
+  lookAt(A, { at: C }, 60); lookAt(C, { at: A }, 60);
+  await wait(sc, 0.4);
+  pose(A, { happy: 0.7 }); pose(C, { happy: 0.7 });
+  lookAt(B, { at: A }, 0.6); later(B, 0.6, () => B.cast === sc && lookAt(B, { at: C }, 0.6));
+  pose(B, { lidA: -0.35 });  // uneasy
+  await wait(sc, 1.2);
+  // tiptoeing in
+  unpose(A, 'happy'); unpose(C, 'happy'); lookAt(A, { at: B }, 60); lookAt(C, { at: B }, 60);
+  pose(A, { sq: 0.93 }); pose(C, { sq: 0.93 });
+  const got = await Promise.all([approach(sc, A, B, TOUCH * 1.03, 0.07), approach(sc, C, B, TOUCH * 1.03, 0.07)]);
+  if (!got.every(Boolean)) return;
+  // squeeze
+  A.press = 1; C.press = -1;
+  pose(A, { lean: 0.16, sq: 0.88, happy: 0.85, earB: 0.4 }); pose(C, { lean: -0.16, sq: 0.88, happy: 0.85, earB: 0.4 });
+  pose(B, { sq: 1.3, wide: 1, mouth: 0.4, earB: 0.7, lidA: 0 });
+  lookAt(B, { you: true }, 60);
+  if (end === 'hug') {
+    // it likes it: a contented sigh; they're surprised, then they smile too
+    await wait(sc, 0.8);
+    B.pose = { sq: 1.25, happy: 1, earO: 0.25 }; B.P.sq.vel += 2;
+    await wait(sc, 0.6);
+    for (const o of [A, C]) { o.pose = { lean: o === A ? 0.1 : -0.1, wide: 1 }; lookAt(o, { at: B }, 60); }
+    await wait(sc, 0.7);
+    for (const o of [A, C]) pose(o, { wide: 0, happy: 0.9 });
+    await wait(sc, 1.3);
+    A.press = C.press = 0; unpose(A); unpose(C); unpose(B);
+    smile(B);
+    await Promise.all([goTo(sc, A, A.x - BODY_PX * 0.35, 0, 0.1), goTo(sc, C, C.x + BODY_PX * 0.35, 0, 0.1)]);
+    return wait(sc, 0.5);
+  }
+  const wriggle = clock + rand(1.6, 2.2);
+  for (let k = 0; clock < wriggle; k++) { B.P.rz.vel += (k % 2 ? 1 : -1) * 3; await wait(sc, 0.15); }
+  if (end === 'slip') {
+    // it squashes down and slides out behind them; they end up nose to nose
+    B.pose = { sq: 0.75, wide: 1 }; await wait(sc, 0.15);
+    B.ghost = true;
+    hop(B, 0.25, B.x, true, Math.min(ZMAX, B.z + BODY_PX * 1.25));
+    await until(sc, () => A.x + extent(A)[0] + extent(C)[0] + 4 >= C.x, 1);
+    A.press = C.press = 0;
+    for (const o of [A, C]) { o.pose = { wide: 1, lean: 0 }; lookAt(o, { at: o === A ? C : A }, 60); }
+    await until(sc, () => grounded(B), 1); B.ghost = false; B.pose = {};
+    await wait(sc, 0.9);   // an awkward moment
+    aside(goTo(sc, A, A.x - BODY_PX * 0.5, 0, 0.25)); aside(goTo(sc, C, C.x + BODY_PX * 0.5, 0, 0.25));
+    await wait(sc, 0.3);
+    lookAt(B, { you: true }, 60); laugh(B, 5);
+    for (const o of [A, C]) later(o, 0.5, () => o.cast === sc && lookAt(o, { at: B }, 60));
+    return wait(sc, 1.5);
+  }
+  // pop: out of the top, the two lurching in after it
+  A.press = C.press = 0;
+  pose(B, { sq: 1, mouth: 0, wide: 0 }); B.P.sq.vel -= 9;
+  if (end === 'cork') {
+    // up and out, landing behind them, so the two meet where it was
+    B.pose = { wide: 1, mouth: 0.6 };
+    hop(B, 1.1, B.x, true, Math.min(ZMAX, B.z + BODY_PX * 1.1));
+    // once it's clear of their heads, the two lurch into where it was
+    await until(sc, () => B.y > 0.75 * S, 0.5);
+    A.vx = S * 4; C.vx = -S * 4; A.press = 1.5; C.press = -1.5;
+    unpose(A, 'happy'); unpose(C, 'happy');
+    await until(sc, () => A.x + extent(A)[0] + extent(C)[0] + 4 >= C.x, 1);
+    A.press = C.press = 0;
+    // bonk
+    for (const [o, d] of [[A, -1], [C, 1]]) { o.pose = { wide: 1, earB: 0.8 }; o.P.rz.vel += d * 5; o.P.sq.vel -= 5; o.vx = d * S * 2; }
+    await until(sc, () => grounded(B), 1.5);
+    B.pose = {}; lookAt(B, { at: A }, 60); laugh(B, 5);
+    await wait(sc, 0.4);
+    shakeHead(A, 0.8); shakeHead(C, 0.8);
+    await wait(sc, 0.9);
+    lookAt(A, { at: C }, 60); lookAt(C, { at: A }, 60);
+    A.pose = { lidT: 0.3, lidA: 0.45, earB: 0.6 }; C.pose = { lidT: 0.3, lidA: 0.45, earB: 0.6 };
+    return wait(sc, 1.1);
+  }
+  unpose(A); unpose(C);
+  A.vx = -S * 3; C.vx = S * 3;
+  hop(B, 0.3, B.x, true);
+  if (end === 'swear') {
+    // and gives one of them a piece of its mind (censored)
+    const [who, other] = chance(0.5) ? [A, C] : [C, A];
+    await until(sc, () => grounded(B), 1);
+    laugh(other, 3);
+    lookAt(who, { at: B }, 60);
+    later(who, 0.4, () => who.cast === sc && (who.pose = { wide: 1, lean: Math.sign(who.x - B.x) * 0.1 }));
+    await swear(sc, B, who, rand(1.6, 2.2));
+    return wait(sc, 0.7);
+  }
+  if (chance(0.5)) { laugh(A, 3); laugh(C, 3); } else laugh(chance(0.5) ? A : C, 4);
+  await wait(sc, 0.8);
+  shakeHead(B, 0.8);
+  await wait(sc, 0.9);
+  lookAt(B, { at: chance(0.5) ? A : C }, 60); pose(B, { lidT: 0.32, lidA: 0.45, earB: 0.6 });
+  await wait(sc, 1.3);
+}
+
+// An Oby pole: one braces itself and the others climb on top, one by one.
+// Each gets beside it, crouches, looks up, and jumps for the top, and it
+// doesn't always work: it misses and slides down the side, comes up short and
+// bumps off, or lands on the very edge and teeters (and sometimes falls). Then
+// it shakes its head, looks at you, and tries again, while someone laughs.
+// Built, the top one looks at you, proud; the pole sways more and more, the
+// base straining; mostly it topples, top first, and they tumble off spinning,
+// dizzy, laughing; sometimes they climb down, pleased with themselves.
+async function pole(sc, B, ...climbers) {
+  log.push('  pole of ' + (climbers.length + 1));
+  const side = room(B, 1) > room(B, -1) ? 1 : -1;
+  const watchers = () => obys.filter((o) => o !== B && !climbers.includes(o) && idle(o));
+  lookAt(B, { you: true }, 1); pose(B, { sq: 0.95, earB: 0.2 });
+  for (const c of climbers) lookAt(c, { at: B }, 60);
+  await wait(sc, 0.8);
+  B.pose = { sq: 0.93, lidT: 0.12, earB: 0.4 };   // braced
+  lookAt(B, { you: true }, 60);
+  const stack = [B];
+  for (const c of climbers) {
+    let up = false;
+    for (let tries = 1; tries <= 3 && !up; tries++) {
+      // beside it, a crouch and a look up, and a jump for the top
+      await goTo(sc, c, B.x + side * BODY_PX * 0.95, B.z, 0.1);
+      const top = stack.at(-1);
+      lookAt(c, { at: top }, 60); c.pose = { sq: 0.8, earB: 0.4 };
+      await wait(sc, 0.35);
+      c.pose = {};
+      const fail = tries < 3 && chance(tries === 1 ? 0.4 : 0.25);
+      const how = fail ? pick(['miss', 'short', 'teeter']) : chance(0.2) ? 'teeter' : 'clean';
+      hopOnto(c, top, how === 'miss' ? -side * rand(0.6, 0.75) : how === 'teeter' ? -side * rand(0.3, 0.38) : rand(-0.06, 0.06), how === 'short' ? 0.6 : 1, how === 'short' ? [] : stack);
+      await until(sc, () => c.air, 1); await until(sc, () => !c.air, 2.5);
+      if (c.on === top && how === 'teeter') {
+        // on the very edge: a wobble, wide-eyed; half the time it goes over
+        c.pose = { wide: 1, earO: 0.4 };
+        for (let k = 0; k < 5; k++) { c.P.rz.vel += (k % 2 ? 1 : -1) * 4; await wait(sc, 0.14); }
+        if (fail && chance(0.6)) { fallOff(c); await until(sc, () => !c.air, 2); }
+        else c.dx = c.dx0 = c.dx * 0.3;   // gets its balance back
+        c.pose = {};
+      }
+      if (c.on === top) {
+        up = true; stack.push(c);
+        B.pose.sq = Math.max(0.84, B.pose.sq - 0.03);   // the base feels each one
+        for (const w of watchers()) if (chance(0.5)) later(w, rand(0.1, 0.4), () => idle(w) && (w.P.sq.vel -= 3));
+      } else {
+        // didn't make it: a shake of the head, a look at you; someone laughs
+        if (!c.air) { c.pose = {}; shakeHead(c, 0.6); lookAt(c, { you: true }, 0.9); }
+        const w = pick(watchers()); if (w && chance(0.4)) laugh(w, 3);
+        await wait(sc, 1);
+      }
+    }
+    if (!up) break;   // gave up; the pole's as tall as it gets
+  }
+  if (stack.length < 2) { B.pose = {}; return; }
+  // built: the top one looks at you, proud; it sways more and more; the base strains
+  const top = stack.at(-1);
+  top.pose = { happy: 0.8, earB: -0.2 }; lookAt(top, { you: true }, 60);
+  for (const o of stack.slice(1, -1)) { o.pose = { wide: 1, earO: 0.3 }; lookAt(o, { you: true }, 60); }
+  B.pose = { sq: Math.min(B.pose.sq, 0.88), lidT: 0.3, lidA: 0.35, earB: 0.6 }; B.jitter = clock + 4;
+  const t0 = clock, hold = rand(1.6, 2.8);
+  while (clock - t0 < hold) {
+    const sway = (clock - t0) / hold;
+    stack.forEach((o, level) => { if (level) o.dx = o.dx0 + sway * BODY_PX * 0.1 * level * Math.sin(clock * 2.6 + level * 0.8); });
+    B.pose.lean = sway * 0.06 * Math.sin(clock * 2.6);
+    await wait(sc, 0.05);
+  }
+  B.jitter = 0;
+  if (chance(0.75)) {
+    // over it goes, from the top down
+    const dir = pick([-1, 1]);
+    fallOff(top, dir);
+    for (const o of stack.slice(1, -1).reverse()) { await wait(sc, 0.12); fallOff(o, dir); }
+    B.pose = { wide: 1 }; B.P.sq.vel -= 6; B.P.rz.vel += dir * 3;
+    await until(sc, () => stack.every((o) => !o.air && !o.on), 3);
+    for (const o of stack) { o.pose = {}; if (o !== B) shakeHead(o, 0.8); }
+    for (const w of watchers()) if (chance(0.6)) later(w, rand(0.1, 0.5), () => idle(w) && laugh(w, 4));
+    await wait(sc, 0.9);
+    if (chance(0.5)) laugh(B, 4); else { lookAt(B, { at: top }, 60); B.pose = { lidT: 0.3, lidA: 0.45, earB: 0.6 }; }
+    for (const o of stack.slice(1)) if (chance(0.5)) later(o, rand(0.1, 0.5), () => o.cast === sc && laugh(o, 3));
+    await wait(sc, 1.4);
+  } else {
+    // they climb down, the top one first, pleased with themselves
+    for (const o of [...stack].reverse()) {
+      if (o === B) continue;
+      o.pose = {};
+      hop(o, 0.25, o.x + side * BODY_PX * 1.05);
+      await until(sc, () => o.air, 1); await until(sc, () => !o.air, 2);
+      if (o.on) fallOff(o, side, false);
+    }
+    B.pose = {}; B.P.sq.vel += 3;
+    for (const o of stack) smile(o);
+    await wait(sc, 1);
+  }
+}
+
+// Dozing off: a yawn, eyes that droop, a nod it catches, and asleep, breathing
+// slow. Then, often, the one beside it tiptoes up, looks at you, and jumps.
+async function doze(sc, D) {
+  D.look = null;
+  pose(D, { mouth: 1, open: 0.35, sq: 1.08, rx: -0.12, earO: 0.2 });
+  await wait(sc, 1.3);
+  D.pose = { earO: 0.3 };
+  preset(D, ['open', 'rx'], 'drowse');
+  pose(D, { open: 0.5, sq: 0.97 }); await wait(sc, 2.4);
+  pose(D, { open: 0.25, rx: 0.12 }); await wait(sc, 1.2);
+  pose(D, { open: 0.85, rx: -0.04 }); D.P.rx.vel -= 2;  // catches itself
+  await wait(sc, 0.6);
+  pose(D, { open: 0, rx: 0 }); D.asleep = true;
+  await wait(sc, rand(3, 5));
+  const side = beside(D).filter((o) => o && idle(o) && grounded(o) && clock > o.busy);
+  if (!D.asleep) return;
+  if (side.length && chance(0.75)) {
+    const K = pick(side);
+    join(sc, K);
+    lookAt(K, { at: D }, 1.2); await wait(sc, 1);
+    lookAt(K, { you: true }, 1.2); pose(K, { happy: 0.8 }); await wait(sc, 1.1);   // watch this
+    unpose(K, 'happy'); pose(K, { sq: 0.93 }); lookAt(K, { at: D }, 30);
+    if (!await approach(sc, K, D, TOUCH * 1.05, 0.07) || !D.asleep) return;   // on tiptoe
+    await wait(sc, 0.5);
+    unpose(K, 'sq'); hop(K, 0.85);
+    await until(sc, () => K.air, 1); await until(sc, () => grounded(K), 2);
+    K.P.sq.vel -= 6;
+    if (D.asleep) spook(D, K);
+    await wait(sc, 0.3);
+    laugh(K, 6);
+    for (const o of others(K)) if (o !== D && idle(o) && chance(0.4)) later(o, rand(0.2, 0.6), () => idle(o) && laugh(o, 3));
+    await wait(sc, 1.2);
+    lookAt(D, { at: K }, 30); D.pose = { lidT: 0.3, lidA: 0.5, earB: 0.8 };
+    await wait(sc, 1.6);
+    return;
+  }
+  await wait(sc, rand(6, 10));
+  if (!D.asleep) return;
+  // wakes by itself: eyes open slowly, a big yawn and a stretch
+  D.asleep = false;
+  pose(D, { open: 0.4 }); await wait(sc, 0.9);
+  preset(D, ['open', 'rx']);
+  pose(D, { mouth: 1, open: 0.3, sq: 1.12, rx: -0.15 }); await wait(sc, 1.2);
+  unpose(D); blink(D); await wait(sc, 0.25); blink(D);
+  await wait(sc, 0.5);
+}
+
+// A fly: it buzzes round their heads. They follow it, swat at it, snap at it,
+// shake it off; sometimes it lands on one's head before it goes.
+const fly = { on: false, x: 0, y: 0, vx: 0, vy: 0, mode: 'buzz', target: { x: 0, y: 0 }, on_: null, sat: false };
+const flyMesh = new THREE.Group();
+{
+  const ink = new THREE.MeshBasicMaterial({ color: 0x0d0d0e });
+  const wing = new THREE.MeshBasicMaterial({ color: 0xc8c8c8, transparent: true, opacity: 0.55 });
+  const disc = new THREE.CircleGeometry(1, 12);
+  const body = new THREE.Mesh(disc, ink); body.scale.set(2.3, 2, 1);
+  const wL = new THREE.Mesh(disc, wing), wR = new THREE.Mesh(disc, wing);
+  wL.position.set(-1.8, 1.8, -1); wR.position.set(1.8, 1.8, -1);
+  flyMesh.add(wL, wR, body);
+  flyMesh.userData.wings = [wL, wR];
+  flyMesh.position.z = 400; flyMesh.visible = false;
+  scene.add(flyMesh);
+}
+async function buzz(sc) {
+  const from = chance(0.5) ? -1 : 1;
+  Object.assign(fly, { on: true, mode: 'buzz', sat: false, on_: null, x: from < 0 ? -10 : W + 10, y: rand(1.2, 2) * S, vx: 0, vy: 0 });
+  try { await buzzAbout(sc); } finally { fly.mode = 'leave'; fly.sat = false; }
+}
+async function buzzAbout(sc) {
+  const end = clock + rand(9, 15);
+  while (clock < end) {
+    const o = pick(obys);
+    fly.target = { x: o.sx + rand(-0.7, 0.7) * BODY_PX, y: o.sy + rand(0.7, 1.4) * S * 0.75 };
+    await wait(sc, rand(0.6, 1.4));
+  }
+  const perch = obys.filter((o) => grounded(o) && idle(o));
+  if (perch.length && chance(0.5)) {
+    const o = pick(perch);
+    fly.mode = 'land'; fly.on_ = o;
+    await until(sc, () => fly.sat, 2.5);
+    if (fly.sat && idle(o)) {
+      join(sc, o);
+      o.look = null; pose(o, { gy: 0.075, rx: -0.3, earB: 0.3 });   // looks up at it
+      for (const b of others(o)) if (idle(b)) later(b, rand(0.2, 0.6), () => idle(b) && lookAt(b, { at: o }, 2));
+      await wait(sc, rand(1.5, 2.5));
+      unpose(o); shakeHead(o, 0.9);
+      await wait(sc, 0.2);
+    }
+  }
+}
+// the fly's flight, and how they take it when it's near
+function flyTick(dt) {
+  // shown only while it's about (sent off from outside, as when they go away,
+  // it'd otherwise stay drawn where it was, hanging in the air)
+  flyMesh.visible = fly.on;
+  if (!fly.on) return;
+  const w = fly.mode === 'land' ? fly.on_ : null;
+  // on top of its head, where it's drawn
+  const top = (w) => ({ x: w.sx - BODY_PX * 0.15 * w.s, y: w.sy + 0.75 * S * w.s * w.P.sq.v + 3 });
+  if (fly.sat && w) { ({ x: fly.x, y: fly.y } = top(w)); if (w.shake > clock) { fly.sat = false; fly.mode = 'leave'; } }
+  else {
+    const t = fly.mode === 'leave' ? { x: fly.x < W / 2 ? -40 : W + 40, y: H * 0.9 } : w ? top(w) : fly.target;
+    const k = w ? 40 : 18, c = w ? 9 : 4, jit = w ? 0.3 : 1;
+    fly.vx += ((t.x - fly.x) * k - fly.vx * c + (Math.random() - 0.5) * S * 220 * jit) * dt;
+    fly.vy += ((t.y - fly.y) * k - fly.vy * c + (Math.random() - 0.5) * S * 220 * jit) * dt;
+    fly.x += fly.vx * dt; fly.y = Math.min(H - 6, fly.y + fly.vy * dt);
+    if (w && Math.hypot(t.x - fly.x, t.y - fly.y) < 2.5) { fly.sat = true; fly.vx = fly.vy = 0; }
+    if (fly.mode === 'leave' && (fly.x < -30 || fly.x > W + 30)) fly.on = false;
+  }
+  for (const o of obys) {
+    const d = Math.hypot(fly.x - o.sx, fly.y - (o.sy + HEAD * o.s));
+    if (o.asleep) { if (d < BODY_PX * 0.7 && clock > o.flyCool) { o.flyCool = clock + 1.5; o.P[chance(0.5) ? 'eLB' : 'eRB'].vel += 10; } continue; }
+    if (!idle(o)) continue;
+    if (d < BODY_PX * 2.6 && o.look?.pt !== fly && chance(dt * 2)) lookAt(o, { pt: fly }, rand(1, 2.5));
+    if (d < BODY_PX * 0.75 && clock > o.flyCool) {
+      o.flyCool = clock + rand(1.5, 3);
+      const r = Math.random();
+      if (r < 0.35 && grounded(o)) hop(o, 0.45, o.x + Math.sign(fly.x - o.sx) * BODY_PX * 0.3);      // swats at it
+      else if (r < 0.65) shakeHead(o, 0.7);
+      else if (r < 0.85) { pose(o, { mouth: 1 }); o.P.sq.vel += 2.5; later(o, 0.14, () => unpose(o, 'mouth')); }  // snaps at it
+      else { o.P.eLB.vel += 9; o.P.eRB.vel += 9; pose(o, { lidT: 0.3 }); later(o, 0.8, () => unpose(o, 'lidT')); }
+    }
+  }
+  flyMesh.position.set(fly.x, fly.y, 400);
+  const flap = fly.sat ? 0.6 : 0.4 + 0.6 * Math.abs(Math.sin(clock * 90));
+  for (const wg of flyMesh.userData.wings) wg.scale.set(2.4, 1.4 * flap, 1);
+}
+
+// A bee: yellow (the only colour they ever see), bigger than the fly, and
+// they're scared of it. One hears it first and freezes, ears up; then they
+// scatter: most run, some hide behind the others in the back row, one shuts
+// its eyes tight and trembles. It chases one back and forth (and now and then
+// one runs right off the edge, and peeks back in), sometimes stings one, then
+// goes, and they come out one by one.
+const bee = { on: false, x: 0, y: 0, vx: 0, vy: 0, target: null, leaving: false };
+const beeMesh = new THREE.Group();
+{
+  const k = (BODY_PX / 40) * 1.35;
+  const body = new THREE.Mesh(new THREE.PlaneGeometry(14 * k, 10 * k), new THREE.ShaderMaterial({
+    transparent: true, premultipliedAlpha: true, depthTest: false,
+    vertexShader: 'varying vec2 vUv; void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.); }',
+    fragmentShader: /* glsl */`
+      varying vec2 vUv;
+      void main() {
+        vec2 p = (vUv - 0.5) * vec2(14., 10.);                  // facing +x
+        float d = length(p / vec2(5.6, 3.9)) - 1.;              // an oval body
+        // the sting: a little point at the back
+        float st = max(abs(p.y) - (p.x + 7.) * 0.35, -(p.x + 7.));
+        d = min(d * 4., st);
+        float aa = fwidth(d), a = 1. - smoothstep(-aa, aa, d);
+        vec3 yellow = vec3(0.98, 0.77, 0.18), ink = vec3(0.05);
+        float stripe = step(0.5, fract((p.x + 0.4) / 2.8)) * step(p.x, 2.6);
+        vec3 col = mix(yellow, ink, stripe);
+        col = p.x > 2.6 || p.x < -5.2 ? ink : col;              // black head and sting
+        float eye = 1. - smoothstep(0.6, 0.9, length(p - vec2(4.3, 0.9)));
+        col = mix(col, vec3(0.95), eye);
+        gl_FragColor = vec4(col * a, a);
+      }`,
+  }));
+  const wing = new THREE.MeshBasicMaterial({ color: 0xe8eef2, transparent: true, opacity: 0.6, depthTest: false });
+  const disc = new THREE.CircleGeometry(1, 14);
+  const wA = new THREE.Mesh(disc, wing), wB = new THREE.Mesh(disc, wing);
+  wA.position.set(-1 * k, 5 * k, -1); wB.position.set(1.6 * k, 4.6 * k, -1);
+  beeMesh.add(wA, wB, body);
+  beeMesh.userData = { wings: [wA, wB], k };
+  beeMesh.renderOrder = 10; beeMesh.visible = false;
+  scene.add(beeMesh);
+}
+function beeTick(dt) {
+  beeMesh.visible = bee.on;
+  if (!bee.on) return;
+  const T = bee.target;
+  const t = bee.leaving ? { x: bee.x < W / 2 ? -70 : W + 70, y: H * 0.85 }
+    : T?.sx !== undefined ? { x: T.sx, y: T.sy + (HEAD + BODY_PX * 0.5) * T.s }   // right over its head
+    : T ?? { x: W / 2, y: S * 1.5 };
+  // purposeful, but in a loopy zigzag
+  const zig = Math.sin(clock * 7) * S * 0.5;
+  bee.vx += ((t.x - bee.x) * 14 - bee.vx * 3.5) * dt;
+  bee.vy += ((t.y + zig - bee.y) * 14 - bee.vy * 3.5) * dt;
+  const v = Math.hypot(bee.vx, bee.vy), max = S * 4.5;
+  if (v > max) { bee.vx *= max / v; bee.vy *= max / v; }
+  bee.x += bee.vx * dt; bee.y = Math.min(H - 8, bee.y + bee.vy * dt);
+  if (bee.leaving && (bee.x < -50 || bee.x > W + 50)) bee.on = false;
+  const { k, wings } = beeMesh.userData;
+  beeMesh.position.set(bee.x, bee.y, 450);
+  beeMesh.scale.set(bee.vx < 0 ? -1 : 1, 1, 1);
+  const flap = 0.35 + 0.65 * Math.abs(Math.sin(clock * 80));
+  for (const w of wings) w.scale.set(3.2 * k, 2 * k * flap, 1);
+  for (const o of obys) {
+    const d = Math.hypot(bee.x - o.sx, bee.y - (o.sy + HEAD * o.s));
+    // the buzz: the ear on its side turns to it; a sleeper's ear twitches
+    if (d < BODY_PX * 3) o.heard = { side: Math.sign(bee.x - o.sx) || 1, until: clock + 0.2 };
+    if (o.asleep && d < BODY_PX * 0.8 && clock > o.flyCool) { o.flyCool = clock + 1; o.P[chance(0.5) ? 'eLB' : 'eRB'].vel += 12; }
+    // it comes close: a flinch away from it
+    else if (o.cast?.name === 'bee' && d < BODY_PX * 1.1 && clock > o.flyCool) {
+      o.flyCool = clock + 0.8;
+      if (o.pose.still) { const was = o.pose.open; o.pose.open = 0.08; later(o, 0.35, () => { if (o.pose.still) o.pose.open = was; }); }   // eyes squeezed shut
+      else { o.P.lean.vel += (Math.sign(o.sx - bee.x) || 1) * 3; o.P.sq.vel -= 2.5; }
+    }
+  }
+}
+async function beeScene(sc) {
+  const from = chance(0.5) ? -1 : 1;
+  Object.assign(bee, { on: true, leaving: false, x: from < 0 ? -16 : W + 16, y: rand(1.3, 1.8) * S, vx: 0, vy: 0, target: { x: from < 0 ? W * 0.3 : W * 0.7, y: S * 1.5 } });
+  const awake = obys.filter(ready);   // a sleeper sleeps through it (an ear twitches)
+  for (const o of awake) join(sc, o);
+  try { if (awake.length) await beeAbout(sc, awake); }
+  finally { bee.leaving = true; bee.target = null; }
+}
+async function beeAbout(sc, awake) {
+  // one hears it first: frozen, ears up, eyes on it
+  const first = [...awake].sort((a, b) => Math.abs(a.sx - bee.x) - Math.abs(b.sx - bee.x))[0];
+  first.pose = { earB: -0.25, wide: 1, still: true }; lookAt(first, { pt: bee, eyes: true }, 60);
+  await wait(sc, 1);
+  for (const o of awake) if (o !== first) later(o, rand(0.1, 0.5), () => { if (o.cast !== sc) return; lookAt(o, { pt: bee, eyes: true }, 60); o.pose = { wide: 1, earB: 0.4, still: true }; });
+  await wait(sc, 0.6);
+  // each takes it its own way. Only one with room runs; the rest stay put,
+  // frozen or cowering, or slip behind someone further from it
+  const roles = new Map();
+  for (const o of shuffle(awake)) {
+    const space = room(o, Math.sign(o.sx - bee.x) || 1);
+    const runs = [...roles.values()].filter((r) => r === 'run').length;
+    roles.set(o, weighted([['freeze', 25], ['cower', 20], ['hide', 30], ['run', space > BODY_PX * 1.2 && runs < 2 ? 35 : 0]]));
+  }
+  const runners = [...roles].filter(([, r]) => r === 'run').map(([o]) => o);
+  for (const [o, r] of roles) {
+    // frozen dead still, only its eyes following it
+    if (r === 'freeze') { o.pose = { wide: 1, earB: 0.5, sq: 0.97, still: true }; lookAt(o, { pt: bee, eyes: true }, 60); }
+    else if (r === 'cower') { o.pose = { sq: 0.8, open: 0.05, earB: 1, earO: 0.4, rx: 0.15, still: true }; o.look = null; }
+    else if (r === 'hide') aside(hide(sc, o));
+    else aside(run(sc, o, room(o, Math.sign(o.sx - bee.x) || 1) > BODY_PX * 1.2 && chance(0.4)));
+  }
+  // it goes after a runner if there is one; else it drifts from one to the next
+  const chased = runners.length ? pick(runners) : [...roles].find(([, r]) => r === 'cower' || r === 'freeze')?.[0] ?? first;
+  bee.target = chased;
+  const until_ = clock + rand(4, 6);
+  while (clock < until_) {
+    await wait(sc, rand(1.2, 2));
+    if (!runners.length) bee.target = pick(awake.filter((o) => o !== bee.target)) ?? chased;
+  }
+  bee.target = chased;
+  // now and then a sting: the one it's after
+  if (chance(0.35) && !chased.offstage) {
+    await until(sc, () => Math.hypot(bee.x - chased.sx, bee.y - (chased.sy + (HEAD + BODY_PX * 0.5) * chased.s)) < BODY_PX * 0.3, 2.5);
+    chased.jitter = 0; chased.pose = { wide: 1, mouth: 1, earB: 1 };
+    if (grounded(chased)) hop(chased, 0.9, chased.x, true);
+    later(chased, 0.9, () => { if (chased.cast === sc) { shakeHead(chased, 0.8); chased.pose = { lidT: 0.3, lidA: 0.45, earB: 0.6 }; } });
+    await wait(sc, 0.5);
+  }
+  // off it goes; they come out one by one
+  bee.leaving = true; bee.target = null;
+  for (const o of runners) o.calm = true;
+  await until(sc, () => !bee.on, 4);
+  for (const o of shuffle(awake)) {
+    if (o.offstage) continue;   // that one comes back by itself (run)
+    await wait(sc, rand(0.3, 0.8));
+    o.jitter = 0;
+    if (roles.get(o) === 'cower') { o.pose = { open: 0.35, sq: 0.9, still: true }; lookAt(o, { ry: 0, gy: 0.03, eyes: true }, 0.6); await wait(sc, 0.6); }   // peeks
+    o.pose = {};
+    lookAt(o, { ry: rand(-0.4, 0.4), gy: 0.03 }, 0.8);
+    if (o.z > 4) aside(goTo(sc, o, o.x, 0, 0.1));
+  }
+  await until(sc, () => !awake.some((o) => o.offstage), 6);
+  await wait(sc, 1.2);
+}
+// running from it: one scurry, low and quick, along behind the others to the
+// far end (or right off the edge), and it stays there trembling, watching it.
+// The one it's after ducks behind someone when it comes close again. Off the
+// edge, it peeks back in once the bee's gone, and comes back.
+async function run(sc, o, off) {
+  o.calm = false;
+  const dir = Math.sign(o.sx - bee.x) || 1;
+  o.pose = { wide: 1, earB: 0.9, mouth: 0.5 };
+  o.look = { ry: dir * 0.55, gy: 0 }; o.lookUntil = clock + 60;
+  if (off) o.offstage = true;
+  const to = off ? (dir > 0 ? W + BODY_PX * 1.2 : -BODY_PX * 1.2) : dir > 0 ? W - EDGE : EDGE;
+  await goTo(sc, o, to, off ? 0 : BODY_PX * 1.1, 0.07);
+  if (o.offstage) {
+    if (bee.target === o) bee.target = { x: dir > 0 ? W - EDGE : EDGE, y: S * 1.4 };   // it lost it
+    await until(sc, () => o.calm && !bee.on, 12);
+    o.x = dir < 0 ? -BODY_PX * 0.15 : W + BODY_PX * 0.15; o.vx = 0; o.z = 0;
+    o.pose = {}; lookAt(o, { ry: -dir * 0.5, gy: 0.02 }, 1.2);
+    await wait(sc, 1.1);
+    await goTo(sc, o, dir < 0 ? EDGE : W - EDGE, 0);
+    o.offstage = false;
+    return;
+  }
+  o.pose = { wide: 1, earB: 0.9, sq: 0.9, still: true }; lookAt(o, { pt: bee, eyes: true }, 60);
+  let ducked = false;
+  while (!o.calm) {
+    await wait(sc, 0.2);
+    if (!ducked && bee.target === o && Math.hypot(bee.x - o.sx, bee.y - (o.sy + HEAD * o.s)) < BODY_PX * 1.2) {
+      ducked = true;
+      o.pose = { sq: 0.8, open: 0.05, earB: 1, rx: 0.15, still: true };
+      const cover = obys.filter((b) => b !== o && b.z < 8 && !b.offstage).sort((a, b) => Math.abs(a.x - o.x) - Math.abs(b.x - o.x))[0];
+      if (cover) await goTo(sc, o, cover.x, BODY_PX * 1.1, 0.07);
+    }
+  }
+}
+// hiding: behind someone further from the bee than it is, in the back row,
+// crouched low, peeking out at it; it stays there
+async function hide(sc, o) {
+  const d = (b) => Math.abs(b.sx - bee.x);
+  const covers = obys.filter((b) => b !== o && b.z < 8 && !b.offstage);
+  const cover = covers.filter((b) => d(b) > d(o)).sort((a, b) => Math.abs(a.x - o.x) - Math.abs(b.x - o.x))[0]
+    ?? covers.sort((a, b) => Math.abs(a.x - o.x) - Math.abs(b.x - o.x))[0];
+  o.pose = { sq: 0.85, wide: 1, earB: 0.9 };
+  await goTo(sc, o, cover ? cover.x : o.x, BODY_PX * 1.1, 0.07);
+  o.pose = { sq: 0.82, wide: 1, earB: 0.9, still: true };
+  lookAt(o, { pt: bee, eyes: true }, 60);
+}
+
+/* ---------------------------------------------------------------------------
+   You: the pointer, a poke, and arriving
+--------------------------------------------------------------------------- */
+const pointer = { x: 0, y: 0, active: false, t: -99, want: 1 };
+addEventListener('pointermove', (e) => {
+  const r = canvas.getBoundingClientRect();
+  // back after a rest: this time 1 to 3 of them follow it, or now and then all
+  if (clock - pointer.t > 2.5) pointer.want = chance(0.2) ? N : 1 + Math.floor(Math.random() * Math.min(3, N));
+  pointer.x = e.clientX - r.left; pointer.y = r.bottom - e.clientY; pointer.t = clock; pointer.active = true;
+});
+document.addEventListener('pointerleave', () => { pointer.active = false; });
+let nextPointer = 0;
+function watchPointer() {
+  if (!pointer.active || clock - pointer.t > 2.5 || clock < nextPointer) return;
+  nextPointer = clock + rand(0.5, 1.4);
+  const free = obys.filter((o) => idle(o) && o.look?.pt !== pointer);
+  // close to one: it notices
+  for (const o of free) if (Math.hypot(pointer.x - o.sx, pointer.y - (o.sy + HEAD * o.s)) < BODY_PX * 1.6) lookAt(o, { pt: pointer }, rand(2, 4));
+  const watching = obys.filter((o) => o.look?.pt === pointer).length;
+  const rest = free.filter((o) => o.look?.pt !== pointer);
+  if (watching < pointer.want && rest.length) lookAt(pick(rest), { pt: pointer }, rand(2, 6));
+}
+
+// A poke, as the mascot takes one: surprised, then annoyed, then it ignores
+// you. The ones beside it hop out of the way and keep an eye on it.
+canvas.addEventListener('pointerdown', (e) => {
+  if (LAB) return;
+  const r = canvas.getBoundingClientRect(), x = e.clientX - r.left, y = r.bottom - e.clientY;
+  // the front one, where they overlap
+  const hit = obys.filter((o) => Math.abs(x - o.sx) < BODY_PX * 0.55 * o.s && y > o.sy - 2 && y < o.sy + (0.75 * S * o.P.sq.v + 0.12 * S) * o.s);
+  const o = hit.sort((a, b) => a.z - b.z)[0];
+  if (o) poke(o);
+});
+function poke(o) {
+  // talking a reply over: a startled look at you, and back to it
+  if (o.cast?.name === 'discussion') { o.P.sq.vel -= 2; pose(o, { wide: 1 }); later(o, 0.6, () => unpose(o, 'wide')); return; }
+  if (o.cast && UNSTOPPABLE.has(o.cast.name)) return;
+  free(o);
+  if (clock - o.lastPoke > 6) o.pokes = 0;
+  const n = ++o.pokes; o.lastPoke = clock;
+  o.busy = clock + 3;
+  if (n >= 6) {
+    // turns away with its eyes shut, peeks to check on you, then shakes it off
+    pose(o, { ry: -0.75, rx: -0.15, rz: 0.06, open: 0.06, earB: 0.7, earO: 0.5 }); o.look = null;
+    later(o, 1.8, () => pose(o, { open: 0.4, gx: 0.06, ry: -0.6 }));
+    later(o, 3, () => { unpose(o); shakeHead(o, 1); });
+  } else if (n >= 4) {
+    pose(o, { lidT: 0.26, lidA: 0.55, rx: 0.22, earB: 0.9, earO: 0.4, sq: 0.94 });
+    lookAt(o, { you: true }, 2); o.jitter = clock + 1.4;
+    later(o, 1.7, () => unpose(o));
+  } else {
+    pose(o, { wide: 1, earB: -0.2, rz: n % 2 ? -0.05 : 0.05 });
+    o.P.sq.vel -= 2;
+    if (grounded(o)) hop(o, 0.12, o.x, true);
+    lookAt(o, { you: true }, 1.5);
+    later(o, 0.9, () => unpose(o));
+  }
+  for (const b of others(o)) {
+    if (!idle(b)) continue;
+    const d = b.x - o.x;
+    b.queue.length = 0;
+    if (Math.abs(d) < BODY_PX * 2.3) {
+      later(b, rand(0.08, 0.3), () => {
+        pose(b, { wide: 1 }); lookAt(b, { at: o }, rand(1.4, 2.2));
+        hop(b, 0.22, b.x + Math.sign(d || 1) * rand(0.5, 0.8) * BODY_PX);
+        later(b, 0.7, () => unpose(b, 'wide'));
+      });
+    } else later(b, rand(0.1, 0.4), () => lookAt(b, { at: o }, rand(1, 2)));
+    if (n >= 4 && chance(0.35)) later(b, rand(0.7, 1.1), () => idle(b) && laugh(b, 3));
+  }
+}
+
+// You arrive (in the app: the side panel closes). One notices you first:
+// it looks at you, ears up, then turns to nudge the one beside it, and it
+// spreads from there along the row. Each comes round from what it was doing:
+// resting, it looks up, ears perked; asleep, it wakes with a start (or sleeps
+// right through it); caught at something with others, they freeze mid-act and
+// stare, then shovers and squashers step apart as if nothing happened, a
+// swearer goes sheepish; laughing, it stops, then smiles; hiccuping, it
+// hiccups at you. One busy (fleeing the bee, in a reply) hardly notices. Each
+// holds your look for its own while, then goes back to being itself.
+const soon = [];   // [{ t, fn }]: not tied to one Oby (a scene's cast can be released meanwhile)
+const after = (delay, fn) => soon.push({ t: clock + delay, fn });
+// a later step for o, dropped if it has moved on to something else meanwhile (its plans were cleared)
+const afterFor = (o, delay, fn) => { const g = o.gen; after(delay, () => { if (o.gen === g && obys.includes(o)) fn(); }); };
+// too busy to notice you: fleeing the bee or the fly, coming or going, in a reply, making room for one
+const tooBusy = (o) => ['bee', 'fly', 'joins', 'leaves', 'discussion', 'makeway'].includes(o.cast?.name);
+function arrive() {
+  nextScene = clock + rand(7, 11); nextSolo = clock + 3; nextBackground = Math.max(nextBackground, clock + 15);
+  const around = obys.filter((o) => !tooBusy(o));
+  if (!around.length) return;
+  const first = pick(around.filter((o) => idle(o) && o.z < 4)) ?? pick(around.filter((o) => !o.asleep && !o.cast)) ?? null;
+  const from = first ?? around[0];
+  const order = [...obys].sort((a, b) => Math.abs(a.x - from.x) - Math.abs(b.x - from.x));
+  const caught = new Set();
+  let t = first ? 0.6 : 0;   // after the first one's nudge
+  for (const o of order) {
+    if (o === first) {
+      attend(o, rand(2.2, 3));
+      pose(o, { earB: -0.25 });
+      const nb = beside(o).filter(Boolean).sort((a, b) => Math.abs(a.x - o.x) - Math.abs(b.x - o.x))[0];
+      if (nb) {
+        afterFor(o, 0.35, () => { lookAt(o, { at: nb }, 0.3); o.P.lean.vel += Math.sign(nb.x - o.x) * 2; });
+        afterFor(o, 0.7, () => lookAt(o, { you: true }, 1.8));
+      }
+      continue;
+    }
+    if (tooBusy(o)) { if (o.working && chance(0.5)) afterFor(o, t + 0.5, () => o.working && lookAt(o, { you: true }, 0.7)); continue; }   // a glance, and back to it
+    t += rand(0.2, 0.45);
+    afterFor(o, t, () => comeRound(o, caught));
+  }
+}
+// in its own time: looking at you, ears perked, nothing else starting meanwhile
+function attend(o, hold = rand(1.5, 3)) {
+  o.startled = true;
+  lookAt(o, { you: true }, hold);
+  pose(o, { earB: -0.15 });
+  if (chance(0.3) && grounded(o)) o.P.sq.vel -= 3;
+  afterFor(o, hold, () => { unpose(o, 'earB'); o.startled = false; o.look = null; o.nextRest = 0; if (chance(0.3)) smile(o); });
+}
+function comeRound(o, caught) {
+  if (tooBusy(o)) return;   // it got busy meanwhile
+  const sc = o.cast;
+  if (sc) { if (!caught.has(sc)) { caught.add(sc); caughtAt(sc); } return; }
+  if (o.asleep) {
+    if (chance(0.3)) return;   // sleeps right through it
+    startle(o); afterFor(o, 0.8, () => attend(o));
+    return;
+  }
+  if (o.hiccupUntil > clock) { lookAt(o, { you: true }, o.hiccupUntil - clock + 0.5); return; }
+  if (o.pose.happy) { o.pose = { wide: 1 }; lookAt(o, { you: true }, 1.4); afterFor(o, 0.9, () => { unpose(o); smile(o); }); return; }
+  clearPlans(o);
+  attend(o);
+}
+// a scene caught in the act: they freeze as they were, staring at you, then
+// carry it off as best they can
+function caughtAt(sc) {
+  const cast = sc.cast.filter((o) => o.cast === sc);
+  if (sc.name === 'doze') {
+    const D = cast[0];
+    if (D.asleep && chance(0.3)) { cancel(sc); return; }   // the sleeper sleeps through it, and the prank's off
+  }
+  const was = new Map(cast.map((o) => [o, o.pose]));
+  cancel(sc);
+  for (const o of cast) {
+    const w = was.get(o);
+    clearPlans(o); o.startled = true;
+    if (o.asleep) { startle(o); continue; }
+    o.pose = { lean: w.lean ?? 0, rz: w.rz ?? 0, sq: w.sq ?? 1, wide: 1, still: true };
+    lookAt(o, { you: true }, 1.4);
+  }
+  if (sc.name === 'sandwich') { const mid = [...cast].sort((a, b) => b.P.sq.v - a.P.sq.v)[0]; mid.pose.sq = 1; mid.P.sq.vel -= 6; }
+  const mid = cast.reduce((t, o) => t + o.x, 0) / cast.length;
+  const gens = new Map(cast.map((o) => [o, o.gen]));
+  const still = (o) => o.gen === gens.get(o) && obys.includes(o);   // not moved on to something else
+  after(rand(1.1, 1.5), () => {
+    for (const o of cast) {
+      if (o.asleep || !still(o)) continue;
+      o.pose = {};
+      if (was.get(o).censor) { o.pose = { open: 0.7, gy: -0.02 }; lookAt(o, { you: true }, 1.2); }   // sheepish
+      else if (['shove', 'sandwich'].includes(sc.name)) {
+        const away = Math.sign(o.x - mid) || pick([-1, 1]);
+        if (grounded(o) && room(o, away) > BODY_PX * 0.25) hop(o, 0.1, o.x + away * BODY_PX * 0.3);
+        lookAt(o, { ry: away * 0.4, gy: 0.05 }, 1.4);
+      } else lookAt(o, { you: true }, 1);
+    }
+    if (sc.name === 'sandwich') {
+      const midOby = cast.find((o) => Math.abs(o.x - mid) < BODY_PX * 0.5 && still(o)), other = cast.find((o) => o !== midOby);
+      if (midOby && other) {
+        afterFor(midOby, 0.6, () => { lookAt(midOby, { at: other }, 1.2); midOby.pose = { lidT: 0.3, lidA: 0.45 }; });
+        afterFor(midOby, 1.8, () => unpose(midOby));
+      }
+    }
+    for (const o of cast) if (still(o)) afterFor(o, 1.4, () => { o.startled = false; o.look = null; o.nextRest = 0; if (!o.asleep) unpose(o, 'open', 'gy'); });
+  });
+}
+
+/* ---------------------------------------------------------------------------
+   The conversation: all the app tells them, through window.obys. Everything
+   else they do on their own.
+
+   Who's in it: set(names), everyone in the conversation, yours first; when
+   someone's @mentioned in, join(name); gone, leave(name). Up to 5 are on the
+   stage; the rest wait their turn, in order, and come in as others leave. A
+   new one hops in from the edge and the others turn to see it; one leaving
+   takes a last look round and hops off. set(names, { now: true }) just puts
+   them there, nothing playing (opening a conversation).
+
+   A reply being written: discuss(names), the Obys in on it, the one answering
+   first. They huddle up and talk it over (see discussion) until end(); set()
+   on it when who's in on it changes. One on its own gets on with it. Replies
+   at the same time each get a huddle; an Oby is in one at a time (the latest
+   to want it), and goes back to the other if it's still going.
+
+   pause(true) while the stage can't be seen (a page over the conversation);
+   pause(false) shows it again, and if they've been out of sight a while they
+   notice you're back. A hidden page pauses by itself.
+
+   away(true) when the side panel opens over them, or there's no room for
+   them: they drop down through the floor, a beat apart, and nothing's drawn
+   once they're gone; away(false): each hops back up out of the floor, in no
+   particular order, and if they were gone a while they notice you. away(true, { now: true }) just puts them under (opening a
+   conversation with the panel open). Anyone who comes or goes meanwhile is
+   sorted out under the floor.
+
+   rest(true) when nobody's been around a while (no pointer, keys or scrolling
+   in the app): one by one they nod off where they stand, and asleep they're
+   drawn at a third of the rate. rest(false), or a reply being talked over, or
+   one joining: they wake, with a yawn.
+--------------------------------------------------------------------------- */
+const MAX = 5;
+let members = [];   // everyone in the conversation, in order; the first MAX are on the stage
+// on the stage by name (not one on its way off)
+const byName = (n) => obys.find((o) => o.name === n && !o.leaving);
+// names as given: one or a list, as strings, trimmed, no blanks or repeats
+const nameList = (v) => [...new Set((Array.isArray(v) ? v : [v]).map((n) => String(n ?? '').trim()).filter(Boolean))];
+function set(names, { now = false } = {}) {
+  members = nameList(names);
+  if (now) placeAll(); else sync();
+}
+function joinIn(name) { const [n] = nameList(name); if (n && !members.includes(n)) { rest(false); members.push(n); sync(); } }
+function leaveIt(name) { const [n] = nameList(name); members = members.filter((m) => m !== n); sync(); }
+// the stage catches up with who's in the conversation: whoever shouldn't be
+// here leaves, whoever should comes in
+function sync() {
+  const want = members.slice(0, MAX);
+  for (const o of [...obys]) if (!o.leaving && !want.includes(o.name)) exit(o);
+  for (const n of want) if (!byName(n)) enter(n);
+}
+// a fresh stage: everything stops, and they're just there, together in the
+// middle; replies still being written start over with the new ones
+function placeAll() {
+  for (const sc of scenes) sc.dead = true;   // its waits stop it next frame
+  fly.on = bee.on = false;
+  for (const o of [...obys]) remove(o);
+  spread(members.slice(0, MAX).map((n) => {
+    const o = makeOby(n, 0);
+    if (hiding) { o.under = 'held'; o.y = -DEPTH; o.underAt = Infinity; }   // away: under the floor with the rest (as enter)
+    add(o);
+    return o;
+  }));
+  for (const d of live) talkAbout(d);
+  nextScene = clock + rand(5, 8);
+}
+// side by side in the middle, a little unevenly, never closer than they like
+// to stand (or as close as the stage allows), and never wider than it (spread
+// wider and clamped at its sides, they'd start in a heap and shove apart)
+function spread(list) {
+  const k = list.length;
+  const gap = Math.min(GAP * 1.12, (W - 2 * EDGE) / Math.max(1, k - 1));
+  const slack = Math.max(0, gap - GAP) * 0.4;
+  [...list].sort((a, b) => a.x - b.x).forEach((o, i) => { o.x = clamp(W / 2 + (i - (k - 1) / 2) * gap + rand(-slack, slack), EDGE, W - EDGE); o.z = 0; });
+}
+function add(o) { obys.push(o); N = obys.length; playIfSeen(); }
+// someone's brought in: it hops in from the edge, and they turn to see it
+function enter(name) {
+  // away: it waits under the floor with the others, and hops up with them
+  if (hiding) { const o = makeOby(name, W / 2); o.under = 'held'; o.y = -DEPTH; o.underAt = Infinity; add(o); return; }
+  const o = makeOby(name, W + BODY_PX);
+  o.offstage = true; o.z = BODY_PX * 0.2;
+  add(o);
+  for (const b of others(o)) if (idle(b)) later(b, rand(0.2, 0.7), () => idle(b) && lookAt(b, { at: o }, rand(1.5, 2.5)));
+  start('joins', [o], async (sc) => {
+    o.ghost = true;   // past whoever's at the edge, not into them
+    // up to the others, beside the last of them (on a wide stage, not left
+    // standing off at its far edge)
+    const here = others(o).filter((b) => !b.leaving && !b.offstage);
+    const to = here.length ? Math.max(...here.map((b) => b.x)) + GAP * rand(1, 1.15) : W / 2;
+    await goTo(sc, o, clamp(to, EDGE, W - EDGE), 0, 0.2);
+    o.offstage = false; o.ghost = false;
+    lookAt(o, { at: neighbour(o) }, 1.2); smile(o);
+    await wait(sc, 1);
+  });
+}
+// leaving: a last look round, and it hops off the edge
+function exit(o) {
+  o.leaving = true;
+  // away: it's just gone (room for one that was waiting)
+  if (hiding) { remove(o); sync(); return; }
+  // still on its way in: it turns straight round
+  if (o.cast?.name === 'joins') { const j = o.cast; j.dead = true; j.cast.length = 0; o.cast = null; }
+  free(o);
+  start('leaves', [o], async (sc) => {
+    const nb = o.offstage ? null : neighbour(o);
+    if (nb) { lookAt(o, { at: nb }, 0.8); await wait(sc, 0.8); }
+    while (o.x < W + BODY_PX) {
+      o.offstage = true; o.ghost = true;   // past the others, not into them
+      if (!await goTo(sc, o, W + BODY_PX * 1.5, 0, 0.2)) await wait(sc, 0.1);
+    }
+    remove(o);
+    sync();   // room for one that was waiting
+  });
+}
+// off the stage for good: nobody keeps looking at it, standing on it, or chasing it
+function remove(o) {
+  if (!obys.includes(o)) return;
+  obys.splice(obys.indexOf(o), 1); N = obys.length;
+  for (const b of obys) {
+    if (b.look?.at === o) b.look = null;
+    if (b.rest?.toward === o) b.rest = null;
+    if (b.on === o) fallOff(b, 1, false);
+  }
+  if (bee.target === o) bee.target = null;
+  if (fly.on_ === o) { fly.on_ = null; fly.mode = 'leave'; }
+  scene.remove(o.rig); censorScene.remove(o.censor);
+  o.rig.traverse((m) => m.material?.dispose());   // its materials (the shapes are shared)
+  playIfSeen();   // the last one gone: nothing left to draw
+}
+// out of whatever it was in, to take part (a reply it was in carries on without it)
+function free(o) {
+  if (o.cast?.name === 'discussion') drop(o); else if (o.cast) cancel(o.cast);
+  if (o.asleep) wake(o);
+  clearPlans(o); o.startled = false;
+}
+// a reply being written, with these Obys in on it (the one answering first)
+function discuss(names) {
+  const d = { names: nameList(names), ended: false, n: ++claims };
+  rest(false);   // a reply being talked over: everyone up
+  live.add(d);
+  if (!hiding && !popping) talkAbout(d);   // away, or on the way back up: they get to it once they've landed
+  return {
+    set(names) { if (!d.ended) { d.names = nameList(names); d.n = ++claims; } },
+    end() { d.ended = true; live.delete(d); },
+    get going() { return !d.ended; },
+  };
+}
+const talkAbout = (d) => start('discussion', [], (sc) => discussion(sc, d));
+
+/* ---------------------------------------------------------------------------
+   Pacing: something small every 1.2–3.5s from one that's free; a scene every
+   so often (never while a reply's being talked over), never the same one
+   twice running; dozing, the fly and the bee now and then on top of that.
+   While a reply's being talked over, the small things come 2.5× less often.
+--------------------------------------------------------------------------- */
+const SCENES = {
+  shove: { need: 2, weight: 1, rest: 45 },
+  sandwich: { need: 3, weight: 1.5, rest: 40 },
+  doze: { need: 1, weight: 1, rest: 50, background: true },
+  fly: { need: 0, weight: 1, rest: 60, background: true },
+  bee: { need: 1, weight: 1, rest: 80, background: true },
+  pole: { need: 2, weight: 1.5, rest: 60 },
+};
+let lastTalk = -99;   // when someone last took a turn in a reply
+const BACKGROUND = new Set(Object.keys(SCENES).filter((k) => SCENES[k].background));
+const lastStart = {};
+let nextScene = rand(5, 8), nextBackground = rand(18, 30), nextSolo = 1, lastScene = null;
+const ready = (o) => idle(o) && grounded(o) && clock > o.busy;
+const weighted = (list) => {
+  let r = Math.random() * list.reduce((t, [, w]) => t + w, 0);
+  for (const [v, w] of list) if ((r -= w) < 0) return v;
+  return list[0]?.[0];
+};
+function cast(name) {
+  const l = line(), pairs = [];
+  for (let k = 0; k + 1 < N; k++) if (ready(l[k]) && ready(l[k + 1])) pairs.push([l[k], l[k + 1]]);
+  if (name === 'shove' && pairs.length) {
+    // the most room behind it to be shoved into, more often than not
+    const ways = pairs.flatMap(([a, b]) => [[a, b], [b, a]]).map((w) => [w, room(w[1], Math.sign(w[1].x - w[0].x) || 1)]);
+    ways.sort((p, q) => q[1] - p[1]);
+    return (chance(0.6) ? ways[0] : pick(ways))[0];
+  }
+  if (name === 'sandwich') {
+    const mids = l.filter((o, k) => k > 0 && k < N - 1 && ready(o) && ready(l[k - 1]) && ready(l[k + 1]));
+    if (mids.length) { const m = pick(mids), k = l.indexOf(m); return [l[k - 1], m, l[k + 1]]; }
+  }
+  if (name === 'doze') { const free = obys.filter(ready); if (free.length) return [pick(free)]; }
+  if (name === 'fly' && !fly.on) return [];
+  if (name === 'bee' && !bee.on) return [];
+  if (name === 'pole') {
+    // the base: one free in the front row with a free one beside it; the
+    // climbers: the free ones nearest it (2 to 4 tall, as many as there are)
+    const bases = l.filter((o) => ready(o) && o.z < 4 && beside(o).some((b) => b && ready(b)));
+    if (!bases.length) return null;
+    const B = pick(bases);
+    const k = N <= 2 ? 1 : N === 3 ? 2 : pick([2, 3]);
+    const climbers = obys.filter((o) => o !== B && ready(o)).sort((a, b) => Math.abs(a.x - B.x) - Math.abs(b.x - B.x)).slice(0, k);
+    return climbers.length ? [B, ...climbers] : null;
+  }
+  return null;
+}
+const SCRIPTS = { shove, sandwich, doze, fly: buzz, bee: beeScene, pole };
+function begin(name) {
+  const c = cast(name);
+  if (!c) return false;
+  const sc = start(name, c, (sc) => SCRIPTS[name](sc, ...c));
+  if (!BACKGROUND.has(name)) lastScene = name;
+  return sc;
+}
+function choose(names) {
+  const ok = names.filter((k) => SCENES[k].need <= N && k !== lastScene && clock - (lastStart[k] ?? -999) > SCENES[k].rest
+    && ![...scenes].some((s) => s.name === k));
+  let r = Math.random() * ok.reduce((s, k) => s + SCENES[k].weight, 0);
+  for (const k of ok) if ((r -= SCENES[k].weight) < 0) return k;
+  return null;
+}
+function direct() {
+  // two standing too close for a while: one shuffles over (if it has room)
+  for (const o of obys) {
+    const [l, r] = beside(o), close = [l, r].filter((b) => b && Math.abs(b.z - o.z) < 8 && Math.abs(b.x - o.x) < GAP * 0.9);
+    if (!close.length || o.on || o.z >= 4 || !idle(o) || !grounded(o) || clock < o.busy) { o.closeSince = 0; continue; }   // at the back, getting back in comes first
+    if (!o.closeSince) { o.closeSince = clock; o.closeWait = rand(2, 5); }
+    else if (clock - o.closeSince > o.closeWait) {
+      o.closeSince = 0;
+      const away = -Math.sign(close[0].x - o.x) || 1;
+      const to = o.x + away * Math.min(room(o, away), BODY_PX * 0.3);
+      if (room(o, away) > BODY_PX * 0.2 && !blockedAt(o, to, o.z)) { o.busy = clock + 1; hop(o, 0.1, to); if (chance(0.3)) lookAt(o, { at: close[0] }, 0.8); }
+    }
+  }
+  // up on someone's head by accident: after a moment it hops down
+  for (const o of obys) {
+    if (!o.on || !idle(o) || o.crouch) { o.upSince = 0; continue; }
+    if (!o.upSince) o.upSince = clock;
+    else if (clock - o.upSince > rand(0.8, 2)) { o.upSince = 0; lookAt(o.on, { at: o }, 1); hop(o, 0.2, o.x + (Math.sign(o.dx) || pick([-1, 1])) * BODY_PX * 1.05); }
+  }
+  // one left behind the front row goes back to it, after a bit
+  for (const o of obys) {
+    if (o.z < 4) { o.backSince = 0; o.backWait = undefined; continue; }
+    if (o.parkedBy) { if (scenes.has(o.parkedBy)) { o.backSince = 0; continue; } o.parkedBy = null; }   // waiting for a huddle to break up
+    if (o.cast || !idle(o) || !grounded(o)) { o.backSince = 0; continue; }
+    if (!o.backSince) { o.backSince = clock; o.backWait ??= rand(1.5, 5); }
+    else if (clock - o.backSince > o.backWait) { o.backSince = clock; o.backWait = rand(1.5, 5); start('rejoin', [o], (sc) => rejoin(sc, o)); }
+  }
+  const fore = [...scenes].some((s) => !BACKGROUND.has(s.name));
+  if (!fore && clock > nextScene) {
+    const k = choose(Object.keys(SCENES).filter((k) => !BACKGROUND.has(k)));
+    if (!k || !begin(k)) nextScene = clock + 2;
+  }
+  if (clock > nextBackground) {
+    nextBackground = clock + rand(30, 55);
+    const k = choose([...BACKGROUND]);
+    if (k) begin(k);
+  }
+  if (clock > nextSolo) {
+    nextSolo = clock + rand(1.2, 3.5) * (clock - lastTalk < 6 ? 2.5 : 1);
+    const free = obys.filter(ready);
+    if (free.length) { const o = pick(free); o.busy = clock + 1; solo(o); }
+  }
+}
+
+/* ---------------------------------------------------------------------------
+   The world: hops arc and land with a squash; on the floor they slide to a
+   stop; they never pass through each other, and a hard knock is felt.
+--------------------------------------------------------------------------- */
+// The top of its head, in px above the floor (what one standing on it stands on)
+const topOf = (b) => b.y + LOOK.height * S * Math.max(0.3, b.P.sq.v) + 1;
+function move(o, dt) {
+  // away (the side panel): sinking through the floor, then held under it
+  // until its turn to hop back up
+  if (o.under && clock >= o.underAt) {
+    if (o.under === 'sink') {
+      o.vy -= G * dt; o.y += o.vy * dt;
+      if (o.y <= -DEPTH) { o.y = -DEPTH; o.vy = 0; o.under = 'held'; o.underAt = Infinity; }
+      return;
+    }
+    // its turn: it springs up out of the floor and lands where it was
+    o.under = null; o.air = true; o.vx = o.vz = 0;
+    o.vy = Math.sqrt(2 * G * (Math.max(0, -o.y) + BODY_PX * rand(0.3, 0.5)));   // from as deep as it is
+    o.P.sq.vel += 4;
+    emit(o, 'hop');
+  } else if (o.under === 'held') return;
+  if (o.air) {
+    const y0 = o.y;
+    o.vy -= G * dt; o.y += o.vy * dt; o.x += o.vx * dt; o.z += o.vz * dt;
+    // coming down on the head it was climbing for: it lands on it, and stands
+    // there (only climbing: falling or hopping down, it goes to the floor)
+    if (o.vy < 0 && o.climb) {
+      for (const b of obys) {
+        if (b === o || b.air || b.on === o) continue;
+        const t = topOf(b);
+        if (y0 >= t - 1 && o.y <= t && Math.abs(o.x - b.x) < BODY_PX * 0.45 && Math.abs(o.z - b.z) < BODY_PX * 0.4) {
+          o.P.sq.vel -= clamp(-o.vy / S * 0.9, 0, 9); b.P.sq.vel -= 4;   // and it squashes under it
+          o.on = b; o.dx = o.dx0 = o.x - b.x; o.y = t; o.vx = o.vz = o.vy = 0; o.air = false; o.climb = null;
+          emit(o, 'land');
+          return;
+        }
+      }
+    }
+    if (o.y <= 0 && o.vy < 0) {
+      o.P.sq.vel -= clamp(-o.vy / S * 0.9, 0, 9);
+      o.y = 0; o.vx *= 0.2; o.vz *= 0.2; o.air = false; o.climb = null;
+      emit(o, 'land');
+      o.stepping = o.answering = false;
+    }
+  } else if (o.on) {
+    // standing on another: carried along with it, its lean tipping it over
+    const b = o.on;
+    o.x = b.x + o.dx + b.P.lean.v * S * 0.56; o.z = b.z; o.y = topOf(b); o.vx = b.vx; o.vz = 0;
+    if (Math.abs(o.dx) > BODY_PX * 0.45) fallOff(o, Math.sign(o.dx));   // too far over the edge
+  } else {
+    o.vx += o.press * S * 30 * dt; o.vz += (o.pressZ ?? 0) * S * 30 * dt;
+    const f = Math.exp(-dt * 9);
+    o.vx *= f; o.vz *= f;
+    o.x += o.vx * dt; o.z += o.vz * dt;
+  }
+}
+// Off the one it stands on (pushed, toppled, or just let go): it tumbles off
+// that way, spinning, and whoever stands on it comes down too, a beat later
+function fallOff(o, dir = Math.sign(o.dx) || pick([-1, 1]), hard = true) {
+  if (!o.on) return;
+  o.on = null; o.air = true; o.vz = 0; o.climb = null;
+  o.vy = hard ? S * 1.8 : S * 0.8; o.vx = dir * S * (hard ? rand(2.5, 3.5) : 1.6);
+  if (hard) { o.P.rz.vel += dir * 7; o.pose.wide = 1; o.pose.mouth = 0.6; }
+  for (const r of obys) if (r.on === o) after(0.12, () => fallOff(r, dir, hard));
+}
+// A jump onto b's head: up high enough to come down on it, aimed to land on
+// it (or off by miss, in bodies, to one side); short: only so much of the height
+function hopOnto(o, b, miss = 0, short = 1, past = []) {
+  if (o.air || o.crouch) return;
+  o.crouch = true; o.crouchAt = clock; o.climb = past;   // on the way up it goes past these (the pole), not into them
+  later(o, 0.22, () => {
+    o.crouch = false; o.on = null;
+    const rise = topOf(b) - o.y, apex = (rise + 0.35 * S) * short;
+    const v0 = Math.sqrt(2 * G * Math.max(apex, S * 0.1));
+    o.vy = v0; o.air = true;
+    // when it'll be coming down past the top (or, short, back on the floor)
+    const t = short < 1 || v0 * v0 < 2 * G * rise ? (2 * v0) / G : (v0 + Math.sqrt(v0 * v0 - 2 * G * rise)) / G;
+    o.vx = (b.x + miss * BODY_PX - o.x) / t; o.vz = (b.z - o.z) / t;
+    o.P.sq.vel += 5;
+    emit(o, 'hop');
+  });
+}
+// how far it reaches from its middle along the floor (half its width, half its
+// depth): thinner when squeezed tall, and turned, its side shows
+function extent(o) {
+  const r = o.P.ry.v + o.P.gx.v * 0.9, c = Math.abs(Math.cos(r)), sn = Math.abs(Math.sin(r)), d = LOOK.height / LOOK.width;
+  const k = BODY_PX / 2 / Math.sqrt(Math.max(0.3, o.P.sq.v)) * (TOUCH / BODY_PX);
+  return [k * (c + d * sn), k * (d * c + sn)];
+}
+// boxes on the floor: two overlap only when they do side to side and front to
+// back, and are pushed apart the shorter way
+function collide() {
+  for (let pass = 0; pass < 2; pass++) {
+    for (let i = 0; i < N; i++) for (let j = i + 1; j < N; j++) {
+      const a = obys[i], b = obys[j];
+      // over its head in a jump, or slipping out behind, it doesn't bump it
+      if (a.ghost || b.ghost || a.on === b || b.on === a || Math.abs(a.y - b.y) > 0.7 * S) continue;
+      // climbing: on its way up past the pole (coming back down below it, it bumps again)
+      const passing = (c, d) => c.air && c.climb?.includes(d) && (c.vy > 0 || c.y > topOf(d) - 4);
+      if (passing(a, b) || passing(b, a)) continue;
+      const [ax, az] = extent(a), [bx, bz] = extent(b);
+      const dx = b.x - a.x, dz = b.z - a.z;
+      const ox = ax + bx - Math.abs(dx), oz = az + bz - Math.abs(dz);
+      if (ox <= 0 || oz <= 0) continue;
+      const alongX = a.squeeze || b.squeeze || ox < oz, sx = Math.sign(dx) || 1, sz = Math.sign(dz) || 1;   // squeezing through: aside
+      if (alongX) { a.x -= sx * ox / 2; b.x += sx * ox / 2; } else { a.z -= sz * oz / 2; b.z += sz * oz / 2; }
+      const va = alongX ? a.vx * sx : a.vz * sz, vb = alongX ? -b.vx * sx : -b.vz * sz;
+      const rel = va + vb;  // closing speed
+      if (rel > 0) {
+        // the one coming in faster did the knocking. A hard knock bounces; a
+        // gentle one doesn't: they move on together, so nothing rocks back and forth
+        const [by, hit] = va > vb ? [a, b] : [b, a];
+        const k = rel > S * 1.5 ? 0.6 : 0.5;
+        if (alongX) { a.vx -= sx * rel * k; b.vx += sx * rel * k; } else { a.vz -= sz * rel * k; b.vz += sz * rel * k; }
+        if (pass === 0 && rel > S * 1.5) bumped(hit, by, clamp(rel / (S * 4), 0, 1.5));
+        else if (pass === 0 && rel > S * 0.5 && idle(hit) && chance(0.3)) nudged(hit, by);
+      }
+    }
+    for (const o of obys) {
+      if (!o.offstage && (o.x < EDGE || o.x > W - EDGE)) { o.x = clamp(o.x, EDGE, W - EDGE); o.vx = 0; }
+      if (o.z < 0 || o.z > ZMAX) { o.z = clamp(o.z, 0, ZMAX); o.vz = 0; }
+    }
+  }
+}
+
+function tick(dt) {
+  clock += dt;
+  for (let k = waits.length - 1; k >= 0; k--) {
+    const w = waits[k];
+    if (w.sc.dead) { waits.splice(k, 1); w.rej(CANCEL); }
+    else if (clock >= w.t || w.cond?.()) { waits.splice(k, 1); w.res(); }
+  }
+  for (let k = soon.length - 1; k >= 0; k--) if (clock >= soon[k].t) { const { fn } = soon[k]; soon.splice(k, 1); fn(); }
+  if (!STILL && !LAB && !hiding && !popping && !resting) { direct(); watchPointer(); }
+  flyTick(dt); beeTick(dt);
+  for (const o of obys) {
+    const P = o.P;
+    o.t += dt;
+    for (let k = o.queue.length - 1; k >= 0; k--) {
+      if (clock >= o.queue[k].t) { const { fn } = o.queue[k]; o.queue.splice(k, 1); fn(); }
+    }
+    if (!STILL && clock > o.nextBlink) { blink(o); o.nextBlink = clock + rand(2.2, 5.7); }
+    if (o.blinkEnd > 0 && clock > o.blinkEnd) { P.blink.to = 0; o.blinkEnd = -1; }
+    // a crouch whose jump never came (its plans were cleared meanwhile): it stands back up
+    if (o.crouch && clock - (o.crouchAt ?? 0) > 0.5) o.crouch = false;
+    if (o.look && clock > o.lookUntil) o.look = null;
+    if (!o.look && clock > (o.nextRest ?? 0)) restLook(o);
+    // asleep outside any scene: it always wakes in a while (see wakeUp)
+    if (o.asleep && !o.cast) { if (!o.wakeAt) o.wakeAt = clock + rand(4, 9); else if (clock >= o.wakeAt) wakeUp(o); }
+    if (o.working && clock >= o.nextNod) { o.P.rx.vel += 1.2; o.nextNod = clock + rand(0.5, 1.4); }
+    move(o, dt);
+  }
+  // away, and the last of them under the floor: nothing more to draw
+  if (hiding && !gone && obys.every((o) => o.under === 'held')) gone = true;   // (stops after this frame's drawn)
+  // resting, and all asleep with nothing buzzing about: drawn at the low rate (frame)
+  sleepy = resting && N > 0 && !fly.on && !bee.on && obys.every((o) => o.asleep && !o.air && !o.crouch);
+  collide();
+  const carried = new Set(obys.map((r) => r.on).filter(Boolean));
+  for (const o of obys) {
+    const P = o.P, p = o.pose;
+    const a = STILL ? { ry: parseFloat(params.get('ry')) || 0, rx: 0, gx: 0, gy: 0 } : aimAt(o, o.look);
+    // asleep: head down, breathing slow and deep, nodding a little
+    const sleep = o.asleep ? 1 : 0;
+    P.ry.to = a.ry + (p.ry ?? 0);
+    P.rx.to = a.rx + (p.rx ?? 0) + sleep * (0.15 + 0.03 * Math.sin(o.t * 0.8));
+    // never quite still: a slow sway and a weight shift, each its own
+    const still = p.still ? 1 : 0;   // frozen in fear: not a sway, hardly a breath
+    const drift = sleep || still ? 0 : 0.012 * Math.sin(o.t * 0.5 + o.i * 1.7);
+    P.rz.to = (p.rz ?? 0) + drift;
+    P.gx.to = a.gx + (p.gx ?? 0); P.gy.to = a.gy + (p.gy ?? 0) - sleep * 0.02;
+    P.open.to = sleep ? 0 : p.open ?? 1; P.wide.to = p.wide ?? 0;
+    P.lidT.to = p.lidT ?? 0; P.lidA.to = p.lidA ?? 0; P.happy.to = p.happy ?? 0; P.mouth.to = p.mouth ?? 0; P.grin.to = p.grin ?? 0;
+    const breath = sleep ? 0.035 * Math.sin(o.t * 1.7) : (still ? 0.003 : 0.012) * Math.sin(o.t * 1.6);
+    // squash: crouched to jump, stretched while rising, else what it holds, breathing
+    P.sq.to = o.crouch ? 0.84 : o.air && o.vy > 0 ? 1.07 : (p.sq ?? 1) + breath;
+    P.lean.to = clamp((p.lean ?? 0) - P.ry.v * 0.05 - o.vx / S * 0.015 + (1 - still) * 0.025 * Math.sin(o.t * 0.7 + o.i * 2.3), -0.2, 0.2);  // trails behind a step
+    const out = clamp(o.vy / S * 0.02, -0.15, 0.3), sway = clamp(o.vx / S * 0.03, -0.25, 0.25);
+    // one standing on its head: its ears lie flat, back along the top of its
+    // head, out of sight
+    const carrying = carried.has(o);
+    P.eLB.to = P.eRB.to = carrying ? 1.55 : 0.1 + (p.earB ?? 0) + sleep * 0.15;
+    // an ear turned to a sound on its side, for a moment
+    const heard = clock < (o.heard?.until ?? 0) ? o.heard.side : 0;
+    P.eLT.to = heard < 0 ? 0.7 : 0; P.eRT.to = heard > 0 ? 0.7 : 0;
+    P.eLO.to = carrying ? 0 : out - sway + (p.earO ?? 0) + sleep * 0.3; P.eRO.to = carrying ? 0 : out + sway + (p.earO ?? 0) + sleep * 0.3;
+    const n = Math.ceil(dt / (1 / 240));
+    for (let k = 0; k < n; k++) stepSprings(P, dt / n);
+
+    // a head shake and an angry tremble go straight on, too quick for the springs
+    let shake = 0, tremble = 0;
+    if (clock < o.shake) { const k = (o.shake - clock) / o.shakeDur; shake = Math.sin(o.t * 28) * 0.4 * Math.pow(k, 1.3); }
+    if (clock < o.jitter) tremble = Math.sin(o.t * 47) * 0.02;
+    o.U.uSq.value = Math.max(0.3, P.sq.v); o.U.uLean.value = P.lean.v;
+    project(o);
+    o.rig.scale.setScalar(S * o.s);
+    o.rig.position.set(o.sx, o.sy + 0.5 * S * o.s, -o.z);
+    o.rig.rotation.set(P.rx.v, P.ry.v + P.gx.v * 0.9 + shake, P.rz.v + tremble, 'YXZ');
+    o.eyes.value.set(P.gx.v, P.gy.v, (1 - clamp(P.blink.v, 0, 1)) * clamp(P.open.v, 0, 1), P.wide.v);
+    o.face.value.set(Math.max(0, P.lidT.v), P.lidA.v, clamp(P.happy.v, 0, 1), Math.max(0, P.mouth.v));
+    o.grin.value = clamp(P.grin.v, 0, 1);
+    o.ears[0].uEarTilt.value.set(Math.max(-0.15, P.eLB.v), P.eLO.v, P.eLT.v);
+    o.ears[1].uEarTilt.value.set(Math.max(-0.15, P.eRB.v), P.eRO.v, P.eRT.v);
+    // the censor square: over its mouth (CENSOR), wherever its face is turned
+    o.censor.visible = !!p.censor;
+    if (p.censor) {
+      o.rig.updateMatrixWorld();
+      faceMid.set(0, (0.5 + CENSOR.y) * P.sq.v - 0.5, 0.5 * LOOK.height).applyMatrix4(o.rig.matrixWorld);
+      o.censor.position.set(faceMid.x, faceMid.y, 500);
+      o.censor.scale.set(CENSOR.w * S * o.s, CENSOR.h * S * o.s, 1);
+    }
+  }
+  devTick?.();
+}
+
+function draw() {
+  renderer.render(scene, camera);
+  // while anyone swears: the frame again into a texture, and the censor squares from it
+  if (obys.some((o) => o.censor.visible)) {
+    const buf = renderer.getDrawingBufferSize(censorBuf);
+    if (censorRT.width !== buf.x || censorRT.height !== buf.y) censorRT.setSize(buf.x, buf.y);
+    censorMat.uniforms.uRes.value.copy(buf); censorMat.uniforms.uBlock.value = BLOCK * renderer.getPixelRatio();
+    censorMat.uniforms.uSeed.value = Math.floor(clock * 10);
+    renderer.setRenderTarget(censorRT); renderer.clear(); renderer.render(scene, camera);
+    renderer.setRenderTarget(null);
+    renderer.autoClear = false; renderer.render(censorScene, camera); renderer.autoClear = true;
+  }
+}
+let frameStep = (dt) => { tick(dt); draw(); };
+
+// 30fps (10 with them all asleep: rest), and nothing at all while paused,
+// hidden, or away under the floor
+const FRAME_MS = 1000 / 30;
+const SLEEP_MS = 1000 / 10;   // all asleep (rest)
+let last = performance.now(), raf = 0, running = false, paused = false, seen = true, awayAt = 0;
+function frame(now) {
+  raf = requestAnimationFrame(frame);
+  // all asleep: slow breaths need few frames (SLEEP_MS), and the longer step
+  // between them is fine (the springs sub-step themselves, in tick)
+  if (now - last < (sleepy ? SLEEP_MS : FRAME_MS) - 2) return;
+  const dt = Math.min(sleepy ? 1 / 8 : 1 / 20, (now - last) / 1000); last = now;
+  frameStep(dt);
+  if (gone && running) playIfSeen();   // away, and they're all under: stop
+}
+// drawing only while it can be seen and someone's on the stage
+function playIfSeen() {
+  const now = performance.now(), nowSeen = !paused && !document.hidden;
+  const back = nowSeen && !seen && now - awayAt > 5000;
+  if (seen && !nowSeen) awayAt = now;
+  seen = nowSeen;
+  const on = nowSeen && N > 0 && !gone;
+  if (on !== running) {
+    running = on;
+    if (on) { last = now; raf = requestAnimationFrame(frame); }
+    // left as it is (empty, if the last one's gone); away, just empty: put
+    // under at once, they haven't been moved there yet, and would be drawn
+    // where they were made
+    else { cancelAnimationFrame(raf); if (gone) { renderer.setRenderTarget(null); renderer.clear(); } else draw(); }
+  }
+  // back after a while out of sight (a page over them gone, the window shown again): they notice you
+  if (back && N && !LAB && !hiding && !popping && !resting) arrive();   // (under the floor, or coming back up: away()'s own)
+}
+function pause(on = true) { paused = !!on; playIfSeen(); }
+
+// Nobody about (see The conversation): one by one, NAP_GAP seconds apart, each
+// nods off where it stands and sleeps till rest(false); then they wake, a beat
+// apart, with a yawn. One busy (in the air, on someone, in a scene) waits.
+let resting = false, restN = 0, sleepy = false;
+let NAP_GAP = [10, 20];   // s between one nodding off and the next: the last of 5 about a minute after the first
+function rest(on = true) {
+  on = !!on;
+  if (on === resting) return;
+  resting = on;
+  restN++;
+  // (under the floor or on the way back up: away()'s callback naps them once they've landed)
+  if (on) { if (!hiding && !popping) napAll(); return; }
+  // a moment to come round first; and no fly or bee the moment they're up (that
+  // clock ran on while they slept)
+  nextScene = Math.max(nextScene, clock + rand(3, 6));
+  nextBackground = Math.max(nextBackground, clock + rand(15, 25));
+}
+function napAll() {
+  const n = restN;
+  let t = rand(0.5, 2);
+  for (const o of [...obys].sort(() => Math.random() - 0.5)) { after(t, () => nodOff(o, n)); t += rand(...NAP_GAP); }
+}
+function nodOff(o, n) {
+  if (n !== restN || !resting || hiding || !obys.includes(o) || o.leaving) return;
+  if (o.cast?.name === 'nap') return;
+  if (o.cast || o.air || o.on || o.crouch || o.startled || o.under) { after(1.5, () => nodOff(o, n)); return; }
+  start('nap', [o], async (sc) => {
+    if (!o.asleep) {
+      o.look = null;
+      pose(o, { mouth: 1, open: 0.35, sq: 1.08, rx: -0.12, earO: 0.2 }); await wait(sc, 1.3);   // a yawn
+      o.pose = { earO: 0.3 }; pose(o, { open: 0.45, sq: 0.97 }); await wait(sc, 1.8);           // eyes droop
+      if (!resting) return;   // someone's back before it dropped off: it just perks up
+      pose(o, { open: 0, rx: 0 }); o.asleep = true;
+    }
+    await until(sc, () => !resting || !o.asleep, 1e9);
+    // knocked awake (a bump from a scene still going): it nods off again in a while
+    if (resting) { after(rand(...NAP_GAP), () => nodOff(o, n)); return; }
+    await wait(sc, rand(0, 0.8));
+    wakeUp(o);
+    await wait(sc, 1.4);   // the yawn plays out
+  });
+}
+
+// Out of the way and back (see The conversation)
+const DEPTH = BODY_PX * 2.4;   // under the floor far enough that the back row's ears don't show
+let hiding = false, gone = false, hidAt = 0;
+let popping = false;   // hopping back up: nothing starts till they've all landed
+let awayN = 0;   // which going-away or coming-back this is (a later one outdates the earlier one's callbacks)
+function away(on = true, { now = false } = {}) {
+  on = !!on;
+  if (on === hiding) return;
+  hiding = on;
+  const n = ++awayN;
+  restN++;   // nodding off waits for them to be back up
+  if (on) {
+    // not being drawn (paused, hidden): nothing would move, so they'd be found
+    // still standing when it's back, and only then sink. Straight under
+    now ||= !running;
+    hidAt = performance.now();
+    for (const sc of scenes) sc.dead = true;   // its waits stop it next frame
+    fly.on = bee.on = false;
+    for (const o of obys.filter((x) => x.leaving)) remove(o);   // one on its way off is just gone
+    // left to right, a beat apart: a little hop, and down through the floor
+    [...obys].sort((a, b) => a.x - b.x).forEach((o, i) => {
+      free(o); o.look = null;
+      o.on = null; o.air = o.crouch = false; o.climb = null; o.vx = o.vz = 0;
+      if (now) { o.under = 'held'; o.y = -DEPTH; o.vy = 0; o.underAt = Infinity; return; }
+      o.under = 'sink'; o.underAt = clock + i * 0.04;
+      o.vy = Math.sqrt(2 * G * BODY_PX * 0.12);
+    });
+    // nothing's drawn once they're all under (see tick): not on a timer, which
+    // runs on while slow frames hold them back, and would stop them mid-way
+    if (now) {
+      gone = true; playIfSeen();
+      // not running, nothing would clear what was last drawn (them standing)
+      if (!running) { renderer.setRenderTarget(null); renderer.clear(); }
+    }
+    return;
+  }
+  gone = false; popping = true;
+  // under the floor, they line up again (someone may have come or gone), then
+  // hop up one at a time in no particular order. Called back while some are
+  // still on their way down (the panel closed again at once): nobody's moved
+  // sideways, and each comes back up from wherever it's got to
+  const midway = obys.some((o) => o.under === 'sink');
+  if (!midway) spread(obys);
+  const order = [...obys].sort(() => Math.random() - 0.5);
+  let t = 0.05;
+  for (const o of order) {
+    if (o.under !== 'sink') o.y = -DEPTH;
+    o.under = 'held'; o.vy = 0; o.underAt = clock + t;
+    t += rand(0.07, 0.14);
+  }
+  const long = performance.now() - hidAt > 5000;
+  soon.push({ t: clock + t + 0.8, fn: () => {
+    if (n !== awayN) return;   // gone again since (and maybe back): that one's callback does this
+    popping = false;
+    nextScene = clock + rand(5, 8);
+    for (const d of live) talkAbout(d);   // a reply still being written: back to it
+    if (resting) napAll();                // still nobody about: back to sleep, in a while
+    else if (long && !LAB) arrive();      // out of sight a while: they notice you
+  } });
+  playIfSeen();
+}
+document.addEventListener('visibilitychange', playIfSeen);
+playIfSeen();
+
+window.obys = {
+  set, join: joinIn, leave: leaveIt, discuss, pause, away, rest,
+  get names() { return obys.filter((o) => !o.leaving).map((o) => o.name); },   // on the stage now
+};
+// The same from a page it's framed in on another origin (only that page):
+// postMessage({ set: names, now }), { join: name }, { leave: name },
+// { discuss: names, id } (id required; the same id again when who's in on it
+// changes), { end: id }, { pause: true | false }, { away: true | false, now },
+// { rest: true | false }
+const talking = new Map();
+addEventListener('message', (e) => {
+  const d = e.data;
+  if (e.source !== window.parent || window.parent === window || !d || typeof d !== 'object') return;
+  try {
+    if ('set' in d) set(d.set, d);
+    if ('join' in d) joinIn(d.join);
+    if ('leave' in d) leaveIt(d.leave);
+    if ('discuss' in d) {
+      if (d.id == null) throw new Error('obys: { discuss } needs an id');
+      const t = talking.get(d.id);
+      if (t?.going) t.set(d.discuss); else talking.set(d.id, discuss(d.discuss));   // one that ended by itself starts again
+    }
+    if ('end' in d) { talking.get(d.end)?.end(); talking.delete(d.end); }
+    if ('pause' in d) pause(d.pause);
+    if ('away' in d) away(d.away, d);
+    if ('rest' in d) rest(d.rest);
+  } catch (err) { console.warn(err.message); }
+});
+
+/* dev:start  the test page's hooks (group.html, censor-lab.html, handoff/obys-tests) */
+// ?n= puts that many there from ?names= (or a few made-up ones) to begin with
+const NAMES = (params.get('names') || 'Yours,Wellington,Ernesto,Dima,Daniel,Ana,Kofi').split(',');
+if (params.has('n')) set(NAMES.slice(0, Math.min(MAX, Math.max(1, parseInt(params.get('n')) || 5))), { now: true });
+if (LAB) obys.forEach((o, i) => { o.x = W / 2 + (i - 0.5) * 1.3 * BODY_PX; });
+// what it costs: JS per frame, and GPU time where the browser allows it
+const gl = renderer.getContext();
+const timer = gl.getExtension('EXT_disjoint_timer_query_webgl2');
+let query = null;
+const stats = { fps: 0, js: 0, gpu: null };
+let acc = { n: 0, js: 0, gpu: 0, gn: 0, t0: performance.now() };
+frameStep = (dt) => {
+  const t0 = performance.now();
+  tick(dt);
+  if (timer && query && gl.getQueryParameter(query, gl.QUERY_RESULT_AVAILABLE)) {
+    if (!gl.getParameter(timer.GPU_DISJOINT_EXT)) { acc.gpu += gl.getQueryParameter(query, gl.QUERY_RESULT) / 1e6; acc.gn++; }
+    gl.deleteQuery(query); query = null;
+  }
+  const timing = timer && !query;
+  if (timing) { query = gl.createQuery(); gl.beginQuery(timer.TIME_ELAPSED_EXT, query); }
+  draw();
+  if (timing) gl.endQuery(timer.TIME_ELAPSED_EXT);
+  acc.js += performance.now() - t0; acc.n++;
+  const now = performance.now();
+  if (now - acc.t0 >= 1000) {
+    stats.fps = acc.n * 1000 / (now - acc.t0); stats.js = acc.js / Math.max(1, acc.n); stats.gpu = acc.gn ? acc.gpu / acc.gn : null;
+    acc = { n: 0, js: 0, gpu: 0, gn: 0, t0: now };
+  }
+};
+// a scene asked for by hand starts as soon as they're all free for it
+let asked = null, note = null;
+devTick = () => {
+  if (LAB) { if (!scenes.size) labSwear(); }
+  if (!asked) return;
+  if (begin(asked.k)) asked = null;
+  else if (clock > asked.until) { note = { text: `${asked.k}: not enough of them for it`, until: clock + 3 }; asked = null; }
+};
+// whatever's going on stops (sleepers wake, replies carry on), and nothing else starts over it for a bit
+function makeFree() {
+  for (const sc of [...scenes]) cancel(sc);
+  for (const o of obys) {
+    if (o.cast && UNSTOPPABLE.has(o.cast.name)) continue;
+    o.busy = 0; o.startled = false; clearPlans(o);
+    if (o.asleep) wake(o);
+    if (o.on) fallOff(o, Math.sign(o.dx) || 1, false);
+  }
+  nextScene = clock + 12; nextBackground = Math.max(nextBackground, clock + 15);
+}
+// a swears at b, and b's taken aback
+const swearAt = (a, b, dur) => start('swear', [a, b], async (sc) => { lookAt(b, { at: a }, 60); await swear(sc, a, b, dur); pose(b, { wide: 1 }); await wait(sc, 0.8); });
+const labSwear = () => swearAt(obys[0], obys[1], 3);
+window.__obys = obys; window.__log = log; window.__stats = stats;
+window.obysDev = {
+  scenes: Object.keys(SCENES),
+  play(k) { makeFree(); asked = { k, until: clock + 2 }; },
+  arrive,
+  laugh() { let o = pick(obys.filter(ready)); if (!o) { makeFree(); o = pick(obys); } if (o) { o.busy = clock + 2; laugh(o); } },
+  swear() {
+    if (N < 2) return;
+    const l = line();
+    let k = l.findIndex((o, j) => ready(o) && l[j + 1] && ready(l[j + 1]));
+    if (k < 0) { makeFree(); k = Math.floor(Math.random() * (N - 1)); }
+    const [a, b] = chance(0.5) ? [l[k], l[k + 1]] : [l[k + 1], l[k]];
+    swearAt(a, b, 2.4);
+  },
+  // what's going on, for the test page's line
+  status: () => (note && clock < note.until ? note.text : [...scenes].map((s) => s.name).join(' + ') || '·'),
+  get clock() { return clock; },
+  napGap(a, b) { NAP_GAP = [a, b]; },   // shorter, to see them nod off without the wait
+};
+/* dev:end */
+</script>
+</body>
+</html>

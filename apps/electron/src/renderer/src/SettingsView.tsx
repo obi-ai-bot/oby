@@ -1,12 +1,16 @@
 import { useEffect, useState, useSyncExternalStore } from 'react';
+import { Check } from 'lucide-react';
 import { BrandMark } from './brands';
 import { useScrollThumb } from './useScrollThumb';
 import { AGENTS, type Agent } from './mock';
 import { OwnerAvatar } from './ObyFace';
 import { useSpheres } from './spheres';
-import { onObid } from './lean';
-import { ApiError, api, type SavedRule, type SignIn, type Status } from './obid';
-import Connectors from './Connectors';
+import { everything, onObid } from './lean';
+import { ApiError, api, type ModelOptions, type Models, type SavedRule, type SignIn, type Status } from './obid';
+import Connectors, { ConfirmWindow, readConnectors } from './Connectors';
+import { Menu } from './Menu';
+import { useLive } from './live';
+import { version } from '../../../package.json';
 
 // how long the way out takes (the sink animation in app.css)
 const LEAVE_MS = 220;
@@ -14,10 +18,16 @@ const LEAVE_MS = 220;
 // Settings' pages, as Wellington's Mac app has them (apps/mac/app/Settings.swift
 // on his dev branch): General (with Voice and Notifications, shared with the
 // iPhone), Runner, Remote access, Accounts, Models, Vault and About; Connectors
-// is ours, and Sharing a preview (docs/research/sphere-sharing.md). Each page opens in the view, as a task's page does, from the account
-// menu (your picture at the icons' foot), then the side panel's Settings list.
+// is ours, and Sharing a preview (docs/research/sphere-sharing.md). Each page opens in the view, as a task's page does, from the
+// gear at the icons' foot (the account menu, with ?everything), then the side panel's Settings list.
+// Runner, Sharing, Remote access and Vault are left out of v1 (Sangam, 2026-10-28) and come
+// back later: only with ?everything (lean.ts)
+// Agents takes Accounts' and Models' place: each agent's accounts with its model and efforts,
+// and which one new tasks go to (the old two stay with ?everything)
+const LATER = new Set(['runner', 'sharing', 'remote', 'vault', 'accounts', 'models']);
 export const SETTINGS_PAGES = [
   { id: 'general', label: 'General' },
+  { id: 'agents', label: 'Agents' },
   { id: 'runner', label: 'Runner' },
   { id: 'sharing', label: 'Sharing' },
   { id: 'remote', label: 'Remote access' },
@@ -26,7 +36,7 @@ export const SETTINGS_PAGES = [
   { id: 'connectors', label: 'Connectors' },
   { id: 'vault', label: 'Vault' },
   { id: 'about', label: 'About' },
-] as const;
+].filter((p) => everything || !LATER.has(p.id));
 export const settingsLabel = (id: string) => SETTINGS_PAGES.find((p) => p.id === id)?.label ?? 'Settings';
 
 // What's set, kept while the app runs (a mock: nothing is saved anywhere)
@@ -39,6 +49,15 @@ export function useSetting<T>(key: string, initial: T): [T, (v: T) => void] {
     () => (values.has(key) ? values.get(key) : initial) as T,
   );
   return [value, (v) => { values.set(key, v); listeners.forEach((l) => l()); }];
+}
+// The same, kept across launches (localStorage, oby.setting.<key>): what's set here and nowhere
+// else yet (obid has no such setting), so it isn't lost each time the app quits
+export function useKeptSetting<T>(key: string, initial: T): [T, (v: T) => void] {
+  if (!values.has(key)) {
+    try { const kept = localStorage.getItem(`oby.setting.${key}`); if (kept != null) values.set(key, JSON.parse(kept)); } catch { /* the default */ }
+  }
+  const [value, put] = useSetting(key, initial);
+  return [value, (v) => { try { localStorage.setItem(`oby.setting.${key}`, JSON.stringify(v)); } catch { /* this launch only */ } put(v); }];
 }
 
 // How freely a job's agent works, each with its line (RunnerMode in his app)
@@ -63,6 +82,8 @@ export default function SettingsView({ page, ...frame }: {
   onClose: () => void;
   onGone: () => void;
 }) {
+  // Connectors' GitHub and Tetrix, read as Settings opens, so that page opens on them at once
+  useEffect(readConnectors, []);
   const Page = PAGES[page] ?? General;
   return <SettingsPage title={settingsLabel(page)} label={`${settingsLabel(page)} settings`} {...frame}><Page /></SettingsPage>;
 }
@@ -116,15 +137,16 @@ function General() {
     <Group i={1}>
       <Row label="Open at login"><Switch on={login} onChange={setLogin} label="Open at login" /></Row>
     </Group>
-    <Group i={2} title="Permissions on this Mac" footer="How much the jobs this Mac runs itself ask. Each job’s Mode menu changes it while it runs. Always allow saves a rule, so it doesn’t ask again; remove the rule to be asked again. The runner’s jobs follow Runner › Permissions.">
+    <Group i={2} title="Permissions on this Mac" footer="Default mode sets how often your agents check with you before they edit files or run commands. To change it for one task, use that task’s Mode menu. Always allow adds a rule here; remove it to be asked again.">
       {onObid ? <MacPermissions /> : <MockMacPermissions />}
     </Group>
-    <Group i={3} title="Voice" footer="When you talk to Oby with fn, it answers out loud and, after fn + Space, listens again for your answer until you press fn or say “stop”. Typed messages are answered in writing. Pressing fn stops it mid-sentence.">
+    {/* Voice: back later, with talking to Oby (only with ?everything) */}
+    {everything && <Group i={3} title="Voice" footer="When you talk to Oby with fn, it answers out loud and, after fn + Space, listens again for your answer until you press fn or say “stop”. Typed messages are answered in writing. Pressing fn stops it mid-sentence.">
       <Row label="Speak replies to spoken requests"><Switch on={speaks} onChange={setSpeaks} label="Speak replies to spoken requests" /></Row>
       <Row label="Speech language">
         <Select value={language} onChange={setLanguage} label="Speech language" options={[['system', 'Mac language'], ['en-US', 'English'], ['pt-BR', 'Português (Brasil)'], ['pt-PT', 'Português (Portugal)']]} />
       </Row>
-    </Group>
+    </Group>}
     <Notifications />
   </>;
 }
@@ -168,7 +190,7 @@ function Notifications() {
   useEffect(() => { void bridge?.alerts().then(setAlerts); }, []);
   const turn = (on: boolean) => { setAlerts(on); void bridge?.alerts(on).then(setAlerts); };
   return (
-    <Group i={4} title="Notifications" footer="Oby alerts you when a job needs you: ready to publish, failed or interrupted, a question for you, out of reviews or not merged. An alert opens its job.">
+    <Group i={everything ? 4 : 3} title="Notifications" footer="Oby alerts you when a job needs you, like a question or a failed run. Click an alert to open the job.">
       {bridge ? <>
         <Row label="Alerts"><Switch on={alerts ?? true} onChange={turn} label="Alerts" /></Row>
         <Row label="Banners, sounds and Focus"><button className="set-button" onClick={bridge.openSystemSettings}>Open System Settings</button></Row>
@@ -245,16 +267,22 @@ function Remote() {
 // used: this week's share in percent, null while its tool hasn't said
 // signedIn: obid's (the mock's are all signed in); label: what obid says about the login, such as
 // "Run codex once" while it's signed out
-export type Account = { id: string; agent: Agent; name: string; payer: string; used: number | null; resets: string; plan?: Plan; signedIn?: boolean; label?: string | null };
+// session: the 5-hour window's use (null: none reported) and when it starts over; weekly: whether
+// used is the week's
+export type Account = { id: string; agent: Agent; name: string; payer: string; used: number | null; resets: string; plan?: Plan; signedIn?: boolean; label?: string | null; session?: number | null; sessionResets?: string | null; weekly?: boolean };
 // how full an account (or an agent) is: past 80% yellow, past 90% red
 export const fullness = (used: number) => (used > 90 ? 'is-over' : used > 80 ? 'is-high' : '');
+// an account's week in words, under its session's bar: its share when the tool reported one, else
+// what obid says (not signed in, none reported yet, Cursor's none); a session but no week: says so
+export const weekWords = (a: Account) => (a.weekly && a.used != null ? `This week ${a.used}% · ${a.resets.replace(/^Resets/, 'resets')}`
+  : a.weekly === false && a.session != null ? 'No weekly use reported yet' : a.resets);
 const ACCOUNTS: Account[] = [
-  { id: 'a1', agent: 'claude', name: 'Deskree', payer: 'Deskree', used: 36, resets: 'Resets Thursday', plan: 'seat' },
-  { id: 'a2', agent: 'claude', name: 'Personal', payer: 'Doti', used: 82, resets: 'Resets in 2 days', plan: 'personal' },
-  { id: 'a3', agent: 'codex', name: 'Deskree', payer: 'Deskree', used: 12, resets: 'Resets Monday', plan: 'seat' },
-  { id: 'a4', agent: 'claude', name: 'Deskree API', payer: 'Deskree', used: 8, resets: '$32 of $400 this month', plan: 'api' },
+  { id: 'a1', agent: 'claude', name: 'Deskree', payer: 'Deskree', used: 36, resets: 'Resets Thursday', plan: 'seat', session: 12, sessionResets: '4:10 PM', weekly: true },
+  { id: 'a2', agent: 'claude', name: 'Personal', payer: 'Doti', used: 82, resets: 'Resets in 2 days', plan: 'personal', session: 86, sessionResets: '2:14 PM', weekly: true },
+  { id: 'a3', agent: 'codex', name: 'Deskree', payer: 'Deskree', used: 12, resets: 'Resets Monday', plan: 'seat', session: 5, sessionResets: '6:40 PM', weekly: true },
+  { id: 'a4', agent: 'claude', name: 'Deskree API', payer: 'Deskree', used: 8, resets: '$32 of $400 this month', plan: 'api', session: null, weekly: false },
 ];
-// the accounts and their use this week: here, and in the message box's usage panel (the gauge)
+// the accounts and their use (the 5-hour session, and the week): here, and in the message box's usage panel (the gauge)
 export const useAccounts = () => useSetting<Account[]>('accounts', onObid ? [] : ACCOUNTS);
 // obid's accounts and their use, in place of the mock's (live.ts)
 export const replaceAccounts = (next: Account[]) => { values.set('accounts', next); listeners.forEach((l) => l()); };
@@ -268,20 +296,19 @@ const ADD = 'add';
 // makes its folder) and opens its tool's own sign-in page at once; Sign In opens it again, Remove
 // removes it. Each tool keeps its own login; Oby only learns that it worked. Leaving the page
 // mid-sign-in leaves it under way on obid: Sign In picks the same one back up.
-function Accounts() {
-  const [accounts, setAccounts] = useAccounts();
+// Signing accounts in, as Settings › Accounts and › Agents both do: the tools' own logins obid
+// offers, each account's sign-in under way and what went wrong where (an account's row, or ADD:
+// adding one)
+type Signing = 'opening' | (SignIn & { code?: 'sending' | 'sent' });
+function useSignIns(accounts: Account[], setAccounts: (a: Account[]) => void) {
   // the tools' own logins on this Mac that aren't accounts (found, or removed here): only
   // GET /v1/status has them, read as the page opens and after a change (obid also reads the usage
   // shown here then, which comes in its `accounts` event)
   const [offered, setOffered] = useState<NonNullable<Status['availableLogins']>>([]);
   const look = () => { if (onObid) api.status().then((s) => setOffered(s.availableLogins ?? []), () => {}); };
   useEffect(look, []);
-  const [agent, setAgent] = useState<Account['agent']>('claude');
-  const [name, setName] = useState('');
-  const [payer, setPayer] = useState('');
   // sign-ins under way, by account: opening, then its page (with Codex's code, or Claude Code's to
   // paste), then that code on its way ('sending') or sent with no answer in time ('sent')
-  type Signing = 'opening' | (SignIn & { code?: 'sending' | 'sent' });
   const [signing, setSigning] = useState<Record<string, Signing>>({});
   const put = (id: string, v?: Signing) => setSigning(({ [id]: _, ...rest }) => (v ? { ...rest, [id]: v } : rest));
   // what obid said went wrong, where it went wrong: on the account's row, or under Add an account
@@ -313,19 +340,6 @@ function Accounts() {
     }
   });
   const cancel = (id: string) => { put(id); void tried(id, () => api.endSignIn(id)); };
-  const add = () => tried(ADD, async () => {
-    const n = name.trim(), p = payer.trim();
-    const a = onObid ? await api.addAccount({ agent, name: n, ...(p ? { payer: p } : {}) }) : null;
-    setName(''); setPayer('');
-    // its sign-in's errors show on its row
-    if (a) return void signIn(a.id);
-    setAccounts([...accounts, { id: `a${Date.now()}`, agent, name: n, payer: p || 'You', used: 0, resets: 'Resets in 7 days' }]);
-  });
-  const remove = (a: Account) => {
-    if (!onObid) return setAccounts(accounts.filter((x) => x.id !== a.id));
-    if (!confirm(removeNote(a))) return;
-    void tried(a.id, () => api.removeAccount(a.id).then(() => { put(a.id); look(); }));
-  };
   // signed in (Codex and Cursor end by themselves; obid's `accounts` event says so)
   useEffect(() => { for (const a of accounts) if (a.signedIn && signing[a.id]) put(a.id); }, [accounts]);
   // a sign-in whose page ran out (15 minutes) without signing in: Sign In again
@@ -336,6 +350,29 @@ function Accounts() {
     });
     return () => timers.forEach(clearTimeout);
   }, [signing]);
+  // taking one off, after its window says what that does (by id: one gone meanwhile has no window)
+  const [removing, setRemoving] = useState<string | null>(null);
+  const remove = (a: Account) => (onObid ? setRemoving(a.id) : setAccounts(accounts.filter((x) => x.id !== a.id)));
+  const gone = accounts.find((x) => x.id === removing);
+  const removeWindow = gone && <ConfirmWindow brand={AGENTS[gone.agent].brand} title={`Remove ${gone.name}?`} text={removeNote(gone)} action="Remove"
+    onConfirm={() => void tried(gone.id, () => api.removeAccount(gone.id).then(() => { put(gone.id); look(); }))} onClose={() => setRemoving(null)} />;
+  return { offered, look, signing, put, problems, busy, tried, signIn, sendCode, cancel, remove, removeWindow };
+}
+
+function Accounts() {
+  const [accounts, setAccounts] = useAccounts();
+  const { offered, look, signing, problems, busy, tried, signIn, sendCode, cancel, remove, removeWindow } = useSignIns(accounts, setAccounts);
+  const [agent, setAgent] = useState<Account['agent']>('claude');
+  const [name, setName] = useState('');
+  const [payer, setPayer] = useState('');
+  const add = () => tried(ADD, async () => {
+    const n = name.trim(), p = payer.trim();
+    const a = onObid ? await api.addAccount({ agent, name: n, ...(p ? { payer: p } : {}) }) : null;
+    setName(''); setPayer('');
+    // its sign-in's errors show on its row
+    if (a) return void signIn(a.id);
+    setAccounts([...accounts, { id: `a${Date.now()}`, agent, name: n, payer: p || 'You', used: 0, resets: 'Resets in 7 days' }]);
+  });
   const roomiest = accounts.filter((a) => a.used != null).sort((a, b) => a.used! - b.used!)[0];
   return <>
     <Group i={1} title="Accounts on this Mac">
@@ -384,16 +421,18 @@ function Accounts() {
         <button className="set-button" disabled={!name.trim() || busy} onClick={add}>Add Account</button>
       </Row>
     </Group>
+    {removeWindow}
   </>;
 }
 
-// What removing one of obid's accounts does, and what it leaves (the Swift app's words)
+// What removing one of obid's accounts does, and what it leaves (the Swift app's words), under
+// its window's Remove X?
 function removeNote(a: Account) {
   const tool = AGENTS[a.agent].name, provider = { claude: 'Anthropic', codex: 'OpenAI', cursor: 'Cursor' }[a.agent];
-  if (ownLogin(a)) return `Remove ${a.name}? Oby stops using ${tool}’s own login on this Mac; nothing of it is deleted. Bring it back with Use ${tool}’s Own Login, under Add an account.`;
+  if (ownLogin(a)) return `Oby stops using ${tool}’s own login on this Mac; nothing of it is deleted. Bring it back with Use ${tool}’s Own Login.`;
   // one obid made has eight hex digits; any other is in obid's configuration, whose folder stays
   const made = /^[0-9a-f]{8}$/.test(a.id);
-  return `Remove ${a.name}? Oby stops using it, and deletes the folder it made for it, if any. Your account with ${provider} stays signed in there until you sign it out.`
+  return `Oby stops using it, and deletes the folder it made for it, if any. Your account with ${provider} stays signed in there until you sign it out.`
     + (a.agent === 'claude' ? ' Its Keychain item stays too; Keychain Access removes it.' : '')
     + (made ? '' : ' It’s in obid’s configuration, so it can’t be added back here.');
 }
@@ -556,6 +595,140 @@ function Models() {
   </>;
 }
 
+// Agents: which agent new tasks go to; each agent added (an account: its 5-hour session and its
+// week) with the model and efforts its jobs run on, and its Remove; then Add an agent. The default
+// agent and the models are kept here only for now (useModels): obid has neither setting yet
+// (asked of Wellington, 2026-10-28)
+const EFFORT_NAMES: Record<string, string> = { low: 'Low', medium: 'Medium', high: 'High', xhigh: 'Extra high', max: 'Max', ultra: 'Ultra' };
+const MOCK_MODELS: Models = {
+  claude: { model: 'claude-opus-5-5', effort: 'xhigh', complexEffort: 'xhigh' },
+  codex: { model: 'gpt-6.1-sol', effort: 'high', complexEffort: 'high' },
+  cursor: { model: 'auto' },
+};
+const ALL_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'];
+const MOCK_OPTIONS: ModelOptions = {
+  claude: { models: [{ id: 'claude-fable-5-1', name: 'Fable 5.1' }, { id: 'claude-opus-5-5', name: 'Opus 5.5' }, { id: 'claude-sonnet-5-5', name: 'Sonnet 5.5' }, { id: 'claude-haiku-5-5', name: 'Haiku 5.5' }], efforts: ALL_EFFORTS, complexEfforts: ALL_EFFORTS },
+  codex: { models: [{ id: 'gpt-6.1-sol', name: 'gpt-6.1-sol', efforts: ALL_EFFORTS.slice(0, 4) }, { id: 'gpt-6-astra', name: 'GPT-6-Astra', efforts: ALL_EFFORTS.slice(0, 4) }], complexEfforts: ALL_EFFORTS.slice(0, 4) },
+  cursor: { models: [{ id: 'auto', name: 'Auto' }, { id: 'claude-opus-5-5', name: 'Opus 5.5' }, { id: 'gpt-6.1-sol', name: 'gpt-6.1-sol' }], complexEfforts: [] },
+};
+type Tuning = { model: string; effort?: string; complexEffort?: string };
+// each agent's model and efforts (an account's: Personal and Work on Claude Code each their own),
+// and the choices. On obid it starts from what its status says the tool runs, with the choices
+// this app knows; a change is kept here only, for now: obid has one setting per tool and no way
+// yet to set it (its /v1/settings/models answers 404; asked of Wellington, 2026-10-28). Else
+// the mock's
+function useModels(): [(x: Account) => Tuning, ModelOptions, (id: string, change: Partial<Tuning>) => void] {
+  const live = useLive().status?.models as Partial<Models> | undefined;
+  const [mine, setMine] = useKeptSetting<Record<string, Partial<Tuning>>>('models.mine', {});
+  // each tool's on its own: what obid says it runs over the mock's, so a key obid leaves out isn't lost
+  const base = Object.fromEntries((Object.keys(MOCK_MODELS) as Agent[]).map((a) => [a, { ...MOCK_MODELS[a], ...(onObid ? live?.[a] : undefined) }])) as Models;
+  const of = (x: Account): Tuning => ({ ...(base[x.agent] ?? { model: 'auto' }), ...mine[x.id] });
+  const tune = (id: string, change: Partial<Tuning>) => setMine({ ...mine, [id]: { ...mine[id], ...change } });
+  return [of, MOCK_OPTIONS, tune];
+}
+// a pop-up's choices, the one set kept even when the choices don't (yet) have it
+const choices = (list: { id: string; name: string }[], set: string | undefined) =>
+  [...(set && !list.some((m) => m.id === set) ? [{ id: set, name: set }] : []), ...list].map((m) => [m.id, m.name] as const);
+const effortChoices = (list: string[] | undefined, set: string | undefined) =>
+  choices((list ?? []).map((e) => ({ id: e, name: EFFORT_NAMES[e] ?? e })), set);
+
+function Agents() {
+  const [accounts, setAccounts] = useAccounts();
+  const [tuning, options, tune] = useModels();
+  const [chosen, setChosen] = useKeptSetting<string | null>('agent.default', null);
+  // signing in, as Settings › Accounts does (useSignIns): its states, its problems, the tool's own login
+  const { offered, look, signing, problems, busy, tried, signIn, sendCode, cancel, remove, removeWindow } = useSignIns(accounts, setAccounts);
+  // Add an agent: a provider, and an alias of your own for it (several of one are fine)
+  const [agent, setAgent] = useState<Agent>('claude');
+  const [name, setName] = useState('');
+  const add = () => tried(ADD, async () => {
+    const n = name.trim();
+    const a = onObid ? await api.addAccount({ agent, name: n }) : null;
+    setName('');
+    // its sign-in's errors show on its card
+    if (a) return void signIn(a.id);
+    setAccounts([...accounts, { id: `a${Date.now()}`, agent, name: n, payer: 'You', used: 0, resets: 'Resets in 7 days', signedIn: true }]);
+  });
+  const ids = Object.keys(AGENTS) as Agent[];
+  // one card per agent you added, in the providers' order
+  const agents = ids.flatMap((a) => accounts.filter((x) => x.agent === a));
+  const ready = agents.filter((x) => x.signedIn !== false);
+  const fallback = ready.find((x) => x.id === chosen) ?? ready[0];
+  return <>
+    <Group i={1} title="Default agent">
+      {fallback
+        ? <Row label="New tasks go to">
+            <Select wide value={fallback.id} onChange={setChosen} label="Default agent" options={ready.map((x) => [x.id, `${x.name} · ${AGENTS[x.agent].name}`] as const)} />
+          </Row>
+        : <Row label={<span className="set-none">No agents yet</span>} />}
+    </Group>
+    {agents.map((x, k) => {
+      const a = x.agent, t = tuning(x), o = options[a];
+      const efforts = a === 'codex' ? o?.models.find((m) => m.id === t.model)?.efforts : o?.efforts;
+      const out = x.signedIn === false, sign = signing[x.id], tool = AGENTS[a].name, own = ownLogin(x);
+      // the bar: the 5-hour session; the week, in words under it
+      const week = weekWords(x);
+      return (
+        <Group key={x.id} i={2 + k} title={x.name}>
+          <div className="set-row set-usage">
+            <BrandMark brand={AGENTS[a].brand} size={16} mono />
+            <span className="set-label">
+              <span className="set-usage-name">
+                {tool}
+                {!out && !sign && x.session != null && <span className="set-value">{x.session}% used</span>}
+              </span>
+              {sign
+                ? <span className="set-about">{sign === 'opening' ? `Opening ${tool}’s sign-in page` : sign.code ? `Signing in to ${tool}` : `Finish on ${tool}’s sign-in page${sign.userCode ? ` · enter ${sign.userCode}` : ''}`}</span>
+                : out ? <span className="set-about">{x.label ?? 'Not signed in'}{own && !x.label ? `: sign in with ${tool} itself on this Mac` : ''}</span>
+                : x.session != null ? <>
+                    <span className="set-about">5-hour session{x.sessionResets ? ` · resets ${x.sessionResets}` : ''}</span>
+                    <span className="set-meter" role="meter" aria-valuenow={x.session} aria-valuemin={0} aria-valuemax={100} aria-label={`${x.session}% of the 5-hour session used`}>
+                      <span className={fullness(x.session)} style={{ width: `${x.session}%` }} />
+                    </span>
+                    <span className="set-about is-quiet">{week}</span>
+                  </>
+                : <span className="set-about">{week}</span>}
+              {sign && sign !== 'opening' && sign.pasteCode && !sign.code && <PasteCode onCode={(code) => sendCode(x.id, sign, code)} />}
+              {problems[x.id] && <span className="set-about set-problem" role="alert">{problems[x.id]}</span>}
+            </span>
+            {/* (obid signs in only the accounts with a folder of their own: not the tool's own login) */}
+            {out && !own && <span className="set-control set-control-top">
+              {sign && sign !== 'opening' && sign.code !== 'sending'
+                ? <button className="set-button" onClick={() => cancel(x.id)}>Cancel</button>
+                : <button className="set-button" disabled={!!sign} onClick={() => signIn(x.id)}>{sign ? 'Waiting…' : 'Sign In'}</button>}
+            </span>}
+          </div>
+          {/* the model and, after it in grey, how hard it thinks (one menu for both); complex tasks get an effort of their own */}
+          <Row label="Model">
+            <ModelPicker label={`${x.name} model and effort`} models={choices(o?.models ?? [], t.model)} model={t.model} onModel={(v) => tune(x.id, { model: v })}
+              efforts={a === 'cursor' ? [] : effortChoices(efforts, t.effort)} effort={t.effort} onEffort={(v) => tune(x.id, { effort: v })} />
+          </Row>
+          {a !== 'cursor' && <Row label="Effort on complex tasks">
+            <Select wide value={t.complexEffort ?? ''} onChange={(v) => tune(x.id, { complexEffort: v })} label={`${x.name} complex task effort`} options={effortChoices(o?.complexEfforts, t.complexEffort)} />
+          </Row>}
+          {/* the card's own action, on the left; red: it can't be undone (its sign-in goes with it) */}
+          <div className="set-row is-action">
+            <button className="set-button is-danger" onClick={() => remove(x)}>Remove</button>
+          </div>
+        </Group>
+      );
+    })}
+    <Group i={2 + agents.length} title="Add an agent" footer={problems[ADD] ? <span className="set-problem" role="alert">{problems[ADD]}</span> : 'The alias is only for you, to tell your agents apart.'}>
+      <Row label="Provider"><Select wide value={agent} onChange={(v) => setAgent(v as Agent)} label="Provider" options={ids.map((a) => [a, AGENTS[a].name] as const)} /></Row>
+      <Row label="Alias"><TextField wide value={name} onChange={setName} placeholder="Work, Personal…" label="Alias" /></Row>
+      {/* the card's action, not a row's: on the left */}
+      <div className="set-row is-action">
+        <button className="set-button is-primary" disabled={!name.trim() || busy} onClick={() => void add()}>{busy ? 'Adding…' : 'Add Agent'}</button>
+        {/* the tool's own login, found on this Mac (or taken off here): back in one click, no alias needed */}
+        {onObid && offered.some((l) => l.agent === agent) && (
+          <button className="set-button" disabled={busy} onClick={() => tried(ADD, () => api.addAccount({ agent, default: true }).then(look))}>Use {AGENTS[agent].name}’s Own Login</button>
+        )}
+      </div>
+    </Group>
+    {removeWindow}
+  </>;
+}
+
 // Vault: the secrets Oby keeps in the keychain, by name, never their values
 function Vault() {
   const [names, setNames] = useSetting('vault', ['figma-token', 'sentry-dsn', 'staging-api-key']);
@@ -585,16 +758,31 @@ function Vault() {
 }
 
 function About() {
-  const [checked, setChecked] = useState(false);
+  // Updating: the app has no updater yet (main has none), so on obid the card says only which
+  // version this is. The rest is the mock's, to show how it looks till then: checking says it's up
+  // to date while it updates itself; with that off, it finds 0.9.3
+  const [auto, setAuto] = useKeptSetting('updates.auto', true);
+  const [found, setFound] = useState<'none' | 'current' | 'update'>('none');
+  if (onObid) return <Group i={1}><Row label="Version"><Value>{version}</Value></Row></Group>;
   return <>
-    <Group i={1} title="Oby" footer="Oby checks for updates every 6 hours, downloads them quietly and installs them when it quits. Once one is downloaded, the island offers to restart now; if this Mac is running a check for the runner, the restart waits for it.">
+    <Group i={1} footer={auto ? 'Oby downloads updates in the background and installs them when you quit.' : undefined}>
       <Row label="Version"><Value>0.9.2 (412)</Value></Row>
-      <Row label="">{checked ? <Value>Oby is up to date</Value> : <button className="set-button" onClick={() => setChecked(true)}>Check for Updates…</button>}</Row>
+      <Row label="Update automatically"><Switch on={auto} onChange={(on) => { setAuto(on); setFound('none'); }} label="Update automatically" /></Row>
+      {found === 'update' && (
+        <Row label="Oby 0.9.3 is available" about="Released Oct 27">
+          <button className="set-button is-primary" onClick={() => setFound('current')}>Update and Restart</button>
+        </Row>
+      )}
+      {/* the card's own action: on the left */}
+      <div className="set-row is-action">
+        {found === 'current' ? <Value>Oby is up to date</Value>
+          : <button className="set-button" disabled={found === 'update'} onClick={() => setFound(auto ? 'current' : 'update')}>Check for Updates</button>}
+      </div>
     </Group>
   </>;
 }
 
-const PAGES: Record<string, () => React.ReactNode> = { general: General, runner: Runner, sharing: Sharing, remote: Remote, accounts: Accounts, models: Models, connectors: Connectors, vault: Vault, about: About };
+const PAGES: Record<string, () => React.ReactNode> = { general: General, agents: Agents, runner: Runner, sharing: Sharing, remote: Remote, accounts: Accounts, models: Models, connectors: Connectors, vault: Vault, about: About };
 
 // The default mode, with what it lets the agent do under it
 function ModeRow({ mode, setMode, modes = MODES }: { mode: string; setMode: (m: string) => void; modes?: typeof MODES }) {
@@ -612,7 +800,8 @@ function Rules({ id, initial }: { id: string; initial: Rule[] }) {
   return <RuleRows rules={rules} onRemove={(r) => setRules(rules.filter((x) => x !== r))} />;
 }
 function RuleRows({ rules, onRemove }: { rules: Rule[]; onRemove: (r: Rule) => void }) {
-  if (!rules.length) return <Row label={<span className="set-none">No saved rules</span>} />;
+  // none saved yet: no row (the group's note says how one gets here)
+  if (!rules.length) return null;
   return rules.map((r) => (
     <Row key={r.id ?? `${r.repo} ${r.rule}`} label={<span className="tok tok-code">{r.rule}</span>} about={`${r.decision} · ${r.repo}`}>
       <button className="set-button is-danger" onClick={() => onRemove(r)}>Remove</button>
@@ -644,14 +833,75 @@ export function Row({ label, about, children }: { label: React.ReactNode; about?
   );
 }
 
+// A model and, after it in grey, its effort: one button, and one menu with the models, then
+// Effort (its pick on the right), which opens the efforts beside it, as macOS's submenus do: on
+// hover, or a click. none: models only, as Cursor's (Settings › Agents)
+function ModelPicker({ label, models, model, onModel, efforts, effort, onEffort }: {
+  label: string;
+  models: readonly (readonly [string, string])[]; model: string; onModel: (v: string) => void;
+  efforts: readonly (readonly [string, string])[]; effort?: string; onEffort: (v: string) => void;
+}) {
+  const [at, setAt] = useState<DOMRect | null>(null);
+  // the efforts open beside Effort: to the right, else the left where the window ends there; as
+  // high as fits (offset: from Effort's top)
+  const [sub, setSub] = useState<{ left: boolean; top: number } | null>(null);
+  const openSub = (e: React.SyntheticEvent<HTMLButtonElement>) => {
+    const r = e.currentTarget.getBoundingClientRect(), tall = efforts.length * 30 + 14, wide = 160;
+    setSub({ left: r.right + 12 + wide > innerWidth - 8, top: Math.min(-8, innerHeight - 12 - tall - r.top) });
+  };
+  const shown = efforts.find(([id]) => id === effort)?.[1];
+  const close = () => { setAt(null); setSub(null); };
+  const pick = (f: (v: string) => void, v: string) => { f(v); close(); };
+  return <>
+    <button type="button" className={`set-picker${at ? ' is-on' : ''}`} aria-label={`${label}: ${models.find(([id]) => id === model)?.[1] ?? model}${shown ? `, ${shown}` : ''}`} aria-haspopup="menu" aria-expanded={!!at}
+      onClick={(e) => (at ? close() : setAt(e.currentTarget.getBoundingClientRect()))}>
+      <span className="set-picker-text">
+        {models.find(([id]) => id === model)?.[1] ?? model}
+        {shown && <span className="set-picker-sub">{shown}</span>}
+      </span>
+      <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M2.5 4 5 6.5 7.5 4" /></svg>
+    </button>
+    {at && (
+      <Menu at={at} onClose={close} width={200} height={30 * models.length + (efforts.length ? 73 : 47)}>
+        <span className="menu-label">Model</span>
+        {models.map(([id, name]) => (
+          <button key={id} role="menuitemradio" aria-checked={id === model} onPointerEnter={() => setSub(null)} onClick={() => pick(onModel, id)}>
+            {name}{id === model && <Check size={14} strokeWidth={1.8} className="menu-check" />}
+          </button>
+        ))}
+        {efforts.length > 0 && <>
+          <hr />
+          <span className="menu-sub-anchor">
+            <button aria-haspopup="menu" aria-expanded={!!sub} className={sub ? 'is-on' : ''} onPointerEnter={openSub} onClick={openSub}>
+              Effort<span className="menu-sub-value">{shown}</span>
+              <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M4 2.5 6.5 5 4 7.5" /></svg>
+            </button>
+            {/* in the menu's own box, so a click on it isn't a click outside the menu */}
+            {sub && (
+              <span className={`row-menu row-submenu${sub.left ? ' is-left' : ''}`} style={{ top: sub.top }} role="menu" aria-label="Effort">
+                {efforts.map(([id, name]) => (
+                  <button key={id} role="menuitemradio" aria-checked={id === effort} onClick={() => pick(onEffort, id)}>
+                    {name}{id === effort && <Check size={14} strokeWidth={1.8} className="menu-check" />}
+                  </button>
+                ))}
+              </span>
+            )}
+          </span>
+        </>}
+      </Menu>
+    )}
+  </>;
+}
+
 export function Switch({ on, onChange, label }: { on: boolean; onChange: (on: boolean) => void; label: string }) {
   return <button role="switch" aria-checked={on} aria-label={label} className="set-switch" onClick={() => onChange(!on)} />;
 }
 
 // A pop-up menu: the system's own (a native select)
-export function Select({ value, options, onChange, label }: { value: string; options: readonly (readonly [string, string])[]; onChange: (v: string) => void; label: string }) {
+// wide: 240px, as every control on Settings › Agents is
+export function Select({ value, options, onChange, label, wide = false }: { value: string; options: readonly (readonly [string, string])[]; onChange: (v: string) => void; label: string; wide?: boolean }) {
   return (
-    <span className="set-select">
+    <span className={`set-select${wide ? ' is-wide' : ''}`}>
       <select value={value} onChange={(e) => onChange(e.target.value)} aria-label={label}>
         {options.map(([id, name]) => <option key={id} value={id}>{name}</option>)}
       </select>
@@ -670,8 +920,8 @@ export function Segmented({ value, options, onChange, label }: { value: string; 
   );
 }
 
-export function TextField({ value, onChange, placeholder, label, secret = false }: { value: string; onChange: (v: string) => void; placeholder: string; label: string; secret?: boolean }) {
-  return <input className="set-field" type={secret ? 'password' : 'text'} value={value} onChange={(e) => onChange(e.target.value)} placeholder={placeholder} aria-label={label} spellCheck={false} />;
+export function TextField({ value, onChange, placeholder, label, secret = false, wide = false }: { value: string; onChange: (v: string) => void; placeholder: string; label: string; secret?: boolean; wide?: boolean }) {
+  return <input className={`set-field${wide ? ' is-wide' : ''}`} type={secret ? 'password' : 'text'} value={value} onChange={(e) => onChange(e.target.value)} placeholder={placeholder} aria-label={label} spellCheck={false} />;
 }
 
 // A read-only value (like everything on a Settings page, it can be selected and copied)

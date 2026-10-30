@@ -120,13 +120,29 @@ import(${JSON.stringify(pathToFileURL(join(appRoot, 'out/main/index.js')).href)}
   const errors = [];
   page.on('pageerror', (e) => errors.push(e.message));
   await page.waitForLoadState('domcontentloaded');
+  // set up already (FirstRun.tsx), so Home shows rather than the first run's screens
+  await page.evaluate(() => { for (const k of ['oby.onboarded', 'oby.setUp', 'oby.welcomed']) localStorage.setItem(k, '1'); });
+  await page.reload();
+  await page.waitForLoadState('domcontentloaded');
   await page.keyboard.press('Escape');
-  const card = page.getByRole('article', { name: 'Account limit decision' });
-  await card.waitFor({ timeout: 30_000 });
-  assert.equal(await card.count(), 1, 'one group, not one card per task');
-  assert.match(await card.innerText(), /2 tasks are waiting/);
+  const card = await limitCard(page);
+  assert.match(await card.innerText(), /2 tasks are waiting/, 'one group, not one card per task');
   return { app, page, card, errors };
 }
+
+// The decision is a card of kind limit in Home's stack (AskStack); brought to the top, past any
+// other card that needs the owner, and given AskBlock's half-second before a click counts.
+const limitCard = async (page) => {
+  const card = page.locator('.ask-card.is-up').filter({ has: page.locator('.tc-ask-kind.is-limit') });
+  await until('the limit decision on top of Home’s stack', async () => {
+    if (await card.count()) return true;
+    const next = page.locator('.ask-card.is-up button[aria-label="Next"]');
+    if (await next.count()) await next.click();
+    return false;
+  }, 30_000);
+  await page.waitForTimeout(600);
+  return card;
+};
 
 async function close(s, app) {
   if (app) { await app.close(); apps.delete(app); }
@@ -158,19 +174,17 @@ try {
     try {
       if (unavailable) {
         await card.getByRole('button', { name: 'Keep stopped' }).click();
-        await until('choices disable during real IPC submission', async () =>
-          await card.getByRole('button', { name: 'Keep stopped' }).isDisabled(), 2000);
-        assert.ok(await card.getByRole('button', { name: 'Resume when available' }).isDisabled(),
-          'every choice disables while the answer is in flight');
-        await card.getByRole('alert').waitFor();
-        assert.match(await card.getByRole('alert').innerText(), /Keychain isn’t available/);
-        assert.ok(await card.getByRole('button', { name: 'Keep stopped' }).isEnabled(), 'failed signing can be retried');
+        await card.waitFor({ state: 'detached', timeout: 2000 });  // out of the stack while the answer is in flight
+        const back = await limitCard(page);
+        assert.match(await back.innerText(), /Keychain isn’t available/);
+        assert.ok(await back.getByRole('button', { name: 'Keep stopped' }).isEnabled(), 'failed signing can be retried');
         assert.equal(read(join(s.home, 'limit-decisions.json'))[0].choice, 'pending');
         assert.equal(existsSync(join(s.root, 'electron-data/device-key')), false, 'no plaintext fallback');
       } else {
         await card.getByRole('button', { name: 'Keep stopped' }).click();
         await card.waitFor({ state: 'detached' });
-        assert.equal(read(join(s.home, 'limit-decisions.json'))[0].choice, 'stop');
+        // (the card leaves Home's stack as it's answered; obid saves the choice a moment later)
+        await until('the owner\'s choice is saved', () => read(join(s.home, 'limit-decisions.json'))[0].choice === 'stop');
         assert.ok(existsSync(join(s.root, 'electron-data/device-key')), 'encrypted device key created in isolated userData');
         for (const id of ['aaaa0001', 'aaaa0002']) assert.equal((await s.call('GET', `/v1/jobs/${id}`)).status, 'interrupted');
         await noRepeatedInterruption(page);
@@ -245,7 +259,7 @@ try {
       const before = await Promise.all(ids.map((id) => s.call('GET', `/v1/jobs/${id}`)));
       ({ app } = await openApp(s));
       const page = await app.firstWindow();
-      const card = page.getByRole('article', { name: 'Account limit decision' });
+      const card = await limitCard(page);
       await card.getByRole('button', { name: /Move all to Codex destination/ }).click();
       await card.waitFor({ state: 'detached' });
       for (const [i, id] of ids.entries()) {
@@ -272,7 +286,8 @@ try {
     try {
       await card.getByRole('button', { name: 'Resume when available' }).click();
       await card.waitFor({ state: 'detached' });
-      assert.equal(read(join(s.home, 'limit-decisions.json'))[0].choice, 'resume');
+      // (the card leaves Home's stack as it's answered; obid saves the choice a moment later)
+      await until('the owner\'s choice is saved', () => read(join(s.home, 'limit-decisions.json'))[0].choice === 'resume');
       await noRepeatedInterruption(page);
       for (const id of ['aaaa0001', 'aaaa0002']) {
         const done = await until('approved reset resumes job', async () => {

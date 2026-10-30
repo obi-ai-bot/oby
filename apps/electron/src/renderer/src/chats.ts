@@ -4,6 +4,7 @@ import { addTask, conversationOfTask, relay } from './tasks';
 import { streamWords, wait } from './stream';
 import { everything, onObid } from './lean';
 import * as live from './live';
+import { box as draftBox, forget } from './drafts';
 
 // A conversation with Oby: what you asked, its answers, and the tasks they
 // started (a card under the answer that started each). Asking Oby (Home's
@@ -146,6 +147,7 @@ export function renameChat(id: string, title: string) {
 }
 export const pinChat = (id: string, pinned: boolean) => (ofObid(id) ? void live.pinConversation(id, pinned) : update(id, () => ({ pinned })));
 export const deleteChat = (id: string) => {
+  forget(draftBox.conversation(id));  // its unsent words go with it
   if (ofObid(id)) return void live.deleteConversation(id);
   queued.delete(id); set(chats.filter((c) => c.id !== id));
 };

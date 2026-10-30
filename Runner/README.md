@@ -115,7 +115,7 @@ The runner listens on `127.0.0.1` only. `tailscale serve` publishes it on the ta
 tailscale serve --bg --https=8443 http://127.0.0.1:7777
 ```
 
-On `tetrix-lab`, port 443 belongs to the Tetrix stack, so the runner is on 8443: the iPhone app's base URL is `https://tetrix-lab.tail8de49b.ts.net:8443`. Nothing on the tailnet API is reachable from the internet.
+On `tetrix-lab`, port 443 belongs to the Tetrix stack, so the runner is on 8443: the iPhone app's base URL is `https://<the machine's tailnet name>:8443`. Nothing on the tailnet API is reachable from the internet.
 
 ## The Apple Watch without its iPhone
 

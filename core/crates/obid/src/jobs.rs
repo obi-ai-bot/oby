@@ -3314,6 +3314,13 @@ impl Jobs {
                     if unheard.first().map(String::as_str) == Some(text) {
                         unheard.remove(0);
                     }
+                    let mut next = follow_up(&job, text);
+                    // The owner's own words to their job carry its mode on, Bypass too: they
+                    // chose it for this work, and a follow-up is more of it ([`follow_up`] drops
+                    // Bypass only for what the brain starts).
+                    if source == Source::Owner {
+                        next.mode = job.mode.clone();
+                    }
                     let made = self.create(NewJob {
                         attachments: (!attachments.is_empty()).then(|| attachments.to_vec()),
                         heard: unheard,
@@ -3322,7 +3329,7 @@ impl Jobs {
                         // Files may hold anyone's words, as a conversation's do (crate::secretspec).
                         foreign: (!attachments.is_empty())
                             .then(|| "files the owner attached, which may hold anyone's words".into()),
-                        ..follow_up(&job, text)
+                        ..next
                     });
                     if made.is_ok() && !job.heard.is_empty() {
                         self.take_heard(id);
@@ -3780,6 +3787,25 @@ impl Jobs {
     /// Settings › Permissions: the mode new jobs get.
     pub fn default_mode(&self) -> Mode {
         self.kept().default_mode()
+    }
+
+    /// Whether Bypass widens trust here: it does unless it's the owner's own default
+    /// (Settings › Permissions), in which case every new job runs in it anyway, so the brain
+    /// naming it, continuing a job in it or carrying it on by itself asks nothing wider than
+    /// what the owner chose. Only the brain's own choices go through this: a mode the owner
+    /// names (`POST /v1/jobs`, `POST /v1/jobs/{id}/mode`) never waits.
+    pub fn bypass_widens(&self) -> bool {
+        self.default_mode() != Mode::Bypass
+    }
+
+    /// The mode a job goes on in once the owner approves its plan: their default, the mode a
+    /// new job gets (Bypass too: approving the plan asks nothing wider than any job they start),
+    /// or Ask when that default is Plan itself, which the job is leaving.
+    pub fn approved_mode(&self) -> Mode {
+        match self.default_mode() {
+            Mode::Plan => Mode::Ask,
+            mode => mode,
+        }
     }
 
     /// Changes the mode new jobs get, and keeps it. Jobs already made keep theirs.
@@ -4420,9 +4446,11 @@ impl Jobs {
         };
         let plan = ask.permission.is_plan();
         let (said, answer) = owners_answer(&ask.permission, decision, words);
-        // An approved plan goes on in the default mode, before the agent's next call is judged.
+        // An approved plan goes on in the owner's default mode ([`Jobs::approved_mode`]), before
+        // the agent's next call is judged.
         if plan && matches!(answer, Answer::Allow) {
-            self.update(id, |job| job.mode = Some(Mode::Ask.as_str().to_owned()));
+            let approved = self.approved_mode();
+            self.update(id, |job| job.mode = Some(approved.as_str().to_owned()));
         }
         // Its item settles, and its words are noted, before the agent hears the answer (and asks
         // its next).
@@ -4470,6 +4498,7 @@ impl Jobs {
         decision: Decision,
         words: Option<&str>,
     ) -> Option<Result<Job, PermissionRefused>> {
+        let approved = self.approved_mode();
         let (card, said) = {
             let mut state = self.lock();
             let job = state
@@ -4489,9 +4518,9 @@ impl Jobs {
             // an allow lets the same call through once.
             parked.answered = true;
             parked.allowed = matches!(answer, Answer::Allow);
-            // An approved plan goes on in the default mode, as a live one does.
+            // An approved plan goes on in the owner's default mode, as a live one does.
             if parked.allowed && card.is_plan() {
-                job.mode = Some(Mode::Ask.as_str().to_owned());
+                job.mode = Some(approved.as_str().to_owned());
             }
             if let Some(words) = words {
                 job.notes
@@ -11749,8 +11778,11 @@ pub fn not_continuable(job: &Job) -> Option<&'static str> {
 /// decision of 2026-10-18): the same kind, agent, account, repository, pull request or issue,
 /// base, check, model, mode and conversation, the words its request and task, titled
 /// `Follow-up: <job's title>` (never the words themselves, which may be long; the conversation
-/// may name it better, `oby_tell_job`'s `title`), and what `job` did for its first prompt. Bypass isn't carried: only the owner's own
-/// Confirm starts a job that never asks. When `job` has commits that aren't merged, the follow-up
+/// may name it better, `oby_tell_job`'s `title`), and what `job` did for its first prompt. Bypass
+/// isn't carried here: a follow-up the brain starts (`oby_tell_job`, a supervisor's restart) gets
+/// the owner's default mode, so only the owner's own choice starts a job that never asks (their
+/// default, their Confirm, or their own words to the job, [`Jobs::message`], which keep its mode).
+/// When `job` has commits that aren't merged, the follow-up
 /// starts from its branch head, so its agent has that work: on that very branch while its pull
 /// request is open (publishing updates it), else on a branch of its own.
 pub fn follow_up(job: &Job, words: &str) -> NewJob {
@@ -15444,7 +15476,96 @@ mod tests {
         jobs.answer_permission("j", &again, Decision::Allow, None)
             .unwrap();
         assert_eq!(approved.await.unwrap(), Answer::Allow);
-        assert_eq!(jobs.get("j").unwrap().mode.as_deref(), Some("ask"));
+        // Approved, it goes on in the owner's default mode (Sandbox here), as a new job would.
+        assert_eq!(jobs.get("j").unwrap().mode.as_deref(), Some("sandbox"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// An approved plan goes on in the owner's default mode, Bypass too (approving asks nothing
+    /// wider than any job they start), and in Ask when that default is Plan itself. Bypass widens
+    /// trust (the brain's naming it, continuing or carrying on a job in it waits for a Confirm)
+    /// only where it isn't the owner's default.
+    #[test]
+    fn an_approved_plan_goes_on_in_the_owners_default_mode() {
+        let root = std::env::temp_dir().join(format!("obid-approved-{}", uuid::Uuid::new_v4()));
+        let config = crate::config::Config::parse(
+            &json!({"listen": "127.0.0.1:0", "home": root.join("home"), "owner": "o"}).to_string(),
+        )
+        .unwrap();
+        let jobs = Jobs::open(
+            config,
+            crate::events::Events::new(),
+            Err("no sandbox".into()),
+        )
+        .unwrap();
+        assert_eq!(jobs.default_mode(), Mode::Sandbox);
+        assert_eq!(jobs.approved_mode(), Mode::Sandbox);
+        assert!(jobs.bypass_widens());
+        for (default, approved, widens) in [
+            (Mode::Ask, Mode::Ask, true),
+            (Mode::AcceptEdits, Mode::AcceptEdits, true),
+            (Mode::Plan, Mode::Ask, true),
+            (Mode::Bypass, Mode::Bypass, false),
+            (Mode::Sandbox, Mode::Sandbox, true),
+        ] {
+            jobs.set_default_mode(default).unwrap();
+            assert_eq!(jobs.approved_mode(), approved, "{default:?}");
+            assert_eq!(jobs.bypass_widens(), widens, "{default:?}");
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The owner's own words to a job that ended start its follow-up in the job's mode, Bypass
+    /// too: they chose it for this work. A Confirm's words (what Oby proposed) start it in the
+    /// owner's default, as `follow_up` has it.
+    #[tokio::test]
+    async fn the_owners_words_carry_a_jobs_bypass_into_its_follow_up() {
+        let root = std::env::temp_dir().join(format!("obid-follow-mode-{}", uuid::Uuid::new_v4()));
+        let account = root.join("accounts/c");
+        std::fs::create_dir_all(&account).unwrap();
+        std::fs::write(account.join(".credentials.json"), "{}").unwrap();
+        let config = crate::config::Config::parse(
+            &json!({"listen": "127.0.0.1:0", "home": root.join("home"), "owner": "o",
+                "repos": [{"repo": "o/r", "remote": "https://example.com/o/r.git"}],
+                "agents": {"claude": {"bin": "/usr/bin/true",
+                                      "accounts": [{"id": "c", "name": "C", "configDir": account}]}}})
+            .to_string(),
+        )
+        .unwrap();
+        let jobs = Jobs::open(
+            config,
+            crate::events::Events::new(),
+            Err("no sandbox".into()),
+        )
+        .unwrap();
+        let ended = |id: &str| {
+            let mut job = Job::new(
+                id.into(),
+                "o/r".into(),
+                "fix".into(),
+                "Fix it".into(),
+                "claude".into(),
+                "c".into(),
+            );
+            job.status = Status::Done;
+            job.branch = format!("oby/fix-{id}");
+            job.mode = Some("bypass".into());
+            jobs.insert(job);
+        };
+        ended("ffff0001");
+        let owners = jobs
+            .message("ffff0001", "and the docs", Source::Owner)
+            .unwrap()
+            .unwrap();
+        assert_eq!(owners.follow_up_of.as_deref(), Some("ffff0001"));
+        assert_eq!(owners.mode.as_deref(), Some("bypass"));
+        ended("ffff0002");
+        let confirmed = jobs
+            .message("ffff0002", "and the docs", Source::Confirmed)
+            .unwrap()
+            .unwrap();
+        assert_eq!(confirmed.mode.as_deref(), Some("sandbox"));
+        jobs.stop_all();
         let _ = std::fs::remove_dir_all(&root);
     }
 

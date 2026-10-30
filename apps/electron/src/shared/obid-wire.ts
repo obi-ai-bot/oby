@@ -106,6 +106,7 @@ export type Account = {
   fiveHour: number | null;
   sevenDay: number | null;
   sevenDayResets: string | null;
+  fiveHourResets?: string | null;
   running: number;
 };
 export type Status = {

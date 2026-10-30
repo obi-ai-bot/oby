@@ -92,7 +92,8 @@ JIT as the only entitlement, Electron's fuses closed), and the script checks it,
 scans it with gitleaks, notarizes and staples it (keychain profile
 `oby-notary`), and makes `dist/Oby-Electron-<version>-<arch>.dmg`, signed, notarized and
 stapled too. It needs the Developer ID Application identity of team
-`3UV9W5SV7W` and both Rust targets (`rustup target add aarch64-apple-darwin
+`3UV9W5SV7W` (another team's: set `OBY_TEAM_ID` and `OBY_SIGN_IDENTITY`, its
+name as in `"Name (TEAMID)"`) and both Rust targets (`rustup target add aarch64-apple-darwin
 x86_64-apple-darwin`); `OBY_CARGO_TARGET_DIR` reuses a cargo target directory.
 obid, gh and gitleaks are staged again only when `core/`, `plugins/` or the bundle
 scripts changed since (`build/helpers/stamp`). `scripts/vm-test.sh [dmg]` then
@@ -166,6 +167,8 @@ tasks.ts, peers.ts  the tasks and the conversations with other Obys, as small st
 spheres.ts          the Obyspheres you're in, their members and invites
 knowledge.ts        each Obysphere's knowledge sources
 stream.ts           Oby's words coming in a word at a time
+drafts.ts           each message box's unsent words, kept on this Mac (localStorage)
+                    until sent, its conversation or task deleted, or a week untouched
 obid.ts             obid's API: its types and calls (copied from apps/web/src/api.ts), through main
 live.ts             what obid has, kept live by its event stream, put into the stores
                     above as conversations, tasks and accounts; and what the app asks of it
