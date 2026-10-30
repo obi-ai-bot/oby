@@ -53,6 +53,9 @@ mac:
       to: obid
     - from: build/helpers/Contents/Resources/Licenses
       to: Licenses
+    # electron-updater reads it before any download (main/updates.ts): package.sh checks it's there
+    - from: build/app-update.yml
+      to: app-update.yml
   # ponytail: Chromium's .pak files are resources Electron Framework's own signature seals; signed
   # one by one they'd each wait on Apple's timestamp server (over 200 of them)
   signIgnore:

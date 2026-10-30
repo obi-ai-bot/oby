@@ -11,6 +11,7 @@ import Connectors, { ConfirmWindow, readConnectors } from './Connectors';
 import { Menu } from './Menu';
 import { useLive } from './live';
 import { version } from '../../../package.json';
+import type { Update } from '../../shared/updates';
 
 // how long the way out takes (the sink animation in app.css)
 const LEAVE_MS = 220;
@@ -745,12 +746,45 @@ function Vault() {
   </>;
 }
 
+// About in the Mac app: the version, and Oby's own updates in Sangam's rows (main/updates.ts
+// decides, shared/updates.ts; docs/contracts/updates.md)
+function Updates() {
+  const app = window.app!;
+  const [kept, setKept] = useState<{ auto: boolean; update: Update } | null>(null);
+  useEffect(() => {
+    void app.updates!().then(setKept);
+    return app.onUpdate!((update) => setKept((k) => k && { ...k, update }));
+  }, []);
+  const ask = (a: 'check' | 'install' | boolean) => {
+    if (typeof a === 'boolean') setKept((k) => k && { ...k, auto: a });
+    void app.updates!(a).then(setKept);
+  };
+  const auto = kept?.auto ?? true, u: Update = kept?.update ?? { state: 'idle' };
+  const found = u.state === 'available' || u.state === 'downloading' || u.state === 'ready' ? u : null;
+  return (
+    <Group i={1} footer={auto ? 'Oby downloads updates in the background and installs them when you quit.' : undefined}>
+      <Row label="Version"><Value>{version}</Value></Row>
+      <Row label="Update automatically"><Switch on={auto} onChange={ask} label="Update automatically" /></Row>
+      {found && (
+        <Row label={`Oby ${found.version} is available`} about={found.date ? `Released ${new Date(found.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}` : undefined}>
+          <button className="set-button is-primary" disabled={found.state === 'downloading' && found.restart} onClick={() => ask('install')}>Update and Restart</button>
+        </Row>
+      )}
+      {/* the card's own action: on the left */}
+      <div className="set-row is-action">
+        {u.state === 'current' ? <Value>Oby is up to date</Value>
+          : <button className="set-button" disabled={u.state !== 'idle'} onClick={() => ask('check')}>Check for Updates</button>}
+      </div>
+    </Group>
+  );
+}
+
 function About() {
-  // Updating: the app has no updater yet (main has none), so on obid the card says only which
-  // version this is. The rest is the mock's, to show how it looks till then: checking says it's up
-  // to date while it updates itself; with that off, it finds 0.9.3
-  const [auto, setAuto] = useKeptSetting('updates.auto', true);
+  // On obid, the real updater (Updates). The rest is the mock's, in a browser: checking says it's
+  // up to date while it updates itself; with that off, it finds 0.9.3
+  const [auto, setAuto] = useSetting('updates.auto', true);
   const [found, setFound] = useState<'none' | 'current' | 'update'>('none');
+  if (onObid && window.app?.updates) return <Updates />;
   if (onObid) return <Group i={1}><Row label="Version"><Value>{version}</Value></Row></Group>;
   return <>
     <Group i={1} footer={auto ? 'Oby downloads updates in the background and installs them when you quit.' : undefined}>
