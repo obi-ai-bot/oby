@@ -129,16 +129,20 @@ async function must(call: Call, method: string, path: string, body?: unknown) {
 
 // The Sphere's refusal in plain words, with what to do (the Swift app's), or as it is
 function plain(said: string, owner: string, sphere: string) {
+  if (/has joined .* already/.test(said)) return ALREADY;
   if (said.includes('the owner already has another bound key')) return `${sphere} already has ${owner} with another Mac’s key (another Mac, or Oby before a reinstall). For now you’re in an Obysphere from one Mac: join from that one.`;
   if (said.includes('invitation_invalid')) return 'This link has expired, was used up or was cancelled. Ask whoever sent it for a new one.';
   return said;
 }
 
+const ALREADY = 'This Oby is already in an Obysphere. Leave it first (in its settings), then open this link again.';
+
 // Joins with an invitation (SPHERE-1): obid's Oby key, its card signed by the owner, a delegation
 // to it, then obid redeems the invitation and follows the Sphere. An open link's Oby is
 // obi-<a new UUID> (an Oby is a UUID with a name, and a Sphere never takes an id twice); a named
-// one's is its own. Answers obid's membership.
-export async function join(call: Call, key: KeyObject, invite: Invite, name?: string) {
+// one's is its own. ownerKey is asked for only once the checks pass (SPHERE-2: a link that can't
+// be used makes no key). Answers obid's membership.
+export async function join(call: Call, ownerKey: () => KeyObject, invite: Invite, name?: string) {
   let owner = '';
   try {
     const now = await must(call, 'GET', '/v1/obid/sphere');
@@ -148,6 +152,8 @@ export async function join(call: Call, key: KeyObject, invite: Invite, name?: st
     }
     // ponytail: no Google sign-in in this app yet, so no link limited to a Workspace
     if (invite.domain && !invite.owner) throw new Refused(`This link is for people at ${invite.domain}, and Oby can’t sign you in with Google yet. Ask ${invite.by || 'the admin'} for a link made for you.`);
+    if (now.state === 'joined') throw new Refused(ALREADY);
+    const key = ownerKey();
     if (now.state === 'revoked') await must(call, 'DELETE', '/v1/obid/sphere');
     await must(call, 'POST', '/v1/obid/sphere/key');
     const obi = invite.obi ?? `obi-${randomUUID()}`;
@@ -167,13 +173,24 @@ export async function join(call: Call, key: KeyObject, invite: Invite, name?: st
 // What keeps a member's words sealed and its membership alive (SPHERE-6), signed with no click as
 // the Swift app's were: a new card when obid says `card_needed` (its first card has no seal key;
 // once the Obysphere and every teammate can read one, the next carries it), and a new delegation
-// with the same scope once 5 days or fewer are left of the 30. key: asked for only to sign (an
-// owner who never joins gets none). Answers what it signed.
+// with the same scope once 5 days or fewer are left of the 30. ownerKey: asked for only while
+// joined (an owner who never joins gets none). Answers what it signed.
+// A membership whose card another owner key signed (the Swift app's, or this app's before a
+// Keychain reset) can't be kept: it throws NotThisKey, whose words say what to do.
 const RENEW_WITHIN = 5 * 86_400_000;
+export class NotThisKey extends Error {}
+// The owner key a card names: its Obysphere extension's params (identity.md 2)
+const cardOwnerKey = (card: unknown) =>
+  ((card as { capabilities?: { extensions?: { params?: { owner_key?: string } }[] } } | null)?.capabilities?.extensions ?? [])
+    .map((x) => x.params?.owner_key).find(Boolean);
 export async function keepMembership(call: Call, ownerKey: () => KeyObject, now = Date.now()) {
   const m = await must(call, 'GET', '/v1/obid/sphere');
   if (m.state !== 'joined') return [];
   const [owner, sphere, obi] = [String(m.owner), String(m.sphere), String(m.obiId)];
+  const signer = cardOwnerKey(m.card);
+  if (signer && signer !== publicOf(ownerKey())) {
+    throw new NotThisKey(`Your Oby joined ${sphere} with another app’s key, so this app can’t keep its words sealed or its membership from running out. Leave ${sphere} (in its settings), then open its link again.`);
+  }
   const body: Record<string, unknown> = {};
   if (m.sealing === 'card_needed') {
     const made = await must(call, 'POST', '/v1/obid/sphere/card', {
@@ -190,7 +207,7 @@ export async function keepMembership(call: Call, ownerKey: () => KeyObject, now 
 // Leaves (SPHERE-4): the Sphere takes this Oby out first, with the owner's own token, which obid
 // never holds; then obid forgets the Sphere and its Oby key. When the Sphere can't be told, obid
 // leaves all the same and `untold` says why: the Sphere lists this Oby until its admin removes it.
-export async function leave(call: Call, key: KeyObject, http: typeof fetch = fetch) {
+export async function leave(call: Call, ownerKey: () => KeyObject, http: typeof fetch = fetch) {
   const now = await must(call, 'GET', '/v1/obid/sphere');
   let untold: string | null = null;
   if (now.state === 'joined') {
@@ -201,7 +218,7 @@ export async function leave(call: Call, key: KeyObject, http: typeof fetch = fet
         method: 'POST', redirect: 'error', headers: { 'content-type': 'application/x-www-form-urlencoded' },
         body: new URLSearchParams({
           grant_type: 'urn:ietf:params:oauth:grant-type:token-exchange', subject_token_type: 'urn:ietf:params:oauth:token-type:jwt',
-          subject_token: assertion(key, String(now.owner), sphere, 'directory:read'),
+          subject_token: assertion(ownerKey(), String(now.owner), sphere, 'directory:read'),
         }),
       });
       const token = t.ok ? ((await t.json()) as { access_token?: string }).access_token : undefined;
@@ -212,5 +229,5 @@ export async function leave(call: Call, key: KeyObject, http: typeof fetch = fet
       untold = e instanceof Error ? e.message : String(e);
     }
   }
-  return { membership: await must(call, 'DELETE', '/v1/obid/sphere'), untold };
+  return { membership: await must(call, 'DELETE', '/v1/obid/sphere'), untold, sphere: String(now.sphere ?? 'the Obysphere') };
 }

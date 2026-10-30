@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import { join as path } from 'node:path';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 import {
-  ACCEPTS, SCOPES, canonical, join, keepMembership, keyIdOf, leave, openedInviteLink, parseInvite, publicOf, readInviteLink, type Answer, type Call,
+  ACCEPTS, NotThisKey, SCOPES, canonical, join, keepMembership, keyIdOf, leave, openedInviteLink, parseInvite, publicOf, readInviteLink, type Answer, type Call,
 } from '../../../shared/sphere';
 
 // docs/contracts/obysphere.md: each test is named after its scenario. SPHERE-5 (two real obids on
@@ -32,7 +32,7 @@ function fakeObid(owner = 'wellington', state = 'none', refuse?: Record<string, 
     if (method === 'GET' && p === '/v1/obid/sphere') return { status: 200, text: JSON.stringify({ state, owner, url: 'https://sphere.example.com', sphere: 'demo', obiId: 'obi-x' }) };
     if (p === '/v1/obid/sphere/card') {
       const b = body as { obiId: string; ownerKey: string };
-      return { status: 200, text: JSON.stringify({ card: { name: 'x', params: { obi_id: b.obiId, owner, owner_key: b.ownerKey } } }) };
+      return { status: 200, text: JSON.stringify({ card: { name: 'x', capabilities: { extensions: [{ params: { obi_id: b.obiId, owner, owner_key: b.ownerKey } }] } } }) };
     }
     if (p === '/v1/obid/sphere/join') return { status: 200, text: JSON.stringify({ state: 'joined' }) };
     return { status: 200, text: JSON.stringify({ state: 'none' }) };
@@ -47,7 +47,7 @@ describe('obysphere', () => {
   it('sphere_1_a_private_link_joins_with_a_card_and_delegation_the_owner_signed', async () => {
     const obid = fakeObid();
     const invite = parseInvite(OPEN)!;
-    expect(await join(obid.call, key, invite)).toEqual({ state: 'joined' });
+    expect(await join(obid.call, () => key, invite)).toEqual({ state: 'joined' });
     expect(obid.calls.map((c) => `${c.method} ${c.path}`)).toEqual([
       'GET /v1/obid/sphere', 'POST /v1/obid/sphere/key', 'POST /v1/obid/sphere/card', 'POST /v1/obid/sphere/join',
     ]);
@@ -71,11 +71,11 @@ describe('obysphere', () => {
     expect(SCOPES.split(' ')).toEqual(expect.arrayContaining(['receive', 'reply']));
     // a named link's Oby is the one it names
     const named = fakeObid();
-    await join(named.call, key, parseInvite(NAMED)!);
+    await join(named.call, () => key, parseInvite(NAMED)!);
     expect(named.sent('/v1/obid/sphere/card').obiId).toBe('obi-wellington');
     // left after a revoke: obid forgets the old Sphere first
     const revoked = fakeObid('wellington', 'revoked');
-    await join(revoked.call, key, invite);
+    await join(revoked.call, () => key, invite);
     expect(revoked.calls[1]).toMatchObject({ method: 'DELETE', path: '/v1/obid/sphere' });
   });
 
@@ -94,20 +94,28 @@ describe('obysphere', () => {
   });
 
   it('sphere_2_a_link_this_oby_cant_use_joins_nothing_and_says_why', async () => {
+    // no owner key is made for a link that can't be used
+    const never = () => { throw new Error('no key for a refused link'); };
     // a named link for another owner
     const other = fakeObid('ernesto');
-    await expect(join(other.call, key, parseInvite(NAMED)!)).rejects.toThrow('This invite is for wellington, and this Mac’s Oby acts for ernesto.');
+    await expect(join(other.call, never, parseInvite(NAMED)!)).rejects.toThrow('This invite is for wellington, and this Mac’s Oby acts for ernesto.');
     expect(other.calls.map((c) => c.method)).toEqual(['GET']);
     // a link for one Google Workspace: no sign-in in this app yet
     const domain = fakeObid();
-    await expect(join(domain.call, key, parseInvite(`${OPEN}&domain=deskree.com`)!)).rejects.toThrow('This link is for people at deskree.com');
+    await expect(join(domain.call, never, parseInvite(`${OPEN}&domain=deskree.com`)!)).rejects.toThrow('This link is for people at deskree.com');
     expect(domain.calls.map((c) => c.method)).toEqual(['GET']);
+    // already in one: a plain sentence, before anything (obid's 409 says the same if it races)
+    const inOne = fakeObid('wellington', 'joined');
+    await expect(join(inOne.call, never, parseInvite(OPEN)!)).rejects.toThrow('This Oby is already in an Obysphere. Leave it first');
+    expect(inOne.calls.map((c) => c.method)).toEqual(['GET']);
+    const raced = fakeObid('wellington', 'none', { 'POST /v1/obid/sphere/join': { status: 409, text: JSON.stringify({ error: 'obid has joined demo already (joined).' }) } });
+    await expect(join(raced.call, () => key, parseInvite(OPEN)!)).rejects.toThrow('This Oby is already in an Obysphere.');
     // the Sphere's refusal, in plain words
     const used = fakeObid('wellington', 'none', { 'POST /v1/obid/sphere/join': { status: 502, text: JSON.stringify({ error: 'The Sphere refused it: invitation_invalid: used up' }) } });
-    await expect(join(used.call, key, parseInvite(OPEN)!)).rejects.toThrow('This link has expired, was used up or was cancelled.');
+    await expect(join(used.call, () => key, parseInvite(OPEN)!)).rejects.toThrow('This link has expired, was used up or was cancelled.');
     // obid not answering
     const down: Call = async () => ({ status: 0, text: 'Nothing answers on 127.0.0.1:7777: obid isn’t running.' });
-    await expect(join(down, key, parseInvite(OPEN)!)).rejects.toThrow('obid isn’t running');
+    await expect(join(down, () => key, parseInvite(OPEN)!)).rejects.toThrow('obid isn’t running');
   });
 
   it('sphere_4_leaving_takes_this_oby_out_of_the_obysphere_then_obid_forgets_it', async () => {
@@ -122,12 +130,17 @@ describe('obysphere', () => {
       expect(init).toMatchObject({ method: 'DELETE', headers: { authorization: 'Bearer owner-token' } });
       return new Response('{}');
     });
-    expect((await leave(obid.call, key, http as unknown as typeof fetch)).untold).toBeNull();
+    expect((await leave(obid.call, () => key, http as unknown as typeof fetch)).untold).toBeNull();
     expect(http.mock.calls.map((c) => c[0])).toEqual(['https://sphere.example.com/v0.1/oauth/token', 'https://sphere.example.com/v0.1/spheres/demo/members/obi-x']);
     expect(obid.calls.at(-1)).toMatchObject({ method: 'DELETE', path: '/v1/obid/sphere' });
+    // nothing joined: no owner key is made, nothing reaches a Sphere
+    const none = fakeObid('wellington', 'none');
+    const nothing = vi.fn();
+    expect((await leave(none.call, () => { throw new Error('no key'); }, nothing as unknown as typeof fetch)).untold).toBeNull();
+    expect(nothing).not.toHaveBeenCalled();
     // the Obysphere can't be told: obid leaves all the same, and says so
     const away = fakeObid('wellington', 'joined');
-    const r = await leave(away.call, key, (async () => { throw new Error('offline'); }) as unknown as typeof fetch);
+    const r = await leave(away.call, () => key, (async () => { throw new Error('offline'); }) as unknown as typeof fetch);
     expect(r.untold).toBe('offline');
     expect(away.calls.at(-1)).toMatchObject({ method: 'DELETE', path: '/v1/obid/sphere' });
   });
@@ -136,7 +149,7 @@ describe('obysphere', () => {
     const at = Date.parse('2026-10-30T12:00:00Z');
     const membership = (sealing: string, expiresAt: string) => ({
       state: 'joined', owner: 'wellington', url: 'https://sphere.example.com', sphere: 'demo', obiId: 'obi-x',
-      sealing, accepts: ACCEPTS, card: { name: 'Wellington’s Oby' }, delegation: { scope: SCOPES, expiresAt },
+      sealing, accepts: ACCEPTS, card: { name: 'Wellington’s Oby', capabilities: { extensions: [{ params: { owner_key: publicOf(key) } }] } }, delegation: { scope: SCOPES, expiresAt },
     });
     const obid = (m: unknown) => {
       const calls: { method: string; path: string; body?: Record<string, unknown> }[] = [];
@@ -149,11 +162,10 @@ describe('obysphere', () => {
     };
     let asked = 0;
     const owner = () => { asked++; return key; };
-    // nothing to sign: nothing sent, and no owner key asked for
+    // nothing to sign: nothing sent
     const quiet = obid(membership('on', '2026-11-20T12:00:00Z'));
     expect(await keepMembership(quiet.call, owner, at)).toEqual([]);
     expect(quiet.calls).toHaveLength(1);
-    expect(asked).toBe(0);
     // card_needed: the same name and accepts, signed, through PUT /v1/obid/sphere/membership
     const sealing = obid(membership('card_needed', '2026-11-20T12:00:00Z'));
     expect(await keepMembership(sealing.call, owner, at)).toEqual(['card']);
@@ -167,8 +179,16 @@ describe('obysphere', () => {
     expect(await keepMembership(ending.call, owner, at)).toEqual(['delegation']);
     const claims = part((ending.calls[1].body!.delegation as string).split('.')[1]);
     expect(claims).toMatchObject({ sub: 'wellington', aud: 'obi-sphere:demo', scope: SCOPES, may_act: { sub: 'obi-x' }, iat: at / 1000 });
-    // not joined: nothing
+    // not joined: nothing, and no owner key made
+    asked = 0;
     expect(await keepMembership(obid({ state: 'none' }).call, owner, at)).toEqual([]);
+    expect(asked).toBe(0);
+    // a card another owner key signed (the Swift app's): nothing signed, and words that say what to do
+    const swift = { ...membership('card_needed', '2026-11-04T12:00:00Z'), card: { name: 'x', capabilities: { extensions: [{ params: { owner_key: publicOf(generateKeyPairSync('ed25519').privateKey) } }] } } };
+    const other = obid(swift);
+    await expect(keepMembership(other.call, owner, at)).rejects.toThrow(NotThisKey);
+    await expect(keepMembership(other.call, owner, at)).rejects.toThrow('Leave demo (in its settings), then open its link again.');
+    expect(other.calls.every((c) => c.method === 'GET')).toBe(true);
   });
 });
 
@@ -182,13 +202,20 @@ describe('obysphere in the side panel', () => {
 
   it('sphere_3_the_joined_obysphere_shows_with_the_other_obys_owners', () => {
     const joined = { state: 'joined', url: 'https://sphere.example.com', sphere: 'demo' };
-    const s = spheres.liveSphere(joined, [{ owner: 'dmytro' }, { owner: 'ernesto' }], { demo: 'Demo team' })!;
-    expect(s).toMatchObject({ id: 'live:demo', name: 'Demo team', admin: false, members: ['dmytro', 'ernesto'], invited: [], live: true });
+    const s = spheres.liveSphere({ ...joined, owner: 'wellington' }, [{ owner: 'dmytro' }, { owner: 'ernesto' }], { demo: 'Demo team' })!;
+    expect(s).toMatchObject({ id: 'live:demo', name: 'Demo team', admin: false, members: ['dmytro', 'ernesto'], invited: [], live: true, me: 'wellington' });
     expect(spheres.urlOf(s)).toBe('sphere.example.com');
     expect(spheres.memberCount(s)).toBe(3);
     // its id when the link's name isn't kept; nothing when obid isn't in one
     expect(spheres.liveSphere(joined, [], {})!.name).toBe('demo');
     expect(spheres.liveSphere({ state: 'none', url: null, sphere: null }, [], {})).toBeNull();
     expect(spheres.liveSphere({ ...joined, state: 'revoked' }, [], {})).toBeNull();
+  });
+
+  it('sphere_7_a_live_obysphere_s_members_open_no_made_up_conversation', () => {
+    const live = spheres.liveSphere({ state: 'joined', url: 'https://sphere.example.com', sphere: 'demo' }, [{ owner: 'ernesto' }], {})!;
+    expect(spheres.canChat(live)).toBe(false);
+    // the mock's (and the tour's sample) keep Sangam's conversations
+    expect(spheres.canChat(spheres.SAMPLE)).toBe(true);
   });
 });

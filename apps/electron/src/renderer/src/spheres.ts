@@ -13,8 +13,9 @@ import { everything, onObid } from './lean';
 export type Sphere = {
   id: string; name: string; slug: string; brand?: Brand; image?: string;
   admin: boolean; members: string[]; invited: string[]; domain?: string; sample?: true;
-  // live: the one obid is in (docs/contracts/obysphere.md), at its own address
-  live?: true; url?: string;
+  // live: the one obid is in (docs/contracts/obysphere.md), at its own address; me: who your Oby
+  // acts for there (obid's owner id)
+  live?: true; url?: string; me?: string;
 };
 // you (until there's sign-in)
 export const ME = { name: 'Doti', email: 'doti@deskree.com' };
@@ -85,11 +86,15 @@ export const invite = (id: string, emails: string[]) =>
 // the other Obys' owners. Not its admin: its admin made it on the Obysphere's own server.
 const LIVE = 'live:';
 const NAMES = 'oby.sphereNames';
-type Membership = { state: string; url: string | null; sphere: string | null };
+type Membership = { state: string; url: string | null; sphere: string | null; owner?: string };
 export function liveSphere(m: Membership, members: { owner: string }[], names: Record<string, string>): Sphere | null {
   if (m.state !== 'joined' || !m.sphere || !m.url) return null;
-  return { id: LIVE + m.sphere, name: names[m.sphere] ?? m.sphere, slug: m.sphere, admin: false, members: members.map((x) => x.owner), invited: [], live: true, url: m.url };
+  return { id: LIVE + m.sphere, name: names[m.sphere] ?? m.sphere, slug: m.sphere, admin: false, members: members.map((x) => x.owner), invited: [], live: true, url: m.url, me: m.owner };
 }
+// Whether a member's row opens a conversation with its Oby (SPHERE-7): not in a live Obysphere,
+// whose conversations are the mock's (peers.ts), which would say a message went when nothing did.
+// ponytail: a live member's row opens nothing until conversations go through obid's requests
+export const canChat = (s: Sphere) => !s.live;
 const names = (): Record<string, string> => { try { return JSON.parse(localStorage.getItem(NAMES) ?? '{}'); } catch { return {}; } };
 async function loadLive() {
   const call = window.app!.obid.call;

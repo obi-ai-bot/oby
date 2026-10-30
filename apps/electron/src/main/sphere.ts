@@ -1,8 +1,8 @@
-import { app, dialog, ipcMain, type BrowserWindow } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain } from 'electron';
 import { generateKeyPairSync, type KeyObject } from 'node:crypto';
 import { keptKey } from './device';
 import { obid, type Trusted } from './obid';
-import { join, joinWarning, keepMembership, leave, parseInvite } from '../shared/sphere';
+import { NotThisKey, join, joinWarning, keepMembership, leave, parseInvite } from '../shared/sphere';
 
 // Joining an Obysphere by a private link (docs/contracts/obysphere.md). The owner key, Ed25519, is
 // made here in main and kept as the device key is (device.ts): it never leaves main, and the page
@@ -28,7 +28,12 @@ export function sphering(trusted: Trusted, show: () => BrowserWindow) {
 
   // the card obid asks for (its seal key) and the delegation's renewal (SPHERE-6): at launch, after
   // a join, and every 5 minutes, as the Swift app did; obid has no membership event to wait on
-  const keep = () => keepMembership(obid, ownerKey).catch((e) => console.warn('Obysphere membership:', e instanceof Error ? e.message : e));
+  // A membership another key signed is told to the owner, once a launch (SPHERE-6)
+  let told = false;
+  const keep = () => keepMembership(obid, ownerKey).catch((e) => {
+    if (e instanceof NotThisKey && !told) { told = true; void said(show(), 'Oby can’t keep your Obysphere working.', e.message); }
+    else if (!(e instanceof NotThisKey)) console.warn('Obysphere membership:', e instanceof Error ? e.message : e);
+  });
   void keep();
   setInterval(() => void keep(), 5 * 60_000);
 
@@ -39,11 +44,11 @@ export function sphering(trusted: Trusted, show: () => BrowserWindow) {
     const { response } = await dialog.showMessageBox(w, {
       type: 'question', message: `Join ${invite.name}?`,
       detail: `${invite.by ? `${invite.by} invited you. ` : ''}${joinWarning(invite)}`,
-      buttons: ['Join', 'Cancel'], defaultId: 0, cancelId: 1,
+      buttons: ['Join', 'Cancel'], defaultId: 1, cancelId: 1,
     });
     if (response !== 0) return;
     try {
-      await join(obid, ownerKey(), invite);
+      await join(obid, ownerKey, invite);
       void keep();
       if (!w.isDestroyed()) w.webContents.send('sphere', { sphere: invite.sphere, name: invite.name });
     } catch (e) {
@@ -52,9 +57,19 @@ export function sphering(trusted: Trusted, show: () => BrowserWindow) {
   };
   if (pending) { const url = pending; pending = null; opened(url); }
 
-  // Leave, from the Obysphere's settings: answers why the Obysphere wasn't told, or null
+  // Leave, from the Obysphere's settings (SPHERE-4): when the Obysphere couldn't be told, or obid
+  // couldn't leave, the owner is told why; answers that, or null
   ipcMain.handle('sphere-leave', async (e) => {
     if (!trusted(e)) return 'Not this app’s page.';
-    try { return (await leave(obid, ownerKey())).untold; } catch (err) { return err instanceof Error ? err.message : String(err); }
+    const w = BrowserWindow.fromWebContents(e.sender) ?? show();
+    try {
+      const { membership, untold, sphere } = await leave(obid, ownerKey);
+      if (untold) void said(w, `You left ${sphere}, but it couldn’t be told.`, `${untold}. It still lists your Oby until its admin removes it.`);
+      return untold ?? (membership.state === 'none' ? null : 'obid is still in it.');
+    } catch (err) {
+      const why = err instanceof Error ? err.message : String(err);
+      void said(w, 'Oby couldn’t leave the Obysphere.', why);
+      return why;
+    }
   });
 }

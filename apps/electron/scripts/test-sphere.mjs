@@ -130,8 +130,8 @@ try {
 
   // 2. Two Obys join, each by its link, through the app's own join
   const a = await obid('obid-a', 'wellington'), b = await obid('obid-b', 'ernesto');
-  const ja = await joinSphere(a.call, a.key, parseInvite(open));
-  const jb = await joinSphere(b.call, b.key, parseInvite(named));
+  const ja = await joinSphere(a.call, () => a.key, parseInvite(open));
+  const jb = await joinSphere(b.call, () => b.key, parseInvite(named));
   assert.equal(ja.state, 'joined');
   assert.match(ja.obiId, /^obi-[0-9a-f-]{36}$/);
   assert.equal(jb.state, 'joined');
@@ -170,7 +170,7 @@ try {
   step(`SPHERE-5: a question crossed it (${got.state} on Ernesto's side)`);
 
   // 5. Wellington's Oby leaves: the Obysphere takes it out, and obid forgets it
-  const left = await leave(a.call, a.key);
+  const left = await leave(a.call, () => a.key);
   assert.equal(left.untold, null);
   assert.equal(left.membership.state, 'none');
   r = await api(`/spheres/demo/members/${ja.obiId}`, { token: adminToken });
