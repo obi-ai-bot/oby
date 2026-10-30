@@ -118,6 +118,8 @@ struct FieldOut {
     optional: bool,
     skip_if_none: bool,
     flatten: bool,
+    /// The type's own name (`Tuning` for `crate::settings::Tuning`): what a `flatten` field brings in.
+    ty: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -867,6 +869,10 @@ impl<'ast> Visit<'ast> for Cx<'_> {
                     optional,
                     skip_if_none: has("skip_serializing_if"),
                     flatten: has("flatten"),
+                    ty: match &f.ty {
+                        Type::Path(p) => p.path.segments.last().map(|s| s.ident.to_string()),
+                        _ => None,
+                    },
                 });
             }
             self.out.structs.push(StructOut {
@@ -1133,6 +1139,7 @@ mod tests {
         assert_eq!(json, ["jobId", "kind", "maxMinutes", "extra"]);
         assert!(s.fields[2].optional && s.fields[2].skip_if_none);
         assert!(s.fields[3].flatten);
+        assert_eq!(s.fields[3].ty.as_deref(), Some("Extra"));
         assert_eq!(rename("a_b_c", Some("kebab-case")), "a-b-c");
     }
 
