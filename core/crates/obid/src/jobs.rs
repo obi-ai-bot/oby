@@ -9686,9 +9686,15 @@ impl Jobs {
             return;
         };
         let Some(author) = self.get(&of) else { return };
+        // A review its account's limit stopped waits for the owner's one decision (#1563), still
+        // the author's review: never let go and retried on another account by itself.
+        let waits_on_limit = review.account_limit_blocked
+            && review.dismissed.is_none()
+            && review.status == Status::Interrupted;
         if author.reviewing.as_deref().is_some_and(|r| r != id)
             || author.review.as_ref().is_some_and(|r| r.job == id)
             || review.resumes_at.is_some()
+            || waits_on_limit
         {
             return;
         }
