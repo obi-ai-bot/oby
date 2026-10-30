@@ -1,0 +1,96 @@
+name: Feature
+description: A feature with its business behavior contract (docs/business-contract-template.md). Ready when every required field is filled.
+title: "feat: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Sangam's design is the spec: the words a person sees come from his screen, never from this contract. Once built, the contract moves to `docs/contracts/<area>.md` and the runner API to `docs/runner-api.md`.
+  - type: input
+    id: screen
+    attributes:
+      label: Sangam's screen
+      description: The screen or component this serves (a path in apps/electron, a `?everything` or `?onboarding=` link, a design PR).
+      placeholder: FirstRun.tsx, the Tools step
+    validations:
+      required: true
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Outcome
+      description: What can the person accomplish, and why does it matter?
+    validations:
+      required: true
+  - type: textarea
+    id: status
+    attributes:
+      label: Status and scope
+      description: Proposed, accepted, implemented or superseded; the owner's decision and related issues. What is included and what is explicitly outside.
+    validations:
+      required: true
+  - type: textarea
+    id: actors
+    attributes:
+      label: Actors and ownership
+      description: Who initiates or answers? What obid decides, persists and executes; what the app displays and sends.
+    validations:
+      required: true
+  - type: textarea
+    id: triggers
+    attributes:
+      label: Triggers and prerequisites
+      description: What starts the behavior, and what must be true first?
+    validations:
+      required: true
+  - type: textarea
+    id: states
+    attributes:
+      label: States and transitions
+      description: The states, what changes them, what the person sees; choices, defaults, cancellation and completion.
+    validations:
+      required: true
+  - type: textarea
+    id: failures
+    attributes:
+      label: Failures and recovery
+      description: A dependency fails, information is stale, the app restarts, a device disconnects, the same action arrives twice. Retries and what stays visible.
+    validations:
+      required: true
+  - type: textarea
+    id: invariants
+    attributes:
+      label: Invariants and boundaries
+      description: What always stays true (authorization, privacy, security, add-only API, AGENTS.md's rules), and when external effects may happen.
+    validations:
+      required: true
+  - type: textarea
+    id: interfaces
+    attributes:
+      label: Interfaces and dependencies
+      description: Affected API, events, stored files, clients and external services; compatibility; open questions.
+    validations:
+      required: true
+  - type: textarea
+    id: scenarios
+    attributes:
+      label: Acceptance scenarios
+      description: Numbered `<AREA>-<n>`, each a starting condition, an action and an expected result. Each becomes a test named after it.
+      value: |
+        - AREA-1: Given …, when …, then …
+        - AREA-2: Given …, when …, then …
+    validations:
+      required: true
+  - type: textarea
+    id: files
+    attributes:
+      label: Files it will touch
+      description: The files or modules this work owns.
+    validations:
+      required: true
+  - type: textarea
+    id: realmac
+    attributes:
+      label: Test it when it's done
+      description: The steps to run on a real Mac.
+    validations:
+      required: true
