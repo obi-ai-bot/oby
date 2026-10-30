@@ -45,8 +45,8 @@ export const config: BrainConfig = {
   // What Sangam's app keeps itself. "obid": a choice obid owes him (the issue that takes it over); "app": a per-viewer
   // convenience that belongs in the app.
   local: [
-    { key: 'agent.default', owner: 'obid', issue: 1573, note: 'Settings › Agents › New tasks go to' },
-    { key: 'models.mine', owner: 'obid', issue: 1574, note: 'Settings › Agents: model and effort per account' },
+    { key: 'agent.default', owner: 'obid', issue: 1573, note: 'Settings › Agents › New tasks go to: obid\'s defaultAccount once its status says it; kept here only for an older obid' },
+    { key: 'models.mine', owner: 'obid', issue: 1574, note: 'Settings › Agents: model and effort per account, obid\'s once its status says defaultAccount; kept here only for an older obid' },
     { key: 'oby.folders', owner: 'obid', issue: 1572, note: 'Working folders, per conversation: obid\'s once its status says folders; kept here only for an older obid' },
     { key: 'oby.archiveAfter', owner: 'obid', issue: 1580, note: 'Home › Archive completed after…' },
     { key: 'updates.auto', owner: 'app', note: 'About › Update automatically: the mock\'s, in memory; in the Mac app, main keeps it (main/updates.ts)' },

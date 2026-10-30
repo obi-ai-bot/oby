@@ -114,6 +114,13 @@ export const api = {
   // obid only: accounts, and signing them in with the tool's own login
   addAccount: (body: { agent: Agent; default: true } | { agent: Agent; name: string; payer?: string }) => call<Account>('POST', '/v1/accounts', body),
   removeAccount: (a: string) => call<null>('DELETE', `/v1/accounts/${id(a)}`),
+  // obid only, Settings › Agents: an account's model and efforts (null: the tool's own), the
+  // choices, and the account new tasks go to (null: routing's own order)
+  tuneAccount: (a: string, change: { model?: string | null; effort?: string | null; complexEffort?: string | null }) =>
+    call<Account>('PATCH', `/v1/accounts/${id(a)}`, change),
+  modelOptions: () => call<ModelOptions>('GET', '/v1/settings/models/options'),
+  setDefaultAccount: (account: string | null) =>
+    call<{ defaultAccount: string | null }>('PUT', '/v1/settings/jobs', { defaultAccount: account }),
   signIn: (a: string) => call<SignIn>('GET', `/v1/accounts/${id(a)}/sign-in`),
   signInCode: (a: string, code: string) => call<Account>('POST', `/v1/accounts/${id(a)}/sign-in`, { code }),
   endSignIn: (a: string) => call<null>('DELETE', `/v1/accounts/${id(a)}/sign-in`),

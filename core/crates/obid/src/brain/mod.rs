@@ -511,19 +511,15 @@ pub(super) fn context(shared: &Shared, conversation: &str, turns: &[Turn], nonce
     // What a job may move to: each tool's models (Engine/Move.swift, `Moves.models`).
     let mut models: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for (tool, _) in &tools {
-        let ids: &[&str] = match *tool {
-            "claude" => &[
-                "claude-fable-5-1",
-                "claude-opus-5-5",
-                "claude-sonnet-5-5",
-                "claude-haiku-5-5",
-            ],
-            "codex" => &["gpt-6.1-sol", "gpt-6-astra"],
+        let ids = match crate::agent::Tool::from_id(tool) {
+            Some(t @ (crate::agent::Tool::Claude | crate::agent::Tool::Codex)) => {
+                crate::settings::models(t)
+            }
             _ => &[],
         };
         models.insert(
             (*tool).into(),
-            ids.iter().map(|m| (*m).to_owned()).collect(),
+            ids.iter().map(|(m, _)| (*m).to_owned()).collect(),
         );
     }
     let briefing = briefing::Briefing {
@@ -533,6 +529,7 @@ pub(super) fn context(shared: &Shared, conversation: &str, turns: &[Turn], nonce
         jobs: shared.jobs.list(usize::MAX),
         inbox: shared.link.waiting_items(now),
         accounts: told,
+        default_account: crate::settings::load(&config.home).default_account,
         repos: config.repos.names(),
         max_running: shared.jobs.max_running(),
         default_mode: shared.jobs.default_mode().as_str(),

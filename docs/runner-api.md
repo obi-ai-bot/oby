@@ -422,6 +422,7 @@ Something only the user can answer (docs/pipeline-cases.md, "Your inbox"). Like 
 - `fullUntil` is set while a job of the account's hit its usage limit: no job goes to it before then. Accounts are signed in on the runner itself, through each tool's own login; the app only shows them.
 - `tetrix`: whether the account's agents have Tetrix's MCP server connected, or null before the runner knows. The runner asks on startup (Claude Code: `claude mcp list`, with claude.ai's connectors off as for agents; Codex: its app-server's `mcpServerStatus/list`), and every job's tool says it again as its session starts. `tetrixJobs`: of the account's recent jobs (the latest 50 the runner keeps in memory) that ended and whose tool said what it had, how many there are; `tetrixUsed`: how many of them called Tetrix. Settings shows `Tetrix: connected · used in 9 of 12 recent jobs (75%)`, or `Tetrix: not connected: sign in` (signing in is the tool's own login for its `tetrix` server, on the runner; never Oby holding the token). Older runners don't send these keys.
 - `reserved`: the account is at 80% of its week before `sevenDayResets`, so it gets only jobs sent to it by name (and reviews, last: Routing below). False while its reserve is lifted. `reserveLiftedUntil`: until when the user let it past its reserve (`POST /v1/accounts/{id}/reserve`), its week's reset; null when they didn't, or once that time has passed. Older runners don't send these keys.
+- `model`, `effort`, `complexEffort` (obid only, #1574): the model and efforts the account's jobs run on, each only when the owner chose it (`PATCH /v1/accounts/{id}`); a key left out is the tool's own. Older runners don't send them (docs/contracts/agents.md, AGENTS-5).
 
 Accounts are signed in on the runner itself, through each tool's own login; the app only shows them (on obid the app can add, rename and remove them, and start that login: [obid only: accounts](#obid-only-accounts)). Settings shows one card per account, grouped by tool, with a bar per window, its reset time, and the running count.
 
@@ -447,7 +448,7 @@ There's no draft to confirm any more: the work the brain plans starts as it's pl
 {"runner": {"version": "0.2.0", "host": "tetrix-lab"},
  "accounts": [ …Account ],
  "models": {"claude": {"model": "claude-opus-5-5", "effort": "xhigh", "complexEffort": "xhigh"}, "codex": {"model": "gpt-6-sol", "effort": "high", "complexEffort": "high"}, "cursor": {"model": "auto"}},
- "maxRunning": 6, "running": 4, "defaultAgent": "auto",
+ "maxRunning": 6, "running": 4, "defaultAgent": "auto", "defaultAccount": null,
  "clearedAt": "2026-10-10T08:12:00Z",
  "github": "app", "checks": "ok", "permissions": {"mode": "sandbox"},
  "cleanup": {"path": "/srv/nvme/oby/jobs", "bytes": 8912896, "lastRun": "2026-10-13T08:00:00Z", "kept": []},
@@ -489,6 +490,8 @@ End-of-turn work a restart cut short carries on too (a crash or `systemctl resta
 `maxRunning` is how many jobs run at once (#237; Job, above), and `running` how many slots are taken now: jobs whose agent is running, reviews and rounds included, and waiting jobs on their way to a slot. Older runners don't send them.
 
 `defaultAgent` (obid only) is the agent new conversation tasks go to: `auto`, `claude`, `codex` or `cursor` (`PUT /v1/settings/default-agent`). Older runners don't send the key.
+
+`defaultAccount` (obid only, #1573) is the account new tasks go to (Settings › Agents › New tasks go to), or null for routing's own order (`PUT /v1/settings/jobs`). Older runners don't send the key; an app that sees it, even null, knows obid keeps Settings › Agents' choices (docs/contracts/agents.md).
 
 `clearedAt` is when Clear done was last pressed, on any app (`POST /v1/clear`), or null when it never was. Every app hides the settled jobs that finished at that second or before (`finished` not after `clearedAt`): dismissed or stopped, with their pull request merged or closed, or ended with nothing to publish (`JobList.settled`, Shared/JobList.swift). Jobs still queued, running or waiting, needing the user, with their pull request open, or reviewing one that isn't settled stay, and so do finished ones that ran again since. Older runners don't send the key.
 
@@ -1234,6 +1237,8 @@ The saved rules, oldest first:
 
 ### `GET /v1/settings/models` and `PUT /v1/settings/models`
 
+obid (#1574) answers `GET /v1/settings/models` with `status.models` and `GET /v1/settings/models/options` with one fixed list per tool, the choices Settings › Agents offers (each model with the efforts it takes); it has no `PUT` (`405`): a model and efforts are an account's (`PATCH /v1/accounts/{id}`). The rest of this section is the Swift runner's.
+
 Each tool's model, routine effort and complex-job effort, as in `status.models`; Cursor has a model and no effort: `"cursor": {"model": "auto"}` (`auto` lets Cursor pick). `PUT` takes `cursor` optionally: older clients leave it out and the value is kept; it must be a model id (`422` for anything else, such as an option). `GET /v1/settings/models/options` lists the choices: Claude Code's models and efforts, the models the signed-in Codex account offers (from its own `model/list`) with the efforts each takes, and Cursor's models from `cursor-agent models` on the first signed-in Cursor account (`{"models": [{"id", "name"}], "efforts": []}`, no models while none is signed in). Defaults are Claude Code `xhigh` and Codex `high` for `complexEffort`; older clients that omit it keep the current value.
 
 The chat's set_setting action uses those same choices. It changes one tool's model, routine effort or `complexEffort` (Cursor's model only: `effort` and `complex_effort` must be null for it), maxRunning (1 through 20), or an account's weekly reserve (lift true or false). For example, "complex jobs on Codex at xhigh" sets Codex's `complexEffort`. Swift checks every value against the briefing before the runner applies it; a rejected model or effort includes the available choices. Each action reply names the old and new value. A request that changes two tools is planned as two actions so the brain receives a fresh briefing between them.
@@ -1248,13 +1253,15 @@ The chat's set_setting action uses those same choices. It changes one tool's mod
 
 Sets the default for new conversation tasks: `{"defaultAgent":"auto"}`, `"claude"`, `"codex"` or `"cursor"`. The default is `"auto"` (the planner's automatic choice). The runner persists this in `home/settings.json`, exposes it as `defaultAgent` in `GET /v1/status`, and answers `200` with `{"defaultAgent":"codex"}` after a successful update. Missing, unknown or non-string values are `422`; malformed JSON is `400`. It uses the same owner authentication as the other settings routes. Older runners answer `404` and send no `defaultAgent`.
 
-When the owner's words name an agent (Claude, Codex or Cursor), or the plan names an account, the planner's selection takes precedence. Otherwise the default is used if it has a signed-in, usable account with room under the existing usage limits; a disconnected default, no usable account or a full default falls back to the planner's current automatic choice. `auto` always keeps that choice. Existing jobs and follow-ups retain their agent.
+When the owner's words name an agent (Claude, Codex or Cursor), or the plan names an account, the planner's selection takes precedence. Otherwise `defaultAccount` comes first, while it's signed in with room (`PUT /v1/settings/jobs`); then this default is used if it has a signed-in, usable account with room under the existing usage limits; a disconnected default, no usable account or a full default falls back to the planner's current automatic choice. `auto` always keeps that choice. Existing jobs and follow-ups retain their agent.
 
 ### `GET /v1/settings/jobs` and `PUT /v1/settings/jobs`
 
 How many jobs run at once, as in `status.maxRunning`: `{"maxRunning": 6}`, 1 to 20 (anything else is `422`). The runner keeps it across restarts. Raising it starts waiting jobs at once; lowering it stops nothing, and new jobs wait until fewer than the new cap run.
 
-obid also answers `accountFailover` (`{"maxRunning": 6, "accountFailover": true}`), kept across restarts and set with `PUT` alongside or instead of `maxRunning`. It controls conversation-turn failover; jobs at an account limit follow the owner decision in “obid: account-limit decisions” (#1563). A body with neither setting, or a value of the wrong kind, is `422`.
+obid also answers `accountFailover` and `defaultAccount` (`{"maxRunning": 6, "accountFailover": true, "defaultAccount": null}`), kept across restarts and set with `PUT` alongside or instead of `maxRunning`. `accountFailover` controls conversation-turn failover; jobs at an account limit follow the owner decision in “obid: account-limit decisions” (#1563). A body with none of them, or a value of the wrong kind, is `422`.
+
+`defaultAccount` (#1573) is the account new tasks go to: an account id obid has (`422` for another), or null for routing's own order; removing the account sets it back to null. A job with no account named (`auto`) goes to it first, whatever its tool, while it's signed in with room; one that names a tool goes to it when it's that tool's. Signed out, out of room, or being signed in or removed, it's passed over as routing passes any. A conversation's plan whose account is `auto` takes its tool unless the owner's words name an agent, before `defaultAgent` (docs/contracts/agents.md, AGENTS-1 to AGENTS-4).
 
 ### `POST /v1/speech?device=<UUID>&utterance=<UUID>&final=false&language=auto`
 
@@ -1629,7 +1636,7 @@ The owner adds, renames and removes the agents' accounts, and signs them in, fro
 - `201` with the Account; `422` with the reason for a wrong body.
 - **The tool's own login back.** `{"agent": "claude" | "codex" | "cursor", "default": true}` and nothing else lists the tool's own login (`default`, `codex`, `cursor`) after it was removed, as it was, or when obid found it on this Mac and offers it (`availableLogins`): no folder, signed in with the tool itself. `201` with it; `409` while it's listed, or when it was neither removed here nor found. The Mac offers it as `Use Claude Code's Own Login` under Add an account once it was removed there. Any other account removed stays removed.
 
-**`PATCH /v1/accounts/{id}`** with `{"name": "…"}`, `{"payer": "…" | null}` or both answers the Account. Errors are `422` as above, and `404` for an unknown account. The configuration's accounts can be renamed and given a payer too.
+**`PATCH /v1/accounts/{id}`** with `{"name": "…"}`, `{"payer": "…" | null}`, `{"model": "…" | null}`, `{"effort": "…" | null}`, `{"complexEffort": "…" | null}`, or several, answers the Account. `model`, `effort` and `complexEffort` (#1574) are the account's own, kept in `home/settings.json` and removed with the account; null is the tool's own. A model is letters, digits, `-`, `.` and `_`; an effort is one the tool takes (`GET /v1/settings/models/options`: Claude Code `low` to `max`, Codex `low` to `xhigh`, Cursor none), else `422`. A job made with no model of its own runs on its account's, at its `complexEffort` when its plan called it complex, else at its `effort` (Claude Code `--model` and `--effort`, Codex the turn's `model` and `effort`, Cursor its session's model option), and the job's `model` and `effort` say so (docs/contracts/agents.md, AGENTS-5, AGENTS-6). Errors are `422` as above, and `404` for an unknown account. The configuration's accounts can be renamed and given a payer too.
 
 **`DELETE /v1/accounts/{id}`** answers `204`.
 

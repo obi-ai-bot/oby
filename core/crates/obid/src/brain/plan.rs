@@ -156,7 +156,8 @@ impl Kind {
     }
 }
 
-/// How hard the work looks: a complex job gets a stronger model offered, never applied on its own.
+/// How hard the work looks: a complex job gets a stronger model offered, never applied on its own,
+/// and runs at its account's complex-task effort when the owner set one (#1574).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Complexity {

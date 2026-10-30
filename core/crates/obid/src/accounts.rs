@@ -837,17 +837,49 @@ fn make_folder(dir: &Path) -> std::io::Result<()> {
     builder.create(dir)
 }
 
-const CHANGE_SHAPE: &str = "{\"name\": \"…\", \"payer\": \"…\" | null}";
+const CHANGE_SHAPE: &str = "{\"name\": \"…\", \"payer\": \"…\" | null, \"model\": \"…\" | null, \"effort\": \"…\" | null, \"complexEffort\": \"…\" | null}";
 
-/// `PATCH /v1/accounts/{id}`: a new name, a new payer (null for none), or both. The Account.
+/// `PATCH /v1/accounts/{id}`: a new name, a new payer (null for none), and its model, effort and
+/// complex-task effort (#1574; null for the tool's own), any of them. The Account.
 pub async fn change(
     State(shared): State<Arc<Shared>>,
     UrlPath(id): UrlPath<String>,
     body: Bytes,
 ) -> Result<Response, ApiError> {
-    let map = object(&body, &["name", "payer"], CHANGE_SHAPE)?;
+    let map = object(
+        &body,
+        &["name", "payer", "model", "effort", "complexEffort"],
+        CHANGE_SHAPE,
+    )?;
     let text = text_field(&map, "name")?;
     let new_payer = map.contains_key("payer").then(|| payer(map.get("payer")));
+    let (tool, _) = find(&shared.config.agents.get(), &id).ok_or_else(|| no_account(&id))?;
+    let tuned = tuning(&map, tool)?;
+    if !tuned.is_empty() {
+        crate::settings::update(&shared.config.home, |s| {
+            let kept = s.tuning.entry(id.clone()).or_default();
+            for (key, value) in tuned {
+                *match key {
+                    "model" => &mut kept.model,
+                    "effort" => &mut kept.effort,
+                    _ => &mut kept.complex_effort,
+                } = value;
+            }
+            if *kept == crate::settings::Tuning::default() {
+                s.tuning.remove(&id);
+            }
+        })
+        .map_err(|e| unkept(Path::new("settings.json"), e))?;
+    }
+    if text.is_none() && new_payer.is_none() {
+        let (tool, account) =
+            find(&shared.config.agents.get(), &id).ok_or_else(|| no_account(&id))?;
+        send_accounts(&shared).await;
+        return Ok(answer(
+            StatusCode::OK,
+            json_now(&shared, tool, account).await,
+        ));
+    }
     let (tool, account) = shared.config.agents.change(|agents, saved| {
         let (tool, mut account) = find(agents, &id).ok_or_else(|| no_account(&id))?;
         if let Some(text) = text {
@@ -880,6 +912,43 @@ pub async fn change(
         StatusCode::OK,
         json_now(&shared, tool, account).await,
     ))
+}
+
+/// The model and efforts a `PATCH` sets, each a value or null (the tool's own): a model obid can
+/// pass on, and an effort `tool` takes ([`crate::settings::efforts`]).
+fn tuning(
+    map: &Map<String, Value>,
+    tool: Tool,
+) -> Result<Vec<(&'static str, Option<String>)>, ApiError> {
+    let mut tuned = Vec::new();
+    for key in ["model", "effort", "complexEffort"] {
+        let value = match map.get(key) {
+            None => continue,
+            Some(Value::Null) => None,
+            Some(Value::String(v)) if key == "model" && crate::settings::valid_model(v) => {
+                Some(v.trim().to_owned())
+            }
+            Some(Value::String(v)) if crate::settings::efforts(tool).contains(&v.as_str()) => {
+                Some(v.clone())
+            }
+            Some(_) if key == "model" => {
+                return Err(unprocessable(format!(
+                    "model is a model id of {}, or null.",
+                    tool.name()
+                )));
+            }
+            Some(_) => {
+                let efforts = crate::settings::efforts(tool);
+                return Err(unprocessable(if efforts.is_empty() {
+                    format!("{} has no effort: {key} is null for it.", tool.name())
+                } else {
+                    format!("{key} is one of {}, or null.", efforts.join(", "))
+                }));
+            }
+        };
+        tuned.push((key, value));
+    }
+    Ok(tuned)
 }
 
 /// `POST /v1/accounts/{id}/reserve` `{"lift": true | false}`: lifts the account's weekly reserve
@@ -969,6 +1038,13 @@ pub async fn remove(
         tracing::warn!("account {id}: its usage stayed in usage.json: {e}");
     }
     tracing::info!("account {id}: removed");
+    // Its model and efforts go with it, and new tasks go by routing's own order again.
+    if let Err(e) = crate::settings::update(&shared.config.home, |s| {
+        s.tuning.remove(&id);
+        s.default_account.take_if(|d| *d == id);
+    }) {
+        tracing::warn!("account {id}: its settings stay: {e}");
+    }
     send_accounts(&shared).await;
     Ok(StatusCode::NO_CONTENT.into_response())
 }

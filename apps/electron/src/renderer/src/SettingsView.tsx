@@ -10,7 +10,7 @@ import { everything, onObid } from './lean';
 import { ApiError, api, type ModelOptions, type Models, type SavedRule, type SignIn, type Status } from './obid';
 import Connectors, { ConfirmWindow, readConnectors } from './Connectors';
 import { Menu } from './Menu';
-import { useLive } from './live';
+import { patchStatus, useLive } from './live';
 import { version } from '../../../package.json';
 import type { Update } from '../../shared/updates';
 
@@ -55,11 +55,20 @@ export function useSetting<T>(key: string, initial: T): [T, (v: T) => void] {
 // The same, kept across launches (localStorage, oby.setting.<key>): what's set here and nowhere
 // else yet (obid has no such setting), so it isn't lost each time the app quits
 export function useKeptSetting<T>(key: string, initial: T): [T, (v: T) => void] {
+  const kept = readKept<T>(key);
+  const [value] = useSetting(key, kept === undefined ? initial : kept);
+  return [value, (v) => keep(key, v)];
+}
+function readKept<T>(key: string): T | undefined {
   if (!values.has(key)) {
     try { const kept = localStorage.getItem(`oby.setting.${key}`); if (kept != null) values.set(key, JSON.parse(kept)); } catch { /* the default */ }
   }
-  const [value, put] = useSetting(key, initial);
-  return [value, (v) => { try { localStorage.setItem(`oby.setting.${key}`, JSON.stringify(v)); } catch { /* this launch only */ } put(v); }];
+  return values.get(key) as T | undefined;
+}
+function keep<T>(key: string, v: T) {
+  try { localStorage.setItem(`oby.setting.${key}`, JSON.stringify(v)); } catch { /* this launch only */ }
+  values.set(key, v);
+  listeners.forEach((l) => l());
 }
 
 const EFFORTS = [['low', 'Low'], ['medium', 'Medium'], ['high', 'High'], ['xhigh', 'Extra high'], ['max', 'Max']] as const;
@@ -280,8 +289,10 @@ export const replaceAccounts = (next: Account[]) => { values.set('accounts', nex
 // folder of obid's, so obid never signs it in (the tool itself does)
 const OWN_LOGIN: Record<Agent, string> = { claude: 'default', codex: 'codex', cursor: 'cursor' };
 const ownLogin = (a: Account) => OWN_LOGIN[a.agent] === a.id;
-// where an error of Add an account's shows (a row's shows on its row, by the account's id)
+// where an error of Add an account's shows (a row's shows on its row, by the account's id), and
+// one of New tasks go to's
 const ADD = 'add';
+const DEFAULT = 'default-agent';
 // On obid they're obid's (docs/runner-api.md, "obid only: accounts"): Add Account adds one (obid
 // makes its folder) and opens its tool's own sign-in page at once; Sign In opens it again, Remove
 // removes it. Each tool keeps its own login; Oby only learns that it worked. Leaving the page
@@ -586,9 +597,9 @@ function Models() {
 }
 
 // Agents: which agent new tasks go to; each agent added (an account: its 5-hour session and its
-// week) with the model and efforts its jobs run on, and its Remove; then Add an agent. The default
-// agent and the models are kept here only for now (useModels): obid has neither setting yet
-// (asked of Wellington, 2026-10-28)
+// week) with the model and efforts its jobs run on, and its Remove; then Add an agent. obid keeps
+// the default agent and the models (#1573, #1574; docs/contracts/agents.md) once its status says
+// defaultAccount; an older obid, and the mock, keep them here (agent.default, models.mine)
 const EFFORT_NAMES: Record<string, string> = { low: 'Low', medium: 'Medium', high: 'High', xhigh: 'Extra high', max: 'Max', ultra: 'Ultra' };
 const MOCK_MODELS: Models = {
   claude: { model: 'claude-opus-5-5', effort: 'xhigh', complexEffort: 'xhigh' },
@@ -602,19 +613,64 @@ const MOCK_OPTIONS: ModelOptions = {
   cursor: { models: [{ id: 'auto', name: 'Auto' }, { id: 'claude-opus-5-5', name: 'Opus 5.5' }, { id: 'gpt-6.1-sol', name: 'gpt-6.1-sol' }], complexEfforts: [] },
 };
 type Tuning = { model: string; effort?: string; complexEffort?: string };
+// obid keeps Agents' choices (its status says defaultAccount, even null)
+const keepsAgents = (s: Status | null | undefined): s is Status => onObid && !!s && 'defaultAccount' in s;
+// an account's own choices, as obid lists them
+const tuningOf = (a: { model?: string; effort?: string; complexEffort?: string } | undefined): Partial<Tuning> =>
+  Object.fromEntries((['model', 'effort', 'complexEffort'] as const).filter((k) => a?.[k] != null).map((k) => [k, a![k]]));
 // each agent's model and efforts (an account's: Personal and Work on Claude Code each their own),
-// and the choices. On obid it starts from what its status says the tool runs, with the choices
-// this app knows; a change is kept here only, for now: obid has one setting per tool and no way
-// yet to set it (its /v1/settings/models answers 404; asked of Wellington, 2026-10-28). Else
-// the mock's
-function useModels(): [(x: Account) => Tuning, ModelOptions, (id: string, change: Partial<Tuning>) => void] {
-  const live = useLive().status?.models as Partial<Models> | undefined;
+// and the choices. Each starts from what obid's status says the tool runs; obid keeps a change on
+// the account and offers the choices; an older obid and the mock keep it here, with the mock's
+// choices
+function useModels(): [(x: Account) => Tuning, ModelOptions, (id: string, change: Partial<Tuning>) => Promise<void>] {
+  const status = useLive().status;
+  const live = status?.models as Partial<Models> | undefined;
   const [mine, setMine] = useKeptSetting<Record<string, Partial<Tuning>>>('models.mine', {});
+  const [options, setOptions] = useState(MOCK_OPTIONS);
+  const kept = keepsAgents(status);
+  useEffect(() => { if (kept) api.modelOptions().then(setOptions, () => {}); }, [kept]);
   // each tool's on its own: what obid says it runs over the mock's, so a key obid leaves out isn't lost
   const base = Object.fromEntries((Object.keys(MOCK_MODELS) as Agent[]).map((a) => [a, { ...MOCK_MODELS[a], ...(onObid ? live?.[a] : undefined) }])) as Models;
-  const of = (x: Account): Tuning => ({ ...(base[x.agent] ?? { model: 'auto' }), ...mine[x.id] });
-  const tune = (id: string, change: Partial<Tuning>) => setMine({ ...mine, [id]: { ...mine[id], ...change } });
-  return [of, MOCK_OPTIONS, tune];
+  const of = (x: Account): Tuning => ({ ...(base[x.agent] ?? { model: 'auto' }),
+    ...(kept ? tuningOf(status.accounts.find((a) => a.id === x.id)) : mine[x.id]) });
+  const tune = async (id: string, change: Partial<Tuning>) => {
+    if (!kept) return setMine({ ...mine, [id]: { ...mine[id], ...change } });
+    const a = await api.tuneAccount(id, change);
+    patchStatus({ accounts: status.accounts.map((x) => (x.id === a.id ? a : x)) });
+  };
+  return [of, options, tune];
+}
+// the account new tasks go to: obid's, else kept here
+function useDefaultAccount(): [string | null, (id: string) => Promise<void>] {
+  const status = useLive().status;
+  const [chosen, setChosen] = useKeptSetting<string | null>('agent.default', null);
+  if (!keepsAgents(status)) return [chosen, async (id) => setChosen(id)];
+  return [status.defaultAccount ?? null, async (id) => patchStatus(await api.setDefaultAccount(id))];
+}
+// What was chosen here before obid kept it (agent.default, models.mine): moved to obid once its
+// status says it keeps them, then forgotten here, so nobody's choice is lost (AGENTS-7). A choice
+// for an account that's gone goes; one obid refused stays here, tried again at the next connection.
+// A default obid has already (set on another device) wins. Whether anything moved.
+export async function moveKeptChoices(status: Status): Promise<boolean> {
+  if (!keepsAgents(status)) return false;
+  const ids = new Set(status.accounts.map((a) => a.id));
+  let moved = false;
+  const chosen = readKept<string | null>('agent.default');
+  if (chosen != null) {
+    if (status.defaultAccount == null && ids.has(chosen)) {
+      try { await api.setDefaultAccount(chosen); moved = true; keep('agent.default', null); } catch { /* next time */ }
+    } else keep('agent.default', null);
+  }
+  const mine = readKept<Record<string, Partial<Tuning>>>('models.mine');
+  if (mine && Object.keys(mine).length) {
+    const left: Record<string, Partial<Tuning>> = {};
+    for (const [id, t] of Object.entries(mine)) {
+      if (!ids.has(id)) continue;
+      try { await api.tuneAccount(id, tuningOf(t)); moved = true; } catch { left[id] = t; }
+    }
+    keep('models.mine', left);
+  }
+  return moved;
 }
 // a pop-up's choices, the one set kept even when the choices don't (yet) have it
 const choices = (list: { id: string; name: string }[], set: string | undefined) =>
@@ -625,7 +681,7 @@ const effortChoices = (list: string[] | undefined, set: string | undefined) =>
 function Agents() {
   const [accounts, setAccounts] = useAccounts();
   const [tuning, options, tune] = useModels();
-  const [chosen, setChosen] = useKeptSetting<string | null>('agent.default', null);
+  const [chosen, setChosen] = useDefaultAccount();
   // signing in, as Settings › Accounts does (useSignIns): its states, its problems, the tool's own login
   const { offered, look, signing, problems, busy, tried, signIn, sendCode, cancel, remove, removeWindow } = useSignIns(accounts, setAccounts);
   // Add an agent: a provider, and an alias of your own for it (several of one are fine)
@@ -645,10 +701,10 @@ function Agents() {
   const ready = agents.filter((x) => x.signedIn !== false);
   const fallback = ready.find((x) => x.id === chosen) ?? ready[0];
   return <>
-    <Group i={1} title="Default agent">
+    <Group i={1} title="Default agent" footer={problems[DEFAULT] ? <span className="set-problem" role="alert">{problems[DEFAULT]}</span> : undefined}>
       {fallback
         ? <Row label="New tasks go to">
-            <Select wide value={fallback.id} onChange={setChosen} label="Default agent" options={ready.map((x) => [x.id, `${x.name} · ${AGENTS[x.agent].name}`] as const)} />
+            <Select wide value={fallback.id} onChange={(v) => void tried(DEFAULT, () => setChosen(v))} label="Default agent" options={ready.map((x) => [x.id, `${x.name} · ${AGENTS[x.agent].name}`] as const)} />
           </Row>
         : <Row label={<span className="set-none">No agents yet</span>} />}
     </Group>
@@ -690,11 +746,11 @@ function Agents() {
           </div>
           {/* the model and, after it in grey, how hard it thinks (one menu for both); complex tasks get an effort of their own */}
           <Row label="Model">
-            <ModelPicker label={`${x.name} model and effort`} models={choices(o?.models ?? [], t.model)} model={t.model} onModel={(v) => tune(x.id, { model: v })}
-              efforts={a === 'cursor' ? [] : effortChoices(efforts, t.effort)} effort={t.effort} onEffort={(v) => tune(x.id, { effort: v })} />
+            <ModelPicker label={`${x.name} model and effort`} models={choices(o?.models ?? [], t.model)} model={t.model} onModel={(v) => void tried(x.id, () => tune(x.id, { model: v }))}
+              efforts={a === 'cursor' ? [] : effortChoices(efforts, t.effort)} effort={t.effort} onEffort={(v) => void tried(x.id, () => tune(x.id, { effort: v }))} />
           </Row>
           {a !== 'cursor' && <Row label="Effort on complex tasks">
-            <Select wide value={t.complexEffort ?? ''} onChange={(v) => tune(x.id, { complexEffort: v })} label={`${x.name} complex task effort`} options={effortChoices(o?.complexEfforts, t.complexEffort)} />
+            <Select wide value={t.complexEffort ?? ''} onChange={(v) => void tried(x.id, () => tune(x.id, { complexEffort: v }))} label={`${x.name} complex task effort`} options={effortChoices(o?.complexEfforts, t.complexEffort)} />
           </Row>}
           {/* the card's own action, on the left; red: it can't be undone (its sign-in goes with it) */}
           <div className="set-row is-action">
