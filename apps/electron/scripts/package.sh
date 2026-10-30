@@ -6,7 +6,11 @@
 #   3. per architecture: window-style built for it, the app signed with Developer ID and the
 #      hardened runtime (electron-builder), checked, scanned for secrets before it leaves this Mac,
 #      notarized and stapled; then dist/<name>-<version>-<arch>.dmg (the app and an
-#      Applications link), signed, notarized and stapled too, and checked.
+#      Applications link), signed, notarized and stapled too, and checked; and
+#      dist/<name>-<version>-<arch>-mac.zip, the stapled app for the updater (main/updates.ts);
+#   4. dist/latest-mac.yml: the version and each zip's sha512, which the updater checks.
+# Uploading is the owner's step: the zips, then latest-mac.yml, to https://downloads.oby.dev/electron
+# (docs/contracts/updates.md, "Publishing a release").
 # Usage: scripts/package.sh [arm64] [x64] (both by default). Notarization uses the keychain
 # profile oby-notary (or OBY_NOTARY_PROFILE): docs/release.md, "Store the notarization credentials".
 set -euo pipefail
@@ -41,6 +45,7 @@ gitleaks=build/helpers/Contents/MacOS/gitleaks
 say "Building main, preload and the renderer"
 npm run build --silent
 
+zips=()
 for arch in $archs; do
   say "Oby $version for $arch"
   npx node-gyp rebuild --silent --directory native/window-style --arch="$arch" --target="$electron" --dist-url=https://electronjs.org/headers
@@ -53,6 +58,8 @@ for arch in $archs; do
     [[ "$(codesign -dv "$app/Contents/$helper" 2>&1)" == *"TeamIdentifier=$team"* ]] || die "$helper isn't signed by team $team"
   done
   [[ "$("$app/Contents/MacOS/gitleaks" version 2>&1)" == 8.30.1 ]] || die "the app's gitleaks doesn't run"
+  # without it the updater never downloads (electron-updater reads its cache folder's name there)
+  cmp -s build/app-update.yml "$app/Contents/Resources/app-update.yml" || die "$name.app has no app-update.yml: it could never update"
 
   # The app's files scanned before they leave this Mac, for Apple's notary service too. gitleaks
   # reads text: a secret inside a Mach-O binary goes unseen, as in scripts/release.sh.
@@ -86,6 +93,29 @@ for arch in $archs; do
   spctl -a -t open --context context:primary-signature "$dmg" || die "Gatekeeper refuses $dmg"
   spctl -a -t exec "$app" || die "Gatekeeper refuses $name.app"
   say "$dmg"
+
+  # The updater's copy: the stapled app, zipped as Squirrel.Mac unzips it (ditto). Its name has
+  # the architecture in it: the updater picks the arm64 zip on Apple silicon, the other elsewhere.
+  zip=dist/${name// /-}-$version-$arch-mac.zip
+  rm -f "$zip"
+  ditto -c -k --sequesterRsrc --keepParent "$app" "$zip"
+  zips+=("$zip")
 done
+
+# What the updater reads: this version, each zip with its sha512 (base64, as electron-updater
+# checks it) and size. Upload it after the zips, so no Mac is sent to a zip that isn’t there yet.
+say "dist/latest-mac.yml"
+{
+  echo "version: $version"
+  echo "files:"
+  for zip in $zips; do
+    echo "  - url: ${zip:t}"
+    echo "    sha512: $(openssl dgst -sha512 -binary "$zip" | base64)"
+    echo "    size: $(stat -f %z "$zip")"
+  done
+  echo "path: ${zips[1]:t}"
+  echo "sha512: $(openssl dgst -sha512 -binary "${zips[1]}" | base64)"
+  echo "releaseDate: '$(date -u +%Y-%m-%dT%H:%M:%S.000Z)'"
+} > dist/latest-mac.yml
 # window-style back to this Mac's architecture, for npm run dev
 npm run build:native --silent > /dev/null

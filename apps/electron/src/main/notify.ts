@@ -387,9 +387,10 @@ export function windowSeen() {
   for (const [key, s] of shown) if (looking(s.place)) withdraw(key);
 }
 
-// Settings › Notifications: Oby's alerts on or off, kept in the app's own folder
-const SETTINGS = () => join(app.getPath('userData'), 'settings.json');
-const settings = (): Record<string, unknown> => { try { return JSON.parse(readFileSync(SETTINGS(), 'utf8')); } catch { return {}; } };
+// Oby's own settings in the app's own folder: Settings › Notifications' alerts here, About's Update
+// automatically (updates.ts)
+export const SETTINGS = () => join(app.getPath('userData'), 'settings.json');
+export const settings = (): Record<string, unknown> => { try { return JSON.parse(readFileSync(SETTINGS(), 'utf8')); } catch { return {}; } };
 // macOS's own settings for Oby's alerts (allowed, banners, sounds, Focus). ponytail: the packaged
 // app's bundle id, electron-builder.yml's appId; in development, the list
 const SYSTEM = `x-apple.systempreferences:com.apple.Notifications-Settings.extension${app.isPackaged ? '?id=com.deskree.oby.electron' : ''}`;
