@@ -100,6 +100,10 @@ struct Thread {
     /// The folders its work is in (crate::folders): canonical paths, in the order picked.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     folders: Vec<String>,
+    /// The files attached to its words, as obid keeps them (`attachments` on `POST /v1/plans`):
+    /// they go when it does ([`Conversations::delete`]).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    uploads: Vec<String>,
 }
 
 /// A conversation kept before obid marked what each one read: its turns' words may be anyone's.
@@ -286,6 +290,9 @@ pub struct Begun {
     /// The turn's id was there already: the same words sent again (an app's Try again after an
     /// answer it lost), and nothing was added.
     pub repeated: bool,
+    /// The files of the conversations forgotten to make room for it (past [`CONVERSATIONS`]),
+    /// for the caller to remove ([`crate::brain::drop_uploads`]).
+    pub forgotten: Vec<String>,
 }
 
 #[derive(Debug)]
@@ -461,6 +468,7 @@ impl Conversations {
                     tasks_tainted: false,
                     foreign: kept_before_marks(),
                     folders: vec![],
+                    uploads: vec![],
                 };
                 // The conversation's name in its folder must be on disk before the old file goes.
                 if let Err(e) = self.write(&thread).and_then(|()| sync_dir(&self.dir)) {
@@ -501,6 +509,8 @@ impl Conversations {
     /// `folders`: checked folders (crate::folders) the conversation works in from now on, added to
     /// those it has, or why they were refused. Words that are a repeat are `repeated` whatever
     /// their folders were, and add none; otherwise a refusal is `Folder`, and nothing is added.
+    /// `attachments`: the files' paths (checked: crate::brain::validate_attachments), kept with the
+    /// conversation; the turn shows their names.
     #[allow(clippy::too_many_arguments)]
     pub fn begin(
         &self,
@@ -536,6 +546,7 @@ impl Conversations {
                 turn: id.to_owned(),
                 started: false,
                 repeated: true,
+                forgotten: vec![],
             });
         }
         let folders = folders.map_err(Error::Folder)?;
@@ -549,12 +560,20 @@ impl Conversations {
             Target::Latest => latest(&threads),
             Target::New => None,
         };
+        let names: Vec<String> = attachments
+            .iter()
+            .map(|p| {
+                std::path::Path::new(p)
+                    .file_name()
+                    .map_or_else(|| "attachment".into(), |n| n.to_string_lossy().into_owned())
+            })
+            .collect();
         let index = found.unwrap_or_else(|| {
             threads.push(Thread {
                 id: self.take_next().unwrap_or_else(new_id),
                 // Files with no words: named after the first.
                 title: titled(
-                    attachments
+                    names
                         .first()
                         .filter(|_| said.trim().is_empty())
                         .unwrap_or(&said),
@@ -567,6 +586,7 @@ impl Conversations {
                 tasks_tainted: false,
                 foreign: None,
                 folders: vec![],
+                uploads: vec![],
             });
             threads.len() - 1
         });
@@ -584,6 +604,12 @@ impl Conversations {
             return Err(Error::TooManyFolders);
         }
         threads[index].folders = more;
+        let kept_uploads = threads[index].uploads.clone();
+        for path in &attachments {
+            if !threads[index].uploads.contains(path) {
+                threads[index].uploads.push(path.clone());
+            }
+        }
         let added = self.add_asking(
             &mut threads,
             index,
@@ -596,7 +622,7 @@ impl Conversations {
             None,
             foreign,
             None,
-            attachments,
+            names,
         );
         let turn = match added {
             Ok(turn) => turn.id,
@@ -605,19 +631,23 @@ impl Conversations {
                     threads.remove(index);
                 } else {
                     threads[index].folders = had;
+                    threads[index].uploads = kept_uploads;
                 }
                 return Err(e);
             }
         };
         let conversation = threads[index].id.clone();
-        if found.is_none() {
-            self.prune(&mut threads);
-        }
+        let forgotten = if found.is_none() {
+            self.prune(&mut threads)
+        } else {
+            vec![]
+        };
         Ok(Begun {
             conversation,
             turn,
             started: found.is_none(),
             repeated: false,
+            forgotten,
         })
     }
 
@@ -710,12 +740,15 @@ impl Conversations {
             tasks_tainted: false,
             foreign: None,
             folders: vec![],
+            uploads: vec![],
         };
         self.write(&thread).map_err(Error::Io)?;
         self.events.send("conversation", thread.summary());
         let id = thread.id.clone();
         threads.push(thread);
-        self.prune(&mut threads);
+        // ponytail: a conversation forgotten here leaves its files to the uploads' own bound
+        // (crate::brain::UPLOADS); only words the owner sent start one with files.
+        let _ = self.prune(&mut threads);
         Ok(id)
     }
 
@@ -937,7 +970,8 @@ impl Conversations {
     }
 
     /// Past [`CONVERSATIONS`], forgets the oldest that are neither pinned nor the latest.
-    fn prune(&self, threads: &mut Vec<Thread>) {
+    fn prune(&self, threads: &mut Vec<Thread>) -> Vec<String> {
+        let mut uploads = vec![];
         while threads.len() > CONVERSATIONS {
             let newest = threads.iter().map(|t| t.sequence).max().unwrap_or(0);
             let Some(oldest) = threads
@@ -947,13 +981,17 @@ impl Conversations {
                 .min_by_key(|(_, t)| t.sequence)
                 .map(|(i, _)| i)
             else {
-                return;
+                return uploads;
             };
-            if let Err(e) = self.forget(threads, oldest) {
-                tracing::warn!("can't forget an old conversation: {e:?}");
-                return;
+            match self.forget(threads, oldest) {
+                Ok(gone) => uploads.extend(gone),
+                Err(e) => {
+                    tracing::warn!("can't forget an old conversation: {e:?}");
+                    return uploads;
+                }
             }
         }
+        uploads
     }
 
     /// Up to `limit` turns, oldest first, ending before the turn `before` (or at the latest):
@@ -1152,8 +1190,9 @@ impl Conversations {
         self.lock().iter().any(|t| t.id == id)
     }
 
-    /// Forgets the conversation `id` and its turns. The jobs it started stay, with its id.
-    pub fn delete(&self, id: &str) -> Result<(), Error> {
+    /// Forgets the conversation `id` and its turns. The jobs it started stay, with its id. Answers
+    /// the files attached to its words, for the caller to remove ([`crate::brain::drop_uploads`]).
+    pub fn delete(&self, id: &str) -> Result<Vec<String>, Error> {
         let mut threads = self.lock();
         let index = threads
             .iter()
@@ -1162,19 +1201,26 @@ impl Conversations {
         self.forget(&mut threads, index)
     }
 
-    fn forget(&self, threads: &mut Vec<Thread>, index: usize) -> Result<(), Error> {
+    fn forget(&self, threads: &mut Vec<Thread>, index: usize) -> Result<Vec<String>, Error> {
         let id = threads[index].id.clone();
         match std::fs::remove_file(self.dir.join(format!("{id}.json"))) {
             Ok(()) => {}
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             Err(e) => return Err(Error::Io(e)),
         }
-        threads.remove(index);
+        let gone = threads.remove(index);
         // Its agent session's room, checkouts and login go with it (crate::brain::harness).
         let _ = std::fs::remove_dir_all(self.dir.join(&id));
         self.events
             .send("conversation", json!({"id": id, "deleted": true}));
-        Ok(())
+        Ok(gone.uploads)
+    }
+
+    /// Whether a conversation still holds the file `path` among its words' files.
+    pub fn holds_upload(&self, path: &str) -> bool {
+        self.lock()
+            .iter()
+            .any(|t| t.uploads.iter().any(|u| u == path))
     }
 }
 
@@ -1561,7 +1607,8 @@ pub async fn remove(
     State(shared): State<std::sync::Arc<Shared>>,
     UrlPath(id): UrlPath<String>,
 ) -> Result<Response, ApiError> {
-    shared.conversations.delete(&id)?;
+    let uploads = shared.conversations.delete(&id)?;
+    crate::brain::drop_uploads(&shared, uploads).await;
     // What Oby offered there can't be started from it any more.
     shared.link.close_offers(&id);
     Ok(StatusCode::NO_CONTENT.into_response())

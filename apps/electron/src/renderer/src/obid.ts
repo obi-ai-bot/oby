@@ -64,6 +64,8 @@ const q = (params: Record<string, string | number | undefined>) => {
   return text ? `?${text}` : '';
 };
 const id = encodeURIComponent;
+// obid's largest file (POST /v1/attachments)
+const UPLOAD_MAX = 25_000_000;
 
 export const api = {
   status: () => call<Status>('GET', '/v1/status'),
@@ -103,9 +105,14 @@ export const api = {
       said, ...(answer ? { answer } : {}), ...where, ...(folders?.length ? { folders } : {}), ...(with_.id ? { id: with_.id } : {}),
       ...(with_.attachments?.length ? { attachments: with_.attachments } : {}), ...(with_.jobs?.length ? { jobs: with_.jobs } : {}),
     }),
-  // a file picked or pasted, kept by obid for the words it goes with: its path there
-  upload: async (file: File) =>
-    call<{ path: string; name: string }>('POST', `/v1/attachments${q({ name: file.name || 'Pasted image' })}`, new Uint8Array(await file.arrayBuffer())),
+  // a file picked or pasted, kept by obid for the words it goes with: its path there; one over
+  // obid's 25 MB isn't read at all, and says so in obid's words
+  upload: async (file: File, name: string) => {
+    if (file.size > UPLOAD_MAX) throw new ApiError(413, `${name} is larger than 25 MB, so Oby can't take it.`);
+    return call<{ path: string; name: string }>('POST', `/v1/attachments${q({ name })}`, new Uint8Array(await file.arrayBuffer()));
+  },
+  // one uploaded for words that never went: it goes (obid keeps one that words or a task use)
+  unload: (path: string) => call<null>('DELETE', `/v1/attachments${q({ path })}`),
   repos: () => call<{ repos: Repo[] }>('GET', '/v1/repos'),
   // Settings › Permissions: the mode new jobs get, and the rules Always allow saved
   permissions: () => call<{ mode: string }>('GET', '/v1/settings/permissions'),

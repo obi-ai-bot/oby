@@ -1,5 +1,5 @@
-//! Files and photos reach Oby (docs/contracts/attachments.md, ATTACH-1 to ATTACH-9): the Mac app
-//! uploads what the owner picked or pasted (`POST /v1/attachments`), then sends the words with the
+//! Files and photos reach Oby (docs/contracts/attachments.md, ATTACH-1 to ATTACH-9 and ATTACH-11
+//! to ATTACH-14): the Mac app uploads what the owner picked or pasted (`POST /v1/attachments`), then sends the words with the
 //! paths obid kept, the tasks attached and an id of their own (`POST /v1/plans`). The agent here is
 //! the conversation harness's stand-in (tests/agents/fake-harness).
 mod support;
@@ -257,4 +257,177 @@ fn attach_9_files_are_uploaded_only_on_the_mac() {
     let post = axum::http::Method::POST;
     assert!(!obid::gateway::allows(&post, "/v1/attachments"));
     assert!(obid::gateway::allows(&post, "/v1/plans"));
+}
+
+fn dispatch(obid: &Obid, task: &str, attachments: &[&str]) -> (String, String) {
+    let words = format!(
+        r#"OBY oby_dispatch {{"repo": "obi-e2e/fixture-app", "task": "{task}", "kind": "investigate"}}"#
+    );
+    let answer = plan(
+        obid,
+        json!({"said": words, "new": true, "attachments": attachments}),
+    );
+    assert_eq!(answer.status, 200, "{}", answer.text);
+    (
+        answer.body["conversation"].as_str().unwrap().to_owned(),
+        answer.body["jobs"][0]["id"].as_str().unwrap().to_owned(),
+    )
+}
+
+fn status(obid: &Obid, job: &str) -> Value {
+    call(obid, "GET", &format!("/v1/jobs/{job}"), None).body["status"].clone()
+}
+
+#[test]
+fn attach_11_a_deleted_conversation_takes_its_files_with_it() {
+    let (_folder, obid) = obid("attach-11");
+    let path = kept(&obid, "notes.txt", b"the owner's own");
+    let answer = plan(
+        &obid,
+        json!({"said": "SAY ok", "new": true, "attachments": [path]}),
+    );
+    let conversation = answer.body["conversation"].as_str().unwrap();
+    let folder = Path::new(&path).parent().unwrap().to_owned();
+    assert!(folder.is_dir());
+    let gone = call(
+        &obid,
+        "DELETE",
+        &format!("/v1/conversations/{conversation}"),
+        None,
+    );
+    assert_eq!(gone.status, 204, "{}", gone.text);
+    assert!(!folder.exists(), "{folder:?}");
+
+    // One a task that hasn't ended still holds stays, for that task.
+    let held = kept(&obid, "shot.png", b"\x89PNG");
+    let (conversation, job) = dispatch(&obid, "STALLS-ALWAYS look", &[&held]);
+    within(60, "the task is at work", || {
+        (status(&obid, &job) == "running").then_some(())
+    });
+    call(
+        &obid,
+        "DELETE",
+        &format!("/v1/conversations/{conversation}"),
+        None,
+    );
+    assert!(Path::new(&held).is_file());
+}
+
+#[test]
+fn attach_12_an_upload_whose_words_never_went_can_go() {
+    let (_folder, obid) = obid("attach-12");
+    let unload = |path: &str| {
+        let query: String = path
+            .bytes()
+            .map(|b| match b {
+                b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'.' | b'-' | b'_' => {
+                    (b as char).to_string()
+                }
+                _ => format!("%{b:02X}"),
+            })
+            .collect();
+        call(
+            &obid,
+            "DELETE",
+            &format!("/v1/attachments?path={query}"),
+            None,
+        )
+    };
+    let unused = kept(&obid, "a.txt", b"a");
+    assert_eq!(unload(&unused).status, 204);
+    assert!(!Path::new(&unused).parent().unwrap().exists());
+    assert_eq!(
+        unload(&unused).status,
+        422,
+        "gone, so not an upload any more"
+    );
+    assert_eq!(unload("/etc/hosts").status, 422);
+    let used = kept(&obid, "b.txt", b"b");
+    plan(
+        &obid,
+        json!({"said": "SAY ok", "new": true, "attachments": [used]}),
+    );
+    assert_eq!(unload(&used).status, 409);
+    assert!(Path::new(&used).is_file());
+}
+
+#[test]
+fn attach_13_files_alone_follow_up_a_finished_task_but_not_a_running_one() {
+    let (_folder, obid) = obid("attach-13");
+    let (_, done) = dispatch(&obid, "Look around", &[]);
+    within(120, "the task is done", || {
+        (status(&obid, &done) == "done").then_some(())
+    });
+    let path = kept(&obid, "shot.png", b"\x89PNG");
+    let followed = call(
+        &obid,
+        "POST",
+        &format!("/v1/jobs/{done}/messages"),
+        Some(&json!({"text": "", "attachments": [path]})),
+    );
+    assert_eq!(followed.status, 201, "{}", followed.text);
+    assert_eq!(followed.body["request"], obid::jobs::FILES_ALONE);
+    let next = followed.body["id"].as_str().unwrap();
+    let input = obid
+        .home
+        .join(format!("worktrees/{next}/.obi/inputs/shot.png"));
+    within(120, "the follow-up has the file", || {
+        input.is_file().then_some(())
+    });
+
+    let (_, running) = dispatch(&obid, "STALLS-ALWAYS look", &[]);
+    within(60, "the task is at work", || {
+        (status(&obid, &running) == "running").then_some(())
+    });
+    let other = kept(&obid, "more.png", b"\x89PNG");
+    let refused = call(
+        &obid,
+        "POST",
+        &format!("/v1/jobs/{running}/messages"),
+        Some(&json!({"text": "", "attachments": [other]})),
+    );
+    assert_eq!(refused.status, 422, "{}", refused.text);
+    assert_eq!(
+        refused.body["error"],
+        "Files go with a follow-up of a finished task or a new task: tell this one in words."
+    );
+}
+
+#[test]
+fn attach_14_a_file_gone_before_its_turn_is_named_as_left_out() {
+    let (_folder, obid) = obid("attach-14");
+    let path = kept(&obid, "notes.txt", b"soon gone");
+    // A turn under way; words sent meanwhile wait for it, and their file goes while they wait.
+    let started = plan(&obid, json!({"said": "SAY first", "new": true}));
+    let conversation = started.body["conversation"].as_str().unwrap().to_owned();
+    std::thread::scope(|scope| {
+        let busy = scope.spawn(|| {
+            plan(
+                &obid,
+                json!({"said": "LINGER 2000", "conversation": conversation}),
+            )
+        });
+        std::thread::sleep(Duration::from_millis(500));
+        let waiting = scope.spawn(|| {
+            plan(
+                &obid,
+                json!({"said": "FILES", "conversation": conversation, "attachments": [path]}),
+            )
+        });
+        std::thread::sleep(Duration::from_millis(500));
+        std::fs::remove_dir_all(Path::new(&path).parent().unwrap()).unwrap();
+        busy.join().unwrap();
+        waiting.join().unwrap();
+    });
+    let recorded = std::fs::read_to_string(
+        obid.home
+            .join(format!("conversations/{conversation}/config/turns.jsonl")),
+    )
+    .unwrap();
+    let last: Value = serde_json::from_str(recorded.lines().last().unwrap()).unwrap();
+    let prompt = last["prompt"].as_str().unwrap();
+    assert!(
+        prompt.contains("(left out: notes.txt, it is no longer on this Mac)"),
+        "{prompt}"
+    );
 }

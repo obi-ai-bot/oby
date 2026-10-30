@@ -246,7 +246,9 @@ pub fn router(shared: Arc<Shared>) -> Router {
         .route("/v1/plans", post(crate::brain::plan))
         .route(
             "/v1/attachments",
-            post(crate::brain::upload).layer(crate::brain::upload_limit()),
+            post(crate::brain::upload)
+                .delete(crate::brain::unload)
+                .layer(crate::brain::upload_limit()),
         )
         .route("/v1/plans/cancel", post(crate::brain::cancel))
         .route("/v1/brain/usage", get(crate::brain::calls::usage))

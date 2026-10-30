@@ -1624,8 +1624,16 @@ fn attach(
     let mut named = vec![];
     let mut left_out = vec![];
     let mut too_big = vec![];
+    let mut gone = vec![];
     for path in paths {
+        // Gone since the words came (its conversation deleted, or past the uploads' bound): said.
         let Ok(source) = std::path::Path::new(path).canonicalize() else {
+            gone.push(clean(
+                &std::path::Path::new(path)
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy(),
+            ));
             continue;
         };
         if !source.starts_with(&root) || !source.is_file() {
@@ -1670,6 +1678,10 @@ fn attach(
             ATTACHMENT_CAP / 1_000_000
         )
     }));
+    list.extend(
+        gone.iter()
+            .map(|n| format!("(left out: {n}, it is no longer on this Mac)")),
+    );
     if list.is_empty() {
         return Ok(None);
     }

@@ -190,17 +190,17 @@ pub async fn plan(
     } else {
         None
     };
-    // The files' names go on the turn, for the tags under the owner's words.
-    let names = attachments.iter().map(|p| file_name(p)).collect();
+    // The files go with the conversation; their names on the turn, for the tags under the words.
     let begun = shared.conversations.begin(
         target,
         said.clone(),
         jobs.clone(),
-        names,
+        attachments.clone(),
         id,
         foreign,
         folders,
     )?;
+    drop_uploads(&shared, begun.forgotten.clone()).await;
     // An answer to a question Oby asked elsewhere (the Watch answers in the latest conversation)
     // brings that conversation's words here.
     if let Some((question, option)) = &question
@@ -792,14 +792,6 @@ const ATTACHED_FILES: usize = 20;
 /// a size; the rooms and jobs keep copies of their own, so only words not sent yet lose a file.
 const UPLOADS: usize = 200;
 
-/// A path's file name, as the tags under the owner's words show it.
-fn file_name(path: &str) -> String {
-    Path::new(path)
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "attachment".into())
-}
-
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Upload {
@@ -835,20 +827,109 @@ pub async fn upload(
             format!("{name} is empty."),
         ));
     }
-    let path =
-        crate::github_work::keep_attachment(&shared.config, "app", &name, &body).map_err(|e| {
+    let home = shared.config.home.clone();
+    let file = name.clone();
+    let kept = tokio::task::spawn_blocking(move || {
+        let path = crate::github_work::keep_attachment(&home, "app", &file, &body)?;
+        prune_uploads(&home.join("attachments/app"), UPLOADS);
+        Ok::<_, std::io::Error>(path)
+    })
+    .await;
+    let path = match kept {
+        Ok(Ok(path)) => path,
+        Ok(Err(e)) => {
             tracing::warn!("an attachment couldn't be kept: {e}");
-            ApiError::new(
+            return Err(ApiError::new(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!("{name} couldn't be kept on this Mac."),
-            )
-        })?;
-    prune_uploads(&shared.config.home.join("attachments/app"), UPLOADS);
+            ));
+        }
+        Err(_) => {
+            return Err(ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("{name} couldn't be kept on this Mac."),
+            ));
+        }
+    };
     Ok((
         StatusCode::CREATED,
         axum::Json(json!({"path": path.to_string_lossy(), "name": name})),
     )
         .into_response())
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Unload {
+    path: String,
+}
+
+/// `DELETE /v1/attachments?path=<path>`: an upload whose words never went (another upload, or the
+/// words, were refused) goes now. Only one of `POST /v1/attachments`'s, and only while no
+/// conversation or active job holds it (`409`); one already gone is `204` too.
+pub async fn unload(
+    State(shared): State<Arc<Shared>>,
+    axum::extract::Query(asked): axum::extract::Query<Unload>,
+) -> Result<Response, ApiError> {
+    let Some(folder) = upload_folder(&shared.config.home, &asked.path) else {
+        return Err(ApiError::new(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "That isn't a file the Oby app uploaded.",
+        ));
+    };
+    if in_use(&shared, &asked.path) {
+        return Err(ApiError::new(
+            StatusCode::CONFLICT,
+            "Words or a task still use that file.",
+        ));
+    }
+    let _ = tokio::task::spawn_blocking(move || std::fs::remove_dir_all(folder)).await;
+    Ok(StatusCode::NO_CONTENT.into_response())
+}
+
+/// The folder `path` was uploaded into (`attachments/app/<uuid>/`), when it's one of those and no
+/// link: what goes with it. Anything else, none.
+fn upload_folder(home: &Path, path: &str) -> Option<PathBuf> {
+    let app = home.join("attachments/app");
+    let file = Path::new(path);
+    let folder = file.parent()?;
+    let named = folder.file_name()?.to_str()?;
+    (folder.parent()? == app
+        && !named.is_empty()
+        && named.chars().all(|c| c.is_ascii_hexdigit())
+        && folder.symlink_metadata().is_ok_and(|m| m.is_dir()))
+    .then(|| folder.to_owned())
+}
+
+/// Whether a conversation, or a job that hasn't ended, still holds the file `path`.
+fn in_use(shared: &Shared, path: &str) -> bool {
+    shared.conversations.holds_upload(path)
+        || shared.jobs.list(usize::MAX).iter().any(|job| {
+            job.status.is_active()
+                && job
+                    .attachments
+                    .as_ref()
+                    .is_some_and(|paths| paths.iter().any(|p| p == path))
+        })
+}
+
+/// Removes the uploads of conversations that went (`paths`), each with its folder, but one a job
+/// that hasn't ended still holds, which the uploads' own bound ([`UPLOADS`]) takes later.
+pub async fn drop_uploads(shared: &Shared, paths: Vec<String>) {
+    let folders: Vec<PathBuf> = paths
+        .iter()
+        .filter(|path| !in_use(shared, path))
+        .filter_map(|path| upload_folder(&shared.config.home, path))
+        .collect();
+    if folders.is_empty() {
+        return;
+    }
+    let _ = tokio::task::spawn_blocking(move || {
+        for folder in folders {
+            let _ = std::fs::remove_dir_all(folder);
+        }
+    })
+    .await;
 }
 
 /// The bound on `POST /v1/attachments`'s body: a megabyte past the largest file, so a file just

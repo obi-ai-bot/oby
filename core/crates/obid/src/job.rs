@@ -298,6 +298,10 @@ pub struct Job {
     pub files: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub attachments: Option<Vec<String>>,
+    /// The names of the attachments that were gone from obid's attachments folder when the job
+    /// started (their conversation deleted, or past the uploads' bound): its prompt says so.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attachments_gone: Option<Vec<String>>,
     pub limit: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stalled: Option<Stalled>,
@@ -742,6 +746,7 @@ impl Job {
             notes: None,
             files: None,
             attachments: None,
+            attachments_gone: None,
             limit: None,
             stalled: None,
             start_commit: None,

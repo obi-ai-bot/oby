@@ -7,6 +7,7 @@ import { replaceTasks, type Asking, type Task } from './tasks';
 import { keepFoldersOf, nameFoldersBy, saveFolders, sendFoldersBy, takeFolders } from './folders';
 import { replaceAccounts } from './SettingsView';
 import { BRANDS } from './brands';
+import { onObid } from './lean';
 import type { GitHubItem } from './mock';
 import type { GitHubWork } from './obid';
 
@@ -642,7 +643,7 @@ export async function openConversation(shown: string) {
 // answer, obid takes them once, files and tasks included.
 let made = 0;
 export function ask(said: string, shown?: string, repo?: string, folders?: string[], att?: Pick<Attachments, 'files' | 'jobs'>): string | undefined {
-  const files = att?.files?.filter((f) => f.file) ?? [], jobs = att?.jobs ?? [];
+  const files = att?.files?.filter((f) => f.path) ?? [], jobs = att?.jobs ?? [];
   if (!said.trim() && !files.length && !jobs.length) return;
   const id = shown ?? `new:${++made}`;
   const c = shown ? realId(shown) : null;
@@ -655,15 +656,14 @@ export function ask(said: string, shown?: string, repo?: string, folders?: strin
   if (c) set({ waiting: without(state.waiting, c), working: { ...state.working, [c]: 'Thinking' }, ...(state.pace[c]?.turn ? { pace: without(state.pace, c) } : {}) });
   else set({ starting: { id, said: words, turn, files: files.map(({ name, preview }) => ({ name, preview })) } });
   let failed = false;
+  const paths = files.map((f) => f.path!);
   void (async () => {
     try {
-      const kept: { path: string; name: string; shown: string; preview?: string }[] = [];
-      for (const f of files) kept.push({ ...(await api.upload(f.file!)), shown: f.name, preview: f.preview });
-      if (kept.length) set({ previews: { ...state.previews, [turn]: kept } });
+      if (files.length) set({ previews: { ...state.previews, [turn]: files.map((f) => ({ name: f.path!.split('/').pop()!, shown: f.name, preview: f.preview })) } });
       // the working folders go with words that start a conversation, once obid takes them (an
       // older one refuses the key); a conversation's own are obid's already (sendFoldersBy)
       const a = await sent(() => api.plan(q ? q.said : words, q ? { question: q.text, option: words } : undefined, c ? { conversation: c } : { new: true },
-        state.status?.folders && !c ? folders : undefined, { id: turn, attachments: kept.map((k) => k.path), jobs }));
+        state.status?.folders && !c ? folders : undefined, { id: turn, attachments: paths, jobs }));
       const where = a.conversation ?? c;
       // the plan's answer is the one: it replaces a guess from the words' turn
       const alias = !c && a.conversation ? { ...Object.fromEntries(Object.entries(state.alias).filter(([, v]) => v !== id)), [a.conversation]: id } : state.alias;
@@ -679,6 +679,8 @@ export function ask(said: string, shown?: string, repo?: string, folders?: strin
       if (!c && where) { set({ loaded: new Set([...state.loaded, where]) }); set({ turns: { ...state.turns, [where]: merged(state.turns[where] ?? [], await api.conversation({ id: where, limit: 100 })) } }); }
     } catch (e) {
       failed = true;
+      // obid refused the words: their files go too (one it didn't answer may have them)
+      if (e instanceof ApiError && e.status) forgetUploads(paths);
       say(e);
     } finally {
       // (words still being shown carry on to the turn, unless it failed)
@@ -688,6 +690,23 @@ export function ask(said: string, shown?: string, repo?: string, folders?: strin
   })();
   return id;
 }
+// Files picked or pasted are uploaded before their words go (POST /v1/attachments), each then
+// with the path obid kept. One refused (over 25 MB, say) takes those uploaded before it away
+// again, says why, and answers null: the box keeps the words and the files. Off obid, as they are.
+export async function uploadFiles<F extends { name: string; file?: File; path?: string }>(files: F[]): Promise<F[] | null> {
+  if (!onObid) return files;
+  const done: F[] = [];
+  try {
+    for (const f of files) done.push(f.file && !f.path ? { ...f, path: (await api.upload(f.file, f.name)).path } : f);
+    return done;
+  } catch (e) {
+    forgetUploads(done.flatMap((f) => (f.file && f.path ? [f.path] : [])));
+    say(e);
+    return null;
+  }
+}
+// uploads whose words never went
+export const forgetUploads = (paths: string[]) => { for (const p of paths) void api.unload(p).catch(() => {}); };
 // A send obid didn't answer (status 0: the connection went, or obid restarted) is sent again, the
 // same request with the same id, a few times a second apart; any answer of obid's is final.
 export async function sent<T>(send: () => Promise<T>, tries = 3, pause = 1000): Promise<T> {
@@ -714,13 +733,16 @@ export async function deleteConversation(shown: string) {
 }
 
 // Told a job's agent something (POST /v1/jobs/{id}/messages)
-export async function tellJob(id: string, text: string, files: { file?: File }[] = []) {
+export async function tellJob(id: string, text: string, files: { path?: string }[] = []) {
+  const paths = files.flatMap((f) => (f.path ? [f.path] : []));
   try {
-    const kept = [];
-    for (const f of files) if (f.file) kept.push((await api.upload(f.file)).path);
-    const j = await api.message(id, text.trim(), kept);
+    const j = await api.message(id, text.trim(), paths);
     set({ jobs: { ...state.jobs, [j.id]: j } });
-  } catch (e) { say(e); }
+  } catch (e) {
+    // obid refused (files go only with a follow-up of a finished task): its files go too
+    if (e instanceof ApiError && e.status) forgetUploads(paths);
+    say(e);
+  }
 }
 // A task's Mode menu: how much it asks from now on (POST /v1/jobs/{id}/mode)
 export async function changeMode(id: string, mode: string) {
