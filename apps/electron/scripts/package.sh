@@ -58,6 +58,8 @@ for arch in $archs; do
     [[ "$(codesign -dv "$app/Contents/$helper" 2>&1)" == *"TeamIdentifier=$team"* ]] || die "$helper isn't signed by team $team"
   done
   [[ "$("$app/Contents/MacOS/gitleaks" version 2>&1)" == 8.30.1 ]] || die "the app's gitleaks doesn't run"
+  # without it the updater never downloads (electron-updater reads its cache folder's name there)
+  cmp -s build/app-update.yml "$app/Contents/Resources/app-update.yml" || die "$name.app has no app-update.yml: it could never update"
 
   # The app's files scanned before they leave this Mac, for Apple's notary service too. gitleaks
   # reads text: a secret inside a Mach-O binary goes unseen, as in scripts/release.sh.

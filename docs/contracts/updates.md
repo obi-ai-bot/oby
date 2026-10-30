@@ -38,29 +38,29 @@ The footer "Oby downloads updates in the background and installs them when you q
 
 ### Failures and recovery
 
-- Offline, the feed or a zip missing, a checksum that doesn't match `latest-mac.yml`, or a signature that doesn't meet the running app's: nothing installs, About shows Check for Updates again, and the reason goes to main's log. With Update automatically on, the next 6-hour look tries again.
+- Offline, the feed or a zip missing, a file off the feed's host, a checksum that doesn't match `latest-mac.yml`, or a signature that doesn't meet the running app's: nothing installs, About shows Check for Updates again, and the reason goes to main's log. With Update automatically on, the next 6-hour look tries again.
 - A click while Oby already looks or downloads starts nothing twice.
 - Turning Update automatically off once an update is downloaded doesn't take it back: Squirrel.Mac already holds it and installs it when Oby quits.
 
 ### Invariants and boundaries
 
 - **Verified before it installs.** electron-updater refuses a zip whose sha512 isn't `latest-mac.yml`'s (it refuses a feed with no checksum at all); Squirrel.Mac installs a bundle only if its code signature meets the running app's designated requirement (Deskree's Developer ID team, `com.deskree.oby.electron`). Neither can be turned off from the app.
-- **Never older, never a pre-release:** `allowDowngrade` and `allowPrerelease` are false.
-- **https only, one host:** the feed is `https://downloads.oby.dev/electron`, set in main's code (`FEED`), never read from the page or a file.
+- **Never a lower version number, never a pre-release:** `allowDowngrade` and `allowPrerelease` are false. That compares the numbers `latest-mac.yml` states, nothing more: a build is trusted for its Deskree signature and its checksum, so someone who can write to the bucket could serve an older, genuinely signed build under a higher number, and Macs would install it. Signing the feed itself (ed25519, a key the app carries) would close that, and is a follow-up of its own.
+- **https only, one host:** the feed is `https://downloads.oby.dev/electron`, set in main's code (`FEED`), never read from the page. Every file `latest-mac.yml` names, resolved against the feed as electron-updater resolves it, must be https on `downloads.oby.dev` (no other host or port, no `http:` or `file:`), or the update is refused before anything downloads (`onFeed`). The bundle's `app-update.yml` names the same feed (a test keeps them equal); electron-updater reads its cache folder's name there.
 - **Privacy first:** the look is one anonymous GET of `latest-mac.yml` (and the zip when there's one); no account, identifier or telemetry. With Update automatically off, nothing goes out until the owner clicks.
 - Only the window's own page (main's `trusted`) can ask main to check, install or change the setting.
 
 ## Interfaces and dependencies
 
 - **Renderer ↔ main (preload `window.app`):** `updates(ask?)` with `'check'`, `'install'` or a boolean (Update automatically) answers `{auto, update}`; `onUpdate(fn)` gets each new `update`. The page is the only caller.
-- **electron-updater 6.8.12**, bundled into main (the app ships no `node_modules`), the `generic` provider, whole-zip downloads (no blockmaps).
+- **electron-updater 6.8.12**, bundled into main (the app ships no `node_modules`), the `generic` provider, whole-zip downloads (no blockmaps). It needs `Contents/Resources/app-update.yml` (`apps/electron/build/app-update.yml`, through electron-builder.yml's `extraResources`) before any download, even with the feed set in code; `package.sh` refuses to notarize an app without it.
 - **What `scripts/package.sh` makes** (after notarizing and stapling): `dist/<name>-<version>-<arch>-mac.zip` per architecture (the arm64 one has `arm64` in its name: the updater picks it on Apple silicon, the other elsewhere) and `dist/latest-mac.yml` (version, each zip's sha512 and size, release date). The version is `apps/electron/package.json`'s.
 
 ### Publishing a release (the owner's step)
 
 1. `apps/electron/scripts/package.sh` (both architectures: a feed with one leaves the other's Macs without an update).
 2. Upload both zips to the `oby-downloads` R2 bucket under `electron/`, then `latest-mac.yml` there last (no Mac is sent to a zip that isn't there yet). `latest-mac.yml` with `Cache-Control: no-cache`, so a new release is seen at the next look.
-3. The DMGs where the README links (`https://downloads.oby.dev/`).
+3. The DMGs where downloads should point.
 
 ## Acceptance scenarios
 
@@ -68,10 +68,11 @@ The footer "Oby downloads updates in the background and installs them when you q
 - **UPDATES-2** With it off, Oby never looks by itself; Check for Updates looks; a newer build shows "Oby X is available", and Update and Restart downloads it and restarts into it once it's checked.
 - **UPDATES-3** Nothing newer: "Oby is up to date".
 - **UPDATES-4** A failure (offline, a bad checksum, a signature that doesn't match) installs nothing and offers Check for Updates again; with Update automatically on, the next 6-hour look tries again.
-- **UPDATES-5** The feed is `https://downloads.oby.dev/electron`; never an older or a pre-release build.
+- **UPDATES-5** The feed is `https://downloads.oby.dev/electron`, and the bundle's `app-update.yml` names the same one; never a lower version number or a pre-release.
 - **UPDATES-6** Update and Restart on a downloaded update restarts into it now; clicked while it downloads, it restarts once it's ready.
 - **UPDATES-7** Turning Update automatically on looks now, or downloads what was found; off, Oby stops looking. It's kept across launches.
 - **UPDATES-8** A click or a look while Oby already looks or downloads starts nothing twice.
+- **UPDATES-9** A `latest-mac.yml` naming a file anywhere but https on `downloads.oby.dev` is refused: nothing downloads, About offers Check for Updates again.
 
 ### Test it when it's done (on a real Mac)
 
@@ -80,4 +81,4 @@ The footer "Oby downloads updates in the background and installs them when you q
 3. Publish a `latest-mac.yml` whose sha512 doesn't match its zip: nothing installs, About shows Check for Updates.
 4. Publish a zip signed with another identity (ad hoc): Squirrel.Mac refuses it, nothing installs.
 
-Checked in this change: `updates.test.ts` (the eight scenarios), the build bundling electron-updater into main, and an unpackaged run of the app on this Mac showing About's rows on the real bridge with `updatesAuto` kept in `settings.json`. The real-Mac steps above wait for the first release on `downloads.oby.dev`.
+Checked in this change: `updates.test.ts` (the nine scenarios), the build bundling electron-updater into main, and an unpackaged run of the app on this Mac showing About's rows on the real bridge with `updatesAuto` kept in `settings.json`. The real-Mac steps above wait for the first release on `downloads.oby.dev`.

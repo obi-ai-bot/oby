@@ -64,7 +64,18 @@ export function next(u: Update, e: Event, auto: boolean): [Update, Action] {
   }
 }
 
-// electron-updater's settings for Update automatically: never an older or a pre-release build,
+// latest-mac.yml's files, resolved against the feed as electron-updater resolves them: each one https
+// on the feed's own host, or the update is refused (thrown: the updater's 'error', About offers
+// Check for Updates again). Whoever writes the feed can't send Macs to another host.
+export function onFeed(info: { files?: { url: string }[]; path?: string }) {
+  const feed = new URL(`${FEED}/`);
+  for (const u of [...(info.files ?? []).map((f) => f.url), ...(info.path ? [info.path] : [])]) {
+    const url = new URL(u, feed);
+    if (url.protocol !== 'https:' || url.host !== feed.host) throw new Error(`refused an update file off ${feed.host}: ${url.href}`);
+  }
+}
+
+// electron-updater's settings for Update automatically: never a lower version or a pre-release,
 // downloads and installs at quit only when it's on; always the whole zip (package.sh makes no
 // blockmaps for a part of one)
 export const settings = (auto: boolean) => ({

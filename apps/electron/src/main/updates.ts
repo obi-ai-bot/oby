@@ -1,7 +1,7 @@
 import { ipcMain, type BrowserWindow } from 'electron';
 import { constants } from 'node:fs';
 import updater from 'electron-updater';
-import { EVERY, FEED, next, settings as updaterSettings, type Event, type Update } from '../shared/updates';
+import { EVERY, FEED, next, onFeed, settings as updaterSettings, type Event, type Update } from '../shared/updates';
 import { writeOwn } from './device';
 import { SETTINGS, settings } from './notify';
 import type { Trusted } from './obid';
@@ -9,8 +9,9 @@ import type { Trusted } from './obid';
 // Oby updates itself from FEED (docs/contracts/updates.md) with electron-updater: it downloads the
 // zip for this Mac's architecture and refuses it unless its sha512 is latest-mac.yml's, and
 // Squirrel.Mac installs it only if its code signature meets this app's own designated requirement
-// (Deskree's Developer ID, this bundle ID). What to do when is shared/updates.ts's; this carries it
-// out, and tells About (Settings) what it shows.
+// (Deskree's Developer ID, this bundle ID); a file anywhere but FEED's host isn't fetched (onFeed).
+// What to do when is shared/updates.ts's; this carries it out, and tells About (Settings) what it
+// shows.
 const { autoUpdater } = updater;
 
 let update: Update = { state: 'idle' };
@@ -33,6 +34,9 @@ export function updating(trusted: Trusted, current: () => BrowserWindow | null) 
   auto = settings().updatesAuto !== false;
   autoUpdater.setFeedURL({ provider: 'generic', url: FEED });
   Object.assign(autoUpdater, updaterSettings(auto));
+  // before an update counts as found: its files on FEED's host, then electron-updater's own check
+  const supported = autoUpdater.isUpdateSupported;
+  autoUpdater.isUpdateSupported = (info) => { onFeed(info); return supported(info); };
   const date = (d: unknown) => (typeof d === 'string' ? { date: d } : {});
   autoUpdater.on('update-not-available', () => on({ kind: 'none' }));
   autoUpdater.on('update-available', (i) => on({ kind: 'found', version: i.version, ...date(i.releaseDate) }));

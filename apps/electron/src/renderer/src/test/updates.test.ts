@@ -1,5 +1,6 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { EVERY, FEED, next, settings, type Event, type Update } from '../../../shared/updates';
+import { EVERY, FEED, next, onFeed, settings, type Event, type Update } from '../../../shared/updates';
 
 // docs/contracts/updates.md: each test is named after its scenario
 const idle: Update = { state: 'idle' };
@@ -49,9 +50,26 @@ describe('updates', () => {
     expect(run(true, [{ kind: 'tick' }]).actions).toEqual(['check']);
   });
 
-  it('updates_5_https_feed_on_downloads_oby_dev_never_older_or_prerelease', () => {
+  it('updates_5_https_feed_on_downloads_oby_dev_never_a_lower_version_or_prerelease', () => {
     expect(FEED).toBe('https://downloads.oby.dev/electron');
     for (const auto of [true, false]) expect(settings(auto)).toMatchObject({ allowDowngrade: false, allowPrerelease: false });
+    // the file electron-updater reads in the bundle names the same feed
+    const yml = readFileSync(new URL('../../../../build/app-update.yml', import.meta.url), 'utf8');
+    expect(yml).toMatch(/^provider: generic$/m);
+    expect(yml).toMatch(new RegExp(`^url: ${FEED}$`, 'm'));
+    expect(yml).toMatch(/^updaterCacheDirName: \S+$/m);
+  });
+
+  it('updates_9_a_file_off_the_feeds_host_or_not_https_is_refused', () => {
+    const zip = (url: string) => ({ files: [{ url }] });
+    expect(() => onFeed(zip('Oby-Electron-0.2.0-arm64-mac.zip'))).not.toThrow();
+    expect(() => onFeed(zip('https://downloads.oby.dev/electron/Oby-Electron-0.2.0-x64-mac.zip'))).not.toThrow();
+    for (const url of [
+      'https://evil.example/Oby.zip', 'http://downloads.oby.dev/electron/Oby.zip', '//evil.example/Oby.zip',
+      'https://downloads.oby.dev.evil.example/Oby.zip', 'https://downloads.oby.dev:8443/Oby.zip', 'file:///tmp/Oby.zip',
+    ]) expect(() => onFeed(zip(url)), url).toThrow(/refused/);
+    // the legacy path too
+    expect(() => onFeed({ files: [], path: 'https://evil.example/Oby.zip' })).toThrow(/refused/);
   });
 
   it('updates_6_update_and_restart_on_a_downloaded_update_restarts_now', () => {
