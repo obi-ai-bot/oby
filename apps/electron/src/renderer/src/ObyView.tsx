@@ -6,6 +6,7 @@ import StatusDot from './StatusDot';
 import { useScrollThumb } from './useScrollThumb';
 import { convosWith, start, useConvos, type Convo } from './peers';
 import { useTasks } from './tasks';
+import { box as draftBox } from './drafts';
 
 // how long the way out takes (the sink animation in app.css)
 const LEAVE_MS = 220;
@@ -81,6 +82,7 @@ export default function ObyView({ name, leaving, covered = false, onClose, onGon
         placeholder={`Message ${name}’s Oby`}
         label={`Message ${name}’s Oby`}
         onSend={(text, att) => { const id = start(name, text, att); if (id) onOpenConvo(id); }}
+        draft={draftBox.oby(name)}
       />
     </div>
   );

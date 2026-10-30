@@ -17,6 +17,7 @@ import SetupCard from './SetupCard';
 import OfferCard from './OfferCard';
 import { WELCOME, typedFirst } from './onboarding';
 import { openConversation, useLimitAsks } from './live';
+import { box as draftBox } from './drafts';
 
 // how long the way out takes (the sink animation in app.css)
 const LEAVE_MS = 220;
@@ -242,6 +243,7 @@ export default function ChatView({ id, kind = 'task', leaving, covered = false, 
         onSend={(text, att) => (task ? tell(task.id, text, att) : talk ? (talk.id === WELCOME && typedFirst(text)) || tellChat(talk.id, text, att) : say(convo!.id, text, att))}
         repos={!!talk && !talk.local}
         conversation={talk?.id}
+        draft={task ? draftBox.task(task.id) : talk ? draftBox.conversation(talk.id) : draftBox.peer(convo!.id)}
       />
     </div>
   );
