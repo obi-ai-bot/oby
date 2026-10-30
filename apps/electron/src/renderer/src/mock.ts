@@ -599,7 +599,8 @@ export type Offer = { id: string; title: string; jobs: { what: string; task: str
 export type SetupStep = 'agents' | 'github' | 'extras' | 'first' | 'sphere' | 'showme' | 'sample' | `convo:${'Ernesto' | 'Dima' | 'Wellington'}` | 'knowledge';
 // What went with a message from the message box besides its words
 // repo: the repository picked for it (obid's, Composer's repository tag)
-export type Attachments = { files?: { name: string; preview?: string }[]; obys?: string[]; jobs?: string[]; on?: string; repo?: string };
+// folders: the working folders picked (v1: kept by the app, folders.ts; obid takes none yet)
+export type Attachments = { files?: { name: string; preview?: string }[]; obys?: string[]; jobs?: string[]; on?: string; repo?: string; folders?: string[] };
 export const hasAttachments = (a?: Attachments) => !!(a?.files?.length || a?.obys?.length || a?.jobs?.length);
 const SOURCE = new Map<Brand, string>([[github, 'GitHub'], [slack, 'Slack'], [gmail, 'Gmail'], [deskree, 'Deskree Ops']]);
 // What was said after it started, in minutes ago (between when it started and now)

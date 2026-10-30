@@ -9,7 +9,7 @@ python3 e2e/live/run.py --obid target/debug/obid --label dev
 
 What it does:
 
-- Makes a run folder (0700) under the temp folder with obid's `home/`, `tmp/` and `config.json`: a free port on 127.0.0.1, `telemetry` false, `claudeKeychain` true, the file vault, one Claude account (`--account-dir`, the Deskree account's folder by default; never the default login), and `field/fixture-app` from `file:///Users/wellprado/Projects/Deskree/oby-field/remote.git` (`--remote`) with the check `node --test`.
+- Makes a run folder (0700) under the temp folder with obid's `home/`, `tmp/` and `config.json`: a free port on 127.0.0.1, `telemetry` false, `claudeKeychain` true, the file vault, one Claude account (`--account-dir` or `OBY_LIVE_ACCOUNT_DIR`, an account's own folder; never the default login), and `field/fixture-app` from a local bare repository (`--remote` or `OBY_LIVE_REMOTE`, a `file://` URL) with the check `node --test`.
 - Starts `obid serve`, follows `GET /v1/events` with the token obid writes in `home/api-token`, and talks with `POST /v1/plans`.
 - Runs the scenarios, prints a pass/fail table, scenario 4's job stages with their times and the load average (times on a loaded Mac aren't representative), and each failure's events and obid's log tail, with tokens redacted.
 - Stops obid (its whole process group) and deletes the run folder, unless `--keep`.

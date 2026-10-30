@@ -32,7 +32,8 @@ mac:
   icon: ../icon/AppIcon.icon
   category: public.app-category.developer-tools
   minimumSystemVersion: "26.0"
-  identity: "Deskree Technologies Inc. (3UV9W5SV7W)"
+  # scripts/package.sh sets it: OBY_SIGN_IDENTITY, Deskree's Developer ID when that's unset
+  identity: ${env.OBY_SIGN_IDENTITY}
   hardenedRuntime: true
   entitlements: build/entitlements.mac.plist
   entitlementsInherit: build/entitlements.mac.plist

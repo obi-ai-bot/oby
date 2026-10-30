@@ -1,6 +1,8 @@
 import { Fragment, useCallback, useEffect, useRef, useState } from 'react';
 import { ChevronLeft, ChevronRight, EllipsisVertical, PanelLeft } from 'lucide-react';
+import { ChatsCircleIcon } from '@phosphor-icons/react';
 import Oby from './Oby';
+import { ARRIVAL_GRAVITY, arrivingNow, useArriving } from './FirstRun';
 import GroupView from './GroupView';
 import ChatView from './ChatView';
 import TaskView from './TaskView';
@@ -9,8 +11,9 @@ import Sidebar from './Sidebar';
 import TaskMenu from './TaskMenu';
 import ConvoMenu from './ConvoMenu';
 import Composer from './Composer';
+import SettingsTip, { dismissSettingsTip } from './SettingsTip';
+import { setFolders } from './folders';
 import AskStack from './AskStack';
-import LimitDecisions from './LimitDecisions';
 import ObyView from './ObyView';
 import ArchiveView from './ArchiveView';
 import SettingsView, { settingsLabel } from './SettingsView';
@@ -18,26 +21,31 @@ import SphereSettings, { sphereSettingsLabel } from './SphereSettings';
 import KnowledgeView, { knowledgeLabel } from './KnowledgeView';
 import { useSpheres } from './spheres';
 import { everything, onObid, welcome } from './lean';
-import { realId, shownId, useLimitCount, useLive } from './live';
+import { realId, shownId, useLive } from './live';
 import { WELCOME, setUp, startOnboarding } from './onboarding';
 import { askOby, chatOfTask, renameChat, tellAbout, useChats } from './chats';
 import { useConvos } from './peers';
 import { AvatarStack } from './ObyFace';
 import { convoTitle, hasAttachments, type Attachments } from './mock';
-import { TYPES, renameTask, tell, countOf, runningCount, firstTab, hasFresh, useTasks, asksWaiting, type Tab } from './tasks';
+import { TYPES, renameTask, tell, countOf, runningCount, firstTab, hasFresh, toDoOf, useTasks, asksWaiting, type Tab } from './tasks';
+
+// the Settings tip over the message box: off for now (its bar, SettingsTip.tsx, kept for tips to come)
+const SETTINGS_TIP = false;
 
 // the line over the chips: what's running and what needs you; with neither,
 // Oby asking for something to do
-function attention(running: number, needs: number) {
+// (fresh: no task ever yet, as when you've just been set up: a welcome, not "all quiet")
+function attention(running: number, needs: number, fresh = false) {
   const r = `${running} running task${running === 1 ? '' : 's'}`;
   const n = `${needs} need${needs === 1 ? 's' : ''} you`;
   if (running) return [r, needs ? n : 'nothing needs you'].join(' · ');
   if (needs) return n;
-  return 'All quiet. Give me something to work on';
+  return fresh ? 'I’m all set.\nGive me a task whenever you’re ready.' : 'All quiet. Give me something to work on';
 }
 
 // side panel width limits, icons (48px) included
-const SIDEBAR_DEFAULT = 290, SIDEBAR_MIN = 252, SIDEBAR_MAX = 472;
+// (the default: halfway between the narrowest and widest, 362px)
+const SIDEBAR_MIN = 252, SIDEBAR_MAX = 472, SIDEBAR_DEFAULT = (SIDEBAR_MIN + SIDEBAR_MAX) / 2;
 // How far past a limit the panel can stretch, and how stiffly (UIKit's
 // rubber-band curve: gives STIFF of the drag at first, approaching STRETCH)
 const STRETCH = 60, STIFF = 0.55;
@@ -69,16 +77,17 @@ let made = 0;
 
 export default function Home() {
   const tasks = useTasks();  // counts and dots follow tasks being added and opened
-  const limitCount = useLimitCount();
   const chats = useChats();
   const convos = useConvos();
   const spheres = useSpheres();
   // what needs you: the tasks', and what obid asks with no task (a GitHub offer, a Confirm)
-  const running = runningCount(), needsYou = countOf('needs') + asksWaiting().length + limitCount;
+  const running = runningCount(), needsYou = countOf('needs') + asksWaiting().length;
 
   const [layers, setLayers] = useState<Layer[]>([]);
   const live = layers.filter((l) => !l.leaving);
   const top = live.at(-1);
+  // Settings opened, however: the tip over the message box has done its job
+  useEffect(() => { if (top?.kind === 'settings') dismissSettingsTip(); }, [top?.kind]);
   const layer = (step: Step): Layer => ({ ...step, key: `${step.kind}:${step.id ?? ''}:${++made}` });
   // over what's open: a step, or back to it if it's already in the trail
   const push = (step: Step) => setLayers((all) => {
@@ -152,6 +161,8 @@ export default function Home() {
   // asked in Home's message box: a new conversation, open straight away
   const ask = (text: string, att: Attachments) => {
     const id = askOby(text, att);
+    // the working folders picked go with the conversation the words start
+    if (id && att.folders?.length) setFolders(id, att.folders);
     if (id) start({ kind: 'talk', id });
   };
   // said in a task page's message box: it goes on the end of the task's
@@ -193,6 +204,17 @@ export default function Home() {
 
   // the pointer arriving on the chips: Oby glances over
   const [onChips, setOnChips] = useState(false);
+  // coming in from setting up (FirstRun.tsx): Oby waits under the floor of its frame, then hops up
+  const [enterIn] = useState(arrivingNow);
+  const arriving = useArriving();
+  // the Settings tip over the message box: coming from setting up, 2s after Home has all come
+  // in (the box, last, done 1.55s after arriving: app.css, .composer.is-arrival); else 600ms in
+  const [tipShown, setTipShown] = useState(false);
+  useEffect(() => {
+    if (enterIn && arriving) return;
+    const t = setTimeout(() => setTipShown(true), enterIn ? 1550 + 2000 : 600);
+    return () => clearTimeout(t);
+  }, [enterIn, arriving]);
   // the side panel opens as you left it: closed the first time
   const [sidebar, setSidebar] = useState(() => {
     try { return localStorage.getItem('oby.sidebarOpen') === '1'; } catch { return false; }
@@ -209,14 +231,16 @@ export default function Home() {
     try { return Number(localStorage.getItem('oby.sidebarWidth')) || SIDEBAR_DEFAULT; } catch { return SIDEBAR_DEFAULT; }
   });
   const [resizing, setResizing] = useState(false);
-  // let go: the edge springs to where it settles (--settle, 520ms)
+  // let go: the edge eases to where it rests (--panel-settle, 640ms)
   const [settling, setSettling] = useState(false);
   const settled = useRef(0);
-  // in full screen there are no traffic lights, so the title bar starts at the edge
+  // in full screen there are no traffic lights, nor in a browser tab (npm run web: no window
+  // of its own), so the title bar starts at the edge
   const [fullScreen, setFullScreen] = useState(() => window.app?.fullScreen ?? false);
   useEffect(() => window.app?.onFullScreen(setFullScreen), []);
+  const noLights = fullScreen || !window.app;
   // While dragging, past the limits the panel gives less and less (rubber band);
-  // on release it settles within them, the eased width transition springing it back.
+  // on release it eases back within them (the width transition), with no bounce.
   const resizeSidebar = useCallback((w: number | null, done = false) => {
     if (w == null) w = SIDEBAR_DEFAULT;
     const next = done ? Math.min(SIDEBAR_MAX, Math.max(SIDEBAR_MIN, Math.round(w))) : rubberBand(w);
@@ -224,7 +248,7 @@ export default function Home() {
     setResizing(!done);
     clearTimeout(settled.current);
     setSettling(done);
-    if (done) settled.current = window.setTimeout(() => setSettling(false), 520);
+    if (done) settled.current = window.setTimeout(() => setSettling(false), 640);
     if (done) try { localStorage.setItem('oby.sidebarWidth', String(next)); } catch { /* not remembered, that's all */ }
   }, []);
 
@@ -284,9 +308,11 @@ export default function Home() {
   const rootTask = top?.kind === 'task' || top?.kind === 'thread' ? top.id : top?.kind === 'talk' && under?.kind === 'task' ? under.id : null;
 
   return (
-    <div className={`app${sidebar ? ' has-sidebar' : ''}${resizing ? ' is-resizing' : ''}${settling ? ' is-settling' : ''}${fullScreen ? ' is-full-screen' : ''}`} style={{ '--sidebar': `${sidebarWidth}px` } as React.CSSProperties}>
+    <div className={`app${sidebar ? ' has-sidebar' : ''}${resizing ? ' is-resizing' : ''}${settling ? ' is-settling' : ''}${noLights ? ' no-lights' : ''}`} style={{ '--sidebar': `${sidebarWidth}px`, '--sidebar-min': `${SIDEBAR_MIN}px` } as React.CSSProperties}>
       <Sidebar
         open={sidebar}
+        atHome={!away}
+        onClose={() => { lent.current = false; setSidebar(false); }}
         onNewChat={newChat}
         onHome={closeAll}
         onOpenTask={(id) => start({ kind: 'task', id })}
@@ -357,6 +383,13 @@ export default function Home() {
                           <EllipsisVertical size={16} strokeWidth={1.6} />
                         </button>
                       )}
+                      {/* a task's: its conversation, beside its ⋮ too (by the title, where it's seen; the
+                          button at the bar's right is easy to miss) */}
+                      {shown && !leavingAll && (
+                        <button className="icon-button bar-chat" aria-label="Go to conversation" data-tip="Go to conversation" onClick={() => goToConversation(shown.id)}>
+                          <ChatsCircleIcon size={17} />
+                        </button>
+                      )}
                     </>}
                 </Fragment>
               );
@@ -392,29 +425,34 @@ export default function Home() {
 
       <main className="main">
         <div className={`stage${away ? ' is-hidden' : ''}`} inert={away}>
-        <Oby paused={away} glance={onChips && !away} />
+        <Oby paused={away} glance={onChips && !away} enter={enterIn ? !arriving : undefined} gravity={enterIn ? ARRIVAL_GRAVITY : undefined} />
         {TYPES.length > 0 && (
           <section className="attention" aria-label="Your tasks">
-            <span className={`attention-label${running || needsYou ? '' : ' is-idle'}`}>{attention(running, needsYou)}</span>
-            <LimitDecisions />
+            {/* coming in from setting up: it waits till Oby has hopped up, then rises in (app.css) */}
+            <span className={`attention-label${running || needsYou ? '' : ' is-idle'}${enterIn ? (arriving ? ' is-waiting' : ' is-arrival') : ''}`}>{attention(running, needsYou, tasks.length === 0)}</span>
             {/* what Oby is asking you, answered here; opening one goes to its task's page */}
             <AskStack active={!away} onOpen={openTask} onOpenTalk={(id) => start({ kind: 'talk', id })} />
             {/* every kind of work, in its usual order, whatever's going on in it (a
                 kind with nothing open opens on its completed ones), so the kinds
                 show here even while the side panel groups by status */}
-            <div className="chips" onPointerEnter={() => setOnChips(true)} onPointerLeave={() => setOnChips(false)}>
-                {TYPES.map((c) => (
-                  <button key={c.id} className="chip" onClick={() => start({ kind: 'group', id: c.id, tab: firstTab(c.id) })}>
-                    {/* blue: holds a new task; orange: something in it needs you; both can show */}
-                    {(hasFresh(c.id) || countOf('needs', c.id) > 0) && (
-                      <span className="chip-dots">
-                        {hasFresh(c.id) && <span className="is-fresh" role="img" aria-label="New" />}
-                        {countOf('needs', c.id) > 0 && <span className="is-needs" role="img" aria-label="Needs you" />}
-                      </span>
-                    )}
-                    {c.label}
-                  </button>
-                ))}
+            <div className={`chips${enterIn ? (arriving ? ' is-waiting' : ' is-arrival') : ''}`} onPointerEnter={() => setOnChips(true)} onPointerLeave={() => setOnChips(false)}>
+                {TYPES.map((c) => {
+                  // blue: holds a new task; orange: something in it needs you (a task's decision, or
+                  // GitHub's work waiting on you under To do: a review asked of you, an issue of yours);
+                  // both can show
+                  const fresh = hasFresh(c.id), needs = countOf('needs', c.id) > 0 || toDoOf(c.id).length > 0;
+                  return (
+                    <button key={c.id} className="chip" onClick={() => start({ kind: 'group', id: c.id, tab: firstTab(c.id) })}>
+                      {(fresh || needs) && (
+                        <span className="chip-dots">
+                          {fresh && <span className="is-fresh" role="img" aria-label="New" />}
+                          {needs && <span className="is-needs" role="img" aria-label="Needs you" />}
+                        </span>
+                      )}
+                      {c.label}
+                    </button>
+                  );
+                })}
             </div>
           </section>
         )}
@@ -426,7 +464,11 @@ export default function Home() {
       <Composer
         home
         hidden={away}
-        placeholder="What do you want me to work on, Doti?"
+        className={enterIn ? (arriving ? 'is-waiting' : 'is-arrival') : ''}
+        prompts
+        // the tip bar over the box (SettingsTip.tsx, its look kept for tips to come): the Settings tip is
+        // off for now (Sangam, 2026-10-28: not needed)
+        note={SETTINGS_TIP && tipShown && <SettingsTip onOpen={() => start({ kind: 'settings', id: 'general' })} />}
         label="Message Oby"
         onSend={ask}
         repos
@@ -457,7 +499,7 @@ export default function Home() {
       {/* stays next to the traffic lights whether the side panel is open or not.
           Last in the page on purpose: Electron reads drag areas in page order,
           so coming after the title bar keeps its click from being taken as a drag */}
-      <button className="icon-button panel-toggle" aria-label={sidebar ? 'Hide sidebar' : 'Show sidebar'} aria-expanded={sidebar} onClick={() => { lent.current = false; setSidebar((v) => !v); }}>
+      <button className={`icon-button panel-toggle${enterIn ? (arriving ? ' is-waiting' : ' is-arrival') : ''}`} aria-label={sidebar ? 'Hide sidebar' : 'Show sidebar'} aria-expanded={sidebar} onClick={() => { lent.current = false; setSidebar((v) => !v); }}>
         <PanelLeft size={18} strokeWidth={1.6} />
       </button>
     </div>

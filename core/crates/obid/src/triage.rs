@@ -65,11 +65,8 @@ pub fn rule(item: &Item) -> Option<&'static str> {
         "pluginEvent" => item.plugin.as_ref().map_or(Some(NEEDS_YOU), event),
         // The owner asked to be told what the person they watch does: worth knowing, never urgent.
         "watch" => Some(FYI),
-        // The listener's daily digest is what didn't need the owner (crate::listen::digest).
-        "listen" if item.title == "Slack digest" => Some(FYI),
         // Everything else asks the owner: a permission, a plan, a confirm, a start, a question,
-        // another Obi's request, a job that failed or stopped, a message or review the listener
-        // brought them.
+        // another Obi's request, a job that failed or stopped.
         _ => Some(NEEDS_YOU),
     }
 }
@@ -637,9 +634,6 @@ mod tests {
             rule(&item("listen", "listen-1", json!({}))),
             Some(NEEDS_YOU)
         );
-        let mut digest = item("listen", "listen-2", json!({}));
-        digest.title = "Slack digest".into();
-        assert_eq!(rule(&digest), Some(FYI));
     }
 
     #[test]

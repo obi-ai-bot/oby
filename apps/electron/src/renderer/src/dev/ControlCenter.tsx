@@ -4,6 +4,7 @@ import { ObyFace } from '../ObyFace';
 import { AGENTS, type Agent, type Ask, type AskKind, type SetupStep, type Stage, type StageId } from '../mock';
 import { FIRST_TASK, WELCOME, pick, signInGitHub, dev as setupDev, type Setup } from '../onboarding';
 import { addTask, stop, useTasks, dev as tasksDev, type Task } from '../tasks';
+import { closeOnboarding, openOnboarding } from '../FirstRun';
 import { sayOby, useChats, dev as chatsDev } from '../chats';
 import { onObid } from '../lean';
 import { dev as faceDev } from '../ObyFaceLive';
@@ -174,10 +175,10 @@ function addDecision(k: AskKind, n: number) {
 
 // --- Oby's face. ponytail: looking and the cheer come when the face has them
 // The balloon and the spin, to compare: ObyFaceLive's, read as Oby next talks; kept across scenarios
-faceDev.balloon = (store('oby.dev.balloon') as typeof faceDev.balloon) || 'gx';
-faceDev.fullSpin = store('oby.dev.spin') === '1';
+faceDev.balloon = (store('oby.dev.balloon') as typeof faceDev.balloon) || 'off';
+faceDev.fullSpin = store('oby.dev.spin') !== '0';
 const setBalloon = (v: typeof faceDev.balloon) => { faceDev.balloon = v; store('oby.dev.balloon', v); changed(); };
-const setSpin = (full: boolean) => { faceDev.fullSpin = full; store('oby.dev.spin', full ? '1' : ''); changed(); };
+const setSpin = (full: boolean) => { faceDev.fullSpin = full; store('oby.dev.spin', full ? '1' : '0'); changed(); };
 const SAMPLE = 'You’re set. What should I work on first? Pick one, or tell me in your own words.';
 
 // --- the panel
@@ -244,6 +245,19 @@ function ControlCenter() {
             {mode !== 'run' && ` · ${held.length ? `waiting ${held[0].ms}ms${held.length > 1 ? ` (+${held.length - 1})` : ''}` : 'nothing waiting'}`}
           </>}
         </p>
+
+        {/* Sangam's setting up (FirstRun.tsx), a step at a time: on whatever's showing (obid's
+            agents on obid, the mock's elsewhere); the panel gets out of its way */}
+        <section className="cc-grp" aria-label="Onboarding">
+          <h6>Onboarding</h6>
+          <span className="cc-seg">
+            <button type="button" onClick={() => { openOnboarding('hello'); close(); }}>Hello</button>
+            <button type="button" onClick={() => { openOnboarding('tools'); close(); }}>Tools</button>
+            <button type="button" onClick={() => { openOnboarding('knowledge'); close(); }}>Knowledge</button>
+            <button type="button" onClick={() => { openOnboarding('sphere'); close(); }}>Obysphere</button>
+            <button type="button" onClick={() => { closeOnboarding(); close(); }}>Close</button>
+          </span>
+        </section>
 
         <section className="cc-grp" aria-label="Scenarios">
           <h6>Scenarios</h6>

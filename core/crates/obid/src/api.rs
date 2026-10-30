@@ -949,7 +949,7 @@ mod tests {
             "localhost.",
             "127.0.0.1.evil.example",
             "localhost.evil.example",
-            "tetrix-lab.tail8de49b.ts.net:8443",
+            "mac.tail0000.ts.net:8443",
             "",
             "   ",
         ] {

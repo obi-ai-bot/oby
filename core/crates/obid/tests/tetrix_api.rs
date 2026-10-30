@@ -363,14 +363,16 @@ fn obid_signs_in_to_tetrix_once_and_agents_use_it_without_its_login() {
     let (base, seen) = fake_tetrix();
     let mut config = config(&folder.0, &remote, &fake_claude());
     config["repos"][0]["check"] = Value::Null;
+    config["tetrixPresets"] =
+        json!([{"id": "example", "name": "Tetrix Example", "url": "https://tetrix.example/mcp"}]);
     let obid = start(&folder.0, &config, None);
 
-    // Signed out, with the preset offered.
+    // Signed out, with the configured preset offered.
     let status = call(&obid, "GET", "/v1/tetrix", None);
     assert_eq!(status.status, 200);
     assert_eq!(status.body["connected"], false);
-    assert_eq!(status.body["presets"][0]["id"], "dogfood");
-    assert_eq!(status.body["presets"][0]["name"], "Tetrix Dogfood");
+    assert_eq!(status.body["presets"][0]["id"], "example");
+    assert_eq!(status.body["presets"][0]["name"], "Tetrix Example");
     // Only with the API token.
     assert_eq!(
         call_with_token(&obid, "not-the-token", "GET", "/v1/tetrix", None).status,
@@ -381,7 +383,7 @@ fn obid_signs_in_to_tetrix_once_and_agents_use_it_without_its_login() {
         json!({"url": "http://tetrix.example/mcp"}),
         json!({"url": "https://tetrix.example/mcp?token=x"}),
         json!({"preset": "nope"}),
-        json!({"preset": "dogfood", "url": format!("{base}/mcp")}),
+        json!({"preset": "example", "url": format!("{base}/mcp")}),
         json!({"other": 1}),
     ] {
         assert_eq!(
