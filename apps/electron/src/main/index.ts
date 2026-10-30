@@ -5,6 +5,7 @@ import { dirname, join } from 'node:path';
 import { bridge, startObid, stopFollowing, type Trusted } from './obid';
 import { confirming, messageJob } from './device';
 import { notifying, windowLeft, windowSeen } from './notify';
+import { updating } from './updates';
 
 // One small window: Oby, what needs you, and a way to talk. The renderer gets
 // the cursor's position wherever it is on screen, so Oby can watch it outside
@@ -178,6 +179,8 @@ app.whenReady().then(() => {
     win!.focus();
     return win!;
   });
+  // Oby's own updates (updates.ts), told to About while the window is there
+  updating(trusted, () => win);
   createWindow();
   app.on('activate', () => { if (!win) createWindow(); });
 });

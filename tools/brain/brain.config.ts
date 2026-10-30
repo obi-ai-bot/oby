@@ -49,7 +49,7 @@ export const config: BrainConfig = {
     { key: 'models.mine', owner: 'obid', issue: 1574, note: 'Settings › Agents: model and effort per account' },
     { key: 'oby.folders', owner: 'obid', issue: 1572, note: 'Working folders, per conversation' },
     { key: 'oby.archiveAfter', owner: 'obid', issue: 1580, note: 'Home › Archive completed after…' },
-    { key: 'updates.auto', owner: 'obid', issue: 1577, note: 'About › Update automatically (the Electron updater)' },
+    { key: 'updates.auto', owner: 'app', note: 'About › Update automatically: the mock\'s, in memory; in the Mac app, main keeps it (main/updates.ts)' },
     { key: 'login', owner: 'app', note: 'General › Open at login: Electron main\'s, held in memory until main has a bridge' },
     { key: 'oby.recentFolders', owner: 'app', note: 'The folder picker\'s recent list' },
     { key: 'oby.onboarded', owner: 'app', note: 'First run done' },
