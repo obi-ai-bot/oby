@@ -3683,8 +3683,9 @@ fn events_follow_every_change() {
         if let Some(name) = text.strip_prefix("event: ") {
             event = name.to_owned();
         } else if let Some(data) = text.strip_prefix("data: ") {
-            // A job's transcript comes as events of its own (`transcript`).
-            if event == "transcript" {
+            // A job's transcript comes as events of its own (`transcript`), and so does the
+            // conversation a task started on its own gets (TASKCONV-1).
+            if matches!(event.as_str(), "transcript" | "conversation" | "turn") {
                 continue;
             }
             assert_eq!(event, "job");

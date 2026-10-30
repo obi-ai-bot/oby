@@ -231,6 +231,19 @@ fn said(obid: &Obid, words: &str) -> serde_json::Value {
     answer.body
 }
 
+/// [`said`], in a new conversation: since every task has one of its own (TASKCONV-1), the latest
+/// conversation may be a task's.
+fn said_anew(obid: &Obid, words: &str) -> serde_json::Value {
+    let answer = call(
+        obid,
+        "POST",
+        "/v1/plans",
+        Some(&json!({"said": words, "new": true})),
+    );
+    assert_eq!(answer.status, 200, "{}", answer.text);
+    answer.body
+}
+
 // ---------------------------------------------------------------------------------------------
 // What each brain turn spent (#533): one entry per model call in the turn's record.
 
@@ -537,7 +550,16 @@ fn never_mind_and_stop_end_the_turn_and_stop_no_job() {
         assert_eq!(answer["kind"], "none", "{words}: {answer}");
     }
     assert!(records(&obid).is_empty());
-    assert_eq!(call(&obid, "GET", "/v1/conversation", None).body, json!([]));
+    // nothing said joined a conversation (the latest is the task's own, TASKCONV-1)
+    let latest = call(&obid, "GET", "/v1/conversation", None).body;
+    assert!(
+        latest
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|t| t["who"] != "user" || t["text"] == "SLEEP"),
+        "{latest}"
+    );
     let events = follow_events(&obid);
     let answer = std::thread::scope(|scope| {
         let asking = scope.spawn(|| said(&obid, "LINGER 2000"));
@@ -1033,15 +1055,38 @@ fn get_job(obid: &Obid, id: &str) -> serde_json::Value {
 fn one_message_tries_a_failed_job_again_and_dismisses_the_old_one() {
     let folder = Folder::new("brain-try-again");
     let obid = started_harness_jobs(&folder);
-    let notch = job_that(&obid, "Notch three screens", "FAIL", None, "interrupted");
-    let old = job_that(&obid, "Old PR job", "Nothing", None, "done");
-    let (notch, old) = (notch["id"].as_str().unwrap(), old["id"].as_str().unwrap());
-    let answer = said(
+    // both started in one conversation, the turn's own: another conversation's job (a task started
+    // on its own has its own, TASKCONV-1) is acted on only on the owner's Confirm (#631)
+    let first = said_anew(
         &obid,
-        &format!(
-            r#"REPEAT 1 OBY oby_continue_job {{"id":"{notch}"}} THEN OBY oby_archive_job {{"id":"{old}"}}"#
-        ),
+        r#"OBY oby_dispatch {"repo":"obi-e2e/fixture-app","kind":"research","title":"Notch three screens","task":"FAIL"}"#,
     );
+    let conversation = first["conversation"].as_str().unwrap().to_owned();
+    let in_it = |words: String| {
+        let answer = call(
+            &obid,
+            "POST",
+            "/v1/plans",
+            Some(&json!({"said": words, "conversation": conversation})),
+        );
+        assert_eq!(answer.status, 200, "{}", answer.text);
+        answer.body
+    };
+    let second = in_it(
+        r#"OBY oby_dispatch {"repo":"obi-e2e/fixture-app","kind":"research","title":"Old PR job","task":"Nothing"}"#
+            .to_owned(),
+    );
+    let notch = first["jobs"][0]["id"].as_str().unwrap().to_owned();
+    let old = second["jobs"][0]["id"].as_str().unwrap().to_owned();
+    for (id, status) in [(&notch, "interrupted"), (&old, "done")] {
+        within(30, &format!("the job is {status}"), || {
+            (get_job(&obid, id)["status"] == status).then_some(())
+        });
+    }
+    let (notch, old) = (notch.as_str(), old.as_str());
+    let answer = in_it(format!(
+        r#"REPEAT 1 OBY oby_continue_job {{"id":"{notch}"}} THEN OBY oby_archive_job {{"id":"{old}"}}"#
+    ));
     let text = answer["text"].as_str().unwrap();
     assert!(text.contains("Archived Old PR job."), "{text}");
     assert!(get_job(&obid, old)["archived"].is_string());
@@ -1305,7 +1350,7 @@ fn telling_a_finished_job_something_starts_a_follow_up() {
     let token = token.trim();
     let words =
         format!(r#"OBY oby_tell_job {{"id":"{id}","words":"REPORT and {token} isn't yours"}}"#);
-    let answer = said(&obid, &words);
+    let answer = said_anew(&obid, &words);
     let cards = answer["jobs"].as_array().unwrap();
     assert_eq!(cards.len(), 1, "{answer}");
     let next = cards[0]["id"].as_str().unwrap().to_owned();
@@ -2526,4 +2571,155 @@ fn a_confirm_needs_the_owners_tap_on_a_device() {
     let cancelled = answer(b_id, json!({"answer": "Cancel"}));
     assert_eq!(cancelled.status, 200, "{}", cancelled.text);
     assert!(get_job(&obid, "c2c2c2c2")["dismissed"].is_null());
+}
+
+// ---------------------------------------------------------------------------------------------
+// Every task has a conversation (docs/contracts/task-conversations.md; Wellington, 2026-10-30).
+
+/// The conversation `id`'s turns.
+fn conversation_turns(obid: &Obid, id: &str) -> Vec<serde_json::Value> {
+    let answer = call(obid, "GET", &format!("/v1/conversation?id={id}"), None);
+    assert_eq!(answer.status, 200, "{}", answer.text);
+    answer.body.as_array().unwrap().clone()
+}
+
+/// A task from the Tasks view (`POST /v1/jobs`), finished.
+fn task_from_the_tasks_view(obid: &Obid, title: &str) -> (String, String) {
+    let answer = call(
+        obid,
+        "POST",
+        "/v1/jobs",
+        Some(
+            &json!({"job": {"repo": "obi-e2e/fixture-app", "kind": "investigate", "task": "Look around the fixture", "title": title}}),
+        ),
+    );
+    assert_eq!(answer.status, 201, "{}", answer.text);
+    let id = answer.body["id"].as_str().unwrap().to_owned();
+    let conversation = answer.body["conversation"]
+        .as_str()
+        .expect("a task from the Tasks view has a conversation")
+        .to_owned();
+    within(120, "the job is done", || {
+        (get_job(obid, &id)["status"] == "done").then_some(())
+    });
+    (id, conversation)
+}
+
+/// TASKCONV-1: a task started from the Tasks view gets a conversation of its own, named after it:
+/// the owner's words that started it, then Oby's line with the task's card.
+#[test]
+fn taskconv_1_a_task_from_the_tasks_view_gets_its_own_conversation() {
+    let folder = Folder::new("taskconv-1");
+    let obid = started_harness_jobs(&folder);
+    let (id, conversation) = task_from_the_tasks_view(&obid, "Fix CI leccoflow #1");
+    let listed = call(&obid, "GET", "/v1/conversations", None).body;
+    let listed = listed.as_array().unwrap();
+    let it = listed
+        .iter()
+        .find(|c| c["id"] == conversation.as_str())
+        .unwrap_or_else(|| panic!("{conversation} isn't listed: {listed:?}"));
+    assert_eq!(it["title"], "Fix CI leccoflow #1");
+    let turns = conversation_turns(&obid, &conversation);
+    assert_eq!(turns[0]["who"], "user");
+    assert_eq!(turns[0]["text"], "Look around the fixture");
+    let oby = turns
+        .iter()
+        .find(|t| t["who"] == "oby")
+        .expect("Oby's line");
+    assert!(
+        oby["text"].as_str().unwrap().starts_with("On it. "),
+        "{oby}"
+    );
+    assert_eq!(oby["jobs"], json!([id]));
+    // its card shows under the words that started it
+    assert_eq!(get_job(&obid, &id)["turn"], turns[0]["id"]);
+}
+
+/// TASKCONV-3: words to a finished task from its page start a follow-up in the same conversation,
+/// with the words and Oby's answer on its end: never a task of its own, never lost.
+#[test]
+fn taskconv_3_a_follow_up_joins_its_tasks_conversation() {
+    let folder = Folder::new("taskconv-3");
+    let obid = started_harness_jobs(&folder);
+    let (id, conversation) = task_from_the_tasks_view(&obid, "Fix CI leccoflow #1");
+    let before = call(&obid, "GET", "/v1/conversations", None)
+        .body
+        .as_array()
+        .unwrap()
+        .len();
+    let followed = call(
+        &obid,
+        "POST",
+        &format!("/v1/jobs/{id}/messages"),
+        Some(&json!({"text": "why wasn't this merged?", "conversation": true})),
+    );
+    assert_eq!(followed.status, 201, "{}", followed.text);
+    let next = followed.body["id"].as_str().unwrap().to_owned();
+    assert_eq!(followed.body["followUpOf"], json!(id));
+    assert_eq!(followed.body["conversation"], json!(conversation));
+    let turns = conversation_turns(&obid, &conversation);
+    let (you, oby) = (&turns[turns.len() - 2], &turns[turns.len() - 1]);
+    assert_eq!(
+        (you["who"].clone(), you["text"].clone()),
+        (json!("user"), json!("why wasn't this merged?"))
+    );
+    assert_eq!(
+        (oby["who"].clone(), oby["jobs"].clone()),
+        (json!("oby"), json!([next]))
+    );
+    // and no other conversation was made for it
+    let after = call(&obid, "GET", "/v1/conversations", None)
+        .body
+        .as_array()
+        .unwrap()
+        .len();
+    assert_eq!(after, before);
+}
+
+/// TASKCONV-4: a task with no conversation (one kept from before every task had one; here, its
+/// conversation deleted) gets one the first time its page's words reach it, and the follow-up
+/// they start is in it too.
+#[test]
+fn taskconv_4_a_task_with_no_conversation_gets_one_when_told_something() {
+    let folder = Folder::new("taskconv-4");
+    let obid = started_harness_jobs(&folder);
+    let (id, gone) = task_from_the_tasks_view(&obid, "Old task");
+    let deleted = call(&obid, "DELETE", &format!("/v1/conversations/{gone}"), None);
+    assert!(deleted.status < 300, "{}", deleted.text);
+    let followed = call(
+        &obid,
+        "POST",
+        &format!("/v1/jobs/{id}/messages"),
+        Some(&json!({"text": "why wasn't this merged?", "conversation": true})),
+    );
+    assert_eq!(followed.status, 201, "{}", followed.text);
+    let next = followed.body["id"].as_str().unwrap().to_owned();
+    let conversation = get_job(&obid, &id)["conversation"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert_ne!(conversation, gone);
+    assert_eq!(get_job(&obid, &next)["conversation"], json!(conversation));
+    let turns = conversation_turns(&obid, &conversation);
+    // Oby's line naming the task, then the words and Oby's answer with the follow-up's card
+    assert_eq!(turns[0]["jobs"], json!([id]));
+    let (you, oby) = (&turns[turns.len() - 2], &turns[turns.len() - 1]);
+    assert_eq!(you["text"], "why wasn't this merged?");
+    assert_eq!(oby["jobs"], json!([next]));
+}
+
+/// TASKCONV-5: a task started in a conversation stays in that one: no second conversation.
+#[test]
+fn taskconv_5_a_task_from_a_conversation_keeps_it() {
+    let folder = Folder::new("taskconv-5");
+    let obid = started_harness_jobs(&folder);
+    let answer = said(
+        &obid,
+        r#"OBY oby_dispatch {"repo":"obi-e2e/fixture-app","kind":"investigate","title":"Docs line","task":"Look around"}"#,
+    );
+    let conversation = answer["conversation"].as_str().unwrap().to_owned();
+    let id = answer["jobs"][0]["id"].as_str().unwrap().to_owned();
+    assert_eq!(get_job(&obid, &id)["conversation"], json!(conversation));
+    let listed = call(&obid, "GET", "/v1/conversations", None).body;
+    assert_eq!(listed.as_array().unwrap().len(), 1, "{listed}");
 }

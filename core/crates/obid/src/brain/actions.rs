@@ -425,7 +425,7 @@ fn named_checks(said: &str) -> Vec<String> {
 
 /// What started, in Oby's voice (`Desk.startedLine`): "On it. Claude Code is fixing oby #12
 /// (Login screen) on Deskree, and Claude Code is reviewing oby PR #33 on Deskree."
-fn started_line(shared: &Shared, jobs: &[Job]) -> String {
+pub(crate) fn started_line(shared: &Shared, jobs: &[Job]) -> String {
     let parts: Vec<String> = jobs
         .iter()
         .map(|job| {

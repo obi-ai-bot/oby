@@ -643,10 +643,19 @@ pub async fn dispatch(
     if job.get("runsOn").is_some_and(|place| !place.is_null()) {
         return Err(ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, ELSEWHERE));
     }
-    let job = shared
-        .jobs
-        .create(new)
-        .map_err(|refused| ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, refused.0))?;
+    // The owner's words start it, so they open its conversation (crate::task_conversation).
+    let words = new.task.clone();
+    let foreign = (!new.vetted).then(|| "words no app of the owner's signed".to_owned());
+    let job = crate::task_conversation::create(
+        &shared,
+        new,
+        Some(crate::task_conversation::Words {
+            text: &words,
+            foreign,
+        }),
+        None,
+    )
+    .map_err(|refused| ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, refused.0))?;
     Ok(json(StatusCode::CREATED, job.to_json()))
 }
 
@@ -1017,11 +1026,13 @@ pub async fn message(
             .unwrap_or(job)
     };
     // Said on the task's page (Sangam's TaskView): the words and Oby's answer go on the end of the
-    // job's conversation, which the app opens, as if said there.
-    if let Some((first, conversation)) = first
-        .filter(|_| say)
-        .and_then(|j| j.conversation.clone().map(|c| (j, c)))
-    {
+    // job's conversation, which the app opens, as if said there. A task with none (one kept from
+    // before every task had one) gets it now (crate::task_conversation, TASKCONV-4).
+    let conversation = say
+        .then(|| crate::task_conversation::of(&shared, &id))
+        .flatten();
+    let job = shared.jobs.get(&job.id).unwrap_or(job);
+    if let Some((first, conversation)) = first.zip(conversation) {
         let said = shared
             .conversations
             .append(

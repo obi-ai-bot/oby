@@ -181,4 +181,15 @@ describe('the task menu on obid', () => {
     expect(tasks.dev!.get()).toEqual([]);
     expect(calls).toEqual([]);
   });
+
+  it('TASKCONV-4: words on a task\'s page go to obid with conversation: true, and the task comes back in the conversation obid made', async () => {
+    const { tasks } = await load(true);
+    await seed(tasks);
+    answers['POST /v1/jobs/j1/messages'] = { status: 201, body: job({ id: 'j2', status: 'queued', followUpOf: 'j1', conversation: 'c1' }) };
+    answers['GET /v1/jobs/j1'] = { status: 200, body: job({ conversation: 'c1' }) };
+    await tasks.tell('j1', 'why wasn\'t this merged?');
+    expect(calls[0]).toEqual({ method: 'POST', path: '/v1/jobs/j1/messages', body: { text: 'why wasn\'t this merged?', conversation: true } });
+    expect(tasks.conversationOfTask('j1')).toBe('c1');
+    expect(tasks.conversationOfTask('j2')).toBe('c1');
+  });
 });

@@ -82,7 +82,9 @@ export const api = {
   deleteJob: (j: string) => call<{ deleted: boolean; ask: InboxItem | null }>('POST', `/v1/jobs/${id(j)}/delete`),
   // obid only: the job's session (Full session), the entries that came or changed after entry `after`
   transcript: (j: string, after?: number) => call<{ next: number | null; entries: TranscriptEntry[] }>('GET', `/v1/jobs/${id(j)}/transcript${q({ after })}`),
-  message: (j: string, text: string, attachments?: string[]) => call<Job>('POST', `/v1/jobs/${id(j)}/messages`, { text, ...(attachments?.length ? { attachments } : {}) }),
+  // conversation: the words go into the task's conversation too, made now if it has none (a task
+  // page's box: docs/contracts/task-conversations.md, TASKCONV-4)
+  message: (j: string, text: string, attachments?: string[], conversation = false) => call<Job>('POST', `/v1/jobs/${id(j)}/messages`, { text, ...(attachments?.length ? { attachments } : {}), ...(conversation ? { conversation: true } : {}) }),
   // a job's waiting permission (POST /v1/jobs/{id}/permission)
   permission: (j: string, body: { id: string; decision: 'allow' | 'always' | 'deny'; message?: string }) =>
     call<Job>('POST', `/v1/jobs/${id(j)}/permission`, body),

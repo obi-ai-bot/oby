@@ -438,7 +438,8 @@ fn jobs_and_their_events_land_in_the_conversation_that_started_them() {
     assert!(thread[2..].iter().all(|t| t["ended"] == true), "{thread:?}");
     assert_eq!(turns(&obid, &format!("?id={other}")).len(), 4);
 
-    // A job dispatched whole (`POST /v1/jobs`) belongs to no conversation.
+    // A job dispatched whole (`POST /v1/jobs`) is in a conversation of its own
+    // (docs/contracts/task-conversations.md, TASKCONV-1), never one of these.
     let whole = call(
         &obid,
         "POST",
@@ -448,8 +449,11 @@ fn jobs_and_their_events_land_in_the_conversation_that_started_them() {
         ),
     );
     assert_eq!(whole.status, 201, "{}", whole.text);
-    assert_eq!(whole.body["conversation"], Value::Null);
-    // It says nothing in any conversation when it ends.
+    let own = whole.body["conversation"]
+        .as_str()
+        .expect("its own conversation");
+    assert!(own != started && own != other, "{own}");
+    // It says nothing in the others when it ends.
     let id = whole.body["id"].as_str().unwrap();
     let waited = call(&obid, "GET", &format!("/v1/jobs/{id}/wait"), None);
     assert_eq!(waited.status, 200, "{}", waited.text);

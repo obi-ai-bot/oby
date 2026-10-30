@@ -171,8 +171,9 @@ export default function Home() {
   const tellFromTask = (id: string, text: string, att: Attachments) => {
     if (!text.trim() && !hasAttachments(att)) return;
     const c = chatOfTask(id);
-    if (c) tellAbout(c.id, id, text, att); else tell(id, text, att);
-    goToConversation(id);
+    // a task with no conversation yet (one from before every task had one) gets it as obid takes the
+    // words, so it opens once they're there (docs/contracts/task-conversations.md, TASKCONV-4)
+    if (c) { tellAbout(c.id, id, text, att); goToConversation(id); } else void Promise.resolve(tell(id, text, att)).then(() => goToConversation(id));
   };
 
   // the first launch (lean.ts): Oby opens its first conversation and sets you up in it. On obid,

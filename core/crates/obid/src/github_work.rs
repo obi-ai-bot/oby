@@ -1557,6 +1557,14 @@ pub async fn start(
 ) -> Result<Response, ApiError> {
     crate::brain::recap::tapped(&shared);
     let (job, new) = shared.github_work.start(&id).await?;
+    // a task of its own: its conversation, named after it (crate::task_conversation, TASKCONV-2).
+    // Its title is GitHub's, so the conversation counts as having read words from outside.
+    let job = if new {
+        let foreign = format!("the title of job {}, which came from GitHub", job.id);
+        crate::task_conversation::give(&shared, job, Some(foreign))
+    } else {
+        job
+    };
     let status = if new {
         StatusCode::CREATED
     } else {
