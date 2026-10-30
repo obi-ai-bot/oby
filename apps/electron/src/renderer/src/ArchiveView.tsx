@@ -71,7 +71,14 @@ export default function ArchiveView({ leaving, covered = false, onClose, onGone,
               );
             })}
           </ul>
-          {!shown.length && <p className="group-empty">{all.length ? `Nothing archived matches “${query.trim()}”` : 'Nothing archived yet'}</p>}
+          {/* nothing (yet, or matching): in the middle of the window's height, as a group's tab */}
+          {!shown.length && (
+            <div className="group-none">
+              <div className="rise" style={{ '--i': 2 } as React.CSSProperties}>
+                <p>{all.length ? `Nothing archived matches “${query.trim()}”` : 'Nothing archived yet'}</p>
+              </div>
+            </div>
+          )}
         </div>
       </section>
       <div {...thumbProps} />

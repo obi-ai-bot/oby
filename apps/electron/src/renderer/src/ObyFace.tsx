@@ -1,58 +1,35 @@
-import { useId } from 'react';
-
-// Oby as a small icon, a silhouette of the mascot: a soft square a little wider
-// than it's tall, two tall eyes, and two short ears on its top, each about a
-// quarter of the way in, their inner edges near upright and their tips leaning
-// toward each other.
+// Oby as a small icon: Sangam's 2D Oby (2026-10-27), a soft square a little
+// wider than it's tall, its two short ears rising out of its shoulders, and
+// two tall eyes.
 // ObyIcon: a line drawing of Oby, for menus (the + panel's Add other Obys).
 // ObyFace is filled like Oby itself.
-// All in a 24-unit square: the body 21 × 16.5 at the bottom, the ears ~2.5 over it.
-const EAR_L = 'M5 6.6 L7.9 3.6 L8.9 6.6 Z';
-const EAR_R = 'M19 6.6 L16.1 3.6 L15.1 6.6 Z';
-const Ears = ({ fill }: { fill: string }) => (
-  // drawn with a round-cornered stroke of their own colour, so their tips are soft
-  <g fill={fill} stroke={fill} strokeWidth="1.2" strokeLinejoin="round">
-    <path d={EAR_L} /><path d={EAR_R} />
-  </g>
-);
+// The outline, as Sangam drew it: 105 × 95, the ears' tips at the top.
+export const OBY_PATH = 'M70.6738 1.4132C71.0781 0.099296 72.6571 -0.424821 73.7666 0.386834C76.0714 2.07339 80.0073 4.97625 82.921 7.12762C85.3816 8.94448 88.192 10.212 90.91 11.615C99.2785 15.935 105 24.6647 105 34.7316V68.7316C105 83.091 93.3594 94.7316 79 94.7316H26C11.6406 94.7316 0 83.091 0 68.7316V34.7316C8.34945e-07 24.3936 6.03367 15.4655 14.7715 11.2754C17.9651 9.74397 21.2856 8.39647 24.144 6.30517L32.2334 0.386834C33.3429 -0.424821 34.9219 0.099296 35.3262 1.4132L36.9257 6.61352C37.3129 7.87244 38.476 8.73156 39.7931 8.73156H66.2069C67.524 8.73156 68.6871 7.87245 69.0743 6.61352L70.6738 1.4132Z';
+// placed in the 24-unit square: 21 wide at the bottom (1.5 to 22.5 across,
+// 3.5 to 22.5 down), so the body sits where the old square one did
+export const OBY_PLACE = 'translate(1.5 3.5) scale(0.2)';
 
 export function ObyIcon({ size = 20 }: { size?: number }) {
-  const mask = useId();
-  // the line drawing: the body's outline breaks under each ear, so the two read as one shape
+  // the line drawing: the same outline, a little smaller so its 1.5 stroke fits
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none" aria-hidden="true">
-      <mask id={mask}>
-        <rect width="24" height="24" fill="#fff" />
-        <path d="M6.4 7.8 L8 5.9 L8.5 7.8 Z" fill="#000" />
-        <path d="M17.6 7.8 L16 5.9 L15.5 7.8 Z" fill="#000" />
-      </mask>
-      <rect x="3" y="7" width="18" height="14" rx="4.5" stroke="currentColor" strokeWidth="1.5" mask={`url(#${mask})`} />
-      <path d="M5.6 7.2 L8 4.5 L8.8 7 M18.4 7.2 L16 4.5 L15.2 7" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" strokeLinecap="round" />
+      <path d={OBY_PATH} transform="translate(3 4.85) scale(0.1714)" stroke="currentColor" strokeWidth="8.75" strokeLinejoin="round" />
       <rect x="6.9" y="11" width="2.2" height="4" rx="1.1" fill="currentColor" />
       <rect x="14.3" y="11" width="2.2" height="4" rx="1.1" fill="currentColor" />
     </svg>
   );
 }
 
-// badge: the small one on an owner's picture. Full-height ears would eat the
-// face at that size, so its ears are stubs (about half as tall), on the same
-// square body, its eyes a little closer together so they still read.
-const BADGE_EAR_L = 'M4.6 5.2 L7.4 3.6 L8.4 5.2 Z';
-const BADGE_EAR_R = 'M19.4 5.2 L16.6 3.6 L15.6 5.2 Z';
+// badge: the small one on an owner's picture, the same shape a little higher,
+// its eyes a little closer together so they still read
 export function ObyFace({ size = 24, badge = false }: { size?: number; badge?: boolean }) {
   if (badge) {
     return (
       <svg width={size} height={size} viewBox="0 0 24 24" overflow="visible" aria-hidden="true">
         {/* the cutout in the picture under it: the same shape, a little bigger,
             in the window's colour (its width is set in app.css) */}
-        <g className="oby-badge-cut" strokeLinejoin="round">
-          <path d={BADGE_EAR_L} /><path d={BADGE_EAR_R} />
-          <rect x="1.5" y="4.5" width="21" height="17" rx="5" />
-        </g>
-        <g fill="#f1f1ee" stroke="#f1f1ee" strokeWidth="1.2" strokeLinejoin="round">
-          <path d={BADGE_EAR_L} /><path d={BADGE_EAR_R} />
-        </g>
-        <rect x="1.5" y="4.5" width="21" height="17" rx="5" fill="#f1f1ee" />
+        <path className="oby-badge-cut" d={OBY_PATH} transform="translate(1.5 2.5) scale(0.2)" strokeLinejoin="round" />
+        <path d={OBY_PATH} transform="translate(1.5 2.5) scale(0.2)" fill="#f1f1ee" />
         <rect x="7.4" y="10" width="2.6" height="5" rx="1.3" fill="#0d0d0e" />
         <rect x="14" y="10" width="2.6" height="5" rx="1.3" fill="#0d0d0e" />
       </svg>
@@ -60,8 +37,7 @@ export function ObyFace({ size = 24, badge = false }: { size?: number; badge?: b
   }
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" aria-hidden="true">
-      <Ears fill="#f1f1ee" />
-      <rect x="1.5" y="6" width="21" height="16.5" rx="5" fill="#f1f1ee" />
+      <path d={OBY_PATH} transform={OBY_PLACE} fill="#f1f1ee" />
       {/* the eyes, as one (they blink together when Oby stops talking: ObyFaceLive) */}
       <g className="oby-eyes" fill="#0d0d0e">
         <rect x="6" y="10.6" width="2.8" height="5" rx="1.4" />
