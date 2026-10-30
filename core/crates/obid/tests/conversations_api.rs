@@ -104,8 +104,9 @@ fn conversations_are_listed_paged_renamed_pinned_and_deleted() {
             .keys()
             .map(String::as_str)
             .collect();
-        assert_eq!(keys.len(), 7, "{conversation}");
+        assert_eq!(keys.len(), 8, "{conversation}");
         assert_eq!(conversation["tasks"], json!([]));
+        assert_eq!(conversation["folders"], json!([]));
         assert_eq!(conversation["pinned"], false);
         assert!(conversation["cursor"].as_str().unwrap().starts_with("0-"));
         assert!(conversation["created"].is_string() && conversation["lastActivity"].is_string());
@@ -516,7 +517,7 @@ fn the_single_thread_from_before_becomes_the_first_conversation() {
         [
             json!({"id": id, "title": "Review oby PR #33", "pinned": false,
                 "created": "2026-10-11T09:12:00Z", "lastActivity": "2026-10-11T09:13:00Z",
-                "cursor": "0-1", "tasks": []})
+                "cursor": "0-1", "tasks": [], "folders": []})
         ]
     );
     let moved = turns(&obid, "");
