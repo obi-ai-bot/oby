@@ -15551,6 +15551,8 @@ mod tests {
             Err("no sandbox".into()),
         )
         .unwrap();
+        // A default that isn't Bypass, so the job's mode and the default tell apart.
+        jobs.set_default_mode(Mode::Sandbox).unwrap();
         let ended = |id: &str| {
             let mut job = Job::new(
                 id.into(),
