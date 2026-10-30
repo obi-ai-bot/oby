@@ -165,7 +165,7 @@ fn planned_job(
         // the job gets it as any job does, with no Confirm (`Jobs::bypass_widens`).
         mode: d
             .mode
-            .filter(|m| !(*m == super::plan::Mode::Bypass && !shared.jobs.bypass_widens()))
+            .filter(|m| *m != super::plan::Mode::Bypass || shared.jobs.bypass_widens())
             .map(|m| m.as_str().to_owned()),
         brief: d.brief(),
         ..NewJob::default()

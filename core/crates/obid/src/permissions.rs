@@ -1744,6 +1744,16 @@ fn file_words(words: &[String]) -> Vec<&String> {
                 said[i] = true;
             }
         }
+        // `git config`'s keys, patterns and values name settings, not files (`--get-regexp
+        // 'cred*'` isn't a glob): only the file after `-f`, `--file` or `--blob` is one.
+        if let Some((s, "config")) = subcommand(program, rest) {
+            for i in s + 1..rest.len() {
+                let file = matches!(rest[i - 1].as_str(), "-f" | "--file" | "--blob");
+                if !rest[i].starts_with('-') && !file {
+                    said[i] = true;
+                }
+            }
+        }
     }
     if SEARCHES.contains(&program) {
         let mut pattern_given = false;
@@ -1774,7 +1784,9 @@ fn reads_a_secret(words: &[String], bounds: &Bounds, base_dir: &Path) -> bool {
     let rest = &words[p + 1..];
     let sub = subcommand(program, rest).map(|(_, s)| s);
     match program {
-        "printenv" => return true,
+        // `printenv` alone prints every variable; `printenv NAME` only those named, as `echo $NAME`
+        // does (a secret's name is caught below, [`names_a_secret`]).
+        "printenv" if rest.iter().all(|w| w.starts_with('-')) => return true,
         // `set` alone prints every variable, `export -p` the exported ones.
         "set" | "export" | "declare" | "typeset" if rest.iter().all(|w| w.starts_with('-')) => {
             return true;
@@ -3952,5 +3964,44 @@ mod tests {
             updated["answers"],
             json!({"Which store?": "SQLite", "Which checks?": "Unit"})
         );
+    }
+
+    /// What touches secrets asks in Bypass too, but only what does: `printenv NAME` prints only
+    /// that variable, as `echo $NAME` does, and `git config`'s keys and patterns aren't files.
+    /// Dumping the environment, a secret's name and a secret's file still ask.
+    #[test]
+    fn only_what_touches_secrets_asks_in_bypass() {
+        for command in [
+            "printenv HTTPS_PROXY",
+            "printenv -0 PATH HOME",
+            "git config --get-regexp 'cred*'",
+            "git config --global --get-regexp '.e*'",
+            "git config --get-regexp 'http.*proxy'",
+        ] {
+            assert_eq!(
+                decide_in(&bash(command), Mode::Bypass, &[]),
+                Verdict::Allow,
+                "{command}"
+            );
+        }
+        for command in [
+            "printenv",
+            "env | grep -i proxy",
+            "printenv OBY_MCP_TOKEN",
+            "git config --file ~/.git-credentials --list",
+            "git config --file=.netrc --list",
+            "git config -f ~/.ssh/config --list",
+        ] {
+            assert_eq!(
+                reach(&bash(command), &Bounds::of(Path::new(WORKTREE))),
+                Some(Reach::Secrets),
+                "{command}"
+            );
+            assert_eq!(
+                decide_in(&bash(command), Mode::Bypass, &[]),
+                Verdict::Ask,
+                "{command}"
+            );
+        }
     }
 }
