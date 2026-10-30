@@ -381,6 +381,7 @@ impl Jobs {
                 return Err("The original account is no longer connected.".into());
             }
         }
+        let tuning = crate::settings::load(&self.config.home).tuning;
         let changed = {
             let mut state = self.lock();
             if state.publishing.contains(id) {
@@ -413,13 +414,11 @@ impl Jobs {
                 let to = format!("{} · {}", tool.name(), account.name);
                 let heard = handoff(&next, &from);
                 next.heard.insert(0, heard);
-                next.agent = tool.id().to_owned();
+                on_tool(&mut next, tool);
                 next.account = account.id;
                 next.named = true;
                 next.session = None;
-                if tool != from_tool {
-                    next.model = None;
-                }
+                tune(&mut next, &tuning);
                 next.moves.push(crate::job::Move {
                     from: from.clone(),
                     to: to.clone(),

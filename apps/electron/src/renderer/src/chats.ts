@@ -155,8 +155,7 @@ export const deleteChat = (id: string) => {
 // Asked in Home's message box: a new conversation, at the top, Oby at work on it
 let made = 0;
 export function askOby(text: string, att?: Attachments) {
-  // ponytail: words only to obid; attachments wait for its uploads (POST /v1/attachments)
-  if (onObid) return live.ask(text, undefined, att?.repo, att?.folders);
+  if (onObid) return live.ask(text, undefined, att?.repo, att?.folders, att);
   const t = text.trim();
   if (!t && !hasAttachments(att)) return;
   const id = `c${++made}`;
@@ -168,7 +167,7 @@ export function askOby(text: string, att?: Attachments) {
 // you: its question goes into the conversation, your words under it as the answer
 export function tellChat(id: string, text: string, att?: Attachments) {
   // the app's own (setting up): only its picks carry it on
-  if (onObid) return void (ofObid(id) ? live.ask(text, id, att?.repo, att?.folders) : live.say('Pick one above to go on.'));
+  if (onObid) return void (ofObid(id) ? live.ask(text, id, att?.repo, att?.folders, att) : live.say('Pick one above to go on.'));
   const t = text.trim();
   if (!t && !hasAttachments(att)) return;
   update(id, (c) => ({
@@ -181,7 +180,7 @@ export function tellChat(id: string, text: string, att?: Attachments) {
 // page): it goes on the end of the conversation, and Oby passes it on (relay)
 export function tellAbout(id: string, taskId: string, text: string, att?: Attachments) {
   // obid: words in the conversation, which Oby passes on to the task
-  if (onObid) return void live.ask(text, id);
+  if (onObid) return void live.ask(text, id, undefined, undefined, att);
   const t = text.trim(), r = relay(taskId, t);
   if ((!t && !hasAttachments(att)) || !r) return;
   update(id, (c) => ({ said: [...c.said, { who: 'you', text: t, ago: 0, ...att }] }));

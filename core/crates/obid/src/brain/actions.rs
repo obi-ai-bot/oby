@@ -139,7 +139,8 @@ fn planned_job(
     researched: bool,
 ) -> NewJob {
     // An account the plan names is a choice of agent too: only an `auto` one takes the saved
-    // default (runner-api.md, `PUT /v1/settings/default-agent`).
+    // default, the account new tasks go to first (runner-api.md, `defaultAccount`), then the
+    // agent (`PUT /v1/settings/default-agent`).
     let preferred = (d.account.eq_ignore_ascii_case("auto") && !names_agent(asked.said))
         .then(|| shared.jobs.preferred_agent())
         .flatten();
@@ -182,6 +183,7 @@ fn planned_job(
             .filter(|m| *m != super::plan::Mode::Bypass || shared.jobs.bypass_widens())
             .map(|m| m.as_str().to_owned()),
         brief: d.brief(),
+        complex: d.complexity == super::plan::Complexity::Complex,
         ..NewJob::default()
     };
     // Work planned after the turn read something untrusted starts now, marked untrusted, in the

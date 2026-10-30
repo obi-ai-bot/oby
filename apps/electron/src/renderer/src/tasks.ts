@@ -124,7 +124,7 @@ function reply(id: string, text: () => string, start?: () => string[] | undefine
 // decision, it's passed on with a nudge; done, it starts a follow-up task,
 // whose card shows under Oby's reply.
 export function tell(id: string, text: string, att?: Attachments) {
-  if (onObid) return void live.tellJob(id, text);
+  if (onObid) return void live.tellJob(id, text, att?.files);
   const t = text.trim(), r = relay(id, t);
   if ((!t && !hasAttachments(att)) || !r) return;
   say(id, { who: 'you', text: t, ago: 0, ...att });

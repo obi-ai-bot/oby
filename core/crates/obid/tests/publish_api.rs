@@ -2065,8 +2065,9 @@ fn a_head_pushed_while_its_review_ran_gets_its_own() {
     assert_eq!(reviews_of(&obid, &id).len(), 2);
 }
 
-/// A review waiting for its account's usage reset that the owner lets go (Dismiss) leaves the job
-/// it reviewed saying so, never `Oby is reviewing` for good.
+/// A review stopped at its account's usage limit waits for the owner's one decision (#1563), never
+/// a reset retry of its own; if the owner lets it go (Dismiss), the job it reviewed says so, never
+/// `Oby is reviewing` for good.
 #[test]
 fn a_dismissed_review_says_so_on_its_job() {
     let folder = Folder::new("publish-review-dismissed");
@@ -2078,11 +2079,21 @@ fn a_dismissed_review_says_so_on_its_job() {
                "check": "test -f hello.txt"}),
     );
     let rid = review_of(&obid, &id, 0)["id"].as_str().unwrap().to_owned();
-    let waits = within(120, "the review waits for its reset", || {
-        let job = call(&obid, "GET", &format!("/v1/jobs/{rid}"), None).body;
-        job["resumesAt"].is_string().then_some(job)
+    within(120, "the review waits for the owner's decision", || {
+        let decisions = call(&obid, "GET", "/v1/limit-decisions", None).body;
+        decisions
+            .as_array()?
+            .iter()
+            .any(|d| {
+                d["jobs"]
+                    .as_array()
+                    .is_some_and(|jobs| jobs.iter().any(|j| j["id"] == rid.as_str()))
+            })
+            .then_some(())
     });
+    let waits = call(&obid, "GET", &format!("/v1/jobs/{rid}"), None).body;
     assert_eq!(waits["status"], "interrupted", "{waits}");
+    assert_eq!(waits["resumesAt"], Value::Null, "{waits}");
     let job = call(&obid, "GET", &format!("/v1/jobs/{id}"), None).body;
     assert_eq!(job["reviewing"], rid.as_str(), "{job}");
     assert_eq!(stage(&job, "review")["detail"], "Oby is reviewing");

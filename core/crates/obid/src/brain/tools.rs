@@ -37,7 +37,8 @@ pub(super) fn list() -> Value {
         "issue": {"type": "integer", "description": "The issue the work is about."},
         "pr": {"type": "integer", "description": "The pull request the work is about: a review reads it, and other work starts from its branch. With issue too, the work is the issue's, from the default branch."},
         "title": {"type": "string", "description": "A short title, 3 to 6 words."},
-        "check": {"type": "string", "maxLength": 200, "description": "Only when the owner named one (\"Check: …\", \"run … to check\"): that one-line shell command, exactly as they said it, which must pass before Oby publishes. Left out, the repository's own check applies."}},
+        "check": {"type": "string", "maxLength": 200, "description": "Only when the owner named one (\"Check: …\", \"run … to check\"): that one-line shell command, exactly as they said it, which must pass before Oby publishes. Left out, the repository's own check applies."},
+        "complexity": {"type": "string", "enum": ["routine", "complex"], "description": "complex for large or tricky work, which runs at the account's effort for complex tasks. Left out, routine."}},
         "required": ["repo", "task"]});
     json!([
         {"name": "oby_jobs", "description": "Lists Oby's jobs, newest first: id, title, status, phase (prepare, work, check or publish), round and rounds, repo, agent, account, mode, pull request, archived. What a job's agent is doing and said is in oby_job. Archived jobs are left out unless archived is true.",
@@ -1302,6 +1303,7 @@ struct Start {
     pr: Option<i64>,
     title: Option<String>,
     check: Option<String>,
+    complexity: Option<super::plan::Complexity>,
 }
 
 fn parse<T: serde::de::DeserializeOwned>(args: Value) -> Result<T, String> {
@@ -1667,7 +1669,7 @@ fn planned(start: Start) -> Result<Dispatch, String> {
             .check
             .map(|c| c.trim().to_owned())
             .filter(|c| !c.is_empty()),
-        complexity: Default::default(),
+        complexity: start.complexity.unwrap_or_default(),
         start_when: None,
         mode,
         reads: None,

@@ -65,6 +65,7 @@ mod tests {
                         artifacts: vec![],
                         routine: None,
                         asked: None,
+                        attachments: vec![],
                     },
                 )
             })

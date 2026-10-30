@@ -109,6 +109,7 @@ pub(super) async fn launch(
     let options = crate::codex::Options {
         resume: resume.clone(),
         model: (!model.is_empty()).then(|| model.clone()),
+        effort: None,
         plan: false,
         instructions: Some(orientation(shared, tetrix.is_some())),
         no_commands: true,

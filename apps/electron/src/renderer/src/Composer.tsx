@@ -10,7 +10,7 @@ import { useClicksEverywhere } from './Menu';
 import { useTasks, type Task } from './tasks';
 import { BrandMark } from './brands';
 import { fullness, useAccounts, weekWords } from './SettingsView';
-import { lookAtUsage, useRepos } from './live';
+import { lookAtUsage, uploadFiles, useRepos } from './live';
 import { useScrollThumb } from './useScrollThumb';
 import { usePrompt } from './prompts';
 import { leave, useGlide } from './glide';
@@ -23,11 +23,18 @@ import { keeper } from './drafts';
 // in the words: @Wellington.) place: the Mac it runs on, when not this one
 // (one at a time: picking another replaces it). repo: the repository the work is
 // in (obid's), one at a time too.
-type Attached = { kind: 'file'; name: string; preview?: string } | { kind: 'task'; id: string } | { kind: 'place'; name: string } | { kind: 'repo'; name: string };
+type Attached = { kind: 'file'; name: string; preview?: string; file?: File } | { kind: 'task'; id: string } | { kind: 'place'; name: string } | { kind: 'repo'; name: string };
 type View = 'root' | 'oby' | 'task' | 'where' | 'repo' | 'folder' | 'usage';
 const same = (a: Attached, b: Attached) =>
   a.kind === 'task' ? b.kind === 'task' && a.id === b.id : a.kind === b.kind && a.name === (b as { name: string }).name;
 const keyOf = (a: Attached) => (a.kind === 'task' ? `task:${a.id}` : `${a.kind}:${a.name}`);
+
+// image.png, image 2.png, image 3.png: the first of them not taken
+export function numbered(name: string, taken: Set<string>) {
+  let next = name;
+  for (let n = 2; taken.has(next); n++) next = name.replace(/(\.[^.]*)?$/, ` ${n}$1`);
+  return next;
+}
 
 // The message box: Home's, and the one at the foot of a conversation (or a
 // task's or an Oby's page): tags for what's attached over one row of +, the
@@ -86,6 +93,8 @@ export default function Composer({ placeholder, prompts = false, note, label, on
     wasOpen.current = open;
   }, [view]);
   const [attached, setAttached] = useState<Attached[]>([]);
+  // its files going up: a second send waits
+  const sending = useRef(false);
   const { repos, last } = useRepos(conversation);
   // undefined: the conversation's last; null: none (taken out)
   const [repoPick, setRepoPick] = useState<string | null>();
@@ -168,11 +177,15 @@ export default function Composer({ placeholder, prompts = false, note, label, on
     box.current?.focus();
   };
 
-  // files picked or pasted: each a tag, a photo with its preview
-  const addFiles = (list: File[]) => {
-    const picked = list.map((f): Attached => ({
-      kind: 'file', name: f.name || 'Pasted image', preview: f.type.startsWith('image/') ? URL.createObjectURL(f) : undefined,
-    }));
+  // files picked or pasted: each a tag, a photo with its preview. A pasted one named as one
+  // there already (every screenshot is image.png) is numbered, so neither is dropped
+  const addFiles = (list: File[], pasted = false) => {
+    const taken = new Set(attached.flatMap((a) => (a.kind === 'file' ? [a.name] : [])));
+    const picked = list.map((f): Attached => {
+      const base = f.name || 'Pasted image', name = pasted ? numbered(base, taken) : base;
+      taken.add(name);
+      return { kind: 'file', name, preview: f.type.startsWith('image/') ? URL.createObjectURL(f) : undefined, file: f };
+    });
     if (picked.length) add(...picked);
   };
   // The box's draft: put back when it shows (or when it's another box's), and
@@ -200,13 +213,18 @@ export default function Composer({ placeholder, prompts = false, note, label, on
   }, [view]);
 
   return (
-    <form ref={form} className={`${home ? `composer${hidden ? ' is-hidden' : ''}` : 'composer chat-composer rise'} ${className}`.trim()} inert={hidden} style={style} onSubmit={(e) => {
+    <form ref={form} className={`${home ? `composer${hidden ? ' is-hidden' : ''}` : 'composer chat-composer rise'} ${className}`.trim()} inert={hidden} style={style} onSubmit={async (e) => {
       e.preventDefault();
       const b = box.current!;
       // words, or something attached, or both
-      if (!b.text().trim() && !attached.length) return;
+      if (sending.current || (!b.text().trim() && !attached.length)) return;
+      // the files go up first (on obid): one refused keeps the box as it was, words and tags
+      sending.current = true;
+      const files = await uploadFiles(attached.flatMap((a) => (a.kind === 'file' ? [{ name: a.name, preview: a.preview, file: a.file }] : [])));
+      sending.current = false;
+      if (!files) return;
       onSend(b.text(), {
-        files: attached.flatMap((a) => (a.kind === 'file' ? [{ name: a.name, preview: a.preview }] : [])),
+        files,
         obys: mentioned(b.text()),
         jobs: attached.flatMap((a) => (a.kind === 'task' ? [a.id] : [])),
         on: attached.find((a) => a.kind === 'place')?.name,
@@ -351,7 +369,7 @@ export default function Composer({ placeholder, prompts = false, note, label, on
             onEnter={() => form.current?.requestSubmit()}
             // past one line (32px: 22 of text, 10 of padding) it stacks
             onHeight={(h) => setStacked((was) => was || h > 33)}
-            onPasteFiles={addFiles}
+            onPasteFiles={(list) => addFiles(list, true)}
           />
           {/* how much of the agents' accounts is used, session and week (UsagePanel on a click) */}
           <UsageGauge ref={gauge} open={view === 'usage'} onClick={() => (view === 'usage' ? closePanel() : setView('usage'))} />
