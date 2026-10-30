@@ -608,7 +608,9 @@ pub struct MemoryJson {
     #[serde(flatten)]
     pub machine: crate::meter::Machine,
     pub jobs: Vec<crate::jobs::JobMemory>,
-    pub waiting: Vec<crate::jobs::MemoryWait>,
+    /// Always `[]`: obid no longer holds a job back for memory (2026-10-28). The key stays for the
+    /// apps that decode it (the API is add-only).
+    pub waiting: serde_json::Value,
 }
 
 #[derive(Serialize)]
@@ -844,10 +846,10 @@ async fn status(State(shared): State<Arc<Shared>>) -> Result<axum::Json<Status>,
             .jobs
             .memory()
             .await
-            .map(|(machine, jobs, waiting)| MemoryJson {
+            .map(|(machine, jobs)| MemoryJson {
                 machine,
                 jobs,
-                waiting,
+                waiting: serde_json::json!([]),
             }),
     }))
 }
