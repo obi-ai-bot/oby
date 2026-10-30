@@ -781,7 +781,7 @@ fn refused(refused: crate::devices::Refused) -> ApiError {
     }
 }
 
-/// The default for new conversation tasks, kept before notifying subscribers.
+/// The agent new conversation tasks go to (`status.defaultAgent`), kept across restarts.
 pub async fn set_default_agent(
     State(shared): State<Arc<Shared>>,
     body: Bytes,
@@ -806,9 +806,7 @@ pub async fn set_default_agent(
             )
         },
     )?;
-    let data = json!({"defaultAgent": agent});
-    shared.events.send("settings", data.clone());
-    Ok(json(StatusCode::OK, data))
+    Ok(json(StatusCode::OK, json!({"defaultAgent": agent})))
 }
 
 /// The jobs' settings as `GET` and `PUT /v1/settings/jobs` answer them.

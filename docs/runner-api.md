@@ -447,7 +447,7 @@ There's no draft to confirm any more: the work the brain plans starts as it's pl
 {"runner": {"version": "0.2.0", "host": "tetrix-lab"},
  "accounts": [ …Account ],
  "models": {"claude": {"model": "claude-opus-5-5", "effort": "xhigh", "complexEffort": "xhigh"}, "codex": {"model": "gpt-6-sol", "effort": "high", "complexEffort": "high"}, "cursor": {"model": "auto"}},
- "maxRunning": 6, "running": 4,
+ "maxRunning": 6, "running": 4, "defaultAgent": "auto",
  "clearedAt": "2026-10-10T08:12:00Z",
  "github": "app", "checks": "ok", "permissions": {"mode": "sandbox"},
  "cleanup": {"path": "/srv/nvme/oby/jobs", "bytes": 8912896, "lastRun": "2026-10-13T08:00:00Z", "kept": []},
@@ -485,6 +485,8 @@ After the restart, its jobs carry on like after any other restart ("After any re
 End-of-turn work a restart cut short carries on too (a crash or `systemctl restart` can stop the runner anywhere; its own update waits for it). A review that ended while its author still shows it `reviewing` has its verdict applied now, as when it ends. A verdict on the author whose check run and hand-off didn't happen (the author's `review` is saved with `applying: true` until both are done) gets them now: the `Oby review` check run is posted (possibly a second time, if the restart came just after GitHub took it: never lost), then changes requested start the author's round with the quoted review, or an approval queues its Mac check. A restart after the round's message was saved but before the round was finds the review still `applying`: the round starts once, with that message. A merge whose check passed is finished on the first refresh ("Mac check", above), and a job that was publishing is still `running`, so it carries on and publishes when its agent ends.
 
 `maxRunning` is how many jobs run at once (#237; Job, above), and `running` how many slots are taken now: jobs whose agent is running, reviews and rounds included, and waiting jobs on their way to a slot. Older runners don't send them.
+
+`defaultAgent` (obid only) is the agent new conversation tasks go to: `auto`, `claude`, `codex` or `cursor` (`PUT /v1/settings/default-agent`). Older runners don't send the key.
 
 `clearedAt` is when Clear done was last pressed, on any app (`POST /v1/clear`), or null when it never was. Every app hides the settled jobs that finished at that second or before (`finished` not after `clearedAt`): dismissed or stopped, with their pull request merged or closed, or ended with nothing to publish (`JobList.settled`, Shared/JobList.swift). Jobs still queued, running or waiting, needing the user, with their pull request open, or reviewing one that isn't settled stay, and so do finished ones that ran again since. Older runners don't send the key.
 
@@ -1238,9 +1240,9 @@ The chat's set_setting action uses those same choices. It changes one tool's mod
 
 ### `PUT /v1/settings/default-agent` (obid)
 
-Sets the default for new conversation tasks: `{"defaultAgent":"auto"}`, `"claude"`, `"codex"` or `"cursor"`. The default is `"auto"` (the planner's automatic choice). The runner persists this in `home/settings.json`, exposes it as `defaultAgent` in `GET /v1/status`, and answers `200` with `{"defaultAgent":"codex"}` after a successful update. It emits a `settings` event with that same setting payload. Missing, unknown or non-string values are `422`; malformed JSON is `400`. It uses the same owner authentication as the other settings routes.
+Sets the default for new conversation tasks: `{"defaultAgent":"auto"}`, `"claude"`, `"codex"` or `"cursor"`. The default is `"auto"` (the planner's automatic choice). The runner persists this in `home/settings.json`, exposes it as `defaultAgent` in `GET /v1/status`, and answers `200` with `{"defaultAgent":"codex"}` after a successful update. Missing, unknown or non-string values are `422`; malformed JSON is `400`. It uses the same owner authentication as the other settings routes. Older runners answer `404` and send no `defaultAgent`.
 
-When the owner's task names an agent explicitly, the planner's selection takes precedence. Otherwise the default is used if it has a signed-in, usable account with room under the existing usage limits; a disconnected default, no usable account or a full default falls back to the planner's current automatic choice. `auto` always keeps that choice. Existing jobs and follow-ups retain their agent.
+When the owner's words name an agent (Claude, Codex or Cursor), or the plan names an account, the planner's selection takes precedence. Otherwise the default is used if it has a signed-in, usable account with room under the existing usage limits; a disconnected default, no usable account or a full default falls back to the planner's current automatic choice. `auto` always keeps that choice. Existing jobs and follow-ups retain their agent.
 
 ### `GET /v1/settings/jobs` and `PUT /v1/settings/jobs`
 

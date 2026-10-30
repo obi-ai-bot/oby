@@ -138,7 +138,9 @@ fn planned_job(
     files: Option<Vec<String>>,
     researched: bool,
 ) -> NewJob {
-    let preferred = (!names_agent(asked.said))
+    // An account the plan names is a choice of agent too: only an `auto` one takes the saved
+    // default (runner-api.md, `PUT /v1/settings/default-agent`).
+    let preferred = (d.account.eq_ignore_ascii_case("auto") && !names_agent(asked.said))
         .then(|| shared.jobs.preferred_agent())
         .flatten();
     // An issue and a pull request is the issue's work started from the pull request (#219):
@@ -155,11 +157,7 @@ fn planned_job(
             d.pr.map(|pr| pr as u64)
         },
         issue: d.issue.map(|issue| issue as u64),
-        account: Some(if preferred.is_some() {
-            "auto".into()
-        } else {
-            d.account.clone()
-        }),
+        account: Some(d.account.clone()),
         agent: Some(preferred.unwrap_or_else(|| d.agent.clone())),
         // The plan's 1 is "no number named": obid's own default (Jobs::create, #958).
         rounds: (d.rounds > 1).then_some(d.rounds as u32),
