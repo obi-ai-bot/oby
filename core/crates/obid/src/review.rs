@@ -947,7 +947,7 @@ mod tests {
         assert_eq!(body["findings"], json!([]));
     }
 
-    // Posting the owner's review (moved from the Slack listener, which is gone).
+    // Posting the owner's review.
     use std::path::{Path, PathBuf};
     use std::sync::Mutex;
 
