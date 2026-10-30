@@ -16,7 +16,7 @@ export interface RustExtract {
   phoneRoutes: Array<{ method: string; pattern: string; line: number }>;
   spawns: Array<{ file: string; line: number; kind: string; inFn: string | null; inFnLine: number | null; doc: string | null }>;
   storedFiles: Array<{ name: string; file: string; line: number; inFn: string | null }>;
-  structs: Array<{ name: string; file: string; line: number; renameAll: string | null; fields: Array<{ name: string; json: string; optional: boolean; skipIfNone: boolean; flatten: boolean }> }>;
+  structs: Array<{ name: string; file: string; line: number; renameAll: string | null; fields: Array<{ name: string; json: string; optional: boolean; skipIfNone: boolean; flatten: boolean; ty: string | null }> }>;
   consts: Array<{ name: string; file: string; line: number; value: string }>;
   fns: Array<{ file: string; name: string; line: number; test: boolean; doc: string | null }>;
   errors: Array<{ file: string; message: string }>;

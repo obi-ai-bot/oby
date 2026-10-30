@@ -155,9 +155,19 @@ export function generateBrain(config: BrainConfig): BrainData {
 
   // ---- wire: obid-wire.ts beside obid's serde structs
   const structs = new Map(rust.structs.map(s => [s.name, s]));
+  // a struct's JSON keys, with what each `#[serde(flatten)]` field's own struct brings in
+  type RustStruct = (typeof rust.structs)[number];
+  const keysOf = (s: RustStruct, seen = new Set<string>()): Array<{ key: string; optional: boolean }> => {
+    seen.add(s.name);
+    return s.fields.flatMap(f => {
+      if (!f.flatten) return [{ key: f.json, optional: f.optional || f.skipIfNone }];
+      const inner = f.ty ? structs.get(f.ty) : undefined;
+      return inner && !seen.has(inner.name) ? keysOf(inner, seen) : [];
+    });
+  };
   const wire: WireType[] = design.wire.map(w => {
     const s = structs.get(config.app.wireRust[w.name] ?? w.name);
-    const rustKeys2 = s ? s.fields.filter(f => !f.flatten).map(f => ({ key: f.json, optional: f.optional || f.skipIfNone })) : [];
+    const rustKeys2 = s ? keysOf(s) : [];
     const tsKeys = new Set(w.keys.map(k => k.key));
     return {
       name: w.name, source: { file: w.file, line: w.line }, keys: w.keys,
