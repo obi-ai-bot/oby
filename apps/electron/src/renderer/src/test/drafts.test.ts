@@ -117,9 +117,16 @@ describe('a box\'s keeper', () => {
     expect(draft(box.conversation('c1'), s)).toBe('half typ');
     vi.advanceTimersByTime(DELAY);
     expect(draft(box.conversation('c2'), s)).toBe('Second thoughts');
-    // the editor reporting the words put back changes nothing
+    // the editor reporting the words put back changes nothing, their time neither
+    const at = JSON.parse(s.getItem(KEY)!)[box.conversation('c2')].at;
     k.typed('Second thoughts');
     vi.advanceTimersByTime(DELAY);
+    expect(JSON.parse(s.getItem(KEY)!)[box.conversation('c2')].at).toBe(at);
+    // typed back to what's kept before the moment passed: nothing to write
+    k.typed('Second thought');
+    k.typed('Second thoughts');
+    vi.advanceTimersByTime(DELAY);
+    expect(JSON.parse(s.getItem(KEY)!)[box.conversation('c2')].at).toBe(at);
     expect(draft(box.conversation('c1'), s)).toBe('half typ');
     expect(draft(box.conversation('c2'), s)).toBe('Second thoughts');
   });

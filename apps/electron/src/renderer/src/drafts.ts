@@ -67,21 +67,24 @@ export const forget = (box: string, store: Storage = localStorage) => keep(box, 
 // DELAY after the last keystroke, or at once when the box is emptied (sent,
 // or cleared by hand); flush() writes what's pending now (the window closing)
 export function keeper(store: Storage = localStorage, delay = DELAY) {
-  let shown: string | null = null, pending: string | null = null, timer: ReturnType<typeof setTimeout> | undefined;
+  // kept: what the store holds for the shown box, so the editor reporting the
+  // words put back doesn't count as typing them (and push their week back)
+  let shown: string | null = null, kept = '', pending: string | null = null, timer: ReturnType<typeof setTimeout> | undefined;
   const flush = () => {
     clearTimeout(timer);
     timer = undefined;
-    if (shown !== null && pending !== null) keep(shown, pending, store);
+    if (shown !== null && pending !== null) { keep(shown, pending, store); kept = pending; }
     pending = null;
   };
   return {
     show(next: string | null): string {
       flush();
       shown = next;
-      return next === null ? '' : draft(next, store);
+      return (kept = next === null ? '' : draft(next, store));
     },
     typed(text: string) {
       if (shown === null) return;
+      if (text === kept) { clearTimeout(timer); pending = null; return; }
       pending = text;
       if (!text.trim()) return flush();
       clearTimeout(timer);
