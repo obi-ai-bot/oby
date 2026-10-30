@@ -1,11 +1,12 @@
 //! The owner's vault (#457, ported from Engine/Vault.swift and Runner/VaultCommand.swift): secrets
 //! the owner adds for connections they make, which obid uses in its own calls and never shows.
 //!
-//! - **Where** ([`Location`]). On a Mac whose obid runs in the Mac app's runner home, the Swift
-//!   runner's own Keychain items (service `com.deskree.oby.runner.vault`), so the owner's secrets
-//!   carry over, as long as the login Keychain file is there (a Mac with none gets the file, so
-//!   the vault can be read); anywhere else `home/vault/secrets.json`, as the Swift runner's `FileVault` keeps
+//! - **Where** ([`Location`]). `home/vault/secrets.json`, as the Swift runner's `FileVault` keeps
 //!   them: a folder only obid's user may open (0700) holding a file only that user may read (0600).
+//!   On a Mac whose obid runs in the Mac app's runner home, the Swift runner's Keychain items
+//!   (service `com.deskree.oby.runner.vault`) are copied into it once, the first time it starts
+//!   with no file there ([`install`]): the owner's decision of 2026-10-30, so a newly signed obid
+//!   (the Electron app's, each update's) never asks the Keychain again.
 //!   A folder or file anyone else may read, that someone else owns, or that is a link isn't read:
 //!   the vault can't be read until it's fixed, and then nothing goes out. The configuration's
 //!   `vault` can say either. `home` is what every job's and plug-in's sandbox hides
@@ -176,47 +177,35 @@ pub fn login_keychain() -> Option<PathBuf> {
         .map(|user| user.dir.join("Library/Keychains/login.keychain-db"))
 }
 
-impl Location {
-    /// Where the vault is when the configuration doesn't say: on a Mac whose obid runs in the Mac
-    /// app's runner home (`~/Library/Application Support/Oby/Runner`, runner-api.md "The Mac app on
-    /// the same Mac"), the Swift runner's Keychain items; anywhere else a file in `home`, so another
-    /// obid on the same Mac (a test's, a second home) never reads or changes the owner's secrets.
-    ///
-    /// A Mac with no login Keychain file (a user made with no Keychain, one reset or moved aside:
-    /// macOS answers errSecNoSuchKeychain, "A keychain cannot be found to store …") gets the file
-    /// too, even in the runner home: a Keychain vault there could never be read, and obid would
-    /// answer 503 and publish nothing. The file is plaintext at rest, guarded by the Unix user and
-    /// the same permission checks as everywhere else (docs/ARCHITECTURE.md 4, "Secrets stay in
-    /// the vault"). The configuration's `vault` still says `keychain` where the owner wants it.
-    pub fn default_for(home: &Path) -> Location {
-        let runner_home = nix::unistd::User::from_uid(nix::unistd::getuid())
-            .ok()
-            .flatten()
-            .map(|user| user.dir.join("Library/Application Support/Oby/Runner"));
-        let keychain = login_keychain().is_some_and(|path| path.is_file());
-        Location::default_in(home, runner_home.as_deref(), keychain)
-    }
+/// Whether `home` is the Mac app's runner home (`~/Library/Application Support/Oby/Runner`,
+/// runner-api.md "The Mac app on the same Mac") on a Mac with a login Keychain file: where the
+/// Swift runner's Keychain items are, to copy into the file once ([`install`]).
+#[cfg(target_os = "macos")]
+fn holds_runner_keychain(home: &Path) -> bool {
+    let runner_home = nix::unistd::User::from_uid(nix::unistd::getuid())
+        .ok()
+        .flatten()
+        .map(|user| user.dir.join("Library/Application Support/Oby/Runner"));
+    let keychain = login_keychain().is_some_and(|path| path.is_file());
+    keychain && runner_home.is_some_and(|runner| same_folder(&runner, home))
+}
 
-    /// [`Location::default_for`] with what it looks at given: whether `home` is `runner_home` and
-    /// whether the login Keychain file is there (`keychain`). Off a Mac it is always the file.
-    fn default_in(home: &Path, runner_home: Option<&Path>, keychain: bool) -> Location {
-        // The same folder however it is written: links resolved, and letter case ignored, as a
-        // Mac's file system ignores it by default.
-        let same = |a: &Path, b: &Path| {
-            let a = std::fs::canonicalize(a).unwrap_or_else(|_| a.to_path_buf());
-            let b = std::fs::canonicalize(b).unwrap_or_else(|_| b.to_path_buf());
-            a.to_string_lossy().to_lowercase() == b.to_string_lossy().to_lowercase()
-        };
-        if cfg!(target_os = "macos")
-            && keychain
-            && runner_home.is_some_and(|runner| same(runner, home))
-        {
-            Location::Keychain {
-                service: RUNNER_SERVICE.into(),
-            }
-        } else {
-            Location::File
-        }
+/// The same folder however it is written: links resolved, and letter case ignored, as a Mac's
+/// file system ignores it by default.
+fn same_folder(a: &Path, b: &Path) -> bool {
+    let a = std::fs::canonicalize(a).unwrap_or_else(|_| a.to_path_buf());
+    let b = std::fs::canonicalize(b).unwrap_or_else(|_| b.to_path_buf());
+    a.to_string_lossy().to_lowercase() == b.to_string_lossy().to_lowercase()
+}
+
+impl Location {
+    /// Where the vault is when the configuration doesn't say: the file in `home`, on a Mac too
+    /// (the owner's decision of 2026-10-30). The Keychain asked about every item each time a
+    /// differently signed obid read one, and kept them no better than the file against the owner's
+    /// other programs (#577). What the Swift runner kept in the Keychain is copied over once
+    /// ([`install`]). The configuration's `vault` still says `keychain` where the owner wants it.
+    pub fn default_for(_home: &Path) -> Location {
+        Location::File
     }
 
     /// `vault` as the configuration writes it: `{"store": "file"}`, or `{"store": "keychain"}`
@@ -1044,6 +1033,12 @@ static SHARED: RwLock<Option<Arc<Vault>>> = RwLock::new(None);
 /// `/v1` answer is `503` and nothing is published until it's fixed.
 pub fn install(home: &Path, location: &Location) -> Arc<Vault> {
     let known = crate::secrets::known();
+    #[cfg(target_os = "macos")]
+    if *location == Location::File && holds_runner_keychain(home) {
+        let file = FileStore::new(folder(home));
+        file.tidy();
+        moved_from(&keychain::KeychainStore::new(RUNNER_SERVICE), &file);
+    }
     let store = location.store(home);
     store.tidy();
     let vault = Arc::new(Vault::new(store, known.clone()));
@@ -1069,6 +1064,59 @@ pub fn install(home: &Path, location: &Location) -> Arc<Vault> {
         );
     }
     vault
+}
+
+/// Copies what `from` holds into `to` once, when `to` has no file yet: the Swift runner's Keychain
+/// items into the file, the last time macOS asks about each (the owner's decision of 2026-10-30).
+/// A secret the Keychain won't give (the owner clicked Deny) is left out, said in the log by name
+/// only; the file is written all the same, so it isn't asked again. The Keychain items stay: only
+/// the program that made one may delete it, and the Swift app may still read them. Answers how
+/// many were copied of how many, or none when nothing was to be done.
+fn moved_from(from: &dyn Store, to: &FileStore) -> Option<(usize, usize)> {
+    if to.file().exists() {
+        return None;
+    }
+    let names = match from.names() {
+        Ok(names) if !names.is_empty() => names,
+        Ok(_) => return None,
+        Err(why) => {
+            tracing::warn!(
+                "the vault's Keychain items can't be listed, so none is copied to the file: {why}"
+            );
+            return None;
+        }
+    };
+    let mut kept = BTreeMap::new();
+    for name in &names {
+        match from.value(name) {
+            Ok(Some(value)) => {
+                kept.insert(name.clone(), value);
+            }
+            Ok(None) => {}
+            Err(why) => {
+                tracing::warn!(secret = %name, "not copied from the Keychain to the vault's file: {why}")
+            }
+        }
+    }
+    let moved = kept.len();
+    // (written only if no other obid wrote one meanwhile)
+    match to.locked(|| {
+        if to.file().exists() {
+            Ok(())
+        } else {
+            to.write(&kept)
+        }
+    }) {
+        Ok(()) => tracing::info!(
+            "copied {moved} of {} secrets from the login Keychain to {}; the Keychain items stay",
+            names.len(),
+            to.file().display()
+        ),
+        Err(why) => tracing::warn!(
+            "the vault's file couldn't be written, so the Keychain items weren't copied: {why}"
+        ),
+    }
+    Some((moved, names.len()))
 }
 
 /// obid's vault, once [`install`]ed.
@@ -1989,52 +2037,19 @@ mod tests {
         );
     }
 
-    /// The Swift runner's Keychain items when obid runs in the Mac app's runner home and the Mac
-    /// has a login Keychain; a file in `home` anywhere else, unless the configuration says.
+    /// The file in `home` wherever obid runs, the Mac app's runner home too (the owner's decision
+    /// of 2026-10-30), unless the configuration says the Keychain.
     #[test]
     fn where_the_vault_is() {
         let user = nix::unistd::User::from_uid(nix::unistd::getuid())
             .unwrap()
             .unwrap();
         let runner_home = user.dir.join("Library/Application Support/Oby/Runner");
-        let keychain = Location::Keychain {
-            service: RUNNER_SERVICE.into(),
-        };
-        let login = login_keychain().unwrap();
-        assert_eq!(login.file_name().unwrap(), "login.keychain-db");
-        let expected = if cfg!(target_os = "macos") && login.is_file() {
-            keychain.clone()
-        } else {
-            Location::File
-        };
-        assert_eq!(Location::default_for(&runner_home), expected);
-        // With no login Keychain file (errSecNoSuchKeychain) the runner home gets the file too;
-        // with one, the Keychain, on a Mac only.
         assert_eq!(
-            Location::default_in(&runner_home, Some(&runner_home), false),
-            Location::File
+            login_keychain().unwrap().file_name().unwrap(),
+            "login.keychain-db"
         );
-        assert_eq!(
-            Location::default_in(&runner_home, Some(&runner_home), true),
-            if cfg!(target_os = "macos") {
-                keychain.clone()
-            } else {
-                Location::File
-            }
-        );
-        assert_eq!(
-            Location::default_in(Path::new("/tmp/obid-home"), Some(&runner_home), true),
-            Location::File
-        );
-        assert_eq!(
-            Location::default_in(&runner_home, None, true),
-            Location::File
-        );
-        let expected = if cfg!(target_os = "macos") {
-            keychain
-        } else {
-            Location::File
-        };
+        assert_eq!(Location::default_for(&runner_home), Location::File);
         assert_eq!(
             Location::default_for(Path::new("/tmp/obid-home")),
             Location::File
@@ -2043,7 +2058,10 @@ mod tests {
         assert!(Location::parse("file", Some("x")).is_err());
         assert!(Location::parse("cloud", None).is_err());
         if cfg!(target_os = "macos") {
-            assert_eq!(Location::parse("keychain", None), Ok(expected.clone()));
+            let runner = Location::Keychain {
+                service: RUNNER_SERVICE.into(),
+            };
+            assert_eq!(Location::parse("keychain", None), Ok(runner));
             assert_eq!(
                 Location::parse("keychain", Some("com.example.test")),
                 Ok(Location::Keychain {
@@ -2053,24 +2071,90 @@ mod tests {
             assert!(Location::parse("keychain", Some(" ")).is_err());
             assert!(Location::parse("keychain", Some(" com.example.test")).is_err());
             assert!(Location::parse("keychain", Some("com.example.test ")).is_err());
-            // The runner home however it is written: another letter case, or through a link.
-            let upper = PathBuf::from(runner_home.to_string_lossy().to_uppercase());
-            assert_eq!(
-                Location::default_in(&upper, Some(&runner_home), true),
-                expected
-            );
-            let scratch = Scratch::new();
-            let link = scratch.0.join("runner-link");
-            if runner_home.is_dir() {
-                std::os::unix::fs::symlink(&runner_home, &link).unwrap();
-                assert_eq!(
-                    Location::default_in(&link, Some(&runner_home), true),
-                    expected
-                );
-            }
         } else {
             assert!(Location::parse("keychain", None).is_err());
         }
+        // The runner home however it is written: another letter case, or through a link.
+        let upper = PathBuf::from(runner_home.to_string_lossy().to_uppercase());
+        assert!(!cfg!(target_os = "macos") || same_folder(&upper, &runner_home));
+        let scratch = Scratch::new();
+        let link = scratch.0.join("runner-link");
+        std::os::unix::fs::symlink(&scratch.0, &link).unwrap();
+        assert!(same_folder(&link, &scratch.0));
+        assert!(!same_folder(&link, Path::new("/tmp/obid-home")));
+    }
+
+    /// The Swift runner's Keychain items are copied into the file once: what the Keychain gives,
+    /// never what it refuses; the file is written even then, so nothing is asked again; and a
+    /// vault that has its file already is left alone.
+    #[test]
+    fn the_keychain_items_move_to_the_file_once() {
+        struct Keychain;
+        impl Store for Keychain {
+            fn stamp(&self) -> Result<String, String> {
+                Ok(String::new())
+            }
+            fn read(&self) -> Result<BTreeMap<String, String>, String> {
+                Err("read one by one".into())
+            }
+            fn names(&self) -> Result<Vec<String>, String> {
+                Ok(vec![
+                    "oby.tetrix.access".into(),
+                    "oby.tetrix.refresh".into(),
+                    "denied".into(),
+                ])
+            }
+            fn value(&self, name: &str) -> Result<Option<String>, String> {
+                match name {
+                    "denied" => Err("the owner clicked Deny".into()),
+                    name => Ok(Some(format!("{name}-value-Zq81x"))),
+                }
+            }
+            fn save(&self, _: &str, _: &str) -> Result<(), String> {
+                unreachable!("nothing is written to the Keychain")
+            }
+            fn remove(&self, _: &str) -> Result<bool, String> {
+                unreachable!("the Keychain items stay")
+            }
+        }
+        let scratch = Scratch::new();
+        let file = FileStore::new(scratch.0.join("vault"));
+        assert_eq!(moved_from(&Keychain, &file), Some((2, 3)));
+        let kept = file.read().unwrap();
+        assert_eq!(
+            kept.keys().collect::<Vec<_>>(),
+            ["oby.tetrix.access", "oby.tetrix.refresh"]
+        );
+        assert_eq!(kept["oby.tetrix.refresh"], "oby.tetrix.refresh-value-Zq81x");
+        // Once: the file is there now, so the Keychain isn't read again.
+        assert_eq!(moved_from(&Keychain, &file), None);
+
+        // Every item refused: an empty file all the same, so it isn't asked again.
+        struct Refusing;
+        impl Store for Refusing {
+            fn stamp(&self) -> Result<String, String> {
+                Ok(String::new())
+            }
+            fn read(&self) -> Result<BTreeMap<String, String>, String> {
+                Err("refused".into())
+            }
+            fn names(&self) -> Result<Vec<String>, String> {
+                Ok(vec!["a".into()])
+            }
+            fn value(&self, _: &str) -> Result<Option<String>, String> {
+                Err("the owner clicked Deny".into())
+            }
+            fn save(&self, _: &str, _: &str) -> Result<(), String> {
+                unreachable!()
+            }
+            fn remove(&self, _: &str) -> Result<bool, String> {
+                unreachable!()
+            }
+        }
+        let empty = FileStore::new(scratch.0.join("refused"));
+        assert_eq!(moved_from(&Refusing, &empty), Some((0, 1)));
+        assert!(empty.file().is_file());
+        assert!(empty.read().unwrap().is_empty());
     }
 
     /// A Keychain modification date may stay the same within a second. The broker must
