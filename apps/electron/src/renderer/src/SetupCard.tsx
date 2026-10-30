@@ -175,9 +175,8 @@ export function GitHubRow() {
     code={s.codes.github?.userCode ?? undefined} bare />;
 }
 
-// Tetrix on the new onboarding's knowledge step, the same way: Connect (its page in the browser,
-// through obid), a spinner while that's under way, then a check
-// Tetrix: on obid, Connect opens Settings' own Connect Tetrix window, where the person gives their
+// Tetrix on the new onboarding's knowledge step, the same way: a spinner while it's under way, then
+// a check. On obid, Connect opens Settings' own Connect Tetrix window, where the person gives their
 // Tetrix's address (Oby has none built in); Continue in Browser signs in from the row
 export function TetrixRow({ sub, bare = true }: { sub?: string; bare?: boolean }) {
   const s = useSetup();
