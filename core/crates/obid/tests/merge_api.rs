@@ -1797,13 +1797,9 @@ fn merging_24_the_tasks_review_of_an_old_head_asks_nothing() {
     assert_eq!(open_merge_cards(&obid).len(), 1);
 }
 
-/// MERGING-14, 23: a follow-up of the task made beside an earlier one (before follow-ups made one
-/// line) pushed last: it carries the pull request's one card, but the earlier follow-up was
-/// untrusted and this one doesn't follow it up, so its single review merges nothing by itself and
-/// no approval is posted for it.
-#[test]
-fn merging_23_a_sibling_follow_up_never_merges_an_untrusted_ones_work_on_one_review() {
-    let folder = Folder::new("merge-siblings");
+/// The task, an untrusted follow-up of it, and a trusted one made beside it (before follow-ups
+/// made one line) that pushed last, `head()`.
+fn siblings() -> [obid::job::Job; 3] {
     let [task, mut later] = task_and_follow_up();
     let mut untrusted = later.clone();
     untrusted.id = "e1b2c3d4".into();
@@ -1814,21 +1810,77 @@ fn merging_23_a_sibling_follow_up_never_merges_an_untrusted_ones_work_on_one_rev
     untrusted.outgoing[0].date -= 30;
     untrusted.review.as_mut().unwrap().commit = "e".repeat(40);
     later.created += 1;
-    let obid = started_with_jobs(&folder, true, Some(OBIS), &[task, untrusted, later], &[]);
+    [task, untrusted, later]
+}
+
+const UNFOLLOWED: &str = "Not merged: its head holds what Untrusted follow-up pushed, and this task doesn't follow that one up, so its review alone doesn't count for that work.";
+
+/// MERGING-14, 20, 23: a follow-up made beside an untrusted one pushed last: it carries the pull
+/// request's one card, and its single review merges nothing by itself, nor posts an approval. The
+/// card names the hold with Merge: an answer no app of the owner's signed merges nothing, their
+/// signed one merges it.
+#[test]
+fn merging_23_a_sibling_follow_up_never_merges_an_untrusted_ones_work_on_one_review() {
+    let folder = Folder::new("merge-siblings");
+    let obid = started_with_jobs(&folder, true, Some(OBIS), &siblings(), &[]);
     let card = within(30, "the card", || {
         open_merge_cards(&obid).into_iter().next()
     });
     assert!(card["id"].as_str().unwrap().contains(FOLLOW_UP), "{card}");
     assert!(
-        card["text"]
-            .as_str()
-            .unwrap()
-            .contains("its head holds what Untrusted follow-up pushed, and this task doesn't follow that one up"),
+        card["text"].as_str().unwrap().contains(UNFOLLOWED),
         "{card}"
     );
+    assert_eq!(card["options"][0], "Merge", "{card}");
     std::thread::sleep(std::time::Duration::from_secs(3));
     assert_eq!(open_merge_cards(&obid).len(), 1);
-    let calls = calls(&folder.0);
-    assert!(!calls.contains("-X PUT"), "{calls}");
-    assert!(!calls.contains("-X POST"), "{calls}");
+    let calls_now = calls(&folder.0);
+    assert!(!calls_now.contains("-X PUT"), "{calls_now}");
+    assert!(!calls_now.contains("-X POST"), "{calls_now}");
+    let unsigned = answer(&obid, &card, "Merge");
+    assert_eq!(unsigned.status, 409, "{}", unsigned.text);
+    assert!(
+        unsigned.text.contains("your Merge didn't cover this")
+            && unsigned.text.contains(UNFOLLOWED),
+        "{}",
+        unsigned.text
+    );
+    assert!(!calls(&folder.0).contains("-X PUT"));
+    let card = within(30, "the card again", || {
+        open_merge_cards(&obid)
+            .into_iter()
+            .find(|c| c["id"] == card["id"])
+    });
+    let merged = answer_signed(&obid, &card, "Merge");
+    assert_eq!(merged.status, 200, "{}", merged.text);
+    assert_eq!(job_of(&obid, FOLLOW_UP)["mergedBy"]["by"], "owner");
+    assert_eq!(calls(&folder.0).matches("-X PUT").count(), 1);
+}
+
+/// MERGING-17, 23: in the same order, with the trusted follow-up's review asking for changes, the
+/// review item's Merge no app of the owner's signed merges nothing: it didn't name the hold.
+#[test]
+fn merging_23_a_review_items_unsigned_merge_never_lifts_an_unfollowed_push() {
+    let folder = Folder::new("merge-siblings-review");
+    let [task, untrusted, mut later] = siblings();
+    later.review.as_mut().unwrap().verdict = "changesRequested".into();
+    let obid = started_with_jobs(&folder, true, Some(OBIS), &[task, untrusted, later], &[]);
+    let item = within(30, "the follow-up's review item", || {
+        call(&obid, "GET", "/v1/inbox", None)
+            .body
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|i| i["id"] == format!("{FOLLOW_UP}-review-r1b2c3d4") && i["done"].is_null())
+            .cloned()
+    });
+    assert_eq!(
+        item["options"],
+        json!(["One more round", "Merge"]),
+        "{item}"
+    );
+    let refused = answer(&obid, &item, "Merge");
+    assert_eq!(refused.status, 409, "{}", refused.text);
+    assert!(refused.text.contains(UNFOLLOWED), "{}", refused.text);
+    assert!(!calls(&folder.0).contains("-X PUT"));
 }

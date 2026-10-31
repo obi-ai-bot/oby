@@ -472,6 +472,11 @@ pub struct Job {
     /// design, the owner's decision of 2026-10-18).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub follow_up_of: Option<String>,
+    /// Why its pull request's head holds another job's push it doesn't follow up, so its review
+    /// can't count for that work (crate::jobs, `unfollowed_why`; MERGING-23): set by obid right
+    /// before a merge is weighed, never kept.
+    #[serde(skip)]
+    pub unfollowed: Option<String>,
     /// Its activity at a glance, from its transcript (`crate::activity`, #730).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub activity: Option<Value>,
@@ -931,6 +936,7 @@ impl Job {
             artifacts: Vec::new(),
             artifact_problems: Vec::new(),
             follow_up_of: None,
+            unfollowed: None,
             activity: None,
             context: None,
             reason: None,

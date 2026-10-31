@@ -1692,6 +1692,11 @@ impl Jobs {
         carrier_of(&self.lock().jobs, job).clone()
     }
 
+    /// [`unfollowed_why`] of `job`: a hold of its merge's (crate::merge, MERGING-23).
+    fn unfollowed(&self, job: &Job) -> Option<String> {
+        unfollowed_why(&self.lock().jobs, job)
+    }
+
     /// [`stand_in_why`] of `job`.
     fn stand_in(&self, job: &Job) -> Option<String> {
         stand_in_why(&self.lock().jobs, job)
@@ -3417,12 +3422,24 @@ impl Jobs {
                     if unheard.first().map(|w| w.text.as_str()) == Some(text) {
                         unheard.remove(0);
                     }
-                    let mut next = follow_up(&job, text);
+                    // It follows the newest follow-up on the branch (MERGING-23): its account,
+                    // agent, mode and report are that one's; its branch is the task's, which that
+                    // one carries on.
+                    let tip = chain_tip(&self.lock().jobs, id);
+                    let tip = self.get(&tip).unwrap_or_else(|| job.clone());
+                    let from_tip = follow_up(&tip, text);
+                    let mut next = NewJob {
+                        account: from_tip.account,
+                        agent: from_tip.agent,
+                        mode: from_tip.mode,
+                        earlier: from_tip.earlier,
+                        ..follow_up(&job, text)
+                    };
                     // The owner's own words to their job carry its mode on, Bypass too: they
                     // chose it for this work, and a follow-up is more of it ([`follow_up`] drops
                     // Bypass only for what the brain starts).
                     if source == Source::Owner {
-                        next.mode = job.mode.clone();
+                        next.mode = tip.mode.clone();
                     }
                     let made = self.create(NewJob {
                         attachments: (!attachments.is_empty()).then(|| attachments.to_vec()),
@@ -11497,7 +11514,7 @@ impl Jobs {
         // is signed in; never on a `teammate` or `person` one, where GitHub's branch rules would
         // count it (it can push) in place of a teammate's.
         // Its head holds another job's push it doesn't follow up: one review can't count for it.
-        let unfollowed = unfollowed_why(&self.lock().jobs, &job);
+        let unfollowed = self.unfollowed(&job);
         let wanted = current.is_some()
             && unfollowed.is_none()
             && workflow
@@ -11545,7 +11562,8 @@ impl Jobs {
         self.update(id, |job| {
             crate::merge::unmark(job, "pullRequestApproval");
         });
-        let Some(job) = self.get(id) else { return };
+        let Some(mut job) = self.get(id) else { return };
+        job.unfollowed = unfollowed;
         // Someone else's approval it waits on: a `teammate` or `person` workflow's, or one GitHub's
         // rules require where Oby's own review approved (the owner's can't count on their pull
         // request). A teammate's Oby is asked over the Obysphere to review that head and approve it
@@ -11568,9 +11586,8 @@ impl Jobs {
             ),
             _ => (false, false),
         };
-        let stop = unfollowed
-            .or(stop)
-            .or_else(|| crate::merge::owner_must_settle(pr, &merging).map(str::to_owned));
+        let stop =
+            stop.or_else(|| crate::merge::owner_must_settle(pr, &merging).map(str::to_owned));
         let card = if let Some(why) = stop {
             // A change request, red checks and a reviewer account signed out are holds the
             // owner's own Merge lifts: one card names every hold, with Merge where Oby knows how
@@ -11916,7 +11933,8 @@ impl Jobs {
         let job = self.get(id).ok_or("There's no such job.")?;
         // A follow-up that pushed to its pull request since carries it, its push Oby's own: the
         // merge goes on that job's record (MERGING-23).
-        let job = self.carrier(&job);
+        let mut job = self.carrier(&job);
+        job.unfollowed = self.unfollowed(&job);
         let id = job.id.as_str();
         let gh = crate::github::gh().ok_or("GitHub's CLI (gh) isn't installed.")?;
         let number = job

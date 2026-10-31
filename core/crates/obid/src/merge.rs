@@ -1092,6 +1092,10 @@ fn owned<'a>(
     if job.pushed_head() != Some(head) {
         lifted.push(yours("Not merged: its head is a commit Oby didn't push."));
     }
+    // Another job's push it doesn't follow up: only a signed Merge naming it lifts it (MERGING-23).
+    if let Some(why) = &job.unfollowed {
+        lifted.push(yours(why.clone()));
+    }
     if !job
         .scan
         .as_ref()
