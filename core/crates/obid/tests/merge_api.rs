@@ -184,15 +184,28 @@ fn started_with(
     job: obid::job::Job,
     gh: &[&str],
 ) -> Obid {
+    started_with_jobs(folder, reviewer, workflow, &[job], gh)
+}
+
+/// [`started_with`] with every one of `jobs` kept.
+fn started_with_jobs(
+    folder: &Folder,
+    reviewer: bool,
+    workflow: Option<&str>,
+    jobs: &[obid::job::Job],
+    gh: &[&str],
+) -> Obid {
     let remote = fixture(&folder.0.join("fixture"));
     let config = config(&folder.0, &remote, &stub_agent());
     let home = Path::new(config["home"].as_str().unwrap()).to_path_buf();
     std::fs::create_dir_all(home.join("jobs")).unwrap();
-    std::fs::write(
-        home.join(format!("jobs/{ID}.json")),
-        serde_json::to_vec(&job).unwrap(),
-    )
-    .unwrap();
+    for job in jobs {
+        std::fs::write(
+            home.join(format!("jobs/{}.json", job.id)),
+            serde_json::to_vec(job).unwrap(),
+        )
+        .unwrap();
+    }
     if reviewer {
         std::fs::create_dir_all(home.join("github/reviewer")).unwrap();
         std::fs::write(
@@ -225,7 +238,41 @@ fn started_with(
 }
 
 fn job(obid: &Obid) -> Value {
-    call(obid, "GET", &format!("/v1/jobs/{ID}"), None).body
+    job_of(obid, ID)
+}
+
+fn job_of(obid: &Obid, id: &str) -> Value {
+    call(obid, "GET", &format!("/v1/jobs/{id}"), None).body
+}
+
+const FOLLOW_UP: &str = "f1b2c3d4";
+
+/// The task that opened the pull request at an earlier head, and its follow-up, which pushed
+/// `head()` to the same branch since and added to that pull request (`addedTo`, #1663). Oby's own
+/// review approved each one's head.
+fn task_and_follow_up() -> [obid::job::Job; 2] {
+    let earlier = "b".repeat(40);
+    let mut task = published();
+    task.outgoing = vec![
+        obid::publish::Outgoing::new("push", REPO, &earlier, Some("oby/fix-7")),
+        obid::publish::Outgoing::new("pullRequest", REPO, PULL, None),
+    ];
+    task.outgoing[0].date -= 60;
+    task.review.as_mut().unwrap().commit = earlier;
+    let mut follow_up = published();
+    follow_up.id = FOLLOW_UP.into();
+    follow_up.title = Some("Fix the thing follow-up".into());
+    follow_up.follow_up_of = Some(ID.into());
+    follow_up.created += 1;
+    [task, follow_up]
+}
+
+/// The merge cards still open.
+fn open_merge_cards(obid: &Obid) -> Vec<Value> {
+    merge_cards(obid)
+        .into_iter()
+        .filter(|c| c["done"].is_null())
+        .collect()
 }
 
 fn merge_cards(obid: &Obid) -> Vec<Value> {
@@ -1491,4 +1538,77 @@ fn merging_8_an_item_from_before_takes_merge() {
         "{}",
         wrong.text
     );
+}
+
+/// MERGING-23: a follow-up's push to its task's pull request is Oby's own: with a workflow the
+/// owner taught Oby, the pull request merges by itself at that head, on the follow-up's record,
+/// and the task it followed up never says its head is a commit Oby didn't push.
+#[test]
+fn merging_23_a_follow_ups_push_merges_as_obys_own() {
+    let folder = Folder::new("merge-follow-up");
+    let obid = started_with_jobs(&folder, true, Some(OBIS), &task_and_follow_up(), &[]);
+    let merged = within(30, "the follow-up to merge it", || {
+        let job = job_of(&obid, FOLLOW_UP);
+        (job["mergedBy"]["by"] == "memory").then_some(job)
+    });
+    assert_eq!(merged["addedTo"], 7, "{merged}");
+    assert_eq!(calls(&folder.0).matches("-X PUT").count(), 1);
+    let task = job(&obid);
+    assert_eq!(task["mergeNeedsYou"], false, "{task}");
+    assert!(
+        task["mergeError"]
+            .as_str()
+            .is_none_or(|e| !e.contains("didn't push")),
+        "{task}"
+    );
+    assert!(open_merge_cards(&obid).is_empty());
+}
+
+/// MERGING-24: one pull request gets one card: the follow-up's, the job that pushed to it last.
+/// The task it followed up has none, and nothing about merging waits on it.
+#[test]
+fn merging_24_one_pull_request_gets_one_card() {
+    let folder = Folder::new("merge-one-card");
+    let obid = started_with_jobs(&folder, true, None, &task_and_follow_up(), &[]);
+    let card = within(30, "the merge card", || {
+        open_merge_cards(&obid).into_iter().next()
+    });
+    assert_eq!(card["id"], format!("merge-ready-{FOLLOW_UP}-{}", head()));
+    // A few more reads: still one.
+    std::thread::sleep(std::time::Duration::from_secs(3));
+    let open = open_merge_cards(&obid);
+    assert_eq!(open.len(), 1, "{open:?}");
+    assert_eq!(job_of(&obid, FOLLOW_UP)["mergeNeedsYou"], true);
+    let task = job(&obid);
+    assert_eq!(task["mergeNeedsYou"], false, "{task}");
+    assert_eq!(task["mergeError"], Value::Null, "{task}");
+    // The owner's Merge merges it on the follow-up's record.
+    let merged = answer_signed(&obid, &card, "Merge");
+    assert_eq!(merged.status, 200, "{}", merged.text);
+    assert_eq!(job_of(&obid, FOLLOW_UP)["mergedBy"]["by"], "owner");
+    assert_eq!(calls(&folder.0).matches("-X PUT").count(), 1);
+}
+
+/// MERGING-25: a head no job of Oby's pushed, a follow-up's chain included, is still not Oby's:
+/// nothing merges by itself, and the one card says so.
+#[test]
+fn merging_25_a_head_nobody_at_oby_pushed_is_still_refused() {
+    let folder = Folder::new("merge-stranger");
+    // GitHub's head is `head()`: the follow-up pushed another commit, approved by Oby's review.
+    let ours = "c".repeat(40);
+    let [task, mut follow_up] = task_and_follow_up();
+    follow_up.outgoing[0].id = ours.clone();
+    follow_up.review.as_mut().unwrap().commit = ours;
+    let obid = started_with_jobs(&folder, true, Some(OBIS), &[task, follow_up], &[]);
+    let card = within(30, "the card", || {
+        open_merge_cards(&obid).into_iter().find(|c| {
+            c["text"]
+                .as_str()
+                .is_some_and(|t| t.contains("its head is a commit Oby didn't push"))
+        })
+    });
+    assert!(card["id"].as_str().unwrap().contains(FOLLOW_UP), "{card}");
+    std::thread::sleep(std::time::Duration::from_secs(3));
+    assert_eq!(open_merge_cards(&obid).len(), 1);
+    assert!(!calls(&folder.0).contains("-X PUT"));
 }

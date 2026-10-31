@@ -1684,6 +1684,12 @@ impl Jobs {
         self.lock().jobs.get(id).cloned()
     }
 
+    /// The job that carries `job`'s pull request on ([`carrier_of`]): `job` itself, unless a
+    /// follow-up pushed to it since.
+    fn carrier(&self, job: &Job) -> Job {
+        carrier_of(&self.lock().jobs, job).clone()
+    }
+
     /// The follow-up of `id` that's queued or running, if any: a job has one at a time, and words
     /// for `id` once it ended go to it.
     pub fn following(&self, id: &str) -> Option<Job> {
@@ -11341,7 +11347,7 @@ impl Jobs {
             } else if let Some(gh) = gh.as_deref().filter(|_| unread)
                 && let Some(head) = self
                     .get(&job.id)
-                    .filter(carries)
+                    .filter(|j| carries(j) && self.carrier(j).id == j.id)
                     .and_then(|j| j.pushed_head().map(str::to_owned))
                 && crate::github_login::signed_out(gh).await
             {
@@ -11377,9 +11383,10 @@ impl Jobs {
         let (Some(number), Some(head)) = (number, pr.head.clone()) else {
             return cards(None);
         };
-        // Not one to carry on now (it runs again, was let go, isn't the owner's own): nothing
-        // waits on the owner about merging it.
-        if !carries(&job) || !pr.is_open() {
+        // Not one to carry on now (it runs again, was let go, isn't the owner's own, or a
+        // follow-up pushed to its pull request since and carries it: MERGING-24): nothing waits on
+        // the owner about merging it.
+        if !carries(&job) || !pr.is_open() || self.carrier(&job).id != job.id {
             self.update(id, |job| {
                 job.merge_needs_you = false;
                 job.merge_error = None;
@@ -11752,6 +11759,9 @@ impl Jobs {
         signed: bool,
     ) -> Result<String, String> {
         let job = self.get(id).ok_or("There's no such job.")?;
+        // A follow-up that pushed to its pull request since carries it (MERGING-23).
+        let job = self.carrier(&job);
+        let id = job.id.as_str();
         // Only a job Oby still carries, at the head Oby pushed (crate::merge::ready's own rule).
         if !carries(&job) || job.pushed_head() != Some(head) {
             return Err("It isn't one Oby carries on at that commit any more.".into());
@@ -11827,6 +11837,10 @@ impl Jobs {
     ) -> Result<Option<String>, String> {
         let signed = matches!(lift, crate::merge::Lift::Named(_));
         let job = self.get(id).ok_or("There's no such job.")?;
+        // A follow-up that pushed to its pull request since carries it, its push Oby's own: the
+        // merge goes on that job's record (MERGING-23).
+        let job = self.carrier(&job);
+        let id = job.id.as_str();
         let gh = crate::github::gh().ok_or("GitHub's CLI (gh) isn't installed.")?;
         let number = job
             .published
@@ -11910,6 +11924,27 @@ fn carries(job: &Job) -> bool {
         && job.obi.is_none()
         && job.kind != "review"
         && job.kind != "research"
+}
+
+/// The job that carries `job`'s pull request on (MERGING-23, 24): of the owner's own jobs that
+/// published to it on `job`'s branch (a follow-up adds to its task's, #1663), the one that pushed
+/// there last. Its head is that push, its card the pull request's only one; `job` itself when none
+/// pushed after it, or it has no pull request. Another Obi's push never counts as Oby's own.
+fn carrier_of<'a>(jobs: &'a HashMap<String, Job>, job: &'a Job) -> &'a Job {
+    let Some(url) = job.published.as_deref() else {
+        return job;
+    };
+    jobs.values()
+        .chain([job])
+        .filter(|j| {
+            j.obi.is_none()
+                && j.repo == job.repo
+                && j.published.as_deref() == Some(url)
+                && same_branch(&j.branch, &job.branch)
+        })
+        .filter_map(|j| j.last_push().map(|p| (p.date, j.created, &j.id, j)))
+        .max_by(|a, b| (a.0, a.1, a.2).cmp(&(b.0, b.1, b.2)))
+        .map_or(job, |(.., j)| j)
 }
 
 /// What publishing `job` by hand would do: obid's own sentence and the base, or why there's
@@ -14685,6 +14720,58 @@ mod tests {
         assert_eq!(Jobs::mode_of(&job), Mode::Ask);
         job.mode = Some("sandbox".into());
         assert_eq!(Jobs::mode_of(&job), Mode::Sandbox);
+    }
+
+    /// MERGING-23, 24: a follow-up that pushed to its task's pull request since carries it: its
+    /// push is Oby's own, its card the pull request's only one. Another Obi's push never is, nor
+    /// one to another branch or pull request.
+    #[test]
+    fn merging_23_the_last_job_that_pushed_to_a_pull_request_carries_it() {
+        let url = "https://github.com/o/r/pull/7";
+        let job = |id: &str, pushed: &str, at: i64| {
+            let mut job = Job::new(
+                id.into(),
+                "o/r".into(),
+                "fix".into(),
+                "Fix it".into(),
+                "claude".into(),
+                "a".into(),
+            );
+            job.branch = "oby/fix-7".into();
+            job.published = Some(url.into());
+            let mut push = crate::publish::Outgoing::new("push", "o/r", pushed, Some("oby/fix-7"));
+            push.date = at;
+            job.outgoing.push(push);
+            job
+        };
+        let first = job("a", "h1", 10);
+        let mut follow_up = job("b", "h2", 20);
+        follow_up.follow_up_of = Some("a".into());
+        let mut jobs: HashMap<String, Job> = [first.clone(), follow_up.clone()]
+            .map(|j| (j.id.clone(), j))
+            .into();
+        assert_eq!(carrier_of(&jobs, &first).id, "b");
+        assert_eq!(carrier_of(&jobs, &follow_up).id, "b");
+        // Another Obi's push, a later one to another branch or pull request: not Oby's own.
+        let mut other = job("c", "h3", 30);
+        other.obi = Some(crate::job::ObiRef {
+            correlation_id: "c".into(),
+            from: "ernesto".into(),
+            from_owner: "ernesto".into(),
+            request_id: "r".into(),
+        });
+        let mut elsewhere = job("d", "h4", 40);
+        elsewhere.branch = "oby/other".into();
+        let mut another = job("e", "h5", 50);
+        another.published = Some("https://github.com/o/r/pull/8".into());
+        for j in [other, elsewhere, another] {
+            jobs.insert(j.id.clone(), j);
+        }
+        assert_eq!(carrier_of(&jobs, &first).id, "b");
+        // No pull request: the job itself.
+        let mut unpublished = first.clone();
+        unpublished.published = None;
+        assert_eq!(carrier_of(&jobs, &unpublished).id, "a");
     }
 
     /// MERGING-18 (#1659): Oby's review hears what the owner first asked, then their own words to
