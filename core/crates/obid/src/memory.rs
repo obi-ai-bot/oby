@@ -739,6 +739,16 @@ pub fn foreign_among(home: &Path, repos: &[&str]) -> Option<String> {
     })
 }
 
+/// Whether a memory that applies to work in `repos` is known to come from someone else's words:
+/// one found in them (a review comment, say) or kept by a Remember no app of the owner's signed.
+/// Never one kept before obid marked where memories came from ([`KEPT_BEFORE`]: unknown), nor one
+/// the owner's own words made (`clean: yes`, the workflow Oby asked to remember among them).
+pub fn someone_elses_among(home: &Path, repos: &[&str]) -> bool {
+    applying(home, repos)
+        .iter()
+        .any(|m| m.foreign.as_deref().is_some_and(|why| why != KEPT_BEFORE))
+}
+
 /// The quoted file of `memories`: each under a heading of obid's own words (whom it's about, its
 /// kind), its title and text in a nonce fence nothing in it can close. The newest that fit in
 /// [`QUOTED_BYTES`].

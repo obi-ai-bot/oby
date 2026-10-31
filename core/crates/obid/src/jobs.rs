@@ -2761,6 +2761,7 @@ impl Jobs {
         let of = job.follow_up_of.as_deref().and_then(|of| self.get(of));
         job.untrusted = new.untrusted || of.as_ref().is_some_and(|of| of.untrusted);
         job.unsigned = of.as_ref().is_some_and(|of| of.unsigned);
+        job.memory_from_others = of.as_ref().is_some_and(|of| of.memory_from_others);
         // Someone else's code from the start keeps to a clone apart; a follow-up to its job's.
         job.apart = match &of {
             // A follow-up of another Oby's review starts afresh, apart: never in the owner's clone.
@@ -8626,13 +8627,11 @@ impl Jobs {
                     crate::memory::foreign_among(&self.config.home, &[job.repo.as_str()])
                 {
                     self.unvet(id, &format!("it read {why}"));
-                    // In obid's words, never the memory's own: it's someone else's code from now
-                    // on, so two reviews merge it (MERGING-14).
-                    self.mark_foreign(
-                        id,
-                        "a memory learned from words that weren't the owner's reached its agent"
-                            .into(),
-                    );
+                }
+                // One known to come from someone else's words: two reviews merge its pull
+                // request (MERGING-14).
+                if crate::memory::someone_elses_among(&self.config.home, &[job.repo.as_str()]) {
+                    self.update(id, |job| job.memory_from_others = true);
                 }
                 let written = crate::obi_dir::folder(&worktree, "inputs").and_then(|dir| {
                     crate::obi_dir::write_new(&dir, crate::memory::FILE, text.as_bytes())

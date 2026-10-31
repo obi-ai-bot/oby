@@ -2005,6 +2005,13 @@ mod tests {
             two_reviews(&unsigned, Some(&[])).as_deref(),
             Some("words no app of the owner's signed reached it")
         );
+        // So is a job a memory learned from someone else's words reached.
+        let mut remembered = reviewed("approved", &head());
+        remembered.memory_from_others = true;
+        assert_eq!(
+            two_reviews(&remembered, Some(&[])).as_deref(),
+            Some("a memory learned from someone else's words reached its agent")
+        );
         // An untrusted job whose one approval came before obid asked for two still needs two.
         let mut before = reviewed("approved", &head());
         before.untrusted = true;

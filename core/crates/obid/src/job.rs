@@ -579,6 +579,11 @@ pub struct Job {
     /// Never in the API.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub unsigned: bool,
+    /// A memory known to come from someone else's words reached its agent
+    /// (crate::memory::someone_elses_among): its pull request merges only after two reviews.
+    /// Carried to its follow-ups. Never in the API.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub memory_from_others: bool,
     /// Why the code it runs isn't only its owner's own, when it follows up a job whose check got
     /// none of the owner's secrets (crate::secretspec): a received review, a job that ran on a
     /// teammate's Mac, another person's pull request. Carried to every follow-up of it, so a
@@ -735,13 +740,19 @@ impl Job {
     }
 
     /// Why its pull request's reviewer is told its author is untrusted, and two reviews merge it
-    /// (MERGING-13, 14): someone else's code ([`Job::someone_elses`]), or words no app of the
-    /// owner's signed ([`Job::unsigned`]). Never the words themselves.
+    /// (MERGING-13, 14): someone else's code ([`Job::someone_elses`]), words no app of the
+    /// owner's signed ([`Job::unsigned`]), or a memory from someone else's words
+    /// ([`Job::memory_from_others`]). Never the words themselves.
     pub fn untrusted_why(&self) -> Option<String> {
-        self.someone_elses().or_else(|| {
-            self.unsigned
-                .then(|| "words no app of the owner's signed reached it".into())
-        })
+        self.someone_elses()
+            .or_else(|| {
+                self.unsigned
+                    .then(|| "words no app of the owner's signed reached it".into())
+            })
+            .or_else(|| {
+                self.memory_from_others
+                    .then(|| "a memory learned from someone else's words reached its agent".into())
+            })
     }
 
     /// Why its pull request's head merges only after two approving reviews by different tools:
@@ -897,6 +908,7 @@ impl Job {
             routine: None,
             untrusted: false,
             unsigned: false,
+            memory_from_others: false,
             foreign: None,
             made: Vec::new(),
             apart: false,
