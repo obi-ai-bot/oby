@@ -1320,6 +1320,10 @@ fn taskconv_6_a_signed_turn_that_reads_untrusted_text_makes_confirms() {
     );
     let settings = card("Change Settings: 20 jobs at once");
     let check_in = card("Check in with you");
+    // Each names its conversation, which shows it under Oby's answer there (#1680).
+    for item in [&settings, &check_in, &approve, &merge] {
+        assert_eq!(item["conversation"], conversation.as_str(), "{item}");
+    }
 
     // The owner's taps do it.
     for item in [&settings, &check_in, &approve, &merge] {

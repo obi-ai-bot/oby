@@ -165,6 +165,8 @@ export default function ChatView({ id, kind = 'task', leaving, covered = false, 
                   ...((m as Message).setup && !(m as Message).streaming ? [<SetupCard key="setup" step={(m as Message).setup!} />] : []),
                   // work Oby offers to start: yours to start with a tap
                   ...((m as Message).offer ? [<OfferCard key="offer" offer={(m as Message).offer!} />] : []),
+                  // a Confirm Oby's answer made: one click here or on Home, the owner's signed Confirm
+                  ...((m as Message).confirm ? [<div key={`confirm-${(m as Message).confirm!.id}`} className="msg-ask"><AskBlock task={{ id: (m as Message).confirm!.id, job: { ask: (m as Message).confirm!.ask } }} inChat /></div>] : []),
                   // what this message started
                   ...('jobs' in m ? m.jobs ?? [] : []).map((jid) => {
                     const t = tasks.find((x) => x.id === jid);
@@ -181,7 +183,7 @@ export default function ChatView({ id, kind = 'task', leaving, covered = false, 
                       : <span className="msg-face"><Face live={working && i === head && !covered} talk={i === head && !covered ? talking?.text.length : undefined} /></span>)}
                     {parts}
                     {last && !(m as Message).streaming && !(typing && i === thread.length - 1 && side === 'oby') ? (
-                      <div className={`msg-end${end?.type === ThreadTask || end?.type === SetupCard || end?.type === OfferCard || 'ask' in m ? ' is-wide' : ''}`}>
+                      <div className={`msg-end${end?.type === ThreadTask || end?.type === SetupCard || end?.type === OfferCard || 'ask' in m || (m as Message).confirm ? ' is-wide' : ''}`}>
                         {end}
                         <time className="msg-time">{clock(m.ago)}</time>
                       </div>

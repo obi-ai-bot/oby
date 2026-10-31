@@ -58,3 +58,51 @@ describe('BYPASS-6: a task’s Mode menu', () => {
     expect(live.liveState().jobs.j1.mode).toBe('bypass');
   });
 });
+
+describe('MERGING-21: a merge card says why it stopped, never just its title (#1680)', () => {
+  it('merging_21_leads_with_obids_reason_and_what_to_change_when_no_headline_came', () => {
+    const ask = live.itemAsk(item('merge', {
+      title: 'Not merged: Oby drive 15:36', options: ['Dismiss'],
+      text: "Not merged: it conflicts with main. Ask Oby to rebase it onto main, or settle it on GitHub. Oby's review still asks for changes, so it's yours to merge.",
+    }));
+    expect(ask).toMatchObject({
+      kind: 'merge', label: 'Not merged', headline: 'It conflicts with main.',
+      text: "Ask Oby to rebase it onto main, or settle it on GitHub. Oby's review still asks for changes, so it's yours to merge.",
+      options: ['Dismiss'],
+    });
+  });
+
+  it('merging_21_keeps_the_models_headline_over_the_reason', () => {
+    const ask = live.itemAsk(item('merge', { title: 'Ready to merge: Fix it', headline: 'Merge it into main?', text: 'A review asks for changes.', options: ['Merge'] }));
+    expect([ask.label, ask.headline, ask.text]).toEqual(['Ready to merge', 'Merge it into main?', 'A review asks for changes.']);
+    // a Ready to merge card is labelled so, never Not merged
+    expect(live.itemAsk(item('merge', { title: 'Ready to merge: Fix it', text: 'Not merged yet: a review asks for changes. Its base is main.', options: ['Merge'] })))
+      .toMatchObject({ label: 'Ready to merge', headline: 'A review asks for changes.', text: 'Its base is main.' });
+  });
+});
+
+describe('TASKCONV-7: the Confirm Oby’s answer made shows under it, and on Home (#1680)', () => {
+  const at = (m: number) => `2026-10-31T12:${String(m).padStart(2, '0')}:00Z`;
+  const convo = { id: 'c1', title: 'Oby drive 15:36', pinned: false, created: at(0), lastActivity: at(49), cursor: '' };
+  const merge = item('confirm', {
+    id: 'confirm-1', job: '', title: 'Merge well-prado/tetrix-e2e#147 into main', text: 'Oby’s conversation planned this.',
+    options: ['Confirm', 'Cancel'], created: at(49), conversation: 'c1',
+  });
+  const turns = [
+    { id: 't1', who: 'user' as const, text: 'Merge it as it is.', at: at(48), jobs: [], conversation: 'c1' },
+    { id: 't2', who: 'oby' as const, text: 'The merge of PR #147 into main waits for your OK.', at: at(49), jobs: [], conversation: 'c1' },
+  ];
+
+  it('taskconv_7_the_confirm_is_under_the_answer_that_made_it_one_click_away', () => {
+    const chat = live.chatOf({ ...live.liveState(), inbox: [merge], turns: { c1: turns } }, convo);
+    expect(chat.said.map((m) => m.text || m.confirm?.id)).toEqual(['Merge it as it is.', 'The merge of PR #147 into main waits for your OK.', 'confirm-1']);
+    // what it confirms shows, though no model headline came
+    expect(chat.said[2].confirm!.ask).toMatchObject({ kind: 'confirm', headline: 'Merge well-prado/tetrix-e2e#147 into main', text: 'Oby’s conversation planned this.', options: ['Confirm', 'Cancel'] });
+  });
+
+  it('taskconv_7_answered_on_home_it_leaves_the_conversation_too', () => {
+    const s = live.liveState();
+    expect(live.chatOf({ ...s, inbox: [merge], turns: { c1: turns }, answering: new Set(['confirm-1']) }, convo).said.some((m) => m.confirm)).toBe(false);
+    expect(live.chatOf({ ...s, inbox: [], turns: { c1: turns } }, convo).said.some((m) => m.confirm)).toBe(false);
+  });
+});

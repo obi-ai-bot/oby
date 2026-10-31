@@ -441,7 +441,21 @@ pub fn ready_as(
         Some(_) => lifted.push(held("Not merged yet: its checks are still running.")
         ),
     }
-    let conflict = || conflicts(base);
+    // Where GitHub itself refuses, its reason says what to change, and the holds of Oby's own that
+    // still wait behind it are named with it, so the card says all that stands (MERGING-21).
+    let behind: Vec<String> = second
+        .iter()
+        .chain(lifted.iter().filter(|b| b.needs_you))
+        .map(|b| b.why.clone())
+        .collect();
+    let refused = |b: Blocked| Blocked {
+        why: std::iter::once(b.why)
+            .chain(behind.iter().cloned())
+            .collect::<Vec<_>>()
+            .join(" "),
+        ..b
+    };
+    let conflict = || refused(conflicts(base));
     match merging.mergeable.as_deref() {
         Some("MERGEABLE") => {}
         Some("CONFLICTING") => return Err(conflict()),
@@ -499,14 +513,16 @@ pub fn ready_as(
             }
         }
         Some("DIRTY") => Err(conflict()),
-        Some("BEHIND") => Err(needs_you(format!(
+        Some("BEHIND") => Err(refused(needs_you(format!(
             "Not merged: it's behind {base}, and GitHub merges only up-to-date pull requests into {base}. Ask Oby to rebase it onto {base}, or update it on GitHub."
-        ))),
+        )))),
         // GitHub's own rules, the code host's: the owner reads how to change them.
-        Some("BLOCKED") => Err(needs_you(format!(
+        Some("BLOCKED") => Err(refused(needs_you(format!(
             "Not merged: GitHub's rules for {base} still block it. Approve it on GitHub as they ask, or change {base}'s branch protection there."
+        )))),
+        Some("DRAFT") => Err(refused(needs_you(
+            "Not merged: it's a draft. Mark it ready for review on GitHub.",
         ))),
-        Some("DRAFT") => Err(needs_you("Not merged: it's a draft.")),
         _ => Err(wait(
             "Not merged yet: GitHub doesn't say it merges cleanly.",
         )),
@@ -1586,11 +1602,14 @@ pub fn no_sphere(repo: &str) -> String {
     )
 }
 
-/// "Not merged" (#853): why the merge stopped where only the owner takes it on.
+/// "Not merged" (#853): why the merge stopped where only the owner takes it on. Its id is the
+/// stop's name, its first sentence, so a card answered isn't asked again when only what to do or
+/// the holds behind it read otherwise.
 pub fn stopped_card(job: &Job, head: &str, why: &str) -> Item {
+    let name = why.split_once(". ").map_or(why, |(name, _)| name);
     card(
         job,
-        why_id(&job.id, head, why),
+        why_id(&job.id, head, name),
         format!("Not merged: {}", job.short_title()),
         why.to_owned(),
         vec![(DISMISS, "Leaves it open. Nothing is sent.".into())],
@@ -1625,6 +1644,38 @@ pub fn yours_card(job: &Job, head: &str, why: &str, workflow: &Workflow, into: &
             ),
         ],
     )
+}
+
+/// The card for a stop only the owner settles (`why`: a change request, red checks, a reviewer
+/// account to sign in again), with every other hold [`ready`] finds by `workflow`: Merge where
+/// their word lifts all of them, naming each (MERGING-20, 21); else what stops it, GitHub's
+/// reason first, which says what to change, and Dismiss alone. With no workflow, `why` alone.
+pub fn stop_card(
+    job: &Job,
+    head: &str,
+    why: &str,
+    workflow: Option<&Workflow>,
+    pr: &PullRequest,
+    merging: &Merging,
+    reviewers: Option<&Reviewers>,
+) -> Item {
+    let Some(workflow) = workflow else {
+        return stopped_card(job, head, why);
+    };
+    let with = |b: &Blocked, first: bool| match (b.why.contains(why), first) {
+        (true, _) => b.why.clone(),
+        (false, true) => format!("{} {why}", b.why),
+        (false, false) => format!("{why} {}", b.why),
+    };
+    match ready(job, Some(workflow), pr, merging, reviewers) {
+        Err(b) if b.yours => yours_card(job, head, &with(&b, false), workflow, &pr.base),
+        // GitHub's own refusal, or another person it requires: no word of the owner's lifts it.
+        Err(b) if b.needs_you || b.why == requires_person(&pr.base) => {
+            stopped_card(job, head, &with(&b, true))
+        }
+        // Nothing more, or only what Oby can't tell yet: their Merge reads it all again.
+        _ => yours_card(job, head, why, workflow, &pr.base),
+    }
 }
 
 /// The card for a merge that stopped where the owner takes it on: Merge where only their word is
@@ -3062,6 +3113,191 @@ mod tests {
             blocked_card(&left, &head(), &conflict, &mac, "dev").options,
             vec![crate::sphere::inbox::DISMISS]
         );
+    }
+
+    /// The human drive's card (#1680): a pull request into main whose changes Oby's review left
+    /// to the owner. Clean, its card names each hold and offers Merge, which the owner's signed
+    /// answer to it lifts (MERGING-7, 17, 20, 21). Where GitHub itself refuses (a conflict, behind,
+    /// its own rules, a draft), the card says what to change and still names Oby's holds, with
+    /// no Merge: the owner's word doesn't lift GitHub's.
+    #[test]
+    fn merging_21_a_card_into_main_whose_review_asks_for_changes_says_why_and_offers_merge() {
+        let mut job = reviewed("changesRequested", &head());
+        job.base = Some("main".into());
+        let into_main = |change: fn(&mut Value)| {
+            view(move |v| {
+                v["baseRefName"] = json!("main");
+                change(v);
+            })
+        };
+        let (pr, merging) = read(&into_main(|_| {}), &pages(vec![]));
+        let workflow = proposed(&job, &pr, &merging, &signed_in()).unwrap();
+        assert_eq!(
+            (workflow.base.as_str(), workflow.review),
+            ("main", Approval::Oby)
+        );
+        let blocked = ready(&job, Some(&workflow), &pr, &merging, Some(&signed_in())).unwrap_err();
+        let card = blocked_card(&job, &head(), &blocked, &workflow, "main");
+        assert!(card.text.contains(REVIEW_ASKS), "{}", card.text);
+        assert!(
+            card.text.contains(&on_their_word("main").unwrap()),
+            "{}",
+            card.text
+        );
+        assert_ne!(card.text, card.title);
+        assert_eq!(card.options, vec![MERGE, LEAVE_OPEN]);
+        let lift = Lift::Named(&card.text);
+        assert_eq!(
+            on_owners_word(
+                true,
+                ready_as(
+                    Some(&lift),
+                    &job,
+                    Some(&workflow),
+                    &pr,
+                    &merging,
+                    Some(&signed_in())
+                )
+            ),
+            Ok(())
+        );
+        // GitHub refuses: what to change first, then every hold of Oby's behind it; no Merge.
+        type Change = fn(&mut Value);
+        let refusals: [(Change, &str); 4] = [
+            (
+                |v| v["mergeable"] = json!("CONFLICTING"),
+                "Ask Oby to rebase it onto main",
+            ),
+            (
+                |v| v["mergeStateStatus"] = json!("BEHIND"),
+                "Ask Oby to rebase it onto main",
+            ),
+            (
+                |v| v["mergeStateStatus"] = json!("BLOCKED"),
+                "change main's branch protection there",
+            ),
+            (
+                |v| v["mergeStateStatus"] = json!("DRAFT"),
+                "Mark it ready for review on GitHub.",
+            ),
+        ];
+        for (change, what) in refusals {
+            let (pr, merging) = read(&into_main(change), &pages(vec![]));
+            let blocked =
+                ready(&job, Some(&workflow), &pr, &merging, Some(&signed_in())).unwrap_err();
+            assert!(blocked.needs_you && !blocked.yours, "{blocked:?}");
+            let card = blocked_card(&job, &head(), &blocked, &workflow, "main");
+            assert!(card.text.starts_with("Not merged: "), "{}", card.text);
+            assert!(card.text.contains(what), "{}", card.text);
+            assert!(card.text.ends_with(REVIEW_ASKS), "{}", card.text);
+            assert_eq!(card.options, vec![crate::sphere::inbox::DISMISS]);
+            assert_eq!(on_owners_word(true, Err(blocked.clone())), Err(blocked));
+        }
+    }
+
+    /// The follower's card for a change request (#1680): with red checks, one Merge card names both
+    /// and the owner's signed Merge lifts both (MERGING-20, 21); with a conflict, or another person
+    /// GitHub requires, it says both and what to change, with Dismiss alone.
+    #[test]
+    fn merging_21_a_change_request_with_red_checks_or_a_conflict_says_both() {
+        let asks = |change: fn(&mut Value)| {
+            read(
+                &view(move |v| {
+                    v["reviewDecision"] = json!("CHANGES_REQUESTED");
+                    change(v);
+                }),
+                &approved(),
+            )
+        };
+        let stop_of = |pr: &PullRequest, merging: &Merging| owner_must_settle(pr, merging).unwrap();
+        // Red checks: Merge, naming both.
+        let (pr, merging) = asks(|v| {
+            v["statusCheckRollup"] = json!([{"__typename": "CheckRun", "name": "test",
+                "status": "COMPLETED", "conclusion": "FAILURE"}]);
+        });
+        let why = stop_of(&pr, &merging);
+        let card = stop_card(
+            &job(),
+            &head(),
+            why,
+            Some(&obis()),
+            &pr,
+            &merging,
+            Some(&signed_in()),
+        );
+        assert_eq!(card.options, vec![MERGE, LEAVE_OPEN]);
+        assert!(
+            card.text.contains("a review asks for changes"),
+            "{}",
+            card.text
+        );
+        assert!(
+            card.text.contains("its checks failed on GitHub"),
+            "{}",
+            card.text
+        );
+        let lift = Lift::Named(&card.text);
+        let signed = ready_as(
+            Some(&lift),
+            &job(),
+            Some(&obis()),
+            &pr,
+            &merging,
+            Some(&signed_in()),
+        );
+        assert_eq!(on_owners_word(true, signed), Ok(()));
+        // A conflict: GitHub's reason first, then the change request; Dismiss alone.
+        let (pr, merging) = asks(|v| v["mergeable"] = json!("CONFLICTING"));
+        let why = stop_of(&pr, &merging);
+        let card = stop_card(
+            &job(),
+            &head(),
+            why,
+            Some(&obis()),
+            &pr,
+            &merging,
+            Some(&signed_in()),
+        );
+        assert!(
+            card.text
+                .starts_with("Not merged: it conflicts with dev. Ask Oby to rebase"),
+            "{}",
+            card.text
+        );
+        assert!(card.text.contains(why), "{}", card.text);
+        assert_eq!(card.options, vec![DISMISS]);
+        // Answered, it isn't asked again when only the holds behind the conflict read otherwise.
+        assert_eq!(
+            card.id,
+            stopped_card(&job(), &head(), &conflicts("dev").why).id
+        );
+        // Another person GitHub requires, which no word of the owner's lifts: Dismiss alone.
+        let mut oby = obis();
+        oby.review = Approval::Oby;
+        let nobody = Reviewers {
+            owner: Some("wellprado".into()),
+            ..Reviewers::default()
+        };
+        let (pr, mut merging) = asks(|_| {});
+        merging.required_approvals = Some(1);
+        merging.reviews.clear();
+        let approved = reviewed("approved", &head());
+        let why = stop_of(&pr, &merging);
+        let card = stop_card(
+            &approved,
+            &head(),
+            why,
+            Some(&oby),
+            &pr,
+            &merging,
+            Some(&nobody),
+        );
+        assert!(
+            card.text.contains(REQUIRES_PERSON) && card.text.contains(why),
+            "{}",
+            card.text
+        );
+        assert_eq!(card.options, vec![DISMISS]);
     }
 
     /// What obid decides when a check passes: it stands for the Mac's only for the owner's own
