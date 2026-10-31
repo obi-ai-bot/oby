@@ -716,9 +716,14 @@ fn reason_in(body: &[u8]) -> Option<String> {
     let why = ["detail", "error_description", "message"]
         .iter()
         .find_map(|key| answer[key].as_str())?;
-    // Redacted whole, then cut: a cut first could leave a secret's start that redaction misses.
+    // Control characters out first, then redacted whole, then cut: a secret split by one, or cut
+    // at the end, would slip past redaction.
+    let why: String = why
+        .chars()
+        .filter(|c| c.is_whitespace() || !c.is_control())
+        .collect();
     let why = crate::secrets::known().redact(&why.split_whitespace().collect::<Vec<_>>().join(" "));
-    let why: String = why.chars().filter(|c| !c.is_control()).take(200).collect();
+    let why: String = why.chars().take(200).collect();
     let why = why.trim_end_matches('.');
     (!why.is_empty()).then(|| why.to_owned())
 }
@@ -834,6 +839,10 @@ mod tests {
         let detail = format!("{} {hidden} after", "x".repeat(180));
         let why = reason_in(json!({ "detail": detail }).to_string().as_bytes()).unwrap();
         assert!(why.chars().count() <= 200, "{why}");
+        assert!(!why.contains("a-word-the-vault"), "{why}");
+        // Split by a control character, it's still the vault's word.
+        let split = format!("before {} after", hidden.replacen('-', "-\u{7}", 1));
+        let why = reason_in(json!({ "detail": split }).to_string().as_bytes()).unwrap();
         assert!(!why.contains("a-word-the-vault"), "{why}");
         assert_eq!(
             reason_in(br#"{"error_description": "  no\n  org.  "}"#).as_deref(),
