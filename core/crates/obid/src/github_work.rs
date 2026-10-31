@@ -1291,12 +1291,20 @@ async fn begin(
     } else {
         None
     };
-    let path = keep_attachment(&config.home, "github", &file, quoted.as_bytes()).map_err(|e| {
-        ApiError::new(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("obid couldn't keep GitHub's text: {e}"),
-        )
-    })?;
+    // An issue's job quotes it again as it runs (crate::jobs, ISSUETASK-1): read here only so a
+    // tap GitHub can't answer starts nothing.
+    let attachments = if list == "assigned" {
+        None
+    } else {
+        let path =
+            keep_attachment(&config.home, "github", &file, quoted.as_bytes()).map_err(|e| {
+                ApiError::new(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("obid couldn't keep GitHub's text: {e}"),
+                )
+            })?;
+        Some(vec![path.to_string_lossy().into_owned()])
+    };
     let task = match list {
         "reviews" => format!("Review pull request #{number} in {repo}."),
         "assigned" => format!("Fix issue #{number} in {repo}."),
@@ -1304,15 +1312,21 @@ async fn begin(
             "Make pull request #{number} in {repo} pass its checks. Add commits on top of it; never rewrite or drop the ones it has."
         ),
     };
+    let task = match attachments {
+        Some(_) => {
+            format!("{task} What people wrote on it on GitHub is quoted in .obi/inputs/{file}.")
+        }
+        None => task,
+    };
     let new = NewJob {
         repo: repo.into(),
         kind: kind.into(),
-        task: format!("{task} What people wrote on it on GitHub is quoted in .obi/inputs/{file}."),
+        task,
         title: Some(cut(&format!("{verb} {name} #{number}"), 60)),
         pr: (list != "assigned").then_some(number),
         issue: (list == "assigned").then_some(number),
         base,
-        attachments: Some(vec![path.to_string_lossy().into_owned()]),
+        attachments,
         adding,
         ..NewJob::default()
     };
