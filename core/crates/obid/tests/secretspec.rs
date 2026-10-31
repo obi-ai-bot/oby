@@ -883,7 +883,10 @@ fn an_inbox_answer_no_app_signed_gives_nothing() {
 }
 
 /// The owner's memories reach each job's agent: one found in words that weren't the owner's alone
-/// (here a reviewer's) takes the owner's job's values away; with only the owner's own, it keeps them.
+/// (here a reviewer's) takes the owner's job's values away, and its pull request needs two reviews
+/// (MERGING-14); with only the owner's own, it keeps them. One kept before obid marked where
+/// memories came from takes the values away too, but asks for no second review: its source is
+/// unknown.
 #[cfg(target_os = "macos")]
 #[test]
 fn a_memory_found_in_someone_elses_words_gives_nothing() {
@@ -901,7 +904,36 @@ fn a_memory_found_in_someone_elses_words_gives_nothing() {
         memory("m00000001", "Keep pull requests small.", "clean: yes"),
     )
     .unwrap();
-    assert!(got_it(&dispatch_and_log(&obid, job.clone())));
+    let id = |answer: Answer| {
+        assert_eq!(answer.status, 201, "{}", answer.text);
+        answer.body["id"].as_str().unwrap().to_owned()
+    };
+    let owners = id(call_typed(
+        &obid,
+        "POST",
+        "/v1/jobs",
+        &json!({ "job": job }),
+    ));
+    assert!(got_it(&check_log(&obid, &owners)));
+    assert_eq!(kept(&obid, &owners)["memoryFromOthers"], Value::Null);
+    // One kept before obid marked memories: no values, and no second review.
+    std::fs::write(
+        memories.join("m00000003.md"),
+        memory("m00000003", "Name branches after issues.", ""),
+    )
+    .unwrap();
+    let before = id(call_typed(
+        &obid,
+        "POST",
+        "/v1/jobs",
+        &json!({ "job": job }),
+    ));
+    refused(
+        &check_log(&obid, &before),
+        "it didn't start from the owner's own words in Oby's apps",
+    );
+    assert_eq!(kept(&obid, &before)["memoryFromOthers"], Value::Null);
+    std::fs::remove_file(memories.join("m00000003.md")).unwrap();
     std::fs::write(
         memories.join("m00000002.md"),
         memory(
@@ -911,9 +943,14 @@ fn a_memory_found_in_someone_elses_words_gives_nothing() {
         ),
     )
     .unwrap();
-    let log = dispatch_and_log(&obid, job);
+    let theirs = id(call_typed(
+        &obid,
+        "POST",
+        "/v1/jobs",
+        &json!({ "job": job }),
+    ));
     refused(
-        &log,
+        &check_log(&obid, &theirs),
         "it didn't start from the owner's own words in Oby's apps",
     );
     assert!(
@@ -922,6 +959,8 @@ fn a_memory_found_in_someone_elses_words_gives_nothing() {
         "{}",
         obid.log()
     );
+    // Someone else's words reached its agent: two reviews merge it.
+    assert_eq!(kept(&obid, &theirs)["memoryFromOthers"], true);
 }
 
 /// The fake Claude Code (tests/agents/fake-claude).

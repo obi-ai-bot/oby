@@ -164,6 +164,7 @@ fn published() -> obid::job::Job {
         round: 1,
         date: job.created,
         commit: head(),
+        two_reviews: None,
     });
     job
 }

@@ -645,7 +645,8 @@ pub async fn dispatch(
     }
     // The owner's words start it, so they open its conversation (crate::task_conversation).
     let words = new.task.clone();
-    let foreign = (!new.vetted).then(|| "words no app of the owner's signed".to_owned());
+    let unsigned = !new.vetted;
+    let foreign = unsigned.then(|| "words no app of the owner's signed".to_owned());
     let job = crate::task_conversation::create(
         &shared,
         new,
@@ -656,6 +657,11 @@ pub async fn dispatch(
         None,
     )
     .map_err(|refused| ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, refused.0))?;
+    // Words no app of the owner's signed: two reviews merge its pull request (MERGING-14).
+    let job = match unsigned {
+        true => shared.jobs.mark_unsigned(&job.id).unwrap_or(job),
+        false => job,
+    };
     Ok(json(StatusCode::CREATED, job.to_json()))
 }
 
@@ -1022,8 +1028,8 @@ pub async fn message(
         }
         shared
             .jobs
-            .unvet(&job.id, "words no app of the owner's signed reached it")
-            .unwrap_or(job)
+            .unvet(&job.id, "words no app of the owner's signed reached it");
+        shared.jobs.mark_unsigned(&job.id).unwrap_or(job)
     };
     // Said on the task's page (Sangam's TaskView): the words and Oby's answer go on the end of the
     // job's conversation, which the app opens, as if said there. A task with none (one kept from

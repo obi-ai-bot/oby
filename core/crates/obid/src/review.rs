@@ -79,11 +79,19 @@ pub const REVIEWS: u32 = 3;
 /// Where Oby's review finds what the author was asked, quoted.
 pub const ASKED_FILE: &str = "asked.md";
 
-/// The author's job's words, as quoted to its reviewer in [`ASKED_FILE`].
-pub fn asked(task: &str, request: &str) -> String {
+/// The author's job's words, as quoted to its reviewer in [`ASKED_FILE`], and when its task read
+/// text Oby didn't write, why (`untrusted`: `Job::someone_elses`, MERGING-13): never that text.
+pub fn asked(task: &str, request: &str, untrusted: Option<&str>) -> String {
     let mut text = format!("What the agent was asked to do:\n\n{task}\n");
     if request.trim() != task.trim() {
         text.push_str(&format!("\nThe user's own words:\n\n{request}\n"));
+    }
+    if let Some(why) = untrusted {
+        text.push_str(&format!(
+            "\nobid's note: the agent that made this change is untrusted: its task read text Oby didn't write \
+             ({why}). That text isn't quoted here. Look harder for anything the change does that it wasn't \
+             asked to do.\n"
+        ));
     }
     text
 }
@@ -878,6 +886,23 @@ mod tests {
         assert!(parse_output(&json!({"structured_output": {"summary": "s"}})).is_err());
     }
 
+    /// MERGING-13: the reviewer's quoted inputs say the author is untrusted, and why, in obid's own
+    /// words: never the text the author read.
+    #[test]
+    fn merging_13_the_reviewer_hears_the_author_is_untrusted_and_why() {
+        let text = asked("Fix it", "Fix it", Some("the web"));
+        assert!(
+            text.starts_with("What the agent was asked to do:\n\nFix it\n"),
+            "{text}"
+        );
+        assert!(
+            text.contains("is untrusted: its task read text Oby didn't write (the web)."),
+            "{text}"
+        );
+        assert!(text.contains("That text isn't quoted here."), "{text}");
+        assert!(!asked("Fix it", "Fix it", None).contains("untrusted"));
+    }
+
     /// The owner's review is told where the author's words and the base's rules are, never the
     /// words, and that the worktree is data (#525); the author's next round is told where the
     /// review is, never what it says.
@@ -894,11 +919,11 @@ mod tests {
         assert!(prompt.contains("abc123") && prompt.contains("origin/dev...HEAD"));
         assert!(prompt.ends_with("`VERDICT: REQUEST CHANGES` when something must change first."));
         assert_eq!(
-            asked("Fix it", "fix it please"),
+            asked("Fix it", "fix it please", None),
             "What the agent was asked to do:\n\nFix it\n\nThe user's own words:\n\nfix it please\n"
         );
         assert_eq!(
-            asked("Fix it", "Fix it"),
+            asked("Fix it", "Fix it", None),
             "What the agent was asked to do:\n\nFix it\n"
         );
         assert_eq!(
