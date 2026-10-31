@@ -1090,6 +1090,19 @@ impl Job {
             .map(|o| o.id.as_str())
     }
 
+    /// The number of the pull request it published to when it didn't open that one itself: a
+    /// follow-up adds to its task's (#1663).
+    pub fn added_to(&self) -> Option<u64> {
+        let url = self.published.as_deref()?;
+        let opened = self
+            .outgoing
+            .iter()
+            .any(|o| o.action == "pullRequest" && o.id == url);
+        (!opened)
+            .then(|| crate::github::pull_request_number(url, &self.repo))
+            .flatten()
+    }
+
     /// It just published to `url`: an observation of another pull request no longer holds, nor why
     /// an earlier head got no review.
     pub fn was_published(&mut self, url: String) {
@@ -1309,6 +1322,7 @@ impl Job {
             value["noReviewer"] = json!(why);
         }
         value["teammates"] = json!(self.teammates);
+        value["addedTo"] = json!(self.added_to());
         if let Some(context) = &self.context {
             value["context"] = json!(context);
             // The agent's own words, quoted: never obid's.
@@ -1573,13 +1587,11 @@ impl Job {
         }
         // A pull request from an earlier round doesn't complete the current work, check or publish.
         if self.published.is_some() && !active && !stopped && !can_publish {
-            set(
-                &mut stages,
-                "publish",
-                "done",
-                Some("Secret scan clean · pushed · pull request opened"),
-                None,
-            );
+            let detail = match self.added_to() {
+                Some(n) => format!("Secret scan clean · pushed · added to pull request #{n}"),
+                None => "Secret scan clean · pushed · pull request opened".into(),
+            };
+            set(&mut stages, "publish", "done", Some(&detail), None);
             let decision = self
                 .pull_request
                 .as_ref()
@@ -1922,11 +1934,12 @@ mod tests {
             "routine",
             "runsOn",
             "teammates",
+            "addedTo",
         ] {
             assert_eq!(object.get(key), Some(&Value::Null), "{key}");
         }
-        // The Swift runner's 65 keys, obid's twenty, and `supervised`.
-        assert_eq!(object.len(), 86);
+        // The Swift runner's 65 keys, obid's twenty-one, and `supervised`.
+        assert_eq!(object.len(), 87);
         assert_eq!(value["supervised"], json!([]));
         assert_eq!(value["approvals"], json!([]));
         assert_eq!(value["archived"], Value::Null);
@@ -2116,6 +2129,17 @@ mod tests {
         job.was_published("https://github.com/deskree-inc/oby/pull/42".into());
         job.pushed = Some(1);
         assert!(!job.can_publish() && !job.needs_you());
+        // PUBLISHING-12: a pull request it didn't open, it added to.
+        assert_eq!(
+            state(&job, "publish").1,
+            "Secret scan clean · pushed · added to pull request #42"
+        );
+        job.outgoing.push(crate::publish::Outgoing::new(
+            "pullRequest",
+            &job.repo.clone(),
+            "https://github.com/deskree-inc/oby/pull/42",
+            None,
+        ));
         assert_eq!(
             state(&job, "publish"),
             (

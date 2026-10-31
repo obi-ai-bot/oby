@@ -1252,7 +1252,11 @@ pub fn job_report(job: &Value) -> Option<(String, String)> {
             crate::brain::briefing::line(why, 120)
         ),
         ("done", _) => match (job["published"].as_str(), first_line("publishError")) {
-            (Some(url), _) => format!("{title} is done: {url}"),
+            // A follow-up adds to its task's open pull request (#1663): it says so.
+            (Some(url), _) => match job["addedTo"].as_u64() {
+                Some(n) => format!("{title} is done: added to pull request #{n}, {url}"),
+                None => format!("{title} is done: {url}"),
+            },
             // The push went out; only its pull request failed (#627).
             (None, Some(why)) if why.starts_with(crate::publish::PUSHED_BUT) => {
                 format!("{title} is done: {why}")
@@ -1707,6 +1711,12 @@ mod tests {
         assert_eq!(
             job_report(&published).unwrap().1,
             "Fix oby #351 is done: https://github.com/obi-ai-bot/obi/pull/700\nReports reach the chat."
+        );
+        // PUBLISHING-12: a follow-up that pushed onto its task's open pull request says so.
+        published["addedTo"] = json!(700);
+        assert_eq!(
+            job_report(&published).unwrap().1,
+            "Fix oby #351 is done: added to pull request #700, https://github.com/obi-ai-bot/obi/pull/700\nReports reach the chat."
         );
         let mut unpublished = job("done");
         unpublished["publishError"] = json!("Not published: the secret scan couldn't run.\nwhy");

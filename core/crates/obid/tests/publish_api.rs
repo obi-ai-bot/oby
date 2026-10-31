@@ -27,8 +27,10 @@ const PULL: &str = "https://github.com/obi-e2e/fixture-app/pull/7";
 /// A stand-in `gh` in `folder/bin`, keeping its state in `folder/gh`: every call's arguments
 /// (`calls`), its environment (`env`), the title and description it was given, the open pull
 /// requests `pr list` answers (`open`: `__HEAD__` stands for the commit obid's clone has the
-/// branch at, which is what obid pushed), whether `pr list` fails (`list-fails`, or once for the
-/// branch's own lookup, as GitHub's 502: `list-fails-once`), and what `pr view` answers (`view.json`).
+/// branch at, which is what obid pushed, or the commit under it with `lags`, as GitHub shows a
+/// pull request's head for a moment after a push), whether `pr list` fails (`list-fails`, or once for the
+/// branch's own lookup, as GitHub's 502: `list-fails-once`), and what `pr view` answers
+/// (`view.json`). Like GitHub, `pr create` refuses a branch it opened one for already (`opened`).
 fn fake_gh(folder: &Path) -> PathBuf {
     use std::os::unix::fs::PermissionsExt;
     let bin = folder.join("bin");
@@ -50,14 +52,19 @@ case "$1 $2" in
     [ -f "$dir/open" ] || exit 0
     for a in "$@"; do [ "$prev" = --head ] && branch="$a"; prev="$a"; done
     oid=$(git -C '{clone}' rev-parse "refs/heads/$branch")
+    [ -f "$dir/lags" ] && oid=$(git -C '{clone}' rev-parse "refs/heads/$branch~1")
     sed "s/__HEAD__/$oid/" "$dir/open"
     exit 0 ;;
   "pr create")
     for a in "$@"; do
+      [ "$prev" = --head ] && branch="$a"
       [ "$prev" = --body-file ] && cp "$a" "$dir/body"
       case "$a" in --title=*) printf '%s' "${{a#--title=}}" > "$dir/title" ;; esac
       prev="$a"
     done
+    # GitHub refuses a second pull request of a branch into the same base (#1663).
+    [ "$(cat "$dir/opened" 2>/dev/null)" = "$branch" ] && {{ echo "a pull request for branch \"$branch\" into branch \"main\" already exists:" >&2; echo '{PULL}' >&2; exit 1; }}
+    printf '%s' "$branch" > "$dir/opened"
     echo '[{{"url":"{PULL}","isCrossRepository":false,"headRefOid":"__HEAD__","baseRefName":"main"}}]' > "$dir/open"
     echo 'Creating pull request…'
     echo '{PULL}'
@@ -319,9 +326,10 @@ fn a_done_job_publishes_by_itself_and_follows_its_pull_request() {
 /// A follow-up of a job whose pull request is still open goes on its branch: it starts at the
 /// branch head and publishes onto it, updating that pull request rather than opening a second.
 /// Its own commits are all it counts. Meanwhile the first job takes no Try again: its follow-up
-/// carries its branch on.
+/// carries its branch on. PUBLISHING-12: GitHub still shows the first job's head on the pull
+/// request when the follow-up looks for it, and it's still the one it adds to, never a failure.
 #[test]
-fn a_follow_up_of_published_work_updates_its_pull_request() {
+fn publishing_12_a_follow_up_adds_to_its_tasks_open_pull_request() {
     let folder = Folder::new("publish-follow-up");
     let bin = fake_gh(&folder.0);
     std::fs::write(
@@ -350,6 +358,7 @@ fn a_follow_up_of_published_work_updates_its_pull_request() {
     assert_eq!(told.status, 201, "{}", told.text);
     let next = told.body["id"].as_str().unwrap().to_owned();
     assert_eq!(told.body["branch"], branch.as_str());
+    std::fs::write(folder.0.join("gh/lags"), "").unwrap();
     // The first job takes no Try again while its follow-up has its branch.
     let again = call(
         &obid,
@@ -363,6 +372,11 @@ fn a_follow_up_of_published_work_updates_its_pull_request() {
     assert_eq!(follow["startCommit"], head.as_str());
     assert_eq!(follow["commits"], 1);
     assert_eq!(follow["published"], PULL);
+    assert!(follow["publishError"].is_null(), "{follow}");
+    assert_eq!(
+        stage(&follow, "publish")["detail"],
+        "Secret scan clean · pushed · added to pull request #7"
+    );
     let actions: Vec<&str> = follow["outgoing"]
         .as_array()
         .unwrap()
