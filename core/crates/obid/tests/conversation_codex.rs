@@ -468,6 +468,22 @@ fn work_codex_plans_after_the_web_starts_marked_untrusted() {
     assert_untrusted(&obid, &answer);
 }
 
+/// #1686 on Codex: a call that reaches Oby's tools before obid has read the web search Codex
+/// reported first waits for its own item, and the work it plans starts marked untrusted.
+#[test]
+fn a_codex_call_waits_for_the_reader_and_sees_the_web_before_it() {
+    let (_folder, obid) = obid("codex-conv-late-web", true);
+    let at = Instant::now();
+    let answer = said(
+        &obid,
+        json!({"said": r#"LATEWEB OBY oby_dispatch {"repo": "obi-e2e/fixture-app", "task": "Add a greeting", "kind": "build"}"#,
+               "new": true}),
+    );
+    assert_untrusted(&obid, &answer);
+    // Its own item came, so it never waited out obid's cap (5 s).
+    assert!(at.elapsed() < Duration::from_secs(4), "{:?}", at.elapsed());
+}
+
 /// Later turns resume the conversation's own thread, also after obid restarts.
 #[test]
 fn a_codex_conversation_resumes_its_thread() {

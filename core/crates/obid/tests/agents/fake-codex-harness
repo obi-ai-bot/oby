@@ -14,6 +14,9 @@
 //   ELSEWHERE          calls a tool of another MCP server and says "elsewhere: <the answer>"
 //   MISNAMED           calls oby_jobs, but asks to run oby_answer, and says "misnamed: <the answer>"
 //   WEB <words>        searches the web (Codex never asks), then does <words>
+//   LATEWEB OBY <tool> <json>  calls the oby tool first, unasked, and 300 ms later reports a web
+//                      search and the call's item (#1686: obid's reader is behind the call); says
+//                      what it answered, as OBY does
 //   PLANT              leaves config.toml and AGENTS.md in its CODEX_HOME, AGENTS.md in its room, and
 //                      shell start-up files (.zshrc, .zshenv, .bash_profile, .profile, fish's config)
 //                      in its HOME, which Codex's shell snapshot would source; csh's, tcsh's and ksh's too
@@ -151,6 +154,20 @@ async function act(turnId, words) {
     event("item/started", turnId, { item: search });
     event("item/completed", turnId, { item: search });
     return act(turnId, words.slice(4));
+  }
+  if (words.startsWith("LATEWEB OBY ")) {
+    const [, , tool, ...rest] = words.split(" ");
+    const args = JSON.parse(rest.join(" "));
+    const answering = oby("tools/call", { name: tool, arguments: args });
+    await new Promise((done) => setTimeout(done, 300));
+    const search = { type: "webSearch", id: randomUUID(), query: "greetings" };
+    event("item/started", turnId, { item: search });
+    event("item/completed", turnId, { item: search });
+    const item = { type: "mcpToolCall", id: randomUUID(), server: "oby", tool, arguments: args, status: "inProgress" };
+    event("item/started", turnId, { item });
+    const answer = await answering;
+    event("item/completed", turnId, { item: { ...item, status: answer.result?.isError ? "failed" : "completed", result: answer.result } });
+    return say(turnId, `oby: ${answer.result?.isError ? "refused: " : ""}${answer.result?.content?.[0]?.text}`);
   }
   if (words.startsWith("RUN ")) {
     const run = { type: "commandExecution", id: randomUUID(), command: "/bin/zsh -lc 'echo hi'", cwd: room, commandActions: [], status: "inProgress" };

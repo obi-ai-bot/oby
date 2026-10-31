@@ -1403,10 +1403,13 @@ fn a_call_waits_for_the_reader_and_sees_the_read_before_it() {
     let before = running();
     let words = json!({"said": r#"LATEREAD OBY oby_settings {"maxRunning": 20}"#,
                        "conversation": conversation});
+    let at = std::time::Instant::now();
     let answer = call_typed(&obid, "POST", "/v1/plans", &words);
     assert_eq!(answer.status, 200, "{}", answer.text);
     assert!(oby_said(&answer).contains("waits for"), "{}", answer.text);
     assert_eq!(running(), before);
+    // Its own line came, so it never waited out obid's cap (5 s).
+    assert!(at.elapsed() < Duration::from_secs(4), "{:?}", at.elapsed());
 }
 
 /// TASKCONV-7: the pull request of a review another Oby asked for never merges from a

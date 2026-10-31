@@ -112,9 +112,10 @@ pub struct Session {
     /// The end of what each shell call's command wrote, by the command (or its id) the call named,
     /// for its step's `output` (obid only: the conversation's shell).
     pub shell_out: Mutex<HashMap<String, String>>,
-    /// The calls of Oby's tools obid's reader has seen the agent write, `(tool, arguments)`, that
-    /// haven't reached Oby's tools yet ([`Session::heard`]).
-    pub written: Mutex<Vec<(String, Value)>>,
+    /// The calls of Oby's tools obid's reader has seen the agent write, `(call id, tool,
+    /// arguments)`, that haven't reached Oby's tools yet ([`Session::heard`]); one whose result
+    /// came first never will ([`Session::answered`]).
+    pub written: Mutex<Vec<(String, String, Value)>>,
 }
 
 impl Session {
@@ -131,27 +132,37 @@ impl Session {
             .insert(key.to_owned(), tail);
     }
 
-    /// obid's reader saw the agent write a call of Oby's tool `tool`: every line before it is
+    /// obid's reader saw the agent write call `id` of Oby's tool `tool`: every line before it is
     /// handled, so a read it made first has marked the turn.
-    pub fn wrote(&self, tool: &str, args: &Value) {
+    pub fn wrote(&self, id: &str, tool: &str, args: &Value) {
         self.written
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .push((tool.to_owned(), arguments(args)));
+            .push((id.to_owned(), tool.to_owned(), arguments(args)));
+    }
+
+    /// Call `id` has its result: one that never reached Oby's tools (input refused, a declined
+    /// approval, a connection that failed) can't stand in for a later call just like it.
+    pub fn answered(&self, id: &str) {
+        self.written
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .retain(|(written, ..)| written != id);
     }
 
     /// Waits until obid's reader has handled the line where the agent wrote this call, and so
     /// every line it wrote before (#1686): a call reaches Oby's tools apart from the agent's
     /// output, and could otherwise be judged before a read it followed marked the turn. A marked
     /// turn waits for nothing; a call whose line doesn't come within `wait` marks it (fail closed).
+    /// A stopped turn's call waits no more and marks nothing: Oby's tools refuse it anyway.
     pub async fn heard(&self, tool: &str, args: &Value, wait: Duration) {
         let args = arguments(args);
         let until = tokio::time::Instant::now() + wait;
         // ponytail: polls every 5 ms; the line is almost always there already.
-        while !self.web.load(Ordering::SeqCst) {
+        while !self.web.load(Ordering::SeqCst) && self.control.live() {
             {
                 let mut written = self.written.lock().unwrap_or_else(|e| e.into_inner());
-                if let Some(at) = written.iter().position(|(t, a)| t == tool && *a == args) {
+                if let Some(at) = written.iter().position(|(_, t, a)| t == tool && *a == args) {
                     written.remove(at);
                     return;
                 }
@@ -1945,7 +1956,7 @@ async fn one(
                     session.taint();
                 }
                 if let Some(tool) = name.strip_prefix("mcp__oby__") {
-                    session.wrote(tool, &input);
+                    session.wrote(&id, tool, &input);
                 }
                 // Fail closed for the owner's secrets (crate::secretspec): a call obid doesn't know
                 // keeps what the conversation read the owner's own marks it. Oby's own tools are
@@ -1976,6 +1987,7 @@ async fn one(
                 steps.insert(id, line);
             }
             Event::ToolDone { id, failed, .. } => {
+                session.answered(&id);
                 if let Some(line) = steps.get(&id) {
                     let state = if failed { State::Failed } else { State::Done };
                     let output = shell_keys.remove(&id).and_then(|key| {
@@ -3157,16 +3169,19 @@ mod tests {
     }
 
     /// #1686: a call of Oby's tools goes on once obid's reader has seen its line, and never waits
-    /// past its cap: a line that doesn't come marks the turn.
+    /// past its cap: a line that doesn't come marks the turn. A line whose call got its result
+    /// without reaching Oby's tools stands in for no later call; a stopped turn's call marks
+    /// nothing.
     #[tokio::test]
     async fn a_call_waits_for_its_line_at_most_its_cap() {
-        let session = Session {
+        let turns = super::super::turn::Turns::default();
+        let session = |control| Session {
             conversation: "c1".into(),
             said: String::new(),
             attachments: vec![],
             attached_jobs: vec![],
             repos_note: None,
-            control: super::super::turn::Turns::default().begin("t1", "c1"),
+            control,
             jobs: Mutex::new(vec![]),
             nonce: "n".into(),
             web: AtomicBool::new(false),
@@ -3183,19 +3198,31 @@ mod tests {
             written: Mutex::default(),
         };
         let cap = Duration::from_secs(5);
+        let first = session(turns.begin("t1", "c1"));
         // Its line, with no arguments as none: heard at once, unmarked, and taken.
-        session.wrote("oby_jobs", &Value::Null);
+        first.wrote("u1", "oby_jobs", &Value::Null);
         let at = Instant::now();
-        session.heard("oby_jobs", &json!({}), cap).await;
+        first.heard("oby_jobs", &json!({}), cap).await;
         assert!(at.elapsed() < Duration::from_secs(1));
-        assert!(!session.web.load(Ordering::SeqCst));
-        assert!(session.written.lock().unwrap().is_empty());
+        assert!(!first.web.load(Ordering::SeqCst));
+        assert!(first.written.lock().unwrap().is_empty());
+        // A call answered without reaching Oby's tools leaves no line behind.
+        first.wrote("u2", "oby_jobs", &json!({}));
+        first.answered("u2");
+        assert!(first.written.lock().unwrap().is_empty());
+        // Stopped, a call waits no more and marks nothing.
+        turns.stop(Some("c1"));
+        let at = Instant::now();
+        first.heard("oby_jobs", &json!({}), cap).await;
+        assert!(at.elapsed() < Duration::from_secs(1));
+        assert!(!first.web.load(Ordering::SeqCst));
         // Another call's line isn't this one's: it waits out its cap, and the turn is marked.
-        session.wrote("oby_jobs", &json!({"all": true}));
-        session
+        let second = session(turns.begin("t2", "c2"));
+        second.wrote("u3", "oby_jobs", &json!({"all": true}));
+        second
             .heard("oby_jobs", &json!({}), Duration::from_millis(50))
             .await;
-        assert!(session.web.load(Ordering::SeqCst));
+        assert!(second.web.load(Ordering::SeqCst));
     }
 
     /// Only a session id Claude Code made is resumed: a UUID, never an argument of another kind.
