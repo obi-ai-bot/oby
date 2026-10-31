@@ -137,8 +137,9 @@ async function main() {
   await until('Home', async () => (await page.locator('.app').count()) > 0);
   await shot(page, '0-home');
 
-  // 7. Sandboxed (#1641, WORDS-9): the page's process is in Chromium's sandbox, with no Node in the page,
-  // and the preload's bridge (a sandboxed preload's, CommonJS) answers through main
+  // 7. Sandboxed (#1641, WORDS-9): the page's process is in Chromium's sandbox, and the preload's
+  // bridge (a sandboxed preload's, CommonJS) answers through main. getAppMetrics()'s `sandboxed` is
+  // what proves the sandbox: the page lacks `process` and `require` with contextIsolation alone too
   const sandboxed = await app.evaluate(({ app: a, BrowserWindow }) => {
     const pid = BrowserWindow.getAllWindows()[0].webContents.getOSProcessId();
     return a.getAppMetrics().find((m) => m.pid === pid)?.sandboxed;

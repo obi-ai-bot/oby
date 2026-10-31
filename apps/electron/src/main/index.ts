@@ -18,11 +18,14 @@ type Chrome = { lightsLeft: number; lightsTop: number; lightsCenterY: number; li
 // The page holds obid's API and signs Confirms with this Mac's device key: a packaged app takes no
 // DevTools port or pipe from whoever opens it (the fuses don't cover them), unless an admin allowed
 // it on this Mac with a root-owned file nobody else may write (scripts/vm-test.sh makes one with
-// sudo in its VM). Nor, ever, another program run as one of its own processes.
+// sudo in its VM). Nor, ever, another program run as one of its own processes, or its windows
+// out of the sandbox (#1641).
 const ALLOW_DEVTOOLS = '/Library/Application Support/Oby/allow-devtools-port';
 const rootOnly = (path: string) => { const s = lstatSync(path); return s.uid === 0 && !s.isSymbolicLink() && !(s.mode & 0o022); };
 const given = (switches: string[]) => switches.some((s) => app.commandLine.hasSwitch(s));
-if (app.isPackaged && given(['browser-subprocess-path', 'renderer-cmd-prefix', 'gpu-launcher', 'utility-cmd-prefix'])) app.exit(1);
+if (app.isPackaged && given(['browser-subprocess-path', 'renderer-cmd-prefix', 'gpu-launcher', 'utility-cmd-prefix', 'no-sandbox'])) app.exit(1);
+// every window sandboxed, one added later too, not only the one createWindow makes (before ready)
+app.enableSandbox();
 if (app.isPackaged && given(['remote-debugging-port', 'remote-debugging-pipe'])) {
   let allowed = false;
   try { allowed = rootOnly(dirname(ALLOW_DEVTOOLS)) && rootOnly(ALLOW_DEVTOOLS); } catch { /* not there */ }
