@@ -2722,13 +2722,21 @@ fn merging_14_an_untrusted_task_gets_two_reviews_its_reviewers_told_why() {
 }
 
 /// MERGING-18 (#1662): the review reads the head obid pushed even when the owner's clone was made
-/// again since (here, words no app signed made it someone else's code); and MERGING-17 (#1659):
-/// those words, sent while the task ran, reach the review quoted after what it was asked.
+/// again since (here by the next job, once words no app signed made it someone else's code); and
+/// MERGING-17 (#1659): the owner's signed words, sent while the task ran, reach the review quoted
+/// after what it was asked, and the unsigned ones never do.
 #[test]
 fn merging_18_a_review_finds_the_pushed_head_in_a_clone_made_again() {
     let folder = Folder::new("publish-review-steered");
     let bin = fake_gh(&folder.0);
     let (obid, _remote, _) = obid_with(&folder, &bin);
+    let one = call(
+        &obid,
+        "PUT",
+        "/v1/settings/jobs",
+        Some(&json!({"maxRunning": 1})),
+    );
+    assert_eq!(one.status, 200, "{}", one.text);
     let id = dispatch(
         &obid,
         json!({"repo": "obi-e2e/fixture-app", "kind": "build", "task": "SLOW: hello.txt",
@@ -2738,22 +2746,35 @@ fn merging_18_a_review_finds_the_pushed_head_in_a_clone_made_again() {
         let job = call(&obid, "GET", &format!("/v1/jobs/{id}"), None).body;
         (job["status"] == "running").then_some(())
     });
-    let told = call(
+    let tell = |answer: support::Answer| assert_eq!(answer.status, 200, "{}", answer.text);
+    let path = format!("/v1/jobs/{id}/messages");
+    tell(call_typed(
         &obid,
         "POST",
-        &format!("/v1/jobs/{id}/messages"),
-        Some(&json!({"text": "also end the line with a period"})),
+        &path,
+        &json!({"text": "also end the line with a period"}),
+    ));
+    tell(call(
+        &obid,
+        "POST",
+        &path,
+        Some(&json!({"text": "UNSIGNED words"})),
+    ));
+    // Waiting for the slot, it starts before the review and makes the marked clone again.
+    dispatch(
+        &obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "build", "task": "Look around"}),
     );
-    assert_eq!(told.status, 200, "{}", told.text);
     let job = reviewed(&obid, &id, 1);
     let pushed = job["outgoing"][0]["id"].as_str().unwrap();
     assert_eq!(job["reviewError"], Value::Null, "{job}\n{}", obid.log());
     assert_eq!(job["review"]["verdict"], "approved", "{job}");
     assert_eq!(job["review"]["commit"], pushed);
+    let log = obid.log();
+    assert!(log.contains("its clone is made again"), "{log}");
     assert!(
-        obid.log().contains("its clone is made again"),
-        "{}",
-        obid.log()
+        log.contains(&format!("fetched {pushed}, which its clone didn't have")),
+        "{log}"
     );
     let review = &reviews_of(&obid, &id)[0];
     let worktree = Path::new(review["worktree"].as_str().unwrap());
@@ -2768,6 +2789,7 @@ fn merging_18_a_review_finds_the_pushed_head_in_a_clone_made_again() {
         ),
         "{asked}"
     );
+    assert!(!asked.contains("UNSIGNED"), "{asked}");
 }
 
 /// MERGING-16: a second review that asks for changes counts like any other: the job takes them as

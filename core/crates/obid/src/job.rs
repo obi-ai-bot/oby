@@ -434,6 +434,12 @@ pub struct Job {
     /// turn's prompt. Never in the API's job (`notes` has them all).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub heard: Vec<String>,
+    /// The owner's own words that reached it after it was made, oldest first: their signed
+    /// messages and Confirms and their conversation turns' words (never Oby's added text, an
+    /// event turn's or unsigned words), and each question its agent asked them with their
+    /// answer. What Oby's review is told they want (#1659). Never in the API's job.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub said: Vec<String>,
     /// When obid said what publishing it by hand would do (`GET /v1/jobs/{id}/publish`), and
     /// which run it described (that run's `finished`): the last two minutes' worth. Never in the
     /// API's job.
@@ -875,6 +881,7 @@ impl Job {
             tetrix: None,
             teammates: None,
             heard: Vec::new(),
+            said: Vec::new(),
             offers: Vec::new(),
             asked: false,
             brief: None,

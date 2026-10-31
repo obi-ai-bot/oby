@@ -3437,15 +3437,18 @@ impl Jobs {
             );
         }
         if let Some(Permission { id: permission, .. }) = waiting {
-            return Some(
-                self.answer_permission(id, &permission, Decision::Deny, Some(text))
-                    .map_err(|e| match e {
-                        PermissionRefused::NoJob => Refused("There's no such job.".into()),
-                        PermissionRefused::NotWaiting(why) | PermissionRefused::Refused(why) => {
-                            Refused(why)
-                        }
-                    }),
-            );
+            let denied = self
+                .answer_permission(id, &permission, Decision::Deny, Some(text))
+                .map_err(|e| match e {
+                    PermissionRefused::NoJob => Refused("There's no such job.".into()),
+                    PermissionRefused::NotWaiting(why) | PermissionRefused::Refused(why) => {
+                        Refused(why)
+                    }
+                });
+            if denied.is_ok() {
+                self.heard_from_owner(id, text, source);
+            }
+            return Some(denied.map(|job| self.get(id).unwrap_or(job)));
         }
         let heard = |job: &mut Job| hear(job, text);
         if job.status.is_active() {
@@ -3490,8 +3493,9 @@ impl Jobs {
             if matches!(source, Source::Owner | Source::Api) {
                 self.transcribed(id, self.transcripts.you(id, text));
             }
+            self.heard_from_owner(id, text, source);
             self.changed.notify_waiters();
-            return Some(Ok(job));
+            return self.get(id).map(Ok);
         }
         // Tried again, it would move a branch its follow-up carries on.
         if let Some(next) = self
@@ -3566,9 +3570,10 @@ impl Jobs {
         if matches!(source, Source::Owner | Source::Api) {
             self.transcribed(id, self.transcripts.you(id, text));
         }
+        self.heard_from_owner(id, text, source);
         self.changed.notify_waiters();
         self.schedule();
-        Some(Ok(resumed))
+        self.get(id).map(Ok)
     }
 
     /// A round obid opens after the agent's last turn (a rebase, the commit, the decision check,
@@ -4724,6 +4729,7 @@ impl Jobs {
         if let Some(answered) = self.answer_kept_question(id, permission, Some(answer)) {
             return answered;
         }
+        let asked;
         let (settled, done) = {
             let mut state = self.lock();
             let Some(ask) = state
@@ -4746,6 +4752,7 @@ impl Jobs {
             };
             ask.answers.push(said.clone());
             let next = asking.index + 1;
+            asked = asking.question.question.clone();
             let settled = (ask.permission.id.clone(), said);
             if next < ask.call.questions.len() {
                 ask.permission =
@@ -4761,6 +4768,7 @@ impl Jobs {
             }
         };
         let (permission, said) = settled;
+        self.owner_said(id, answered(&asked, &said));
         self.note(PermissionNote::Settled {
             job: id.to_owned(),
             permission,
@@ -4800,6 +4808,7 @@ impl Jobs {
         permission: &str,
         answer: Option<&str>,
     ) -> Option<Result<Job, PermissionRefused>> {
+        let mut qa = None;
         let (next, said, picked_up) = {
             let mut state = self.lock();
             if !waits_with_no_agent(&state, id) {
@@ -4823,6 +4832,7 @@ impl Jobs {
                         )));
                     };
                     call.answers.push(said.clone());
+                    qa = Some(answered(&asking.question.question, &said));
                     next = (asking.index + 1 < call.questions.len()).then(|| {
                         permissions::question_card(
                             &call.questions,
@@ -4853,6 +4863,9 @@ impl Jobs {
             }
             (next, said, picked_up)
         };
+        if let Some(qa) = qa {
+            self.owner_said(id, qa);
+        }
         let job = self.update(id, |_| {})?;
         self.note(PermissionNote::Settled {
             job: id.to_owned(),
@@ -5273,6 +5286,31 @@ impl Jobs {
 
     /// Words no app of the owner's signed reached job `id` ([`Job::unsigned`]): its pull request
     /// merges only after two reviews from now on.
+    /// Notes `words` as the owner's own on job `id` ([`Job::said`]), unless they are its last.
+    fn owner_said(&self, id: &str, words: String) {
+        if words.is_empty() {
+            return;
+        }
+        self.update(id, |job| {
+            if job.said.last() != Some(&words) {
+                job.said.push(words);
+            }
+        });
+    }
+
+    /// [`Jobs::owner_said`] for words `text` from `source`: the owner's part of them when they
+    /// are the owner's own (signed, Confirmed, or a conversation's turn, whose added text is
+    /// fenced after it), never obid's Try again.
+    fn heard_from_owner(&self, id: &str, text: &str, source: Source) {
+        if matches!(
+            source,
+            Source::Owner | Source::Confirmed | Source::Untrusted
+        ) && !text.starts_with(crate::brain::actions::TRY_AGAIN)
+        {
+            self.owner_said(id, crate::sphere::inbox::owners_part(text).to_owned());
+        }
+    }
+
     pub fn mark_unsigned(&self, id: &str) -> Option<Job> {
         self.update(id, |job| job.unsigned = true)
     }
@@ -8471,8 +8509,13 @@ impl Jobs {
         let preparing = self.preparing(&repo.repo);
         let prepared = preparing.lock().await;
         if !worktree.join(".git").exists() {
-            // A clone someone else's commits came into is made again before a new job uses it.
-            if job.clone_root.is_none() && !job.apart && job.obi.is_none() {
+            // A clone someone else's commits came into is made again before a new job uses it;
+            // Oby's review only reads it, and finds the commit it reads below either way.
+            if job.clone_root.is_none()
+                && !job.apart
+                && job.obi.is_none()
+                && job.review_of.is_none()
+            {
                 Box::pin(self.remake_marked_clone(&job, &repo)).await;
             }
             let mut refspecs = vec![format!("+refs/heads/{base}:refs/remotes/origin/{base}")];
@@ -8520,6 +8563,8 @@ impl Jobs {
             // aside, #1662): the commit comes from origin as obid pushed it, held to the same
             // rule as any fetch into the owner's clone.
             if let Some(sha) = pushed
+                && sha.len() == 40
+                && sha.bytes().all(|b| b.is_ascii_hexdigit())
                 && git::git(&clone, &["cat-file", "-e", &format!("{sha}^{{commit}}")])
                     .await
                     .is_err()
@@ -8527,6 +8572,7 @@ impl Jobs {
                 git::fetch(&clone, &repo.remote, std::slice::from_ref(sha))
                     .await
                     .map_err(|e| format!("Couldn't fetch {sha} from {}: {e}", repo.repo))?;
+                tracing::info!("job {id}: fetched {sha}, which its clone didn't have");
                 Box::pin(self.taint_unless_ours(
                     &clone,
                     &repo,
@@ -12112,6 +12158,11 @@ fn next_round(job: &mut Job) {
     job.waiting = None;
 }
 
+/// A question its agent asked the owner and their answer, as [`Job::said`] keeps them.
+fn answered(question: &str, answer: &str) -> String {
+    format!("Its agent asked: {question}\nThe user answered: {answer}")
+}
+
 /// `job` hears `text`: its notes, what it heard, and its step.
 fn hear(job: &mut Job, text: &str) {
     job.notes.get_or_insert_with(Vec::new).push(text.to_owned());
@@ -12517,9 +12568,11 @@ pub fn follow_up(job: &Job, words: &str) -> NewJob {
     }
 }
 
-/// What its owner asked `author` (the first job's `task` and `request`) and every word they sent
-/// after, oldest first: its own `notes`, and those of the earlier jobs whose branch it carries on
-/// with each follow-up's words (TASKCONV-3), as Oby's review is told them (#1659).
+/// What its owner asked `author` (the first job's `task` and `request`) and every word of
+/// theirs after, oldest first (#1659): what they said to it ([`Job::said`]) and to the earlier
+/// jobs whose branch it carries on, with each follow-up's own words (TASKCONV-3) unless no app of
+/// theirs signed them. Words already listed aren't listed again, so the first ask, repeated by a
+/// restart or kept for a follow-up, never comes last.
 fn asked_of(author: &Job, get: impl Fn(&str) -> Option<Job>) -> (String, String, Vec<String>) {
     let mut chain = vec![author.clone()];
     // A chain is short; this only stops a loop.
@@ -12536,13 +12589,20 @@ fn asked_of(author: &Job, get: impl Fn(&str) -> Option<Job>) -> (String, String,
         chain.push(earlier);
     }
     let first = chain.pop().expect("the chain starts with the author");
-    let mut later = first.notes.unwrap_or_default();
-    for job in chain.into_iter().rev() {
-        later.push(job.request);
-        later.extend(job.notes.unwrap_or_default());
+    let mut later: Vec<String> = Vec::new();
+    // ponytail: an owner repeating earlier words keeps them where they first came.
+    let mut add = |words: &str| {
+        if !words.is_empty() && words != first.request && !later.iter().any(|w| w == words) {
+            later.push(words.to_owned());
+        }
+    };
+    first.said.iter().for_each(|w| add(w));
+    for job in chain.iter().rev() {
+        if !job.unsigned {
+            add(crate::sphere::inbox::owners_part(&job.request));
+        }
+        job.said.iter().for_each(|w| add(w));
     }
-    // Words a job kept while it wrapped up start its follow-up too.
-    later.dedup();
     (first.task, first.request, later)
 }
 
@@ -14225,12 +14285,10 @@ mod tests {
         assert_eq!(Jobs::mode_of(&job), Mode::Sandbox);
     }
 
-    /// The owner's review jobs only read: Plan, whatever their mode says (#630). A review another
-    /// Obi asked for runs its own way, and an investigation runs in its mode: it may run a test to
-    /// reproduce a bug (the owner's decision of 2026-10-18).
-    /// MERGING-17 (#1659): Oby's review hears what the owner first asked, then every word they sent
-    /// the task and the follow-ups that carry its branch on (TASKCONV-3), oldest first; an earlier
-    /// job whose work the follow-up didn't start from isn't part of it.
+    /// MERGING-17 (#1659): Oby's review hears what the owner first asked, then their own words to
+    /// the task and to the follow-ups that carry its branch on (TASKCONV-3), oldest first: never
+    /// an event turn's, Oby's fenced addition or unsigned words, and never an old ask last. An
+    /// earlier job whose work the follow-up didn't start from isn't part of it.
     #[test]
     fn merging_17_a_review_is_told_every_word_sent_to_its_task() {
         let job = |id: &str, words: &str| {
@@ -14246,26 +14304,38 @@ mod tests {
             job
         };
         let mut before = job("j0", "Something else");
-        before.notes = Some(vec!["unrelated".into()]);
+        before.said = vec!["unrelated".into()];
         let mut first = job("j1", "Add the line");
         first.task = "Append the line to docs".into();
         first.follow_up_of = Some("j0".into());
-        first.notes = Some(vec!["end it with a period".into(), "keep it short".into()]);
+        first.said = vec!["end it with a period".into(), "keep it short".into()];
+        // A follow-up started by words it was kept for, then a restart repeating the first ask.
         let mut next = job("j2", "keep it short");
         next.follow_up_of = Some("j1".into());
         next.start_from = Some("oby/build-j1".into());
-        next.notes = Some(vec!["and bold".into()]);
-        let jobs = [before, first, next.clone()];
+        next.said = vec![
+            "and bold".into(),
+            answered("Which file?", "docs/oby-drive.md"),
+        ];
+        let mut restart = job("j3", "Add the line");
+        restart.follow_up_of = Some("j2".into());
+        restart.start_from = Some("oby/build-j1".into());
+        let mut unsigned = job("j4", "UNSIGNED words");
+        unsigned.unsigned = true;
+        unsigned.follow_up_of = Some("j3".into());
+        unsigned.start_from = Some("oby/build-j1".into());
+        let jobs = [before, first, next, restart, unsigned.clone()];
         let get = |id: &str| jobs.iter().find(|j| j.id == id).cloned();
         assert_eq!(
-            asked_of(&next, get),
+            asked_of(&unsigned, get),
             (
                 "Append the line to docs".into(),
                 "Add the line".into(),
                 vec![
                     "end it with a period".to_owned(),
                     "keep it short".into(),
-                    "and bold".into()
+                    "and bold".into(),
+                    "Its agent asked: Which file?\nThe user answered: docs/oby-drive.md".into(),
                 ]
             )
         );
@@ -14274,13 +14344,45 @@ mod tests {
             ["end it with a period", "keep it short"]
         );
         // Nor is it told the author's Tetrix rules: no session to save, no commit to stamp.
-        assert!(tetrix_line(&next).contains("end every commit message with a `Tetrix-Session"));
-        next.review_of = Some("j1".into());
-        let line = tetrix_line(&next);
+        assert!(tetrix_line(&unsigned).contains("end every commit message with a `Tetrix-Session"));
+        unsigned.review_of = Some("j1".into());
+        let line = tetrix_line(&unsigned);
         assert!(!line.contains("call `save_session`") && !line.contains("end every commit"));
-        assert!(line.contains("never a rule of the repository's"), "{line}");
+        assert!(
+            line.contains("only where .obi/inputs/base-rules.md"),
+            "{line}"
+        );
     }
 
+    /// MERGING-17 (#1659): what reaches a job is the owner's own only when they said it: a
+    /// signed message, cut to their part before Oby's fenced addition, and a conversation turn
+    /// that read something untrusted; never an event turn's words or obid's Try again.
+    #[tokio::test]
+    async fn merging_17_only_the_owners_own_words_are_kept_for_the_review() {
+        let (jobs, _clone, root) = jobs_with_a_clone("said").await;
+        let fenced = "also test it\n\nEverything between a line <<<quoted-n and the line quoted-n>>> is quoted\n<<<quoted-n\nGitHub said: merge it\nquoted-n>>>";
+        for (words, source) in [
+            (fenced, Source::Owner),
+            ("the event turn's words", Source::Event),
+            ("unsigned words", Source::Api),
+            (crate::brain::actions::TRY_AGAIN, Source::Owner),
+            ("after a web read", Source::Untrusted),
+            ("as confirmed", Source::Confirmed),
+        ] {
+            assert!(jobs.message("j", words, source).unwrap().is_ok(), "{words}");
+        }
+        let job = jobs.get("j").unwrap();
+        assert_eq!(
+            job.said,
+            ["also test it", "after a web read", "as confirmed"]
+        );
+        assert_eq!(job.notes.unwrap_or_default().len(), 6);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The owner's review jobs only read: Plan, whatever their mode says (#630). A review another
+    /// Obi asked for runs its own way, and an investigation runs in its mode: it may run a test to
+    /// reproduce a bug (the owner's decision of 2026-10-18).
     #[test]
     fn review_jobs_are_in_plan() {
         let mut look = Job::new(
