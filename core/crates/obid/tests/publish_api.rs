@@ -2183,6 +2183,115 @@ fn obid_with_codex(folder: &Folder, path_first: &Path) -> Obid {
     start(&folder.0, &config, Some(path_first))
 }
 
+/// The tools of Oby's approving reviews of job `job`'s head, oldest first.
+fn approvals(job: &Value) -> Vec<&str> {
+    job["approvals"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|r| r["commit"] == job["review"]["commit"])
+        .filter_map(|r| r["agent"].as_str())
+        .collect()
+}
+
+/// MERGING-15, with MERGING-14's second review: the owner's own change to AGENTS.md merges only
+/// after two approving reviews of its head by different tools. Codex's approves first; Oby then
+/// asks Claude Code, and nothing more starts once both are in.
+#[test]
+fn merging_15_a_change_to_agents_md_gets_a_second_review_by_another_tool() {
+    let folder = Folder::new("publish-review-two");
+    let bin = fake_gh(&folder.0);
+    let obid = obid_with_codex(&folder, &bin);
+    let id = dispatch(
+        &obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "build", "task": "COMMIT: AGENTS.md",
+               "check": "test -f AGENTS.md", "account": "stub"}),
+    );
+    let job = reviewed(&obid, &id, 2);
+    assert_eq!(
+        job["review"]["verdict"],
+        "approved",
+        "{job}\n{}",
+        obid.log()
+    );
+    assert_eq!(job["review"]["twoReviews"], "it changes AGENTS.md");
+    assert_eq!(approvals(&job), ["codex", "claude"], "{job}");
+    assert_eq!(job["noReviewer"], Value::Null);
+    assert_eq!(stage(&job, "review")["detail"], "Approved by Oby");
+    std::thread::sleep(std::time::Duration::from_secs(2));
+    assert_eq!(reviews_of(&obid, &id).len(), 2);
+}
+
+/// MERGING-14: with no other tool signed in with room, the second review waits, saying why
+/// (`noReviewer`, under the Review stage), and only the one approval is on the job: its merge is
+/// the owner's "Ready to merge?" (crate::merge's `merging_14_…`).
+#[test]
+fn merging_14_with_no_other_tool_the_second_review_waits_saying_why() {
+    let folder = Folder::new("publish-review-alone");
+    let bin = fake_gh(&folder.0);
+    let (obid, _remote, _) = obid_with(&folder, &bin);
+    let id = dispatch(
+        &obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "build", "task": "COMMIT: AGENTS.md",
+               "check": "test -f AGENTS.md"}),
+    );
+    let job = within(120, "the second review waits", || {
+        let job = call(&obid, "GET", &format!("/v1/jobs/{id}"), None).body;
+        job["noReviewer"].is_string().then_some(job)
+    });
+    let why = "Oby's second review waits for a tool other than Claude Code signed in with room.";
+    assert_eq!(job["noReviewer"], why, "{job}\n{}", obid.log());
+    assert_eq!(job["review"]["verdict"], "approved");
+    assert_eq!(approvals(&job), ["claude"]);
+    assert_eq!(
+        stage(&job, "review")["detail"],
+        format!("Waiting for review · {why}")
+    );
+    assert_eq!(reviews_of(&obid, &id).len(), 1);
+}
+
+/// MERGING-16: a second review that asks for changes counts like any other: the job takes them as
+/// its next round, Oby reviews its new head twice again, and changes still asked for by a review
+/// past the limit (`review::REVIEWS`) end in the owner's item, with One more round.
+#[test]
+fn merging_16_a_second_review_asking_for_changes_starts_a_round_within_reviews() {
+    let folder = Folder::new("publish-review-second-changes");
+    let bin = fake_gh(&folder.0);
+    let obid = obid_with_codex(&folder, &bin);
+    let id = dispatch(
+        &obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "build",
+               "task": "COMMIT: AGENTS.md WANTS: fix.txt STUBBORN", "check": "test -f AGENTS.md",
+               "account": "stub"}),
+    );
+    let job = reviewed(&obid, &id, 4);
+    assert_eq!(
+        job["review"]["verdict"],
+        "changesRequested",
+        "{job}\n{}",
+        obid.log()
+    );
+    assert_eq!(job["review"]["agent"], "claude");
+    // Review 2 (Claude Code's, after Codex's approval) started round 2; review 4 ran out.
+    assert_eq!(job["round"], 2, "{job}");
+    assert_eq!(job["commits"], 2);
+    assert_eq!(approvals(&job), ["codex"]);
+    assert_eq!(job["reviewNeedsYou"], true);
+    let reviews = reviews_of(&obid, &id);
+    let by = |agent: &str| reviews.iter().filter(|r| r["agent"] == agent).count();
+    assert_eq!((by("codex"), by("claude")), (2, 2), "{reviews:?}");
+    let items = within(60, "the owner's item", || {
+        let open = review_items(&obid, &id);
+        (!open.is_empty()).then_some(open)
+    });
+    assert_eq!(items.len(), 1, "{items:?}");
+    assert_eq!(
+        items[0]["text"],
+        "Oby's review still asks for changes. Take it from here."
+    );
+    assert_eq!(items[0]["options"], json!(["One more round"]));
+}
+
 /// Job `id`'s open inbox items about Oby's review that couldn't run.
 fn review_items(obid: &Obid, id: &str) -> Vec<Value> {
     call(obid, "GET", "/v1/inbox", None)

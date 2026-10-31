@@ -32,8 +32,8 @@
 //                    ALWAYS that it's waiting again
 //   TOKENS           its thread uses 1000 input tokens (600 of them cached) and 100 output tokens
 //                    more, reported in `thread/tokenUsage/updated` twice
-//   Oby's review     (its prompt names .obi/inputs/asked.md) of work asked with CODEX REFUSED: the
-//                    turn fails as codex-cli 0.162.1's does on a login OpenAI ended
+//   Oby's review     (its prompt names .obi/inputs/asked.md) approves; of work asked with CODEX
+//                    REFUSED, the turn fails as codex-cli 0.162.1's does on a login OpenAI ended
 // It answers `account/read` (once the turn starts) as a ChatGPT (plan) login, or an API key's when
 // the task says APIKEY.
 //   a brain's prompt answers one plan: a reply "From Codex.", with work.md's first line; one
@@ -98,6 +98,7 @@ async function runTurn(turnId, prompt) {
   const asked = ".obi/inputs/asked.md";
   if (task.includes(asked) && existsSync(asked) && readFileSync(asked, "utf8").includes("CODEX REFUSED"))
     return complete(turnId, null, "failed", { message: "workspace routing discovery unauthorized (401)" });
+  if (task.includes(asked) && existsSync(asked)) return complete(turnId, "Codex read it.\nLooks right.\nVERDICT: APPROVE");
   // Oby's brain (`CodexBrain`): one plan, read from work.md when there is one.
   if (task.includes("Return exactly one JSON object matching this JSON schema")) {
     // Words with STALL in them: it never answers, as a Codex on a Mac too busy to think.

@@ -207,6 +207,10 @@ pub struct Review {
     pub date: i64,
     /// The head it read: the pull request's, as obid pushed it.
     pub commit: String,
+    /// Why that head merges only after two approving reviews, each by a different tool
+    /// (crate::merge::two_reviews: an untrusted task, a security path); none when one is enough.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub two_reviews: Option<String>,
 }
 
 impl Review {
@@ -220,6 +224,9 @@ impl Review {
                                "date": obi_protocol::time::format(self.date), "commit": self.commit});
         if self.same_account {
             value["sameAccount"] = json!(true);
+        }
+        if let Some(why) = &self.two_reviews {
+            value["twoReviews"] = json!(why);
         }
         value
     }
@@ -285,9 +292,18 @@ pub struct Job {
     /// Oby's latest verdict on its published work.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub review: Option<Review>,
+    /// Oby's approving reviews of its pushed head, oldest first: two by different tools merge a
+    /// head whose review says it needs them ([`Review::two_reviews`]).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub approvals: Vec<Review>,
     /// On Oby's review job: the job whose published work it reviews.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub review_of: Option<String>,
+    /// On Oby's review job: the security paths (crate::merge::SECURITY_PATHS) its head changes
+    /// against its base, as obid read them before it ran; none when they couldn't be read, and
+    /// then it counts as touching one. Never in the API.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub security_paths: Option<Vec<String>>,
     /// Why Oby's review of its published work waits: no account fits to run it on (none signed in
     /// with room, never Cursor). It starts once one does.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -767,7 +783,9 @@ impl Job {
             review_error: None,
             reviewing: None,
             review: None,
+            approvals: Vec::new(),
             review_of: None,
+            security_paths: None,
             no_reviewer: None,
             review_failed: None,
             summaries: None,
@@ -1040,8 +1058,29 @@ impl Job {
             && self.kind != "review"
             && self.reviewing.is_none()
             && self.pull_request_open()
-            && self.review.as_ref().is_none_or(|r| r.commit != head))
+            && (self.review.as_ref().is_none_or(|r| r.commit != head) || self.second_review_due()))
         .then_some(head)
+    }
+
+    /// The tools whose reviews of Oby's approved the pull request's head, as obid pushed it.
+    pub fn approving_tools(&self) -> Vec<&str> {
+        let mut tools: Vec<&str> = self
+            .approvals
+            .iter()
+            .filter(|r| self.pushed_head() == Some(r.commit.as_str()))
+            .map(|r| r.agent.as_str())
+            .collect();
+        tools.sort_unstable();
+        tools.dedup();
+        tools
+    }
+
+    /// Oby's review approved the head, which merges only after two approving reviews by different
+    /// tools ([`Review::two_reviews`], MERGING-14, 15), and no other tool's approved it yet.
+    pub fn second_review_due(&self) -> bool {
+        self.current_review()
+            .is_some_and(|r| r.approved() && r.two_reviews.is_some())
+            && self.approving_tools().len() < 2
     }
 
     /// Oby's verdict on the head its pull request has now, if it has one: an approval here is
@@ -1143,6 +1182,7 @@ impl Job {
             "dismissed": date(self.dismissed),
             "reviewing": self.reviewing,
             "review": self.review.as_ref().map(Review::to_json),
+            "approvals": self.approvals.iter().map(Review::to_json).collect::<Vec<_>>(),
             "reviewError": self.review_error,
             "reviewOf": self.review_of,
             "files": self.files,
@@ -1548,6 +1588,15 @@ impl Job {
                             let detail = format!("Waiting for review · {error}");
                             set(&mut stages, "review", "current", Some(&detail), None);
                         }
+                        (None, None, Some(review))
+                            if review.approved() && self.second_review_due() =>
+                        {
+                            let detail = match &self.no_reviewer {
+                                Some(why) => format!("Waiting for review · {why}"),
+                                None => "Waiting for a second review".into(),
+                            };
+                            set(&mut stages, "review", "current", Some(&detail), None);
+                        }
                         (None, None, Some(review)) if review.approved() => {
                             set(&mut stages, "review", "done", Some(APPROVED_BY_OBY), None);
                             set(&mut stages, "merged", "current", Some(merge_line), None);
@@ -1787,9 +1836,10 @@ mod tests {
         ] {
             assert_eq!(object.get(key), Some(&Value::Null), "{key}");
         }
-        // The Swift runner's 65 keys, obid's nineteen, and `supervised`.
-        assert_eq!(object.len(), 85);
+        // The Swift runner's 65 keys, obid's twenty, and `supervised`.
+        assert_eq!(object.len(), 86);
         assert_eq!(value["supervised"], json!([]));
+        assert_eq!(value["approvals"], json!([]));
         assert_eq!(value["archived"], Value::Null);
         assert_eq!(value["changes"], json!([]));
         assert_eq!(value["artifacts"], json!([]));
@@ -2088,6 +2138,7 @@ mod tests {
             round: 1,
             date: created,
             commit: commit.into(),
+            two_reviews: None,
         };
         job.review = Some(verdict("changesRequested", "abc"));
         assert_eq!(job.review_due(), None);
