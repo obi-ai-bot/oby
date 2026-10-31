@@ -18,6 +18,8 @@ const ACCESS_1: &str = "tetrix-access-0f9e8d7c6b5a49382716";
 const ACCESS_2: &str = "tetrix-access-a1b2c3d4e5f60718293a";
 const REFRESH_1: &str = "tetrix-refresh-5e4d3c2b1a0f9e8d7c6b";
 const REFRESH_2: &str = "tetrix-refresh-9a8b7c6d5e4f30211203";
+/// The organization the "orgs" Tetrix answers for.
+const ORG: &str = "0b5e1a2c-7d3f-4e6a-9c8b-1f2e3d4c5b6a";
 
 /// What the fake Tetrix was asked, and the state its login is in.
 #[derive(Default)]
@@ -32,7 +34,9 @@ struct Seen {
     /// How its earlier sessions answer: "" as they are, "leaky" listing one whose id holds a key,
     /// "slow" listing four whose context takes 9 seconds each: each call within its own 10
     /// seconds, all of them past the check's 30. "flaky": its first `tools/list` answers 503.
-    /// "down": its MCP server refuses every token and its sign-in server answers 503.
+    /// "down": its MCP server refuses every token and its sign-in server answers 503. "orgs":
+    /// its login is in several organizations, so its MCP server answers 400 to a call whose
+    /// address doesn't say `?org=` [`ORG`] (Tetrix's mcp_service/app/org_request.py).
     mode: &'static str,
     /// The "flaky" 503 was sent.
     flaked: bool,
@@ -207,6 +211,15 @@ fn fake_tetrix() -> (String, Arc<Mutex<Seen>>) {
                             &format!("401 Unauthorized\r\nWWW-Authenticate: Bearer error=\"invalid_token\", resource_metadata=\"{origin}/meta/tetrix-resource\""),
                             "application/json",
                             "{}",
+                        );
+                        continue;
+                    }
+                    if seen.mode == "orgs" && target != format!("/mcp?org={ORG}") {
+                        reply(
+                            &mut stream,
+                            "400 Bad Request",
+                            "application/json",
+                            r#"{"detail": "multiple organizations in token; org query param required"}"#,
                         );
                         continue;
                     }
@@ -849,6 +862,79 @@ fn a_tetrix_error_never_takes_the_tools_away_and_losing_it_is_said() {
     );
 }
 
+/// SIGN-IN-14 (docs/contracts/sign-in.md), a login in several organizations (#1667): Tetrix answers HTTP 400 to every call until its
+/// address says which one (`?org=<uuid>`). obid says Tetrix's reason and what to do about it, and
+/// takes an address that names the organization; nothing else rides in its query.
+#[test]
+fn sign_in_14_a_login_in_several_organizations_reaches_tetrix_once_its_address_names_one() {
+    let folder = Folder::new("tetrix-orgs");
+    let remote = fixture(&folder.0.join("fixture"));
+    let (base, seen) = fake_tetrix();
+    let mut config = config(&folder.0, &remote, &fake_claude());
+    config["repos"][0]["check"] = Value::Null;
+    let obid = start(&folder.0, &config, None);
+    seen.lock().unwrap().mode = "orgs";
+    let run = || {
+        let made = call(
+            &obid,
+            "POST",
+            "/v1/jobs",
+            Some(
+                &json!({"job": {"repo": "obi-e2e/fixture-app", "kind": "build", "task": "REPORT TETRIX_CALL"}}),
+            ),
+        );
+        assert_eq!(made.status, 201, "{}", made.text);
+        let id = made.body["id"].as_str().unwrap().to_owned();
+        call(&obid, "GET", &format!("/v1/jobs/{id}/wait"), None).body
+    };
+
+    // Its address names no organization: the job says Tetrix's reason and the way out.
+    sign_in(&obid, &base);
+    let job = run();
+    assert!(
+        job["tetrix"]["unreachable"].as_str().unwrap_or("").contains(
+            "answered HTTP 400: multiple organizations in token; org query param required. Add ?org=<your organization's id> to Tetrix's address and connect again."
+        ),
+        "{job}"
+    );
+    assert_eq!(job["tetrix"]["saved"], json!([]), "{job}");
+
+    // Connected again with the organization in its address, in upper case as someone may paste
+    // it: obid writes it as Tetrix does, and every call reaches it.
+    sign_in_at(&obid, &format!("{base}/mcp?org={}", ORG.to_uppercase()));
+    assert_eq!(
+        call(&obid, "GET", "/v1/tetrix", None).body["url"],
+        format!("{base}/mcp?org={ORG}")
+    );
+    let job = run();
+    assert_eq!(job["tetrix"]["saved"], json!(["sess-agent-1"]), "{job}");
+    assert_eq!(job["tetrix"]["unreachable"], Value::Null, "{job}");
+
+    // Nothing but an organization's id rides in the query, and the refusal says what does.
+    for bad in [
+        format!("{base}/mcp?org=not-an-id"),
+        format!("{base}/mcp?org={ORG}&next=1"),
+        format!("{base}/mcp?org={ORG}#top"),
+        format!("{base}/mcp?next=1"),
+    ] {
+        let refused = call(
+            &obid,
+            "POST",
+            "/v1/tetrix/sign-in",
+            Some(&json!({"url": bad})),
+        );
+        assert_eq!(refused.status, 422, "{bad}: {}", refused.text);
+        assert_eq!(refused.body["reason"], "badAddress", "{bad}");
+        assert!(
+            refused
+                .text
+                .contains("the one query it takes is ?org=<your organization's id>"),
+            "{bad}: {}",
+            refused.text
+        );
+    }
+}
+
 /// A stand-in `gh` in `folder/bin` that opens a pull request and keeps its description in
 /// `folder/gh/body`.
 fn body_keeping_gh(folder: &Path) -> PathBuf {
@@ -880,11 +966,16 @@ esac
 
 /// Signs `obid` in to the fake Tetrix at `base`, as the browser would.
 fn sign_in(obid: &Obid, base: &str) {
+    sign_in_at(obid, &format!("{base}/mcp"));
+}
+
+/// Signs `obid` in to the fake Tetrix whose MCP server is at `url`, as the browser would.
+fn sign_in_at(obid: &Obid, url: &str) {
     let started = call(
         obid,
         "POST",
         "/v1/tetrix/sign-in",
-        Some(&json!({"url": format!("{base}/mcp")})),
+        Some(&json!({"url": url})),
     );
     assert_eq!(started.status, 200, "{}", started.text);
     let page = reqwest::Url::parse(started.body["url"].as_str().unwrap()).unwrap();

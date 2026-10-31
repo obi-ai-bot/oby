@@ -180,17 +180,54 @@ enum TokenError {
 }
 
 /// Why `text` isn't a URL obid sends Tetrix's login to, or none: a connection's rule (HTTPS, no
-/// login, query or fragment; HTTP only on 127.0.0.1).
+/// login, query or fragment; HTTP only on 127.0.0.1), but for Tetrix's one query, `?org=<uuid>`:
+/// the organization a login in several answers for, which Tetrix refuses to guess (HTTP 400,
+/// #1667). An id, not a secret; [`with_org`] writes it as Tetrix does before it's used.
 pub fn url_problem(text: &str) -> Option<String> {
+    let base = match text.split_once('?') {
+        Some((base, org)) if org.strip_prefix("org=").is_some_and(is_org) => base,
+        Some(_) => {
+            return Some(format!(
+                "{text} isn't a Tetrix address Oby can use: the one query it takes is ?org=<your organization's id>, a UUID."
+            ));
+        }
+        None => text,
+    };
     Connection {
         name: "tetrix".into(),
-        mcp: Some(text.into()),
+        mcp: Some(base.into()),
         api: None,
         secret: "tetrix".into(),
         header: None,
         created: String::new(),
     }
     .problem()
+}
+
+/// An organization's id: a hyphenated UUID, in either case.
+fn is_org(text: &str) -> bool {
+    uuid::Uuid::parse_str(text)
+        .is_ok_and(|id| id.hyphenated().to_string() == text.to_ascii_lowercase())
+}
+
+/// `url` with its `?org=` id in lower case, as Tetrix matches it against the login's
+/// organizations.
+fn with_org(url: &str) -> String {
+    match url.split_once("?org=") {
+        Some((base, org)) if is_org(org) => format!("{base}?org={}", org.to_ascii_lowercase()),
+        _ => url.to_owned(),
+    }
+}
+
+/// `error` with what to do when Tetrix refused because Oby's login is in several organizations
+/// and its address doesn't say which.
+fn org_hint(error: String) -> String {
+    if error.contains("org query param required") {
+        // Short: a job's record keeps 200 characters of it.
+        format!("{error} Add ?org=<your organization's id> to Tetrix's address and connect again.")
+    } else {
+        error
+    }
 }
 
 /// Whether `url` is on this machine (127.0.0.1, localhost, ::1).
@@ -427,6 +464,7 @@ impl Tetrix {
         if let Some(problem) = url_problem(&url) {
             return Err(bad(problem));
         }
+        let url = with_org(&url);
         let mcp = reqwest::Url::parse(&url).expect("checked");
         let host = mcp.host_str().unwrap_or("").to_owned();
         let local = on_loopback(&mcp);
@@ -1002,9 +1040,12 @@ impl Tetrix {
         let listed = match connections.upstream_tools(job, &c, false).await {
             Err(e) if e.ends_with("answered HTTP 401.") => {
                 self.access(Some(&token)).await?;
-                connections.upstream_tools(job, &c, true).await?
+                connections
+                    .upstream_tools(job, &c, true)
+                    .await
+                    .map_err(org_hint)?
             }
-            other => other?,
+            other => other.map_err(org_hint)?,
         };
         let mut tools: Vec<Value> = listed
             .into_iter()
@@ -1058,7 +1099,8 @@ impl Tetrix {
                     .await
             }
             other => other,
-        }?;
+        }
+        .map_err(org_hint)?;
         Ok(connections.clean(answer))
     }
 

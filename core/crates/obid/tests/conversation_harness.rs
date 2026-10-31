@@ -645,6 +645,93 @@ fn rooms_never_wait_for_a_checkout_obid_could_keep_ready() {
     );
 }
 
+/// #1667: a GitHub repository the owner can push to, not configured, has no checkout in the room
+/// until the owner's words name it (`owner/name`); then it gets one, read through obid's clone as
+/// a configured one is. Its first clone goes on in the background, and the turn is told so; one
+/// gh can't see is said plainly. (git's own `insteadOf` sends the GitHub URL to the fixture's
+/// remote, as a test can't reach GitHub.)
+#[test]
+fn a_github_repository_the_owner_names_is_checked_out_in_the_room() {
+    use std::os::unix::fs::PermissionsExt;
+    let folder = Folder::new("harness-named");
+    let remote = fixture(&folder.0.join("fixture"));
+    let bin = folder.0.join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    std::fs::write(
+        bin.join("gh"),
+        "#!/bin/sh\ncase \"$1 $2\" in\n  \"auth status\") echo '{\"hosts\":{\"github.com\":[{\"state\":\"success\",\"active\":true,\"login\":\"octo-cat\"}]}}' ;;\n  \"api user/repos\"*) printf 'obi-e2e/fixture-app\\tmain\\n' ;;\n  *) exit 1 ;;\nesac\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(bin.join("gh"), std::fs::Permissions::from_mode(0o755)).unwrap();
+    std::fs::create_dir_all(folder.0.join("env-home")).unwrap();
+    std::fs::write(
+        folder.0.join("env-home/.gitconfig"),
+        format!(
+            "[url \"file://{}\"]\n\tinsteadOf = https://github.com/obi-e2e/fixture-app.git\n",
+            remote.display()
+        ),
+    )
+    .unwrap();
+    let mut config = config(&folder.0, &remote, &harness());
+    config["conversation"] = json!({"agent": "claude"});
+    config["repos"] = json!([]);
+    let account = folder.0.join("home/accounts/stub");
+    std::fs::create_dir_all(&account).unwrap();
+    std::fs::write(account.join(".credentials.json"), "{}").unwrap();
+    let obid = start_with(&folder.0, &config, Some(&bin), &[]);
+    let give_up_at = Instant::now() + Duration::from_secs(30);
+    while call(&obid, "GET", "/v1/repos", None).body["repos"]
+        .as_array()
+        .is_none_or(|r| r.is_empty())
+    {
+        assert!(Instant::now() < give_up_at, "gh's repositories never came");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+
+    let first = said(&obid, json!({"said": "HELLO", "new": true}));
+    let conversation = first.body["conversation"].as_str().unwrap().to_owned();
+    let checkout = obid.home.join(format!(
+        "conversations/{conversation}/room/repos/obi-e2e/fixture-app/package.json"
+    ));
+    assert!(!checkout.exists(), "checked out though nobody named it");
+    said(
+        &obid,
+        json!({"said": "HELLO, what are obi-e2e/fixture-app and obi-e2e/missing for?", "conversation": conversation}),
+    );
+    let prompt = turns(&obid).last().unwrap()["prompt"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(
+        prompt.contains("obi-e2e/fixture-app has no checkout in repos/ yet: Oby is cloning it"),
+        "{prompt}"
+    );
+    assert!(
+        prompt.contains(
+            "Oby can't read obi-e2e/missing: the GitHub account Oby uses (gh) can't see it."
+        ),
+        "{prompt}"
+    );
+    let give_up_at = Instant::now() + Duration::from_secs(30);
+    while !checkout.is_file() {
+        assert!(
+            Instant::now() < give_up_at,
+            "the named repository never came into the room"
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    // Named again, with its clone made: the turn has it and is told nothing.
+    said(
+        &obid,
+        json!({"said": "HELLO again about obi-e2e/fixture-app", "conversation": conversation}),
+    );
+    let prompt = turns(&obid).last().unwrap()["prompt"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(!prompt.contains("From Oby, not the owner"), "{prompt}");
+}
+
 /// AGENTS-6 (docs/contracts/agents.md): a task the conversation calls complex runs at its account's
 /// complex-task effort, and a routine one at its effort.
 #[test]
