@@ -11,6 +11,8 @@
 //      from Home's box is theirs (vetted, WORDS-6), and so is the follow-up their words on its page
 //      start.
 //   6. Words the page's script sends with no keystroke or click go unsigned (WORDS-7).
+//   7. The window is sandboxed (#1641, WORDS-9): its process runs in Chromium's sandbox, the page reaches
+//      neither `process` nor `require`, and the preload's bridge still works.
 // Screenshots of each step go to OBY_CORE_SHOTS (a folder), when it's set.
 // Run: cargo build -p obid (or OBY_TEST_OBID=<obid>), npm run build, then npm run test:core.
 import assert from 'node:assert/strict';
@@ -134,6 +136,21 @@ async function main() {
   const { page, errors } = await openApp(s);
   await until('Home', async () => (await page.locator('.app').count()) > 0);
   await shot(page, '0-home');
+
+  // 7. Sandboxed (#1641, WORDS-9): the page's process is in Chromium's sandbox, with no Node in the page,
+  // and the preload's bridge (a sandboxed preload's, CommonJS) answers through main
+  const sandboxed = await app.evaluate(({ app: a, BrowserWindow }) => {
+    const pid = BrowserWindow.getAllWindows()[0].webContents.getOSProcessId();
+    return a.getAppMetrics().find((m) => m.pid === pid)?.sandboxed;
+  });
+  assert.equal(sandboxed, true, 'the window’s process runs sandboxed');
+  const { bridge, ...reach } = await page.evaluate(async () => ({
+    process: typeof process, require: typeof require, module: typeof module,
+    bridge: Object.keys(window.app), fullScreen: typeof window.app.fullScreen,
+    status: (await window.app.obid.call('GET', '/v1/status')).status,
+  }));
+  assert.deepEqual(reach, { process: 'undefined', require: 'undefined', module: 'undefined', fullScreen: 'boolean', status: 200 });
+  for (const key of ['chrome', 'obid', 'notifications', 'updates', 'pickFolders', 'onSphere', 'sphereLeave']) assert.ok(bridge.includes(key), `window.app.${key}`);
 
   // 1. Home's box: the words go to Oby's brain (the stand-in's OBY lines), which starts a task
   const box = await until('Home’s message box', async () => {

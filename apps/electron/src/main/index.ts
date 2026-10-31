@@ -132,8 +132,10 @@ function createWindow() {
     // the page: without it, macOS keeps that click, Chromium puts the focus back
     // in the message box, and a click outside it seems to do nothing
     acceptFirstMouse: true,
-    // scrollBounce: macOS's rubber-band at the ends of a scroll (off by default in Electron)
-    webPreferences: { preload: join(__dirname, '../preload/index.mjs'), sandbox: false, backgroundThrottling: !dev, scrollBounce: true },
+    // scrollBounce: macOS's rubber-band at the ends of a scroll (off by default in Electron).
+    // sandbox: the page's process, the preload's world too, has no Node and runs in Chromium's
+    // sandbox, so a script that takes it over reaches only what the preload hands main over IPC
+    webPreferences: { preload: join(__dirname, '../preload/index.cjs'), sandbox: true, contextIsolation: true, nodeIntegration: false, backgroundThrottling: !dev, scrollBounce: true },
   });
 
   chrome = windowStyle?.useToolbarWindow(win.getNativeWindowHandle()) ?? null;
