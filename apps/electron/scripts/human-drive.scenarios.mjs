@@ -4,7 +4,8 @@
 // something, `t.shot` keeps a screenshot, `t.note` writes a line in the report, `t.state` carries
 // what a later scenario needs (a scenario whose `needs` didn't pass is skipped). Waits are on what
 // the window shows (obid's job files only say when a task ended, as evidence). Tasks stay tiny: one
-// line in one file of the scratch repository.
+// line in one file of the scratch repository, a file of its own for each scenario that makes a
+// pull request, so the run never conflicts with itself.
 const MIN = 60_000;
 const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
 const ASKS = 'section[aria-label="Oby is asking"]';
@@ -40,8 +41,9 @@ async function newTask(t, since, kinds = ['build', 'fix']) {
 
 // Home's cards for the tasks this run started, answered in one click each until `done`: a card counts
 // only when its title is exactly one of theirs, so the owner's other cards (their real GitHub
-// reviews, their own tasks) are never touched
-async function answerCards(t, { done, ms = 25 * MIN }) {
+// reviews, their own tasks) are never touched; `mine` lets in a card whose title names this run's
+// pull request (a Confirm Oby makes for it)
+async function answerCards(t, { done, ms = 25 * MIN, mine = () => false }) {
   const ours = new Set(t.state.titles ?? []);
   const asks = t.page.locator(ASKS);
   const seen = (t.state.unanswerable ??= new Set());
@@ -53,7 +55,7 @@ async function answerCards(t, { done, ms = 25 * MIN }) {
       const top = asks.locator('article.ask-card.is-up');
       const text = (await top.count()) ? await top.innerText() : '';
       const title = (await top.count()) ? (await top.locator('h2.tc-title').innerText()).trim() : '';
-      if (ours.has(title)) {
+      if (ours.has(title) || mine(title)) {
         // a check for the scratch repository: none (its tests need the network); anything else: yes,
         // and the question's answer, "asked"
         const answer = top.getByRole('button', { name: /check before publishing/.test(text) ? /^(No check|Cancel)$/ : /^(Allow|Approve|Merge|Confirm|Yes|Start|asked)/ }).first();
@@ -90,13 +92,14 @@ async function openTask(t, title) {
   await t.see('Tell Oby about this task…', { label: 'its page' });
 }
 
-// the Confirm Oby's answer made to merge `url` (Merge <repo>#<n> into …), under that answer: its
-// exact title tracked as this run's, then Confirm, the owner's one click
-async function confirmMerge(t, url) {
-  const n = url.match(/\/pull\/(\d+)$/)?.[1];
-  // this run's repository and pull request only, never another of the owner's
-  const repo = t.repo.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const card = t.page.locator('.msg-ask').filter({ has: t.page.locator('.tc-ask-head', { hasText: new RegExp(`^Merge ${repo}#${n} into `, 'i') }) }).last();
+// this run's repository and pull request only, never another of the owner's: `<repo>#<n>`
+const prRef = (t, url) => `${t.repo}#${url.match(/\/pull\/(\d+)$/)?.[1]}`;
+const escape = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+// the Confirm Oby's answer made for `url` (by default to merge it: Merge <repo>#<n> into …), under
+// that answer: its exact title tracked as this run's, then Confirm, the owner's one click
+async function confirmMerge(t, url, head = new RegExp(`^Merge ${escape(prRef(t, url))} into `, 'i')) {
+  const card = t.page.locator('.msg-ask').filter({ has: t.page.locator('.tc-ask-head', { hasText: head }) }).last();
   await card.waitFor({ timeout: MIN });
   const title = (await card.locator('.tc-ask-head').innerText()).trim();
   track(t, { title });
@@ -107,6 +110,41 @@ async function confirmMerge(t, url) {
   await card.getByRole('button', { name: 'Confirm', exact: true }).click();
   t.step(`answered “Confirm” on “${title}” in the conversation`);
   await t.shot('confirmed');
+}
+
+// a conflict, as the owner settles it (MERGING-3: "Ask Oby to rebase it onto <base>"): in words on
+// the task's page, then Oby's rebase (a follow-up task, or a round of the task's own: either gives
+// the pull request a new head), its Confirm if one comes, and the merge. What Oby said and did goes
+// in the report; no rebase is a finding.
+async function rebaseThenMerge(t, url, merged) {
+  const pr = () => JSON.parse(t.gh('pr', 'view', url, '--json', 'headRefOid,baseRefName,mergeable'));
+  const { headRefOid: head, baseRefName: base } = pr();
+  // its number whole: #15 never matches inside #151
+  const ref = new RegExp(`${escape(prRef(t, url))}(?!\\d)`, 'i'), mine = (title) => ref.test(title);
+  await openTask(t, t.state.task.title);
+  const since = Date.now();
+  await t.say(`Rebase it onto ${base}, then merge it.`, 'Tell Oby about this task…');
+  t.note(`Oby, told to rebase: ${(await t.reply({ ms: 5 * MIN })).replace(/\n+/g, ' ')}`);
+  await t.shot('told-to-rebase');
+  // a Confirm for this pull request under its answer (a rebase's or a merge's), if Oby made one
+  await confirmMerge(t, url, ref).catch(() => t.note('no Confirm under its answer'));
+  await home(t);
+  // its rebase: a task it starts for it is this run's (its cards answered, its branch cleaned up)
+  const rebased = () => {
+    const job = t.newestJob(since);
+    if (job && !t.state.jobs.includes(job.id)) {
+      t.state.jobs.push(job.id);
+      track(t, job);
+      t.note(`it started a task for the rebase: ${job.id}, a ${job.kind}, “${job.title}”`);
+    }
+    return merged() || pr().headRefOid !== head;
+  };
+  await answerCards(t, { done: rebased, ms: 20 * MIN, mine }).catch(() => {});
+  const now = pr();
+  if (now.headRefOid === head && !merged()) throw new Error(`Oby didn't rebase it onto ${base} in 20 minutes: its head is still ${head.slice(0, 7)}, ${now.mergeable}`);
+  t.note(`rebased: its head ${head.slice(0, 7)} → ${now.headRefOid.slice(0, 7)}, ${now.mergeable}`);
+  await t.shot('rebased');
+  await answerCards(t, { done: merged, ms: 15 * MIN, mine });
 }
 
 // a task whose cards this run answers: never one named as a card the owner had on Home already
@@ -150,8 +188,8 @@ export default [
     title: 'Point Oby at an issue: it reads it and its task does it',
     contract: 'tasks.md',
     run: async (t) => {
-      const url = t.gh('issue', 'create', '-R', t.repo, '--title', `Oby drive ${stamp}: one line in docs/oby-drive.md`,
-        '--body', `Add the line \`- ${stamp}: driven by Oby (issue)\` at the end of docs/oby-drive.md (make the file if it isn't there). Change nothing else. Opened by apps/electron/scripts/human-drive.mjs.`);
+      const url = t.gh('issue', 'create', '-R', t.repo, '--title', `Oby drive ${stamp}: one line in docs/oby-drive-issue.md`,
+        '--body', `Add the line \`- ${stamp}: driven by Oby (issue)\` at the end of docs/oby-drive-issue.md (make the file if it isn't there). Change nothing else. Opened by apps/electron/scripts/human-drive.mjs.`);
       (t.state.issues ??= []).push(url);
       t.note(`issue: ${url}`);
       await home(t);
@@ -235,11 +273,14 @@ export default [
     run: async (t) => {
       const url = t.state.job.published;
       const merged = () => JSON.parse(t.gh('pr', 'view', url, '--json', 'state')).state === 'MERGED';
+      // GitHub's word, or the card's (MERGING-3) for this task or its follow-up
+      const conflicts = () => JSON.parse(t.gh('pr', 'view', url, '--json', 'mergeable')).mergeable === 'CONFLICTING'
+        || [...(t.state.unanswerable ?? [])].some((k) => k.includes(t.state.task.title) && /conflicts with/.test(k));
       const before = t.state.cards ?? 0;
       await home(t);
       // the card Oby gives the owner: a merge, a review's decision, or nothing while it merges itself
       await answerCards(t, { done: merged, ms: 10 * MIN }).catch((e) => t.note(`the cards didn't merge it: ${e.message}`));
-      if (!merged()) {
+      if (!merged() && !conflicts()) {
         // no card merged it (a question with only "Done" can't): the owner tells Oby, as they would
         t.note(`not merged after the cards (${(t.state.cards ?? 0) - before} answered): the owner says so in words`);
         await openTask(t, t.state.task.title);
@@ -252,8 +293,11 @@ export default [
         const deadline = Date.now() + 3 * MIN;
         while (!merged() && Date.now() < deadline) await sleep(5000);
         await home(t);
-        await answerCards(t, { done: merged, ms: 15 * MIN });
+        await answerCards(t, { done: merged, ms: 15 * MIN }).catch((e) => t.note(`not merged after the owner's word: ${e.message}`));
       }
+      // it conflicts with its base (or GitHub found so when asked to merge): the owner asks for a rebase
+      if (!merged() && conflicts()) await rebaseThenMerge(t, url, merged);
+      if (!merged()) throw new Error('not merged');
       await openTask(t, t.state.task.title);
       await t.see(/Merged[^\n]*/, { ms: 3 * MIN, label: 'merged, on its page' });
       await t.shot('merged');
