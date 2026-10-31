@@ -195,8 +195,8 @@ impl Stall {
             Stall::Quiet => format!("no progress for {}", spell(config.stall_after)),
             Stall::Loop => format!("the same failing call {LOOP_REPEATS} times"),
             Stall::Turns => format!("{MAX_TURNS} turns in one round"),
-            Stall::Ceiling => format!("the job ran {}", spell(config.job_ceiling)),
-            Stall::Budget => format!("the job used {} tokens", config.job_token_budget),
+            Stall::Ceiling => format!("the task ran {}", spell(config.job_ceiling)),
+            Stall::Budget => format!("the task used {} tokens", config.job_token_budget),
         }
     }
 }

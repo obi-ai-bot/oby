@@ -321,7 +321,7 @@ fn the_token_budget_stalls_and_only_the_owners_confirm_carries_on() {
     let id = post_job(&obid, "SPEND: 5000");
     let job = wait(&obid, &id);
     assert_eq!(job["status"], "interrupted", "{job}");
-    assert_eq!(job["limit"], "the job used 1000 tokens", "{job}");
+    assert_eq!(job["limit"], "the task used 1000 tokens", "{job}");
     assert_eq!(job["stalled"]["why"], "budget");
     // A safety stall is never tried again by itself, whatever any reset says (#740).
     assert_eq!(job["resumesAt"], Value::Null, "{job}");
@@ -355,7 +355,7 @@ fn the_token_budget_stalls_and_only_the_owners_confirm_carries_on() {
             answer.text
         );
     }
-    // Its Confirm takes words only: files with them are refused, rather than dropped.
+    // Files with the words go with its Confirm (ATTACH-17), which still waits for the owner.
     let file = obid.home.join("attachments/shot.png");
     std::fs::create_dir_all(file.parent().unwrap()).unwrap();
     std::fs::write(&file, b"png").unwrap();
@@ -369,7 +369,7 @@ fn the_token_budget_stalls_and_only_the_owners_confirm_carries_on() {
     );
     assert_eq!(with_files.status, 422, "{}", with_files.text);
     assert!(
-        with_files.text.contains("takes words only"),
+        with_files.text.contains("waits for your Confirm"),
         "{}",
         with_files.text
     );
@@ -412,7 +412,7 @@ fn the_ceiling_counts_every_run() {
     let job = wait(&obid, "ce111ng0");
     // It never had a session to pick up: a dead end (#725), its stall kept.
     assert_eq!(job["status"], "failed", "{job}");
-    assert_eq!(job["limit"], "the job ran 1 hour", "{job}");
+    assert_eq!(job["limit"], "the task ran 1 hour", "{job}");
     assert_eq!(job["stalled"]["why"], "ceiling");
     assert_eq!(job["stalled"]["noteBy"], "obid");
 }
