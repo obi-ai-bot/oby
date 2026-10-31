@@ -1350,7 +1350,10 @@ impl Jobs {
                 .map(|d| d.flatten().map(|e| e.path()).collect())
                 .unwrap_or_default()
         };
-        for root in [home.clone(), home.join("apart"), self.received_home()] {
+        let mut roots = vec![home.clone(), home.join("apart"), self.received_home()];
+        // And the clones moved aside, `marked/<when>/clones/…`, which jobs still use.
+        roots.extend(read(&home.join("marked")));
+        for root in roots {
             for owner in read(&root.join("clones")) {
                 for clone in read(&owner) {
                     for admin in read(&clone.join(".git/worktrees")) {
@@ -7479,10 +7482,12 @@ impl Jobs {
         let merges_into = crate::memory::workflow(&self.config.home, &job.repo)
             .and_then(|m| m.workflow)
             .map(|w| w.base);
+        // A job on another base (stacked on `oby/a`) gets where its work merges into.
         let base = job
             .base
             .clone()
             .filter(|b| *b == repo.default_branch || Some(b) == merges_into.as_ref())
+            .or(merges_into.filter(|b| !b.starts_with("oby/")))
             .unwrap_or(repo.default_branch.clone());
         if !git::is_branch_name(&base) || base.starts_with("oby/") {
             return Err(unchecked(format!(
@@ -7524,9 +7529,10 @@ impl Jobs {
         )
         .await
         .map_err(|_| unchecked(format!("obid's clone doesn't have {base}")))?;
-        let check = crate::secretspec::fresh_checkout(spec, &base_commit, head, at)
-            .await
-            .map_err(unchecked);
+        let check =
+            crate::secretspec::fresh_checkout(spec, &base_commit, head, at, &repo.check_keep)
+                .await
+                .map_err(unchecked);
         let mut check = match check {
             Ok(check) => check,
             Err(why) => {

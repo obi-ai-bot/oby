@@ -144,6 +144,7 @@ impl Repos {
                 Some(listed) => listed.check = check.map(str::to_owned),
                 None => state.listed.push(Repo {
                     check: check.map(str::to_owned),
+                    check_keep: Vec::new(),
                     ..repo.clone()
                 }),
             }
@@ -340,6 +341,7 @@ fn parse(said: &str) -> Vec<Repo> {
                 remote: format!("https://github.com/{repo}.git"),
                 default_branch: branch.to_owned(),
                 check: None,
+                check_keep: Vec::new(),
                 pull_requests: None,
             })
         })
@@ -488,6 +490,7 @@ mod tests {
             remote: format!("https://github.com/{name}.git"),
             default_branch: "main".into(),
             check: None,
+            check_keep: Vec::new(),
             pull_requests: None,
         }
     }
@@ -703,6 +706,7 @@ mod tests {
         let file = dir.join("config.json");
         let configured = Repo {
             check: Some("make test".into()),
+            check_keep: Vec::new(),
             ..repo("acme/App")
         };
         let before = json!({"repos": [{"repo": "acme/App", "remote": "https://github.com/acme/App.git", "check": "make test"}]});

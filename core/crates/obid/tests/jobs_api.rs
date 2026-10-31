@@ -2363,17 +2363,22 @@ fn a_failing_check_is_heard_every_round_and_on_one_more_round() {
 
 /// A fix whose check fails once, with no rounds named, is fixed in its second round and
 /// publishes: Needs you never hears of it. Its checks share the job's own checkout (PUBLISHING-6):
-/// what the first left ignored (its mark, `.obi/ran`) is there for the second, what it left
-/// untracked (`loose`) isn't.
+/// what the first built in the folder the repository keeps (`checkKeep`: its mark, `build/ran`) is
+/// there for the second; nothing else it left is, an ignored `.env` and a folder its own
+/// `.gitignore` hides included.
 #[test]
 fn a_fix_that_fails_once_is_fixed_in_its_second_round() {
     let folder = Folder::new("rounds-second");
     let remote = fixture(&folder.0.join("fixture"));
     let bin = fake_gh(&folder.0);
-    let obid = start_with(&folder.0, &config(&folder.0, &remote), Some(&bin));
+    let mut config = config(&folder.0, &remote);
+    config["repos"][0]["checkKeep"] = json!(["build/"]);
+    let obid = start_with(&folder.0, &config, Some(&bin));
+    let first = "mkdir -p build sub .obi; touch build/ran .env sub/planted .obi/x; printf '*\\n' > sub/.gitignore; false";
     let id = post_job(
         &obid,
-        json!({"repo": "obi-e2e/fixture-app", "kind": "fix", "task": "COMMIT: a.txt", "check": "test -e .obi/ran && test ! -e loose || { mkdir -p .obi; touch .obi/ran loose; false; }"}),
+        json!({"repo": "obi-e2e/fixture-app", "kind": "fix", "task": "COMMIT: a.txt",
+               "check": format!("test -e build/ran && test ! -e .env && test ! -e sub && test ! -e .obi/x || {{ {first}; }}")}),
     )
     .body["id"]
         .as_str()

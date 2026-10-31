@@ -495,6 +495,22 @@ pub fn check_scripts(command: &str) -> BTreeSet<String> {
     check_words(command).0
 }
 
+/// `word` as a path inside the repository, `./` and a last `/` taken off: never one with `..`,
+/// `.git`, `$`, a glob or a `~`, or that starts with `/` or `-`.
+pub fn repo_path(word: &str) -> Option<String> {
+    let mut word = word.strip_suffix('/').unwrap_or(word);
+    while let Some(rest) = word.strip_prefix("./") {
+        word = rest;
+    }
+    let clean = !word.is_empty()
+        && !word.starts_with(['-', '/'])
+        && !word.contains(['$', '*', '?', '[', '~', '\\', '`'])
+        && word
+            .split('/')
+            .all(|part| !matches!(part, "" | "." | "..") && !part.eq_ignore_ascii_case(".git"));
+    clean.then(|| word.to_owned())
+}
+
 /// [`check_scripts`], and the files [`check_files`] adds for `make` and Node's package managers.
 fn check_words(command: &str) -> (BTreeSet<String>, BTreeSet<String>) {
     const INTERPRETERS: [&str; 10] = [
@@ -517,19 +533,7 @@ fn check_words(command: &str) -> (BTreeSet<String>, BTreeSet<String>) {
     ];
     // What runs the next command it's given, with its options (and `timeout` its duration).
     const WRAPPERS: [&str; 6] = ["env", "timeout", "nice", "time", "exec", "command"];
-    let path = |word: &str| {
-        let mut word = word;
-        while let Some(rest) = word.strip_prefix("./") {
-            word = rest;
-        }
-        let clean = !word.is_empty()
-            && !word.starts_with(['-', '/'])
-            && !word.contains(['$', '*', '?', '[', '~', '\\', '`'])
-            && word
-                .split('/')
-                .all(|part| !matches!(part, "" | "." | "..") && !part.eq_ignore_ascii_case(".git"));
-        clean.then(|| word.to_owned())
-    };
+    let path = repo_path;
     let assignment = |w: &str| w.contains('=') && !w.starts_with('-');
     let (mut scripts, mut runs_from) = (BTreeSet::new(), BTreeSet::new());
     for simple in command.split(['&', '|', ';', '\n', '(', ')']) {

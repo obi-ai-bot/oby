@@ -1725,7 +1725,7 @@ fn publishing_7_a_check_rewritten_to_pass_still_runs_the_bases() {
 fn publishing_7_a_running_check_cant_rewrite_the_bases_script() {
     let folder = Folder::new("publish-script-frozen");
     let bin = fake_gh(&folder.0);
-    let script = "#!/bin/sh\ntrue > tools/ci/check.sh\nmv tools moved && true > moved/ci/check.sh\nmv tools/ci tools/moved && true > tools/moved/check.sh\ntrue > .gitleaks.toml || test -s tools/ci/check.sh && test ! -e moved && test ! -e tools/moved && echo the base check stayed\nexit 1\n";
+    let script = "#!/bin/sh\ntrue > tools/ci/check.sh\nmv tools moved && true > moved/ci/check.sh\nmv tools/ci tools/moved && true > tools/moved/check.sh\ntrue > .gitleaks.toml && echo the gitleaks config was rewritten\ntest -s .gitleaks.toml && test -s tools/ci/check.sh && test ! -e moved && test ! -e tools/moved && echo the base check stayed\nexit 1\n";
     let remote = base_with(
         &folder,
         &[
@@ -1748,6 +1748,7 @@ fn publishing_7_a_running_check_cant_rewrite_the_bases_script() {
     );
     let log = std::fs::read_to_string(obid.home.join(format!("logs/{id}/check.log"))).unwrap();
     assert!(log.contains("the base check stayed"), "{log}");
+    assert!(!log.contains("the gitleaks config was rewritten"), "{log}");
     assert!(
         log.contains("runs tools/ci/check.sh as main has it"),
         "{log}"

@@ -736,14 +736,16 @@ const NO_SETTINGS: [(&str, &str); 2] = [
 /// nothing of the job's folders is read again. `agent` is the job's sandbox spec; the answer is the
 /// check's. What the job's worktree holds besides its commits (files left uncommitted, hidden by a
 /// `.gitignore`, rewritten after the gate) isn't in it. When an earlier check left one at `at`
-/// (a job's own, kept across its checks), it's reset to `head` and what that check left untracked
-/// is removed, but what it left ignored (its builds) stays. obid's git here reads none of the
-/// person's own git settings.
+/// (a job's own, kept across its checks), it's reset to `head` and everything that check left is
+/// removed, ignored files too and whatever `.gitignore` it wrote, but for the folders in `keep`
+/// (the repository's `checkKeep`: its builds), which can still carry what an earlier check's code
+/// wrote there. obid's git here reads none of the person's own git settings.
 pub async fn fresh_checkout(
     agent: &Spec,
     base: &str,
     head: &str,
     at: &Path,
+    keep: &[String],
 ) -> Result<Spec, String> {
     let common = agent
         .git_common
@@ -849,16 +851,23 @@ pub async fn fresh_checkout(
     )
     .await
     .map_err(|_| fail("its files"))?;
-    // What the last check left untracked goes; what it left ignored (its builds: `target/`,
-    // `node_modules`) stays for this one. Nothing in it was ever the agent's.
+    // Everything the last check left goes, whatever it ignored, but for the folders the
+    // repository keeps for its checks' builds (`-x` reads no `.gitignore`, only these `-e`s).
+    // The agent's own files were never here; what the last check's code (the agent's) wrote can
+    // be, in those folders only.
     if again {
-        crate::git::run(
-            &check.worktree,
-            &[OsStr::new("clean"), OsStr::new("-q"), OsStr::new("-ffd")],
-            &env,
-        )
-        .await
-        .map_err(|_| fail("its files"))?;
+        let kept: Vec<String> = keep
+            .iter()
+            .filter_map(|k| crate::merge::repo_path(k))
+            .map(|k| format!("/{k}/"))
+            .collect();
+        let mut args: Vec<&OsStr> = ["clean", "-q", "-ffdx"].map(OsStr::new).into();
+        for k in &kept {
+            args.extend([OsStr::new("-e"), OsStr::new(k)]);
+        }
+        crate::git::run(&check.worktree, &args, &env)
+            .await
+            .map_err(|_| fail("its files"))?;
     }
     Ok(check)
 }
@@ -1793,7 +1802,7 @@ required = false
         );
         let head = head_of(&job).await.unwrap();
         let at = dir.join("checks/job-1");
-        let check = fresh_checkout(&job, &base, &head, &at).await.unwrap();
+        let check = fresh_checkout(&job, &base, &head, &at, &[]).await.unwrap();
         // After the gate: what a survivor would write into the job's worktree.
         std::fs::write(job.worktree.join("run.sh"), "echo REWRITTEN\n").unwrap();
         assert!(!check.worktree.starts_with(&job.worktree) && !check.temp.starts_with(&job.temp));
