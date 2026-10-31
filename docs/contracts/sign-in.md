@@ -26,7 +26,7 @@ The business behavior contract for why a sign-in didn't take, shown under its ow
 | `busy` | a task of the account is queued or running, it's being removed, or GitHub's sign-in is starting | `409` | `Codex is busy with a task. Try again when it’s done.`; GitHub: `GitHub’s sign-in is already starting. Try again in a moment.` |
 | `didNotStart` | the login (or gh) gave no link or code, or couldn't start; Tetrix's sign-in server didn't register Oby | `502` | `GitHub’s sign-in didn’t start. Try again.` |
 | `codeRefused` | Claude Code didn't sign in with the code pasted | `422` | `That code didn’t work. Connect again for a new one.` |
-| `badAddress` | a Tetrix address that isn't HTTPS (or loopback HTTP), or an unknown preset | `422` | `That isn’t a Tetrix address Oby can use.` |
+| `badAddress` | a Tetrix address that isn't HTTPS (or loopback HTTP), one with a login, a fragment or a query other than `?org=<uuid>` (the organization a login in several answers for, #1667), or an unknown preset | `422` | `That isn’t a Tetrix address Oby can use.` |
 | `noSignIn` | that Tetrix's metadata, sign-in server or client can't be found or used | `502` | `That Tetrix doesn’t say where to sign in.` |
 
 A sign-in that started and then ended without signing in (its page closed, gh or the Tetrix exchange failing, 15 minutes for an agent or GitHub, 10 for Tetrix) puts Connect back with `Didn’t finish signing in. Try again.` The app knows it ended when `GET /v1/github` or `GET /v1/tetrix` says no sign-in is under way and nothing is signed in. obid makes that answer true only once it is: `GET /v1/github` reads the sign-in before gh's status, and a sign-in's end forgets the status before it shows as ended, so a status read that began before the end keeps nothing.
@@ -56,5 +56,6 @@ A sign-in that started and then ended without signing in (its page closed, gh or
 - **SIGN-IN-11:** no reason, an unknown one, or obid not answering → `Couldn’t connect <name>. Try again.`
 - **SIGN-IN-12:** GitHub's or Tetrix's sign-in that ends without signing in → the row back to Connect with `Didn’t finish signing in. Try again.`; the next try clears it.
 - **SIGN-IN-13:** a `gh auth status` read that began while gh's sign-in was under way and answers after it ended → the next `GET /v1/github` with no sign-in under way says `signedIn` true.
+- **SIGN-IN-14:** a Tetrix address ending in `?org=<uuid>` (either case) signs in, the id written in lower case, and every call goes there with it; any other query, a malformed id or anything after it → `422` `badAddress`. Without it, a login in several organizations has every call refused (HTTP `400`), and the job says Tetrix's reason and to add `?org=<your organization's id>` (#1667).
 
 **Test it when it's done (real Mac):** on first run, rename `cursor-agent` out of the PATH and Connect Cursor (`Cursor isn’t on this Mac.`); start GitHub's sign-in and close the browser's page, then cancel gh's device code (`Didn’t finish signing in. Try again.`); type `http://tetrix.example/mcp` in Connect Tetrix (`That isn’t a Tetrix address Oby can use.`).

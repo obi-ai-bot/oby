@@ -5337,15 +5337,14 @@ impl Jobs {
             .map(|r| r.default_branch)
     }
 
-    /// obid's clone of `repo`, with its default branch fetched now, for the brain's lookups
-    /// (#546): one at a time with the jobs getting ready in it.
+    /// obid's clone of `repo` (a configured one, or one of GitHub's the owner named, #1667), with
+    /// its default branch fetched now, for the brain's lookups (#546): one at a time with the jobs
+    /// getting ready in it.
     pub async fn research_clone(&self, repo: &str) -> Result<PathBuf, String> {
         let config = self
             .config
             .repos
-            .get()
-            .into_iter()
-            .find(|r| r.repo == repo)
+            .find(repo)
             .ok_or_else(|| format!("{repo} isn't a known repository"))?;
         let preparing = self.preparing(repo);
         let _ready = preparing.lock().await;

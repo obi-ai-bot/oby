@@ -596,6 +596,7 @@ mod tests {
             said: String::new(),
             attachments: vec![],
             attached_jobs: vec![],
+            repos_note: None,
             control: super::super::turn::Turns::default().begin("t1", "c1"),
             jobs: Mutex::new(vec![]),
             nonce: "n".into(),

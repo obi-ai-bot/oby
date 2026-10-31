@@ -551,7 +551,16 @@ impl Connections {
             ));
         }
         if !status.is_success() {
-            return Err(format!("{} answered HTTP {}.", c.host(), status.as_u16()));
+            // A 401 stays bare: callers refresh the login on exactly that text.
+            let why = if status == StatusCode::UNAUTHORIZED {
+                None
+            } else {
+                refusal(response).await
+            };
+            return Err(match why {
+                Some(why) => format!("{} answered HTTP {}: {why}.", c.host(), status.as_u16()),
+                None => format!("{} answered HTTP {}.", c.host(), status.as_u16()),
+            });
         }
         let session = response
             .headers()
@@ -688,6 +697,32 @@ impl Connections {
     }
 }
 
+/// Why a server refused a call, as its JSON error body says it (`detail`, `error_description` or
+/// `message`): one line of at most 200 characters, known secrets scrubbed, or none. Tetrix says
+/// which organization it needs this way (#1667).
+async fn refusal(mut response: reqwest::Response) -> Option<String> {
+    let mut body = Vec::new();
+    while body.len() < 4096
+        && let Ok(Some(chunk)) = response.chunk().await
+    {
+        body.extend_from_slice(&chunk);
+    }
+    reason_in(&body)
+}
+
+/// [`refusal`]'s reason in a body already read.
+fn reason_in(body: &[u8]) -> Option<String> {
+    let answer: Value = serde_json::from_slice(body).ok()?;
+    let why = ["detail", "error_description", "message"]
+        .iter()
+        .find_map(|key| answer[key].as_str())?;
+    // Redacted whole, then cut: a cut first could leave a secret's start that redaction misses.
+    let why = crate::secrets::known().redact(&why.split_whitespace().collect::<Vec<_>>().join(" "));
+    let why: String = why.chars().filter(|c| !c.is_control()).take(200).collect();
+    let why = why.trim_end_matches('.');
+    (!why.is_empty()).then(|| why.to_owned())
+}
+
 /// Where the use log before this one is kept: `uses.1.jsonl` next to `uses.jsonl`.
 fn previous_log(file: &Path) -> PathBuf {
     file.with_extension("1.jsonl")
@@ -789,6 +824,23 @@ async fn agent_mcp(
 mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
+
+    /// A refusal's reason is redacted whole before it's cut to 200 characters: a secret that
+    /// straddles the cut is never left as a prefix (#1667).
+    #[test]
+    fn a_refusal_s_reason_is_redacted_before_it_is_cut() {
+        let hidden = "a-word-the-vault-holds-here";
+        crate::secrets::known().learn("refusal test", hidden);
+        let detail = format!("{} {hidden} after", "x".repeat(180));
+        let why = reason_in(json!({ "detail": detail }).to_string().as_bytes()).unwrap();
+        assert!(why.chars().count() <= 200, "{why}");
+        assert!(!why.contains("a-word-the-vault"), "{why}");
+        assert_eq!(
+            reason_in(br#"{"error_description": "  no\n  org.  "}"#).as_deref(),
+            Some("no org")
+        );
+        assert_eq!(reason_in(b"<html>Bad Request</html>"), None);
+    }
 
     fn folder(name: &str) -> PathBuf {
         let path =

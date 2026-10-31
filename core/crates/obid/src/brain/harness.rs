@@ -13,7 +13,7 @@
 //! in a session of its own: a supervisor's (super::supervisor) and an event's
 //! (super::orchestrator).
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -74,6 +74,9 @@ pub struct Session {
     pub attachments: Vec<String>,
     /// The jobs the owner attached to their words, by obid's own ids.
     pub attached_jobs: Vec<String>,
+    /// obid's word on repositories the owner named that repos/ doesn't hold yet
+    /// ([`named_checkouts`]), put before their words.
+    pub repos_note: Option<String>,
     pub control: Arc<Control>,
     /// The jobs Oby's tools started this turn: their cards go on the turn.
     pub jobs: Mutex<Vec<Value>>,
@@ -1124,17 +1127,23 @@ async fn session(
     }
     watch.mark("its turn");
     checkouts(shared, &place, &|| control.live()).await;
-    watch.mark("repositories");
-    super::thinking(shared, control, 1, "Thinking", State::Running);
     // A turn nobody watches runs in a session of its own, never the conversation's: nothing of
     // the owner's history is in it (super::supervisor), and its id is kept apart.
     let unattended = supervising.is_some() || event.is_some();
+    let repos_note = if unattended {
+        None
+    } else {
+        named_checkouts(shared, &place, said, &|| control.live()).await
+    };
+    watch.mark("repositories");
+    super::thinking(shared, control, 1, "Thinking", State::Running);
     let resumed = kept(&place, &account.id).filter(|_| !unattended);
     let session = Arc::new(Session {
         conversation: control.conversation.clone(),
         said: said.to_owned(),
         attachments: asked.attachments.to_vec(),
         attached_jobs: asked.jobs.to_vec(),
+        repos_note,
         control: control.clone(),
         jobs: Mutex::new(vec![]),
         nonce: super::briefing::nonce(),
@@ -1289,13 +1298,19 @@ async fn attempts(
     // The owner's memories about them and the repositories here, quoted in the room afresh each
     // turn (#378); with none to give, an earlier turn's file goes. The agent writes in its room:
     // never through a link it left there.
-    let names: Vec<String> = shared
+    // The configured repositories, and those the room holds because the owner named them.
+    let mut names: Vec<String> = shared
         .config
         .repos
         .get()
         .iter()
         .map(|r| r.repo.clone())
         .collect();
+    for held in marks(place).into_keys() {
+        if !names.iter().any(|n| n.eq_ignore_ascii_case(&held)) {
+            names.push(held);
+        }
+    }
     let repos: Vec<&str> = names.iter().map(String::as_str).collect();
     let memories = place.room.join(crate::memory::FILE);
     match crate::memory::for_agent(&shared.config.home, &repos).await? {
@@ -1345,6 +1360,10 @@ async fn attempts(
         )
     });
     let with = |prompt: String| {
+        let prompt = match &session.repos_note {
+            Some(note) => format!("{note}\n\n{prompt}"),
+            None => prompt,
+        };
         let prompt = match &jobs {
             Some(jobs) => format!("{jobs}\n\n{prompt}"),
             None => prompt,
@@ -1798,7 +1817,7 @@ pub(super) fn orientation(shared: &Shared, tetrix: bool) -> String {
     }
     if !github.is_empty() {
         orientation += &format!(
-            "\n\nOther GitHub repositories the owner can push to, where a job may start too (no checkout in repos/): {}.",
+            "\n\nOther GitHub repositories the owner can push to, where a job may start too: {}. repos/ has a checkout of one only once the owner names it as owner/name; for one they mean but didn't name, ask which. Read a repository from repos/ rather than its GitHub web page: you have no login there, and a private one's is a 404.",
             github.join(", ")
         );
     }
@@ -2340,6 +2359,86 @@ async fn checkouts(shared: &Arc<Shared>, place: &Place, live: &(dyn Fn() -> bool
             tracing::warn!("conversation room: {} isn't checked out: {why}", repo.repo);
         }
     }
+}
+
+/// Checkouts of GitHub's repositories the owner's words name as `owner/name` (or by their GitHub
+/// address), which the room otherwise lacks: Oby reads one as it reads a configured one, through
+/// obid's clone, rather than its web page, which is a 404 for a private repository (#1667). A
+/// checkout from a clone obid has waits while the turn is live; a first clone goes on in the
+/// background, so the turn never waits on it. Its answer is obid's note for the agent: the named
+/// repositories still being cloned, and those the account Oby uses on GitHub can't see.
+async fn named_checkouts(
+    shared: &Arc<Shared>,
+    place: &Place,
+    said: &str,
+    live: &(dyn Fn() -> bool + Sync),
+) -> Option<String> {
+    let words: BTreeSet<String> = said
+        .split(|c: char| !(c.is_ascii_alphanumeric() || "-_./:".contains(c)))
+        .map(|w| w.trim_end_matches(['.', '/', ':']).to_ascii_lowercase())
+        .collect();
+    let github = shared.config.repos.github();
+    let listed = shared.config.repos.get();
+    let (mut cloning, mut unseen) = (vec![], vec![]);
+    for word in &words {
+        let word = word.strip_suffix(".git").unwrap_or(word);
+        let (address, name) = match word.rsplit_once("github.com/") {
+            Some((_, name)) => (true, name),
+            None => (false, word),
+        };
+        let Some((owner, repo)) = name.split_once('/') else {
+            continue;
+        };
+        if owner.is_empty() || repo.is_empty() || repo.contains('/') {
+            continue;
+        }
+        if listed.iter().any(|r| r.repo.eq_ignore_ascii_case(name)) {
+            continue;
+        }
+        let Some(found) = github.iter().find(|r| r.repo.eq_ignore_ascii_case(name)) else {
+            // Said as an address, or under an owner gh lists: a repository, not a path.
+            let owned = github.iter().any(|r| {
+                r.repo
+                    .split_once('/')
+                    .is_some_and(|(o, _)| o.eq_ignore_ascii_case(owner))
+            });
+            if address || owned {
+                unseen.push(name.to_owned());
+            }
+            continue;
+        };
+        let cloned = crate::git::clone_path(&shared.config.home, &found.repo).is_dir();
+        let (shared, place, found) = (shared.clone(), place.clone(), found.clone());
+        let name = found.repo.clone();
+        let made = tokio::spawn(async move {
+            if let Err(why) = checkout(&shared, &place, &found).await {
+                tracing::warn!("conversation room: {} isn't checked out: {why}", found.repo);
+            }
+        });
+        if !cloned {
+            cloning.push(name);
+            continue;
+        }
+        while !made.is_finished() && live() {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+    let mut note = vec![];
+    if !cloning.is_empty() {
+        note.push(format!(
+            "{} {} no checkout in repos/ yet: Oby is cloning it for the next turn. Answer from Tetrix when it knows; otherwise say the checkout is coming, and to ask again in a moment.",
+            cloning.join(", "),
+            if cloning.len() == 1 { "has" } else { "have" }
+        ));
+    }
+    if !unseen.is_empty() {
+        note.push(format!(
+            "Oby can't read {}: the GitHub account Oby uses (gh) can't see {}. If the owner asked about it, say so plainly, and that signing gh in to an account that can see it, or adding it to Oby's repositories, fixes it.",
+            unseen.join(", "),
+            if unseen.len() == 1 { "it" } else { "them" }
+        ));
+    }
+    (!note.is_empty()).then(|| format!("From Oby, not the owner: {}", note.join(" ")))
 }
 
 /// The commit `repo`'s default branch is at in obid's clone, cloning it first when there's none.
@@ -2959,6 +3058,7 @@ mod tests {
             said: String::new(),
             attachments: vec![],
             attached_jobs: vec![],
+            repos_note: None,
             control,
             jobs: Mutex::new(vec![]),
             nonce: "n".into(),
@@ -3259,6 +3359,7 @@ mod tests {
             said: String::new(),
             attachments: vec![],
             attached_jobs: vec![],
+            repos_note: None,
             control,
             jobs: Mutex::new(vec![]),
             nonce: "n".into(),
