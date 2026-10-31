@@ -203,6 +203,9 @@ pub fn refused(session: &Session, tool: &str, args: &serde_json::Value) -> Optio
         // The inbox is what waits for the owner: an unattended turn answers none of it, and adds
         // no offer to it.
         "oby_answer" => Some("A turn nobody watches answers nothing in the inbox."),
+        "oby_merge" | "oby_github_write" | "oby_settings" => Some(
+            "A turn nobody watches merges nothing, writes nothing on GitHub and changes no setting: say what should happen, and the owner can ask.",
+        ),
         "oby_offer" => Some(
             "A turn nobody watches offers nothing: say what should happen, and the owner can start it.",
         ),
@@ -603,6 +606,7 @@ mod tests {
             web: AtomicBool::new(true),
             dispatched: AtomicUsize::new(0),
             told: AtomicUsize::new(0),
+            asked: AtomicUsize::new(0),
             kept: "/nowhere/session.json".into(),
             account: "a".into(),
             room: "/nowhere/room".into(),

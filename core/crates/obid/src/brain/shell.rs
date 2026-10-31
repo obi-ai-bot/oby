@@ -99,7 +99,7 @@ fn by_rules(command: &str, mode: Mode, rules: &[Rule], bounds: &Bounds, tainted:
     // 1. Pushing or posting: only Publish does, whatever the mode.
     if crate::policy::fixed_denial("Bash", &input, room, &[]).is_some() {
         return Judged::Refuse(
-            "Oby publishes work itself, through a job's checks: the shell never pushes or posts. Start a job with oby_dispatch.".into(),
+            "The shell has no login, so it doesn't push or post: oby_merge merges a pull request, oby_github_write writes on GitHub with Oby's own login, and a job (oby_dispatch) pushes changed code through its checks.".into(),
         );
     }
     let call = Call::new("Bash", &input);

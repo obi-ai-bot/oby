@@ -484,15 +484,34 @@ fn a_check_in_turned_off_posts_nothing_and_a_failed_call_still_says_what_happene
     let mut obid = start(&folder.0, &config, None);
     let on = r#"OBY oby_check_in {"schedule": {"every": "daily", "at": "08:30"}, "zone": "UTC"}"#;
 
-    // After reading what others wrote, the turn's words turn none on.
+    // After reading what others wrote, the turn's words turn none on: they wait for the owner's
+    // Confirm (TASKCONV-11).
     let tainted = say(&obid, &format!("READREPO {on}"), None);
     assert!(
         tainted["text"]
             .as_str()
             .unwrap()
-            .contains("only when the owner says it again"),
+            .contains("waits for the owner's OK"),
         "{tainted}"
     );
+    assert_eq!(check_in_kept(&obid), Value::Null);
+    // The owner cancels that card: nothing waits on them in the check-ins below.
+    let inbox = call(&obid, "GET", "/v1/inbox", None);
+    let card = inbox
+        .body
+        .as_array()
+        .and_then(|items| items.iter().find(|i| i["kind"] == "confirm"))
+        .unwrap_or_else(|| panic!("a confirm item: {}", inbox.text))["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let cancelled = call(
+        &obid,
+        "POST",
+        &format!("/v1/inbox/{card}/answer"),
+        Some(&json!({"answer": "Cancel"})),
+    );
+    assert_eq!(cancelled.status, 200, "{}", cancelled.text);
     assert_eq!(check_in_kept(&obid), Value::Null);
 
     let conversation = say(&obid, on, None)["conversation"]

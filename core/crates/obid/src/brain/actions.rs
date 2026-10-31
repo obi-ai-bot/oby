@@ -527,7 +527,7 @@ pub async fn act(
         Action::RetryJob | Action::DismissJob | Action::StartNow => {
             on_jobs(shared, plan, source, conversation)
         }
-        Action::AnswerInbox => answer_inbox(shared, plan, conversation).await,
+        Action::AnswerInbox => answer_inbox(shared, plan, conversation, None).await,
         Action::SetSetting => set_setting(shared, plan),
         Action::MessageJob => message_job(shared, plan, said, source, conversation, turn),
         Action::MoveJob => {
@@ -856,8 +856,15 @@ pub(super) fn already_on_it(
 }
 
 /// answer_inbox: an item of the inbox, with one of its options or the user's own words
-/// (`Desk.answerInbox`).
-async fn answer_inbox(shared: &Arc<Shared>, plan: &Plan, conversation: &str) -> Outcome {
+/// (`Desk.answerInbox`). `owners_word`: when the turn began, if its words are the owner's own,
+/// signed, and it read nothing untrusted (TASKCONV-9): an item made before then is answered as they
+/// say, the decisions only they make included; anything else waits for their Confirm.
+pub(super) async fn answer_inbox(
+    shared: &Arc<Shared>,
+    plan: &Plan,
+    conversation: &str,
+    owners_word: Option<i64>,
+) -> Outcome {
     let Some(id) = plan.item.as_deref() else {
         return Outcome::NeedsWhich("Say which inbox item to answer.".into());
     };
@@ -881,13 +888,6 @@ async fn answer_inbox(shared: &Arc<Shared>, plan: &Plan, conversation: &str) -> 
     if item.done.is_some() {
         return Outcome::Failed(format!(
             "Couldn't answer {}: it's done already.",
-            item.title
-        ));
-    }
-    // A confirm item is the user's own decision: the brain never answers it.
-    if item.kind == "confirm" {
-        return Outcome::Failed(format!(
-            "Couldn't answer {}: only you can confirm it, in your inbox.",
             item.title
         ));
     }
@@ -919,8 +919,23 @@ async fn answer_inbox(shared: &Arc<Shared>, plan: &Plan, conversation: &str) -> 
         ", with your words".to_owned()
     };
     let job = shared.jobs.get(&item.job);
-    match owners_call(&item, &words, job.as_ref()) {
+    // One made since the turn began is one the owner hasn't seen: never theirs to settle by words.
+    let owner = owners_word.is_some_and(|begun| item.created < begun);
+    match owners_call(&item, &words, job.as_ref(), owner) {
         Owners::No => {}
+        Owners::Word => {
+            let Some(words) = confirm_answer(&words) else {
+                return Outcome::Failed(format!(
+                    "Couldn't answer {}: a Confirm is answered Confirm or Cancel, nothing else.",
+                    item.title
+                ));
+            };
+            return match shared.link.answer_on_owners_word(id, words).await {
+                Ok(_) => Outcome::Done(format!("Answered {}: {words}.", item.title)),
+                Err(e) => Outcome::Failed(format!("Couldn't answer {}: {}", item.title, e.message)),
+            };
+        }
+        Owners::Waits(why) => return Outcome::Done(format!("{}: {why}", item.title)),
         Owners::Refuse(why) => {
             return Outcome::Failed(format!("Couldn't answer {}: {why}", item.title));
         }
@@ -943,11 +958,16 @@ async fn answer_inbox(shared: &Arc<Shared>, plan: &Plan, conversation: &str) -> 
 }
 
 /// Whether answering `item` with `words` is the user's alone (the owner's decision of
-/// 2026-10-16): what persists or widens trust never happens in a turn.
+/// 2026-10-16): what persists or widens trust happens in a turn only on the owner's own word
+/// (AGENTS.md, "Oby forbids nothing", TASKCONV-9); otherwise on their Confirm.
 #[derive(Debug, PartialEq)]
 enum Owners {
-    /// A one-off answer: done in the turn.
+    /// A one-off answer, or the owner's own word: done in the turn.
     No,
+    /// A confirm item, confirmed or cancelled on the owner's own word.
+    Word,
+    /// It waits for the owner's own click on its card, and why: not an error.
+    Waits(String),
     /// Not answered at all, and why.
     Refuse(String),
     /// A confirm item: its title and text, obid's own words saying exactly what Confirm does
@@ -965,7 +985,19 @@ fn quoted(words: &str) -> String {
         .join("\n")
 }
 
-fn owners_call(item: &Item, words: &str, job: Option<&Job>) -> Owners {
+/// What answering a Confirm on the owner's word does: Confirm confirms and Cancel cancels, in any
+/// case; anything else ("No", "Leave it") neither.
+fn confirm_answer(words: &str) -> Option<&'static str> {
+    use crate::sphere::inbox::{CANCEL, CONFIRM};
+    [CONFIRM, CANCEL]
+        .into_iter()
+        .find(|a| words.trim().eq_ignore_ascii_case(a))
+}
+
+/// `owner`: the words are the owner's own (TASKCONV-9). Then what only they decide is answered as
+/// they said; otherwise it waits for their Confirm, which answers it as they would have, never
+/// refused. A secret, and a teammate's approval, keep the owner's own click either way.
+fn owners_call(item: &Item, words: &str, job: Option<&Job>, owner: bool) -> Owners {
     use crate::sphere::inbox::{ACCEPT, ACCEPT_REMEMBER, CANCEL_START, DECLINE, DECLINE_REMEMBER};
     let on_item = |name: &str, payload: serde_json::Value| Confirmed {
         action: name.into(),
@@ -973,41 +1005,53 @@ fn owners_call(item: &Item, words: &str, job: Option<&Job>) -> Owners {
         payload,
     };
     let about = super::briefing::line(&item.title, 80);
-    match item.kind.as_str() {
-        // A confirm item is the owner's own decision: never answered by the brain.
-        "confirm" => Owners::Refuse("only you can confirm it, in your inbox.".into()),
-        // What someone said, told to the owner: theirs to read, not the brain's to settle.
-        "watch" => Owners::Refuse("it's for you to read, in your inbox.".into()),
-        // A review the listener started: Approve posts on GitHub, which only the owner does.
-        "listen" => Owners::Refuse("only you can approve or dismiss it, in your inbox.".into()),
-        // A merge card: merging is the owner's tap, or the workflow they taught Oby (#853).
-        "merge" => {
-            Owners::Refuse("only you can merge it, or ask a teammate, in your inbox.".into())
+    // The owner's decision: at once on their word, else their Confirm of exactly these words.
+    let theirs = || {
+        if owner {
+            return Owners::No;
         }
-        // So is Merge on Oby's review item whose changes were left to the owner (MERGING-17).
-        "failed" if words == crate::merge::MERGE => {
-            Owners::Refuse("only you can merge it: Merge is on its card, in your inbox.".into())
-        }
-        // A job's plan is the owner's to approve or send back, either way (#609).
-        "plan" => Owners::Refuse(
-            "it's a job's plan: only you can approve it or send it back, in your inbox.".into(),
-        ),
-        // A job's agent asked the owner a question (#858): theirs to answer.
-        crate::sphere::inbox::QUESTION_KIND => Owners::Refuse(
-            "it's a job's question for you: only you can answer it, in your inbox.".into(),
-        ),
-        // A conversation's shell command runs only on the owner's own answer; saying no isn't.
-        "permission"
-            if super::shell::is_item(item)
-                && crate::permissions::inbox_decision(words)
-                    != (crate::permissions::Decision::Deny, None) =>
-        {
-            Owners::Refuse(
-                "it's a command in a conversation's shell: only you can let it run, in your inbox."
-                    .into(),
+        if item.options.iter().any(|o| o == words) {
+            Owners::Confirm(
+                format!("{words}: {about}"),
+                format!(
+                    "Oby's brain planned to answer {about} with {words}. It happens only if you confirm."
+                ),
+                on_item(action::ANSWER_ITEM, serde_json::json!({"answer": words})),
+            )
+        } else {
+            Owners::Confirm(
+                format!("Send an answer: {about}"),
+                format!(
+                    "Oby's brain planned to answer {about} in words. It happens only if you confirm. What it wrote, quoted:\n\n{}",
+                    quoted(words)
+                ),
+                on_item(action::ANSWER_ITEM, serde_json::json!({"answer": words})),
             )
         }
-        // Letting a secret through is the owner's alone, even once (#586); saying no isn't.
+    };
+    let bare_no =
+        crate::permissions::inbox_decision(words) == (crate::permissions::Decision::Deny, None);
+    match item.kind.as_str() {
+        // A Confirm is the owner's: on their word, as their tap; else it's on its card already. A
+        // teammate's approval on GitHub, or a standing one, keeps their tap.
+        "confirm"
+            if owner
+                && !item.confirm.as_ref().is_some_and(|c| {
+                    c.action == action::APPROVE_ON_HOST || c.action == action::REMEMBER_APPROVAL
+                }) =>
+        {
+            Owners::Word
+        }
+        "confirm" => Owners::Waits("it waits for your Confirm on its card, in your inbox.".into()),
+        // What someone said, told to the owner: dismissing it is one-off.
+        "watch" if words == crate::sphere::inbox::DISMISS => Owners::No,
+        // Merge on Oby's review item whose changes were left to the owner (MERGING-17): the
+        // owner's word, or their Confirm.
+        "failed" if words.eq_ignore_ascii_case(crate::merge::MERGE) => theirs(),
+        // A watcher's notice, a review the listener started (Approve posts on GitHub), a merge
+        // card (#853), a job's plan (#609) and its agent's question (#858): the owner's.
+        "watch" | "listen" | "merge" | "plan" | crate::sphere::inbox::QUESTION_KIND => theirs(),
+        // Letting a secret through is the owner's click alone, even once (#586); saying no isn't.
         "permission"
             if job
                 .and_then(|j| j.permission.as_ref())
@@ -1015,10 +1059,28 @@ fn owners_call(item: &Item, words: &str, job: Option<&Job>) -> Owners {
                 && crate::permissions::inbox_decision(words).0
                     != crate::permissions::Decision::Deny =>
         {
-            Owners::Refuse("it touches secrets: only you can let it through, in your inbox.".into())
+            Owners::Waits(
+                "it touches secrets: it waits for your click on its card, in your inbox.".into(),
+            )
         }
-        // Allow once and no (with or without words) are one-off; always saves the permission's
-        // rule, which can be broader than this one command: the title says the rule.
+        // A bare no to a job's or a conversation's shell permission is Oby's to say.
+        "permission" if bare_no => Owners::No,
+        // A conversation's shell command that touches secrets runs only on the owner's click, even
+        // on their word; any other, on their answer.
+        "permission"
+            if super::shell::is_item(item)
+                && item
+                    .text
+                    .starts_with(crate::permissions::Reach::Secrets.why()) =>
+        {
+            Owners::Waits(
+                "it touches secrets: it waits for your click on its card, in your inbox.".into(),
+            )
+        }
+        "permission" if super::shell::is_item(item) => theirs(),
+        "permission" if owner => Owners::No,
+        // Always saves the permission's rule, which can be broader than this one command: the
+        // title says the rule.
         "permission" if words == crate::permissions::ALWAYS_ALLOW => {
             let waiting = job.and_then(|job| {
                 let permission = job.permission.as_ref()?;
@@ -1045,13 +1107,14 @@ fn owners_call(item: &Item, words: &str, job: Option<&Job>) -> Owners {
                 },
             )
         }
-        "permission" => Owners::No,
+        // Allow once, or words to the job's agent: the owner's (N3).
+        "permission" => theirs(),
         // Dismissing an event is one-off; starting its work (Look into it, Fix it) is the owner's
         // to confirm, as a GitHub offer's is (#1124).
         "pluginEvent" if words == crate::sphere::inbox::DISMISS => Owners::No,
         // Saying no once to another Obi is one-off; accepting its request at all, remembering
         // either way, or answering its question in words (they leave for the other Obi) aren't.
-        "obiRequest" if words == DECLINE => Owners::No,
+        "obiRequest" if words == DECLINE || owner => Owners::No,
         "obiRequest" => {
             let fixed = |option: &str, name: &str| {
                 Owners::Confirm(
@@ -1076,7 +1139,7 @@ fn owners_call(item: &Item, words: &str, job: Option<&Job>) -> Owners {
                 ),
             }
         }
-        "start" if words == CANCEL_START => Owners::No,
+        "start" if words == CANCEL_START || owner => Owners::No,
         // Starting the work the brain proposed is the owner's call (review on #552), and the
         // title is the job obid keeps for it: mode, tool, account and check (N1).
         "start" => {
@@ -1096,6 +1159,7 @@ fn owners_call(item: &Item, words: &str, job: Option<&Job>) -> Owners {
                 on_item(action::START, serde_json::Value::Null),
             )
         }
+        _ if owner => Owners::No,
         // Anything else is the user's until obid knows it's one-off. An option is obid's own
         // words; anything else the brain wrote is quoted, never the title.
         _ if item.options.iter().any(|o| o == words) => Owners::Confirm(
@@ -1510,8 +1574,43 @@ mod tests {
         }
     }
 
+    /// TASKCONV-9: only Confirm confirms and only Cancel cancels, on the owner's word.
     #[test]
-    fn owners_call_refuses_a_confirm_item() {
+    fn taskconv_9_only_confirm_confirms_and_only_cancel_cancels() {
+        assert_eq!(confirm_answer("Confirm"), Some("Confirm"));
+        assert_eq!(confirm_answer(" confirm "), Some("Confirm"));
+        assert_eq!(confirm_answer("cancel"), Some("Cancel"));
+        for other in ["No", "Leave it", "don't", "yes", "Confirm it", ""] {
+            assert_eq!(confirm_answer(other), None, "{other}");
+        }
+    }
+
+    /// A conversation's shell command that touches secrets waits for the owner's click, even on
+    /// their word.
+    #[test]
+    fn a_shell_command_that_touches_secrets_keeps_its_click() {
+        let mut shell = item(
+            "permission",
+            "shell-5b0e2c4d-1111-2222-3333-444455556666-pa1b2c3",
+            "Run cat ~/.ssh/id_rsa",
+            &["Allow", "Deny"],
+        );
+        shell.text = format!(
+            "{}\n\ncat ~/.ssh/id_rsa",
+            crate::permissions::Reach::Secrets.why()
+        );
+        for owner in [false, true] {
+            assert!(matches!(
+                owners_call(&shell, "Allow", None, owner),
+                Owners::Waits(_)
+            ));
+        }
+        assert_eq!(owners_call(&shell, "Deny", None, true), Owners::No);
+    }
+
+    /// TASKCONV-9: a Confirm stays on its card unless the owner's own word confirms it.
+    #[test]
+    fn owners_call_leaves_a_confirm_item_on_its_card() {
         let confirm = item(
             "confirm",
             "confirm-1",
@@ -1519,13 +1618,27 @@ mod tests {
             &["Confirm"],
         );
         assert_eq!(
-            owners_call(&confirm, "Confirm", None),
-            Owners::Refuse("only you can confirm it, in your inbox.".into())
+            owners_call(&confirm, "Confirm", None, false),
+            Owners::Waits("it waits for your Confirm on its card, in your inbox.".into())
         );
+        assert_eq!(owners_call(&confirm, "Confirm", None, true), Owners::Word);
+        // A teammate's approval on GitHub keeps the owner's tap, even on their word.
+        let mut approval = confirm.clone();
+        approval.confirm = Some(Box::new(Confirmed {
+            action: action::APPROVE_ON_HOST.into(),
+            target: "confirm-1".into(),
+            payload: json!({}),
+        }));
+        assert!(matches!(
+            owners_call(&approval, "Confirm", None, true),
+            Owners::Waits(_)
+        ));
     }
 
+    /// TASKCONV-9: "merge it" answers a merge card on the owner's word; otherwise it's their Confirm
+    /// of exactly that answer, never a refusal.
     #[test]
-    fn the_brain_cant_answer_a_merge_card() {
+    fn taskconv_9_a_merge_card_is_answered_on_the_owners_word() {
         let card = item(
             "merge",
             "merge-j1-abc",
@@ -1533,40 +1646,46 @@ mod tests {
             &["Merge", "Merge, and remember", "Leave it open"],
         );
         for words in ["Merge", "Merge, and remember", "Leave it open"] {
-            assert_eq!(
-                owners_call(&card, words, None),
-                Owners::Refuse("only you can merge it, or ask a teammate, in your inbox.".into()),
-                "{words}"
-            );
+            assert_eq!(owners_call(&card, words, None, true), Owners::No, "{words}");
+            let Owners::Confirm(title, _, confirmed) = owners_call(&card, words, None, false)
+            else {
+                panic!("not a confirm: {words}")
+            };
+            assert_eq!(title, format!("{words}: Ready to merge: Fix the thing"));
+            assert_eq!(confirmed.action, action::ANSWER_ITEM);
+            assert_eq!(confirmed.payload, json!({"answer": words}));
         }
     }
 
+    /// TASKCONV-9: a notice is Oby's to dismiss; approving a review posts on GitHub, so it's the
+    /// owner's word or their Confirm.
     #[test]
-    fn merging_17_the_brain_cant_merge_from_a_review_item() {
+    fn merging_17_merge_on_a_review_item_is_the_owners_word_or_their_confirm() {
         let review = item(
             "failed",
             "j1-review-r1",
             "Fix the thing",
             &["One more round", "Merge"],
         );
+        // TASKCONV-9: on the owner's word it merges; otherwise it's their Confirm of Merge.
+        assert_eq!(owners_call(&review, "Merge", None, true), Owners::No);
         assert_eq!(
-            owners_call(&review, "Merge", None),
-            Owners::Refuse("only you can merge it: Merge is on its card, in your inbox.".into())
+            title(&owners_call(&review, "Merge", None, false)),
+            "Merge: Fix the thing"
         );
         // One more round is the owner's Confirm, as on any failed item.
         assert!(matches!(
-            owners_call(&review, "One more round", None),
+            owners_call(&review, "One more round", None, false),
             Owners::Confirm(..)
         ));
     }
 
+    /// TASKCONV-9: a notice is Oby's to dismiss; approving a review posts on GitHub, so it's the
+    /// owner's word or their Confirm.
     #[test]
-    fn owners_call_refuses_a_watchers_notice() {
+    fn owners_call_dismisses_a_notice_and_confirms_an_approval() {
         let notice = item("watch", "watch-1", "Dmitry on Slack, in #x", &["Dismiss"]);
-        assert_eq!(
-            owners_call(&notice, "Dismiss", None),
-            Owners::Refuse("it's for you to read, in your inbox.".into())
-        );
+        assert_eq!(owners_call(&notice, "Dismiss", None, false), Owners::No);
         // A listener's review: Approve posts on GitHub, the owner's alone.
         let review = item(
             "listen",
@@ -1575,19 +1694,51 @@ mod tests {
             &["Approve", "Dismiss"],
         );
         assert_eq!(
-            owners_call(&review, "Approve", None),
-            Owners::Refuse("only you can approve or dismiss it, in your inbox.".into())
+            title(&owners_call(&review, "Approve", None, false)),
+            "Approve: Review ready: obi #835"
         );
+        assert_eq!(owners_call(&review, "Approve", None, true), Owners::No);
+        // A job's plan and its agent's question: the same.
+        for kind in ["plan", crate::sphere::inbox::QUESTION_KIND] {
+            let asked = item(kind, "j1-permission-p1", "Fix it", &["Approve"]);
+            assert_eq!(
+                owners_call(&asked, "Approve", None, true),
+                Owners::No,
+                "{kind}"
+            );
+            assert!(
+                matches!(
+                    owners_call(&asked, "Use the v2 API", None, false),
+                    Owners::Confirm(..)
+                ),
+                "{kind}"
+            );
+        }
     }
 
     #[test]
     fn owners_call_keeps_one_off_answers_in_the_turn() {
         let permission = item("permission", "j1-permission-p1", "Fix it", &[]);
         for words in ["Allow", "Deny", "no, run only the runner tests"] {
-            assert_eq!(owners_call(&permission, words, None), Owners::No, "{words}");
+            assert_eq!(
+                owners_call(&permission, words, None, true),
+                Owners::No,
+                "{words}"
+            );
+        }
+        // Not the owner's word: only a bare no is Oby's; letting it through is their Confirm.
+        assert_eq!(owners_call(&permission, "Deny", None, false), Owners::No);
+        for words in ["Allow", "no, run only the runner tests"] {
+            assert!(
+                matches!(
+                    owners_call(&permission, words, None, false),
+                    Owners::Confirm(..)
+                ),
+                "{words}"
+            );
         }
         let event = item("pluginEvent", "ev-x-1", "Build failed", &["Dismiss"]);
-        assert_eq!(owners_call(&event, "Dismiss", None), Owners::No);
+        assert_eq!(owners_call(&event, "Dismiss", None, false), Owners::No);
         // Starting an event's work is never one-off: the owner confirms it.
         let offer = item(
             "pluginEvent",
@@ -1596,19 +1747,19 @@ mod tests {
             &["Fix it", "Dismiss"],
         );
         assert_eq!(
-            title(&owners_call(&offer, "Fix it", None)),
+            title(&owners_call(&offer, "Fix it", None, false)),
             "Fix it: Ticket assigned: ENG-1"
         );
         let request = item("obiRequest", "obi-1", "Review request from ernesto", &[]);
-        assert_eq!(owners_call(&request, "Decline", None), Owners::No);
+        assert_eq!(owners_call(&request, "Decline", None, false), Owners::No);
         let start = item("start", "start-1", "Fix", &["Start", "Cancel"]);
-        assert_eq!(owners_call(&start, "Cancel", None), Owners::No);
+        assert_eq!(owners_call(&start, "Cancel", None, false), Owners::No);
     }
 
-    /// A conversation's shell command runs only on the owner's own answer: the brain may only say
-    /// a bare no to it.
+    /// A conversation's shell command runs only on the owner's own answer: their word, or their
+    /// Confirm; a bare no is Oby's.
     #[test]
-    fn owners_call_never_lets_a_shell_command_run() {
+    fn owners_call_lets_a_shell_command_run_only_on_the_owners_answer() {
         let shell = item(
             "permission",
             "shell-5b0e2c4d-1111-2222-3333-444455556666-pa1b2c3",
@@ -1617,14 +1768,20 @@ mod tests {
         );
         for words in ["Allow", "yes", "Always allow", "Deny, but use pip instead"] {
             assert!(
-                matches!(owners_call(&shell, words, None), Owners::Refuse(_)),
+                matches!(owners_call(&shell, words, None, false), Owners::Confirm(..)),
+                "{words}"
+            );
+            assert_eq!(
+                owners_call(&shell, words, None, true),
+                Owners::No,
                 "{words}"
             );
         }
-        assert_eq!(owners_call(&shell, "Deny", None), Owners::No);
+        assert_eq!(owners_call(&shell, "Deny", None, false), Owners::No);
     }
 
-    /// #586: the brain never lets a secret through, not even once; a no still goes through it.
+    /// #586: a secret is let through only by the owner's click, even on their word; a no still
+    /// goes through the brain.
     #[test]
     fn owners_call_never_lets_a_secret_through() {
         let permission = item("permission", "j1-permission-p1", "Fix it", &[]);
@@ -1632,24 +1789,31 @@ mod tests {
         job.permission.as_mut().unwrap().why =
             Some(crate::permissions::Reach::Secrets.why().into());
         for words in ["Allow", "yes", "Always allow"] {
-            assert_eq!(
-                owners_call(&permission, words, Some(&job)),
-                Owners::Refuse(
-                    "it touches secrets: only you can let it through, in your inbox.".into()
-                ),
-                "{words}"
-            );
+            for owner in [false, true] {
+                assert_eq!(
+                    owners_call(&permission, words, Some(&job), owner),
+                    Owners::Waits(
+                        "it touches secrets: it waits for your click on its card, in your inbox."
+                            .into()
+                    ),
+                    "{words}"
+                );
+            }
         }
         for words in ["Deny", "no, read the key's path from the docs instead"] {
             assert_eq!(
-                owners_call(&permission, words, Some(&job)),
+                owners_call(&permission, words, Some(&job), true),
                 Owners::No,
                 "{words}"
             );
         }
-        // Another permission is the brain's to allow once, as before.
         assert_eq!(
-            owners_call(&permission, "Allow", Some(&waiting_job(None))),
+            owners_call(&permission, "Deny", Some(&job), false),
+            Owners::No
+        );
+        // Another permission is allowed once on the owner's word.
+        assert_eq!(
+            owners_call(&permission, "Allow", Some(&waiting_job(None)), true),
             Owners::No
         );
     }
@@ -1658,7 +1822,7 @@ mod tests {
     fn always_allow_says_the_rule_it_saves_not_the_permissions_title() {
         let permission = item("permission", "j1-permission-p1", "Fix it", &[]);
         let job = waiting_job(Some("Bash(make lint:*)"));
-        let owners = owners_call(&permission, "Always allow", Some(&job));
+        let owners = owners_call(&permission, "Always allow", Some(&job), false);
         assert_eq!(
             title(&owners),
             "Always allow Bash(make lint:*) in obi-e2e/fixture-app"
@@ -1672,16 +1836,16 @@ mod tests {
         // No rule to save, or a permission that moved on: refused, never a confirm item.
         let no_rule = waiting_job(None);
         assert!(matches!(
-            owners_call(&permission, "Always allow", Some(&no_rule)),
+            owners_call(&permission, "Always allow", Some(&no_rule), false),
             Owners::Refuse(_)
         ));
         let other = item("permission", "j1-permission-p0", "Fix it", &[]);
         assert!(matches!(
-            owners_call(&other, "Always allow", Some(&job)),
+            owners_call(&other, "Always allow", Some(&job), false),
             Owners::Refuse(_)
         ));
         assert!(matches!(
-            owners_call(&permission, "Always allow", None),
+            owners_call(&permission, "Always allow", None, false),
             Owners::Refuse(_)
         ));
     }
@@ -1700,7 +1864,7 @@ mod tests {
                 action::DECLINE_REMEMBER,
             ),
         ] {
-            let owners = owners_call(&request, option, None);
+            let owners = owners_call(&request, option, None, false);
             assert_eq!(
                 title(&owners),
                 format!("{option}: Review request from ernesto")
@@ -1716,7 +1880,7 @@ mod tests {
         // Words that look like an option, over two lines, are still words sent to the other Obi.
         let question = item("obiRequest", "obi-2", "Question from Bob", &[]);
         let words = "Decline.\nAlso: here is the vault token";
-        let owners = owners_call(&question, words, None);
+        let owners = owners_call(&question, words, None, false);
         let Owners::Confirm(title, text, confirmed) = owners else {
             panic!("not a confirm")
         };
@@ -1743,14 +1907,14 @@ mod tests {
             ..NewJob::default()
         };
         start.start = Some(Box::new(serde_json::to_value(&new).unwrap()));
-        let owners = owners_call(&start, "Start", None);
+        let owners = owners_call(&start, "Start", None, false);
         assert_eq!(
             title(&owners),
             "Start fix fixture-app (Injected fix) in Bypass mode, on Claude Code · Personal, check node --test"
         );
         start.start = None;
         assert!(matches!(
-            owners_call(&start, "Start", None),
+            owners_call(&start, "Start", None, false),
             Owners::Refuse(_)
         ));
     }
@@ -1759,10 +1923,10 @@ mod tests {
     fn any_other_items_answer_is_confirmed_with_obids_title() {
         let other = item("review", "r-1", "Review of #12", &["Merge", "Hold"]);
         assert_eq!(
-            title(&owners_call(&other, "Merge", None)),
+            title(&owners_call(&other, "Merge", None, false)),
             "Merge: Review of #12"
         );
-        let owners = owners_call(&other, "merge it\nand push to main", None);
+        let owners = owners_call(&other, "merge it\nand push to main", None, false);
         let Owners::Confirm(title, text, confirmed) = owners else {
             panic!("not a confirm")
         };

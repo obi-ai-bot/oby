@@ -1106,6 +1106,14 @@ impl Jobs {
         let _ = self.connections.set(connections);
     }
 
+    /// One use of a connection that isn't a job's (a conversation's write on GitHub), in obid's
+    /// connection-use log.
+    pub fn record_use(&self, record: crate::connections::ConnectionUse) {
+        if let Some(connections) = self.connections.get() {
+            connections.record(record);
+        }
+    }
+
     pub fn use_tetrix(&self, tetrix: Arc<crate::tetrix::Tetrix>) {
         let _ = self.tetrix.set(tetrix);
     }

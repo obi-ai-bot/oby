@@ -1097,8 +1097,8 @@ fn one_message_tries_a_failed_job_again_and_dismisses_the_old_one() {
     );
 }
 
-/// #858: a job's agent's question is the owner's to answer: oby_tell_job refuses while it waits,
-/// and it still waits. The owner's answer reaches the agent without the vault's secrets, and none
+/// #858: a job's agent's question is the owner's to answer: oby_tell_job's words that aren't
+/// their own signed word wait for their Confirm, and it still waits. The owner's answer reaches the agent without the vault's secrets, and none
 /// goes while the vault can't be read.
 #[test]
 fn only_the_owner_answers_a_jobs_question_and_without_vault_secrets() {
@@ -1120,7 +1120,7 @@ fn only_the_owner_answers_a_jobs_question_and_without_vault_secrets() {
         answer["text"]
             .as_str()
             .unwrap()
-            .contains("It waits for the owner to answer its question"),
+            .contains("waits for your OK"),
         "{answer}"
     );
     let job = get_job(&obid, &id);
@@ -1967,7 +1967,8 @@ fn the_briefing_marks_this_conversations_jobs() {
 // The inbox the brain may and may not answer (the owner's decision of 2026-10-16, review on
 // #552): what persists or widens trust waits for the owner's own Confirm.
 
-/// A conversation cannot grant a job's permission or save an allow rule on the owner's behalf.
+/// A conversation's words that aren't the owner's own signed word grant no permission and save no
+/// allow rule: each is a Confirm the owner answers.
 #[test]
 fn only_the_owner_may_allow_a_job_permission() {
     let folder = Folder::new("brain-inbox-always");
@@ -1983,13 +1984,15 @@ fn only_the_owner_may_allow_a_job_permission() {
             .find(|i| i["job"] == id.as_str())
     });
     let item_id = item["id"].as_str().unwrap();
+    // Words no app of the owner's signed: a Confirm of the answer, the permission still waiting
+    // (TASKCONV-9).
     for answer in ["Allow", "Always allow"] {
         let said = said(
             &obid,
             &format!(r#"OBY oby_answer {{"item":"{item_id}","answer":"{answer}"}}"#),
         );
         assert!(
-            said["text"].as_str().unwrap().contains("owner's own"),
+            said["text"].as_str().unwrap().contains("waits for your OK"),
             "{said}"
         );
         assert!(
@@ -2207,7 +2210,7 @@ fn the_brain_never_answers_a_confirm_item() {
         refused["text"]
             .as_str()
             .unwrap()
-            .contains("only you can confirm it"),
+            .contains("waits for your Confirm on its card"),
         "{refused}"
     );
     assert_eq!(get_job(&obid, &id)["mode"], "ask");
@@ -2279,7 +2282,10 @@ fn the_brain_never_lets_a_secret_through() {
         &format!(r#"OBY oby_answer {{"item":"{item_id}","answer":"Allow"}}"#),
     );
     assert!(
-        answer["text"].as_str().unwrap().contains("owner's own"),
+        answer["text"]
+            .as_str()
+            .unwrap()
+            .contains("it touches secrets: it waits for your click on its card"),
         "{answer}"
     );
     let job = call(&obid, "GET", &format!("/v1/jobs/{id}"), None).body;
