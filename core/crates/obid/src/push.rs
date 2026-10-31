@@ -1552,6 +1552,7 @@ mod tests {
         ready.status = Status::Done;
         ready.base = Some("dev".into());
         ready.commits = Some(2);
+        ready.checked_head = Some("a".repeat(40));
         ready.publish_error = Some("Couldn't push oby/fix: the remote hung up.".into());
         assert_eq!(notice(&ready), Some(Notice::Ready));
         assert_eq!(
@@ -2074,6 +2075,7 @@ mod tests {
         ready.finished = Some(30);
         ready.base = Some("dev".into());
         ready.commits = Some(2);
+        ready.checked_head = Some("a".repeat(40));
         ready.publish_error = Some("Couldn't push: the remote hung up.".into());
         let mut quiet = job("quiet");
         quiet.status = Status::Running;

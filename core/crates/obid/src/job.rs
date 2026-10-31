@@ -332,6 +332,15 @@ pub struct Job {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stalled: Option<Stalled>,
     pub start_commit: Option<String>,
+    /// The commit its branch was at when its check passed (none ran, when it has none) and it
+    /// ended done: the only commit publishing pushes (docs/contracts/publishing.md, PUBLISHING-1).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checked_head: Option<String>,
+    /// What its last checks left in its worktree, uncommitted: each `git status` entry with the
+    /// hash of what was there (`<entry>\t<hash>`). Still there unchanged when its next check
+    /// starts, it isn't the job's uncommitted work (PUBLISHING-5): a test report, coverage.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub check_left: Vec<String>,
     pub mode: Option<String>,
     pub waiting: Option<Waiting>,
     pub phase: Option<Phase>,
@@ -779,6 +788,8 @@ impl Job {
             limit: None,
             stalled: None,
             start_commit: None,
+            checked_head: None,
+            check_left: Vec::new(),
             mode: None,
             waiting: None,
             phase: None,
@@ -974,8 +985,9 @@ impl Job {
     }
 
     /// Done, with commits that aren't on its pull request yet: obid publishes it when it ends, and
-    /// offers Publish when that failed. Not once dismissed, never on a review or research job, and
-    /// never once its pull request was merged or closed.
+    /// offers Publish when that failed. Not once dismissed, never on a review or research job,
+    /// never once its pull request was merged or closed, and only while its branch is at the
+    /// commit its check passed on, as far as obid knows (`checked_head`, PUBLISHING-2).
     pub fn can_publish(&self) -> bool {
         self.status == Status::Done
             && self.kind != "research"
@@ -984,6 +996,7 @@ impl Job {
             && self.unpublished() > 0
             && self.dismissed.is_none()
             && self.pull_request_open()
+            && self.checked_head.is_some()
     }
 
     /// Done with commits its pull request will never take: it was merged or closed before they
@@ -1921,6 +1934,7 @@ mod tests {
         job.status = Status::Done;
         job.started = Some(job.created);
         job.commits = Some(1);
+        job.checked_head = Some("a".repeat(40));
         let state = |job: &Job, id: &str| -> (String, String) {
             let stage = job.pipeline()["stages"]
                 .as_array()

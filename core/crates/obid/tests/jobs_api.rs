@@ -1706,9 +1706,10 @@ fn a_job_stopped_at_a_limit_counts_its_commits_for_a_follow_up() {
     assert!(worktree.join("a.txt").exists(), "{follow}");
 }
 
-/// A follow-up that commits nothing still publishes the first job's commits it started from: it
-/// ends done with them counted, pushed and in a pull request (#770). A follow-up of that one starts
-/// on its branch with them, and, adding nothing to a branch that's out, publishes nothing.
+/// A follow-up that commits nothing still publishes the first job's commits it started from, once
+/// its check passes on them alone (PUBLISHING-5): it ends done with them counted, pushed and in a
+/// pull request (#770). A follow-up of that one starts on its branch with them, and, adding
+/// nothing to a branch that's out, publishes nothing.
 #[test]
 fn a_follow_up_publishes_the_first_jobs_commits() {
     let folder = Folder::new("follow-publish");
@@ -1718,14 +1719,22 @@ fn a_follow_up_publishes_the_first_jobs_commits() {
     let clone = obid.home.join("clones/obi-e2e/fixture-app");
     let id = post_job(
         &obid,
-        json!({"repo": "obi-e2e/fixture-app", "kind": "build", "task": "COMMIT: a.txt", "request": "Add a.txt", "title": "Add a.txt", "check": "test -e b.txt", "rounds": 1}),
+        json!({"repo": "obi-e2e/fixture-app", "kind": "build", "task": "COMMIT: a.txt QUIET", "request": "Add a.txt", "title": "Add a.txt", "check": "test -e a.txt", "rounds": 1}),
     )
     .body["id"]
         .as_str()
         .unwrap()
         .to_owned();
+    // Stopped once it committed, before its check ran.
+    let worktree = obid.home.join("worktrees").join(&id);
+    until(&obid, &id, |_| worktree.join("a.txt").exists());
+    // ponytail: the agent commits right after it writes the file; its objects are in the job's
+    // own folder, which plain git here can't read, so a moment stands in for watching it.
+    std::thread::sleep(Duration::from_secs(2));
+    let stop = request(&obid, "POST", &format!("/v1/jobs/{id}/stop"), None);
+    assert_eq!(stop.status, 200, "{}", stop.text);
     let job = wait(&obid, &id);
-    assert_eq!(job["status"], "interrupted", "{job}");
+    assert_eq!(job["status"], "stopped", "{job}");
     assert_eq!(job["commits"], 1, "{job}");
     let head = git(&clone, &["rev-parse", &format!("oby/build-{id}")]);
     let tell = |id: &str, text: &str| {
@@ -1739,8 +1748,8 @@ fn a_follow_up_publishes_the_first_jobs_commits() {
         told.body["id"].as_str().unwrap().to_owned()
     };
 
-    // Its agent leaves b.txt for the check and commits nothing.
-    let next = tell(&id, "DRAFT: b.txt");
+    // Its agent commits nothing: the first job's commit passes the check alone.
+    let next = tell(&id, "Look around");
     let follow = wait(&obid, &next);
     assert_eq!(follow["status"], "done", "{follow}");
     assert_eq!(follow["startCommit"], head.as_str(), "{follow}");
