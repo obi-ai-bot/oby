@@ -27,9 +27,11 @@ async function run() {
   let r = await call('POST', '/v1/devices', { name, publicKey });
   if (r.status === 403 && action === 'register') {
     const pairing = path.join(home, 'pairing');
-    try { fs.writeFileSync(pairing, publicKey, { mode: 0o600 }); r = await call('POST', '/v1/devices', { name, publicKey }); } finally { fs.rmSync(pairing, { force: true }); }
+    // as main writes it: 0600, never through a link
+    const { O_WRONLY, O_CREAT, O_TRUNC, O_NOFOLLOW } = fs.constants;
+    try { fs.writeFileSync(pairing, publicKey, { mode: 0o600, flag: O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW }); r = await call('POST', '/v1/devices', { name, publicKey }); } finally { fs.rmSync(pairing, { force: true }); }
   }
-  if (r.status === 403) return { revoked: true }; // not registered: nothing to revoke
+  if (r.status === 403 && action === 'revoke') return { revoked: true }; // not registered: nothing to revoke
   if (!r.ok) return { error: `${r.status} ${await r.text()}` };
   const { id } = await r.json();
   if (action === 'register') return { id };

@@ -192,7 +192,7 @@ async function homeTitles(page) {
 const report = { repo, started: new Date().toISOString(), commit: execFileSync('git', ['rev-parse', '--short', 'HEAD'], { encoding: 'utf8', timeout: 10_000 }).trim(), scenarios: [] };
 mkdirSync(out, { recursive: true });
 const registered = device('register');
-if (registered.error) fail(`the driver's device didn't register with obid: ${registered.error}`);
+if (registered.error || !registered.id) fail(`the driver's device didn't register with obid: ${registered.error ?? 'no id'}`);
 report.device = registered.id;
 const { app, page } = await openApp();
 const errors = [], mainLog = [];
@@ -208,10 +208,9 @@ let finishing;
 const finish = () => (finishing ??= (async () => {
   report.cleanup = [];
   await app.close().catch(() => {});
-  if (report.device) {
-    const revoked = device('revoke');
-    report.cleanup.push(revoked.revoked ? `revoked the driver's device ${revoked.id ?? report.device}` : `the driver's device wasn't revoked: ${revoked.error}`);
-  }
+  // always: a key obid doesn't know is nothing to revoke
+  const revoked = device('revoke');
+  report.cleanup.push(revoked.revoked ? `revoked the driver's device${revoked.id ? ` ${revoked.id}` : ' (not registered)'}` : `the driver's device wasn't revoked: ${revoked.error}`);
   try { report.cleanup.push(...cleanUp(state)); } catch (e) { report.cleanup.push(`cleanup failed: ${e.message.split('\n')[0]}`); }
   report.pageErrors = errors;
   report.unsigned = mainLog.join('').split('\n').filter((l) => /couldn.t sign/.test(l));
