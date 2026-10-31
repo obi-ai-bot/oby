@@ -1464,7 +1464,7 @@ fn research_cant_carry_a_job_past_its_safety_limit() {
     );
     spent.stalled = Some(obid::job::Stalled {
         why: "budget".into(),
-        text: "the job used 1000 tokens".into(),
+        text: "the task used 1000 tokens".into(),
         at: obi_protocol::time::now(),
         round: 1,
         branch: spent.branch.clone(),
@@ -1474,7 +1474,7 @@ fn research_cant_carry_a_job_past_its_safety_limit() {
         note: String::new(),
         note_by: "obid".into(),
     });
-    spent.limit = Some("the job used 1000 tokens".into());
+    spent.limit = Some("the task used 1000 tokens".into());
     let obid = started_with(&folder, &[spent]);
     let answer = said(
         &obid,
