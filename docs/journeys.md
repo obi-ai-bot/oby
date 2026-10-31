@@ -1,6 +1,6 @@
 # Journeys: testing Oby the way a person uses it
 
-The owner's ask of 2026-10-25: Claude should be able to run Oby itself, from a clean install through every permission and every daily workflow, and check it's flawless, so Oby becomes the best dispatcher and agent orchestrator for software engineers while staying as simple as it is. This is the plan; nothing here is built yet.
+The owner's ask of 2026-10-25: Claude should be able to run Oby itself, from a clean install through every permission and every daily workflow, and check it's flawless, so Oby becomes the best dispatcher and agent orchestrator for software engineers while staying as simple as it is. This is the plan. Built so far: the owner's conversation loop on their own Mac, obid and accounts, driven through the Electron app (`npm run drive`, the `human-drive` skill; [human-drive/research.md](human-drive/research.md) says how and why, and each first report is in `docs/human-drive/`).
 
 The unit and API suites (`cargo test`, MacTests, `swift test`) say the parts work. A journey says the product works: one person's path through the real app, start to finish, with what they see, what they wait for and every time Oby makes them click.
 
