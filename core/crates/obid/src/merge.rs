@@ -1108,7 +1108,7 @@ pub async fn merge(
     go: &(dyn Fn(&str) -> bool + Sync),
 ) -> Result<Merged, Blocked> {
     if job.id.is_empty() || !job.id.bytes().all(|b| b.is_ascii_alphanumeric()) {
-        return Err(needs_you("Not merged: that isn't one of Oby's jobs."));
+        return Err(needs_you("Not merged: that isn't one of Oby's tasks."));
     }
     // One merge of a job at a time: the follower's and the owner's tap never race.
     let busy = || MERGING.lock().unwrap_or_else(|e| e.into_inner());
@@ -1175,7 +1175,7 @@ async fn merging(
         None => Err(yours(why)),
     };
     if !pull.head_repo.eq_ignore_ascii_case(repo) || !own_branch(job, &pull.head_ref) {
-        lifts("Not merged: its branch isn't the job's own, in the repository itself.".into())?;
+        lifts("Not merged: its branch isn't the task's own, in the repository itself.".into())?;
     }
     if !pull.open || pull.base != pr.base || pull.head != head {
         return Err(wait(
@@ -1260,7 +1260,7 @@ async fn merging(
     )?;
     if !go("merge") {
         return Err(wait(
-            "Not merged yet: the job changed while Oby got it ready to merge.",
+            "Not merged yet: the task changed while Oby got it ready to merge.",
         ));
     }
     // What GitHub is sent goes in a 0600 file, never in an argument.
