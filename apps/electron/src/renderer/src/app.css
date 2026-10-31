@@ -434,7 +434,7 @@ button.crumb:hover { color: var(--ink); background: var(--hover); }
 .tc-ask-kind { color: var(--needs); font-size: var(--text-sm); font-weight: 500; }
 .tc-ask-kind.is-failed { color: var(--danger); }
 .tc-ask-head { margin: 4px 0 0; color: var(--ink); font-size: var(--text-base); font-weight: 500; line-height: 20px; overflow-wrap: anywhere; }
-.tc-ask-text { margin: 4px 0 0; color: var(--text); font-size: var(--text-md); line-height: 19px; overflow-wrap: anywhere; }
+.tc-ask-text { margin: 4px 0 0; color: var(--text); font-size: var(--text-md); line-height: 19px; overflow-wrap: anywhere; white-space: pre-line; }
 .tc-code {
   margin: 10px 0 0;
   padding: 10px 12px;

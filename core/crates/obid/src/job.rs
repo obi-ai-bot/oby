@@ -1134,6 +1134,16 @@ impl Job {
             && (self.pull_request_ended() || reviewed.is_some_and(Job::pull_request_ended))
     }
 
+    /// An Oby review still queued or running (parked on the owner's OK among them) of a pull
+    /// request merged or closed since, `reviewed`'s: nothing it finds counts any more, so obid
+    /// stops it and lets it go, and its cards settle (TASKS-13).
+    pub fn reviews_an_ended_pull_request(&self, reviewed: Option<&Job>) -> bool {
+        self.kind == "review"
+            && self.status.is_active()
+            && self.dismissed.is_none()
+            && reviewed.is_some_and(Job::pull_request_ended)
+    }
+
     /// Done with commits its pull request will never take: it was merged or closed before they
     /// went out.
     pub fn stranded(&self) -> bool {

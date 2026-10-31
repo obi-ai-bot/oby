@@ -11300,29 +11300,44 @@ impl Jobs {
 
     /// Lets go of the failed or interrupted jobs nothing waits on since their pull request was
     /// merged or closed ([`Job::ended_with_its_pull_request`], TASKS-13), so Home doesn't keep
-    /// them, saying so in their changes ([`LET_GO`]): obid let it go, not the owner.
+    /// them, saying so in their changes ([`LET_GO`]): obid let it go, not the owner. An Oby review
+    /// still at work, or parked on the owner's OK, of a pull request merged or closed since is
+    /// stopped first ([`Job::reviews_an_ended_pull_request`]): it never reads it again.
     fn let_go_ended(&self) {
         let now = obi_protocol::time::now();
-        let ended: Vec<String> = {
+        let (ended, outlived): (Vec<String>, Vec<String>) = {
             let state = self.lock();
-            state
+            let reviewed = |job: &Job| job.review_of.as_ref().and_then(|of| state.jobs.get(of));
+            let ended = state
                 .jobs
                 .values()
                 .filter(|job| {
-                    let reviewed = job.review_of.as_ref().and_then(|of| state.jobs.get(of));
-                    job.ended_with_its_pull_request(reviewed, state.publishing.contains(&job.id))
+                    job.ended_with_its_pull_request(
+                        reviewed(job),
+                        state.publishing.contains(&job.id),
+                    )
                 })
                 .map(|job| job.id.clone())
-                .collect()
+                .collect();
+            let outlived = state
+                .jobs
+                .values()
+                .filter(|job| job.reviews_an_ended_pull_request(reviewed(job)))
+                .map(|job| job.id.clone())
+                .collect();
+            (ended, outlived)
         };
-        for id in &ended {
+        for id in &outlived {
+            self.stop(id);
+        }
+        for id in ended.iter().chain(&outlived) {
             self.update(id, |job| {
                 job.dismissed.get_or_insert(now);
                 job.resumes_at = None;
                 job.changed(LET_GO.to_owned());
             });
         }
-        if !ended.is_empty() {
+        if !ended.is_empty() || !outlived.is_empty() {
             self.cleaning.notify_one();
         }
     }
