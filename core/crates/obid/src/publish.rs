@@ -733,6 +733,16 @@ fn forbidden_names() -> Vec<String> {
     names
 }
 
+/// Why a job isn't published when its branch moved since its check passed on it (PUBLISHING-2).
+pub fn branch_moved(branch: &str) -> String {
+    format!(
+        "Not published: {branch} moved since this job's check passed on it, so its commits now aren't the ones checked."
+    )
+}
+
+/// Why not, for a job that ended before obid kept the commit its check passed on (PUBLISHING-2).
+pub const NOT_RECORDED: &str = "Not published: this job ended before Oby kept the commit its check passed on, so Oby can't tell what it checked. Tell it to carry on, and it checks again.";
+
 /// Publishes `job` from `target`: the gate, then the push of one pinned commit, then the pull
 /// request into `base`. Answers the pull request's URL, or none for a remote that gets none.
 pub async fn publish(
@@ -754,10 +764,7 @@ pub async fn publish(
     // One commit from here on, so nothing added after the scan gets pushed: the one its check
     // passed on, and only while its branch is still there (PUBLISHING-1, PUBLISHING-2).
     let Some(head) = job.checked_head.clone().filter(|h| git::is_sha(h)) else {
-        return Err(Failure::Failed(format!(
-            "Not published: obid has no record of the commit {}'s check passed on.",
-            job.branch
-        )));
+        return Err(Failure::Failed(NOT_RECORDED.into()));
     };
     let now = git_in(
         clone,
@@ -777,10 +784,7 @@ pub async fn publish(
         ))
     })?;
     if now != head {
-        return Err(Failure::Failed(format!(
-            "Not published: {} moved since this job's check passed on it, so its commits now aren't the ones checked.",
-            job.branch
-        )));
+        return Err(Failure::Failed(branch_moved(&job.branch)));
     }
     let ancestry = git_in(clone, &["rev-list", "--parents", "-n", "1", &head])
         .await

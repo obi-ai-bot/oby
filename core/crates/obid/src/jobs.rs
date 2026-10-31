@@ -2137,10 +2137,22 @@ impl Jobs {
     /// Changes the job `id` with `change`, keeps it and tells the apps. `None` for a job obid
     /// doesn't have.
     fn update(&self, id: &str, change: impl FnOnce(&mut Job)) -> Option<Job> {
+        self.update_after(id, |_| (), |job, ()| change(job))
+    }
+
+    /// [`Jobs::update`], `change` told what `see` read of every job obid has, under the same
+    /// lock: what it decides from them can't change before it's made.
+    fn update_after<T>(
+        &self,
+        id: &str,
+        see: impl FnOnce(&HashMap<String, Job>) -> T,
+        change: impl FnOnce(&mut Job, T),
+    ) -> Option<Job> {
         let job = {
             let mut state = self.lock();
+            let seen = see(&state.jobs);
             let job = state.jobs.get_mut(id)?;
-            change(job);
+            change(job, seen);
             // Its stages' times, and its estimate again when a stage started or ended (#733).
             // ponytail: reads every job kept; an index by repository if that ever shows.
             if job.stamp(obi_protocol::time::now()) && job.status.is_active() {
@@ -5386,7 +5398,10 @@ impl Jobs {
             .map(|j| j.id.clone())
             .collect();
         for other in moved {
-            self.update(&other, |j| j.checked_head = None);
+            self.update(&other, |j| {
+                j.checked_head = None;
+                j.publish_error = Some(crate::publish::branch_moved(&j.branch));
+            });
         }
         Ok(head)
     }
@@ -5724,35 +5739,106 @@ impl Jobs {
         .is_ok_and(|changes| !changes.is_empty())
     }
 
-    /// Where the job's worktree is as its check starts: its HEAD (empty when git can't say), and
-    /// whether anything isn't committed (also when git can't say).
-    async fn before_check(&self, id: &str) -> (String, bool) {
-        let dirty = self
+    /// What isn't committed in the job's worktree, as `git status` lists it (untracked files too,
+    /// ignored ones not), each entry with the hash of the file there now (`-` for none), all read
+    /// in its sandbox; none when git can't say.
+    async fn uncommitted_entries(&self, id: &str) -> Option<BTreeSet<String>> {
+        let status = self
             .sandboxed_git(
                 id,
-                &["status", "--porcelain", "--untracked-files=all"],
+                &[
+                    "status",
+                    "--porcelain",
+                    "-z",
+                    "--no-renames",
+                    "--untracked-files=all",
+                ],
                 None,
             )
             .await
-            .map_or(true, |changes| !changes.is_empty());
-        (self.worktree_head(id).await, dirty)
+            .ok()?;
+        let status = String::from_utf8_lossy(&status);
+        let entries: Vec<&str> = status.split('\0').filter(|e| e.len() > 3).collect();
+        let worktree = self.worktree_path(id);
+        let files: Vec<&str> = entries
+            .iter()
+            .map(|e| &e[3..])
+            .filter(|path| {
+                !path.contains('\n')
+                    && worktree
+                        .join(path)
+                        .symlink_metadata()
+                        .is_ok_and(|m| m.is_file())
+            })
+            .collect();
+        let hashes = if files.is_empty() {
+            Vec::new()
+        } else {
+            self.sandboxed_git(
+                id,
+                &["hash-object", "--no-filters", "--stdin-paths"],
+                Some(files.join("\n").into_bytes()),
+            )
+            .await
+            .ok()?
+        };
+        let hashes = String::from_utf8_lossy(&hashes);
+        let of: HashMap<&str, &str> = files.iter().copied().zip(hashes.lines()).collect();
+        Some(
+            entries
+                .iter()
+                .map(|e| format!("{e}\t{}", of.get(&e[3..]).unwrap_or(&"-")))
+                .collect(),
+        )
+    }
+
+    /// Where the job's worktree is as its check starts (PUBLISHING-5): its HEAD (empty when git
+    /// can't say), what isn't committed, and whether any of that is the job's own: what its
+    /// earlier checks left there (`Job::check_left`), unchanged, isn't. Dirty when git can't say.
+    async fn before_check(&self, id: &str) -> CheckStart {
+        let changes = self.uncommitted_entries(id).await;
+        let left = self.get(id).map(|j| j.check_left).unwrap_or_default();
+        let dirty = changes
+            .as_ref()
+            .is_none_or(|changes| changes.iter().any(|c| !left.contains(c)));
+        CheckStart {
+            head: self.worktree_head(id).await,
+            changes,
+            dirty,
+        }
+    }
+
+    /// Keeps with the job what the check just run left in its worktree (`Job::check_left`): what
+    /// it changed or made since `start`, and what earlier checks left that's still there
+    /// unchanged. Nothing when git can't say.
+    async fn after_check(&self, id: &str, start: &CheckStart) {
+        let (Some(before), Some(after)) = (&start.changes, self.uncommitted_entries(id).await)
+        else {
+            self.update(id, |job| job.check_left.clear());
+            return;
+        };
+        self.update(id, |job| {
+            let kept: Vec<String> = after
+                .iter()
+                .filter(|e| !before.contains(*e) || job.check_left.contains(*e))
+                .cloned()
+                .collect();
+            job.check_left = kept;
+        });
     }
 
     /// The commit a passing check passed on (PUBLISHING-5): the worktree's HEAD before it, when
-    /// nothing was uncommitted then and the check left HEAD there; else why it didn't check them.
-    async fn checked_commit(
-        &self,
-        id: &str,
-        (before, dirty): (String, bool),
-    ) -> Result<String, String> {
-        if dirty {
+    /// nothing of the job's own was uncommitted then and the check left HEAD there; else why it
+    /// didn't check them.
+    async fn checked_commit(&self, id: &str, start: CheckStart) -> Result<String, String> {
+        if start.dirty {
             return Err(CHECKED_UNCOMMITTED.into());
         }
         let after = self.worktree_head(id).await;
-        if !git::is_sha(&before) || after != before {
+        if !git::is_sha(&start.head) || after != start.head {
             return Err(CHECK_MOVED_HEAD.into());
         }
-        Ok(before)
+        Ok(start.head)
     }
 
     /// The job's worktree's HEAD, read with its own git folders; empty when git can't say.
@@ -8573,6 +8659,7 @@ impl Jobs {
                     stages.begin("check");
                     let before = self.before_check(id).await;
                     let run = self.check(id, &command, &spec, signal).await?;
+                    self.after_check(id, &before).await;
                     if *signal.borrow() != Signal::Run {
                         return Ok(());
                     }
@@ -9001,6 +9088,7 @@ impl Jobs {
                     stages.begin("check");
                     let before = self.before_check(id).await;
                     let run = self.check(id, command, &spec, signal).await?;
+                    self.after_check(id, &before).await;
                     if *signal.borrow() != Signal::Run {
                         return Ok(());
                     }
@@ -10001,7 +10089,14 @@ impl Jobs {
             None => self.quote_review(&of, round, &by, &text),
         });
         self.review_items(&of, None);
-        self.update(&of, |job| {
+        // Its round starts only while no job works on its branch, checked again as it starts: a job
+        // started while the review was quoted holds it too (PUBLISHING-4).
+        let busy = |jobs: &HashMap<String, Job>| jobs.get(&of).and_then(|j| branch_busy(jobs, j));
+        self.update_after(&of, busy, |job, busy| {
+            let quoted = match (quoted, busy) {
+                (Some(Ok(())), Some(why)) => Some(Err(why)),
+                (quoted, _) => quoted,
+            };
             job.reviewing = None;
             job.review_failed = None;
             job.review_error = match &quoted {
@@ -10981,12 +11076,12 @@ fn publish_action_of(job: &Job, jobs: &HashMap<String, Job>) -> Result<(String, 
         } else if job.status == Status::Done && job.unpublished() > 0 && job.checked_head.is_none()
         {
             // Its check didn't pass on its commits alone, or its branch moved since (PUBLISHING-2).
-            match job.reason.as_deref() {
-                Some(why @ (CHECKED_UNCOMMITTED | CHECK_MOVED_HEAD)) => why.to_owned(),
-                _ => format!(
-                    "Not published: {} moved since this job's check passed on it, so its commits now aren't the ones checked.",
-                    job.branch
-                ),
+            let moved = crate::publish::branch_moved(&job.branch);
+            match (job.reason.as_deref(), job.publish_error.as_deref()) {
+                (Some(why @ (CHECKED_UNCOMMITTED | CHECK_MOVED_HEAD)), _) => why.to_owned(),
+                (_, Some(why)) if why == moved => moved,
+                // One that ended before obid kept the commit its check passed on.
+                _ => crate::publish::NOT_RECORDED.to_owned(),
             }
         } else {
             "Nothing to publish: the job made no commits.".into()
@@ -12109,6 +12204,13 @@ fn check_failed(command: &str, output: &str) -> String {
         crate::brain::briefing::fence_rule(&nonce, "the check's output"),
         crate::brain::briefing::fence(&nonce, &output)
     )
+}
+
+/// The worktree as a check starts ([`Jobs::before_check`]).
+struct CheckStart {
+    head: String,
+    changes: Option<BTreeSet<String>>,
+    dirty: bool,
 }
 
 /// How a run of the check went.

@@ -1534,6 +1534,41 @@ fn publishing_5_a_check_that_didnt_check_the_commits_publishes_nothing() {
     assert_eq!(remote_branch(&remote, &format!("oby/build-{id}")), None);
 }
 
+/// PUBLISHING-5: what a check leaves in the worktree (a report it writes, untracked) isn't the
+/// job's uncommitted work. Its first run's check writes `report.xml`; Try again's next check
+/// starts with it there, unchanged, and the job publishes its new commit without being told to
+/// commit the report, which never goes out. (The stand-in agent can't do a second round of one
+/// run: the failed check's prompt quotes its task, and it commits the same file again.)
+#[test]
+fn publishing_5_what_a_check_leaves_isnt_uncommitted_work() {
+    let folder = Folder::new("publish-check-left");
+    let bin = fake_gh(&folder.0);
+    let (obid, remote, _) = obid_with(&folder, &bin);
+    let id = dispatch(
+        &obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "build", "task": "COMMIT: hello.txt",
+               "check": "echo '<testsuite/>' > report.xml"}),
+    );
+    assert_eq!(ended(&obid, &id)["published"], PULL);
+    again_commits(&obid, &id, "second.txt");
+    let told = call(
+        &obid,
+        "POST",
+        &format!("/v1/jobs/{id}/messages"),
+        Some(&json!({"text": TRY_AGAIN})),
+    );
+    assert_eq!(told.status, 200, "{}", told.text);
+    let job = ended(&obid, &id);
+    assert_eq!(job["status"], "done", "{job}\n{}", obid.log());
+    assert_eq!(job["reason"], Value::Null, "{job}");
+    assert_eq!(job["pushed"], 2, "{job}");
+    let branch = format!("oby/build-{id}");
+    let pushed = remote_branch(&remote, &branch).unwrap();
+    let files = git(&remote, &["ls-tree", "-r", "--name-only", &pushed]);
+    assert!(files.lines().any(|f| f == "second.txt"), "{files}");
+    assert!(!files.lines().any(|f| f == "report.xml"), "{files}");
+}
+
 /// PUBLISHING-4, Oby's review: changes it asks for start no round while another job works on the
 /// job's branch; the job says why instead.
 #[test]
