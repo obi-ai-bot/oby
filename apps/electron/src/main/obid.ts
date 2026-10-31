@@ -308,14 +308,12 @@ export async function obid(method: string, path: string, body?: unknown, words?:
 // The page's own frame only: no other page, or frame in it, gets obid
 export type Trusted = (e: IpcMainEvent | IpcMainInvokeEvent) => boolean;
 
-export function bridge(trusted: Trusted, messageJob: (path: string, body: unknown) => Promise<Answer>) {
-  // one call: obid's status and body, or why it didn't answer
-  ipcMain.handle('obid', async (e, method: string, path: string, body?: unknown): Promise<Answer> => {
+export function bridge(trusted: Trusted, ownersWords: (method: string, path: string, body: unknown) => Promise<Answer>) {
+  // one call: obid's status and body, or why it didn't answer. owners: the preload saw the owner's
+  // own keystroke or click hold its words, so main signs them (device.ts)
+  ipcMain.handle('obid', async (e, method: string, path: string, body?: unknown, owners?: unknown): Promise<Answer> => {
     if (!trusted(e)) return { status: 403, text: '' };
-    if (method === 'POST' && /^\/v1\/jobs\/[^/]+\/messages$/.test(path)) {
-      return messageJob(path, body);
-    }
-    return obid(method, path, body);
+    return owners === true ? ownersWords(method, path, body) : obid(method, path, body);
   });
 
   // the splash's Open Login Items, when obid waits for that approval

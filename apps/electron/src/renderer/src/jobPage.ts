@@ -29,14 +29,20 @@ const ENDED = new Set(['done', 'failed', 'stopped', 'interrupted']);
 // The stages, with how long each took (or should: "≈ 6m"), and the agent's activity and latest
 // words under Work
 export function stagesOf(j: Job, now = Date.now()): Stage[] {
-  return (j.pipeline?.stages ?? []).map((st) => {
+  const stages = j.pipeline?.stages ?? [];
+  // why its pull request couldn't be read (gh missing, say): under the stage that waits on it,
+  // Merged, else Review, while it's current
+  const unread = j.published && j.pullRequestError ? j.pullRequestError : undefined;
+  const waits = ['merged', 'review'].find((id) => stages.some((st) => st.id === id && st.state === 'current'));
+  return stages.map((st) => {
     const took = st.seconds != null ? span(st.seconds)
       : st.state === 'current' && st.started ? `${span(since(st.started, now) - (st.waited ?? 0))} so far`
         : st.estimate ? `≈ ${span((st.estimate.low + st.estimate.high) / 2)}` : undefined;
     const work = st.id === 'work';
     return {
       id: st.id as StageId, title: st.title, state: st.state, detail: st.detail ?? undefined, took,
-      activity: work && !!j.activity || undefined, sub: work && st.state === 'current' ? j.context || undefined : undefined,
+      activity: work && !!j.activity || undefined,
+      sub: work && st.state === 'current' ? j.context || undefined : st.id === waits ? unread : undefined,
     };
   });
 }

@@ -132,8 +132,8 @@ export default function TaskCard({ task, alone = false, onOpen, onSession, style
                 // the stage it's on pulses only while the agent works: orange while the task
                 // needs you; done, it waits on someone else (a reviewer), so a plain ring
                 const state: StageMark = s.state !== 'current' ? s.state : task.status === 'needs' ? 'needs' : done ? 'upcoming' : 'current';
-                const detail = s.id === 'work' && j.round ? [`Round ${j.round[0]} of ${j.round[1]}`, s.detail].filter(Boolean).join(' · ')
-                  : s.id === 'review' && s.state === 'current' && done ? 'Waiting for review' : s.detail;
+                // obid's own words for each stage (who reviews it, why it isn't merged)
+                const detail = s.id === 'work' && j.round ? [`Round ${j.round[0]} of ${j.round[1]}`, s.detail].filter(Boolean).join(' · ') : s.detail;
                 return (
                   <li key={s.id} className={`is-${state}`}>
                     <span className="tc-stage-mark"><StageIcon state={state} /></span>

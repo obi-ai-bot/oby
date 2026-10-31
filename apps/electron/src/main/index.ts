@@ -3,7 +3,8 @@ import { createRequire } from 'node:module';
 import { lstatSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { bridge, startObid, stopFollowing, type Trusted } from './obid';
-import { confirming, messageJob } from './device';
+import { confirming, ownersWords } from './device';
+import { input, picked } from './words';
 import { notifying, windowLeft, windowSeen } from './notify';
 import { updating } from './updates';
 import { sphering } from './sphere';
@@ -61,9 +62,9 @@ let last = '';
 ipcMain.on('window-chrome', (e) => { e.returnValue = chrome; });
 ipcMain.on('full-screen', (e) => { e.returnValue = win?.isFullScreen() ?? false; });
 // obid, through main (obid.ts): only for the window's own page, never a frame in it; and its
-// Confirm, signed with this Mac's device key (device.ts)
+// Confirm and the owner's words, signed with this Mac's device key (device.ts)
 const trusted: Trusted = (e) => !!win && e.sender === win.webContents && e.senderFrame === win.webContents.mainFrame;
-bridge(trusted, messageJob);
+bridge(trusted, ownersWords);
 confirming(trusted);
 // setting up, or not: the page says so (synchronously, before the window first shows) and the
 // window takes the setup's size, held there (no resizing, zooming or full screen), or its own back.
@@ -95,6 +96,7 @@ ipcMain.handle('pick-folders', async (e, from: unknown) => {
     properties: ['openDirectory', 'multiSelections', 'createDirectory'], buttonLabel: 'Select', message: 'Choose the folders the work is in',
     ...(typeof from === 'string' && from.startsWith('/') ? { defaultPath: from } : {}),
   });
+  if (!r.canceled) picked(r.filePaths);
   return r.canceled ? [] : r.filePaths;
 });
 
@@ -158,6 +160,10 @@ function createWindow() {
     if (!dev || new URL(url).origin !== new URL(win!.webContents.getURL()).origin) e.preventDefault();
   });
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  // the owner's real Enter and clicks, which the page's own process can't make: each lets main sign
+  // one request of the owner's words right after it (words.ts, device.ts)
+  win.webContents.on('before-input-event', (_, i) => { if (i.type === 'keyDown' && i.key === 'Enter' && !i.isAutoRepeat) input(); });
+  win.webContents.on('before-mouse-event', (_, m) => { if (m.type === 'mouseDown') input(); });
   // full screen hides the traffic lights: the page moves its title bar over.
   // Besides entering and leaving, re-check whenever the window comes back
   // (switching Spaces between full-screen apps), so the page never drifts.

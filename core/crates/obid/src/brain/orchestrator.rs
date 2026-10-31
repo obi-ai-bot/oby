@@ -353,6 +353,9 @@ pub struct ItemView {
     pub job: String,
     pub kind: String,
     pub options: Vec<String>,
+    /// obid fell back already, and it's the owner's alone (`inbox::is_review_item`): an answer
+    /// from Oby would loop it.
+    pub owners: bool,
 }
 
 /// One event turn: its events, the jobs they're about, and the ledger every turn shares.
@@ -576,10 +579,12 @@ impl Watch {
             ));
         }
         let picked = item.options.iter().position(|o| o == answer.trim());
-        let permitted = !matches!(
-            item.kind.as_str(),
-            "permission" | "plan" | "question" | "limit" | crate::sphere::inbox::QUESTION_KIND
-        ) && INBOX_OPTIONS.contains(&answer.trim());
+        let permitted = !item.owners
+            && !matches!(
+                item.kind.as_str(),
+                "permission" | "plan" | "question" | "limit" | crate::sphere::inbox::QUESTION_KIND
+            )
+            && INBOX_OPTIONS.contains(&answer.trim());
         match picked {
             Some(at) if permitted => Ok(at as i64 + 1),
             _ => Err(Refused::Owner(escalate(
@@ -729,6 +734,7 @@ pub(super) async fn call(
                         .map(|e| e.job.clone())
                 });
             let view = item.map(|i| ItemView {
+                owners: crate::sphere::inbox::is_review_item(&i),
                 open: i.done.is_none(),
                 job: i.job,
                 kind: i.kind,
@@ -1027,7 +1033,12 @@ mod tests {
                     "j1".into()
                 },
                 kind: kind.into(),
-                options: vec!["Dismiss".into(), "Try again".into()],
+                options: vec![
+                    "Dismiss".into(),
+                    "Try again".into(),
+                    "One more round".into(),
+                ],
+                owners: id == "review",
             })
         };
         let unread = why(watch.option(item("i1", "failed"), "Try again").unwrap_err());
@@ -1049,6 +1060,14 @@ mod tests {
             .option(item("other", "failed"), "Try again")
             .unwrap_err());
         assert!(other.contains("couldn't match"), "{other}");
+        // Oby's reviews that ran out, or couldn't run, are the owner's alone (MERGING-9).
+        let review = why(watch
+            .option(item("review", "failed"), "One more round")
+            .unwrap_err());
+        assert!(
+            review.contains("outside the automatic allow-list"),
+            "{review}"
+        );
         let closed = why(watch
             .option(item("closed", "failed"), "Try again")
             .unwrap_err());
@@ -1060,6 +1079,7 @@ mod tests {
                 job: "j1".into(),
                 kind: "limit".into(),
                 options: vec![answer.into()],
+                owners: false,
             });
             assert!(
                 why(watch.option(limit, answer).unwrap_err())
