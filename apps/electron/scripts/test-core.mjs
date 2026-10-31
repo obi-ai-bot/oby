@@ -10,6 +10,7 @@
 //   5. The owner's words go signed by this Mac's key (docs/contracts/signed-words.md): the task
 //      from Home's box is theirs (vetted, WORDS-6), and so is the follow-up their words on its page
 //      start.
+//   6. Words the page's script sends with no keystroke or click go unsigned (WORDS-7).
 // Screenshots of each step go to OBY_CORE_SHOTS (a folder), when it's set.
 // Run: cargo build -p obid (or OBY_TEST_OBID=<obid>), npm run build, then npm run test:core.
 import assert from 'node:assert/strict';
@@ -101,6 +102,8 @@ import(${JSON.stringify(pathToFileURL(join(appRoot, 'out/main/index.js')).href)}
   const page = await app.firstWindow();
   const errors = [];
   page.on('pageerror', (e) => errors.push(e.message));
+  // the page's Content-Security-Policy (vite.config.ts) blocks nothing the app itself loads
+  page.on('console', (m) => { if (m.type() === 'error' && /Content.Security.Policy/i.test(m.text())) errors.push(m.text()); });
   await page.waitForLoadState('domcontentloaded');
   // set up already (FirstRun.tsx), so Home shows rather than the first run's screens
   await page.evaluate(() => { for (const k of ['oby.onboarded', 'oby.setUp', 'oby.welcomed']) localStorage.setItem(k, '1'); });
@@ -115,6 +118,8 @@ const shown = (page) => page.evaluate(() => document.body.innerText);
 // types words into the message box with this placeholder, and sends them
 async function send(page, placeholder, words) {
   const box = page.locator(`[contenteditable="true"][aria-placeholder="${placeholder}"]`).last();
+  // shown, as a person sees it (a page fades in): only then do its words count as typed (the preload's check)
+  await until('the box shown', () => box.evaluate((el) => el.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true })));
   await box.click();
   await page.keyboard.insertText(words);
   await page.keyboard.press('Enter');
@@ -191,6 +196,15 @@ async function main() {
   const more = await until('its follow-up', async () => (await jobs(s)).find((j) => j.followUpOf === first.id));
   assert.equal(kept(s, more.id).vetted, true, 'WORDS-6: the follow-up the owner’s words start is theirs');
   assert.ok(!s.logs.join('').includes('not words the owner typed'), 'every signature obid was given checked out');
+
+  // 6. Words the page's script sends with no keystroke or click of the owner's go unsigned
+  // (WORDS-7): the follow-up they start isn't the owner's
+  await until('the follow-up ends', async () => ended(await s.call('GET', `/v1/jobs/${more.id}`)), 120_000);
+  await sleep(2500);
+  const told = await page.evaluate((id) => window.app.obid.call('POST', `/v1/jobs/${id}/messages`, { text: 'Look around once more' }), more.id);
+  assert.equal(told.status, 201, told.text);
+  const unheld = await until('the follow-up the script’s words start', async () => kept(s, JSON.parse(told.text).id));
+  assert.notEqual(unheld.vetted, true, 'WORDS-7: words no keystroke or click held go unsigned');
 
   assert.deepEqual(errors, [], 'no page errors');
   console.log('core: Home → task → its conversation → follow-ups, the owner’s words signed: all passed');

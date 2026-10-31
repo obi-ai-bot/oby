@@ -5,7 +5,7 @@ import { closeSync, constants, openSync, readFileSync, renameSync, rmSync, write
 import { hostname } from 'node:os';
 import { join } from 'node:path';
 import { HOME, obid, type Answer, type Trusted } from './obid';
-import { wordsHeader } from './words';
+import { takeInput, wordsHeader } from './words';
 
 // This Mac's device key for obid (docs/runner-api.md, "POST /v1/devices"), which makes a Confirm
 // the owner's (#776). A P-256 key made here in main, kept encrypted by safeStorage (macOS: a key
@@ -72,7 +72,12 @@ const said = (a: Answer) => { try { return (JSON.parse(a.text) as { error?: stri
 // Registered with obid, every time (a key it knows answers its id at once). A new key goes in only
 // with the owner present: on their click, as the Swift Mac app does, home/pairing names it for the
 // moment the registration takes (obid takes it within 2 minutes), and is removed whatever happened.
-export async function register(): Promise<string> {
+// One at a time: two at once would both write and remove home/pairing.
+let registering: Promise<string> | null = null;
+export function register(): Promise<string> {
+  return (registering ??= registerNow().finally(() => { registering = null; }));
+}
+async function registerNow(): Promise<string> {
   const body = { name: name(), publicKey: publicKey() };
   let r = await obid('POST', '/v1/devices', body);
   if (r.status === 403) {
@@ -90,16 +95,21 @@ export async function register(): Promise<string> {
 
 type Item = { id: string; kind: string; title: string; state: string };
 
-// The owner's words (wordsOf's routes only), signed with this Mac's key, on the preload's word
-// that the owner's own keystroke or click held them (preload/index.ts). A limit-stopped job's
-// continuation needs it (docs/runner-api.md, `accountLimit`); everything else just isn't marked.
+// The owner's words, signed with this Mac's key: the preload saw the owner's own keystroke or
+// click hold them, main saw that keystroke or click itself (main/words.ts, takeInput), and the
+// request is one of the app's words requests in its exact shape (wordsHeader). Anything short of
+// that, or a key or registration that fails, goes unsigned, as words always could: obid marks
+// them. A limit-stopped job's continuation needs the signature (docs/runner-api.md, `accountLimit`).
+// The device registers once a run (a Confirm still registers each time).
+let device: string | null = null;
 export async function ownersWords(method: string, path: string, body: unknown): Promise<Answer> {
+  let words: string | null = null;
   try {
-    const words = wordsHeader(deviceKey(), await register(), method, path, body);
-    return obid(method, path, body, words ?? undefined);
+    if (takeInput()) words = wordsHeader(deviceKey(), (device ??= await register()), method, path, body);
   } catch (err) {
-    return { status: 500, text: JSON.stringify({ error: err instanceof Error ? err.message : String(err) }) };
+    console.error(`Oby couldn’t sign the owner’s words, so they go unsigned: ${err instanceof Error ? err.message : String(err)}`);
   }
+  return obid(method, path, body, words ?? undefined);
 }
 
 // Fetch and verify the current options before signing; the revision and destination are covered.

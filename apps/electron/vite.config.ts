@@ -27,10 +27,20 @@ function oby(): Plugin {
   };
 }
 
+// The page's Content-Security-Policy, in what a build ships (the dev server's own inline script
+// needs more): its own scripts only, no remote content, no plugins, no other base. The page reaches
+// obid only through main (preload), never over the network itself. Inline styles: React's style={}.
+const CSP = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'none'; frame-src 'self'; object-src 'none'; base-uri 'none'";
+const csp = (): Plugin => ({
+  name: 'csp',
+  apply: 'build',
+  transformIndexHtml: () => [{ tag: 'meta', attrs: { 'http-equiv': 'Content-Security-Policy', content: CSP }, injectTo: 'head-prepend' }],
+});
+
 export default defineConfig({
   root: resolve(__dirname, 'src/renderer'),
   base: './',
-  plugins: [react(), oby()],
+  plugins: [react(), oby(), csp()],
   server: { port: Number(process.env.PORT) || 5175, strictPort: true },
   // the favicons, from Oby's icon folder (apps/icon/exports/web): served in dev, copied by a build
   publicDir: resolve(__dirname, '../icon/exports/web'),

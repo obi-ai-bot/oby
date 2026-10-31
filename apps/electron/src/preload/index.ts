@@ -1,42 +1,49 @@
 import { contextBridge, ipcRenderer } from 'electron';
-import { HELD_MS, owners } from '../shared/words';
+import { WITHIN_MS, owners } from '../shared/words';
 
 type Point = { x: number; y: number };
 // obid's answer: its status and body, or (status 0) why it didn't answer (main/obid.ts, reason)
 type Answer = { status: number; text: string; why?: 'waiting' | 'approval' };
 
 // What the owner's own keystrokes and clicks held (shared/words.ts): the text of the box they
-// pressed Enter in, or were in when they clicked (Send, or away from a name being edited), the
-// boxes of the form they clicked in, and the label of the button they pressed. Only events the person made count (isTrusted: a script's
-// aren't), read here in the preload's own world, which the page's script can't reach or change.
-// The page gets main to sign words only by passing this check; anything else goes unsigned.
+// pressed Enter in, and, for a click, the boxes of the form they clicked in (Send) and the label
+// of the button they clicked. Only events the person made count (isTrusted: a script's aren't).
+// Each held text signs once, within WITHIN_MS. This is the preload's half: main signs only right
+// after a keystroke or click it saw itself (main/words.ts), and only the app's own shapes.
 const held: { text: string; at: number }[] = [];
 const earlier: string[] = [];
-const keep = (list: unknown[], item: unknown) => { list.push(item); if (list.length > 50) list.shift(); };
+const keep = <T>(list: T[], item: T) => { list.push(item); if (list.length > 50) list.shift(); };
+const seen = (el: HTMLElement) => el.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true });
 function textOf(el: Element | null): string | null {
-  if (!(el instanceof HTMLElement) || !el.checkVisibility()) return null;
+  if (!(el instanceof HTMLElement) || !seen(el)) return null;
   if (el instanceof HTMLTextAreaElement || (el instanceof HTMLInputElement && ['text', 'search'].includes(el.type))) return el.value;
-  if (el.isContentEditable) return (el.closest('[contenteditable="true"]') as HTMLElement | null)?.innerText ?? null;
-  return null;
+  const box = el.isContentEditable ? el.closest('[contenteditable="true"]') : null;
+  return box instanceof HTMLElement ? box.innerText : null;
 }
+// a button's own label, never a whole card's text
 const labelOf = (el: Element | null) => {
-  const b = el?.closest('button, [role="button"], [role="menuitem"], [role="option"]');
-  return b instanceof HTMLElement && b.checkVisibility() ? b.innerText : null;
+  const b = el?.closest('button');
+  return b && seen(b) && !b.querySelector('button, input, textarea, [contenteditable="true"]') ? b.innerText : null;
 };
 function hold(e: Event) {
   if (!e.isTrusted || (e instanceof KeyboardEvent && (e.key !== 'Enter' || e.isComposing))) return;
   const target = e.target instanceof Element ? e.target : null, at = Date.now();
-  const form = [...(target?.closest('form')?.querySelectorAll('textarea, input, [contenteditable="true"]') ?? [])];
-  for (const text of [textOf(e.type === 'keydown' ? target : document.activeElement), labelOf(target), ...form.map(textOf)]) if (text?.trim()) keep(held, { text, at });
+  const texts = e.type === 'keydown' ? [textOf(target)]
+    : [labelOf(target), ...[...(target?.closest('form')?.querySelectorAll('textarea, input, [contenteditable="true"]') ?? [])].map(textOf)];
+  for (const text of texts) if (text?.trim()) keep(held, { text, at });
 }
 addEventListener('keydown', hold, true);
 addEventListener('pointerdown', hold, true);
 function signs(method: string, path: string, body: unknown) {
   const now = Date.now();
-  const mine = owners(method, path, body, held.filter((h) => now - h.at < HELD_MS).map((h) => h.text), earlier);
+  const recent = held.filter((h) => now - h.at < WITHIN_MS);
+  const used = owners(method, path, body, recent.map((h) => h.text), earlier);
+  if (!used) return false;
+  // each held text signs once
+  for (const h of used.map((i) => recent[i])) held.splice(held.indexOf(h), 1);
   // the words an answer to Oby's question sends again
-  if (mine && path === '/v1/plans') keep(earlier, (body as { said: string }).said);
-  return mine;
+  if (path === '/v1/plans') keep(earlier, (body as { said: string }).said);
+  return true;
 }
 
 contextBridge.exposeInMainWorld('app', {
