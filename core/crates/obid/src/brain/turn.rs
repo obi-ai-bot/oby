@@ -24,6 +24,10 @@ pub struct Control {
     /// Cancel (`POST /v1/plans/cancel`, or the owner's words where obid's own turn is under
     /// way): nothing more happens for it, and its answer is `none`.
     cancelled: AtomicBool,
+    /// The owner's words this turn answers were signed by an app of theirs ([`Words::signed`]).
+    signed: AtomicBool,
+    /// When it began: an inbox item made since is one the owner hasn't seen yet.
+    pub begun: i64,
 }
 
 impl Control {
@@ -39,6 +43,15 @@ impl Control {
     pub fn live(&self) -> bool {
         !self.stopped() && !self.cancelled()
     }
+
+    /// Whether the owner's words this turn answers were signed by an app of theirs.
+    pub fn signed(&self) -> bool {
+        self.signed.load(Ordering::SeqCst)
+    }
+
+    pub fn set_signed(&self, signed: bool) {
+        self.signed.store(signed, Ordering::SeqCst);
+    }
 }
 
 /// The owner's words in a conversation, kept until a turn answers them.
@@ -50,6 +63,9 @@ pub struct Words {
     pub attachments: Vec<String>,
     /// The jobs the owner attached (`POST /v1/plans`'s `jobs`).
     pub jobs: Vec<String>,
+    /// An app of the owner's signed them (docs/contracts/signed-words.md): only then are they the
+    /// owner's own word for what Oby does at once (TASKCONV-6).
+    pub signed: bool,
 }
 
 /// What the owner's next turn in a conversation answers ([`Turns::wait_turn`]): every word said
@@ -124,6 +140,8 @@ impl Turns {
                     .join("\n\n"),
                 attachments: taken.iter().flat_map(|w| w.attachments.clone()).collect(),
                 jobs: taken.iter().flat_map(|w| w.jobs.clone()).collect(),
+                // Words said together are the owner's own only when every one was signed.
+                signed: taken.iter().all(|w| w.signed),
             },
             turns: taken.into_iter().map(|w| w.turn).collect(),
             _held: held,
@@ -139,6 +157,8 @@ impl Turns {
             conversation: conversation.into(),
             stopped: AtomicBool::new(false),
             cancelled: AtomicBool::new(false),
+            signed: AtomicBool::new(false),
+            begun: obi_protocol::time::now(),
         });
         let mut underway = self.lock();
         for earlier in underway.iter().filter(|c| c.conversation == conversation) {
@@ -170,6 +190,8 @@ impl Turns {
             conversation: conversation.into(),
             stopped: AtomicBool::new(false),
             cancelled: AtomicBool::new(false),
+            signed: AtomicBool::new(false),
+            begun: obi_protocol::time::now(),
         });
         underway.push(control.clone());
         Some(control)
@@ -373,6 +395,7 @@ mod tests {
             said: format!("said {turn}"),
             attachments: vec![format!("{turn}.png")],
             jobs: vec![],
+            signed: true,
         };
         let wait = |turn: &'static str| {
             let turns = turns.clone();

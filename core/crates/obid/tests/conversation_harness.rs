@@ -773,7 +773,7 @@ fn oby_dispatch_starts_a_job_whose_card_is_on_the_turn() {
     let conversation = tools.body["conversation"].as_str().unwrap().to_owned();
     assert_eq!(
         tools.body["text"],
-        "tools: oby_jobs,oby_job,oby_dispatch,oby_offer,oby_tell_job,oby_stop_job,oby_continue_job,oby_archive_job,oby_delete_job,oby_change_job,oby_tasks,oby_inbox,oby_github,oby_answer,oby_routines,oby_routine,oby_change_routine,oby_check_in,oby_conversations,oby_artifact,oby_read,oby_search,oby_list,oby_shell,oby_shell_output,oby_shell_stop",
+        "tools: oby_jobs,oby_job,oby_dispatch,oby_offer,oby_tell_job,oby_stop_job,oby_continue_job,oby_archive_job,oby_delete_job,oby_change_job,oby_tasks,oby_inbox,oby_github,oby_answer,oby_merge,oby_github_write,oby_settings,oby_routines,oby_routine,oby_change_routine,oby_check_in,oby_conversations,oby_artifact,oby_read,oby_search,oby_list,oby_shell,oby_shell_output,oby_shell_stop",
         "{}",
         tools.text
     );
@@ -1123,7 +1123,7 @@ fn owner_only_answers_become_confirm_items() {
         answered.body["text"]
             .as_str()
             .unwrap()
-            .contains("only you can confirm it"),
+            .contains("waits for your Confirm on its card"),
         "{}",
         answered.text
     );
@@ -1138,6 +1138,86 @@ fn owner_only_answers_become_confirm_items() {
         "{}",
         inbox.text
     );
+}
+
+/// TASKCONV-9, TASKCONV-10: the owner's own signed words, in a turn that read nothing untrusted, confirm
+/// a Confirm that was waiting and change Settings at once; the same words unsigned leave the
+/// Confirm on its card, and a default mode that asks less waits for one.
+#[test]
+fn taskconv_9_the_owners_signed_words_settle_what_waits() {
+    let (_folder, obid) = obid("harness-owners-word", true);
+    let answer = said(
+        &obid,
+        json!({"said": r#"OBY oby_dispatch {"repo": "obi-e2e/fixture-app", "task": "Add a greeting", "kind": "build", "mode": "bypass"}"#,
+               "new": true}),
+    );
+    let conversation = answer.body["conversation"].as_str().unwrap().to_owned();
+    let confirm = |obid: &Obid| -> Option<Value> {
+        let inbox = call(obid, "GET", "/v1/inbox", None);
+        inbox
+            .body
+            .as_array()
+            .and_then(|items| items.iter().find(|i| i["kind"] == "confirm").cloned())
+    };
+    let item = confirm(&obid).expect("a confirm item")["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    // A card the owner has seen: made before their words.
+    std::thread::sleep(Duration::from_millis(1100));
+    let words = format!(r#"OBY oby_answer {{"item": "{item}", "answer": "Confirm"}}"#);
+    let unsigned = said(&obid, json!({"said": words, "conversation": conversation}));
+    assert!(
+        oby_said(&unsigned).contains("waits for your Confirm on its card"),
+        "{}",
+        unsigned.text
+    );
+    let jobs = call(&obid, "GET", "/v1/jobs", None);
+    assert_eq!(jobs.body.as_array().map_or(0, Vec::len), 0, "{}", jobs.text);
+    let signed = call_typed(
+        &obid,
+        "POST",
+        "/v1/plans",
+        &json!({"said": words, "conversation": conversation}),
+    );
+    assert_eq!(signed.status, 200, "{}", signed.text);
+    assert!(oby_said(&signed).contains("Confirm."), "{}", signed.text);
+    assert!(confirm(&obid).is_none(), "the Confirm is done");
+    let jobs = call(&obid, "GET", "/v1/jobs", None);
+    let jobs = jobs.body.as_array().cloned().unwrap_or_default();
+    assert_eq!(jobs.len(), 1, "{jobs:?}");
+    assert_eq!(jobs[0]["mode"], "bypass", "{}", jobs[0]);
+
+    // Settings: what widens nothing is done; a mode that asks less waits unless it's their word.
+    let set = |body: &str, signed: bool| -> Answer {
+        let words =
+            json!({"said": format!("OBY oby_settings {body}"), "conversation": conversation});
+        if signed {
+            call_typed(&obid, "POST", "/v1/plans", &words)
+        } else {
+            said(&obid, words)
+        }
+    };
+    let max = set(r#"{"maxRunning": 3}"#, false);
+    assert!(
+        oby_said(&max).contains("Saved: 3 jobs at once"),
+        "{}",
+        max.text
+    );
+    let settings = call(&obid, "GET", "/v1/settings/jobs", None);
+    assert_eq!(settings.body["maxRunning"], 3, "{}", settings.text);
+    let mode = || call(&obid, "GET", "/v1/settings/permissions", None).body["mode"].clone();
+    let before = mode();
+    let waits = set(r#"{"defaultMode": "bypass"}"#, false);
+    assert!(
+        oby_said(&waits).contains("waits for your OK"),
+        "{}",
+        waits.text
+    );
+    assert_eq!(mode(), before);
+    let done = set(r#"{"defaultMode": "bypass"}"#, true);
+    assert!(oby_said(&done).contains("Saved: Bypass"), "{}", done.text);
+    assert_eq!(mode(), "bypass");
 }
 
 /// A routine said in chat (#395) is only proposed: a confirm item whose Confirm, the owner's own,
@@ -1225,16 +1305,17 @@ fn a_routine_said_in_chat_waits_for_the_owners_confirm() {
     );
     assert_eq!(routine_now()["enabled"], false);
 
-    // After reading what others wrote, the turn's words change no routine.
+    // After reading what others wrote, the turn's words change a routine only on the owner's
+    // Confirm (TASKCONV-11).
     let resume = format!(r#"READREPO OBY oby_change_routine {{"id": "{id}", "action": "resume"}}"#);
-    let refused = said(&obid, json!({"said": resume, "new": true}));
+    let waits = said(&obid, json!({"said": resume, "new": true}));
     assert!(
-        refused.body["text"]
+        waits.body["text"]
             .as_str()
             .unwrap()
-            .contains("only when the owner says it again"),
+            .contains("waits for the owner's OK"),
         "{}",
-        refused.text
+        waits.text
     );
     assert_eq!(routine_now()["enabled"], false);
 
@@ -1705,10 +1786,11 @@ fn a_turn_starts_and_tells_at_most_ten() {
     }
 }
 
-/// #858: a job's agent's question is the owner's alone to answer: oby_tell_job is refused while
-/// it waits, and the question still waits; the owner's own words then answer it.
+/// #858, TASKCONV-9: a job's agent's question is the owner's to answer: words that aren't their own
+/// signed word make a Confirm of the answer, and the question still waits; the owner's own words
+/// then answer it.
 #[test]
-fn oby_tell_job_never_answers_a_jobs_question() {
+fn oby_tell_job_answers_a_jobs_question_only_on_the_owners_word() {
     let (_folder, obid) = obid("harness-question", true);
     let posted = call(
         &obid,
@@ -1729,7 +1811,7 @@ fn oby_tell_job_never_answers_a_jobs_question() {
     let tell = format!(r#"OBY oby_tell_job {{"id": "{id}", "words": "SQLite"}}"#);
     let told = said(&obid, json!({"said": tell, "new": true}));
     assert!(
-        oby_said(&told).contains("refused: It waits for the owner to answer its question"),
+        oby_said(&told).contains("waits for your OK"),
         "{}",
         told.text
     );

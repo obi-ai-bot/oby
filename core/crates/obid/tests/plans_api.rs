@@ -1097,8 +1097,8 @@ fn one_message_tries_a_failed_job_again_and_dismisses_the_old_one() {
     );
 }
 
-/// #858: a job's agent's question is the owner's to answer: oby_tell_job refuses while it waits,
-/// and it still waits. The owner's answer reaches the agent without the vault's secrets, and none
+/// #858: a job's agent's question is the owner's to answer: oby_tell_job's words that aren't
+/// their own signed word wait for their Confirm, and it still waits. The owner's answer reaches the agent without the vault's secrets, and none
 /// goes while the vault can't be read.
 #[test]
 fn only_the_owner_answers_a_jobs_question_and_without_vault_secrets() {
@@ -1120,7 +1120,7 @@ fn only_the_owner_answers_a_jobs_question_and_without_vault_secrets() {
         answer["text"]
             .as_str()
             .unwrap()
-            .contains("It waits for the owner to answer its question"),
+            .contains("waits for your OK"),
         "{answer}"
     );
     let job = get_job(&obid, &id);
@@ -2207,7 +2207,7 @@ fn the_brain_never_answers_a_confirm_item() {
         refused["text"]
             .as_str()
             .unwrap()
-            .contains("only you can confirm it"),
+            .contains("waits for your Confirm on its card"),
         "{refused}"
     );
     assert_eq!(get_job(&obid, &id)["mode"], "ask");

@@ -1216,10 +1216,11 @@ fn a_conversation_asks_tetrix_for_reads_with_its_turns_token() {
         "get_entity",
         "repo_sessions",
         "session_digest",
+        "save_session",
     ] {
         assert!(listed.contains(&format!("\"{read}\"")), "{listed}");
     }
-    for never in ["save_session", "resume_session", "admin_wipe_graph"] {
+    for never in ["resume_session", "admin_wipe_graph"] {
         assert!(!listed.contains(never), "{listed}");
     }
     let signed_in = last_turn();
@@ -1247,17 +1248,27 @@ fn a_conversation_asks_tetrix_for_reads_with_its_turns_token() {
     }
     assert_eq!(kept()["web"], true, "Tetrix's answers are anyone's words");
 
-    // A write, and what agents never get, never reach Tetrix.
-    for tool in ["save_session", "resume_session"] {
-        let refused =
-            say(json!({"said": format!("MCP tetrix {tool} {{}}"), "conversation": conversation}));
-        assert!(
-            refused.contains(&format!("Oby doesn't let agents call Tetrix's {tool}")),
-            "{refused}"
-        );
-    }
+    // What agents never get never reaches Tetrix.
+    let refused =
+        say(json!({"said": "MCP tetrix resume_session {}", "conversation": conversation}));
+    assert!(
+        refused.contains("Oby doesn't let agents call Tetrix's resume_session"),
+        "{refused}"
+    );
+    // TASKCONV-12: save_session does, in the use log as a write.
+    let saved = say(
+        json!({"said": r#"MCP tetrix save_session {"summary": "Kept retries at 4"}"#, "conversation": conversation}),
+    );
+    assert!(saved.contains("sess-agent-1"), "{saved}");
+    let uses = std::fs::read_to_string(obid.home.join("vault/uses.jsonl")).unwrap_or_default();
+    assert!(
+        uses.lines()
+            .any(|l| l.contains("\"save_session\"") && l.contains("\"write\"")),
+        "{uses}"
+    );
     let seen = seen.lock().unwrap();
-    assert!(seen.saved.is_empty());
+    assert_eq!(seen.saved.len(), 1);
+    assert_eq!(seen.saved[0]["summary"], "Kept retries at 4");
     assert!(!seen.requests.iter().any(|r| r.3.contains("resume_session")));
     drop(seen);
 

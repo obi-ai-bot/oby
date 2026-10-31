@@ -447,6 +447,10 @@ impl Link {
                         zone: confirmed.payload["zone"].as_str().map(str::to_owned),
                         ..Default::default()
                     }),
+                    Some("pause") => change(Change {
+                        enabled: Some(false),
+                        ..Default::default()
+                    }),
                     Some("delete") => routines.delete(target).then_some(()).ok_or_else(gone),
                     Some("run") => {
                         // Off the async threads: a run takes the routines' firing lock.
@@ -577,6 +581,47 @@ impl Link {
                     tracing::warn!("No check for {target} isn't forgotten: {e}");
                 }
                 Ok(())
+            }
+            inbox::action::MERGE_PR => {
+                let asked: crate::brain::owners_word::Merge =
+                    serde_json::from_value(confirmed.payload["merge"].clone())
+                        .map_err(|_| api(StatusCode::CONFLICT, "That merge's plan was lost."))?;
+                let head = confirmed.payload["head"].as_str().unwrap_or_default();
+                crate::brain::owners_word::merge(&self.jobs, &self.config.home, &asked, head)
+                    .await
+                    .map(|_| ())
+                    .map_err(|why| api(StatusCode::CONFLICT, why))
+            }
+            inbox::action::GITHUB_WRITE => {
+                let asked: crate::brain::owners_word::Write =
+                    serde_json::from_value(confirmed.payload["write"].clone())
+                        .map_err(|_| api(StatusCode::CONFLICT, "That write's plan was lost."))?;
+                crate::brain::owners_word::write(&self.config.home, &asked)
+                    .await
+                    .map(|_| ())
+                    .map_err(|why| api(StatusCode::CONFLICT, why))
+            }
+            inbox::action::SET_SETTINGS => {
+                let asked: crate::brain::owners_word::Settings =
+                    serde_json::from_value(confirmed.payload["settings"].clone())
+                        .map_err(|_| api(StatusCode::CONFLICT, "That change was lost."))?;
+                asked
+                    .apply(&self.jobs, &self.config.home)
+                    .map(|_| ())
+                    .map_err(|why| api(StatusCode::UNPROCESSABLE_ENTITY, why))
+            }
+            inbox::action::SET_CHECK_IN => {
+                let kept: crate::settings::CheckIn =
+                    serde_json::from_value(confirmed.payload["checkIn"].clone())
+                        .map_err(|_| api(StatusCode::CONFLICT, "That check-in was lost."))?;
+                crate::settings::update(&self.config.home, |s| s.check_in = Some(kept)).map_err(
+                    |e| {
+                        api(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            format!("It couldn't be kept: {e}"),
+                        )
+                    },
+                )
             }
             // The ones that answer an inbox item, as the owner would have.
             inbox::action::ACCEPT
@@ -840,6 +885,32 @@ impl Link {
         typed: bool,
     ) -> Result<Value, ApiError> {
         let answered = self.answer_as(id, body, None, typed).await;
+        answered.map(|shown| self.with_triage(shown))
+    }
+
+    /// `Confirm` or `Cancel` on a `confirm` item made before the owner's own signed words, in a
+    /// conversation turn that read nothing untrusted, said so (crate::brain::actions, TASKCONV-9):
+    /// as their tap would. A teammate's approval on GitHub, and a standing one, keep their tap
+    /// (crate::sphere::approval).
+    pub async fn answer_on_owners_word(
+        self: &Arc<Self>,
+        id: &str,
+        answer: &str,
+    ) -> Result<Value, ApiError> {
+        let item = self
+            .item(id)
+            .filter(|i| i.kind == "confirm" && i.done.is_none())
+            .ok_or_else(|| api(StatusCode::CONFLICT, "That item is gone."))?;
+        if item.confirm.as_ref().is_some_and(|c| {
+            c.action == inbox::action::APPROVE_ON_HOST
+                || c.action == inbox::action::REMEMBER_APPROVAL
+        }) {
+            return Err(api(StatusCode::FORBIDDEN, NEEDS_YOUR_TAP));
+        }
+        let body = json!({"answer": answer}).to_string();
+        let answered = self
+            .answer_as(id, body.as_bytes(), Some((&item.title, time::now())))
+            .await;
         answered.map(|shown| self.with_triage(shown))
     }
 

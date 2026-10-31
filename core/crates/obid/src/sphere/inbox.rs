@@ -107,6 +107,19 @@ pub mod action {
     /// Make a check Oby guessed, or the owner typed, the check of a repository that has none
     /// (#1062, [`super::check_item`]): `target` the repository, `payload` `{"check": "<command>"}`.
     pub const SET_CHECK: &str = "set_check";
+    /// Merge a pull request the owner named in a conversation (`oby_merge`, TASKCONV-7): `target`
+    /// `owner/name#<number>`, `payload` `{"merge": {"repo", "pr", "method"}, "head": "<sha>"}`,
+    /// the head the card showed.
+    pub const MERGE_PR: &str = "merge_pr";
+    /// Write on GitHub as the owner (`oby_github_write`, TASKCONV-8): `target` the repository,
+    /// `payload` `{"write": {"repo", "action", "number", "body", "title", "labels"}}`.
+    pub const GITHUB_WRITE: &str = "github_write";
+    /// Change Settings (`oby_settings`, TASKCONV-10): `target` empty, `payload` `{"settings":
+    /// {"maxRunning", "accountFailover", "defaultMode"}}`.
+    pub const SET_SETTINGS: &str = "set_settings";
+    /// Turn check-ins on or change them (`oby_check_in`, TASKCONV-11): `target` the conversation they
+    /// post in, `payload` `{"checkIn": <settings' checkIn>}`.
+    pub const SET_CHECK_IN: &str = "set_check_in";
 }
 
 /// A `confirm` item: `title` says exactly what `Confirm` does, `confirmed` is what obid carries

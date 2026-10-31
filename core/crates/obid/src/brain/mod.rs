@@ -11,6 +11,7 @@ pub mod find;
 pub mod harness;
 pub mod harness_codex;
 pub mod orchestrator;
+pub mod owners_word;
 pub mod plan;
 pub mod read;
 pub mod recap;
@@ -181,7 +182,8 @@ pub async fn plan(
         .unwrap_or_else(|| words.to_owned());
     // What the conversation hears that isn't on obid's allowlist (crate::secretspec): words no app
     // of the owner's signed (oby-mcp's, a script's), turns the client wrote, files.
-    let foreign = if !crate::routes::typed_by_owner(&shared, "POST", &uri, &headers, &body) {
+    let signed = crate::routes::typed_by_owner(&shared, "POST", &uri, &headers, &body);
+    let foreign = if !signed {
         Some("words no app of the owner's signed".to_owned())
     } else if turns.is_some() {
         Some("turns its client wrote".to_owned())
@@ -228,6 +230,7 @@ pub async fn plan(
         said,
         attachments,
         jobs,
+        signed,
     };
     // The turn goes on by itself: a client that stops waiting can't be told from a slow one, so
     // what the plan does still happens, and is kept (docs/runner-api.md, `POST /v1/plans`).
@@ -247,6 +250,7 @@ pub async fn plan(
         let given =
             turns.unwrap_or_else(|| shared.conversations.turns_but(&conversation, &next.turns));
         let control = shared.turns.begin(&next.words.turn, &conversation);
+        control.set_signed(next.words.signed);
         let asked = Asked {
             said,
             attachments: &next.words.attachments,
