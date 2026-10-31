@@ -1407,6 +1407,7 @@ impl Link {
         item: Item,
         answer: Option<String>,
         later: Option<i64>,
+        signed: bool,
     ) -> Result<Value, ApiError> {
         let now = time::now();
         let Some(answer) = answer else {
@@ -1458,7 +1459,8 @@ impl Link {
         use crate::jobs::PermissionRefused;
         // The agent's question: an option or the owner's own words are its answer (#858).
         let answered = if item.kind == inbox::QUESTION_KIND {
-            self.jobs.answer_question(&item.job, &permission, &answer)
+            self.jobs
+                .answer_question_as(&item.job, &permission, &answer, signed)
         } else {
             let (decision, words) = crate::permissions::inbox_decision(&answer);
             self.jobs

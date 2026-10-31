@@ -1173,9 +1173,11 @@ impl Link {
             ) {
                 drop(state);
                 return match given {
-                    Given::Answer(answer) => self.answer_permission_item(item, Some(answer), None),
-                    Given::Done => self.answer_permission_item(item, None, None),
-                    Given::Later(at) => self.answer_permission_item(item, None, Some(at)),
+                    Given::Answer(answer) => {
+                        self.answer_permission_item(item, Some(answer), None, approved.is_some())
+                    }
+                    Given::Done => self.answer_permission_item(item, None, None, false),
+                    Given::Later(at) => self.answer_permission_item(item, None, Some(at), false),
                 };
             }
             // A crashed job's `failed` item (#911): Try again runs it again, Dismiss lets the job

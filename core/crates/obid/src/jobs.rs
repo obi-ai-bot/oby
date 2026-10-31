@@ -3418,13 +3418,18 @@ impl Jobs {
                 return Some(Err(Refused(QUESTION_IS_THE_OWNERS.into())));
             }
             return Some(
-                self.answer_question(id, &question.id, text)
-                    .map_err(|e| match e {
-                        PermissionRefused::NoJob => Refused("There's no such job.".into()),
-                        PermissionRefused::NotWaiting(why) | PermissionRefused::Refused(why) => {
-                            Refused(why)
-                        }
-                    }),
+                self.answer_question_as(
+                    id,
+                    &question.id,
+                    text,
+                    matches!(source, Source::Owner | Source::Confirmed),
+                )
+                .map_err(|e| match e {
+                    PermissionRefused::NoJob => Refused("There's no such job.".into()),
+                    PermissionRefused::NotWaiting(why) | PermissionRefused::Refused(why) => {
+                        Refused(why)
+                    }
+                }),
             );
         }
         // Words from anyone but the owner typing them (the brain's, an event's, a Confirm of what
@@ -4489,7 +4494,7 @@ impl Jobs {
         if kept {
             return match decision {
                 Decision::Deny => self
-                    .answer_kept_question(id, permission, None)
+                    .answer_kept_question(id, permission, None, false)
                     .unwrap_or_else(|| {
                         Err(PermissionRefused::NotWaiting(
                             "That question isn't waiting any more.".into(),
@@ -4718,6 +4723,19 @@ impl Jobs {
         permission: &str,
         answer: &str,
     ) -> Result<Job, PermissionRefused> {
+        self.answer_question_as(id, permission, answer, false)
+    }
+
+    /// [`Jobs::answer_question`]; `signed`: the owner's app signed the answer (their typed words,
+    /// a Confirm or a device-signed inbox answer), so the question and it are kept with their own
+    /// words for Oby's review ([`Job::said`]). An answer no app signed is kept nowhere.
+    pub fn answer_question_as(
+        self: &Arc<Self>,
+        id: &str,
+        permission: &str,
+        answer: &str,
+        signed: bool,
+    ) -> Result<Job, PermissionRefused> {
         let job = self.get(id).ok_or(PermissionRefused::NoJob)?;
         // The owner's words reach the agent without the vault's secrets, or not at all.
         let answer = crate::vault::for_agent(answer.trim())
@@ -4726,7 +4744,7 @@ impl Jobs {
                 PermissionRefused::Refused(format!("Couldn't pass your answer on: {why}"))
             })?;
         let answer = answer.as_str();
-        if let Some(answered) = self.answer_kept_question(id, permission, Some(answer)) {
+        if let Some(answered) = self.answer_kept_question(id, permission, Some(answer), signed) {
             return answered;
         }
         let asked;
@@ -4768,7 +4786,9 @@ impl Jobs {
             }
         };
         let (permission, said) = settled;
-        self.owner_said(id, answered(&asked, &said));
+        if signed {
+            self.owner_said(id, answered(&asked, &said));
+        }
         self.note(PermissionNote::Settled {
             job: id.to_owned(),
             permission,
@@ -4807,6 +4827,7 @@ impl Jobs {
         id: &str,
         permission: &str,
         answer: Option<&str>,
+        signed: bool,
     ) -> Option<Result<Job, PermissionRefused>> {
         let mut qa = None;
         let (next, said, picked_up) = {
@@ -4832,7 +4853,7 @@ impl Jobs {
                         )));
                     };
                     call.answers.push(said.clone());
-                    qa = Some(answered(&asking.question.question, &said));
+                    qa = signed.then(|| answered(&asking.question.question, &said));
                     next = (asking.index + 1 < call.questions.len()).then(|| {
                         permissions::question_card(
                             &call.questions,
@@ -16760,6 +16781,11 @@ mod tests {
         let job = jobs.get("j").unwrap();
         assert!(job.permission.is_none());
         assert_eq!(job.step, "You answered its question");
+        // MERGING-18: only the signed answer is kept as the owner's own, with its question.
+        assert_eq!(
+            job.said,
+            ["Its agent asked: Which checks?\nThe user answered: Unit, Lint"]
+        );
         // A no declines it, the agent told to decide.
         let Ruling::Ask(declined) = ask() else {
             panic!("the question went through by itself");

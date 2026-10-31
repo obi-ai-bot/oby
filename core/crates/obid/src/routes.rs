@@ -1159,12 +1159,17 @@ pub async fn permission(
     let answered = match value.get("answer") {
         None | Some(Value::Null) => None,
         Some(Value::String(answer)) if value.get("decision").is_none() => {
-            if unsigned() {
+            let unsigned = unsigned();
+            if unsigned {
                 shared
                     .jobs
                     .unvet(&id, "an answer no app of the owner's signed reached it");
             }
-            Some(shared.jobs.answer_question(&id, permission, answer))
+            Some(
+                shared
+                    .jobs
+                    .answer_question_as(&id, permission, answer, !unsigned),
+            )
         }
         Some(_) => return Err(ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, shape)),
     };
