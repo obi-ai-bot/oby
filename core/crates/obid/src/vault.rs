@@ -780,6 +780,31 @@ pub fn install(home: &Path, location: &Location) -> Arc<Vault> {
     vault
 }
 
+/// Says in the log which of the Swift runner's vault items (`old`, by name, listed without a value)
+/// the file doesn't hold, and how to add each back: obid no longer copies them out of the Keychain
+/// (#1679). Also when the configuration still says `keychain`, which is the file now. Answers the
+/// names it said.
+pub fn left_in_keychain(old: &[String], says_keychain: bool) -> Vec<String> {
+    if says_keychain {
+        tracing::warn!(
+            "the configuration's vault says \"keychain\": obid keeps the vault in its file now and never reads the Keychain, so set it to {{\"store\": \"file\"}} or leave it out"
+        );
+    }
+    let held = shared().and_then(|v| v.names().ok()).unwrap_or_default();
+    let left: Vec<String> = old.iter().filter(|n| !held.contains(n)).cloned().collect();
+    for name in &left {
+        let how = if name.starts_with("oby.tetrix.") {
+            "connect Tetrix again in Settings › Connectors".to_owned()
+        } else {
+            format!("add it again with `obid vault --config <path> add {name}`")
+        };
+        tracing::warn!(
+            "{name} is still in the Keychain, where obid no longer reads its secrets, and not in the vault's file: {how}"
+        );
+    }
+    left
+}
+
 /// obid's vault, once [`install`]ed.
 pub fn shared() -> Option<Arc<Vault>> {
     SHARED.read().unwrap_or_else(|e| e.into_inner()).clone()

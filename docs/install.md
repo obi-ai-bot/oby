@@ -137,7 +137,7 @@ obid's API token is `home/api-token` (0600, in a 0700 home). The installer makes
 
 | What | Where | Notes |
 | --- | --- | --- |
-| Secrets in the vault | `home/vault/secrets.json` (a Mac too, since 2026-10-30) | obid never reads the Keychain for them (#1679), so it asks for no password. What the Swift runner kept in the Keychain (service `com.deskree.oby.runner.vault`) stays there unread: connect Tetrix (or any connection whose secret was there) again once. On Linux copy `vault/secrets.json` into the new home (folder 0700, file 0600), or add them again with `obid vault --config <path> add NAME`. |
+| Secrets in the vault | `home/vault/secrets.json` (a Mac too, since 2026-10-30) | obid never reads the Keychain for them (#1679), so it asks for no password. What the Swift runner kept in the Keychain (service `com.deskree.oby.runner.vault`) stays there unread: connect Tetrix (or any connection whose secret was there) again once; obid's log names each item the file lacks. On Linux copy `vault/secrets.json` into the new home (folder 0700, file 0600), or add them again with `obid vault --config <path> add NAME`. |
 | Phones that may approve publishing | `home/devices.json` | Copy it into the new home. Without it each device adds its key again, with the owner's presence (docs/runner-api.md, `POST /v1/devices`): the Mac on the owner's first Publish, Confirm or Disconnect, a paired iPhone with its pairing. |
 | When Clear done was last pressed | `home/cleared.json` | Copy it, or ignore it. |
 | Your logins | Claude Code, Codex, `gh`: each tool's own | Nothing to move; obid runs as the same user. |

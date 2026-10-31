@@ -51,7 +51,9 @@ pub const ACCESS: &str = "oby.tetrix.access";
 pub const REFRESH: &str = "oby.tetrix.refresh";
 pub const NOT_SIGNED_IN: &str = "Oby isn't signed in to Tetrix.";
 const SIGNED_OUT: &str = "Tetrix signed Oby out: sign in again.";
-/// Why a Tetrix connection made before obid kept its logins only in its own file is gone (#1679).
+/// Why a saved Tetrix connection whose login isn't in the vault is gone (#1679).
+pub const GONE: &str = "Oby's Tetrix login isn't in its vault any more: connect Tetrix again.";
+/// [`GONE`] when the login is still in the Keychain, where obid no longer reads (#1679).
 pub const RECONNECT: &str = "Connect Tetrix again: Oby no longer reads its logins from your Keychain, so the one kept there didn't carry over.";
 const SIGN_IN_LASTS: Duration = Duration::from_secs(10 * 60);
 /// How long obid's own questions to Tetrix (a job's context) may take.
@@ -383,13 +385,21 @@ impl Tetrix {
             changing: tokio::sync::Mutex::new(()),
             known: Mutex::new(Vec::new()),
         });
-        // A login the Swift runner kept in the Keychain isn't read any more (#1679): Settings says
-        // to connect again, once, rather than showing a connection that fails at every call.
+        // A login that isn't in the vault (one the Swift runner kept in the Keychain, which obid no
+        // longer reads, #1679): Settings says to connect again, once, rather than showing a
+        // connection that fails at every call. Why, once obid has looked ([`Self::left_in_keychain`]).
         if tetrix.connected() && matches!(tetrix.vault.value(ACCESS), Ok(None)) {
             tracing::warn!("Tetrix's login isn't in the vault: connect Tetrix again");
-            tetrix.forget(Some(RECONNECT.into()));
+            tetrix.forget(Some(GONE.into()));
         }
         tetrix
+    }
+
+    /// The login [`Self::open`] found gone is still in the Keychain: Settings says that's why.
+    pub fn left_in_keychain(&self) {
+        if !self.connected() && self.saved().error.as_deref() == Some(GONE) {
+            self.set_error(RECONNECT.into());
+        }
     }
 
     fn saved(&self) -> Saved {
@@ -2345,6 +2355,9 @@ mod tests {
         ));
         let gone = open(vault.clone());
         assert!(!gone.connected());
+        assert_eq!(gone.status_json()["error"], json!(GONE));
+        // The Keychain is blamed only once obid saw the login there.
+        gone.left_in_keychain();
         assert_eq!(gone.status_json()["error"], json!(RECONNECT));
         // Once: what it saved is no longer connected, so nothing is said again.
         let saved_now: Value =

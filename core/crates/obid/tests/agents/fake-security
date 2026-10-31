@@ -16,7 +16,8 @@ while [ $# -gt 0 ]; do
 done
 item="${TMPDIR:-/nonexistent}/obid-test-keychain/$service"
 if [ -n "$service" ] && [ -f "$item" ]; then
-    [ -n "$value" ] && cat "$item"
+    # Without -w, the item's attributes: its "mdat" changes with what it holds, as a rewrite's does.
+    if [ -n "$value" ]; then cat "$item"; else printf '    "mdat"<timedate>="%s"\n' "$(cksum < "$item")"; fi
     exit 0
 fi
 exit 44

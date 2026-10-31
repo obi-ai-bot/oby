@@ -6529,6 +6529,14 @@ impl Jobs {
                     "obid can't find the home Cursor's own login is in.".to_owned()
                 })?;
                 let own = own_cursor_login(&home);
+                // A Keychain login macOS didn't give: say why, not that it's signed out (#1679).
+                if own.is_none()
+                    && let Some(why) = CURSOR_ITEMS
+                        .iter()
+                        .find_map(|(_, service)| keychain_unread(Tool::Cursor, service))
+                {
+                    return Err(why);
+                }
                 // A copy can't refresh it: only the Mac's own cursor-agent does.
                 if own
                     .as_deref()

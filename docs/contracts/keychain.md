@@ -18,20 +18,20 @@ The business behavior contract for what obid asks of the macOS Keychain, from [t
 
 ### Scenarios
 
-- **KEYCHAIN-1:** obid never reads or writes the Keychain for its own secrets: no Security framework in obid, no Keychain store for the vault, no copy out of the Keychain. A configuration's `{"store": "keychain"}` is read as the file.
-- **KEYCHAIN-2:** A Mac upgrading from a vault in the Keychain starts with no prompt. A saved Tetrix connection whose login isn't in the file is no longer connected, and says once, in Settings: "Connect Tetrix again: Oby no longer reads its logins from your Keychain, so the one kept there didn't carry over." The old Keychain items stay, unread.
-- **KEYCHAIN-3:** A Claude Code or Cursor Keychain login that macOS doesn't give obid (the owner chose Deny, or answered nothing within 60 seconds, or the Keychain was locked) isn't asked for again until obid restarts. That account isn't signed in; its label says "Restart Oby, then Always Allow", and a run on it says "Claude Code keeps its login in your Keychain, and macOS asks once whether Oby may read it: that was denied or not answered, so Oby won't ask again until it restarts. Restart Oby and choose Always Allow."
+- **KEYCHAIN-1:** obid never reads or writes the Keychain for its own secrets: no Security framework in obid, no Keychain store for the vault, no copy out of the Keychain. A configuration's `{"store": "keychain"}` is read as the file, and obid's log says to change it. Once obid answers, it lists the names of the Swift runner's items (`security dump-keychain`, attributes only: no value, no prompt, 10 seconds at most) and, for each one the file doesn't hold, says in its log which and how to add it back: Tetrix's by connecting Tetrix again, any other with `obid vault --config <path> add NAME` (`oby.fcm.serviceAccount`, or what `obid vault add` put there).
+- **KEYCHAIN-2:** A Mac upgrading from a vault in the Keychain starts with no prompt. A saved Tetrix connection whose login isn't in the file is no longer connected, and says once, in Settings: "Oby's Tetrix login isn't in its vault any more: connect Tetrix again." When obid then finds `oby.tetrix.access` among the Swift runner's Keychain items, it says why: "Connect Tetrix again: Oby no longer reads its logins from your Keychain, so the one kept there didn't carry over." The old Keychain items stay, unread.
+- **KEYCHAIN-3:** obid asks for a Claude Code or Cursor Keychain login's value at most once per change of the item: it reads the item's modification date first (no value, no prompt), keeps what macOS gave while that date stays the same (so an "Allow" rather than "Always Allow" isn't asked again at the keeper's every minute), and reads again only once the tool rewrote the item (a refresh, a sign-in). A value macOS doesn't give (Deny, or no answer within 60 seconds) isn't asked for again until the item changes: that account, with no login file, isn't signed in; its label says "Sign in again, then Always Allow", and a run on it (a follow-up too) fails saying "Claude Code keeps its login in your Keychain, and macOS asked whether Oby may read it: that was denied or not answered, so Oby won't ask again until that login changes. To be asked again, run claude, then /login, and choose Always Allow when macOS asks." (Cursor: "run cursor-agent login"). obid looks at the item's date again at most every 30 seconds, so the sign-in clears it without a restart. A locked login Keychain, or no one at the screen (`security`'s exit 36), is never kept: the run says "Your login Keychain is locked, so Oby couldn't read the agent's login there: unlock your Mac (sign in at its screen), then try again.", and the next read asks again. An account with a login file (`.credentials.json`) uses it first and is never marked refused.
 
 ### What the owner can still see
 
 - No prompt in the usual case: Claude Code and cursor-agent write their items with `/usr/bin/security`, and obid reads them with it.
-- A prompt only when an item was made by another program (an older Claude Code, a tool that writes the Keychain itself) or the login Keychain is locked. Then macOS asks once per item; Always Allow ends it for good, and Deny or no answer ends it until obid restarts (KEYCHAIN-3). A value is read when a run starts and while the keeper refreshes a login, off the request path; Cursor's is also read when an app asks `GET /v1/status`, at most once a minute, so that one answer can wait for the owner's choice, once.
+- A prompt only when an item was made by another program (an older Claude Code, a tool that writes the Keychain itself) or the login Keychain is locked. Then macOS asks once per change of the item: Always Allow ends it for good; Allow asks again when the tool next rewrites its login (a refresh, about every 8 hours for Claude Code); Deny or no answer ends it until the login changes (KEYCHAIN-3). A value is read when a run starts and while the keeper refreshes a login, off the request path; Cursor's is also read when an app asks `GET /v1/status`, at most once a minute, so that one answer can wait for the owner's choice, once.
 - While obid starts it asks only whether an item exists, which reads no secret and never prompts for an item, each answer within 5 seconds.
 
 ## Invariants
 
 - No vault secret is ever read from or written to the Keychain.
-- No Keychain value is asked for twice in one obid run after macOS refused it.
+- No Keychain value is asked for twice while its item is unchanged.
 - obid's API is add-only: no key or route is removed; `tetrix.error` gains one text.
 
 ## Tests
@@ -39,11 +39,12 @@ The business behavior contract for what obid asks of the macOS Keychain, from [t
 | Scenario | Test |
 |---|---|
 | KEYCHAIN-1 | `vault::tests::keychain_1_the_vault_never_touches_the_keychain`, `vault::tests::where_the_vault_is` |
+| KEYCHAIN-1 (the items left behind) | `jobs::logins::tests::the_swift_runners_vault_items_are_named_from_their_attributes` |
 | KEYCHAIN-2 | `tetrix::tests::keychain_2_a_login_left_in_the_keychain_asks_to_connect_again` |
-| KEYCHAIN-3 | `jobs::logins::tests::keychain_3_a_refused_login_is_asked_for_once` |
+| KEYCHAIN-3 | `jobs::logins::tests::keychain_3_a_login_is_asked_for_once_per_change`, `accounts_api::keychain_3_a_cursor_login_macos_refused_says_why`, `accounts_api::keychain_3_a_claude_login_macos_refused_fails_the_run_saying_why` |
 
 ## Test it when it's done (on a real Mac)
 
 1. On a Mac with Oby Electron 0.1.0 and its vault items in the Keychain, move `~/Library/Application Support/Oby/Runner/vault/secrets.json` aside, install the signed release with this obid, and open Oby. No password prompt; Home shows within seconds.
 2. Settings › Connectors: Tetrix asks to be connected again, with the text above. Connect it; jobs use it.
-3. `~/Library/Logs/obid.log` has no `Keychain` line from the vault.
+3. `~/Library/Logs/obid.log` names each item still in the Keychain that the file lacks (`… is still in the Keychain, where obid no longer reads its secrets …`), with how to add it back.

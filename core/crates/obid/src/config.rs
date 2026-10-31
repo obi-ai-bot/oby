@@ -82,8 +82,8 @@ struct File {
     /// The safety budget of a job, in tokens (cache reads left out): 1 to 10^10, 50 million when
     /// left out.
     job_token_budget: Option<u64>,
-    /// Where the vault is (crate::vault): `{"store": "file"}` or `{"store": "keychain", "service":
-    /// "…"}`; left out, [`crate::vault::Location::default_for`].
+    /// Where the vault is (crate::vault): `{"store": "file"}`, also when left out. An older
+    /// `{"store": "keychain", "service": "…"}` is the file too (#1679), and obid's start says so.
     #[serde(default)]
     vault: Option<VaultSetting>,
     /// Where the gateway listens (crate::gateway), on 127.0.0.1; left out, there's none.
@@ -233,6 +233,9 @@ pub struct Config {
     pub council: bool,
     /// Where the owner's vault is (crate::vault).
     pub vault: crate::vault::Location,
+    /// Whether the configuration still says `{"store": "keychain"}`, which is the file since #1679:
+    /// obid's start says so.
+    pub vault_says_keychain: bool,
     /// How long the event orchestrator waits for nearby events to come together before its
     /// turn (#590): 30 seconds unless `orchestratorDelay` says otherwise (1 to 600).
     pub orchestrator_delay: std::time::Duration,
@@ -562,6 +565,7 @@ impl Config {
             allow_file_remotes: file.allow_file_remotes,
             telemetry: file.telemetry,
             council: file.council,
+            vault_says_keychain: file.vault.as_ref().is_some_and(|v| v.store == "keychain"),
             vault,
             orchestrator_delay: std::time::Duration::from_secs(orchestrator_delay),
             stall_after: std::time::Duration::from_secs(stall_after),
