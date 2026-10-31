@@ -128,6 +128,8 @@ fn an_event_the_brain_cant_answer_escalates_saying_why() {
         ),
         "{item}"
     );
+    // No recommendation: the task by its name (TASKS-14).
+    assert_eq!(item["title"], "Flaky thing needs your decision", "{item}");
     assert_eq!(get(&obid, &id)["round"], 1);
 }
 
@@ -201,8 +203,8 @@ fn an_event_turn_never_starts_a_follow_up() {
     assert_eq!(get(&obid, &id)["round"], 1);
 }
 
-/// What the owner decides is left for them with the turn's diagnosis and recommendation, titled
-/// by the task's name, never its id (TASKS-14); a tool off the allow-list is refused, and the turn
+/// What the owner decides is left for them with the turn's diagnosis and recommendation, its
+/// recommendation asked as the card's question, never an id (TASKS-14); a tool off the allow-list is refused, and the turn
 /// lists only the allow-list.
 #[test]
 fn tasks_14_an_event_turn_escalates_with_its_diagnosis_and_calls_only_its_tools() {
@@ -227,7 +229,7 @@ fn tasks_14_an_event_turn_escalates_with_its_diagnosis_and_calls_only_its_tools(
         ),
         "{item}"
     );
-    assert_eq!(item["title"], "Flaky thing needs your decision", "{item}");
+    assert_eq!(item["title"], "Add the secret?", "{item}");
     assert!(!item["text"].as_str().unwrap().contains(&id), "{item}");
     let tools = within(10, "the turn's answer", || {
         answered(&obid)

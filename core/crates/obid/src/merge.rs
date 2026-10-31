@@ -1031,7 +1031,7 @@ fn owned<'a>(
         .is_none()
     {
         return Err(needs_you(
-            "Not merged: the job has no pull request of its own.",
+            "Not merged: the task has no pull request of its own.",
         ));
     }
     // Into main, master or trunk too: only the owner's word merges there ([`on_their_word`]).
@@ -1057,7 +1057,7 @@ fn owned<'a>(
         return Err(needs_you("Not merged: it's another Obi's work."));
     }
     if job.dismissed.is_some() {
-        lifted.push(held("Not merged: you let the job go."));
+        lifted.push(held("Not merged: you let the task go."));
     }
     match pr.state.as_str() {
         "OPEN" => {}
@@ -1065,7 +1065,7 @@ fn owned<'a>(
         _ => return Err(wait("Not merged: it's closed.")),
     }
     if job.status != Status::Done {
-        lifted.push(held("Not merged yet: the job isn't done."));
+        lifted.push(held("Not merged yet: the task isn't done."));
     }
     if job.unpublished() > 0 {
         lifted.push(held("Not merged yet: it has commits Oby hasn't published."));
@@ -1146,7 +1146,7 @@ async fn merging(
     let repo = job.repo.as_str();
     let url = job.published.as_deref().unwrap_or_default();
     let number = github::pull_request_number(url, repo)
-        .ok_or_else(|| needs_you("Not merged: the job has no pull request of its own."))?;
+        .ok_or_else(|| needs_you("Not merged: the task has no pull request of its own."))?;
     let unread = |_| wait("Not merged yet: GitHub couldn't be read. Oby tries again shortly.");
     let (pr, merging) = github::view_merging(gh, repo, number, obi_protocol::time::now())
         .await

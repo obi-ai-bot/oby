@@ -2874,8 +2874,8 @@ fn closed_start(mut item: Item, why: &str, now: i64) -> Item {
 /// Whether the open `item` waits on nothing any more (TASKS-13): it's about one of this Mac's own
 /// jobs (its question, permission, plan, merge card, limit, or obid's crash or review failure),
 /// and that job is gone, or ended let go or with its pull request merged or closed; or it's Oby's
-/// own escalation (`orchestrator::escalate`, only Done) on an ended job that has another open
-/// item, where obid offers the decision now (MERGING-8's). A queued or running job's items stay,
+/// own escalation (`orchestrator::escalate`, only Done) on an ended job with an open merge card,
+/// crash or review failure or limit, where obid offers the decision now (MERGING-8's). A queued or running job's items stay,
 /// as does everything not about a job: confirms, offers, GitHub's, another Obi's, a teammate
 /// approval to remove on GitHub. `open`: every open item.
 pub(crate) fn is_stale(item: &Item, job: Option<&crate::job::Job>, open: &[&Item]) -> bool {
@@ -2898,13 +2898,16 @@ pub(crate) fn is_stale(item: &Item, job: Option<&crate::job::Job>, open: &[&Item
         .pull_request
         .as_ref()
         .is_some_and(|pr| matches!(pr.state.as_str(), "MERGED" | "CLOSED"));
-    let escalation = |i: &Item| i.id.starts_with(crate::brain::orchestrator::ESCALATION);
+    // Where obid offers the decision itself: a merge card, its crash or review failure, a limit.
+    let offers = |i: &Item| {
+        matches!(i.kind.as_str(), "merge" | "limit")
+            || inbox::is_crash_item(i)
+            || inbox::is_review_item(i)
+    };
     job.dismissed.is_some()
         || pr_ended
-        || (escalation(item)
-            && open
-                .iter()
-                .any(|o| o.job == item.job && o.id != item.id && !escalation(o)))
+        || (item.id.starts_with(crate::brain::orchestrator::ESCALATION)
+            && open.iter().any(|o| o.job == item.job && offers(o)))
 }
 
 #[cfg(test)]
@@ -4006,6 +4009,12 @@ mod tests {
         assert!(!is_stale(&merge, Some(&open), &all));
         assert!(is_stale(&escalation, Some(&open), &all));
         assert!(!is_stale(&escalation, Some(&open), &[&escalation]));
+        // Beside a Confirm (or anything else that isn't obid offering that decision), it stays.
+        assert!(!is_stale(
+            &escalation,
+            Some(&open),
+            &[&escalation, &confirm]
+        ));
 
         // A running job's items stay, even with its pull request merged.
         let mut running = ended(Some("MERGED"));

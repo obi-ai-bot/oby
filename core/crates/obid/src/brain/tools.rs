@@ -324,7 +324,10 @@ async fn call(
         "oby_jobs" => Ok(jobs(shared, session, args)?),
         "oby_job" => {
             let One { id } = parse(args)?;
-            let job = shared.jobs.get(&id).ok_or("There's no job with that id.")?;
+            let job = shared
+                .jobs
+                .get(&id)
+                .ok_or("There's no task with that id.")?;
             session.taint();
             Ok(quoted(
                 session,
@@ -523,7 +526,7 @@ const BY_OBY: &str = "by Oby, in a conversation";
 
 /// The job `id`, when it's the owner's own: never a review another Obi asked for.
 fn owners_job(shared: &Shared, id: &str) -> Result<crate::job::Job, String> {
-    let job = shared.jobs.get(id).ok_or("There's no job with that id.")?;
+    let job = shared.jobs.get(id).ok_or("There's no task with that id.")?;
     match foreign(&job) {
         Some(why) => Err(why.into()),
         None => Ok(job),
@@ -715,7 +718,7 @@ fn settings(shared: &Arc<Shared>, session: &Session, args: Value) -> Result<Stri
     let asked: super::owners_word::Settings = parse(args)?;
     if asked == super::owners_word::Settings::default() {
         return Ok(format!(
-            "{} jobs at once; account failover {}; {} is the default mode.",
+            "{} tasks at once; account failover {}; {} is the default mode.",
             shared.jobs.max_running(),
             if shared.jobs.account_failover() {
                 "on"

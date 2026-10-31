@@ -2633,6 +2633,72 @@ fn inbox(obid: &Obid) -> Value {
     request(obid, "GET", "/v1/inbox", None).body
 }
 
+/// TASKS-13: a task's crash card settles, with no answer, once the task is let go: obid settles
+/// it as the task changes, not when the card is answered.
+#[test]
+fn tasks_13_a_let_go_tasks_crash_card_settles() {
+    let folder = Folder::new("settles");
+    let remote = fixture(&folder.0.join("fixture"));
+    let config = config(&folder.0, &remote);
+    let obid = start(&folder.0, &config);
+    let id = post_job(
+        &obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "fix", "task": "Look around"}),
+    )
+    .body["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    wait(&obid, &id);
+    drop(obid);
+    // obid kept going down with it: its next start leaves the owner a crash card (#915).
+    let file = folder.0.join("home/jobs").join(format!("{id}.json"));
+    let mut kept: Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+    kept["status"] = json!("failed");
+    kept["reason"] = json!(
+        "obid went down 3 times in 30 minutes while this ran, so Oby left it here. Try again carries it on."
+    );
+    std::fs::write(&file, kept.to_string()).unwrap();
+    let obid = start(&folder.0, &config);
+    let crash = format!("{id}-crash-");
+    let open = |obid: &Obid| {
+        inbox(obid)
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|i| i["id"].as_str().unwrap().starts_with(&crash))
+            .cloned()
+    };
+    let give_up_at = Instant::now() + Duration::from_secs(30);
+    let card = loop {
+        if let Some(card) = open(&obid) {
+            break card;
+        }
+        assert!(
+            Instant::now() < give_up_at,
+            "no crash card: {}",
+            inbox(&obid)
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    };
+    assert_eq!(card["state"], "open", "{card}");
+    let let_go = request(&obid, "POST", &format!("/v1/jobs/{id}/dismiss"), None);
+    assert_eq!(let_go.status, 200, "{}", let_go.text);
+    let give_up_at = Instant::now() + Duration::from_secs(10);
+    while open(&obid).is_some() {
+        assert!(Instant::now() < give_up_at, "still open: {}", inbox(&obid));
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let done = request(&obid, "GET", "/v1/inbox?state=done", None).body;
+    let settled = done
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["id"] == card["id"])
+        .unwrap_or_else(|| panic!("not settled: {done}"));
+    assert_eq!(settled["answer"], Value::Null, "{settled}");
+}
+
 /// A job in the default mode asks the owner nothing about what stays inside its sandbox (edits in
 /// its worktree, commands, tests, reads): obid answers by its rules, and the job lists what it
 /// answered, the refused ones too. Nothing reaches the inbox (#586).

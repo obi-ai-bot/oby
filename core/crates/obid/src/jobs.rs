@@ -5091,7 +5091,7 @@ impl Jobs {
             }
             if !job.needs_you() {
                 return Some(Err(Refused(
-                    "This job doesn't need you: there's nothing to dismiss.".into(),
+                    "This task doesn't need you: there's nothing to dismiss.".into(),
                 )));
             }
             job.dismissed = Some(obi_protocol::time::now());

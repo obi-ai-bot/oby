@@ -750,8 +750,9 @@ impl Link {
     }
 
     /// Settles, with no answer, the open items about this Mac's own jobs that nothing waits on any
-    /// more ([`is_stale`], TASKS-13): run when obid starts and on every job and inbox change
-    /// (crate::spawn_settling), so Home never keeps them.
+    /// more ([`is_stale`], TASKS-13), each as [`Link::settle`] does (one answered meanwhile stays
+    /// answered): run when obid starts and on every job and inbox change
+    /// (`crate::settle_stale_items`), so Home never keeps them.
     pub fn settle_stale_items(&self) {
         let open: Vec<Item> = self
             .lock()
@@ -771,24 +772,8 @@ impl Link {
             .filter(|i| is_stale(i, jobs.get(i.job.as_str()), &all))
             .map(|i| i.id.as_str())
             .collect();
-        if stale.is_empty() {
-            return;
-        }
-        let now = time::now();
-        let settled: Vec<Item> = {
-            let mut state = self.lock();
-            let mut settled = vec![];
-            for id in stale {
-                // Answered meanwhile: the owner's answer stands.
-                if let Some(item) = state.inbox.get_mut(id).filter(|i| i.done.is_none()) {
-                    item.done = Some(now);
-                    settled.push(item.clone());
-                }
-            }
-            settled
-        };
-        for item in &settled {
-            self.save_item(item);
+        for id in stale {
+            self.settle(id);
         }
     }
 

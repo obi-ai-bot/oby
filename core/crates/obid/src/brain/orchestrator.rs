@@ -335,6 +335,8 @@ pub fn signature(job: &Job) -> String {
 pub struct Escalation {
     pub why: String,
     pub reply: &'static str,
+    /// What the turn recommends, when it said: the card's question (TASKS-14).
+    pub recommend: Option<String>,
 }
 
 /// What settles an escalation once the owner has looked (#710).
@@ -346,6 +348,7 @@ fn escalate(why: impl Into<String>, reply: &'static str) -> Escalation {
     Escalation {
         why: why.into(),
         reply,
+        recommend: None,
     }
 }
 
@@ -413,13 +416,15 @@ impl Orchestration {
             .find(|e| !e.job.is_empty())
             .map(|e| e.job.clone())
             .unwrap_or_default();
-        // The task by its name, never its id (TASKS-14): the events' summaries are for the turn.
-        let title = match shared.jobs.get(&job) {
-            Some(job) => format!(
+        // What the turn recommends, asked as Sangam's cards ask ("Post this review as you?"),
+        // else the task by its name, never its id (TASKS-14): the events' summaries are the turn's.
+        let title = match (&escalation.recommend, shared.jobs.get(&job)) {
+            (Some(recommend), _) => question(recommend),
+            (None, Some(job)) => format!(
                 "{} needs your decision",
                 super::briefing::line(&job.short_title(), 80)
             ),
-            None => "Oby needs your decision".to_owned(),
+            (None, None) => "Oby needs your decision".to_owned(),
         };
         let item = Item {
             id: format!(
@@ -448,6 +453,17 @@ impl Orchestration {
         tracing::info!("orchestrator escalates: {}", escalation.why);
         shared.link.add_confirm(item)
     }
+}
+
+/// `recommend` as the card's question: "Add the secret" asks "Add the secret?".
+fn question(recommend: &str) -> String {
+    let words = recommend.trim().trim_end_matches(['.', '!', '?']);
+    let mut chars = words.chars();
+    let first = chars
+        .next()
+        .map(|c| c.to_uppercase().to_string())
+        .unwrap_or_default();
+    format!("{first}{}?", chars.as_str())
 }
 
 /// Why an event turn's call didn't happen: one the turn can mend (it read nothing yet), or the
@@ -652,11 +668,11 @@ pub(super) async fn call(
                 return Some(Ok(OWNERS_NOW.into()));
             }
             let why = super::briefing::line(&text("why"), 300);
-            let recommends = match text("recommend") {
-                r if r.is_empty() => {
-                    " Oby recommends that you review the evidence and choose.".to_owned()
-                }
-                r => format!(" Oby recommends: {}.", super::briefing::line(&r, 120)),
+            let recommend =
+                Some(super::briefing::line(&text("recommend"), 120)).filter(|r| !r.is_empty());
+            let recommends = match &recommend {
+                None => " Oby recommends that you review the evidence and choose.".to_owned(),
+                Some(r) => format!(" Oby recommends: {}.", r.trim_end_matches('.')),
             };
             let read = if watch.read().is_empty() {
                 ""
@@ -666,6 +682,7 @@ pub(super) async fn call(
             let escalation = Escalation {
                 why: format!("{read}{why}{recommends}"),
                 reply: "Oby left it for the owner in Needs you.",
+                recommend,
             };
             watch.leave(shared, &escalation);
             return Some(Ok(escalation.reply.into()));
@@ -882,6 +899,7 @@ async fn run(shared: &Arc<Shared>, batch: Vec<Event>, ledger: Arc<Mutex<Ledger>>
             why.trim_end_matches('.')
         ),
         reply: "",
+        recommend: None,
     };
     let tool = shared.config.conversation.agent;
     let Some(account) = shared.jobs.thinking_accounts(tool).into_iter().next() else {

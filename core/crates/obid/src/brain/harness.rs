@@ -2712,6 +2712,18 @@ async fn extract(shared: &Shared, repo: &str, sha: &str, dest: &Path) -> Result<
 mod tests {
     use super::*;
 
+    /// TASKS-14: every prompt that writes to the owner takes the one rule for Oby's words.
+    #[test]
+    fn tasks_14_every_prompt_to_the_owner_takes_its_words() {
+        for prompt in [
+            ORIENTATION,
+            super::super::recap::SYSTEM,
+            super::super::recap::CHECK_IN,
+        ] {
+            assert!(prompt.ends_with(owners_words!()), "{prompt}");
+        }
+    }
+
     /// A stand-in for a waiting Claude Code (`cat`, which waits on its stdin), kept for `account`
     /// on `config_dir` with `session`.
     async fn waiting(account: &str, config_dir: Option<&str>, session: &str) -> Warm {

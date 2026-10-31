@@ -479,7 +479,7 @@ impl Settings {
     pub fn words(&self) -> String {
         let mut parts = vec![];
         if let Some(max) = self.max_running {
-            parts.push(format!("{max} jobs at once"));
+            parts.push(format!("{max} tasks at once"));
         }
         if let Some(on) = self.account_failover {
             parts.push(format!(
@@ -762,7 +762,7 @@ mod tests {
         assert!(!set(None, Some(true)).widens(&on));
         assert_eq!(
             set(Some(8), Some(true)).words(),
-            "8 jobs at once, account failover on"
+            "8 tasks at once, account failover on"
         );
         assert!(mode("yolo").mode().is_err());
     }
