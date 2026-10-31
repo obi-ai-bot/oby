@@ -2861,7 +2861,8 @@ fn close_expired(inbox: &mut HashMap<String, Item>, id: &str, now: i64) -> Optio
     Some(closed)
 }
 
-/// A `start` item done by Oby itself, `why` above its words, with no options: nothing starts.
+/// A `start` item, or a Confirm, done by Oby itself, `why` above its words, with no options:
+/// nothing starts, nothing is carried out.
 fn closed_start(mut item: Item, why: &str, now: i64) -> Item {
     item.text = format!("{why}\n\n{}", inbox::unfenced(&item.text));
     item.options = vec![];
@@ -2911,6 +2912,60 @@ pub(crate) fn is_stale(
         || pr_ended
         || (item.id.starts_with(crate::brain::orchestrator::ESCALATION)
             && open.iter().any(|o| o.job == item.job && offers(o)))
+}
+
+/// What an open Confirm settles with once what it does can't happen any more (TASKS-13).
+pub(crate) const CONFIRM_TASK_GONE: &str = "Closed by Oby: its task is gone.";
+pub(crate) const CONFIRM_MERGED: &str = "Closed by Oby: that pull request was merged since.";
+pub(crate) const CONFIRM_CLOSED: &str = "Closed by Oby: that pull request was closed since.";
+pub(crate) const CONFIRM_MOVED: &str =
+    "Closed by Oby: that pull request's head moved since. Ask Oby again.";
+
+/// The plain note an open Confirm settles with because what it does can no longer happen
+/// (TASKS-13), or none while it still can: an action on a task that's gone, or a merge of the pull
+/// request of one of `jobs` (this Mac's) that obid read merged, or closed or at another head than
+/// the card's since the card was made. A pull request none of them published stays: obid doesn't
+/// follow it, and the owner's Confirm reads GitHub again.
+pub(crate) fn dead_confirm(item: &Item, jobs: &[crate::job::Job]) -> Option<&'static str> {
+    use inbox::action;
+    let confirmed = item.confirm.as_deref().filter(|_| item.done.is_none())?;
+    match confirmed.action.as_str() {
+        action::MESSAGE_JOB
+        | action::DISMISS_JOB
+        | action::RETRY_JOB
+        | action::CONTINUE_JOB
+        | action::DELETE_JOB
+        | action::CHANGE_JOB => {
+            (!jobs.iter().any(|j| j.id == confirmed.target)).then_some(CONFIRM_TASK_GONE)
+        }
+        action::MERGE_PR => {
+            let asked: crate::brain::owners_word::Merge =
+                serde_json::from_value(confirmed.payload["merge"].clone()).ok()?;
+            let head = confirmed.payload["head"].as_str()?;
+            let read = jobs
+                .iter()
+                .filter(|j| {
+                    j.repo == asked.repo
+                        && j.published
+                            .as_deref()
+                            .and_then(|url| crate::github::pull_request_number(url, &j.repo))
+                            == Some(asked.pr)
+                })
+                .filter_map(|j| j.pull_request.as_ref())
+                .filter(|pr| pr.state == "MERGED" || pr.checked_at >= item.created)
+                .max_by_key(|pr| pr.checked_at)?;
+            match read.state.as_str() {
+                "MERGED" => Some(CONFIRM_MERGED),
+                "OPEN" => read
+                    .head
+                    .as_deref()
+                    .is_some_and(|now| now != head)
+                    .then_some(CONFIRM_MOVED),
+                _ => Some(CONFIRM_CLOSED),
+            }
+        }
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -4058,5 +4113,105 @@ mod tests {
             ..of("shell-c1-p1", "permission")
         };
         assert!(!is_stale(&shell, None, None, &all));
+    }
+
+    /// TASKS-13: a Confirm whose action can no longer happen settles with a plain note (the
+    /// drive's "Merge well-prado/tetrix-e2e#147 into main at a05849f", #147 closed hours before):
+    /// a merge of a pull request obid read merged, or closed or at another head since the card,
+    /// an action on a task that's gone. One that still can stays: its pull request open at the
+    /// card's head, read before the card only, or not one of this Mac's.
+    #[test]
+    fn tasks_13_a_confirm_whose_action_can_no_longer_happen_settles_and_one_that_can_stays() {
+        use crate::job::Job;
+        let head = "a05849f36b44190d2fa62e6b40799fa4eed8e77e";
+        let merge = inbox::confirm_item(
+            "",
+            "Merge o/r#147 into main at a05849f (its job's workflow)".into(),
+            "It happens only if you confirm.".into(),
+            inbox::Confirmed {
+                action: inbox::action::MERGE_PR.into(),
+                target: "o/r#147".into(),
+                payload: json!({"base": "main", "head": head, "conversation": "c1",
+                    "merge": {"repo": "o/r", "pr": 147, "method": null}}),
+            },
+            100,
+        );
+        let of_pr = |state: &str, at: i64, now: &str| {
+            let mut job = Job::new(
+                "j1".into(),
+                "o/r".into(),
+                "build".into(),
+                "Append a line".into(),
+                "claude".into(),
+                "Default".into(),
+            );
+            job.published = Some("https://github.com/o/r/pull/147".into());
+            job.pull_request = Some(crate::github::PullRequest {
+                state: state.into(),
+                review_decision: None,
+                base: "main".into(),
+                merged_at: None,
+                checked_at: at,
+                head: Some(now.into()),
+            });
+            job
+        };
+        let dead = |jobs: &[Job]| dead_confirm(&merge, jobs);
+        assert_eq!(dead(&[of_pr("CLOSED", 200, head)]), Some(CONFIRM_CLOSED));
+        assert_eq!(dead(&[of_pr("MERGED", 50, head)]), Some(CONFIRM_MERGED));
+        assert_eq!(
+            dead(&[of_pr("OPEN", 200, &"b".repeat(40))]),
+            Some(CONFIRM_MOVED)
+        );
+        // Still possible, or not known to be impossible: it stays.
+        assert_eq!(dead(&[of_pr("OPEN", 200, head)]), None);
+        assert_eq!(
+            dead(&[of_pr("CLOSED", 50, head)]),
+            None,
+            "read before the card"
+        );
+        assert_eq!(
+            dead(&[of_pr("OPEN", 50, &"b".repeat(40))]),
+            None,
+            "read before the card"
+        );
+        assert_eq!(dead(&[]), None, "not a pull request of this Mac's");
+        let mut other = of_pr("CLOSED", 200, head);
+        other.published = Some("https://github.com/o/r/pull/148".into());
+        assert_eq!(dead(&[other]), None);
+        // Answered: the owner's answer stands.
+        let answered = Item {
+            done: Some(150),
+            ..merge.clone()
+        };
+        assert_eq!(dead_confirm(&answered, &[of_pr("CLOSED", 200, head)]), None);
+
+        // An action on a task: gone, it settles; there, it stays.
+        let dismiss = inbox::confirm_item(
+            "j1",
+            "Dismiss Append a line".into(),
+            String::new(),
+            inbox::Confirmed {
+                action: inbox::action::DISMISS_JOB.into(),
+                target: "j1".into(),
+                payload: Value::Null,
+            },
+            100,
+        );
+        assert_eq!(dead_confirm(&dismiss, &[]), Some(CONFIRM_TASK_GONE));
+        assert_eq!(dead_confirm(&dismiss, &[of_pr("OPEN", 200, head)]), None);
+        // Anything else stays: a repository's check, say.
+        let check = inbox::confirm_item(
+            "",
+            "Use `pnpm test`".into(),
+            String::new(),
+            inbox::Confirmed {
+                action: inbox::action::SET_CHECK.into(),
+                target: "o/r".into(),
+                payload: json!({"check": "pnpm test"}),
+            },
+            100,
+        );
+        assert_eq!(dead_confirm(&check, &[]), None);
     }
 }

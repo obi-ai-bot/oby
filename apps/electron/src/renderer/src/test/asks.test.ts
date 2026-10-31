@@ -79,6 +79,22 @@ describe('MERGING-21: a merge card says why it stopped, never just its title (#1
     });
   });
 
+  it('merging_21_a_ready_card_asks_its_headline_and_lists_its_holds_a_line_each', () => {
+    const ask = live.itemAsk(item('merge', {
+      title: 'Ready to merge: Resolve issue 153', options: ['Merge', 'Leave it open'],
+      text: 'Merge tetrix-e2e #153 into main?\nNo check ran on its head (this repository has none).\nNobody has approved its head.',
+    }));
+    expect(ask).toMatchObject({
+      kind: 'merge', label: 'Ready to merge', headline: 'Merge tetrix-e2e #153 into main?',
+      text: 'No check ran on its head (this repository has none).\nNobody has approved its head.',
+    });
+    // a stop's reason leads, what to change under it, then each hold behind it
+    expect(live.itemAsk(item('merge', {
+      title: 'Not merged: Fix it', options: ['Dismiss'],
+      text: "Not merged: it conflicts with main. Ask Oby to rebase it onto main.\nOby's review still asks for changes.",
+    }))).toMatchObject({ headline: 'It conflicts with main.', text: "Ask Oby to rebase it onto main.\nOby's review still asks for changes." });
+  });
+
   it('merging_21_keeps_the_models_headline_over_the_reason', () => {
     const ask = live.itemAsk(item('merge', { title: 'Ready to merge: Fix it', headline: 'Merge it into main?', text: 'A review asks for changes.', options: ['Merge'] }));
     expect([ask.label, ask.headline, ask.text]).toEqual(['Ready to merge', 'Merge it into main?', 'A review asks for changes.']);

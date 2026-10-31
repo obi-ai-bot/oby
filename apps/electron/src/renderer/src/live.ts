@@ -195,12 +195,15 @@ export const itemAsk = (item: InboxItem, detail?: string): Ask => {
   // A merge card's title is its task's, which the card shows already, after what it is (Not
   // merged, Ready to merge, Needs a teammate): that is its label. With no headline of the model's,
   // obid's reason leads, its first sentence (without the label's words again) over the rest (what to
-  // change, every other hold), as text shows when headline is null (docs/runner-api.md, #1680).
+  // change, then every other hold, one a line), as text shows when headline is null
+  // (docs/runner-api.md, #1680, MERGING-21).
   const label = item.kind === 'merge' ? item.title.split(': ')[0] : undefined;
   if (item.kind === 'merge' && !item.headline && item.text) {
-    const [first, ...rest] = item.text.split(/(?<=\.) /);
+    const [line, ...holds] = item.text.split('\n');
+    const [first, ...rest] = line.split(/(?<=\.) /);
     const headline = first.replace(/^Not merged( yet)?: (.)/, (_, _yet, c: string) => c.toUpperCase());
-    return { kind: 'merge', label, headline, text: rest.join(' '), options: item.options, recommended: item.recommended ?? undefined };
+    const text = [rest.join(' '), ...holds].filter(Boolean).join('\n');
+    return { kind: 'merge', label, headline, text, options: item.options, recommended: item.recommended ?? undefined };
   }
   return {
     // obid's own question (Oby's escalation, a stalled task): its why and what Oby recommends are

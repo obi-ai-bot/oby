@@ -101,9 +101,45 @@ pub enum Lift<'a> {
 }
 
 impl Lift<'_> {
+    /// Whether the card said `why`: as the hold is written, or as the card lists it ([`hold_line`]).
     fn names(&self, why: &str) -> bool {
-        matches!(self, Lift::Named(said) if said.contains(why))
+        matches!(self, Lift::Named(said) if said.contains(why) || said.contains(&hold_line(why)))
     }
+}
+
+/// A hold as a card lists it, one a line under its headline (MERGING-21): without the "Not merged
+/// (yet): " it starts with, or the "so it's yours to merge" the headline already says.
+pub fn hold_line(why: &str) -> String {
+    let why = why
+        .strip_prefix("Not merged yet: ")
+        .or_else(|| why.strip_prefix("Not merged: "))
+        .unwrap_or(why);
+    let why = match why
+        .strip_suffix(", so it's yours to merge.")
+        .or_else(|| why.strip_suffix(" It's yours to merge."))
+    {
+        Some(said) if said.ends_with('.') => said.to_owned(),
+        Some(said) => format!("{said}."),
+        None => why.to_owned(),
+    };
+    let mut chars = why.chars();
+    chars
+        .next()
+        .map_or_else(String::new, |c| c.to_uppercase().chain(chars).collect())
+}
+
+/// A merge card's text from `why`, its holds one a line (MERGING-21): `headline` (what the card
+/// asks), else the first, the stop's own reason, as written; then each other hold, short.
+fn card_text(headline: Option<String>, why: &str) -> String {
+    let mut lines = why.lines();
+    let first = match headline {
+        Some(headline) => headline,
+        None => lines.next().unwrap_or_default().to_owned(),
+    };
+    std::iter::once(first)
+        .chain(lines.map(hold_line))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// Why the owner's Merge doesn't go: a hold their card didn't name, or one only a signed answer
@@ -452,7 +488,7 @@ pub fn ready_as(
         why: std::iter::once(b.why)
             .chain(behind.iter().cloned())
             .collect::<Vec<_>>()
-            .join(" "),
+            .join("\n"),
         ..b
     };
     let conflict = || refused(conflicts(base));
@@ -506,7 +542,7 @@ pub fn ready_as(
                 Ok(())
             } else {
                 Err(Blocked {
-                    why: whys.join(" "),
+                    why: whys.join("\n"),
                     needs_you: !quiet,
                     yours: true,
                 })
@@ -1516,10 +1552,13 @@ pub fn ready_id(job: &str, head: &str) -> String {
 /// The id of a card saying why the merge needs the owner: one per reason and head, so a new reason
 /// brings a new card, and the job's other cards are settled.
 pub fn why_id(job: &str, head: &str, why: &str) -> String {
-    // FNV-1a: the same id for the same words, from one obid to the next.
-    let hash = why.bytes().fold(0xcbf2_9ce4_8422_2325_u64, |h, b| {
-        (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3)
-    });
+    // FNV-1a: the same id for the same words, from one obid to the next, a hold a line or not.
+    let hash = why
+        .replace('\n', " ")
+        .bytes()
+        .fold(0xcbf2_9ce4_8422_2325_u64, |h, b| {
+            (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3)
+        });
     format!("merge-why{hash:016x}-{job}-{head}")
 }
 
@@ -1610,12 +1649,15 @@ pub fn no_sphere(repo: &str) -> String {
 /// stop's name, its first sentence, so a card answered isn't asked again when only what to do or
 /// the holds behind it read otherwise.
 pub fn stopped_card(job: &Job, head: &str, why: &str) -> Item {
-    let name = why.split_once(". ").map_or(why, |(name, _)| name);
+    let flat = why.replace('\n', " ");
+    let name = flat
+        .split_once(". ")
+        .map_or(flat.as_str(), |(name, _)| name);
     card(
         job,
         why_id(&job.id, head, name),
         format!("Not merged: {}", job.short_title()),
-        why.to_owned(),
+        card_text(None, why),
         vec![(DISMISS, "Leaves it open. Nothing is sent.".into())],
     )
 }
@@ -1629,11 +1671,20 @@ pub fn yours_card(job: &Job, head: &str, why: &str, workflow: &Workflow, into: &
         Method::Merge => "Merges",
         Method::Rebase => "Rebase-merges",
     };
+    let number = job
+        .published
+        .as_deref()
+        .and_then(|url| crate::github::pull_request_number(url, &job.repo));
+    // Sangam's merge card's headline: "Merge tetrix-ee #497 into dev?"
+    let asks = match number {
+        Some(n) => format!("Merge {} #{n} into {into}?", name(&job.repo)),
+        None => format!("Merge it into {into}?"),
+    };
     card(
         job,
         why_id(&job.id, head, why),
         format!("Ready to merge: {}", job.short_title()),
-        why.to_owned(),
+        card_text(Some(asks), why),
         vec![
             (
                 MERGE,
@@ -1668,8 +1719,8 @@ pub fn stop_card(
     };
     let with = |b: &Blocked, first: bool| match (b.why.contains(why), first) {
         (true, _) => b.why.clone(),
-        (false, true) => format!("{} {why}", b.why),
-        (false, false) => format!("{why} {}", b.why),
+        (false, true) => format!("{}\n{why}", b.why),
+        (false, false) => format!("{why}\n{}", b.why),
     };
     match ready(job, Some(workflow), pr, merging, reviewers) {
         Err(b) if b.yours => yours_card(job, head, &with(&b, false), workflow, &pr.base),
@@ -2207,7 +2258,7 @@ mod tests {
         assert_eq!(
             refused,
             yours(
-                "Not merged: its head is a commit Oby didn't push. Not merged yet: Oby's reviewer account hasn't approved its head."
+                "Not merged: its head is a commit Oby didn't push.\nNot merged yet: Oby's reviewer account hasn't approved its head."
             )
         );
         let mut unpublished = self::job();
@@ -2512,7 +2563,7 @@ mod tests {
         let (mac_pr, mac_merging) = read(&none, &pages(vec![]));
         assert_eq!(
             ready(&left, Some(&mac), &mac_pr, &mac_merging, Some(&nobody)),
-            Err(yours(format!("{} {MAC_LEFT}", blocked.why)))
+            Err(yours(format!("{}\n{MAC_LEFT}", blocked.why)))
         );
         // A `reviewer` workflow with its account signed in: Oby's reviewer account posts nothing,
         // and the same Ready to merge asks the owner.
@@ -3096,7 +3147,10 @@ mod tests {
             // Its card offers Merge.
             let card = blocked_card(job, &head(), &blocked, &mac, "dev");
             assert_eq!(card.title, "Ready to merge: Fix the thing");
-            assert_eq!(card.text, why);
+            assert_eq!(
+                card.text,
+                format!("Merge oby #7 into dev?\n{}", hold_line(why))
+            );
             assert_eq!(card.options, vec![MERGE, LEAVE_OPEN]);
             assert_eq!(item_head(&card.id), Some(head().as_str()));
         }
@@ -3116,6 +3170,52 @@ mod tests {
         assert_eq!(
             blocked_card(&left, &head(), &conflict, &mac, "dev").options,
             vec![crate::sphere::inbox::DISMISS]
+        );
+    }
+
+    /// MERGING-21: a Ready to merge card says what it asks once, in Sangam's words ("Merge
+    /// tetrix-ee #497 into dev?"), then each hold on a line of its own, with no "Not merged yet: "
+    /// or "so it's yours to merge" again (the drive of 2026-10-31), and the owner's signed answer to
+    /// it still lifts every hold it lists. A stop's reason leads its card, the holds behind it under.
+    #[test]
+    fn merging_21_a_card_asks_once_and_lists_each_hold_on_a_line() {
+        let holds = [
+            "No check ran on its head (this repository has none), so it's yours to merge."
+                .to_owned(),
+            on_their_word("main").unwrap(),
+            "Not merged yet: nobody has approved its head.".to_owned(),
+            "Not merged yet: GitHub has no checks on its head yet.".to_owned(),
+        ];
+        let why = holds.join("\n");
+        let card = yours_card(&job(), &head(), &why, &obis(), "main");
+        assert_eq!(
+            card.text,
+            "Merge oby #7 into main?\n\
+             No check ran on its head (this repository has none).\n\
+             Its base is main, which Oby merges into only on your word.\n\
+             Nobody has approved its head.\n\
+             GitHub has no checks on its head yet."
+        );
+        assert_eq!(card.options, vec![MERGE, LEAVE_OPEN]);
+        let lift = Lift::Named(&card.text);
+        for hold in &holds {
+            assert!(lift.names(hold), "{hold}");
+        }
+        assert!(!lift.names("Not merged yet: its checks failed on GitHub."));
+        // The same holds, a line each or not: the same card.
+        assert_eq!(card.id, why_id("j1", &head(), &holds.join(" ")));
+
+        let stopped = stopped_card(
+            &job(),
+            &head(),
+            &format!("{}\n{}", conflicts("main").why, REVIEW_ASKS),
+        );
+        assert_eq!(
+            stopped.text,
+            format!(
+                "{}\nOby's review still asks for changes.",
+                conflicts("main").why
+            )
         );
     }
 
@@ -3142,9 +3242,10 @@ mod tests {
         );
         let blocked = ready(&job, Some(&workflow), &pr, &merging, Some(&signed_in())).unwrap_err();
         let card = blocked_card(&job, &head(), &blocked, &workflow, "main");
-        assert!(card.text.contains(REVIEW_ASKS), "{}", card.text);
+        assert!(card.text.contains(&hold_line(REVIEW_ASKS)), "{}", card.text);
         assert!(
-            card.text.contains(&on_their_word("main").unwrap()),
+            card.text
+                .contains(&hold_line(&on_their_word("main").unwrap())),
             "{}",
             card.text
         );
@@ -3193,7 +3294,11 @@ mod tests {
             let card = blocked_card(&job, &head(), &blocked, &workflow, "main");
             assert!(card.text.starts_with("Not merged: "), "{}", card.text);
             assert!(card.text.contains(what), "{}", card.text);
-            assert!(card.text.ends_with(REVIEW_ASKS), "{}", card.text);
+            assert!(
+                card.text.ends_with(&hold_line(REVIEW_ASKS)),
+                "{}",
+                card.text
+            );
             assert_eq!(card.options, vec![crate::sphere::inbox::DISMISS]);
             assert_eq!(on_owners_word(true, Err(blocked.clone())), Err(blocked));
         }
@@ -3231,12 +3336,12 @@ mod tests {
         );
         assert_eq!(card.options, vec![MERGE, LEAVE_OPEN]);
         assert!(
-            card.text.contains("a review asks for changes"),
+            card.text.contains("A review asks for changes."),
             "{}",
             card.text
         );
         assert!(
-            card.text.contains("its checks failed on GitHub"),
+            card.text.contains("Its checks failed on GitHub."),
             "{}",
             card.text
         );
@@ -3268,7 +3373,7 @@ mod tests {
             "{}",
             card.text
         );
-        assert!(card.text.contains(why), "{}", card.text);
+        assert!(card.text.contains(&hold_line(why)), "{}", card.text);
         assert_eq!(card.options, vec![DISMISS]);
         // Answered, it isn't asked again when only the holds behind the conflict read otherwise.
         assert_eq!(
@@ -3297,7 +3402,7 @@ mod tests {
             Some(&nobody),
         );
         assert!(
-            card.text.contains(REQUIRES_PERSON) && card.text.contains(why),
+            card.text.contains(REQUIRES_PERSON) && card.text.contains(&hold_line(why)),
             "{}",
             card.text
         );

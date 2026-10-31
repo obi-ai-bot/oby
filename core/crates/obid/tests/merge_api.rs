@@ -540,7 +540,7 @@ fn merging_21_red_checks_into_main_ask_the_owner_and_their_merge_merges() {
             c["done"].is_null()
                 && c["text"]
                     .as_str()
-                    .is_some_and(|t| t.contains("Not merged yet: its checks failed on GitHub."))
+                    .is_some_and(|t| t.contains("\nIts checks failed on GitHub."))
         })
     });
     assert_eq!(card["options"], json!(["Merge", "Leave it open"]), "{card}");
@@ -585,7 +585,7 @@ fn a_dismissed_approval_is_never_posted_again() {
         card["text"]
             .as_str()
             .unwrap()
-            .starts_with("Someone dismissed Oby's approval of this commit"),
+            .contains("\nSomeone dismissed Oby's approval of this commit"),
         "{card}"
     );
     // A few more reads.
@@ -700,6 +700,129 @@ fn tasks_13_an_oby_reviews_card_settles_once_its_pull_request_closes() {
     // Its commit never went out: the carded review stays the owner's, its card settled all the same.
     let carded = job("r9e8d7c6");
     assert_eq!(carded["dismissed"], Value::Null, "{carded}");
+}
+
+/// TASKS-13: an Oby review parked on the owner's OK (its agent waited 10 minutes for a permission,
+/// so obid ended it) is still running, so its card stayed on Home after the pull request it
+/// reviewed closed (the drive of 2026-10-31). While that pull request is open the review and its
+/// card wait for the owner; once it's closed, obid stops the review, lets it go, saying so, and
+/// its permission card comes back done with no answer.
+#[test]
+fn tasks_13_a_parked_review_of_a_closed_pull_request_stops_and_its_card_settles() {
+    let folder = Folder::new("review-parked-closed");
+    let mut review = obid::job::Job::new(
+        "r7c6b5a4".into(),
+        REPO.into(),
+        "review".into(),
+        "Fix the thing".into(),
+        "claude".into(),
+        "stub".into(),
+    );
+    review.status = obid::job::Status::Running;
+    review.review_of = Some(ID.into());
+    review.step = "Waiting for your OK".into();
+    let command = json!({"command": "git diff origin/dev...HEAD"});
+    review.permission = Some(
+        serde_json::from_value(json!({"id": "p1a2b3c", "tool": "Bash",
+            "title": "Run git diff origin/dev...HEAD", "detail": "git diff origin/dev...HEAD",
+            "rule": null, "always": null}))
+        .unwrap(),
+    );
+    review.parked =
+        Some(serde_json::from_value(json!({"tool": "Bash", "input": command})).unwrap());
+    let mut author = published();
+    author.reviewing = Some(review.id.clone());
+    // Its card, as obid kept it when it parked the review.
+    let inbox = folder.0.join("home/inbox");
+    std::fs::create_dir_all(&inbox).unwrap();
+    let item = json!({"id": "r7c6b5a4-permission-p1a2b3c", "kind": "permission", "job": "r7c6b5a4",
+        "title": "Oby review: Fix the thing", "text": "Run git diff origin/dev...HEAD",
+        "options": ["Allow", "Deny"], "details": null, "recommended": null, "created": 1,
+        "done": null, "later": null, "answer": null, "obi": null});
+    std::fs::write(
+        inbox.join("r7c6b5a4-permission-p1a2b3c.json"),
+        item.to_string(),
+    )
+    .unwrap();
+    let obid = started_with_jobs(&folder, true, None, &[author, review], &[]);
+    let job = |id: &str| call(&obid, "GET", &format!("/v1/jobs/{id}"), None).body;
+    let card = |state: &str| {
+        call(&obid, "GET", &format!("/v1/inbox?state={state}"), None)
+            .body
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .find(|i| i["id"] == "r7c6b5a4-permission-p1a2b3c")
+    };
+    let open = within(30, "the review's permission card", || card("open"));
+    // Its pull request still open: the review waits for the owner's OK, its card with it.
+    std::thread::sleep(std::time::Duration::from_secs(3));
+    assert!(card("open").is_some(), "{open}");
+    assert_eq!(job("r7c6b5a4")["status"], "running", "{}", job("r7c6b5a4"));
+
+    view_now(&folder, |view| view["state"] = json!("CLOSED"));
+    let done = within(30, "the card settled", || card("done"));
+    assert_eq!(done["answer"], Value::Null, "{done}");
+    let review = within(30, "the review stopped and let go", || {
+        let review = job("r7c6b5a4");
+        (review["dismissed"].is_string() && review["status"] != "running").then_some(review)
+    });
+    assert!(
+        review["changes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|c| c["what"] == obid::jobs::LET_GO),
+        "{review}"
+    );
+}
+
+/// TASKS-13: the conversation's Confirm to merge a task's pull request at the head it showed
+/// stays while that can still happen, and settles with a plain note, no answer, once obid reads
+/// the pull request closed (the drive's "Merge well-prado/tetrix-e2e#147 into main at a05849f").
+#[test]
+fn tasks_13_a_confirm_to_merge_a_closed_pull_request_settles_saying_so() {
+    let folder = Folder::new("confirm-merge-closed");
+    let inbox = folder.0.join("home/inbox");
+    std::fs::create_dir_all(&inbox).unwrap();
+    let item = json!({"id": "confirm-0a1b2c3d4e5f", "kind": "confirm", "job": "",
+        "title": format!("Merge {REPO}#7 into dev at {}", &head()[..7]),
+        "text": "It happens only if you confirm.", "options": ["Confirm", "Cancel"],
+        "details": null, "recommended": null, "created": 1, "done": null, "later": null,
+        "answer": null, "obi": null,
+        "confirm": {"action": "merge_pr", "target": format!("{REPO}#7"),
+            "payload": {"base": "dev", "head": head(), "conversation": "c1",
+                "merge": {"repo": REPO, "pr": 7, "method": null}}}});
+    std::fs::write(inbox.join("confirm-0a1b2c3d4e5f.json"), item.to_string()).unwrap();
+    let obid = started_with(&folder, false, None, published(), &[]);
+    let confirm = |state: &str| {
+        call(&obid, "GET", &format!("/v1/inbox?state={state}"), None)
+            .body
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .find(|i| i["id"] == "confirm-0a1b2c3d4e5f")
+    };
+    // Open at the card's head: it can still happen, so it stays.
+    within(30, "the pull request read", || {
+        (calls(&folder.0).matches("pr view 7").count() >= 1).then_some(())
+    });
+    std::thread::sleep(std::time::Duration::from_secs(3));
+    assert!(confirm("open").is_some());
+
+    view_now(&folder, |view| view["state"] = json!("CLOSED"));
+    let done = within(30, "the Confirm settled", || confirm("done"));
+    assert_eq!(done["answer"], Value::Null, "{done}");
+    assert!(
+        done["text"]
+            .as_str()
+            .unwrap()
+            .starts_with("Closed by Oby: that pull request was closed since."),
+        "{done}"
+    );
+    assert_eq!(done["options"], json!([]), "{done}");
 }
 
 /// What obid was sending when it stopped is settled from GitHub when it starts again: a merge
@@ -943,7 +1066,12 @@ fn merge_rules_github_wont_show_ask_the_owner_once() {
     let card = within(30, "the card", || merge_cards(&obid).into_iter().next());
     assert_eq!(
         card["text"],
-        "Oby can't read this repository's merge rules (GitHub said: Resource protected by organization SAML enforcement. You must grant your Personal Access token access to this organization.)."
+        asks(
+            "dev",
+            &[
+                "Oby can't read this repository's merge rules (GitHub said: Resource protected by organization SAML enforcement. You must grant your Personal Access token access to this organization.)."
+            ]
+        )
     );
     let read = calls(&folder.0).matches("pr view 7").count();
     within(30, "a few more reads", || {
@@ -974,7 +1102,12 @@ fn a_stale_reviewer_login_on_a_reviewer_workflow_asks_the_owner_once() {
     let card = within(30, "the card", || merge_cards(&obid).into_iter().next());
     assert_eq!(
         card["text"],
-        "Oby's reviewer account needs signing in again, or signing out (the reviewer's GitHub login isn't signed in any more)."
+        asks(
+            "dev",
+            &[
+                "Oby's reviewer account needs signing in again, or signing out (the reviewer's GitHub login isn't signed in any more)."
+            ]
+        )
     );
     let read = calls(&folder.0).matches("pr view 7").count();
     within(30, "a few more reads", || {
@@ -1210,6 +1343,14 @@ fn view_now(folder: &Folder, change: impl FnOnce(&mut Value)) {
     std::fs::write(dir.join("view-now.json"), view.to_string()).unwrap();
 }
 
+/// A Merge card's text into `base` (MERGING-21): what it asks, then each of `whys` on a line.
+fn asks(base: &str, whys: &[&str]) -> String {
+    std::iter::once(format!("Merge fixture-app #7 into {base}?"))
+        .chain(whys.iter().map(|why| obid::merge::hold_line(why)))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 /// [`published`], pushed `seconds` ago.
 fn pushed_ago(seconds: i64) -> obid::job::Job {
     let mut job = published();
@@ -1252,7 +1393,10 @@ fn merging_2_the_owners_merge_merges_where_the_check_doesnt_count() {
     assert_eq!(card["title"], "Ready to merge: Fix the thing");
     assert_eq!(
         card["text"],
-        "Its check didn't pass on exactly this commit, so it's yours to merge."
+        asks(
+            "dev",
+            &["Its check didn't pass on exactly this commit, so it's yours to merge."]
+        )
     );
     assert_eq!(card["options"], json!(["Merge", "Leave it open"]));
     let waiting = job(&obid);
@@ -1337,7 +1481,9 @@ fn merging_5_checks_that_run_long_ask_then_merge_by_themselves() {
     });
     let why = "Not merged: its checks on GitHub are still running an hour after Oby pushed it. Look at them on GitHub.";
     let card = within(30, "the card", || {
-        merge_cards(&obid).into_iter().find(|c| c["text"] == why)
+        merge_cards(&obid)
+            .into_iter()
+            .find(|c| c["text"] == asks("dev", &[why]))
     });
     assert_eq!(job(&obid)["mergeNeedsYou"], true);
     std::fs::remove_file(folder.0.join("gh/view-now.json")).unwrap();
@@ -1482,7 +1628,10 @@ fn merging_7_into_main_only_the_owners_merge_merges() {
     assert_eq!(card["title"], "Ready to merge: Fix the thing");
     assert_eq!(
         card["text"],
-        "Its base is main, which Oby merges into only on your word, so it's yours to merge."
+        asks(
+            "main",
+            &["Its base is main, which Oby merges into only on your word, so it's yours to merge."]
+        )
     );
     assert_eq!(card["options"], json!(["Merge", "Leave it open"]));
     within(30, "a few reads", || {
@@ -1527,7 +1676,7 @@ fn merging_7_another_base_than_the_learned_one_is_the_owners_merge() {
         let card = within(30, "the card", || {
             merge_cards(&obid)
                 .into_iter()
-                .find(|c| c["done"].is_null() && c["text"] == why)
+                .find(|c| c["done"].is_null() && c["text"] == asks(base, &[why]))
         });
         assert_eq!(card["options"], json!(["Merge", "Leave it open"]), "{base}");
         assert!(!calls(&folder.0).contains("-X PUT"), "{base}");
@@ -1679,7 +1828,7 @@ fn merging_25_a_head_nobody_at_oby_pushed_is_still_refused() {
         open_merge_cards(&obid).into_iter().find(|c| {
             c["text"]
                 .as_str()
-                .is_some_and(|t| t.contains("its head is a commit Oby didn't push"))
+                .is_some_and(|t| t.contains("Its head is a commit Oby didn't push"))
         })
     });
     assert!(card["id"].as_str().unwrap().contains(FOLLOW_UP), "{card}");
@@ -1828,7 +1977,10 @@ fn merging_23_a_sibling_follow_up_never_merges_an_untrusted_ones_work_on_one_rev
     });
     assert!(card["id"].as_str().unwrap().contains(FOLLOW_UP), "{card}");
     assert!(
-        card["text"].as_str().unwrap().contains(UNFOLLOWED),
+        card["text"]
+            .as_str()
+            .unwrap()
+            .contains(&obid::merge::hold_line(UNFOLLOWED)),
         "{card}"
     );
     assert_eq!(card["options"][0], "Merge", "{card}");

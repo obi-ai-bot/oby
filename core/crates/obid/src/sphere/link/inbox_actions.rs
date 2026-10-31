@@ -783,6 +783,34 @@ impl Link {
         for id in stale {
             self.settle(id);
         }
+        // A Confirm whose action can no longer happen settles saying why (TASKS-13).
+        if !open.iter().any(|i| i.confirm.is_some()) {
+            return;
+        }
+        let all = self.jobs.list(usize::MAX);
+        let dead: Vec<(&str, &str)> = open
+            .iter()
+            .filter_map(|i| Some((i.id.as_str(), dead_confirm(i, &all)?)))
+            .collect();
+        if dead.is_empty() {
+            return;
+        }
+        let now = time::now();
+        let closed: Vec<Item> = {
+            let mut state = self.lock();
+            dead.into_iter()
+                .filter_map(|(id, why)| {
+                    // Answered meanwhile: the owner's answer stands.
+                    let item = state.inbox.get(id).filter(|i| i.done.is_none())?.clone();
+                    let item = closed_start(item, why, now);
+                    state.inbox.insert(item.id.clone(), item.clone());
+                    Some(item)
+                })
+                .collect()
+        };
+        for item in &closed {
+            self.save_item(item);
+        }
     }
 
     /// Closes the open `start` items offered in `conversation`, which was deleted: nothing of it
