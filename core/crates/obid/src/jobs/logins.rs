@@ -54,6 +54,7 @@ pub(crate) fn signed_in(tool: Tool, account: &crate::config::Account, home: Opti
             (Tool::Cursor, Some(file)) if is_regular_file(&file) => cursor_has_token(&file),
             // With no file, the login is Cursor's own Keychain items'.
             (Tool::Cursor, Some(_)) => cursor_keychain_live(),
+            (Tool::Claude, _) => !claude_refused(account, home),
             _ => true,
         }
 }
@@ -72,10 +73,58 @@ pub(super) fn login_problem(
     }
     match tool {
         Tool::Codex => codex_copy_ready(&file, &account.name).err(),
-        Tool::Cursor if !is_regular_file(&file) && !cursor_keychain_live() => {
-            Some(CURSOR_ENDED.into())
-        }
+        Tool::Claude if claude_refused(account, home) => Some(keychain_refused(tool)),
+        // Why it isn't live once it was read: macOS refused it, or its token ended.
+        Tool::Cursor if !is_regular_file(&file) && !cursor_keychain_live() => Some(
+            if CURSOR_ITEMS.iter().any(|(_, service)| refused(service)) {
+                keychain_refused(tool)
+            } else {
+                CURSOR_ENDED.into()
+            },
+        ),
         _ => None,
+    }
+}
+
+/// Why a login macOS didn't give obid can't run (#1679): the tool keeps it in the Keychain, macOS
+/// asked whether obid may read it, and the owner denied it or didn't answer in time. Asked again
+/// once the tool rewrites its login ([`refused`]): a sign-in does.
+pub(crate) fn keychain_refused(tool: Tool) -> String {
+    let sign_in = match tool {
+        Tool::Cursor => "run cursor-agent login",
+        _ => "run claude, then /login",
+    };
+    format!(
+        "{} keeps its login in your Keychain, and macOS asked whether Oby may read it: that was denied or not answered, so Oby won't ask again until that login changes. To be asked again, {sign_in}, and choose Always Allow when macOS asks.",
+        tool.name()
+    )
+}
+
+/// Why no Keychain login could be read while the login Keychain was locked, or no one was signed in
+/// at the screen (`security`'s exit 36): never kept, so the next read asks again.
+pub(crate) const KEYCHAIN_LOCKED: &str = "Your login Keychain is locked, so Oby couldn't read the agent's login there: unlock your Mac (sign in at its screen), then try again.";
+
+/// Whether macOS refused Claude Code's Keychain login for `account` and the item hasn't changed
+/// since. An account with a login file (`.credentials.json`) is never refused: that file is its
+/// login.
+fn claude_refused(account: &crate::config::Account, home: Option<&Path>) -> bool {
+    !login_file(Tool::Claude, account, home).is_some_and(|f| is_regular_file(&f))
+        && refused(&keychain_service(account.config_dir.as_deref()))
+}
+
+/// Why a run on `service`'s Keychain login can't start, once its value was asked for: refused
+/// ([`keychain_refused`]), or the Keychain was locked ([`KEYCHAIN_LOCKED`]).
+pub(super) fn keychain_unread(tool: Tool, service: &str) -> Option<String> {
+    if refused(service) {
+        Some(keychain_refused(tool))
+    } else if LOCKED
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .contains(service)
+    {
+        Some(KEYCHAIN_LOCKED.into())
+    } else {
+        None
     }
 }
 
@@ -86,6 +135,7 @@ pub(crate) fn login_note(
     home: Option<&Path>,
 ) -> Option<&'static str> {
     login_problem(tool, account, home).map(|why| match tool {
+        _ if why.contains("Always Allow") => "Sign in again, then Always Allow",
         Tool::Cursor => "Run cursor-agent once",
         _ if why.contains(CODEX_SIGN_IN) => "Run codex login",
         _ => "Run codex once",
@@ -371,18 +421,232 @@ pub(super) fn keychain_item(config_dir: Option<&Path>, value: bool) -> Option<Ve
     let user = nix::unistd::User::from_uid(nix::unistd::getuid())
         .ok()??
         .name;
+    let service = keychain_service(config_dir);
     let mut command = std::process::Command::new(security_bin());
     command
-        .args(["find-generic-password", "-s"])
-        .arg(keychain_service(config_dir))
-        .args(["-a", &user])
+        .args(["find-generic-password", "-s", &service])
+        .args(["-a", &user]);
+    ask_security(&service, command, value)
+}
+
+/// What `security` last answered for an item's value, by its service, while the item's
+/// modification date (`stamp`, read without `-w`: no secret, so no prompt) stays the same (#1679).
+/// A value is kept for the run and read again only once the tool rewrote the item (a refresh, a
+/// sign-in): with "Allow" rather than "Always Allow" macOS asks at each read, so obid asks at most
+/// once per change of the login, never at each of the keeper's minutes. A refusal (Deny, or no
+/// answer within [`security_limit`]) stands until the item changes too, so prompts never stack.
+/// Claude Code and cursor-agent write their items with `/usr/bin/security` itself, which macOS lets
+/// read them back without asking: a prompt comes only for an item another program made.
+pub(super) struct Answer {
+    /// The `security` and its arguments that find the item, without `-w`.
+    args: (std::ffi::OsString, Vec<std::ffi::OsString>),
+    stamp: String,
+    /// None: refused.
+    value: Option<Vec<u8>>,
+    /// When the item's stamp was last looked at for a refusal ([`refused`]).
+    pub(super) looked: std::time::Instant,
+}
+
+pub(super) static ANSWERS: Mutex<BTreeMap<String, Answer>> = Mutex::new(BTreeMap::new());
+
+/// The items whose last value read found the login Keychain locked (`security`'s exit 36), which
+/// is never kept as an answer: the next read asks again.
+pub(super) static LOCKED: Mutex<BTreeSet<String>> = Mutex::new(BTreeSet::new());
+
+fn locked(service: &str, now: bool) {
+    let mut all = LOCKED.lock().unwrap_or_else(|e| e.into_inner());
+    if now {
+        all.insert(service.to_owned());
+    } else {
+        all.remove(service);
+    }
+}
+
+/// How often, at most, a refused item's stamp is looked at again, from `GET /v1/status`.
+const LOOK_AGAIN: Duration = Duration::from_secs(30);
+
+/// Whether macOS refused `service`'s value and the item hasn't changed since: its stamp is looked
+/// at again at most every [`LOOK_AGAIN`], so a sign-in (which rewrites it) clears the refusal.
+pub(super) fn refused(service: &str) -> bool {
+    let (args, stamp) = {
+        let mut answers = ANSWERS.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(answer) = answers.get_mut(service).filter(|a| a.value.is_none()) else {
+            return false;
+        };
+        if answer.looked.elapsed() < LOOK_AGAIN {
+            return true;
+        }
+        answer.looked = std::time::Instant::now();
+        (answer.args.clone(), answer.stamp.clone())
+    };
+    if item_stamp(&args).as_deref() == Some(stamp.as_str()) {
+        return true;
+    }
+    ANSWERS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(service);
+    false
+}
+
+/// The item's modification date as `security` prints it without `-w` (its `"mdat"` line; the whole
+/// answer when there's none), or none when it isn't there.
+#[cfg(target_os = "macos")]
+fn item_stamp((program, args): &(std::ffi::OsString, Vec<std::ffi::OsString>)) -> Option<String> {
+    let mut command = std::process::Command::new(program);
+    command
+        .args(args)
         .stdin(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
-    if value {
-        command.arg("-w");
+    let output = process::output_within(&mut command, security_limit(false))?;
+    if !output.status.success() {
+        return None;
     }
-    let output = process::output_within(&mut command, security_limit(value))?;
-    output.status.success().then_some(output.stdout)
+    let text = String::from_utf8_lossy(&output.stdout);
+    Some(
+        text.lines()
+            .find(|line| line.contains("\"mdat\""))
+            .unwrap_or(&text)
+            .trim()
+            .to_owned(),
+    )
+}
+
+#[cfg(not(target_os = "macos"))]
+fn item_stamp(_args: &(std::ffi::OsString, Vec<std::ffi::OsString>)) -> Option<String> {
+    None
+}
+
+/// `security`'s answer for `service` (`command` finds it): with `value`, the item's value, from
+/// [`ANSWERS`] while the item is unchanged; else only whether it's there, which reads no secret and
+/// so never prompts for an item.
+#[cfg(target_os = "macos")]
+pub(super) fn ask_security(
+    service: &str,
+    mut command: std::process::Command,
+    value: bool,
+) -> Option<Vec<u8>> {
+    command
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    if !value {
+        let output = process::output_within(&mut command, security_limit(false))?;
+        return output.status.success().then_some(output.stdout);
+    }
+    let args = (
+        command.get_program().to_owned(),
+        command
+            .get_args()
+            .map(ToOwned::to_owned)
+            .collect::<Vec<_>>(),
+    );
+    let forget = || {
+        ANSWERS
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(service);
+    };
+    let Some(stamp) = item_stamp(&args) else {
+        forget();
+        locked(service, false);
+        return None;
+    };
+    if let Some(answer) = ANSWERS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(service)
+        .filter(|a| a.stamp == stamp)
+    {
+        return answer.value.clone();
+    }
+    // ponytail: a date has whole seconds, so a rewrite in the second of the last read is missed
+    // until the next one; the keeper's refresh comes seconds after its read.
+    command.arg("-w");
+    let output = process::output_within(&mut command, security_limit(true));
+    let keep = |value: Option<Vec<u8>>| {
+        ANSWERS.lock().unwrap_or_else(|e| e.into_inner()).insert(
+            service.to_owned(),
+            Answer {
+                args: args.clone(),
+                stamp: stamp.clone(),
+                value,
+                looked: std::time::Instant::now(),
+            },
+        );
+    };
+    // 36: the Keychain is locked, or no one is at the screen; 51: not allowed; 128: Deny.
+    match output
+        .as_ref()
+        .map(|o| (o.status.success(), o.status.code()))
+    {
+        Some((true, _)) => {
+            locked(service, false);
+            let bytes = output.map(|o| o.stdout);
+            keep(bytes.clone());
+            bytes
+        }
+        Some((_, Some(36))) => {
+            tracing::warn!("the login Keychain is locked, so obid couldn't read {service}");
+            locked(service, true);
+            forget();
+            None
+        }
+        None | Some((_, Some(51 | 128))) => {
+            tracing::warn!(
+                "macOS didn't give obid {service} from the Keychain: it won't ask again until the item changes"
+            );
+            keep(None);
+            None
+        }
+        Some(_) => {
+            forget();
+            None
+        }
+    }
+}
+
+/// The names of the Swift runner's vault items (service `com.deskree.oby.runner.vault`) in the
+/// Keychain, for [`crate::vault::left_in_keychain`]: their attributes only (`security dump-keychain`
+/// without `-d`), never a value, so macOS asks nothing (#1679). None elsewhere, or when `security`
+/// can't say within 10 seconds.
+pub fn swift_vault_names() -> Vec<String> {
+    #[cfg(target_os = "macos")]
+    {
+        let mut command = std::process::Command::new(security_bin());
+        command
+            .arg("dump-keychain")
+            .stdin(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        process::output_within(&mut command, Duration::from_secs(10))
+            .filter(|o| o.status.success())
+            .map(|o| vault_names_in(&String::from_utf8_lossy(&o.stdout)))
+            .unwrap_or_default()
+    }
+    #[cfg(not(target_os = "macos"))]
+    Vec::new()
+}
+
+/// The `acct` of every item under the Swift runner's vault service in `security dump-keychain`'s
+/// answer, one item per `keychain:` block.
+pub(super) fn vault_names_in(dump: &str) -> Vec<String> {
+    let quoted = |line: &str, key: &str| {
+        line.trim()
+            .strip_prefix(key)
+            .and_then(|rest| rest.strip_prefix("<blob>=\""))
+            .and_then(|rest| rest.strip_suffix('"'))
+            .map(str::to_owned)
+    };
+    let mut names: Vec<String> = dump
+        .split("\nkeychain: ")
+        .filter(|item| {
+            item.lines()
+                .any(|l| quoted(l, "\"svce\"").as_deref() == Some("com.deskree.oby.runner.vault"))
+        })
+        .filter_map(|item| item.lines().find_map(|l| quoted(l, "\"acct\"")))
+        .collect();
+    names.sort();
+    names.dedup();
+    names
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -525,15 +789,8 @@ pub(super) const CURSOR_ITEMS: [(&str, &str); 2] = [
 #[cfg(target_os = "macos")]
 pub(super) fn cursor_keychain_item(service: &str, value: bool) -> Option<Vec<u8>> {
     let mut command = std::process::Command::new(security_bin());
-    command
-        .args(["find-generic-password", "-a", "cursor-user", "-s", service])
-        .stdin(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null());
-    if value {
-        command.arg("-w");
-    }
-    let output = process::output_within(&mut command, security_limit(value))?;
-    output.status.success().then_some(output.stdout)
+    command.args(["find-generic-password", "-a", "cursor-user", "-s", service]);
+    ask_security(service, command, value)
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -546,14 +803,14 @@ pub(super) fn cursor_keychain_item(_service: &str, _value: bool) -> Option<Vec<u
 /// afresh, [`cursor_keychain_login`]).
 pub(super) fn cursor_keychain_live() -> bool {
     static LAST: Mutex<Option<(std::time::Instant, bool)>> = Mutex::new(None);
-    let mut last = LAST.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some((at, live)) = *last
+    if let Some((at, live)) = *LAST.lock().unwrap_or_else(|e| e.into_inner())
         && at.elapsed() < Duration::from_secs(60)
     {
         return live;
     }
+    // Not under the lock: a read can wait on macOS's prompt, and other statuses mustn't.
     let live = cursor_keychain_login().is_some_and(|login| cursor_login_live(&login));
-    *last = Some((std::time::Instant::now(), live));
+    *LAST.lock().unwrap_or_else(|e| e.into_inner()) = Some((std::time::Instant::now(), live));
     live
 }
 
@@ -785,12 +1042,28 @@ pub(crate) async fn keychain_ready(
     {
         return Ok(());
     }
+    // A login file is the account's login: a Keychain read macOS refused doesn't stop it.
+    let file = login_file(Tool::Claude, account, login_home().as_deref())
+        .is_some_and(|f| is_regular_file(&f));
+    let unread = |service: &str| {
+        if file {
+            None
+        } else {
+            keychain_unread(Tool::Claude, service)
+        }
+    };
     if let Some(folder) = dir.clone().filter(|_| !made) {
         // Never refreshed by obid while the Mac app may run unboxed on the folder (#655's open
         // item, [`refresh_claude_login`]): good far from its end, else refused.
+        let service = keychain_service(Some(&folder));
         let read = tokio::task::spawn_blocking(move || keychain(Some(&folder), true))
             .await
             .unwrap_or(None);
+        if read.is_none()
+            && let Some(why) = unread(&service)
+        {
+            return Err(why);
+        }
         return if folder_login_ok(read.as_deref(), now_ms()) {
             Ok(())
         } else {
@@ -817,9 +1090,16 @@ pub(crate) async fn keychain_ready(
             }),
         }
     }
-    let fresh = tokio::task::spawn_blocking(move || keep_one(&service, dir.as_deref(), &bin))
-        .await
-        .unwrap_or(Fresh::SignIn);
+    let fresh = {
+        let service = service.clone();
+        tokio::task::spawn_blocking(move || keep_one(&service, dir.as_deref(), &bin))
+            .await
+            .unwrap_or(Fresh::SignIn)
+    };
+    // A login macOS didn't give: the run would start with none and fail "not logged in".
+    if let Some(why) = unread(&service) {
+        return Err(why);
+    }
     match fresh {
         Fresh::SignIn => Err(format!(
             "The Mac's Claude login for {} needs signing in again (run claude, then /login).",
@@ -896,10 +1176,10 @@ pub(super) fn file_login_ready(account: &crate::config::Account) -> Result<(), S
 }
 
 /// An account's login as obid copies it for a run that must not read the account's folder (the
-/// unboxed brain, `crate::brain::calls`): the Keychain's ([`keychain_login`]), else its
-/// `.credentials.json` when that's a regular file, only what calls the API ([`without_refresh`]).
+/// unboxed brain, `crate::brain::calls`): its `.credentials.json` when that's a regular file, else
+/// the Keychain's ([`keychain_login`]), only what calls the API ([`without_refresh`]).
 pub(crate) fn account_login(config_dir: &Path) -> Option<Vec<u8>> {
-    keychain_login(Some(config_dir)).or_else(|| folder_login(config_dir))
+    folder_login(config_dir).or_else(|| keychain_login(Some(config_dir)))
 }
 
 /// An account's `.credentials.json` when it's a regular file, only what calls the API
@@ -1823,6 +2103,111 @@ pub fn person_homes() -> Vec<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// KEYCHAIN-3: a Keychain login's value is asked for once per change of the item: a value
+    /// macOS gave is kept while the item stays the same (an "Allow" isn't asked again every
+    /// minute), a refusal stands until the item changes (a sign-in rewrites it), and a locked
+    /// Keychain is never kept, so the next read asks again.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn keychain_3_a_login_is_asked_for_once_per_change() {
+        let dir = std::env::temp_dir().join(format!("obid-refused-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let (mdat, answer, asked) = (dir.join("mdat"), dir.join("answer"), dir.join("asked"));
+        // Without -w the item's date; with -w what `answer` says: Deny (128), locked (36), a value.
+        let script = format!(
+            "#!/bin/sh\ncase \" $* \" in *\" -w \"*) echo x >> {asked:?}; a=$(cat {answer:?}); \
+             [ \"$a\" = refuse ] && exit 128; [ \"$a\" = locked ] && exit 36; echo \"$a\";; \
+             *) printf '    \"mdat\"<timedate>=\"%s\"\\n' \"$(cat {mdat:?})\";; esac\n"
+        );
+        let bin = dir.join("security");
+        std::fs::write(&bin, script).unwrap();
+        std::fs::set_permissions(&bin, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+            .unwrap();
+        let service = format!("Claude Code-credentials-test-{}", std::process::id());
+        let ask = || {
+            let mut command = std::process::Command::new(&bin);
+            command.args(["find-generic-password", "-s", &service]);
+            ask_security(&service, command, true)
+        };
+        let times = || {
+            std::fs::read_to_string(&asked)
+                .unwrap_or_default()
+                .lines()
+                .count()
+        };
+        let set = |path: &Path, text: &str| std::fs::write(path, text).unwrap();
+
+        // Deny: asked once, refused while the item stays the same, said on the account.
+        set(&mdat, "1");
+        set(&answer, "refuse");
+        assert_eq!(ask(), None);
+        assert_eq!(ask(), None);
+        assert_eq!(times(), 1, "asked once");
+        assert!(refused(&service));
+        assert!(
+            keychain_unread(Tool::Claude, &service)
+                .unwrap()
+                .contains("Always Allow")
+        );
+        // A sign-in rewrites the item: the refusal goes, once obid looks again.
+        set(&mdat, "2");
+        set(&answer, "token-one");
+        ANSWERS.lock().unwrap().get_mut(&service).unwrap().looked -= LOOK_AGAIN;
+        assert!(!refused(&service));
+        assert_eq!(ask(), Some(b"token-one\n".to_vec()));
+        // Allowed: kept while the item stays the same, so an "Allow" isn't asked again.
+        assert_eq!(ask(), Some(b"token-one\n".to_vec()));
+        assert_eq!(times(), 2);
+        // A refresh rewrites it: read again, once.
+        set(&mdat, "3");
+        set(&answer, "token-two");
+        assert_eq!(ask(), Some(b"token-two\n".to_vec()));
+        assert_eq!(times(), 3);
+        // Locked: never kept, said as such, and asked again at the next read.
+        set(&mdat, "4");
+        set(&answer, "locked");
+        assert_eq!(ask(), None);
+        assert!(!refused(&service));
+        assert_eq!(
+            keychain_unread(Tool::Claude, &service).as_deref(),
+            Some(KEYCHAIN_LOCKED)
+        );
+        set(&answer, "token-three");
+        assert_eq!(ask(), Some(b"token-three\n".to_vec()));
+        assert_eq!(keychain_unread(Tool::Claude, &service), None);
+        assert_eq!(times(), 5);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The Swift runner's vault items are found by name in `security dump-keychain`'s attributes,
+    /// and no other service's (#1679).
+    #[test]
+    fn the_swift_runners_vault_items_are_named_from_their_attributes() {
+        let dump = r#"keychain: "/Users/o/Library/Keychains/login.keychain-db"
+class: "genp"
+attributes:
+    "acct"<blob>="oby.tetrix.access"
+    "svce"<blob>="com.deskree.oby.runner.vault"
+keychain: "/Users/o/Library/Keychains/login.keychain-db"
+class: "genp"
+attributes:
+    "acct"<blob>="someone"
+    "svce"<blob>="Claude Code-credentials"
+keychain: "/Users/o/Library/Keychains/login.keychain-db"
+class: "genp"
+attributes:
+    "acct"<blob>="oby.fcm.serviceAccount"
+    "mdat"<timedate>=0x3230 "20261031120000Z\000"
+    "svce"<blob>="com.deskree.oby.runner.vault"
+"#;
+        assert_eq!(
+            vault_names_in(dump),
+            ["oby.fcm.serviceAccount", "oby.tetrix.access"]
+        );
+        assert!(vault_names_in("").is_empty());
+    }
 
     /// N5: a copied `~/.claude.json` keeps only the keys a boxed run needs to stay signed in, never
     /// the person's projects, history or MCP state.

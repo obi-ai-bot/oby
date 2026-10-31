@@ -3,13 +3,10 @@
 //!
 //! - **Where** ([`Location`]). `home/vault/secrets.json`, as the Swift runner's `FileVault` keeps
 //!   them: a folder only obid's user may open (0700) holding a file only that user may read (0600).
-//!   On a Mac whose obid runs in the Mac app's runner home, the Swift runner's Keychain items
-//!   (service `com.deskree.oby.runner.vault`) are copied into it once, the first time it starts
-//!   with no file there ([`install`]): the owner's decision of 2026-10-30, so a newly signed obid
-//!   (the Electron app's, each update's) never asks the Keychain again.
+//!   Never the Keychain, on a Mac either (#1679): obid makes macOS ask for no password. What the
+//!   Swift runner kept there stays there; its connection (Tetrix, say) is made again once.
 //!   A folder or file anyone else may read, that someone else owns, or that is a link isn't read:
-//!   the vault can't be read until it's fixed, and then nothing goes out. The configuration's
-//!   `vault` can say either. `home` is what every job's and plug-in's sandbox hides
+//!   the vault can't be read until it's fixed, and then nothing goes out. `home` is what every job's and plug-in's sandbox hides
 //!   (docs/ARCHITECTURE.md 5.3). No items, or no file, is an empty vault.
 //! - **How values come in.** `obid vault --config <path> add NAME` with the value on stdin (typed
 //!   without echo at a terminal), never as an argument or in an environment variable, where other
@@ -153,87 +150,34 @@ fn trimmed(value: &str) -> &str {
 // ---------------------------------------------------------------------------------------------
 // Where the vault is
 
-/// The Keychain service the Swift runner's items are under on a Mac (Engine/Vault.swift,
-/// `KeychainVault.runnerService`): obid uses the same items, so the owner's secrets carry over.
-pub const RUNNER_SERVICE: &str = "com.deskree.oby.runner.vault";
-
-/// Where the vault keeps its secrets.
+/// Where the vault keeps its secrets: `home/vault/secrets.json` (Engine/Vault.swift, `FileVault`),
+/// on a Mac too. obid never reads or writes the Keychain for its own secrets (#1679, the owner's
+/// word of 2026-10-31): an item a differently signed program made has macOS ask the owner's
+/// password for each one, and obid answered nothing while it waited.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Location {
-    /// `home/vault/secrets.json` (Engine/Vault.swift, `FileVault`).
     File,
-    /// Generic passwords in the login Keychain under `service`, one per secret, the name as the
-    /// account (Engine/Vault.swift, `KeychainVault`). macOS only.
-    Keychain { service: String },
-}
-
-/// The owner's login Keychain, by its path from the user database (`getpwuid`), never through
-/// `$HOME`: an obid started with another `HOME` would otherwise look in the wrong place. None when
-/// obid can't find its user's home folder.
-pub fn login_keychain() -> Option<PathBuf> {
-    nix::unistd::User::from_uid(nix::unistd::getuid())
-        .ok()
-        .flatten()
-        .map(|user| user.dir.join("Library/Keychains/login.keychain-db"))
-}
-
-/// Whether `home` is the Mac app's runner home (`~/Library/Application Support/Oby/Runner`,
-/// runner-api.md "The Mac app on the same Mac") on a Mac with a login Keychain file: where the
-/// Swift runner's Keychain items are, to copy into the file once ([`install`]).
-#[cfg(target_os = "macos")]
-fn holds_runner_keychain(home: &Path) -> bool {
-    let runner_home = nix::unistd::User::from_uid(nix::unistd::getuid())
-        .ok()
-        .flatten()
-        .map(|user| user.dir.join("Library/Application Support/Oby/Runner"));
-    let keychain = login_keychain().is_some_and(|path| path.is_file());
-    keychain && runner_home.is_some_and(|runner| same_folder(&runner, home))
-}
-
-/// The same folder however it is written: links resolved, and letter case ignored, as a Mac's
-/// file system ignores it by default.
-fn same_folder(a: &Path, b: &Path) -> bool {
-    let a = std::fs::canonicalize(a).unwrap_or_else(|_| a.to_path_buf());
-    let b = std::fs::canonicalize(b).unwrap_or_else(|_| b.to_path_buf());
-    a.to_string_lossy().to_lowercase() == b.to_string_lossy().to_lowercase()
 }
 
 impl Location {
-    /// Where the vault is when the configuration doesn't say: the file in `home`, on a Mac too
-    /// (the owner's decision of 2026-10-30). The Keychain asked about every item each time a
-    /// differently signed obid read one, and kept them no better than the file against the owner's
-    /// other programs (#577). What the Swift runner kept in the Keychain is copied over once
-    /// ([`install`]). The configuration's `vault` still says `keychain` where the owner wants it.
+    /// Where the vault is when the configuration doesn't say: the file in `home`.
     pub fn default_for(_home: &Path) -> Location {
         Location::File
     }
 
-    /// `vault` as the configuration writes it: `{"store": "file"}`, or `{"store": "keychain"}`
-    /// with an optional `service` (the Swift runner's when left out).
+    /// `vault` as the configuration writes it: `{"store": "file"}`. An older configuration's
+    /// `{"store": "keychain"}` is the file too: what only the Keychain held is connected again once.
     pub fn parse(store: &str, service: Option<&str>) -> Result<Location, String> {
         match (store, service) {
-            ("file", None) => Ok(Location::File),
+            ("file", None) | ("keychain", _) => Ok(Location::File),
             ("file", Some(_)) => Err("a file vault takes no service.".into()),
-            ("keychain", _) if !cfg!(target_os = "macos") => {
-                Err("the Keychain is macOS's: on this machine the vault is a file (\"store\": \"file\").".into())
-            }
-            ("keychain", Some(service)) if service.trim().is_empty() || service.trim() != service => {
-                Err(format!("service is {service:?}: a name with no spaces around it, like com.deskree.oby.runner.vault."))
-            }
-            ("keychain", service) => Ok(Location::Keychain {
-                service: service.unwrap_or(RUNNER_SERVICE).to_owned(),
-            }),
-            _ => Err(format!("store is {store:?}: \"file\" or \"keychain\".")),
+            _ => Err(format!("store is {store:?}: \"file\".")),
         }
     }
 
     fn store(&self, home: &Path) -> Box<dyn Store> {
         match self {
             Location::File => Box::new(FileStore::new(folder(home))),
-            #[cfg(target_os = "macos")]
-            Location::Keychain { service } => Box::new(keychain::KeychainStore::new(service)),
-            #[cfg(not(target_os = "macos"))]
-            Location::Keychain { .. } => Box::new(Unavailable),
         }
     }
 }
@@ -259,8 +203,8 @@ pub trait Store: Send + Sync {
     fn names(&self) -> Result<Vec<String>, String> {
         Ok(self.read()?.into_keys().collect())
     }
-    /// Whether the stamp changes with every change. When it doesn't (a Keychain item's date has
-    /// whole seconds only, so a second change in the same second keeps it), the values are read
+    /// Whether the stamp changes with every change. When it doesn't (a date with whole seconds
+    /// only, so a second change in the same second keeps it), the values are read
     /// again at least every [`READ_EVERY`] all the same.
     fn exact(&self) -> bool {
         true
@@ -270,26 +214,6 @@ pub trait Store: Send + Sync {
 /// How often, at most, a store whose stamp isn't [`Store::exact`] goes without its values being
 /// read again.
 const READ_EVERY: Duration = Duration::from_secs(2);
-
-/// A Keychain asked for where there's none: every read fails, so nothing goes out.
-#[cfg(not(target_os = "macos"))]
-struct Unavailable;
-
-#[cfg(not(target_os = "macos"))]
-impl Store for Unavailable {
-    fn stamp(&self) -> Result<String, String> {
-        Err("there's no Keychain on this machine.".into())
-    }
-    fn read(&self) -> Result<BTreeMap<String, String>, String> {
-        self.stamp().map(|_| BTreeMap::new())
-    }
-    fn save(&self, _: &str, _: &str) -> Result<(), String> {
-        self.stamp().map(|_| ())
-    }
-    fn remove(&self, _: &str) -> Result<bool, String> {
-        self.stamp().map(|_| false)
-    }
-}
 
 // ---------------------------------------------------------------------------------------------
 // The file
@@ -477,207 +401,6 @@ impl Store for FileStore {
     }
 }
 
-// ---------------------------------------------------------------------------------------------
-// The Keychain
-
-/// The Mac's vault (Engine/Vault.swift, `KeychainVault`): generic passwords in the owner's login
-/// Keychain under one service, one per secret, the secret's name as the account and `Oby vault:
-/// <name>` as the label, as the Swift runner makes them, so its items and obid's are the same.
-/// Listing reads the names and dates alone, never a value.
-///
-/// The login Keychain is named by its path, from the user database (`getpwuid`), in every search,
-/// add, update and removal, never found through `$HOME`: an obid started with another `HOME` would
-/// otherwise see no items at all, an empty vault, and take nothing out.
-///
-/// Measured on a Mac (2026-10-17): another program of the same user reads and updates these items
-/// without being asked (macOS adds it to the item's access list), so against such a program the
-/// Keychain holds them no better than the file does (#577); only the program that made an item may
-/// delete it, and every new build of obid that reads one is added to its access list again.
-#[cfg(target_os = "macos")]
-mod keychain {
-    use std::collections::BTreeMap;
-    use std::path::PathBuf;
-
-    use core_foundation::base::TCFType as _;
-    use core_foundation::data::CFData;
-    use core_foundation::dictionary::CFMutableDictionary;
-    use core_foundation::string::CFString;
-    use security_framework::item::{
-        ItemAddOptions, ItemAddValue, ItemClass, ItemSearchOptions, ItemUpdateOptions,
-        ItemUpdateValue, Limit, Location, SearchResult,
-    };
-    use security_framework::os::macos::keychain::SecKeychain;
-
-    use super::Store;
-
-    /// errSecItemNotFound.
-    const NOT_FOUND: i32 = -25300;
-    /// errSecInvalidOwnerEdit: another program made the item, and only it may delete it.
-    const NOT_OURS: i32 = -25244;
-
-    pub struct KeychainStore {
-        service: String,
-    }
-
-    impl KeychainStore {
-        pub fn new(service: &str) -> KeychainStore {
-            KeychainStore {
-                service: service.to_owned(),
-            }
-        }
-
-        /// The owner's login Keychain, by its path.
-        fn login(&self) -> Result<SecKeychain, String> {
-            let path: PathBuf = super::login_keychain().ok_or(
-                "obid can't find its user's home folder, so it can't find the login Keychain.",
-            )?;
-            if !path.is_file() {
-                return Err(format!("There's no login Keychain at {}.", path.display()));
-            }
-            SecKeychain::open(&path)
-                .map_err(|e| format!("Can't open the login Keychain at {} ({e}).", path.display()))
-        }
-
-        /// A search for this vault's items (one, with `account`), in the login Keychain only.
-        fn search(&self, account: Option<&str>) -> Result<ItemSearchOptions, String> {
-            let mut search = ItemSearchOptions::new();
-            search
-                .class(ItemClass::generic_password())
-                .service(&self.service)
-                .keychains(&[self.login()?]);
-            if let Some(account) = account {
-                search.account(account);
-            }
-            Ok(search)
-        }
-
-        /// Every item's attributes (`acct` its name, `mdat` when it last changed), never its data.
-        fn items(&self, account: Option<&str>) -> Result<Vec<BTreeMap<String, String>>, String> {
-            let mut search = self.search(account)?;
-            search.load_attributes(true).limit(Limit::All);
-            match search.search() {
-                Ok(found) => Ok(found
-                    .iter()
-                    .filter_map(SearchResult::simplify_dict)
-                    .map(|item| item.into_iter().collect())
-                    .collect()),
-                Err(e) if e.code() == NOT_FOUND => Ok(Vec::new()),
-                Err(e) => Err(format!(
-                    "Couldn't list the vault in the Keychain ({}: {e}): unlock the login Keychain, or allow obid in Keychain Access.",
-                    self.service
-                )),
-            }
-        }
-    }
-
-    impl Store for KeychainStore {
-        fn names(&self) -> Result<Vec<String>, String> {
-            Ok(self
-                .items(None)?
-                .into_iter()
-                .filter_map(|mut item| item.remove("acct"))
-                .collect())
-        }
-
-        fn exact(&self) -> bool {
-            false
-        }
-
-        /// Each item's name and when it last changed: Keychain Access, `security` or the Swift
-        /// runner can change one outside obid.
-        fn stamp(&self) -> Result<String, String> {
-            let mut lines: Vec<String> = self
-                .items(None)?
-                .iter()
-                .map(|item| {
-                    format!(
-                        "{} {}",
-                        item.get("acct").map_or("?", String::as_str),
-                        item.get("mdat").map_or("", String::as_str)
-                    )
-                })
-                .collect();
-            lines.sort();
-            Ok(lines.join("\n"))
-        }
-
-        fn read(&self) -> Result<BTreeMap<String, String>, String> {
-            let mut secrets = BTreeMap::new();
-            for item in self.items(None)? {
-                let Some(name) = item.get("acct") else {
-                    continue;
-                };
-                if let Some(value) = self.value(name)? {
-                    secrets.insert(name.clone(), value);
-                }
-            }
-            Ok(secrets)
-        }
-
-        fn value(&self, name: &str) -> Result<Option<String>, String> {
-            let mut search = self.search(Some(name))?;
-            search.load_data(true).limit(1);
-            match search.search() {
-                Ok(found) => Ok(found.into_iter().find_map(|item| match item {
-                    SearchResult::Data(bytes) => Some(String::from_utf8_lossy(&bytes).into_owned()),
-                    _ => None,
-                })),
-                Err(e) if e.code() == NOT_FOUND => Ok(None),
-                Err(e) => Err(format!(
-                    "Couldn't read {name} in the Keychain ({e}): unlock the login Keychain, or allow obid in Keychain Access."
-                )),
-            }
-        }
-
-        /// An item already there gets the new value and keeps its attributes; a new one is made
-        /// with the Swift runner's label and accessibility.
-        fn save(&self, value: &str, name: &str) -> Result<(), String> {
-            let data = CFData::from_buffer(value.as_bytes());
-            let saved = if self.items(Some(name))?.is_empty() {
-                let mut add = ItemAddOptions::new(ItemAddValue::Data {
-                    class: ItemClass::generic_password(),
-                    data,
-                });
-                add.set_service(&self.service)
-                    .set_account_name(name)
-                    .set_label(format!("Oby vault: {name}"))
-                    .set_location(Location::FileKeychain(self.login()?));
-                // kSecAttrAccessible: kSecAttrAccessibleWhenUnlockedThisDeviceOnly, as the Swift
-                // runner sets it ("pdmn" and "aku" are those constants' values: the named
-                // constants are extern statics, which only `unsafe` reads, and this workspace
-                // forbids it). ItemAddOptions can't carry it, so its query is added to by hand
-                // (the deprecated way in).
-                let accessible = CFString::from_static_string("pdmn");
-                let when_unlocked = CFString::from_static_string("aku");
-                #[allow(deprecated)]
-                let mut query = CFMutableDictionary::from(&add.to_dictionary());
-                query.set(accessible.as_CFTypeRef(), when_unlocked.as_CFTypeRef());
-                #[allow(deprecated)]
-                security_framework::item::add_item(query.to_immutable())
-            } else {
-                let mut update = ItemUpdateOptions::new();
-                update.set_value(ItemUpdateValue::Data(data));
-                security_framework::item::update_item(&self.search(Some(name))?, &update)
-            };
-            saved.map_err(|e| format!("Couldn't save {name} in the Keychain ({e})."))
-        }
-
-        fn remove(&self, name: &str) -> Result<bool, String> {
-            if self.items(Some(name))?.is_empty() {
-                return Ok(false);
-            }
-            match self.search(Some(name))?.delete() {
-                Ok(()) => Ok(true),
-                Err(e) if e.code() == NOT_FOUND => Ok(false),
-                Err(e) if e.code() == NOT_OURS => Err(format!(
-                    "{name} was added to the Keychain by another program (Oby's runner): only it may remove it, so remove it there, or in Keychain Access."
-                )),
-                Err(e) => Err(format!("Couldn't remove {name} from the Keychain ({e}).")),
-            }
-        }
-    }
-}
-
 /// The file's bytes, refusing a link in its place.
 fn read_no_follow(path: &Path) -> std::io::Result<Vec<u8>> {
     use std::os::unix::fs::OpenOptionsExt;
@@ -783,7 +506,7 @@ impl Vault {
     /// read here could return an externally changed credential before redaction knows it.
     /// Fails when the vault can't be read, and is none when it has no such secret.
     pub fn value(&self, name: &str) -> Result<Option<String>, String> {
-        // Broker access rechecks readability even when the Keychain's metadata stamp is
+        // Broker access rechecks readability even when the store's stamp is
         // unchanged: a lock or an edit within the same second must take effect immediately.
         self.check_with_force(true)?;
         Ok(self
@@ -845,7 +568,7 @@ impl Vault {
     /// values learned before stay learned (a log line is still redacted with them), and whatever
     /// asked sends nothing.
     ///
-    /// The store is asked without the lock held: a Keychain that is slow to answer (a prompt)
+    /// The store is asked without the lock held: a store that is slow to answer
     /// holds up only whoever asked, never the answers and log lines that only read what was
     /// learned.
     pub fn check(&self) -> Result<(), String> {
@@ -1033,12 +756,6 @@ static SHARED: RwLock<Option<Arc<Vault>>> = RwLock::new(None);
 /// `/v1` answer is `503` and nothing is published until it's fixed.
 pub fn install(home: &Path, location: &Location) -> Arc<Vault> {
     let known = crate::secrets::known();
-    #[cfg(target_os = "macos")]
-    if *location == Location::File && holds_runner_keychain(home) {
-        let file = FileStore::new(folder(home));
-        file.tidy();
-        moved_from(&keychain::KeychainStore::new(RUNNER_SERVICE), &file);
-    }
     let store = location.store(home);
     store.tidy();
     let vault = Arc::new(Vault::new(store, known.clone()));
@@ -1050,10 +767,7 @@ pub fn install(home: &Path, location: &Location) -> Arc<Vault> {
     }));
     *SHARED.write().unwrap_or_else(|e| e.into_inner()) = Some(vault.clone());
     // Which store, and how many secrets it holds: never a name or a value.
-    let place = match location {
-        Location::File => format!("the file {}", folder(home).join("secrets.json").display()),
-        Location::Keychain { service } => format!("the login Keychain, service {service}"),
-    };
+    let place = format!("the file {}", folder(home).join("secrets.json").display());
     match vault.names() {
         Ok(names) => tracing::info!(secrets = names.len(), "the vault is {place}"),
         Err(_) => tracing::info!("the vault is {place}"),
@@ -1066,57 +780,29 @@ pub fn install(home: &Path, location: &Location) -> Arc<Vault> {
     vault
 }
 
-/// Copies what `from` holds into `to` once, when `to` has no file yet: the Swift runner's Keychain
-/// items into the file, the last time macOS asks about each (the owner's decision of 2026-10-30).
-/// A secret the Keychain won't give (the owner clicked Deny) is left out, said in the log by name
-/// only; the file is written all the same, so it isn't asked again. The Keychain items stay: only
-/// the program that made one may delete it, and the Swift app may still read them. Answers how
-/// many were copied of how many, or none when nothing was to be done.
-fn moved_from(from: &dyn Store, to: &FileStore) -> Option<(usize, usize)> {
-    if to.file().exists() {
-        return None;
+/// Says in the log which of the Swift runner's vault items (`old`, by name, listed without a value)
+/// the file doesn't hold, and how to add each back: obid no longer copies them out of the Keychain
+/// (#1679). Also when the configuration still says `keychain`, which is the file now. Answers the
+/// names it said.
+pub fn left_in_keychain(old: &[String], says_keychain: bool) -> Vec<String> {
+    if says_keychain {
+        tracing::warn!(
+            "the configuration's vault says \"keychain\": obid keeps the vault in its file now and never reads the Keychain, so set it to {{\"store\": \"file\"}} or leave it out"
+        );
     }
-    let names = match from.names() {
-        Ok(names) if !names.is_empty() => names,
-        Ok(_) => return None,
-        Err(why) => {
-            tracing::warn!(
-                "the vault's Keychain items can't be listed, so none is copied to the file: {why}"
-            );
-            return None;
-        }
-    };
-    let mut kept = BTreeMap::new();
-    for name in &names {
-        match from.value(name) {
-            Ok(Some(value)) => {
-                kept.insert(name.clone(), value);
-            }
-            Ok(None) => {}
-            Err(why) => {
-                tracing::warn!(secret = %name, "not copied from the Keychain to the vault's file: {why}")
-            }
-        }
-    }
-    let moved = kept.len();
-    // (written only if no other obid wrote one meanwhile)
-    match to.locked(|| {
-        if to.file().exists() {
-            Ok(())
+    let held = shared().and_then(|v| v.names().ok()).unwrap_or_default();
+    let left: Vec<String> = old.iter().filter(|n| !held.contains(n)).cloned().collect();
+    for name in &left {
+        let how = if name.starts_with("oby.tetrix.") {
+            "connect Tetrix again in Settings › Connectors".to_owned()
         } else {
-            to.write(&kept)
-        }
-    }) {
-        Ok(()) => tracing::info!(
-            "copied {moved} of {} secrets from the login Keychain to {}; the Keychain items stay",
-            names.len(),
-            to.file().display()
-        ),
-        Err(why) => tracing::warn!(
-            "the vault's file couldn't be written, so the Keychain items weren't copied: {why}"
-        ),
+            format!("add it again with `obid vault --config <path> add {name}`")
+        };
+        tracing::warn!(
+            "{name} is still in the Keychain, where obid no longer reads its secrets, and not in the vault's file: {how}"
+        );
     }
-    Some((moved, names.len()))
+    left
 }
 
 /// obid's vault, once [`install`]ed.
@@ -1272,7 +958,7 @@ pub async fn answers(request: Request, next: Next) -> Response {
         .into_data_stream()
         .map(move |frame| match frame {
             // obid's own keepalive carries nothing to scrub: no check, so an idle stream never
-            // reads the Keychain (it did 4 times every 15 seconds, at each `:ping`).
+            // reads the store (the Keychain's was read 4 times every 15 seconds, at each `:ping`).
             Ok(bytes) if keepalive(&bytes, events) => Some(Ok(bytes)),
             Ok(bytes) => {
                 if vault.check().is_err() && !state {
@@ -1809,7 +1495,7 @@ mod tests {
         }
     }
 
-    /// A store that counts every time it's asked, and like the Keychain isn't exact: what an idle
+    /// A store that counts every time it's asked, and isn't exact: what an idle
     /// event stream would read.
     #[derive(Clone, Default)]
     struct Counted {
@@ -2037,127 +1723,50 @@ mod tests {
         );
     }
 
-    /// The file in `home` wherever obid runs, the Mac app's runner home too (the owner's decision
-    /// of 2026-10-30), unless the configuration says the Keychain.
+    /// The file in `home` wherever obid runs, the Mac app's runner home too; an older
+    /// configuration's Keychain is the file (#1679).
     #[test]
     fn where_the_vault_is() {
-        let user = nix::unistd::User::from_uid(nix::unistd::getuid())
-            .unwrap()
-            .unwrap();
-        let runner_home = user.dir.join("Library/Application Support/Oby/Runner");
-        assert_eq!(
-            login_keychain().unwrap().file_name().unwrap(),
-            "login.keychain-db"
-        );
-        assert_eq!(Location::default_for(&runner_home), Location::File);
         assert_eq!(
             Location::default_for(Path::new("/tmp/obid-home")),
             Location::File
         );
         assert_eq!(Location::parse("file", None), Ok(Location::File));
+        assert_eq!(Location::parse("keychain", None), Ok(Location::File));
+        assert_eq!(
+            Location::parse("keychain", Some("com.deskree.oby.runner.vault")),
+            Ok(Location::File)
+        );
         assert!(Location::parse("file", Some("x")).is_err());
         assert!(Location::parse("cloud", None).is_err());
-        if cfg!(target_os = "macos") {
-            let runner = Location::Keychain {
-                service: RUNNER_SERVICE.into(),
-            };
-            assert_eq!(Location::parse("keychain", None), Ok(runner));
-            assert_eq!(
-                Location::parse("keychain", Some("com.example.test")),
-                Ok(Location::Keychain {
-                    service: "com.example.test".into()
-                })
-            );
-            assert!(Location::parse("keychain", Some(" ")).is_err());
-            assert!(Location::parse("keychain", Some(" com.example.test")).is_err());
-            assert!(Location::parse("keychain", Some("com.example.test ")).is_err());
-        } else {
-            assert!(Location::parse("keychain", None).is_err());
-        }
-        // The runner home however it is written: another letter case, or through a link.
-        let upper = PathBuf::from(runner_home.to_string_lossy().to_uppercase());
-        assert!(!cfg!(target_os = "macos") || same_folder(&upper, &runner_home));
-        let scratch = Scratch::new();
-        let link = scratch.0.join("runner-link");
-        std::os::unix::fs::symlink(&scratch.0, &link).unwrap();
-        assert!(same_folder(&link, &scratch.0));
-        assert!(!same_folder(&link, Path::new("/tmp/obid-home")));
     }
 
-    /// The Swift runner's Keychain items are copied into the file once: what the Keychain gives,
-    /// never what it refuses; the file is written even then, so nothing is asked again; and a
-    /// vault that has its file already is left alone.
+    /// KEYCHAIN-1: the vault never touches the Keychain (#1679): no Security framework in obid, and no call
+    /// in the vault that could reach it, so macOS never asks the owner's password for it. The
+    /// needles are split so this test's own text doesn't match.
     #[test]
-    fn the_keychain_items_move_to_the_file_once() {
-        struct Keychain;
-        impl Store for Keychain {
-            fn stamp(&self) -> Result<String, String> {
-                Ok(String::new())
-            }
-            fn read(&self) -> Result<BTreeMap<String, String>, String> {
-                Err("read one by one".into())
-            }
-            fn names(&self) -> Result<Vec<String>, String> {
-                Ok(vec![
-                    "oby.tetrix.access".into(),
-                    "oby.tetrix.refresh".into(),
-                    "denied".into(),
-                ])
-            }
-            fn value(&self, name: &str) -> Result<Option<String>, String> {
-                match name {
-                    "denied" => Err("the owner clicked Deny".into()),
-                    name => Ok(Some(format!("{name}-value-Zq81x"))),
-                }
-            }
-            fn save(&self, _: &str, _: &str) -> Result<(), String> {
-                unreachable!("nothing is written to the Keychain")
-            }
-            fn remove(&self, _: &str) -> Result<bool, String> {
-                unreachable!("the Keychain items stay")
-            }
+    fn keychain_1_the_vault_never_touches_the_keychain() {
+        let vault = include_str!("vault.rs");
+        let manifest = include_str!("../Cargo.toml");
+        for needle in [
+            ["security", "-framework"].concat(),
+            ["core", "-foundation"].concat(),
+        ] {
+            assert!(!manifest.contains(&needle), "obid depends on {needle}");
         }
-        let scratch = Scratch::new();
-        let file = FileStore::new(scratch.0.join("vault"));
-        assert_eq!(moved_from(&Keychain, &file), Some((2, 3)));
-        let kept = file.read().unwrap();
-        assert_eq!(
-            kept.keys().collect::<Vec<_>>(),
-            ["oby.tetrix.access", "oby.tetrix.refresh"]
-        );
-        assert_eq!(kept["oby.tetrix.refresh"], "oby.tetrix.refresh-value-Zq81x");
-        // Once: the file is there now, so the Keychain isn't read again.
-        assert_eq!(moved_from(&Keychain, &file), None);
-
-        // Every item refused: an empty file all the same, so it isn't asked again.
-        struct Refusing;
-        impl Store for Refusing {
-            fn stamp(&self) -> Result<String, String> {
-                Ok(String::new())
-            }
-            fn read(&self) -> Result<BTreeMap<String, String>, String> {
-                Err("refused".into())
-            }
-            fn names(&self) -> Result<Vec<String>, String> {
-                Ok(vec!["a".into()])
-            }
-            fn value(&self, _: &str) -> Result<Option<String>, String> {
-                Err("the owner clicked Deny".into())
-            }
-            fn save(&self, _: &str, _: &str) -> Result<(), String> {
-                unreachable!()
-            }
-            fn remove(&self, _: &str) -> Result<bool, String> {
-                unreachable!()
-            }
+        for needle in [
+            ["security", "_framework"].concat(),
+            ["Sec", "Item"].concat(),
+            ["Sec", "Keychain"].concat(),
+            ["/usr/bin/", "security"].concat(),
+            ["security", "_bin"].concat(),
+            ["Command", "::new"].concat(),
+        ] {
+            assert!(!vault.contains(&needle), "the vault calls {needle}");
         }
-        let empty = FileStore::new(scratch.0.join("refused"));
-        assert_eq!(moved_from(&Refusing, &empty), Some((0, 1)));
-        assert!(empty.file().is_file());
-        assert!(empty.read().unwrap().is_empty());
     }
 
-    /// A Keychain modification date may stay the same within a second. The broker must
+    /// A store's modification date may stay the same within a second. The broker must
     /// receive the already-learned snapshot, never a newer credential from another read.
     #[test]
     fn a_connection_gets_only_a_value_the_redactors_already_know() {

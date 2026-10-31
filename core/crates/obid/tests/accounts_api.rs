@@ -245,7 +245,8 @@ fn a_cursor_login_only_in_the_keychain_is_found() {
             .count()
     };
     assert_eq!(read("cursor-access-token"), 1, "{asked}");
-    assert_eq!(read("cursor-api-key"), 1, "{asked}");
+    // Not there: only whether it is was asked, never its value (#1679).
+    assert_eq!(read("cursor-api-key"), 0, "{asked}");
 }
 
 /// Cursor's own Keychain login whose access token has ended: it's signed out, its label says to run
@@ -300,6 +301,116 @@ fn a_cursor_keychain_login_that_ended_says_run_cursor_agent_once() {
     assert!(
         failed.to_string().contains("run cursor-agent once"),
         "{failed}"
+    );
+}
+
+/// KEYCHAIN-3: Cursor's own Keychain login macOS didn't give obid (Deny): it's signed out, its label
+/// says to sign in again and choose Always Allow, a job on it doesn't start, saying why, and its
+/// value is asked for once, not at every status.
+#[cfg(target_os = "macos")]
+#[test]
+fn keychain_3_a_cursor_login_macos_refused_says_why() {
+    let folder = Folder::new("accounts-cursor-refused");
+    let remote = fixture(&folder.0.join("fixture"));
+    let mut config = config(&folder.0, &remote, &agent("fake-claude"));
+    config["agents"]["cursor"] = json!({"bin": agent("fake-cursor"), "accounts": []});
+    config["cursorKeychain"] = json!(true);
+    let security = agent("fake-security-cursor");
+    let obid = start_with(
+        &folder.0,
+        &config,
+        None,
+        &[
+            ("OBID_SECURITY_BIN", security.to_str().unwrap()),
+            ("FAKE_CURSOR_REFUSE", "1"),
+        ],
+    );
+    assert_eq!(
+        own(&obid),
+        [(
+            "cursor".into(),
+            json!(false),
+            json!("Sign in again, then Always Allow")
+        )]
+    );
+    let job = call(
+        &obid,
+        "POST",
+        "/v1/jobs",
+        Some(
+            &json!({"job": {"repo": "obi-e2e/fixture-app", "kind": "investigate", "task": "ENV", "account": "cursor"}}),
+        ),
+    );
+    assert_eq!(job.status, 201, "{}", job.text);
+    let id = job.body["id"].as_str().unwrap().to_owned();
+    let failed = within(30, "the job ended", || {
+        let job = call(&obid, "GET", &format!("/v1/jobs/{id}"), None).body;
+        (job["status"] != "queued" && job["status"] != "running").then_some(job)
+    });
+    assert!(
+        failed
+            .to_string()
+            .contains("Cursor keeps its login in your Keychain"),
+        "{failed}"
+    );
+    call(&obid, "GET", "/v1/status", None);
+    let asked = std::fs::read_to_string(folder.0.join("tmp/obid-test-security-calls")).unwrap();
+    let reads = asked
+        .lines()
+        .filter(|l| l.contains("-s cursor-access-token") && l.ends_with(" -w"))
+        .count();
+    assert_eq!(reads, 1, "{asked}");
+}
+
+/// KEYCHAIN-3: Claude Code's Keychain login macOS didn't give obid (Deny): a run on it fails saying
+/// why, rather than starting with no login ("not logged in"), and the account then reads as signed
+/// out, its label saying to sign in again and choose Always Allow.
+#[cfg(target_os = "macos")]
+#[test]
+fn keychain_3_a_claude_login_macos_refused_fails_the_run_saying_why() {
+    let folder = Folder::new("accounts-claude-refused");
+    let remote = fixture(&folder.0.join("fixture"));
+    let mut config = config(&folder.0, &remote, &agent("fake-claude"));
+    config["claudeKeychain"] = json!(true);
+    let security = agent("fake-security-holding");
+    let obid = start_with(
+        &folder.0,
+        &config,
+        None,
+        &[
+            ("OBID_SECURITY_BIN", security.to_str().unwrap()),
+            ("FAKE_SECURITY_REFUSE", "1"),
+        ],
+    );
+    let job = call(
+        &obid,
+        "POST",
+        "/v1/jobs",
+        Some(
+            &json!({"job": {"repo": "obi-e2e/fixture-app", "kind": "investigate", "task": "ENV", "account": "stub"}}),
+        ),
+    );
+    assert_eq!(job.status, 201, "{}", job.text);
+    let id = job.body["id"].as_str().unwrap().to_owned();
+    let failed = within(30, "the job ended", || {
+        let job = call(&obid, "GET", &format!("/v1/jobs/{id}"), None).body;
+        (job["status"] != "queued" && job["status"] != "running").then_some(job)
+    });
+    assert!(
+        failed
+            .to_string()
+            .contains("Claude Code keeps its login in your Keychain"),
+        "{failed}"
+    );
+    let stub = accounts(&obid)
+        .into_iter()
+        .find(|a| a["id"] == "stub")
+        .unwrap();
+    assert_eq!(stub["signedIn"], json!(false), "{stub}");
+    assert_eq!(
+        stub["label"],
+        json!("Sign in again, then Always Allow"),
+        "{stub}"
     );
 }
 

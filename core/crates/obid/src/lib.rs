@@ -532,6 +532,17 @@ pub async fn serve(
     // Every call the door held goes on now, once everything above is in place.
     let _ = opened.send(Some(Ok(app.clone())));
     ready(bound);
+    // Once obid answers: the Swift runner's vault items the file doesn't have, named (#1679).
+    {
+        let says_keychain = shared.config.vault_says_keychain;
+        let tetrix = shared.tetrix.clone();
+        tokio::task::spawn_blocking(move || {
+            let left = vault::left_in_keychain(&jobs::swift_vault_names(), says_keychain);
+            if left.iter().any(|name| name == tetrix::ACCESS) {
+                tetrix.left_in_keychain();
+            }
+        });
+    }
     // The gateway (crate::gateway): paired phones' calls, forwarded to the same router.
     if let Some(listener) = gateway {
         let address = listener.local_addr().map_err(StartError::Serve)?;

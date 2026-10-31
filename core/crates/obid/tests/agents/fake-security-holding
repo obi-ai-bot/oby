@@ -4,6 +4,8 @@
 # token, as Claude Code keeps it. It notes what it was asked in $TMPDIR/obid-test-security-calls.
 printf '%s\n' "$*" >> "${TMPDIR:-/nonexistent}/obid-test-security-calls"
 case " $* " in
-*" -w "*) printf '%s\n' '{"claudeAiOauth":{"accessToken":"held-access","refreshToken":"held-refresh","expiresAt":4102444800000}}' ;;
+# FAKE_SECURITY_REFUSE: the owner chose Deny at macOS's prompt (errSecUserCanceled).
+*" -w "*) [ -n "${FAKE_SECURITY_REFUSE:-}" ] && exit 128; printf '%s\n' '{"claudeAiOauth":{"accessToken":"held-access","refreshToken":"held-refresh","expiresAt":4102444800000}}' ;;
+*) printf '%s\n' '    "mdat"<timedate>="20261031120000Z"' ;;
 esac
 exit 0

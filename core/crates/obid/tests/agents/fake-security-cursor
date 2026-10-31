@@ -12,6 +12,8 @@ case " $* " in
 *) exit 44 ;;
 esac
 case " $* " in
-*" -w "*) printf '%s\n' "$value" ;;
+# FAKE_CURSOR_REFUSE: the owner chose Deny at macOS's prompt (errSecUserCanceled).
+*" -w "*) [ -n "${FAKE_CURSOR_REFUSE:-}" ] && exit 128; printf '%s\n' "$value" ;;
+*) printf '%s\n' '    "mdat"<timedate>="20261031120000Z"' ;;
 esac
 exit 0

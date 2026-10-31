@@ -6529,6 +6529,14 @@ impl Jobs {
                     "obid can't find the home Cursor's own login is in.".to_owned()
                 })?;
                 let own = own_cursor_login(&home);
+                // A Keychain login macOS didn't give: say why, not that it's signed out (#1679).
+                if own.is_none()
+                    && let Some(why) = CURSOR_ITEMS
+                        .iter()
+                        .find_map(|(_, service)| keychain_unread(Tool::Cursor, service))
+                {
+                    return Err(why);
+                }
                 // A copy can't refresh it: only the Mac's own cursor-agent does.
                 if own
                     .as_deref()
@@ -13633,7 +13641,8 @@ mod tests {
             format!("cat {:?} >/dev/null 2>&1; echo decoy-token:$?", home.join("api-token")),
             format!("cat {real_token:?} >/dev/null 2>&1; echo real-token:$?"),
             "security find-generic-password -s 'Claude Code-credentials' >/dev/null 2>&1; echo keychain:$?".into(),
-            format!("security find-generic-password -s {} >/dev/null 2>&1; echo vault:$?", crate::vault::RUNNER_SERVICE),
+            // The Swift runner's vault items, still in a Mac's Keychain (#1679 left them there).
+            "security find-generic-password -s com.deskree.oby.runner.vault >/dev/null 2>&1; echo vault:$?".into(),
             "printf 'protocol=https\\nhost=github.com\\n\\n' | git credential fill 2>/dev/null | grep -c '^password=' | sed 's/^/fill:/'".into(),
             format!("cat {:?} >/dev/null 2>&1; echo other-job:$?", home.join("tmp/other/secret")),
             format!("echo x > {:?} 2>/dev/null; echo write-home:$?", person.join("obid-own-sandbox-probe")),
