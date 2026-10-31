@@ -2760,6 +2760,8 @@ impl Jobs {
         // `rule` (it's never from the API): found here. So is an untrusted one's.
         let of = job.follow_up_of.as_deref().and_then(|of| self.get(of));
         job.untrusted = new.untrusted || of.as_ref().is_some_and(|of| of.untrusted);
+        job.unsigned = of.as_ref().is_some_and(|of| of.unsigned);
+        job.memory_from_others = of.as_ref().is_some_and(|of| of.memory_from_others);
         // Someone else's code from the start keeps to a clone apart; a follow-up to its job's.
         job.apart = match &of {
             // A follow-up of another Oby's review starts afresh, apart: never in the owner's clone.
@@ -5211,6 +5213,12 @@ impl Jobs {
                 job.vetted = false;
             }
         })
+    }
+
+    /// Words no app of the owner's signed reached job `id` ([`Job::unsigned`]): its pull request
+    /// merges only after two reviews from now on.
+    pub fn mark_unsigned(&self, id: &str) -> Option<Job> {
+        self.update(id, |job| job.unsigned = true)
     }
 
     /// Adds `what` to the job's changes.
@@ -8489,7 +8497,22 @@ impl Jobs {
             rules_quoted = !reviews && files.iter().any(|(_, text)| text.is_some());
             let mut quoted = Vec::new();
             if reviews {
-                quoted.push((review::ASKED_FILE, review::asked(&job.task, &job.request)));
+                // Whether the author is untrusted, and why: never what it read (MERGING-13).
+                let author = job.review_of.as_deref().and_then(|of| self.get(of));
+                let untrusted = author.as_ref().and_then(Job::untrusted_why);
+                quoted.push((
+                    review::ASKED_FILE,
+                    review::asked(&job.task, &job.request, untrusted.as_deref()),
+                ));
+                // The security paths its head changes against its base, from the commit it reads
+                // (MERGING-15): none read counts as touching one.
+                let changed = match &job.start_commit {
+                    Some(head) => self.changed_files(&job, head).await,
+                    None => None,
+                };
+                let check = author.as_ref().and_then(|a| a.check.as_deref());
+                let touched = changed.map(|changed| crate::merge::security_paths(&changed, check));
+                self.update(id, |job| job.security_paths = touched);
             }
             if reviews || rules_quoted {
                 quoted.push((review::RULES_FILE, review::base_rules(&base, &files)));
@@ -8604,6 +8627,11 @@ impl Jobs {
                     crate::memory::foreign_among(&self.config.home, &[job.repo.as_str()])
                 {
                     self.unvet(id, &format!("it read {why}"));
+                }
+                // One known to come from someone else's words: two reviews merge its pull
+                // request (MERGING-14).
+                if crate::memory::someone_elses_among(&self.config.home, &[job.repo.as_str()]) {
+                    self.update(id, |job| job.memory_from_others = true);
                 }
                 let written = crate::obi_dir::folder(&worktree, "inputs").and_then(|dir| {
                     crate::obi_dir::write_new(&dir, crate::memory::FILE, text.as_bytes())
@@ -9846,11 +9874,17 @@ impl Jobs {
         let home = login_home();
         let now = obi_protocol::time::now();
         let own = Tool::from_id(&author.agent);
+        // A second review is another tool's than those that approved the head (MERGING-14).
+        let approved: Vec<&str> = if author.second_review_due() {
+            author.approving_tools()
+        } else {
+            Vec::new()
+        };
         let tools = Tool::ALL
             .into_iter()
             .filter(|t| Some(*t) != own)
             .chain(own)
-            .filter(|t| *t != Tool::Cursor);
+            .filter(|t| *t != Tool::Cursor && !approved.contains(&t.id()));
         let mut theirs = None;
         let mut held = Vec::new();
         for tool in tools {
@@ -9871,7 +9905,12 @@ impl Jobs {
             }
         }
         theirs.ok_or_else(|| {
-            if held.is_empty() {
+            if let Some(by) = approved.first().and_then(|a| Tool::from_id(a)) {
+                format!(
+                    "Oby's second review waits for a tool other than {} signed in with room.",
+                    by.name()
+                )
+            } else if held.is_empty() {
                 "Oby's review waits for a Claude Code or Codex account signed in to review it."
                     .to_owned()
             } else {
@@ -10029,10 +10068,15 @@ impl Jobs {
                     (!alive).then(|| (job.id.clone(), review.clone()))
                 })
                 .collect();
+            // A second review that never started (a restart between the first's verdict and its
+            // start, say) starts now too.
             let waiting = state
                 .jobs
                 .values()
-                .filter(|job| job.no_reviewer.is_some())
+                .filter(|job| {
+                    job.no_reviewer.is_some()
+                        || (job.review_due().is_some() && job.second_review_due())
+                })
                 .map(|job| job.id.clone())
                 .collect();
             (hanging, waiting)
@@ -10187,6 +10231,7 @@ impl Jobs {
             round,
             date: obi_protocol::time::now(),
             commit: head.unwrap_or_default(),
+            two_reviews: crate::merge::two_reviews(&author, review.security_paths.as_deref()),
         };
         // Its next round only while it has reviews left and nothing else moves its branch: Try
         // again's rules ([`Jobs::message`]).
@@ -10227,6 +10272,10 @@ impl Jobs {
                 )),
                 _ => None,
             };
+            if approved {
+                job.approvals.retain(|r| r.commit == verdict.commit);
+                job.approvals.push(verdict.clone());
+            }
             job.review = Some(verdict);
             if matches!(quoted, Some(Ok(()))) && job.status == Status::Done {
                 job.heard.push(review::round_prompt(round));
@@ -10234,6 +10283,10 @@ impl Jobs {
                 job.step = "Working on Oby's review".into();
             }
         });
+        // An approval of a head that needs two asks another tool for the second (MERGING-14).
+        if approved {
+            self.start_review(&of);
+        }
     }
 
     /// Quotes Oby's review `round` of job `id`'s pull request in its worktree's
