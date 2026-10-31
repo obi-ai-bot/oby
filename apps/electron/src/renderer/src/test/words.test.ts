@@ -1,7 +1,7 @@
 import { createHash, createPublicKey, generateKeyPairSync, verify } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import { WITHIN_MS, owners, wordsOf } from '../../../shared/words';
-import { input, takeInput, wordsHeader } from '../../../main/words';
+import { input, picked, takeInput, wordsHeader } from '../../../main/words';
 
 // What main signs as the owner's words, and what it refuses (docs/contracts/signed-words.md)
 describe('signed words', () => {
@@ -67,6 +67,17 @@ describe('signed words', () => {
     expect(wordsHeader(privateKey, 'd1', 'PUT', '/v1/settings/permissions', { mode: 'bypass' })).toBeNull();
     expect(wordsHeader(privateKey, 'd1', 'POST', '/v1/jobs', { job: { repo: 'o/r', kind: 'build', task: 'x' } })).toBeNull();
     expect(wordsHeader(privateKey, 'd1', 'POST', '/v1/jobs/j1/messages', { text: 'x', mode: 'bypass' })).toBeNull();
+  });
+
+  it('WORDS-8: folders go signed only when the owner chose them in main’s own dialog this run', () => {
+    const { privateKey } = generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
+    const plan = (folders: string[]) => ({ said: 'Fix the login', new: true, folders });
+    expect(wordsHeader(privateKey, 'd1', 'POST', '/v1/plans', plan(['/Users/me/app']))).toBeNull();
+    picked(['/Users/me/app']);
+    expect(wordsHeader(privateKey, 'd1', 'POST', '/v1/plans', plan(['/Users/me/app']))).not.toBeNull();
+    // one the page adds, or the home folder, isn't
+    expect(wordsHeader(privateKey, 'd1', 'POST', '/v1/plans', plan(['/Users/me/app', '/Users/me']))).toBeNull();
+    expect(wordsHeader(privateKey, 'd1', 'POST', '/v1/plans', { said: 'Fix the login', new: true })).not.toBeNull();
   });
 
   it('WORDS-7: main signs once per real keystroke or click it saw, and only right after it', () => {

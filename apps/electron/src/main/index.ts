@@ -4,7 +4,7 @@ import { lstatSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { bridge, startObid, stopFollowing, type Trusted } from './obid';
 import { confirming, ownersWords } from './device';
-import { input } from './words';
+import { input, picked } from './words';
 import { notifying, windowLeft, windowSeen } from './notify';
 import { updating } from './updates';
 import { sphering } from './sphere';
@@ -96,6 +96,7 @@ ipcMain.handle('pick-folders', async (e, from: unknown) => {
     properties: ['openDirectory', 'multiSelections', 'createDirectory'], buttonLabel: 'Select', message: 'Choose the folders the work is in',
     ...(typeof from === 'string' && from.startsWith('/') ? { defaultPath: from } : {}),
   });
+  if (!r.canceled) picked(r.filePaths);
   return r.canceled ? [] : r.filePaths;
 });
 
