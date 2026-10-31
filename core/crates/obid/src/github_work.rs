@@ -309,7 +309,7 @@ comments(first: 100) { pageInfo { hasNextPage } nodes { author { login } body us
 timelineItems(itemTypes: [RENAMED_TITLE_EVENT], first: 50) { pageInfo { hasNextPage } nodes { ... on RenamedTitleEvent { actor { login } } } } \
 comments(first: 100) { pageInfo { hasNextPage } nodes { author { login } body userContentEdits(first: 50) { pageInfo { hasNextPage } nodes { editor { login } } } } } \
 reviews(first: 100) { pageInfo { hasNextPage } nodes { author { login } body userContentEdits(first: 50) { pageInfo { hasNextPage } nodes { editor { login } } } \
-comments(first: 100) { pageInfo { hasNextPage } nodes { author { login } body userContentEdits(first: 50) { pageInfo { hasNextPage } nodes { editor { login } } } } } } } } } } }";
+comments(first: 100) { pageInfo { hasNextPage } nodes { author { login } body userContentEdits(first: 20) { pageInfo { hasNextPage } nodes { editor { login } } } } } } } } } } }";
 
 /// Whether issue or pull request `number` on `repo` holds only words the owner (the login obid's
 /// gh is signed in as, and no one else, organisation members included) wrote: its body, its title
@@ -317,8 +317,16 @@ comments(first: 100) { pageInfo { hasNextPage } nodes { author { login } body us
 /// review comment, each list given whole. For the owner's secrets (crate::secretspec), stricter
 /// than [`issue_trusted`]. Anything obid can't read is a no. A text carrying [`OBY_SIGNS`] is an
 /// Oby's, whoever's login posted it: never the owner's, but the item's own body when
-/// `signed_body` (obid wrote it for jobs that are the owner's own throughout).
-pub async fn owners_only(gh: &std::path::Path, repo: &str, number: u64, signed_body: bool) -> bool {
+/// `signed_body` (obid wrote it for jobs that are the owner's own throughout). With `shown`, what
+/// obid quoted of it just before ([`quote`]), that too is all the owner's ([`shown_by`]): a
+/// comment deleted in between is gone from this read, never from the quote.
+pub async fn owners_only(
+    gh: &std::path::Path,
+    repo: &str,
+    number: u64,
+    signed_body: bool,
+    shown: Option<&Value>,
+) -> bool {
     let Some((holder, name)) = repo.split_once('/') else {
         return false;
     };
@@ -352,7 +360,21 @@ pub async fn owners_only(gh: &std::path::Path, repo: &str, number: u64, signed_b
         login,
         &read["data"]["repository"]["issueOrPullRequest"],
         signed_body,
-    )
+    ) && shown.is_none_or(|shown| shown_by(login, shown))
+}
+
+/// Whether `shown`, what `gh issue view --json author,comments,…` printed, is all `login`'s: its
+/// author and every comment's. Anyone it doesn't name is someone else.
+fn shown_by(login: &str, shown: &Value) -> bool {
+    let by = |v: &Value| {
+        v["author"]["login"]
+            .as_str()
+            .is_some_and(|l| l.eq_ignore_ascii_case(login))
+    };
+    by(shown)
+        && shown["comments"]
+            .as_array()
+            .is_some_and(|comments| comments.iter().all(by))
 }
 
 /// [`owners_only`] on what [`WHO_WROTE_ALL`] read (`item`): every login in it is `login`, every
@@ -1262,7 +1284,7 @@ async fn begin(
         return Ok((job.clone(), false));
     }
     let name = repo.rsplit('/').next().unwrap_or(repo);
-    let file = format!("github-{name}-{number}.md");
+    let file = quoted_name(repo, number);
     let (quoted, read) = quote(list, repo, number).await.map_err(|why| {
         ApiError::new(
             StatusCode::BAD_GATEWAY,
@@ -1291,12 +1313,20 @@ async fn begin(
     } else {
         None
     };
-    let path = keep_attachment(&config.home, "github", &file, quoted.as_bytes()).map_err(|e| {
-        ApiError::new(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("obid couldn't keep GitHub's text: {e}"),
-        )
-    })?;
+    // An issue's job quotes it again as it runs (crate::jobs, ISSUETASK-1): read here only so a
+    // tap GitHub can't answer starts nothing.
+    let attachments = if list == "assigned" {
+        None
+    } else {
+        let path =
+            keep_attachment(&config.home, "github", &file, quoted.as_bytes()).map_err(|e| {
+                ApiError::new(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("obid couldn't keep GitHub's text: {e}"),
+                )
+            })?;
+        Some(vec![path.to_string_lossy().into_owned()])
+    };
     let task = match list {
         "reviews" => format!("Review pull request #{number} in {repo}."),
         "assigned" => format!("Fix issue #{number} in {repo}."),
@@ -1304,15 +1334,21 @@ async fn begin(
             "Make pull request #{number} in {repo} pass its checks. Add commits on top of it; never rewrite or drop the ones it has."
         ),
     };
+    let task = match attachments {
+        Some(_) => {
+            format!("{task} What people wrote on it on GitHub is quoted in .obi/inputs/{file}.")
+        }
+        None => task,
+    };
     let new = NewJob {
         repo: repo.into(),
         kind: kind.into(),
-        task: format!("{task} What people wrote on it on GitHub is quoted in .obi/inputs/{file}."),
+        task,
         title: Some(cut(&format!("{verb} {name} #{number}"), 60)),
         pr: (list != "assigned").then_some(number),
         issue: (list == "assigned").then_some(number),
         base,
-        attachments: Some(vec![path.to_string_lossy().into_owned()]),
+        attachments,
         adding,
         ..NewJob::default()
     };
@@ -1402,11 +1438,17 @@ pub(crate) fn keep_attachment(
     Ok(path)
 }
 
+/// The name of the file in a job's `.obi/inputs/` that quotes `repo` `number` ([`quote`]).
+pub(crate) fn quoted_name(repo: &str, number: u64) -> String {
+    let name = repo.rsplit('/').next().unwrap_or(repo);
+    format!("github-{name}-{number}.md")
+}
+
 /// What people wrote on `repo` `number` on GitHub, fenced as data: its title, description,
 /// labels and latest comments, at most [`QUOTED_MAX`]; on the owner's own pull request, its checks
 /// too. And what gh read: for the owner's own, its branch too (`headRefName`,
 /// `isCrossRepository`).
-async fn quote(list: &str, repo: &str, number: u64) -> Result<(String, Value), String> {
+pub(crate) async fn quote(list: &str, repo: &str, number: u64) -> Result<(String, Value), String> {
     let gh = crate::github::gh().ok_or("gh isn't installed")?;
     let what = if list == "assigned" { "issue" } else { "pr" };
     let fields = if list == "mine" {
@@ -1577,6 +1619,62 @@ pub async fn start(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The most nodes `query` may ask GitHub for, as GitHub counts them: each connection's
+    /// `first`, times every connection's it is inside.
+    fn nodes(query: &str) -> u64 {
+        let (mut total, mut within, mut first) = (0, vec![1u64], None);
+        let mut rest = query;
+        while let Some(at) = rest.find(['{', '}', 'f']) {
+            let after = &rest[at..];
+            if let Some(n) = after.strip_prefix("first: ") {
+                let digits: String = n.chars().take_while(char::is_ascii_digit).collect();
+                first = digits.parse().ok();
+            } else if after.starts_with('{') {
+                let outer = *within.last().unwrap();
+                let these = outer * first.take().unwrap_or(1);
+                if these != outer {
+                    total += these;
+                }
+                within.push(these);
+            } else if after.starts_with('}') {
+                within.pop();
+            }
+            rest = &after[1..];
+        }
+        total
+    }
+
+    /// ISSUETASK-4: what obid quoted is checked too, a comment deleted since included.
+    #[test]
+    fn issuetask_4_the_quote_is_the_owners_only_when_all_of_it_is() {
+        let quoted = |commenters: &[&str]| {
+            json!({"author": {"login": "Wellington"}, "comments": commenters.iter()
+                .map(|l| json!({"author": {"login": l}})).collect::<Vec<_>>()})
+        };
+        assert!(shown_by("wellington", &quoted(&[])));
+        assert!(shown_by("wellington", &quoted(&["wellington"])));
+        assert!(!shown_by("wellington", &quoted(&["wellington", "mallory"])));
+        assert!(!shown_by("sangam", &quoted(&[])));
+        assert!(!shown_by(
+            "wellington",
+            &json!({"author": {"login": "wellington"}})
+        ));
+    }
+
+    /// ISSUETASK-3 (#1660): who wrote an issue or a pull request is a read GitHub answers. Asking
+    /// for 520,300 nodes, past GitHub's 500,000, it was refused for every one, so every job from
+    /// an issue, the owner's own too, was marked someone else's as it started.
+    #[test]
+    fn issuetask_3_who_wrote_it_is_a_read_github_answers() {
+        assert_eq!(
+            nodes("{ a(first: 10) { b(first: 5) { c } } d(first: 2) { e } }"),
+            62
+        );
+        for query in [WHO_WROTE, WHO_WROTE_ALL] {
+            assert!(nodes(query) <= 500_000, "{} nodes: {query}", nodes(query));
+        }
+    }
 
     fn node(repo: &str, number: u64, updated: &str) -> Value {
         json!({"number": number, "title": format!("Thing {number}"), "updatedAt": updated, "state": "OPEN",

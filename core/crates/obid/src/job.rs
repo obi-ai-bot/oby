@@ -336,6 +336,10 @@ pub struct Job {
     /// its file, never in the API.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub complex: bool,
+    /// Why obid couldn't read the issue it works from this run, when its task carried the work
+    /// anyway (ISSUETASK-2). Kept in its file, never in the API.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub issue_unread: Option<String>,
     pub notes: Option<Vec<String>>,
     pub files: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -841,6 +845,7 @@ impl Job {
             effort: None,
             model_from_account: false,
             complex: false,
+            issue_unread: None,
             notes: None,
             files: None,
             attachments: None,

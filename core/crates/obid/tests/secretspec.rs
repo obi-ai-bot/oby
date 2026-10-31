@@ -175,6 +175,12 @@ case "$1 $2" in
   "auth status") echo '{"hosts":{"github.com":[{"login":"wellington","active":true,"state":"success"}]}}' ;;
   "api repos/obi-e2e/fixture-app/rules/branches/main") echo '[{"type":"pull_request","ruleset_id":7,"parameters":{"required_approving_review_count":1,"require_last_push_approval":true}}]' ;;
   "api repos/obi-e2e/fixture-app/rulesets/7") echo '{"id":7,"enforcement":"active","current_user_can_bypass":"never","bypass_actors":[]}' ;;
+  # What obid quotes of an issue for its agent: issue 3's; 12's and 13's can't be read, so their
+  # jobs work from their tasks alone.
+  "issue view") case "$3" in
+      3) echo '{"title":"Fix it","body":"Fix it","author":{"login":"wellington"},"labels":[],"comments":[]}' ;;
+      *) exit 1 ;;
+    esac ;;
   "api graphql")
     # Issue 13 is wellington's own throughout; issue 12 held mallory's comment the first time
     # it was read, deleted by the next.
