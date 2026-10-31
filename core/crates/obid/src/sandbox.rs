@@ -200,9 +200,15 @@ pub struct Spec {
     /// by its host. Seatbelt only ([`Sandbox::confines_egress`]); bubblewrap's agent still has
     /// slirp4netns (#616's next step).
     pub proxied: bool,
-    /// Folders inside the worktree that stay read-only: a conversation's checkouts of the
-    /// repositories in its room (`room/repos`). Each must exist before the process starts.
+    /// Folders or files inside the worktree that stay read-only: a conversation's checkouts of the
+    /// repositories in its room (`room/repos`), a check's scripts as its base has them. Each must
+    /// exist before the process starts.
     pub frozen: Vec<PathBuf>,
+    /// Folders inside the worktree that can't be renamed or removed, though what's in them can be
+    /// written: the folders a frozen file is in, so it can't be moved out from under its rule (the
+    /// Mac's sandbox goes by path). bubblewrap needs none: a file bound read-only stays so wherever
+    /// its folder goes.
+    pub fixed: Vec<PathBuf>,
 }
 
 impl Sandbox {
@@ -473,6 +479,7 @@ impl Spec {
             loopback: self.loopback,
             proxied: self.proxied,
             frozen: self.frozen.iter().map(real).collect(),
+            fixed: self.fixed.iter().map(real).collect(),
         }
     }
 
@@ -728,6 +735,9 @@ fn seatbelt_profile_reading(spec: &Spec, confined: bool, loopback: bool) -> Stri
     // What stays read-only inside the worktree, itself included (it can't be removed or renamed).
     for frozen in &spec.frozen {
         profile.push_str(&format!(" (subpath {})", sbpl_string(frozen)));
+    }
+    for fixed in &spec.fixed {
+        profile.push_str(&format!(" (literal {})", sbpl_string(fixed)));
     }
     profile.push_str(")\n");
     if confined {
@@ -1480,15 +1490,21 @@ mod tests {
             worktree: "/h/conversations/c/room".into(),
             temp: "/h/conversations/c/home".into(),
             frozen: vec!["/h/conversations/c/room/repos".into()],
+            fixed: vec!["/h/conversations/c/room/ci".into()],
             hidden: vec!["/h".into()],
             ..Spec::default()
         };
         let profile = seatbelt_profile(&spec);
+        // A fixed folder itself, never what's in it.
+        assert!(
+            profile.contains("(literal \"/h/conversations/c/room/ci\")"),
+            "{profile}"
+        );
         let allow = profile
             .find("(allow file-write* (subpath \"/h/conversations/c/room\")")
             .unwrap();
         let deny = profile
-            .find("(subpath \"/h/conversations/c/room/repos\"))\n")
+            .find("(subpath \"/h/conversations/c/room/repos\")")
             .unwrap();
         assert!(allow < deny, "{profile}");
         assert!(

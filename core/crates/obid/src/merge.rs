@@ -453,43 +453,123 @@ pub fn mac_only(path: &str) -> bool {
             .any(|part| part.ends_with(".xcodeproj") || part.ends_with(".xcworkspace"))
 }
 
-/// The files a check's command line runs as its own: each simple command's program when it names
-/// it by its path in the repository (`scripts/oby-check.sh`, `./test.sh`), the script it hands an
-/// interpreter (`sh check.sh`, `python3 tools/check.py`), and the file `make` (`Makefile`) or a
-/// Node package manager (`package.json`) runs it from. ponytail: what the command runs, not what
-/// those files run in turn; following a script's own sources would need a shell's parser.
+/// The files a check's command line runs as its own: its scripts ([`check_scripts`]), and the file
+/// `make` (`Makefile`) or a Node package manager (`package.json`) runs it from. ponytail: what the
+/// command runs, not what those files run in turn; following a script's own sources would need a
+/// shell's parser.
 pub fn check_files(command: &str) -> BTreeSet<String> {
+    let (mut own, runs_from) = check_words(command);
+    own.extend(runs_from);
+    own
+}
+
+/// The scripts a check's command line runs out of the repository, which its base's copy of runs
+/// in its place (PUBLISHING-6): each simple command's program when it names it by its path
+/// (`scripts/oby-check.sh`, `./test.sh`), or the script it hands an interpreter (`sh check.sh`,
+/// `bash -o pipefail ci/x.sh`, `python3 tools/check.py`, `deno run t.ts`), or a command string's
+/// first (`sh -c 'scripts/x.sh'`), past `env`, `timeout`, `nice`, `time`, `exec` and `command`
+/// and the `NAME=value` words before any of them. A path inside the repository only: never one
+/// with `..`, `.git`, `$`, a glob or a `~`, or that starts with `/`. Not what `make check` or
+/// `npm test` reads: those run the commit's own files (a known limit, docs/contracts/publishing.md).
+pub fn check_scripts(command: &str) -> BTreeSet<String> {
+    check_words(command).0
+}
+
+/// [`check_scripts`], and the files [`check_files`] adds for `make` and Node's package managers.
+fn check_words(command: &str) -> (BTreeSet<String>, BTreeSet<String>) {
     const INTERPRETERS: [&str; 10] = [
         "sh", "bash", "zsh", "dash", "python", "python3", "node", "ruby", "perl", "deno",
     ];
+    // The options of theirs that take the next word as their own.
+    const WITH_ARGUMENT: [&str; 12] = [
+        "-o",
+        "+o",
+        "-O",
+        "+O",
+        "--rcfile",
+        "--init-file",
+        "-W",
+        "-X",
+        "-r",
+        "--require",
+        "-I",
+        "--import",
+    ];
+    // What runs the next command it's given, with its options (and `timeout` its duration).
+    const WRAPPERS: [&str; 6] = ["env", "timeout", "nice", "time", "exec", "command"];
     let path = |word: &str| {
-        let word = word.trim_start_matches("./");
-        (!word.is_empty() && !word.starts_with(['-', '$', '/', '~'])).then(|| word.to_owned())
+        let mut word = word;
+        while let Some(rest) = word.strip_prefix("./") {
+            word = rest;
+        }
+        let clean = !word.is_empty()
+            && !word.starts_with(['-', '/'])
+            && !word.contains(['$', '*', '?', '[', '~', '\\', '`'])
+            && word
+                .split('/')
+                .all(|part| !matches!(part, "" | "." | "..") && !part.eq_ignore_ascii_case(".git"));
+        clean.then(|| word.to_owned())
     };
-    let mut own = BTreeSet::new();
+    let assignment = |w: &str| w.contains('=') && !w.starts_with('-');
+    let (mut scripts, mut runs_from) = (BTreeSet::new(), BTreeSet::new());
     for simple in command.split(['&', '|', ';', '\n', '(', ')']) {
         let mut words = simple
             .split_whitespace()
             .map(|w| w.trim_matches(['\'', '"']))
-            .skip_while(|w| w.contains('=') && !w.starts_with('-'));
-        let Some(program) = words.next() else {
-            continue;
-        };
-        match program {
+            .filter(|w| !w.is_empty())
+            .skip_while(|w| assignment(w))
+            .peekable();
+        let mut program = words.next();
+        while let Some(wrapper) = program.filter(|p| WRAPPERS.contains(p)) {
+            let mut duration = wrapper == "timeout";
+            program = None;
+            for word in words.by_ref() {
+                if word.starts_with('-') || assignment(word) {
+                    continue;
+                }
+                // `timeout`'s duration (`600`, `10m`), `nice`'s number.
+                if std::mem::take(&mut duration) || word.parse::<f64>().is_ok() {
+                    continue;
+                }
+                program = Some(word);
+                break;
+            }
+        }
+        let Some(program) = program else { continue };
+        let name = program.rsplit('/').next().unwrap_or(program);
+        match name {
             "make" | "gmake" => {
-                own.insert("Makefile".to_owned());
+                runs_from.insert("Makefile".to_owned());
             }
             "npm" | "pnpm" | "yarn" | "bun" | "npx" => {
-                own.insert("package.json".to_owned());
+                runs_from.insert("package.json".to_owned());
             }
-            _ if INTERPRETERS.contains(&program) => {
-                own.extend(words.find(|w| !w.starts_with('-')).and_then(path));
+            _ if INTERPRETERS.contains(&name) => {
+                let mut script = None;
+                while let Some(word) = words.next() {
+                    if WITH_ARGUMENT.contains(&word) {
+                        words.next();
+                    } else if word.starts_with(['-', '+']) {
+                        // A module or code given on the line (a shell's `-e` is errexit, and its
+                        // `-c` string's first word is read on): no script of the repository's.
+                        let shell = ["sh", "bash", "zsh", "dash"].contains(&name);
+                        if !shell && ["-m", "-e", "--eval", "-c", "-p"].contains(&word) {
+                            break;
+                        }
+                    } else if name == "deno" && ["run", "test", "task"].contains(&word) {
+                        continue;
+                    } else {
+                        script = Some(word);
+                        break;
+                    }
+                }
+                scripts.extend(script.and_then(path));
             }
-            _ if program.contains('/') => own.extend(path(program)),
+            _ if program.contains('/') => scripts.extend(path(program)),
             _ => {}
         }
     }
-    own
+    (scripts, runs_from)
 }
 
 /// Why the job's own check, passed with `command`, can't stand for the Mac's checks at merge
@@ -2362,6 +2442,41 @@ mod tests {
             check_files("scripts/oby-check.sh"),
             ["scripts/oby-check.sh".to_owned()].into()
         );
+    }
+
+    /// PUBLISHING-6: which words of a check are its scripts, the base's copy of which runs, by the
+    /// same reading [`check_files`] makes.
+    #[test]
+    fn publishing_6_a_checks_scripts_are_its_programs_paths() {
+        let scripts = |command: &str| check_scripts(command).into_iter().collect::<Vec<_>>();
+        assert_eq!(scripts("scripts/oby-check.sh"), ["scripts/oby-check.sh"]);
+        assert_eq!(scripts("OBY_CHECK_PLAN=1 ./check.sh --all"), ["check.sh"]);
+        assert_eq!(
+            scripts("bash -e ci/test.sh && /bin/sh ./b.sh"),
+            ["b.sh", "ci/test.sh"]
+        );
+        assert_eq!(scripts("sh -c 'scripts/x.sh'"), ["scripts/x.sh"]);
+        assert_eq!(scripts("foo; scripts/x.sh"), ["scripts/x.sh"]);
+        assert_eq!(scripts("deno run tools/t.ts"), ["tools/t.ts"]);
+        assert_eq!(scripts("env X=1 ./s.sh"), ["s.sh"]);
+        assert_eq!(scripts("timeout 600 ./s.sh"), ["s.sh"]);
+        assert_eq!(scripts("nice -n 10 ci/s.sh"), ["ci/s.sh"]);
+        assert_eq!(scripts("(./s.sh)"), ["s.sh"]);
+        assert_eq!(scripts("bash -o pipefail s.sh"), ["s.sh"]);
+        // Arguments, absolute paths, code on the line, paths out of the repository, and what
+        // `make` or `npm` reads: none is a script.
+        for none in [
+            "test -f hello.txt",
+            "cargo test --manifest-path core/Cargo.toml",
+            "/usr/bin/make check",
+            "npm test",
+            "../elsewhere/check.sh",
+            "sh .git/hooks/x",
+            "sh \"$SCRIPT\"",
+            "python3 -m pytest tests/",
+        ] {
+            assert!(scripts(none).is_empty(), "{none}");
+        }
     }
 
     /// Everything scripts/oby-check.sh sends to the Apple apps or `swift test`, which a job's box

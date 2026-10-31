@@ -199,6 +199,7 @@ fn spec(world: &World, network: bool, commits: bool, account: bool) -> Spec {
         loopback: false,
         proxied: false,
         frozen: Vec::new(),
+        fixed: Vec::new(),
     }
 }
 

@@ -721,13 +721,24 @@ pub async fn others_wrote(
         .then(|| format!("it works from {name} #{number}, which someone else wrote in or GitHub didn't say who wrote"))
 }
 
+/// What obid's git reads of the person's own settings while it handles a job's commit outside any
+/// box: nothing (no `filter.lfs`, no `url.*.insteadOf`), so the commit's `.gitattributes` and
+/// `.lfsconfig` reach no host of the agent's choosing.
+const NO_SETTINGS: [(&str, &str); 2] = [
+    ("GIT_CONFIG_NOSYSTEM", "1"),
+    ("GIT_CONFIG_GLOBAL", "/dev/null"),
+];
+
 /// A checkout of commit `head` that obid makes for the check, apart from the job's: its worktree
 /// at `at/work`, its own git folder in the clone's `worktrees/`, its own temporary folder at
 /// `at/tmp`, none of them anywhere the job's sandbox can write. What the job's commits brought
 /// since `base` (a commit) is copied out of the job's own object folder into the checkout's, so
 /// nothing of the job's folders is read again. `agent` is the job's sandbox spec; the answer is the
 /// check's. What the job's worktree holds besides its commits (files left uncommitted, hidden by a
-/// `.gitignore`, rewritten after the gate) isn't in it.
+/// `.gitignore`, rewritten after the gate) isn't in it. When an earlier check left one at `at`
+/// (a job's own, kept across its checks), it's reset to `head` and what that check left untracked
+/// is removed, but what it left ignored (its builds) stays. obid's git here reads none of the
+/// person's own git settings.
 pub async fn fresh_checkout(
     agent: &Spec,
     base: &str,
@@ -743,28 +754,37 @@ pub async fn fresh_checkout(
         .ok_or("the job's clone has no folder")?
         .to_path_buf();
     let fail = |what: &str| format!("obid couldn't make the check's own checkout ({what})");
-    let _ = std::fs::remove_dir_all(at);
+    let name = format!(
+        "check-{}",
+        at.file_name().unwrap_or_default().to_string_lossy()
+    );
+    // git names the checkout's git folder after its worktree's folder: one of obid's own.
+    let work = at.join(&name);
+    let admin = common.join("worktrees").join(&name);
+    // One an earlier check of the job's left (a per-job `at`) is used again, its builds kept.
+    let again = work.join(".git").is_file() && admin.join("objects/pack").is_dir();
     let temp = at.join("tmp");
-    let objects = at.join("objects");
+    let objects = if again {
+        admin.join("objects")
+    } else {
+        let _ = std::fs::remove_dir_all(at);
+        at.join("objects")
+    };
     std::fs::create_dir_all(objects.join("pack")).map_err(|_| fail("its folder"))?;
     std::fs::create_dir_all(&temp).map_err(|_| fail("its folder"))?;
     // The job's commits since the base, out of its own object folder, as one pack: git pinned to
     // the job's git folders as obid checked them, never the `.git` its agent could rewrite.
-    let admin = agent
+    let agent_admin = agent
         .git_admin
         .clone()
         .ok_or("the job's worktree has no git folder obid knows")?;
     let mut env = git_env(agent);
-    env.extend([
-        ("GIT_DIR", admin.to_string_lossy().into_owned()),
-        ("GIT_COMMON_DIR", common.to_string_lossy().into_owned()),
-        (
-            "GIT_WORK_TREE",
-            agent.worktree.to_string_lossy().into_owned(),
-        ),
-    ]);
+    env.extend(pinned_to(&agent_admin, &common, &agent.worktree));
     let env: Vec<(&str, &str)> = env.iter().map(|(k, v)| (*k, v.as_str())).collect();
-    let pack = objects.join("pack/pack").to_string_lossy().into_owned();
+    let pack = objects
+        .join(format!("pack/pack-{}", head.get(..12).unwrap_or(head)))
+        .to_string_lossy()
+        .into_owned();
     crate::git::run_bytes(
         &agent.worktree,
         &[
@@ -778,43 +798,44 @@ pub async fn fresh_checkout(
     )
     .await
     .map_err(|_| fail("copying its commits"))?;
-    let objects_text = objects.to_string_lossy().into_owned();
-    let name = format!(
-        "check-{}",
-        at.file_name().unwrap_or_default().to_string_lossy()
-    );
-    // git names the checkout's git folder after its worktree's folder: one of obid's own.
-    let work = at.join(&name);
-    crate::git::run(
-        &clone,
-        &[
-            OsStr::new("worktree"),
-            OsStr::new("add"),
-            OsStr::new("--no-checkout"),
-            OsStr::new("--detach"),
-            work.as_os_str(),
-            OsStr::new(head),
-        ],
-        &[("GIT_ALTERNATE_OBJECT_DIRECTORIES", objects_text.as_str())],
-    )
-    .await
-    .map_err(|_| fail("its worktree"))?;
-    let admin = common.join("worktrees").join(&name);
-    if !admin.is_dir() {
-        return Err(fail("its git folder"));
+    if !again {
+        let objects_text = objects.to_string_lossy().into_owned();
+        crate::git::run(
+            &clone,
+            &[
+                OsStr::new("worktree"),
+                OsStr::new("add"),
+                OsStr::new("--no-checkout"),
+                OsStr::new("--detach"),
+                work.as_os_str(),
+                OsStr::new(head),
+            ],
+            &[
+                ("GIT_ALTERNATE_OBJECT_DIRECTORIES", objects_text.as_str()),
+                NO_SETTINGS[0],
+                NO_SETTINGS[1],
+            ],
+        )
+        .await
+        .map_err(|_| fail("its worktree"))?;
+        if !admin.is_dir() {
+            return Err(fail("its git folder"));
+        }
+        std::fs::rename(&objects, admin.join("objects")).map_err(|_| fail("its objects"))?;
     }
-    std::fs::rename(&objects, admin.join("objects")).map_err(|_| fail("its objects"))?;
     let check = Spec {
         worktree: work,
-        git_admin: Some(admin),
-        git_common: Some(common),
+        git_admin: Some(admin.clone()),
+        git_common: Some(common.clone()),
         commits: true,
         temp,
         accounts: Vec::new(),
         frozen: Vec::new(),
+        fixed: Vec::new(),
         ..agent.clone()
     };
-    let env = git_env(&check);
+    let mut env = git_env(&check);
+    env.extend(pinned_to(&admin, &common, &check.worktree));
     let env: Vec<(&str, &str)> = env.iter().map(|(k, v)| (*k, v.as_str())).collect();
     crate::git::run(
         &check.worktree,
@@ -828,7 +849,30 @@ pub async fn fresh_checkout(
     )
     .await
     .map_err(|_| fail("its files"))?;
+    // What the last check left untracked goes; what it left ignored (its builds: `target/`,
+    // `node_modules`) stays for this one. Nothing in it was ever the agent's.
+    if again {
+        crate::git::run(
+            &check.worktree,
+            &[OsStr::new("clean"), OsStr::new("-q"), OsStr::new("-ffd")],
+            &env,
+        )
+        .await
+        .map_err(|_| fail("its files"))?;
+    }
     Ok(check)
+}
+
+/// git's environment for a worktree obid checked (its git folder `admin`, its clone's `common`),
+/// with none of the person's own settings ([`NO_SETTINGS`]).
+fn pinned_to(admin: &Path, common: &Path, worktree: &Path) -> Vec<(&'static str, String)> {
+    let mut env: Vec<(&'static str, String)> = NO_SETTINGS.map(|(k, v)| (k, v.to_owned())).into();
+    env.extend([
+        ("GIT_DIR", admin.to_string_lossy().into_owned()),
+        ("GIT_COMMON_DIR", common.to_string_lossy().into_owned()),
+        ("GIT_WORK_TREE", worktree.to_string_lossy().into_owned()),
+    ]);
+    env
 }
 
 /// Removes a checkout [`fresh_checkout`] made, and its folder `at`: what the check wrote goes with
@@ -862,63 +906,7 @@ pub async fn remove_checkout(check: &Spec, at: &Path) -> Result<(), String> {
     }
 }
 
-/// The files a check's `command` runs out of the repository (PUBLISHING-6): for each of its
-/// top-level steps (crate::facts::steps), its program when that's a path (`scripts/oby-check.sh`,
-/// `./check.sh`), or, after `sh`, `bash`, `zsh`, `dash`, `python3`, `python`, `node`, `ruby` or
-/// `perl`, the first word that isn't an option; `NAME=value` words before it skipped. Relative
-/// paths only, `./` taken off: a word with `..`, `.git`, a quote, `$` or a glob isn't one. Whether
-/// it names a file in the repository is the caller's to tell.
-// ponytail: words split on whitespace; what `make check` or `npm test` read (a Makefile,
-// package.json) isn't named, so it's the commit's: a list of such files when a repository needs it.
-pub fn check_scripts(command: &str) -> Vec<String> {
-    const RUNNERS: [&str; 9] = [
-        "sh", "bash", "zsh", "dash", "python3", "python", "node", "ruby", "perl",
-    ];
-    let mut out = Vec::new();
-    for step in crate::facts::steps(command) {
-        let mut words = step.split_whitespace().skip_while(|w| is_assignment(w));
-        let Some(first) = words.next() else { continue };
-        let program = first.rsplit('/').next().unwrap_or(first);
-        let word = if RUNNERS.contains(&program) {
-            words.find(|w| !w.starts_with('-'))
-        } else {
-            first.contains('/').then_some(first)
-        };
-        if let Some(path) = word.and_then(repo_path)
-            && !out.contains(&path)
-        {
-            out.push(path);
-        }
-    }
-    out
-}
-
-/// Whether `word` is a shell variable's assignment (`RUST_LOG=info`).
-fn is_assignment(word: &str) -> bool {
-    word.split_once('=').is_some_and(|(name, _)| {
-        name.chars()
-            .next()
-            .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
-            && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
-    })
-}
-
-/// `word` as a path inside the repository, `./` taken off, or none.
-fn repo_path(word: &str) -> Option<String> {
-    let mut path = word;
-    while let Some(rest) = path.strip_prefix("./") {
-        path = rest;
-    }
-    let clean = !path.is_empty()
-        && !path.starts_with('/')
-        && !path.contains(['\'', '"', '`', '$', '\\', '*', '?', '[', '~'])
-        && path
-            .split('/')
-            .all(|part| !matches!(part, "" | "." | "..") && !part.eq_ignore_ascii_case(".git"));
-    clean.then(|| path.to_owned())
-}
-
-/// Puts commit `base`'s own copy of each of `paths` (as [`check_scripts`] gives them) into the
+/// Puts commit `base`'s own copy of each of `paths` (as crate::merge::check_scripts gives them) into the
 /// check's checkout `work`, from obid's `clone` (PUBLISHING-6): what the job's commit has there
 /// is replaced, and a path that isn't a file on the base is taken out. Answers the paths the base
 /// has. A folder on the way that the commit made a link or a file is made a real one, so nothing
@@ -1199,31 +1187,6 @@ fn json_forms(value: &str) -> (String, String) {
 mod tests {
     use super::*;
     use std::path::PathBuf;
-
-    /// PUBLISHING-6: which words of a check are its scripts, the base's copy of which runs.
-    #[test]
-    fn publishing_6_a_checks_scripts_are_its_programs_paths() {
-        let scripts = |command: &str| check_scripts(command);
-        assert_eq!(scripts("scripts/oby-check.sh"), ["scripts/oby-check.sh"]);
-        assert_eq!(scripts("OBY_CHECK_PLAN=1 ./check.sh --all"), ["check.sh"]);
-        assert_eq!(
-            scripts("bash -e ci/test.sh && /bin/sh ./b.sh"),
-            ["ci/test.sh", "b.sh"]
-        );
-        assert_eq!(scripts("sh check.sh"), ["check.sh"]);
-        // Arguments, absolute paths, the shell's own words and paths out of the repository aren't.
-        for none in [
-            "test -f hello.txt",
-            "cargo test --manifest-path core/Cargo.toml",
-            "/usr/bin/make check",
-            "../elsewhere/check.sh",
-            "sh .git/hooks/x",
-            "sh \"$SCRIPT\"",
-            "npm test",
-        ] {
-            assert!(scripts(none).is_empty(), "{none}");
-        }
-    }
 
     /// Obviously fake: what the tests put where the owner's vault would be.
     const FAKE: &str = "fake-check-value/Z9q2+not=real";

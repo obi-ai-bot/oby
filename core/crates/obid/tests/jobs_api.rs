@@ -2362,8 +2362,9 @@ fn a_failing_check_is_heard_every_round_and_on_one_more_round() {
 }
 
 /// A fix whose check fails once, with no rounds named, is fixed in its second round and
-/// publishes: Needs you never hears of it. (Its mark is in the check's home, the job's: each check
-/// runs in a checkout of its own, PUBLISHING-6.)
+/// publishes: Needs you never hears of it. Its checks share the job's own checkout (PUBLISHING-6):
+/// what the first left ignored (its mark, `.obi/ran`) is there for the second, what it left
+/// untracked (`loose`) isn't.
 #[test]
 fn a_fix_that_fails_once_is_fixed_in_its_second_round() {
     let folder = Folder::new("rounds-second");
@@ -2372,7 +2373,7 @@ fn a_fix_that_fails_once_is_fixed_in_its_second_round() {
     let obid = start_with(&folder.0, &config(&folder.0, &remote), Some(&bin));
     let id = post_job(
         &obid,
-        json!({"repo": "obi-e2e/fixture-app", "kind": "fix", "task": "COMMIT: a.txt", "check": "test -e \"$HOME/ran\" || { touch \"$HOME/ran\"; false; }"}),
+        json!({"repo": "obi-e2e/fixture-app", "kind": "fix", "task": "COMMIT: a.txt", "check": "test -e .obi/ran && test ! -e loose || { mkdir -p .obi; touch .obi/ran loose; false; }"}),
     )
     .body["id"]
         .as_str()
@@ -2384,6 +2385,13 @@ fn a_fix_that_fails_once_is_fixed_in_its_second_round() {
     assert_eq!(job["commits"], 1, "{job}");
     assert!(job["published"].is_string(), "{job}");
     assert_eq!(job["publishError"], Value::Null, "{job}");
+    // Its checkout, and what its checks built there, go with its worker.
+    let checkout = obid.home.join("checks").join(&id);
+    let gone = std::time::Instant::now();
+    while checkout.exists() && gone.elapsed().as_secs() < 10 {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    assert!(!checkout.exists(), "{}", checkout.display());
 }
 
 /// Work the agent left uncommitted, none committed: obid tells it once to commit it, and what it
