@@ -2051,7 +2051,7 @@ mod tests {
     }
 
     /// Engine/Pipeline.swift for a published job, with obid's own rule: the Merged stage is done
-    /// only once a person merged it (runner-api.md, "obid only: what obid leaves out").
+    /// only once its pull request merged (runner-api.md, "obid only: merging").
     #[test]
     fn a_published_pipeline_follows_github_and_never_merges() {
         let mut job = job();

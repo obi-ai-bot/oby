@@ -33,8 +33,8 @@
 
 ## You stay in control
 
-- Oby merges a pull request the way it learned for that repository, once it asked "Can I remember that?" and you said yes. Until it has learned one, it asks "Ready to merge?" and leaves the pull request open. It never pushes to or force-pushes `main` or your default branch, and never merges into `main`.
-- Nothing goes out until the job's check passes and the secret scan is clean. A review goes out as you only after your Approve.
+- Oby merges a pull request the way it learned for that repository, once it asked "Can I remember that?" and you said yes. Until it has learned one, it asks "Ready to merge?" and leaves the pull request open. By itself, it never pushes to or force-pushes `main` or your default branch, and never merges into `main`; tell it to, and it does (still being built: today you do these on GitHub yourself).
+- Nothing goes out by itself until the job's check passes, and nothing goes out at all unless the secret scan is clean. A review goes out as you only after your Approve.
 - Approvals (publishing by hand, a Confirm, a Disconnect) are a click in Oby on your Mac, with no Touch ID, Face ID or password; whatever waits on you notifies on the Mac and shows on Home.
 - Every job has safety limits on time and tokens, and **⌃⌥⌘.** stops them all.
 - No usage data leaves your Mac unless you turn it on.

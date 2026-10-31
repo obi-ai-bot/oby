@@ -303,7 +303,7 @@ choose scan.clean:
 
 `publish/push` takes `scan`'s output as its input and its schema has `"clean": {"const": true}` and the `head` it pushes: a push can't be built from anything but a clean scan of the same commit. The `job` record's `pipeline` stages (`prepare`, `work`, `check`, `publish`, `review`, `merged`) and `publishStep` (`scan`, `push`, `pullRequest`) become views of these steps' states.
 
-What's left out on purpose: the merge. obid never merges (runner-api.md, "obid only: what obid leaves out"), so there is no merge node, and no flow can have one.
+What's left out on purpose: the merge. When this was written obid didn't merge; it now merges by its merge follower (runner-api.md, "obid only: merging"), outside these flows, so there is no merge node yet.
 
 ### 4.2 A conversation turn (`conversation/turn@1.0.0`, `memory`)
 
@@ -431,7 +431,7 @@ The engine checks every node before step 3 of 3.3, against the run's rules: the 
 | Secrets never reach an agent. | Only nodes holding `secret.use` touch `crate::secrets` (publish, connections, the API loop's provider call). The flow builder refuses a reference from a `secret.use` node's output into a `Sandboxed` node or `agent/turn`, and every output is redacted before it's journaled or sent as an event. |
 | Text from others is data. | `agent/turn`'s input has `quoted` (files) apart from `prompt`; nodes that read GitHub, the web, a plug-in or another Obi return `{quoted: path}`, and the builder refuses a reference from one into a `prompt`. |
 | Approvals are inbox items. | An effect the run's mode marks *ask* (Ask mode's prompts, a confirm for what persists or widens trust, Bypass starts) makes an inbox item and waits for `owner.answer`; only the owner's answer carries `owner`. `oby_answer` never carries it, so the owner's own decisions are refused with why, as now. |
-| obid never merges. | There is no merge node, and the registry refuses an effect named `out:github.merge`. |
+| Merging stays obid's merge follower's. | There is no merge node yet, and the registry refuses an effect named `out:github.merge` until one is designed. |
 | Every outgoing action is listed. | Each committed `out:` operation is appended to the job's `outgoing` (ids only, never what was sent), as `publish.rs` does now. |
 
 These replace scattered checks with one place to read them; they don't replace the sandbox. As new-blok's roadmap says of its own manifests, a declaration doesn't sandbox code: bubblewrap and Seatbelt still hold an agent in, the invalid push URL still holds a push back, and the policy still answers each permission prompt.
