@@ -2639,6 +2639,65 @@ fn permission_prompts_are_answered_by_the_rules() {
     }
 }
 
+/// PERMISSIONS-3: Oby's own review stays in Plan and runs what only reads without asking
+/// (`git diff origin/dev...HEAD`, `git ls-tree`, `git cat-file`, `cat`, `grep`, `ls`), so it
+/// leaves no card on Home; an edit and a push are refused, and a write waits for the owner.
+#[test]
+fn permissions_3_a_review_reads_without_asking_and_a_write_still_asks() {
+    let folder = Folder::new("review-reads");
+    let remote = fixture(&folder.0.join("fixture"));
+    let obid = start(&folder.0, &config(&folder.0, &remote));
+    let review = |list: &[Value]| {
+        post_job(
+            &obid,
+            json!({"repo": "obi-e2e/fixture-app", "kind": "review",
+                   "task": format!("ASKS: {}", Value::Array(list.to_vec()))}),
+        )
+        .body["id"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    };
+    let bash = |command: &str| json!({"tool": "Bash", "input": {"command": command}});
+    let id = review(&[
+        bash("git diff origin/dev...HEAD"),
+        bash("git rev-parse HEAD; git log -1 --format=fuller; git status --short"),
+        bash(
+            "git ls-tree HEAD src/greet.js && git cat-file -p HEAD:src/greet.js && git blame src/greet.js",
+        ),
+        bash("cat src/greet.js | grep -n greet; ls src"),
+        json!({"tool": "Edit", "input": {"file_path": "src/greet.js"}}),
+        bash("git push origin HEAD"),
+    ]);
+    let job = settled(&obid, &id);
+    assert_eq!(job["status"], "done", "{job}");
+    assert_eq!(job["mode"], "plan");
+    let summary = job["summary"].as_str().unwrap();
+    assert!(
+        summary.starts_with("answers: allow, allow, allow, allow, deny: Plan mode"),
+        "{summary}"
+    );
+    assert_eq!(summary.matches("deny: ").count(), 2, "{summary}");
+    assert!(
+        !inbox(&obid)
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|i| i["job"] == id.as_str()),
+        "{}",
+        inbox(&obid)
+    );
+    for write in ["git commit -am x", "rm src/greet.js"] {
+        let id = review(&[bash(write)]);
+        let job = until(&obid, &id, |j| {
+            j["permission"].is_object()
+                || !matches!(j["status"].as_str(), Some("queued" | "running"))
+        });
+        assert_eq!(job["permission"]["tool"], "Bash", "{write}: {job}");
+        assert_eq!(job["permission"]["detail"], write, "{job}");
+    }
+}
+
 /// A control request of a kind obid doesn't know (a newer Claude Code's) gets an error, never
 /// silence, which would hang the job; the agent's next request is answered as usual (#1095).
 #[test]

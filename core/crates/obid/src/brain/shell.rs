@@ -400,15 +400,18 @@ fn system_program_on(name: &str, path: &std::ffi::OsStr) -> bool {
 /// variable set before it, no wrapper, no folder), found among the system's software, given only
 /// the options it allows. Best-effort; whatever passes still runs boxed.
 pub fn reads_only(words: &[String]) -> bool {
+    words.first().is_some_and(|p| system_program(p)) && takes_read_options(words)
+}
+
+/// Whether one simple command is a program [`read_options`] names given only the options it
+/// allows, wherever the program is found ([`reads_only`] asks that it be the system's).
+pub fn takes_read_options(words: &[String]) -> bool {
     let Some(program) = words.first() else {
         return false;
     };
     let Some(options) = read_options(program) else {
         return false;
     };
-    if !system_program(program) {
-        return false;
-    }
     if options.any {
         return true;
     }
@@ -811,6 +814,7 @@ async fn run(shared: &Arc<Shared>, session: &Session, args: Value) -> Result<Sho
         home: Some(temp.clone()),
         logins: place.bounds().logins,
         git: Vec::new(),
+        programs: None,
     };
     let rules = shared.jobs.rules();
     let tainted = session.web.load(Ordering::SeqCst);
@@ -1055,6 +1059,7 @@ mod tests {
             home: Some(temp),
             logins: vec![room.parent().unwrap().join("config")],
             git: Vec::new(),
+            programs: None,
         }
     }
 

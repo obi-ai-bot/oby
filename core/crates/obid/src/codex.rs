@@ -10,7 +10,7 @@
 //! an approval (as the Swift runner does inside bubblewrap). In Plan mode obid declines file changes.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use serde_json::{Value, json};
@@ -1053,9 +1053,47 @@ pub fn finished(turn: &Value, said: Option<&str>) -> (String, bool) {
     }
 }
 
+/// The folder Codex's standalone package puts first on its commands' `PATH` (`pathDir` in its
+/// `codex-package.json`, beside `bin/codex`), where it ships its own `rg`; none for another install.
+pub fn shipped_programs(bin: &Path) -> Option<PathBuf> {
+    let root = std::fs::canonicalize(bin)
+        .ok()?
+        .parent()?
+        .parent()?
+        .to_path_buf();
+    let package: Value =
+        serde_json::from_slice(&std::fs::read(root.join("codex-package.json")).ok()?).ok()?;
+    let dir = Path::new(package["pathDir"].as_str()?);
+    dir.components()
+        .all(|c| matches!(c, std::path::Component::Normal(_)))
+        .then(|| root.join(dir))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Codex's standalone package names the folder it ships `rg` in; one that leads out of the
+    /// package is none.
+    #[test]
+    fn codex_ships_its_programs_beside_its_binary() {
+        let root = std::env::temp_dir().join(format!("obid-codex-pkg-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("bin")).unwrap();
+        std::fs::write(root.join("bin/codex"), "").unwrap();
+        let root = std::fs::canonicalize(&root).unwrap();
+        let package = |dir: &str| {
+            std::fs::write(
+                root.join("codex-package.json"),
+                json!({"entrypoint": "bin/codex", "pathDir": dir}).to_string(),
+            )
+            .unwrap();
+            shipped_programs(&root.join("bin/codex"))
+        };
+        assert_eq!(package("codex-path"), Some(root.join("codex-path")));
+        assert_eq!(package("../elsewhere"), None);
+        assert_eq!(package("/usr/bin"), None);
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
     /// ConnectionTests' last part: Codex finds the broker in its config and reads the job's token
     /// from a variable it names; the token is never an argument (other processes read those).

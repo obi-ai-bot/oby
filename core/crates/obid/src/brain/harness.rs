@@ -892,6 +892,7 @@ impl Place {
                 self.temp.join(".claude.json"),
             ],
             git: Vec::new(),
+            programs: None,
         }
     }
 
@@ -3268,6 +3269,7 @@ mod tests {
             home: Some(place.temp.clone()),
             logins: vec![],
             git: Vec::new(),
+            programs: None,
         };
         let web = AtomicBool::new(false);
         let taint = || web.store(true, Ordering::SeqCst);
@@ -3353,6 +3355,7 @@ mod tests {
             home: Some(place.temp.clone()),
             logins: vec![],
             git: Vec::new(),
+            programs: None,
         };
         let safe = |tool: &str, input: Value| known_safe(tool, &input, &bounds, &place.repos);
         assert!(safe("Read", json!({"file_path": "notes.md"})));
@@ -3387,6 +3390,7 @@ mod tests {
             home: Some(place.temp.clone()),
             logins: vec![],
             git: Vec::new(),
+            programs: None,
         };
         let read = |path: std::path::PathBuf| {
             taints("Read", &json!({ "file_path": path }), &bounds, &place.repos)
