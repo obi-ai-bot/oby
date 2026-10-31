@@ -582,28 +582,38 @@ fn a_pull_request_merged_on_github_needs_nobody() {
 
 /// TASKS-13: an Oby review's card (here its crash card) waits on the pull request it reviewed:
 /// open, the card stays; once that pull request is closed on GitHub, the card comes back done
-/// with no answer and the failed review is let go, so Home keeps neither.
+/// with no answer, and a failed review with nothing left for the owner is let go by obid, saying
+/// so, so Home keeps neither. Each half alone: the carded review made a commit that never went
+/// out, so obid keeps it (its card settles by the closed pull request), and the other has no card.
 #[test]
 fn tasks_13_an_oby_reviews_card_settles_once_its_pull_request_closes() {
     let folder = Folder::new("review-card-closed");
-    let mut review = obid::job::Job::new(
-        "r9e8d7c6".into(),
-        REPO.into(),
-        "review".into(),
-        "Fix the thing".into(),
-        "claude".into(),
-        "stub".into(),
-    );
-    review.status = obid::job::Status::Failed;
-    review.reason = Some(obid::job::LOOPED.into());
-    review.review_of = Some(ID.into());
+    let review = |id: &str, status: obid::job::Status| {
+        let mut review = obid::job::Job::new(
+            id.into(),
+            REPO.into(),
+            "review".into(),
+            "Fix the thing".into(),
+            "claude".into(),
+            "stub".into(),
+        );
+        review.status = status;
+        review.review_of = Some(ID.into());
+        review
+    };
+    let mut carded = review("r9e8d7c6", obid::job::Status::Failed);
+    carded.reason = Some(obid::job::LOOPED.into());
+    carded.commits = Some(1);
+    let bare = review("r5f4e3d2", obid::job::Status::Interrupted);
     let jobs = folder.0.join("home/jobs");
     std::fs::create_dir_all(&jobs).unwrap();
-    std::fs::write(
-        jobs.join("r9e8d7c6.json"),
-        serde_json::to_vec(&review).unwrap(),
-    )
-    .unwrap();
+    for job in [&carded, &bare] {
+        std::fs::write(
+            jobs.join(format!("{}.json", job.id)),
+            serde_json::to_vec(job).unwrap(),
+        )
+        .unwrap();
+    }
     let obid = started_with(&folder, true, None, published(), &[]);
     let card = |state: &str| {
         call(&obid, "GET", &format!("/v1/inbox?state={state}"), None)
@@ -614,20 +624,35 @@ fn tasks_13_an_oby_reviews_card_settles_once_its_pull_request_closes() {
             .into_iter()
             .find(|i| i["id"].as_str().unwrap().starts_with("r9e8d7c6-crash-"))
     };
+    let job = |id: &str| call(&obid, "GET", &format!("/v1/jobs/{id}"), None).body;
     let open = within(30, "the review's crash card", || card("open"));
-    // Its pull request still open: the card waits for the owner, and the review isn't let go.
+    // Its pull request still open: the card waits for the owner, and neither review is let go.
     std::thread::sleep(std::time::Duration::from_secs(3));
     assert!(card("open").is_some(), "{open}");
-    let failed = call(&obid, "GET", "/v1/jobs/r9e8d7c6", None).body;
-    assert_eq!(failed["dismissed"], Value::Null, "{failed}");
+    for id in ["r9e8d7c6", "r5f4e3d2"] {
+        assert_eq!(job(id)["dismissed"], Value::Null, "{}", job(id));
+    }
 
     view_now(&folder, |view| view["state"] = json!("CLOSED"));
     let done = within(30, "the card settled", || card("done"));
     assert_eq!(done["id"], open["id"]);
     assert_eq!(done["answer"], Value::Null, "{done}");
     assert!(card("open").is_none());
-    let review = call(&obid, "GET", "/v1/jobs/r9e8d7c6", None).body;
-    assert!(review["dismissed"].is_string(), "{review}");
+    let bare = within(30, "the bare review let go", || {
+        let bare = job("r5f4e3d2");
+        bare["dismissed"].is_string().then_some(bare)
+    });
+    assert!(
+        bare["changes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|c| c["what"] == obid::jobs::LET_GO),
+        "{bare}"
+    );
+    // Its commit never went out: the carded review stays the owner's, its card settled all the same.
+    let carded = job("r9e8d7c6");
+    assert_eq!(carded["dismissed"], Value::Null, "{carded}");
 }
 
 /// What obid was sending when it stopped is settled from GitHub when it starts again: a merge
