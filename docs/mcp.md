@@ -62,7 +62,7 @@ Moving a job to another account (`move`) comes when the runner can do it (#118).
 These answer "answer that in Oby" and call nothing on the runner:
 
 - `publish`: publishing by hand needs a device signature (the owner's click in Oby on their Mac or iPhone), and only the user's device can make one.
-- `merge`: Oby merges into `dev` by itself after its review and the Mac check. Nobody merges by hand from here, and nothing merges into `main`.
+- `merge`: Oby merges into `dev` by itself after its review and the Mac check. The owner's own Merge (into `main` too, proposed: #1658) is a click in Oby, signed by their device, so it isn't taken from here.
 - `settings`: the vault, secrets and Settings (accounts, models, the runner) change only in Oby.
 
 These tools exist so that an assistant asked to do one of these things gets a clear answer instead of trying another route.

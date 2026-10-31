@@ -23,6 +23,7 @@ The plan for making Oby run Deskree's whole pipeline by itself, case by case. Th
   - Oby merges a PR into `dev` after the review approves and CI is green. It merges `dev` into `main` only when a feature's "Test it when it's done" list passes and CI is green on `dev`. It never pushes straight to `main`.
   - It force-pushes only branches it created.
   - Nothing goes out unless the checks, the Lead's review and the secret scan pass.
+  - Since 2026-10-31 (AGENTS.md, "Oby forbids nothing") these three are what Oby does by itself: on the owner's word it pushes to `main`, force-pushes or publishes past a failed check, and only the agents' own limits and GitHub's stop it.
   - Vault secrets never reach an agent.
 
 ## Roadmap
@@ -197,7 +198,7 @@ Like email: each item waits for your decision, with no timeout and no guessing. 
   - Superhuman reminds you about mail that needs a reply, and Linear snoozes until new activity.
 - **Decided 2026-10-10:**
   - Obys are the main reviewers, so waits are short, apart from limit resets.
-  - A person marked as reviewer is always waited for. Oby never merges without their review, and it swaps them only where GitHub's branch rules and CODEOWNERS allow, through a Follow-up to you.
+  - A person marked as reviewer is always waited for. By itself, Oby never merges without their review (on the owner's word it merges anyway, where GitHub's rules let it), and it swaps them only where GitHub's branch rules and CODEOWNERS allow, through a Follow-up to you.
   - Nudging a person follows best practice (delegated by Wellington):
   - The first nudge comes after one business day with no reviewer activity, counted in the reviewer's working hours. Any comment, commit or review resets the clock.
   - At most two nudges per PR (day 1 and day 3), then Oby stops pinging.
@@ -484,7 +485,7 @@ Decided 2026-10-10: the agent merges once the review approves.
 
 ### 6.1 Approved: merge
 - **What happens:** approved and CI green: squash-merge into dev and delete the branch. The issue closes through "Closes #N". Goes to 7.
-- **Oby today:** Missing. AGENTS.md says Oby never merges, and your decision changes that rule.
+- **Oby today:** Built since: obid merges by the learned workflow, or on the owner's Merge (runner-api.md, "obid only: merging").
 - **Claude Code:** Desktop's "Auto-merge when ready" squash-merges after the checks pass, if the repo's GitHub auto-merge is on. Project cards have a "Merge it" button.
 - **Cursor:** you merge, from the iOS app for example.
 - **Codex:** you merge.
