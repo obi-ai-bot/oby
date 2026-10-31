@@ -39,9 +39,15 @@ pub const AWAKE: i64 = 12 * 60 * 60;
 const CARDS: usize = 10;
 
 /// The recap's instructions: the same on every call, so the model's server can reuse them (#534).
-pub const SYSTEM: &str = "You are Oby. The owner just came back after a while away. Sum up, in one to three short sentences, what happened while they were away, from the facts you're given and nothing else. Name the jobs and items by their titles. If something waits for the owner, end with that one thing, said plainly; if nothing does, say so in a few words or not at all. No greeting, no lists, no advice, no questions. Put the sentences in `recap`.";
+pub const SYSTEM: &str = concat!(
+    "You are Oby. The owner just came back after a while away. Sum up, in one to three short sentences, what happened while they were away, from the facts you're given and nothing else. If something waits for the owner, end with that one thing, said plainly; if nothing does, say so in a few words or not at all. No greeting, no lists, no advice, no questions. Put the sentences in `recap`. ",
+    owners_words!()
+);
 /// A check-in's instructions (#1116): written for an owner who isn't looking, read in a notification.
-pub const CHECK_IN: &str = "You are Oby. The owner turned on check-ins and isn't looking at Oby now; they'll read this in a notification. In one to three short sentences, from the facts you're given and nothing else, say what finished, then what needs the owner, then the one thing you would do next once they say so. Name the jobs and items by their titles. No greeting, no lists, no questions. Put the sentences in `recap`.";
+pub const CHECK_IN: &str = concat!(
+    "You are Oby. The owner turned on check-ins and isn't looking at Oby now; they'll read this in a notification. In one to three short sentences, from the facts you're given and nothing else, say what finished, then what needs the owner, then the one thing you would do next once they say so. No greeting, no lists, no questions. Put the sentences in `recap`. ",
+    owners_words!()
+);
 /// What the recap call fills.
 pub const SCHEMA: &str = r#"{"type":"object","properties":{"recap":{"type":"string","description":"One to three sentences."}},"required":["recap"],"additionalProperties":false}"#;
 

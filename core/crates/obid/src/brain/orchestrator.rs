@@ -230,7 +230,7 @@ impl Seen {
     pub fn item(&mut self, item: &Item) -> Vec<Event> {
         if !self.items.insert(item.id.clone())
             || item.done.is_some()
-            || item.id.starts_with("orchestrator-")
+            || item.id.starts_with(ESCALATION)
             // Already the owner's to decide: escalating would only leave a second item for it.
             || matches!(item.kind.as_str(), "confirm" | "start" | "permission" | "plan" | "question" | "github" | "merge" | "limit" | crate::sphere::inbox::QUESTION_KIND)
             // obid's own bug's item is the owner's too (#914): an answer from Oby would loop it.
@@ -300,13 +300,13 @@ impl Ledger {
             .unwrap_or_default();
         if previous.len() >= DAILY_ACTIONS {
             return Err(
-                "Oby reached the three automatic actions per job today. Oby recommends that you review the job."
+                "Oby tried three times by itself today. Oby recommends that you look at the task."
                     .into(),
             );
         }
         if !previous.is_empty() && self.signatures.get(job).map(String::as_str) == Some(signature) {
             return Err(
-                "The same failure repeated after an automatic action. Oby recommends that you review the job."
+                "It failed the same way after Oby tried again. Oby recommends that you look at the task."
                     .into(),
             );
         }
@@ -339,6 +339,8 @@ pub struct Escalation {
 
 /// What settles an escalation once the owner has looked (#710).
 pub const DONE: &str = "Done";
+/// How an escalation's item id starts.
+pub const ESCALATION: &str = "orchestrator-";
 
 fn escalate(why: impl Into<String>, reply: &'static str) -> Escalation {
     Escalation {
@@ -411,21 +413,23 @@ impl Orchestration {
             .find(|e| !e.job.is_empty())
             .map(|e| e.job.clone())
             .unwrap_or_default();
-        let title = if job.is_empty() {
-            "Job event needs your decision".to_owned()
-        } else {
-            format!("Job {job} needs your decision")
+        // The task by its name, never its id (TASKS-14): the events' summaries are for the turn.
+        let title = match shared.jobs.get(&job) {
+            Some(job) => format!(
+                "{} needs your decision",
+                super::briefing::line(&job.short_title(), 80)
+            ),
+            None => "Oby needs your decision".to_owned(),
         };
-        let summary: Vec<&str> = self.events.iter().map(|e| e.summary.as_str()).collect();
         let item = Item {
             id: format!(
-                "orchestrator-{}",
+                "{ESCALATION}{}",
                 &uuid::Uuid::new_v4().simple().to_string()[..12]
             ),
             kind: "question".into(),
             job,
             title,
-            text: format!("{} {}", escalation.why, summary.join(" ")),
+            text: escalation.why.clone(),
             options: vec![DONE.into()],
             details: None,
             recommended: None,
@@ -533,7 +537,7 @@ impl Watch {
         }
         if !self.turn.jobs.contains(job) {
             return Err(Refused::Owner(escalate(
-                "Oby couldn't match the proposed action to this event. Oby recommends reviewing the related job.",
+                "Oby couldn't match what it would do to what happened. Oby recommends that you look at the task.",
                 "That isn't the event's job, so I left the event for the owner.",
             )));
         }
@@ -566,7 +570,7 @@ impl Watch {
     pub fn option(&self, item: Option<ItemView>, answer: &str) -> Result<i64, Refused> {
         let Some(item) = item.filter(|i| i.open) else {
             return Err(Refused::Owner(escalate(
-                "The inbox item changed while Oby was considering it. Oby recommends reviewing it again before choosing.",
+                "Its card changed while Oby was looking at it. Oby recommends that you look at it again before choosing.",
                 "That inbox item changed before I could answer it. I left the event for the owner.",
             )));
         };
@@ -588,7 +592,7 @@ impl Watch {
         match picked {
             Some(at) if permitted => Ok(at as i64 + 1),
             _ => Err(Refused::Owner(escalate(
-                "Oby read the job but this inbox answer is outside the automatic allow-list. Oby recommends that you choose an option.",
+                "Oby looked at it, and this answer is one only you give. Oby recommends that you choose one.",
                 "That inbox item needs the owner's answer. I left it in Needs you.",
             ))),
         }
@@ -615,7 +619,7 @@ pub fn tools(all: &Value) -> Value {
         .collect();
     tools.push(json!({"name": "oby_escalate", "description": "Leaves this event for the owner in Needs you, with what you found and the option you recommend. Once a turn: nothing more happens for the event after it.",
         "inputSchema": {"type": "object", "properties": {
-            "why": {"type": "string", "description": "What you found and why it's the owner's, in one or two sentences."},
+            "why": {"type": "string", "description": "What you found and why it's the owner's, in one or two sentences, in the owner's words: the task by its title, never an id; never job or room."},
             "recommend": {"type": "string", "description": "The option you recommend, in a few words."}},
             "required": ["why"]}}));
     Value::Array(tools)
@@ -657,7 +661,7 @@ pub(super) async fn call(
             let read = if watch.read().is_empty() {
                 ""
             } else {
-                "Oby read the job. "
+                "Oby looked at it. "
             };
             let escalation = Escalation {
                 why: format!("{read}{why}{recommends}"),
@@ -703,7 +707,7 @@ pub(super) async fn call(
             if ended {
                 let escalation = escalate(
                     format!(
-                        "Oby read the job and recommends telling it: {}. It ended, so that starts a follow-up, which only your own words start.",
+                        "Oby looked at it and recommends telling it: {}. It ended, so that starts a follow-up, which only your own words start.",
                         super::briefing::line(&words, 300)
                     ),
                     "It ended, so telling it starts a follow-up, which only the owner's words start. I left it in Needs you.",
@@ -874,7 +878,7 @@ async fn run(shared: &Arc<Shared>, batch: Vec<Event>, ledger: Arc<Mutex<Ledger>>
     let watch = Arc::new(Watch::new(Orchestration::new(batch, ledger)));
     let failed = |why: &str| Escalation {
         why: format!(
-            "Oby's brain couldn't answer this event: {}. Oby recommends reviewing the job.",
+            "Oby couldn't work out what to do here: {}. Oby recommends that you look at the task.",
             why.trim_end_matches('.')
         ),
         reply: "",
@@ -969,7 +973,7 @@ mod tests {
         watch.reading("j1").unwrap();
         let mismatch = why(watch.acting("j2").unwrap_err());
         assert!(
-            mismatch.starts_with("Oby couldn't match the proposed action"),
+            mismatch.starts_with("Oby couldn't match what it would do"),
             "{mismatch}"
         );
         assert!(watch.turn.ledger.lock().unwrap().actions.is_empty());
@@ -1008,13 +1012,10 @@ mod tests {
         assert!(ledger.take("j1", "a", day + 10).is_ok());
         assert!(ledger.take("j1", "b", day + 20).is_ok());
         let repeated = ledger.take("j1", "b", day + 30).unwrap_err();
-        assert!(repeated.contains("same failure repeated"), "{repeated}");
+        assert!(repeated.contains("failed the same way"), "{repeated}");
         assert!(ledger.take("j1", "c", day + 40).is_ok());
         let fourth = ledger.take("j1", "d", day + 50).unwrap_err();
-        assert!(
-            fourth.contains("three automatic actions per job today"),
-            "{fourth}"
-        );
+        assert!(fourth.contains("three times by itself today"), "{fourth}");
         // A new day starts afresh.
         assert!(ledger.take("j1", "d", day + 86_400).is_ok());
     }
@@ -1051,10 +1052,7 @@ mod tests {
             ("i1", "limit", "Try again"),
         ] {
             let refused = why(watch.option(item(id, kind), answer).unwrap_err());
-            assert!(
-                refused.contains("outside the automatic allow-list"),
-                "{refused}"
-            );
+            assert!(refused.contains("only you give"), "{refused}");
         }
         let other = why(watch
             .option(item("other", "failed"), "Try again")
@@ -1064,10 +1062,7 @@ mod tests {
         let review = why(watch
             .option(item("review", "failed"), "One more round")
             .unwrap_err());
-        assert!(
-            review.contains("outside the automatic allow-list"),
-            "{review}"
-        );
+        assert!(review.contains("only you give"), "{review}");
         let closed = why(watch
             .option(item("closed", "failed"), "Try again")
             .unwrap_err());
@@ -1081,10 +1076,7 @@ mod tests {
                 options: vec![answer.into()],
                 owners: false,
             });
-            assert!(
-                why(watch.option(limit, answer).unwrap_err())
-                    .contains("outside the automatic allow-list")
-            );
+            assert!(why(watch.option(limit, answer).unwrap_err()).contains("only you give"));
         }
     }
 

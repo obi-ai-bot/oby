@@ -50,6 +50,13 @@ describe('BYPASS-5: the agent’s question is Sangam’s Question card', () => {
   });
 });
 
+describe('TASKS-14: obid’s own question says why under its title', () => {
+  it('tasks_14_shows_obids_reason_and_recommendation_under_the_title', () => {
+    const ask = live.itemAsk(item('question', { id: 'orchestrator-1', title: 'Fix the login needs your decision', text: 'Oby looked at it. Its pull request conflicts with main. Oby recommends: Rebase it.', options: ['Done'] }));
+    expect(ask).toMatchObject({ kind: 'question', headline: 'Fix the login needs your decision', text: 'Oby looked at it. Its pull request conflicts with main. Oby recommends: Rebase it.', options: ['Done'] });
+  });
+});
+
 describe('BYPASS-6: a task’s Mode menu', () => {
   it('bypass_6_changes_the_jobs_mode_through_obid', async () => {
     call.mockResolvedValue(answered({ id: 'j1', mode: 'bypass' }));

@@ -2871,6 +2871,42 @@ fn closed_start(mut item: Item, why: &str, now: i64) -> Item {
     item
 }
 
+/// Whether the open `item` waits on nothing any more (TASKS-13): it's about one of this Mac's own
+/// jobs (its question, permission, plan, merge card, limit, or obid's crash or review failure),
+/// and that job is gone, or ended let go or with its pull request merged or closed; or it's Oby's
+/// own escalation (`orchestrator::escalate`, only Done) on an ended job that has another open
+/// item, where obid offers the decision now (MERGING-8's). A queued or running job's items stay,
+/// as does everything not about a job: confirms, offers, GitHub's, another Obi's, a teammate
+/// approval to remove on GitHub. `open`: every open item.
+pub(crate) fn is_stale(item: &Item, job: Option<&crate::job::Job>, open: &[&Item]) -> bool {
+    let about_job = !item.job.is_empty()
+        && match item.kind.as_str() {
+            "question" | "merge" | "limit" | "permission" | "plan" | inbox::QUESTION_KIND => true,
+            "failed" => inbox::is_crash_item(item) || inbox::is_review_item(item),
+            _ => false,
+        };
+    if !about_job {
+        return false;
+    }
+    let Some(job) = job else {
+        return true;
+    };
+    if job.status.is_active() {
+        return false;
+    }
+    let pr_ended = job
+        .pull_request
+        .as_ref()
+        .is_some_and(|pr| matches!(pr.state.as_str(), "MERGED" | "CLOSED"));
+    let escalation = |i: &Item| i.id.starts_with(crate::brain::orchestrator::ESCALATION);
+    job.dismissed.is_some()
+        || pr_ended
+        || (escalation(item)
+            && open
+                .iter()
+                .any(|o| o.job == item.job && o.id != item.id && !escalation(o)))
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::atomic::Ordering;
@@ -3904,5 +3940,88 @@ mod tests {
         );
         assert!(closed.options.is_empty() && closed.details.is_none());
         assert_eq!(closed.done, Some(7));
+    }
+
+    /// TASKS-13: what Home asks about a job settles once the job is gone, let go, or its pull
+    /// request merged or closed, and Oby's escalation once obid offers the decision another way;
+    /// a running job's items, and what isn't about a job, stay.
+    #[test]
+    fn tasks_13_items_about_an_ended_job_settle_and_what_needs_the_owner_stays() {
+        use crate::job::{Job, Status};
+        let ended = |pr: Option<&str>| {
+            let mut job = Job::new(
+                "j1".into(),
+                "o/r".into(),
+                "build".into(),
+                "Append a line".into(),
+                "claude".into(),
+                "Default".into(),
+            );
+            job.status = Status::Done;
+            job.pull_request = pr.map(|state| crate::github::PullRequest {
+                state: state.into(),
+                review_decision: None,
+                base: "main".into(),
+                merged_at: None,
+                checked_at: 0,
+                head: None,
+            });
+            job
+        };
+        let of = |id: &str, kind: &str| Item {
+            id: id.into(),
+            kind: kind.into(),
+            ..inbox::crash_item(&ended(None), 1)
+        };
+        let escalation = of(
+            &format!("{}1", crate::brain::orchestrator::ESCALATION),
+            "question",
+        );
+        let merge = of("merge-1", "merge");
+        let crash = inbox::crash_item(&ended(None), 1);
+        let dismissal = of("approval-dismissal-c1", "failed");
+        let confirm = of("confirm-1", "confirm");
+        let all = [&escalation, &merge, &crash, &dismissal, &confirm];
+
+        // Its pull request merged or closed, let go, or gone: its own items settle.
+        for job in [ended(Some("MERGED")), ended(Some("CLOSED"))] {
+            for item in [&escalation, &merge, &crash] {
+                assert!(is_stale(item, Some(&job), &all), "{}", item.id);
+            }
+        }
+        let mut let_go = ended(Some("OPEN"));
+        let_go.dismissed = Some(1);
+        assert!(is_stale(&merge, Some(&let_go), &all));
+        assert!(is_stale(&escalation, None, &all));
+        // What isn't about the job stays, whatever became of it: a teammate approval to remove on
+        // GitHub, a Confirm.
+        for item in [&dismissal, &confirm] {
+            assert!(!is_stale(item, None, &all), "{}", item.id);
+            assert!(!is_stale(item, Some(&ended(Some("MERGED"))), &all));
+        }
+
+        // Its pull request still open: the merge card waits for the owner; Oby's escalation beside
+        // it settles (obid offers the decision there), and alone it stays.
+        let open = ended(Some("OPEN"));
+        assert!(!is_stale(&merge, Some(&open), &all));
+        assert!(is_stale(&escalation, Some(&open), &all));
+        assert!(!is_stale(&escalation, Some(&open), &[&escalation]));
+
+        // A running job's items stay, even with its pull request merged.
+        let mut running = ended(Some("MERGED"));
+        running.status = Status::Running;
+        assert!(!is_stale(&escalation, Some(&running), &all));
+        assert!(!is_stale(
+            &of("j1-permission-p1", "permission"),
+            Some(&running),
+            &all
+        ));
+
+        // An item about no job, a shell's permission, stays.
+        let shell = Item {
+            job: String::new(),
+            ..of("shell-c1-p1", "permission")
+        };
+        assert!(!is_stale(&shell, None, &all));
     }
 }

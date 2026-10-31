@@ -4,6 +4,14 @@
 //! and carried out by [`actions`]. The turns nobody watches run there too: a stalled job's
 //! ([`supervisor`]) and obid's own events' ([`orchestrator`]).
 
+/// How Oby speaks of its work to the owner, in Sangam's words (TASKS-14): written once, and every
+/// prompt that writes to them takes it whole (`concat!`), before the modules that use it.
+macro_rules! owners_words {
+    () => {
+        "Speak to the owner in Oby's own words: what Oby runs for them is a task, named by its title, never by an id or a hash; never say job, room or repos/ to them."
+    };
+}
+
 pub mod actions;
 pub mod briefing;
 pub mod calls;
