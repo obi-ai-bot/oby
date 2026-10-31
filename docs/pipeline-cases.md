@@ -23,7 +23,7 @@ The plan for making Oby run Deskree's whole pipeline by itself, case by case. Th
   - Oby merges a PR into `dev` after the review approves and CI is green. It merges `dev` into `main` only when a feature's "Test it when it's done" list passes and CI is green on `dev`. It never pushes straight to `main`.
   - It force-pushes only branches it created.
   - Nothing goes out unless the checks, the Lead's review and the secret scan pass.
-  - Since 2026-10-31 (AGENTS.md, "Oby forbids nothing") these three are what Oby does by itself: on the owner's word it pushes to `main`, force-pushes or publishes past a failed check, and only the agents' own limits and GitHub's stop it.
+  - Since 2026-10-31 (AGENTS.md, "Oby forbids nothing") these three are what Oby does by itself. Proposed, not built: on the owner's word it pushes to `main`, force-pushes or publishes past a failed check; what still stops it is the secret scan, the agents' own limits and GitHub's.
   - Vault secrets never reach an agent.
 
 ## Roadmap

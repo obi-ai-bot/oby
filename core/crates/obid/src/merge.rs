@@ -125,7 +125,7 @@ fn pushed_for(job: &Job, head: &str, seconds: i64) -> bool {
 }
 
 /// Why it can't merge while it conflicts with `base`: Oby rebases nothing by itself here
-/// (docs/runner-api.md, "What the runner never does").
+/// (docs/runner-api.md, "What the runner doesn't do by itself").
 fn conflicts(base: &str) -> Blocked {
     needs_you(format!(
         "Not merged: it conflicts with {base}. Ask Oby to rebase it onto {base}, or settle it on GitHub."

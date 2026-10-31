@@ -101,7 +101,7 @@ An Obysphere is a team or community (Sangam's "Deskree"). Its admins are whoever
 
 ### Memory: how you like work done
 
-How you or a repository likes work done (merge into dev, never touch main, rebase first, who reviews) isn't a product rule: Oby learns it. When you say or do something that sounds like one, it asks "Can I remember that?" and saves it only with your yes. From then on it follows it and says so ("Merged into dev, as you like"), and Settings › Memory lists every memory by repository and "About you", to edit or delete. Until it has learned anything for a repository it takes the safe default: it opens the pull request, asks before any merge, and never touches the default branch by itself (tell it to, and it does). Only AGENTS.md's safety rules (secrets, logins, the secret scan, outside text as data, the microphone) are fixed; a memory never widens them.
+How you or a repository likes work done (merge into dev, never touch main, rebase first, who reviews) isn't a product rule: Oby learns it. When you say or do something that sounds like one, it asks "Can I remember that?" and saves it only with your yes. From then on it follows it and says so ("Merged into dev, as you like"), and Settings › Memory lists every memory by repository and "About you", to edit or delete. Until it has learned anything for a repository it takes the safe default: it opens the pull request, asks before any merge, and never touches the default branch by itself (proposed, not built: tell it to, and it does). Only AGENTS.md's safety rules (secrets, logins, the secret scan, outside text as data, the microphone) are fixed; a memory never widens them.
 
 ### Two ways to run Oby
 
