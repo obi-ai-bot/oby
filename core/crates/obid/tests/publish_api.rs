@@ -1703,11 +1703,13 @@ fn changes_requested_are_the_next_round_and_the_new_head_is_reviewed_again() {
     );
 }
 
-/// Oby's reviews are bounded: changes still asked for by the last of them
+/// MERGING-8: Oby's reviews are bounded: changes still asked for by the last of them
 /// (`review::REVIEWS`, three) start no more rounds, and the job waits for the owner
-/// (`reviewNeedsYou`, the Review stage failed with why). No fourth review starts by itself.
+/// (`reviewNeedsYou`, the Review stage failed with why) in one inbox item. No fourth review starts
+/// by itself; the item's One more round hands the review to the agent once more, and Oby reviews
+/// what it pushes.
 #[test]
-fn the_last_review_asking_for_changes_waits_for_the_owner() {
+fn merging_8_reviews_that_run_out_ask_the_owner_with_one_more_round() {
     let folder = Folder::new("publish-review-cap");
     let bin = fake_gh(&folder.0);
     let (obid, _remote, _) = obid_with(&folder, &bin);
@@ -1737,6 +1739,29 @@ fn the_last_review_asking_for_changes_waits_for_the_owner() {
         (job["round"].clone(), job["status"].clone()),
         (json!(3), json!("done"))
     );
+    let items = review_items(&obid, &id);
+    assert_eq!(items.len(), 1, "{items:?}");
+    assert_eq!(
+        items[0]["text"],
+        "Oby's review still asks for changes. Take it from here."
+    );
+    assert_eq!(items[0]["options"], json!(["One more round"]));
+    let more = call(
+        &obid,
+        "POST",
+        &format!("/v1/inbox/{}/answer", items[0]["id"].as_str().unwrap()),
+        Some(&json!({"answer": "One more round"})),
+    );
+    assert_eq!(more.status, 200, "{}", more.text);
+    let job = reviewed(&obid, &id, 4);
+    assert_eq!(job["round"], 4, "{job}");
+    assert_eq!(job["review"]["round"], 4);
+    // Still asking for changes: one new item, the old one done.
+    let again = within(60, "a new item", || {
+        let open = review_items(&obid, &id);
+        (open.len() == 1 && open[0]["id"] != items[0]["id"]).then_some(open)
+    });
+    assert_eq!(again[0]["options"], json!(["One more round"]));
 }
 
 /// The review job of `id`'s published work at `nth` (oldest first), once there is one.

@@ -53,6 +53,8 @@ export type Job = {
   permission: { id: string; tool: string; title: string; detail: string; rule: string | null; always: string | null } | null;
   pipeline: { number: number; total: number; stages: Stage[] } | null;
   title: string;
+  // obid only: why its pull request couldn't be read last time (gh missing or signed out)
+  pullRequestError?: string | null;
   waiting?: { kind: string; text: string } | null;
   // The account-wide question is shown once. Its settled choice remains authoritative while
   // the job is stopped, so an ordinary interruption card must not ask the owner again.
@@ -267,3 +269,8 @@ export function parseEvent(name: string, data: string): Event | null {
     default: return null;
   }
 }
+
+// The alert's title for a job whose merge waits on the owner: its open merge card's ("Ready to
+// merge", "Needs a teammate", "Not merged"), which obid titles "<what>: <the task's title>"
+export const mergeAlertTitle = (items: Iterable<InboxItem>, job: string): string =>
+  [...items].find((i) => i.kind === 'merge' && i.job === job && i.state === 'open')?.title.split(': ')[0] || 'Not merged';

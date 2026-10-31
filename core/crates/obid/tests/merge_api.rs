@@ -25,7 +25,9 @@ fn head() -> String {
 /// `gh/protection-403`, a rate limit, or `gh/protection-sso`, an organization's SSO, is); its
 /// reviews are the
 /// reviewer's approval once it posted one (`gh/approved`), someone's dismissal of it
-/// (`gh/dismissed`) and a person's approval (`gh/person`); the merge goes through.
+/// (`gh/dismissed`) and a person's approval (`gh/person`); the merge goes through. `gh/view-now.json`,
+/// when a test writes one, is what `pr view` prints instead, and with `gh/signed-out` the owner's
+/// gh is signed in to nothing.
 fn stand_in_gh(folder: &Path) -> PathBuf {
     use std::os::unix::fs::PermissionsExt;
     let bin = folder.join("bin");
@@ -81,10 +83,12 @@ printf '%s|%s\n' "$GH_CONFIG_DIR" "$*" >> "$dir/calls"
 case "$*" in
   "auth status --hostname github.com --active --json hosts")
     who=octo-cat; [ -n "$GH_CONFIG_DIR" ] && who=oby-reviewer
+    [ -z "$GH_CONFIG_DIR" ] && [ -f "$dir/signed-out" ] && {{ echo '{{"hosts": {{"github.com": []}}}}'; exit 0; }}
     [ -n "$GH_CONFIG_DIR" ] && [ -f "$dir/reviewer-stale" ] && {{ echo '{{"hosts": {{"github.com": []}}}}'; exit 0; }}
     echo '{{"hosts": {{"github.com": [{{"active": true, "state": "success", "login": "'$who'"}}]}}}}' ;;
   "pr view 7 --repo {REPO} --json "*)
-    if [ -f "$dir/merged-on-github" ]; then cat "$dir/view-merged.json";
+    if [ -f "$dir/view-now.json" ]; then cat "$dir/view-now.json";
+    elif [ -f "$dir/merged-on-github" ]; then cat "$dir/view-merged.json";
     elif [ -f "$dir/unknown" ]; then cat "$dir/view-unknown.json";
     else cat "$dir/view.json"; fi ;;
   "api --paginate --slurp repos/{REPO}/pulls/7/reviews?per_page=100")
@@ -1030,4 +1034,110 @@ fn a_stale_reviewer_login_doesnt_stall_an_oby_merge() {
         (job(&obid)["mergedBy"]["by"] == "memory").then_some(())
     });
     assert!(!calls(&folder.0).contains("-X POST"));
+}
+
+/// `pr view`'s answer with `change` applied to the stand-in's own.
+fn view_now(folder: &Folder, change: impl FnOnce(&mut Value)) {
+    let dir = folder.0.join("gh");
+    let mut view: Value =
+        serde_json::from_slice(&std::fs::read(dir.join("view.json")).unwrap()).unwrap();
+    change(&mut view);
+    std::fs::write(dir.join("view-now.json"), view.to_string()).unwrap();
+}
+
+const MAC: &str =
+    r#"{"base":"dev","method":"squash","rebaseFirst":false,"review":"oby","checks":"mac"}"#;
+
+/// MERGING-1: a `mac` workflow in a repository with no GitHub checks merges by itself once the
+/// job's own check passed in its box on exactly the head.
+#[test]
+fn merging_1_the_jobs_own_check_merges_a_repository_without_github_checks() {
+    let folder = Folder::new("merge-mac-checked");
+    let mut checked = published();
+    checked.check = Some("true".into());
+    checked.checked = Some(obid::job::Checked {
+        commit: head(),
+        mac_left: false,
+    });
+    let obid = started_with(&folder, false, Some(MAC), checked, &[]);
+    view_now(&folder, |v| v["statusCheckRollup"] = json!([]));
+    within(30, "the job to be merged", || {
+        (job(&obid)["mergedBy"]["by"] == "memory").then_some(())
+    });
+    assert!(merge_cards(&obid).is_empty());
+}
+
+/// MERGING-2: where the job's own check doesn't count (none passed on that head), the card offers
+/// Merge, and the owner's Merge merges it.
+#[test]
+fn merging_2_the_owners_merge_merges_where_the_check_doesnt_count() {
+    let folder = Folder::new("merge-mac-yours");
+    let mut unchecked = published();
+    unchecked.check = Some("true".into());
+    let obid = started_with(&folder, false, Some(MAC), unchecked, &[]);
+    view_now(&folder, |v| v["statusCheckRollup"] = json!([]));
+    let card = within(30, "the card", || merge_cards(&obid).into_iter().next());
+    assert_eq!(card["title"], "Ready to merge: Fix the thing");
+    assert_eq!(
+        card["text"],
+        "Not merged: its check didn't pass on exactly this commit, so it's yours to merge."
+    );
+    assert_eq!(card["options"], json!(["Merge", "Leave it open"]));
+    let waiting = job(&obid);
+    assert_eq!(waiting["mergeNeedsYou"], true);
+    assert_eq!(waiting["mergeError"], card["text"]);
+    assert!(!calls(&folder.0).contains("-X PUT"));
+    let merged = answer(&obid, &card, "Merge");
+    assert_eq!(merged.status, 200, "{}", merged.text);
+    assert_eq!(job(&obid)["mergedBy"]["by"], "owner");
+    assert_eq!(calls(&folder.0).matches("-X PUT").count(), 1);
+}
+
+/// MERGING-3: a conflict under a learned workflow ends in a card saying what to do, its words on
+/// the Merged stage, and nothing is sent.
+#[test]
+fn merging_3_a_conflict_asks_the_owner() {
+    let folder = Folder::new("merge-conflict");
+    let obid = started(&folder, false, Some(OBY));
+    view_now(&folder, |v| {
+        v["mergeable"] = json!("CONFLICTING");
+        v["mergeStateStatus"] = json!("DIRTY");
+    });
+    let why =
+        "Not merged: it conflicts with dev. Ask Oby to rebase it onto dev, or settle it on GitHub.";
+    let card = within(30, "the card", || {
+        merge_cards(&obid).into_iter().find(|c| c["text"] == why)
+    });
+    assert_eq!(card["options"], json!(["Dismiss"]));
+    let waiting = job(&obid);
+    assert_eq!(waiting["mergeNeedsYou"], true);
+    let merged = waiting["pipeline"]["stages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["id"] == "merged")
+        .cloned()
+        .unwrap();
+    assert_eq!(merged["detail"], why);
+    assert!(!calls(&folder.0).contains("-X PUT"));
+}
+
+/// MERGING-6: the owner's gh signed out (or its login expired): a card says so, and nothing merges.
+#[test]
+fn merging_6_a_signed_out_gh_asks_the_owner() {
+    let folder = Folder::new("merge-signed-out");
+    let obid = started_with(&folder, false, Some(OBY), published(), &["signed-out"]);
+    let why = "Not merged: obid's gh isn't signed in to GitHub. Sign in to GitHub again, and Oby carries on.";
+    let card = within(30, "the card", || {
+        merge_cards(&obid).into_iter().find(|c| c["text"] == why)
+    });
+    assert_eq!(card["title"], "Not merged: Fix the thing");
+    assert_eq!(job(&obid)["mergeError"], why);
+    assert!(!calls(&folder.0).contains("-X PUT"));
+    // Signed in again, it carries on by itself.
+    std::fs::remove_file(folder.0.join("gh/signed-out")).unwrap();
+    within(30, "the job to be merged", || {
+        (job(&obid)["mergedBy"]["by"] == "memory").then_some(())
+    });
+    assert_eq!(job(&obid)["mergeNeedsYou"], false);
 }

@@ -932,6 +932,23 @@ pub fn review_item(job: &crate::job::Job, review: &str, error: &str) -> Item {
     }
 }
 
+/// The `failed` item on a job whose Oby reviews ran out ([`crate::review::REVIEWS`]) still asking
+/// for changes (`reviewNeedsYou`): One more round hands that review to its agent once more
+/// (`Jobs::review_round_again`), and Oby reviews what it pushes. Its id is [`review_item`]'s, so the
+/// next review settles it, and no event turn of Oby's answers it.
+pub fn reviews_ran_out_item(job: &crate::job::Job, review: &str) -> Item {
+    Item {
+        options: vec![crate::job::ONE_MORE_ROUND.into()],
+        details: Some(vec![
+            "Gives Oby's review to its agent for one more round, then Oby reviews it again.".into(),
+        ]),
+        ..review_item(job, review, RAN_OUT)
+    }
+}
+
+/// What [`reviews_ran_out_item`] says: the words of its alert.
+pub const RAN_OUT: &str = "Oby's review still asks for changes. Take it from here.";
+
 /// A permission item's id: `<job>-permission-<permission>`.
 pub fn permission_item_id(job: &str, permission: &str) -> String {
     format!("{job}-permission-{permission}")

@@ -176,6 +176,17 @@ pub struct ReviewFailed {
     pub needs_you: bool,
 }
 
+/// A passing run of a job's own check ([`Job::checked`]).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Checked {
+    /// The worktree's head it ran on, clean.
+    pub commit: String,
+    /// It said it left part of itself for the Mac, outside any box ([`crate::merge::MAC_LEFT`]).
+    #[serde(default)]
+    pub mac_left: bool,
+}
+
 /// Oby's latest verdict on a job's published work (docs/runner-api.md, "Oby's review").
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -292,6 +303,11 @@ pub struct Job {
     /// it went on without one, and its pull request says so. Kept in its file, never in the API.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub check_asked: bool,
+    /// The commit its own check last passed on, in its box, with nothing left uncommitted: what a
+    /// `mac` workflow's merge counts as the Mac's checks on that head (crate::merge, `mac_checks`).
+    /// Kept in its file, never in the API.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checked: Option<Checked>,
     pub model: Option<String>,
     pub effort: Option<String>,
     /// `model` is its account's (Settings › Agents, #1574), not one the job named: on another
@@ -750,6 +766,7 @@ impl Job {
             round: None,
             check: None,
             check_asked: false,
+            checked: None,
             model: None,
             effort: None,
             model_from_account: false,
