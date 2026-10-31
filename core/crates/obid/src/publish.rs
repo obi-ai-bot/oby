@@ -751,8 +751,15 @@ pub async fn publish(
         ));
     }
     let clone = target.clone.as_path();
-    // One commit from here on, so nothing added after the scan gets pushed.
-    let head = git_in(
+    // One commit from here on, so nothing added after the scan gets pushed: the one its check
+    // passed on, and only while its branch is still there (PUBLISHING-1, PUBLISHING-2).
+    let Some(head) = job.checked_head.clone().filter(|h| git::is_sha(h)) else {
+        return Err(Failure::Failed(format!(
+            "Not published: obid has no record of the commit {}'s check passed on.",
+            job.branch
+        )));
+    };
+    let now = git_in(
         clone,
         &[
             "rev-parse",
@@ -769,6 +776,12 @@ pub async fn publish(
             job.branch
         ))
     })?;
+    if now != head {
+        return Err(Failure::Failed(format!(
+            "Not published: {} moved since this job's check passed on it, so its commits now aren't the ones checked.",
+            job.branch
+        )));
+    }
     let ancestry = git_in(clone, &["rev-list", "--parents", "-n", "1", &head])
         .await
         .map_err(|_| {

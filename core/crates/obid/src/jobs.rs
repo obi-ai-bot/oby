@@ -2804,19 +2804,19 @@ impl Jobs {
             job.step = room_step(&wait);
             job.waiting = Some(wait);
         }
-        // A follow-up starts only when nothing else moves its branch: checked and taken under one
-        // lock (insert takes the same job again).
-        if job.follow_up_of.is_some() {
+        // A job starts only when nothing else moves its branch (PUBLISHING-4): checked and taken
+        // under one lock (insert takes the same job again). Refused rather than put on a branch of
+        // its own, so two jobs on one issue never make two pull requests for it.
+        {
             let mut state = self.lock();
             let active: Vec<&Job> = state
                 .jobs
                 .values()
                 .filter(|j| j.status.is_active())
                 .collect();
-            if let Some(other) = active
-                .iter()
-                .find(|j| !new.split && j.follow_up_of == job.follow_up_of)
-            {
+            if let Some(other) = active.iter().find(|j| {
+                !new.split && job.follow_up_of.is_some() && j.follow_up_of == job.follow_up_of
+            }) {
                 return Err(Refused(format!(
                     "{} (job {}) is following it up already: tell that one instead.",
                     other.short_title(),
@@ -2828,8 +2828,9 @@ impl Jobs {
                 .find(|j| j.repo == job.repo && j.branch == job.branch)
             {
                 return Err(Refused(format!(
-                    "{} is working on {} now: tell that one instead.",
+                    "{} (job {}) is working on {} now: tell that one instead.",
                     other.short_title(),
+                    other.id,
                     job.branch
                 )));
             }
@@ -9007,6 +9008,9 @@ impl Jobs {
             self.publish_artifacts(id).await;
             stages.begin("keep commits");
             let head = self.keep_commits(id).await?;
+            // What its check passed on (PUBLISHING-1): all that publishing will push, by itself
+            // or by hand, while its branch is still there.
+            self.update(id, |job| job.checked_head = Some(head.clone()));
             let job = self.get(id).ok_or("the job is gone")?;
             let folders = self.pinned_git(id).await.unwrap_or_default();
             let commits = self.counted(&job, &worktree, &folders, &head).await;
@@ -9139,7 +9143,9 @@ impl Jobs {
             // Publish times its own steps (PublishHooks).
             stages.end();
             use crate::publish::Failure;
-            let mut published = self.publish_job(id, Some(signal.clone()), |_| Ok(())).await;
+            let mut published = self
+                .publish_job(id, Some(signal.clone()), |_, _| Ok(()))
+                .await;
             // A try whose pull request failed pushed (#627): counted at once, so neither a stop
             // nor a later try's other failure forgets it.
             let mut went_out = false;
@@ -9172,7 +9178,9 @@ impl Jobs {
                     () = tokio::time::sleep(wait) => {}
                     _ = stop.wait_for(|s| *s != Signal::Run) => return Ok(()),
                 }
-                published = self.publish_job(id, Some(signal.clone()), |_| Ok(())).await;
+                published = self
+                    .publish_job(id, Some(signal.clone()), |_, _| Ok(()))
+                    .await;
                 count_push(&published);
             }
             if *signal.borrow() != Signal::Run {
@@ -10099,7 +10107,7 @@ impl Jobs {
         self: &Arc<Self>,
         id: &str,
         signal: Option<watch::Receiver<Signal>>,
-        may: impl FnOnce(&Job) -> Result<(), crate::publish::Failure>,
+        may: impl FnOnce(&Job, &HashMap<String, Job>) -> Result<(), crate::publish::Failure>,
     ) -> Result<Option<String>, crate::publish::Failure> {
         use crate::publish::Failure;
         // `may` and the claim under one lock: nothing changes the job between them.
@@ -10110,7 +10118,7 @@ impl Jobs {
                 .get(id)
                 .cloned()
                 .ok_or_else(|| Failure::Failed("There's no such job.".into()))?;
-            may(&job)?;
+            may(&job, &state.jobs)?;
             if !state.publishing.insert(id.to_owned()) {
                 return Err(Failure::Busy);
             }
@@ -10154,13 +10162,17 @@ impl Jobs {
     /// What publishing the job `id` by hand would do: obid's own sentence and the base, or why
     /// there's nothing to publish (`409`).
     pub fn publish_action(&self, id: &str) -> Option<Result<(String, String), String>> {
-        Some(publish_action_of(&self.get(id)?))
+        let state = self.lock();
+        Some(publish_action_of(state.jobs.get(id)?, &state.jobs))
     }
 
     /// [`Jobs::publish_action`], said to a device that will ask its owner to approve it: obid
     /// keeps, with the job, which of its runs it described and when (`Job::offers`).
     pub fn offer_publish(&self, id: &str) -> Option<Result<(String, String), String>> {
-        let answer = publish_action_of(&self.get(id)?);
+        let answer = {
+            let state = self.lock();
+            publish_action_of(state.jobs.get(id)?, &state.jobs)
+        };
         if answer.is_ok() {
             self.update(id, |job| job.offered(obi_protocol::time::now()));
         }
@@ -10185,8 +10197,8 @@ impl Jobs {
     ) -> Result<Option<String>, String> {
         use crate::publish::Failure;
         // Still obid's own sentence for the run that was approved, checked as it's claimed.
-        let may = |job: &Job| {
-            match publish_action_of(job) {
+        let may = |job: &Job, jobs: &HashMap<String, Job>| {
+            match publish_action_of(job, jobs) {
             Ok(_) if !job.approvable_at(signed_at) => Err(Failure::Refused(
                 "The job ran again since obid said what publishing it would do. Approve it again in two minutes.".into(),
             )),
@@ -10847,10 +10859,20 @@ fn carries(job: &Job) -> bool {
 }
 
 /// What publishing `job` by hand would do: obid's own sentence and the base, or why there's
-/// nothing to publish.
-fn publish_action_of(job: &Job) -> Result<(String, String), String> {
-    match (&job.base, job.can_publish()) {
-        (Some(base), true) => Ok((crate::publish::action(job, base), base.clone())),
+/// nothing to publish. Never while a follow-up (of every job obid has, `jobs`) carries its branch
+/// on, as Try again and delete refuse then (PUBLISHING-3): that one publishes the branch.
+fn publish_action_of(job: &Job, jobs: &HashMap<String, Job>) -> Result<(String, String), String> {
+    let carried = jobs.values().find(|j| {
+        j.id != job.id
+            && j.follow_up_of.as_deref() == Some(job.id.as_str())
+            && j.branch == job.branch
+    });
+    match (&job.base, job.can_publish(), carried) {
+        (Some(_), true, Some(next)) => Err(format!(
+            "Its follow-up {} carries its branch on: publish that one instead.",
+            next.short_title()
+        )),
+        (Some(base), true, None) => Ok((crate::publish::action(job, base), base.clone())),
         _ => Err(if job.dismissed.is_some() {
             "It was dismissed: there's nothing to publish.".into()
         } else if job.status != Status::Done {
@@ -14355,11 +14377,12 @@ mod tests {
         cleanup_git(&clone, &["commit", "-q", "--allow-empty", "-m", "base"]);
         cleanup_git(&clone, &["commit", "-q", "--allow-empty", "-m", "work"]);
         cleanup_git(&clone, &["branch", "oby/build-eeee0001"]);
+        job.checked_head = Some(cleanup_git(&clone, &["rev-parse", "HEAD"]));
         let jobs = jobs_with_kept(&home, &[&job]);
         // Its base's fetch waits for the repository's lock, held here.
         let preparing = jobs.preparing("o/r");
         let held = preparing.lock().await;
-        let mut publishing = Box::pin(jobs.publish_job("eeee0001", None, |_| Ok(())));
+        let mut publishing = Box::pin(jobs.publish_job("eeee0001", None, |_, _| Ok(())));
         let waited = tokio::time::timeout(Duration::from_secs(2), &mut publishing).await;
         assert!(waited.is_err(), "it waits on the lock: {waited:?}");
         assert!(

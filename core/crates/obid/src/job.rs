@@ -315,6 +315,10 @@ pub struct Job {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stalled: Option<Stalled>,
     pub start_commit: Option<String>,
+    /// The commit its branch was at when its check passed (none ran, when it has none) and it
+    /// ended done: the only commit publishing pushes (docs/contracts/publishing.md, PUBLISHING-1).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checked_head: Option<String>,
     pub mode: Option<String>,
     pub waiting: Option<Waiting>,
     pub phase: Option<Phase>,
@@ -761,6 +765,7 @@ impl Job {
             limit: None,
             stalled: None,
             start_commit: None,
+            checked_head: None,
             mode: None,
             waiting: None,
             phase: None,

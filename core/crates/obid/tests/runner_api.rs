@@ -595,7 +595,7 @@ fn dispatched_jobs_keep_their_mode() {
     assert_eq!(given["mode"], "acceptEdits");
     let defaulted = dispatch(
         &obid,
-        json!({"repo": "obi-e2e/fixture-app", "kind": "fix", "task": "Fix #12", "issue": 12}),
+        json!({"repo": "obi-e2e/fixture-app", "kind": "fix", "task": "Fix #13", "issue": 13}),
     );
     assert_eq!(
         defaulted["mode"],
@@ -612,6 +612,50 @@ fn dispatched_jobs_keep_their_mode() {
         ),
     );
     assert_eq!(refused.status, 422);
+    call(&obid, "POST", "/v1/stop-all", None);
+}
+
+/// PUBLISHING-4 (docs/contracts/publishing.md), the core audit's second trigger (#1635): "fix issue
+/// 34" twice, and the second is refused while the first works on `oby/fix-34`, naming it; so is a
+/// job that names that branch itself. Another issue, or the first one stopped, starts.
+#[test]
+fn publishing_4_two_jobs_on_one_issue_never_share_a_branch() {
+    let folder = Folder::new("busy-branch");
+    let (obid, _) = obid(&folder);
+    let first = dispatch(
+        &obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "fix", "task": "SLEEP", "issue": 34}),
+    );
+    assert_eq!(first["branch"], "oby/fix-34");
+    let id = first["id"].as_str().unwrap();
+    for job in [
+        json!({"repo": "obi-e2e/fixture-app", "kind": "fix", "task": "Fix #34", "issue": 34}),
+        json!({"repo": "obi-e2e/fixture-app", "kind": "build", "task": "Fix it", "branch": "oby/fix-34"}),
+    ] {
+        let refused = call(&obid, "POST", "/v1/jobs", Some(&json!({"job": job})));
+        assert_eq!(refused.status, 422, "{}", refused.text);
+        let error = refused.body["error"].as_str().unwrap();
+        assert!(
+            error.contains(&format!("(job {id}) is working on oby/fix-34 now")),
+            "{error}"
+        );
+    }
+    let other = dispatch(
+        &obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "fix", "task": "SLEEP", "issue": 35}),
+    );
+    assert_eq!(other["branch"], "oby/fix-35");
+    call(&obid, "POST", "/v1/stop-all", None);
+    let stopped = within(30, "the first job to stop", || {
+        let job = job(&obid, id);
+        (job["status"] == "stopped").then_some(job)
+    });
+    assert_eq!(stopped["branch"], "oby/fix-34");
+    let again = dispatch(
+        &obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "fix", "task": "Fix #34", "issue": 34}),
+    );
+    assert_eq!(again["branch"], "oby/fix-34");
     call(&obid, "POST", "/v1/stop-all", None);
 }
 
