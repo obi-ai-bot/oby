@@ -1095,6 +1095,11 @@ impl Job {
         self.pull_request.as_ref().is_none_or(|pr| pr.is_open())
     }
 
+    /// Whether it has a pull request, and obid knows it was merged or closed.
+    pub fn pull_request_ended(&self) -> bool {
+        self.pull_request.as_ref().is_some_and(|pr| !pr.is_open())
+    }
+
     /// Done, with commits that aren't on its pull request yet: obid publishes it when it ends, and
     /// offers Publish when that failed. Not once dismissed, never on a review or research job,
     /// never once its pull request was merged or closed, and only while its branch is at the
@@ -1108,6 +1113,19 @@ impl Job {
             && self.dismissed.is_none()
             && self.pull_request_open()
             && self.checked_head.is_some()
+    }
+
+    /// Failed or interrupted, and nothing of it waits on the owner any more (TASKS-13): its pull
+    /// request, an Oby review's being `reviewed`'s, was merged or closed. Not with commits that
+    /// never went out, as [`Job::stranded`] keeps them; not one an account limit holds, the
+    /// owner's decision (#1563); not one obid is `publishing`; not one already let go.
+    pub fn ended_with_its_pull_request(&self, reviewed: Option<&Job>, publishing: bool) -> bool {
+        self.dismissed.is_none()
+            && matches!(self.status, Status::Failed | Status::Interrupted)
+            && self.unpublished() == 0
+            && !self.account_limit_blocked
+            && !publishing
+            && (self.pull_request_ended() || reviewed.is_some_and(Job::pull_request_ended))
     }
 
     /// Done with commits its pull request will never take: it was merged or closed before they
@@ -2334,5 +2352,76 @@ mod tests {
         assert_eq!(job.to_json()["reviewNeedsYou"], true);
         push(&mut job, "efg");
         assert!(!job.review_needs_you() && job.review_failed_here().is_none());
+    }
+
+    /// TASKS-13: a failed or interrupted task is let go by obid once its pull request (an Oby
+    /// review's: the one it reviewed) was merged or closed; each rule below keeps one that still
+    /// needs the owner.
+    #[test]
+    fn tasks_13_a_task_ended_with_its_pull_request_is_let_go_unless_it_needs_the_owner() {
+        let pr = |state: &str| crate::github::PullRequest {
+            state: state.into(),
+            review_decision: None,
+            base: "dev".into(),
+            merged_at: None,
+            checked_at: 0,
+            head: None,
+        };
+        let ended = |state: &str| {
+            let mut job = Job::new(
+                "j1".into(),
+                "o/r".into(),
+                "fix".into(),
+                "Fix it".into(),
+                "claude".into(),
+                "Default".into(),
+            );
+            job.status = Status::Failed;
+            job.published = Some("https://github.com/o/r/pull/1".into());
+            job.commits = Some(1);
+            job.pushed = Some(1);
+            job.pull_request = Some(pr(state));
+            job
+        };
+        for state in ["MERGED", "CLOSED"] {
+            assert!(
+                ended(state).ended_with_its_pull_request(None, false),
+                "{state}"
+            );
+        }
+        let mut interrupted = ended("CLOSED");
+        interrupted.status = Status::Interrupted;
+        assert!(interrupted.ended_with_its_pull_request(None, false));
+        // Still open, done, or let go already: nothing to do.
+        assert!(!ended("OPEN").ended_with_its_pull_request(None, false));
+        let mut done = ended("CLOSED");
+        done.status = Status::Done;
+        assert!(!done.ended_with_its_pull_request(None, false));
+        let mut let_go = ended("CLOSED");
+        let_go.dismissed = Some(1);
+        assert!(!let_go.ended_with_its_pull_request(None, false));
+
+        // Commits that never went out stay the owner's.
+        let mut unpublished = ended("CLOSED");
+        unpublished.commits = Some(2);
+        assert!(!unpublished.ended_with_its_pull_request(None, false));
+        // An account limit's hold is the owner's decision (#1563).
+        let mut held = ended("CLOSED");
+        held.account_limit_blocked = true;
+        assert!(!held.ended_with_its_pull_request(None, false));
+        // A task obid is publishing stays.
+        assert!(!ended("CLOSED").ended_with_its_pull_request(None, true));
+
+        // An Oby review has no pull request of its own: the one it reviewed counts.
+        let mut review = ended("OPEN");
+        review.kind = "review".into();
+        review.published = None;
+        review.pull_request = None;
+        review.commits = None;
+        review.pushed = None;
+        review.review_of = Some("j0".into());
+        assert!(!review.ended_with_its_pull_request(None, false));
+        assert!(!review.ended_with_its_pull_request(Some(&ended("OPEN")), false));
+        assert!(review.ended_with_its_pull_request(Some(&ended("CLOSED")), false));
     }
 }

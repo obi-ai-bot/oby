@@ -47,6 +47,8 @@ pub const CHECK_TOO_LONG: &str = "obid stopped it after 20 minutes, the most a t
 const CHECK_OUTPUT_MAX: usize = 64 * 1024;
 /// Why a job that commits ended done with nothing to publish.
 const NOTHING_COMMITTED: &str = "Nothing committed, so nothing was published.";
+/// In the changes of a task obid let go itself (TASKS-13): not the owner's Dismiss.
+pub const LET_GO: &str = "Oby let it go: its pull request was merged or closed.";
 /// How long git in a job's sandbox may take.
 const SANDBOXED_GIT_LIMIT: Duration = Duration::from_secs(600);
 /// How much of what git in a job's sandbox says on stderr obid keeps: its end.
@@ -11229,6 +11231,7 @@ impl Jobs {
                 return;
             }
             self.read_pull_requests().await;
+            self.let_go_ended();
             if self.settle_reviews() {
                 self.schedule();
             }
@@ -11237,6 +11240,35 @@ impl Jobs {
                 _ = tokio::time::sleep(follow_tick()) => {}
                 _ = woken => {}
             }
+        }
+    }
+
+    /// Lets go of the failed or interrupted jobs nothing waits on since their pull request was
+    /// merged or closed ([`Job::ended_with_its_pull_request`], TASKS-13), so Home doesn't keep
+    /// them, saying so in their changes ([`LET_GO`]): obid let it go, not the owner.
+    fn let_go_ended(&self) {
+        let now = obi_protocol::time::now();
+        let ended: Vec<String> = {
+            let state = self.lock();
+            state
+                .jobs
+                .values()
+                .filter(|job| {
+                    let reviewed = job.review_of.as_ref().and_then(|of| state.jobs.get(of));
+                    job.ended_with_its_pull_request(reviewed, state.publishing.contains(&job.id))
+                })
+                .map(|job| job.id.clone())
+                .collect()
+        };
+        for id in &ended {
+            self.update(id, |job| {
+                job.dismissed.get_or_insert(now);
+                job.resumes_at = None;
+                job.changed(LET_GO.to_owned());
+            });
+        }
+        if !ended.is_empty() {
+            self.cleaning.notify_one();
         }
     }
 

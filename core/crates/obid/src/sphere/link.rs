@@ -2873,12 +2873,18 @@ fn closed_start(mut item: Item, why: &str, now: i64) -> Item {
 
 /// Whether the open `item` waits on nothing any more (TASKS-13): it's about one of this Mac's own
 /// jobs (its question, permission, plan, merge card, limit, or obid's crash or review failure),
-/// and that job is gone, or ended let go or with its pull request merged or closed; or it's Oby's
+/// and that job is gone, or ended let go or with its pull request merged or closed (an Oby review's
+/// is the one it reviewed, `reviewed`'s); or it's Oby's
 /// own escalation (`orchestrator::escalate`, only Done) on an ended job with an open merge card,
 /// crash or review failure or limit, where obid offers the decision now (MERGING-8's). A queued or running job's items stay,
 /// as does everything not about a job: confirms, offers, GitHub's, another Obi's, a teammate
 /// approval to remove on GitHub. `open`: every open item.
-pub(crate) fn is_stale(item: &Item, job: Option<&crate::job::Job>, open: &[&Item]) -> bool {
+pub(crate) fn is_stale(
+    item: &Item,
+    job: Option<&crate::job::Job>,
+    reviewed: Option<&crate::job::Job>,
+    open: &[&Item],
+) -> bool {
     let about_job = !item.job.is_empty()
         && match item.kind.as_str() {
             "question" | "merge" | "limit" | "permission" | "plan" | inbox::QUESTION_KIND => true,
@@ -2894,10 +2900,7 @@ pub(crate) fn is_stale(item: &Item, job: Option<&crate::job::Job>, open: &[&Item
     if job.status.is_active() {
         return false;
     }
-    let pr_ended = job
-        .pull_request
-        .as_ref()
-        .is_some_and(|pr| matches!(pr.state.as_str(), "MERGED" | "CLOSED"));
+    let pr_ended = job.pull_request_ended() || reviewed.is_some_and(|r| r.pull_request_ended());
     // Where obid offers the decision itself: a merge card, its crash or review failure, a limit.
     let offers = |i: &Item| {
         matches!(i.kind.as_str(), "merge" | "limit")
@@ -3989,48 +3992,71 @@ mod tests {
         // Its pull request merged or closed, let go, or gone: its own items settle.
         for job in [ended(Some("MERGED")), ended(Some("CLOSED"))] {
             for item in [&escalation, &merge, &crash] {
-                assert!(is_stale(item, Some(&job), &all), "{}", item.id);
+                assert!(is_stale(item, Some(&job), None, &all), "{}", item.id);
             }
         }
         let mut let_go = ended(Some("OPEN"));
         let_go.dismissed = Some(1);
-        assert!(is_stale(&merge, Some(&let_go), &all));
-        assert!(is_stale(&escalation, None, &all));
+        assert!(is_stale(&merge, Some(&let_go), None, &all));
+        assert!(is_stale(&escalation, None, None, &all));
         // What isn't about the job stays, whatever became of it: a teammate approval to remove on
         // GitHub, a Confirm.
         for item in [&dismissal, &confirm] {
-            assert!(!is_stale(item, None, &all), "{}", item.id);
-            assert!(!is_stale(item, Some(&ended(Some("MERGED"))), &all));
+            assert!(!is_stale(item, None, None, &all), "{}", item.id);
+            assert!(!is_stale(item, Some(&ended(Some("MERGED"))), None, &all));
         }
 
         // Its pull request still open: the merge card waits for the owner; Oby's escalation beside
         // it settles (obid offers the decision there), and alone it stays.
         let open = ended(Some("OPEN"));
-        assert!(!is_stale(&merge, Some(&open), &all));
-        assert!(is_stale(&escalation, Some(&open), &all));
-        assert!(!is_stale(&escalation, Some(&open), &[&escalation]));
+        assert!(!is_stale(&merge, Some(&open), None, &all));
+        assert!(is_stale(&escalation, Some(&open), None, &all));
+        assert!(!is_stale(&escalation, Some(&open), None, &[&escalation]));
         // Beside a Confirm (or anything else that isn't obid offering that decision), it stays.
         assert!(!is_stale(
             &escalation,
             Some(&open),
+            None,
             &[&escalation, &confirm]
         ));
 
         // A running job's items stay, even with its pull request merged.
         let mut running = ended(Some("MERGED"));
         running.status = Status::Running;
-        assert!(!is_stale(&escalation, Some(&running), &all));
+        assert!(!is_stale(&escalation, Some(&running), None, &all));
         assert!(!is_stale(
             &of("j1-permission-p1", "permission"),
             Some(&running),
+            None,
             &all
         ));
+
+        // An Oby review's items (its crash card, a permission left over) follow the pull request
+        // it reviewed: its own job has none.
+        let mut review = ended(None);
+        review.status = Status::Failed;
+        review.review_of = Some("j0".into());
+        let permission = of("j1-permission-p1", "permission");
+        for item in [&crash, &permission] {
+            assert!(
+                !is_stale(item, Some(&review), Some(&open), &all),
+                "{}",
+                item.id
+            );
+            for reviewed in [ended(Some("MERGED")), ended(Some("CLOSED"))] {
+                assert!(
+                    is_stale(item, Some(&review), Some(&reviewed), &all),
+                    "{}",
+                    item.id
+                );
+            }
+        }
 
         // An item about no job, a shell's permission, stays.
         let shell = Item {
             job: String::new(),
             ..of("shell-c1-p1", "permission")
         };
-        assert!(!is_stale(&shell, None, &all));
+        assert!(!is_stale(&shell, None, None, &all));
     }
 }

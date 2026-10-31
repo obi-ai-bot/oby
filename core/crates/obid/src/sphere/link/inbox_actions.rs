@@ -766,10 +766,18 @@ impl Link {
             .iter()
             .filter_map(|i| self.jobs.get(&i.job).map(|j| (i.job.as_str(), j)))
             .collect();
+        // An Oby review's pull request is the one it reviewed.
+        let reviewed: HashMap<&str, crate::job::Job> = jobs
+            .iter()
+            .filter_map(|(id, j)| Some((*id, self.jobs.get(j.review_of.as_deref()?)?)))
+            .collect();
         let all: Vec<&Item> = open.iter().collect();
         let stale: Vec<&str> = open
             .iter()
-            .filter(|i| is_stale(i, jobs.get(i.job.as_str()), &all))
+            .filter(|i| {
+                let job = i.job.as_str();
+                is_stale(i, jobs.get(job), reviewed.get(job), &all)
+            })
             .map(|i| i.id.as_str())
             .collect();
         for id in stale {
