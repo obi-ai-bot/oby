@@ -102,7 +102,7 @@ pub(super) fn list() -> Value {
              "required": ["repo", "action"]}},
         {"name": "oby_settings", "description": "Changes Settings when the owner asks: how many jobs run at once (maxRunning), account failover for conversations (accountFailover), and the default permission mode (defaultMode). A mode that asks less than the default does now waits for their Confirm on a turn that read something untrusted. With nothing, says how they are.",
          "inputSchema": {"type": "object", "properties": {
-             "maxRunning": {"type": "integer", "minimum": 1, "maximum": 20},
+             "maxRunning": {"type": "integer", "minimum": 1, "description": "1 to the owner's ceiling (20 unless they raised it)."},
              "accountFailover": {"type": "boolean"},
              "defaultMode": {"type": "string", "enum": ["ask", "acceptEdits", "plan", "sandbox", "bypass"]}}}},
         {"name": "oby_routines", "description": "Lists the owner's routines (requests Oby runs on a schedule, a job each time): id, name, schedule, next run, on or paused, and the last run.",

@@ -932,7 +932,7 @@ impl Link {
         }
         let body = json!({"answer": answer}).to_string();
         let answered = self
-            .answer_as(id, body.as_bytes(), Some((&item.title, time::now())))
+            .answer_as(id, body.as_bytes(), Some((&item.title, time::now())), false)
             .await;
         answered.map(|shown| self.with_triage(shown))
     }

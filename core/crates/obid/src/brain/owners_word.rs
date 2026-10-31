@@ -178,7 +178,12 @@ async fn merge_at(
                 "{name} is the pull request of a review another Oby asked for: it isn't yours to merge from here."
             ));
         }
-        return match jobs.merge_by_owner(&job.id, head, false).await? {
+        // As an answer no app of the owner's signed on a card: the holds of before 2026-10-31,
+        // never one only their signed answer to a card naming it lifts (MERGING-20).
+        return match jobs
+            .merge_by_owner(&job.id, head, false, crate::merge::Lift::Before)
+            .await?
+        {
             Some(note) => Ok(note),
             None => Ok(format!(
                 "Merged {name}, {}'s pull request.",
@@ -495,10 +500,15 @@ impl Settings {
         if self.max_running.is_none() && self.account_failover.is_none() && mode.is_none() {
             return Err("Say what to change: maxRunning, accountFailover or defaultMode.".into());
         }
+        let range = crate::settings::max_running_range();
         if let Some(max) = self.max_running
-            && !crate::settings::MAX_RUNNING_RANGE.contains(&max)
+            && !range.contains(&max)
         {
-            return Err("maxRunning is 1 to 20.".into());
+            return Err(format!(
+                "maxRunning is {} to {}: the owner's ceiling, which Settings raises.",
+                range.start(),
+                range.end()
+            ));
         }
         let was = Now::of(jobs);
         let unkept =
