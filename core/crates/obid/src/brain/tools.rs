@@ -324,7 +324,10 @@ async fn call(
         "oby_jobs" => Ok(jobs(shared, session, args)?),
         "oby_job" => {
             let One { id } = parse(args)?;
-            let job = shared.jobs.get(&id).ok_or("There's no job with that id.")?;
+            let job = shared
+                .jobs
+                .get(&id)
+                .ok_or("There's no task with that id.")?;
             session.taint();
             Ok(quoted(
                 session,
@@ -366,7 +369,7 @@ async fn call(
                 Some(Ok(_)) if archived => Ok(format!("Archived {name}.")),
                 Some(Ok(_)) => Ok(format!("Unarchived {name}.")),
                 Some(Err(refused)) => Err(format!("Couldn't archive {name}: {}", refused.0)),
-                None => Err("That job isn't here any more.".into()),
+                None => Err("That task isn't here any more.".into()),
             }
         }
         "oby_delete_job" => {
@@ -523,7 +526,7 @@ const BY_OBY: &str = "by Oby, in a conversation";
 
 /// The job `id`, when it's the owner's own: never a review another Obi asked for.
 fn owners_job(shared: &Shared, id: &str) -> Result<crate::job::Job, String> {
-    let job = shared.jobs.get(id).ok_or("There's no job with that id.")?;
+    let job = shared.jobs.get(id).ok_or("There's no task with that id.")?;
     match foreign(&job) {
         Some(why) => Err(why.into()),
         None => Ok(job),
@@ -716,7 +719,7 @@ fn settings(shared: &Arc<Shared>, session: &Session, args: Value) -> Result<Stri
     let asked: super::owners_word::Settings = parse(args)?;
     if asked == super::owners_word::Settings::default() {
         return Ok(format!(
-            "{} jobs at once; account failover {}; {} is the default mode.",
+            "{} tasks at once; account failover {}; {} is the default mode.",
             shared.jobs.max_running(),
             if shared.jobs.account_failover() {
                 "on"
@@ -841,7 +844,7 @@ fn continue_job(shared: &Arc<Shared>, session: &Session, args: Value) -> Result<
                 Ok(format!("Continuing {name}: round {}.", job.current_round()))
             }
             Some(Err(refused)) => Err(format!("Couldn't continue {name}: {}", refused.0)),
-            None => Err("That job isn't here any more.".into()),
+            None => Err("That task isn't here any more.".into()),
         };
     }
     let why = waits(session, &job).or(bypass.then_some("it runs in Bypass mode, never asking"));
@@ -873,7 +876,7 @@ fn continue_job(shared: &Arc<Shared>, session: &Session, args: Value) -> Result<
     ) {
         Some(Ok(job)) => Ok(format!("Continuing {name}: round {}.", job.current_round())),
         Some(Err(refused)) => Err(format!("Couldn't continue {name}: {}", refused.0)),
-        None => Err("That job isn't here any more.".into()),
+        None => Err("That task isn't here any more.".into()),
     }
 }
 
@@ -1002,7 +1005,7 @@ fn change_job(shared: &Arc<Shared>, session: &Session, args: Value) -> Result<St
         shared
             .jobs
             .set_mode(&id, mode)
-            .ok_or("That job isn't here any more.")?;
+            .ok_or("That task isn't here any more.")?;
         shared.jobs.note_change(
             &id,
             format!(
@@ -1031,7 +1034,7 @@ fn change_job(shared: &Arc<Shared>, session: &Session, args: Value) -> Result<St
                     return Err(done.join(" "));
                 }
             }
-            None => return Err("That job isn't here any more.".into()),
+            None => return Err("That task isn't here any more.".into()),
         }
     }
     Ok(done.join(" "))
@@ -1749,7 +1752,7 @@ async fn tell(
     let job = shared
         .jobs
         .get(&id)
-        .ok_or("That job isn't here any more.")?;
+        .ok_or("That task isn't here any more.")?;
     // Its agent's question is the owner's to answer (#858): their words answer it on their own
     // word, else on their Confirm of these words (TASKCONV-9).
     if let Some(question) = job.permission.as_ref().filter(|p| p.is_question()) {

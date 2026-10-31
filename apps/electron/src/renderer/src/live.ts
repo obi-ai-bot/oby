@@ -203,7 +203,9 @@ export const itemAsk = (item: InboxItem, detail?: string): Ask => {
     return { kind: 'merge', label, headline, text: rest.join(' '), options: item.options, recommended: item.recommended ?? undefined };
   }
   return {
-    kind: LABELLED[item.kind] ?? item.kind as AskKind, headline: item.headline ?? item.title, text: item.headline ? item.text : '',
+    // obid's own question (Oby's escalation, a stalled task): its why and what Oby recommends are
+    // its text, shown under its title (TASKS-14)
+    kind: LABELLED[item.kind] ?? item.kind as AskKind, headline: item.headline ?? item.title, text: item.headline || item.kind === 'question' ? item.text : '',
     options: item.options, recommended: item.recommended ?? undefined, detail: detail ?? item.watch?.review ?? undefined,
     ...(label ? { label } : {}),
   };

@@ -287,7 +287,7 @@ async fn dispatch(
                 "",
                 format!("Start {what}"),
                 format!(
-                    "Oby's brain planned a job that never asks you anything: {what}. It starts only if you confirm."
+                    "Oby's brain planned a task that never asks you anything: {what}. It starts only if you confirm."
                 ),
                 Confirmed {
                     action: action::START_JOB.into(),
@@ -537,7 +537,7 @@ pub async fn act(
                 .map(|id| shared.jobs.get(id).map_or(id.clone(), |j| j.short_title()))
                 .collect();
             Outcome::Failed(format!(
-                "Couldn't move {}: obid can't move a job to another tool, account or model yet (#447).",
+                "Couldn't move {}: Oby can't move a task to another tool, account or model yet (#447).",
                 if names.len() == 1 {
                     "it".to_owned()
                 } else {
@@ -562,14 +562,14 @@ pub async fn act(
 fn on_jobs(shared: &Arc<Shared>, plan: &Plan, source: Source, conversation: &str) -> Outcome {
     let ids = plan.named();
     if ids.is_empty() {
-        return Outcome::NeedsWhich("Say which job.".into());
+        return Outcome::NeedsWhich("Say which task.".into());
     }
     let mut lines: Vec<String> = vec![];
     let mut any = false;
     for id in ids {
         let Some(job) = shared.jobs.get(id) else {
             lines.push(if ids.len() == 1 {
-                "That job isn't here any more.".into()
+                "That task isn't here any more.".into()
             } else {
                 format!("Couldn't do that for {id}: it isn't here any more.")
             });
@@ -655,7 +655,7 @@ fn retry(shared: &Arc<Shared>, job: &Job, theirs: bool) -> (String, bool) {
             true,
         ),
         Some(Err(refused)) => (format!("Couldn't try {name} again: {}", refused.0), false),
-        None => ("That job isn't here any more.".into(), false),
+        None => ("That task isn't here any more.".into(), false),
     }
 }
 
@@ -711,7 +711,7 @@ fn dismiss(shared: &Arc<Shared>, job: &Job, theirs: bool) -> (String, bool) {
     match shared.jobs.dismiss(&job.id) {
         Some(Ok(_)) => (format!("Dismissed {name}{kept}."), true),
         Some(Err(refused)) => (format!("Couldn't let {name} go: {}", refused.0), false),
-        None => ("That job isn't here any more.".into(), false),
+        None => ("That task isn't here any more.".into(), false),
     }
 }
 
@@ -730,10 +730,10 @@ fn message_job(
     turn: &str,
 ) -> Outcome {
     let Some(id) = plan.named().first() else {
-        return Outcome::Failed("Say which job to tell.".into());
+        return Outcome::Failed("Say which task to tell.".into());
     };
     let Some(job) = shared.jobs.get(id) else {
-        return Outcome::Failed("That job isn't here any more.".into());
+        return Outcome::Failed("That task isn't here any more.".into());
     };
     let name = job.short_title();
     let words = match crate::vault::for_agent(said.trim()) {
@@ -774,7 +774,7 @@ fn message_job(
     match shared.jobs.relay(&job.id, &words, source, foreign) {
         Some(Ok(_)) => Outcome::Done(format!("Told {name} what you said.")),
         Some(Err(refused)) => Outcome::Failed(format!("Couldn't tell {name}: {}", refused.0)),
-        None => Outcome::Failed("That job isn't here any more.".into()),
+        None => Outcome::Failed("That task isn't here any more.".into()),
     }
 }
 
@@ -848,10 +848,10 @@ pub(super) fn already_on_it(
             heard.to_json(),
         ),
         Some(Err(refused)) => Outcome::Failed(format!(
-            "Couldn't tell {follow} (job {}), which is following up {name}: {}",
-            next.id, refused.0
+            "Couldn't tell {follow}, which is following up {name}: {}",
+            refused.0
         )),
-        None => Outcome::Failed("That job isn't here any more.".into()),
+        None => Outcome::Failed("That task isn't here any more.".into()),
     }
 }
 
@@ -1193,15 +1193,15 @@ fn set_setting(shared: &Arc<Shared>, plan: &Plan) -> Outcome {
     };
     let old = shared.jobs.max_running();
     match u32::try_from(max).map(|max| shared.jobs.set_max_running(max)) {
-        Ok(Ok(new)) => Outcome::Done(format!("Changed jobs at once from {old} to {new}.")),
+        Ok(Ok(new)) => Outcome::Done(format!("Changed tasks at once from {old} to {new}.")),
         Ok(Err(crate::jobs::SettingsError::Refused(why))) => {
-            Outcome::Failed(format!("Couldn't change jobs at once: {why}"))
+            Outcome::Failed(format!("Couldn't change tasks at once: {why}"))
         }
         Ok(Err(crate::jobs::SettingsError::Unkept(e))) => Outcome::Failed(format!(
-            "Couldn't change jobs at once: it couldn't be kept ({e})."
+            "Couldn't change tasks at once: it couldn't be kept ({e})."
         )),
         Err(_) => Outcome::Failed(format!(
-            "Couldn't change jobs at once: maxRunning is 1 to {}.",
+            "Couldn't change tasks at once: maxRunning is 1 to {}.",
             crate::settings::limits().max_running()
         )),
     }
@@ -1212,7 +1212,7 @@ fn set_setting(shared: &Arc<Shared>, plan: &Plan) -> Outcome {
 fn stop(shared: &Arc<Shared>, plan: &Plan) -> Outcome {
     let named = plan.named();
     if named.is_empty() && plan.all != Some(true) {
-        return Outcome::NeedsWhich("Say which job to stop, or “stop everything”.".into());
+        return Outcome::NeedsWhich("Say which task to stop, or “stop everything”.".into());
     }
     if named.is_empty() {
         let stopped = shared.jobs.stop_all();
@@ -1220,7 +1220,7 @@ fn stop(shared: &Arc<Shared>, plan: &Plan) -> Outcome {
             "Nothing is running.".into()
         } else {
             format!(
-                "Stopped {} job{}.",
+                "Stopped {} task{}.",
                 stopped.len(),
                 if stopped.len() == 1 { "" } else { "s" }
             )
@@ -1234,7 +1234,7 @@ fn stop(shared: &Arc<Shared>, plan: &Plan) -> Outcome {
         }
     }
     Outcome::Done(if stopped.is_empty() {
-        "That job isn't running any more.".into()
+        "That task isn't running any more.".into()
     } else {
         format!("Stopped {}.", stopped.join(", "))
     })
@@ -1274,7 +1274,7 @@ fn set_mode(shared: &Arc<Shared>, plan: &Plan) -> Outcome {
             ));
         }
         if jobs.is_empty() {
-            return Outcome::Done("That job isn't running any more.".into());
+            return Outcome::Done("That task isn't running any more.".into());
         }
         let names: Vec<String> = jobs.iter().map(crate::job::Job::short_title).collect();
         // One item per job: each is the owner's own decision.
@@ -1285,7 +1285,7 @@ fn set_mode(shared: &Arc<Shared>, plan: &Plan) -> Outcome {
                 &job.id,
                 format!("Stop asking on {name}: Bypass mode"),
                 format!(
-                    "Oby's brain planned Bypass mode for {name}: obid answers everything by its rules, and the job stops asking you. It happens only if you confirm."
+                    "Oby's brain planned Bypass mode for {name}: obid answers everything by its rules, and the task stops asking you. It happens only if you confirm."
                 ),
                 Confirmed {
                     action: action::SET_MODE_BYPASS.into(),
@@ -1324,7 +1324,7 @@ fn set_mode(shared: &Arc<Shared>, plan: &Plan) -> Outcome {
         ));
     }
     if done.is_empty() {
-        return Outcome::Done("That job isn't running any more.".into());
+        return Outcome::Done("That task isn't running any more.".into());
     }
     Outcome::Done(format!(
         "{} {} in {} mode now.",
@@ -1338,10 +1338,10 @@ fn set_mode(shared: &Arc<Shared>, plan: &Plan) -> Outcome {
 /// the job the conversation is about.
 fn answer_permission(shared: &Arc<Shared>, plan: &Plan, conversation: &str) -> Outcome {
     let (Some(id), Some(decision)) = (plan.named().first(), plan.decision) else {
-        return Outcome::NeedsWhich("Say which job to answer.".into());
+        return Outcome::NeedsWhich("Say which task to answer.".into());
     };
     let Some(job) = shared.jobs.get(id) else {
-        return Outcome::Done("That job isn't waiting for your OK any more.".into());
+        return Outcome::Done("That task isn't waiting for your OK any more.".into());
     };
     let name = job.short_title();
     let Some(permission) = job.permission.as_ref() else {
@@ -1424,7 +1424,7 @@ fn answer_permission(shared: &Arc<Shared>, plan: &Plan, conversation: &str) -> O
             ),
         }),
         Err(PermissionRefused::NoJob) => {
-            Outcome::Done("That job isn't waiting for your OK any more.".into())
+            Outcome::Done("That task isn't waiting for your OK any more.".into())
         }
         Err(PermissionRefused::NotWaiting(why) | PermissionRefused::Refused(why)) => {
             Outcome::Failed(format!("Couldn't answer {name}: {why}"))

@@ -510,6 +510,8 @@ pub async fn serve(
     }
     // A job a conversation started tells it how it ended (#351).
     conversation::report_job_ends(shared.clone());
+    // What Home asks the owner about a job that's merged, closed, let go or gone settles (TASKS-13).
+    settle_stale_items(shared.clone());
     // Each repository's spare tree for the conversations' rooms, so a new one
     // doesn't wait for one to be extracted (docs/fast-replies.md).
     brain::harness::prepare_rooms(&shared);
@@ -928,6 +930,34 @@ impl StopSignal {
             let _ = tokio::signal::ctrl_c().await;
         }
     }
+}
+
+/// Settles the inbox items that wait on nothing any more ([`sphere::Link::settle_stale_items`]):
+/// once at the start, then on every inbox change and every change of a job that isn't running.
+fn settle_stale_items(shared: Arc<api::Shared>) {
+    use tokio::sync::broadcast::error::RecvError;
+    shared.link.settle_stale_items();
+    let mut bus = shared.events.subscribe();
+    let mut stopping = shared.stopping.clone();
+    tokio::spawn(async move {
+        loop {
+            let settles = tokio::select! {
+                got = bus.recv() => match got {
+                    Ok(event) => match event.name {
+                        "inbox" => true,
+                        "job" => !matches!(event.data["status"].as_str(), Some("queued" | "running")),
+                        _ => false,
+                    },
+                    Err(RecvError::Lagged(_)) => true,
+                    Err(RecvError::Closed) => return,
+                },
+                _ = stopping.changed() => return,
+            };
+            if settles {
+                shared.link.settle_stale_items();
+            }
+        }
+    });
 }
 
 #[cfg(test)]

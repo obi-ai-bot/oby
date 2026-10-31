@@ -1201,7 +1201,7 @@ fn taskconv_9_the_owners_signed_words_settle_what_waits() {
     // Fewer jobs at once widens nothing: done. More waits for a Confirm unless it's their word.
     let max = set(r#"{"maxRunning": 1}"#, false);
     assert!(
-        oby_said(&max).contains("Saved: 1 jobs at once"),
+        oby_said(&max).contains("Saved: 1 tasks at once"),
         "{}",
         max.text
     );
@@ -1216,7 +1216,7 @@ fn taskconv_9_the_owners_signed_words_settle_what_waits() {
     assert_eq!(running(), 1);
     let more = set(r#"{"maxRunning": 3}"#, true);
     assert!(
-        oby_said(&more).contains("Saved: 3 jobs at once"),
+        oby_said(&more).contains("Saved: 3 tasks at once"),
         "{}",
         more.text
     );
@@ -1318,7 +1318,7 @@ fn taskconv_6_a_signed_turn_that_reads_untrusted_text_makes_confirms() {
         approve["text"].as_str().unwrap().contains("> LGTM"),
         "{approve}"
     );
-    let settings = card("Change Settings: 20 jobs at once");
+    let settings = card("Change Settings: 20 tasks at once");
     let check_in = card("Check in with you");
     // Each names its conversation, which shows it under Oby's answer there (#1680).
     for item in [&settings, &check_in, &approve, &merge] {
@@ -2789,7 +2789,7 @@ fn oby_continue_job_continues_a_job_in_its_session() {
         json!({"said": r#"OBY oby_continue_job {"id": "nope"}"#, "conversation": conversation}),
     );
     assert!(
-        oby_said(&unknown).contains("refused: There's no job with that id."),
+        oby_said(&unknown).contains("refused: There's no task with that id."),
         "{}",
         unknown.text
     );

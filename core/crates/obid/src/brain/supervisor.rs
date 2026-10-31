@@ -542,7 +542,7 @@ fn ask_owner(
 ) {
     let title = super::briefing::line(&job.short_title(), 80);
     let text = format!(
-        "{title} {}. {why} Tell me to carry it on, start it fresh from its handoff note or split it, or open the job.",
+        "{title} {}. {why} Tell me to carry it on, start it fresh from its handoff note or split it, or open the task.",
         stall_words(job)
     );
     if let Some(conversation) = conversation

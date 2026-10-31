@@ -285,7 +285,7 @@ impl Link {
                 if !self.jobs.get(target).is_some_and(|j| j.status.is_active()) {
                     return Err(api(
                         StatusCode::CONFLICT,
-                        "That job isn't running any more.",
+                        "That task isn't running any more.",
                     ));
                 }
                 self.jobs
@@ -746,6 +746,34 @@ impl Link {
         }
         for item in &closed {
             self.save_item(item);
+        }
+    }
+
+    /// Settles, with no answer, the open items about this Mac's own jobs that nothing waits on any
+    /// more ([`is_stale`], TASKS-13), each as [`Link::settle`] does (one answered meanwhile stays
+    /// answered): run when obid starts and on every job and inbox change
+    /// (`crate::settle_stale_items`), so Home never keeps them.
+    pub fn settle_stale_items(&self) {
+        let open: Vec<Item> = self
+            .lock()
+            .inbox
+            .values()
+            .filter(|i| i.done.is_none())
+            .cloned()
+            .collect();
+        // Read with this Link's state unlocked: Jobs may call into it.
+        let jobs: HashMap<&str, crate::job::Job> = open
+            .iter()
+            .filter_map(|i| self.jobs.get(&i.job).map(|j| (i.job.as_str(), j)))
+            .collect();
+        let all: Vec<&Item> = open.iter().collect();
+        let stale: Vec<&str> = open
+            .iter()
+            .filter(|i| is_stale(i, jobs.get(i.job.as_str()), &all))
+            .map(|i| i.id.as_str())
+            .collect();
+        for id in stale {
+            self.settle(id);
         }
     }
 
@@ -1458,7 +1486,7 @@ impl Link {
             // Oby's own question about a job event (the event orchestrator's escalation): the
             // owner's answer, or Done, settles it, and nothing else is carried out (#710). It isn't
             // another Obi's request, whose exchange it would look for.
-            if item.obi.is_none() && item.id.starts_with("orchestrator-") {
+            if item.obi.is_none() && item.id.starts_with(crate::brain::orchestrator::ESCALATION) {
                 let mut item = item;
                 match &given {
                     Given::Later(at) => item.later = Some(*at),

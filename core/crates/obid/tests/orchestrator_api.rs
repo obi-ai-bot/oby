@@ -124,10 +124,12 @@ fn an_event_the_brain_cant_answer_escalates_saying_why() {
     let item = within(60, "it escalates", || escalations(&obid).pop());
     assert!(
         item["text"].as_str().unwrap().starts_with(
-            "Oby's brain couldn't answer this event: its agent session failed twice. Oby recommends reviewing the job."
+            "Oby couldn't work out what to do here: its agent session failed twice. Oby recommends that you look at the task."
         ),
         "{item}"
     );
+    // No recommendation: the task by its name (TASKS-14).
+    assert_eq!(item["title"], "Flaky thing needs your decision", "{item}");
     assert_eq!(get(&obid, &id)["round"], 1);
 }
 
@@ -156,7 +158,7 @@ fn an_event_it_cant_match_escalates_and_changes_nothing() {
         item["text"]
             .as_str()
             .unwrap()
-            .starts_with("Oby couldn't match the proposed action to this event."),
+            .starts_with("Oby couldn't match what it would do to what happened."),
         "{item}"
     );
     within(10, "the turn ends", || {
@@ -201,10 +203,11 @@ fn an_event_turn_never_starts_a_follow_up() {
     assert_eq!(get(&obid, &id)["round"], 1);
 }
 
-/// What the owner decides is left for them with the turn's diagnosis and recommendation; a tool
-/// off the allow-list is refused, and the turn lists only the allow-list.
+/// What the owner decides is left for them with the turn's diagnosis and recommendation, titled
+/// by the task's name, never its id (TASKS-14); a tool off the allow-list is refused, and the turn
+/// lists only the allow-list.
 #[test]
-fn an_event_turn_escalates_with_its_diagnosis_and_calls_only_its_tools() {
+fn tasks_14_an_event_turn_escalates_with_its_diagnosis_and_calls_only_its_tools() {
     let folder = Folder::new("orchestrator-escalates");
     let obid = started(&folder);
     script(
@@ -222,10 +225,12 @@ fn an_event_turn_escalates_with_its_diagnosis_and_calls_only_its_tools() {
     let item = within(60, "it escalates", || escalations(&obid).pop());
     assert!(
         item["text"].as_str().unwrap().starts_with(
-            "Oby read the job. It needs a secret it doesn't have. Oby recommends: Add the secret."
+            "Oby looked at it. It needs a secret it doesn't have. Oby recommends: Add the secret."
         ),
         "{item}"
     );
+    assert_eq!(item["title"], "Flaky thing needs your decision", "{item}");
+    assert!(!item["text"].as_str().unwrap().contains(&id), "{item}");
     let tools = within(10, "the turn's answer", || {
         answered(&obid)
             .into_iter()

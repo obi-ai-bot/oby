@@ -838,11 +838,11 @@ pub fn limit_item(
     let text = match first {
         // Failover off, or an account the owner named: it waits for its own account.
         Some((at, name)) if stays => format!(
-            "Every {tool} account is full. This job stays on {name}, which has room again at {}: Oby carries it on by itself then.",
+            "Every {tool} account is full. This task stays on {name}, which has room again at {}: Oby carries it on by itself then.",
             time::format(at)
         ),
         Some((at, name)) => format!(
-            "Every {tool} account is full. The first with room again is {name}, at {}: Oby carries this job on by itself then.",
+            "Every {tool} account is full. The first with room again is {name}, at {}: Oby carries this task on by itself then.",
             time::format(at)
         ),
         None => format!(
@@ -857,8 +857,8 @@ pub fn limit_item(
         text,
         options: vec![crate::job::TRY_AGAIN.into(), DISMISS.into()],
         details: Some(vec![
-            "Carries the job on now, in its own session, on the first account with room.".into(),
-            "Lets the job go: Oby doesn't carry it on by itself. Its branch stays.".into(),
+            "Carries the task on now, in its own session, on the first account with room.".into(),
+            "Lets the task go: Oby doesn't carry it on by itself. Its branch stays.".into(),
         ]),
         recommended: None,
         created: now,
@@ -906,8 +906,8 @@ pub fn crash_item(job: &crate::job::Job, now: i64) -> Item {
             vec!["Lets it go: the Obi that asked was told it failed.".into()]
         } else {
             vec![
-                "Runs the job again, in its own session where it has one.".into(),
-                "Lets the job go. Its branch stays.".into(),
+                "Runs the task again, in its own session where it has one.".into(),
+                "Lets the task go. Its branch stays.".into(),
             ]
         }),
         recommended: None,
