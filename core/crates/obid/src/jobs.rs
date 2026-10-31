@@ -8516,6 +8516,26 @@ impl Jobs {
                 .start_commit
                 .as_ref()
                 .filter(|_| job.review_of.is_some());
+            // Its clone may be one made again since the author pushed (a marked clone moves
+            // aside, #1662): the commit comes from origin as obid pushed it, held to the same
+            // rule as any fetch into the owner's clone.
+            if let Some(sha) = pushed
+                && git::git(&clone, &["cat-file", "-e", &format!("{sha}^{{commit}}")])
+                    .await
+                    .is_err()
+            {
+                git::fetch(&clone, &repo.remote, std::slice::from_ref(sha))
+                    .await
+                    .map_err(|e| format!("Couldn't fetch {sha} from {}: {e}", repo.repo))?;
+                Box::pin(self.taint_unless_ours(
+                    &clone,
+                    &repo,
+                    sha,
+                    None,
+                    &format!("the commit {sha} Oby's review reads"),
+                ))
+                .await;
+            }
             let start = match (pushed, &job.start_from, job.pr) {
                 (Some(sha), _, _) => sha.clone(),
                 (None, Some(branch), _) => format!("refs/heads/{branch}"),
@@ -8662,9 +8682,14 @@ impl Jobs {
                 // Whether the author is untrusted, and why: never what it read (MERGING-13).
                 let author = job.review_of.as_deref().and_then(|of| self.get(of));
                 let untrusted = author.as_ref().and_then(Job::untrusted_why);
+                // What the owner asked, and every word they sent it after (#1659, TASKCONV-3).
+                let (task, request, later) = match &author {
+                    Some(author) => asked_of(author, |id| self.get(id)),
+                    None => (job.task.clone(), job.request.clone(), Vec::new()),
+                };
                 quoted.push((
                     review::ASKED_FILE,
-                    review::asked(&job.task, &job.request, untrusted.as_deref()),
+                    review::asked(&task, &request, &later, untrusted.as_deref()),
                 ));
                 // The security paths its head changes against its base, from the commit it reads
                 // (MERGING-15): none read counts as touching one.
@@ -8841,7 +8866,7 @@ impl Jobs {
                 message = format!("{message}\n\n{note}");
             }
             if self.tetrix_for(&job).is_some() {
-                message = format!("{message}\n\n{}", crate::tetrix::PROMPT);
+                message = format!("{message}\n\n{}", tetrix_line(&job));
             }
             if job.session.is_some() {
                 message = format!(
@@ -12492,6 +12517,45 @@ pub fn follow_up(job: &Job, words: &str) -> NewJob {
     }
 }
 
+/// What its owner asked `author` (the first job's `task` and `request`) and every word they sent
+/// after, oldest first: its own `notes`, and those of the earlier jobs whose branch it carries on
+/// with each follow-up's words (TASKCONV-3), as Oby's review is told them (#1659).
+fn asked_of(author: &Job, get: impl Fn(&str) -> Option<Job>) -> (String, String, Vec<String>) {
+    let mut chain = vec![author.clone()];
+    // A chain is short; this only stops a loop.
+    for _ in 0..64 {
+        let last = chain.last().expect("the chain starts with the author");
+        let Some(earlier) = last
+            .start_from
+            .as_ref()
+            .and(last.follow_up_of.as_deref())
+            .and_then(&get)
+        else {
+            break;
+        };
+        chain.push(earlier);
+    }
+    let first = chain.pop().expect("the chain starts with the author");
+    let mut later = first.notes.unwrap_or_default();
+    for job in chain.into_iter().rev() {
+        later.push(job.request);
+        later.extend(job.notes.unwrap_or_default());
+    }
+    // Words a job kept while it wrapped up start its follow-up too.
+    later.dedup();
+    (first.task, first.request, later)
+}
+
+/// What `job`'s agent is told of Tetrix: Oby's review only reads, and holds no change to the
+/// author's commit stamps (#1659).
+fn tetrix_line(job: &Job) -> &'static str {
+    if job.review_of.is_some() {
+        crate::tetrix::REVIEW_PROMPT
+    } else {
+        crate::tetrix::PROMPT
+    }
+}
+
 fn owner_prompt(job: &Job) -> String {
     let base = job
         .base
@@ -14164,6 +14228,59 @@ mod tests {
     /// The owner's review jobs only read: Plan, whatever their mode says (#630). A review another
     /// Obi asked for runs its own way, and an investigation runs in its mode: it may run a test to
     /// reproduce a bug (the owner's decision of 2026-10-18).
+    /// MERGING-17 (#1659): Oby's review hears what the owner first asked, then every word they sent
+    /// the task and the follow-ups that carry its branch on (TASKCONV-3), oldest first; an earlier
+    /// job whose work the follow-up didn't start from isn't part of it.
+    #[test]
+    fn merging_17_a_review_is_told_every_word_sent_to_its_task() {
+        let job = |id: &str, words: &str| {
+            let mut job = Job::new(
+                id.into(),
+                "o/r".into(),
+                "build".into(),
+                words.into(),
+                "claude".into(),
+                "a".into(),
+            );
+            job.request = words.into();
+            job
+        };
+        let mut before = job("j0", "Something else");
+        before.notes = Some(vec!["unrelated".into()]);
+        let mut first = job("j1", "Add the line");
+        first.task = "Append the line to docs".into();
+        first.follow_up_of = Some("j0".into());
+        first.notes = Some(vec!["end it with a period".into(), "keep it short".into()]);
+        let mut next = job("j2", "keep it short");
+        next.follow_up_of = Some("j1".into());
+        next.start_from = Some("oby/build-j1".into());
+        next.notes = Some(vec!["and bold".into()]);
+        let jobs = [before, first, next.clone()];
+        let get = |id: &str| jobs.iter().find(|j| j.id == id).cloned();
+        assert_eq!(
+            asked_of(&next, get),
+            (
+                "Append the line to docs".into(),
+                "Add the line".into(),
+                vec![
+                    "end it with a period".to_owned(),
+                    "keep it short".into(),
+                    "and bold".into()
+                ]
+            )
+        );
+        assert_eq!(
+            asked_of(&jobs[1], get).2,
+            ["end it with a period", "keep it short"]
+        );
+        // Nor is it told the author's Tetrix rules: no session to save, no commit to stamp.
+        assert!(tetrix_line(&next).contains("end every commit message with a `Tetrix-Session"));
+        next.review_of = Some("j1".into());
+        let line = tetrix_line(&next);
+        assert!(!line.contains("call `save_session`") && !line.contains("end every commit"));
+        assert!(line.contains("never a rule of the repository's"), "{line}");
+    }
+
     #[test]
     fn review_jobs_are_in_plan() {
         let mut look = Job::new(

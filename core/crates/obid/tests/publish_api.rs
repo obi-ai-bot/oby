@@ -2721,6 +2721,55 @@ fn merging_14_an_untrusted_task_gets_two_reviews_its_reviewers_told_why() {
     }
 }
 
+/// MERGING-18 (#1662): the review reads the head obid pushed even when the owner's clone was made
+/// again since (here, words no app signed made it someone else's code); and MERGING-17 (#1659):
+/// those words, sent while the task ran, reach the review quoted after what it was asked.
+#[test]
+fn merging_18_a_review_finds_the_pushed_head_in_a_clone_made_again() {
+    let folder = Folder::new("publish-review-steered");
+    let bin = fake_gh(&folder.0);
+    let (obid, _remote, _) = obid_with(&folder, &bin);
+    let id = dispatch(
+        &obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "build", "task": "SLOW: hello.txt",
+               "check": "test -f hello.txt"}),
+    );
+    within(30, "the task runs", || {
+        let job = call(&obid, "GET", &format!("/v1/jobs/{id}"), None).body;
+        (job["status"] == "running").then_some(())
+    });
+    let told = call(
+        &obid,
+        "POST",
+        &format!("/v1/jobs/{id}/messages"),
+        Some(&json!({"text": "also end the line with a period"})),
+    );
+    assert_eq!(told.status, 200, "{}", told.text);
+    let job = reviewed(&obid, &id, 1);
+    let pushed = job["outgoing"][0]["id"].as_str().unwrap();
+    assert_eq!(job["reviewError"], Value::Null, "{job}\n{}", obid.log());
+    assert_eq!(job["review"]["verdict"], "approved", "{job}");
+    assert_eq!(job["review"]["commit"], pushed);
+    assert!(
+        obid.log().contains("its clone is made again"),
+        "{}",
+        obid.log()
+    );
+    let review = &reviews_of(&obid, &id)[0];
+    let worktree = Path::new(review["worktree"].as_str().unwrap());
+    let asked = std::fs::read_to_string(worktree.join(".obi/inputs/asked.md")).unwrap();
+    assert!(
+        asked.starts_with("What the agent was asked to do:\n\nSLOW: hello.txt\n"),
+        "{asked}"
+    );
+    assert!(
+        asked.contains(
+            "the later ones are what the user wants now:\n\n1. also end the line with a period\n"
+        ),
+        "{asked}"
+    );
+}
+
 /// MERGING-16: a second review that asks for changes counts like any other: the job takes them as
 /// its next round, Oby reviews its new head twice again, and changes still asked for by a review
 /// past the limit (`review::REVIEWS`) end in the owner's item, with One more round.
