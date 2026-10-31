@@ -613,6 +613,19 @@ mod tests {
         }
     }
 
+    /// MERGING-18 (#1659): what a turn nobody watches tells a job is obid's, never the owner's
+    /// words: it reaches the job as an event's, which the job doesn't keep as theirs.
+    #[test]
+    fn merging_18_a_supervisor_turns_words_are_never_the_owners() {
+        use crate::jobs::Source;
+        let unattended = session(Some(Arc::new(Watch::new("j1", "t1"))));
+        assert_eq!(super::super::tools::source(&unattended), Source::Event);
+        let owners = session(None);
+        assert_eq!(super::super::tools::source(&owners), Source::Untrusted);
+        owners.web.store(false, std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(super::super::tools::source(&owners), Source::Owner);
+    }
+
     /// A turn nobody watches reads only its own job and archives nothing; the owner's turns are
     /// as they were.
     #[test]

@@ -2721,6 +2721,122 @@ fn merging_14_an_untrusted_task_gets_two_reviews_its_reviewers_told_why() {
     }
 }
 
+/// MERGING-19 (#1662): the review reads the head obid pushed even when the owner's clone was made
+/// again since (here by the next job, once words no app signed made it someone else's code); and
+/// MERGING-18 (#1659): the owner's signed words, sent while the task ran, reach the review quoted
+/// after what it was asked, and the unsigned ones never do.
+#[test]
+fn merging_19_a_review_finds_the_pushed_head_in_a_clone_made_again() {
+    let folder = Folder::new("publish-review-steered");
+    let bin = fake_gh(&folder.0);
+    let (obid, _remote, _) = obid_with(&folder, &bin);
+    let one = call(
+        &obid,
+        "PUT",
+        "/v1/settings/jobs",
+        Some(&json!({"maxRunning": 1})),
+    );
+    assert_eq!(one.status, 200, "{}", one.text);
+    let id = dispatch(
+        &obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "build", "task": "SLOW: hello.txt",
+               "check": "test -f hello.txt"}),
+    );
+    within(30, "the task runs", || {
+        let job = call(&obid, "GET", &format!("/v1/jobs/{id}"), None).body;
+        (job["status"] == "running").then_some(())
+    });
+    let tell = |answer: support::Answer| assert_eq!(answer.status, 200, "{}", answer.text);
+    let path = format!("/v1/jobs/{id}/messages");
+    tell(call_typed(
+        &obid,
+        "POST",
+        &path,
+        &json!({"text": "also end the line with a period"}),
+    ));
+    tell(call(
+        &obid,
+        "POST",
+        &path,
+        Some(&json!({"text": "UNSIGNED words"})),
+    ));
+    // Waiting for the slot, it starts before the review and makes the marked clone again.
+    dispatch(
+        &obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "build", "task": "Look around"}),
+    );
+    let job = reviewed(&obid, &id, 1);
+    let pushed = job["outgoing"][0]["id"].as_str().unwrap();
+    assert_eq!(job["reviewError"], Value::Null, "{job}\n{}", obid.log());
+    assert_eq!(job["review"]["verdict"], "approved", "{job}");
+    assert_eq!(job["review"]["commit"], pushed);
+    let log = obid.log();
+    assert!(log.contains("its clone is made again"), "{log}");
+    assert!(
+        log.contains(&format!("fetched {pushed}, which its clone didn't have")),
+        "{log}"
+    );
+    let review = &reviews_of(&obid, &id)[0];
+    let worktree = Path::new(review["worktree"].as_str().unwrap());
+    let asked = std::fs::read_to_string(worktree.join(".obi/inputs/asked.md")).unwrap();
+    assert!(
+        asked.starts_with("What the agent was asked to do:\n\nSLOW: hello.txt\n"),
+        "{asked}"
+    );
+    assert!(
+        asked.contains(
+            "the later ones are what the user wants now:\n\n1. also end the line with a period\n"
+        ),
+        "{asked}"
+    );
+    assert!(!asked.contains("UNSIGNED"), "{asked}");
+}
+
+/// MERGING-18 (#1659): the owner's answer to its agent's question from their inbox (Home, a
+/// notification) is kept as their own words for Oby's review when their app signed it, with the
+/// question; an answer no app signed isn't.
+#[test]
+fn merging_18_a_signed_inbox_answer_is_kept_as_the_owners_own() {
+    let folder = Folder::new("publish-question-said");
+    let remote = fixture(&folder.0.join("fixture"));
+    let asker = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/agents/fake-claude");
+    let config = config(&folder.0, &remote, &asker);
+    sign_in(&folder, "stub");
+    let obid = start(&folder.0, &config, None);
+    let ask = json!({"tool": "AskUserQuestion", "input": {"questions": [{"question": "Which store?",
+        "options": [{"label": "SQLite"}, {"label": "Postgres"}]}]}});
+    let said = |signed: bool| {
+        let id = dispatch(
+            &obid,
+            json!({"repo": "obi-e2e/fixture-app", "kind": "research", "task": format!("ASK: {ask}")}),
+        );
+        let job = within(60, "its question waits", || {
+            let job = call(&obid, "GET", &format!("/v1/jobs/{id}"), None).body;
+            job["permission"].is_object().then_some(job)
+        });
+        let item = format!(
+            "{id}-permission-{}",
+            job["permission"]["id"].as_str().unwrap()
+        );
+        let path = format!("/v1/inbox/{item}/answer");
+        let body = json!({"answer": "Postgres"});
+        let answered = if signed {
+            call_typed(&obid, "POST", &path, &body)
+        } else {
+            call(&obid, "POST", &path, Some(&body))
+        };
+        assert_eq!(answered.status, 200, "{}", answered.text);
+        ended(&obid, &id);
+        let file = std::fs::read(folder.0.join(format!("home/jobs/{id}.json"))).unwrap();
+        serde_json::from_slice::<Value>(&file).unwrap()["said"].clone()
+    };
+    assert_eq!(
+        said(true),
+        json!(["Its agent asked: Which store?\nThe user answered: Postgres"])
+    );
+    assert_eq!(said(false), Value::Null);
+}
+
 /// MERGING-16: a second review that asks for changes counts like any other: the job takes them as
 /// its next round, Oby reviews its new head twice again, and changes still asked for by a review
 /// past the limit (`review::REVIEWS`) end in the owner's item, with One more round.

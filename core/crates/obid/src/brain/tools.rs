@@ -1069,7 +1069,7 @@ fn change_routine(shared: &Shared, session: &Session, args: Value) -> Result<Str
         schedule,
         zone,
     } = parse(args)?;
-    if source(session) == crate::jobs::Source::Untrusted {
+    if source(session) != crate::jobs::Source::Owner {
         return Err("This turn read what others wrote, so Oby changes routines only when the owner says it again.".into());
     }
     let routines = &shared.routines;
@@ -1229,7 +1229,7 @@ fn check_in(shared: &Shared, session: &Session, args: Value) -> Result<String, S
             None => "Check-ins are off.".into(),
         });
     };
-    if source(session) == crate::jobs::Source::Untrusted {
+    if source(session) != crate::jobs::Source::Owner {
         return Err("This turn read what others wrote, so Oby turns check-ins on only when the owner says it again.".into());
     }
     let schedule = serde_json::from_value::<crate::routines::Schedule>(schedule)
@@ -1364,8 +1364,12 @@ async fn act(
 
 /// Whose words this turn's actions pass on: the owner's, or after the turn read something
 /// untrusted, the owner's only as a proposal.
-fn source(session: &Session) -> crate::jobs::Source {
-    if session.web.load(Ordering::SeqCst) {
+pub(super) fn source(session: &Session) -> crate::jobs::Source {
+    // A turn nobody watches (a supervisor's, an event's) says obid's own prompt, never the
+    // owner's words (#1659).
+    if session.unwatched() {
+        crate::jobs::Source::Event
+    } else if session.web.load(Ordering::SeqCst) {
         crate::jobs::Source::Untrusted
     } else {
         crate::jobs::Source::Owner
@@ -1556,7 +1560,7 @@ async fn tell(
         new.title = Some(title);
     }
     // After something untrusted was read, it's marked so (it keeps the owner's mode).
-    new.untrusted = source(session) == crate::jobs::Source::Untrusted;
+    new.untrusted = source(session) != crate::jobs::Source::Owner;
     new.turn = actions::started_by(&job, &session.conversation, &session.control.turn);
     let new = super::written_in(shared, &session.conversation, new);
     outcome_answer(session, actions::follow_up(shared, &job, new))

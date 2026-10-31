@@ -810,7 +810,18 @@ impl Link {
     /// `confirm` item is refused (#776). Agents, oby-mcp, the brain and obid's own callers come
     /// this way.
     pub async fn answer(self: &Arc<Self>, id: &str, body: &[u8]) -> Result<Value, ApiError> {
-        let answered = self.answer_as(id, body, None).await;
+        self.answer_typed(id, body, false).await
+    }
+
+    /// [`Self::answer`]; `typed`: an app of the owner's signed the request (`X-Oby-Words`), so
+    /// an answer to a job's question is kept as their own words (#1659).
+    pub async fn answer_typed(
+        self: &Arc<Self>,
+        id: &str,
+        body: &[u8],
+        typed: bool,
+    ) -> Result<Value, ApiError> {
+        let answered = self.answer_as(id, body, None, typed).await;
         answered.map(|shown| self.with_triage(shown))
     }
 
@@ -832,7 +843,9 @@ impl Link {
         approved: &str,
         signed_at: i64,
     ) -> Result<Value, ApiError> {
-        let answered = self.answer_as(id, body, Some((approved, signed_at))).await;
+        let answered = self
+            .answer_as(id, body, Some((approved, signed_at)), true)
+            .await;
         answered.map(|shown| self.with_triage(shown))
     }
 
@@ -841,6 +854,7 @@ impl Link {
         id: &str,
         body: &[u8],
         approved: Option<(&str, i64)>,
+        typed: bool,
     ) -> Result<Value, ApiError> {
         let map = object(body, &["answer", "done", "later"])?;
         let one_of = "The body is exactly one of {\"answer\": …}, {\"done\": true} or {\"later\": \"<date>\"}.";
@@ -1173,9 +1187,11 @@ impl Link {
             ) {
                 drop(state);
                 return match given {
-                    Given::Answer(answer) => self.answer_permission_item(item, Some(answer), None),
-                    Given::Done => self.answer_permission_item(item, None, None),
-                    Given::Later(at) => self.answer_permission_item(item, None, Some(at)),
+                    Given::Answer(answer) => {
+                        self.answer_permission_item(item, Some(answer), None, typed)
+                    }
+                    Given::Done => self.answer_permission_item(item, None, None, false),
+                    Given::Later(at) => self.answer_permission_item(item, None, Some(at), false),
                 };
             }
             // A crashed job's `failed` item (#911): Try again runs it again, Dismiss lets the job
