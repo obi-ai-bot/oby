@@ -1692,13 +1692,24 @@ impl Jobs {
         carrier_of(&self.lock().jobs, job).clone()
     }
 
+    /// [`unfollowed_why`] of `job`: a hold of its merge's (crate::merge, MERGING-23).
+    fn unfollowed(&self, job: &Job) -> Option<String> {
+        unfollowed_why(&self.lock().jobs, job)
+    }
+
+    /// [`stand_in_why`] of `job`.
+    fn stand_in(&self, job: &Job) -> Option<String> {
+        stand_in_why(&self.lock().jobs, job)
+    }
+
     /// The follow-up of `id` that's queued or running, if any: a job has one at a time, and words
     /// for `id` once it ended go to it.
     pub fn following(&self, id: &str) -> Option<Job> {
-        self.lock()
+        let state = self.lock();
+        state
             .jobs
             .values()
-            .find(|j| j.status.is_active() && j.follow_up_of.as_deref() == Some(id))
+            .find(|j| j.status.is_active() && j.id != id && follows_up(&state.jobs, j, id))
             .cloned()
     }
 
@@ -2853,6 +2864,8 @@ impl Jobs {
         job.routine = new.routine;
         // A follow-up of a rule's job is the rule's too (#1314). A Start item's job never carries
         // `rule` (it's never from the API): found here. So is an untrusted one's.
+        // One line of follow-ups on a branch: it follows the newest of them (MERGING-23).
+        job.follow_up_of = job.follow_up_of.map(|of| chain_tip(&self.lock().jobs, &of));
         let of = job.follow_up_of.as_deref().and_then(|of| self.get(of));
         job.untrusted = new.untrusted || of.as_ref().is_some_and(|of| of.untrusted);
         job.unsigned = of.as_ref().is_some_and(|of| of.unsigned);
@@ -3409,12 +3422,24 @@ impl Jobs {
                     if unheard.first().map(|w| w.text.as_str()) == Some(text) {
                         unheard.remove(0);
                     }
-                    let mut next = follow_up(&job, text);
+                    // It follows the newest follow-up on the branch (MERGING-23): its account,
+                    // agent, mode and report are that one's; its branch is the task's, which that
+                    // one carries on.
+                    let tip = chain_tip(&self.lock().jobs, id);
+                    let tip = self.get(&tip).unwrap_or_else(|| job.clone());
+                    let from_tip = follow_up(&tip, text);
+                    let mut next = NewJob {
+                        account: from_tip.account,
+                        agent: from_tip.agent,
+                        mode: from_tip.mode,
+                        earlier: from_tip.earlier,
+                        ..follow_up(&job, text)
+                    };
                     // The owner's own words to their job carry its mode on, Bypass too: they
                     // chose it for this work, and a follow-up is more of it ([`follow_up`] drops
                     // Bypass only for what the brain starts).
                     if source == Source::Owner {
-                        next.mode = job.mode.clone();
+                        next.mode = tip.mode.clone();
                     }
                     let made = self.create(NewJob {
                         attachments: (!attachments.is_empty()).then(|| attachments.to_vec()),
@@ -5441,7 +5466,8 @@ impl Jobs {
         if !job.vetted {
             return Some(job);
         }
-        self.update(id, |job| {
+        // Its follow-ups there are already run its code: theirs neither (crate::secretspec).
+        self.mark_line(id, |job| {
             if job.vetted {
                 tracing::info!("job {}: {why}: its check gets no declared secrets", job.id);
                 job.vetted = false;
@@ -5477,7 +5503,25 @@ impl Jobs {
     }
 
     pub fn mark_unsigned(&self, id: &str) -> Option<Job> {
-        self.update(id, |job| job.unsigned = true)
+        self.mark_line(id, |job| job.unsigned = true)
+    }
+
+    /// `mark`s job `id` and the follow-ups of it there are already, at any depth: a mark carried to
+    /// follow-ups reaches those made before it (MERGING-14).
+    fn mark_line(&self, id: &str, mark: impl Fn(&mut Job)) -> Option<Job> {
+        let later: Vec<String> = {
+            let state = self.lock();
+            state
+                .jobs
+                .values()
+                .filter(|j| j.id != id && follows_up(&state.jobs, j, id))
+                .map(|j| j.id.clone())
+                .collect()
+        };
+        for later in later {
+            self.update(&later, &mark);
+        }
+        self.update(id, mark)
     }
 
     /// Adds `what` to the job's changes.
@@ -9089,7 +9133,7 @@ impl Jobs {
                 // One known to come from someone else's words: two reviews merge its pull
                 // request (MERGING-14).
                 if crate::memory::someone_elses_among(&self.config.home, &[job.repo.as_str()]) {
-                    self.update(id, |job| job.memory_from_others = true);
+                    self.mark_line(id, |job| job.memory_from_others = true);
                 }
                 let written = crate::obi_dir::folder(&worktree, "inputs").and_then(|dir| {
                     crate::obi_dir::write_new(&dir, crate::memory::FILE, text.as_bytes())
@@ -10793,6 +10837,11 @@ impl Jobs {
     pub fn review_left_to_owner(&self, id: &str) -> Option<crate::sphere::inbox::Item> {
         let job = self.get(id)?;
         let review = job.current_review().filter(|r| !r.approved())?;
+        // A follow-up that pushed to its pull request since carries it: its own review is the
+        // one (MERGING-24).
+        if self.carrier(&job).id != job.id {
+            return None;
+        }
         let following = self.lock().jobs.values().any(|j| {
             j.follow_up_of.as_deref() == Some(id) && j.branch == job.branch && j.status.is_active()
         });
@@ -11415,6 +11464,15 @@ impl Jobs {
         let (Some(number), Some(head)) = (number, pr.head.clone()) else {
             return cards(None);
         };
+        // The follow-up that pushed its head was let go or ended unfinished: this one tells the
+        // owner why (MERGING-24).
+        if carries(&job)
+            && pr.is_open()
+            && let Some(why) = self.stand_in(&job)
+        {
+            let card = crate::merge::stopped_card(&job, &head, &why);
+            return self.offer_merge_card(id, link.as_deref(), Some(card));
+        }
         // Not one to carry on now (it runs again, was let go, isn't the owner's own, or a
         // follow-up pushed to its pull request since and carries it: MERGING-24): nothing waits on
         // the owner about merging it.
@@ -11455,7 +11513,10 @@ impl Jobs {
         // optional extra, posting its approval only where a `reviewer` workflow names it and one
         // is signed in; never on a `teammate` or `person` one, where GitHub's branch rules would
         // count it (it can push) in place of a teammate's.
+        // Its head holds another job's push it doesn't follow up: one review can't count for it.
+        let unfollowed = self.unfollowed(&job);
         let wanted = current.is_some()
+            && unfollowed.is_none()
             && workflow
                 .as_ref()
                 .is_some_and(|w| w.review == crate::memory::Approval::Reviewer);
@@ -11501,7 +11562,8 @@ impl Jobs {
         self.update(id, |job| {
             crate::merge::unmark(job, "pullRequestApproval");
         });
-        let Some(job) = self.get(id) else { return };
+        let Some(mut job) = self.get(id) else { return };
+        job.unfollowed = unfollowed;
         // Someone else's approval it waits on: a `teammate` or `person` workflow's, or one GitHub's
         // rules require where Oby's own review approved (the owner's can't count on their pull
         // request). A teammate's Oby is asked over the Obysphere to review that head and approve it
@@ -11871,7 +11933,8 @@ impl Jobs {
         let job = self.get(id).ok_or("There's no such job.")?;
         // A follow-up that pushed to its pull request since carries it, its push Oby's own: the
         // merge goes on that job's record (MERGING-23).
-        let job = self.carrier(&job);
+        let mut job = self.carrier(&job);
+        job.unfollowed = self.unfollowed(&job);
         let id = job.id.as_str();
         let gh = crate::github::gh().ok_or("GitHub's CLI (gh) isn't installed.")?;
         let number = job
@@ -11958,25 +12021,114 @@ fn carries(job: &Job) -> bool {
         && job.kind != "research"
 }
 
+/// The owner's own jobs that pushed to `job`'s pull request on its branch, oldest push first:
+/// `job` too when it did.
+fn pushers<'a>(jobs: &'a HashMap<String, Job>, job: &'a Job) -> Vec<&'a Job> {
+    let Some(url) = job.published.as_deref() else {
+        return Vec::new();
+    };
+    let pushed = |j: &Job| {
+        j.obi.is_none()
+            && j.repo == job.repo
+            && j.published.as_deref() == Some(url)
+            && same_branch(&j.branch, &job.branch)
+            && j.last_push().is_some()
+    };
+    let mut found: Vec<&Job> = jobs.values().filter(|j| pushed(j)).collect();
+    if !jobs.contains_key(&job.id) && pushed(job) {
+        found.push(job);
+    }
+    found.sort_by(|a, b| {
+        let key = |j: &Job| (j.last_push().map(|p| p.date), j.created);
+        key(a).cmp(&key(b)).then_with(|| a.id.cmp(&b.id))
+    });
+    found
+}
+
+/// Whether `job` follows up `of`, at any depth, or is it.
+fn follows_up(jobs: &HashMap<String, Job>, job: &Job, of: &str) -> bool {
+    let mut at = Some(job.id.as_str());
+    // ponytail: a chain longer than 64 follow-ups counts as not following up.
+    for _ in 0..64 {
+        match at {
+            Some(id) if id == of => return true,
+            Some(id) => {
+                at = jobs
+                    .get(id)
+                    .or((id == job.id).then_some(job))
+                    .and_then(|j| j.follow_up_of.as_deref())
+            }
+            None => return false,
+        }
+    }
+    false
+}
+
 /// The job that carries `job`'s pull request on (MERGING-23, 24): of the owner's own jobs that
 /// published to it on `job`'s branch (a follow-up adds to its task's, #1663), the one that pushed
 /// there last. Its head is that push, its card the pull request's only one; `job` itself when none
-/// pushed after it, or it has no pull request. Another Obi's push never counts as Oby's own.
+/// pushed after it, or it has no pull request. Another Obi's push never counts as Oby's own. It
+/// merges by itself only when it follows up every other one ([`unfollowed_why`]).
 fn carrier_of<'a>(jobs: &'a HashMap<String, Job>, job: &'a Job) -> &'a Job {
-    let Some(url) = job.published.as_deref() else {
-        return job;
+    pushers(jobs, job).last().copied().unwrap_or(job)
+}
+
+/// Why the carrier `job` doesn't merge by itself (MERGING-14, 23): another job pushed to its pull
+/// request that it doesn't follow up, at any depth, so that one's untrusted and unsigned marks
+/// aren't its own and its review can't count for that work. A hold the owner's Merge lifts.
+fn unfollowed_why(jobs: &HashMap<String, Job>, job: &Job) -> Option<String> {
+    let other = pushers(jobs, job)
+        .into_iter()
+        .find(|p| !follows_up(jobs, job, &p.id))?;
+    Some(format!(
+        "Not merged: its head holds what {} pushed, and this task doesn't follow that one up, so its review alone doesn't count for that work.",
+        other.short_title()
+    ))
+}
+
+/// The job a new follow-up of `of` follows up: the newest of the owner's own jobs on its branch
+/// that follows `of` up, at any depth, or `of` itself. Its branch holds their commits, so their
+/// marks are the follow-up's (MERGING-14, 23): follow-ups make one line, never siblings.
+fn chain_tip(jobs: &HashMap<String, Job>, of: &str) -> String {
+    let Some(first) = jobs.get(of) else {
+        return of.to_owned();
     };
     jobs.values()
-        .chain([job])
         .filter(|j| {
             j.obi.is_none()
-                && j.repo == job.repo
-                && j.published.as_deref() == Some(url)
-                && same_branch(&j.branch, &job.branch)
+                && j.repo == first.repo
+                && same_branch(&j.branch, &first.branch)
+                && follows_up(jobs, j, of)
         })
-        .filter_map(|j| j.last_push().map(|p| (p.date, j.created, &j.id, j)))
-        .max_by(|a, b| (a.0, a.1, a.2).cmp(&(b.0, b.1, b.2)))
-        .map_or(job, |(.., j)| j)
+        .max_by(|a, b| a.created.cmp(&b.created).then_with(|| a.id.cmp(&b.id)))
+        .map_or_else(|| of.to_owned(), |j| j.id.clone())
+}
+
+/// Why `job` tells the owner about its pull request when the job that carries it can't
+/// (MERGING-24): that one pushed the head, then was let go or ended unfinished, so nothing more
+/// comes of it by itself. Only the latest job before it that Oby still carries says so; none
+/// while the carrier still works or carries it.
+fn stand_in_why(jobs: &HashMap<String, Job>, job: &Job) -> Option<String> {
+    let carrier = carrier_of(jobs, job);
+    if carrier.id == job.id || carries(carrier) || carrier.status.is_active() {
+        return None;
+    }
+    let stand_in = pushers(jobs, job)
+        .into_iter()
+        .rev()
+        .filter(|j| j.id != carrier.id)
+        .find(|j| carries(j))?;
+    let what = if carrier.dismissed.is_some() {
+        "you let that task go"
+    } else {
+        "that task didn't finish"
+    };
+    (stand_in.id == job.id).then(|| {
+        format!(
+            "Not merged: its head is what {} pushed, and {what}. Tell Oby to carry on in it, or settle it on GitHub.",
+            carrier.short_title()
+        )
+    })
 }
 
 /// What publishing `job` by hand would do: obid's own sentence and the base, or why there's
@@ -14804,6 +14956,84 @@ mod tests {
         let mut unpublished = first.clone();
         unpublished.published = None;
         assert_eq!(carrier_of(&jobs, &unpublished).id, "a");
+    }
+
+    /// MERGING-14, 23, 24: the last job that pushed to the pull request carries it, and merges by
+    /// itself only as a follow-up of every other one, whose marks are then its own; new follow-ups
+    /// make one line. A carrier let go or ended unfinished: the latest job before it that Oby
+    /// carries tells the owner why, alone.
+    #[test]
+    fn merging_24_a_carrier_follows_up_every_push_and_one_let_go_hands_the_card_back() {
+        let job = |id: &str, of: Option<&str>, at: i64| {
+            let mut job = Job::new(
+                id.into(),
+                "o/r".into(),
+                "fix".into(),
+                "Fix it".into(),
+                "claude".into(),
+                "a".into(),
+            );
+            job.status = Status::Done;
+            job.title = Some(format!("Task {id}"));
+            job.branch = "oby/fix-7".into();
+            job.published = Some("https://github.com/o/r/pull/7".into());
+            job.follow_up_of = of.map(str::to_owned);
+            let mut push = crate::publish::Outgoing::new("push", "o/r", id, Some("oby/fix-7"));
+            push.date = at;
+            job.outgoing.push(push);
+            job
+        };
+        let map = |jobs: Vec<Job>| -> HashMap<String, Job> {
+            jobs.into_iter().map(|j| (j.id.clone(), j)).collect()
+        };
+        // a, then b following up a, then c following up b: c carries, b says nothing.
+        let chain = map(vec![
+            job("a", None, 10),
+            job("b", Some("a"), 20),
+            job("c", Some("b"), 30),
+        ]);
+        assert_eq!(carrier_of(&chain, &chain["a"]).id, "c");
+        assert!(stand_in_why(&chain, &chain["a"]).is_none());
+        assert_eq!(unfollowed_why(&chain, &chain["c"]), None);
+        // A new follow-up of a or b follows c: one line, never siblings.
+        assert_eq!(chain_tip(&chain, "a"), "c");
+        assert_eq!(chain_tip(&chain, "b"), "c");
+        // b and c both follow up a (made before follow-ups made one line): c still carries, with
+        // one card, but c's marks aren't b's, so it doesn't merge by itself.
+        let siblings = map(vec![
+            job("a", None, 10),
+            job("b", Some("a"), 20),
+            job("c", Some("a"), 30),
+        ]);
+        for id in ["a", "b", "c"] {
+            assert_eq!(carrier_of(&siblings, &siblings[id]).id, "c");
+        }
+        assert_eq!(
+            unfollowed_why(&siblings, &siblings["c"]).as_deref(),
+            Some(
+                "Not merged: its head holds what Task b pushed, and this task doesn't follow that one up, so its review alone doesn't count for that work."
+            )
+        );
+        // c was let go: b, the latest before it, tells the owner; a stays quiet.
+        let mut let_go = chain.clone();
+        let_go.get_mut("c").unwrap().dismissed = Some(40);
+        assert_eq!(stand_in_why(&let_go, &let_go["a"]), None);
+        assert_eq!(
+            stand_in_why(&let_go, &let_go["b"]).as_deref(),
+            Some(
+                "Not merged: its head is what Task c pushed, and you let that task go. Tell Oby to carry on in it, or settle it on GitHub."
+            )
+        );
+        // c failed on a retry: the same, saying so; while it runs again, nobody speaks.
+        let mut failed = chain.clone();
+        failed.get_mut("c").unwrap().status = Status::Failed;
+        assert!(
+            stand_in_why(&failed, &failed["b"])
+                .unwrap()
+                .contains("that task didn't finish")
+        );
+        failed.get_mut("c").unwrap().status = Status::Running;
+        assert_eq!(stand_in_why(&failed, &failed["b"]), None);
     }
 
     /// MERGING-18 (#1659): Oby's review hears what the owner first asked, then their own words to
