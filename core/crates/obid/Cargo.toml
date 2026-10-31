@@ -44,11 +44,6 @@ icu_properties = { version = "2.3.0", default-features = false, features = ["com
 tower = { version = "0.5.3", default-features = false, features = ["util"] }
 uuid.workspace = true
 
-[target.'cfg(target_os = "macos")'.dependencies]
-# The vault's Keychain store (src/vault.rs), as the Swift runner's KeychainVault.
-core-foundation = "0.10.1"
-security-framework = "3.7.0"
-
 [lints]
 workspace = true
 

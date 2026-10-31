@@ -54,6 +54,7 @@ pub(crate) fn signed_in(tool: Tool, account: &crate::config::Account, home: Opti
             (Tool::Cursor, Some(file)) if is_regular_file(&file) => cursor_has_token(&file),
             // With no file, the login is Cursor's own Keychain items'.
             (Tool::Cursor, Some(_)) => cursor_keychain_live(),
+            (Tool::Claude, _) => !claude_refused(account),
             _ => true,
         }
 }
@@ -72,11 +73,32 @@ pub(super) fn login_problem(
     }
     match tool {
         Tool::Codex => codex_copy_ready(&file, &account.name).err(),
+        Tool::Claude if claude_refused(account) => Some(keychain_refused(tool)),
+        Tool::Cursor
+            if !is_regular_file(&file)
+                && CURSOR_ITEMS.iter().any(|(_, service)| refused(service)) =>
+        {
+            Some(keychain_refused(tool))
+        }
         Tool::Cursor if !is_regular_file(&file) && !cursor_keychain_live() => {
             Some(CURSOR_ENDED.into())
         }
         _ => None,
     }
+}
+
+/// Why a login macOS didn't give obid can't run (#1679): the tool keeps it in the Keychain, macOS
+/// asked once whether obid may read it, and the owner denied it or didn't answer in time.
+pub(super) fn keychain_refused(tool: Tool) -> String {
+    format!(
+        "{} keeps its login in your Keychain, and macOS asks once whether Oby may read it: that was denied or not answered, so Oby won't ask again until it restarts. Restart Oby and choose Always Allow.",
+        tool.name()
+    )
+}
+
+/// Whether macOS refused this run Claude Code's Keychain login for `account`, with no login file.
+fn claude_refused(account: &crate::config::Account) -> bool {
+    refused(&keychain_service(account.config_dir.as_deref()))
 }
 
 /// What the apps show beside an account whose login is there but can't run ([`login_problem`]).
@@ -86,6 +108,7 @@ pub(crate) fn login_note(
     home: Option<&Path>,
 ) -> Option<&'static str> {
     login_problem(tool, account, home).map(|why| match tool {
+        _ if why.contains("Always Allow") => "Restart Oby, then Always Allow",
         Tool::Cursor => "Run cursor-agent once",
         _ if why.contains(CODEX_SIGN_IN) => "Run codex login",
         _ => "Run codex once",
@@ -371,17 +394,58 @@ pub(super) fn keychain_item(config_dir: Option<&Path>, value: bool) -> Option<Ve
     let user = nix::unistd::User::from_uid(nix::unistd::getuid())
         .ok()??
         .name;
+    let service = keychain_service(config_dir);
     let mut command = std::process::Command::new(security_bin());
     command
-        .args(["find-generic-password", "-s"])
-        .arg(keychain_service(config_dir))
-        .args(["-a", &user])
-        .stdin(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null());
+        .args(["find-generic-password", "-s", &service])
+        .args(["-a", &user]);
+    ask_security(&service, command, value)
+}
+
+/// The items whose value `security` didn't give this run: denied at macOS's prompt, not answered
+/// within [`security_limit`], or a locked Keychain. Each is asked once, never again until obid
+/// restarts, so prompts never stack (#1679). Claude Code and cursor-agent write their items with
+/// `/usr/bin/security` itself, so macOS lets it read them back without asking: a prompt comes only
+/// from an item another program made, or a locked Keychain.
+static REFUSED: Mutex<std::collections::BTreeSet<String>> =
+    Mutex::new(std::collections::BTreeSet::new());
+
+pub(super) fn refused(service: &str) -> bool {
+    REFUSED
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .contains(service)
+}
+
+/// `security`'s answer for `service`: its value with `-w` (never for an item it [`refused`]),
+/// else only whether it's there, which reads no secret and so never prompts for an item.
+#[cfg(target_os = "macos")]
+fn ask_security(service: &str, mut command: std::process::Command, value: bool) -> Option<Vec<u8>> {
     if value {
+        if refused(service) {
+            return None;
+        }
         command.arg("-w");
     }
-    let output = process::output_within(&mut command, security_limit(value))?;
+    command
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    let output = process::output_within(&mut command, security_limit(value));
+    // 36: the Keychain is locked; 51: not allowed; 128: the prompt was cancelled (Deny).
+    if value
+        && output
+            .as_ref()
+            .is_none_or(|o| matches!(o.status.code(), Some(36 | 51 | 128)))
+    {
+        tracing::warn!(
+            "macOS didn't give obid {service} from the Keychain: it won't ask again until it restarts"
+        );
+        REFUSED
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(service.to_owned());
+    }
+    let output = output?;
     output.status.success().then_some(output.stdout)
 }
 
@@ -525,15 +589,8 @@ pub(super) const CURSOR_ITEMS: [(&str, &str); 2] = [
 #[cfg(target_os = "macos")]
 pub(super) fn cursor_keychain_item(service: &str, value: bool) -> Option<Vec<u8>> {
     let mut command = std::process::Command::new(security_bin());
-    command
-        .args(["find-generic-password", "-a", "cursor-user", "-s", service])
-        .stdin(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null());
-    if value {
-        command.arg("-w");
-    }
-    let output = process::output_within(&mut command, security_limit(value))?;
-    output.status.success().then_some(output.stdout)
+    command.args(["find-generic-password", "-a", "cursor-user", "-s", service]);
+    ask_security(service, command, value)
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -1823,6 +1880,43 @@ pub fn person_homes() -> Vec<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// KEYCHAIN-3: a Keychain login macOS didn't give obid (Deny, or no answer) is asked for once,
+    /// never again while obid runs, and the account says why and what to do.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn keychain_3_a_refused_login_is_asked_for_once() {
+        let dir = std::env::temp_dir().join(format!("obid-refused-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let asked = dir.join("asked");
+        // A `security` whose prompt the owner cancelled: exit 128 (errSecUserCanceled).
+        let script = format!("#!/bin/sh\necho x >> {asked:?}\nexit 128\n");
+        let bin = dir.join("security");
+        std::fs::write(&bin, script).unwrap();
+        std::fs::set_permissions(&bin, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+            .unwrap();
+        let service = format!("Claude Code-credentials-test-{}", std::process::id());
+        let ask = |value| ask_security(&service, std::process::Command::new(&bin), value);
+        assert_eq!(ask(true), None);
+        assert!(refused(&service));
+        assert_eq!(ask(true), None);
+        let times = |path: &Path| {
+            std::fs::read_to_string(path)
+                .unwrap_or_default()
+                .lines()
+                .count()
+        };
+        assert_eq!(times(&asked), 1, "asked once");
+        // Whether it's there reads no secret, so it's still asked.
+        assert_eq!(ask(false), None);
+        assert_eq!(times(&asked), 2);
+        assert!(
+            keychain_refused(Tool::Claude)
+                .starts_with("Claude Code keeps its login in your Keychain")
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     /// N5: a copied `~/.claude.json` keeps only the keys a boxed run needs to stay signed in, never
     /// the person's projects, history or MCP state.

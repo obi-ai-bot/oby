@@ -51,6 +51,8 @@ pub const ACCESS: &str = "oby.tetrix.access";
 pub const REFRESH: &str = "oby.tetrix.refresh";
 pub const NOT_SIGNED_IN: &str = "Oby isn't signed in to Tetrix.";
 const SIGNED_OUT: &str = "Tetrix signed Oby out: sign in again.";
+/// Why a Tetrix connection made before obid kept its logins only in its own file is gone (#1679).
+pub const RECONNECT: &str = "Connect Tetrix again: Oby no longer reads its logins from your Keychain, so the one kept there didn't carry over.";
 const SIGN_IN_LASTS: Duration = Duration::from_secs(10 * 60);
 /// How long obid's own questions to Tetrix (a job's context) may take.
 const ASK_WITHIN: Duration = Duration::from_secs(10);
@@ -369,7 +371,7 @@ impl Tetrix {
             .timeout(Duration::from_secs(30))
             .build()
             .expect("reqwest client");
-        Arc::new(Tetrix {
+        let tetrix = Arc::new(Tetrix {
             file,
             presets,
             scratch: home.join("tmp"),
@@ -380,7 +382,14 @@ impl Tetrix {
             sign_in: Mutex::new(None),
             changing: tokio::sync::Mutex::new(()),
             known: Mutex::new(Vec::new()),
-        })
+        });
+        // A login the Swift runner kept in the Keychain isn't read any more (#1679): Settings says
+        // to connect again, once, rather than showing a connection that fails at every call.
+        if tetrix.connected() && matches!(tetrix.vault.value(ACCESS), Ok(None)) {
+            tracing::warn!("Tetrix's login isn't in the vault: connect Tetrix again");
+            tetrix.forget(Some(RECONNECT.into()));
+        }
+        tetrix
     }
 
     fn saved(&self) -> Saved {
@@ -2314,6 +2323,36 @@ mod tests {
             0,
             "nothing left"
         );
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// KEYCHAIN-2: a connection whose login stayed in the Keychain (#1679) says to connect again, once; one
+    /// whose login is in the vault's file stays connected.
+    #[test]
+    fn keychain_2_a_login_left_in_the_keychain_asks_to_connect_again() {
+        let home = std::env::temp_dir().join(format!("obid-tetrix-moved-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(&home).unwrap();
+        let saved =
+            json!({"url": "https://tetrix.example/mcp", "connectedAt": "2026-10-30T10:00:00Z"});
+        let open = |vault: Arc<crate::vault::Vault>| {
+            std::fs::write(home.join("tetrix.json"), saved.to_string()).unwrap();
+            Tetrix::open(&home, Vec::new(), vault, crate::events::Events::new())
+        };
+        let vault = Arc::new(crate::vault::Vault::file(
+            home.join("vault"),
+            Arc::new(crate::secrets::Secrets::default()),
+        ));
+        let gone = open(vault.clone());
+        assert!(!gone.connected());
+        assert_eq!(gone.status_json()["error"], json!(RECONNECT));
+        // Once: what it saved is no longer connected, so nothing is said again.
+        let saved_now: Value =
+            serde_json::from_slice(&std::fs::read(home.join("tetrix.json")).unwrap()).unwrap();
+        assert_eq!(saved_now["connectedAt"], Value::Null);
+
+        vault.add("tetrix-access-Zq81xWv7Lp3", ACCESS).unwrap();
+        assert!(open(vault).connected());
         let _ = std::fs::remove_dir_all(&home);
     }
 
