@@ -60,11 +60,13 @@ async function answerCards(t, { done, ms = 25 * MIN, mine = () => false }) {
         // and the question's answer, "asked"
         const answer = top.getByRole('button', { name: /check before publishing/.test(text) ? /^(No check|Cancel)$/ : /^(Allow|Approve|Merge|Confirm|Yes|Start|asked)/ }).first();
         if (await answer.count()) {
+          // a card settled under the pointer (its pull request merged meanwhile) is progress, not a failure
+          if (await done()) return;
           t.state.cards = (t.state.cards ?? 0) + 1;
           await t.shot(`card-${t.state.cards}`);
           const name = await answer.innerText();
           t.note(`card: ${text.replace(/\n+/g, ' · ')} → ${name}`);
-          await answer.click();
+          if (!(await answer.click({ timeout: 5000 }).then(() => true, () => false))) { t.note(`“${title}” left Home before its ${name} was clicked`); break; }
           t.step(`answered “${name}” on Home`);
           await sleep(2000);
           break;
@@ -75,8 +77,7 @@ async function answerCards(t, { done, ms = 25 * MIN, mine = () => false }) {
       }
       // the card on top: another may still be leaving, with its own arrows
       const next = top.getByRole('button', { name: 'Next' });
-      if (!(await next.count())) break;
-      await next.click();
+      if (!(await next.count()) || !(await next.click({ timeout: 5000 }).then(() => true, () => false))) break;
       await sleep(300);
     }
     await sleep(2000);
@@ -88,7 +89,10 @@ async function answerCards(t, { done, ms = 25 * MIN, mine = () => false }) {
 async function openTask(t, title) {
   await home(t);
   if (await t.page.getByRole('button', { name: 'Show sidebar' }).isVisible()) await t.click('Show sidebar');
-  await t.page.locator('nav[aria-label="Side panel"]').getByText(title, { exact: true }).first().click();
+  const panel = t.page.locator('nav[aria-label="Side panel"]'), row = panel.getByText(title, { exact: true }).first();
+  // Completed shows its latest 5: an older task (one its follow-up and reviews came after) is under Show N more
+  if (!(await row.isVisible())) for (const more of await panel.getByRole('button', { name: /^Show \d+ more$/ }).all()) await more.click();
+  await row.click();
   await t.see('Tell Oby about this task…', { label: 'its page' });
 }
 
