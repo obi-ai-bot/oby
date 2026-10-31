@@ -181,6 +181,7 @@ fn jobs_have_iso_dates_and_every_key() {
             extra,
             [
                 "accountLimit",
+                "addedTo",
                 "answered",
                 "answeredCount",
                 "approvals",
@@ -205,7 +206,7 @@ fn jobs_have_iso_dates_and_every_key() {
             "{body}"
         );
         let known = keys.keys().filter(|k| page.contains(&k.as_str())).count();
-        assert_eq!(keys.len(), 86 + known);
+        assert_eq!(keys.len(), 87 + known);
         // POST /v1/jobs: its own conversation, the owner's words its first turn (TASKCONV-1).
         assert!(body["conversation"].is_string(), "{body}");
         assert!(body["turn"].is_string(), "{body}");
@@ -1437,11 +1438,11 @@ const TRY_AGAIN: &str =
     "Try again, picking up where you left off. Finish with a short summary as asked.";
 
 /// The owner's words reach a job whose agent is at work as its next turn, before the check, in
-/// the same round, and that turn's reply joins the round's summaries but leaves the job's summary
-/// to the work; a job that must commit and whose round the owner asked for (Try again) may end
+/// the same round, and that turn's reply joins the round's summaries and is added to the job's
+/// summary after the work's (TASKCONV-14, #1661); a job that must commit and whose round the owner asked for (Try again) may end
 /// done with nothing committed: their words decide (runner-api.md, "POST /v1/jobs/{id}/messages").
 #[test]
-fn a_running_job_hears_the_words_next_and_the_owners_round_may_commit_nothing() {
+fn taskconv_14_a_running_job_hears_the_words_next_and_its_reply_joins_the_report() {
     let folder = Folder::new("hear");
     let (obid, _) = obid(&folder);
     let post = |id: &str, text: &str| {
@@ -1477,8 +1478,12 @@ fn a_running_job_hears_the_words_next_and_the_owners_round_may_commit_nothing() 
             "heard: ECHO and add a test resume=00000000-0000-4000-8000-000000000001"
         ])
     );
-    // The turn only the words started keeps the work's summary (#699).
-    assert_eq!(done["summary"], "Paused.");
+    // The turn only the words started keeps the work's first line (#699), and its reply follows
+    // it, so the words are seen to be heard (#1661).
+    assert_eq!(
+        done["summary"],
+        "Paused.\n\nAfter what you told it: heard: ECHO and add a test resume=00000000-0000-4000-8000-000000000001"
+    );
 
     // A fix that commits nothing is done, saying so; the owner's round after it may end done
     // without a commit too.

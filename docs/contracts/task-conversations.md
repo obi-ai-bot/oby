@@ -60,4 +60,12 @@ The business behavior contract for where a task's words go ([#1631](https://gith
 - **TASKCONV-12:** The owner's word sets no cap on how many jobs one turn starts or tells; a conversation may `save_session` to Tetrix, scanned and in the use log as a write. (`taskconv_12_a_turn_does_each_at_most_ten_times_unless_the_owner_said`, `a_conversation_asks_tetrix_for_reads_with_its_turns_token`)
 - **TASKCONV-13:** `oby_dispatch` takes the owner's base branch and rounds. An epic isn't offered: obid can't make one job per sub-issue yet. (`taskconv_13_dispatch_takes_a_base_and_rounds`)
 
+
+## Steering a task while it works (#1661)
+
+obid owns where the words go (`Jobs::message`, `Jobs::left_words`) and the report (`summary`); the apps show them.
+
+- **TASKCONV-14:** Words the owner tells a task while it's queued, getting ready or at work reach its agent: with its first prompt, or as its next turn (#1661). When the owner's own words were among a turn's, its reply is added to the task's report after the work's (`After what you told it: …`), the work's first line still first; the conversation's line when it ends, Oby's briefing and its read of the job show that reply too, past a long report. A turn only obid's words started (a rebase, a commit, Try again) adds nothing. (`taskconv_14_words_wait_for_a_job_that_isnt_at_work`, jobs_api.rs; `taskconv_14_a_running_job_hears_the_words_next_and_its_reply_joins_the_report`, runner_api.rs)
+- **TASKCONV-15:** The owner's own words (signed, by the API or a Confirm) told a task before it started or while it wrapped up are kept with it, apart from obid's own, a restart included. If it ends without hearing them (it failed getting ready, say), they start its follow-up, each the way it came, and the rest ride along with it; when that can't start, a Confirm in the inbox says they weren't heard and keeps them. Words that weren't the owner's own (what Oby read, an event's) never start one or ride along. Try again's words the owner told it while queued run it again, once, when it has a session to pick up (the rest wait for that run), and are dropped when it never started; Try again that ran it again never comes back as the owner's words. A follow-up that fails getting ready too does the same with what it carried. (`taskconv_15_words_a_queued_task_never_heard_start_its_follow_up`, obid's lib tests)
+
 Test it when it's done, on a real Mac: start a task from the Tasks view, open its conversation, then send a follow-up from its page, and see the question, Oby's answer and the follow-up's card together there.

@@ -1284,10 +1284,14 @@ pub fn job_report(job: &Value) -> Option<(String, String)> {
         _ => return None,
     };
     // A stalled job's summary starts with the same stall in other words: obid says it once.
-    let text = match first_line("summary").filter(|_| job["stalled"].is_null()) {
+    let mut text = match first_line("summary").filter(|_| job["stalled"].is_null()) {
         Some(summary) => format!("{said}\n{summary}"),
         None => said,
     };
+    // What it did on the owner's words after its work (#1661).
+    if let Some(steer) = job["summary"].as_str().and_then(crate::job::last_steer) {
+        text = format!("{text}\n{}", crate::brain::briefing::line(steer, 300));
+    }
     Some((
         conversation.to_owned(),
         crate::secrets::known().redact(&text),
@@ -1717,6 +1721,14 @@ mod tests {
         assert_eq!(
             job_report(&published).unwrap().1,
             "Fix oby #351 is done: added to pull request #700, https://github.com/obi-ai-bot/obi/pull/700\nReports reach the chat."
+        );
+        published["addedTo"] = json!(null);
+        // TASKCONV-14: what it did on the owner's words after its work shows too.
+        published["summary"] =
+            json!("Reports reach the chat.\n\nAfter what you told it: Ended it with a period.");
+        assert_eq!(
+            job_report(&published).unwrap().1,
+            "Fix oby #351 is done: https://github.com/obi-ai-bot/obi/pull/700\nReports reach the chat.\nAfter what you told it: Ended it with a period."
         );
         let mut unpublished = job("done");
         unpublished["publishError"] = json!("Not published: the secret scan couldn't run.\nwhy");

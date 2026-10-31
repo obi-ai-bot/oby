@@ -391,6 +391,10 @@ impl Briefing {
                 && let Some(result) = job.summary.split('\n').next().filter(|r| !r.is_empty())
             {
                 lines.push(format!("Result: {}", line(result, 300)));
+                // What it did on the owner's words after that (#1661).
+                if let Some(steer) = crate::job::last_steer(&job.summary) {
+                    lines.push(line(steer, 300));
+                }
             }
             if !lines.is_empty() {
                 sections.push(fence(

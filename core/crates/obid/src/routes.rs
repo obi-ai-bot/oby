@@ -741,6 +741,7 @@ fn new_job(job: &Map<String, Value>) -> Result<NewJob, String> {
         split: false,
         adding: None,
         heard: Vec::new(),
+        owners: Vec::new(),
     })
 }
 

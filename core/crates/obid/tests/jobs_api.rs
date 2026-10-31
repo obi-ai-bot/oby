@@ -2205,7 +2205,7 @@ fn prompts(obid: &Obid, id: &str) -> Vec<String> {
 /// it waits for; the owner's words while its check runs are its next turn (#930). Never "Tell it
 /// again in a moment".
 #[test]
-fn words_wait_for_a_job_that_isnt_at_work() {
+fn taskconv_14_words_wait_for_a_job_that_isnt_at_work() {
     let folder = Folder::new("words-wait");
     let remote = fixture(&folder.0.join("fixture"));
     let obid = start(&folder.0, &config(&folder.0, &remote));

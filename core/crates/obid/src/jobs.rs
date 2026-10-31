@@ -534,6 +534,9 @@ pub struct NewJob {
     /// (#930), each as the owner sent it. Never from the API.
     #[serde(skip)]
     pub heard: Vec<String>,
+    /// How each of `heard` came (#1661), for its `owners`. Never from the API.
+    #[serde(skip)]
+    pub owners: Vec<crate::job::OwnersWords>,
 }
 
 /// Who tells a job something, which decides what words for one that ended do (the owner's
@@ -558,6 +561,24 @@ impl Source {
     /// have a stricter check than the legacy bearer-authenticated message API.
     fn direct(self) -> bool {
         matches!(self, Source::Owner | Source::Api | Source::Confirmed)
+    }
+
+    /// How words came, as `Job::owners` keeps it: only a direct source's are kept.
+    fn name(self) -> &'static str {
+        match self {
+            Source::Owner => "owner",
+            Source::Api => "api",
+            Source::Confirmed => "confirmed",
+            Source::Untrusted => "untrusted",
+            Source::Event => "event",
+        }
+    }
+
+    /// The direct source `name` names ([`Source::name`]); none for any other.
+    fn named(name: &str) -> Option<Source> {
+        [Source::Owner, Source::Api, Source::Confirmed]
+            .into_iter()
+            .find(|s| s.name() == name)
     }
 
     fn approves_limit(self) -> bool {
@@ -685,11 +706,6 @@ struct State {
     workers: HashMap<String, watch::Sender<Signal>>,
     /// The jobs whose agent had its last turn: they take no more words until they end.
     wrapping: std::collections::HashSet<String>,
-    /// The jobs that kept the owner's words while they wrapped up (#930): if one ends with them
-    /// unheard, they start its follow-up ([`Jobs::left_words`]). Never a job whose words came
-    /// before it started, nor a follow-up carrying them: one that fails before it hears them
-    /// starts no follow-up of its own.
-    told_late: std::collections::HashSet<String>,
     /// Each job's prompts waiting for the owner, the one shown first.
     asks: HashMap<String, VecDeque<Ask>>,
     /// The prompts a parked job's agent waited on ([`Jobs::park`]), held unanswered until its
@@ -1006,7 +1022,6 @@ impl Jobs {
                 jobs,
                 workers: HashMap::new(),
                 wrapping: std::collections::HashSet::new(),
-                told_late: std::collections::HashSet::new(),
                 asks: HashMap::new(),
                 held: HashMap::new(),
                 asked: HashMap::new(),
@@ -2822,6 +2837,7 @@ impl Jobs {
             .filter(|b| !b.findings.is_empty() || b.done.is_some());
         job.earlier = new.earlier.filter(|_| new.follow_up_of.is_some());
         job.heard = new.heard.clone();
+        job.owners = new.owners.clone();
         job.start_from = new
             .start_from
             .filter(|b| new.follow_up_of.is_some() && git::is_branch_name(b));
@@ -3358,7 +3374,7 @@ impl Jobs {
                 // them follow, so none is lost or heard twice.
                 if sent.is_ok()
                     && source == Source::Confirmed
-                    && job.heard.first().map(String::as_str) == Some(text)
+                    && job.owners.first().map(|w| w.text.as_str()) == Some(text)
                 {
                     self.pass_on_heard(id, text, &next.id);
                 }
@@ -3373,8 +3389,16 @@ impl Jobs {
                 // It takes the owner's words the first job never heard (#930): they came while
                 // it wrapped up, and `text` may be the first of them ([`Jobs::left_words`]).
                 Source::Owner | Source::Api | Source::Confirmed => {
-                    let mut unheard = job.heard.clone();
-                    if unheard.first().map(String::as_str) == Some(text) {
+                    // Only the owner's own (#1661): never obid's Try again or a review's round.
+                    let mut unheard: Vec<_> = job
+                        .owners
+                        .iter()
+                        .map(|w| crate::job::OwnersWords {
+                            late: true,
+                            ..w.clone()
+                        })
+                        .collect();
+                    if unheard.first().map(|w| w.text.as_str()) == Some(text) {
                         unheard.remove(0);
                     }
                     let mut next = follow_up(&job, text);
@@ -3386,7 +3410,8 @@ impl Jobs {
                     }
                     let made = self.create(NewJob {
                         attachments: (!attachments.is_empty()).then(|| attachments.to_vec()),
-                        heard: unheard,
+                        heard: unheard.iter().map(|w| w.text.clone()).collect(),
+                        owners: unheard,
                         // Words the owner typed; a Confirm's are what Oby proposed.
                         vetted: source == Source::Owner,
                         // Files may hold anyone's words, as a conversation's do (crate::secretspec).
@@ -3483,21 +3508,28 @@ impl Jobs {
                 let wrapping = state.wrapping.contains(id);
                 let job = state.jobs.get_mut(id)?;
                 let starting = job.status == Status::Queued || job.phase == Some(Phase::Prepare);
+                // The owner's own are kept apart (#1661): unheard when it ends, those that came
+                // before it started or while it wrapped up start its follow-up (`left_words`).
+                let owners = |late: bool| {
+                    source.direct().then(|| crate::job::OwnersWords {
+                        text: text.to_owned(),
+                        source: source.name().into(),
+                        late,
+                    })
+                };
                 if worker
                     && !wrapping
                     && job.status == Status::Running
                     && job.phase == Some(Phase::Work)
                 {
                     heard(job);
+                    job.owners.extend(owners(false));
                     Some(job.clone())
                 } else if starting || (worker && source.direct()) {
                     job.notes.get_or_insert_with(Vec::new).push(text.to_owned());
                     job.heard.push(text.to_owned());
-                    let job = job.clone();
-                    if !starting {
-                        state.told_late.insert(id.to_owned());
-                    }
-                    Some(job)
+                    job.owners.extend(owners(true));
+                    Some(job.clone())
                 } else {
                     None
                 }
@@ -3610,41 +3642,54 @@ impl Jobs {
         }
     }
 
-    /// Its worker ended with the owner's words still unheard, words that came while it wrapped
-    /// up (#930): they start its follow-up, as if the owner sent them now, one by one, so each is
-    /// within the 2,000 characters it was sent in. The first starts it and takes the rest along
-    /// (`message_as`); with a follow-up working, each goes to that one. Taken off the job only once
-    /// heard; refused (another job on its branch, its safety limit), they stay with it and a
-    /// Confirm item in the inbox tries again. A job the owner stopped drops them (its notes keep
-    /// them).
+    /// Its worker ended with the owner's own words still unheard that came before it started or
+    /// while it wrapped up (#930, #1661: `Job::owners`, `late`): they start its follow-up, as if
+    /// the owner sent them now, each the way it came, one by one, so each is within the 2,000
+    /// characters it was sent in. The first starts it and takes the rest along (`message_as`);
+    /// with a follow-up working, each goes to that one. Each leaves the job before it's sent, so
+    /// none is sent twice; refused (another job on its branch, its safety limit), it's put back and
+    /// a Confirm item in the inbox tries again. It stops once the job is at work again (Try again's
+    /// words among them run it; for a job that never started they pick nothing up, and go). Words that weren't the owner's own, and obid's own (Try again's,
+    /// a review's round), never start one. A job the owner stopped drops them (its notes keep them).
     fn left_words(self: &Arc<Self>, id: &str) {
-        if !self.lock().told_late.remove(id) {
-            return;
-        }
         let Some(job) = self.get(id) else {
             return;
         };
-        if job.status.is_active() || job.obi.is_some() {
+        if job.status.is_active() || job.obi.is_some() || !job.owners.iter().any(|w| w.late) {
             return;
         }
         if job.status == Status::Stopped {
             self.take_heard(id);
             return;
         }
-        while let Some(first) = self.get(id).and_then(|j| j.heard.first().cloned()) {
-            match self.message(id, &first, Source::Owner) {
-                Some(Ok(_)) => {
-                    let still = self
-                        .get(id)
-                        .is_some_and(|j| j.heard.first() == Some(&first));
-                    if still {
-                        self.update(id, |job| {
-                            job.heard.remove(0);
-                        });
-                    }
+        loop {
+            let Some(job) = self.get(id).filter(|j| !j.status.is_active()) else {
+                return;
+            };
+            let Some(at) = job.owners.iter().position(|w| w.late) else {
+                return;
+            };
+            let words = job.owners[at].clone();
+            self.update(id, |job| {
+                job.owners.remove(at);
+                if let Some(i) = job.heard.iter().position(|h| *h == words.text) {
+                    job.heard.remove(i);
                 }
+            });
+            // Try again for a job that never started picks nothing up: the rest go on.
+            let nothing_to_pick_up =
+                words.text.starts_with(crate::brain::actions::TRY_AGAIN) && job.session.is_none();
+            let Some(source) = Source::named(&words.source).filter(|_| !nothing_to_pick_up) else {
+                continue;
+            };
+            match self.message_as(id, &words.text, source, &[], true) {
+                Some(Ok(_)) => {}
                 Some(Err(why)) => {
-                    self.unheard(&job, &first, &why.0);
+                    self.update(id, |job| {
+                        job.owners.insert(0, words.clone());
+                        job.heard.insert(0, words.text.clone());
+                    });
+                    self.unheard(&job, &words.text, &why.0);
                     return;
                 }
                 None => return,
@@ -3653,18 +3698,25 @@ impl Jobs {
     }
 
     /// The first of the words job `id` never heard, `first`, went to its working follow-up `next`
-    /// on the owner's Confirm: it leaves `id`, and the rest go to `next` one by one, each leaving
-    /// `id` once heard. A refusal keeps the rest with `id` and asks again ([`Jobs::unheard`]).
+    /// on the owner's Confirm: it leaves `id`, and the rest of the owner's own go to `next` one by
+    /// one, each leaving `id` once heard. A refusal keeps the rest with `id` and asks again
+    /// ([`Jobs::unheard`]).
     fn pass_on_heard(self: &Arc<Self>, id: &str, first: &str, next: &str) {
         let take = |words: &str| {
             self.update(id, |job| {
-                if job.heard.first().map(String::as_str) == Some(words) {
-                    job.heard.remove(0);
+                if job.owners.first().map(|w| w.text.as_str()) == Some(words) {
+                    job.owners.remove(0);
+                    if let Some(i) = job.heard.iter().position(|h| h == words) {
+                        job.heard.remove(i);
+                    }
                 }
             });
         };
         take(first);
-        while let Some(words) = self.get(id).and_then(|j| j.heard.first().cloned()) {
+        while let Some(words) = self
+            .get(id)
+            .and_then(|j| j.owners.first().map(|w| w.text.clone()))
+        {
             match self.message_as(next, &words, Source::Confirmed, &[], true) {
                 Some(Ok(_)) => take(&words),
                 Some(Err(why)) => {
@@ -3710,30 +3762,46 @@ impl Jobs {
 
     /// The owner's words the agent hasn't heard yet, taken: what its next turn hears.
     fn take_heard(&self, id: &str) -> Vec<String> {
-        let mut words = Vec::new();
-        self.update(id, |job| words = std::mem::take(&mut job.heard));
-        words
+        self.take_words(id).0
+    }
+
+    /// [`Self::take_heard`], and whether the owner's own words were among them (#1661).
+    fn take_words(&self, id: &str) -> (Vec<String>, bool) {
+        let mut taken = (Vec::new(), false);
+        self.update(id, |job| {
+            taken = (
+                std::mem::take(&mut job.heard),
+                !std::mem::take(&mut job.owners).is_empty(),
+            );
+        });
+        taken
     }
 
     /// The agent's last turn is over: the owner's words that came meanwhile, taken (its next
-    /// turn), or none, and from now on the job takes no more until it ends.
-    fn last_turn(&self, id: &str) -> Vec<String> {
-        let words = {
+    /// turn), and whether the owner's own were among them, or none, and from now on the job
+    /// takes no more until it ends.
+    fn last_turn(&self, id: &str) -> (Vec<String>, bool) {
+        let (words, owners) = {
             let mut state = self.lock();
-            let words = state
+            let (words, owners) = state
                 .jobs
                 .get_mut(id)
-                .map(|job| std::mem::take(&mut job.heard))
+                .map(|job| {
+                    (
+                        std::mem::take(&mut job.heard),
+                        !std::mem::take(&mut job.owners).is_empty(),
+                    )
+                })
                 .unwrap_or_default();
             if words.is_empty() {
                 state.wrapping.insert(id.to_owned());
             }
-            words
+            (words, owners)
         };
         if !words.is_empty() {
             self.update(id, |_| {});
         }
-        words
+        (words, owners)
     }
 
     /// Who is told about permissions (once; a second call changes nothing).
@@ -9084,6 +9152,10 @@ impl Jobs {
         // The turn only the owner's words started after the work's: its reply leaves the job's
         // summary to the work (#699).
         let mut noted = false;
+        // The owner's own words were among them (never only obid's rebase or commit prompt, Try
+        // again's or what Oby read): their reply is added to the summary, so whoever reads it
+        // sees they were heard (#1661).
+        let mut steered = false;
         // No clock ends a job that makes progress: only the run's safety ceiling (`jobCeilingHours`).
         // It counts every run's time, restarts and tries again included (`Job::ran_secs`), kept as
         // each turn starts and ends.
@@ -9158,11 +9230,12 @@ impl Jobs {
                     if run.passed || run.unchecked.is_some() {
                         checked = Some(self.checked_commit(id, before).await);
                         by_hand = run.unchecked;
-                        let words = self.last_turn(id);
+                        let (words, owners) = self.last_turn(id);
                         to_publish = words.is_empty();
                         if !to_publish {
                             message = words.join("\n\n");
                             noted = true;
+                            steered = owners;
                         }
                     } else {
                         let round = job.current_round();
@@ -9500,12 +9573,16 @@ impl Jobs {
                     }
                     if !noted || job.summary.is_empty() {
                         job.summary = said.clone();
+                    } else if steered {
+                        job.summary =
+                            format!("{}\n\n{}{}", job.summary, crate::job::STEERED, said.trim());
                     }
                     job.summaries
                         .get_or_insert_with(Vec::new)
                         .push(said.clone());
                 });
                 noted = false;
+                steered = false;
                 self.note_diff(id, &start_commit, round).await;
                 // It asked the owner (`oby_ask_owner`) and ended its turn: it waits for the answer,
                 // which starts its next turn, the owner's words that came meanwhile with it.
@@ -9514,10 +9591,11 @@ impl Jobs {
                 }
                 // Words the owner sent while it worked: the agent hears them now, in another turn of
                 // this round, before the check.
-                let words = self.take_heard(id);
+                let (words, owners) = self.take_words(id);
                 if !words.is_empty() {
                     message = words.join("\n\n");
                     noted = true;
+                    steered = owners;
                     continue;
                 }
                 // It ended its turn to wait for something still running: once, it's told to wait
@@ -9588,12 +9666,13 @@ impl Jobs {
                         checked = Some(self.checked_commit(id, before).await);
                         by_hand = run.unchecked;
                         // The last turn, unless the owner's words came meanwhile: those are the next.
-                        let words = self.last_turn(id);
+                        let (words, owners) = self.last_turn(id);
                         if words.is_empty() {
                             break;
                         }
                         message = words.join("\n\n");
                         noted = true;
+                        steered = owners;
                         continue;
                     }
                     message =
@@ -9607,23 +9686,25 @@ impl Jobs {
                         .trim();
                     if last == "GOAL MET" || !more_rounds {
                         // The last turn, unless the owner's words came meanwhile: those are the next.
-                        let words = self.last_turn(id);
+                        let (words, owners) = self.last_turn(id);
                         if words.is_empty() {
                             break;
                         }
                         message = words.join("\n\n");
                         noted = true;
+                        steered = owners;
                         continue;
                     }
                     message = "Your last line didn't say `GOAL MET`: carry on with what's left, then end with `GOAL MET` or `GOAL NOT MET: <what's left>`.".into();
                 } else {
                     // The last turn, unless the owner's words came meanwhile: those are the next.
-                    let words = self.last_turn(id);
+                    let (words, owners) = self.last_turn(id);
                     if words.is_empty() {
                         break;
                     }
                     message = words.join("\n\n");
                     noted = true;
+                    steered = owners;
                     continue;
                 }
                 // What obid declined last round, for a tool whose answers carry no words (ACP).
@@ -15611,6 +15692,133 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// TASKCONV-15 (#1661): the owner's own words to a queued task that ended before its first
+    /// prompt took them (it failed getting ready, say) start its follow-up, each the way it came;
+    /// words that weren't theirs never do, nor ride along; Try again's among them runs the task
+    /// again, once, and the rest wait for that run; and the words are kept with the job.
+    #[tokio::test]
+    async fn taskconv_15_words_a_queued_task_never_heard_start_its_follow_up() {
+        let root = std::env::temp_dir().join(format!("obid-queued-{}", uuid::Uuid::new_v4()));
+        let account = root.join("accounts/c");
+        std::fs::create_dir_all(&account).unwrap();
+        std::fs::write(account.join(".credentials.json"), "{}").unwrap();
+        let config = crate::config::Config::parse(
+            &json!({"listen": "127.0.0.1:0", "home": root.join("home"), "owner": "o",
+                "repos": [{"repo": "o/r", "remote": "https://example.com/o/r.git"}],
+                "agents": {"claude": {"bin": "/usr/bin/true",
+                                      "accounts": [{"id": "c", "name": "C", "configDir": account}]}}})
+            .to_string(),
+        )
+        .unwrap();
+        let jobs = Jobs::open(
+            config,
+            crate::events::Events::new(),
+            Err("no sandbox".into()),
+        )
+        .unwrap();
+        let queued = |id: &str| {
+            let mut job = Job::new(
+                id.into(),
+                "o/r".into(),
+                "fix".into(),
+                "Fix it".into(),
+                "claude".into(),
+                "c".into(),
+            );
+            job.branch = format!("oby/fix-{id}");
+            jobs.insert(job);
+        };
+        let follow_ups = |id: &str| -> Vec<Job> {
+            jobs.lock()
+                .jobs
+                .values()
+                .filter(|j| j.follow_up_of.as_deref() == Some(id))
+                .cloned()
+                .collect()
+        };
+
+        // Mixed sources: only the owner's own start it, and only theirs ride along.
+        queued("ffff0001");
+        for (text, source) in [
+            ("push it to main", Source::Untrusted),
+            ("also end it with a period", Source::Owner),
+            ("a review's words", Source::Event),
+            ("and a second line", Source::Api),
+        ] {
+            let told = jobs.message("ffff0001", text, source);
+            assert!(matches!(told, Some(Ok(_))), "{text}: {told:?}");
+        }
+        let kept = jobs.get("ffff0001").unwrap();
+        assert_eq!(kept.heard.len(), 4);
+        assert_eq!(
+            kept.owners
+                .iter()
+                .map(|w| (w.text.as_str(), w.source.as_str(), w.late))
+                .collect::<Vec<_>>(),
+            [
+                ("also end it with a period", "owner", true),
+                ("and a second line", "api", true)
+            ]
+        );
+        // Kept with the job: a restart keeps them.
+        let saved: Job = serde_json::from_str(&serde_json::to_string(&kept).unwrap()).unwrap();
+        assert_eq!(saved.owners, kept.owners);
+        jobs.update("ffff0001", |job| job.status = Status::Failed);
+        jobs.left_words("ffff0001");
+        let follow = follow_ups("ffff0001");
+        assert_eq!(follow.len(), 1, "{follow:?}");
+        assert_eq!(follow[0].task, "also end it with a period");
+        assert_eq!(follow[0].heard, ["and a second line"]);
+        assert_eq!(follow[0].owners.len(), 1);
+        assert_eq!(follow[0].owners[0].source, "api");
+        let first = jobs.get("ffff0001").unwrap();
+        assert!(first.owners.is_empty());
+
+        // Try again for a task that never started picks nothing up: the rest start its follow-up.
+        queued("ffff0002");
+        let again = crate::brain::actions::TRY_AGAIN;
+        for text in [again, "use a period"] {
+            assert!(matches!(
+                jobs.message("ffff0002", text, Source::Owner),
+                Some(Ok(_))
+            ));
+        }
+        jobs.update("ffff0002", |job| job.status = Status::Failed);
+        jobs.left_words("ffff0002");
+        let follow = follow_ups("ffff0002");
+        assert_eq!(follow.len(), 1, "{follow:?}");
+        assert_eq!(follow[0].task, "use a period");
+        assert!(follow[0].heard.is_empty());
+
+        // Tried again, then told something while queued, it fails before its first prompt: the
+        // owner's words start its follow-up once, and Try again's never come back as theirs.
+        queued("ffff0003");
+        jobs.update("ffff0003", |job| {
+            job.status = Status::Interrupted;
+            job.session = Some("s".into());
+        });
+        let tried = jobs.message("ffff0003", again, Source::Owner);
+        assert!(matches!(tried, Some(Ok(_))), "{tried:?}");
+        assert!(jobs.get("ffff0003").unwrap().status.is_active());
+        assert!(matches!(
+            jobs.message("ffff0003", "and a period", Source::Owner),
+            Some(Ok(_))
+        ));
+        jobs.update("ffff0003", |job| job.status = Status::Failed);
+        jobs.left_words("ffff0003");
+        let follow = follow_ups("ffff0003");
+        assert_eq!(follow.len(), 1, "{follow:?}");
+        assert_eq!(follow[0].task, "and a period");
+        assert!(
+            !follow[0].heard.iter().any(|h| h.starts_with(again)),
+            "{:?}",
+            follow[0].heard
+        );
+        let job = jobs.get("ffff0003").unwrap();
+        assert!(job.owners.is_empty() && !job.status.is_active());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// The owner's words that came while a job wrapped up, left unheard when it ended, start its
     /// follow-up one by one, each within its own 2,000 characters: the first is its task, the
     /// rest its first prompt's end. Refused, they stay with the job and a Confirm item tries
@@ -15650,8 +15858,16 @@ mod tests {
             job.status = Status::Done;
             job.branch = branch.into();
             job.heard = vec!["a".repeat(1200), "b".repeat(1200)];
+            job.owners = job
+                .heard
+                .iter()
+                .map(|text| crate::job::OwnersWords {
+                    text: text.clone(),
+                    source: "owner".into(),
+                    late: true,
+                })
+                .collect();
             jobs.insert(job);
-            jobs.lock().told_late.insert(id.into());
         };
         ended("eeee0001", "oby/fix-eeee0001");
         jobs.left_words("eeee0001");

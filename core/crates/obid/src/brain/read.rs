@@ -72,10 +72,15 @@ pub fn section(job: &Job, home: &Path) -> String {
         });
     }
     lines.extend([String::new(), "### Report".into()]);
-    lines.push(if job.summary.is_empty() {
-        "(none yet)".into()
-    } else {
-        job.summary.chars().take(3000).collect()
+    // The replies to the owner's words keep their own room past a long report (#1661).
+    lines.push(match crate::job::steered(&job.summary) {
+        ("", None) => "(none yet)".into(),
+        (report, None) => report.chars().take(3000).collect(),
+        (report, Some(replies)) => format!(
+            "{}\n\n{}",
+            report.chars().take(2000).collect::<String>(),
+            replies.chars().take(1500).collect::<String>()
+        ),
     });
     if let Some(stalled) = &job.stalled {
         lines.extend([String::new(), "### Handoff note".into()]);
@@ -368,5 +373,17 @@ mod tests {
         let mut long = failed("aaaa1111", "Vault secrets");
         long.summary = "report ".repeat(4000);
         assert!(section(&long, Path::new("/nonexistent")).len() < SIZE);
+        // TASKCONV-14: the reply to the owner's words keeps its room past a long report.
+        long.summary = format!(
+            "{}\n\n{}Ended the line with a period.",
+            "report ".repeat(4000),
+            crate::job::STEERED
+        );
+        let read = section(&long, Path::new("/nonexistent"));
+        assert!(read.len() < SIZE);
+        assert!(
+            read.contains("After what you told it: Ended the line with a period."),
+            "{read}"
+        );
     }
 }
