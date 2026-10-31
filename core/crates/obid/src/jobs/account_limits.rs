@@ -348,7 +348,7 @@ impl Jobs {
 
     /// Apply a decision to one job in one persisted state transition. In particular the handoff,
     /// new account and queued status cannot be separated by an obid crash.
-    fn apply_limit_job(
+    pub(super) fn apply_limit_job(
         self: &Arc<Self>,
         decision: &crate::account_limits::Decision,
         id: &str,
@@ -404,6 +404,10 @@ impl Jobs {
                 .any(|j| j.follow_up_of.as_deref() == Some(id) && j.branch == job.branch)
             {
                 return Err("A follow-up now carries the job's branch.".into());
+            }
+            // Resumed, it would move a branch another job works on now (PUBLISHING-4).
+            if let Some(why) = branch_busy(&state.jobs, job) {
+                return Err(why);
             }
             let mut next = job.clone();
             if let Some((tool, account)) = target {

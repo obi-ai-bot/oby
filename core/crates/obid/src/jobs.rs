@@ -235,6 +235,11 @@ fn spell(time: Duration) -> String {
 const WAIT_HERE: &str = "Your turn ended while you wait for something still running, but in a job the end of your turn is the end of your work: nothing wakes you later, and what you left running is ended. Run it again in the foreground and wait for it (or poll it with a foreground command until it's done), then carry on and finish with a short summary.";
 
 /// What obid tells an agent that ended its work with changes it never committed.
+/// Why a job whose check passed isn't published: the check ran with work in its worktree that
+/// isn't committed, so it didn't check its commits alone (PUBLISHING-5).
+const CHECKED_UNCOMMITTED: &str = "Not published: its check ran with changes in the worktree that weren't committed, so it didn't check the commits alone. Tell Oby to commit them or drop them, and it checks again.";
+/// Why not, when its commits changed while its check ran (PUBLISHING-5).
+const CHECK_MOVED_HEAD: &str = "Not published: its commits changed while its check ran, so the check didn't pass on the ones there now. Tell Oby to carry on, and it checks them again.";
 const COMMIT_HERE: &str = "Your turn ended with changes in this worktree that aren't committed, and obid publishes only commits: what isn't committed is left out. If they're the work, commit them now (unsigned, a Conventional Commits message); if they aren't, say why in your summary's first line. Then finish with a short summary.";
 
 /// The agent ended its turn to wait for something still running ("The build is still going. I'll
@@ -2823,16 +2828,8 @@ impl Jobs {
                     other.id
                 )));
             }
-            if let Some(other) = active
-                .iter()
-                .find(|j| j.repo == job.repo && j.branch == job.branch)
-            {
-                return Err(Refused(format!(
-                    "{} (job {}) is working on {} now: tell that one instead.",
-                    other.short_title(),
-                    other.id,
-                    job.branch
-                )));
+            if let Some(why) = branch_busy(&state.jobs, &job) {
+                return Err(Refused(why));
             }
             state.jobs.insert(job.id.clone(), job.clone());
         }
@@ -3472,6 +3469,10 @@ impl Jobs {
                 return Some(Err(Refused(
                     "obid is publishing it. Tell it again once that's done.".into(),
                 )));
+            }
+            // Run again, it would move a branch another job works on now (PUBLISHING-4).
+            if let Some(why) = branch_busy(&state.jobs, state.jobs.get(id)?) {
+                return Some(Err(Refused(why)));
             }
             let job = state.jobs.get_mut(id)?;
             if job.account_limit_blocked && !source.approves_limit() {
@@ -5371,6 +5372,22 @@ impl Jobs {
         git::move_branch(&clone, &job.branch, &head)
             .await
             .map_err(|e| e.to_string())?;
+        // The jobs whose check passed on another commit of that branch can't publish it any more
+        // (PUBLISHING-2): they're offered no Publish that would be refused.
+        let moved: Vec<String> = self
+            .lock()
+            .jobs
+            .values()
+            .filter(|j| {
+                j.repo == job.repo
+                    && same_branch(&j.branch, &job.branch)
+                    && j.checked_head.as_ref().is_some_and(|c| *c != head)
+            })
+            .map(|j| j.id.clone())
+            .collect();
+        for other in moved {
+            self.update(&other, |j| j.checked_head = None);
+        }
         Ok(head)
     }
 
@@ -5705,6 +5722,51 @@ impl Jobs {
         )
         .await
         .is_ok_and(|changes| !changes.is_empty())
+    }
+
+    /// Where the job's worktree is as its check starts: its HEAD (empty when git can't say), and
+    /// whether anything isn't committed (also when git can't say).
+    async fn before_check(&self, id: &str) -> (String, bool) {
+        let dirty = self
+            .sandboxed_git(
+                id,
+                &["status", "--porcelain", "--untracked-files=all"],
+                None,
+            )
+            .await
+            .map_or(true, |changes| !changes.is_empty());
+        (self.worktree_head(id).await, dirty)
+    }
+
+    /// The commit a passing check passed on (PUBLISHING-5): the worktree's HEAD before it, when
+    /// nothing was uncommitted then and the check left HEAD there; else why it didn't check them.
+    async fn checked_commit(
+        &self,
+        id: &str,
+        (before, dirty): (String, bool),
+    ) -> Result<String, String> {
+        if dirty {
+            return Err(CHECKED_UNCOMMITTED.into());
+        }
+        let after = self.worktree_head(id).await;
+        if !git::is_sha(&before) || after != before {
+            return Err(CHECK_MOVED_HEAD.into());
+        }
+        Ok(before)
+    }
+
+    /// The job's worktree's HEAD, read with its own git folders; empty when git can't say.
+    async fn worktree_head(&self, id: &str) -> String {
+        match self.pinned_git(id).await {
+            Ok(folders) => git::pinned(
+                &self.worktree_path(id),
+                &folders,
+                &["rev-parse", "--verify", "--quiet", "HEAD"],
+            )
+            .await
+            .unwrap_or_default(),
+            Err(_) => String::new(),
+        }
     }
 
     /// The job's change against `start_commit` after `round`, kept as that round's (#736): paths
@@ -8463,6 +8525,8 @@ impl Jobs {
         // commit what it left uncommitted (`COMMIT_HERE`).
         let mut told_to_wait = false;
         let mut told_to_commit = false;
+        // What its last passing check passed on, or why it didn't check its commits (PUBLISHING-5).
+        let mut checked: Option<Result<String, String>> = None;
         // How the transcript opens the next turn, when it's obid's words that start it.
         let mut opening: Option<String> = None;
         // Its base moved and its commits didn't rebase onto it: its agent had its one round to do it.
@@ -8507,11 +8571,13 @@ impl Jobs {
                         job.step = format!("Running {command}");
                     });
                     stages.begin("check");
+                    let before = self.before_check(id).await;
                     let run = self.check(id, &command, &spec, signal).await?;
                     if *signal.borrow() != Signal::Run {
                         return Ok(());
                     }
                     if run.passed {
+                        checked = Some(self.checked_commit(id, before).await);
                         let words = self.last_turn(id);
                         to_publish = words.is_empty();
                         if !to_publish {
@@ -8933,11 +8999,13 @@ impl Jobs {
                         job.step = format!("Running {command}");
                     });
                     stages.begin("check");
+                    let before = self.before_check(id).await;
                     let run = self.check(id, command, &spec, signal).await?;
                     if *signal.borrow() != Signal::Run {
                         return Ok(());
                     }
                     if run.passed {
+                        checked = Some(self.checked_commit(id, before).await);
                         // The last turn, unless the owner's words came meanwhile: those are the next.
                         let words = self.last_turn(id);
                         if words.is_empty() {
@@ -9008,16 +9076,23 @@ impl Jobs {
             self.publish_artifacts(id).await;
             stages.begin("keep commits");
             let head = self.keep_commits(id).await?;
-            // What its check passed on (PUBLISHING-1): all that publishing will push, by itself
-            // or by hand, while its branch is still there.
-            self.update(id, |job| job.checked_head = Some(head.clone()));
+            // What its check passed on (PUBLISHING-1, PUBLISHING-5): all that publishing will push,
+            // by itself or by hand, while its branch is still there. One with no check: its head.
+            let verified = match (self.get(id).and_then(|j| j.check), checked.take()) {
+                (None, _) => Ok(head.clone()),
+                (Some(_), Some(Ok(commit))) if commit == head => Ok(commit),
+                (Some(_), Some(Err(why))) => Err(why),
+                (Some(_), _) => Err(CHECK_MOVED_HEAD.to_owned()),
+            };
+            self.update(id, |job| job.checked_head = verified.clone().ok());
             let job = self.get(id).ok_or("the job is gone")?;
             let folders = self.pinned_git(id).await.unwrap_or_default();
             let commits = self.counted(&job, &worktree, &folders, &head).await;
-            // Work it left uncommitted, none committed: once, it's told to commit it, then the
-            // check runs on what it committed. Before the job's end is told to anyone.
+            // Work it left uncommitted, none committed or checked with them: once, it's told to
+            // commit it, then the check runs on what it committed. Before the job's end is told to
+            // anyone.
             if COMMITTING.contains(&job.kind.as_str())
-                && commits == 0
+                && (commits == 0 || verified.is_err())
                 && !told_to_commit
                 && self.uncommitted(id).await
             {
@@ -9068,6 +9143,13 @@ impl Jobs {
                 return Ok(());
             }
             let pushed = self.still_pushed(&job, &head, commits).await;
+            // Its check didn't pass on its commits alone: done, nothing published, and why.
+            if let Err(why) = &verified
+                && job.kind != "research"
+            {
+                self.end_done(id, commits, pushed, |job| job.reason = Some(why.clone()));
+                return Ok(());
+            }
             // The job as it would end, which is what gets published.
             let mut ended = job.clone();
             ended.status = Status::Done;
@@ -9901,16 +9983,23 @@ impl Jobs {
         };
         // Its next round only while it has reviews left and nothing else moves its branch: Try
         // again's rules ([`Jobs::message`]).
-        let carried =
-            self.lock().jobs.values().any(|j| {
+        let (carried, busy) = {
+            let state = self.lock();
+            let carried = state.jobs.values().any(|j| {
                 j.follow_up_of.as_deref() == Some(of.as_str()) && j.branch == author.branch
             });
+            (carried, branch_busy(&state.jobs, &author))
+        };
         let quoted = (!approved
             && round < review::REVIEWS
             && author.status == Status::Done
             && !carried
             && !past_safety(&author))
-        .then(|| self.quote_review(&of, round, &by, &text));
+        .then(|| match &busy {
+            // Its round would move a branch another job works on now (PUBLISHING-4).
+            Some(why) => Err(why.clone()),
+            None => self.quote_review(&of, round, &by, &text),
+        });
         self.review_items(&of, None);
         self.update(&of, |job| {
             job.reviewing = None;
@@ -10860,12 +10949,16 @@ fn carries(job: &Job) -> bool {
 
 /// What publishing `job` by hand would do: obid's own sentence and the base, or why there's
 /// nothing to publish. Never while a follow-up (of every job obid has, `jobs`) carries its branch
-/// on, as Try again and delete refuse then (PUBLISHING-3): that one publishes the branch.
+/// on, at work or done, as Try again and delete refuse then (PUBLISHING-3): that one publishes the
+/// branch. One that was dismissed or ended otherwise doesn't hold it: when it moved the branch,
+/// the job's checked commit isn't there any more (PUBLISHING-2).
 fn publish_action_of(job: &Job, jobs: &HashMap<String, Job>) -> Result<(String, String), String> {
     let carried = jobs.values().find(|j| {
         j.id != job.id
             && j.follow_up_of.as_deref() == Some(job.id.as_str())
-            && j.branch == job.branch
+            && same_branch(&j.branch, &job.branch)
+            && j.dismissed.is_none()
+            && (j.status.is_active() || j.status == Status::Done)
     });
     match (&job.base, job.can_publish(), carried) {
         (Some(_), true, Some(next)) => Err(format!(
@@ -10885,6 +10978,16 @@ fn publish_action_of(job: &Job, jobs: &HashMap<String, Job>) -> Result<(String, 
             "It's already published, with every commit.".into()
         } else if job.stranded() {
             "Nothing to publish: its pull request was merged or closed.".into()
+        } else if job.status == Status::Done && job.unpublished() > 0 && job.checked_head.is_none()
+        {
+            // Its check didn't pass on its commits alone, or its branch moved since (PUBLISHING-2).
+            match job.reason.as_deref() {
+                Some(why @ (CHECKED_UNCOMMITTED | CHECK_MOVED_HEAD)) => why.to_owned(),
+                _ => format!(
+                    "Not published: {} moved since this job's check passed on it, so its commits now aren't the ones checked.",
+                    job.branch
+                ),
+            }
         } else {
             "Nothing to publish: the job made no commits.".into()
         }),
@@ -11453,6 +11556,29 @@ fn hear(job: &mut Job, text: &str) {
     job.heard.push(text.to_owned());
     // What the owner said; the agent's words quoted after it aren't theirs to show.
     job.step = format!("You: {}", crate::sphere::inbox::owners_part(text));
+}
+
+/// Two branch names that are one ref in obid's clone: a Mac's disk ignores letter case, so
+/// `oby/Fix-34` is `oby/fix-34` there.
+fn same_branch(a: &str, b: &str) -> bool {
+    a.eq_ignore_ascii_case(b)
+}
+
+/// Why `job` can't start, new or again, on its branch (PUBLISHING-4): another queued or running
+/// job of its repository works on it, of every job obid has (`jobs`).
+fn branch_busy(jobs: &HashMap<String, Job>, job: &Job) -> Option<String> {
+    let other = jobs.values().find(|j| {
+        j.id != job.id
+            && j.status.is_active()
+            && j.repo == job.repo
+            && same_branch(&j.branch, &job.branch)
+    })?;
+    Some(format!(
+        "{} (job {}) is working on {} now: tell that one instead.",
+        other.short_title(),
+        other.id,
+        job.branch
+    ))
 }
 
 /// Why the job `id` can't be deleted, when it can't, from every job obid has (`publishing`:
@@ -14349,6 +14475,69 @@ mod tests {
             ["a".repeat(1200), "b".repeat(1200)]
         );
         assert!(jobs.get("eeee0002").unwrap().heard.is_empty());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// PUBLISHING-4, run again: an ended job takes no Try again, and the owner's account-limit
+    /// choice neither resumes nor moves it, while another job works on its branch, whatever the
+    /// letter case of its name. It stays as it was.
+    #[tokio::test]
+    async fn publishing_4_an_ended_job_runs_again_only_off_a_busy_branch() {
+        let root = std::env::temp_dir().join(format!("obid-busy-{}", uuid::Uuid::new_v4()));
+        let home = root.join("home");
+        let on = |id: &str, branch: &str| {
+            let mut job = Job::new(
+                id.into(),
+                "o/r".into(),
+                "fix".into(),
+                "Fix #34".into(),
+                "claude".into(),
+                "c".into(),
+            );
+            job.branch = branch.into();
+            job.base = Some("main".into());
+            job.session = Some("00000000-0000-4000-8000-000000000001".into());
+            job
+        };
+        let mut stopped = on("aaaa0001", "oby/fix-34");
+        stopped.status = Status::Stopped;
+        let mut limited = on("aaaa0002", "oby/fix-34");
+        limited.status = Status::Interrupted;
+        limited.account_limit_blocked = true;
+        limited.account_limit_episode = Some("e1".into());
+        let jobs = jobs_with_kept(&home, &[&stopped, &limited]);
+        let mut busy = on("aaaa0003", "oby/Fix-34");
+        busy.status = Status::Running;
+        jobs.insert(busy);
+        let refused = jobs
+            .message("aaaa0001", crate::brain::actions::TRY_AGAIN, Source::Owner)
+            .unwrap()
+            .unwrap_err();
+        assert!(
+            refused
+                .0
+                .contains("(job aaaa0003) is working on oby/fix-34 now"),
+            "{}",
+            refused.0
+        );
+        assert_eq!(jobs.get("aaaa0001").unwrap().status, Status::Stopped);
+        let decision: crate::account_limits::Decision = serde_json::from_value(json!({
+            "id": "e1", "revision": 1, "agent": "claude", "account": "c", "jobs": ["aaaa0002"],
+            "choice": "move", "destination": null, "applied": []}))
+        .unwrap();
+        let elsewhere = crate::config::Account {
+            id: "d".into(),
+            name: "D".into(),
+            config_dir: None,
+            payer: None,
+        };
+        let why = jobs
+            .apply_limit_job(&decision, "aaaa0002", Some((Tool::Claude, elsewhere)))
+            .unwrap_err();
+        assert!(why.contains("(job aaaa0003) is working on"), "{why}");
+        let limited = jobs.get("aaaa0002").unwrap();
+        assert_eq!(limited.status, Status::Interrupted);
+        assert_eq!(limited.account, "c");
         let _ = std::fs::remove_dir_all(&root);
     }
 

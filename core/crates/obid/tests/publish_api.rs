@@ -1384,8 +1384,9 @@ fn publishing_1_2_only_the_commit_its_check_passed_on_goes_out() {
 
 /// PUBLISHING-3, the core audit's first trigger (#1635): a published job's next run passes its
 /// check and its publish fails; a follow-up on its branch then fails its check. Publish on the
-/// first job is refused while the follow-up carries its branch on, and, the follow-up deleted,
-/// because the branch moved: its failing commits never go out.
+/// first job is refused while the follow-up carries its branch on, and once the follow-up's
+/// commits moved the branch, it's refused for that, and offered no more: its failing commits never
+/// go out.
 #[test]
 fn publishing_3_a_follow_ups_failing_commits_never_go_out_on_the_first_job() {
     let folder = Folder::new("publish-follow-up-fails");
@@ -1418,19 +1419,20 @@ fn publishing_3_a_follow_ups_failing_commits_never_go_out_on_the_first_job() {
     assert_eq!(told.status, 200, "{}", told.text);
     let job = ended(&obid, &id);
     assert!(job["publishError"].is_string(), "{job}");
-    // A follow-up on its branch whose check fails.
+    assert_eq!(
+        call(&obid, "GET", &format!("/v1/jobs/{id}/publish"), None).status,
+        200
+    );
+    // A follow-up on its branch, whose commit (after 3 seconds) fails its check.
     let told = call(
         &obid,
         "POST",
         &format!("/v1/jobs/{id}/messages"),
-        Some(&json!({"text": "COMMIT: bad.txt"})),
+        Some(&json!({"text": "SLOW: bad.txt"})),
     );
     assert_eq!(told.status, 201, "{}", told.text);
     assert_eq!(told.body["branch"], branch.as_str());
     let next = told.body["id"].as_str().unwrap().to_owned();
-    let follow = ended(&obid, &next);
-    assert_ne!(follow["status"], "done", "{follow}");
-    assert_eq!(follow["checks"][0]["steps"][0]["passed"], false, "{follow}");
     let answer = call(&obid, "GET", &format!("/v1/jobs/{id}/publish"), None);
     assert_eq!(answer.status, 409, "{}", answer.text);
     assert!(
@@ -1438,14 +1440,20 @@ fn publishing_3_a_follow_ups_failing_commits_never_go_out_on_the_first_job() {
         "{}",
         answer.text
     );
-    // The follow-up deleted, its commits stay on the branch: the first job's publish refuses them.
-    let deleted = call(&obid, "DELETE", &format!("/v1/jobs/{next}"), None);
-    assert!(deleted.status < 300, "{}", deleted.text);
+    let follow = ended(&obid, &next);
+    assert_ne!(follow["status"], "done", "{follow}");
+    assert_eq!(follow["checks"][0]["steps"][0]["passed"], false, "{follow}");
+    // Its commits moved the branch: the first job is offered no Publish, and one by hand refused.
+    let moved = format!(
+        "Not published: {branch} moved since this job's check passed on it, so its commits now aren't the ones checked."
+    );
+    let answer = call(&obid, "GET", &format!("/v1/jobs/{id}/publish"), None);
+    assert_eq!(answer.status, 409, "{}", answer.text);
+    assert_eq!(answer.body["error"], moved.as_str());
     let (key, device_id) = registered(&obid, 12);
-    let sentence = call(&obid, "GET", &format!("/v1/jobs/{id}/publish"), None).body["action"]
-        .as_str()
-        .unwrap()
-        .to_owned();
+    let action = format!(
+        "Push the new commits on {branch} to obi-e2e/fixture-app, for its pull request into main."
+    );
     let refused = call(
         &obid,
         "POST",
@@ -1454,23 +1462,124 @@ fn publishing_3_a_follow_ups_failing_commits_never_go_out_on_the_first_job() {
             &key,
             &device_id,
             &id,
-            &sentence,
+            &action,
             obi_protocol::time::now(),
         )),
     );
     assert_eq!(refused.status, 409, "{}", refused.text);
-    assert!(
-        refused.body["error"]
-            .as_str()
-            .unwrap()
-            .contains("moved since"),
-        "{}",
-        refused.text
-    );
+    assert_eq!(refused.body["error"], moved.as_str());
     assert_eq!(
         remote_branch(&remote, &branch).as_deref(),
         Some(first.as_str())
     );
+}
+
+/// PUBLISHING-5: a check passes on the commits alone or publishes nothing. One that ran with a
+/// file left uncommitted (after the one round Oby tells it to commit) and one that committed while
+/// it ran both end done with why, nothing pushed, and no Publish offered.
+#[test]
+fn publishing_5_a_check_that_didnt_check_the_commits_publishes_nothing() {
+    let folder = Folder::new("publish-unchecked");
+    let bin = fake_gh(&folder.0);
+    let (obid, remote, _) = obid_with(&folder, &bin);
+    let no_publish = |id: &str, why: &str| {
+        let answer = call(&obid, "GET", &format!("/v1/jobs/{id}/publish"), None);
+        assert_eq!(answer.status, 409, "{}", answer.text);
+        assert_eq!(answer.body["error"], why);
+    };
+    // Published once; then a file it never commits is there when its next check runs.
+    let id = dispatch(
+        &obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "build", "task": "COMMIT: hello.txt",
+               "check": "test -f hello.txt"}),
+    );
+    assert_eq!(ended(&obid, &id)["published"], PULL);
+    let branch = format!("oby/build-{id}");
+    let first = remote_branch(&remote, &branch).unwrap();
+    let job = call(&obid, "GET", &format!("/v1/jobs/{id}"), None).body;
+    std::fs::write(
+        Path::new(job["worktree"].as_str().unwrap()).join("junk.txt"),
+        "not committed\n",
+    )
+    .unwrap();
+    again_commits(&obid, &id, "second.txt");
+    let told = call(
+        &obid,
+        "POST",
+        &format!("/v1/jobs/{id}/messages"),
+        Some(&json!({"text": TRY_AGAIN})),
+    );
+    assert_eq!(told.status, 200, "{}", told.text);
+    let job = ended(&obid, &id);
+    let dirty = "Not published: its check ran with changes in the worktree that weren't committed, so it didn't check the commits alone. Tell Oby to commit them or drop them, and it checks again.";
+    assert_eq!(job["status"], "done", "{job}");
+    assert_eq!(job["reason"], dirty, "{job}");
+    no_publish(&id, dirty);
+    assert_eq!(
+        remote_branch(&remote, &branch).as_deref(),
+        Some(first.as_str())
+    );
+
+    // A check that commits while it runs.
+    let id = dispatch(
+        &obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "build", "task": "COMMIT: other.txt",
+               "check": "git -c user.name=x -c user.email=x@x -c commit.gpgsign=false commit -q --allow-empty -m sneaky"}),
+    );
+    let job = ended(&obid, &id);
+    let moved = "Not published: its commits changed while its check ran, so the check didn't pass on the ones there now. Tell Oby to carry on, and it checks them again.";
+    assert_eq!(job["status"], "done", "{job}\n{}", obid.log());
+    assert_eq!(job["reason"], moved, "{job}");
+    no_publish(&id, moved);
+    assert_eq!(remote_branch(&remote, &format!("oby/build-{id}")), None);
+}
+
+/// PUBLISHING-4, Oby's review: changes it asks for start no round while another job works on the
+/// job's branch; the job says why instead.
+#[test]
+fn publishing_4_a_reviews_changes_wait_off_a_busy_branch() {
+    let folder = Folder::new("publish-review-busy");
+    let bin = fake_gh(&folder.0);
+    let (obid, _remote, _) = obid_with(&folder, &bin);
+    let id = dispatch(
+        &obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "build",
+               "task": "COMMIT: hello.txt WANTS: fix.txt HOLD REVIEW", "check": "test -f hello.txt"}),
+    );
+    let job_of = |id: &str| call(&obid, "GET", &format!("/v1/jobs/{id}"), None).body;
+    let review = review_of(&obid, &id, 0);
+    let review = within(60, "the review runs", || {
+        let review = job_of(review["id"].as_str().unwrap());
+        (review["status"] == "running").then_some(review)
+    });
+    // Another job on its branch, at work while the review answers.
+    let branch = format!("oby/build-{id}");
+    let other = dispatch(
+        &obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "build", "task": "Look", "branch": branch,
+               "check": "sleep 60"}),
+    );
+    within(60, "the other job's check runs", || {
+        (job_of(&other)["step"] == "Running sleep 60").then_some(())
+    });
+    std::fs::write(
+        Path::new(review["worktree"].as_str().unwrap()).join(".obi/release"),
+        "",
+    )
+    .unwrap();
+    let job = within(120, "the review's verdict", || {
+        let job = job_of(&id);
+        job["reviewError"].is_string().then_some(job)
+    });
+    assert_eq!(job["status"], "done", "{job}");
+    assert!(
+        job["reviewError"]
+            .as_str()
+            .unwrap()
+            .contains(&format!("(job {other}) is working on {branch} now")),
+        "{job}"
+    );
+    call(&obid, "POST", "/v1/stop-all", None);
 }
 
 /// Only the names a job adds are its own: a base that already holds `.env.development` and a

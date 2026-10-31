@@ -961,8 +961,9 @@ impl Job {
     }
 
     /// Done, with commits that aren't on its pull request yet: obid publishes it when it ends, and
-    /// offers Publish when that failed. Not once dismissed, never on a review or research job, and
-    /// never once its pull request was merged or closed.
+    /// offers Publish when that failed. Not once dismissed, never on a review or research job,
+    /// never once its pull request was merged or closed, and only while its branch is at the
+    /// commit its check passed on, as far as obid knows (`checked_head`, PUBLISHING-2).
     pub fn can_publish(&self) -> bool {
         self.status == Status::Done
             && self.kind != "research"
@@ -971,6 +972,7 @@ impl Job {
             && self.unpublished() > 0
             && self.dismissed.is_none()
             && self.pull_request_open()
+            && self.checked_head.is_some()
     }
 
     /// Done with commits its pull request will never take: it was merged or closed before they
@@ -1908,6 +1910,7 @@ mod tests {
         job.status = Status::Done;
         job.started = Some(job.created);
         job.commits = Some(1);
+        job.checked_head = Some("a".repeat(40));
         let state = |job: &Job, id: &str| -> (String, String) {
             let stage = job.pipeline()["stages"]
                 .as_array()
