@@ -2721,12 +2721,12 @@ fn merging_14_an_untrusted_task_gets_two_reviews_its_reviewers_told_why() {
     }
 }
 
-/// MERGING-18 (#1662): the review reads the head obid pushed even when the owner's clone was made
+/// MERGING-19 (#1662): the review reads the head obid pushed even when the owner's clone was made
 /// again since (here by the next job, once words no app signed made it someone else's code); and
-/// MERGING-17 (#1659): the owner's signed words, sent while the task ran, reach the review quoted
+/// MERGING-18 (#1659): the owner's signed words, sent while the task ran, reach the review quoted
 /// after what it was asked, and the unsigned ones never do.
 #[test]
-fn merging_18_a_review_finds_the_pushed_head_in_a_clone_made_again() {
+fn merging_19_a_review_finds_the_pushed_head_in_a_clone_made_again() {
     let folder = Folder::new("publish-review-steered");
     let bin = fake_gh(&folder.0);
     let (obid, _remote, _) = obid_with(&folder, &bin);

@@ -944,7 +944,7 @@ mod tests {
             ),
             "The repository's rules as they are on dev, where the change goes:\n\n## AGENTS.md\n\nTest it.\n\n## CLAUDE.md\n\n(dev has no CLAUDE.md.)\n"
         );
-        // MERGING-17: what the user told it after, numbered, the later words winning.
+        // MERGING-18: what the user told it after, numbered, the later words winning.
         assert_eq!(
             asked(
                 "Fix it",

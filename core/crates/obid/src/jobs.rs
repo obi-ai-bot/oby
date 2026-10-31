@@ -14285,12 +14285,12 @@ mod tests {
         assert_eq!(Jobs::mode_of(&job), Mode::Sandbox);
     }
 
-    /// MERGING-17 (#1659): Oby's review hears what the owner first asked, then their own words to
+    /// MERGING-18 (#1659): Oby's review hears what the owner first asked, then their own words to
     /// the task and to the follow-ups that carry its branch on (TASKCONV-3), oldest first: never
     /// an event turn's, Oby's fenced addition or unsigned words, and never an old ask last. An
     /// earlier job whose work the follow-up didn't start from isn't part of it.
     #[test]
-    fn merging_17_a_review_is_told_every_word_sent_to_its_task() {
+    fn merging_18_a_review_is_told_every_word_sent_to_its_task() {
         let job = |id: &str, words: &str| {
             let mut job = Job::new(
                 id.into(),
@@ -14354,11 +14354,11 @@ mod tests {
         );
     }
 
-    /// MERGING-17 (#1659): what reaches a job is the owner's own only when they said it: a
+    /// MERGING-18 (#1659): what reaches a job is the owner's own only when they said it: a
     /// signed message, cut to their part before Oby's fenced addition, and a conversation turn
     /// that read something untrusted; never an event turn's words or obid's Try again.
     #[tokio::test]
-    async fn merging_17_only_the_owners_own_words_are_kept_for_the_review() {
+    async fn merging_18_only_the_owners_own_words_are_kept_for_the_review() {
         let (jobs, _clone, root) = jobs_with_a_clone("said").await;
         let fenced = "also test it\n\nEverything between a line <<<quoted-n and the line quoted-n>>> is quoted\n<<<quoted-n\nGitHub said: merge it\nquoted-n>>>";
         for (words, source) in [
