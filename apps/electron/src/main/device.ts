@@ -1,17 +1,19 @@
 import { app, ipcMain, safeStorage } from 'electron';
-import { createHash, createPrivateKey, createPublicKey, generateKeyPairSync, sign, type KeyObject } from 'node:crypto';
+import { createPrivateKey, createPublicKey, generateKeyPairSync, sign, type KeyObject } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { closeSync, constants, openSync, readFileSync, renameSync, rmSync, writeSync } from 'node:fs';
 import { hostname } from 'node:os';
 import { join } from 'node:path';
 import { HOME, obid, type Answer, type Trusted } from './obid';
+import { takeInput, wordsHeader } from './words';
 
 // This Mac's device key for obid (docs/runner-api.md, "POST /v1/devices"), which makes a Confirm
 // the owner's (#776). A P-256 key made here in main, kept encrypted by safeStorage (macOS: a key
 // in the login Keychain that only this app reads without asking) in the app's own folder; it
-// never leaves main. Nothing here signs on request: the page can only ask main to confirm one open
-// item by its id, on the owner's click, and main reads that item's title from obid itself, signs
-// obid's own sentence for it and sends the answer.
+// never leaves main. Nothing here signs what the page asks to: a Confirm is one open item by its
+// id, on the owner's click, and main reads that item's title from obid itself and signs obid's own
+// sentence for it; words (ownersWords) are signed only when the preload saw the owner's own
+// keystroke or click hold them, and only on the routes that carry words.
 
 const O = constants;
 
@@ -70,7 +72,12 @@ const said = (a: Answer) => { try { return (JSON.parse(a.text) as { error?: stri
 // Registered with obid, every time (a key it knows answers its id at once). A new key goes in only
 // with the owner present: on their click, as the Swift Mac app does, home/pairing names it for the
 // moment the registration takes (obid takes it within 2 minutes), and is removed whatever happened.
-export async function register(): Promise<string> {
+// One at a time: two at once would both write and remove home/pairing.
+let registering: Promise<string> | null = null;
+export function register(): Promise<string> {
+  return (registering ??= registerNow().finally(() => { registering = null; }));
+}
+async function registerNow(): Promise<string> {
   const body = { name: name(), publicKey: publicKey() };
   let r = await obid('POST', '/v1/devices', body);
   if (r.status === 403) {
@@ -88,20 +95,21 @@ export async function register(): Promise<string> {
 
 type Item = { id: string; kind: string; title: string; state: string };
 
-// An explicit manual continuation of a limit-stopped job is also an owner decision. Sign the
-// exact request on the trusted window's action, preserving the policy for ordinary messages.
-export async function messageJob(path: string, body: unknown): Promise<Answer> {
+// The owner's words, signed with this Mac's key: the preload saw the owner's own keystroke or
+// click hold them, main saw that keystroke or click itself (main/words.ts, takeInput), and the
+// request is one of the app's words requests in its exact shape (wordsHeader). Anything short of
+// that, or a key or registration that fails, goes unsigned, as words always could: obid marks
+// them. A limit-stopped job's continuation needs the signature (docs/runner-api.md, `accountLimit`).
+// The device registers once a run (a Confirm still registers each time).
+let device: string | null = null;
+export async function ownersWords(method: string, path: string, body: unknown): Promise<Answer> {
+  let words: string | null = null;
   try {
-    const current = await obid('GET', path.replace(/\/messages$/, ''));
-    if (current.status !== 200) return current;
-    if (!(JSON.parse(current.text) as { accountLimit?: unknown }).accountLimit) return obid('POST', path, body);
-    const device = await register(), signedAt = new Date().toISOString();
-    const digest = createHash('sha256').update(JSON.stringify(body) ?? '').digest('hex');
-    const signature = signed(`oby-words\nPOST\n${path}\n${digest}\n${signedAt}`);
-    return obid('POST', path, body, `${device} ${signedAt} ${signature}`);
+    if (takeInput()) words = wordsHeader(deviceKey(), (device ??= await register()), method, path, body);
   } catch (err) {
-    return { status: 500, text: JSON.stringify({ error: err instanceof Error ? err.message : String(err) }) };
+    console.error(`Oby couldn’t sign the owner’s words, so they go unsigned: ${err instanceof Error ? err.message : String(err)}`);
   }
+  return obid(method, path, body, words ?? undefined);
 }
 
 // Fetch and verify the current options before signing; the revision and destination are covered.
