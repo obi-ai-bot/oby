@@ -766,6 +766,9 @@ fn tasks_12_nothing_committed_is_done_with_nothing_done_and_needs_nothing() {
         .to_owned();
     let research = wait(&obid, &quiet);
     assert_eq!(research["status"], "done");
+    // Its last change: the cleanup pass its end wakes frees its build outputs (`buildFreed`), a
+    // `job` event that would otherwise race the rename's below.
+    until(&obid, &quiet, |job| job.get("buildFreed").is_some());
     assert!(research.get("nothingDone").is_none(), "{research}");
     let refused = request(&obid, "POST", &format!("/v1/jobs/{quiet}/dismiss"), None);
     assert_eq!(refused.status, 409);
