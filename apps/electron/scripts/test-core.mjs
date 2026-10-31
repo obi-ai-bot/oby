@@ -88,6 +88,10 @@ async function openApp(s) {
   const launcher = join(s.root, 'electron-launcher.cjs');
   writeFileSync(launcher, `const { app } = require('electron');
 app.setPath('userData', ${JSON.stringify(join(s.root, 'electron-data'))});
+// never on the person's screen: no Dock icon, and every window invisible and unfocusable (the test
+// drives it through DevTools, which needs neither)
+app.dock?.hide();
+app.on('browser-window-created', (_e, win) => { win.setOpacity(0); win.setFocusable(false); win.setIgnoreMouseEvents(true); });
 import(${JSON.stringify(pathToFileURL(join(appRoot, 'out/main/index.js')).href)});
 `);
   app = await electron.launch({ executablePath: electronBinary, args: [launcher], env: { ...process.env, OBID_HOME: s.home, OBID_PORT: String(s.port) } });
@@ -99,7 +103,6 @@ import(${JSON.stringify(pathToFileURL(join(appRoot, 'out/main/index.js')).href)}
   await page.evaluate(() => { for (const k of ['oby.onboarded', 'oby.setUp', 'oby.welcomed']) localStorage.setItem(k, '1'); });
   await page.reload();
   await page.waitForLoadState('domcontentloaded');
-  await page.setViewportSize({ width: 1280, height: 820 }).catch(() => {});
   return { page, errors };
 }
 
