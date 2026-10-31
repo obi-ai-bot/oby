@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { stagesOf } from '../jobPage';
-import { mergeAlertTitle, type InboxItem } from '../../../shared/obid-wire';
+import { mergeAlert, type InboxItem } from '../../../shared/obid-wire';
 import type { Job } from '../obid';
 import type { Job as JobView, Stage } from '../mock';
 
@@ -51,6 +51,12 @@ describe('merging on the task card', () => {
     const stages = stagesOf(job({ pullRequestError: why }));
     expect(stages.find((s) => s.id === 'merged')?.sub).toBe(why);
     expect(stages.find((s) => s.id === 'review')?.sub).toBeUndefined();
+    // on no stage that's over: Review done, Merged done
+    const over = stagesOf(job({ pullRequestError: why, pipeline: { number: 6, total: 6, stages: [
+      { id: 'review', title: 'Review', state: 'done', detail: 'Approved by Oby' },
+      { id: 'merged', title: 'Merged into dev', state: 'done' },
+    ] } }));
+    expect(over.every((s) => !s.sub)).toBe(true);
     // still being reviewed: under Review
     const reviewing = stagesOf(job({ pullRequestError: why, pipeline: { number: 5, total: 6, stages: [
       { id: 'review', title: 'Review', state: 'current', detail: 'Oby is reviewing' },
@@ -61,14 +67,15 @@ describe('merging on the task card', () => {
     expect(stagesOf(job({ pullRequestError: why, published: null })).every((s) => !s.sub)).toBe(true);
   });
 
-  it("MERGING-12: the alert for a merge waiting on the owner is titled as its card is", () => {
-    const item = (more: Partial<InboxItem>) => ({ id: 'm1', kind: 'merge', job: 'j1', title: 'Ready to merge: Fix it', text: '', options: [], details: null,
-      created: '', state: 'open', later: null, headline: null, recommended: null, ...more }) as InboxItem;
-    expect(mergeAlertTitle([item({})], 'j1')).toBe('Ready to merge');
-    expect(mergeAlertTitle([item({ title: 'Needs a teammate: Fix it' })], 'j1')).toBe('Needs a teammate');
-    expect(mergeAlertTitle([item({ title: 'Not merged: Fix it' })], 'j1')).toBe('Not merged');
-    // another job's, a card answered already, or none: the default
-    expect(mergeAlertTitle([item({ job: 'j2' }), item({ state: 'done' })], 'j1')).toBe('Not merged');
-    expect(mergeAlertTitle([], 'j1')).toBe('Not merged');
+  it("MERGING-12: the alert for a merge waiting on the owner is titled as its card is, once per card", () => {
+    const item = (more: Partial<InboxItem>) => ({ id: 'merge-why1-j1-h1', kind: 'merge', job: 'j1', title: 'Ready to merge: Fix it', text: '', options: [],
+      details: null, created: '', state: 'open', later: null, headline: null, recommended: null, ...more }) as InboxItem;
+    expect(mergeAlert([item({})], 'j1', 'h1')).toEqual({ key: 'merge:merge-why1-j1-h1', title: 'Ready to merge' });
+    expect(mergeAlert([item({ title: 'Needs a teammate: Fix it' })], 'j1', 'h1').title).toBe('Needs a teammate');
+    // another reason on the same head is another card: it alerts again
+    expect(mergeAlert([item({ id: 'merge-why2-j1-h1', title: 'Not merged: Fix it' })], 'j1', 'h1'))
+      .toEqual({ key: 'merge:merge-why2-j1-h1', title: 'Not merged' });
+    // another job's, a card answered already, or none: by the head, "Not merged"
+    expect(mergeAlert([item({ job: 'j2' }), item({ state: 'done' })], 'j1', 'h1')).toEqual({ key: 'merge:h1', title: 'Not merged' });
   });
 });

@@ -270,7 +270,10 @@ export function parseEvent(name: string, data: string): Event | null {
   }
 }
 
-// The alert's title for a job whose merge waits on the owner: its open merge card's ("Ready to
-// merge", "Needs a teammate", "Not merged"), which obid titles "<what>: <the task's title>"
-export const mergeAlertTitle = (items: Iterable<InboxItem>, job: string): string =>
-  [...items].find((i) => i.kind === 'merge' && i.job === job && i.state === 'open')?.title.split(': ')[0] || 'Not merged';
+// The alert for a job whose merge waits on the owner, from its open merge card: said again for each
+// card (one per head and reason: a new reason alerts again), titled as the card is ("Ready to
+// merge", "Needs a teammate", "Not merged"; obid titles it "<what>: <the task's title>")
+export const mergeAlert = (items: Iterable<InboxItem>, job: string, head: string): { key: string; title: string } => {
+  const card = [...items].find((i) => i.kind === 'merge' && i.job === job && i.state === 'open');
+  return { key: `merge:${card?.id ?? head}`, title: card?.title.split(': ')[0] || 'Not merged' };
+};

@@ -111,13 +111,17 @@ pub fn on_owners_word(owner: bool, ready: Result<(), Blocked>) -> Result<(), Blo
 /// owner hears of it: an hour.
 pub const CHECKS_WAIT: i64 = 3600;
 
-/// GitHub's checks on `head` have had [`CHECKS_WAIT`] since obid pushed it.
-fn checks_stalled(job: &Job, head: &str) -> bool {
+/// How long GitHub may take to show its checks on a head obid pushed: until then, a `mac`
+/// workflow doesn't take "no checks" as none.
+pub const CHECKS_SETTLE: i64 = 300;
+
+/// obid pushed `head` at least `seconds` ago.
+fn pushed_for(job: &Job, head: &str, seconds: i64) -> bool {
     job.outgoing
         .iter()
         .rev()
         .find(|o| o.action == "push" && o.id == head)
-        .is_some_and(|o| obi_protocol::time::now() - o.date >= CHECKS_WAIT)
+        .is_some_and(|o| obi_protocol::time::now() - o.date >= seconds)
 }
 
 /// Why it can't merge while it conflicts with `base`: Oby rebases nothing by itself here
@@ -348,9 +352,10 @@ pub fn ready(
             return Err(needs_you("Not merged yet: its checks failed on GitHub."));
         }
         Some("SUCCESS") => {}
-        Some("NONE") if workflow.checks == Checks::Mac => {}
+        // Right after a push, GitHub may not show the checks it will run yet.
+        Some("NONE") if workflow.checks == Checks::Mac && pushed_for(job, head, CHECKS_SETTLE) => {}
         // Checks that never come, or never end, aren't waited for in silence.
-        Some("NONE") if checks_stalled(job, head) => {
+        Some("NONE") if workflow.checks == Checks::Github && pushed_for(job, head, CHECKS_WAIT) => {
             return Err(needs_you(format!(
                 "Not merged: GitHub still has no checks on its head an hour after Oby pushed it, and {} merges once they pass. Look at it on GitHub.",
                 name(&job.repo)
@@ -361,7 +366,7 @@ pub fn ready(
                 "Not merged yet: GitHub has no checks on its head yet.",
             ));
         }
-        Some(_) if checks_stalled(job, head) => {
+        Some(_) if pushed_for(job, head, CHECKS_WAIT) => {
             return Err(needs_you(
                 "Not merged: its checks on GitHub are still running an hour after Oby pushed it. Look at them on GitHub.",
             ));
@@ -394,31 +399,128 @@ pub fn ready(
     }
 }
 
-/// What a passing check prints when it left part of itself for the Mac, outside any box
-/// (scripts/oby-check.sh: MacTests and `swift test` can't nest in a job's sandbox).
-pub const MAC_LEFT: &str = "run them on the Mac before merging";
-
 /// `mac` (this repository's remembered workflow, and what `proposed` offers wherever GitHub's checks
 /// aren't green): the job's own check, passed in its box on exactly `head` (`Job::checked`), is
-/// this Mac's check. One that left part of itself for the Mac ([`MAC_LEFT`]), didn't pass on that
-/// head, or a job with no check, and only the owner's own Merge merges it ([`Blocked::yours`]).
-/// (A `github` workflow waits for GitHub's checks instead.)
+/// this Mac's check, where it can stand for it ([`check_apart`]). Otherwise, one that didn't pass
+/// on that head, or a job with no check, and only the owner's own Merge merges it
+/// ([`Blocked::yours`]). (A `github` workflow waits for GitHub's checks instead.)
 fn mac_checks(job: &Job, workflow: &Workflow, head: &str) -> Result<(), Blocked> {
     if workflow.checks != Checks::Mac {
         return Ok(());
     }
     match &job.checked {
-        Some(checked) if checked.commit == head && !checked.mac_left => Ok(()),
-        Some(checked) if checked.commit == head => Err(yours(
-            "Not merged: its check passed, and left the Mac's own tests for this Mac, so it's yours to merge.",
-        )),
+        Some(checked) if checked.commit == head => match &checked.apart {
+            None => Ok(()),
+            Some(why) => Err(yours(why.clone())),
+        },
         _ if job.check.is_none() => Err(yours(
-            "Not merged: no check ran on its head (this repository has none), so it's yours to merge.",
+            "No check ran on its head (this repository has none), so it's yours to merge.",
         )),
         _ => Err(yours(
-            "Not merged: its check didn't pass on exactly this commit, so it's yours to merge.",
+            "Its check didn't pass on exactly this commit, so it's yours to merge.",
         )),
     }
+}
+
+/// Why a check that left the Mac's own tests for the Mac can't stand for its checks.
+pub const MAC_LEFT: &str =
+    "Its check passed, and left the Mac's own tests for this Mac, so it's yours to merge.";
+
+/// What only the Mac builds and tests, outside any box: SwiftPM and Xcode can't nest in a job's
+/// sandbox. Swift, Swift packages and Xcode projects anywhere, and the folders scripts/oby-check.sh
+/// sends to the Apple apps and `swift test` (a test reads them from the script).
+const MAC_ONLY: [&str; 10] = [
+    "apps/mac/",
+    "apps/ios/",
+    "apps/watch/",
+    "apps/shared/",
+    "apps/Oby.xcodeproj/",
+    "character/",
+    "Engine/",
+    "Runner/",
+    "RunnerTests/",
+    "mcp/",
+];
+
+/// Whether a change to `path` needs the Mac's own tests ([`MAC_ONLY`]).
+pub fn mac_only(path: &str) -> bool {
+    let name = path.rsplit('/').next().unwrap_or(path);
+    MAC_ONLY.iter().any(|folder| path.starts_with(folder))
+        || name.ends_with(".swift")
+        || name == "Package.resolved"
+        || path
+            .split('/')
+            .any(|part| part.ends_with(".xcodeproj") || part.ends_with(".xcworkspace"))
+}
+
+/// The files a check's command line runs as its own: each simple command's program when it names
+/// it by its path in the repository (`scripts/oby-check.sh`, `./test.sh`), the script it hands an
+/// interpreter (`sh check.sh`, `python3 tools/check.py`), and the file `make` (`Makefile`) or a
+/// Node package manager (`package.json`) runs it from. ponytail: what the command runs, not what
+/// those files run in turn; following a script's own sources would need a shell's parser.
+pub fn check_files(command: &str) -> BTreeSet<String> {
+    const INTERPRETERS: [&str; 10] = [
+        "sh", "bash", "zsh", "dash", "python", "python3", "node", "ruby", "perl", "deno",
+    ];
+    let path = |word: &str| {
+        let word = word.trim_start_matches("./");
+        (!word.is_empty() && !word.starts_with(['-', '$', '/', '~'])).then(|| word.to_owned())
+    };
+    let mut own = BTreeSet::new();
+    for simple in command.split(['&', '|', ';', '\n', '(', ')']) {
+        let mut words = simple
+            .split_whitespace()
+            .map(|w| w.trim_matches(['\'', '"']))
+            .skip_while(|w| w.contains('=') && !w.starts_with('-'));
+        let Some(program) = words.next() else {
+            continue;
+        };
+        match program {
+            "make" | "gmake" => {
+                own.insert("Makefile".to_owned());
+            }
+            "npm" | "pnpm" | "yarn" | "bun" | "npx" => {
+                own.insert("package.json".to_owned());
+            }
+            _ if INTERPRETERS.contains(&program) => {
+                own.extend(words.find(|w| !w.starts_with('-')).and_then(path));
+            }
+            _ if program.contains('/') => own.extend(path(program)),
+            _ => {}
+        }
+    }
+    own
+}
+
+/// Why the job's own check, passed with `command`, can't stand for the Mac's checks at merge
+/// (`Job::checked`), in the owner's words, or none when it can. `changed`: the files its pull
+/// request changes against its base, as obid's git read them (none when they couldn't be read,
+/// and then it can't). It can't when its check isn't the owner's own to trust (it gets none of
+/// their secrets: `Job::check_refuses_secrets`), when the change edits the check itself
+/// ([`check_files`]), or when it touches what only the Mac tests ([`mac_only`]). Fails closed:
+/// the owner's Merge is asked.
+pub fn check_apart(job: &Job, command: &str, changed: Option<&[String]>) -> Option<String> {
+    if let Some(why) = job.check_refuses_secrets() {
+        return Some(format!(
+            "Its check passed, but {why}, so it's yours to merge."
+        ));
+    }
+    let Some(changed) = changed else {
+        return Some(
+            "Its check passed, but Oby couldn't read what the change touches, so it's yours to merge."
+                .into(),
+        );
+    };
+    let own = check_files(command);
+    if let Some(file) = changed.iter().find(|f| own.contains(f.as_str())) {
+        return Some(format!(
+            "Its check passed, but this change edits the check itself ({file}), so it's yours to merge."
+        ));
+    }
+    changed
+        .iter()
+        .any(|f| mac_only(f))
+        .then(|| MAC_LEFT.to_owned())
 }
 
 /// The approval the merge waits on, and who gives it by the workflow: Oby's reviewer account
@@ -2091,23 +2193,40 @@ mod tests {
         );
     }
 
+    /// [`job`], pushed [`CHECKS_SETTLE`] ago: GitHub had time to show its checks.
+    fn settled() -> Job {
+        let mut job = job();
+        job.outgoing[0].date -= CHECKS_SETTLE;
+        job
+    }
+
     /// A `mac` workflow, in a repository with no GitHub checks: the job's own check, passed in its
-    /// box on exactly the head, merges it by itself.
+    /// box on exactly the head, merges it by itself; right after the push, "no checks" waits for
+    /// GitHub to show the ones it will run.
     #[test]
     fn merging_1_the_jobs_own_check_on_its_head_is_the_macs() {
         let mut mac = obis();
         mac.checks = Checks::Mac;
-        let mut checked = job();
+        let mut checked = settled();
         checked.check = Some("scripts/oby-check.sh".into());
         checked.checked = Some(crate::job::Checked {
             commit: head(),
-            mac_left: false,
+            apart: None,
         });
         let none = view(|v| v["statusCheckRollup"] = json!([]));
         for text in [&none, &view(|_| {})] {
             assert_eq!(check(&checked, Some(&mac), text), Ok(()));
         }
-        // Every other rule still holds: a head Oby didn't push, a scan that wasn't clean.
+        let mut fresh = checked.clone();
+        fresh.outgoing[0].date = obi_protocol::time::now();
+        assert_eq!(
+            check(&fresh, Some(&mac), &none),
+            Err(wait(
+                "Not merged yet: GitHub has no checks on its head yet."
+            ))
+        );
+        assert_eq!(check(&fresh, Some(&mac), &view(|_| {})), Ok(()));
+        // Every other rule still holds (MERGING-7): a scan that wasn't clean, a base of main.
         let mut found = checked.clone();
         found.scan.as_mut().unwrap().clean = Some(false);
         assert!(!check(&found, Some(&mac), &none).unwrap_err().yours);
@@ -2127,31 +2246,28 @@ mod tests {
         let mut mac = obis();
         mac.checks = Checks::Mac;
         let none = view(|v| v["statusCheckRollup"] = json!([]));
-        let mut left = job();
+        let mut left = settled();
         left.check = Some("scripts/oby-check.sh".into());
         left.checked = Some(crate::job::Checked {
             commit: head(),
-            mac_left: true,
+            apart: Some(MAC_LEFT.into()),
         });
         let mut elsewhere = left.clone();
         elsewhere.checked = Some(crate::job::Checked {
             commit: "b".repeat(40),
-            mac_left: false,
+            apart: None,
         });
-        let mut unchecked = job();
+        let mut unchecked = settled();
         unchecked.check = None;
         for (job, why) in [
-            (
-                &left,
-                "Not merged: its check passed, and left the Mac's own tests for this Mac, so it's yours to merge.",
-            ),
+            (&left, MAC_LEFT),
             (
                 &elsewhere,
-                "Not merged: its check didn't pass on exactly this commit, so it's yours to merge.",
+                "Its check didn't pass on exactly this commit, so it's yours to merge.",
             ),
             (
                 &unchecked,
-                "Not merged: no check ran on its head (this repository has none), so it's yours to merge.",
+                "No check ran on its head (this repository has none), so it's yours to merge.",
             ),
         ] {
             let blocked = check(job, Some(&mac), &none).unwrap_err();
@@ -2175,6 +2291,104 @@ mod tests {
             blocked_card(&left, &head(), &red, &mac).options,
             vec![crate::sphere::inbox::DISMISS]
         );
+    }
+
+    /// What obid decides when a check passes: it stands for the Mac's only for the owner's own
+    /// work, a change that leaves the check itself alone, and touches nothing only the Mac tests.
+    /// It fails closed: what can't be read can't stand for it.
+    #[test]
+    fn merging_2_a_check_stands_for_the_macs_only_where_obid_can_tell() {
+        let mut own = job();
+        own.vetted = true;
+        let command = "scripts/oby-check.sh";
+        let files = |names: &[&str]| names.iter().map(|n| (*n).to_owned()).collect::<Vec<_>>();
+        assert_eq!(
+            check_apart(
+                &own,
+                command,
+                Some(&files(&["core/crates/obid/src/merge.rs"]))
+            ),
+            None
+        );
+        for (changed, why) in [
+            (
+                files(&["core/x.rs", "scripts/oby-check.sh"]),
+                "Its check passed, but this change edits the check itself (scripts/oby-check.sh), so it's yours to merge.".to_owned(),
+            ),
+            (files(&["Engine/Jobs.swift"]), MAC_LEFT.to_owned()),
+            (files(&["tools/Thing.swift"]), MAC_LEFT.to_owned()),
+            (files(&["apps/Oby.xcodeproj/project.pbxproj"]), MAC_LEFT.to_owned()),
+        ] {
+            assert_eq!(check_apart(&own, command, Some(&changed)), Some(why));
+        }
+        assert_eq!(
+            check_apart(&own, command, None).as_deref(),
+            Some(
+                "Its check passed, but Oby couldn't read what the change touches, so it's yours to merge."
+            )
+        );
+        // Not the owner's own words, or someone else's code: its check can't vouch for it.
+        let unvetted = job();
+        assert_eq!(
+            check_apart(&unvetted, command, Some(&files(&["a.rs"]))).as_deref(),
+            Some(
+                "Its check passed, but it didn't start from the owner's own words in Oby's apps, so it's yours to merge."
+            )
+        );
+        let mut untrusted = own.clone();
+        untrusted.untrusted = true;
+        assert!(
+            check_apart(&untrusted, command, Some(&files(&["a.rs"])))
+                .unwrap()
+                .contains("read something Oby didn't write")
+        );
+        // The check's own files: what its command runs, never what it only reads.
+        assert_eq!(
+            check_files(
+                "./test.sh && make check && npm --prefix apps/electron test -- --x=1; FOO=1 bash -e ci/run.sh | python3 tools/t.py"
+            ),
+            [
+                "Makefile",
+                "ci/run.sh",
+                "package.json",
+                "test.sh",
+                "tools/t.py"
+            ]
+            .map(str::to_owned)
+            .into()
+        );
+        assert!(check_files("test -f hello.txt && cargo test -p obid").is_empty());
+        assert_eq!(
+            check_files("scripts/oby-check.sh"),
+            ["scripts/oby-check.sh".to_owned()].into()
+        );
+    }
+
+    /// Everything scripts/oby-check.sh sends to the Apple apps or `swift test`, which a job's box
+    /// leaves for the Mac, is what only the Mac tests here.
+    #[test]
+    fn merging_2_what_only_the_mac_tests_is_the_scripts() {
+        let script = std::fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../scripts/oby-check.sh"),
+        )
+        .unwrap();
+        let line = Regex::new(r"^\s+([^#(]+)\)\s+(mac|ios|swift)[a-z_]*=").unwrap();
+        let mut patterns = 0;
+        for caps in script.lines().filter_map(|l| line.captures(l)) {
+            for pattern in caps[1].split('|').map(str::trim) {
+                let path = pattern.replace('*', "a");
+                assert!(mac_only(&path), "{pattern} ({path})");
+                patterns += 1;
+            }
+        }
+        assert!(patterns >= 12, "{patterns}");
+        for other in [
+            "core/crates/obid/src/merge.rs",
+            "apps/electron/src/x.ts",
+            "docs/a.md",
+        ] {
+            assert!(!mac_only(other), "{other}");
+        }
     }
 
     /// GitHub's checks that never come, or never end, an hour after obid pushed the head: the
@@ -2209,9 +2423,21 @@ mod tests {
         assert!(!check(&job(), Some(&obis()), &none).unwrap_err().needs_you);
     }
 
-    /// GitHub says it merges cleanly: never a conflict, a branch behind its base or one GitHub's
-    /// rules still block. A conflict, and a branch behind a base that takes only up-to-date ones,
-    /// ask the owner (MERGING-3, MERGING-4).
+    /// A branch behind a base whose rules take only up-to-date ones asks the owner: Oby starts no
+    /// rebase round by itself.
+    #[test]
+    fn merging_4_a_branch_behind_its_base_asks_the_owner() {
+        let behind = view(|v| v["mergeStateStatus"] = json!("BEHIND"));
+        assert_eq!(
+            check(&job(), Some(&obis()), &behind),
+            Err(needs_you(
+                "Not merged: it's behind dev, and GitHub merges only up-to-date pull requests into dev. Ask Oby to rebase it onto dev, or update it on GitHub."
+            ))
+        );
+    }
+
+    /// GitHub says it merges cleanly: never a conflict, a branch behind its base (MERGING-4) or
+    /// one GitHub's rules still block. A conflict asks the owner (MERGING-3).
     #[test]
     fn it_merges_only_cleanly() {
         let job = job();
@@ -2233,12 +2459,6 @@ mod tests {
         assert_eq!(state("CONFLICTING", "DIRTY"), Err(conflict.clone()));
         assert_eq!(state("MERGEABLE", "DIRTY"), Err(conflict));
         assert!(!state("UNKNOWN", "UNKNOWN").unwrap_err().needs_you);
-        assert_eq!(
-            state("MERGEABLE", "BEHIND"),
-            Err(needs_you(
-                "Not merged: it's behind dev, and GitHub merges only up-to-date pull requests into dev. Ask Oby to rebase it onto dev, or update it on GitHub."
-            ))
-        );
         assert!(!state("MERGEABLE", "UNSTABLE").unwrap_err().needs_you);
         assert!(state("MERGEABLE", "BLOCKED").unwrap_err().needs_you);
         assert!(state("MERGEABLE", "DRAFT").unwrap_err().needs_you);

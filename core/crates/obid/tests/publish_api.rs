@@ -2165,3 +2165,74 @@ fn with_no_account_with_room_the_review_waits() {
     assert_eq!(job["reviewError"], Value::Null);
     assert!(reviews_of(&obid, &id).is_empty());
 }
+
+/// MERGING-1, MERGING-2: a passing check keeps the clean head it ran on, and why it can't stand for
+/// the Mac's checks when it can't (a Swift file only the Mac tests, words no app of the owner's
+/// signed); a failing one clears it.
+#[test]
+fn merging_1_a_passing_check_keeps_its_head_and_a_failing_one_clears_it() {
+    let folder = Folder::new("publish-checked");
+    let bin = fake_gh(&folder.0);
+    let (obid, _remote, config) = obid_with(&folder, &bin);
+    let home = Path::new(config["home"].as_str().unwrap()).to_path_buf();
+    let checked = |id: &str| {
+        let file = std::fs::read(home.join(format!("jobs/{id}.json"))).unwrap();
+        serde_json::from_slice::<Value>(&file).unwrap()["checked"].clone()
+    };
+    // The owner's own words, signed by their app, as Oby's apps send them.
+    let owners = |job: Value| {
+        let answer = call_typed(&obid, "POST", "/v1/jobs", &json!({"job": job}));
+        assert_eq!(answer.status, 201, "{}", answer.text);
+        answer.body["id"].as_str().unwrap().to_owned()
+    };
+    let pushed = |job: &Value| {
+        job["outgoing"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .rev()
+            .find(|o| o["action"] == "push")
+            .map(|o| o["id"].clone())
+            .unwrap()
+    };
+    let plain = owners(json!({"repo": "obi-e2e/fixture-app", "kind": "build",
+                              "task": "COMMIT: hello.txt", "check": "test -f hello.txt"}));
+    let job = ended(&obid, &plain);
+    assert_eq!(job["status"], "done", "{job}");
+    assert_eq!(
+        checked(&plain),
+        json!({"commit": pushed(&job)}),
+        "{}",
+        obid.log()
+    );
+    let swift = owners(json!({"repo": "obi-e2e/fixture-app", "kind": "build",
+                              "task": "COMMIT: Thing.swift", "check": "test -f Thing.swift"}));
+    let job = ended(&obid, &swift);
+    assert_eq!(job["status"], "done", "{job}");
+    assert_eq!(
+        checked(&swift),
+        json!({"commit": pushed(&job), "apart": obid::merge::MAC_LEFT})
+    );
+    // Words no app of the owner's signed: its check can't vouch for the merge.
+    let unsigned = dispatch(
+        &obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "build",
+               "task": "COMMIT: other.txt", "check": "test -f other.txt"}),
+    );
+    let job = ended(&obid, &unsigned);
+    assert_eq!(
+        checked(&unsigned),
+        json!({"commit": pushed(&job), "apart": "Its check passed, but it didn't start from the owner's own words in Oby's apps, so it's yours to merge."})
+    );
+    // It passes, publishes, and Oby's review asks for a change its round commits (again-1.txt),
+    // which the check then fails on.
+    let cleared = owners(json!({"repo": "obi-e2e/fixture-app", "kind": "build",
+                                "task": "COMMIT: second.txt WANTS: fix.txt STUBBORN", "check": "test ! -f again-1.txt"}));
+    within(60, "its first check to pass", || {
+        checked(&cleared).is_object().then_some(())
+    });
+    within(180, "its check to fail", || {
+        let job = call(&obid, "GET", &format!("/v1/jobs/{cleared}"), None).body;
+        (job["round"].as_u64() >= Some(2) && checked(&cleared).is_null()).then_some(())
+    });
+}

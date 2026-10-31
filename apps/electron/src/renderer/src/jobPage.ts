@@ -30,9 +30,10 @@ const ENDED = new Set(['done', 'failed', 'stopped', 'interrupted']);
 // words under Work
 export function stagesOf(j: Job, now = Date.now()): Stage[] {
   const stages = j.pipeline?.stages ?? [];
-  // why its pull request couldn't be read (gh signed out, say): under the stage that waits on it
+  // why its pull request couldn't be read (gh missing, say): under the stage that waits on it,
+  // Merged, else Review, while it's current
   const unread = j.published && j.pullRequestError ? j.pullRequestError : undefined;
-  const waits = stages.some((st) => st.id === 'merged' && st.state === 'current') ? 'merged' : 'review';
+  const waits = ['merged', 'review'].find((id) => stages.some((st) => st.id === id && st.state === 'current'));
   return stages.map((st) => {
     const took = st.seconds != null ? span(st.seconds)
       : st.state === 'current' && st.started ? `${span(since(st.started, now) - (st.waited ?? 0))} so far`

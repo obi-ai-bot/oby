@@ -182,9 +182,10 @@ pub struct ReviewFailed {
 pub struct Checked {
     /// The worktree's head it ran on, clean.
     pub commit: String,
-    /// It said it left part of itself for the Mac, outside any box ([`crate::merge::MAC_LEFT`]).
-    #[serde(default)]
-    pub mac_left: bool,
+    /// Why it can't stand for the Mac's checks, decided by obid when it passed
+    /// (crate::merge::check_apart); none when it can.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub apart: Option<String>,
 }
 
 /// Oby's latest verdict on a job's published work (docs/runner-api.md, "Oby's review").

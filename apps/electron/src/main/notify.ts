@@ -3,7 +3,7 @@ import { constants, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { obid, send, type Answer, type Trusted } from './obid';
 import { answerLimit, writeOwn } from './device';
-import { mergeAlertTitle, parseEvent, sseReader, type Conversation, type Event, type InboxItem, type Job, type LimitDecision, type Turn } from '../shared/obid-wire';
+import { mergeAlert, parseEvent, sseReader, type Conversation, type Event, type InboxItem, type Job, type LimitDecision, type Turn } from '../shared/obid-wire';
 
 // Oby's alerts on this Mac, as the Swift app posted them (apps/mac/app/Alerts.swift and
 // RunnerFeed.swift), by the owner's rule of 2026-10-28 (`notifies`, the one gate): nothing while
@@ -123,7 +123,8 @@ function wanted(): Map<string, Alert> {
     }
     // Oby's merge waits on the owner: titled as its card is ("Ready to merge", "Not merged")
     if (j.status === 'done' && !canPublish(j) && j.mergeNeedsYou) {
-      say(`merge:${pushedHead(j)}`, true, mergeAlertTitle(inbox.values(), j.id), firstLine(j.mergeError) ?? 'Not merged');
+      const alert = mergeAlert(inbox.values(), j.id, pushedHead(j));
+      say(alert.key, true, alert.title, firstLine(j.mergeError) ?? 'Not merged');
       continue;
     }
     // how it ended, once per end
