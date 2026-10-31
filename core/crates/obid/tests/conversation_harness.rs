@@ -1198,14 +1198,29 @@ fn taskconv_9_the_owners_signed_words_settle_what_waits() {
             said(&obid, words)
         }
     };
-    let max = set(r#"{"maxRunning": 3}"#, false);
+    // Fewer jobs at once widens nothing: done. More waits for a Confirm unless it's their word.
+    let max = set(r#"{"maxRunning": 1}"#, false);
     assert!(
-        oby_said(&max).contains("Saved: 3 jobs at once"),
+        oby_said(&max).contains("Saved: 1 jobs at once"),
         "{}",
         max.text
     );
-    let settings = call(&obid, "GET", "/v1/settings/jobs", None);
-    assert_eq!(settings.body["maxRunning"], 3, "{}", settings.text);
+    let running = || call(&obid, "GET", "/v1/settings/jobs", None).body["maxRunning"].clone();
+    assert_eq!(running(), 1);
+    let more = set(r#"{"maxRunning": 3}"#, false);
+    assert!(
+        oby_said(&more).contains("waits for your OK"),
+        "{}",
+        more.text
+    );
+    assert_eq!(running(), 1);
+    let more = set(r#"{"maxRunning": 3}"#, true);
+    assert!(
+        oby_said(&more).contains("Saved: 3 jobs at once"),
+        "{}",
+        more.text
+    );
+    assert_eq!(running(), 3);
     let mode = || call(&obid, "GET", "/v1/settings/permissions", None).body["mode"].clone();
     let before = mode();
     let waits = set(r#"{"defaultMode": "bypass"}"#, false);
@@ -1218,6 +1233,156 @@ fn taskconv_9_the_owners_signed_words_settle_what_waits() {
     let done = set(r#"{"defaultMode": "bypass"}"#, true);
     assert!(oby_said(&done).contains("Saved: Bypass"), "{}", done.text);
     assert_eq!(mode(), "bypass");
+}
+
+/// TASKCONV-6 to 11: a signed turn that reads untrusted text mid-turn is no longer the owner's own
+/// word: answering a card, Settings that widen, a merge, a write on GitHub and check-ins each
+/// become a Confirm card. Their Confirms, the owner's taps, then do it against GitHub (the fake
+/// `gh`): a merge only at the base and head the card named, a review of the head it showed, each
+/// attempt in the use log.
+#[test]
+fn taskconv_6_a_signed_turn_that_reads_untrusted_text_makes_confirms() {
+    let (folder, obid) = obid("harness-tainted-word", true);
+    let github = folder.0.join("env-home/github");
+    std::fs::create_dir_all(&github).unwrap();
+    let pull = |head: &str| {
+        std::fs::write(
+            github.join("pull.json"),
+            json!({"state": "open", "merged": false, "head": {"sha": head},
+                "base": {"ref": "main"}})
+            .to_string(),
+        )
+        .unwrap();
+    };
+    pull("abcdef0123456789");
+    let offered = said(
+        &obid,
+        json!({"said": r#"OBY oby_offer {"repo": "obi-e2e/fixture-app", "task": "Add a greeting", "kind": "build"}"#,
+               "new": true}),
+    );
+    let conversation = offered.body["conversation"].as_str().unwrap().to_owned();
+    let inbox = || -> Vec<Value> {
+        call(&obid, "GET", "/v1/inbox", None)
+            .body
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+    };
+    let start = inbox()
+        .into_iter()
+        .find(|i| i["kind"] == "start")
+        .expect("an offer")["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    std::thread::sleep(Duration::from_millis(1100));
+    // Each call, in a signed turn that read the repositories first: a Confirm, nothing done.
+    let tainted = |call_words: String| -> Answer {
+        let said = json!({"said": format!("READREPO {call_words}"), "conversation": conversation});
+        let answer = call_typed(&obid, "POST", "/v1/plans", &said);
+        assert_eq!(answer.status, 200, "{}", answer.text);
+        assert!(
+            oby_said(&answer).contains("waits for"),
+            "{call_words}: {}",
+            answer.text
+        );
+        answer
+    };
+    tainted(format!(
+        r#"OBY oby_answer {{"item": "{start}", "answer": "Start"}}"#
+    ));
+    tainted(r#"OBY oby_settings {"maxRunning": 20}"#.into());
+    tainted(r#"OBY oby_merge {"repo": "o/r", "pr": 3}"#.into());
+    tainted(
+        r#"OBY oby_github_write {"repo": "o/r", "action": "approve", "number": 3, "body": "LGTM"}"#
+            .into(),
+    );
+    tainted(
+        r#"OBY oby_check_in {"schedule": {"every": "daily", "at": "08:30"}, "zone": "UTC"}"#.into(),
+    );
+    let jobs = call(&obid, "GET", "/v1/jobs", None);
+    assert_eq!(jobs.body.as_array().map_or(0, Vec::len), 0, "{}", jobs.text);
+    assert!(!github.join("merges").exists());
+    assert!(!github.join("approvals").exists());
+    let card = |starts: &str| -> Value {
+        inbox()
+            .into_iter()
+            .find(|i| {
+                i["kind"] == "confirm" && i["title"].as_str().unwrap_or("").starts_with(starts)
+            })
+            .unwrap_or_else(|| panic!("a card {starts}"))
+    };
+    let merge = card("Merge o/r#3 into main at abcdef0 (squash)");
+    let approve = card("Approve o/r#3 at abcdef0 on GitHub");
+    assert!(
+        approve["text"].as_str().unwrap().contains("> LGTM"),
+        "{approve}"
+    );
+    let settings = card("Change Settings: 20 jobs at once");
+    let check_in = card("Check in with you");
+
+    // The owner's taps do it.
+    for item in [&settings, &check_in, &approve, &merge] {
+        let tapped = confirm(&obid, item["id"].as_str().unwrap());
+        assert_eq!(tapped.status, 200, "{}", tapped.text);
+    }
+    let jobs_settings = call(&obid, "GET", "/v1/settings/jobs", None);
+    assert_eq!(
+        jobs_settings.body["maxRunning"], 20,
+        "{}",
+        jobs_settings.text
+    );
+    let kept: Value =
+        serde_json::from_slice(&std::fs::read(obid.home.join("settings.json")).unwrap()).unwrap();
+    assert_eq!(kept["checkIn"]["zone"], "UTC", "{kept}");
+    let approvals = std::fs::read_to_string(github.join("approvals")).unwrap();
+    assert!(
+        approvals.contains("repos/o/r/pulls/3/reviews")
+            && approvals.contains("\"commit_id\":\"abcdef0123456789\""),
+        "{approvals}"
+    );
+    let merges = std::fs::read_to_string(github.join("merges")).unwrap();
+    assert!(
+        merges.contains("repos/o/r/pulls/3/merge")
+            && merges.contains("\"sha\":\"abcdef0123456789\""),
+        "{merges}"
+    );
+
+    // A merge card whose pull request moved since merges nothing.
+    tainted(r#"OBY oby_merge {"repo": "o/r", "pr": 3}"#.into());
+    pull("9999999999999999");
+    let moved = card("Merge o/r#3 into main at abcdef0");
+    let refused = confirm(&obid, moved["id"].as_str().unwrap());
+    assert_eq!(refused.status, 409, "{}", refused.text);
+    assert!(
+        refused.text.contains("it moved since the card"),
+        "{}",
+        refused.text
+    );
+    assert_eq!(
+        std::fs::read_to_string(github.join("merges"))
+            .unwrap()
+            .lines()
+            .count(),
+        1
+    );
+
+    // Every attempt, done or refused, in the use log as the conversation's.
+    let uses = std::fs::read_to_string(obid.home.join("vault/uses.jsonl")).unwrap();
+    let ours: Vec<Value> = uses
+        .lines()
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .filter(|u| {
+            u["job"] == format!("conversation-{conversation}") && u["connection"] == "github"
+        })
+        .collect();
+    let seen: Vec<(String, bool)> = ours
+        .iter()
+        .map(|u| (u["tool"].as_str().unwrap().to_owned(), u["allowed"] == true))
+        .collect();
+    assert!(seen.contains(&("approve".into(), true)), "{seen:?}");
+    assert!(seen.contains(&("merge".into(), true)), "{seen:?}");
+    assert!(seen.contains(&("merge".into(), false)), "{seen:?}");
 }
 
 /// A routine said in chat (#395) is only proposed: a confirm item whose Confirm, the owner's own,

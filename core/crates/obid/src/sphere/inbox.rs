@@ -108,11 +108,12 @@ pub mod action {
     /// (#1062, [`super::check_item`]): `target` the repository, `payload` `{"check": "<command>"}`.
     pub const SET_CHECK: &str = "set_check";
     /// Merge a pull request the owner named in a conversation (`oby_merge`, TASKCONV-7): `target`
-    /// `owner/name#<number>`, `payload` `{"merge": {"repo", "pr", "method"}, "head": "<sha>"}`,
-    /// the head the card showed.
+    /// `owner/name#<number>`, `payload` `{"merge": {"repo", "pr", "method"}, "base", "head",
+    /// "conversation"}`: the base and head the card showed, read again before it merges.
     pub const MERGE_PR: &str = "merge_pr";
     /// Write on GitHub as the owner (`oby_github_write`, TASKCONV-8): `target` the repository,
-    /// `payload` `{"write": {"repo", "action", "number", "body", "title", "labels"}}`.
+    /// `payload` `{"write": {"repo", "action", "number", "body", "title", "labels", "commit"},
+    /// "conversation"}`.
     pub const GITHUB_WRITE: &str = "github_write";
     /// Change Settings (`oby_settings`, TASKCONV-10): `target` empty, `payload` `{"settings":
     /// {"maxRunning", "accountFailover", "defaultMode"}}`.

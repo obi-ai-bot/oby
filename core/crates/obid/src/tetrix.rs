@@ -68,7 +68,7 @@ const CANDIDATES: usize = 10;
 const DIGESTS: usize = 5;
 const INSTRUCTIONS: &str = "Tetrix, the code graph and memory for this work, through Oby: Oby holds the login and forwards your calls. Only the graph reads, earlier sessions' digests and save_session are offered. Candidate links are not confirmed facts.";
 const CONVERSATION_INSTRUCTIONS: &str = "Tetrix, the code graph and memory of the owner's work, through Oby: Oby holds the login and forwards your calls. Only the graph reads, earlier sessions' digests and save_session are offered. Candidate links are not confirmed facts.";
-/// The upstream session every conversation's calls share: they only read.
+/// The upstream session every conversation's calls share: the graph reads and `save_session`.
 const CONVERSATIONS: &str = "conversations";
 
 /// Whether a conversation's turn may call `tool`: [`TOOLS`], `save_session` too (TASKCONV-12): what

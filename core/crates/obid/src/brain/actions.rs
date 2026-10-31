@@ -924,10 +924,11 @@ pub(super) async fn answer_inbox(
     match owners_call(&item, &words, job.as_ref(), owner) {
         Owners::No => {}
         Owners::Word => {
-            let words = if words.eq_ignore_ascii_case(crate::sphere::inbox::CANCEL) {
-                crate::sphere::inbox::CANCEL
-            } else {
-                crate::sphere::inbox::CONFIRM
+            let Some(words) = confirm_answer(&words) else {
+                return Outcome::Failed(format!(
+                    "Couldn't answer {}: a Confirm is answered Confirm or Cancel, nothing else.",
+                    item.title
+                ));
             };
             return match shared.link.answer_on_owners_word(id, words).await {
                 Ok(_) => Outcome::Done(format!("Answered {}: {words}.", item.title)),
@@ -982,6 +983,15 @@ fn quoted(words: &str) -> String {
         .map(|line| format!("> {line}"))
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+/// What answering a Confirm on the owner's word does: Confirm confirms and Cancel cancels, in any
+/// case; anything else ("No", "Leave it") neither.
+fn confirm_answer(words: &str) -> Option<&'static str> {
+    use crate::sphere::inbox::{CANCEL, CONFIRM};
+    [CONFIRM, CANCEL]
+        .into_iter()
+        .find(|a| words.trim().eq_ignore_ascii_case(a))
 }
 
 /// `owner`: the words are the owner's own (TASKCONV-9). Then what only they decide is answered as
@@ -1055,7 +1065,18 @@ fn owners_call(item: &Item, words: &str, job: Option<&Job>, owner: bool) -> Owne
         }
         // A bare no to a job's or a conversation's shell permission is Oby's to say.
         "permission" if bare_no => Owners::No,
-        // A conversation's shell command runs only on the owner's own answer.
+        // A conversation's shell command that touches secrets runs only on the owner's click, even
+        // on their word; any other, on their answer.
+        "permission"
+            if super::shell::is_item(item)
+                && item
+                    .text
+                    .starts_with(crate::permissions::Reach::Secrets.why()) =>
+        {
+            Owners::Waits(
+                "it touches secrets: it waits for your click on its card, in your inbox.".into(),
+            )
+        }
         "permission" if super::shell::is_item(item) => theirs(),
         "permission" if owner => Owners::No,
         // Always saves the permission's rule, which can be broader than this one command: the
@@ -1551,6 +1572,40 @@ mod tests {
             Owners::Confirm(title, _, _) => title,
             other => panic!("not a confirm: {other:?}"),
         }
+    }
+
+    /// TASKCONV-9: only Confirm confirms and only Cancel cancels, on the owner's word.
+    #[test]
+    fn taskconv_9_only_confirm_confirms_and_only_cancel_cancels() {
+        assert_eq!(confirm_answer("Confirm"), Some("Confirm"));
+        assert_eq!(confirm_answer(" confirm "), Some("Confirm"));
+        assert_eq!(confirm_answer("cancel"), Some("Cancel"));
+        for other in ["No", "Leave it", "don't", "yes", "Confirm it", ""] {
+            assert_eq!(confirm_answer(other), None, "{other}");
+        }
+    }
+
+    /// A conversation's shell command that touches secrets waits for the owner's click, even on
+    /// their word.
+    #[test]
+    fn a_shell_command_that_touches_secrets_keeps_its_click() {
+        let mut shell = item(
+            "permission",
+            "shell-5b0e2c4d-1111-2222-3333-444455556666-pa1b2c3",
+            "Run cat ~/.ssh/id_rsa",
+            &["Allow", "Deny"],
+        );
+        shell.text = format!(
+            "{}\n\ncat ~/.ssh/id_rsa",
+            crate::permissions::Reach::Secrets.why()
+        );
+        for owner in [false, true] {
+            assert!(matches!(
+                owners_call(&shell, "Allow", None, owner),
+                Owners::Waits(_)
+            ));
+        }
+        assert_eq!(owners_call(&shell, "Deny", None, true), Owners::No);
     }
 
     /// TASKCONV-9: a Confirm stays on its card unless the owner's own word confirms it.

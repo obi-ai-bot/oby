@@ -586,20 +586,43 @@ impl Link {
                 let asked: crate::brain::owners_word::Merge =
                     serde_json::from_value(confirmed.payload["merge"].clone())
                         .map_err(|_| api(StatusCode::CONFLICT, "That merge's plan was lost."))?;
-                let head = confirmed.payload["head"].as_str().unwrap_or_default();
-                crate::brain::owners_word::merge(&self.jobs, &self.config.home, &asked, head)
-                    .await
-                    .map(|_| ())
-                    .map_err(|why| api(StatusCode::CONFLICT, why))
+                let text = |key: &str| {
+                    confirmed.payload[key]
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_owned()
+                };
+                let pinned = crate::brain::owners_word::Open {
+                    head: text("head"),
+                    base: text("base"),
+                };
+                crate::brain::owners_word::merge_confirmed(
+                    &self.jobs,
+                    &self.config.home,
+                    &text("conversation"),
+                    &asked,
+                    &pinned,
+                )
+                .await
+                .map(|_| ())
+                .map_err(|why| api(StatusCode::CONFLICT, why))
             }
             inbox::action::GITHUB_WRITE => {
                 let asked: crate::brain::owners_word::Write =
                     serde_json::from_value(confirmed.payload["write"].clone())
                         .map_err(|_| api(StatusCode::CONFLICT, "That write's plan was lost."))?;
-                crate::brain::owners_word::write(&self.config.home, &asked)
-                    .await
-                    .map(|_| ())
-                    .map_err(|why| api(StatusCode::CONFLICT, why))
+                let conversation = confirmed.payload["conversation"]
+                    .as_str()
+                    .unwrap_or_default();
+                crate::brain::owners_word::write(
+                    &self.jobs,
+                    &self.config.home,
+                    conversation,
+                    &asked,
+                )
+                .await
+                .map(|_| ())
+                .map_err(|why| api(StatusCode::CONFLICT, why))
             }
             inbox::action::SET_SETTINGS => {
                 let asked: crate::brain::owners_word::Settings =

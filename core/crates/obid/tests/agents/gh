@@ -38,6 +38,9 @@
 #   no-dismiss  when it exists, a dismissal fails as GitHub does when the branch's rules don't let
 #               the login dismiss reviews
 #   flaky-view  when it exists, the next `gh pr view` fails once, as a passing GitHub error does
+#   merges      one line per `gh api -X PUT …/pulls/<n>/merge`: its path and its --input file's
+#               text; it answers that it merged
+#   (approvals also gets the --input file's text of a POST or PATCH: a conversation's write)
 work="$HOME/github"
 if [ -d "$work" ]; then
   echo "$1 $2" >> "$work/calls"
@@ -82,6 +85,11 @@ if [ -d "$work" ]; then
       fi
       echo "gh: Not Found (HTTP 404)" >&2; exit 1 ;;
     "api -X")
+      input=""; prev=""
+      for arg in "$@"; do if [ "$prev" = "--input" ]; then input=$(cat "$arg"); fi; prev=$arg; done
+      case "$3 $4" in "PUT "*/pulls/*/merge)
+        echo "$4 $input" >> "$work/merges"; echo '{"merged":true}'; exit 0 ;;
+      esac
       if [ "$3" = PUT ]; then
         if [ -f "$work/no-dismiss" ]; then echo "gh: Can not dismiss a review on this pull request (HTTP 422)" >&2; exit 1; fi
         echo "$*" >> "$work/dismissals"; echo '{"id":1,"state":"DISMISSED"}'; exit 0
@@ -89,7 +97,7 @@ if [ -d "$work" ]; then
       if [ -d "$work/after-post" ]; then cp "$work/after-post/"* "$work/"; rm -rf "$work/after-post"; fi
       body=""
       for arg in "$@"; do case "$arg" in body=@*) body=$(cat "${arg#body=@}") ;; esac; done
-      echo "$* | $body" >> "$work/approvals"
+      echo "$* | $body$input" >> "$work/approvals"
       echo '{"id":1,"state":"APPROVED","html_url":"https://github.com/'"$4"'#pullrequestreview-1"}'
       exit 0 ;;
   esac

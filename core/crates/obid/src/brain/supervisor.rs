@@ -606,6 +606,7 @@ mod tests {
             web: AtomicBool::new(true),
             dispatched: AtomicUsize::new(0),
             told: AtomicUsize::new(0),
+            asked: AtomicUsize::new(0),
             kept: "/nowhere/session.json".into(),
             account: "a".into(),
             room: "/nowhere/room".into(),

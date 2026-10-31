@@ -40,8 +40,7 @@ pub(super) fn list() -> Value {
         "check": {"type": "string", "maxLength": 200, "description": "Only when the owner named one (\"Check: …\", \"run … to check\"): that one-line shell command, exactly as they said it, which must pass before Oby publishes. Left out, the repository's own check applies."},
         "complexity": {"type": "string", "enum": ["routine", "complex"], "description": "complex for large or tricky work, which runs at the account's effort for complex tasks. Left out, routine."},
         "base_branch": {"type": "string", "description": "Only when the owner named one: the branch the work starts from and its pull request goes into. Left out, the repository's default."},
-        "rounds": {"type": "integer", "minimum": 1, "maximum": 10, "description": "How many rounds the agent may take: more than 1 only when the owner asked it to keep going until done."},
-        "epic": {"type": "integer", "description": "An epic issue: one job per open sub-issue."}},
+        "rounds": {"type": "integer", "minimum": 1, "maximum": 10, "description": "How many rounds the agent may take: more than 1 only when the owner asked it to keep going until done."}},
         "required": ["repo", "task"]});
     json!([
         {"name": "oby_jobs", "description": "Lists Oby's jobs, newest first: id, title, status, phase (prepare, work, check or publish), round and rounds, repo, agent, account, mode, pull request, archived. What a job's agent is doing and said is in oby_job. Archived jobs are left out unless archived is true.",
@@ -243,6 +242,20 @@ fn answered(called: Result<String, String>) -> Value {
            "isError": failed})
 }
 
+/// The tools that may leave a Confirm card when the turn isn't the owner's own word.
+const CONFIRMS: &[&str] = &[
+    "oby_answer",
+    "oby_merge",
+    "oby_github_write",
+    "oby_settings",
+    "oby_change_job",
+    "oby_continue_job",
+    "oby_delete_job",
+    "oby_routine",
+    "oby_change_routine",
+    "oby_check_in",
+];
+
 /// Why a supervisor turn (super::supervisor) starts no job past its own bounds: after something
 /// untrusted, a watched turn's jobs start with the owner there to see them, but nobody watches
 /// this one.
@@ -301,6 +314,11 @@ async fn call(
     }
     if let Some(why) = reads_foreign(shared, name, &args) {
         shared.conversations.mark(&session.conversation, why);
+    }
+    // A turn that isn't the owner's own word asks for their OK at most so many times: what it read
+    // can't flood their inbox with cards.
+    if CONFIRMS.contains(&name) && owners_word(session).is_none() {
+        capped(&session.asked, "asks for the owner's OK", false)?;
     }
     match name {
         "oby_jobs" => Ok(jobs(shared, session, args)?),
@@ -596,17 +614,24 @@ fn confirm_card(
     ))
 }
 
-/// oby_merge (TASKCONV-7): the pull request as GitHub has it now, merged at that head on the owner's
-/// word, else their Confirm of exactly it.
+/// oby_merge (TASKCONV-7): the pull request as GitHub has it now, merged at that base and head on
+/// the owner's word, else their Confirm of exactly those. Never a review another Oby asked for.
 async fn merge(shared: &Arc<Shared>, session: &Session, args: Value) -> Result<String, String> {
     use super::owners_word::{self, Merge};
     let asked: Merge = parse(args)?;
     if let Some(why) = asked.problem() {
         return Err(why);
     }
+    let job = owners_word::job_of(&shared.jobs, &asked);
+    if job.as_ref().is_some_and(|j| j.obi.is_some()) {
+        return Err(format!(
+            "{}#{} is the pull request of a review another Oby asked for: it isn't yours to merge from here.",
+            asked.repo, asked.pr
+        ));
+    }
     let open = owners_word::open(&asked.repo, asked.pr).await?;
     if owners_word(session).is_none() {
-        let title = asked.title(&open.base);
+        let title = asked.title(&open, job.is_some());
         return confirm_card(
             shared,
             session,
@@ -615,42 +640,56 @@ async fn merge(shared: &Arc<Shared>, session: &Session, args: Value) -> Result<S
             crate::sphere::inbox::Confirmed {
                 action: crate::sphere::inbox::action::MERGE_PR.into(),
                 target: format!("{}#{}", asked.repo, asked.pr),
-                payload: json!({"merge": asked, "head": open.head}),
+                payload: json!({"merge": asked, "base": open.base, "head": open.head,
+                    "conversation": session.conversation}),
             },
         );
     }
-    owners_word::merge(&shared.jobs, &shared.config.home, &asked, &open.head).await
+    owners_word::merge(
+        &shared.jobs,
+        &shared.config.home,
+        &session.conversation,
+        &asked,
+        &open,
+    )
+    .await
 }
 
-/// oby_github_write (TASKCONV-8): one write on GitHub as the owner, on their word, else their Confirm
-/// showing what goes.
+/// oby_github_write (TASKCONV-8): one write on GitHub as the owner, on their word, else their
+/// Confirm quoting what goes. A review is of the head GitHub has now.
 async fn github_write(
     shared: &Arc<Shared>,
     session: &Session,
     args: Value,
 ) -> Result<String, String> {
     use super::owners_word::{self, Write};
-    let asked: Write = parse(args)?;
-    let (_, _, body) = asked.request()?;
+    let mut asked: Write = parse(args)?;
+    asked.commit = None;
+    asked.request()?;
+    if asked.reviews() {
+        let number = asked.number.unwrap_or_default();
+        asked.commit = Some(owners_word::open(&asked.repo, number).await?.head);
+    }
     if owners_word(session).is_none() {
-        let what = [body["title"].as_str(), body["body"].as_str()]
-            .into_iter()
-            .flatten()
-            .collect::<Vec<_>>()
-            .join("\n\n");
         return confirm_card(
             shared,
             session,
             asked.title(),
-            Some(&what),
+            Some(&asked.shown()),
             crate::sphere::inbox::Confirmed {
                 action: crate::sphere::inbox::action::GITHUB_WRITE.into(),
                 target: asked.repo.clone(),
-                payload: json!({ "write": asked }),
+                payload: json!({"write": asked, "conversation": session.conversation}),
             },
         );
     }
-    owners_word::write(&shared.config.home, &asked).await
+    owners_word::write(
+        &shared.jobs,
+        &shared.config.home,
+        &session.conversation,
+        &asked,
+    )
+    .await
 }
 
 /// oby_settings (TASKCONV-10): Settings as they are, or changed. A default mode that asks less waits
@@ -670,7 +709,7 @@ fn settings(shared: &Arc<Shared>, session: &Session, args: Value) -> Result<Stri
         ));
     }
     asked.mode()?;
-    if asked.widens(shared.jobs.default_mode()) && owners_word(session).is_none() {
+    if asked.widens(&super::owners_word::Now::of(&shared.jobs)) && owners_word(session).is_none() {
         return confirm_card(
             shared,
             session,
@@ -1520,7 +1559,6 @@ struct Start {
     complexity: Option<super::plan::Complexity>,
     base_branch: Option<String>,
     rounds: Option<i64>,
-    epic: Option<i64>,
 }
 
 fn parse<T: serde::de::DeserializeOwned>(args: Value) -> Result<T, String> {
@@ -1905,7 +1943,7 @@ fn planned(start: Start) -> Result<Dispatch, String> {
             .filter(|b| !b.is_empty()),
         pr: start.pr,
         issue: start.issue,
-        epic: start.epic,
+        epic: None,
         kind: start.kind.unwrap_or_else(|| "build".into()).into(),
         title: start.title,
         task: start.task,
@@ -2972,24 +3010,21 @@ mod tests {
         assert_eq!(owners_only("failed", "One more round"), None);
     }
 
-    /// TASKCONV-13: oby_dispatch carries the owner's base branch, rounds and epic into its plan.
+    /// TASKCONV-13: oby_dispatch carries the owner's base branch and rounds into its plan; an epic
+    /// isn't offered, since obid can't make one job per sub-issue yet.
     #[test]
-    fn taskconv_13_dispatch_takes_a_base_rounds_and_an_epic() {
-        let start: Start = parse(
-            json!({"repo": "o/r", "task": "x", "base_branch": " release ",
-            "rounds": 3, "epic": 12}),
-        )
-        .unwrap();
+    fn taskconv_13_dispatch_takes_a_base_and_rounds() {
+        let start: Start =
+            parse(json!({"repo": "o/r", "task": "x", "base_branch": " release ", "rounds": 3}))
+                .unwrap();
         let named = planned(start).unwrap();
         assert_eq!(
-            (named.base_branch.as_deref(), named.rounds, named.epic),
-            (Some("release"), 3, Some(12))
+            (named.base_branch.as_deref(), named.rounds),
+            (Some("release"), 3)
         );
         let plain = planned(parse(json!({"repo": "o/r", "task": "x"})).unwrap()).unwrap();
-        assert_eq!(
-            (plain.base_branch, plain.rounds, plain.epic),
-            (None, 1, None)
-        );
+        assert_eq!((plain.base_branch, plain.rounds), (None, 1));
+        assert!(parse::<Start>(json!({"repo": "o/r", "task": "x", "epic": 12})).is_err());
     }
 
     /// TASKCONV-12: a turn that isn't the owner's own word does each at most ten times; their word
