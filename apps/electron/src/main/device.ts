@@ -1,17 +1,19 @@
 import { app, ipcMain, safeStorage } from 'electron';
-import { createHash, createPrivateKey, createPublicKey, generateKeyPairSync, sign, type KeyObject } from 'node:crypto';
+import { createPrivateKey, createPublicKey, generateKeyPairSync, sign, type KeyObject } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { closeSync, constants, openSync, readFileSync, renameSync, rmSync, writeSync } from 'node:fs';
 import { hostname } from 'node:os';
 import { join } from 'node:path';
 import { HOME, obid, type Answer, type Trusted } from './obid';
+import { wordsHeader } from './words';
 
 // This Mac's device key for obid (docs/runner-api.md, "POST /v1/devices"), which makes a Confirm
 // the owner's (#776). A P-256 key made here in main, kept encrypted by safeStorage (macOS: a key
 // in the login Keychain that only this app reads without asking) in the app's own folder; it
-// never leaves main. Nothing here signs on request: the page can only ask main to confirm one open
-// item by its id, on the owner's click, and main reads that item's title from obid itself, signs
-// obid's own sentence for it and sends the answer.
+// never leaves main. Nothing here signs what the page asks to: a Confirm is one open item by its
+// id, on the owner's click, and main reads that item's title from obid itself and signs obid's own
+// sentence for it; words (ownersWords) are signed only when the preload saw the owner's own
+// keystroke or click hold them, and only on the routes that carry words.
 
 const O = constants;
 
@@ -88,17 +90,13 @@ export async function register(): Promise<string> {
 
 type Item = { id: string; kind: string; title: string; state: string };
 
-// An explicit manual continuation of a limit-stopped job is also an owner decision. Sign the
-// exact request on the trusted window's action, preserving the policy for ordinary messages.
-export async function messageJob(path: string, body: unknown): Promise<Answer> {
+// The owner's words (wordsOf's routes only), signed with this Mac's key, on the preload's word
+// that the owner's own keystroke or click held them (preload/index.ts). A limit-stopped job's
+// continuation needs it (docs/runner-api.md, `accountLimit`); everything else just isn't marked.
+export async function ownersWords(method: string, path: string, body: unknown): Promise<Answer> {
   try {
-    const current = await obid('GET', path.replace(/\/messages$/, ''));
-    if (current.status !== 200) return current;
-    if (!(JSON.parse(current.text) as { accountLimit?: unknown }).accountLimit) return obid('POST', path, body);
-    const device = await register(), signedAt = new Date().toISOString();
-    const digest = createHash('sha256').update(JSON.stringify(body) ?? '').digest('hex');
-    const signature = signed(`oby-words\nPOST\n${path}\n${digest}\n${signedAt}`);
-    return obid('POST', path, body, `${device} ${signedAt} ${signature}`);
+    const words = wordsHeader(deviceKey(), await register(), method, path, body);
+    return obid(method, path, body, words ?? undefined);
   } catch (err) {
     return { status: 500, text: JSON.stringify({ error: err instanceof Error ? err.message : String(err) }) };
   }

@@ -7,6 +7,9 @@
 //   3. A follow-up asked on that task's page lands in that conversation, with its card (TASKCONV-3).
 //   4. A task with no conversation gets one when its page's words reach it, and the app opens it
 //      (TASKCONV-4).
+//   5. The owner's words go signed by this Mac's key (docs/contracts/signed-words.md): the task
+//      from Home's box is theirs (vetted, WORDS-6), and so is the follow-up their words on its page
+//      start.
 // Screenshots of each step go to OBY_CORE_SHOTS (a folder), when it's set.
 // Run: cargo build -p obid (or OBY_TEST_OBID=<obid>), npm run build, then npm run test:core.
 import assert from 'node:assert/strict';
@@ -114,6 +117,8 @@ async function send(page, placeholder, words) {
   await page.keyboard.press('Enter');
 }
 const jobs = async (s) => s.call('GET', '/v1/jobs');
+// the job as obid keeps it, `vetted` and all
+const kept = (s, id) => JSON.parse(readFileSync(join(s.home, 'jobs', `${id}.json`), 'utf8'));
 const ended = (j) => ['done', 'failed', 'interrupted', 'stopped'].includes(j.status);
 
 async function main() {
@@ -135,6 +140,7 @@ async function main() {
   const done = await until('it runs to its end', async () => { const j = await s.call('GET', `/v1/jobs/${first.id}`); return ended(j) && j; }, 120_000);
   assert.equal(done.status, 'done', JSON.stringify(done));
   await until('its card in the conversation', async () => (await shown(page)).includes('Core flow'));
+  assert.equal(kept(s, first.id).vetted, true, 'WORDS-6: the task from Home’s box is the owner’s own words');
   await shot(page, '1-task-from-home');
 
   // 2. A task started on its own (POST /v1/jobs, as the Tasks view does): its own conversation
@@ -175,8 +181,16 @@ async function main() {
   await until('the app shows the words in the conversation', async () => (await shown(page)).includes('why wasn’t this merged?'));
   await shot(page, '4-old-task-gets-a-conversation');
 
+  // 5. Words on the page of the task from Home's box, signed: its follow-up is the owner's too
+  await page.evaluate((id) => dispatchEvent(new CustomEvent('oby:open', { detail: { kind: 'task', id }, cancelable: true })), first.id);
+  await until('the first task’s page', async () => (await page.locator('[aria-placeholder="Tell Oby about this task…"]').count()) > 0);
+  await send(page, 'Tell Oby about this task…', `OBY oby_tell_job {"id":"${first.id}","words":"Look around once more"}`);
+  const more = await until('its follow-up', async () => (await jobs(s)).find((j) => j.followUpOf === first.id));
+  assert.equal(kept(s, more.id).vetted, true, 'WORDS-6: the follow-up the owner’s words start is theirs');
+  assert.ok(!s.logs.join('').includes('not words the owner typed'), 'every signature obid was given checked out');
+
   assert.deepEqual(errors, [], 'no page errors');
-  console.log('core: Home → task → its conversation → follow-ups: all passed');
+  console.log('core: Home → task → its conversation → follow-ups, the owner’s words signed: all passed');
 }
 
 try {

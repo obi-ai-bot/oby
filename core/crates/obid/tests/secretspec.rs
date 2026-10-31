@@ -977,3 +977,61 @@ fn a_follow_up_with_files_attached_is_someone_elses() {
         "{job}"
     );
 }
+
+/// WORDS-5, BYPASS-7 through the real routes (#1611): a task the owner typed, signed by their app
+/// as the Electron app signs it, is theirs (`vetted`), and so is the follow-up their signed words
+/// start, in the task's Bypass. The same words no app signed start a follow-up that isn't theirs,
+/// and Bypass doesn't carry on to it: it's in the owner's default.
+#[test]
+fn words_5_signed_words_keep_a_task_vetted_and_its_follow_up_in_bypass() {
+    let folder = Folder::new("secretspec-words-bypass");
+    let remote = fixture(&folder.0.join("fixture"));
+    let config = config(&folder.0, &remote, &fake_claude());
+    let obid = start(&folder.0, &config, None);
+    let mode = call(
+        &obid,
+        "PUT",
+        "/v1/settings/permissions",
+        Some(&json!({"mode": "ask"})),
+    );
+    assert_eq!(mode.status, 200, "{}", mode.text);
+    let created = call_typed(
+        &obid,
+        "POST",
+        "/v1/jobs",
+        &json!({"job": {"repo": "obi-e2e/fixture-app", "kind": "investigate", "task": "Nothing to do", "mode": "bypass"}}),
+    );
+    assert_eq!(created.status, 201, "{}", created.text);
+    let first = created.body["id"].as_str().unwrap().to_owned();
+    call(&obid, "GET", &format!("/v1/jobs/{first}/wait"), None);
+    let job = kept(&obid, &first);
+    assert_eq!(
+        (&job["vetted"], &job["mode"]),
+        (&json!(true), &json!("bypass")),
+        "{job}"
+    );
+
+    let follow = |text: &str, signed: bool| {
+        let path = format!("/v1/jobs/{first}/messages");
+        let body = json!({"text": text});
+        let next = if signed {
+            call_typed(&obid, "POST", &path, &body)
+        } else {
+            call(&obid, "POST", &path, Some(&body))
+        };
+        assert_eq!(next.status, 201, "{}", next.text);
+        let id = next.body["id"].as_str().unwrap().to_owned();
+        call(&obid, "GET", &format!("/v1/jobs/{id}/wait"), None);
+        kept(&obid, &id)
+    };
+    let owners = follow("Nothing more to do", true);
+    assert_eq!(owners["followUpOf"], first.as_str(), "{owners}");
+    assert_eq!(
+        (&owners["vetted"], &owners["mode"]),
+        (&json!(true), &json!("bypass")),
+        "{owners}"
+    );
+    let unsigned = follow("Nothing more to do", false);
+    assert_ne!(unsigned["vetted"], true, "{unsigned}");
+    assert_ne!(unsigned["mode"], "bypass", "{unsigned}");
+}

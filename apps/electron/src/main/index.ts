@@ -3,7 +3,7 @@ import { createRequire } from 'node:module';
 import { lstatSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { bridge, startObid, stopFollowing, type Trusted } from './obid';
-import { confirming, messageJob } from './device';
+import { confirming, ownersWords } from './device';
 import { notifying, windowLeft, windowSeen } from './notify';
 import { updating } from './updates';
 import { sphering } from './sphere';
@@ -61,9 +61,9 @@ let last = '';
 ipcMain.on('window-chrome', (e) => { e.returnValue = chrome; });
 ipcMain.on('full-screen', (e) => { e.returnValue = win?.isFullScreen() ?? false; });
 // obid, through main (obid.ts): only for the window's own page, never a frame in it; and its
-// Confirm, signed with this Mac's device key (device.ts)
+// Confirm and the owner's words, signed with this Mac's device key (device.ts)
 const trusted: Trusted = (e) => !!win && e.sender === win.webContents && e.senderFrame === win.webContents.mainFrame;
-bridge(trusted, messageJob);
+bridge(trusted, ownersWords);
 confirming(trusted);
 // setting up, or not: the page says so (synchronously, before the window first shows) and the
 // window takes the setup's size, held there (no resizing, zooming or full screen), or its own back.
