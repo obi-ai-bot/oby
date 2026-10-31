@@ -119,14 +119,15 @@ async function confirmMerge(t, url, head = new RegExp(`^Merge ${escape(prRef(t, 
 async function rebaseThenMerge(t, url, merged) {
   const pr = () => JSON.parse(t.gh('pr', 'view', url, '--json', 'headRefOid,baseRefName,mergeable'));
   const { headRefOid: head, baseRefName: base } = pr();
-  const ref = prRef(t, url), mine = (title) => title.toLowerCase().includes(ref);
+  // its number whole: #15 never matches inside #151
+  const ref = new RegExp(`${escape(prRef(t, url))}(?!\\d)`, 'i'), mine = (title) => ref.test(title);
   await openTask(t, t.state.task.title);
   const since = Date.now();
   await t.say(`Rebase it onto ${base}, then merge it.`, 'Tell Oby about this task…');
   t.note(`Oby, told to rebase: ${(await t.reply({ ms: 5 * MIN })).replace(/\n+/g, ' ')}`);
   await t.shot('told-to-rebase');
   // a Confirm for this pull request under its answer (a rebase's or a merge's), if Oby made one
-  await confirmMerge(t, url, new RegExp(escape(ref), 'i')).catch(() => t.note('no Confirm under its answer'));
+  await confirmMerge(t, url, ref).catch(() => t.note('no Confirm under its answer'));
   await home(t);
   // its rebase: a task it starts for it is this run's (its cards answered, its branch cleaned up)
   const rebased = () => {
