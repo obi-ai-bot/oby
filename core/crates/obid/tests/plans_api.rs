@@ -2120,7 +2120,7 @@ async fn accepting_another_obis_request_waits_for_the_owners_confirm() {
             answer["text"]
                 .as_str()
                 .unwrap()
-                .contains("confirm it in your inbox"),
+                .contains("its Confirm is under this answer, and on Home"),
             "{answer}"
         );
         // Nothing changed: no decision, no job, the request still waits.
