@@ -60,4 +60,12 @@ The business behavior contract for where a task's words go ([#1631](https://gith
 - **TASKCONV-12:** The owner's word sets no cap on how many jobs one turn starts or tells; a conversation may `save_session` to Tetrix, scanned and in the use log as a write. (`taskconv_12_a_turn_does_each_at_most_ten_times_unless_the_owner_said`, `a_conversation_asks_tetrix_for_reads_with_its_turns_token`)
 - **TASKCONV-13:** `oby_dispatch` takes the owner's base branch and rounds. An epic isn't offered: obid can't make one job per sub-issue yet. (`taskconv_13_dispatch_takes_a_base_and_rounds`)
 
+
+## Steering a task while it works (#1661)
+
+obid owns where the words go (`Jobs::message`, `Jobs::left_words`) and the report (`summary`); the apps show them.
+
+- **TASKCONV-14:** Words the owner tells a task while it's queued, getting ready or at work reach its agent: with its first prompt, or as its next turn (#1661). That turn's reply is added to the task's report after the work's (`After what you told it: …`), the work's first line still first, so Oby and the owner see the words were heard. (`taskconv_14_a_running_job_hears_the_words_next_and_its_reply_joins_the_report`, runner_api.rs)
+- **TASKCONV-15:** Words the owner told a queued task that it ended without hearing (it failed before its first prompt, say) start its follow-up as words told while it wrapped up do (#930); when that can't start, a Confirm in the inbox says they weren't heard and keeps them. Never silently dropped. (`taskconv_15_words_a_queued_task_never_heard_start_its_follow_up`, obid's lib tests)
+
 Test it when it's done, on a real Mac: start a task from the Tasks view, open its conversation, then send a follow-up from its page, and see the question, Oby's answer and the follow-up's card together there.

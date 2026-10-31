@@ -1066,7 +1066,7 @@ pub async fn publish(
     hooks.progress(Step::Push);
     // A rebased branch replaces what's on the remote, and only what obid pushed there itself.
     let to = by_hand.branch(job);
-    let lease = lease(&head, job, target, by_hand).await?;
+    let (before, lease) = lease(&head, job, target, by_hand).await?;
     if !hooks.proceed() {
         return Err(Failure::Stopped);
     }
@@ -1094,9 +1094,11 @@ pub async fn publish(
         ))
     })?;
     let opened = {
-        // GitHub may still show the commit obid pushed before as the pull request's head.
+        // GitHub may still show the commit obid pushed before as the pull request's head, or the
+        // one that was on the branch before this push: a follow-up adds to its task's (#1663).
         let mut heads = vec![head.as_str()];
         heads.extend(job.pushed_head());
+        heads.extend(before.as_deref());
         github::open_pull_request(gh, &job.repo, base, to, &heads, &title, &file).await
     };
     let _ = std::fs::remove_file(&file);
@@ -1599,27 +1601,31 @@ pub(crate) async fn remote_head(branch: &str, target: &Target) -> Result<Option<
 /// What pushing `head` replaces on the job's branch: none when it only adds to what's there (no
 /// branch yet, the same commit, or one `head` builds on), else the commit there, which a rebase
 /// leaves behind. Only the commit obid pushed there last may be replaced: anything else someone
-/// else pushed, and obid refuses rather than overwrite it.
+/// else pushed, and obid refuses rather than overwrite it. Answered after the commit that was
+/// there before the push, if any: an open pull request may still show it as its head (#1663).
 async fn lease(
     head: &str,
     job: &Job,
     target: &Target,
     by_hand: &ByHand,
-) -> Result<Option<String>, Failure> {
+) -> Result<(Option<String>, Option<String>), Failure> {
     // The owner's force replaces the commit they were shown there, and only it (PUBLISHING-10).
     if by_hand.force {
         return match by_hand.over.as_deref() {
-            Some(over) if over.is_empty() || git::is_sha(over) => Ok(Some(over.to_owned())),
+            Some(over) if over.is_empty() || git::is_sha(over) => Ok((
+                Some(over.to_owned()).filter(|o| !o.is_empty()),
+                Some(over.to_owned()),
+            )),
             _ => Err(Failure::Failed(
                 "Not published: a force-push names the commit it replaces.".into(),
             )),
         };
     }
     let Some(there) = remote_head(by_hand.branch(job), target).await? else {
-        return Ok(None);
+        return Ok((None, None));
     };
     if there == head {
-        return Ok(None);
+        return Ok((Some(there), None));
     }
     // Fails too when the clone doesn't have that commit: then it isn't one obid pushed from here.
     if git_in(
@@ -1629,7 +1635,7 @@ async fn lease(
     .await
     .is_ok()
     {
-        return Ok(None);
+        return Ok((Some(there), None));
     }
     if job.pushed_head() != Some(there.as_str()) {
         return Err(Failure::Failed(format!(
@@ -1638,7 +1644,7 @@ async fn lease(
             &there[..12]
         )));
     }
-    Ok(Some(there))
+    Ok((Some(there.clone()), Some(there)))
 }
 
 /// Pushes one commit to the job's own branch: no tags, submodules or signing. With `lease`, the
