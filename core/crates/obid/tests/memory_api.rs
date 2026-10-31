@@ -219,11 +219,7 @@ fn a_workflow_memory_keeps_its_typed_merge_and_refuses_main() {
         None,
     );
     assert_eq!(main.status, 422, "{}", main.text);
-    assert!(
-        main.text.contains("never merges into main"),
-        "{}",
-        main.text
-    );
+    assert!(main.text.contains("only on your word"), "{}", main.text);
 
     let saved = call(
         &obid,

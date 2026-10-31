@@ -10255,6 +10255,20 @@ impl Jobs {
             (hanging, waiting)
         };
         let settled = !hanging.is_empty() || !waiting.is_empty();
+        // Changes left to the owner with no item for them (a round that left the head as it was,
+        // one obid kept from before): theirs now. An item answered isn't asked again.
+        let left: Vec<String> = self
+            .lock()
+            .jobs
+            .values()
+            .filter(|j| j.review_needs_you() && j.current_review().is_some_and(|r| !r.approved()))
+            .map(|j| j.id.clone())
+            .collect();
+        for id in left {
+            if let Some(item) = self.review_left_to_owner(&id) {
+                self.review_items(&id, Some(item));
+            }
+        }
         for (author, review) in hanging {
             if self.get(&review).is_some() {
                 self.reviewed(&review);
@@ -10425,10 +10439,6 @@ impl Jobs {
             Some(why) => Err(why.clone()),
             None => self.quote_review(&of, round, &by, &text),
         });
-        // Its reviews ran out still asking for changes: the owner hears it, with One more round.
-        let ran_out = (!approved && round >= review::REVIEWS)
-            .then(|| crate::sphere::inbox::reviews_ran_out_item(&author, id));
-        self.review_items(&of, ran_out);
         // Its round starts only while no job works on its branch, checked again as it starts: a job
         // started while the review was quoted holds it too (PUBLISHING-4).
         let busy = |jobs: &HashMap<String, Job>| jobs.get(&of).and_then(|j| branch_busy(jobs, j));
@@ -10456,10 +10466,35 @@ impl Jobs {
                 job.step = "Working on Oby's review".into();
             }
         });
+        // Its changes left to the owner, its reviews run out or no round started: the owner hears
+        // it, with One more round (MERGING-8). A round that started settles the old item.
+        let left = self.review_left_to_owner(&of);
+        self.review_items(&of, left);
         // An approval of a head that needs two asks another tool for the second (MERGING-14).
         if approved {
             self.start_review(&of);
         }
+    }
+
+    /// MERGING-8's item for the job `id`, when Oby's review of its head still asks for changes and
+    /// nothing more happens by itself (`Job::review_needs_you`): its reviews ran out, a follow-up
+    /// carries its branch, another job holds it, or the round asked for left the head as it was.
+    /// None while a follow-up still works on its branch: what it pushes is the head to merge. Why
+    /// obid couldn't hand the review to the agent, when it couldn't, is in its text.
+    pub fn review_left_to_owner(&self, id: &str) -> Option<crate::sphere::inbox::Item> {
+        let job = self.get(id)?;
+        let review = job.current_review().filter(|r| !r.approved())?;
+        let following = self.lock().jobs.values().any(|j| {
+            j.follow_up_of.as_deref() == Some(id) && j.branch == job.branch && j.status.is_active()
+        });
+        if !job.review_needs_you() || following {
+            return None;
+        }
+        let mut item = crate::sphere::inbox::reviews_ran_out_item(&job, &review.job);
+        if let Some(why) = &job.review_error {
+            item.text = format!("{} {why}", item.text);
+        }
+        Some(item)
     }
 
     /// Quotes Oby's review `round` of job `id`'s pull request in its worktree's
@@ -10972,7 +11007,18 @@ impl Jobs {
         };
         let reviewer = crate::github_login::reviewer(gh, &home, &owner).await;
         let current = reviewer.as_ref().ok().and_then(|r| r.as_ref());
-        let learned = crate::memory::workflow(&home, &job.repo);
+        // A workflow that names another base than this pull request's isn't its: the owner's Merge
+        // takes it on, by the one its card proposes (never remembered over the learned one).
+        let (learned, other_base) = match crate::memory::workflow(&home, &job.repo) {
+            Some(m) if m.workflow.as_ref().is_some_and(|w| w.base != pr.base) => {
+                let why = m
+                    .workflow
+                    .as_ref()
+                    .map(|w| crate::merge::other_base(&job.repo, &pr.base, &w.base));
+                (None, why)
+            }
+            learned => (learned, None),
+        };
         let workflow = learned.as_ref().and_then(|m| m.workflow.clone());
         let reviewers = crate::merge::accounts(&home, &owner, &reviewer, workflow.as_ref());
         self.settle_sending(id, &merging);
@@ -11140,7 +11186,7 @@ impl Jobs {
                     self.update(id, |job| crate::merge::note(job, &outcome, by));
                     outcome
                         .err()
-                        .filter(|b| b.needs_you)
+                        .filter(|b| b.needs_you && !crate::merge::on_review_item(b))
                         .map(|b| crate::merge::blocked_card(&job, &head, &b, workflow))
                 }
                 None => {
@@ -11162,9 +11208,13 @@ impl Jobs {
                                 &merging,
                                 reviewers.as_ref(),
                             ) {
-                                Ok(()) => Some(crate::merge::ready_card(&job, number, &head, &w)),
+                                Ok(()) => Some(match &other_base {
+                                    Some(why) => crate::merge::yours_card(&job, &head, why, &w),
+                                    None => crate::merge::ready_card(&job, number, &head, &w),
+                                }),
                                 // What only the owner can settle (red checks, a change request)
                                 // asks them here too.
+                                Err(blocked) if crate::merge::on_review_item(&blocked) => None,
                                 Err(blocked)
                                     if blocked.needs_you || refused.as_ref() == Some(&blocked) =>
                                 {
@@ -11377,6 +11427,7 @@ impl Jobs {
             .ok_or("Oby couldn't tell who its reviewer accounts are.")?;
         let workflow = learned
             .clone()
+            .filter(|w| w.base == pr.base)
             .or_else(|| crate::merge::proposed(&job, &pr, &merging, &reviewers))
             .ok_or("It isn't one Oby may merge.")?;
         crate::merge::on_owners_word(

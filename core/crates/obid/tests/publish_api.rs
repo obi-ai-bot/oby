@@ -2425,7 +2425,8 @@ fn merging_8_reviews_that_run_out_ask_the_owner_with_one_more_round() {
         items[0]["text"],
         "Oby's review still asks for changes. Take it from here."
     );
-    assert_eq!(items[0]["options"], json!(["One more round"]));
+    // Merge too, into main: the owner's word merges there (MERGING-7, 17).
+    assert_eq!(items[0]["options"], json!(["One more round", "Merge"]));
     let more = call(
         &obid,
         "POST",
@@ -2441,7 +2442,70 @@ fn merging_8_reviews_that_run_out_ask_the_owner_with_one_more_round() {
         let open = review_items(&obid, &id);
         (open.len() == 1 && open[0]["id"] != items[0]["id"]).then_some(open)
     });
-    assert_eq!(again[0]["options"], json!(["One more round"]));
+    assert_eq!(again[0]["options"], json!(["One more round", "Merge"]));
+}
+
+/// MERGING-8, the path #1658 found: a follow-up works on the job's branch when Oby's first review
+/// asks for changes, so no round starts. Once it ended, the owner gets obid's own item after that
+/// one round, with One more round and Merge, and no question of the orchestrator's.
+#[test]
+fn merging_8_a_follow_up_on_the_branch_at_round_one_leaves_it_to_the_owner() {
+    let folder = Folder::new("publish-review-follow-up");
+    let bin = fake_gh(&folder.0);
+    let (obid, _remote, _) = obid_with(&folder, &bin);
+    let id = dispatch(
+        &obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "build",
+               "task": "COMMIT: hello.txt WANTS: fix.txt HOLD REVIEW", "check": "test -f hello.txt"}),
+    );
+    let job_of = |id: &str| call(&obid, "GET", &format!("/v1/jobs/{id}"), None).body;
+    let review = review_of(&obid, &id, 0);
+    let review = within(60, "the review runs", || {
+        let review = job_of(review["id"].as_str().unwrap());
+        (review["status"] == "running").then_some(review)
+    });
+    let told = call(
+        &obid,
+        "POST",
+        &format!("/v1/jobs/{id}/messages"),
+        Some(&json!({"text": "Look"})),
+    );
+    assert_eq!(told.status, 201, "{}", told.text);
+    let next = told.body["id"].as_str().unwrap().to_owned();
+    assert_eq!(told.body["branch"], format!("oby/build-{id}"));
+    let follow = ended(&obid, &next);
+    assert!(!follow["status"].as_str().unwrap().is_empty());
+    std::fs::write(
+        Path::new(review["worktree"].as_str().unwrap()).join(".obi/release"),
+        "",
+    )
+    .unwrap();
+    let job = reviewed(&obid, &id, 1);
+    assert_eq!(job["review"]["verdict"], "changesRequested", "{job}");
+    assert_eq!(job["round"], 1, "no round started: {job}");
+    assert_eq!(job["reviewNeedsYou"], true);
+    let items = within(60, "the owner's item", || {
+        let open = review_items(&obid, &id);
+        (!open.is_empty()).then_some(open)
+    });
+    assert_eq!(items.len(), 1, "{items:?}");
+    assert!(
+        items[0]["text"]
+            .as_str()
+            .unwrap()
+            .starts_with("Oby's review still asks for changes. Take it from here."),
+        "{}",
+        items[0]
+    );
+    assert_eq!(items[0]["options"], json!(["One more round", "Merge"]));
+    let questions = call(&obid, "GET", "/v1/inbox", None).body;
+    assert!(
+        !questions.as_array().unwrap().iter().any(|i| i["id"]
+            .as_str()
+            .unwrap_or_default()
+            .starts_with("orchestrator-")),
+        "{questions}"
+    );
 }
 
 /// The review job of `id`'s published work at `nth` (oldest first), once there is one.
@@ -2696,7 +2760,7 @@ fn merging_16_a_second_review_asking_for_changes_starts_a_round_within_reviews()
         items[0]["text"],
         "Oby's review still asks for changes. Take it from here."
     );
-    assert_eq!(items[0]["options"], json!(["One more round"]));
+    assert_eq!(items[0]["options"], json!(["One more round", "Merge"]));
 }
 
 /// Job `id`'s open inbox items about Oby's review that couldn't run.

@@ -189,8 +189,9 @@ impl Workflow {
         if !crate::git::is_branch_name(&self.base) {
             return Some("That isn't a branch.");
         }
+        // Never one Oby would follow by itself: each merge there waits for the owner's Merge.
         crate::merge::protected(&self.base).then_some(
-            "Oby never merges into main, master or trunk by itself: those stay yours, on GitHub.",
+            "Oby merges into main, master or trunk only on your word, each time, so it doesn't remember a workflow for one.",
         )
     }
 

@@ -932,15 +932,22 @@ pub fn review_item(job: &crate::job::Job, review: &str, error: &str) -> Item {
     }
 }
 
-/// The `failed` item on a job whose Oby reviews ran out ([`crate::review::REVIEWS`]) still asking
-/// for changes (`reviewNeedsYou`): One more round hands that review to its agent once more
-/// (`Jobs::review_round_again`), and Oby reviews what it pushes. Its id is [`review_item`]'s, so the
-/// next review settles it, and no event turn of Oby's answers it.
+/// The `failed` item on a job whose Oby review still asks for changes and nothing more happens by
+/// itself (`reviewNeedsYou`): its rounds ran out ([`crate::review::REVIEWS`]), or none could start.
+/// One more round hands that review to its agent once more (`Jobs::review_round_again`), and Oby
+/// reviews what it pushes; Merge is the owner's own Merge of it as it is (`Jobs::merge_by_owner`,
+/// MERGING-17), into main too. Its id is [`review_item`]'s, so the next review settles it, and no
+/// event turn of Oby's answers it.
 pub fn reviews_ran_out_item(job: &crate::job::Job, review: &str) -> Item {
+    let into = job.base.as_deref().unwrap_or("its base");
     Item {
-        options: vec![crate::job::ONE_MORE_ROUND.into()],
+        options: vec![
+            crate::job::ONE_MORE_ROUND.into(),
+            crate::merge::MERGE.into(),
+        ],
         details: Some(vec![
             "Gives Oby's review to its agent for one more round, then Oby reviews it again.".into(),
+            format!("Merges it as it is into {into} with your GitHub login, if GitHub lets it."),
         ]),
         ..review_item(job, review, RAN_OUT)
     }

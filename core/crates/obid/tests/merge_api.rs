@@ -103,9 +103,9 @@ case "$*" in
     echo "[[${{r#,}}]]" ;;
   "api --paginate --slurp repos/{REPO}/pulls/7/commits?per_page=100") cat "$dir/commits.json" ;;
   "api repos/{REPO} --jq .permissions.push") echo true ;;
-  "api repos/{REPO}/rules/branches/dev")
+  "api repos/{REPO}/rules/branches/"*)
     if [ -f "$dir/requires-approval" ]; then echo '[{{"type": "pull_request", "parameters": {{"required_approving_review_count": 1}}}}]'; else echo '[]'; fi ;;
-  "api repos/{REPO}/branches/dev/protection/required_pull_request_reviews")
+  "api repos/{REPO}/branches/"*"/protection/required_pull_request_reviews")
     if [ -f "$dir/protection-403" ]; then echo '{{"message": "API rate limit exceeded for user ID 1.", "status": "403"}}'; echo 'gh: API rate limit exceeded (HTTP 403)' >&2; exit 1; fi
     if [ -f "$dir/protection-sso" ]; then echo '{{"message": "Resource protected by organization SAML enforcement. You must grant your Personal Access token access to this organization.", "status": "403"}}'; echo 'gh: Resource protected by organization SAML enforcement. (HTTP 403)' >&2; exit 1; fi
     echo '{{"message": "Branch not protected", "status": "404"}}'; echo 'gh: Branch not protected (HTTP 404)' >&2; exit 1 ;;
@@ -474,7 +474,7 @@ fn an_unlearned_repository_asks_first_with_no_reviewer() {
 }
 
 /// In a repository Oby hasn't learned, a pull request into main whose checks failed asks the owner:
-/// no workflow can be proposed for main, and nothing of Oby's fixes its own pull request's checks.
+/// main merges only on their word, and nothing of Oby's fixes its own pull request's checks.
 #[test]
 fn red_checks_into_main_in_an_unlearned_repository_ask_the_owner() {
     let folder = Folder::new("merge-red-main");
@@ -1190,5 +1190,267 @@ fn merging_5_checks_that_run_long_ask_then_merge_by_themselves() {
         merge_cards(&obid)
             .iter()
             .all(|c| c["id"] != card["id"] || !c["done"].is_null())
+    );
+}
+
+/// [`published`], but Oby's review of its head asks for changes: on its first round, with nothing
+/// more happening by itself (a follow-up carries its branch, say).
+fn changes_asked() -> obid::job::Job {
+    let mut job = published();
+    job.review.as_mut().unwrap().verdict = "changesRequested".into();
+    job
+}
+
+/// The open items of Oby's review of the job.
+fn review_items(obid: &Obid) -> Vec<Value> {
+    call(obid, "GET", "/v1/inbox", None)
+        .body
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|i| i["id"] == format!("{ID}-review-r1b2c3d4") && i["done"].is_null())
+        .collect()
+}
+
+/// MERGING-8 (#1658): Oby's review left asking for changes with no round to take them, after one
+/// round as after three, gives the owner obid's own item, with One more round and, into dev,
+/// Merge: never a question of Oby's that offers only Done.
+#[test]
+fn merging_8_changes_left_to_the_owner_after_any_round_ask_with_one_more_round() {
+    let folder = Folder::new("merge-review-left");
+    let obid = started_with(&folder, false, None, changes_asked(), &[]);
+    let item = within(30, "the review's item", || {
+        review_items(&obid).into_iter().next()
+    });
+    assert_eq!(item["kind"], "failed");
+    assert_eq!(
+        item["text"],
+        "Oby's review still asks for changes. Take it from here."
+    );
+    assert_eq!(item["options"], json!(["One more round", "Merge"]));
+    assert_eq!(job(&obid)["reviewNeedsYou"], true);
+    // No question of the orchestrator's beside it.
+    let questions: Vec<Value> = call(&obid, "GET", "/v1/inbox", None)
+        .body
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|i| {
+            i["id"]
+                .as_str()
+                .unwrap_or_default()
+                .starts_with("orchestrator-")
+        })
+        .collect();
+    assert!(questions.is_empty(), "{questions:?}");
+}
+
+/// MERGING-17 (#1658): Merge on that item is the owner's own Merge of the pull request as it is:
+/// it merges with their GitHub login, `mergedBy` `owner`, in a repository Oby hasn't learned and
+/// under a learned workflow alike, which never merges it by itself. No merge card of its own
+/// stands beside the item.
+#[test]
+fn merging_17_merge_on_the_review_item_merges_it_as_it_is_on_the_owners_word() {
+    for (name, workflow) in [("merge-as-it-is", None), ("merge-as-it-is-oby", Some(OBY))] {
+        let folder = Folder::new(name);
+        let obid = started_with(&folder, false, workflow, changes_asked(), &[]);
+        let item = within(30, "the review's item", || {
+            review_items(&obid).into_iter().next()
+        });
+        within(30, "a few reads", || {
+            (calls(&folder.0).matches("pr view 7").count() >= 3).then_some(())
+        });
+        assert!(!calls(&folder.0).contains("-X PUT"), "{name}");
+        assert!(
+            merge_cards(&obid).iter().all(|c| !c["done"].is_null()),
+            "{name}: {:?}",
+            merge_cards(&obid)
+        );
+        let merged = answer(&obid, &item, "Merge");
+        assert_eq!(merged.status, 200, "{name}: {}", merged.text);
+        assert_eq!(merged.body["answer"], "Merge");
+        assert_eq!(job(&obid)["mergedBy"]["by"], "owner", "{name}");
+        assert_eq!(calls(&folder.0).matches("-X PUT").count(), 1, "{name}");
+        assert!(review_items(&obid).is_empty(), "{name}");
+    }
+}
+
+/// MERGING-17: Merge that can't go (a conflict) merges nothing, says why, and leaves the item open.
+#[test]
+fn merging_17_a_merge_that_cant_go_says_why_and_stays_open() {
+    let folder = Folder::new("merge-as-it-is-conflict");
+    let obid = started_with(&folder, false, None, changes_asked(), &[]);
+    let item = within(30, "the review's item", || {
+        review_items(&obid).into_iter().next()
+    });
+    view_now(&folder, |v| {
+        v["mergeable"] = json!("CONFLICTING");
+        v["mergeStateStatus"] = json!("DIRTY");
+    });
+    let refused = answer(&obid, &item, "Merge");
+    assert_eq!(refused.status, 409, "{}", refused.text);
+    assert!(
+        refused.text.contains("conflicts with dev"),
+        "{}",
+        refused.text
+    );
+    assert!(!calls(&folder.0).contains("-X PUT"));
+    assert_eq!(review_items(&obid).len(), 1);
+}
+
+/// MERGING-7 (the owner's decision of 2026-10-31, "Oby forbids nothing"): an approved, green pull
+/// request into main never merges by itself; the owner gets `Ready to merge`, and their Merge
+/// merges it with their own login.
+#[test]
+fn merging_7_into_main_only_the_owners_merge_merges() {
+    let folder = Folder::new("merge-into-main");
+    let mut into_main = published();
+    into_main.base = Some("main".into());
+    let obid = started_with(&folder, false, None, into_main, &[]);
+    view_now(&folder, |v| v["baseRefName"] = json!("main"));
+    let pull = folder.0.join("gh/pull.json");
+    let mut rest: Value = serde_json::from_slice(&std::fs::read(&pull).unwrap()).unwrap();
+    rest["base"]["ref"] = json!("main");
+    std::fs::write(&pull, rest.to_string()).unwrap();
+    let card = within(30, "the card", || {
+        merge_cards(&obid).into_iter().find(|c| {
+            c["done"].is_null() && c["text"].as_str().unwrap_or_default().contains("main")
+        })
+    });
+    assert_eq!(card["title"], "Ready to merge: Fix the thing");
+    assert_eq!(
+        card["text"],
+        "Its base is main, which Oby merges into only on your word, so it's yours to merge."
+    );
+    assert_eq!(card["options"], json!(["Merge", "Leave it open"]));
+    within(30, "a few reads", || {
+        (calls(&folder.0).matches("pr view 7").count() >= 3).then_some(())
+    });
+    assert!(!calls(&folder.0).contains("-X PUT"));
+    let merged = answer(&obid, &card, "Merge");
+    assert_eq!(merged.status, 200, "{}", merged.text);
+    assert_eq!(job(&obid)["mergedBy"]["by"], "owner");
+    assert_eq!(calls(&folder.0).matches("-X PUT").count(), 1);
+}
+
+/// Points the stand-in's pull request at `base`, in both of GitHub's answers.
+fn into_base(folder: &Folder, base: &str) {
+    view_now(folder, |v| v["baseRefName"] = json!(base));
+    let pull = folder.0.join("gh/pull.json");
+    let mut rest: Value = serde_json::from_slice(&std::fs::read(&pull).unwrap()).unwrap();
+    rest["base"]["ref"] = json!(base);
+    std::fs::write(&pull, rest.to_string()).unwrap();
+}
+
+/// MERGING-7 with a learned workflow into dev: a pull request into another base isn't that
+/// workflow's, so the owner gets the card a repository Oby hasn't learned gets (into main its
+/// base's reason, else that it goes elsewhere), with no remembering, and their Merge merges it.
+#[test]
+fn merging_7_another_base_than_the_learned_one_is_the_owners_merge() {
+    for (base, why) in [
+        (
+            "main",
+            "Its base is main, which Oby merges into only on your word, so it's yours to merge.",
+        ),
+        (
+            "release",
+            "It goes into release, and fixture-app merges into dev, so it's yours to merge.",
+        ),
+    ] {
+        let folder = Folder::new(&format!("merge-learned-into-{base}"));
+        let mut elsewhere = published();
+        elsewhere.base = Some(base.into());
+        let obid = started_with(&folder, false, Some(OBY), elsewhere, &[]);
+        into_base(&folder, base);
+        let card = within(30, "the card", || {
+            merge_cards(&obid)
+                .into_iter()
+                .find(|c| c["done"].is_null() && c["text"] == why)
+        });
+        assert_eq!(card["options"], json!(["Merge", "Leave it open"]), "{base}");
+        assert!(!calls(&folder.0).contains("-X PUT"), "{base}");
+        let merged = answer(&obid, &card, "Merge");
+        assert_eq!(merged.status, 200, "{base}: {}", merged.text);
+        assert_eq!(job(&obid)["mergedBy"]["by"], "owner", "{base}");
+        assert_eq!(calls(&folder.0).matches("-X PUT").count(), 1, "{base}");
+    }
+}
+
+/// MERGING-17: Merge is tied to the head the card's review read: a head moved since merges nothing.
+#[test]
+fn merging_17_a_head_moved_since_merges_nothing() {
+    let folder = Folder::new("merge-as-it-is-moved");
+    let obid = started_with(&folder, false, None, changes_asked(), &[]);
+    let item = within(30, "the review's item", || {
+        review_items(&obid).into_iter().next()
+    });
+    view_now(&folder, |v| v["headRefOid"] = json!("d".repeat(40)));
+    let refused = answer(&obid, &item, "Merge");
+    assert_eq!(refused.status, 409, "{}", refused.text);
+    assert!(refused.text.contains("head moved"), "{}", refused.text);
+    assert!(!calls(&folder.0).contains("-X PUT"));
+}
+
+/// MERGING-17: what GitHub's own rules refuse reaches the owner as GitHub's, saying how to change
+/// it: a required approval, and rules that still block the merge.
+#[test]
+fn merging_17_githubs_rules_say_how_to_change_them() {
+    for (name, files, blocked) in [
+        ("merge-as-it-is-required", &["requires-approval"][..], false),
+        ("merge-as-it-is-blocked", &[][..], true),
+    ] {
+        let folder = Folder::new(name);
+        let obid = started_with(&folder, false, None, changes_asked(), files);
+        if blocked {
+            view_now(&folder, |v| v["mergeStateStatus"] = json!("BLOCKED"));
+        }
+        let item = within(30, "the review's item", || {
+            review_items(&obid).into_iter().next()
+        });
+        let refused = answer(&obid, &item, "Merge");
+        assert_eq!(refused.status, 409, "{name}: {}", refused.text);
+        assert!(
+            refused
+                .text
+                .contains("change dev's branch protection there"),
+            "{name}: {}",
+            refused.text
+        );
+        assert!(!calls(&folder.0).contains("-X PUT"), "{name}");
+        assert_eq!(review_items(&obid).len(), 1, "{name}");
+    }
+}
+
+/// MERGING-8: an item kept open from an obid before #1658 (One more round alone) takes Merge too,
+/// and any other answer names the item's own.
+#[test]
+fn merging_8_an_item_from_before_takes_merge() {
+    let folder = Folder::new("merge-review-item-before");
+    let inbox = folder.0.join("home/inbox");
+    std::fs::create_dir_all(&inbox).unwrap();
+    let mut before = obid::sphere::inbox::reviews_ran_out_item(&changes_asked(), "r1b2c3d4");
+    before.options.truncate(1);
+    before.details.as_mut().unwrap().truncate(1);
+    std::fs::write(
+        inbox.join(format!("{}.json", before.id)),
+        serde_json::to_vec(&before).unwrap(),
+    )
+    .unwrap();
+    let obid = started_with(&folder, false, None, changes_asked(), &[]);
+    let item = within(30, "Merge on it", || {
+        review_items(&obid)
+            .into_iter()
+            .find(|i| i["options"] == json!(["One more round", "Merge"]))
+    });
+    let wrong = answer(&obid, &item, "Dismiss it");
+    assert_eq!(wrong.status, 422, "{}", wrong.text);
+    assert!(
+        wrong
+            .text
+            .contains("The answer is One more round or Merge."),
+        "{}",
+        wrong.text
     );
 }

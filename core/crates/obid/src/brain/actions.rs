@@ -984,6 +984,10 @@ fn owners_call(item: &Item, words: &str, job: Option<&Job>) -> Owners {
         "merge" => {
             Owners::Refuse("only you can merge it, or ask a teammate, in your inbox.".into())
         }
+        // So is Merge on Oby's review item whose changes were left to the owner (MERGING-17).
+        "failed" if words == crate::merge::MERGE => {
+            Owners::Refuse("only you can merge it: Merge is on its card, in your inbox.".into())
+        }
         // A job's plan is the owner's to approve or send back, either way (#609).
         "plan" => Owners::Refuse(
             "it's a job's plan: only you can approve it or send it back, in your inbox.".into(),
@@ -1532,6 +1536,25 @@ mod tests {
                 "{words}"
             );
         }
+    }
+
+    #[test]
+    fn merging_17_the_brain_cant_merge_from_a_review_item() {
+        let review = item(
+            "failed",
+            "j1-review-r1",
+            "Fix the thing",
+            &["One more round", "Merge"],
+        );
+        assert_eq!(
+            owners_call(&review, "Merge", None),
+            Owners::Refuse("only you can merge it: Merge is on its card, in your inbox.".into())
+        );
+        // One more round is the owner's Confirm, as on any failed item.
+        assert!(matches!(
+            owners_call(&review, "One more round", None),
+            Owners::Confirm(..)
+        ));
     }
 
     #[test]

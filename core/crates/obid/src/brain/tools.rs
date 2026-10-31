@@ -1419,6 +1419,12 @@ fn owners_only(kind: &str, answer: &str) -> Option<&'static str> {
             "Only the owner merges, asks a teammate, or leaves it open, in their inbox: Oby can't answer it.",
         );
     }
+    // So is Merge on Oby's review item whose changes were left to the owner (MERGING-17).
+    if kind == "failed" && answer.trim().eq_ignore_ascii_case(crate::merge::MERGE) {
+        return Some(
+            "Only the owner merges it, with Merge on its card in their inbox: Oby can't answer it.",
+        );
+    }
     // A job's agent's question is the owner's to answer (#858).
     if kind == crate::sphere::inbox::QUESTION_KIND {
         return Some(
@@ -2717,6 +2723,9 @@ mod tests {
         for any in ["Merge", "Merge, and remember", "Leave it open", "Dismiss"] {
             assert!(owners_only("merge", any).is_some(), "{any}");
         }
+        // Merge on Oby's review item (MERGING-17); One more round stays Oby's to give.
+        assert!(owners_only("failed", "merge").is_some());
+        assert_eq!(owners_only("failed", "One more round"), None);
     }
 
     #[test]
