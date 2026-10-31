@@ -1721,6 +1721,48 @@ fn a_job_stopped_at_a_limit_counts_its_commits_for_a_follow_up() {
     assert!(worktree.join("a.txt").exists(), "{follow}");
 }
 
+/// MERGING-23: words to a task once its follow-up ended follow up that follow-up, never a second
+/// one of the task beside it: follow-ups on a branch make one line, so every one's marks are the
+/// next one's.
+#[test]
+fn merging_23_more_words_to_a_task_follow_up_its_last_follow_up() {
+    let folder = Folder::new("follow-line");
+    let remote = fixture(&folder.0.join("fixture"));
+    let bin = fake_gh(&folder.0);
+    let obid = start_with(&folder.0, &config(&folder.0, &remote), Some(&bin));
+    let id = post_job(
+        &obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "build", "task": "COMMIT: a.txt", "request": "Add a.txt", "title": "Add a.txt", "check": "test -e a.txt", "rounds": 1}),
+    )
+    .body["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let task = wait(&obid, &id);
+    assert_eq!(
+        task["published"], "https://github.com/obi-e2e/fixture-app/pull/7",
+        "{task}"
+    );
+    let tell = |text: &str| {
+        let told = request(
+            &obid,
+            "POST",
+            &format!("/v1/jobs/{id}/messages"),
+            Some(&json!({ "text": text }).to_string()),
+        );
+        assert_eq!(told.status, 201, "{}", told.text);
+        told.body["id"].as_str().unwrap().to_owned()
+    };
+    let first = tell("Look around");
+    let follow = wait(&obid, &first);
+    assert_eq!(follow["followUpOf"], id.as_str(), "{follow}");
+    assert_eq!(follow["branch"], task["branch"], "{follow}");
+    let second = tell("Look around once more");
+    let next = wait(&obid, &second);
+    assert_eq!(next["followUpOf"], first.as_str(), "{next}");
+    assert_eq!(next["branch"], task["branch"], "{next}");
+}
+
 /// A follow-up that commits nothing still publishes the first job's commits it started from, once
 /// its check passes on them alone (PUBLISHING-5): it ends done with them counted, pushed and in a
 /// pull request (#770). A follow-up of that one starts on its branch with them, and, adding

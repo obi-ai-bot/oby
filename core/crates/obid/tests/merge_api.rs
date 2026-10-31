@@ -1796,3 +1796,39 @@ fn merging_24_the_tasks_review_of_an_old_head_asks_nothing() {
     assert!(items.is_empty(), "{items:?}");
     assert_eq!(open_merge_cards(&obid).len(), 1);
 }
+
+/// MERGING-14, 23: a follow-up of the task made beside an earlier one (before follow-ups made one
+/// line) pushed last: it carries the pull request's one card, but the earlier follow-up was
+/// untrusted and this one doesn't follow it up, so its single review merges nothing by itself and
+/// no approval is posted for it.
+#[test]
+fn merging_23_a_sibling_follow_up_never_merges_an_untrusted_ones_work_on_one_review() {
+    let folder = Folder::new("merge-siblings");
+    let [task, mut later] = task_and_follow_up();
+    let mut untrusted = later.clone();
+    untrusted.id = "e1b2c3d4".into();
+    untrusted.title = Some("Untrusted follow-up".into());
+    untrusted.untrusted = true;
+    untrusted.created -= 1;
+    untrusted.outgoing[0].id = "e".repeat(40);
+    untrusted.outgoing[0].date -= 30;
+    untrusted.review.as_mut().unwrap().commit = "e".repeat(40);
+    later.created += 1;
+    let obid = started_with_jobs(&folder, true, Some(OBIS), &[task, untrusted, later], &[]);
+    let card = within(30, "the card", || {
+        open_merge_cards(&obid).into_iter().next()
+    });
+    assert!(card["id"].as_str().unwrap().contains(FOLLOW_UP), "{card}");
+    assert!(
+        card["text"]
+            .as_str()
+            .unwrap()
+            .contains("its head holds what Untrusted follow-up pushed, and this task doesn't follow that one up"),
+        "{card}"
+    );
+    std::thread::sleep(std::time::Duration::from_secs(3));
+    assert_eq!(open_merge_cards(&obid).len(), 1);
+    let calls = calls(&folder.0);
+    assert!(!calls.contains("-X PUT"), "{calls}");
+    assert!(!calls.contains("-X POST"), "{calls}");
+}
