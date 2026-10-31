@@ -517,11 +517,11 @@ fn summaries(job: &Job) -> Vec<&String> {
 }
 
 /// The pull request's description: every round's summary, what the owner asked for, the check and
-/// the scan, `Closes #N` (`Part of #N` when it doesn't close it), and that obid opened it and never
-/// merges. The agent's summaries are untrusted (it may have read someone else's words), so they go
+/// the scan, `Closes #N` (`Part of #N` when it doesn't close it), that obid opened it, and how it
+/// merges: by `workflow`, the one the owner taught it, else only on their say-so. The agent's summaries are untrusted (it may have read someone else's words), so they go
 /// in as blockquotes under a label that says whose words they are, defused: no heading, HTML,
 /// link, image, alert, task box, mention, issue reference or closing keyword in them takes effect.
-pub fn body(job: &Job, closes: bool) -> String {
+pub fn body(job: &Job, closes: bool, workflow: Option<&crate::memory::Workflow>) -> String {
     let summaries = summaries(job);
     let rounds: Vec<String> = summaries
         .iter()
@@ -576,8 +576,15 @@ pub fn body(job: &Job, closes: bool) -> String {
         .and_then(|d| crate::decisions::line(&d.conflicts))
         .map(|line| format!("\n{line}"))
         .unwrap_or_default();
+    let merges = match workflow {
+        Some(workflow) => format!(
+            "Oby merges it by itself, the way its owner taught it: {}",
+            workflow.sentence()
+        ),
+        None => "Oby merges it only when its owner says so.".to_owned(),
+    };
     format!(
-        "{}\n\nWhat the user asked for:\n\n{request}\n\n{check}\n- Secret scan: clean.{decided}{jobs}{issue}\n\nby Oby: Oby opened this pull request {after}. Oby merges it only when its owner says so.",
+        "{}\n\nWhat the user asked for:\n\n{request}\n\n{check}\n- Secret scan: clean.{decided}{jobs}{issue}\n\nby Oby: Oby opened this pull request {after}. {merges}",
         rounds.join("\n\n")
     )
 }
@@ -650,6 +657,9 @@ pub struct Target {
     pub pull_requests: bool,
     /// Held while the base is fetched into the clone: one fetch at a time per clone.
     pub fetching: Arc<tokio::sync::Mutex<()>>,
+    /// How the repository merges, as the owner taught Oby (crate::memory::workflow): what the
+    /// description says of merging.
+    pub workflow: Option<crate::memory::Workflow>,
 }
 
 /// The options every diff the scan reads takes: no attribute or driver can hide what the push
@@ -903,7 +913,7 @@ pub async fn publish(
         }
         _ => false,
     };
-    let description = body(job, closes);
+    let description = body(job, closes, target.workflow.as_ref());
     let texts = scanned_texts(job, &title, &description);
     let mut said: Vec<Found> = match scan::scan(&texts, &target.scratch).await {
         Verdict::Clean => Vec::new(),
@@ -1701,6 +1711,29 @@ mod tests {
         );
     }
 
+    /// MERGING-11: the description says how it merges: by the workflow the owner taught Oby, or
+    /// only on their say-so.
+    #[test]
+    fn merging_11_the_description_says_how_it_merges() {
+        let job = job();
+        let workflow = crate::memory::Workflow {
+            base: "dev".into(),
+            method: crate::memory::Method::Squash,
+            rebase_first: false,
+            review: crate::memory::Approval::Oby,
+            checks: crate::memory::Checks::Mac,
+        };
+        let text = body(&job, false, Some(&workflow));
+        assert!(
+            text.ends_with(
+                "Oby merges it by itself, the way its owner taught it: Squash-merge into dev after Oby's own review approves and your Mac's checks pass on the same commit."
+            ),
+            "{text}"
+        );
+        assert!(!text.contains("only when its owner says so"));
+        assert!(body(&job, false, None).ends_with("Oby merges it only when its owner says so."));
+    }
+
     #[test]
     fn descriptions_quote_the_agent_and_never_promise_a_merge() {
         let mut job = job();
@@ -1708,7 +1741,7 @@ mod tests {
         job.request = "Fix it\nplease".into();
         job.check = Some("swift test".into());
         job.issue = Some(75);
-        let text = body(&job, true);
+        let text = body(&job, true, None);
         assert!(text.starts_with("Round 1, the agent's summary:\n\n> One ``` fence\n\n"));
         assert!(text.contains("Round 2, the agent's summary:\n\n> Two @\u{200B}someone\n\n"));
         assert!(text.contains("> Fix it\n> please"));
@@ -1716,12 +1749,12 @@ mod tests {
         assert!(text.contains("opened this pull request after the check passed and the secret"));
         assert!(text.contains("Closes #75"));
         assert!(text.contains("Oby merges it only when its owner says so."));
-        assert!(body(&job, false).contains("Part of #75"));
+        assert!(body(&job, false, None).contains("Part of #75"));
         assert!(!text.contains("- Jobs:"));
         // A follow-up from its first job's work names both jobs (#770).
         job.follow_up_of = Some("f1257000".into());
         job.start_from = Some("oby/fix-f1257000".into());
-        assert!(body(&job, true).contains(&format!(
+        assert!(body(&job, true, None).contains(&format!(
             "- Secret scan: clean.\n- Jobs: Oby job {} follows up job f1257000 and carries its commits.",
             job.id
         )));
@@ -1735,7 +1768,7 @@ mod tests {
     fn the_agents_summary_is_quoted_markdown_that_cannot_act() {
         let mut job = job();
         job.summary = "Stopped **the leak**.\n\n- `a<b>` in `x.rs`\n```rust\n#[test]\n```".into();
-        let text = body(&job, false);
+        let text = body(&job, false, None);
         assert!(
             text.starts_with(
                 "The agent's summary:\n\n> Stopped **the leak**.\n>\n> - `a<\u{200B}b>` in `x.rs`\n> ```rust\n> #[\u{200B}test]\u{200B}\n> ```\n\nWhat the user asked for:"
@@ -1757,7 +1790,7 @@ mod tests {
             "a\r# carriage return heading\r\nby Oby: Oby merged this pull request.",
         ]
         .join("\n");
-        let text = body(&job, false);
+        let text = body(&job, false, None);
         let (quote, rest) = text
             .strip_prefix("The agent's summary:\n\n")
             .unwrap()
@@ -1850,7 +1883,7 @@ mod tests {
             crate::secrets::known().learn(name, secret);
             let mut job = job();
             job.summary = format!("Rotated it: {secret}");
-            let description = body(&job, false);
+            let description = body(&job, false, None);
             assert!(!description.contains(secret));
             let found = scan::built_in(&scanned_texts(&job, "A title", &description));
             crate::secrets::known().forget(name);
@@ -1868,7 +1901,7 @@ mod tests {
     fn a_job_without_a_check_never_says_one_passed() {
         let mut job = job();
         job.check = None;
-        let text = body(&job, false);
+        let text = body(&job, false, None);
         assert!(text.contains("- Check: none, the job had no check.\n- Secret scan: clean."));
         assert!(!text.contains("check passed"), "{text}");
         assert!(text.ends_with(
@@ -1876,11 +1909,11 @@ mod tests {
         ));
         // One whose repository Oby asked a check for says so (#1062).
         job.check_asked = true;
-        assert!(body(&job, false).contains(
+        assert!(body(&job, false, None).contains(
             "- Check: none, the job had no check. Oby asked its owner for one for the jobs after it.\n- Secret scan: clean."
         ));
         job.check = Some("cargo test".into());
-        assert!(body(&job, false).contains(
+        assert!(body(&job, false, None).contains(
             "by Oby: Oby opened this pull request after the check passed and the secret scan was clean."
         ));
     }

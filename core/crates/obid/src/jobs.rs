@@ -5305,6 +5305,78 @@ impl Jobs {
         self.config.home.join("logins").join(id)
     }
 
+    /// The job `id`'s worktree head, read through the git folders obid checked, when nothing is
+    /// left uncommitted there; else none. Its new commits are still in the job's own object
+    /// folder, so what needs them runs in its sandbox, as [`Jobs::keep_commits`]' packing does.
+    async fn clean_head(&self, id: &str) -> Option<String> {
+        let worktree = self.worktree_path(id);
+        let (admin, common) = self.own_git_dirs(id).await.ok()?;
+        let folders = git_folders(&admin, &common, &worktree);
+        let head = git::pinned(
+            &worktree,
+            &folders,
+            &["rev-parse", "--verify", "--quiet", "HEAD"],
+        )
+        .await
+        .ok()
+        .filter(|h| git::is_sha(h))?;
+        let left = self
+            .sandboxed_git_within(
+                id,
+                &["status", "--porcelain"],
+                None,
+                SANDBOXED_GIT_LIMIT,
+                CHANGED_MAX,
+            )
+            .await
+            .ok()?;
+        if !left.is_empty() {
+            tracing::info!("job {id}: its check passed with work left uncommitted");
+        }
+        left.is_empty().then_some(head)
+    }
+
+    /// What a passing check of the job `id` with `command` counts for at merge (`Job::checked`):
+    /// the clean head it passed on, and why it can't stand for the Mac's checks, from the files its
+    /// change touches against its base (crate::merge::check_apart).
+    async fn checked(&self, id: &str, command: &str) -> Option<crate::job::Checked> {
+        let commit = self.clean_head(id).await?;
+        let job = self.get(id)?;
+        let changed = self.changed_files(&job, &commit).await;
+        Some(crate::job::Checked {
+            apart: crate::merge::check_apart(&job, command, changed.as_deref()),
+            commit,
+        })
+    }
+
+    /// The files `head` changes against the job's base as the clone has it
+    /// (`origin/<base>...<head>`), read in its sandbox; none when they can't be read.
+    async fn changed_files(&self, job: &Job, head: &str) -> Option<Vec<String>> {
+        let base = job
+            .base
+            .clone()
+            .or_else(|| self.repo(&job.repo).map(|r| r.default_branch.clone()))
+            .filter(|b| git::is_branch_name(b))?;
+        let range = format!("refs/remotes/origin/{base}...{head}");
+        let names = self
+            .sandboxed_git_within(
+                &job.id,
+                &["diff", "--name-only", "--no-renames", "-z", &range, "--"],
+                None,
+                SANDBOXED_GIT_LIMIT,
+                CHANGED_MAX,
+            )
+            .await
+            .ok()?;
+        Some(
+            names
+                .split(|b| *b == 0)
+                .filter(|f| !f.is_empty())
+                .map(|f| String::from_utf8_lossy(f).into_owned())
+                .collect(),
+        )
+    }
+
     /// Takes what an owner's job committed into its clone and moves its branch there: the
     /// worktree's HEAD commit, which it answers.
     ///
@@ -7208,6 +7280,12 @@ impl Jobs {
         }
         record(Some(run.as_ref().is_ok_and(|run| run.passed)));
         let mut run = run.map_err(|e| format!("obid couldn't run the check: {e}"))?;
+        // What a `mac` workflow's merge counts (crate::merge): a pass, on the clean head it ran.
+        let checked = match run.passed {
+            true => self.checked(id, command).await,
+            false => None,
+        };
+        self.update(id, |job| job.checked = checked);
         run.output = declared.noted(&run.output);
         let _ = std::fs::write(self.log_path(id, "check.log"), &run.output);
         Ok(run)
@@ -9703,6 +9781,47 @@ impl Jobs {
         self.get(id).map(Ok)
     }
 
+    /// The owner's One more round on the job `id` whose Oby reviews ran out still asking for
+    /// changes (`inbox::reviews_ran_out_item`): that review is quoted for its agent as a round past
+    /// the limit, as one with reviews left is ([`Jobs::reviewed`]), and Oby reviews what it pushes.
+    pub fn review_round_again(self: &Arc<Self>, id: &str) -> Option<Result<Job, Refused>> {
+        let job = self.get(id)?;
+        let refused = |why: &str| Some(Err(Refused(why.into())));
+        let Some(review) = job.current_review().filter(|r| !r.approved()).cloned() else {
+            return refused("Oby's review of it isn't waiting for you.");
+        };
+        let carried = self.lock().jobs.values().any(|j| {
+            j.follow_up_of.as_deref() == Some(id) && j.branch == job.branch && j.status.is_active()
+        });
+        if job.status != Status::Done || job.reviewing.is_some() || carried || past_safety(&job) {
+            return refused("It can't take another round now.");
+        }
+        let Some((_, text)) = self
+            .get(&review.job)
+            .and_then(|r| review::verdict(&r.summary))
+        else {
+            return refused("Oby's review of it is gone: ask Oby to review it again.");
+        };
+        let by = format!(
+            "{} · {}",
+            Tool::from_id(&review.agent).map_or("Its agent", Tool::name),
+            review.account
+        );
+        if let Err(why) = self.quote_review(id, review.round, &by, &text) {
+            return Some(Err(Refused(format!(
+                "Oby couldn't hand its review to the agent: {why}"
+            ))));
+        }
+        self.update(id, |job| {
+            job.heard.push(review::round_prompt(review.round));
+            next_round(job);
+            job.step = "Working on Oby's review".into();
+        });
+        self.review_items(id, None);
+        self.schedule();
+        self.get(id).map(Ok)
+    }
+
     /// The job `id`'s inbox item about Oby's review that couldn't run: `item` when there is one,
     /// and its other open ones done, with no answer.
     fn review_items(&self, id: &str, item: Option<crate::sphere::inbox::Item>) {
@@ -9903,7 +10022,10 @@ impl Jobs {
             && !carried
             && !past_safety(&author))
         .then(|| self.quote_review(&of, round, &by, &text));
-        self.review_items(&of, None);
+        // Its reviews ran out still asking for changes: the owner hears it, with One more round.
+        let ran_out = (!approved && round >= review::REVIEWS)
+            .then(|| crate::sphere::inbox::reviews_ran_out_item(&author, id));
+        self.review_items(&of, ran_out);
         self.update(&of, |job| {
             job.reviewing = None;
             job.review_failed = None;
@@ -10090,6 +10212,8 @@ impl Jobs {
                 .pull_requests
                 .unwrap_or_else(|| crate::github::is_remote(&repo.remote)),
             fetching: self.preparing(&repo.repo),
+            workflow: crate::memory::workflow(&self.config.home, &repo.repo)
+                .and_then(|m| m.workflow),
         })
     }
 
@@ -10325,6 +10449,7 @@ impl Jobs {
             };
             let mut carried = None;
             let mut closed = false;
+            let unread = read.is_err();
             self.update(&job.id, |job| {
                 if job.published.as_deref() != Some(url.as_str()) {
                     return;
@@ -10367,6 +10492,15 @@ impl Jobs {
                 }
             } else if let (Some(gh), Some((pull_request, merging))) = (&gh, carried) {
                 self.carry(&job.id, gh, &pull_request, merging).await;
+            } else if let Some(gh) = gh.as_deref().filter(|_| unread)
+                && let Some(head) = self
+                    .get(&job.id)
+                    .filter(carries)
+                    .and_then(|j| j.pushed_head().map(str::to_owned))
+                && crate::github_login::signed_out(gh).await
+            {
+                // A signed-out gh can't read the pull request at all: the owner hears why.
+                self.signed_out_card(&job.id, &head);
             }
         }
     }
@@ -10408,6 +10542,10 @@ impl Jobs {
         }
         let home = self.config.home.clone();
         let Some(owner) = crate::github_login::read_status(gh).await.user else {
+            // Signed out for sure: the owner hears it. A gh that only didn't answer waits.
+            if crate::github_login::signed_out(gh).await {
+                self.signed_out_card(id, &head);
+            }
             return;
         };
         let reviewer = crate::github_login::reviewer(gh, &home, &owner).await;
@@ -10558,7 +10696,8 @@ impl Jobs {
                             };
                             match reviewers.as_ref() {
                                 Some(r) => {
-                                    crate::merge::merge(gh, &home, &job, workflow, r, &go).await
+                                    crate::merge::merge(gh, &home, &job, workflow, r, false, &go)
+                                        .await
                                 }
                                 None => Err(crate::merge::unread_reviewers()),
                             }
@@ -10580,7 +10719,7 @@ impl Jobs {
                     outcome
                         .err()
                         .filter(|b| b.needs_you)
-                        .map(|b| crate::merge::stopped_card(&job, &head, &b.why))
+                        .map(|b| crate::merge::blocked_card(&job, &head, &b, workflow))
                 }
                 None => {
                     // Not learned yet: the safe default asks before it merges, once everything else
@@ -10607,7 +10746,7 @@ impl Jobs {
                                 Err(blocked)
                                     if blocked.needs_you || refused.as_ref() == Some(&blocked) =>
                                 {
-                                    Some(crate::merge::stopped_card(&job, &head, &blocked.why))
+                                    Some(crate::merge::blocked_card(&job, &head, &blocked, &w))
                                 }
                                 Err(_) => None,
                             }
@@ -10615,19 +10754,38 @@ impl Jobs {
                 }
             }
         };
-        // What waits on the owner now: the card, unless they answered it already (Leave it open,
-        // Dismiss): then not again for this head and reason. A card the follower settled by
-        // itself (the state went and came back) is offered again.
+        self.offer_merge_card(id, link.as_deref(), card);
+    }
+
+    /// The job `id`'s card about `head` saying obid's gh is signed out ([`crate::merge::SIGNED_OUT`]).
+    fn signed_out_card(&self, id: &str, head: &str) {
+        let Some(job) = self.get(id) else { return };
+        let link = self.link.get().and_then(std::sync::Weak::upgrade);
+        let card = crate::merge::stopped_card(&job, head, crate::merge::SIGNED_OUT);
+        self.offer_merge_card(id, link.as_deref(), Some(card));
+    }
+
+    /// What waits on the owner about merging the job `id` now: `card`, unless they answered it
+    /// already (Leave it open, Dismiss): then not again for this head and reason. A card the
+    /// follower settled by itself (the state went and came back) is offered again. Its words are
+    /// the Merged stage's (`mergeError`).
+    fn offer_merge_card(
+        &self,
+        id: &str,
+        link: Option<&crate::sphere::Link>,
+        card: Option<crate::sphere::inbox::Item>,
+    ) {
         let answered = card.as_ref().is_some_and(|c| {
-            link.as_ref()
-                .and_then(|l| l.item(&c.id))
+            link.and_then(|l| l.item(&c.id))
                 .is_some_and(|i| i.done.is_some() && i.answer.is_some())
         });
         self.update(id, |job| {
             job.merge_needs_you = card.is_some() && !answered;
             job.merge_error = card.as_ref().filter(|_| !answered).map(|c| c.text.clone());
         });
-        cards(card);
+        if let Some(link) = link {
+            link.merge_items(id, card);
+        }
     }
 
     /// Right before obid sends `action` for the job `id` about `head` (crate::merge): whether the
@@ -10799,15 +10957,18 @@ impl Jobs {
             .clone()
             .or_else(|| crate::merge::proposed(&job, &pr, &merging, &reviewers))
             .ok_or("It isn't one Oby may merge.")?;
-        crate::merge::ready(&job, Some(&workflow), &pr, &merging, Some(&reviewers))
-            .map_err(|b| b.why)?;
+        crate::merge::on_owners_word(
+            true,
+            crate::merge::ready(&job, Some(&workflow), &pr, &merging, Some(&reviewers)),
+        )
+        .map_err(|b| b.why)?;
         let by = crate::job::MergedBy {
             by: "owner".into(),
             memory: None,
             at: obi_protocol::time::now(),
         };
         let go = |action: &str| self.about_to_send(id, head, action, Some(by.clone()), None);
-        let outcome = crate::merge::merge(&gh, &home, &job, &workflow, &reviewers, &go).await;
+        let outcome = crate::merge::merge(&gh, &home, &job, &workflow, &reviewers, true, &go).await;
         self.update(id, |job| crate::merge::note(job, &outcome, by));
         let merged = outcome.map_err(|b| b.why)?;
         for sent in &merged.outgoing {
@@ -10868,6 +11029,10 @@ fn publish_action_of(job: &Job) -> Result<(String, String), String> {
         }),
     }
 }
+
+/// The most a check's head's uncommitted work or changed files may print before obid reads it as
+/// too much to tell: 4 MiB, and then the check stands for nothing at merge.
+const CHANGED_MAX: usize = 4 * 1024 * 1024;
 
 /// How often the pull request follower looks for one that's due: every 30 seconds, or as often as
 /// reads may come when they come sooner.
