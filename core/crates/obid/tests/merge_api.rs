@@ -473,10 +473,12 @@ fn an_unlearned_repository_asks_first_with_no_reviewer() {
     assert!(!calls(&folder.0).contains("-X POST"));
 }
 
-/// In a repository Oby hasn't learned, a pull request into main whose checks failed asks the owner:
-/// main merges only on their word, and nothing of Oby's fixes its own pull request's checks.
+/// MERGING-21 and 20: in a repository Oby hasn't learned, a pull request into main whose checks
+/// failed asks the owner: main merges only on their word, and nothing of Oby's fixes its own pull
+/// request's checks. Its card offers Merge. An answer no app of theirs signed merges nothing (red
+/// checks weren't Oby's to lift before); their signed Merge merges it as it is.
 #[test]
-fn red_checks_into_main_in_an_unlearned_repository_ask_the_owner() {
+fn merging_21_red_checks_into_main_ask_the_owner_and_their_merge_merges() {
     let folder = Folder::new("merge-red-main");
     let mut published = published();
     published.base = Some("main".into());
@@ -488,11 +490,35 @@ fn red_checks_into_main_in_an_unlearned_repository_ask_the_owner() {
     std::fs::write(&file, view.to_string()).unwrap();
     let card = within(30, "the owner's card", || {
         merge_cards(&obid).into_iter().find(|c| {
-            c["done"].is_null() && c["text"] == "Not merged yet: its checks failed on GitHub."
+            c["done"].is_null()
+                && c["text"]
+                    .as_str()
+                    .is_some_and(|t| t.contains("Not merged yet: its checks failed on GitHub."))
         })
     });
-    assert_eq!(card["options"], json!(["Dismiss"]), "{card}");
+    assert_eq!(card["options"], json!(["Merge", "Leave it open"]), "{card}");
     assert!(!calls(&folder.0).contains("-X PUT"));
+    let pull = folder.0.join("gh/pull.json");
+    let mut rest: Value = serde_json::from_slice(&std::fs::read(&pull).unwrap()).unwrap();
+    rest["base"]["ref"] = json!("main");
+    std::fs::write(&pull, rest.to_string()).unwrap();
+    let unsigned = answer(&obid, &card, "Merge");
+    assert_eq!(unsigned.status, 409, "{}", unsigned.text);
+    assert!(
+        unsigned.text.contains("your Merge didn't cover this"),
+        "{}",
+        unsigned.text
+    );
+    assert!(!calls(&folder.0).contains("-X PUT"));
+    let card = within(30, "the card again", || {
+        merge_cards(&obid)
+            .into_iter()
+            .find(|c| c["done"].is_null() && c["id"] == card["id"])
+    });
+    let merged = answer_signed(&obid, &card, "Merge");
+    assert_eq!(merged.status, 200, "{}", merged.text);
+    assert_eq!(job(&obid)["mergedBy"]["by"], "owner");
+    assert_eq!(calls(&folder.0).matches("-X PUT").count(), 1);
 }
 
 /// An approval someone dismissed on GitHub isn't posted again: the merge waits on the owner, with
@@ -907,6 +933,18 @@ fn answer(obid: &Obid, card: &Value, answer: &str) -> Answer {
             "POST",
             &format!("/v1/inbox/{}/answer", card["id"].as_str().unwrap()),
             Some(&json!({"answer": answer})),
+        )
+    })
+}
+
+/// [`answer`], signed by the owner's app as the Electron app signs it (`X-Oby-Words`).
+fn answer_signed(obid: &Obid, card: &Value, answer: &str) -> Answer {
+    tokio::task::block_in_place(|| {
+        call_typed(
+            obid,
+            "POST",
+            &format!("/v1/inbox/{}/answer", card["id"].as_str().unwrap()),
+            &json!({"answer": answer}),
         )
     })
 }

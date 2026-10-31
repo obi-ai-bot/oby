@@ -37,6 +37,7 @@ The business behavior contract for Settings › Agents' **New tasks go to** and 
 
 - **AGENTS-5:** `PATCH /v1/accounts/{id}` takes `model`, `effort` and `complexEffort`, any of them, each a value or `null` (the tool's own). A model is one the tool offers (`GET /v1/settings/models/options`: never another tool's); an effort is one the tool takes (Claude Code `low` `medium` `high` `xhigh` `max`; Codex `low` `medium` `high` `xhigh`; Cursor none). Anything else, or a refused `name` or `payer` in the same body, is `422` and nothing changes. The Account JSON carries each one set, and leaves out the rest. Kept across restarts; removed with the account.
 - **AGENTS-6:** A job made with no model of its own takes its account's; its effort is the account's `complexEffort` when the plan called the task complex (a conversation's `oby_dispatch` and `oby_offer` take `complexity`; the job's `complexity` says `complex`), else its `effort`. Neither set, nothing is passed and the tool runs its own, as before. Claude Code gets `--model` and `--effort`; Codex the turn's `model` and `effort`; Cursor its model through its session's options. The job's `model` and `effort` show what it runs on. Whenever a job changes account (it starts on another after waiting for room, the owner moves it, the owner's account-limit choice moves it) they're the new account's again; a model the job named itself stays on the same tool. A follow-up keeps its job's complexity and the model it named, not its account's.
+- **AGENTS-9:** The owner's own ceilings are settings (the owner's decision of 2026-10-31): `limits` on `GET` and `PUT /v1/settings/jobs`, `rounds` (10), `maxRunning` (20), `folders` (20), `routines` (20), `accounts` (32), each shown as its value now, each set to a whole number from 1 or back to its default with null; kept across restarts; a lower `maxRunning` ceiling lowers `maxRunning`. Caps that only protect the Mac (lengths, sizes, connections) stay fixed.
 - **AGENTS-8:** `GET /v1/settings/models/options` lists the choices per tool (`models` with each model's `efforts`, `efforts`, `complexEfforts`); `GET /v1/settings/models` answers the tools' own, as `status.models`.
 
 ### The Electron app
@@ -61,6 +62,7 @@ The business behavior contract for Settings › Agents' **New tasks go to** and 
 | AGENTS-5, AGENTS-6 | `runner_api::agents_5_6_jobs_run_on_their_accounts_model_and_effort`, `runner_api::agents_4_the_default_account_is_validated_kept_and_cleared` (removed with the account), `adapters::agents_6_codex_runs_on_its_accounts_model_and_effort`, `conversation_harness::agents_6_a_complex_task_from_a_conversation_runs_at_its_complex_effort`, `account_limit_flow::owner_moves_a_limit_stopped_job_to_a_connected_account_of_another_tool`, `settings::tests::agents_6_a_complex_task_takes_its_own_effort` |
 | AGENTS-7 | `apps/electron/src/renderer/src/test/agents.test.ts` |
 | AGENTS-8 | `runner_api::agents_8_the_choices_are_listed` |
+| AGENTS-9 | `runner_api::agents_9_the_owners_limits_are_settings_with_defaults` |
 
 ## Test it when it's done (on a real Mac)
 

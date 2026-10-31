@@ -1135,7 +1135,10 @@ fn set_setting(shared: &Arc<Shared>, plan: &Plan) -> Outcome {
         Ok(Err(crate::jobs::SettingsError::Unkept(e))) => Outcome::Failed(format!(
             "Couldn't change jobs at once: it couldn't be kept ({e})."
         )),
-        Err(_) => Outcome::Failed("Couldn't change jobs at once: maxRunning is 1 to 20.".into()),
+        Err(_) => Outcome::Failed(format!(
+            "Couldn't change jobs at once: maxRunning is 1 to {}.",
+            crate::settings::limits().max_running()
+        )),
     }
 }
 

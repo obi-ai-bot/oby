@@ -306,10 +306,28 @@ impl Link {
             // words for a job that ended do.
             inbox::action::MESSAGE_JOB => {
                 let words = confirmed.payload["words"].as_str().unwrap_or("");
-                match self
-                    .jobs
-                    .message(target, words, crate::jobs::Source::Confirmed)
-                {
+                // The files a Confirm past the safety limit carries, checked again.
+                let paths: Vec<String> = confirmed.payload["attachments"]
+                    .as_array()
+                    .map(|items| {
+                        items
+                            .iter()
+                            .filter_map(|p| p.as_str().map(str::to_owned))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                let attachments = if paths.is_empty() {
+                    paths
+                } else {
+                    crate::brain::validate_attachments(&self.config.home, &paths)
+                        .map_err(|e| api(StatusCode::CONFLICT, e.message))?
+                };
+                match self.jobs.message_attaching(
+                    target,
+                    words,
+                    crate::jobs::Source::Confirmed,
+                    &attachments,
+                ) {
                     Some(Ok(_)) => Ok(()),
                     Some(Err(refused)) => Err(api(StatusCode::UNPROCESSABLE_ENTITY, refused.0)),
                     None => Err(api(StatusCode::CONFLICT, "That job is gone.")),
@@ -1055,9 +1073,9 @@ impl Link {
         };
         if let Some(item) = merge {
             return match given {
-                Given::Answer(answer) => self.answer_merge(item, Some(answer), None).await,
-                Given::Done => self.answer_merge(item, None, None).await,
-                Given::Later(at) => self.answer_merge(item, None, Some(at)).await,
+                Given::Answer(answer) => self.answer_merge(item, Some(answer), None, typed).await,
+                Given::Done => self.answer_merge(item, None, None, typed).await,
+                Given::Later(at) => self.answer_merge(item, None, Some(at), typed).await,
             };
         }
         // Merge on Oby's review item whose changes were left to the owner (MERGING-17): their own
@@ -1091,7 +1109,15 @@ impl Link {
                 .and_then(|j| j.review.filter(|r| r.job == review))
                 .map(|r| r.commit)
                 .unwrap_or_default();
-            let merged = self.jobs.merge_by_owner(&item.job, &head, false).await;
+            // A signed answer lifts what the item named; any other, the holds of before.
+            let lift = match typed {
+                true => crate::merge::Lift::Named(&item.text),
+                false => crate::merge::Lift::Before,
+            };
+            let merged = self
+                .jobs
+                .merge_by_owner(&item.job, &head, false, lift)
+                .await;
             if let Err(why) = merged {
                 // Open again only while it's still the job's item: one a newer review settled stays.
                 let current = self

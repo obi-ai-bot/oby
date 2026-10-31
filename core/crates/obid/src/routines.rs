@@ -476,9 +476,10 @@ impl Routines {
     pub fn create(&self, jobs: &Jobs, draft: Draft, now: i64) -> Result<Routine, String> {
         let routine = self.draft(jobs, draft, now)?;
         let mut kept = self.lock();
-        if kept.len() >= MOST {
+        let most = crate::settings::limits().routines();
+        if kept.len() >= most {
             return Err(format!(
-                "obid keeps at most {MOST} routines: delete one first."
+                "obid keeps at most {most} routines: delete one first."
             ));
         }
         kept.insert(routine.id.clone(), routine.clone());

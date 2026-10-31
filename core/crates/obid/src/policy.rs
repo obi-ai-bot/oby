@@ -25,6 +25,7 @@ const GIT_LOCAL: &[&str] = &[
     "bisect",
     "blame",
     "branch",
+    "bundle",
     "cat-file",
     "check-attr",
     "check-ignore",
@@ -42,9 +43,12 @@ const GIT_LOCAL: &[&str] = &[
     "difftool",
     "fetch",
     "for-each-ref",
+    "format-patch",
+    "gc",
     "grep",
     "hash-object",
     "init",
+    "lfs",
     "log",
     "ls-files",
     "ls-remote",
@@ -68,8 +72,10 @@ const GIT_LOCAL: &[&str] = &[
     "shortlog",
     "show",
     "show-ref",
+    "sparse-checkout",
     "stash",
     "status",
+    "submodule",
     "switch",
     "tag",
     "update-index",
@@ -104,6 +110,10 @@ fn publishes(command: &str) -> bool {
             }
             match words.get(j).copied() {
                 Some("push" | "send-pack" | "receive-pack" | "upload-pack" | "http-push") => {
+                    return true;
+                }
+                // Git LFS's upload is a push.
+                Some("lfs") if matches!(words.get(j + 1), Some(&("push" | "pre-push"))) => {
                     return true;
                 }
                 Some("remote") => {
@@ -324,6 +334,18 @@ fn value_names_a_path(value: &Value) -> bool {
 /// and the broker's rule. Every other MCP tool is refused (Engine/Jobs.swift's
 /// `Policy.tetrixTools`).
 pub fn fixed_denial(tool: &str, input: &Value, worktree: &Path, mcp: &[String]) -> Option<String> {
+    fixed_denial_as(false, tool, input, worktree, mcp)
+}
+
+/// [`fixed_denial`], for a job in Bypass when `bypass`: nothing there asks for a permission, so a
+/// background helper may run (BYPASS-8).
+pub fn fixed_denial_as(
+    bypass: bool,
+    tool: &str,
+    input: &Value,
+    worktree: &Path,
+    mcp: &[String],
+) -> Option<String> {
     // The broker itself checks every upstream tool's read-only annotation and holds each login
     // outside the job sandbox. Its tool calls are accepted only in a job given the broker (its rule
     // is in `mcp`). The job-scoped broker token still limits them to this job.
@@ -340,10 +362,11 @@ pub fn fixed_denial(tool: &str, input: &Value, worktree: &Path, mcp: &[String]) 
         ));
     }
     // A background command is fine: Claude Code wakes when it ends, obid waits for that
-    // (crate::agent), and it ends with the turn. Background subagents stay refused.
+    // (crate::agent), and it ends with the turn. A background subagent too in Bypass, where
+    // nothing asks for a permission; one run remotely, outside Oby's box, never.
     let background = match tool {
         "Agent" | "Task" => {
-            input.get("run_in_background").and_then(Value::as_bool) != Some(false)
+            (!bypass && input.get("run_in_background").and_then(Value::as_bool) != Some(false))
                 || input.get("isolation").and_then(Value::as_str) == Some("remote")
         }
         _ => false,
@@ -355,7 +378,7 @@ pub fn fixed_denial(tool: &str, input: &Value, worktree: &Path, mcp: &[String]) 
         && let Some(command) = input.get("command").and_then(Value::as_str)
         && publishes(command)
     {
-        return Some("obid publishes the job's work itself. Don't push or post; say in your summary what you'd publish.".into());
+        return Some("Agents have no code-host login, so pushing and posting go through obid: it pushes this job's branch and opens its pull request when the job ends. Say in your summary what else should go out, and the owner decides.".into());
     }
     if let Some(path) = input
         .get("file_path")
@@ -401,7 +424,19 @@ pub fn decide(
     obi_review: bool,
     mcp: &[String],
 ) -> Answer {
-    if let Some(why) = fixed_denial(tool, input, worktree, mcp) {
+    decide_as(false, tool, input, worktree, obi_review, mcp)
+}
+
+/// [`decide`], for a job in Bypass when `bypass` ([`fixed_denial_as`]).
+pub fn decide_as(
+    bypass: bool,
+    tool: &str,
+    input: &Value,
+    worktree: &Path,
+    obi_review: bool,
+    mcp: &[String],
+) -> Answer {
+    if let Some(why) = fixed_denial_as(bypass && !obi_review, tool, input, worktree, mcp) {
         return Answer::Deny(why);
     }
     // Another Obi's review never puts a question to this owner (#858).
@@ -447,6 +482,63 @@ mod tests {
         let inner = format!("{}/src/*.rs", worktree.display());
         assert!(!denied("Glob", json!({"pattern": inner})));
         let _ = std::fs::remove_dir_all(&worktree);
+    }
+
+    /// PERMISSIONS-1: git that stays on the Mac runs (submodules, LFS, gc, sparse checkouts,
+    /// bundles, patches); what writes to a code host goes through obid, whose words say how the
+    /// owner gets it done.
+    #[test]
+    fn permissions_1_local_git_runs_and_a_code_host_write_says_how() {
+        for local in [
+            "git submodule update --init",
+            "git lfs pull",
+            "git gc --auto",
+            "git sparse-checkout set src",
+            "git bundle create x.bundle HEAD",
+            "git format-patch -1",
+        ] {
+            assert!(!publishes(local), "{local}");
+        }
+        assert!(publishes("git lfs push origin main"));
+        assert!(publishes("git lfs pre-push origin x"));
+        let worktree = Path::new("/tmp/w");
+        let Answer::Deny(why) = decide(
+            "Bash",
+            &serde_json::json!({"command": "gh pr merge 7"}),
+            worktree,
+            false,
+            &[],
+        ) else {
+            panic!("a merge from a job runs")
+        };
+        assert!(why.contains("the owner decides"), "{why}");
+        assert!(!why.contains("Don't"), "{why}");
+    }
+
+    /// BYPASS-8: a background helper runs in Bypass, where nothing asks for a permission; in any
+    /// other mode it's refused, and one run remotely, outside Oby's box, in every mode.
+    #[test]
+    fn bypass_8_a_background_helper_runs_in_bypass() {
+        let worktree = Path::new("/tmp/w");
+        let background = serde_json::json!({"description": "x", "run_in_background": true});
+        let remote = serde_json::json!({"description": "x", "isolation": "remote", "run_in_background": false});
+        assert_eq!(
+            decide_as(true, "Agent", &background, worktree, false, &[]),
+            Answer::Allow
+        );
+        assert!(matches!(
+            decide_as(false, "Agent", &background, worktree, false, &[]),
+            Answer::Deny(_)
+        ));
+        assert!(matches!(
+            decide_as(true, "Task", &remote, worktree, false, &[]),
+            Answer::Deny(_)
+        ));
+        // Another Obi's review takes none, whatever this owner's mode.
+        assert!(matches!(
+            decide_as(true, "Agent", &background, worktree, true, &[]),
+            Answer::Deny(_)
+        ));
     }
 
     #[test]

@@ -21,8 +21,6 @@ pub const MOST_FINDINGS: usize = 10;
 pub const DONE_LENGTH: usize = 300;
 /// How long one finding's note may be.
 pub const NOTE_LENGTH: usize = 500;
-/// The range of `maxRunning` (Engine/Jobs.swift, `JobSlots.range`).
-pub const MAX_RUNNING: std::ops::RangeInclusive<i64> = 1..=20;
 
 /// The actions, as the schema names them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
@@ -1023,12 +1021,10 @@ fn setting_problems(setting: &Setting, context: &Context) -> Vec<String> {
             problems.push("setting needs a model or effort".into());
         }
     } else if let Some(max) = setting.max_running {
-        if !MAX_RUNNING.contains(&max) {
-            problems.push(format!(
-                "maxRunning goes from {} to {}",
-                MAX_RUNNING.start(),
-                MAX_RUNNING.end()
-            ));
+        // The owner's own ceiling (`limits.maxRunning`), 20 unless they raised it.
+        let most = i64::from(crate::settings::limits().max_running());
+        if !(1..=most).contains(&max) {
+            problems.push(format!("maxRunning goes from 1 to {most}"));
         }
     } else if reserve_change {
         let Some(account) = &setting.account else {
@@ -1311,8 +1307,9 @@ fn dispatch_problems(dispatch: &Dispatch, context: &Context) -> Vec<String> {
             problems.push("an epic job has no pr or issue: Oby finds its sub-issues".into());
         }
     }
-    if !(1..=10).contains(&dispatch.rounds) {
-        problems.push("rounds must be 1 to 10".into());
+    let most = i64::from(crate::settings::limits().rounds());
+    if !(1..=most).contains(&dispatch.rounds) {
+        problems.push(format!("rounds must be 1 to {most}"));
     }
     if let Some(check) = &dispatch.check
         && !is_check(check)

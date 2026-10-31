@@ -3,8 +3,12 @@
 //! pull request may merge ([`ready`]), and the merge itself ([`merge`]), with the owner's own `gh`
 //! (crate::github), never inside a job.
 //!
-//! Oby merges a pull request only when every one of these holds, and [`merge`] checks them all
-//! itself, on what GitHub says right then, whoever asks:
+//! Oby merges a pull request by itself only when every one of these holds, and [`merge`] checks
+//! them all itself, on what GitHub says right then. The owner's own Merge ([`ready_as`] with
+//! `owner`) lifts every one but these: the pull request is open, at the head their card showed
+//! (`sha`), not another Obi's, the secret scans are clean, and GitHub's own rules (mergeable,
+//! branch protection, required reviews) let it merge (the owner's decision of 2026-10-31, "Oby
+//! forbids nothing"):
 //! - a workflow says how the repository merges (the owner's `workflow` memory,
 //!   crate::memory::workflow; free text never drives a merge), and the pull request's base is the
 //!   one it names: `main`, `master` or `trunk` only on the owner's own Merge, never by itself
@@ -69,9 +73,46 @@ pub struct Blocked {
     pub why: String,
     /// Oby can't go on by itself: the owner takes it from here.
     pub needs_you: bool,
-    /// Everything else holds, and only the checks a `mac` workflow waits for aren't proven on its
-    /// head ([`mac_checks`]): the owner's own Merge merges it ([`on_owners_word`]).
+    /// A hold of Oby's own that the owner's own Merge lifts ([`on_owners_word`]): a review, a
+    /// check, where it came from. With `needs_you` it asks them (a card with Merge); without, it
+    /// waits by itself and says nothing ([`held`]).
     pub yours: bool,
+}
+
+/// Not now by itself, and it may still go by itself later; the owner's own Merge goes on without
+/// it ([`Blocked::yours`]).
+fn held(why: impl Into<String>) -> Blocked {
+    Blocked {
+        why: why.into(),
+        needs_you: false,
+        yours: true,
+    }
+}
+
+/// What the owner's own Merge lifts (MERGING-20): the holds of before 2026-10-31 (the Mac's
+/// check standing in, a second review, a base Oby merges into only on their word, Oby's review
+/// left to them) on any answer of theirs, and every other hold of Oby's only when the card they
+/// answered named it, on an answer their app signed.
+pub enum Lift<'a> {
+    /// An answer no app of theirs signed, or one whose card named no other hold.
+    Before,
+    /// A signed answer to a card saying this.
+    Named(&'a str),
+}
+
+impl Lift<'_> {
+    fn names(&self, why: &str) -> bool {
+        matches!(self, Lift::Named(said) if said.contains(why))
+    }
+}
+
+/// Why the owner's Merge doesn't go: a hold their card didn't name, or one only a signed answer
+/// lifts.
+fn unnamed(whys: &[String]) -> Blocked {
+    needs_you(format!(
+        "Not merged: your Merge didn't cover this. {}",
+        whys.join(" ")
+    ))
 }
 
 /// Not now: it may merge later by itself.
@@ -100,7 +141,7 @@ fn yours(why: impl Into<String>) -> Blocked {
     }
 }
 
-/// What [`ready`] says when the owner's own Merge asks (`owner`): one that waited only on their
+/// What [`ready_as`] says when the owner's own Merge asks (`owner`): one that waited only on their
 /// say-so ([`Blocked::yours`]) goes; every other rule still holds.
 pub fn on_owners_word(owner: bool, ready: Result<(), Blocked>) -> Result<(), Blocked> {
     match ready {
@@ -282,14 +323,30 @@ pub fn ready(
     merging: &Merging,
     reviewers: Option<&Reviewers>,
 ) -> Result<(), Blocked> {
-    let (workflow, head) = owned(job, workflow, pr)?;
+    ready_as(None, job, workflow, pr, merging, reviewers)
+}
+
+/// [`ready`], for the owner's own Merge when `lift` says what it lifts. Every hold of Oby's own
+/// ([`Blocked::yours`]) is collected and every other rule still checked, so a card names all of
+/// them at once (MERGING-21) and their Merge lifts what the card named, never GitHub's own rules
+/// (MERGING-20).
+pub fn ready_as(
+    lift: Option<&Lift<'_>>,
+    job: &Job,
+    workflow: Option<&Workflow>,
+    pr: &PullRequest,
+    merging: &Merging,
+    reviewers: Option<&Reviewers>,
+) -> Result<(), Blocked> {
+    let mut lifted = Vec::new();
+    let (workflow, head) = owned(job, workflow, pr, &mut lifted)?;
     let base = pr.base.as_str();
     let Some(author) = merging.author.as_deref() else {
         return Err(wait("Not merged yet: GitHub didn't say who opened it."));
     };
     if asked_for_changes(pr, merging) {
         // Nothing of Oby's answers a review on its own pull request any more: the owner is asked.
-        return Err(needs_you("Not merged yet: a review asks for changes."));
+        lifted.push(yours("Not merged yet: a review asks for changes."));
     }
     let Some(reviewers) = reviewers else {
         return Err(unread_reviewers());
@@ -299,33 +356,31 @@ pub fn ready(
     if by_own_review(by, reviewers) {
         // Oby's own review of this very head is the review, for the owner's own pull request (the
         // owner's decision of 2026-10-24), unless GitHub's rules ask for someone else's.
-        let Some(owner) = reviewers.owner.as_deref() else {
-            return Err(wait(
-                "Not merged yet: Oby couldn't tell whose GitHub login merges it.",
-            ));
-        };
-        if !author.eq_ignore_ascii_case(owner) {
-            return Err(needs_you(format!(
-                "Not merged: it's {author}'s pull request, not yours ({owner}), so Oby's own review doesn't count."
-            )));
+        match reviewers.owner.as_deref() {
+            None => lifted.push(held("Not merged yet: Oby couldn't tell whose GitHub login merges it.")
+            ),
+            Some(owner_login) if !author.eq_ignore_ascii_case(owner_login) => lifted.push(yours(format!(
+                    "Not merged: it's {author}'s pull request, not yours ({owner_login}), so Oby's own review doesn't count."
+                ))
+            ),
+            Some(_) => {}
         }
         // A second review no tool can give is the owner's Merge, once every other rule holds, and
         // so is a review whose changes were left to them (MERGING-17).
         match oby_approval(job, head) {
             Err(blocked) if blocked.yours => second = Some(blocked),
             Err(_) if left_to_owner(job, head) => second = Some(yours(REVIEW_ASKS)),
-            Err(blocked) => return Err(blocked),
+            Err(blocked) => lifted.push(held(blocked.why)),
             Ok(()) => {}
         }
         match another_needed(pr, merging, head, author, reviewers) {
-            None => {
-                return Err(match &merging.rules_refused {
+            // GitHub's own rules can't be read: on the owner's word, GitHub decides.
+            None => lifted.push(match &merging.rules_refused {
                     Some(said) => unreadable_rules(said),
                     None => wait(
                         "Not merged yet: Oby couldn't read whether GitHub requires an approving review here.",
                     ),
-                });
-            }
+                }),
             Some(true) => return Err(wait(requires_person(base))),
             Some(false) => {}
         }
@@ -342,54 +397,49 @@ pub fn ready(
                 Err(_) if by == Approval::Reviewer && left_to_owner(job, head) => {
                     second = Some(yours(REVIEW_ASKS));
                 }
-                _ => {
-                    return Err(wait(match by {
-                        Approval::Reviewer => {
-                            "Not merged yet: Oby's reviewer account hasn't approved its head."
-                        }
-                        Approval::Teammate => "Not merged yet: no teammate has approved its head.",
-                        Approval::Oby | Approval::Person => {
-                            "Not merged yet: nobody has approved its head."
-                        }
-                    }));
-                }
+                _ => lifted.push(held(match by {
+                    Approval::Reviewer => {
+                        "Not merged yet: Oby's reviewer account hasn't approved its head."
+                    }
+                    Approval::Teammate => "Not merged yet: no teammate has approved its head.",
+                    Approval::Oby | Approval::Person => {
+                        "Not merged yet: nobody has approved its head."
+                    }
+                })),
             }
         }
-        if second.is_none() && pr.review_decision.as_deref() == Some("REVIEW_REQUIRED") {
+        if second.is_none()
+            && (lift.is_none() || lifted.is_empty())
+            && pr.review_decision.as_deref() == Some("REVIEW_REQUIRED")
+        {
             return Err(wait("Not merged yet: GitHub waits for more reviews."));
         }
     }
     match merging.checks {
-        None => {
-            return Err(wait(
-                "Not merged yet: GitHub didn't say how its checks went.",
-            ));
-        }
+        None => lifted.push(held("Not merged yet: GitHub didn't say how its checks went.")
+        ),
         // Nor red checks: the owner is asked.
-        Some("FAILURE") => {
-            return Err(needs_you("Not merged yet: its checks failed on GitHub."));
-        }
+        Some("FAILURE") => lifted.push(yours("Not merged yet: its checks failed on GitHub.")
+        ),
         Some("SUCCESS") => {}
         // Right after a push, GitHub may not show the checks it will run yet.
         Some("NONE") if workflow.checks == Checks::Mac && pushed_for(job, head, CHECKS_SETTLE) => {}
         // Checks that never come, or never end, aren't waited for in silence.
         Some("NONE") if workflow.checks == Checks::Github && pushed_for(job, head, CHECKS_WAIT) => {
-            return Err(needs_you(format!(
-                "Not merged: GitHub still has no checks on its head an hour after Oby pushed it, and {} merges once they pass. Look at it on GitHub.",
-                name(&job.repo)
-            )));
+            lifted.push(yours(format!(
+                    "Not merged: GitHub still has no checks on its head an hour after Oby pushed it, and {} merges once they pass. Look at it on GitHub.",
+                    name(&job.repo)
+                ))
+            );
         }
-        Some("NONE") => {
-            return Err(wait(
-                "Not merged yet: GitHub has no checks on its head yet.",
-            ));
-        }
-        Some(_) if pushed_for(job, head, CHECKS_WAIT) => {
-            return Err(needs_you(
+        Some("NONE") => lifted.push(held("Not merged yet: GitHub has no checks on its head yet.")
+        ),
+        Some(_) if pushed_for(job, head, CHECKS_WAIT) => lifted.push(yours(
                 "Not merged: its checks on GitHub are still running an hour after Oby pushed it. Look at them on GitHub.",
-            ));
-        }
-        Some(_) => return Err(wait("Not merged yet: its checks are still running.")),
+            )
+        ),
+        Some(_) => lifted.push(held("Not merged yet: its checks are still running.")
+        ),
     }
     let conflict = || conflicts(base);
     match merging.mergeable.as_deref() {
@@ -401,24 +451,51 @@ pub fn ready(
             ));
         }
     }
+    // Checks that aren't green leave it UNSTABLE: GitHub merges it on the owner's word.
+    let clean = match merging.merge_state.as_deref() {
+        Some("CLEAN" | "HAS_HOOKS") => true,
+        Some("UNSTABLE") => !lifted.is_empty(),
+        _ => false,
+    };
     match merging.merge_state.as_deref() {
-        // A missing second review, a check that can't stand for the Mac's and a base Oby merges
-        // into only on the owner's word are one card, so the owner's Merge lifts only what it says.
-        Some("CLEAN" | "HAS_HOOKS") => {
+        // A missing second review, a check that can't stand for the Mac's, a base Oby merges into
+        // only on the owner's word and the holds their Merge lifts are one card, so the owner's
+        // Merge lifts only what it says.
+        _ if clean => {
             let mac = match mac_checks(job, workflow, head) {
                 Err(mac) if !mac.yours => return Err(mac),
                 mac => mac.err(),
             };
-            let whys: Vec<String> = [second, mac]
+            let before: Vec<String> = [second, mac]
                 .into_iter()
                 .flatten()
                 .map(|b| b.why)
                 .chain(on_their_word(base))
                 .collect();
+            // Only a signed answer to a card that named them lifts the rest.
+            if let Some(lift) = lift {
+                let left: Vec<String> = lifted
+                    .iter()
+                    .filter(|b| !lift.names(&b.why))
+                    .map(|b| b.why.clone())
+                    .collect();
+                if !left.is_empty() {
+                    return Err(unnamed(&left));
+                }
+            }
+            let quiet = before.is_empty() && lifted.iter().all(|b| !b.needs_you);
+            let whys: Vec<String> = before
+                .into_iter()
+                .chain(lifted.into_iter().map(|b| b.why))
+                .collect();
             if whys.is_empty() {
                 Ok(())
             } else {
-                Err(yours(whys.join(" ")))
+                Err(Blocked {
+                    why: whys.join(" "),
+                    needs_you: !quiet,
+                    yours: true,
+                })
             }
         }
         Some("DIRTY") => Err(conflict()),
@@ -655,7 +732,11 @@ pub fn wanted_approval(
     merging: &Merging,
     reviewers: &Reviewers,
 ) -> Option<Approval> {
-    let (workflow, head) = owned(job, workflow, pr).ok()?;
+    let mut held = Vec::new();
+    let (workflow, head) = owned(job, workflow, pr, &mut held).ok()?;
+    if !held.is_empty() {
+        return None;
+    }
     let author = merging.author.as_deref()?;
     let by = workflow.review;
     // Oby's own review is Oby's to give: it waits on nobody else's, unless GitHub requires one.
@@ -744,9 +825,11 @@ fn left_to_owner(job: &Job, head: &str) -> bool {
 }
 
 /// What only [`REVIEW_ASKS`] leaves to the owner gets no merge card: Oby's review item carries
-/// Merge (`crate::sphere::inbox::reviews_ran_out_item`), so the owner has one card for it.
+/// Merge (`crate::sphere::inbox::reviews_ran_out_item`), so the owner has one card for it. With
+/// another hold of Oby's beside it (each says "Not merged"), the merge card names them all.
+/// ponytail: told apart by its words; a typed list of holds if one more kind needs it.
 pub fn on_review_item(blocked: &Blocked) -> bool {
-    blocked.yours && blocked.why.starts_with(REVIEW_ASKS)
+    blocked.yours && blocked.why.starts_with(REVIEW_ASKS) && !blocked.why.contains("Not merged")
 }
 
 fn oby_approved(job: &Job, head: &str) -> bool {
@@ -865,9 +948,13 @@ pub fn needs_another_person(
     merging: &Merging,
     reviewers: &Reviewers,
 ) -> bool {
-    let Ok((workflow, head)) = owned(job, workflow, pr) else {
+    let mut held = Vec::new();
+    let Ok((workflow, head)) = owned(job, workflow, pr, &mut held) else {
         return false;
     };
+    if !held.is_empty() {
+        return false;
+    }
     let Some(author) = merging.author.as_deref() else {
         return false;
     };
@@ -928,11 +1015,13 @@ pub fn owner_must_settle(pr: &PullRequest, merging: &Merging) -> Option<&'static
 /// The rules about the pull request itself, before anyone's review or any check: a workflow that
 /// names its base (main, master or trunk only on the owner's word: [`ready`]), the job's own open
 /// pull request at the commit obid pushed last, scanned clean. The workflow and that head, or why
-/// not.
+/// not. On the owner's word (`owner`), where it came from is a hold their Merge lifts (`lifted`,
+/// [`hold!`]): only that it's open, not another Obi's, and scanned clean stay.
 fn owned<'a>(
     job: &'a Job,
     workflow: Option<&'a Workflow>,
     pr: &'a PullRequest,
+    lifted: &mut Vec<Blocked>,
 ) -> Result<(&'a Workflow, &'a str), Blocked> {
     let base = pr.base.as_str();
     if job
@@ -953,22 +1042,22 @@ fn owned<'a>(
         )));
     };
     if base != workflow.base || job.base.as_deref() != Some(base) {
-        return Err(needs_you(format!(
+        lifted.push(yours(format!(
             "Not merged: it goes into {base}, and {} merges into {}.",
             name(&job.repo),
             workflow.base
         )));
     }
     if !own_branch(job, &job.branch) || job.kind == "research" || job.kind == "review" {
-        return Err(needs_you(
-            "Not merged: Oby merges only its own oby/ branches.",
+        lifted.push(yours(
+            "Not merged: Oby merges only its own oby/ branches by itself.",
         ));
     }
     if job.obi.is_some() {
         return Err(needs_you("Not merged: it's another Obi's work."));
     }
     if job.dismissed.is_some() {
-        return Err(wait("Not merged: you let the job go."));
+        lifted.push(held("Not merged: you let the job go."));
     }
     match pr.state.as_str() {
         "OPEN" => {}
@@ -976,18 +1065,16 @@ fn owned<'a>(
         _ => return Err(wait("Not merged: it's closed.")),
     }
     if job.status != Status::Done {
-        return Err(wait("Not merged yet: the job isn't done."));
+        lifted.push(held("Not merged yet: the job isn't done."));
     }
     if job.unpublished() > 0 {
-        return Err(wait("Not merged yet: it has commits Oby hasn't published."));
+        lifted.push(held("Not merged yet: it has commits Oby hasn't published."));
     }
     let Some(head) = pr.head.as_deref() else {
         return Err(wait("Not merged yet: GitHub didn't say what its head is."));
     };
     if job.pushed_head() != Some(head) {
-        return Err(needs_you(
-            "Not merged: its head is a commit Oby didn't push.",
-        ));
+        lifted.push(yours("Not merged: its head is a commit Oby didn't push."));
     }
     if !job
         .scan
@@ -1009,14 +1096,15 @@ fn owned<'a>(
 /// `go` is asked right
 /// before the merge is sent (`merge`) and before its branch is deleted (`branchDelete`): whether
 /// the job is still as it was, its answer saved (the caller keeps a mark in `Job::sending`
-/// there), and nothing is sent on a no. `owner`: the owner's own Merge asks ([`on_owners_word`]).
+/// there), and nothing is sent on a no. `lift`: the owner's own Merge asks, and what it lifts
+/// ([`Lift`]); none by itself.
 pub async fn merge(
     gh: &Path,
     home: &Path,
     job: &Job,
     workflow: &Workflow,
     reviewers: &Reviewers,
-    owner: bool,
+    lift: Option<&Lift<'_>>,
     go: &(dyn Fn(&str) -> bool + Sync),
 ) -> Result<Merged, Blocked> {
     if job.id.is_empty() || !job.id.bytes().all(|b| b.is_ascii_alphanumeric()) {
@@ -1028,7 +1116,7 @@ pub async fn merge(
     if !busy().insert(scratch.clone()) {
         return Err(wait("Not merged yet: Oby is merging it already."));
     }
-    let merged = merging(gh, job, workflow, reviewers, owner, &scratch, go).await;
+    let merged = merging(gh, job, workflow, reviewers, lift, &scratch, go).await;
     let _ = std::fs::remove_dir_all(&scratch);
     busy().remove(&scratch);
     merged
@@ -1051,7 +1139,7 @@ async fn merging(
     job: &Job,
     workflow: &Workflow,
     reviewers: &Reviewers,
-    owner: bool,
+    lift: Option<&Lift<'_>>,
     scratch: &Path,
     go: &(dyn Fn(&str) -> bool + Sync),
 ) -> Result<Merged, Blocked> {
@@ -1065,8 +1153,8 @@ async fn merging(
         .map_err(unread)?;
     let mut merging = merging.map_err(unread)?;
     on_owners_word(
-        owner,
-        ready(job, Some(workflow), &pr, &merging, Some(reviewers)),
+        lift.is_some(),
+        ready_as(lift, job, Some(workflow), &pr, &merging, Some(reviewers)),
     )?;
     let head = pr.head.as_deref().unwrap_or_default();
     let pull_path = format!("repos/{repo}/pulls/{number}");
@@ -1080,10 +1168,14 @@ async fn merging(
             .await
             .map_err(unread)?,
     )?;
+    // Holds the owner's own Merge lifts here: by itself, Oby stops at them with a Merge card.
+    let lifts = |why: String| match lift {
+        Some(lift) if lift.names(&why) => Ok(()),
+        Some(_) => Err(unnamed(&[why])),
+        None => Err(yours(why)),
+    };
     if !pull.head_repo.eq_ignore_ascii_case(repo) || !own_branch(job, &pull.head_ref) {
-        return Err(needs_you(
-            "Not merged: its branch isn't the job's own, in the repository itself.",
-        ));
+        lifts("Not merged: its branch isn't the job's own, in the repository itself.".into())?;
     }
     if !pull.open || pull.base != pr.base || pull.head != head {
         return Err(wait(
@@ -1137,16 +1229,16 @@ async fn merging(
     // A merge or a rebase lands each commit as it is: one saying it closes an issue would. GitHub
     // lists at most 250 of them, so past that Oby can't tell.
     if workflow.method != Method::Squash && commits.len() >= GITHUB_LISTS {
-        return Err(needs_you(format!(
+        lifts(format!(
             "Not merged: it has more commits than GitHub lists ({GITHUB_LISTS}), so Oby can't check them all, and a {} would land each as it is.",
             workflow.method.as_str()
-        )));
+        ))?;
     }
     if workflow.method != Method::Squash && closes(&commits) {
-        return Err(needs_you(format!(
+        lifts(format!(
             "Not merged: a commit says it closes an issue, and a {} would land it as it is.",
             workflow.method.as_str()
-        )));
+        ))?;
     }
     // A rebase lands the commits as they are; the others get Oby's own title and message.
     if workflow.method != Method::Rebase {
@@ -1163,8 +1255,8 @@ async fn merging(
     // A change request made while Oby wrote and scanned its words stops it too.
     merging.reviews = github::reviews(gh, repo, number).await.map_err(unread)?;
     on_owners_word(
-        owner,
-        ready(job, Some(workflow), &pr, &merging, Some(reviewers)),
+        lift.is_some(),
+        ready_as(lift, job, Some(workflow), &pr, &merging, Some(reviewers)),
     )?;
     if !go("merge") {
         return Err(wait(
@@ -1506,8 +1598,9 @@ pub fn stopped_card(job: &Job, head: &str, why: &str) -> Item {
 }
 
 /// "Ready to merge" where only the owner's own Merge is missing ([`Blocked::yours`]): why, and
-/// Merge, by `workflow`.
-pub fn yours_card(job: &Job, head: &str, why: &str, workflow: &Workflow) -> Item {
+/// Merge, by `workflow`, into `into`, the pull request's own base (GitHub merges it there, the
+/// workflow's or not).
+pub fn yours_card(job: &Job, head: &str, why: &str, workflow: &Workflow, into: &str) -> Item {
     let how = match workflow.method {
         Method::Squash => "Squash-merges",
         Method::Merge => "Merges",
@@ -1521,7 +1614,10 @@ pub fn yours_card(job: &Job, head: &str, why: &str, workflow: &Workflow) -> Item
         vec![
             (
                 MERGE,
-                format!("{how} it into {} and deletes its branch.", workflow.base),
+                match own_branch(job, &job.branch) {
+                    true => format!("{how} it into {into} and deletes its branch."),
+                    false => format!("{how} it into {into}."),
+                },
             ),
             (
                 LEAVE_OPEN,
@@ -1533,9 +1629,15 @@ pub fn yours_card(job: &Job, head: &str, why: &str, workflow: &Workflow) -> Item
 
 /// The card for a merge that stopped where the owner takes it on: Merge where only their word is
 /// missing ([`yours_card`]), else why ([`stopped_card`]).
-pub fn blocked_card(job: &Job, head: &str, blocked: &Blocked, workflow: &Workflow) -> Item {
+pub fn blocked_card(
+    job: &Job,
+    head: &str,
+    blocked: &Blocked,
+    workflow: &Workflow,
+    into: &str,
+) -> Item {
     if blocked.yours {
-        yours_card(job, head, &blocked.why, workflow)
+        yours_card(job, head, &blocked.why, workflow, into)
     } else {
         stopped_card(job, head, &blocked.why)
     }
@@ -2046,9 +2148,12 @@ mod tests {
         let moved = view(|v| v["headRefOid"] = json!("b".repeat(40)));
         let job = job();
         let refused = check(&job, Some(&obis()), &moved).unwrap_err();
+        // Every hold on one card: the head, and so no approval of it (MERGING-21).
         assert_eq!(
             refused,
-            needs_you("Not merged: its head is a commit Oby didn't push.")
+            yours(
+                "Not merged: its head is a commit Oby didn't push. Not merged yet: Oby's reviewer account hasn't approved its head."
+            )
         );
         let mut unpublished = self::job();
         unpublished.commits = Some(2);
@@ -2071,6 +2176,150 @@ mod tests {
                 .unwrap_err()
                 .needs_you
         );
+    }
+
+    /// MERGING-20: by itself, each of Oby's own holds stops it (a card with Merge where it asks
+    /// the owner, silence where it may still go by itself); on the owner's own Merge every one of
+    /// them lifts at once, and only what's left is GitHub's, the secret scan's, or another Obi's.
+    #[test]
+    fn merging_20_the_owners_merge_lifts_obys_own_holds_never_githubs() {
+        // The owner's signed Merge on the card Oby shows: it names every hold at once.
+        let owners = |job: &Job, text: &str| {
+            let (pr, merging) = read(text, &approved());
+            let card = ready(job, Some(&obis()), &pr, &merging, Some(&signed_in()))
+                .err()
+                .map(|b| b.why)
+                .unwrap_or_default();
+            on_owners_word(
+                true,
+                ready_as(
+                    Some(&Lift::Named(&card)),
+                    job,
+                    Some(&obis()),
+                    &pr,
+                    &merging,
+                    Some(&signed_in()),
+                ),
+            )
+        };
+        let red = |v: &mut Value| {
+            v["statusCheckRollup"][0]["conclusion"] = json!("FAILURE");
+            v["mergeStateStatus"] = json!("UNSTABLE");
+        };
+        let mut moved = job();
+        moved.outgoing[0].id = "c".repeat(40);
+        let mut running = job();
+        running.status = Status::Running;
+        let mut elsewhere = job();
+        elsewhere.base = Some("release".into());
+        let mut theirs = job();
+        theirs.branch = "fix/their-branch".into();
+        let changes = |v: &mut Value| v["reviewDecision"] = json!("CHANGES_REQUESTED");
+        // Each stops it by itself, red checks and all, as Oby's to lift.
+        let plain = job();
+        let holds: Vec<(&Job, String)> = vec![
+            (&moved, view(|_| {})),
+            (&running, view(|_| {})),
+            (&elsewhere, view(|_| {})),
+            (&theirs, view(|_| {})),
+            (&plain, view(red)),
+            (&plain, view(changes)),
+        ];
+        for (job, text) in &holds {
+            let by_itself = check(job, Some(&obis()), text).unwrap_err();
+            assert!(by_itself.yours, "{}", by_itself.why);
+            assert_eq!(
+                on_owners_word(false, Err(by_itself.clone())),
+                Err(by_itself)
+            );
+            assert_eq!(owners(job, text), Ok(()), "{text}");
+        }
+        // A job still at work waits by itself, quietly: no card.
+        assert!(
+            !check(&running, Some(&obis()), &view(|_| {}))
+                .unwrap_err()
+                .needs_you
+        );
+        // All of them at once, on the owner's word.
+        let mut all = moved.clone();
+        all.status = Status::Running;
+        all.branch = "fix/their-branch".into();
+        assert_eq!(owners(&all, &view(red)), Ok(()));
+        // What the owner's word never lifts: a conflict, GitHub's own rules, another Obi's work, a
+        // secret scan that wasn't clean.
+        let dirty = view(|v| {
+            red(v);
+            v["mergeStateStatus"] = json!("DIRTY");
+        });
+        let blocked = view(|v| v["mergeStateStatus"] = json!("BLOCKED"));
+        let mut obi = job();
+        obi.obi = Some(crate::job::ObiRef {
+            correlation_id: "c".into(),
+            from: "o1".into(),
+            from_owner: "someone".into(),
+            request_id: "r".into(),
+        });
+        let mut flagged = job();
+        flagged.scan.as_mut().unwrap().clean = Some(false);
+        let clean = view(|_| {});
+        for (job, text) in [
+            (&all, &dirty),
+            (&plain, &blocked),
+            (&obi, &clean),
+            (&flagged, &clean),
+        ] {
+            let refused = owners(job, text).unwrap_err();
+            assert!(!refused.yours, "{}", refused.why);
+        }
+    }
+
+    /// MERGING-20: the owner's Merge lifts only what the card they answered named, and only when
+    /// their app signed the answer: a card that said only "its checks failed" doesn't also merge
+    /// someone else's pull request; an unsigned answer lifts only the holds of before.
+    #[test]
+    fn merging_20_the_owners_merge_lifts_only_what_its_card_named() {
+        let mut oby = obis();
+        oby.review = Approval::Oby;
+        let someone = Reviewers {
+            owner: Some("ernesto".into()),
+            ..Reviewers::default()
+        };
+        let (pr, merging) = read(
+            &view(|v| {
+                v["statusCheckRollup"][0]["conclusion"] = json!("FAILURE");
+                v["mergeStateStatus"] = json!("UNSTABLE");
+            }),
+            &approved(),
+        );
+        let job = reviewed("approved", &head());
+        let card = ready(&job, Some(&oby), &pr, &merging, Some(&someone)).unwrap_err();
+        assert!(
+            card.why.contains("its checks failed on GitHub"),
+            "{}",
+            card.why
+        );
+        assert!(
+            card.why.contains("wellprado's pull request"),
+            "{}",
+            card.why
+        );
+        let merge = |lift: &Lift| {
+            on_owners_word(
+                true,
+                ready_as(Some(lift), &job, Some(&oby), &pr, &merging, Some(&someone)),
+            )
+        };
+        let red_only = merge(&Lift::Named("Not merged yet: its checks failed on GitHub."));
+        assert!(
+            red_only
+                .as_ref()
+                .unwrap_err()
+                .why
+                .contains("wellprado's pull request"),
+            "{red_only:?}"
+        );
+        assert!(merge(&Lift::Before).is_err());
+        assert_eq!(merge(&Lift::Named(&card.why)), Ok(()));
     }
 
     /// MERGING-14: an untrusted task's pull request merges by itself only once two approving
@@ -2097,7 +2346,7 @@ mod tests {
         job.review.as_mut().unwrap().two_reviews = Some(why.clone());
         job.approvals = vec![job.review.clone().unwrap()];
         assert!(job.second_review_due());
-        let waits = Err(wait(
+        let waits = Err(held(
             "Not merged yet: it waits for a second review, by another tool.",
         ));
         assert_eq!(ready_now(&job), waits);
@@ -2132,7 +2381,7 @@ mod tests {
             ))
         );
         assert_eq!(on_owners_word(true, Err(blocked.clone())), Ok(()));
-        let card = blocked_card(&alone, &head(), &blocked, &oby);
+        let card = blocked_card(&alone, &head(), &blocked, &oby, "dev");
         assert_eq!(card.title, "Ready to merge: Fix the thing");
         assert_eq!(card.options, vec![MERGE, LEAVE_OPEN]);
         let red = view(|v| v["mergeStateStatus"] = json!("DIRTY"));
@@ -2339,7 +2588,7 @@ mod tests {
         for job in [older, changes.clone(), job()] {
             assert_eq!(
                 ready_with(&job, &view(|_| {}), vec![], Some(0)).0,
-                Err(wait(
+                Err(held(
                     "Not merged yet: Oby's review hasn't approved its head."
                 ))
             );
@@ -2377,7 +2626,7 @@ mod tests {
         assert_eq!(
             ready_with(&approved, &view(|_| {}), vec![], None),
             (
-                Err(wait(
+                Err(held(
                     "Not merged yet: Oby couldn't read whether GitHub requires an approving review here."
                 )),
                 false,
@@ -2389,7 +2638,8 @@ mod tests {
         merging.rules_refused = Some("Resource protected by organization SAML enforcement.".into());
         assert_eq!(
             ready(&approved, Some(&oby), &pr, &merging, Some(&nobody)),
-            Err(needs_you(
+            // GitHub decides on the owner's word (MERGING-20).
+            Err(yours(
                 "Oby can't read this repository's merge rules (GitHub said: Resource protected by organization SAML enforcement.)."
             ))
         );
@@ -2426,7 +2676,7 @@ mod tests {
         assert_eq!(
             ready_with(&approved, &view(|_| {}), vec![], None),
             (
-                Err(wait(
+                Err(held(
                     "Not merged yet: Oby couldn't read whether GitHub requires an approving review here."
                 )),
                 false,
@@ -2509,7 +2759,7 @@ mod tests {
                 ],
                 Some(&signed_in)
             ),
-            Err(needs_you("Not merged yet: a review asks for changes."))
+            Err(yours("Not merged yet: a review asks for changes."))
         );
         for (decision, asks) in [("CHANGES_REQUESTED", true), ("REVIEW_REQUIRED", false)] {
             let text = view(|v| v["reviewDecision"] = json!(decision));
@@ -2561,7 +2811,7 @@ mod tests {
         );
         assert_eq!(
             out,
-            Err(wait(
+            Err(held(
                 "Not merged yet: Oby's review hasn't approved its head."
             ))
         );
@@ -2575,7 +2825,7 @@ mod tests {
                 vec![reviewer("APPROVED", &head)],
                 Some(&signed_in)
             ),
-            Err(wait("Not merged yet: no teammate has approved its head."))
+            Err(held("Not merged yet: no teammate has approved its head."))
         );
         assert_eq!(
             with(&tetrix, &view(|_| {}), vec![ana.clone()], Some(&signed_in)),
@@ -2585,7 +2835,7 @@ mod tests {
         let x1 = vec![reviewer("APPROVED", &head)];
         assert_eq!(
             with(&tetrix, &view(|_| {}), x1.clone(), Some(&signed_out)),
-            Err(wait("Not merged yet: no teammate has approved its head."))
+            Err(held("Not merged yet: no teammate has approved its head."))
         );
         assert_eq!(
             with(&tetrix, &view(|_| {}), vec![ana.clone()], Some(&signed_out)),
@@ -2675,19 +2925,19 @@ mod tests {
                 "Not merged yet: GitHub didn't say how its checks went.",
             ),
         ] {
-            assert_eq!(check(&job, Some(&obis()), text), Err(wait(why)));
+            assert_eq!(check(&job, Some(&obis()), text), Err(held(why)));
         }
         // Red checks need the owner: nothing of Oby's fixes them on its own pull request.
         for text in [&red, &errored] {
             assert_eq!(
                 check(&job, Some(&obis()), text),
-                Err(needs_you("Not merged yet: its checks failed on GitHub."))
+                Err(yours("Not merged yet: its checks failed on GitHub."))
             );
         }
         // GitHub's workflow waits for GitHub's checks; green, it merges.
         assert_eq!(
             check(&job, Some(&obis()), &none),
-            Err(wait(
+            Err(held(
                 "Not merged yet: GitHub has no checks on its head yet."
             ))
         );
@@ -2730,7 +2980,7 @@ mod tests {
         fresh.outgoing[0].date = obi_protocol::time::now();
         assert_eq!(
             check(&fresh, Some(&mac), &none),
-            Err(wait(
+            Err(held(
                 "Not merged yet: GitHub has no checks on its head yet."
             ))
         );
@@ -2743,9 +2993,11 @@ mod tests {
             v["baseRefName"] = json!("main");
             v["statusCheckRollup"] = json!([]);
         });
+        // Into main by a workflow into dev: never by itself, and only the owner's Merge (MERGING-20).
         let mut into_main = checked.clone();
         into_main.base = Some("main".into());
-        assert!(!check(&into_main, Some(&mac), &main).unwrap_err().yours);
+        let refused = check(&into_main, Some(&mac), &main).unwrap_err();
+        assert!(refused.yours && refused.needs_you, "{}", refused.why);
     }
 
     /// Where the job's own check can't stand for the Mac's, the owner's own Merge merges it, and
@@ -2787,17 +3039,27 @@ mod tests {
             );
             assert_eq!(on_owners_word(true, Err(blocked.clone())), Ok(()));
             // Its card offers Merge.
-            let card = blocked_card(job, &head(), &blocked, &mac);
+            let card = blocked_card(job, &head(), &blocked, &mac, "dev");
             assert_eq!(card.title, "Ready to merge: Fix the thing");
             assert_eq!(card.text, why);
             assert_eq!(card.options, vec![MERGE, LEAVE_OPEN]);
             assert_eq!(item_head(&card.id), Some(head().as_str()));
         }
-        // The owner's word never lifts any other rule.
-        let red = needs_you("Not merged yet: its checks failed on GitHub.");
-        assert_eq!(on_owners_word(true, Err(red.clone())), Err(red.clone()));
+        // Red checks on GitHub are Oby's hold too, which the owner's word lifts (MERGING-20, 21);
+        // a conflict isn't.
+        let red = yours("Not merged yet: its checks failed on GitHub.");
+        assert_eq!(on_owners_word(true, Err(red.clone())), Ok(()));
         assert_eq!(
-            blocked_card(&left, &head(), &red, &mac).options,
+            blocked_card(&left, &head(), &red, &mac, "dev").options,
+            vec![MERGE, LEAVE_OPEN]
+        );
+        let conflict = conflicts("dev");
+        assert_eq!(
+            on_owners_word(true, Err(conflict.clone())),
+            Err(conflict.clone())
+        );
+        assert_eq!(
+            blocked_card(&left, &head(), &conflict, &mac, "dev").options,
             vec![crate::sphere::inbox::DISMISS]
         );
     }
@@ -2948,13 +3210,13 @@ mod tests {
         old.outgoing[0].date -= CHECKS_WAIT;
         assert_eq!(
             check(&old, Some(&obis()), &pending),
-            Err(needs_you(
+            Err(yours(
                 "Not merged: its checks on GitHub are still running an hour after Oby pushed it. Look at them on GitHub."
             ))
         );
         assert_eq!(
             check(&old, Some(&obis()), &none),
-            Err(needs_you(
+            Err(yours(
                 "Not merged: GitHub still has no checks on its head an hour after Oby pushed it, and oby merges once they pass. Look at it on GitHub."
             ))
         );
@@ -3015,7 +3277,7 @@ mod tests {
         job.pull_request = Some(read(&view(|_| {}), &approved()).0);
         note(
             &mut job,
-            &Err(wait("Not merged yet: its checks are still running.")),
+            &Err(held("Not merged yet: its checks are still running.")),
             by(),
         );
         assert_eq!(job.to_json()["mergeError"], Value::Null);
@@ -3135,7 +3397,7 @@ esac
                 job,
                 workflow,
                 &signed_in(),
-                false,
+                None,
                 &|_| true,
             )
             .await
@@ -3261,7 +3523,7 @@ esac
         );
         assert_eq!(
             gh.merge(&job(), &obis()).await.unwrap_err(),
-            needs_you("Not merged yet: a review asks for changes.")
+            yours("Not merged yet: a review asks for changes.")
         );
         assert_eq!(gh.calls().matches("/reviews?").count(), 2);
         assert!(!gh.calls().contains("-X PUT"));
@@ -3522,11 +3784,9 @@ esac
             Approved::NotNow
         );
         assert!(!gh.calls().contains("-X POST"));
-        let blocked = merge(&ghp, &gh.dir, &job, &obis(), &signed_in(), false, &|_| {
-            false
-        })
-        .await
-        .unwrap_err();
+        let blocked = merge(&ghp, &gh.dir, &job, &obis(), &signed_in(), None, &|_| false)
+            .await
+            .unwrap_err();
         assert!(!blocked.needs_you, "{}", blocked.why);
         assert!(!gh.calls().contains("-X PUT"));
     }

@@ -1909,6 +1909,294 @@ fn publishing_8_a_check_the_base_doesnt_have_counts_for_nothing() {
     assert!(remote_branch(&remote, &branch).is_some());
 }
 
+/// PUBLISHING-9, 10 and 11: a job whose check failed publishes nothing by itself, and Publish by
+/// hand is refused as before; the owner's signed Publish anyway sends its head (the secret scan
+/// still runs). Over a branch someone else moved it's refused, unless the owner's signed force
+/// replaces it; onto the base it lands with no pull request; and a root commit goes on their word.
+#[test]
+fn publishing_9_10_11_the_owners_publish_goes_where_they_say() {
+    let folder = Folder::new("publish-owners-word");
+    let bin = fake_gh(&folder.0);
+    let (obid, remote, _) = obid_with(&folder, &bin);
+    let id = dispatch(
+        &obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "build", "task": "COMMIT: hello.txt",
+               "check": "test -f nope.txt"}),
+    );
+    let job = ended(&obid, &id);
+    assert_ne!(job["status"], "done", "{job}");
+    let branch = format!("oby/build-{id}");
+    assert_eq!(remote_branch(&remote, &branch), None);
+    // Oby's own default: nothing to publish.
+    let path = format!("/v1/jobs/{id}/publish");
+    assert_eq!(call(&obid, "GET", &path, None).status, 409);
+    let (key, device_id) = registered(&obid, 14);
+    let at = std::cell::Cell::new(obi_protocol::time::now());
+    let publish = |query: &str, more: Value| {
+        let offered = call(&obid, "GET", &format!("{path}?{query}"), None);
+        assert_eq!(offered.status, 200, "{}", offered.text);
+        let sentence = offered.body["action"].as_str().unwrap().to_owned();
+        at.set(at.get() + 1);
+        let mut body = approval(&key, &device_id, &id, &sentence, at.get());
+        for (k, v) in more.as_object().unwrap() {
+            body[k] = v.clone();
+        }
+        // What the owner was shown, sent back: the commit that goes out, the one it replaces.
+        for shown in ["head", "over"] {
+            if let Some(v) = offered.body.get(shown) {
+                body[shown] = v.clone();
+            }
+        }
+        (sentence, call(&obid, "POST", &path, Some(&body)))
+    };
+    // PUBLISHING-9: Publish anyway, its sentence saying so.
+    let (said, published) = publish("anyway=true", json!({"anyway": true}));
+    assert!(said.ends_with("it goes out anyway."), "{said}");
+    assert!(said.contains("Its check didn't pass on "), "{said}");
+    assert_eq!(published.status, 200, "{}\n{}", published.text, obid.log());
+    let head = remote_branch(&remote, &branch).unwrap();
+    // A sentence signed without the choice doesn't carry it.
+    let offered = call(&obid, "GET", &format!("{path}?anyway=true"), None);
+    let sentence = offered.body["action"].as_str().unwrap();
+    let mut body = approval(&key, &device_id, &id, sentence, at.get() + 1);
+    at.set(at.get() + 1);
+    body["anyway"] = json!(false);
+    assert_ne!(call(&obid, "POST", &path, Some(&body)).status, 200);
+    // PUBLISHING-10: someone else moved its branch. Refused, unless the owner forces it.
+    let tree = git(&remote, &["rev-parse", &format!("{head}^{{tree}}")]);
+    let theirs = git(
+        &remote,
+        &[
+            "-c",
+            "user.name=x",
+            "-c",
+            "user.email=x@x",
+            "commit-tree",
+            &tree,
+            "-p",
+            &head,
+            "-m",
+            "theirs",
+        ],
+    );
+    git(
+        &remote,
+        &["update-ref", &format!("refs/heads/{branch}"), &theirs],
+    );
+    let (_, refused) = publish("anyway=true", json!({"anyway": true}));
+    assert_eq!(refused.status, 409, "{}", refused.text);
+    assert!(
+        refused.text.contains("someone else's work"),
+        "{}",
+        refused.text
+    );
+    // A force-push replaces the commit the owner was shown there, and only that: moved since,
+    // nothing goes out.
+    let offered = call(
+        &obid,
+        "GET",
+        &format!("{path}?anyway=true&force=true"),
+        None,
+    );
+    assert_eq!(offered.body["over"], theirs.as_str(), "{}", offered.text);
+    let newer = git(
+        &remote,
+        &[
+            "-c",
+            "user.name=x",
+            "-c",
+            "user.email=x@x",
+            "commit-tree",
+            &tree,
+            "-p",
+            &theirs,
+            "-m",
+            "newer",
+        ],
+    );
+    git(
+        &remote,
+        &["update-ref", &format!("refs/heads/{branch}"), &newer],
+    );
+    at.set(at.get() + 1);
+    let mut stale = approval(
+        &key,
+        &device_id,
+        &id,
+        offered.body["action"].as_str().unwrap(),
+        at.get(),
+    );
+    for k in ["head", "over"] {
+        stale[k] = offered.body[k].clone();
+    }
+    stale["anyway"] = json!(true);
+    stale["force"] = json!(true);
+    let moved = call(&obid, "POST", &path, Some(&stale));
+    assert_eq!(moved.status, 409, "{}", moved.text);
+    assert_eq!(remote_branch(&remote, &branch), Some(newer.clone()));
+    let (said, forced) = publish(
+        "anyway=true&force=true",
+        json!({"anyway": true, "force": true}),
+    );
+    assert!(
+        said.contains(&format!("It replaces {newer} on {branch} (force-push).")),
+        "{said}"
+    );
+    assert_eq!(forced.status, 200, "{}\n{}", forced.text, obid.log());
+    assert_eq!(remote_branch(&remote, &branch), Some(head.clone()));
+    // Onto its base, main, with no pull request.
+    let (said, onto) = publish("anyway=true&to=main", json!({"anyway": true, "to": "main"}));
+    assert!(
+        said.contains("to main on obi-e2e/fixture-app, with no pull request"),
+        "{said}"
+    );
+    assert_eq!(onto.status, 200, "{}\n{}", onto.text, obid.log());
+    assert_eq!(remote_branch(&remote, "main"), Some(head.clone()));
+    // PUBLISHING-11: a done job's branch now a root commit: by hand as before it's refused; on the
+    // owner's word it goes to a branch of their naming.
+    let done = dispatch(
+        &obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "build", "task": "COMMIT: second.txt",
+               "check": "test -f second.txt"}),
+    );
+    assert_eq!(ended(&obid, &done)["status"], "done");
+    let clone = obid.home.join("clones/obi-e2e/fixture-app");
+    let root = git(
+        &clone,
+        &[
+            "-c",
+            "user.name=x",
+            "-c",
+            "user.email=x@x",
+            "commit-tree",
+            &tree,
+            "-m",
+            "root",
+        ],
+    );
+    git(
+        &clone,
+        &["update-ref", &format!("refs/heads/oby/build-{done}"), &root],
+    );
+    let path = format!("/v1/jobs/{done}/publish");
+    let offered = call(&obid, "GET", &format!("{path}?anyway=true&to=fresh"), None);
+    assert_eq!(offered.status, 200, "{}", offered.text);
+    let mut body = approval(
+        &key,
+        &device_id,
+        &done,
+        offered.body["action"].as_str().unwrap(),
+        obi_protocol::time::now(),
+    );
+    body["anyway"] = json!(true);
+    body["to"] = json!("fresh");
+    body["head"] = offered.body["head"].clone();
+    let rooted = call(&obid, "POST", &path, Some(&body));
+    assert_eq!(rooted.status, 200, "{}\n{}", rooted.text, obid.log());
+    assert_eq!(remote_branch(&remote, "fresh"), Some(root));
+    // The secret scan holds on every one of the owner's choices: a commit with a key in it, or
+    // a root commit whose tree holds one, goes nowhere.
+    let keys = folder.0.join("keys.txt");
+    std::fs::write(&keys, format!("aws_key_id {}\nhello\n", leaked_key())).unwrap();
+    let blob = git(&clone, &["hash-object", "-w", keys.to_str().unwrap()]);
+    let mut mktree = std::process::Command::new("git")
+        .args(["mktree"])
+        .current_dir(&clone)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    use std::io::Write as _;
+    mktree
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(format!("100644 blob {blob}\tkeys.txt\n").as_bytes())
+        .unwrap();
+    let leaky = String::from_utf8(mktree.wait_with_output().unwrap().stdout).unwrap();
+    let leaky = leaky.trim();
+    let done_branch = format!("oby/build-{done}");
+    let pushed = remote_branch(&remote, &done_branch);
+    let parent = git(&clone, &["rev-parse", &done_branch]);
+    let commit = |args: &[&str]| {
+        let mut all = vec![
+            "-c",
+            "user.name=x",
+            "-c",
+            "user.email=x@x",
+            "commit-tree",
+            leaky,
+        ];
+        all.extend_from_slice(args);
+        git(&clone, &all)
+    };
+    for (commit, query, more) in [
+        (
+            commit(&["-p", &parent, "-m", "keys"]),
+            "anyway=true&to=leaked",
+            json!({"anyway": true, "to": "leaked"}),
+        ),
+        (
+            commit(&["-m", "root keys"]),
+            "anyway=true&force=true",
+            json!({"anyway": true, "force": true}),
+        ),
+    ] {
+        git(
+            &clone,
+            &["update-ref", &format!("refs/heads/{done_branch}"), &commit],
+        );
+        let offered = call(&obid, "GET", &format!("{path}?{query}"), None);
+        assert_eq!(offered.status, 200, "{}", offered.text);
+        let mut body = approval(
+            &key,
+            &device_id,
+            &done,
+            offered.body["action"].as_str().unwrap(),
+            obi_protocol::time::now(),
+        );
+        for (k, v) in more.as_object().unwrap() {
+            body[k] = v.clone();
+        }
+        for k in ["head", "over"] {
+            if let Some(v) = offered.body.get(k) {
+                body[k] = v.clone();
+            }
+        }
+        let blocked = call(&obid, "POST", &path, Some(&body));
+        assert_eq!(blocked.status, 409, "{}", blocked.text);
+        assert!(blocked.text.contains("possible secret"), "{}", blocked.text);
+        assert!(!blocked.text.contains(&leaked_key()));
+        std::thread::sleep(std::time::Duration::from_secs(1));
+    }
+    assert_eq!(remote_branch(&remote, "leaked"), None);
+    assert_eq!(remote_branch(&remote, &done_branch), pushed);
+    // Publish anyway sends the commit it named: its branch moved since, nothing goes out.
+    let offered = call(&obid, "GET", &format!("{path}?anyway=true&to=named"), None);
+    git(
+        &clone,
+        &["update-ref", &format!("refs/heads/{done_branch}"), &parent],
+    );
+    let mut body = approval(
+        &key,
+        &device_id,
+        &done,
+        offered.body["action"].as_str().unwrap(),
+        obi_protocol::time::now(),
+    );
+    body["anyway"] = json!(true);
+    body["to"] = json!("named");
+    body["head"] = offered.body["head"].clone();
+    let moved = call(&obid, "POST", &path, Some(&body));
+    assert_eq!(moved.status, 409, "{}", moved.text);
+    assert!(
+        moved.text.contains("the commit you approved"),
+        "{}",
+        moved.text
+    );
+    assert_eq!(remote_branch(&remote, "named"), None);
+}
+
 /// PUBLISHING-4, Oby's review: changes it asks for start no round while another job works on the
 /// job's branch; the job says why instead.
 #[test]

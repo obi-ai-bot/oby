@@ -281,22 +281,107 @@ pub fn action(job: &Job, base: &str) -> String {
     }
 }
 
+/// What the owner's own signed Publish asks beyond the default (PUBLISHING-9 to 11): every field is
+/// in obid's sentence for it ([`action_with`]), so their signature covers it. None of it is ever
+/// what Oby does by itself.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ByHand {
+    /// The branch it goes to on the remote, when not the job's own: any branch, the base or the
+    /// default branch included, where it lands with no pull request.
+    #[serde(default)]
+    pub to: Option<String>,
+    /// Replace whatever is on that branch now (`--force-with-lease` on what's there).
+    #[serde(default)]
+    pub force: bool,
+    /// Its check failed or didn't run on this commit: its branch's head goes out anyway. The
+    /// secret scan still runs.
+    #[serde(default)]
+    pub anyway: bool,
+    /// With `force`: the commit on that branch when the owner was asked (`GET`), the one the push
+    /// replaces and only that (`--force-with-lease`); empty when there was none.
+    #[serde(default)]
+    pub over: Option<String>,
+    /// With `anyway`: the commit that goes out, as the owner was shown it (`GET`); refused if the
+    /// branch is anywhere else by then.
+    #[serde(default)]
+    pub head: Option<String>,
+}
+
+impl ByHand {
+    /// Where the push goes: `to`, else the job's own branch.
+    pub fn branch<'a>(&'a self, job: &'a Job) -> &'a str {
+        self.to.as_deref().unwrap_or(&job.branch)
+    }
+
+    /// Anything beyond Oby's own default.
+    pub fn asks(&self) -> bool {
+        *self != ByHand::default()
+    }
+}
+
+/// [`action`], with what the owner's signed Publish asks beyond it (`by_hand`): their signature
+/// covers this sentence, so each choice is in it.
+pub fn action_with(job: &Job, base: &str, by_hand: &ByHand) -> String {
+    let to = by_hand.branch(job);
+    let mut said = if to == base {
+        format!(
+            "Push {} to {base} on {}, with no pull request.",
+            job.branch, job.repo
+        )
+    } else if to != job.branch {
+        format!(
+            "Push {} to {} as {to} and open a pull request into {base}.",
+            job.branch, job.repo
+        )
+    } else {
+        action(job, base)
+    };
+    if by_hand.force {
+        said.push_str(&match by_hand.over.as_deref() {
+            Some(over) if !over.is_empty() => {
+                format!(" It replaces {over} on {to} (force-push).")
+            }
+            _ => format!(" It replaces nothing on {to}, which isn't there now (force-push)."),
+        });
+    }
+    if by_hand.anyway {
+        let head = by_hand.head.as_deref().unwrap_or("its head");
+        said.push_str(&format!(
+            " Its check didn't pass on {head}, or didn't run: it goes out anyway."
+        ));
+    }
+    said
+}
+
 /// Why a review that made commits published nothing, and why obid won't publish one.
 pub const REVIEW_COMMITTED: &str = "A review made commits; nothing was published.";
 
-/// Why obid won't publish this job, or none to go ahead: never a review, only its own `oby/`
-/// branches, never onto `main`, `master` or the repository's default branch.
-pub fn refusal(job: &Job, base: &str, default_branch: &str) -> Option<String> {
+/// Why obid won't publish this job, or none to go ahead: never a review; by itself, only its own
+/// `oby/` branches, never onto `main`, `master` or the repository's default branch. The owner's
+/// own signed Publish (`by_hand` asking more) goes to any branch they named (PUBLISHING-10).
+pub fn refusal(job: &Job, base: &str, default_branch: &str, by_hand: &ByHand) -> Option<String> {
     if job.kind == "review" {
         return Some(REVIEW_COMMITTED.into());
     }
     if job.kind == "research" {
         return Some("Research jobs don't publish.".into());
     }
+    if by_hand.asks() {
+        let to = by_hand.branch(job);
+        return [&job.branch, to, base]
+            .into_iter()
+            .find(|b| !git::is_branch_name(b))
+            .map(|b| format!("{b} isn't a branch name."))
+            .or_else(|| {
+                (!github::is_repo(&job.repo))
+                    .then(|| format!("{} isn't a GitHub repository.", job.repo))
+            });
+    }
     let branch = job.branch.as_str();
     if !branch.starts_with("oby/") || !git::is_branch_name(branch) {
         return Some(format!(
-            "obid only publishes its own oby/ branches, not {branch}."
+            "obid publishes only its own oby/ branches by itself, not {branch}."
         ));
     }
     if !git::is_branch_name(base) {
@@ -306,7 +391,7 @@ pub fn refusal(job: &Job, base: &str, default_branch: &str) -> Option<String> {
         return Some(format!("{branch} can't be its own base."));
     }
     if ["main", "master", default_branch].contains(&branch) {
-        return Some(format!("obid never pushes to {branch}."));
+        return Some(format!("obid doesn't push to {branch} by itself."));
     }
     if !github::is_repo(&job.repo) {
         return Some(format!("{} isn't a GitHub repository.", job.repo));
@@ -662,6 +747,9 @@ pub struct Target {
     pub workflow: Option<crate::memory::Workflow>,
 }
 
+/// git's empty tree: what a root commit's files are read against.
+const EMPTY_TREE: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+
 /// The options every diff the scan reads takes: no attribute or driver can hide what the push
 /// sends, files named as they are.
 pub(crate) const DIFF: &[&str] = &[
@@ -760,9 +848,10 @@ pub async fn publish(
     base: &str,
     target: &Target,
     hooks: &dyn Hooks,
+    by_hand: &ByHand,
 ) -> Result<Option<String>, Failure> {
     hooks.progress(Step::Scan);
-    if let Some(why) = refusal(job, base, &target.default_branch) {
+    if let Some(why) = refusal(job, base, &target.default_branch, by_hand) {
         return Err(Failure::Failed(why));
     }
     if has_login(&target.remote) {
@@ -773,9 +862,11 @@ pub async fn publish(
     let clone = target.clone.as_path();
     // One commit from here on, so nothing added after the scan gets pushed: the one its check
     // passed on, and only while its branch is still there (PUBLISHING-1, PUBLISHING-2).
-    let Some(head) = job.checked_head.clone().filter(|h| git::is_sha(h)) else {
+    // Publish anyway: the branch's head as it is, checked or not (PUBLISHING-9).
+    let checked = job.checked_head.clone().filter(|h| git::is_sha(h));
+    if checked.is_none() && !by_hand.anyway {
         return Err(Failure::Failed(NOT_RECORDED.into()));
-    };
+    }
     let now = git_in(
         clone,
         &[
@@ -793,6 +884,24 @@ pub async fn publish(
             job.branch
         ))
     })?;
+    let head = match checked {
+        Some(head) if !by_hand.anyway => head,
+        // Publish anyway sends the commit the owner was shown, and only that (PUBLISHING-9).
+        _ => match by_hand.head.as_deref() {
+            Some(shown) if shown == now => now.clone(),
+            Some(shown) => {
+                return Err(Failure::Failed(format!(
+                    "Not published: {} is at {now} now, not {shown}, the commit you approved.",
+                    job.branch
+                )));
+            }
+            None => {
+                return Err(Failure::Failed(
+                    "Not published: Publish anyway names the commit it sends.".into(),
+                ));
+            }
+        },
+    };
     if now != head {
         return Err(Failure::Failed(branch_moved(&job.branch)));
     }
@@ -804,7 +913,8 @@ pub async fn publish(
                 job.branch
             ))
         })?;
-    if ancestry.split_whitespace().count() == 1 {
+    // A root commit goes out on the owner's own word (PUBLISHING-11), never by itself.
+    if ancestry.split_whitespace().count() == 1 && !by_hand.asks() {
         return Err(Failure::Failed(format!(
             "Not published: the head commit on {} has no parent.",
             job.branch
@@ -955,19 +1065,16 @@ pub async fn publish(
     }
     hooks.progress(Step::Push);
     // A rebased branch replaces what's on the remote, and only what obid pushed there itself.
-    let lease = lease(&head, job, target).await?;
+    let to = by_hand.branch(job);
+    let lease = lease(&head, job, target, by_hand).await?;
     if !hooks.proceed() {
         return Err(Failure::Stopped);
     }
-    push(&head, job, target, lease.as_deref()).await?;
-    hooks.sent(Outgoing::new(
-        "push",
-        &job.repo,
-        &head,
-        Some(job.branch.as_str()),
-    ));
-    // Not GitHub (a `file://` remote): the push is all there is, and gh is never asked (#627).
-    if !target.pull_requests {
+    push(&head, job, target, lease.as_deref(), by_hand).await?;
+    hooks.sent(Outgoing::new("push", &job.repo, &head, Some(to)));
+    // Not GitHub (a `file://` remote), or straight onto its base: the push is all there is, and gh
+    // is never asked (#627).
+    if !target.pull_requests || to == base {
         return Ok(None);
     }
     if !hooks.proceed() {
@@ -990,7 +1097,7 @@ pub async fn publish(
         // GitHub may still show the commit obid pushed before as the pull request's head.
         let mut heads = vec![head.as_str()];
         heads.extend(job.pushed_head());
-        github::open_pull_request(gh, &job.repo, base, &job.branch, &heads, &title, &file).await
+        github::open_pull_request(gh, &job.repo, base, to, &heads, &title, &file).await
     };
     let _ = std::fs::remove_file(&file);
     let (url, sent) = opened.map_err(Failure::PullRequest)?;
@@ -1123,10 +1230,16 @@ async fn scan_changes(
             }
         }
     }
-    let tip_range = format!("{since}...{head}");
+    // What the tip adds since its history and the base's met; for a head that shares none with
+    // the base (a root commit, on the owner's word: PUBLISHING-11), its whole tree.
+    let met = git_in(clone, &["merge-base", since, head])
+        .await
+        .ok()
+        .filter(|c| git::is_sha(c))
+        .unwrap_or_else(|| EMPTY_TREE.to_owned());
     let mut diff_args = vec!["diff"];
     diff_args.extend_from_slice(DIFF);
-    diff_args.push(&tip_range);
+    diff_args.extend([met.as_str(), head]);
     let tip = git_in(clone, &diff_args).await.map_err(unreadable)?;
     let at_tip = off_runtime(move || scan::in_diff(&tip)).await?;
     for (commit, lines) in &commits {
@@ -1459,25 +1572,24 @@ fn commit_texts(commit: &str, object: &[u8]) -> (Vec<(String, String)>, Option<S
     )
 }
 
-/// The commit the job's branch has on the remote, or none when it has no such branch yet.
-async fn remote_head(job: &Job, target: &Target) -> Result<Option<String>, Failure> {
+/// The commit `branch` has on the remote, or none when it has no such branch yet.
+pub(crate) async fn remote_head(branch: &str, target: &Target) -> Result<Option<String>, Failure> {
     let mut args = credentials(&target.remote, target.gh.as_deref(), &forbidden_names());
     args.extend([
         "ls-remote".into(),
         "--heads".into(),
         "--".into(),
         target.remote.clone(),
-        format!("refs/heads/{}", job.branch),
+        format!("refs/heads/{branch}"),
     ]);
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
     let listed = git::git(&target.clone, &args).await.map_err(|e| {
         Failure::Remote(format!(
-            "Couldn't read {} on the remote: {}",
-            job.branch,
+            "Couldn't read {branch} on the remote: {}",
             git_said(&e, &target.remote)
         ))
     })?;
-    let wanted = format!("refs/heads/{}", job.branch);
+    let wanted = format!("refs/heads/{branch}");
     Ok(listed.lines().find_map(|line| {
         let (commit, name) = line.split_once('\t')?;
         (name == wanted && git::is_sha(commit)).then(|| commit.to_owned())
@@ -1488,8 +1600,22 @@ async fn remote_head(job: &Job, target: &Target) -> Result<Option<String>, Failu
 /// branch yet, the same commit, or one `head` builds on), else the commit there, which a rebase
 /// leaves behind. Only the commit obid pushed there last may be replaced: anything else someone
 /// else pushed, and obid refuses rather than overwrite it.
-async fn lease(head: &str, job: &Job, target: &Target) -> Result<Option<String>, Failure> {
-    let Some(there) = remote_head(job, target).await? else {
+async fn lease(
+    head: &str,
+    job: &Job,
+    target: &Target,
+    by_hand: &ByHand,
+) -> Result<Option<String>, Failure> {
+    // The owner's force replaces the commit they were shown there, and only it (PUBLISHING-10).
+    if by_hand.force {
+        return match by_hand.over.as_deref() {
+            Some(over) if over.is_empty() || git::is_sha(over) => Ok(Some(over.to_owned())),
+            _ => Err(Failure::Failed(
+                "Not published: a force-push names the commit it replaces.".into(),
+            )),
+        };
+    }
+    let Some(there) = remote_head(by_hand.branch(job), target).await? else {
         return Ok(None);
     };
     if there == head {
@@ -1518,11 +1644,18 @@ async fn lease(head: &str, job: &Job, target: &Target) -> Result<Option<String>,
 /// Pushes one commit to the job's own branch: no tags, submodules or signing. With `lease`, the
 /// commit a rebase replaces, it pushes with `--force-with-lease` on that commit, so it fails when
 /// the branch moved since; never to a branch obid didn't make.
-async fn push(head: &str, job: &Job, target: &Target, lease: Option<&str>) -> Result<(), Failure> {
-    if lease.is_some() && (!job.branch.starts_with("oby/") || !git::is_branch_name(&job.branch)) {
+async fn push(
+    head: &str,
+    job: &Job,
+    target: &Target,
+    lease: Option<&str>,
+    by_hand: &ByHand,
+) -> Result<(), Failure> {
+    let to = by_hand.branch(job);
+    if lease.is_some() && (!git::is_branch_name(to) || (!by_hand.force && !to.starts_with("oby/")))
+    {
         return Err(Failure::Failed(format!(
-            "obid never force-pushes {}: only the oby/ branches it made.",
-            job.branch
+            "obid doesn't force-push {to} by itself: only the oby/ branches it made."
         )));
     }
     let mut args = credentials(&target.remote, target.gh.as_deref(), &forbidden_names());
@@ -1534,27 +1667,22 @@ async fn push(head: &str, job: &Job, target: &Target, lease: Option<&str>) -> Re
         "--no-verify".into(),
     ]);
     if let Some(there) = lease {
-        args.push(format!(
-            "--force-with-lease=refs/heads/{}:{there}",
-            job.branch
-        ));
+        args.push(format!("--force-with-lease=refs/heads/{to}:{there}"));
     }
     args.extend([
         "--".into(),
         target.remote.clone(),
-        format!("{head}:refs/heads/{}", job.branch),
+        format!("{head}:refs/heads/{to}"),
     ]);
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
     git::git(&target.clone, &args).await.map_err(|e| {
         if lease.is_some() && e.0.contains("stale info") {
             Failure::Failed(format!(
-                "Not published: {} moved on GitHub while Oby pushed the rebase, so it would overwrite someone else's work.",
-                job.branch
+                "Not published: {to} moved on GitHub while Oby pushed it, so it would overwrite someone else's work."
             ))
         } else {
             Failure::Remote(format!(
-                "Couldn't push {}: {}",
-                job.branch,
+                "Couldn't push {to}: {}",
                 git_said(&e, &target.remote)
             ))
         }
@@ -1641,28 +1769,75 @@ mod tests {
     #[test]
     fn only_its_own_branches_and_never_main() {
         let mut job = job();
-        assert_eq!(refusal(&job, "dev", "main"), None);
+        assert_eq!(refusal(&job, "dev", "main", &ByHand::default()), None);
         job.branch = "feature/x".into();
-        assert!(refusal(&job, "dev", "main").unwrap().contains("oby/"));
+        assert!(
+            refusal(&job, "dev", "main", &ByHand::default())
+                .unwrap()
+                .contains("oby/")
+        );
         job.branch = "oby/fix-75".into();
         assert!(
-            refusal(&job, "oby/fix-75", "main")
+            refusal(&job, "oby/fix-75", "main", &ByHand::default())
                 .unwrap()
                 .contains("its own base")
         );
         assert!(
-            refusal(&job, "dev", "oby/fix-75")
+            refusal(&job, "dev", "oby/fix-75", &ByHand::default())
                 .unwrap()
-                .contains("never pushes")
+                .contains("by itself")
         );
         job.repo = "../etc".into();
-        assert!(refusal(&job, "dev", "main").is_some());
+        assert!(refusal(&job, "dev", "main", &ByHand::default()).is_some());
         let mut review = self::job();
         review.kind = "review".into();
         assert_eq!(
-            refusal(&review, "dev", "main").unwrap(),
+            refusal(&review, "dev", "main", &ByHand::default()).unwrap(),
             "A review made commits; nothing was published."
         );
+    }
+
+    /// PUBLISHING-10: the owner's signed Publish goes to any branch they name, the default branch
+    /// and the base included, and its sentence names each choice; by itself, only its own oby/
+    /// branch, never main or the default branch.
+    #[test]
+    fn publishing_10_the_owners_publish_takes_any_branch_and_says_so() {
+        let mut job = job();
+        job.branch = "feature/x".into();
+        let to_main = ByHand {
+            to: Some("main".into()),
+            ..ByHand::default()
+        };
+        assert!(refusal(&job, "dev", "main", &ByHand::default()).is_some());
+        assert_eq!(refusal(&job, "dev", "main", &to_main), None);
+        assert_eq!(
+            action_with(&job, "dev", &to_main),
+            "Push feature/x to deskree-inc/oby as main and open a pull request into dev."
+        );
+        let sha = "a".repeat(40);
+        let forced = ByHand {
+            to: Some("dev".into()),
+            force: true,
+            anyway: true,
+            over: Some("b".repeat(40)),
+            head: Some(sha.clone()),
+        };
+        assert_eq!(
+            action_with(&job, "dev", &forced),
+            format!(
+                "Push feature/x to dev on deskree-inc/oby, with no pull request. It replaces {} on dev (force-push). Its check didn't pass on {sha}, or didn't run: it goes out anyway.",
+                "b".repeat(40)
+            )
+        );
+        assert_eq!(
+            action_with(&job, "dev", &ByHand::default()),
+            action(&job, "dev")
+        );
+        let bad = ByHand {
+            to: Some("../x".into()),
+            ..ByHand::default()
+        };
+        assert!(refusal(&job, "dev", "main", &bad).is_some());
     }
 
     #[test]

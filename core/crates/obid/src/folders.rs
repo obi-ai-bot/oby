@@ -79,8 +79,9 @@ pub fn checked(places: &Places, paths: &[String]) -> Result<Vec<String>, String>
             kept.push(real);
         }
     }
-    if kept.len() > MOST {
-        return Err(format!("A conversation works in at most {MOST} folders."));
+    let most = crate::settings::limits().folders();
+    if kept.len() > most {
+        return Err(format!("A conversation works in at most {most} folders."));
     }
     Ok(kept)
 }
