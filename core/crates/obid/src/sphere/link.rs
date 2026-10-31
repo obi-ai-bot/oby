@@ -1086,7 +1086,8 @@ impl Link {
     }
 
     /// The job `job`'s item about Oby's review that couldn't run now (`inbox::review_item`): `item`,
-    /// when there is one, added, and the job's other open ones done, with no answer.
+    /// when there is one, added, and the job's other open ones done, with no answer. One still open
+    /// from an obid before takes its options (Merge, #1658), and keeps the rest.
     pub fn review_items(&self, job: &str, item: Option<Item>) {
         let keep = item.as_ref().map(|i| i.id.clone());
         let stale: Vec<String> = self
@@ -1104,8 +1105,21 @@ impl Link {
         for id in stale {
             self.settle(&id);
         }
-        if let Some(item) = item {
-            self.add_items(vec![item]);
+        let Some(item) = item else { return };
+        let older = {
+            let mut state = self.lock();
+            match state.inbox.get_mut(&item.id) {
+                Some(kept) if kept.done.is_none() && kept.options != item.options => {
+                    kept.options = item.options.clone();
+                    kept.details = item.details.clone();
+                    Some(kept.clone())
+                }
+                _ => None,
+            }
+        };
+        match older {
+            Some(kept) => self.save_item(&kept),
+            None => self.add_items(vec![item]),
         }
     }
 

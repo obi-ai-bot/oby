@@ -173,16 +173,16 @@ impl Seen {
                 evidence: vec![format!("jobs/{}/report", id)],
             });
         }
-        // Oby's review gave no verdict, or its changes and their rounds didn't settle it: once.
-        // One no reviewer could give is the owner's already, in obid's own item.
+        // Oby's review gave no verdict: once. One left to the owner (no reviewer could give it, or
+        // its changes with no round to take them) is theirs already, in obid's own item, which no
+        // event turn answers (MERGING-9): a question of Oby's beside it would offer only Done.
         let why = match &now.review_error {
+            _ if now.review_needs_you => None,
             Some(error) if error.starts_with(crate::job::COULDNT_REVIEW) => None,
             Some(error) if Some(error) != before.review_error.as_ref() => {
                 Some(super::briefing::line(error, 200))
             }
-            _ => (now.review_needs_you && !before.review_needs_you).then(|| {
-                "Oby's review still asks for changes, and its rounds didn't settle it".to_owned()
-            }),
+            _ => None,
         };
         if let Some(why) = why {
             events.push(Event {
@@ -1261,9 +1261,9 @@ mod tests {
         assert_eq!(again.job(&job).len(), 1);
     }
 
-    /// Oby's review is an event only when it can't settle the pull request itself: it gave no
-    /// verdict, or still asks for changes once its rounds are done (`reviewNeedsYou`), once each.
-    /// Reviewing, approving, and the review job's own end are none (#525).
+    /// Oby's review is an event only when it gave no verdict, once. Reviewing, approving, the
+    /// review job's own end and a review left to the owner (`reviewNeedsYou`: obid's own item,
+    /// MERGING-8, 9) are none (#525, #1658).
     #[test]
     fn a_review_is_an_event_only_when_it_cant_settle_it() {
         let mut seen = Seen::default();
@@ -1286,16 +1286,15 @@ mod tests {
             .is_empty()
         );
         assert!(seen.job(&job(None, false)).is_empty());
-        assert_eq!(seen.job(&job(None, true)).len(), 1);
+        // Changes left to the owner, after one round or three: obid's own item, no event.
         assert!(seen.job(&job(None, true)).is_empty());
-        // A review no reviewer could give is the owner's in obid's own item: no event. Changes
-        // obid couldn't hand to the agent still are one.
+        // So are a review no reviewer could give, and changes obid couldn't hand to the agent.
         let mut fresh = Seen::default();
         let none = "Oby couldn't review #7: The Mac's Codex login for Codex has ended";
         assert!(fresh.job(&job(Some(none), true)).is_empty());
         let unhanded =
             "Oby's review asks for changes, and obid couldn't hand them to the agent: disk full";
-        assert_eq!(fresh.job(&job(Some(unhanded), true)).len(), 1);
+        assert!(fresh.job(&job(Some(unhanded), true)).is_empty());
         // The review job itself: failed or interrupted, it's told on the job it reviewed.
         let review = serde_json::json!({"id": "r1", "status": "failed", "title": "Oby review: Fix", "limit": null, "reviewError": null, "reviewOf": "j1", "dismissed": null});
         assert!(Seen::default().job(&review).is_empty());

@@ -1046,6 +1046,72 @@ impl Link {
                 Given::Later(at) => self.answer_merge(item, None, Some(at)).await,
             };
         }
+        // Merge on Oby's review item whose changes were left to the owner (MERGING-17): their own
+        // Merge, as on a merge card, of the head that review read. Claimed under the lock, then
+        // carried out with none held; open again with why when it didn't merge.
+        let review_merge = {
+            let mut state = self.lock();
+            let item = state
+                .inbox
+                .get(id)
+                .filter(|i| {
+                    i.done.is_none()
+                        && inbox::is_review_item(i)
+                        && i.options.iter().any(|o| o == crate::merge::MERGE)
+                        && matches!(&given, Given::Answer(a) if a == crate::merge::MERGE)
+                })
+                .cloned();
+            if item.is_some()
+                && let Some(kept) = state.inbox.get_mut(id)
+            {
+                kept.done = Some(time::now());
+            }
+            item
+        };
+        if let Some(mut item) = review_merge {
+            // The head the card's review read, whatever came since: a moved head merges nothing.
+            let review = item.id.rsplit_once("-review-").map_or("", |(_, r)| r);
+            let head = self
+                .jobs
+                .get(&item.job)
+                .and_then(|j| j.review.filter(|r| r.job == review))
+                .map(|r| r.commit)
+                .unwrap_or_default();
+            let merged = self.jobs.merge_by_owner(&item.job, &head, false).await;
+            if let Err(why) = merged {
+                // Open again only while it's still the job's item: one a newer review settled stays.
+                let current = self
+                    .jobs
+                    .review_left_to_owner(&item.job)
+                    .is_some_and(|i| i.id == item.id);
+                let reopened = {
+                    let mut state = self.lock();
+                    let claimed = current
+                        && state
+                            .inbox
+                            .get(&item.id)
+                            .is_some_and(|i| i.done.is_some() && i.answer.is_none());
+                    if claimed {
+                        state.inbox.insert(item.id.clone(), item.clone());
+                    }
+                    claimed
+                };
+                if reopened {
+                    self.save_item(&item);
+                }
+                let why = if why.starts_with("Not merged") {
+                    why
+                } else {
+                    format!("Not merged: {why}")
+                };
+                return Err(api(StatusCode::CONFLICT, why));
+            }
+            item.done = Some(time::now());
+            item.answer = Some(crate::merge::MERGE.into());
+            self.lock().inbox.insert(item.id.clone(), item.clone());
+            self.save_item(&item);
+            return Ok(item.to_json());
+        }
         // An offer of GitHub work: its start reads GitHub first, with no lock held, so its start
         // answer claims the item under the lock (done), as Start does: nothing settles it
         // meanwhile, and a second answer finds it done.
@@ -1127,6 +1193,12 @@ impl Link {
                     {
                         item.answer = Some(a.clone());
                         item.done = Some(now);
+                    }
+                    Given::Answer(_) if inbox::is_review_item(&item) => {
+                        return Err(api(
+                            StatusCode::UNPROCESSABLE_ENTITY,
+                            format!("The answer is {}.", item.options.join(" or ")),
+                        ));
                     }
                     Given::Answer(_) => {
                         return Err(api(

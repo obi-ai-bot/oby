@@ -7,8 +7,9 @@
 //! itself, on what GitHub says right then, whoever asks:
 //! - a workflow says how the repository merges (the owner's `workflow` memory,
 //!   crate::memory::workflow; free text never drives a merge), and the pull request's base is the
-//!   one it names: never `main`, `master` or `trunk`, whatever it says, and the default branch
-//!   only when it names it;
+//!   one it names: `main`, `master` or `trunk` only on the owner's own Merge, never by itself
+//!   whatever a workflow says ([`on_their_word`], the owner's decision of 2026-10-31), and the
+//!   default branch only when it names it;
 //! - it's the job's own: its `oby/` branch in the repository itself, published by obid, its head
 //!   the commit obid pushed last, nothing unpublished, and the secret scan of that push clean; the
 //!   job is done, the owner's own (never another Obi's), and not dismissed;
@@ -53,7 +54,8 @@ use crate::publish::Outgoing;
 use crate::scan::{self, Verdict};
 use crate::sphere::inbox::{DISMISS, Item};
 
-/// A branch Oby never merges into by itself, whatever a workflow says: those stay the owner's.
+/// A branch Oby doesn't merge into by itself, whatever a workflow says: only the owner's own Merge
+/// does ([`on_their_word`]).
 pub fn protected(branch: &str) -> bool {
     matches!(
         branch.to_ascii_lowercase().as_str(),
@@ -307,9 +309,11 @@ pub fn ready(
                 "Not merged: it's {author}'s pull request, not yours ({owner}), so Oby's own review doesn't count."
             )));
         }
-        // A second review no tool can give is the owner's Merge, once every other rule holds.
+        // A second review no tool can give is the owner's Merge, once every other rule holds, and
+        // so is a review whose changes were left to them (MERGING-17).
         match oby_approval(job, head) {
             Err(blocked) if blocked.yours => second = Some(blocked),
+            Err(_) if left_to_owner(job, head) => second = Some(yours(REVIEW_ASKS)),
             Err(blocked) => return Err(blocked),
             Ok(()) => {}
         }
@@ -322,7 +326,7 @@ pub fn ready(
                     ),
                 });
             }
-            Some(true) => return Err(wait(format!("Not merged yet: {REQUIRES_PERSON}"))),
+            Some(true) => return Err(wait(requires_person(base))),
             Some(false) => {}
         }
     } else {
@@ -335,6 +339,9 @@ pub fn ready(
             // can give the second, the owner's Merge stands for both (MERGING-14).
             match oby_approval(job, head) {
                 Err(blocked) if blocked.yours && by == Approval::Reviewer => second = Some(blocked),
+                Err(_) if by == Approval::Reviewer && left_to_owner(job, head) => {
+                    second = Some(yours(REVIEW_ASKS));
+                }
                 _ => {
                     return Err(wait(match by {
                         Approval::Reviewer => {
@@ -395,22 +402,32 @@ pub fn ready(
         }
     }
     match merging.merge_state.as_deref() {
-        // A missing second review and a check that can't stand for the Mac's are one card, so the
-        // owner's Merge lifts only what it says.
-        Some("CLEAN" | "HAS_HOOKS") => match (second, mac_checks(job, workflow, head)) {
-            (None, mac) => mac,
-            (Some(second), Ok(())) => Err(second),
-            (Some(second), Err(mac)) if mac.yours => {
-                Err(yours(format!("{} {}", second.why, mac.why)))
+        // A missing second review, a check that can't stand for the Mac's and a base Oby merges
+        // into only on the owner's word are one card, so the owner's Merge lifts only what it says.
+        Some("CLEAN" | "HAS_HOOKS") => {
+            let mac = match mac_checks(job, workflow, head) {
+                Err(mac) if !mac.yours => return Err(mac),
+                mac => mac.err(),
+            };
+            let whys: Vec<String> = [second, mac]
+                .into_iter()
+                .flatten()
+                .map(|b| b.why)
+                .chain(on_their_word(base))
+                .collect();
+            if whys.is_empty() {
+                Ok(())
+            } else {
+                Err(yours(whys.join(" ")))
             }
-            (Some(_), Err(mac)) => Err(mac),
-        },
+        }
         Some("DIRTY") => Err(conflict()),
         Some("BEHIND") => Err(needs_you(format!(
             "Not merged: it's behind {base}, and GitHub merges only up-to-date pull requests into {base}. Ask Oby to rebase it onto {base}, or update it on GitHub."
         ))),
+        // GitHub's own rules, the code host's: the owner reads how to change them.
         Some("BLOCKED") => Err(needs_you(format!(
-            "Not merged: GitHub's rules for {base} still block it."
+            "Not merged: GitHub's rules for {base} still block it. Approve it on GitHub as they ask, or change {base}'s branch protection there."
         ))),
         Some("DRAFT") => Err(needs_you("Not merged: it's a draft.")),
         _ => Err(wait(
@@ -656,6 +673,14 @@ pub fn wanted_approval(
 /// approving review, and the owner's own can't count on their pull request.
 pub const REQUIRES_PERSON: &str = "GitHub requires another person's approval here.";
 
+/// Why a merge by Oby's own review into `base` waits on [`REQUIRES_PERSON`], and how the owner
+/// changes it: GitHub's rule, not Oby's.
+pub fn requires_person(base: &str) -> String {
+    format!(
+        "Not merged yet: {REQUIRES_PERSON} Ask someone with write access to approve it on GitHub, or change {base}'s branch protection there."
+    )
+}
+
 /// Whether Oby's own review is what approves it: an `oby` workflow, or a `reviewer` one with no
 /// reviewer account signed in (that account is an optional extra).
 fn by_own_review(by: Approval, reviewers: &Reviewers) -> bool {
@@ -683,6 +708,45 @@ fn oby_approval(job: &Job, head: &str) -> Result<(), Blocked> {
         }),
         _ => Ok(()),
     }
+}
+
+/// Why a pull request into `base` merges only on the owner's own word: Oby doesn't merge into
+/// main, master or trunk by itself, and their Merge does (the owner's decision of 2026-10-31,
+/// "Oby forbids nothing"). The one place that says so for merging.
+pub fn on_their_word(base: &str) -> Option<String> {
+    protected(base).then(|| {
+        format!(
+            "Its base is {base}, which Oby merges into only on your word, so it's yours to merge."
+        )
+    })
+}
+
+/// Why a pull request into `base` is the owner's to merge where the workflow Oby learned for
+/// `repo` merges into `learned` instead: their Merge takes it on, by the workflow its card proposes.
+pub fn other_base(repo: &str, base: &str, learned: &str) -> String {
+    format!(
+        "It goes into {base}, and {} merges into {learned}, so it's yours to merge.",
+        name(repo)
+    )
+}
+
+/// Why only the owner's own Merge merges it as it is: Oby's review of its head still asks for
+/// changes, and nothing more happens by itself (MERGING-17).
+pub const REVIEW_ASKS: &str = "Oby's review still asks for changes, so it's yours to merge.";
+
+/// Oby's review of exactly `head` asks for changes, and they're left to the owner
+/// (`Job::review_needs_you`): its rounds ran out, or none could start.
+fn left_to_owner(job: &Job, head: &str) -> bool {
+    job.review_needs_you()
+        && job
+            .current_review()
+            .is_some_and(|r| !r.approved() && r.commit == head)
+}
+
+/// What only [`REVIEW_ASKS`] leaves to the owner gets no merge card: Oby's review item carries
+/// Merge (`crate::sphere::inbox::reviews_ran_out_item`), so the owner has one card for it.
+pub fn on_review_item(blocked: &Blocked) -> bool {
+    blocked.yours && blocked.why.starts_with(REVIEW_ASKS)
 }
 
 fn oby_approved(job: &Job, head: &str) -> bool {
@@ -852,7 +916,7 @@ fn asked_for_changes(pr: &PullRequest, merging: &Merging) -> bool {
 
 /// Why only the owner can settle the job's own pull request now: a review asks for changes, or
 /// its checks failed on GitHub. Nothing of Oby's answers either any more, so they ask the owner
-/// whatever the workflow, learned or not (a pull request into main, where none can be proposed,
+/// whatever the workflow, learned or not (a pull request into main, which merges only on their word,
 /// included), and before a teammate's Oby is asked to review a red head.
 pub fn owner_must_settle(pr: &PullRequest, merging: &Merging) -> Option<&'static str> {
     if asked_for_changes(pr, merging) {
@@ -862,8 +926,9 @@ pub fn owner_must_settle(pr: &PullRequest, merging: &Merging) -> Option<&'static
 }
 
 /// The rules about the pull request itself, before anyone's review or any check: a workflow that
-/// names its base (never main, master or trunk), the job's own open pull request at the commit
-/// obid pushed last, scanned clean. The workflow and that head, or why not.
+/// names its base (main, master or trunk only on the owner's word: [`ready`]), the job's own open
+/// pull request at the commit obid pushed last, scanned clean. The workflow and that head, or why
+/// not.
 fn owned<'a>(
     job: &'a Job,
     workflow: Option<&'a Workflow>,
@@ -880,12 +945,8 @@ fn owned<'a>(
             "Not merged: the job has no pull request of its own.",
         ));
     }
-    if protected(base) {
-        return Err(needs_you(format!(
-            "Its base is {base}: merge it on GitHub."
-        )));
-    }
-    let Some(workflow) = workflow.filter(|w| w.problem().is_none()) else {
+    // Into main, master or trunk too: only the owner's word merges there ([`on_their_word`]).
+    let Some(workflow) = workflow.filter(|w| crate::git::is_branch_name(&w.base)) else {
         return Err(needs_you(format!(
             "I don't know how {} merges yet, so I left it open.",
             name(&job.repo)
@@ -1251,7 +1312,7 @@ pub const DISMISSED_APPROVAL: &str = "Someone dismissed Oby's approval of this c
 pub const APPROVAL: &str = "Oby reviewed this commit and approves it. Its review is in Oby, on the job that opened this.\n\nby Oby: Oby wrote this review.";
 
 /// The workflow a merge card proposes for a repository Oby hasn't learned yet: a squash into the
-/// pull request's base (never main, master or trunk), approved the way it was (Oby's own review
+/// pull request's base (main, master or trunk only on the owner's own Merge), approved the way it was (Oby's own review
 /// of the head, else the reviewer account's approval, else a person's) and checked the way it
 /// was (GitHub's checks, else the owner's Mac's). The card shows only when the merge would hold
 /// by it ([`ready`]).
@@ -1273,7 +1334,7 @@ pub fn proposed(
         rebase_first: false,
         // Oby's own review first: the default for the owner's own repositories.
         // A second review no tool can give still proposes Oby's: the owner's Merge stands for it.
-        review: if oby_approved_but_yours(job, head) {
+        review: if oby_approved_but_yours(job, head) || left_to_owner(job, head) {
             Approval::Oby
         } else if by_reviewer {
             Approval::Reviewer
@@ -1286,7 +1347,7 @@ pub fn proposed(
             Checks::Mac
         },
     };
-    workflow.problem().is_none().then_some(workflow)
+    crate::git::is_branch_name(&workflow.base).then_some(workflow)
 }
 
 /// The job's pull request was merged or closed (`pr`): nothing waits on the owner about merging it
@@ -1904,10 +1965,11 @@ mod tests {
         );
     }
 
-    /// The fixed rules, whatever else holds: main, master and trunk never; no workflow, another
-    /// base, or another branch, and only the owner can take it on.
+    /// The fixed rules, whatever else holds: main, master and trunk only on the owner's word (the
+    /// owner's decision of 2026-10-31); no workflow, another base, or another branch, and only the
+    /// owner can take it on.
     #[test]
-    fn it_never_merges_into_main_or_without_a_workflow() {
+    fn it_never_merges_into_main_by_itself_or_without_a_workflow() {
         let job = job();
         assert_eq!(check(&job, Some(&obis()), &view(|_| {})), Ok(()));
         // Into dev, the default branch here: the workflow names it.
@@ -1922,19 +1984,27 @@ mod tests {
             job.base = Some(base.into());
             let mut workflow = obis();
             workflow.base = base.into();
-            // Even a workflow that names it (it can't be saved) doesn't merge into it.
+            // Even a workflow that names it doesn't merge into it by itself: the owner's Merge does.
             let into = view(|v| v["baseRefName"] = json!(base));
-            let refused = check(&job, Some(&workflow), &into).unwrap_err();
-            assert!(refused.needs_you, "{base}");
-            assert_eq!(
-                refused.why,
-                format!("Its base is {base}: merge it on GitHub.")
+            let waits = check(&job, Some(&workflow), &into);
+            let why = format!(
+                "Its base is {base}, which Oby merges into only on your word, so it's yours to merge."
             );
+            assert_eq!(waits, Err(yours(why.clone())), "{base}");
+            assert_eq!(on_owners_word(false, waits.clone()), Err(yours(why)));
+            assert_eq!(on_owners_word(true, waits), Ok(()), "{base}");
+            // Every other rule still holds on their word: a conflict says so.
+            let dirty = view(|v| {
+                v["baseRefName"] = json!(base);
+                v["mergeStateStatus"] = json!("DIRTY");
+            });
+            let conflict = on_owners_word(true, check(&job, Some(&workflow), &dirty));
+            assert!(!conflict.unwrap_err().yours, "{base}");
             assert!(
                 check(&job, None, &into)
                     .unwrap_err()
                     .why
-                    .starts_with("Its base is")
+                    .starts_with("I don't know how")
             );
         }
         // Another base than the workflow's: the default branch included.
@@ -2114,7 +2184,7 @@ mod tests {
         ));
         assert_eq!(
             ready(&alone, Some(&oby), &required_pr, &required, Some(&nobody)),
-            Err(wait(format!("Not merged yet: {REQUIRES_PERSON}")))
+            Err(wait(requires_person("dev")))
         );
         let ana = rest(2, "ana", "User", "APPROVED", &head(), "MEMBER");
         let (teammate_pr, mut teammate) = read(&view(|_| {}), &pages(vec![ana]));
@@ -2261,10 +2331,12 @@ mod tests {
             ready_with(&approved, &view(|_| {}), vec![], Some(0)),
             (Ok(()), false, None)
         );
-        // A head Oby's review didn't approve, or one asking for changes: it waits for the next.
+        // A head Oby's review didn't approve, or one asking for changes while another review is
+        // under way: it waits for the next.
         let older = reviewed("approved", &"c".repeat(40));
-        let changes = reviewed("changesRequested", &head());
-        for job in [older, changes, job()] {
+        let mut changes = reviewed("changesRequested", &head());
+        changes.reviewing = Some("r2".into());
+        for job in [older, changes.clone(), job()] {
             assert_eq!(
                 ready_with(&job, &view(|_| {}), vec![], Some(0)).0,
                 Err(wait(
@@ -2272,8 +2344,15 @@ mod tests {
                 ))
             );
         }
+        // Asking for changes with nothing more by itself (MERGING-17): only the owner's Merge.
+        changes.reviewing = None;
+        let left = ready_with(&changes, &view(|_| {}), vec![], Some(0)).0;
+        assert_eq!(left, Err(yours(REVIEW_ASKS)));
+        assert!(on_review_item(&left.clone().unwrap_err()));
+        assert_eq!(on_owners_word(true, left.clone()), Ok(()));
+        assert_eq!(on_owners_word(false, left.clone()), left);
         // GitHub requires an approving review: the owner's own can't count, another person's does.
-        let requires = Err(wait(format!("Not merged yet: {REQUIRES_PERSON}")));
+        let requires = Err(wait(requires_person("dev")));
         assert_eq!(
             ready_with(&approved, &view(|_| {}), vec![], Some(1)),
             (requires.clone(), true, None)
@@ -2943,12 +3022,12 @@ mod tests {
         assert_eq!(job.to_json()["mergeNeedsYou"], false);
         note(
             &mut job,
-            &Err(needs_you("Its base is main: merge it on GitHub.")),
+            &Err(needs_you("Not merged: it conflicts with dev.")),
             by(),
         );
         assert_eq!(
             job.to_json()["mergeError"],
-            "Its base is main: merge it on GitHub."
+            "Not merged: it conflicts with dev."
         );
         assert_eq!(job.to_json()["mergeNeedsYou"], true);
         assert!(job.to_json().get("mergedBy").is_none());
@@ -3473,7 +3552,7 @@ esac
     }
 
     /// For a repository Oby hasn't learned, the card proposes the way the pull request was
-    /// approved and checked, squashed into its base; never into main.
+    /// approved and checked, squashed into its base; into main on the owner's own Merge.
     #[test]
     fn a_card_proposes_how_it_was_approved_and_checked() {
         let (pr, merging) = read(&view(|_| {}), &approved());
@@ -3494,8 +3573,12 @@ esac
             (theirs.review, theirs.checks),
             (Approval::Person, Checks::Mac)
         );
+        // Into main too: its card's Merge is the owner's word there (MERGING-7).
         let (main, merging) = read(&view(|v| v["baseRefName"] = json!("main")), &approved());
-        assert_eq!(proposed(&job(), &main, &merging, &signed_in()), None);
+        assert_eq!(
+            proposed(&job(), &main, &merging, &signed_in()).map(|w| w.base),
+            Some("main".into())
+        );
         // Oby's own review of the head first: the default for the owner's own repositories.
         let (pr, merging) = read(&view(|_| {}), &approved());
         let oby = proposed(&reviewed("approved", &head()), &pr, &merging, &signed_in()).unwrap();
