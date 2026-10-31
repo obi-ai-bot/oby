@@ -193,7 +193,12 @@ try {
           body: JSON.stringify({ text: 'Try again, picking up where you left off. Finish with a short summary as asked.' }),
         });
         assert.equal(unsigned.status, 403, 'the API token alone cannot continue a limit-stopped job');
-        const manual = await page.evaluate(() => window.app.obid.call('POST', '/v1/jobs/aaaa0001/messages', { text: 'Try again, picking up where you left off. Finish with a short summary as asked.' }));
+        // the owner's own words: typed in a box, Enter pressed (main signs only right after a real
+        // keystroke, and the preload only the words it held: docs/contracts/signed-words.md)
+        const words = 'Try again, picking up where you left off. Finish with a short summary as asked.';
+        await page.evaluate((text) => { const box = document.body.appendChild(document.createElement('textarea')); box.value = text; box.focus(); }, words);
+        await page.keyboard.press('Enter');
+        const manual = await page.evaluate((text) => window.app.obid.call('POST', '/v1/jobs/aaaa0001/messages', { text }), words);
         assert.equal(manual.status, 200, manual.text);
         await until('signed manual continuation after Keep stopped', async () => (await s.call('GET', '/v1/jobs/aaaa0001')).status === 'done', 60_000);
       }
