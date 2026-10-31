@@ -1630,6 +1630,7 @@ mod tests {
             remote: format!("https://github.com/{repo}.git"),
             default_branch: "main".into(),
             check: None,
+            check_keep: Vec::new(),
             pull_requests: None,
         }
     }

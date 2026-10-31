@@ -721,18 +721,31 @@ pub async fn others_wrote(
         .then(|| format!("it works from {name} #{number}, which someone else wrote in or GitHub didn't say who wrote"))
 }
 
+/// What obid's git reads of the person's own settings while it handles a job's commit outside any
+/// box: nothing (no `filter.lfs`, no `url.*.insteadOf`), so the commit's `.gitattributes` and
+/// `.lfsconfig` reach no host of the agent's choosing.
+const NO_SETTINGS: [(&str, &str); 2] = [
+    ("GIT_CONFIG_NOSYSTEM", "1"),
+    ("GIT_CONFIG_GLOBAL", "/dev/null"),
+];
+
 /// A checkout of commit `head` that obid makes for the check, apart from the job's: its worktree
 /// at `at/work`, its own git folder in the clone's `worktrees/`, its own temporary folder at
 /// `at/tmp`, none of them anywhere the job's sandbox can write. What the job's commits brought
 /// since `base` (a commit) is copied out of the job's own object folder into the checkout's, so
 /// nothing of the job's folders is read again. `agent` is the job's sandbox spec; the answer is the
 /// check's. What the job's worktree holds besides its commits (files left uncommitted, hidden by a
-/// `.gitignore`, rewritten after the gate) isn't in it.
+/// `.gitignore`, rewritten after the gate) isn't in it. When an earlier check left one at `at`
+/// (a job's own, kept across its checks), it's reset to `head` and everything that check left is
+/// removed, ignored files too and whatever `.gitignore` it wrote, but for the folders in `keep`
+/// (the repository's `checkKeep`: its builds), which can still carry what an earlier check's code
+/// wrote there. obid's git here reads none of the person's own git settings.
 pub async fn fresh_checkout(
     agent: &Spec,
     base: &str,
     head: &str,
     at: &Path,
+    keep: &[String],
 ) -> Result<Spec, String> {
     let common = agent
         .git_common
@@ -743,15 +756,37 @@ pub async fn fresh_checkout(
         .ok_or("the job's clone has no folder")?
         .to_path_buf();
     let fail = |what: &str| format!("obid couldn't make the check's own checkout ({what})");
-    let _ = std::fs::remove_dir_all(at);
+    let name = format!(
+        "check-{}",
+        at.file_name().unwrap_or_default().to_string_lossy()
+    );
+    // git names the checkout's git folder after its worktree's folder: one of obid's own.
+    let work = at.join(&name);
+    let admin = common.join("worktrees").join(&name);
+    // One an earlier check of the job's left (a per-job `at`) is used again, its builds kept.
+    let again = work.join(".git").is_file() && admin.join("objects/pack").is_dir();
     let temp = at.join("tmp");
-    let objects = at.join("objects");
+    let objects = if again {
+        admin.join("objects")
+    } else {
+        let _ = std::fs::remove_dir_all(at);
+        at.join("objects")
+    };
     std::fs::create_dir_all(objects.join("pack")).map_err(|_| fail("its folder"))?;
     std::fs::create_dir_all(&temp).map_err(|_| fail("its folder"))?;
-    // The job's commits since the base, out of its own object folder, as one pack.
-    let env = git_env(agent);
+    // The job's commits since the base, out of its own object folder, as one pack: git pinned to
+    // the job's git folders as obid checked them, never the `.git` its agent could rewrite.
+    let agent_admin = agent
+        .git_admin
+        .clone()
+        .ok_or("the job's worktree has no git folder obid knows")?;
+    let mut env = git_env(agent);
+    env.extend(pinned_to(&agent_admin, &common, &agent.worktree));
     let env: Vec<(&str, &str)> = env.iter().map(|(k, v)| (*k, v.as_str())).collect();
-    let pack = objects.join("pack/pack").to_string_lossy().into_owned();
+    let pack = objects
+        .join(format!("pack/pack-{}", head.get(..12).unwrap_or(head)))
+        .to_string_lossy()
+        .into_owned();
     crate::git::run_bytes(
         &agent.worktree,
         &[
@@ -765,43 +800,44 @@ pub async fn fresh_checkout(
     )
     .await
     .map_err(|_| fail("copying its commits"))?;
-    let objects_text = objects.to_string_lossy().into_owned();
-    let name = format!(
-        "check-{}",
-        at.file_name().unwrap_or_default().to_string_lossy()
-    );
-    // git names the checkout's git folder after its worktree's folder: one of obid's own.
-    let work = at.join(&name);
-    crate::git::run(
-        &clone,
-        &[
-            OsStr::new("worktree"),
-            OsStr::new("add"),
-            OsStr::new("--no-checkout"),
-            OsStr::new("--detach"),
-            work.as_os_str(),
-            OsStr::new(head),
-        ],
-        &[("GIT_ALTERNATE_OBJECT_DIRECTORIES", objects_text.as_str())],
-    )
-    .await
-    .map_err(|_| fail("its worktree"))?;
-    let admin = common.join("worktrees").join(&name);
-    if !admin.is_dir() {
-        return Err(fail("its git folder"));
+    if !again {
+        let objects_text = objects.to_string_lossy().into_owned();
+        crate::git::run(
+            &clone,
+            &[
+                OsStr::new("worktree"),
+                OsStr::new("add"),
+                OsStr::new("--no-checkout"),
+                OsStr::new("--detach"),
+                work.as_os_str(),
+                OsStr::new(head),
+            ],
+            &[
+                ("GIT_ALTERNATE_OBJECT_DIRECTORIES", objects_text.as_str()),
+                NO_SETTINGS[0],
+                NO_SETTINGS[1],
+            ],
+        )
+        .await
+        .map_err(|_| fail("its worktree"))?;
+        if !admin.is_dir() {
+            return Err(fail("its git folder"));
+        }
+        std::fs::rename(&objects, admin.join("objects")).map_err(|_| fail("its objects"))?;
     }
-    std::fs::rename(&objects, admin.join("objects")).map_err(|_| fail("its objects"))?;
     let check = Spec {
         worktree: work,
-        git_admin: Some(admin),
-        git_common: Some(common),
+        git_admin: Some(admin.clone()),
+        git_common: Some(common.clone()),
         commits: true,
         temp,
         accounts: Vec::new(),
         frozen: Vec::new(),
+        fixed: Vec::new(),
         ..agent.clone()
     };
-    let env = git_env(&check);
+    let mut env = git_env(&check);
+    env.extend(pinned_to(&admin, &common, &check.worktree));
     let env: Vec<(&str, &str)> = env.iter().map(|(k, v)| (*k, v.as_str())).collect();
     crate::git::run(
         &check.worktree,
@@ -815,7 +851,37 @@ pub async fn fresh_checkout(
     )
     .await
     .map_err(|_| fail("its files"))?;
+    // Everything the last check left goes, whatever it ignored, but for the folders the
+    // repository keeps for its checks' builds (`-x` reads no `.gitignore`, only these `-e`s).
+    // The agent's own files were never here; what the last check's code (the agent's) wrote can
+    // be, in those folders only.
+    if again {
+        let kept: Vec<String> = keep
+            .iter()
+            .filter_map(|k| crate::merge::repo_path(k))
+            .map(|k| format!("/{k}/"))
+            .collect();
+        let mut args: Vec<&OsStr> = ["clean", "-q", "-ffdx"].map(OsStr::new).into();
+        for k in &kept {
+            args.extend([OsStr::new("-e"), OsStr::new(k)]);
+        }
+        crate::git::run(&check.worktree, &args, &env)
+            .await
+            .map_err(|_| fail("its files"))?;
+    }
     Ok(check)
+}
+
+/// git's environment for a worktree obid checked (its git folder `admin`, its clone's `common`),
+/// with none of the person's own settings ([`NO_SETTINGS`]).
+fn pinned_to(admin: &Path, common: &Path, worktree: &Path) -> Vec<(&'static str, String)> {
+    let mut env: Vec<(&'static str, String)> = NO_SETTINGS.map(|(k, v)| (k, v.to_owned())).into();
+    env.extend([
+        ("GIT_DIR", admin.to_string_lossy().into_owned()),
+        ("GIT_COMMON_DIR", common.to_string_lossy().into_owned()),
+        ("GIT_WORK_TREE", worktree.to_string_lossy().into_owned()),
+    ]);
+    env
 }
 
 /// Removes a checkout [`fresh_checkout`] made, and its folder `at`: what the check wrote goes with
@@ -847,6 +913,91 @@ pub async fn remove_checkout(check: &Spec, at: &Path) -> Result<(), String> {
             at.display()
         )),
     }
+}
+
+/// Puts commit `base`'s own copy of each of `paths` (as crate::merge::check_scripts gives them) into the
+/// check's checkout `work`, from obid's `clone` (PUBLISHING-6): what the job's commit has there
+/// is replaced, and a path that isn't a file on the base is taken out. Answers the paths the base
+/// has. A folder on the way that the commit made a link or a file is made a real one, so nothing
+/// is ever written outside `work`.
+pub async fn from_base(
+    clone: &Path,
+    base: &str,
+    work: &Path,
+    paths: &[String],
+) -> Result<Vec<String>, String> {
+    let mut had = Vec::new();
+    for path in paths {
+        let fail = || format!("obid couldn't read {path} as its base has it");
+        let listed = crate::git::git(clone, &["ls-tree", "-z", base, "--", path])
+            .await
+            .map_err(|_| fail())?;
+        // `<mode> blob <sha>\t<path>`, for a file; nothing, or anything else, for none.
+        let file = listed
+            .split_once('\t')
+            .map(|(meta, _)| meta.split(' ').collect::<Vec<_>>())
+            .filter(|meta| meta.len() == 3 && meta[1] == "blob" && meta[0] != "120000");
+        let copy = match file {
+            Some(meta) => {
+                let bytes = crate::git::run_bytes(
+                    clone,
+                    &[
+                        OsStr::new("cat-file"),
+                        OsStr::new("blob"),
+                        OsStr::new(meta[2]),
+                    ],
+                    &[],
+                    None,
+                )
+                .await
+                .map_err(|_| fail())?;
+                had.push(path.clone());
+                Some((bytes, meta[0] == "100755"))
+            }
+            None => None,
+        };
+        put(work, path, copy)
+            .map_err(|e| format!("obid couldn't put {path} as its base has it: {e}"))?;
+    }
+    Ok(had)
+}
+
+/// Writes `copy` (its bytes, and whether it runs) at `path` in `work`, or takes `path` out for
+/// none, through real folders only.
+fn put(work: &Path, path: &str, copy: Option<(Vec<u8>, bool)>) -> std::io::Result<()> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut at = work.to_path_buf();
+    let parts: Vec<&str> = path.split('/').collect();
+    let (name, folders) = parts.split_last().expect("a path has a name");
+    for folder in folders {
+        at.push(folder);
+        match at.symlink_metadata() {
+            Ok(meta) if meta.is_dir() => {}
+            // Not a folder in the commit: the path isn't there to take out.
+            _ if copy.is_none() => return Ok(()),
+            Ok(_) => {
+                std::fs::remove_file(&at)?;
+                std::fs::create_dir(&at)?;
+            }
+            Err(_) => std::fs::create_dir(&at)?,
+        }
+    }
+    at.push(name);
+    match at.symlink_metadata() {
+        Ok(meta) if meta.is_dir() => std::fs::remove_dir_all(&at)?,
+        Ok(_) => std::fs::remove_file(&at)?,
+        Err(_) => {}
+    }
+    if let Some((bytes, runs)) = copy {
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(if runs { 0o755 } else { 0o644 })
+            .open(&at)?
+            .write_all(&bytes)?;
+    }
+    Ok(())
 }
 
 /// What a check gets of the secrets its repository declares: the values to put in its environment,
@@ -1651,7 +1802,7 @@ required = false
         );
         let head = head_of(&job).await.unwrap();
         let at = dir.join("checks/job-1");
-        let check = fresh_checkout(&job, &base, &head, &at).await.unwrap();
+        let check = fresh_checkout(&job, &base, &head, &at, &[]).await.unwrap();
         // After the gate: what a survivor would write into the job's worktree.
         std::fs::write(job.worktree.join("run.sh"), "echo REWRITTEN\n").unwrap();
         assert!(!check.worktree.starts_with(&job.worktree) && !check.temp.starts_with(&job.temp));

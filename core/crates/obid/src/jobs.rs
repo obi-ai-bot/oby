@@ -1270,6 +1270,7 @@ impl Jobs {
     /// Starts the queued jobs there are slots for, follows the published pull requests, and tidies
     /// the clones once a day.
     pub fn resume(self: &Arc<Self>) {
+        self.sweep_checks();
         // The jobs obid kept going down with, each one item for the owner (#915).
         let looped: Vec<String> = self
             .lock()
@@ -1311,6 +1312,60 @@ impl Jobs {
                 self.schedule();
             }
             self.run_approved_limit_decisions().await;
+        }
+    }
+
+    /// Where job `id`'s own check checkout is kept between its checks.
+    fn check_home(&self, id: &str) -> PathBuf {
+        self.config.home.join("checks").join(id)
+    }
+
+    /// Removes job `id`'s own check checkout and what its checks built there, once its worker
+    /// ended: never another job's (cargo could run another checkout's binary).
+    async fn drop_checkout(&self, id: &str) {
+        let at = self.check_home(id);
+        let Some(job) = self.get(id).filter(|_| at.exists()) else {
+            return;
+        };
+        let common = self.clone_for(&job).join(".git");
+        let name = format!("check-{id}");
+        let check = Spec {
+            worktree: at.join(&name),
+            git_admin: Some(common.join("worktrees").join(&name)),
+            git_common: Some(common),
+            ..Spec::default()
+        };
+        if let Err(why) = crate::secretspec::remove_checkout(&check, &at).await {
+            tracing::warn!("job {id}: {why}");
+        }
+    }
+
+    /// What checks a stopped obid cut short left behind: their checkouts (`home/checks`) and
+    /// their git folders in the clones (`worktrees/check-*`). Nothing checks before it runs.
+    fn sweep_checks(&self) {
+        let home = &self.config.home;
+        let _ = std::fs::remove_dir_all(home.join("checks"));
+        let read = |dir: &Path| -> Vec<PathBuf> {
+            std::fs::read_dir(dir)
+                .map(|d| d.flatten().map(|e| e.path()).collect())
+                .unwrap_or_default()
+        };
+        let mut roots = vec![home.clone(), home.join("apart"), self.received_home()];
+        // And the clones moved aside, `marked/<when>/clones/…`, which jobs still use.
+        roots.extend(read(&home.join("marked")));
+        for root in roots {
+            for owner in read(&root.join("clones")) {
+                for clone in read(&owner) {
+                    for admin in read(&clone.join(".git/worktrees")) {
+                        if admin
+                            .file_name()
+                            .is_some_and(|n| n.to_string_lossy().starts_with("check-"))
+                        {
+                            let _ = std::fs::remove_dir_all(admin);
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -3029,6 +3084,7 @@ impl Jobs {
                 if let Some(connections) = jobs.connections.get() {
                     connections.close_job(&id).await;
                 }
+                jobs.drop_checkout(&id).await;
                 if let Some(egress) = jobs.egress.get() {
                     egress.close(&id);
                 }
@@ -5819,97 +5875,27 @@ impl Jobs {
         .is_ok_and(|changes| !changes.is_empty())
     }
 
-    /// What isn't committed in the job's worktree, as `git status` lists it (untracked files too,
-    /// ignored ones not), each entry with the hash of the file there now (`-` for none), all read
-    /// in its sandbox; none when git can't say.
-    async fn uncommitted_entries(&self, id: &str) -> Option<BTreeSet<String>> {
-        let status = self
+    /// Where the job's worktree is as its check starts (PUBLISHING-5): its HEAD (empty when git
+    /// can't say), and whether anything isn't committed (untracked files too, ignored ones not).
+    /// Dirty when git can't say. The check never writes there: it runs in a checkout of its own.
+    async fn before_check(&self, id: &str) -> CheckStart {
+        let dirty = !self
             .sandboxed_git(
                 id,
-                &[
-                    "status",
-                    "--porcelain",
-                    "-z",
-                    "--no-renames",
-                    "--untracked-files=all",
-                ],
+                &["status", "--porcelain", "--untracked-files=all"],
                 None,
             )
             .await
-            .ok()?;
-        let status = String::from_utf8_lossy(&status);
-        let entries: Vec<&str> = status.split('\0').filter(|e| e.len() > 3).collect();
-        let worktree = self.worktree_path(id);
-        let files: Vec<&str> = entries
-            .iter()
-            .map(|e| &e[3..])
-            .filter(|path| {
-                !path.contains('\n')
-                    && worktree
-                        .join(path)
-                        .symlink_metadata()
-                        .is_ok_and(|m| m.is_file())
-            })
-            .collect();
-        let hashes = if files.is_empty() {
-            Vec::new()
-        } else {
-            self.sandboxed_git(
-                id,
-                &["hash-object", "--no-filters", "--stdin-paths"],
-                Some(files.join("\n").into_bytes()),
-            )
-            .await
-            .ok()?
-        };
-        let hashes = String::from_utf8_lossy(&hashes);
-        let of: HashMap<&str, &str> = files.iter().copied().zip(hashes.lines()).collect();
-        Some(
-            entries
-                .iter()
-                .map(|e| format!("{e}\t{}", of.get(&e[3..]).unwrap_or(&"-")))
-                .collect(),
-        )
-    }
-
-    /// Where the job's worktree is as its check starts (PUBLISHING-5): its HEAD (empty when git
-    /// can't say), what isn't committed, and whether any of that is the job's own: what its
-    /// earlier checks left there (`Job::check_left`), unchanged, isn't. Dirty when git can't say.
-    async fn before_check(&self, id: &str) -> CheckStart {
-        let changes = self.uncommitted_entries(id).await;
-        let left = self.get(id).map(|j| j.check_left).unwrap_or_default();
-        let dirty = changes
-            .as_ref()
-            .is_none_or(|changes| changes.iter().any(|c| !left.contains(c)));
+            .is_ok_and(|changes| changes.is_empty());
         CheckStart {
             head: self.worktree_head(id).await,
-            changes,
             dirty,
         }
     }
 
-    /// Keeps with the job what the check just run left in its worktree (`Job::check_left`): what
-    /// it changed or made since `start`, and what earlier checks left that's still there
-    /// unchanged. Nothing when git can't say.
-    async fn after_check(&self, id: &str, start: &CheckStart) {
-        let (Some(before), Some(after)) = (&start.changes, self.uncommitted_entries(id).await)
-        else {
-            self.update(id, |job| job.check_left.clear());
-            return;
-        };
-        self.update(id, |job| {
-            let kept: Vec<String> = after
-                .iter()
-                .filter(|e| !before.contains(*e) || job.check_left.contains(*e))
-                .cloned()
-                .collect();
-            job.check_left = kept;
-        });
-    }
-
     /// The commit a passing check passed on (PUBLISHING-5): the worktree's HEAD before it, when
-    /// nothing of the job's own was uncommitted then and the check left HEAD there; else why it
-    /// didn't check them.
+    /// nothing was uncommitted then and HEAD was still there after it; else why it didn't check
+    /// them.
     async fn checked_commit(&self, id: &str, start: CheckStart) -> Result<String, String> {
         if start.dirty {
             return Err(CHECKED_UNCOMMITTED.into());
@@ -6312,6 +6298,7 @@ impl Jobs {
             loopback: false,
             proxied: false,
             frozen: Vec::new(),
+            fixed: Vec::new(),
         }
     }
 
@@ -6664,6 +6651,7 @@ impl Jobs {
             loopback: false,
             proxied: false,
             frozen,
+            fixed: Vec::new(),
         };
         // No file it writes grows past 256 MB (bash's `ulimit -f` counts KB), then bash runs the
         // command, which comes as an argument, never inside code. `oby-shell` names it, for the
@@ -6748,6 +6736,7 @@ impl Jobs {
             loopback: false,
             proxied: false,
             frozen,
+            fixed: Vec::new(),
         };
         let mut extra: Vec<(&str, OsString)> = Vec::new();
         match &account.config_dir {
@@ -7296,12 +7285,14 @@ impl Jobs {
         Some(self.transcripts.read(id, after, limit))
     }
 
-    /// Runs the repository's check in the job sandbox, with no network but, for an owner's job
-    /// run here, loopback; one at a time, its limit counted from when it starts.
+    /// Runs the repository's check on commit `head` in the job sandbox (in a checkout of its own,
+    /// [`Jobs::base_checkout`]), with no network but, for an owner's job run here, loopback; one at
+    /// a time, its limit counted from when it starts.
     async fn check(
         &self,
         id: &str,
         command: &str,
+        head: &str,
         spec: &Spec,
         signal: &watch::Receiver<Signal>,
     ) -> Result<CheckRun, String> {
@@ -7337,7 +7328,7 @@ impl Jobs {
                 turn.map_err(|e| format!("obid couldn't run the check: {e}"))?
             }
             _ = async { while *stop.borrow_and_update() == Signal::Run && stop.changed().await.is_ok() {} } => {
-                return Ok(CheckRun { passed: false, output: String::new() });
+                return Ok(CheckRun { passed: false, output: String::new(), unchecked: None });
             }
         };
         if waiting {
@@ -7349,28 +7340,34 @@ impl Jobs {
         // The secrets its repository declares on its base branch, for an owner's job only.
         // Boxed, as each of the secrets' steps below: they'd grow every job's future on the stack.
         let (mut declared, gate) = Box::pin(self.declared_secrets(id, &spec, raw_network)).await;
-        // With values, the check runs in a checkout obid makes from the commit the gate passed,
-        // apart from everything the job's sandbox can write, and gone after it (crate::secretspec).
-        let mut fresh: Option<(Spec, PathBuf)> = None;
-        if let Some((base, head)) = gate.filter(|_| !declared.names().is_empty()) {
-            let at = self
+        // Every check runs in a checkout obid makes of the commit (the gate's, with values), apart
+        // from everything the job's sandbox can write, with nothing ignored or untracked, and gone
+        // after it (crate::secretspec); the base's own check script and `.gitleaks.toml` in it
+        // (PUBLISHING-6). Without that, nothing counts as checked (PUBLISHING-8).
+        // Its own checkout, kept across its checks with what they built, and gone with its worker
+        // ([`Jobs::drop_checkout`]); with the owner's secrets, one for this check alone.
+        let kept = gate.is_none();
+        let at = match kept {
+            true => self.check_home(id),
+            false => self
                 .config
                 .home
                 .join("checks")
-                .join(format!("{id}-{}", random_check_id()?));
-            match Box::pin(crate::secretspec::fresh_checkout(&spec, &base, &head, &at)).await {
-                Ok(check) => fresh = Some((check, at)),
-                Err(why) => {
-                    declared = crate::secretspec::Filled::refused(format!(
-                        "obid gave this check none of its owner's secrets: {why}."
-                    ));
-                }
-            }
-        }
-        let spec = match &fresh {
-            Some((check, _)) => check.clone(),
-            None => spec,
+                .join(format!("{id}-{}", random_check_id()?)),
         };
+        let (spec, notes) =
+            match Box::pin(self.base_checkout(id, command, head, &spec, gate, &at)).await {
+                Ok(check) => check,
+                Err(why) => {
+                    tracing::info!("job {id}: nothing counts as checked: {why}");
+                    self.update(id, |job| job.checked = None);
+                    return Ok(CheckRun {
+                        passed: false,
+                        output: why.clone(),
+                        unchecked: Some(why),
+                    });
+                }
+            };
         let watch = Arc::new(Mutex::new(
             crate::facts::CheckWatch::new(marker, crate::facts::steps(command))
                 .redacting(declared.secrets()),
@@ -7429,10 +7426,9 @@ impl Jobs {
                 _ = tick.tick() => record(None),
             }
         };
-        // What it wrote goes with its own checkout, which no job's sandbox ever reads.
-        if let Some((check, at)) = &fresh
-            && let Err(why) = Box::pin(crate::secretspec::remove_checkout(check, at)).await
-        {
+        // With the owner's secrets, what it wrote goes with its own checkout, which no job's
+        // sandbox ever reads.
+        if !kept && let Err(why) = Box::pin(crate::secretspec::remove_checkout(&spec, &at)).await {
             tracing::warn!("job {id}: {why}");
         }
         record(Some(run.as_ref().is_ok_and(|run| run.passed)));
@@ -7443,9 +7439,175 @@ impl Jobs {
             false => None,
         };
         self.update(id, |job| job.checked = checked);
-        run.output = declared.noted(&run.output);
+        run.output = declared.noted(&format!("{}\n{}", notes.join("\n"), run.output));
         let _ = std::fs::write(self.log_path(id, "check.log"), &run.output);
         Ok(run)
+    }
+
+    /// The checkout job `id`'s check of `command` runs in, at `at` (PUBLISHING-6): of `head`, the
+    /// commit its worktree was at when the check started, with the base's own copy of the check's
+    /// scripts ([`crate::merge::check_scripts`], each naming a file at the commit or on the base)
+    /// and of `.gitleaks.toml` (none when the base has none), frozen there with the folders they're
+    /// in. The base is the job's when it's the repository's default branch or the one its
+    /// remembered workflow merges into, else the default branch: never a branch obid pushed
+    /// (`oby/…`) or any other, which a task could have written. As obid's clone has it when the
+    /// check starts. The secrets' `gate`, when it passed, passed `head`. With what obid notes atop
+    /// the check's output; else why nothing counts as checked (PUBLISHING-8), nothing left at `at`.
+    async fn base_checkout(
+        &self,
+        id: &str,
+        command: &str,
+        head: &str,
+        spec: &Spec,
+        gate: Option<(String, String)>,
+        at: &Path,
+    ) -> Result<(Spec, Vec<String>), String> {
+        let unchecked = |why: String| {
+            format!(
+                "Not published: {why}, so nothing counts as checked. Read its change, then Publish it by hand."
+            )
+        };
+        let job = self.get(id).ok_or("the job is gone")?;
+        if !git::is_sha(head) {
+            return Err(unchecked(
+                "obid couldn't read the commit its worktree is at".into(),
+            ));
+        }
+        if gate.as_ref().is_some_and(|(_, gated)| gated != head) {
+            return Err(CHECK_MOVED_HEAD.into());
+        }
+        let repo = self
+            .repo(&job.repo)
+            .ok_or_else(|| unchecked("obid doesn't know its repository's default branch".into()))?;
+        let merges_into = crate::memory::workflow(&self.config.home, &job.repo)
+            .and_then(|m| m.workflow)
+            .map(|w| w.base);
+        // A job on another base (stacked on `oby/a`) gets where its work merges into.
+        let base = job
+            .base
+            .clone()
+            .filter(|b| *b == repo.default_branch || Some(b) == merges_into.as_ref())
+            .or(merges_into.filter(|b| !b.starts_with("oby/")))
+            .unwrap_or(repo.default_branch.clone());
+        if !git::is_branch_name(&base) || base.starts_with("oby/") {
+            return Err(unchecked(format!(
+                "{base} isn't a branch obid takes a check from"
+            )));
+        }
+        let clone = self.clone_for(&job);
+        // The job's own base was fetched as the check started (Jobs::onto_base); another isn't.
+        if job.base.as_ref().is_some_and(|b| *b != base) {
+            let tracking = format!("refs/remotes/origin/{base}");
+            let preparing = self.preparing(&repo.repo);
+            let _fetching = preparing.lock().await;
+            if let Err(e) = git::fetch(
+                &clone,
+                &repo.remote,
+                &[format!("+refs/heads/{base}:{tracking}")],
+            )
+            .await
+            {
+                return Err(unchecked(format!("obid couldn't fetch {base}: {e}")));
+            }
+            Box::pin(self.taint_unless_ours(
+                &clone,
+                &repo,
+                &tracking,
+                Some(&base),
+                &format!("the branch {base}, fetched for a job's check"),
+            ))
+            .await;
+        }
+        let base_commit = git::git(
+            &clone,
+            &[
+                "rev-parse",
+                "--verify",
+                "--quiet",
+                &format!("refs/remotes/origin/{base}^{{commit}}"),
+            ],
+        )
+        .await
+        .map_err(|_| unchecked(format!("obid's clone doesn't have {base}")))?;
+        let check =
+            crate::secretspec::fresh_checkout(spec, &base_commit, head, at, &repo.check_keep)
+                .await
+                .map_err(unchecked);
+        let mut check = match check {
+            Ok(check) => check,
+            Err(why) => {
+                let _ = std::fs::remove_dir_all(at);
+                return Err(why);
+            }
+        };
+        // Its home is the job's, as before, with the caches its agent filled (cargo's registry,
+        // npm's): the check has no network to fetch them. One with the owner's secrets gets a
+        // home of its own, which no job's sandbox ever wrote.
+        // ponytail: a cache the agent wrote can still steer the check (a `~/.cargo/config.toml`);
+        // a home rebuilt from the base's lockfiles when that matters.
+        if gate.is_none() {
+            check.temp = spec.temp.clone();
+        }
+        let scripts: Vec<String> = crate::merge::check_scripts(command).into_iter().collect();
+        let at_commit: Vec<bool> = scripts
+            .iter()
+            .map(|p| check.worktree.join(p).symlink_metadata().is_ok())
+            .collect();
+        let mut paths = scripts.clone();
+        paths.push(".gitleaks.toml".into());
+        let made =
+            crate::secretspec::from_base(&clone, &base_commit, &check.worktree, &paths).await;
+        let missing = match &made {
+            Ok(had) => scripts
+                .iter()
+                .zip(at_commit)
+                .find(|(path, at_commit)| *at_commit && !had.contains(path))
+                .map(|(path, _)| {
+                    unchecked(format!(
+                        "its check runs {path} as {base} has it, and {base} has no {path}"
+                    ))
+                }),
+            Err(why) => Some(unchecked(why.clone())),
+        };
+        if let Some(why) = missing {
+            if let Err(e) = crate::secretspec::remove_checkout(&check, at).await {
+                tracing::warn!("job {id}: {e}");
+            }
+            return Err(why);
+        }
+        let had = made.unwrap_or_default();
+        // What the check runs as its base has it can't be rewritten while it runs (a shell reads
+        // its script as it goes), nor moved out from under that with a folder it's in.
+        for path in &had {
+            check.frozen.push(check.worktree.join(path));
+            let mut folder = std::path::PathBuf::new();
+            for part in path
+                .split('/')
+                .collect::<Vec<_>>()
+                .split_last()
+                .map_or(&[][..], |(_, f)| f)
+            {
+                folder.push(part);
+                let fixed = check.worktree.join(&folder);
+                if !check.fixed.contains(&fixed) {
+                    check.fixed.push(fixed);
+                }
+            }
+        }
+        let ran: Vec<&String> = scripts.iter().filter(|p| had.contains(p)).collect();
+        let note = match ran.as_slice() {
+            [] => format!(
+                "obid: no script found in this check, so the commit's own files run (`.gitleaks.toml` is {base}'s)."
+            ),
+            ran => format!(
+                "obid: this check runs {} as {base} has it, on the commit alone.",
+                ran.iter()
+                    .map(|p| p.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+        };
+        Ok((check, vec![note]))
     }
 
     /// Why the code job `job`'s check would run isn't only its owner's own, so the check gets none
@@ -8233,7 +8395,7 @@ impl Jobs {
                     job.phase = Some(Phase::Check);
                     job.step = format!("Running {command}");
                 });
-                let run = self.check(id, command, &spec, signal).await?;
+                let run = self.check(id, command, &head, &spec, signal).await?;
                 if *signal.borrow() != Signal::Run {
                     return Ok(());
                 }
@@ -8719,6 +8881,9 @@ impl Jobs {
         let mut told_to_commit = false;
         // What its last passing check passed on, or why it didn't check its commits (PUBLISHING-5).
         let mut checked: Option<Result<String, String>> = None;
+        // Why nothing counted as checked though its commits are kept for Publish by hand
+        // (PUBLISHING-8).
+        let mut by_hand: Option<String> = None;
         // How the transcript opens the next turn, when it's obid's words that start it.
         let mut opening: Option<String> = None;
         // Its base moved and its commits didn't rebase onto it: its agent had its one round to do it.
@@ -8764,13 +8929,15 @@ impl Jobs {
                     });
                     stages.begin("check");
                     let before = self.before_check(id).await;
-                    let run = self.check(id, &command, &spec, signal).await?;
-                    self.after_check(id, &before).await;
+                    let run = self
+                        .check(id, &command, &before.head, &spec, signal)
+                        .await?;
                     if *signal.borrow() != Signal::Run {
                         return Ok(());
                     }
-                    if run.passed {
+                    if run.passed || run.unchecked.is_some() {
                         checked = Some(self.checked_commit(id, before).await);
+                        by_hand = run.unchecked;
                         let words = self.last_turn(id);
                         to_publish = words.is_empty();
                         if !to_publish {
@@ -9193,13 +9360,13 @@ impl Jobs {
                     });
                     stages.begin("check");
                     let before = self.before_check(id).await;
-                    let run = self.check(id, command, &spec, signal).await?;
-                    self.after_check(id, &before).await;
+                    let run = self.check(id, command, &before.head, &spec, signal).await?;
                     if *signal.borrow() != Signal::Run {
                         return Ok(());
                     }
-                    if run.passed {
+                    if run.passed || run.unchecked.is_some() {
                         checked = Some(self.checked_commit(id, before).await);
+                        by_hand = run.unchecked;
                         // The last turn, unless the owner's words came meanwhile: those are the next.
                         let words = self.last_turn(id);
                         if words.is_empty() {
@@ -9342,6 +9509,12 @@ impl Jobs {
                 && job.kind != "research"
             {
                 self.end_done(id, commits, pushed, |job| job.reason = Some(why.clone()));
+                return Ok(());
+            }
+            if let Some(why) = by_hand.take()
+                && job.kind != "research"
+            {
+                self.end_done(id, commits, pushed, |job| job.reason = Some(why));
                 return Ok(());
             }
             // The job as it would end, which is what gets published.
@@ -12427,7 +12600,6 @@ fn check_failed(command: &str, output: &str) -> String {
 /// The worktree as a check starts ([`Jobs::before_check`]).
 struct CheckStart {
     head: String,
-    changes: Option<BTreeSet<String>>,
     dirty: bool,
 }
 
@@ -12437,6 +12609,9 @@ pub struct CheckRun {
     pub passed: bool,
     /// Its output, stdout and stderr together, from the end.
     pub output: String,
+    /// Why it didn't run, so nothing counts as checked, though the job ends done and its owner
+    /// may publish it by hand (PUBLISHING-8).
+    pub unchecked: Option<String>,
 }
 
 /// Runs a check's command line: its output together, at most [`CHECK_LIMIT`] long, ended with
@@ -12577,7 +12752,11 @@ pub async fn run_check(
         output.push_str(CHECK_TOO_LONG);
     }
     let passed = !timed_out && status.is_some_and(|ended| sandbox_succeeded(&ended, env));
-    Ok(CheckRun { passed, output })
+    Ok(CheckRun {
+        passed,
+        output,
+        unchecked: None,
+    })
 }
 
 fn random_check_id() -> Result<String, String> {
@@ -12717,6 +12896,7 @@ mod tests {
             loopback: false,
             proxied: false,
             frozen: Vec::new(),
+            fixed: Vec::new(),
         };
         let account = crate::config::Account {
             id: "work".into(),
@@ -12931,6 +13111,7 @@ mod tests {
             loopback: false,
             proxied: false,
             frozen: Vec::new(),
+            fixed: Vec::new(),
         };
         let account = crate::config::Account {
             id: "default".into(),

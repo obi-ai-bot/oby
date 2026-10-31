@@ -1529,24 +1529,27 @@ fn publishing_5_a_check_that_didnt_check_the_commits_publishes_nothing() {
         Some(first.as_str())
     );
 
-    // A check that commits while it runs.
+    // A check that commits while it runs commits in its own checkout (PUBLISHING-6): the job's
+    // branch never gets that commit, and what goes out is the commit the check passed on.
     let id = dispatch(
         &obid,
         json!({"repo": "obi-e2e/fixture-app", "kind": "build", "task": "COMMIT: other.txt",
                "check": "git -c user.name=x -c user.email=x@x -c commit.gpgsign=false commit -q --allow-empty -m sneaky"}),
     );
     let job = ended(&obid, &id);
-    let moved = "Not published: its commits changed while its check ran, so the check didn't pass on the ones there now. Tell Oby to carry on, and it checks them again.";
     assert_eq!(job["status"], "done", "{job}\n{}", obid.log());
-    assert_eq!(job["reason"], moved, "{job}");
-    no_publish(&id, moved);
-    assert_eq!(remote_branch(&remote, &format!("oby/build-{id}")), None);
+    assert_eq!(job["reason"], Value::Null, "{job}");
+    let pushed = remote_branch(&remote, &format!("oby/build-{id}")).unwrap();
+    assert_eq!(
+        git(&remote, &["log", "-1", "--format=%s", &pushed]),
+        "Add other.txt"
+    );
 }
 
-/// PUBLISHING-5: what a check leaves in the worktree (a report it writes, untracked) isn't the
-/// job's uncommitted work. Its first run's check writes `report.xml`; Try again's next check
-/// starts with it there, unchanged, and the job publishes its new commit without being told to
-/// commit the report, which never goes out. (The stand-in agent can't do a second round of one
+/// PUBLISHING-5 and 6: what a check writes (a report, untracked) stays in its own checkout, so it's
+/// never the job's uncommitted work. Its first run's check writes `report.xml`; Try again's job
+/// publishes its new commit without being told to commit the report, which never reaches the
+/// job's worktree or goes out. (The stand-in agent can't do a second round of one
 /// run: the failed check's prompt quotes its task, and it commits the same file again.)
 #[test]
 fn publishing_5_what_a_check_leaves_isnt_uncommitted_work() {
@@ -1576,6 +1579,334 @@ fn publishing_5_what_a_check_leaves_isnt_uncommitted_work() {
     let files = git(&remote, &["ls-tree", "-r", "--name-only", &pushed]);
     assert!(files.lines().any(|f| f == "second.txt"), "{files}");
     assert!(!files.lines().any(|f| f == "report.xml"), "{files}");
+    // The report stayed in the check's own checkout, gone with it.
+    let job = call(&obid, "GET", &format!("/v1/jobs/{id}"), None).body;
+    assert!(
+        !Path::new(job["worktree"].as_str().unwrap())
+            .join("report.xml")
+            .exists()
+    );
+}
+
+/// The fixture's remote with `files` (a path, its content, whether it runs) committed on `main`
+/// by someone, as a repository's own check script is there before any job.
+fn base_with(folder: &Folder, files: &[(&str, &str, bool)]) -> PathBuf {
+    let remote = fixture(&folder.0.join("fixture"));
+    git(
+        &folder.0,
+        &[
+            "clone",
+            "-q",
+            remote.to_str().unwrap(),
+            folder.0.join("theirs").to_str().unwrap(),
+        ],
+    );
+    commit_on(folder, "main", files);
+    remote
+}
+
+/// Someone's commit of `files` on `branch` of the remote [`base_with`] made, from `main`.
+fn commit_on(folder: &Folder, branch: &str, files: &[(&str, &str, bool)]) {
+    use std::os::unix::fs::PermissionsExt;
+    let theirs = folder.0.join("theirs");
+    git(&theirs, &["checkout", "-q", "-B", branch, "origin/main"]);
+    for (path, text, runs) in files {
+        let at = theirs.join(path);
+        std::fs::create_dir_all(at.parent().unwrap()).unwrap();
+        std::fs::write(&at, text).unwrap();
+        let mode = if *runs { 0o755 } else { 0o644 };
+        std::fs::set_permissions(&at, std::fs::Permissions::from_mode(mode)).unwrap();
+    }
+    git(&theirs, &["add", "-A"]);
+    git(
+        &theirs,
+        &[
+            "-c",
+            "user.name=Someone",
+            "-c",
+            "user.email=someone@example.com",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-q",
+            "-m",
+            "The check",
+        ],
+    );
+    git(&theirs, &["push", "-q", "origin", branch]);
+}
+
+/// obid on the remote [`base_with`] made, `bin` first on its `PATH`.
+fn obid_on(folder: &Folder, remote: &Path, bin: &Path) -> Obid {
+    let config = config(&folder.0, remote, &agent());
+    sign_in(folder, "stub");
+    start(&folder.0, &config, Some(bin))
+}
+
+/// PUBLISHING-6: the check runs in a clean checkout of the commit, with the base's own
+/// `.gitleaks.toml`: a `.env` the agent left (ignored, so not uncommitted work) isn't there, and
+/// the job's own `.gitleaks.toml` isn't what the check reads, though it's what goes out.
+#[test]
+fn publishing_6_the_check_runs_on_the_commit_alone_with_the_bases_files() {
+    let folder = Folder::new("publish-base-files");
+    let bin = fake_gh(&folder.0);
+    let remote = base_with(
+        &folder,
+        &[
+            (".gitignore", ".env\n", false),
+            (".gitleaks.toml", "# BASE\n", false),
+        ],
+    );
+    let obid = obid_on(&folder, &remote, &bin);
+    // Its own `.gitleaks.toml` says "hello": the check reads the base's.
+    let id = dispatch(
+        &obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "build", "task": "COMMIT: .gitleaks.toml",
+               "check": "grep -q BASE .gitleaks.toml"}),
+    );
+    let job = ended(&obid, &id);
+    assert_eq!(job["published"], PULL, "{job}\n{}", obid.log());
+    let pushed = remote_branch(&remote, &format!("oby/build-{id}")).unwrap();
+    assert_eq!(
+        git(&remote, &["show", &format!("{pushed}:.gitleaks.toml")]),
+        "hello"
+    );
+    // A `.env` it left makes no check pass: the commit, as it goes out, has none.
+    let id = dispatch(
+        &obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "build", "task": "COMMIT: hello.txt LEAVE: .env",
+               "check": "test -f .env", "rounds": 1}),
+    );
+    let job = ended(&obid, &id);
+    let worktree = Path::new(job["worktree"].as_str().unwrap());
+    assert!(worktree.join(".env").is_file(), "{job}");
+    assert_eq!(job["checks"][0]["steps"][0]["passed"], false, "{job}");
+    assert_ne!(job["status"], "done", "{job}");
+    assert_eq!(remote_branch(&remote, &format!("oby/build-{id}")), None);
+}
+
+/// PUBLISHING-7: a task that rewrites its check script to `exit 0` still runs the base's, which
+/// fails: nothing goes out.
+#[test]
+fn publishing_7_a_check_rewritten_to_pass_still_runs_the_bases() {
+    let folder = Folder::new("publish-base-script");
+    let bin = fake_gh(&folder.0);
+    let remote = base_with(
+        &folder,
+        &[(
+            "check.sh",
+            "#!/bin/sh\necho the base check ran\nexit 1\n",
+            true,
+        )],
+    );
+    let obid = obid_on(&folder, &remote, &bin);
+    let id = dispatch(
+        &obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "build", "task": "PASS: check.sh",
+               "check": "./check.sh", "rounds": 1}),
+    );
+    let job = ended(&obid, &id);
+    assert_eq!(
+        job["checks"][0]["steps"][0]["passed"],
+        false,
+        "{job}\n{}",
+        obid.log()
+    );
+    assert_ne!(job["status"], "done", "{job}");
+    let log = std::fs::read_to_string(obid.home.join(format!("logs/{id}/check.log"))).unwrap();
+    assert!(log.contains("the base check ran"), "{log}");
+    assert_eq!(remote_branch(&remote, &format!("oby/build-{id}")), None);
+}
+
+/// PUBLISHING-7: what the check runs can't rewrite the base's script while it runs (a shell reads
+/// it as it goes: emptied, it ends with the last command's 0), nor move it out from under that
+/// with a folder it's in, nor rewrite the base's `.gitleaks.toml`.
+#[test]
+fn publishing_7_a_running_check_cant_rewrite_the_bases_script() {
+    let folder = Folder::new("publish-script-frozen");
+    let bin = fake_gh(&folder.0);
+    let script = "#!/bin/sh\ntrue > tools/ci/check.sh\nmv tools moved && true > moved/ci/check.sh\nmv tools/ci tools/moved && true > tools/moved/check.sh\ntrue > .gitleaks.toml && echo the gitleaks config was rewritten\ntest -s .gitleaks.toml && test -s tools/ci/check.sh && test ! -e moved && test ! -e tools/moved && echo the base check stayed\nexit 1\n";
+    let remote = base_with(
+        &folder,
+        &[
+            ("tools/ci/check.sh", script, true),
+            (".gitleaks.toml", "# BASE\n", false),
+        ],
+    );
+    let obid = obid_on(&folder, &remote, &bin);
+    let id = dispatch(
+        &obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "build", "task": "COMMIT: hello.txt",
+               "check": "tools/ci/check.sh", "rounds": 1}),
+    );
+    let job = ended(&obid, &id);
+    assert_eq!(
+        job["checks"][0]["steps"][0]["passed"],
+        false,
+        "{job}\n{}",
+        obid.log()
+    );
+    let log = std::fs::read_to_string(obid.home.join(format!("logs/{id}/check.log"))).unwrap();
+    assert!(log.contains("the base check stayed"), "{log}");
+    assert!(!log.contains("the gitleaks config was rewritten"), "{log}");
+    assert!(
+        log.contains("runs tools/ci/check.sh as main has it"),
+        "{log}"
+    );
+    assert_eq!(remote_branch(&remote, &format!("oby/build-{id}")), None);
+}
+
+/// PUBLISHING-6: a job based on a branch obid pushed (`oby/…`, another task's, whose check script
+/// passes) is checked with the default branch's script, never that branch's.
+#[test]
+fn publishing_6_a_check_never_comes_from_a_branch_obid_pushed() {
+    let folder = Folder::new("publish-oby-base");
+    let bin = fake_gh(&folder.0);
+    let remote = base_with(
+        &folder,
+        &[(
+            "check.sh",
+            "#!/bin/sh\necho the check main has\nexit 1\n",
+            true,
+        )],
+    );
+    commit_on(
+        &folder,
+        "oby/a",
+        &[("check.sh", "#!/bin/sh\nexit 0\n", true)],
+    );
+    let obid = obid_on(&folder, &remote, &bin);
+    let id = dispatch(
+        &obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "build", "task": "COMMIT: hello.txt",
+               "base": "oby/a", "check": "./check.sh", "rounds": 1}),
+    );
+    let job = ended(&obid, &id);
+    assert_eq!(
+        job["checks"][0]["steps"][0]["passed"],
+        false,
+        "{job}\n{}",
+        obid.log()
+    );
+    let log = std::fs::read_to_string(obid.home.join(format!("logs/{id}/check.log"))).unwrap();
+    assert!(log.contains("the check main has"), "{log}");
+    assert_eq!(remote_branch(&remote, &format!("oby/build-{id}")), None);
+}
+
+/// PUBLISHING-5: a commit that lands on the job's worktree while its check runs (not the check's:
+/// it can't reach that worktree) leaves nothing checked: done, why, nothing pushed.
+#[test]
+fn publishing_5_a_commit_made_while_the_check_runs_isnt_checked() {
+    let folder = Folder::new("publish-moved-head");
+    let bin = fake_gh(&folder.0);
+    let (obid, remote, _) = obid_with(&folder, &bin);
+    let id = dispatch(
+        &obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "build", "task": "COMMIT: hello.txt",
+               "check": "sleep 4"}),
+    );
+    let started = std::time::Instant::now();
+    let job = loop {
+        let job = call(&obid, "GET", &format!("/v1/jobs/{id}"), None).body;
+        // Its check's step is running: it's checking the commit it read before it.
+        if job["checks"][0]["steps"][0]["running"] == true || started.elapsed().as_secs() > 60 {
+            break job;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    };
+    assert_eq!(job["checks"][0]["steps"][0]["running"], true, "{job}");
+    // With the job's own object folder, where its commits are, as its agent's git has it.
+    let worktree = Path::new(job["worktree"].as_str().unwrap());
+    let pointer = std::fs::read_to_string(worktree.join(".git")).unwrap();
+    let admin = PathBuf::from(pointer.trim().strip_prefix("gitdir: ").unwrap());
+    let common = admin.parent().unwrap().parent().unwrap();
+    let made = std::process::Command::new("git")
+        .env("GIT_OBJECT_DIRECTORY", admin.join("objects"))
+        .env("GIT_ALTERNATE_OBJECT_DIRECTORIES", common.join("objects"))
+        .args([
+            "-c",
+            "user.name=x",
+            "-c",
+            "user.email=x@x",
+            "-c",
+            "commit.gpgsign=false",
+        ])
+        .args(["commit", "-q", "--allow-empty", "-m", "outside"])
+        .current_dir(worktree)
+        .output()
+        .unwrap();
+    assert!(
+        made.status.success(),
+        "{}",
+        String::from_utf8_lossy(&made.stderr)
+    );
+    let job = ended(&obid, &id);
+    let moved = "Not published: its commits changed while its check ran, so the check didn't pass on the ones there now. Tell Oby to carry on, and it checks them again.";
+    assert_eq!(job["status"], "done", "{job}\n{}", obid.log());
+    assert_eq!(job["reason"], moved, "{job}");
+    assert_eq!(remote_branch(&remote, &format!("oby/build-{id}")), None);
+}
+
+/// What a check cut short by obid's stop left (its checkout, its git folder in the clone) is gone
+/// once obid starts again; the clone's other worktrees stay.
+#[test]
+fn a_check_cut_short_leaves_nothing_after_a_restart() {
+    let folder = Folder::new("publish-check-sweep");
+    let bin = fake_gh(&folder.0);
+    let remote = fixture(&folder.0.join("fixture"));
+    let home = folder.0.join("home");
+    let admins = home.join("clones/obi-e2e/fixture-app/.git/worktrees");
+    for left in [
+        home.join("checks/abc-123/tmp"),
+        admins.join("check-abc-123/objects"),
+        admins.join("abc"),
+    ] {
+        std::fs::create_dir_all(left).unwrap();
+    }
+    let obid = start(&folder.0, &config(&folder.0, &remote, &agent()), Some(&bin));
+    assert_eq!(call(&obid, "GET", "/v1/jobs", None).status, 200);
+    assert!(!home.join("checks").exists());
+    assert!(!admins.join("check-abc-123").exists());
+    assert!(admins.join("abc").exists());
+}
+
+/// PUBLISHING-8: a check whose script the base doesn't have (added in this very task) counts for
+/// nothing: the job ends done with why, nothing published by itself, and Publish by hand, a
+/// click, pushes it.
+#[test]
+fn publishing_8_a_check_the_base_doesnt_have_counts_for_nothing() {
+    let folder = Folder::new("publish-no-base-script");
+    let bin = fake_gh(&folder.0);
+    let (obid, remote, _) = obid_with(&folder, &bin);
+    let id = dispatch(
+        &obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "build", "task": "PASS: check.sh",
+               "check": "sh check.sh"}),
+    );
+    let job = ended(&obid, &id);
+    let why = "Not published: its check runs check.sh as main has it, and main has no check.sh, so nothing counts as checked. Read its change, then Publish it by hand.";
+    assert_eq!(job["status"], "done", "{job}\n{}", obid.log());
+    assert_eq!(job["reason"], why, "{job}");
+    assert!(job["checks"].as_array().is_none_or(Vec::is_empty), "{job}");
+    let branch = format!("oby/build-{id}");
+    assert_eq!(remote_branch(&remote, &branch), None);
+    let (key, device_id) = registered(&obid, 13);
+    let sentence = call(&obid, "GET", &format!("/v1/jobs/{id}/publish"), None);
+    assert_eq!(sentence.status, 200, "{}", sentence.text);
+    let published = call(
+        &obid,
+        "POST",
+        &format!("/v1/jobs/{id}/publish"),
+        Some(&approval(
+            &key,
+            &device_id,
+            &id,
+            sentence.body["action"].as_str().unwrap(),
+            obi_protocol::time::now(),
+        )),
+    );
+    assert_eq!(published.status, 200, "{}\n{}", published.text, obid.log());
+    assert!(remote_branch(&remote, &branch).is_some());
 }
 
 /// PUBLISHING-4, Oby's review: changes it asks for start no round while another job works on the

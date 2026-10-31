@@ -24,7 +24,8 @@
 //   SLEEP            beats: writes a growing count to .obi/beat every 50 ms until it is cancelled
 //   FAIL             answers the prompt with an error
 //   REFUSE           ends with stopReason `refusal`
-//   TWICE            round one asks to push and is told no; round two writes .obi/twice and says
+//   TWICE            round one asks to push and is told no; round two writes `twice` in its TMPDIR (the
+//                    job's temporary folder, the check's HOME too) and says
 //                    what its prompt started with
 //   ENV              says its HOME, XDG_CONFIG_HOME, CURSOR_CONFIG_DIR, model, mode and settings
 //   LOGIN            says which keys its login file holds, and the file itself
@@ -138,8 +139,7 @@ async function prompt(id, text) {
       say(`push: ${chosen(answer)}`);
       return answered(id);
     }
-    mkdirSync(".obi", { recursive: true });
-    writeFileSync(".obi/twice", "");
+    writeFileSync(`${process.env.TMPDIR}/twice`, "");
     say(`heard: ${text.split("\n")[0]}\nGOAL MET`);
     return answered(id);
   }

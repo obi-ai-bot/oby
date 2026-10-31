@@ -352,11 +352,6 @@ pub struct Job {
     /// ended done: the only commit publishing pushes (docs/contracts/publishing.md, PUBLISHING-1).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub checked_head: Option<String>,
-    /// What its last checks left in its worktree, uncommitted: each `git status` entry with the
-    /// hash of what was there (`<entry>\t<hash>`). Still there unchanged when its next check
-    /// starts, it isn't the job's uncommitted work (PUBLISHING-5): a test report, coverage.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub check_left: Vec<String>,
     pub mode: Option<String>,
     pub waiting: Option<Waiting>,
     pub phase: Option<Phase>,
@@ -843,7 +838,6 @@ impl Job {
             stalled: None,
             start_commit: None,
             checked_head: None,
-            check_left: Vec::new(),
             mode: None,
             waiting: None,
             phase: None,

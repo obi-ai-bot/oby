@@ -431,7 +431,7 @@ fn codex_resumes_fails_and_stops() {
     let obid = obid(&folder, false);
     let twice = dispatch(
         &obid,
-        json!({"agent": "codex", "task": "TWICE", "rounds": 2, "check": "test -f .obi/twice"}),
+        json!({"agent": "codex", "task": "TWICE", "rounds": 2, "check": "test -f \"$HOME/twice\""}),
     );
     let fail = dispatch(&obid, json!({"agent": "codex", "task": "FAIL"}));
     let sleep = dispatch(&obid, json!({"agent": "codex", "task": "SLEEP"}));
@@ -609,7 +609,7 @@ fn cursor_hears_what_obid_declined_at_its_next_prompt() {
     let obid = obid(&folder, false);
     let twice = dispatch(
         &obid,
-        json!({"agent": "cursor", "task": "TWICE", "rounds": 2, "check": "test -f .obi/twice"}),
+        json!({"agent": "cursor", "task": "TWICE", "rounds": 2, "check": "test -f \"$TMPDIR/twice\""}),
     );
     let fs = dispatch(&obid, json!({"agent": "cursor", "task": "FS"}));
     let fine = dispatch(

@@ -19,7 +19,8 @@
 //   ESCAPE           writes a file outside the worktree without asking, and says how that went
 //   SLEEP            beats: writes a growing count to .obi/beat every 50 ms until it is ended
 //   FAIL             the turn fails with the API's error inside its message
-//   TWICE            round one says it isn't done; round two (a resumed thread) writes .obi/twice
+//   TWICE            round one says it isn't done; round two (a resumed thread) writes `twice` in its HOME
+//                    (the job's, the check's too: the check never sees its worktree's .obi/)
 //   ENV              says its CODEX_HOME and HOME
 //   TOOLS            a session of items, each started and completed (tests/transcript_api.rs): its
 //                    words, 5 reads, a plan, 2 file changes and a failing run of the check
@@ -199,8 +200,7 @@ async function runTurn(turnId, prompt) {
     state.rounds = (state.rounds || 0) + 1;
     save();
     if (state.rounds === 1) return complete(turnId, "First round.");
-    mkdirSync(".obi", { recursive: true });
-    writeFileSync(".obi/twice", "");
+    writeFileSync(`${process.env.HOME}/twice`, "");
     return complete(turnId, `Round ${state.rounds} on thread ${thread}, which remembers: ${task}\nGOAL MET`);
   }
   if (task.includes("TOKENS")) {

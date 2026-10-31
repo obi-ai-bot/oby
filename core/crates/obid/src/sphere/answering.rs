@@ -277,6 +277,7 @@ async fn run(
         loopback: false,
         proxied: false,
         frozen: Vec::new(),
+        fixed: Vec::new(),
     };
     let mut extra: Vec<(&str, OsString)> = Vec::new();
     match &account.config_dir {

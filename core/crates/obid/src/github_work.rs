@@ -1376,6 +1376,7 @@ pub async fn start_adding(
         remote: format!("https://github.com/{repo}.git"),
         default_branch: branch.into(),
         check: None,
+        check_keep: Vec::new(),
         pull_requests: None,
     };
     let started = begin(jobs, config, "reviews", repo, number, Some(adding)).await?;
