@@ -7848,13 +7848,8 @@ impl Jobs {
             );
             return;
         };
-        // A read GitHub refused (a rate limit) is asked once more before it marks the job for
-        // good; the quote it checks stays the same.
-        let why = match self.others_wrote(&gh, job, shown).await {
-            Some(_) => self.others_wrote(&gh, job, shown).await,
-            None => None,
-        };
-        if let Some(why) = why {
+        // Never asked again: a comment deleted in between would clear a job it reached.
+        if let Some(why) = self.others_wrote(&gh, job, shown).await {
             self.mark_foreign(&job.id, format!("as it started, {why}"));
         }
     }
@@ -8683,6 +8678,11 @@ impl Jobs {
                         .into());
                     }
                     self.update(id, |job| job.issue_unread = Some(unread));
+                    // Its agent never saw the issue, but who wrote it is read as it starts all
+                    // the same: a word of someone else's there still gives its check nothing.
+                    if job.foreign.is_none() {
+                        Box::pin(self.authors_as_it_starts(&job, None)).await;
+                    }
                 }
             }
         }
