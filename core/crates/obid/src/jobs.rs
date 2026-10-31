@@ -1692,6 +1692,11 @@ impl Jobs {
         carrier_of(&self.lock().jobs, job).clone()
     }
 
+    /// [`stand_in_why`] of `job`.
+    fn stand_in(&self, job: &Job) -> Option<String> {
+        stand_in_why(&self.lock().jobs, job)
+    }
+
     /// The follow-up of `id` that's queued or running, if any: a job has one at a time, and words
     /// for `id` once it ended go to it.
     pub fn following(&self, id: &str) -> Option<Job> {
@@ -10793,6 +10798,11 @@ impl Jobs {
     pub fn review_left_to_owner(&self, id: &str) -> Option<crate::sphere::inbox::Item> {
         let job = self.get(id)?;
         let review = job.current_review().filter(|r| !r.approved())?;
+        // A follow-up that pushed to its pull request since carries it: its own review is the
+        // one (MERGING-24).
+        if self.carrier(&job).id != job.id {
+            return None;
+        }
         let following = self.lock().jobs.values().any(|j| {
             j.follow_up_of.as_deref() == Some(id) && j.branch == job.branch && j.status.is_active()
         });
@@ -11415,6 +11425,15 @@ impl Jobs {
         let (Some(number), Some(head)) = (number, pr.head.clone()) else {
             return cards(None);
         };
+        // The follow-up that pushed its head was let go or ended unfinished: this one tells the
+        // owner why (MERGING-24).
+        if carries(&job)
+            && pr.is_open()
+            && let Some(why) = self.stand_in(&job)
+        {
+            let card = crate::merge::stopped_card(&job, &head, &why);
+            return self.offer_merge_card(id, link.as_deref(), Some(card));
+        }
         // Not one to carry on now (it runs again, was let go, isn't the owner's own, or a
         // follow-up pushed to its pull request since and carries it: MERGING-24): nothing waits on
         // the owner about merging it.
@@ -11958,25 +11977,89 @@ fn carries(job: &Job) -> bool {
         && job.kind != "research"
 }
 
+/// The owner's own jobs that pushed to `job`'s pull request on its branch, oldest push first:
+/// `job` too when it did.
+fn pushers<'a>(jobs: &'a HashMap<String, Job>, job: &'a Job) -> Vec<&'a Job> {
+    let Some(url) = job.published.as_deref() else {
+        return Vec::new();
+    };
+    let pushed = |j: &Job| {
+        j.obi.is_none()
+            && j.repo == job.repo
+            && j.published.as_deref() == Some(url)
+            && same_branch(&j.branch, &job.branch)
+            && j.last_push().is_some()
+    };
+    let mut found: Vec<&Job> = jobs.values().filter(|j| pushed(j)).collect();
+    if !jobs.contains_key(&job.id) && pushed(job) {
+        found.push(job);
+    }
+    found.sort_by(|a, b| {
+        let key = |j: &Job| (j.last_push().map(|p| p.date), j.created);
+        key(a).cmp(&key(b)).then_with(|| a.id.cmp(&b.id))
+    });
+    found
+}
+
+/// Whether `job` follows up `of`, at any depth, or is it.
+fn follows_up(jobs: &HashMap<String, Job>, job: &Job, of: &str) -> bool {
+    let mut at = Some(job.id.as_str());
+    // ponytail: a chain longer than 64 follow-ups counts as not following up.
+    for _ in 0..64 {
+        match at {
+            Some(id) if id == of => return true,
+            Some(id) => {
+                at = jobs
+                    .get(id)
+                    .or((id == job.id).then_some(job))
+                    .and_then(|j| j.follow_up_of.as_deref())
+            }
+            None => return false,
+        }
+    }
+    false
+}
+
 /// The job that carries `job`'s pull request on (MERGING-23, 24): of the owner's own jobs that
 /// published to it on `job`'s branch (a follow-up adds to its task's, #1663), the one that pushed
-/// there last. Its head is that push, its card the pull request's only one; `job` itself when none
-/// pushed after it, or it has no pull request. Another Obi's push never counts as Oby's own.
+/// there last, when it follows up, at any depth, every other one that pushed there: its untrusted
+/// and unsigned marks are carried from them (MERGING-14), so its review and merge count for the
+/// whole head. Its head is that push, its card the pull request's only one. `job` itself when none
+/// pushed after it, when it has no pull request, or when the last one doesn't follow up the rest.
+/// Another Obi's push never counts as Oby's own.
 fn carrier_of<'a>(jobs: &'a HashMap<String, Job>, job: &'a Job) -> &'a Job {
-    let Some(url) = job.published.as_deref() else {
-        return job;
+    let pushers = pushers(jobs, job);
+    match pushers.last() {
+        Some(last) if pushers.iter().all(|p| follows_up(jobs, last, &p.id)) => last,
+        _ => job,
+    }
+}
+
+/// Why `job` tells the owner about its pull request when the job that carries it can't
+/// (MERGING-24): that one pushed the head, then was let go or ended unfinished, so nothing more
+/// comes of it by itself. Only the latest job before it that Oby still carries says so; none
+/// while the carrier still works or carries it.
+fn stand_in_why(jobs: &HashMap<String, Job>, job: &Job) -> Option<String> {
+    let carrier = carrier_of(jobs, job);
+    if carrier.id == job.id || carries(carrier) || carrier.status.is_active() {
+        return None;
+    }
+    let stand_in = pushers(jobs, job)
+        .into_iter()
+        .rev()
+        .filter(|j| j.id != carrier.id)
+        .find(|j| carries(j))?;
+    let what = if carrier.dismissed.is_some() {
+        "you let that task go"
+    } else {
+        "that task didn't finish"
     };
-    jobs.values()
-        .chain([job])
-        .filter(|j| {
-            j.obi.is_none()
-                && j.repo == job.repo
-                && j.published.as_deref() == Some(url)
-                && same_branch(&j.branch, &job.branch)
-        })
-        .filter_map(|j| j.last_push().map(|p| (p.date, j.created, &j.id, j)))
-        .max_by(|a, b| (a.0, a.1, a.2).cmp(&(b.0, b.1, b.2)))
-        .map_or(job, |(.., j)| j)
+    (stand_in.id == job.id).then(|| {
+        format!(
+            "Not merged: its head is what {} pushed, and {what}. Tell Oby to carry on in it, or settle it on GitHub.",
+            carrier.short_title()
+        )
+    })
 }
 
 /// What publishing `job` by hand would do: obid's own sentence and the base, or why there's
@@ -14804,6 +14887,72 @@ mod tests {
         let mut unpublished = first.clone();
         unpublished.published = None;
         assert_eq!(carrier_of(&jobs, &unpublished).id, "a");
+    }
+
+    /// MERGING-14, 24: only a follow-up of every job that pushed to the pull request carries it,
+    /// so their marks are its own; one that doesn't leaves each job to itself. A carrier let go or
+    /// ended unfinished: the latest job before it that Oby carries tells the owner why, alone.
+    #[test]
+    fn merging_24_a_carrier_follows_up_every_push_and_one_let_go_hands_the_card_back() {
+        let job = |id: &str, of: Option<&str>, at: i64| {
+            let mut job = Job::new(
+                id.into(),
+                "o/r".into(),
+                "fix".into(),
+                "Fix it".into(),
+                "claude".into(),
+                "a".into(),
+            );
+            job.status = Status::Done;
+            job.title = Some(format!("Task {id}"));
+            job.branch = "oby/fix-7".into();
+            job.published = Some("https://github.com/o/r/pull/7".into());
+            job.follow_up_of = of.map(str::to_owned);
+            let mut push = crate::publish::Outgoing::new("push", "o/r", id, Some("oby/fix-7"));
+            push.date = at;
+            job.outgoing.push(push);
+            job
+        };
+        let map = |jobs: Vec<Job>| -> HashMap<String, Job> {
+            jobs.into_iter().map(|j| (j.id.clone(), j)).collect()
+        };
+        // a, then b following up a, then c following up b: c carries, b says nothing.
+        let chain = map(vec![
+            job("a", None, 10),
+            job("b", Some("a"), 20),
+            job("c", Some("b"), 30),
+        ]);
+        assert_eq!(carrier_of(&chain, &chain["a"]).id, "c");
+        assert!(stand_in_why(&chain, &chain["a"]).is_none());
+        // b and c both follow up a: c's marks aren't b's, so each job stands alone.
+        let siblings = map(vec![
+            job("a", None, 10),
+            job("b", Some("a"), 20),
+            job("c", Some("a"), 30),
+        ]);
+        for id in ["a", "b", "c"] {
+            assert_eq!(carrier_of(&siblings, &siblings[id]).id, id);
+        }
+        // c was let go: b, the latest before it, tells the owner; a stays quiet.
+        let mut let_go = chain.clone();
+        let_go.get_mut("c").unwrap().dismissed = Some(40);
+        assert_eq!(stand_in_why(&let_go, &let_go["a"]), None);
+        assert_eq!(
+            stand_in_why(&let_go, &let_go["b"]).as_deref(),
+            Some(
+                "Not merged: its head is what Task c pushed, and you let that task go. Tell Oby to carry on in it, or settle it on GitHub."
+            )
+        );
+        // c failed on a retry: the same, saying so; while it runs again, nobody speaks.
+        let mut failed = chain.clone();
+        failed.get_mut("c").unwrap().status = Status::Failed;
+        assert!(
+            stand_in_why(&failed, &failed["b"])
+                .unwrap()
+                .contains("that task didn't finish")
+        );
+        failed.get_mut("c").unwrap().status = Status::Running;
+        assert_eq!(stand_in_why(&failed, &failed["b"]), None);
     }
 
     /// MERGING-18 (#1659): Oby's review hears what the owner first asked, then their own words to
