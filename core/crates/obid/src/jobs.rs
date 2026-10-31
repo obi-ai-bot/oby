@@ -86,7 +86,7 @@ const SETTLE_AFTER: i64 = 24 * 60 * 60;
 /// before each turn: Oby's own servers (Tetrix, the broker).
 pub const MCP_CONFIG_FILE: &str = "obi-mcp.json";
 /// The kinds whose work is commits: one that ends with none committed says so.
-const COMMITTING: [&str; 3] = ["build", "fix", "test"];
+pub(crate) const COMMITTING: [&str; 3] = ["build", "fix", "test"];
 /// The rounds a committing job with a check gets when nobody named a number (#958): its agent
 /// hears the check's failure and fixes it, and the last one still stops and asks.
 const CHECK_ROUNDS: u32 = 3;

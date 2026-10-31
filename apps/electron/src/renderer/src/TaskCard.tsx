@@ -387,10 +387,12 @@ function Usage({ usage: u, account, done }: { usage: NonNullable<Page['usage']>;
 // how long it took start to finish; null when there's none of that.
 export function resultLine({ job: j }: Task) {
   const took = j.finished != null ? duration(j.created - j.finished) : null;
-  if (!j.commits && !j.published && !took) return null;
+  if (!j.commits && !j.published && !j.nothingDone && !took) return null;
   return (
     <p className="tc-result">
       {[
+        // obid's: it ended with nothing done (TASKS-12)
+        j.nothingDone ? 'No changes' : null,
         j.commits ? `${j.commits} commit${j.commits > 1 ? 's' : ''} on ${j.branch}` : null,
         // its pull request, on GitHub in the browser
         j.published ? <a key="pr" href={prUrl(j.published) ?? '#'} onClick={(e) => { e.preventDefault(); openOnGitHub(prUrl(j.published!)); }}>{prName(j.published)}</a> : null,

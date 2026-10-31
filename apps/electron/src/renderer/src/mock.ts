@@ -106,6 +106,7 @@ export type Job = {
   summary?: string;    // the agent's report once it's done
   commits?: number;
   published?: string;  // the pull request it opened
+  nothingDone?: boolean;  // obid's: it ended with nothing done (TASKS-12)
   log?: LogLine[];
   page?: Page;         // the job page's extra data, once obid serves it
   conversation?: string;  // obid's: the conversation whose words started it

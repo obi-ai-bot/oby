@@ -428,7 +428,7 @@ fn jobs_and_their_events_land_in_the_conversation_that_started_them() {
         let text = report["text"].as_str().unwrap();
         assert!(
             text.starts_with(&format!(
-                "{title} is done. Nothing committed, so nothing was published."
+                "{title} ended with nothing done. Nothing committed, so nothing was published."
             )),
             "{text}"
         );

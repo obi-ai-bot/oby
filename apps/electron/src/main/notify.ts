@@ -133,7 +133,7 @@ function wanted(): Map<string, Alert> {
     if (canPublish(j)) say(end('ready'), true, j.publishError ? 'Couldn’t publish' : 'Ready to publish', firstLine(j.publishError) ?? firstLine(j.summary) ?? 'Done');
     else if (j.status === 'failed') say(end('failed'), true, 'Failed', why('Failed'));
     else if (j.status === 'interrupted' && !j.accountLimit && ![...limits.values()].some((d) => d.jobs.some((job) => job.id === j.id))) say(end('interrupted'), true, 'Needs you', why('Interrupted'));
-    else if (j.status === 'done') say(end('done'), false, 'Done', firstLine(j.summary) ?? 'Done');
+    else if (j.status === 'done') { const done = j.nothingDone ? 'Nothing done' : 'Done'; say(end('done'), false, done, firstLine(j.summary) ?? done); }
   }
   for (const d of limits.values()) {
     // The count and "all" on every action describe the scope in the collapsed banner.

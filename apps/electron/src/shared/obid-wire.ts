@@ -45,6 +45,8 @@ export type Job = {
   finished: string | null;
   commits: number | null;
   published: string | null;
+  // obid only (TASKS-12): it ended done with nothing done (no commits, nothing published)
+  nothingDone?: boolean;
   rounds: number;
   round: number;
   check: string | null;

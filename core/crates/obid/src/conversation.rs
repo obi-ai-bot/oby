@@ -1261,6 +1261,11 @@ pub fn job_report(job: &Value) -> Option<(String, String)> {
             (None, None) if job["pushed"].as_u64().is_some_and(|n| n > 0) => {
                 format!("{title} is done and pushed.")
             }
+            // Nothing done (TASKS-12): obid's own fact, never read from the agent's words.
+            (None, None) if job["nothingDone"] == true => match first_line("reason") {
+                Some(why) => format!("{title} ended with nothing done. {why}"),
+                None => format!("{title} ended with nothing done."),
+            },
             (None, None) => match first_line("reason") {
                 Some(why) => format!("{title} is done. {why}"),
                 None => format!("{title} is done."),
@@ -1744,7 +1749,13 @@ mod tests {
             job_report(&nothing).unwrap().1,
             "Fix oby #351 is done. Nothing committed, so nothing was published."
         );
-        // A stall says why in obid's words; its conversation decides what comes next.
+        // TASKS-12: obid's fact, not the agent's words, says nothing was done.
+        nothing["nothingDone"] = json!(true);
+        nothing["summary"] = json!("I couldn't implement issue #131, and I made no commits.");
+        assert_eq!(
+            job_report(&nothing).unwrap().1,
+            "Fix oby #351 ended with nothing done. Nothing committed, so nothing was published.\nI couldn't implement issue #131, and I made no commits."
+        );
         let mut stalled = job("failed");
         stalled["stalled"] = json!({"text": "no progress for 15 minutes", "note": "Left: tests"});
         assert_eq!(
