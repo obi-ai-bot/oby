@@ -940,9 +940,10 @@ pub(super) async fn answer_inbox(
             return Outcome::Failed(format!("Couldn't answer {}: {why}", item.title));
         }
         Owners::Confirm(title, text, confirmed) => {
+            let confirmed = confirmed.in_conversation(conversation);
             confirm(shared, &item.job, title.clone(), text, confirmed);
             return Outcome::Done(format!(
-                "{title} waits for your OK: confirm it in your inbox."
+                "{title} waits for your OK: its Confirm is under this answer, and on Home."
             ));
         }
     }
@@ -1042,7 +1043,7 @@ fn owners_call(item: &Item, words: &str, job: Option<&Job>, owner: bool) -> Owne
         {
             Owners::Word
         }
-        "confirm" => Owners::Waits("it waits for your Confirm on its card, in your inbox.".into()),
+        "confirm" => Owners::Waits("it waits for your Confirm on its card, on Home.".into()),
         // What someone said, told to the owner: dismissing it is one-off.
         "watch" if words == crate::sphere::inbox::DISMISS => Owners::No,
         // Merge on Oby's review item whose changes were left to the owner (MERGING-17): the
@@ -1619,7 +1620,7 @@ mod tests {
         );
         assert_eq!(
             owners_call(&confirm, "Confirm", None, false),
-            Owners::Waits("it waits for your Confirm on its card, in your inbox.".into())
+            Owners::Waits("it waits for your Confirm on its card, on Home.".into())
         );
         assert_eq!(owners_call(&confirm, "Confirm", None, true), Owners::Word);
         // A teammate's approval on GitHub keeps the owner's tap, even on their word.

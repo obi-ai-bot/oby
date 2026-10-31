@@ -11400,25 +11400,17 @@ impl Jobs {
             stop.or_else(|| crate::merge::owner_must_settle(pr, &merging).map(str::to_owned));
         let card = if let Some(why) = stop {
             // A change request, red checks and a reviewer account signed out are holds the
-            // owner's own Merge lifts: the card carries Merge where Oby knows how it'd merge.
-            // One card names every hold the Merge lifts (MERGING-21), and where GitHub itself
-            // refuses, its reason, which says what to change, with no Merge.
-            let all = |b: crate::merge::Blocked| match b.why.contains(&why) {
-                true => b.why,
-                false => format!("{why} {}", b.why),
-            };
-            Some(match effective.as_ref() {
-                Some(w) => {
-                    match crate::merge::ready(&job, Some(w), pr, &merging, reviewers.as_ref()) {
-                        Err(b) if b.yours => {
-                            crate::merge::yours_card(&job, &head, &all(b), w, &pr.base)
-                        }
-                        Err(b) if b.needs_you => crate::merge::stopped_card(&job, &head, &all(b)),
-                        _ => crate::merge::yours_card(&job, &head, &why, w, &pr.base),
-                    }
-                }
-                None => crate::merge::stopped_card(&job, &head, &why),
-            })
+            // owner's own Merge lifts: one card names every hold, with Merge where Oby knows how
+            // it'd merge and their word lifts them all (MERGING-21).
+            Some(crate::merge::stop_card(
+                &job,
+                &head,
+                &why,
+                effective.as_ref(),
+                pr,
+                &merging,
+                reviewers.as_ref(),
+            ))
         } else if required
             && workflow.is_none()
             && !crate::memory::teammate_reviews(&home, &job.repo)

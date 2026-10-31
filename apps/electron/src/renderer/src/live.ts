@@ -110,13 +110,13 @@ export function chatOf(s: Live, c: Conversation): Chat {
   const offers = offersOf(s, c.id);
   const said: Message[] = [];
   // the Confirms Oby's answers made here, each under the first answer that came after it, as on
-  // Home's stack: not put off, not on their way (#1680)
+  // Home's stack: obid's words under the headline, not put off, not on their way (#1680)
   const now = Date.now();
   const confirms = s.inbox.filter((i) => i.kind === 'confirm' && i.conversation === c.id
     && !(i.later && Date.parse(i.later) > now) && !s.answering.has(i.id));
   const confirmed = new Set<string>();
   const confirm = (m: Omit<Message, 'confirm'>, by?: string) => confirms.filter((i) => (by === undefined || Date.parse(i.created) <= Date.parse(by)) && !confirmed.has(i.id) && confirmed.add(i.id))
-    .forEach((i) => said.push({ ...m, confirm: { id: i.id, ask: itemAsk(i) } }));
+    .forEach((i) => said.push({ ...m, confirm: { id: i.id, ask: { ...itemAsk(i), text: i.text } } }));
   let asked: string | undefined;
   for (const t of (s.turns[c.id] ?? []).filter((t) => t.id !== p?.turn)) {
     const answer = t.who === 'oby' && !t.ended && !t.routine ? asked : undefined;
@@ -192,16 +192,20 @@ export const itemAsk = (item: InboxItem, detail?: string): Ask => {
     return { kind: 'check', headline: `Use this as ${item.confirm!.target}’s check before publishing?`, text: item.text, options, detail: check };
   }
   if (item.kind === 'agentQuestion') return { kind: 'question', headline: item.text, text: '', options: [...item.options, TELL] };
-  // A merge card's title is its task's, which the card shows already: with no headline of the
-  // model's, obid's reason leads, its first sentence over the rest (what to change, every other
-  // hold), as text shows when headline is null (docs/runner-api.md, #1680).
+  // A merge card's title is its task's, which the card shows already, after what it is (Not
+  // merged, Ready to merge, Needs a teammate): that is its label. With no headline of the model's,
+  // obid's reason leads, its first sentence (without the label's words again) over the rest (what to
+  // change, every other hold), as text shows when headline is null (docs/runner-api.md, #1680).
+  const label = item.kind === 'merge' ? item.title.split(': ')[0] : undefined;
   if (item.kind === 'merge' && !item.headline && item.text) {
-    const [headline, ...rest] = item.text.split(/(?<=\.) /);
-    return { kind: 'merge', headline, text: rest.join(' '), options: item.options, recommended: item.recommended ?? undefined };
+    const [first, ...rest] = item.text.split(/(?<=\.) /);
+    const headline = first.replace(/^Not merged( yet)?: (.)/, (_, _yet, c: string) => c.toUpperCase());
+    return { kind: 'merge', label, headline, text: rest.join(' '), options: item.options, recommended: item.recommended ?? undefined };
   }
   return {
     kind: LABELLED[item.kind] ?? item.kind as AskKind, headline: item.headline ?? item.title, text: item.headline ? item.text : '',
     options: item.options, recommended: item.recommended ?? undefined, detail: detail ?? item.watch?.review ?? undefined,
+    ...(label ? { label } : {}),
   };
 };
 // a check to keep: one taking a check out shows as any confirm item, its Confirm as such

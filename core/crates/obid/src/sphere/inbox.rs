@@ -47,6 +47,18 @@ pub struct Confirmed {
     pub payload: Value,
 }
 
+impl Confirmed {
+    /// Made in `conversation`: the app shows it under Oby's answer there, and on Home (#1680).
+    pub fn in_conversation(mut self, conversation: &str) -> Self {
+        if let Some(payload) = self.payload.as_object_mut() {
+            payload
+                .entry("conversation")
+                .or_insert_with(|| conversation.into());
+        }
+        self
+    }
+}
+
 /// The actions a `confirm` item may carry out.
 pub mod action {
     /// Always allow a job's waiting permission, saving its rule: `target` the job, `payload`
@@ -1033,6 +1045,25 @@ mod tests {
         assert_eq!(merge.to_json()["conversation"], "c1");
         let bypass = confirm(super::action::SET_MODE_BYPASS, serde_json::Value::Null);
         assert_eq!(bypass.conversation(), None);
+        // A tool's Confirm is made in its conversation (`confirm_card`): one it names already stays.
+        let settings = super::Confirmed {
+            action: super::action::SET_SETTINGS.into(),
+            target: String::new(),
+            payload: serde_json::json!({"settings": {"maxRunning": 20}}),
+        }
+        .in_conversation("c2");
+        assert_eq!(
+            settings.payload,
+            serde_json::json!({"settings": {"maxRunning": 20}, "conversation": "c2"})
+        );
+        let kept = settings.in_conversation("c3");
+        assert_eq!(kept.payload["conversation"], "c2");
+        let none = super::Confirmed {
+            action: super::action::SET_MODE_BYPASS.into(),
+            target: "j1".into(),
+            payload: serde_json::Value::Null,
+        };
+        assert_eq!(none.in_conversation("c2").payload, serde_json::Value::Null);
     }
 
     /// Oby's ask about a check says what each answer does in its text, which every app shows

@@ -66,7 +66,7 @@ describe('MERGING-21: a merge card says why it stopped, never just its title (#1
       text: "Not merged: it conflicts with main. Ask Oby to rebase it onto main, or settle it on GitHub. Oby's review still asks for changes, so it's yours to merge.",
     }));
     expect(ask).toMatchObject({
-      kind: 'merge', headline: 'Not merged: it conflicts with main.',
+      kind: 'merge', label: 'Not merged', headline: 'It conflicts with main.',
       text: "Ask Oby to rebase it onto main, or settle it on GitHub. Oby's review still asks for changes, so it's yours to merge.",
       options: ['Dismiss'],
     });
@@ -74,7 +74,10 @@ describe('MERGING-21: a merge card says why it stopped, never just its title (#1
 
   it('merging_21_keeps_the_models_headline_over_the_reason', () => {
     const ask = live.itemAsk(item('merge', { title: 'Ready to merge: Fix it', headline: 'Merge it into main?', text: 'A review asks for changes.', options: ['Merge'] }));
-    expect([ask.headline, ask.text]).toEqual(['Merge it into main?', 'A review asks for changes.']);
+    expect([ask.label, ask.headline, ask.text]).toEqual(['Ready to merge', 'Merge it into main?', 'A review asks for changes.']);
+    // a Ready to merge card is labelled so, never Not merged
+    expect(live.itemAsk(item('merge', { title: 'Ready to merge: Fix it', text: 'Not merged yet: a review asks for changes. Its base is main.', options: ['Merge'] })))
+      .toMatchObject({ label: 'Ready to merge', headline: 'A review asks for changes.', text: 'Its base is main.' });
   });
 });
 
@@ -93,7 +96,8 @@ describe('TASKCONV-7: the Confirm Oby’s answer made shows under it, and on Hom
   it('taskconv_7_the_confirm_is_under_the_answer_that_made_it_one_click_away', () => {
     const chat = live.chatOf({ ...live.liveState(), inbox: [merge], turns: { c1: turns } }, convo);
     expect(chat.said.map((m) => m.text || m.confirm?.id)).toEqual(['Merge it as it is.', 'The merge of PR #147 into main waits for your OK.', 'confirm-1']);
-    expect(chat.said[2].confirm!.ask).toMatchObject({ kind: 'confirm', headline: 'Merge well-prado/tetrix-e2e#147 into main', options: ['Confirm', 'Cancel'] });
+    // what it confirms shows, though no model headline came
+    expect(chat.said[2].confirm!.ask).toMatchObject({ kind: 'confirm', headline: 'Merge well-prado/tetrix-e2e#147 into main', text: 'Oby’s conversation planned this.', options: ['Confirm', 'Cancel'] });
   });
 
   it('taskconv_7_answered_on_home_it_leaves_the_conversation_too', () => {

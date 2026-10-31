@@ -94,7 +94,9 @@ async function openTask(t, title) {
 // exact title tracked as this run's, then Confirm, the owner's one click
 async function confirmMerge(t, url) {
   const n = url.match(/\/pull\/(\d+)$/)?.[1];
-  const card = t.page.locator('.msg-ask').filter({ has: t.page.locator('.tc-ask-head', { hasText: new RegExp(`^Merge \\S+#${n} into `) }) }).last();
+  // this run's repository and pull request only, never another of the owner's
+  const repo = t.repo.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const card = t.page.locator('.msg-ask').filter({ has: t.page.locator('.tc-ask-head', { hasText: new RegExp(`^Merge ${repo}#${n} into `, 'i') }) }).last();
   await card.waitFor({ timeout: MIN });
   const title = (await card.locator('.tc-ask-head').innerText()).trim();
   track(t, { title });

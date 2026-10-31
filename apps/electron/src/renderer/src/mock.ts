@@ -64,6 +64,7 @@ export type Ask = {
   options: string[];
   recommended?: number;
   detail?: string;    // the command, the diff stat, the plan
+  label?: string;     // over the headline, in place of the kind's (a merge card's own: Ready to merge)
 };
 // a Question's own words for the agent, in place of its options (as on his "Go with this plan?")
 export const TELL = 'Tell it something';

@@ -1602,11 +1602,14 @@ pub fn no_sphere(repo: &str) -> String {
     )
 }
 
-/// "Not merged" (#853): why the merge stopped where only the owner takes it on.
+/// "Not merged" (#853): why the merge stopped where only the owner takes it on. Its id is the
+/// stop's name, its first sentence, so a card answered isn't asked again when only what to do or
+/// the holds behind it read otherwise.
 pub fn stopped_card(job: &Job, head: &str, why: &str) -> Item {
+    let name = why.split_once(". ").map_or(why, |(name, _)| name);
     card(
         job,
-        why_id(&job.id, head, why),
+        why_id(&job.id, head, name),
         format!("Not merged: {}", job.short_title()),
         why.to_owned(),
         vec![(DISMISS, "Leaves it open. Nothing is sent.".into())],
@@ -1641,6 +1644,38 @@ pub fn yours_card(job: &Job, head: &str, why: &str, workflow: &Workflow, into: &
             ),
         ],
     )
+}
+
+/// The card for a stop only the owner settles (`why`: a change request, red checks, a reviewer
+/// account to sign in again), with every other hold [`ready`] finds by `workflow`: Merge where
+/// their word lifts all of them, naming each (MERGING-20, 21); else what stops it, GitHub's
+/// reason first, which says what to change, and Dismiss alone. With no workflow, `why` alone.
+pub fn stop_card(
+    job: &Job,
+    head: &str,
+    why: &str,
+    workflow: Option<&Workflow>,
+    pr: &PullRequest,
+    merging: &Merging,
+    reviewers: Option<&Reviewers>,
+) -> Item {
+    let Some(workflow) = workflow else {
+        return stopped_card(job, head, why);
+    };
+    let with = |b: &Blocked, first: bool| match (b.why.contains(why), first) {
+        (true, _) => b.why.clone(),
+        (false, true) => format!("{} {why}", b.why),
+        (false, false) => format!("{why} {}", b.why),
+    };
+    match ready(job, Some(workflow), pr, merging, reviewers) {
+        Err(b) if b.yours => yours_card(job, head, &with(&b, false), workflow, &pr.base),
+        // GitHub's own refusal, or another person it requires: no word of the owner's lifts it.
+        Err(b) if b.needs_you || b.why == requires_person(&pr.base) => {
+            stopped_card(job, head, &with(&b, true))
+        }
+        // Nothing more, or only what Oby can't tell yet: their Merge reads it all again.
+        _ => yours_card(job, head, why, workflow, &pr.base),
+    }
 }
 
 /// The card for a merge that stopped where the owner takes it on: Merge where only their word is
@@ -3158,6 +3193,111 @@ mod tests {
             assert_eq!(card.options, vec![crate::sphere::inbox::DISMISS]);
             assert_eq!(on_owners_word(true, Err(blocked.clone())), Err(blocked));
         }
+    }
+
+    /// The follower's card for a change request (#1680): with red checks, one Merge card names both
+    /// and the owner's signed Merge lifts both (MERGING-20, 21); with a conflict, or another person
+    /// GitHub requires, it says both and what to change, with Dismiss alone.
+    #[test]
+    fn merging_21_a_change_request_with_red_checks_or_a_conflict_says_both() {
+        let asks = |change: fn(&mut Value)| {
+            read(
+                &view(move |v| {
+                    v["reviewDecision"] = json!("CHANGES_REQUESTED");
+                    change(v);
+                }),
+                &approved(),
+            )
+        };
+        let stop_of = |pr: &PullRequest, merging: &Merging| owner_must_settle(pr, merging).unwrap();
+        // Red checks: Merge, naming both.
+        let (pr, merging) = asks(|v| {
+            v["statusCheckRollup"] = json!([{"__typename": "CheckRun", "name": "test",
+                "status": "COMPLETED", "conclusion": "FAILURE"}]);
+        });
+        let why = stop_of(&pr, &merging);
+        let card = stop_card(
+            &job(),
+            &head(),
+            why,
+            Some(&obis()),
+            &pr,
+            &merging,
+            Some(&signed_in()),
+        );
+        assert_eq!(card.options, vec![MERGE, LEAVE_OPEN]);
+        assert!(
+            card.text.contains("a review asks for changes"),
+            "{}",
+            card.text
+        );
+        assert!(
+            card.text.contains("its checks failed on GitHub"),
+            "{}",
+            card.text
+        );
+        let lift = Lift::Named(&card.text);
+        let signed = ready_as(
+            Some(&lift),
+            &job(),
+            Some(&obis()),
+            &pr,
+            &merging,
+            Some(&signed_in()),
+        );
+        assert_eq!(on_owners_word(true, signed), Ok(()));
+        // A conflict: GitHub's reason first, then the change request; Dismiss alone.
+        let (pr, merging) = asks(|v| v["mergeable"] = json!("CONFLICTING"));
+        let why = stop_of(&pr, &merging);
+        let card = stop_card(
+            &job(),
+            &head(),
+            why,
+            Some(&obis()),
+            &pr,
+            &merging,
+            Some(&signed_in()),
+        );
+        assert!(
+            card.text
+                .starts_with("Not merged: it conflicts with dev. Ask Oby to rebase"),
+            "{}",
+            card.text
+        );
+        assert!(card.text.contains(why), "{}", card.text);
+        assert_eq!(card.options, vec![DISMISS]);
+        // Answered, it isn't asked again when only the holds behind the conflict read otherwise.
+        assert_eq!(
+            card.id,
+            stopped_card(&job(), &head(), &conflicts("dev").why).id
+        );
+        // Another person GitHub requires, which no word of the owner's lifts: Dismiss alone.
+        let mut oby = obis();
+        oby.review = Approval::Oby;
+        let nobody = Reviewers {
+            owner: Some("wellprado".into()),
+            ..Reviewers::default()
+        };
+        let (pr, mut merging) = asks(|_| {});
+        merging.required_approvals = Some(1);
+        merging.reviews.clear();
+        let approved = reviewed("approved", &head());
+        let why = stop_of(&pr, &merging);
+        let card = stop_card(
+            &approved,
+            &head(),
+            why,
+            Some(&oby),
+            &pr,
+            &merging,
+            Some(&nobody),
+        );
+        assert!(
+            card.text.contains(REQUIRES_PERSON) && card.text.contains(why),
+            "{}",
+            card.text
+        );
+        assert_eq!(card.options, vec![DISMISS]);
     }
 
     /// What obid decides when a check passes: it stands for the Mac's only for the owner's own

@@ -166,7 +166,7 @@ export default function ChatView({ id, kind = 'task', leaving, covered = false, 
                   // work Oby offers to start: yours to start with a tap
                   ...((m as Message).offer ? [<OfferCard key="offer" offer={(m as Message).offer!} />] : []),
                   // a Confirm Oby's answer made: one click here or on Home, the owner's signed Confirm
-                  ...((m as Message).confirm ? [<div key="confirm" className="msg-ask"><AskBlock task={{ id: (m as Message).confirm!.id, job: { ask: (m as Message).confirm!.ask } }} inChat /></div>] : []),
+                  ...((m as Message).confirm ? [<div key={`confirm-${(m as Message).confirm!.id}`} className="msg-ask"><AskBlock task={{ id: (m as Message).confirm!.id, job: { ask: (m as Message).confirm!.ask } }} inChat /></div>] : []),
                   // what this message started
                   ...('jobs' in m ? m.jobs ?? [] : []).map((jid) => {
                     const t = tasks.find((x) => x.id === jid);

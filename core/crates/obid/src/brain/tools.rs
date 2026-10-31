@@ -593,14 +593,9 @@ fn confirm_card(
     session: &Session,
     title: String,
     what: Option<&str>,
-    mut confirmed: crate::sphere::inbox::Confirmed,
+    confirmed: crate::sphere::inbox::Confirmed,
 ) -> Result<String, String> {
-    // The conversation it was planned in shows it under Oby's answer, as Home does (#1680).
-    if let Some(payload) = confirmed.payload.as_object_mut() {
-        payload
-            .entry("conversation")
-            .or_insert_with(|| json!(session.conversation));
-    }
+    let confirmed = confirmed.in_conversation(&session.conversation);
     let mut text = format!(
         "Oby's conversation planned this, and it waits for you because {}. It happens only if you confirm.",
         not_their_word(session)
@@ -1524,10 +1519,11 @@ fn check_in(shared: &Shared, session: &Session, args: Value) -> Result<String, S
                 action: crate::sphere::inbox::action::SET_CHECK_IN.into(),
                 target: session.conversation.clone(),
                 payload: json!({ "checkIn": kept }),
-            },
+            }
+            .in_conversation(&session.conversation),
         );
         return Ok(format!(
-            "{title} waits for the owner's OK in their inbox: nothing changes until they confirm it."
+            "{title} waits for the owner's OK: its Confirm is under this answer, and on Home. Nothing changes until they confirm it."
         ));
     }
     crate::settings::update(home, |s| s.check_in = Some(kept.clone())).map_err(unkept)?;

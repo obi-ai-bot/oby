@@ -228,7 +228,7 @@ export function AskBlock({ task, inChat = false, onAnswer }: { task: Pick<Task, 
   const pick = (o: string, words?: string) => { if (performance.now() - shownAt < 500) return; answer(task.id, o, words); onAnswer?.(o); };
   return (
     <div className="tc-ask">
-      <span className={`tc-ask-kind is-${ask.kind}`}>{ASK_LABEL[ask.kind] ?? ask.kind}</span>
+      <span className={`tc-ask-kind is-${ask.kind}`}>{ask.label ?? ASK_LABEL[ask.kind] ?? ask.kind}</span>
       <p className="tc-ask-head">{ask.headline}</p>
       <p className="tc-ask-text">{ask.text}</p>
       {ask.detail && editing === null && <pre className="tc-code">{ask.detail}</pre>}
