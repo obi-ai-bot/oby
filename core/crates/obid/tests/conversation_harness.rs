@@ -1385,6 +1385,26 @@ fn taskconv_6_a_signed_turn_that_reads_untrusted_text_makes_confirms() {
     assert!(seen.contains(&("merge".into(), false)), "{seen:?}");
 }
 
+/// #1686: a call of Oby's tools reaches obid apart from the agent's output, and is judged only
+/// once obid's reader has handled the line where the agent wrote it, and every line before: here
+/// the call comes first and the read of repos/ that precedes its line 300 ms later, and the signed
+/// turn's Settings still wait for a Confirm.
+#[test]
+fn a_call_waits_for_the_reader_and_sees_the_read_before_it() {
+    let (_folder, obid) = obid("harness-late-read", true);
+    let first = said(&obid, json!({"said": "SAY hi", "new": true}));
+    let conversation = first.body["conversation"].as_str().unwrap().to_owned();
+    std::thread::sleep(Duration::from_millis(1100));
+    let running = || call(&obid, "GET", "/v1/settings/jobs", None).body["maxRunning"].clone();
+    let before = running();
+    let words = json!({"said": r#"LATEREAD OBY oby_settings {"maxRunning": 20}"#,
+                       "conversation": conversation});
+    let answer = call_typed(&obid, "POST", "/v1/plans", &words);
+    assert_eq!(answer.status, 200, "{}", answer.text);
+    assert!(oby_said(&answer).contains("waits for"), "{}", answer.text);
+    assert_eq!(running(), before);
+}
+
 /// TASKCONV-7: the pull request of a review another Oby asked for never merges from a
 /// conversation, on the owner's word or on a Confirm made before obid knew of the review; each
 /// refusal is in the use log.

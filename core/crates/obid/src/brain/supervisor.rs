@@ -614,6 +614,7 @@ mod tests {
             supervising,
             event: None,
             shell_out: Mutex::default(),
+            written: Mutex::default(),
         }
     }
 

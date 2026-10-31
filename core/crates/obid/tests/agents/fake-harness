@@ -26,6 +26,9 @@
 //   SAY <words>    streams <words> in three deltas and says them
 //   SAYLATE <w>    says <w>, then writes one more line 300 ms after its result, while it waits
 //   READREPO <w>   reads a file under repos/ (taints the turn), then does <w>
+//   LATEREAD OBY <tool> <json>  calls the oby tool first, and 300 ms later writes a read under
+//                  repos/ and the call's own line (#1686: obid's reader is behind the call); says
+//                  what it answered, as OBY does
 //   MAKEPAGE <w>   writes page/index.html in its room (a list of functions), then does <w>
 //   GREP <w>       searches the room with no path (repos/ in it, taints the turn), then does <w>
 //   TOOLSEARCH     makes a ToolSearch tool call (the deferred-tool lookup), then says "searched"
@@ -278,7 +281,10 @@ async function act(words, prompt = "", before = resumed) {
     const [repeat, then] = words.split(" THEN ");
     const [, times, , tool, ...rest] = repeat.split(" ");
     let answer;
-    for (let i = 0; i < Number(times); i++) answer = await oby(tool, JSON.parse(rest.join(" ")));
+    for (let i = 0; i < Number(times); i++) {
+      use(`t${i}`, `mcp__oby__${tool}`, JSON.parse(rest.join(" ")));
+      answer = await oby(tool, JSON.parse(rest.join(" ")));
+    }
     if (then) return act(then, prompt);
     say(`oby: ${answer.result?.isError ? "refused: " : ""}${answer.result?.content?.[0]?.text}`);
   } else if (words.startsWith("MCP ")) {
@@ -286,6 +292,17 @@ async function act(words, prompt = "", before = resumed) {
     const answer = await mcp(name, tool, JSON.parse(rest.join(" ") || "{}"));
     writeFileSync("mcp-answer.json", JSON.stringify(answer));
     say(`mcp: ${answer === null ? `no ${name}` : JSON.stringify(answer.result ?? answer.error)}`);
+  } else if (words.startsWith("LATEREAD OBY ")) {
+    const [, , tool, ...rest] = words.split(" ");
+    const args = JSON.parse(rest.join(" "));
+    const answering = oby(tool, args);
+    await new Promise((done) => setTimeout(done, 300));
+    use("r1", "Read", { file_path: join(room, "repos/obi-e2e/fixture-app/package.json") });
+    used("r1", "{}");
+    use("t1", `mcp__oby__${tool}`, args);
+    const answer = await answering;
+    used("t1", answer.result?.content?.[0]?.text ?? "", answer.result?.isError);
+    say(`oby: ${answer.result?.isError ? "refused: " : ""}${answer.result?.content?.[0]?.text ?? JSON.stringify(answer)}`);
   } else if (words.startsWith("OBY ")) {
     const [, tool, ...rest] = words.split(" ");
     use("t1", `mcp__oby__${tool}`, JSON.parse(rest.join(" ")));

@@ -57,6 +57,9 @@ const UNATTENDED: &str =
 /// Where a supervisor turn keeps its own session's id and taint, beside the conversation's
 /// `session.json`, which it never reads or writes.
 const SUPERVISOR_KEPT: &str = "supervisor-session.json";
+/// How long a call of Oby's tools waits for obid's reader to reach the line where the agent wrote
+/// it ([`Session::heard`]).
+pub const READ_WAIT: Duration = Duration::from_secs(5);
 /// The file in the session's `HOME` that gives it Oby's MCP server.
 const MCP_FILE: &str = "oby-mcp.json";
 /// Why a turn couldn't answer when its session failed twice.
@@ -106,6 +109,9 @@ pub struct Session {
     /// The end of what each shell call's command wrote, by the command (or its id) the call named,
     /// for its step's `output` (obid only: the conversation's shell).
     pub shell_out: Mutex<HashMap<String, String>>,
+    /// The calls of Oby's tools obid's reader has seen the agent write, `(tool, arguments)`, that
+    /// haven't reached Oby's tools yet ([`Session::heard`]).
+    pub written: Mutex<Vec<(String, Value)>>,
 }
 
 impl Session {
@@ -120,6 +126,39 @@ impl Session {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .insert(key.to_owned(), tail);
+    }
+
+    /// obid's reader saw the agent write a call of Oby's tool `tool`: every line before it is
+    /// handled, so a read it made first has marked the turn.
+    pub fn wrote(&self, tool: &str, args: &Value) {
+        self.written
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push((tool.to_owned(), arguments(args)));
+    }
+
+    /// Waits until obid's reader has handled the line where the agent wrote this call, and so
+    /// every line it wrote before (#1686): a call reaches Oby's tools apart from the agent's
+    /// output, and could otherwise be judged before a read it followed marked the turn. A marked
+    /// turn waits for nothing; a call whose line doesn't come within `wait` marks it (fail closed).
+    pub async fn heard(&self, tool: &str, args: &Value, wait: Duration) {
+        let args = arguments(args);
+        let until = tokio::time::Instant::now() + wait;
+        // ponytail: polls every 5 ms; the line is almost always there already.
+        while !self.web.load(Ordering::SeqCst) {
+            {
+                let mut written = self.written.lock().unwrap_or_else(|e| e.into_inner());
+                if let Some(at) = written.iter().position(|(t, a)| t == tool && *a == args) {
+                    written.remove(at);
+                    return;
+                }
+            }
+            if tokio::time::Instant::now() >= until {
+                self.taint();
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
     }
 
     /// Marks the turn as having read something untrusted, and writes the mark to `session.json`
@@ -1164,6 +1203,7 @@ async fn session(
         supervising,
         event,
         shell_out: Mutex::default(),
+        written: Mutex::default(),
     });
     // A turn nobody watches is about what an agent wrote: nothing it does counts as the owner's
     // own words, except what super::supervisor or super::orchestrator lets it do by itself.
@@ -1901,6 +1941,9 @@ async fn one(
                 if taints(&name, &input, &bounds, &place.repos) {
                     session.taint();
                 }
+                if let Some(tool) = name.strip_prefix("mcp__oby__") {
+                    session.wrote(tool, &input);
+                }
                 // Fail closed for the owner's secrets (crate::secretspec): a call obid doesn't know
                 // keeps what the conversation read the owner's own marks it. Oby's own tools are
                 // judged where they answer (super::tools).
@@ -1991,6 +2034,15 @@ async fn one(
 enum Run {
     Cold(agent::Launch),
     Warm(Box<crate::conn::Conn>),
+}
+
+/// A tool call's arguments as the agent wrote them and as they reach Oby's tools: none is `{}`.
+fn arguments(args: &Value) -> Value {
+    if args.is_null() {
+        json!({})
+    } else {
+        args.clone()
+    }
 }
 
 /// A turn's words as they stream, sent out with every secret obid knows taken out: what could
@@ -3076,6 +3128,7 @@ mod tests {
             supervising: None,
             event: None,
             shell_out: Mutex::default(),
+            written: Mutex::default(),
         };
         // The run names its session: kept at once, unmarked.
         session.keep(Some("c0000000-0000-4000-8000-000000000001"));
@@ -3086,6 +3139,48 @@ mod tests {
         assert!(got.web);
         assert_eq!(got.session, "c0000000-0000-4000-8000-000000000001");
         let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// #1686: a call of Oby's tools goes on once obid's reader has seen its line, and never waits
+    /// past its cap: a line that doesn't come marks the turn.
+    #[tokio::test]
+    async fn a_call_waits_for_its_line_at_most_its_cap() {
+        let session = Session {
+            conversation: "c1".into(),
+            said: String::new(),
+            attachments: vec![],
+            attached_jobs: vec![],
+            repos_note: None,
+            control: super::super::turn::Turns::default().begin("t1", "c1"),
+            jobs: Mutex::new(vec![]),
+            nonce: "n".into(),
+            web: AtomicBool::new(false),
+            dispatched: AtomicUsize::new(0),
+            told: AtomicUsize::new(0),
+            asked: AtomicUsize::new(0),
+            kept: PathBuf::from("/nowhere/session.json"),
+            account: "a".into(),
+            room: PathBuf::from("/nowhere/room"),
+            artifacts: Mutex::new(vec![]),
+            supervising: None,
+            event: None,
+            shell_out: Mutex::default(),
+            written: Mutex::default(),
+        };
+        let cap = Duration::from_secs(5);
+        // Its line, with no arguments as none: heard at once, unmarked, and taken.
+        session.wrote("oby_jobs", &Value::Null);
+        let at = Instant::now();
+        session.heard("oby_jobs", &json!({}), cap).await;
+        assert!(at.elapsed() < Duration::from_secs(1));
+        assert!(!session.web.load(Ordering::SeqCst));
+        assert!(session.written.lock().unwrap().is_empty());
+        // Another call's line isn't this one's: it waits out its cap, and the turn is marked.
+        session.wrote("oby_jobs", &json!({"all": true}));
+        session
+            .heard("oby_jobs", &json!({}), Duration::from_millis(50))
+            .await;
+        assert!(session.web.load(Ordering::SeqCst));
     }
 
     /// Only a session id Claude Code made is resumed: a UUID, never an argument of another kind.
@@ -3378,6 +3473,7 @@ mod tests {
             supervising: None,
             event: None,
             shell_out: Mutex::default(),
+            written: Mutex::default(),
         }));
         assert!(sessions.session("conversation-c1", &token).is_some());
         assert!(sessions.session("conversation-c2", &token).is_none());
