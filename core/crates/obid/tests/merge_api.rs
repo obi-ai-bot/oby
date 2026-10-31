@@ -580,6 +580,56 @@ fn a_pull_request_merged_on_github_needs_nobody() {
     assert!(!calls(&folder.0).contains("-X PUT"));
 }
 
+/// TASKS-13: an Oby review's card (here its crash card) waits on the pull request it reviewed:
+/// open, the card stays; once that pull request is closed on GitHub, the card comes back done
+/// with no answer and the failed review is let go, so Home keeps neither.
+#[test]
+fn tasks_13_an_oby_reviews_card_settles_once_its_pull_request_closes() {
+    let folder = Folder::new("review-card-closed");
+    let mut review = obid::job::Job::new(
+        "r9e8d7c6".into(),
+        REPO.into(),
+        "review".into(),
+        "Fix the thing".into(),
+        "claude".into(),
+        "stub".into(),
+    );
+    review.status = obid::job::Status::Failed;
+    review.reason = Some(obid::job::LOOPED.into());
+    review.review_of = Some(ID.into());
+    let jobs = folder.0.join("home/jobs");
+    std::fs::create_dir_all(&jobs).unwrap();
+    std::fs::write(
+        jobs.join("r9e8d7c6.json"),
+        serde_json::to_vec(&review).unwrap(),
+    )
+    .unwrap();
+    let obid = started_with(&folder, true, None, published(), &[]);
+    let card = |state: &str| {
+        call(&obid, "GET", &format!("/v1/inbox?state={state}"), None)
+            .body
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .find(|i| i["id"].as_str().unwrap().starts_with("r9e8d7c6-crash-"))
+    };
+    let open = within(30, "the review's crash card", || card("open"));
+    // Its pull request still open: the card waits for the owner, and the review isn't let go.
+    std::thread::sleep(std::time::Duration::from_secs(3));
+    assert!(card("open").is_some(), "{open}");
+    let failed = call(&obid, "GET", "/v1/jobs/r9e8d7c6", None).body;
+    assert_eq!(failed["dismissed"], Value::Null, "{failed}");
+
+    view_now(&folder, |view| view["state"] = json!("CLOSED"));
+    let done = within(30, "the card settled", || card("done"));
+    assert_eq!(done["id"], open["id"]);
+    assert_eq!(done["answer"], Value::Null, "{done}");
+    assert!(card("open").is_none());
+    let review = call(&obid, "GET", "/v1/jobs/r9e8d7c6", None).body;
+    assert!(review["dismissed"].is_string(), "{review}");
+}
+
 /// What obid was sending when it stopped is settled from GitHub when it starts again: a merge
 /// that landed is listed, as its workflow's; an approval that went out is listed once, and
 /// neither is sent again.

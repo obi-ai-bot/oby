@@ -1095,6 +1095,11 @@ impl Job {
         self.pull_request.as_ref().is_none_or(|pr| pr.is_open())
     }
 
+    /// Whether it has a pull request, and obid knows it was merged or closed.
+    pub fn pull_request_ended(&self) -> bool {
+        self.pull_request.as_ref().is_some_and(|pr| !pr.is_open())
+    }
+
     /// Done, with commits that aren't on its pull request yet: obid publishes it when it ends, and
     /// offers Publish when that failed. Not once dismissed, never on a review or research job,
     /// never once its pull request was merged or closed, and only while its branch is at the

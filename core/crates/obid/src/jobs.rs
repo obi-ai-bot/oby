@@ -11229,6 +11229,7 @@ impl Jobs {
                 return;
             }
             self.read_pull_requests().await;
+            self.let_go_ended();
             if self.settle_reviews() {
                 self.schedule();
             }
@@ -11237,6 +11238,46 @@ impl Jobs {
                 _ = tokio::time::sleep(follow_tick()) => {}
                 _ = woken => {}
             }
+        }
+    }
+
+    /// Lets go of the failed or interrupted jobs whose pull request was merged or closed, an Oby
+    /// review's being the one it reviewed (TASKS-13): nothing of theirs waits on the owner any
+    /// more, so Home doesn't keep them. Not one an account limit holds: that's the owner's one
+    /// decision (#1563).
+    fn let_go_ended(&self) {
+        let now = obi_protocol::time::now();
+        let ended: Vec<String> = {
+            let state = self.lock();
+            let pr_ended = |job: &Job| {
+                job.pull_request_ended()
+                    || job
+                        .review_of
+                        .as_ref()
+                        .and_then(|of| state.jobs.get(of))
+                        .is_some_and(Job::pull_request_ended)
+            };
+            state
+                .jobs
+                .values()
+                .filter(|job| {
+                    job.dismissed.is_none()
+                        && matches!(job.status, Status::Failed | Status::Interrupted)
+                        && !job.account_limit_blocked
+                        && !state.publishing.contains(&job.id)
+                        && pr_ended(job)
+                })
+                .map(|job| job.id.clone())
+                .collect()
+        };
+        for id in &ended {
+            self.update(id, |job| {
+                job.dismissed.get_or_insert(now);
+                job.resumes_at = None;
+            });
+        }
+        if !ended.is_empty() {
+            self.cleaning.notify_one();
         }
     }
 
