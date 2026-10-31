@@ -294,7 +294,7 @@ const Face = ({ live = false, talk }: { live?: boolean; talk?: number }) => <Oby
 // its title, how it stands and who has it, what it left behind once done, and
 // its status mark (as in the side panel). A click opens the task's page; in a
 // task's own thread, its own card just shows where it stands.
-function ThreadTask({ task, current, onOpen }: { task: Task; current: boolean; onOpen: (id: string) => void }) {
+export function ThreadTask({ task, current, onOpen }: { task: Task; current: boolean; onOpen: (id: string) => void }) {
   const j = task.job;
   const repo = j.repo.includes('/') ? j.repo.split('/')[1] : null;
   const body = <>
@@ -305,7 +305,7 @@ function ThreadTask({ task, current, onOpen }: { task: Task; current: boolean; o
         {task.title}
       </span>
       <span className="msg-task-meta">
-        {task.status === 'running' ? (j.status === 'queued' ? 'Queued' : 'Running') : task.status === 'needs' ? 'Needs you' : 'Done'}
+        {task.status === 'running' ? (j.status === 'queued' ? 'Queued' : 'Running') : task.status === 'needs' ? 'Needs you' : j.nothingDone ? 'Nothing done' : 'Done'}
         {' · '}{AGENTS[j.agent].name} · {j.account}{j.on && <> · on {j.on}</>}{repo && <> · {repo}</>}
       </span>
       {task.status === 'done' && resultLine(task)}

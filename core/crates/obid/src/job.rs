@@ -709,6 +709,17 @@ pub struct JobArtifact {
 }
 
 impl Job {
+    /// Whether it ended with nothing done (docs/contracts/tasks.md, TASKS-12): a job whose work is
+    /// commits ended done with none, nothing published or pushed. Its card and its conversation's
+    /// report say so, never plain "Done".
+    pub fn nothing_done(&self) -> bool {
+        self.status == Status::Done
+            && crate::jobs::COMMITTING.contains(&self.kind.as_str())
+            && self.commits == Some(0)
+            && self.published.is_none()
+            && self.pushed.is_none_or(|n| n == 0)
+    }
+
     /// Whether its pull request was merged, as the job's `pullRequest` says: it's finished for
     /// good. obid follows no pull request yet, so none reads merged until it does.
     /// Whether its check keeps loopback (`sandbox::Spec::loopback`): only an owner's job whose
@@ -1275,6 +1286,9 @@ impl Job {
         if self.untrusted {
             value["untrusted"] = json!(true);
         }
+        if self.nothing_done() {
+            value["nothingDone"] = json!(true);
+        }
         if let Some(merged) = &self.merged_by {
             value["mergedBy"] = json!({"by": merged.by, "memory": merged.memory,
                                        "at": obi_protocol::time::format(merged.at)});
@@ -1750,6 +1764,35 @@ mod tests {
         job.pr = Some(33);
         job.created = obi_protocol::time::parse("2026-10-09T21:42:53Z").unwrap();
         job
+    }
+
+    /// TASKS-12: a job whose work is commits that ended done with none, nothing published or
+    /// pushed, ended with nothing done, and its JSON says so; a review, research, a job still
+    /// running, or one that committed or pushed doesn't.
+    #[test]
+    fn tasks_12_a_job_that_committed_nothing_ended_with_nothing_done() {
+        let mut fix = job();
+        fix.kind = "fix".into();
+        fix.status = Status::Done;
+        fix.commits = Some(0);
+        assert!(fix.nothing_done());
+        assert_eq!(fix.to_json()["nothingDone"], true);
+        let mut review = fix.clone();
+        review.kind = "review".into();
+        let mut research = fix.clone();
+        research.kind = "research".into();
+        let mut running = fix.clone();
+        running.status = Status::Running;
+        let mut committed = fix.clone();
+        committed.commits = Some(2);
+        let mut pushed = fix.clone();
+        pushed.pushed = Some(1);
+        let mut published = fix.clone();
+        published.published = Some("https://github.com/deskree-inc/oby/pull/9".into());
+        for other in [review, research, running, committed, pushed, published] {
+            assert!(!other.nothing_done(), "{other:?}");
+            assert!(other.to_json().get("nothingDone").is_none());
+        }
     }
 
     /// Only an owner's job keeps loopback in its check: not another Obi's review.

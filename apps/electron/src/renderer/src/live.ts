@@ -308,7 +308,7 @@ function taskOf(s: Live, j: Job): Task {
     check: j.check ?? undefined, repoCheck: s.repos.find((r) => r.repo === j.repo)?.check, status: j.status, step: j.step, waiting: j.waiting ?? undefined,
     round: j.rounds > 1 ? [j.round, j.rounds] : undefined,
     stages: stagesOf(j),
-    ask, summary: j.summary || undefined, commits: j.commits ?? undefined, published: j.published ?? undefined,
+    ask, summary: j.summary || undefined, commits: j.commits ?? undefined, published: j.published ?? undefined, nothingDone: j.nothingDone || undefined,
     created: minutesAgo(j.created), finished: j.finished ? minutesAgo(j.finished) : undefined, conversation: j.conversation ? shownId(j.conversation) : undefined,
     archived: !!j.archived,
   };

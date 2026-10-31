@@ -721,9 +721,10 @@ fn a_fresh_obid_works_in_the_github_repositories_gh_can_push_to() {
 }
 
 /// A fix that commits nothing is done, as Claude Code is when its model stops: the agent's summary
-/// says why, and `reason` that nothing was published. It needs nothing, so it can't be dismissed.
+/// says why, `reason` that nothing was published, and `nothingDone` that nothing was done
+/// (TASKS-12). It needs nothing, so it can't be dismissed.
 #[test]
-fn nothing_committed_is_done_and_needs_nothing() {
+fn tasks_12_nothing_committed_is_done_with_nothing_done_and_needs_nothing() {
     let folder = Folder::new("nothing");
     let remote = fixture(&folder.0.join("fixture"));
     let obid = start(&folder.0, &config(&folder.0, &remote));
@@ -743,6 +744,9 @@ fn nothing_committed_is_done_and_needs_nothing() {
         "Nothing committed, so nothing was published."
     );
     assert_eq!(job["commits"], 0);
+    // TASKS-12: it ended with nothing done, and its JSON says so; research that commits nothing
+    // doesn't.
+    assert_eq!(job["nothingDone"], true, "{job}");
     assert_eq!(
         request(&obid, "POST", &format!("/v1/jobs/{id}/dismiss"), None).status,
         409
@@ -760,7 +764,9 @@ fn nothing_committed_is_done_and_needs_nothing() {
         .as_str()
         .unwrap()
         .to_owned();
-    assert_eq!(wait(&obid, &quiet)["status"], "done");
+    let research = wait(&obid, &quiet);
+    assert_eq!(research["status"], "done");
+    assert!(research.get("nothingDone").is_none(), "{research}");
     let refused = request(&obid, "POST", &format!("/v1/jobs/{quiet}/dismiss"), None);
     assert_eq!(refused.status, 409);
     assert!(
@@ -1011,7 +1017,7 @@ fn a_fake_agent_test_runs_inside_a_jobs_sandbox() {
     let job = inside_a_job::Job::new("inside-a-job");
     let argv = job.wrapped(
         &job.spec(true),
-        "nothing_committed_is_done_and_needs_nothing",
+        "tasks_12_nothing_committed_is_done_with_nothing_done_and_needs_nothing",
     );
     let (passed, said) = job.run(&job.spec(true), &argv, &[("OBID_TEST_KEEP", "1".into())]);
     assert!(passed, "{said}");
@@ -1155,7 +1161,7 @@ fn inside_another_sandbox_a_fake_agent_test_runs_nothing() {
         person.display().to_string(),
         job.home.display().to_string(),
     );
-    let test = "nothing_committed_is_done_and_needs_nothing";
+    let test = "tasks_12_nothing_committed_is_done_with_nothing_done_and_needs_nothing";
     let mut sandbox_exec: Vec<std::ffi::OsString> =
         vec!["/usr/bin/sandbox-exec".into(), "-p".into(), foreign.into()];
     sandbox_exec.extend(job.argv(test));
