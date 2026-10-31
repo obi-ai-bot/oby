@@ -335,8 +335,8 @@ impl Item {
     }
 
     /// The conversation a `start` item was proposed in (kept beside its job as `proposedIn`; the
-    /// planned job's own `conversation` for one made before), or a confirm to start a job came
-    /// from: the apps show it opened out only there.
+    /// planned job's own `conversation` for one made before), or a confirm came from (a job it
+    /// starts, or the conversation's own Confirm): the apps show it opened out there.
     pub fn conversation(&self) -> Option<String> {
         // A conversation's shell command waiting for the owner names it in its id.
         if crate::brain::shell::is_item(self) {
@@ -346,6 +346,8 @@ impl Item {
             (Some(start), _) if start["proposedIn"].is_string() => &start["proposedIn"],
             (Some(start), _) => &start["conversation"],
             (None, Some(c)) if c.action == action::START_JOB => &c.payload["job"]["conversation"],
+            // The conversation's own Confirms (oby_merge, oby_github_write, oby_settings…).
+            (None, Some(c)) => &c.payload["conversation"],
             _ => return None,
         };
         planned.as_str().map(str::to_owned)
@@ -1004,6 +1006,34 @@ impl Inbox {
 
 #[cfg(test)]
 mod tests {
+
+    /// TASKCONV-7: the Confirm a conversation's tool made names that conversation, so the app shows
+    /// it under Oby's answer there (#1680); one with none names none.
+    #[test]
+    fn taskconv_7_a_conversations_confirm_names_it() {
+        let confirm = |action: &str, payload: serde_json::Value| {
+            let confirmed = super::Confirmed {
+                action: action.into(),
+                target: "o/r#3".into(),
+                payload,
+            };
+            super::confirm_item(
+                "",
+                "Merge o/r#3 into main".into(),
+                String::new(),
+                confirmed,
+                0,
+            )
+        };
+        let merge = confirm(
+            super::action::MERGE_PR,
+            serde_json::json!({"merge": {}, "conversation": "c1"}),
+        );
+        assert_eq!(merge.conversation().as_deref(), Some("c1"));
+        assert_eq!(merge.to_json()["conversation"], "c1");
+        let bypass = confirm(super::action::SET_MODE_BYPASS, serde_json::Value::Null);
+        assert_eq!(bypass.conversation(), None);
+    }
 
     /// Oby's ask about a check says what each answer does in its text, which every app shows
     /// (Electron shows no `details`), and when the check's tool will ask for a site (#1062).

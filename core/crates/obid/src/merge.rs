@@ -3127,7 +3127,8 @@ mod tests {
             Ok(())
         );
         // GitHub refuses: what to change first, then every hold of Oby's behind it; no Merge.
-        let refusals: [(fn(&mut Value), &str); 4] = [
+        type Change = fn(&mut Value);
+        let refusals: [(Change, &str); 4] = [
             (
                 |v| v["mergeable"] = json!("CONFLICTING"),
                 "Ask Oby to rebase it onto main",

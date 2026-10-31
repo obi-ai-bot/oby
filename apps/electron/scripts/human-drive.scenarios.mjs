@@ -90,6 +90,23 @@ async function openTask(t, title) {
   await t.see('Tell Oby about this task…', { label: 'its page' });
 }
 
+// the Confirm Oby's answer made to merge `url` (Merge <repo>#<n> into …), under that answer: its
+// exact title tracked as this run's, then Confirm, the owner's one click
+async function confirmMerge(t, url) {
+  const n = url.match(/\/pull\/(\d+)$/)?.[1];
+  const card = t.page.locator('.msg-ask').filter({ has: t.page.locator('.tc-ask-head', { hasText: new RegExp(`^Merge \\S+#${n} into `) }) }).last();
+  await card.waitFor({ timeout: MIN });
+  const title = (await card.locator('.tc-ask-head').innerText()).trim();
+  track(t, { title });
+  t.state.cards = (t.state.cards ?? 0) + 1;
+  t.note(`card: ${title} → Confirm, in the conversation`);
+  // (a click in a card's first half second answers nothing: AskBlock)
+  await sleep(700);
+  await card.getByRole('button', { name: 'Confirm', exact: true }).click();
+  t.step(`answered “Confirm” on “${title}” in the conversation`);
+  await t.shot('confirmed');
+}
+
 // a task whose cards this run answers: never one named as a card the owner had on Home already
 const track = (t, task) => {
   if (t.state.homeTitles?.has(task.title)) throw new Error(`the task “${task.title}” has the name of a card the owner had on Home: its cards can't be told apart, so none is answered`);
@@ -227,6 +244,11 @@ export default [
         await t.say('Merge it as it is.', 'Tell Oby about this task…');
         t.note(`Oby: ${(await t.reply({ ms: 5 * MIN })).replace(/\n+/g, ' ')}`);
         await t.shot('told-to-merge');
+        // words read with untrusted text make a Confirm: under Oby's answer (and on Home), answered
+        // here by its exact title, tracked like the run's other cards, before the merge is waited for
+        await confirmMerge(t, url).catch((e) => t.note(`no Confirm to answer in the conversation: ${e.message}`));
+        const deadline = Date.now() + 3 * MIN;
+        while (!merged() && Date.now() < deadline) await sleep(5000);
         await home(t);
         await answerCards(t, { done: merged, ms: 15 * MIN });
       }

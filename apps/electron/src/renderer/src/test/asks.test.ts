@@ -77,3 +77,28 @@ describe('MERGING-21: a merge card says why it stopped, never just its title (#1
     expect([ask.headline, ask.text]).toEqual(['Merge it into main?', 'A review asks for changes.']);
   });
 });
+
+describe('TASKCONV-7: the Confirm Oby’s answer made shows under it, and on Home (#1680)', () => {
+  const at = (m: number) => `2026-10-31T12:${String(m).padStart(2, '0')}:00Z`;
+  const convo = { id: 'c1', title: 'Oby drive 15:36', pinned: false, created: at(0), lastActivity: at(49), cursor: '' };
+  const merge = item('confirm', {
+    id: 'confirm-1', job: '', title: 'Merge well-prado/tetrix-e2e#147 into main', text: 'Oby’s conversation planned this.',
+    options: ['Confirm', 'Cancel'], created: at(49), conversation: 'c1',
+  });
+  const turns = [
+    { id: 't1', who: 'user' as const, text: 'Merge it as it is.', at: at(48), jobs: [], conversation: 'c1' },
+    { id: 't2', who: 'oby' as const, text: 'The merge of PR #147 into main waits for your OK.', at: at(49), jobs: [], conversation: 'c1' },
+  ];
+
+  it('taskconv_7_the_confirm_is_under_the_answer_that_made_it_one_click_away', () => {
+    const chat = live.chatOf({ ...live.liveState(), inbox: [merge], turns: { c1: turns } }, convo);
+    expect(chat.said.map((m) => m.text || m.confirm?.id)).toEqual(['Merge it as it is.', 'The merge of PR #147 into main waits for your OK.', 'confirm-1']);
+    expect(chat.said[2].confirm!.ask).toMatchObject({ kind: 'confirm', headline: 'Merge well-prado/tetrix-e2e#147 into main', options: ['Confirm', 'Cancel'] });
+  });
+
+  it('taskconv_7_answered_on_home_it_leaves_the_conversation_too', () => {
+    const s = live.liveState();
+    expect(live.chatOf({ ...s, inbox: [merge], turns: { c1: turns }, answering: new Set(['confirm-1']) }, convo).said.some((m) => m.confirm)).toBe(false);
+    expect(live.chatOf({ ...s, inbox: [], turns: { c1: turns } }, convo).said.some((m) => m.confirm)).toBe(false);
+  });
+});

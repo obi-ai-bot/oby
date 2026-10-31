@@ -593,8 +593,14 @@ fn confirm_card(
     session: &Session,
     title: String,
     what: Option<&str>,
-    confirmed: crate::sphere::inbox::Confirmed,
+    mut confirmed: crate::sphere::inbox::Confirmed,
 ) -> Result<String, String> {
+    // The conversation it was planned in shows it under Oby's answer, as Home does (#1680).
+    if let Some(payload) = confirmed.payload.as_object_mut() {
+        payload
+            .entry("conversation")
+            .or_insert_with(|| json!(session.conversation));
+    }
     let mut text = format!(
         "Oby's conversation planned this, and it waits for you because {}. It happens only if you confirm.",
         not_their_word(session)
@@ -610,7 +616,7 @@ fn confirm_card(
         confirmed,
     );
     Ok(format!(
-        "{title} waits for your OK: confirm it in your inbox."
+        "{title} waits for your OK: its Confirm is under this answer, and on Home."
     ))
 }
 

@@ -99,7 +99,7 @@ function offersOf(s: Live, c?: string, items = s.inbox): Offer[] {
   }));
 }
 
-function chatOf(s: Live, c: Conversation): Chat {
+export function chatOf(s: Live, c: Conversation): Chat {
   // a task's card under the answer that started it, not again under each that mentions it. A
   // job your words started or were offered (its turn), and what Oby offered for them (the offer's
   // id), go under Oby's answer to them: its first turn after them that isn't a job's report or a
@@ -109,6 +109,14 @@ function chatOf(s: Live, c: Conversation): Chat {
   const byTurn = Object.values(s.jobs).filter((j) => j.conversation === c.id && j.turn).sort((a, b) => a.created.localeCompare(b.created));
   const offers = offersOf(s, c.id);
   const said: Message[] = [];
+  // the Confirms Oby's answers made here, each under the first answer that came after it, as on
+  // Home's stack: not put off, not on their way (#1680)
+  const now = Date.now();
+  const confirms = s.inbox.filter((i) => i.kind === 'confirm' && i.conversation === c.id
+    && !(i.later && Date.parse(i.later) > now) && !s.answering.has(i.id));
+  const confirmed = new Set<string>();
+  const confirm = (m: Omit<Message, 'confirm'>, by?: string) => confirms.filter((i) => (by === undefined || Date.parse(i.created) <= Date.parse(by)) && !confirmed.has(i.id) && confirmed.add(i.id))
+    .forEach((i) => said.push({ ...m, confirm: { id: i.id, ask: itemAsk(i) } }));
   let asked: string | undefined;
   for (const t of (s.turns[c.id] ?? []).filter((t) => t.id !== p?.turn)) {
     const answer = t.who === 'oby' && !t.ended && !t.routine ? asked : undefined;
@@ -118,6 +126,7 @@ function chatOf(s: Live, c: Conversation): Chat {
     const files = t.attachments?.map((name) => { const p = s.previews[t.id]?.find((f) => f.name === name); return { name: p?.shown ?? name, preview: p?.preview }; });
     said.push({ who: t.who === 'user' ? 'you' : 'oby', text: t.text, ago: minutesAgo(t.at), ...(jobs.length ? { jobs } : {}), ...(files?.length ? { files } : {}) });
     for (const offer of offers.filter((o) => o.id === answer)) said.push({ who: 'oby', text: '', ago: minutesAgo(t.at), offer });
+    if (t.who === 'oby') confirm({ who: 'oby', text: '', ago: minutesAgo(t.at) }, t.at);
     if (t.who === 'user') asked = t.id;
     else if (answer) asked = undefined;
   }
@@ -126,6 +135,7 @@ function chatOf(s: Live, c: Conversation): Chat {
   // its answer still coming (under the words so far), or an event turn's offer: last
   const placed = new Set(said.flatMap((m) => (m.offer ? [m.offer.id] : [])));
   for (const offer of offers.filter((o) => !placed.has(o.id))) said.push({ who: 'oby', text: '', ago: 0, offer });
+  confirm({ who: 'oby', text: '', ago: 0 });
   return {
     id: s.alias[c.id] ?? c.id, title: c.title, pinned: c.pinned, at: minutesAgo(c.lastActivity), said,
     about: c.tasks?.length ? `Started ${c.tasks.length} task${c.tasks.length === 1 ? '' : 's'}` : '',
