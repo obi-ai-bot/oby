@@ -20,31 +20,17 @@ import { spawn } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
-import { _electron as electron } from 'playwright-core';
+import { join, resolve } from 'node:path';
 import { buildFixture } from '../../../e2e/lib/fixture.mjs';
+import { appRoot, launch, sleep, until } from './drive-lib.mjs';
 
-const appRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const repoRoot = resolve(appRoot, '../..');
 const agents = join(repoRoot, 'core/crates/obid/tests/agents');
 const binary = process.env.OBY_TEST_OBID || join(repoRoot, 'core/target/debug/obid');
-const electronBinary = join(appRoot, 'node_modules/electron/dist/Electron.app/Contents/MacOS/Electron');
 const shots = process.env.OBY_CORE_SHOTS;
 const scratch = mkdtempSync(join(tmpdir(), 'oby-core-'));
-const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
 const json = (path, value) => writeFileSync(path, JSON.stringify(value), { mode: 0o600 });
 let daemon, app;
-
-async function until(label, f, ms = 60_000) {
-  const deadline = Date.now() + ms;
-  let last;
-  while (Date.now() < deadline) {
-    try { const value = await f(); if (value) return value; } catch (e) { last = e; }
-    await sleep(150);
-  }
-  throw new Error(`${label} timed out${last ? `: ${last.message}` : ''}`);
-}
 
 async function freePort() {
   const server = createServer();
@@ -91,16 +77,7 @@ async function startObid() {
 }
 
 async function openApp(s) {
-  const launcher = join(s.root, 'electron-launcher.cjs');
-  writeFileSync(launcher, `const { app } = require('electron');
-app.setPath('userData', ${JSON.stringify(join(s.root, 'electron-data'))});
-// never on the person's screen: no Dock icon, and every window invisible and unfocusable (the test
-// drives it through DevTools, which needs neither)
-app.dock?.hide();
-app.on('browser-window-created', (_e, win) => { win.setOpacity(0); win.setFocusable(false); win.setIgnoreMouseEvents(true); });
-import(${JSON.stringify(pathToFileURL(join(appRoot, 'out/main/index.js')).href)});
-`);
-  app = await electron.launch({ executablePath: electronBinary, args: [launcher], env: { ...process.env, OBID_HOME: s.home, OBID_PORT: String(s.port) } });
+  app = await launch({ dir: s.root, userData: join(s.root, 'electron-data'), env: { ...process.env, OBID_HOME: s.home, OBID_PORT: String(s.port) } });
   const page = await app.firstWindow();
   const errors = [];
   page.on('pageerror', (e) => errors.push(e.message));
