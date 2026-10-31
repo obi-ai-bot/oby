@@ -1119,7 +1119,12 @@ impl Link {
                 match &given {
                     Given::Later(at) => item.later = Some(*at),
                     Given::Done => item.done = Some(now),
-                    Given::Answer(a) if a == crate::job::TRY_AGAIN || a == inbox::DISMISS => {
+                    Given::Answer(a)
+                        if a == crate::job::TRY_AGAIN
+                            || a == inbox::DISMISS
+                            || (a == crate::job::ONE_MORE_ROUND
+                                && inbox::is_review_item(&item)) =>
+                    {
                         item.answer = Some(a.clone());
                         item.done = Some(now);
                     }
@@ -1141,6 +1146,8 @@ impl Link {
                     Some(crate::job::TRY_AGAIN) if inbox::is_review_item(&item) => {
                         self.jobs.review_again(&item.job)
                     }
+                    // Oby's reviews ran out: their last changes go to the agent once more.
+                    Some(crate::job::ONE_MORE_ROUND) => self.jobs.review_round_again(&item.job),
                     Some(crate::job::TRY_AGAIN) => self.jobs.message(
                         &item.job,
                         crate::brain::actions::TRY_AGAIN,

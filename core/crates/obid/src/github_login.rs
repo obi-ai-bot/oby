@@ -298,6 +298,40 @@ pub fn decode_status(said: &str) -> Status {
     }
 }
 
+/// Whether gh says for sure that the owner is signed in to no GitHub account that works (as gh
+/// 2.102 prints it, exit 0 either way): no account for github.com (`{"hosts":{}}`), or its active
+/// one refused (`state` `error`, HTTP 401). A gh that didn't answer, or an account it couldn't
+/// check (offline), isn't.
+pub(crate) fn decode_signed_out(said: &str) -> bool {
+    let Some(hosts) = serde_json::from_str::<Value>(said)
+        .ok()
+        .and_then(|v| v["hosts"].as_object().cloned())
+    else {
+        return false;
+    };
+    let accounts = hosts
+        .get("github.com")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    match accounts.iter().find(|a| a["active"] == true) {
+        None => true,
+        Some(active) => {
+            active["state"] == "error"
+                && active["error"]
+                    .as_str()
+                    .is_some_and(|e| e.contains("HTTP 401"))
+        }
+    }
+}
+
+/// [`decode_signed_out`] of what the owner's gh says now.
+pub(crate) async fn signed_out(gh: &Path) -> bool {
+    crate::github::run_as(gh, None, &STATUS)
+        .await
+        .is_ok_and(|said| decode_signed_out(&said))
+}
+
 /// `GET /v1/github`: whether obid has a gh, whether it's signed in and as whom, and the sign-in
 /// under way; the same for the reviewer, with why its last sign-in kept no login.
 pub async fn get(State(shared): State<Arc<Shared>>) -> Result<Response, ApiError> {
@@ -846,5 +880,24 @@ mod tests {
         assert_eq!(decode_status(failing), signed_out);
         let odd = r#"{"hosts":{"github.com":[{"state":"success","active":true,"login":"a b"}]}}"#;
         assert_eq!(decode_status(odd), signed_out);
+    }
+
+    /// MERGING-6: only a gh that says so is signed out, as gh 2.102 says it: no account, or its
+    /// active one refused. One that didn't answer, or couldn't reach GitHub, isn't.
+    #[test]
+    fn merging_6_only_a_gh_that_says_so_is_signed_out() {
+        assert!(decode_signed_out(r#"{"hosts":{}}"#));
+        assert!(decode_signed_out(r#"{"hosts":{"github.com":[]}}"#));
+        assert!(decode_signed_out(
+            r#"{"hosts":{"github.com":[{"state":"error","error":"HTTP 401: Bad credentials (https://api.github.com/)","active":true,"host":"github.com","login":"nobody"}]}}"#
+        ));
+        for not in [
+            "",
+            "error connecting to api.github.com",
+            r#"{"hosts":{"github.com":[{"state":"error","error":"Get \"https://api.github.com/\": dial tcp: lookup api.github.com: no such host","active":true,"login":"x"}]}}"#,
+            r#"{"hosts":{"github.com":[{"state":"success","active":true,"login":"well-prado"}]}}"#,
+        ] {
+            assert!(!decode_signed_out(not), "{not}");
+        }
     }
 }
