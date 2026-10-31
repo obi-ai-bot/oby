@@ -2688,7 +2688,7 @@ fn work_inside_the_sandbox_is_answered_without_the_owner() {
         job["summary"]
             .as_str()
             .unwrap()
-            .contains("deny: obid publishes"),
+            .contains("deny: Agents have no code-host login"),
         "{job}"
     );
     assert_eq!(job["permission"], Value::Null);
@@ -2727,7 +2727,7 @@ fn work_inside_the_sandbox_is_answered_without_the_owner() {
         answered[7]["reason"]
             .as_str()
             .unwrap()
-            .contains("publishes"),
+            .contains("go through obid"),
         "{job}"
     );
     assert!(answered[0]["at"].as_str().unwrap().ends_with('Z'));

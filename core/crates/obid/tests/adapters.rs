@@ -319,7 +319,7 @@ fn codex_hears_what_obid_declined_and_why() {
     assert_eq!(job["status"], "done", "{job}");
     assert!(
         summary(&job).starts_with(
-            "answer: decline\nheard: obid declined that: obid publishes the job's work itself"
+            "answer: decline\nheard: obid declined that: Agents have no code-host login, so pushing and posting go through obid"
         ),
         "{job}"
     );
@@ -626,7 +626,7 @@ fn cursor_hears_what_obid_declined_at_its_next_prompt() {
         summaries[1]
             .as_str()
             .unwrap()
-            .starts_with("heard: obid declined git push: obid publishes the job's work itself."),
+            .starts_with("heard: obid declined git push: Agents have no code-host login, so pushing and posting go through obid:"),
         "{job}"
     );
     assert_eq!(ended(&obid, &fs)["summary"], "fs: error -32601");
@@ -1037,10 +1037,11 @@ fn bypass_3_cursor_asks_you_before_it_runs_a_repositorys_hooks() {
     assert_eq!(ended(&obid, &id)["status"], "failed");
 }
 
-/// A repository whose `.cursor/cli.json` lets commands through without asking: Cursor doesn't
-/// start, and the job says why. And jobs name a tool obid has: Claude Code isn't set up here.
+/// BYPASS-9: a repository whose `.cursor/cli.json` lets commands through without asking: Cursor
+/// starts only on the owner's yes to its card (it used to refuse), a no says why, and Bypass
+/// answers it. And jobs name a tool obid has: Claude Code isn't set up here.
 #[test]
-fn a_repository_allowlist_keeps_cursor_from_starting() {
+fn bypass_9_a_repository_allowlist_asks_you_before_cursor_starts() {
     let folder = Folder::new("cursor-allowlist");
     let (obid, remote) = obid_and_remote(&folder, false);
     // The fixture's remote, with a commit that adds the allowlist.
@@ -1077,13 +1078,44 @@ fn a_repository_allowlist_keeps_cursor_from_starting() {
         ],
     );
     git(&work, &["push", "-q", "origin", "HEAD:main"]);
+    let card = |id: &str| {
+        within(60, "the allowlist waits for the owner", || {
+            let job = call(&obid, "GET", &format!("/v1/jobs/{id}"), None).body;
+            (job["permission"]["tool"] == "RepositoryHooks").then_some(job)
+        })
+    };
+    let answer = |id: &str, job: &Value, decision: &str| {
+        let answered = call(
+            &obid,
+            "POST",
+            &format!("/v1/jobs/{id}/permission"),
+            Some(&json!({"id": job["permission"]["id"], "decision": decision})),
+        );
+        assert_eq!(answered.status, 200, "{}", answered.text);
+    };
     let id = dispatch(&obid, json!({"agent": "cursor", "task": "anything"}));
+    let job = card(&id);
+    assert_eq!(
+        job["permission"]["title"],
+        "Let Cursor run what this repository's .cursor/cli.json allows: Shell(npm test)"
+    );
+    answer(&id, &job, "deny");
     let job = ended(&obid, &id);
     assert_eq!(job["status"], "failed", "{job}");
     assert!(
-        summary(&job).starts_with("Cursor didn't start: this repository's .cursor/cli.json lets it run Shell(npm test) without asking obid"),
+        summary(&job).starts_with("Cursor didn't start: you said no to what this repository's .cursor/cli.json lets it run"),
         "{job}"
     );
+    // The owner's yes: it starts.
+    let id = dispatch(&obid, json!({"agent": "cursor", "task": "anything"}));
+    answer(&id, &card(&id), "allow");
+    assert_eq!(ended(&obid, &id)["status"], "done");
+    // Bypass answers it: no card.
+    let id = dispatch(
+        &obid,
+        json!({"agent": "cursor", "task": "anything", "mode": "bypass"}),
+    );
+    assert_eq!(ended(&obid, &id)["status"], "done");
 
     let answer = call(
         &obid,

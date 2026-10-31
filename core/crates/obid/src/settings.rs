@@ -9,8 +9,99 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-/// How many jobs may run at once: 1 to 20.
-pub const MAX_RUNNING_RANGE: std::ops::RangeInclusive<u32> = 1..=20;
+/// How many jobs may run at once: 1 to the owner's ceiling ([`Limits::max_running`], 20 unless
+/// they raised it).
+pub fn max_running_range() -> std::ops::RangeInclusive<u32> {
+    1..=limits().max_running()
+}
+
+/// The owner's own ceilings on what Oby holds to by itself (the owner's decision of 2026-10-31,
+/// "Oby forbids nothing"; `limits` on `PUT /v1/settings/jobs`): each unset one is its default.
+/// What only protects the Mac (memory, disk, open connections) stays a fixed limit.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Limits {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rounds: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_running: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub folders: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub routines: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub accounts: Option<u32>,
+}
+
+impl Limits {
+    /// The highest each may be set to, whatever the owner says: past these the Mac itself runs out
+    /// (memory and processes for running jobs, files, the inbox), not a rule of Oby's.
+    pub const CEILINGS: [(&'static str, u32); 5] = [
+        ("rounds", 100),
+        ("maxRunning", 64),
+        ("folders", 200),
+        ("routines", 500),
+        ("accounts", 256),
+    ];
+
+    /// The most rounds a job may be given: 10.
+    pub fn rounds(&self) -> u32 {
+        self.rounds.unwrap_or(10)
+    }
+
+    /// The most jobs `maxRunning` may let run at once: 20.
+    pub fn max_running(&self) -> u32 {
+        self.max_running.unwrap_or(20)
+    }
+
+    /// The most folders a conversation works in ([`crate::folders::MOST`]).
+    pub fn folders(&self) -> usize {
+        self.folders.map_or(crate::folders::MOST, |n| n as usize)
+    }
+
+    /// The most routines obid keeps ([`crate::routines::MOST`]).
+    pub fn routines(&self) -> usize {
+        self.routines.map_or(crate::routines::MOST, |n| n as usize)
+    }
+
+    /// The most accounts obid keeps ([`crate::accounts::MOST_ACCOUNTS`]).
+    pub fn accounts(&self) -> usize {
+        self.accounts
+            .map_or(crate::accounts::MOST_ACCOUNTS, |n| n as usize)
+    }
+
+    /// As `GET /v1/settings/jobs` shows them: each one's value now.
+    pub fn to_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "rounds": self.rounds(),
+            "maxRunning": self.max_running(),
+            "folders": self.folders(),
+            "routines": self.routines(),
+            "accounts": self.accounts(),
+        })
+    }
+}
+
+/// The limits in force now: what obid's settings say, once read ([`use_limits`]).
+/// ponytail: one per process, set from the one home obid serves; per-home if one obid ever
+/// serves several.
+static LIMITS: std::sync::RwLock<Limits> = std::sync::RwLock::new(Limits {
+    rounds: None,
+    max_running: None,
+    folders: None,
+    routines: None,
+    accounts: None,
+});
+
+/// The limits in force now.
+pub fn limits() -> Limits {
+    *LIMITS.read().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Puts `limits` in force: when obid starts, and when the owner changes them.
+pub fn use_limits(limits: Limits) {
+    *LIMITS.write().unwrap_or_else(|e| e.into_inner()) = limits;
+}
 
 /// Whether obid moves work past an account's usage limit to another account with room by itself,
 /// when the owner didn't say (`accountFailover`, #871): on, the owner's decision of 2026-10-24.
@@ -48,6 +139,13 @@ pub struct Settings {
     /// read: those are asked once more.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub no_check: Vec<String>,
+    /// The owner's own ceilings ([`Limits`]).
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub limits: Limits,
+}
+
+fn is_default(limits: &Limits) -> bool {
+    *limits == Limits::default()
 }
 
 /// An account's model, routine effort and complex-task effort, each only when the owner chose it:
@@ -169,6 +267,7 @@ impl Default for Settings {
             check_in_sent: None,
             account_failover: None,
             no_check: Vec::new(),
+            limits: Limits::default(),
         }
     }
 }
@@ -193,11 +292,12 @@ pub fn load(home: &Path) -> Settings {
             Settings::default()
         }),
     };
-    if !MAX_RUNNING_RANGE.contains(&settings.max_running) {
+    if !(1..=settings.limits.max_running()).contains(&settings.max_running) {
         tracing::warn!(
-            "{} says maxRunning {}, which isn't 1 to 20",
+            "{} says maxRunning {}, which isn't 1 to {}",
             file.display(),
-            settings.max_running
+            settings.max_running,
+            settings.limits.max_running()
         );
         settings.max_running = default_max_running();
     }

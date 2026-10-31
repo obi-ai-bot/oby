@@ -8,7 +8,9 @@
 //! was opened for ([`hello_fits`]): a CDN's edge serves whichever of its sites the hello names.
 //! The HTTP `Host` inside the tunnel isn't read, so the registries let through by default are only
 //! those whose edge answers just the hello's host ([`REGISTRIES`], [`ROUTED_BY_HOST`]).
-//! A plain `http://` request is refused.
+//! A plain `http://` request is decided the same way, for its host on its port, and forwarded
+//! alone: one request per connection, its `Host` the address's, the job's token taken out
+//! ([`plain`]).
 
 use std::collections::HashMap;
 use std::ffi::OsString;
@@ -241,9 +243,10 @@ impl Egress {
         job: &str,
         host: &str,
         port: u16,
+        plain: bool,
         jobs: &Jobs,
     ) -> Result<(), String> {
-        let decided = self.decide_site(token, job, host, port, jobs).await;
+        let decided = self.decide_site(token, job, host, port, plain, jobs).await;
         // What the agent read there could be anyone's code: from now on the job's check gets none
         // of the owner's secrets (crate::secretspec).
         if decided.is_ok() && crate::secretspec::site_is_foreign(host) {
@@ -261,6 +264,7 @@ impl Egress {
         job: &str,
         host: &str,
         port: u16,
+        plain: bool,
         jobs: &Jobs,
     ) -> Result<(), String> {
         // A deny rule holds whatever was decided before it was saved.
@@ -284,7 +288,7 @@ impl Egress {
         if let Some(known) = &*known {
             return known.result.clone();
         }
-        match jobs.ask_about(job, host, port) {
+        match jobs.ask_about(job, host, port, plain) {
             Asked::Now(result) => {
                 *known = Some(Known {
                     result: result.clone(),
@@ -329,11 +333,14 @@ impl Egress {
         let Some((head, early)) = read_head(&mut client, HEAD_WAIT).await else {
             return;
         };
-        let Some((host, port)) = target(&head) else {
+        let Some((host, port, tunnel)) = target(&head)
+            .map(|(host, port)| (host, port, true))
+            .or_else(|| plain(&head).map(|(host, port)| (host, port, false)))
+        else {
             refuse(
                 &mut client,
                 "405 Method Not Allowed",
-                "obid's proxy only tunnels (CONNECT): use https.",
+                "obid's proxy tunnels (CONNECT) and forwards plain http:// requests, with a Host that names the address's host.",
             )
             .await;
             return;
@@ -369,7 +376,7 @@ impl Egress {
         let Some(jobs) = jobs.upgrade() else { return };
         let allowed = match jobs.reach_now(&job, &host, port) {
             Some(now) => now,
-            None => self.decide(&token, &job, &host, port, &jobs).await,
+            None => self.decide(&token, &job, &host, port, !tunnel, &jobs).await,
         };
         if let Err(why) = allowed {
             tracing::debug!("egress: job {job} refused {host}:{port}");
@@ -387,6 +394,28 @@ impl Egress {
             .await;
             return;
         };
+        if !tunnel {
+            // One plain request, as it came but for the proxy's own headers, its body exactly
+            // its Content-Length; then only the answer comes back, so a second request can't
+            // ride on this site's decision.
+            let length = content_length(&head);
+            let first = early.len().min(length);
+            if upstream
+                .write_all(forwarded(&head).as_bytes())
+                .await
+                .is_err()
+                || upstream.write_all(&early[..first]).await.is_err()
+            {
+                return;
+            }
+            let mut rest = (&mut client).take((length - first) as u64);
+            if tokio::io::copy(&mut rest, &mut upstream).await.is_err() {
+                return;
+            }
+            tracing::debug!("egress: job {job} reaches {host}:{port} over plain http");
+            let _ = tokio::io::copy(&mut upstream, &mut client).await;
+            return;
+        }
         if client
             .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
             .await
@@ -850,6 +879,94 @@ fn target(head: &str) -> Option<(String, u16)> {
     valid_host(&host).then_some((host, port))
 }
 
+/// The host and port a plain `http://` request names, absolute-form (`GET http://host[:port]/…
+/// HTTP/1.1`), when its `Host`, if any, names the same host: none for anything else. Port 80 by
+/// default.
+fn plain(head: &str) -> Option<(String, u16)> {
+    let mut lines = head.lines();
+    let mut words = lines.next()?.split(' ');
+    let (method, uri) = (words.next()?, words.next()?);
+    if method == "CONNECT" || !words.next()?.starts_with("HTTP/1.") || words.next().is_some() {
+        return None;
+    }
+    let rest = uri
+        .get(..7)?
+        .eq_ignore_ascii_case("http://")
+        .then(|| &uri[7..])?;
+    let authority = rest.split(['/', '?', '#']).next()?;
+    if authority.contains('@') {
+        return None;
+    }
+    let (host, port) = match authority.rsplit_once(':') {
+        Some((host, port)) if !authority.ends_with(']') => {
+            (host, port.parse().ok().filter(|p| *p != 0)?)
+        }
+        _ => (authority, 80),
+    };
+    let host = host.trim_end_matches('.').to_ascii_lowercase();
+    let same = |value: &str| {
+        let value = value.trim().to_ascii_lowercase();
+        value == host || value == format!("{host}:{port}")
+    };
+    let headers: Vec<(&str, &str)> = lines
+        .filter_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            Some((name.trim(), value))
+        })
+        .collect();
+    // A body only by its Content-Length: chunked, its end can't be told without reading it.
+    if headers
+        .iter()
+        .any(|(name, _)| name.eq_ignore_ascii_case("transfer-encoding"))
+    {
+        return None;
+    }
+    let hosts: Vec<&str> = headers
+        .iter()
+        .filter(|(name, _)| name.eq_ignore_ascii_case("host"))
+        .map(|(_, value)| *value)
+        .collect();
+    (valid_host(&host) && hosts.len() <= 1 && hosts.iter().all(|v| same(v))).then_some((host, port))
+}
+
+/// A plain request's body length (`Content-Length`), 0 with none. One sent chunked has none, and
+/// [`plain`] refuses it.
+fn content_length(head: &str) -> usize {
+    head.lines()
+        .skip(1)
+        .find_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            name.trim()
+                .eq_ignore_ascii_case("content-length")
+                .then(|| value.trim().parse().ok())?
+        })
+        .unwrap_or(0)
+}
+
+/// A plain request's head as it goes on: without the proxy's own headers (the job's token among
+/// them) or its `Connection`, and with `Connection: close`.
+fn forwarded(head: &str) -> String {
+    let mut lines = head.lines();
+    let mut out = format!("{}\r\n", lines.next().unwrap_or_default());
+    for line in lines {
+        let name = line.split(':').next().unwrap_or_default().trim();
+        if ![
+            "proxy-authorization",
+            "proxy-connection",
+            "connection",
+            "keep-alive",
+        ]
+        .iter()
+        .any(|n| name.eq_ignore_ascii_case(n))
+        {
+            out.push_str(line);
+            out.push_str("\r\n");
+        }
+    }
+    out.push_str("Connection: close\r\n\r\n");
+    out
+}
+
 async fn refuse(client: &mut TcpStream, status: &str, why: &str) {
     let _ = client
         .write_all(
@@ -925,14 +1042,6 @@ pub fn tools_api(tool: Tool, host: &str) -> bool {
         Tool::Cursor => &["api2.cursor.sh", "api3.cursor.sh", "api4.cursor.sh"],
     };
     hosts.contains(&host)
-}
-
-/// Telemetry a CLI sends elsewhere than its vendor (Claude Code's to Datadog, seen 2026-10-26):
-/// refused without asking the owner about it.
-pub fn telemetry(host: &str) -> bool {
-    ["datadoghq.com", "sentry.io"]
-        .iter()
-        .any(|domain| within(host, domain))
 }
 
 /// The package registries a job in Sandbox mode reaches without asking, on 443 (the PR's
@@ -1042,6 +1151,44 @@ fn hello_with(extensions: &[u8]) -> Vec<u8> {
 mod tests {
     use super::*;
 
+    /// PERMISSIONS-2: a plain http:// request names its site, port 80 by default, only where its Host
+    /// agrees; it goes on alone, without the job's token.
+    #[test]
+    fn permissions_2_a_plain_request_names_its_site_and_goes_on_alone() {
+        assert_eq!(
+            plain("GET http://Example.com/x HTTP/1.1\r\nHost: example.com"),
+            Some(("example.com".into(), 80))
+        );
+        assert_eq!(
+            plain("POST http://example.com:8080/x?y HTTP/1.1\r\nHost: example.com:8080"),
+            Some(("example.com".into(), 8080))
+        );
+        assert_eq!(
+            plain("GET http://[::1]/ HTTP/1.1"),
+            Some(("[::1]".into(), 80))
+        );
+        for refused in [
+            // Another site in its Host: a CDN's edge would serve that one.
+            "GET http://example.com/ HTTP/1.1\r\nHost: attacker.workers.dev",
+            "GET http://example.com/ HTTP/1.1\r\nHost: example.com\r\nHost: other.example",
+            "GET http://u:p@example.com/ HTTP/1.1",
+            "GET https://example.com/ HTTP/1.1",
+            "GET / HTTP/1.1\r\nHost: example.com",
+            "CONNECT example.com:443 HTTP/1.1",
+            "GET http://example.com:0/ HTTP/1.1",
+            "POST http://example.com/ HTTP/1.1\r\nTransfer-Encoding: chunked",
+        ] {
+            assert_eq!(plain(refused), None, "{refused}");
+        }
+        let sent = forwarded(
+            "GET http://example.com/ HTTP/1.1\r\nHost: example.com\r\nProxy-Authorization: Basic b2J5OnQ=\r\nConnection: keep-alive\r\nAccept: */*",
+        );
+        assert_eq!(
+            sent,
+            "GET http://example.com/ HTTP/1.1\r\nHost: example.com\r\nAccept: */*\r\nConnection: close\r\n\r\n"
+        );
+    }
+
     #[test]
     fn a_connect_names_its_host_and_port() {
         let head = "CONNECT API.Example.com.:443 HTTP/1.1\r\nHost: x";
@@ -1071,7 +1218,6 @@ mod tests {
         assert!(!tools_own(Tool::Claude, "chatgpt.com", 443));
         assert!(!tools_own(Tool::Claude, "evilanthropic.com", 443));
         assert!(!tools_own(Tool::Claude, "anthropic.com.evil.example", 443));
-        assert!(telemetry("http-intake.logs.us5.datadoghq.com"));
         // Only a tool's API hosts leave its job the owner's: the vendor's others serve what
         // people share (crate::secretspec).
         assert!(tools_api(Tool::Claude, "api.anthropic.com"));

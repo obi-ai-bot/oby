@@ -1170,6 +1170,7 @@ impl Link {
         mut item: Item,
         answer: Option<String>,
         later: Option<i64>,
+        signed: bool,
     ) -> Result<Value, ApiError> {
         if let Some(at) = later {
             item.later = Some(at);
@@ -1201,14 +1202,19 @@ impl Link {
             let merged = if asking {
                 // The owner's yes: remembered for the repository, then a teammate's Oby is asked.
                 self.jobs
-                    .ask_teammate_and_remember(&item.job, &head)
+                    .ask_teammate_and_remember(&item.job, &head, signed)
                     .await
                     .map(Some)
                     .map_err(|why| format!("Nothing was asked: {why}"))
             } else {
                 let remember = answer.as_deref() == Some(crate::merge::MERGE_AND_REMEMBER);
+                // Only an answer the owner's app signed lifts what its card named (MERGING-20).
+                let lift = match signed {
+                    true => crate::merge::Lift::Named(&item.text),
+                    false => crate::merge::Lift::Before,
+                };
                 self.jobs
-                    .merge_by_owner(&item.job, &head, remember)
+                    .merge_by_owner(&item.job, &head, remember, lift)
                     .await
                     .map_err(|why| format!("Not merged: {why}"))
             };

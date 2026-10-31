@@ -35,8 +35,14 @@ const FILE: &str = "accounts.json";
 /// The longest name or payer, in characters.
 const LONGEST: usize = 60;
 
-/// The most accounts obid keeps, the configuration's and the API's together.
-const MOST_ACCOUNTS: usize = 32;
+/// The most accounts obid keeps, the configuration's and the API's together, unless the owner
+/// raised it ([`most_accounts`]).
+pub const MOST_ACCOUNTS: usize = 32;
+
+/// The most accounts obid keeps now (`limits.accounts`).
+fn most_accounts() -> usize {
+    crate::settings::limits().accounts()
+}
 
 /// How long a look for the tools' own logins stands ([`refind_own_logins`]).
 pub const LOOK_EVERY: std::time::Duration = std::time::Duration::from_secs(2);
@@ -226,7 +232,8 @@ impl Live {
             let mut listed: Vec<Tool> = Vec::new();
             for tool in found {
                 // Those listed in this pass count too.
-                if fresh(agents, saved, *tool) && all(agents).len() + listed.len() < MOST_ACCOUNTS {
+                if fresh(agents, saved, *tool) && all(agents).len() + listed.len() < most_accounts()
+                {
                     listed.push(*tool);
                 }
             }
@@ -341,7 +348,7 @@ fn checked(seed: &Agents, saved: Saved, home: &Path) -> Saved {
         let fine = Tool::from_id(&added.agent).filter(|_| {
             own_folder(home, &added.id).is_some_and(|own| own == added.config_dir)
                 && find(&agents, &added.id).is_none()
-                && all(&agents).len() < MOST_ACCOUNTS
+                && all(&agents).len() < most_accounts()
                 && payer_text(added.payer.as_deref()).is_ok()
         });
         match fine.map(|tool| name(&agents, tool, &added.name, None)) {
@@ -552,7 +559,7 @@ fn addable(seed: &Agents, agents: &Agents, tool: Tool) -> bool {
         && find(agents, &own.id).is_none()
         && find(seed, &own.id).is_none_or(|(_, a)| a.config_dir.is_none())
         && name(agents, tool, &own.name, None).is_ok()
-        && all(agents).len() < MOST_ACCOUNTS
+        && all(agents).len() < most_accounts()
 }
 
 /// Every account, with its tool.
@@ -732,9 +739,10 @@ pub async fn add(State(shared): State<Arc<Shared>>, body: Bytes) -> Result<Respo
     let payer = payer(map.get("payer"))?;
     let home = shared.config.home.clone();
     let added = shared.config.agents.change(|agents, saved| {
-        if all(agents).len() >= MOST_ACCOUNTS {
+        if all(agents).len() >= most_accounts() {
             return Err(unprocessable(format!(
-                "obid keeps at most {MOST_ACCOUNTS} accounts: remove one first."
+                "obid keeps at most {} accounts: remove one first.",
+                most_accounts()
             )));
         }
         let name = name(agents, tool, text, None)?;
@@ -794,9 +802,10 @@ async fn restore_default(shared: Arc<Shared>, tool: Tool) -> Result<Response, Ap
                 format!("{}'s own login is listed already.", tool.name()),
             ));
         }
-        if all(agents).len() >= MOST_ACCOUNTS {
+        if all(agents).len() >= most_accounts() {
             return Err(unprocessable(format!(
-                "obid keeps at most {MOST_ACCOUNTS} accounts: remove one first."
+                "obid keeps at most {} accounts: remove one first.",
+                most_accounts()
             )));
         }
         // Removed here, or found on this Mac at start and not listed (Live::available).

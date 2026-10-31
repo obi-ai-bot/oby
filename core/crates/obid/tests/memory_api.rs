@@ -193,7 +193,7 @@ fn a_scan_that_cant_run_saves_nothing() {
 /// How a repository merges (#854) is kept typed, only on the owner's Remember on its own
 /// question, never into main, and read back as written.
 #[test]
-fn a_workflow_memory_keeps_its_typed_merge_and_refuses_main() {
+fn merging_22_a_workflow_memory_keeps_its_typed_merge_and_main_only_on_the_owners_word() {
     let folder = Folder::new("memory-api-workflow");
     let remote = fixture(&folder.0.join("fixture"));
     let config = config(&folder.0, &remote, &stub_agent());
@@ -218,8 +218,18 @@ fn a_workflow_memory_keeps_its_typed_merge_and_refuses_main() {
         "/v1/memory/suggestions/s0000000b/remember",
         None,
     );
+    // A Remember no app of the owner's signed would widen what Oby does by itself: refused.
     assert_eq!(main.status, 422, "{}", main.text);
-    assert!(main.text.contains("only on your word"), "{}", main.text);
+    assert!(main.text.contains("stays fixed"), "{}", main.text);
+    // The owner's own signed Remember keeps it (MERGING-22).
+    let main = call_signed(
+        &obid,
+        "POST",
+        "/v1/memory/suggestions/s0000000b/remember",
+        None,
+    );
+    assert_eq!(main.status, 201, "{}", main.text);
+    assert_eq!(main.body["workflow"], workflow("main"));
 
     let saved = call(
         &obid,
@@ -244,6 +254,8 @@ fn a_workflow_memory_keeps_its_typed_merge_and_refuses_main() {
         "{file}"
     );
     let listed = call(&obid, "GET", "/v1/memory", None);
+    // dev's replaced main's: one workflow per repository.
+    assert_eq!(listed.body["memories"].as_array().unwrap().len(), 1);
     assert_eq!(listed.body["memories"][0]["workflow"], workflow("dev"));
-    assert_eq!(listed.body["suggestions"][0]["id"], "s0000000b");
+    assert_eq!(listed.body["suggestions"], json!([]));
 }

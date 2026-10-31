@@ -305,7 +305,7 @@ pub enum Error {
     IdTaken,
     /// It couldn't be written.
     Io(std::io::Error),
-    /// It would work in more than [`crate::folders::MOST`] folders.
+    /// It would work in more than the owner's limit of folders (`limits.folders`, 20 by default).
     TooManyFolders,
     /// A folder it doesn't have was refused (crate::folders::check), and why.
     Folder(String),
@@ -336,7 +336,7 @@ impl FolderChange {
                 kept.push(folder);
             }
         }
-        if kept.len() > crate::folders::MOST {
+        if kept.len() > crate::settings::limits().folders() {
             return Err(Error::TooManyFolders);
         }
         Ok(kept)
@@ -371,7 +371,7 @@ impl From<Error> for ApiError {
                 StatusCode::UNPROCESSABLE_ENTITY,
                 format!(
                     "A conversation works in at most {} folders.",
-                    crate::folders::MOST
+                    crate::settings::limits().folders()
                 ),
             ),
         }
@@ -597,7 +597,7 @@ impl Conversations {
                 more.push(folder);
             }
         }
-        if more.len() > crate::folders::MOST {
+        if more.len() > crate::settings::limits().folders() {
             if found.is_none() {
                 threads.remove(index);
             }

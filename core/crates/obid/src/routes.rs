@@ -871,6 +871,7 @@ fn job_settings_json(shared: &Shared) -> Value {
         "maxRunning": shared.jobs.max_running(),
         "accountFailover": shared.jobs.account_failover(),
         "defaultAccount": crate::settings::load(&shared.config.home).default_account,
+        "limits": crate::settings::limits().to_json(),
     })
 }
 
@@ -881,8 +882,10 @@ pub async fn job_settings(State(shared): State<Arc<Shared>>) -> Response {
 }
 
 /// `PUT /v1/settings/jobs`: `{"maxRunning": 1…20, "accountFailover": true|false, "defaultAccount":
-/// "<account id>"|null}`, any of them, kept across restarts. Raising `maxRunning` starts waiting
-/// jobs at once; lowering it stops nothing.
+/// "<account id>"|null, "limits": {"rounds", "maxRunning", "folders", "routines", "accounts"}}`,
+/// any of them, kept across restarts. Each limit is a whole number from 1, or null for its
+/// default (crate::settings::Limits); a lower `limits.maxRunning` lowers `maxRunning` with it.
+/// Raising `maxRunning` starts waiting jobs at once; lowering it stops nothing.
 pub async fn set_job_settings(
     State(shared): State<Arc<Shared>>,
     body: Bytes,
@@ -892,7 +895,7 @@ pub async fn set_job_settings(
     let bad = || {
         ApiError::new(
             StatusCode::UNPROCESSABLE_ENTITY,
-            "The body is {\"maxRunning\": 1 to 20, \"accountFailover\": true or false, \"defaultAccount\": an account's id or null}, any of them.",
+            "The body is {\"maxRunning\": 1 to 20, \"accountFailover\": true or false, \"defaultAccount\": an account's id or null, \"limits\": {\"rounds\", \"maxRunning\", \"folders\", \"routines\", \"accounts\"}, each 1 or more, or null}, any of them.",
         )
     };
     let max = match value.get("maxRunning") {
@@ -922,10 +925,76 @@ pub async fn set_job_settings(
             Some(Some(id.to_owned()))
         }
     };
-    if max.is_none() && failover.is_none() && default_account.is_none() {
+    // The owner's own ceilings, each a whole number from 1, or null for its default.
+    let limits = match value.get("limits") {
+        None => None,
+        Some(Value::Object(given)) => {
+            let mut limits = crate::settings::load(&shared.config.home).limits;
+            for (key, value) in given {
+                let ceiling = crate::settings::Limits::CEILINGS
+                    .iter()
+                    .find(|(name, _)| name == key)
+                    .map(|(_, most)| *most)
+                    .ok_or_else(bad)?;
+                let n = match value {
+                    Value::Null => None,
+                    n => Some(
+                        n.as_u64()
+                            .and_then(|n| u32::try_from(n).ok())
+                            .filter(|n| (1..=ceiling).contains(n))
+                            .ok_or_else(|| {
+                                ApiError::new(
+                                    StatusCode::UNPROCESSABLE_ENTITY,
+                                    format!("limits.{key} is 1 to {ceiling}, or null."),
+                                )
+                            })?,
+                    ),
+                };
+                match key.as_str() {
+                    "rounds" => limits.rounds = n,
+                    "maxRunning" => limits.max_running = n,
+                    "folders" => limits.folders = n,
+                    "routines" => limits.routines = n,
+                    "accounts" => limits.accounts = n,
+                    _ => return Err(bad()),
+                }
+            }
+            Some(limits)
+        }
+        Some(_) => return Err(bad()),
+    };
+    if max.is_none() && failover.is_none() && default_account.is_none() && limits.is_none() {
         return Err(bad());
     }
+    // Every value checked before anything is kept: a 422 changes nothing.
+    if let Some(max) = max {
+        let ceiling = limits.map_or(crate::settings::limits().max_running(), |l| l.max_running());
+        if !(1..=ceiling).contains(&max) {
+            return Err(ApiError::new(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                format!("maxRunning is 1 to {ceiling}."),
+            ));
+        }
+    }
     use crate::jobs::SettingsError;
+    if let Some(limits) = limits {
+        let ceiling = limits.max_running();
+        crate::settings::update(&shared.config.home, |s| {
+            s.limits = limits;
+            s.max_running = s.max_running.min(ceiling);
+        })
+        .map_err(|e| {
+            tracing::error!("{e}");
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "The setting couldn't be kept.",
+            )
+        })?;
+        crate::settings::use_limits(limits);
+        if shared.jobs.max_running() > ceiling as usize {
+            let _ = shared.jobs.set_max_running(ceiling);
+        }
+    }
     let kept = match max {
         Some(max) => shared.jobs.set_max_running(max).map(|_| ()),
         None => Ok(()),
@@ -1076,18 +1145,42 @@ pub async fn message(
 }
 
 /// `GET /v1/jobs/{id}/publish`: what publishing the job by hand would do, in obid's one sentence,
-/// and its base: for a job whose own publish failed. `409` when there's nothing to publish.
+/// and its base: for a job whose own publish failed. `?to=<branch>&force=true&anyway=true` say
+/// what the owner asks beyond the default (crate::publish::ByHand); then the answer also has
+/// `head` (with `anyway`) and `over` (with `force`), which the `POST` sends back. `409` when
+/// there's nothing to publish.
 pub async fn publish_action(
     State(shared): State<Arc<Shared>>,
     Path(id): Path<String>,
+    axum::extract::Query(mut by_hand): axum::extract::Query<crate::publish::ByHand>,
 ) -> Result<Response, ApiError> {
-    match shared.jobs.offer_publish(&id) {
+    if shared.jobs.get(&id).is_none() {
+        return Err(ApiError::new(StatusCode::NOT_FOUND, NO_JOB));
+    }
+    // What the owner is shown, read now, never what the request says: the sentence they sign
+    // names the commit Publish anyway sends and the one a force-push replaces.
+    by_hand.head = None;
+    by_hand.over = None;
+    if by_hand.anyway || by_hand.force {
+        by_hand = shared
+            .jobs
+            .shown(&id, by_hand)
+            .await
+            .map_err(|why| ApiError::new(StatusCode::CONFLICT, why))?;
+    }
+    match shared.jobs.offer_publish(&id, &by_hand) {
         None => Err(ApiError::new(StatusCode::NOT_FOUND, NO_JOB)),
         Some(Err(why)) => Err(ApiError::new(StatusCode::CONFLICT, why)),
-        Some(Ok((action, base))) => Ok(json(
-            StatusCode::OK,
-            json!({"action": action, "base": base}),
-        )),
+        Some(Ok((action, base))) => {
+            let mut said = json!({"action": action, "base": base});
+            if let Some(head) = by_hand.head {
+                said["head"] = json!(head);
+            }
+            if let Some(over) = by_hand.over {
+                said["over"] = json!(over);
+            }
+            Ok(json(StatusCode::OK, said))
+        }
     }
 }
 
@@ -1102,13 +1195,20 @@ pub async fn publish(
 ) -> Result<Response, ApiError> {
     let value: Value = serde_json::from_slice(&body)
         .map_err(|_| ApiError::new(StatusCode::BAD_REQUEST, "That isn't JSON."))?;
+    // What the owner asks beyond the default (PUBLISHING-9, 10): in the signed sentence too.
+    let by_hand: crate::publish::ByHand = serde_json::from_value(value.clone()).map_err(|_| {
+        ApiError::new(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "\"to\" is a branch, \"force\" and \"anyway\" are true or false.",
+        )
+    })?;
     let approval: crate::approval::Approval = serde_json::from_value(value).map_err(|_| {
         ApiError::new(
             StatusCode::UNPROCESSABLE_ENTITY,
             "An approval is {\"device\", \"action\", \"signedAt\", \"signature\"}.",
         )
     })?;
-    let action = match shared.jobs.publish_action(&id) {
+    let action = match shared.jobs.publish_action(&id, &by_hand) {
         None => return Err(ApiError::new(StatusCode::NOT_FOUND, NO_JOB)),
         Some(Err(why)) => return Err(ApiError::new(StatusCode::CONFLICT, why)),
         Some(Ok((action, _))) => action,
@@ -1127,7 +1227,11 @@ pub async fn publish(
         .map_err(|why| ApiError::new(StatusCode::FORBIDDEN, why))?;
     // Checked fresh by `check` above.
     let signed_at = obi_protocol::time::parse(&approval.signed_at).unwrap_or(i64::MAX);
-    match shared.jobs.publish_by_hand(&id, &action, signed_at).await {
+    match shared
+        .jobs
+        .publish_by_hand(&id, &action, signed_at, &by_hand)
+        .await
+    {
         Ok(url) => Ok(json(StatusCode::OK, json!({"url": url}))),
         Err(why) => Err(ApiError::new(StatusCode::CONFLICT, why)),
     }

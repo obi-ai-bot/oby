@@ -135,7 +135,7 @@ cursor-agent --sandbox disabled acp
   never the account's folder: docs/runner-api.md, "The job sandbox", #655.)
 - `CURSOR_API_KEY` and `CURSOR_AUTH_TOKEN` are removed from every agent's environment (Shell.swift).
 - A repository's `.cursor/cli.json` with a non-empty `allow` is asked about once per repository,
-  before Cursor starts. (obid refuses to start Cursor there instead, #1075.)
+  before Cursor starts. (obid asks with a card, as for its hooks, and Bypass answers it: BYPASS-9.)
 - A repository's hooks wait for the owner's yes before Cursor starts (obid only): see below.
 
 ### A repository's hooks

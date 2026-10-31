@@ -190,7 +190,11 @@ impl Briefing {
             "## Settings you can change in chat".into(),
             String::new(),
             "- Models: none to change on this runner yet.".into(),
-            format!("- Jobs at once: {} (1 to 20)", self.max_running),
+            format!(
+                "- Jobs at once: {} (1 to {})",
+                self.max_running,
+                crate::settings::limits().max_running()
+            ),
             "- Weekly reserves: none on this runner.".into(),
             String::new(),
             "## Accounts and their usage".into(),

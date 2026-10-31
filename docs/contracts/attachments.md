@@ -59,3 +59,4 @@ The business behavior contract for the message box's **Add files or photos** and
 - **ATTACH-14** A file gone before its turn or task started is named as left out (`(left out: <name>, it is no longer on this Mac)`); a task's prompt names its files between fences.
 - **ATTACH-15** One refused upload (empty, or over 25 MB, which isn't read or sent) keeps the box, says obid's words, and removes the files uploaded before it; words obid refuses take their uploads away.
 - **ATTACH-16** A second pasted screenshot is numbered (`image 2.png`), not dropped.
+- **ATTACH-17** Words with files to a finished task stopped at its safety limit make one Confirm that carries the files (`attachments` in its payload, checked again when confirmed), where they used to be refused (`Send them without the files.`); the follow-up it starts gets them. `jobs::tests::attach_17_a_confirm_past_the_safety_limit_carries_the_files`.

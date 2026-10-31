@@ -903,7 +903,8 @@ fn the_cap_is_in_status_and_settings() {
     assert_eq!(set.status, 200, "{}", set.text);
     assert_eq!(
         set.body,
-        json!({"maxRunning": 3, "accountFailover": true, "defaultAccount": null})
+        json!({"maxRunning": 3, "accountFailover": true, "defaultAccount": null,
+               "limits": {"rounds": 10, "maxRunning": 20, "folders": 20, "routines": 20, "accounts": 32}})
     );
     for refused in [json!({"accountFailover": "no"}), json!({})] {
         let answer = call(&obid, "PUT", "/v1/settings/jobs", Some(&refused));
@@ -917,11 +918,13 @@ fn the_cap_is_in_status_and_settings() {
     );
     assert_eq!(
         off.body,
-        json!({"maxRunning": 3, "accountFailover": false, "defaultAccount": null})
+        json!({"maxRunning": 3, "accountFailover": false, "defaultAccount": null,
+               "limits": {"rounds": 10, "maxRunning": 20, "folders": 20, "routines": 20, "accounts": 32}})
     );
     assert_eq!(
         call(&obid, "GET", "/v1/settings/jobs", None).body,
-        json!({"maxRunning": 3, "accountFailover": false, "defaultAccount": null})
+        json!({"maxRunning": 3, "accountFailover": false, "defaultAccount": null,
+               "limits": {"rounds": 10, "maxRunning": 20, "folders": 20, "routines": 20, "accounts": 32}})
     );
     assert_eq!(call(&obid, "GET", "/v1/status", None).body["maxRunning"], 3);
     assert!(obid.stop().success());
@@ -929,7 +932,8 @@ fn the_cap_is_in_status_and_settings() {
     let obid = start(&folder.0, &config, None);
     assert_eq!(
         call(&obid, "GET", "/v1/settings/jobs", None).body,
-        json!({"maxRunning": 3, "accountFailover": false, "defaultAccount": null})
+        json!({"maxRunning": 3, "accountFailover": false, "defaultAccount": null,
+               "limits": {"rounds": 10, "maxRunning": 20, "folders": 20, "routines": 20, "accounts": 32}})
     );
     assert_eq!(call(&obid, "GET", "/v1/status", None).body["maxRunning"], 3);
 }
@@ -986,6 +990,71 @@ fn default_agent_is_validated_and_kept() {
 /// AGENTS-4 (docs/contracts/agents.md): the account new tasks go to is set and cleared on
 /// `PUT /v1/settings/jobs`, only to an account obid has, said by `GET` and status, kept across a
 /// restart, and cleared when its account is removed.
+/// AGENTS-9: the owner's own ceilings (rounds, maxRunning, folders, routines, accounts) are
+/// settings: their defaults show, a raised one lets more through, null brings the default back,
+/// a lower maxRunning ceiling lowers maxRunning, and they're kept across restarts.
+#[test]
+fn agents_9_the_owners_limits_are_settings_with_defaults() {
+    let folder = Folder::new("owner-limits");
+    let (mut obid, config) = obid(&folder);
+    let put = |obid: &Obid, body: Value| call(obid, "PUT", "/v1/settings/jobs", Some(&body));
+    let limits = |obid: &Obid| call(obid, "GET", "/v1/settings/jobs", None).body["limits"].clone();
+    assert_eq!(
+        limits(&obid),
+        json!({"rounds": 10, "maxRunning": 20, "folders": 20, "routines": 20, "accounts": 32})
+    );
+    // Past a default: refused, as before.
+    assert_eq!(put(&obid, json!({"maxRunning": 30})).status, 422);
+    for refused in [
+        json!({"limits": {"rounds": 0}}),
+        json!({"limits": {"rounds": "many"}}),
+        json!({"limits": {"tokens": 5}}),
+        json!({"limits": 5}),
+        // Past what the Mac itself holds.
+        json!({"limits": {"maxRunning": 65}}),
+        json!({"limits": {"rounds": 101}}),
+        // A 422 keeps nothing, the limit it came with included.
+        json!({"limits": {"maxRunning": 40}, "maxRunning": 50}),
+    ] {
+        assert_eq!(put(&obid, refused.clone()).status, 422, "{refused}");
+    }
+    assert_eq!(
+        limits(&obid)["maxRunning"],
+        20,
+        "a refused body kept nothing"
+    );
+    let set = put(
+        &obid,
+        json!({"limits": {"rounds": 25, "maxRunning": 40}, "maxRunning": 30}),
+    );
+    assert_eq!(set.status, 200, "{}", set.text);
+    assert_eq!(set.body["maxRunning"], 30);
+    assert_eq!(set.body["limits"]["rounds"], 25);
+    assert_eq!(set.body["limits"]["folders"], 20, "the rest stays");
+    let job = |rounds: u32| {
+        call(
+            &obid,
+            "POST",
+            "/v1/jobs",
+            Some(&json!({"job": {"repo": "obi-e2e/fixture-app", "kind": "fix", "task": "x", "rounds": rounds}})),
+        )
+        .status
+    };
+    assert_eq!(job(26), 422);
+    assert_eq!(job(25), 201);
+    // A lower ceiling lowers maxRunning with it.
+    let lower = put(&obid, json!({"limits": {"maxRunning": 8}}));
+    assert_eq!(lower.body["maxRunning"], 8, "{}", lower.text);
+    assert!(obid.stop().success());
+    drop(obid);
+    let obid = start(&folder.0, &config, None);
+    assert_eq!(limits(&obid)["rounds"], 25);
+    assert_eq!(limits(&obid)["maxRunning"], 8);
+    // Null: its default again.
+    let back = put(&obid, json!({"limits": {"rounds": null}}));
+    assert_eq!(back.body["limits"]["rounds"], 10, "{}", back.text);
+}
+
 #[test]
 fn agents_4_the_default_account_is_validated_kept_and_cleared() {
     let folder = Folder::new("default-account");

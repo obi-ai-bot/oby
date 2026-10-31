@@ -983,7 +983,9 @@ impl Jobs {
             jobs.insert(job.id.clone(), job);
         }
         let identity = commit_identity(&config.owner);
-        let max_running = crate::settings::load(&config.home).max_running as usize;
+        let kept = crate::settings::load(&config.home);
+        crate::settings::use_limits(kept.limits);
+        let max_running = kept.max_running as usize;
         let kept = permissions::load(&config.home);
         let approvals = crate::approval::Approvals::open(&config.home);
         let transcripts = crate::transcript::Transcripts::new(&config.home);
@@ -1740,11 +1742,16 @@ impl Jobs {
         self.max_running.load(std::sync::atomic::Ordering::Relaxed)
     }
 
-    /// Changes how many jobs run at once, and keeps it: 1 to 20 (`Err` says why not). Raising it
-    /// starts waiting jobs at once; lowering it stops nothing.
+    /// Changes how many jobs run at once, and keeps it: 1 to the owner's ceiling, 20 unless they
+    /// raised it (`Err` says why not). Raising it starts waiting jobs at once; lowering it stops
+    /// nothing.
     pub fn set_max_running(self: &Arc<Self>, max: u32) -> Result<u32, SettingsError> {
-        if !crate::settings::MAX_RUNNING_RANGE.contains(&max) {
-            return Err(SettingsError::Refused("maxRunning is 1 to 20.".into()));
+        let range = crate::settings::max_running_range();
+        if !range.contains(&max) {
+            return Err(SettingsError::Refused(format!(
+                "maxRunning is 1 to {}.",
+                range.end()
+            )));
         }
         crate::settings::update(&self.config.home, |s| s.max_running = max)
             .map_err(SettingsError::Unkept)?;
@@ -2600,10 +2607,11 @@ impl Jobs {
             },
             Err(refused) => return Err(refused),
         };
+        let most = crate::settings::limits().rounds();
         if let Some(rounds) = new.rounds
-            && !(1..=10).contains(&rounds)
+            && !(1..=most).contains(&rounds)
         {
-            return Err(Refused("rounds is 1 to 10.".into()));
+            return Err(Refused(format!("rounds is 1 to {most}.")));
         }
         if let Some(check) = &new.check
             && (check.contains('\n') || check.chars().count() > 200 || check.trim().is_empty())
@@ -3349,11 +3357,11 @@ impl Jobs {
                 return Some(sent);
             }
             return Some(match source {
-                // Past its safety limit, a follow-up would start its counters again.
-                Source::Owner | Source::Api if past_safety(&job) && !attachments.is_empty() => Err(Refused(
-                    "It stopped at its safety limit: carrying it on waits for your Confirm, which takes words only. Send them without the files.".into(),
-                )),
-                Source::Owner | Source::Api if past_safety(&job) => Err(self.confirm_past_safety(&job, text)),
+                // Past its safety limit, a follow-up would start its counters again: the Confirm
+                // carries the files too (ATTACH-17).
+                Source::Owner | Source::Api if past_safety(&job) => {
+                    Err(self.confirm_past_safety_with(&job, text, attachments))
+                }
                 // It takes the owner's words the first job never heard (#930): they came while
                 // it wrapped up, and `text` may be the first of them ([`Jobs::left_words`]).
                 Source::Owner | Source::Api | Source::Confirmed => {
@@ -3739,6 +3747,17 @@ impl Jobs {
     /// the owner confirms them in the inbox (docs/runner-api.md, `limit`), wherever they came
     /// from: the API, oby-mcp, a conversation. Its Confirm item, and why nothing happened yet.
     pub fn confirm_past_safety(&self, job: &Job, words: &str) -> Refused {
+        self.confirm_past_safety_with(job, words, &[])
+    }
+
+    /// [`Self::confirm_past_safety`], the owner's files (`attachments`, checked to be in obid's
+    /// attachments folder) going with the follow-up their Confirm starts.
+    pub fn confirm_past_safety_with(
+        &self,
+        job: &Job,
+        words: &str,
+        attachments: &[String],
+    ) -> Refused {
         use crate::sphere::inbox::{Confirmed, action};
         let limit = job.limit.as_deref().unwrap_or("");
         let name = job.short_title();
@@ -3753,7 +3772,11 @@ impl Jobs {
             Confirmed {
                 action: action::MESSAGE_JOB.into(),
                 target: job.id.clone(),
-                payload: json!({"words": words}),
+                payload: if attachments.is_empty() {
+                    json!({"words": words})
+                } else {
+                    json!({"words": words, "attachments": attachments})
+                },
             }
         };
         if let Some(hook) = self.confirm_hook.get() {
@@ -3761,8 +3784,15 @@ impl Jobs {
                 &job.id,
                 if again {
                     format!("Try {name} again")
-                } else {
+                } else if attachments.is_empty() {
                     format!("Start a follow-up of {name}")
+                } else {
+                    // The files it carries are in what the owner signs (ATTACH-17).
+                    let names: Vec<&str> = attachments
+                        .iter()
+                        .map(|p| p.rsplit('/').next().unwrap_or(p))
+                        .collect();
+                    format!("Start a follow-up of {name} with {}", names.join(", "))
                 },
                 format!(
                     "{name} stopped at its safety limit ({limit}). Carrying it on past that waits for your OK."
@@ -3944,19 +3974,24 @@ impl Jobs {
     /// nothing, and says Claude Code and Codex don't run them; a stop ends the wait. The mode
     /// decides first (`permissions::decide`): in Bypass they run without a card, as the owner
     /// chose, unless they touch secrets, which ask in every mode and no rule answers (#1570).
-    async fn allow_repository_hooks(
+    async fn allow_repository_config(
         &self,
         id: &str,
         repo: &str,
         hooks: &[String],
+        allowlist: bool,
         signal: &watch::Receiver<Signal>,
     ) -> Result<(), End> {
         let detail = hooks.join("\n");
         let digest = hex::encode(obi_protocol::keys::sha256(detail.as_bytes()));
         let rule = format!("{}({})", permissions::REPOSITORY_HOOKS, &digest[..16]);
+        // `.cursor/cli.json`'s entries are what Cursor runs as they are (`Shell(npm test)`).
         let runs: Vec<&str> = hooks
             .iter()
-            .map(|h| h.split_once(": ").map_or(h.as_str(), |(_, run)| run))
+            .map(|h| match allowlist {
+                true => h.as_str(),
+                false => h.split_once(": ").map_or(h.as_str(), |(_, run)| run),
+            })
             .collect();
         // What the hooks run, one command a line, read as the agent's commands are: the mode
         // decides, as `reconsider` does when it changes, and secrets ask in every mode (#1570).
@@ -3986,10 +4021,17 @@ impl Jobs {
         {
             return Ok(());
         }
-        let title = format!(
-            "Let Cursor run this repository's hooks: {}",
-            runs.join(", ")
-        );
+        let title = if allowlist {
+            format!(
+                "Let Cursor run what this repository's .cursor/cli.json allows: {}",
+                runs.join(", ")
+            )
+        } else {
+            format!(
+                "Let Cursor run this repository's hooks: {}",
+                runs.join(", ")
+            )
+        };
         let permission = Permission {
             id: permissions::new_id(),
             tool: permissions::REPOSITORY_HOOKS.into(),
@@ -4000,10 +4042,15 @@ impl Jobs {
             },
             detail: detail.chars().take(2000).collect(),
             rule: (!secret).then_some(rule),
-            always: (!secret)
-                .then(|| format!("Yes, and don't ask again for these hooks in {repo}")),
+            always: (!secret).then(|| match allowlist {
+                true => format!("Yes, and don't ask again for these in {repo}"),
+                false => format!("Yes, and don't ask again for these hooks in {repo}"),
+            }),
             why: Some(if secret {
                 permissions::Reach::Secrets.why().into()
+            } else if allowlist {
+                "This repository's .cursor/cli.json lets Cursor run these without asking obid."
+                    .into()
             } else {
                 "Cursor runs a repository's hooks itself, outside obid's prompts.".into()
             }),
@@ -4041,6 +4088,9 @@ impl Jobs {
         };
         match answer {
             Ok(Answer::Allow | Answer::AllowWith(_)) => Ok(()),
+            _ if allowlist => Err(End::Failed(
+                "Cursor didn't start: you said no to what this repository's .cursor/cli.json lets it run without asking obid. Claude Code and Codex jobs don't read it: move it to one of them, or start it again and allow it.".into(),
+            )),
             _ => Err(End::Failed(
                 "Cursor didn't start: you said no to this repository's hooks, which Cursor runs itself, outside obid's prompts. Claude Code and Codex jobs don't run them: move it to one of them, or start it again and allow them.".into(),
             )),
@@ -4237,7 +4287,9 @@ impl Jobs {
             }
             return Some(Ok(()));
         }
-        (crate::egress::telemetry(host) || job.obi.is_some()).then(|| {
+        // Telemetry a CLI sends elsewhere (Datadog, Sentry) is a site like any other: the job's
+        // rules, its mode or the owner's card decide it (PERMISSIONS-2).
+        job.obi.is_some().then(|| {
             Err(format!(
                 "This job doesn't reach {}.",
                 crate::egress::site(host, port)
@@ -4251,13 +4303,21 @@ impl Jobs {
     /// ([`crate::egress::REGISTRIES`]); else the repository's rules and the job's mode answer, or
     /// the owner's card does (Allow for the rest of the job, Always allow saving the rule too). At
     /// most [`MOST_SITES_ASKED`] wait for the owner at once: another is refused this once.
-    pub(crate) fn ask_about(&self, id: &str, host: &str, port: u16) -> crate::egress::Asked {
+    pub(crate) fn ask_about(
+        &self,
+        id: &str,
+        host: &str,
+        port: u16,
+        plain: bool,
+    ) -> crate::egress::Asked {
         use crate::egress::Asked;
         let Some(job) = self.get(id) else {
             return Asked::Now(Err("The job is gone.".into()));
         };
         let site = crate::egress::site(host, port);
-        let input = json!({"url": format!("https://{site}/")});
+        // Its card says how it's reached: plain http shows `http://` (PERMISSIONS-2).
+        let scheme = if plain { "http" } else { "https" };
+        let input = json!({"url": format!("{scheme}://{site}/")});
         let call = Call::new("WebFetch", &input);
         let worktree = self.worktree_path(id);
         let mode = Self::mode_of(&job);
@@ -6969,9 +7029,15 @@ impl Jobs {
                     ))
                 })
             });
-            match outside
-                .unwrap_or_else(|| policy::decide(name, input, &worktree, obi_review, mcp_rules))
-            {
+            match outside.unwrap_or_else(|| {
+                // The job's mode as it is now: the owner may change it mid-turn (BYPASS-8). Its
+                // background helpers are waited for as its background commands are
+                // (`background_tasks_changed`, crate::agent).
+                let bypass = jobs
+                    .get(id)
+                    .is_some_and(|j| Self::mode_of(&j) == Mode::Bypass);
+                policy::decide_as(bypass, name, input, &worktree, obi_review, mcp_rules)
+            }) {
                 Answer::Deny(why) => {
                     if !obi_review {
                         jobs.answered(id, &Call::new(name, input), &worktree, Some(&why));
@@ -8878,16 +8944,16 @@ impl Jobs {
             .await
             .map_err(|e| format!("obid couldn't take its wip commit back out: {e}"))?;
         if tool == Tool::Cursor {
+            // What the repository lets Cursor run without asking obid: a card, as its hooks are
+            // (BYPASS-9); Bypass answers it.
             let allowed = acp::cursor::repository_allowlist(&worktree);
             if !allowed.is_empty() {
-                return Err(format!(
-                    "Cursor didn't start: this repository's .cursor/cli.json lets it run {} without asking obid, and obid can't ask you about that yet.",
-                    allowed.join(", ")
-                ).into());
+                self.allow_repository_config(id, &job.repo, &allowed, true, signal)
+                    .await?;
             }
             let hooks = acp::cursor::repository_hooks(&worktree);
             if !hooks.is_empty() {
-                self.allow_repository_hooks(id, &job.repo, &hooks, signal)
+                self.allow_repository_config(id, &job.repo, &hooks, false, signal)
                     .await?;
             }
         }
@@ -9731,7 +9797,7 @@ impl Jobs {
             stages.end();
             use crate::publish::Failure;
             let mut published = self
-                .publish_job(id, Some(signal.clone()), |_, _| Ok(()))
+                .publish_job(id, Some(signal.clone()), |_, _| Ok(()), &Default::default())
                 .await;
             // A try whose pull request failed pushed (#627): counted at once, so neither a stop
             // nor a later try's other failure forgets it.
@@ -9766,7 +9832,7 @@ impl Jobs {
                     _ = stop.wait_for(|s| *s != Signal::Run) => return Ok(()),
                 }
                 published = self
-                    .publish_job(id, Some(signal.clone()), |_, _| Ok(()))
+                    .publish_job(id, Some(signal.clone()), |_, _| Ok(()), &Default::default())
                     .await;
                 count_push(&published);
             }
@@ -10827,6 +10893,7 @@ impl Jobs {
         id: &str,
         signal: Option<watch::Receiver<Signal>>,
         may: impl FnOnce(&Job, &HashMap<String, Job>) -> Result<(), crate::publish::Failure>,
+        by_hand: &crate::publish::ByHand,
     ) -> Result<Option<String>, crate::publish::Failure> {
         use crate::publish::Failure;
         // `may` and the claim under one lock: nothing changes the job between them.
@@ -10865,7 +10932,7 @@ impl Jobs {
                     signal,
                     stages: Stages::new(self.log_path(id, "stages.log")),
                 };
-                let outcome = crate::publish::publish(&job, &base, &target, &hooks).await;
+                let outcome = crate::publish::publish(&job, &base, &target, &hooks, by_hand).await;
                 let _ = std::fs::remove_dir_all(&target.scratch);
                 outcome
             }
@@ -10878,19 +10945,82 @@ impl Jobs {
         outcome
     }
 
-    /// What publishing the job `id` by hand would do: obid's own sentence and the base, or why
-    /// there's nothing to publish (`409`).
-    pub fn publish_action(&self, id: &str) -> Option<Result<(String, String), String>> {
+    /// What publishing the job `id` by hand would do, with what the owner asks beyond the default
+    /// (`by_hand`): obid's own sentence and the base, or why there's nothing to publish (`409`).
+    pub fn publish_action(
+        &self,
+        id: &str,
+        by_hand: &crate::publish::ByHand,
+    ) -> Option<Result<(String, String), String>> {
         let state = self.lock();
-        Some(publish_action_of(state.jobs.get(id)?, &state.jobs))
+        Some(publish_action_of(state.jobs.get(id)?, &state.jobs, by_hand))
+    }
+
+    /// What the owner is shown before a Publish that asks more (`by_hand`): the commit Publish
+    /// anyway sends (the worktree's head for a job that didn't end done, else its branch's in
+    /// obid's clone), and the commit a force-push replaces on the remote (empty when there's
+    /// none), so their signature names both (PUBLISHING-9, 10).
+    pub async fn shown(
+        &self,
+        id: &str,
+        mut by_hand: crate::publish::ByHand,
+    ) -> Result<crate::publish::ByHand, String> {
+        let job = self.get(id).ok_or("There's no such job.")?;
+        if by_hand.anyway {
+            let worktree = self.worktree_path(id);
+            let in_worktree = match job.status != Status::Done && worktree.join(".git").exists() {
+                true => match self.own_git_dirs(id).await {
+                    Ok((admin, common)) => git::pinned(
+                        &worktree,
+                        &git_folders(&admin, &common, &worktree),
+                        &["rev-parse", "--verify", "--quiet", "HEAD"],
+                    )
+                    .await
+                    .ok(),
+                    Err(_) => None,
+                },
+                false => None,
+            };
+            let head = match in_worktree.filter(|h| git::is_sha(h)) {
+                Some(head) => head,
+                None => crate::publish::git_in(
+                    &self.clone_for(&job),
+                    &[
+                        "rev-parse",
+                        "--verify",
+                        &format!("refs/heads/{}^{{commit}}", job.branch),
+                    ],
+                )
+                .await
+                .ok()
+                .filter(|h| git::is_sha(h))
+                .ok_or_else(|| format!("Can't read {} in obid's clone.", job.branch))?,
+            };
+            by_hand.head = Some(head);
+        }
+        if by_hand.force {
+            // Its scan's folder is the publish's own: not while one runs.
+            if self.lock().publishing.contains(id) {
+                return Err("obid is publishing it now. Ask again once that's done.".into());
+            }
+            let target = self.publish_target(&job)?;
+            let there = crate::publish::remote_head(by_hand.branch(&job), &target).await;
+            let _ = std::fs::remove_dir_all(&target.scratch);
+            by_hand.over = Some(there.map_err(|f| f.line())?.unwrap_or_default());
+        }
+        Ok(by_hand)
     }
 
     /// [`Jobs::publish_action`], said to a device that will ask its owner to approve it: obid
     /// keeps, with the job, which of its runs it described and when (`Job::offers`).
-    pub fn offer_publish(&self, id: &str) -> Option<Result<(String, String), String>> {
+    pub fn offer_publish(
+        &self,
+        id: &str,
+        by_hand: &crate::publish::ByHand,
+    ) -> Option<Result<(String, String), String>> {
         let answer = {
             let state = self.lock();
-            publish_action_of(state.jobs.get(id)?, &state.jobs)
+            publish_action_of(state.jobs.get(id)?, &state.jobs, by_hand)
         };
         if answer.is_ok() {
             self.update(id, |job| job.offered(obi_protocol::time::now()));
@@ -10913,11 +11043,12 @@ impl Jobs {
         id: &str,
         action: &str,
         signed_at: i64,
+        by_hand: &crate::publish::ByHand,
     ) -> Result<Option<String>, String> {
         use crate::publish::Failure;
         // Still obid's own sentence for the run that was approved, checked as it's claimed.
         let may = |job: &Job, jobs: &HashMap<String, Job>| {
-            match publish_action_of(job, jobs) {
+            match publish_action_of(job, jobs, by_hand) {
             Ok(_) if !job.approvable_at(signed_at) => Err(Failure::Refused(
                 "The job ran again since obid said what publishing it would do. Approve it again in two minutes.".into(),
             )),
@@ -10928,7 +11059,18 @@ impl Jobs {
             Err(why) => Err(Failure::Refused(why)),
         }
         };
-        match self.publish_job(id, None, may).await {
+        // Publish anyway: a job whose check failed never took its commits into the clone, so its
+        // worktree's head goes there first (PUBLISHING-9); a done one's are there already. One
+        // whose worktree is gone publishes its branch as it is.
+        if by_hand.anyway
+            && self
+                .get(id)
+                .is_some_and(|j| !j.status.is_active() && j.status != Status::Done)
+            && let Err(why) = self.keep_commits(id).await
+        {
+            tracing::info!("job {id}: publish anyway takes its branch as it is: {why}");
+        }
+        match self.publish_job(id, None, may, by_hand).await {
             Ok(Some(url)) => {
                 self.update(id, |job| {
                     job.publish_step = None;
@@ -11249,7 +11391,23 @@ impl Jobs {
         let stop =
             stop.or_else(|| crate::merge::owner_must_settle(pr, &merging).map(str::to_owned));
         let card = if let Some(why) = stop {
-            Some(crate::merge::stopped_card(&job, &head, &why))
+            // A change request, red checks and a reviewer account signed out are holds the
+            // owner's own Merge lifts: the card carries Merge where Oby knows how it'd merge.
+            // One card names every hold the Merge lifts (MERGING-21).
+            Some(match effective.as_ref() {
+                Some(w) => {
+                    match crate::merge::ready(&job, Some(w), pr, &merging, reviewers.as_ref()) {
+                        Err(b) if b.yours && b.why.contains(&why) => {
+                            crate::merge::yours_card(&job, &head, &b.why, w, &pr.base)
+                        }
+                        Err(b) if !b.yours && b.needs_you => {
+                            crate::merge::stopped_card(&job, &head, &why)
+                        }
+                        _ => crate::merge::yours_card(&job, &head, &why, w, &pr.base),
+                    }
+                }
+                None => crate::merge::stopped_card(&job, &head, &why),
+            })
         } else if required
             && workflow.is_none()
             && !crate::memory::teammate_reviews(&home, &job.repo)
@@ -11314,7 +11472,7 @@ impl Jobs {
                             };
                             match reviewers.as_ref() {
                                 Some(r) => {
-                                    crate::merge::merge(gh, &home, &job, workflow, r, false, &go)
+                                    crate::merge::merge(gh, &home, &job, workflow, r, None, &go)
                                         .await
                                 }
                                 None => Err(crate::merge::unread_reviewers()),
@@ -11337,7 +11495,7 @@ impl Jobs {
                     outcome
                         .err()
                         .filter(|b| b.needs_you && !crate::merge::on_review_item(b))
-                        .map(|b| crate::merge::blocked_card(&job, &head, &b, workflow))
+                        .map(|b| crate::merge::blocked_card(&job, &head, &b, workflow, &pr.base))
                 }
                 None => {
                     // Not learned yet: the safe default asks before it merges, once everything else
@@ -11359,7 +11517,9 @@ impl Jobs {
                                 reviewers.as_ref(),
                             ) {
                                 Ok(()) => Some(match &other_base {
-                                    Some(why) => crate::merge::yours_card(&job, &head, why, &w),
+                                    Some(why) => {
+                                        crate::merge::yours_card(&job, &head, why, &w, &pr.base)
+                                    }
                                     None => crate::merge::ready_card(&job, number, &head, &w),
                                 }),
                                 // What only the owner can settle (red checks, a change request)
@@ -11368,7 +11528,9 @@ impl Jobs {
                                 Err(blocked)
                                     if blocked.needs_you || refused.as_ref() == Some(&blocked) =>
                                 {
-                                    Some(crate::merge::blocked_card(&job, &head, &blocked, &w))
+                                    Some(crate::merge::blocked_card(
+                                        &job, &head, &blocked, &w, &pr.base,
+                                    ))
                                 }
                                 Err(_) => None,
                             }
@@ -11422,8 +11584,16 @@ impl Jobs {
         login: Option<String>,
     ) -> bool {
         let mut going = false;
+        // The owner's own Merge goes at the head their card showed, wherever it came from: GitHub
+        // refuses it if the head moved since (`sha`). Never another Obi's.
+        let owners = by.as_ref().is_some_and(|b| b.by == "owner");
         self.update(id, |job| {
-            if carries(job) && job.pushed_head() == Some(head) {
+            // Never the branch of a job still at work.
+            let owners = owners
+                && job.published.is_some()
+                && job.obi.is_none()
+                && !(action == "branchDelete" && job.status.is_active());
+            if (carries(job) && job.pushed_head() == Some(head)) || owners {
                 crate::merge::mark(
                     job,
                     crate::job::Sending {
@@ -11481,8 +11651,14 @@ impl Jobs {
     /// (`memory::remember_review`), or, where the owner taught it a workflow since, changes only
     /// that workflow's review to a teammate's Oby; then a teammate's Oby is asked right away
     /// (`Link::ask_teammate`). What came of the ask, in Oby's words; why not, otherwise: nothing
-    /// was asked, nor remembered.
-    pub async fn ask_teammate_and_remember(&self, id: &str, head: &str) -> Result<String, String> {
+    /// was asked, nor remembered. `signed`: the owner's app signed the answer (a workflow it
+    /// changes is theirs, else it's kept as a Remember no app of theirs signed).
+    pub async fn ask_teammate_and_remember(
+        &self,
+        id: &str,
+        head: &str,
+        signed: bool,
+    ) -> Result<String, String> {
         let job = self.get(id).ok_or("There's no such job.")?;
         // Only a job Oby still carries, at the head Oby pushed (crate::merge::ready's own rule).
         if !carries(&job) || job.pushed_head() != Some(head) {
@@ -11516,6 +11692,7 @@ impl Jobs {
                     learned,
                     &from,
                     &self.repo_branches(),
+                    signed,
                 )
                 .await
             }
@@ -11546,13 +11723,17 @@ impl Jobs {
     /// `head` (crate::sphere::link): GitHub is read again, the pull request must still be at that
     /// head and hold by the workflow the card proposes (or the one the owner taught Oby since),
     /// then it merges, `mergedBy` the owner. `remember` then keeps that workflow, the owner's yes
-    /// to the card's "Can I remember that?". Why not, otherwise: nothing was sent.
+    /// to the card's "Can I remember that?". Why not, otherwise: nothing was sent. `lift`: what
+    /// their answer lifts (crate::merge::Lift): an answer their app signed lifts what its card
+    /// named and remembers as theirs; any other, only the holds of before (MERGING-20).
     pub async fn merge_by_owner(
         &self,
         id: &str,
         head: &str,
         remember: bool,
+        lift: crate::merge::Lift<'_>,
     ) -> Result<Option<String>, String> {
+        let signed = matches!(lift, crate::merge::Lift::Named(_));
         let job = self.get(id).ok_or("There's no such job.")?;
         let gh = crate::github::gh().ok_or("GitHub's CLI (gh) isn't installed.")?;
         let number = job
@@ -11582,7 +11763,14 @@ impl Jobs {
             .ok_or("It isn't one Oby may merge.")?;
         crate::merge::on_owners_word(
             true,
-            crate::merge::ready(&job, Some(&workflow), &pr, &merging, Some(&reviewers)),
+            crate::merge::ready_as(
+                Some(&lift),
+                &job,
+                Some(&workflow),
+                &pr,
+                &merging,
+                Some(&reviewers),
+            ),
         )
         .map_err(|b| b.why)?;
         let by = crate::job::MergedBy {
@@ -11591,7 +11779,8 @@ impl Jobs {
             at: obi_protocol::time::now(),
         };
         let go = |action: &str| self.about_to_send(id, head, action, Some(by.clone()), None);
-        let outcome = crate::merge::merge(&gh, &home, &job, &workflow, &reviewers, true, &go).await;
+        let outcome =
+            crate::merge::merge(&gh, &home, &job, &workflow, &reviewers, Some(&lift), &go).await;
         self.update(id, |job| crate::merge::note(job, &outcome, by));
         let merged = outcome.map_err(|b| b.why)?;
         for sent in &merged.outgoing {
@@ -11606,6 +11795,7 @@ impl Jobs {
                 workflow,
                 &from,
                 &self.repo_branches(),
+                signed,
             )
             .await
             {
@@ -11634,8 +11824,13 @@ fn carries(job: &Job) -> bool {
 /// nothing to publish. Never while a follow-up (of every job obid has, `jobs`) carries its branch
 /// on, at work or done, as Try again and delete refuse then (PUBLISHING-3): that one publishes the
 /// branch. One that was dismissed or ended otherwise doesn't hold it: when it moved the branch,
-/// the job's checked commit isn't there any more (PUBLISHING-2).
-fn publish_action_of(job: &Job, jobs: &HashMap<String, Job>) -> Result<(String, String), String> {
+/// the job's checked commit isn't there any more (PUBLISHING-2). With the owner's Publish anyway
+/// (`by_hand`, PUBLISHING-9), a job that ended red or unchecked publishes its branch as it is.
+fn publish_action_of(
+    job: &Job,
+    jobs: &HashMap<String, Job>,
+    by_hand: &crate::publish::ByHand,
+) -> Result<(String, String), String> {
     let carried = jobs.values().find(|j| {
         j.id != job.id
             && j.follow_up_of.as_deref() == Some(job.id.as_str())
@@ -11643,12 +11838,30 @@ fn publish_action_of(job: &Job, jobs: &HashMap<String, Job>) -> Result<(String, 
             && j.dismissed.is_none()
             && (j.status.is_active() || j.status == Status::Done)
     });
-    match (&job.base, job.can_publish(), carried) {
-        (Some(_), true, Some(next)) => Err(format!(
+    let anyway = by_hand.anyway
+        && !job.status.is_active()
+        && job.kind != "review"
+        && job.kind != "research"
+        && job.dismissed.is_none()
+        && job.pull_request_open();
+    match (&job.base, job.can_publish() || anyway, carried) {
+        (Some(_), true, Some(next)) if !by_hand.anyway => Err(format!(
             "Its follow-up {} carries its branch on: publish that one instead.",
             next.short_title()
         )),
-        (Some(base), true, None) => Ok((crate::publish::action(job, base), base.clone())),
+        (Some(base), true, carried) => {
+            let mut said = crate::publish::action_with(job, base, by_hand);
+            // Publish anyway past a follow-up that carries the branch: what that costs is in what
+            // the owner signs (PUBLISHING-9).
+            if let Some(next) = carried {
+                said.push_str(&format!(
+                    " A follow-up, {}, carries this branch: publishing this puts it at {}, and the follow-up loses its own publish.",
+                    next.short_title(),
+                    by_hand.head.as_deref().unwrap_or("its head")
+                ));
+            }
+            Ok((said, base.clone()))
+        }
         _ => Err(if job.dismissed.is_some() {
             "It was dismissed: there's nothing to publish.".into()
         } else if job.status != Status::Done {
@@ -15269,6 +15482,123 @@ mod tests {
         .unwrap()
     }
 
+    /// PUBLISHING-9 past PUBLISHING-3: by default a follow-up carrying the branch refuses Publish;
+    /// Publish anyway goes past it, its sentence saying where the branch goes and what the
+    /// follow-up loses.
+    #[test]
+    fn publishing_9_anyway_past_a_follow_up_says_what_it_costs() {
+        let mut job = Job::new(
+            "eeee0001".into(),
+            "o/r".into(),
+            "fix".into(),
+            "Fix it".into(),
+            "claude".into(),
+            "c".into(),
+        );
+        job.status = Status::Done;
+        job.branch = "oby/fix-eeee0001".into();
+        job.base = Some("main".into());
+        job.commits = Some(1);
+        job.checked_head = Some("a".repeat(40));
+        let mut next = Job::new(
+            "eeee0002".into(),
+            "o/r".into(),
+            "fix".into(),
+            "Fix it more".into(),
+            "claude".into(),
+            "c".into(),
+        );
+        next.status = Status::Running;
+        next.follow_up_of = Some(job.id.clone());
+        next.branch = job.branch.clone();
+        let jobs: HashMap<String, Job> = [(job.id.clone(), job.clone()), (next.id.clone(), next)]
+            .into_iter()
+            .collect();
+        let refused = publish_action_of(&job, &jobs, &crate::publish::ByHand::default());
+        assert!(refused.unwrap_err().contains("carries its branch on"));
+        let anyway = crate::publish::ByHand {
+            anyway: true,
+            head: Some("a".repeat(40)),
+            ..Default::default()
+        };
+        let (said, _) = publish_action_of(&job, &jobs, &anyway).unwrap();
+        assert!(
+            said.ends_with(&format!(
+                "A follow-up, Fix it more, carries this branch: publishing this puts it at {}, and the follow-up loses its own publish.",
+                "a".repeat(40)
+            )),
+            "{said}"
+        );
+    }
+
+    /// ATTACH-17: the owner's words with files to a job past its safety limit make a Confirm that
+    /// carries the files too, where it used to refuse them.
+    #[tokio::test]
+    async fn attach_17_a_confirm_past_the_safety_limit_carries_the_files() {
+        let root = std::env::temp_dir().join(format!("obid-safety-{}", uuid::Uuid::new_v4()));
+        let account = root.join("accounts/c");
+        std::fs::create_dir_all(&account).unwrap();
+        std::fs::write(account.join(".credentials.json"), "{}").unwrap();
+        let config = crate::config::Config::parse(
+            &json!({"listen": "127.0.0.1:0", "home": root.join("home"), "owner": "o",
+                "repos": [{"repo": "o/r", "remote": "https://example.com/o/r.git"}],
+                "agents": {"claude": {"bin": "/usr/bin/true",
+                                      "accounts": [{"id": "c", "name": "C", "configDir": account}]}}})
+            .to_string(),
+        )
+        .unwrap();
+        let jobs = Jobs::open(
+            config,
+            crate::events::Events::new(),
+            Err("no sandbox".into()),
+        )
+        .unwrap();
+        let items = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let kept = items.clone();
+        jobs.on_confirm(Arc::new(move |item| kept.lock().unwrap().push(item)));
+        let mut job = Job::new(
+            "eeee0001".into(),
+            "o/r".into(),
+            "fix".into(),
+            "Fix it".into(),
+            "claude".into(),
+            "c".into(),
+        );
+        job.status = Status::Done;
+        job.limit = Some("its token ceiling".into());
+        job.stalled = Some(crate::job::Stalled {
+            why: "ceiling".into(),
+            text: "its token ceiling".into(),
+            at: 0,
+            round: 1,
+            branch: job.branch.clone(),
+            commit: None,
+            commits: 0,
+            session: false,
+            note: String::new(),
+            note_by: "obid".into(),
+        });
+        jobs.insert(job);
+        let files = ["/attachments/app/a/shot.png".to_owned()];
+        let told = jobs.message_attaching("eeee0001", "Use this", Source::Owner, &files);
+        let Some(Err(refused)) = told else {
+            panic!("it started past its safety limit: {told:?}")
+        };
+        assert!(
+            refused.0.contains("waits for your Confirm"),
+            "{}",
+            refused.0
+        );
+        let items = items.lock().unwrap().clone();
+        assert_eq!(items[0].title, "Start a follow-up of Fix it with shot.png");
+        let confirmed = items[0].confirm.as_deref().unwrap();
+        assert_eq!(
+            confirmed.payload,
+            json!({"words": "Use this", "attachments": files})
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// The owner's words that came while a job wrapped up, left unheard when it ended, start its
     /// follow-up one by one, each within its own 2,000 characters: the first is its task, the
     /// rest its first prompt's end. Refused, they stay with the job and a Confirm item tries
@@ -15457,7 +15787,8 @@ mod tests {
         // Its base's fetch waits for the repository's lock, held here.
         let preparing = jobs.preparing("o/r");
         let held = preparing.lock().await;
-        let mut publishing = Box::pin(jobs.publish_job("eeee0001", None, |_, _| Ok(())));
+        let by_hand = crate::publish::ByHand::default();
+        let mut publishing = Box::pin(jobs.publish_job("eeee0001", None, |_, _| Ok(()), &by_hand));
         let waited = tokio::time::timeout(Duration::from_secs(2), &mut publishing).await;
         assert!(waited.is_err(), "it waits on the lock: {waited:?}");
         assert!(
@@ -17113,7 +17444,7 @@ mod tests {
     /// the owner's own yes, never a comment's or a rule's; and lets nothing through once the job's
     /// worker ends.
     #[tokio::test]
-    async fn the_egress_proxy_lets_through_asks_and_refuses_by_site() {
+    async fn permissions_2_the_egress_proxy_lets_through_asks_and_refuses_by_site() {
         use base64::Engine;
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -17236,6 +17567,27 @@ mod tests {
             assert_eq!(status_line, "200");
             assert_eq!(echoed(stream, bytes).await, None);
         }
+        // PERMISSIONS-2: a plain http:// request to the rule's site goes on, alone and without the
+        // job's token, where it used to be refused.
+        let mut plain = tokio::net::TcpStream::connect(("127.0.0.1", port))
+            .await
+            .unwrap();
+        plain
+            .write_all(
+                format!("GET http://localhost:{up}/x HTTP/1.1\r\nHost: localhost:{up}\r\nProxy-Authorization: Basic {auth}\r\n\r\n")
+                    .as_bytes(),
+            )
+            .await
+            .unwrap();
+        let want = format!(
+            "GET http://localhost:{up}/x HTTP/1.1\r\nHost: localhost:{up}\r\nConnection: close\r\n\r\n"
+        );
+        let mut back = vec![0u8; want.len()];
+        tokio::time::timeout(Duration::from_secs(5), plain.read_exact(&mut back))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(String::from_utf8_lossy(&back), want);
         // No token, a wrong one: refused, and nobody is asked.
         assert_eq!(connect(format!("localhost:{up}"), None).await.0, "407");
         let wrong = base64::engine::general_purpose::STANDARD.encode("oby:nope");
@@ -17313,13 +17665,14 @@ mod tests {
         assert_eq!(jobs.reach_now("j", "api.anthropic.com", 443), Some(Ok(())));
         assert_eq!(jobs.reach_now("j", "api.anthropic.com", 22), None);
         assert!(matches!(
-            jobs.ask_about("j", "registry.npmjs.org", 443),
+            jobs.ask_about("j", "registry.npmjs.org", 443, false),
             crate::egress::Asked::Now(Ok(()))
         ));
-        assert!(matches!(
+        // PERMISSIONS-2: telemetry elsewhere than the tool's vendor is decided as any site is.
+        assert_eq!(
             jobs.reach_now("j", "http-intake.logs.us5.datadoghq.com", 443),
-            Some(Err(_))
-        ));
+            None
+        );
         let worktree = root.join("worktree");
         // A fetch the owner allowed: its site goes through without asking again.
         let Ruling::Ask(_fetch) = jobs.rule_on(
@@ -17445,7 +17798,7 @@ mod tests {
 
         for host in REGISTRIES {
             assert!(
-                matches!(jobs.ask_about("j", host, 443), Asked::Now(Ok(()))),
+                matches!(jobs.ask_about("j", host, 443, false), Asked::Now(Ok(()))),
                 "{host} asked"
             );
             assert!(jobs.get("j").unwrap().permission.is_none(), "{host}");
@@ -17453,7 +17806,7 @@ mod tests {
         for host in ROUTED_BY_HOST {
             assert!(!REGISTRIES.contains(host), "{host}");
             assert!(
-                matches!(jobs.ask_about("j", host, 443), Asked::Card { .. }),
+                matches!(jobs.ask_about("j", host, 443, false), Asked::Card { .. }),
                 "{host} wasn't asked about"
             );
             let card = jobs.get("j").unwrap().permission.unwrap();
