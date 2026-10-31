@@ -536,17 +536,19 @@ fn admission_3_a_seventh_job_waits_for_a_slot_and_says_so() {
 fn a_client_may_claim_files_at_dispatch() {
     let folder = Folder::new("claim");
     let (obid, _) = obid(&folder);
-    let post = |files: Value| {
+    // Each job that starts on an issue of its own: two on one would share its branch (PUBLISHING-4).
+    let post_on = |issue: u64, files: Value| {
         call(
             &obid,
             "POST",
             "/v1/jobs",
             Some(
-                &json!({"job": {"repo": "obi-e2e/fixture-app", "kind": "fix", "task": "Fix #176",
-                                 "issue": 176, "files": files}}),
+                &json!({"job": {"repo": "obi-e2e/fixture-app", "kind": "fix", "task": format!("Fix #{issue}"),
+                                 "issue": issue, "files": files}}),
             ),
         )
     };
+    let post = |files: Value| post_on(176, files);
     for bad in [
         json!(["/etc/passwd"]),
         json!(["src/", "~/.ssh/id_ed25519"]),
@@ -566,7 +568,7 @@ fn a_client_may_claim_files_at_dispatch() {
     let started = post(json!(["./src/greet.js", "docs/", "src//greet.js", "  "]));
     assert_eq!(started.status, 201, "{}", started.text);
     assert_eq!(started.body["files"], json!(["src/greet.js", "docs/"]));
-    let none = post(json!([]));
+    let none = post_on(177, json!([]));
     assert_eq!(none.body["files"], json!([]));
     let many: Vec<String> = (0..31).map(|n| format!("src/{n}.js")).collect();
     let refused = post(json!(many));
