@@ -1121,11 +1121,15 @@ impl Job {
 
     /// The last commit obid pushed to the job's branch: its pull request's head, as obid left it.
     pub fn pushed_head(&self) -> Option<&str> {
+        self.last_push().map(|o| o.id.as_str())
+    }
+
+    /// obid's last push to the job's branch.
+    pub fn last_push(&self) -> Option<&crate::publish::Outgoing> {
         self.outgoing
             .iter()
             .rev()
             .find(|o| o.action == "push" && o.branch.as_deref() == Some(self.branch.as_str()))
-            .map(|o| o.id.as_str())
     }
 
     /// The number of the pull request it published to when it didn't open that one itself: a
