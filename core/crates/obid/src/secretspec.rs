@@ -704,20 +704,22 @@ const SAFE_TOOLS: &[&str] = &[
 /// issue, every list whole; what GitHub can't say is a no. What obid posted under the owner's login
 /// is signed, an Oby's, never the owner's: but a pull request's own description when
 /// `signed_body`, obid's record that it wrote it only for jobs that are the owner's own throughout
-/// (`Jobs::described_clean`).
+/// (`Jobs::described_clean`). With `shown`, what obid quoted of it, that counts too
+/// (`crate::github_work::owners_only`).
 pub async fn others_wrote(
     gh: &Path,
     repo: &str,
     kind: &str,
     number: u64,
     signed_body: bool,
+    shown: Option<&serde_json::Value>,
 ) -> Option<String> {
     let name = if kind == "pr" {
         "pull request"
     } else {
         "issue"
     };
-    (!crate::github_work::owners_only(gh, repo, number, signed_body).await)
+    (!crate::github_work::owners_only(gh, repo, number, signed_body, shown).await)
         .then(|| format!("it works from {name} #{number}, which someone else wrote in or GitHub didn't say who wrote"))
 }
 
@@ -2035,16 +2037,29 @@ required = false
         let gh = dir.join("gh");
         std::fs::write(&gh, script).unwrap();
         std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755)).unwrap();
-        assert_eq!(others_wrote(&gh, "o/r", "issue", 1, false).await, None);
-        assert_eq!(others_wrote(&gh, "o/r", "pr", 8, false).await, None);
+        assert_eq!(
+            others_wrote(&gh, "o/r", "issue", 1, false, None).await,
+            None
+        );
+        assert_eq!(others_wrote(&gh, "o/r", "pr", 8, false, None).await, None);
         // What obid signed is an Oby's: a description only when obid wrote it for clean jobs alone,
         // a comment never.
-        assert!(others_wrote(&gh, "o/r", "pr", 10, false).await.is_some());
-        assert_eq!(others_wrote(&gh, "o/r", "pr", 10, true).await, None);
-        assert!(others_wrote(&gh, "o/r", "issue", 11, true).await.is_some());
+        assert!(
+            others_wrote(&gh, "o/r", "pr", 10, false, None)
+                .await
+                .is_some()
+        );
+        assert_eq!(others_wrote(&gh, "o/r", "pr", 10, true, None).await, None);
+        assert!(
+            others_wrote(&gh, "o/r", "issue", 11, true, None)
+                .await
+                .is_some()
+        );
         for n in [2, 3, 4, 5, 6, 7, 9] {
             assert!(
-                others_wrote(&gh, "o/r", "issue", n, false).await.is_some(),
+                others_wrote(&gh, "o/r", "issue", n, false, None)
+                    .await
+                    .is_some(),
                 "#{n}"
             );
         }

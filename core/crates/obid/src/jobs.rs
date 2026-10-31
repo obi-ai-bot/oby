@@ -7648,7 +7648,7 @@ impl Jobs {
             ));
         };
         // What someone else wrote in the issue or pull request it works from may steer it.
-        if let Some(why) = self.others_wrote(&gh, job).await {
+        if let Some(why) = self.others_wrote(&gh, job, None).await {
             return Some(why);
         }
         if let Err(why) = crate::secretspec::protected_base(&gh, &repo.repo, base).await {
@@ -7744,8 +7744,8 @@ impl Jobs {
     /// fresh one, so the repository's checks get values again (crate::secretspec). Called under the
     /// repository's preparing lock, for `job`, which has no worktree yet.
     /// Why the issue or pull request `job` works from isn't only the owner's own words
-    /// (crate::secretspec::others_wrote), or none.
-    async fn others_wrote(&self, gh: &Path, job: &Job) -> Option<String> {
+    /// (crate::secretspec::others_wrote), or none. `shown` is what obid quoted of its issue.
+    async fn others_wrote(&self, gh: &Path, job: &Job, shown: Option<&Value>) -> Option<String> {
         for (kind, number) in [("issue", job.issue), ("pr", job.pr)] {
             if let Some(number) = number
                 && let Some(why) = crate::secretspec::others_wrote(
@@ -7754,6 +7754,7 @@ impl Jobs {
                     kind,
                     number,
                     self.described_clean(&job.repo, number),
+                    shown.filter(|_| kind == "issue"),
                 )
                 .await
             {
@@ -7837,8 +7838,9 @@ impl Jobs {
     }
 
     /// Who wrote the issue or pull request `job` works from, as it starts (crate::secretspec):
-    /// what anyone else wrote there reached it then, even if it's gone by its check.
-    async fn authors_as_it_starts(&self, job: &Job) {
+    /// what anyone else wrote there reached it then, even if it's gone by its check. `shown` is
+    /// what obid quoted of its issue for this run.
+    async fn authors_as_it_starts(&self, job: &Job, shown: Option<&Value>) {
         let Some(gh) = crate::github::gh() else {
             self.mark_foreign(
                 &job.id,
@@ -7846,7 +7848,13 @@ impl Jobs {
             );
             return;
         };
-        if let Some(why) = self.others_wrote(&gh, job).await {
+        // A read GitHub refused (a rate limit) is asked once more before it marks the job for
+        // good; the quote it checks stays the same.
+        let why = match self.others_wrote(&gh, job, shown).await {
+            Some(_) => self.others_wrote(&gh, job, shown).await,
+            None => None,
+        };
+        if let Some(why) = why {
             self.mark_foreign(&job.id, format!("as it started, {why}"));
         }
     }
@@ -8468,7 +8476,7 @@ impl Jobs {
             && job.issue.is_none()
             && job.pr.is_some()
         {
-            Box::pin(self.authors_as_it_starts(&job)).await;
+            Box::pin(self.authors_as_it_starts(&job, None)).await;
         }
         let preparing = self.preparing(&repo.repo);
         let prepared = preparing.lock().await;
@@ -8652,14 +8660,14 @@ impl Jobs {
                 .map_err(|e| format!("obid can't make .obi/inputs: {e}"))?;
             let file = crate::github_work::quoted_name(&job.repo, issue);
             match crate::github_work::quote("assigned", &job.repo, issue).await {
-                Ok((quoted, _)) => {
+                Ok((quoted, read)) => {
                     let text = crate::secrets::known().redact(&crate::vault::for_agent(&quoted)?);
                     crate::obi_dir::write_new(&inputs, &file, text.as_bytes()).map_err(|e| {
                         format!("obid couldn't quote issue #{issue} for the agent: {e}")
                     })?;
                     self.update(id, |job| job.issue_unread = None);
                     if job.foreign.is_none() {
-                        Box::pin(self.authors_as_it_starts(&job)).await;
+                        Box::pin(self.authors_as_it_starts(&job, Some(&read))).await;
                     }
                 }
                 Err(why) => {

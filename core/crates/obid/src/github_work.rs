@@ -317,8 +317,16 @@ comments(first: 100) { pageInfo { hasNextPage } nodes { author { login } body us
 /// review comment, each list given whole. For the owner's secrets (crate::secretspec), stricter
 /// than [`issue_trusted`]. Anything obid can't read is a no. A text carrying [`OBY_SIGNS`] is an
 /// Oby's, whoever's login posted it: never the owner's, but the item's own body when
-/// `signed_body` (obid wrote it for jobs that are the owner's own throughout).
-pub async fn owners_only(gh: &std::path::Path, repo: &str, number: u64, signed_body: bool) -> bool {
+/// `signed_body` (obid wrote it for jobs that are the owner's own throughout). With `shown`, what
+/// obid quoted of it just before ([`quote`]), that too is all the owner's ([`shown_by`]): a
+/// comment deleted in between is gone from this read, never from the quote.
+pub async fn owners_only(
+    gh: &std::path::Path,
+    repo: &str,
+    number: u64,
+    signed_body: bool,
+    shown: Option<&Value>,
+) -> bool {
     let Some((holder, name)) = repo.split_once('/') else {
         return false;
     };
@@ -352,7 +360,21 @@ pub async fn owners_only(gh: &std::path::Path, repo: &str, number: u64, signed_b
         login,
         &read["data"]["repository"]["issueOrPullRequest"],
         signed_body,
-    )
+    ) && shown.is_none_or(|shown| shown_by(login, shown))
+}
+
+/// Whether `shown`, what `gh issue view --json author,comments,…` printed, is all `login`'s: its
+/// author and every comment's. Anyone it doesn't name is someone else.
+fn shown_by(login: &str, shown: &Value) -> bool {
+    let by = |v: &Value| {
+        v["author"]["login"]
+            .as_str()
+            .is_some_and(|l| l.eq_ignore_ascii_case(login))
+    };
+    by(shown)
+        && shown["comments"]
+            .as_array()
+            .is_some_and(|comments| comments.iter().all(by))
 }
 
 /// [`owners_only`] on what [`WHO_WROTE_ALL`] read (`item`): every login in it is `login`, every
@@ -1621,6 +1643,23 @@ mod tests {
             rest = &after[1..];
         }
         total
+    }
+
+    /// ISSUETASK-4: what obid quoted is checked too, a comment deleted since included.
+    #[test]
+    fn issuetask_4_the_quote_is_the_owners_only_when_all_of_it_is() {
+        let quoted = |commenters: &[&str]| {
+            json!({"author": {"login": "Wellington"}, "comments": commenters.iter()
+                .map(|l| json!({"author": {"login": l}})).collect::<Vec<_>>()})
+        };
+        assert!(shown_by("wellington", &quoted(&[])));
+        assert!(shown_by("wellington", &quoted(&["wellington"])));
+        assert!(!shown_by("wellington", &quoted(&["wellington", "mallory"])));
+        assert!(!shown_by("sangam", &quoted(&[])));
+        assert!(!shown_by(
+            "wellington",
+            &json!({"author": {"login": "wellington"}})
+        ));
     }
 
     /// ISSUETASK-3 (#1660): who wrote an issue or a pull request is a read GitHub answers. Asking
