@@ -182,6 +182,13 @@ export const itemAsk = (item: InboxItem, detail?: string): Ask => {
     return { kind: 'check', headline: `Use this as ${item.confirm!.target}’s check before publishing?`, text: item.text, options, detail: check };
   }
   if (item.kind === 'agentQuestion') return { kind: 'question', headline: item.text, text: '', options: [...item.options, TELL] };
+  // A merge card's title is its task's, which the card shows already: with no headline of the
+  // model's, obid's reason leads, its first sentence over the rest (what to change, every other
+  // hold), as text shows when headline is null (docs/runner-api.md, #1680).
+  if (item.kind === 'merge' && !item.headline && item.text) {
+    const [headline, ...rest] = item.text.split(/(?<=\.) /);
+    return { kind: 'merge', headline, text: rest.join(' '), options: item.options, recommended: item.recommended ?? undefined };
+  }
   return {
     kind: LABELLED[item.kind] ?? item.kind as AskKind, headline: item.headline ?? item.title, text: item.headline ? item.text : '',
     options: item.options, recommended: item.recommended ?? undefined, detail: detail ?? item.watch?.review ?? undefined,

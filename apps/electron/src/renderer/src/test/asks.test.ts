@@ -58,3 +58,22 @@ describe('BYPASS-6: a task’s Mode menu', () => {
     expect(live.liveState().jobs.j1.mode).toBe('bypass');
   });
 });
+
+describe('MERGING-21: a merge card says why it stopped, never just its title (#1680)', () => {
+  it('merging_21_leads_with_obids_reason_and_what_to_change_when_no_headline_came', () => {
+    const ask = live.itemAsk(item('merge', {
+      title: 'Not merged: Oby drive 15:36', options: ['Dismiss'],
+      text: "Not merged: it conflicts with main. Ask Oby to rebase it onto main, or settle it on GitHub. Oby's review still asks for changes, so it's yours to merge.",
+    }));
+    expect(ask).toMatchObject({
+      kind: 'merge', headline: 'Not merged: it conflicts with main.',
+      text: "Ask Oby to rebase it onto main, or settle it on GitHub. Oby's review still asks for changes, so it's yours to merge.",
+      options: ['Dismiss'],
+    });
+  });
+
+  it('merging_21_keeps_the_models_headline_over_the_reason', () => {
+    const ask = live.itemAsk(item('merge', { title: 'Ready to merge: Fix it', headline: 'Merge it into main?', text: 'A review asks for changes.', options: ['Merge'] }));
+    expect([ask.headline, ask.text]).toEqual(['Merge it into main?', 'A review asks for changes.']);
+  });
+});

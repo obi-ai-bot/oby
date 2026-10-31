@@ -11401,16 +11401,19 @@ impl Jobs {
         let card = if let Some(why) = stop {
             // A change request, red checks and a reviewer account signed out are holds the
             // owner's own Merge lifts: the card carries Merge where Oby knows how it'd merge.
-            // One card names every hold the Merge lifts (MERGING-21).
+            // One card names every hold the Merge lifts (MERGING-21), and where GitHub itself
+            // refuses, its reason, which says what to change, with no Merge.
+            let all = |b: crate::merge::Blocked| match b.why.contains(&why) {
+                true => b.why,
+                false => format!("{why} {}", b.why),
+            };
             Some(match effective.as_ref() {
                 Some(w) => {
                     match crate::merge::ready(&job, Some(w), pr, &merging, reviewers.as_ref()) {
-                        Err(b) if b.yours && b.why.contains(&why) => {
-                            crate::merge::yours_card(&job, &head, &b.why, w, &pr.base)
+                        Err(b) if b.yours => {
+                            crate::merge::yours_card(&job, &head, &all(b), w, &pr.base)
                         }
-                        Err(b) if !b.yours && b.needs_you => {
-                            crate::merge::stopped_card(&job, &head, &why)
-                        }
+                        Err(b) if b.needs_you => crate::merge::stopped_card(&job, &head, &all(b)),
                         _ => crate::merge::yours_card(&job, &head, &why, w, &pr.base),
                     }
                 }
