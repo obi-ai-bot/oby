@@ -748,8 +748,21 @@ pub async fn fresh_checkout(
     let objects = at.join("objects");
     std::fs::create_dir_all(objects.join("pack")).map_err(|_| fail("its folder"))?;
     std::fs::create_dir_all(&temp).map_err(|_| fail("its folder"))?;
-    // The job's commits since the base, out of its own object folder, as one pack.
-    let env = git_env(agent);
+    // The job's commits since the base, out of its own object folder, as one pack: git pinned to
+    // the job's git folders as obid checked them, never the `.git` its agent could rewrite.
+    let admin = agent
+        .git_admin
+        .clone()
+        .ok_or("the job's worktree has no git folder obid knows")?;
+    let mut env = git_env(agent);
+    env.extend([
+        ("GIT_DIR", admin.to_string_lossy().into_owned()),
+        ("GIT_COMMON_DIR", common.to_string_lossy().into_owned()),
+        (
+            "GIT_WORK_TREE",
+            agent.worktree.to_string_lossy().into_owned(),
+        ),
+    ]);
     let env: Vec<(&str, &str)> = env.iter().map(|(k, v)| (*k, v.as_str())).collect();
     let pack = objects.join("pack/pack").to_string_lossy().into_owned();
     crate::git::run_bytes(
@@ -847,6 +860,147 @@ pub async fn remove_checkout(check: &Spec, at: &Path) -> Result<(), String> {
             at.display()
         )),
     }
+}
+
+/// The files a check's `command` runs out of the repository (PUBLISHING-6): for each of its
+/// top-level steps (crate::facts::steps), its program when that's a path (`scripts/oby-check.sh`,
+/// `./check.sh`), or, after `sh`, `bash`, `zsh`, `dash`, `python3`, `python`, `node`, `ruby` or
+/// `perl`, the first word that isn't an option; `NAME=value` words before it skipped. Relative
+/// paths only, `./` taken off: a word with `..`, `.git`, a quote, `$` or a glob isn't one. Whether
+/// it names a file in the repository is the caller's to tell.
+// ponytail: words split on whitespace; what `make check` or `npm test` read (a Makefile,
+// package.json) isn't named, so it's the commit's: a list of such files when a repository needs it.
+pub fn check_scripts(command: &str) -> Vec<String> {
+    const RUNNERS: [&str; 9] = [
+        "sh", "bash", "zsh", "dash", "python3", "python", "node", "ruby", "perl",
+    ];
+    let mut out = Vec::new();
+    for step in crate::facts::steps(command) {
+        let mut words = step.split_whitespace().skip_while(|w| is_assignment(w));
+        let Some(first) = words.next() else { continue };
+        let program = first.rsplit('/').next().unwrap_or(first);
+        let word = if RUNNERS.contains(&program) {
+            words.find(|w| !w.starts_with('-'))
+        } else {
+            first.contains('/').then_some(first)
+        };
+        if let Some(path) = word.and_then(repo_path)
+            && !out.contains(&path)
+        {
+            out.push(path);
+        }
+    }
+    out
+}
+
+/// Whether `word` is a shell variable's assignment (`RUST_LOG=info`).
+fn is_assignment(word: &str) -> bool {
+    word.split_once('=').is_some_and(|(name, _)| {
+        name.chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+            && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+    })
+}
+
+/// `word` as a path inside the repository, `./` taken off, or none.
+fn repo_path(word: &str) -> Option<String> {
+    let mut path = word;
+    while let Some(rest) = path.strip_prefix("./") {
+        path = rest;
+    }
+    let clean = !path.is_empty()
+        && !path.starts_with('/')
+        && !path.contains(['\'', '"', '`', '$', '\\', '*', '?', '[', '~'])
+        && path
+            .split('/')
+            .all(|part| !matches!(part, "" | "." | "..") && !part.eq_ignore_ascii_case(".git"));
+    clean.then(|| path.to_owned())
+}
+
+/// Puts commit `base`'s own copy of each of `paths` (as [`check_scripts`] gives them) into the
+/// check's checkout `work`, from obid's `clone` (PUBLISHING-6): what the job's commit has there
+/// is replaced, and a path that isn't a file on the base is taken out. Answers the paths the base
+/// has. A folder on the way that the commit made a link or a file is made a real one, so nothing
+/// is ever written outside `work`.
+pub async fn from_base(
+    clone: &Path,
+    base: &str,
+    work: &Path,
+    paths: &[String],
+) -> Result<Vec<String>, String> {
+    let mut had = Vec::new();
+    for path in paths {
+        let fail = || format!("obid couldn't read {path} as its base has it");
+        let listed = crate::git::git(clone, &["ls-tree", "-z", base, "--", path])
+            .await
+            .map_err(|_| fail())?;
+        // `<mode> blob <sha>\t<path>`, for a file; nothing, or anything else, for none.
+        let file = listed
+            .split_once('\t')
+            .map(|(meta, _)| meta.split(' ').collect::<Vec<_>>())
+            .filter(|meta| meta.len() == 3 && meta[1] == "blob" && meta[0] != "120000");
+        let copy = match file {
+            Some(meta) => {
+                let bytes = crate::git::run_bytes(
+                    clone,
+                    &[
+                        OsStr::new("cat-file"),
+                        OsStr::new("blob"),
+                        OsStr::new(meta[2]),
+                    ],
+                    &[],
+                    None,
+                )
+                .await
+                .map_err(|_| fail())?;
+                had.push(path.clone());
+                Some((bytes, meta[0] == "100755"))
+            }
+            None => None,
+        };
+        put(work, path, copy)
+            .map_err(|e| format!("obid couldn't put {path} as its base has it: {e}"))?;
+    }
+    Ok(had)
+}
+
+/// Writes `copy` (its bytes, and whether it runs) at `path` in `work`, or takes `path` out for
+/// none, through real folders only.
+fn put(work: &Path, path: &str, copy: Option<(Vec<u8>, bool)>) -> std::io::Result<()> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut at = work.to_path_buf();
+    let parts: Vec<&str> = path.split('/').collect();
+    let (name, folders) = parts.split_last().expect("a path has a name");
+    for folder in folders {
+        at.push(folder);
+        match at.symlink_metadata() {
+            Ok(meta) if meta.is_dir() => {}
+            // Not a folder in the commit: the path isn't there to take out.
+            _ if copy.is_none() => return Ok(()),
+            Ok(_) => {
+                std::fs::remove_file(&at)?;
+                std::fs::create_dir(&at)?;
+            }
+            Err(_) => std::fs::create_dir(&at)?,
+        }
+    }
+    at.push(name);
+    match at.symlink_metadata() {
+        Ok(meta) if meta.is_dir() => std::fs::remove_dir_all(&at)?,
+        Ok(_) => std::fs::remove_file(&at)?,
+        Err(_) => {}
+    }
+    if let Some((bytes, runs)) = copy {
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(if runs { 0o755 } else { 0o644 })
+            .open(&at)?
+            .write_all(&bytes)?;
+    }
+    Ok(())
 }
 
 /// What a check gets of the secrets its repository declares: the values to put in its environment,
@@ -1045,6 +1199,31 @@ fn json_forms(value: &str) -> (String, String) {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    /// PUBLISHING-6: which words of a check are its scripts, the base's copy of which runs.
+    #[test]
+    fn publishing_6_a_checks_scripts_are_its_programs_paths() {
+        let scripts = |command: &str| check_scripts(command);
+        assert_eq!(scripts("scripts/oby-check.sh"), ["scripts/oby-check.sh"]);
+        assert_eq!(scripts("OBY_CHECK_PLAN=1 ./check.sh --all"), ["check.sh"]);
+        assert_eq!(
+            scripts("bash -e ci/test.sh && /bin/sh ./b.sh"),
+            ["ci/test.sh", "b.sh"]
+        );
+        assert_eq!(scripts("sh check.sh"), ["check.sh"]);
+        // Arguments, absolute paths, the shell's own words and paths out of the repository aren't.
+        for none in [
+            "test -f hello.txt",
+            "cargo test --manifest-path core/Cargo.toml",
+            "/usr/bin/make check",
+            "../elsewhere/check.sh",
+            "sh .git/hooks/x",
+            "sh \"$SCRIPT\"",
+            "npm test",
+        ] {
+            assert!(scripts(none).is_empty(), "{none}");
+        }
+    }
 
     /// Obviously fake: what the tests put where the owner's vault would be.
     const FAKE: &str = "fake-check-value/Z9q2+not=real";

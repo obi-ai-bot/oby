@@ -1896,7 +1896,7 @@ fn try_again_after_a_limit_keeps_the_rounds_summary() {
     let tried = |file: &str, words: &str| {
         let id = post_job(
             &obid,
-            json!({"repo": "obi-e2e/fixture-app", "kind": "build", "task": format!("COMMIT: {file} AGAIN:{words}"), "check": "test -e .obi/tried", "rounds": 1}),
+            json!({"repo": "obi-e2e/fixture-app", "kind": "build", "task": format!("COMMIT: {file} AGAIN:{words}"), "check": "test -e \"$HOME/tried\"", "rounds": 1}),
         )
         .body["id"]
             .as_str()
@@ -2362,7 +2362,8 @@ fn a_failing_check_is_heard_every_round_and_on_one_more_round() {
 }
 
 /// A fix whose check fails once, with no rounds named, is fixed in its second round and
-/// publishes: Needs you never hears of it.
+/// publishes: Needs you never hears of it. (Its mark is in the check's home, the job's: each check
+/// runs in a checkout of its own, PUBLISHING-6.)
 #[test]
 fn a_fix_that_fails_once_is_fixed_in_its_second_round() {
     let folder = Folder::new("rounds-second");
@@ -2371,7 +2372,7 @@ fn a_fix_that_fails_once_is_fixed_in_its_second_round() {
     let obid = start_with(&folder.0, &config(&folder.0, &remote), Some(&bin));
     let id = post_job(
         &obid,
-        json!({"repo": "obi-e2e/fixture-app", "kind": "fix", "task": "COMMIT: a.txt", "check": "test -e .obi/ran || { mkdir -p .obi; touch .obi/ran; false; }"}),
+        json!({"repo": "obi-e2e/fixture-app", "kind": "fix", "task": "COMMIT: a.txt", "check": "test -e \"$HOME/ran\" || { touch \"$HOME/ran\"; false; }"}),
     )
     .body["id"]
         .as_str()

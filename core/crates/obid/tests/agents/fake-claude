@@ -90,7 +90,8 @@
 //                    rebase half done instead ("Left the rebase half done.")
 //   AGAIN: <words>   keeps the words (maybe none) in .obi/again, then goes on with the rest of the
 //                    prompt; a later "Try again, …" (after the check's output, when one stopped the
-//                    job) that finds them writes .obi/tried and ends the turn with them
+//                    job) that finds them writes `tried` in its HOME (the job's, the
+//                    check's too) and ends the turn with them
 //   BUMP: <file> <a> <b>  changes `= <a>` to `= <b>` in the file and commits it
 //   obid's decision round  (it compared the change with earlier decisions) keeps the change and
 //                    ends the turn with "Kept it: …", having copied .obi/inputs/decisions.md to
@@ -384,7 +385,7 @@ rl.on("line", (line) => {
     writeFileSync(".obi/again", again[1].trim());
   }
   if (prompt.includes("Try again, picking up where you left off") && existsSync(".obi/again")) {
-    writeFileSync(".obi/tried", "");
+    writeFileSync(`${process.env.HOME}/tried`, "");
     result(readFileSync(".obi/again", "utf8"));
   } else if (commit) {
     writeFileSync(commit[1], "hello\n");

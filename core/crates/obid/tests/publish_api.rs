@@ -1520,18 +1520,21 @@ fn publishing_5_a_check_that_didnt_check_the_commits_publishes_nothing() {
         Some(first.as_str())
     );
 
-    // A check that commits while it runs.
+    // A check that commits while it runs commits in its own checkout (PUBLISHING-6): the job's
+    // branch never gets that commit, and what goes out is the commit the check passed on.
     let id = dispatch(
         &obid,
         json!({"repo": "obi-e2e/fixture-app", "kind": "build", "task": "COMMIT: other.txt",
                "check": "git -c user.name=x -c user.email=x@x -c commit.gpgsign=false commit -q --allow-empty -m sneaky"}),
     );
     let job = ended(&obid, &id);
-    let moved = "Not published: its commits changed while its check ran, so the check didn't pass on the ones there now. Tell Oby to carry on, and it checks them again.";
     assert_eq!(job["status"], "done", "{job}\n{}", obid.log());
-    assert_eq!(job["reason"], moved, "{job}");
-    no_publish(&id, moved);
-    assert_eq!(remote_branch(&remote, &format!("oby/build-{id}")), None);
+    assert_eq!(job["reason"], Value::Null, "{job}");
+    let pushed = remote_branch(&remote, &format!("oby/build-{id}")).unwrap();
+    assert_eq!(
+        git(&remote, &["log", "-1", "--format=%s", &pushed]),
+        "Add other.txt"
+    );
 }
 
 /// PUBLISHING-5: what a check leaves in the worktree (a report it writes, untracked) isn't the
@@ -1567,6 +1570,168 @@ fn publishing_5_what_a_check_leaves_isnt_uncommitted_work() {
     let files = git(&remote, &["ls-tree", "-r", "--name-only", &pushed]);
     assert!(files.lines().any(|f| f == "second.txt"), "{files}");
     assert!(!files.lines().any(|f| f == "report.xml"), "{files}");
+}
+
+/// The fixture's remote with `files` (a path, its content, whether it runs) committed on `main`
+/// by someone, as a repository's own check script is there before any job.
+fn base_with(folder: &Folder, files: &[(&str, &str, bool)]) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let remote = fixture(&folder.0.join("fixture"));
+    let theirs = folder.0.join("theirs");
+    git(
+        &folder.0,
+        &[
+            "clone",
+            "-q",
+            remote.to_str().unwrap(),
+            theirs.to_str().unwrap(),
+        ],
+    );
+    git(&theirs, &["checkout", "-q", "main"]);
+    for (path, text, runs) in files {
+        std::fs::write(theirs.join(path), text).unwrap();
+        let mode = if *runs { 0o755 } else { 0o644 };
+        std::fs::set_permissions(theirs.join(path), std::fs::Permissions::from_mode(mode)).unwrap();
+    }
+    git(&theirs, &["add", "-A"]);
+    git(
+        &theirs,
+        &[
+            "-c",
+            "user.name=Someone",
+            "-c",
+            "user.email=someone@example.com",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-q",
+            "-m",
+            "The check",
+        ],
+    );
+    git(&theirs, &["push", "-q", "origin", "main"]);
+    remote
+}
+
+/// obid on the remote [`base_with`] made, `bin` first on its `PATH`.
+fn obid_on(folder: &Folder, remote: &Path, bin: &Path) -> Obid {
+    let config = config(&folder.0, remote, &agent());
+    sign_in(folder, "stub");
+    start(&folder.0, &config, Some(bin))
+}
+
+/// PUBLISHING-6: the check runs in a clean checkout of the commit, with the base's own
+/// `.gitleaks.toml`: a `.env` the agent left (ignored, so not uncommitted work) isn't there, and
+/// the job's own `.gitleaks.toml` isn't what the check reads, though it's what goes out.
+#[test]
+fn publishing_6_the_check_runs_on_the_commit_alone_with_the_bases_files() {
+    let folder = Folder::new("publish-base-files");
+    let bin = fake_gh(&folder.0);
+    let remote = base_with(
+        &folder,
+        &[
+            (".gitignore", ".env\n", false),
+            (".gitleaks.toml", "# BASE\n", false),
+        ],
+    );
+    let obid = obid_on(&folder, &remote, &bin);
+    // Its own `.gitleaks.toml` says "hello": the check reads the base's.
+    let id = dispatch(
+        &obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "build", "task": "COMMIT: .gitleaks.toml",
+               "check": "grep -q BASE .gitleaks.toml"}),
+    );
+    let job = ended(&obid, &id);
+    assert_eq!(job["published"], PULL, "{job}\n{}", obid.log());
+    let pushed = remote_branch(&remote, &format!("oby/build-{id}")).unwrap();
+    assert_eq!(
+        git(&remote, &["show", &format!("{pushed}:.gitleaks.toml")]),
+        "hello"
+    );
+    // A `.env` it left makes no check pass: the commit, as it goes out, has none.
+    let id = dispatch(
+        &obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "build", "task": "COMMIT: hello.txt LEAVE: .env",
+               "check": "test -f .env", "rounds": 1}),
+    );
+    let job = ended(&obid, &id);
+    let worktree = Path::new(job["worktree"].as_str().unwrap());
+    assert!(worktree.join(".env").is_file(), "{job}");
+    assert_eq!(job["checks"][0]["steps"][0]["passed"], false, "{job}");
+    assert_ne!(job["status"], "done", "{job}");
+    assert_eq!(remote_branch(&remote, &format!("oby/build-{id}")), None);
+}
+
+/// PUBLISHING-7: a task that rewrites its check script to `exit 0` still runs the base's, which
+/// fails: nothing goes out.
+#[test]
+fn publishing_7_a_check_rewritten_to_pass_still_runs_the_bases() {
+    let folder = Folder::new("publish-base-script");
+    let bin = fake_gh(&folder.0);
+    let remote = base_with(
+        &folder,
+        &[(
+            "check.sh",
+            "#!/bin/sh\necho the base check ran\nexit 1\n",
+            true,
+        )],
+    );
+    let obid = obid_on(&folder, &remote, &bin);
+    let id = dispatch(
+        &obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "build", "task": "PASS: check.sh",
+               "check": "./check.sh", "rounds": 1}),
+    );
+    let job = ended(&obid, &id);
+    assert_eq!(
+        job["checks"][0]["steps"][0]["passed"],
+        false,
+        "{job}\n{}",
+        obid.log()
+    );
+    assert_ne!(job["status"], "done", "{job}");
+    let log = std::fs::read_to_string(obid.home.join(format!("logs/{id}/check.log"))).unwrap();
+    assert!(log.contains("the base check ran"), "{log}");
+    assert_eq!(remote_branch(&remote, &format!("oby/build-{id}")), None);
+}
+
+/// PUBLISHING-8: a check whose script the base doesn't have (added in this very task) counts for
+/// nothing: the job ends done with why, nothing published by itself, and Publish by hand, a
+/// click, pushes it.
+#[test]
+fn publishing_8_a_check_the_base_doesnt_have_counts_for_nothing() {
+    let folder = Folder::new("publish-no-base-script");
+    let bin = fake_gh(&folder.0);
+    let (obid, remote, _) = obid_with(&folder, &bin);
+    let id = dispatch(
+        &obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "build", "task": "PASS: check.sh",
+               "check": "sh check.sh"}),
+    );
+    let job = ended(&obid, &id);
+    let why = "Not published: its check runs check.sh as main has it, and main has no check.sh, so nothing counts as checked. Read its change, then Publish it by hand.";
+    assert_eq!(job["status"], "done", "{job}\n{}", obid.log());
+    assert_eq!(job["reason"], why, "{job}");
+    assert!(job["checks"].as_array().is_none_or(Vec::is_empty), "{job}");
+    let branch = format!("oby/build-{id}");
+    assert_eq!(remote_branch(&remote, &branch), None);
+    let (key, device_id) = registered(&obid, 13);
+    let sentence = call(&obid, "GET", &format!("/v1/jobs/{id}/publish"), None);
+    assert_eq!(sentence.status, 200, "{}", sentence.text);
+    let published = call(
+        &obid,
+        "POST",
+        &format!("/v1/jobs/{id}/publish"),
+        Some(&approval(
+            &key,
+            &device_id,
+            &id,
+            sentence.body["action"].as_str().unwrap(),
+            obi_protocol::time::now(),
+        )),
+    );
+    assert_eq!(published.status, 200, "{}\n{}", published.text, obid.log());
+    assert!(remote_branch(&remote, &branch).is_some());
 }
 
 /// PUBLISHING-4, Oby's review: changes it asks for start no round while another job works on the
