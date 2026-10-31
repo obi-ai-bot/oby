@@ -97,13 +97,27 @@ fn open_of(repo: &str, pr: u64, read: &str) -> Result<Open, String> {
 
 /// The job whose own pull request `asked` is, of any Obi.
 pub fn job_of(jobs: &Jobs, asked: &Merge) -> Option<crate::job::Job> {
-    jobs.list(usize::MAX).into_iter().find(|j| {
+    pick(jobs.list(usize::MAX), asked)
+}
+
+/// Of `jobs`, the one `asked` is about: one whose own published pull request it is, or a review
+/// another Oby asked for of it (which has `pr`, never `published`). That review wins, so its pull
+/// request is never merged from here.
+fn pick(jobs: Vec<crate::job::Job>, asked: &Merge) -> Option<crate::job::Job> {
+    let mut about = jobs.into_iter().filter(|j| {
         j.repo == asked.repo
-            && j.published
+            && (j
+                .published
                 .as_deref()
                 .and_then(|url| github::pull_request_number(url, &j.repo))
                 == Some(asked.pr)
-    })
+                || (j.obi.is_some() && j.pr == Some(asked.pr)))
+    });
+    let first = about.next()?;
+    if first.obi.is_some() {
+        return Some(first);
+    }
+    Some(about.find(|j| j.obi.is_some()).unwrap_or(first))
 }
 
 /// The Confirm of `asked` the owner clicked: GitHub read again, and merged only while the pull
@@ -346,7 +360,7 @@ pub async fn write(
 
 /// One write of the conversation's on GitHub in obid's connection-use log (`vault/uses.jsonl`), as
 /// Tetrix's calls are: job `conversation-<id>`, connection `github`, a `write`, allowed or not.
-fn record(jobs: &Jobs, conversation: &str, tool: &str, allowed: bool) {
+pub(super) fn record(jobs: &Jobs, conversation: &str, tool: &str, allowed: bool) {
     jobs.record_use(crate::connections::ConnectionUse {
         job: format!("conversation-{conversation}"),
         connection: "github".into(),
@@ -593,6 +607,58 @@ mod tests {
         assert_eq!(labelled.shown(), "Labels: bug, p1");
         assert!(write("delete", Some(7), None).request().is_err());
         assert_eq!(write("close", Some(7), None).title(), "Close o/r#7");
+    }
+
+    /// TASKCONV-7: a review another Oby asked for of a pull request (`pr`, no `published`) is what
+    /// it's about, before the owner's own job on it: so it's refused, never merged from here.
+    #[test]
+    fn taskconv_7_a_teammates_review_is_found_by_its_pull_request() {
+        let job = |id: &str, repo: &str| {
+            crate::job::Job::new(
+                id.into(),
+                repo.into(),
+                "review".into(),
+                "Review it".into(),
+                "claude".into(),
+                "a".into(),
+            )
+        };
+        let asked = Merge {
+            repo: "o/r".into(),
+            pr: 3,
+            method: None,
+        };
+        let mut teammates = job("t1", "o/r");
+        teammates.pr = Some(3);
+        teammates.obi = Some(crate::job::ObiRef {
+            correlation_id: "c".into(),
+            from: "f".into(),
+            from_owner: "ernesto".into(),
+            request_id: "r".into(),
+        });
+        let mut owners = job("j1", "o/r");
+        owners.published = Some("https://github.com/o/r/pull/3".into());
+        let mut elsewhere = teammates.clone();
+        elsewhere.id = "t2".into();
+        elsewhere.pr = Some(4);
+        assert_eq!(pick(vec![teammates.clone()], &asked).unwrap().id, "t1");
+        assert_eq!(
+            pick(vec![owners.clone(), teammates.clone()], &asked)
+                .unwrap()
+                .id,
+            "t1"
+        );
+        assert_eq!(
+            pick(vec![owners.clone(), elsewhere.clone()], &asked)
+                .unwrap()
+                .id,
+            "j1"
+        );
+        assert!(pick(vec![elsewhere], &asked).is_none());
+        // A job of the owner's with that number but no pull request of its own isn't it.
+        let mut unpublished = job("j2", "o/r");
+        unpublished.pr = Some(3);
+        assert!(pick(vec![unpublished], &asked).is_none());
     }
 
     /// TASKCONV-7: the card names the base, the head and how it merges.

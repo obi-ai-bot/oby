@@ -1385,6 +1385,95 @@ fn taskconv_6_a_signed_turn_that_reads_untrusted_text_makes_confirms() {
     assert!(seen.contains(&("merge".into(), false)), "{seen:?}");
 }
 
+/// TASKCONV-7: the pull request of a review another Oby asked for never merges from a
+/// conversation, on the owner's word or on a Confirm made before obid knew of the review; each
+/// refusal is in the use log.
+#[test]
+fn taskconv_7_a_teammates_review_never_merges_from_a_conversation() {
+    let (folder, obid) = obid("harness-teammate-pr", true);
+    let github = folder.0.join("env-home/github");
+    std::fs::create_dir_all(&github).unwrap();
+    std::fs::write(
+        github.join("pull.json"),
+        json!({"state": "open", "merged": false, "head": {"sha": "abcdef0123456789"},
+            "base": {"ref": "main"}})
+        .to_string(),
+    )
+    .unwrap();
+    let merge = r#"OBY oby_merge {"repo": "obi-e2e/fixture-app", "pr": 3}"#;
+    // Unsigned words: a Confirm card, made before any review of #3 is known.
+    let carded = said(&obid, json!({"said": merge, "new": true}));
+    assert!(
+        oby_said(&carded).contains("waits for your OK"),
+        "{}",
+        carded.text
+    );
+    let conversation = carded.body["conversation"].as_str().unwrap().to_owned();
+    let card = call(&obid, "GET", "/v1/inbox", None)
+        .body
+        .as_array()
+        .and_then(|items| items.iter().find(|i| i["kind"] == "confirm").cloned())
+        .expect("a merge card");
+    // A job on that repository, made a review another Oby asked for of #3 while obid is stopped.
+    let posted = call(
+        &obid,
+        "POST",
+        "/v1/jobs",
+        Some(
+            &json!({"job": {"repo": "obi-e2e/fixture-app", "kind": "research", "task": "Read it"}}),
+        ),
+    );
+    assert_eq!(posted.status, 201, "{}", posted.text);
+    let id = posted.body["id"].as_str().unwrap().to_owned();
+    within(60, "the job ends", || {
+        let job = call(&obid, "GET", &format!("/v1/jobs/{id}"), None).body;
+        (!["queued", "running"].contains(&job["status"].as_str().unwrap_or(""))).then_some(())
+    });
+    let config: Value =
+        serde_json::from_slice(&std::fs::read(folder.0.join("config.json")).unwrap()).unwrap();
+    drop(obid);
+    let file = folder.0.join(format!("home/jobs/{id}.json"));
+    let mut job: Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+    job["pr"] = json!(3);
+    job["obi"] = json!({"correlationId": "c1", "from": "obi-ernesto", "fromOwner": "ernesto",
+        "requestId": "r1"});
+    std::fs::write(&file, job.to_string()).unwrap();
+    let obid = start(&folder.0, &config, None);
+
+    // The owner's own word: refused.
+    let signed = call_typed(
+        &obid,
+        "POST",
+        "/v1/plans",
+        &json!({"said": merge, "conversation": conversation}),
+    );
+    assert!(
+        oby_said(&signed).contains("a review another Oby asked for"),
+        "{}",
+        signed.text
+    );
+    // The Confirm made before: refused too.
+    let tapped = confirm(&obid, card["id"].as_str().unwrap());
+    assert_eq!(tapped.status, 409, "{}", tapped.text);
+    assert!(
+        tapped.text.contains("a review another Oby asked for"),
+        "{}",
+        tapped.text
+    );
+    assert!(!github.join("merges").exists(), "nothing merged");
+    let uses = std::fs::read_to_string(obid.home.join("vault/uses.jsonl")).unwrap();
+    let refused = uses
+        .lines()
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .filter(|u| {
+            u["job"] == format!("conversation-{conversation}")
+                && u["tool"] == "merge"
+                && u["allowed"] == false
+        })
+        .count();
+    assert_eq!(refused, 2, "{uses}");
+}
+
 /// A routine said in chat (#395) is only proposed: a confirm item whose Confirm, the owner's own,
 /// saves it. Then the owner's words pause it; after the turn read the repositories, they don't.
 #[test]

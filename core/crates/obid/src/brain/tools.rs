@@ -619,17 +619,25 @@ fn confirm_card(
 async fn merge(shared: &Arc<Shared>, session: &Session, args: Value) -> Result<String, String> {
     use super::owners_word::{self, Merge};
     let asked: Merge = parse(args)?;
+    // A refusal before GitHub is asked is in the use log too.
+    let refused = |why: String| -> Result<String, String> {
+        owners_word::record(&shared.jobs, &session.conversation, "merge", false);
+        Err(why)
+    };
     if let Some(why) = asked.problem() {
-        return Err(why);
+        return refused(why);
     }
     let job = owners_word::job_of(&shared.jobs, &asked);
     if job.as_ref().is_some_and(|j| j.obi.is_some()) {
-        return Err(format!(
+        return refused(format!(
             "{}#{} is the pull request of a review another Oby asked for: it isn't yours to merge from here.",
             asked.repo, asked.pr
         ));
     }
-    let open = owners_word::open(&asked.repo, asked.pr).await?;
+    let open = match owners_word::open(&asked.repo, asked.pr).await {
+        Ok(open) => open,
+        Err(why) => return refused(why),
+    };
     if owners_word(session).is_none() {
         let title = asked.title(&open, job.is_some());
         return confirm_card(
@@ -665,10 +673,19 @@ async fn github_write(
     use super::owners_word::{self, Write};
     let mut asked: Write = parse(args)?;
     asked.commit = None;
-    asked.request()?;
+    let refused = |action: &str, why: String| -> Result<String, String> {
+        owners_word::record(&shared.jobs, &session.conversation, action, false);
+        Err(why)
+    };
+    if let Err(why) = asked.request() {
+        return refused(&asked.action, why);
+    }
     if asked.reviews() {
         let number = asked.number.unwrap_or_default();
-        asked.commit = Some(owners_word::open(&asked.repo, number).await?.head);
+        match owners_word::open(&asked.repo, number).await {
+            Ok(open) => asked.commit = Some(open.head),
+            Err(why) => return refused(&asked.action, why),
+        }
     }
     if owners_word(session).is_none() {
         return confirm_card(
