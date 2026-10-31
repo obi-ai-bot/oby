@@ -221,6 +221,7 @@ pub async fn handle(shared: &Arc<Shared>, session: &Session, body: Value) -> Opt
                 .get("arguments")
                 .cloned()
                 .unwrap_or_else(|| json!({}));
+            session.heard(name, &args, super::harness::READ_WAIT).await;
             answered(call(shared, session, name, args).await)
         }
         other => match plain(other, &params) {
