@@ -573,6 +573,12 @@ pub struct Job {
     /// decision of 2026-10-24, replacing 2026-10-23's by hand).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub untrusted: bool,
+    /// Words no app of the owner's signed reached it (`POST /v1/jobs`, a message to it): since
+    /// #1638 the owner's apps sign theirs, so these aren't the owner's own, and its pull request
+    /// merges only after two reviews (crate::merge::two_reviews). Carried to its follow-ups.
+    /// Never in the API.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub unsigned: bool,
     /// Why the code it runs isn't only its owner's own, when it follows up a job whose check got
     /// none of the owner's secrets (crate::secretspec): a received review, a job that ran on a
     /// teammate's Mac, another person's pull request. Carried to every follow-up of it, so a
@@ -728,6 +734,25 @@ impl Job {
         }
     }
 
+    /// Why its pull request's reviewer is told its author is untrusted, and two reviews merge it
+    /// (MERGING-13, 14): someone else's code ([`Job::someone_elses`]), or words no app of the
+    /// owner's signed ([`Job::unsigned`]). Never the words themselves.
+    pub fn untrusted_why(&self) -> Option<String> {
+        self.someone_elses().or_else(|| {
+            self.unsigned
+                .then(|| "words no app of the owner's signed reached it".into())
+        })
+    }
+
+    /// Why its pull request's head merges only after two approving reviews by different tools:
+    /// what its review said ([`Review::two_reviews`]), or, for a review from before obid asked,
+    /// its untrusted author ([`Job::untrusted_why`]).
+    pub fn two_reviews_why(&self) -> Option<String> {
+        self.current_review()
+            .and_then(|r| r.two_reviews.clone())
+            .or_else(|| self.untrusted_why())
+    }
+
     /// Why its check gets none of the owner's secrets its repository declares (crate::secretspec),
     /// or none when it gets them, as far as the job itself says: someone else's code
     /// ([`Job::someone_elses`]), and fail closed, any job that didn't start from the owner's own
@@ -871,6 +896,7 @@ impl Job {
             window_share: None,
             routine: None,
             untrusted: false,
+            unsigned: false,
             foreign: None,
             made: Vec::new(),
             apart: false,
@@ -1062,12 +1088,14 @@ impl Job {
         .then_some(head)
     }
 
-    /// The tools whose reviews of Oby's approved the pull request's head, as obid pushed it.
+    /// The tools whose reviews of Oby's approved the pull request's head, as obid pushed it: its
+    /// current review's too, kept before `approvals` was.
     pub fn approving_tools(&self) -> Vec<&str> {
         let mut tools: Vec<&str> = self
             .approvals
             .iter()
-            .filter(|r| self.pushed_head() == Some(r.commit.as_str()))
+            .chain(self.current_review())
+            .filter(|r| r.approved() && self.pushed_head() == Some(r.commit.as_str()))
             .map(|r| r.agent.as_str())
             .collect();
         tools.sort_unstable();
@@ -1078,8 +1106,8 @@ impl Job {
     /// Oby's review approved the head, which merges only after two approving reviews by different
     /// tools ([`Review::two_reviews`], MERGING-14, 15), and no other tool's approved it yet.
     pub fn second_review_due(&self) -> bool {
-        self.current_review()
-            .is_some_and(|r| r.approved() && r.two_reviews.is_some())
+        self.current_review().is_some_and(Review::approved)
+            && self.two_reviews_why().is_some()
             && self.approving_tools().len() < 2
     }
 

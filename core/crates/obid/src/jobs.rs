@@ -2760,6 +2760,7 @@ impl Jobs {
         // `rule` (it's never from the API): found here. So is an untrusted one's.
         let of = job.follow_up_of.as_deref().and_then(|of| self.get(of));
         job.untrusted = new.untrusted || of.as_ref().is_some_and(|of| of.untrusted);
+        job.unsigned = of.as_ref().is_some_and(|of| of.unsigned);
         // Someone else's code from the start keeps to a clone apart; a follow-up to its job's.
         job.apart = match &of {
             // A follow-up of another Oby's review starts afresh, apart: never in the owner's clone.
@@ -5211,6 +5212,12 @@ impl Jobs {
                 job.vetted = false;
             }
         })
+    }
+
+    /// Words no app of the owner's signed reached job `id` ([`Job::unsigned`]): its pull request
+    /// merges only after two reviews from now on.
+    pub fn mark_unsigned(&self, id: &str) -> Option<Job> {
+        self.update(id, |job| job.unsigned = true)
     }
 
     /// Adds `what` to the job's changes.
@@ -8491,7 +8498,7 @@ impl Jobs {
             if reviews {
                 // Whether the author is untrusted, and why: never what it read (MERGING-13).
                 let author = job.review_of.as_deref().and_then(|of| self.get(of));
-                let untrusted = author.as_ref().and_then(Job::someone_elses);
+                let untrusted = author.as_ref().and_then(Job::untrusted_why);
                 quoted.push((
                     review::ASKED_FILE,
                     review::asked(&job.task, &job.request, untrusted.as_deref()),
@@ -8619,6 +8626,13 @@ impl Jobs {
                     crate::memory::foreign_among(&self.config.home, &[job.repo.as_str()])
                 {
                     self.unvet(id, &format!("it read {why}"));
+                    // In obid's words, never the memory's own: it's someone else's code from now
+                    // on, so two reviews merge it (MERGING-14).
+                    self.mark_foreign(
+                        id,
+                        "a memory learned from words that weren't the owner's reached its agent"
+                            .into(),
+                    );
                 }
                 let written = crate::obi_dir::folder(&worktree, "inputs").and_then(|dir| {
                     crate::obi_dir::write_new(&dir, crate::memory::FILE, text.as_bytes())
@@ -10055,10 +10069,15 @@ impl Jobs {
                     (!alive).then(|| (job.id.clone(), review.clone()))
                 })
                 .collect();
+            // A second review that never started (a restart between the first's verdict and its
+            // start, say) starts now too.
             let waiting = state
                 .jobs
                 .values()
-                .filter(|job| job.no_reviewer.is_some())
+                .filter(|job| {
+                    job.no_reviewer.is_some()
+                        || (job.review_due().is_some() && job.second_review_due())
+                })
                 .map(|job| job.id.clone())
                 .collect();
             (hanging, waiting)

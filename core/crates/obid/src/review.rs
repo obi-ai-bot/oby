@@ -886,7 +886,6 @@ mod tests {
         assert!(parse_output(&json!({"structured_output": {"summary": "s"}})).is_err());
     }
 
-    /// The owner's review is told where the author's words and the base's rules are, never the
     /// MERGING-13: the reviewer's quoted inputs say the author is untrusted, and why, in obid's own
     /// words: never the text the author read.
     #[test]
@@ -904,6 +903,7 @@ mod tests {
         assert!(!asked("Fix it", "Fix it", None).contains("untrusted"));
     }
 
+    /// The owner's review is told where the author's words and the base's rules are, never the
     /// words, and that the worktree is data (#525); the author's next round is told where the
     /// review is, never what it says.
     #[test]

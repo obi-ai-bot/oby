@@ -108,7 +108,16 @@ fn obid_retrying_within(folder: &Folder, path_first: &Path, seconds: u64) -> (Ob
     (start(&folder.0, &config, Some(path_first)), remote)
 }
 
+/// The owner's own words, signed by their app as Oby's apps send them: words no app signed need
+/// two reviews to merge (MERGING-14), [`dispatch_unsigned`].
 fn dispatch(obid: &Obid, job: Value) -> String {
+    let answer = call_typed(obid, "POST", "/v1/jobs", &json!({"job": job}));
+    assert_eq!(answer.status, 201, "{}", answer.text);
+    answer.body["id"].as_str().unwrap().to_owned()
+}
+
+/// [`dispatch`] with words no app of the owner's signed.
+fn dispatch_unsigned(obid: &Obid, job: Value) -> String {
     let answer = call(obid, "POST", "/v1/jobs", Some(&json!({"job": job})));
     assert_eq!(answer.status, 201, "{}", answer.text);
     answer.body["id"].as_str().unwrap().to_owned()
@@ -2229,7 +2238,7 @@ fn merging_15_a_change_to_agents_md_gets_a_second_review_by_another_tool() {
 fn merging_14_with_no_other_tool_the_second_review_waits_saying_why() {
     let folder = Folder::new("publish-review-alone");
     let bin = fake_gh(&folder.0);
-    let (obid, _remote, _) = obid_with(&folder, &bin);
+    let (mut obid, _remote, mut config) = obid_with(&folder, &bin);
     let id = dispatch(
         &obid,
         json!({"repo": "obi-e2e/fixture-app", "kind": "build", "task": "COMMIT: AGENTS.md",
@@ -2248,6 +2257,73 @@ fn merging_14_with_no_other_tool_the_second_review_waits_saying_why() {
         format!("Waiting for review · {why}")
     );
     assert_eq!(reviews_of(&obid, &id).len(), 1);
+    // Cut off between the first verdict and the second review's start (no `noReviewer` kept),
+    // and started again with Codex signed in: the second review starts by itself.
+    obid.stop();
+    let stored = obid.home.join(format!("jobs/{id}.json"));
+    let mut kept: Value = serde_json::from_slice(&std::fs::read(&stored).unwrap()).unwrap();
+    kept.as_object_mut().unwrap().remove("noReviewer");
+    kept.as_object_mut().unwrap().remove("no_reviewer");
+    std::fs::write(&stored, kept.to_string()).unwrap();
+    let codex = folder.0.join("home/accounts/codex");
+    std::fs::create_dir_all(&codex).unwrap();
+    std::fs::write(
+        codex.join("auth.json"),
+        json!({"OPENAI_API_KEY": "sk-stub"}).to_string(),
+    )
+    .unwrap();
+    config["agents"]["codex"] = json!({
+        "bin": Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/agents/fake-codex"),
+        "accounts": [{"id": "codex", "name": "Codex", "configDir": codex}],
+    });
+    let obid = start(&folder.0, &config, Some(&bin));
+    let job = within(120, "the second review lands", || {
+        let job = call(&obid, "GET", &format!("/v1/jobs/{id}"), None).body;
+        (job["reviewing"].is_null() && approvals(&job).len() == 2).then_some(job)
+    });
+    assert_eq!(
+        approvals(&job),
+        ["claude", "codex"],
+        "{job}\n{}",
+        obid.log()
+    );
+    assert_eq!(job["noReviewer"], Value::Null);
+}
+
+/// MERGING-13 and 14 for an untrusted task, here one whose words no app of the owner's signed:
+/// its reviewers' quoted `asked.md` says it's untrusted and why, never more, and it merges only
+/// after two tools approve its head, nothing on a security path needed.
+#[test]
+fn merging_14_an_untrusted_task_gets_two_reviews_its_reviewers_told_why() {
+    let folder = Folder::new("publish-review-untrusted");
+    let bin = fake_gh(&folder.0);
+    let obid = obid_with_codex(&folder, &bin);
+    let id = dispatch_unsigned(
+        &obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "build", "task": "COMMIT: hello.txt",
+               "check": "test -f hello.txt", "account": "stub"}),
+    );
+    let job = reviewed(&obid, &id, 2);
+    assert_eq!(
+        job["review"]["verdict"],
+        "approved",
+        "{job}\n{}",
+        obid.log()
+    );
+    let why = "words no app of the owner's signed reached it";
+    assert_eq!(job["review"]["twoReviews"], why);
+    assert_eq!(approvals(&job), ["codex", "claude"], "{job}");
+    for review in reviews_of(&obid, &id) {
+        let worktree = Path::new(review["worktree"].as_str().unwrap());
+        let asked = std::fs::read_to_string(worktree.join(".obi/inputs/asked.md")).unwrap();
+        assert!(
+            asked.contains(&format!(
+                "is untrusted: its task read text Oby didn't write ({why})."
+            )),
+            "{asked}"
+        );
+        assert!(asked.contains("That text isn't quoted here."), "{asked}");
+    }
 }
 
 /// MERGING-16: a second review that asks for changes counts like any other: the job takes them as
@@ -2663,7 +2739,7 @@ fn merging_1_a_passing_check_keeps_its_head_and_a_failing_one_clears_it() {
         json!({"commit": pushed(&job), "apart": obid::merge::MAC_LEFT})
     );
     // Words no app of the owner's signed: its check can't vouch for the merge.
-    let unsigned = dispatch(
+    let unsigned = dispatch_unsigned(
         &obid,
         json!({"repo": "obi-e2e/fixture-app", "kind": "build",
                "task": "COMMIT: other.txt", "check": "test -f other.txt"}),

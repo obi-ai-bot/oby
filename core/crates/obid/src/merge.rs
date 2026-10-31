@@ -331,15 +331,24 @@ pub fn ready(
             .iter()
             .any(|r| counts(r, head, author, by, reviewers))
         {
-            return Err(wait(match by {
-                Approval::Reviewer => {
-                    "Not merged yet: Oby's reviewer account hasn't approved its head."
+            // Oby's reviewer account approves only once Oby's own reviews are in: where no tool
+            // can give the second, the owner's Merge stands for both (MERGING-14).
+            match oby_approval(job, head) {
+                Err(blocked) if blocked.yours && by == Approval::Reviewer => second = Some(blocked),
+                _ => {
+                    return Err(wait(match by {
+                        Approval::Reviewer => {
+                            "Not merged yet: Oby's reviewer account hasn't approved its head."
+                        }
+                        Approval::Teammate => "Not merged yet: no teammate has approved its head.",
+                        Approval::Oby | Approval::Person => {
+                            "Not merged yet: nobody has approved its head."
+                        }
+                    }));
                 }
-                Approval::Teammate => "Not merged yet: no teammate has approved its head.",
-                Approval::Oby | Approval::Person => "Not merged yet: nobody has approved its head.",
-            }));
+            }
         }
-        if pr.review_decision.as_deref() == Some("REVIEW_REQUIRED") {
+        if second.is_none() && pr.review_decision.as_deref() == Some("REVIEW_REQUIRED") {
             return Err(wait("Not merged yet: GitHub waits for more reviews."));
         }
     }
@@ -386,7 +395,16 @@ pub fn ready(
         }
     }
     match merging.merge_state.as_deref() {
-        Some("CLEAN" | "HAS_HOOKS") => second.map_or_else(|| mac_checks(job, workflow, head), Err),
+        // A missing second review and a check that can't stand for the Mac's are one card, so the
+        // owner's Merge lifts only what it says.
+        Some("CLEAN" | "HAS_HOOKS") => match (second, mac_checks(job, workflow, head)) {
+            (None, mac) => mac,
+            (Some(second), Ok(())) => Err(second),
+            (Some(second), Err(mac)) if mac.yours => {
+                Err(yours(format!("{} {}", second.why, mac.why)))
+            }
+            (Some(_), Err(mac)) => Err(mac),
+        },
         Some("DIRTY") => Err(conflict()),
         Some("BEHIND") => Err(needs_you(format!(
             "Not merged: it's behind {base}, and GitHub merges only up-to-date pull requests into {base}. Ask Oby to rebase it onto {base}, or update it on GitHub."
@@ -564,15 +582,15 @@ fn by_own_review(by: Approval, reviewers: &Reviewers) -> bool {
 /// that head needs two approving reviews ([`two_reviews`]), another tool's approved it too. A
 /// second review no tool can give leaves it to the owner's own Merge ([`Blocked::yours`]).
 fn oby_approval(job: &Job, head: &str) -> Result<(), Blocked> {
-    let Some(review) = job
+    if !job
         .current_review()
-        .filter(|r| r.approved() && r.commit == head)
-    else {
+        .is_some_and(|r| r.approved() && r.commit == head)
+    {
         return Err(wait(
             "Not merged yet: Oby's review hasn't approved its head.",
         ));
-    };
-    match &review.two_reviews {
+    }
+    match job.two_reviews_why() {
         Some(why) if job.approving_tools().len() < 2 => Err(match &job.no_reviewer {
             Some(_) => yours(format!(
                 "Oby's review approved it, but it needs a second approving review by another tool ({why}), and no other tool is signed in with room. It's yours to merge."
@@ -587,14 +605,32 @@ fn oby_approved(job: &Job, head: &str) -> bool {
     oby_approval(job, head).is_ok()
 }
 
+/// [`oby_approved`], or approved but for a second review no tool can give, which only the owner's
+/// Merge stands for once every other rule holds: a workflow proposed and a teammate asked go on
+/// from there.
+fn oby_approved_but_yours(job: &Job, head: &str) -> bool {
+    oby_approval(job, head).map_or_else(|b| b.yours, |()| true)
+}
+
 /// The paths where a change merges only after two approving reviews by different tools, whoever
-/// wrote it (MERGING-15), besides the files the repository's check runs ([`check_files`]): a name
-/// ending in `/` is a folder at the repository's root, any other a file's name at any depth.
-pub const SECURITY_PATHS: [&str; 13] = [
+/// wrote it (MERGING-15), besides the files the repository's check runs ([`check_files`]): what
+/// steers agents, the secret scan, CI and who must review. A name ending in `/` is a folder, any
+/// other a file's name; both at any depth, and in any letter case (macOS reads `claude.md` as
+/// `CLAUDE.md`).
+pub const SECURITY_PATHS: [&str; 22] = [
     "AGENTS.md",
+    "AGENTS.override.md",
     "CLAUDE.md",
+    ".cursorrules",
+    ".mcp.json",
+    ".cursor/rules/",
+    ".claude/",
+    ".codex/",
+    ".agents/",
     ".gitleaks.toml",
+    ".gitleaksignore",
     "secretspec.toml",
+    "CODEOWNERS",
     ".github/workflows/",
     ".github/actions/",
     ".gitlab-ci.yml",
@@ -613,11 +649,15 @@ pub fn security_paths(changed: &[String], command: Option<&str>) -> Vec<String> 
     changed
         .iter()
         .filter(|path| {
-            let name = path.rsplit('/').next().unwrap_or(path);
-            own.contains(path.as_str())
-                || SECURITY_PATHS.iter().any(|p| match p.strip_suffix('/') {
-                    Some(_) => path.starts_with(p),
-                    None => name == *p,
+            let lower = path.to_ascii_lowercase();
+            let name = lower.rsplit('/').next().unwrap_or(&lower);
+            own.iter().any(|f| f.eq_ignore_ascii_case(path))
+                || SECURITY_PATHS.iter().any(|p| {
+                    let p = p.to_ascii_lowercase();
+                    match p.strip_suffix('/') {
+                        Some(_) => lower.starts_with(&p) || lower.contains(&format!("/{p}")),
+                        None => name == p,
+                    }
                 })
         })
         .cloned()
@@ -626,10 +666,10 @@ pub fn security_paths(changed: &[String], command: Option<&str>) -> Vec<String> 
 
 /// Why `job`'s pull request merges only after two approving reviews of its head, each by a
 /// different tool, or none when one is enough: its task read text Oby didn't write
-/// (`Job::someone_elses`, MERGING-14), or its head changes a security path (`touched`:
+/// (`Job::untrusted_why`, MERGING-14), or its head changes a security path (`touched`:
 /// [`security_paths`], MERGING-15), or what it changes couldn't be read (`touched` none).
 pub fn two_reviews(job: &Job, touched: Option<&[String]>) -> Option<String> {
-    if let Some(why) = job.someone_elses() {
+    if let Some(why) = job.untrusted_why() {
         return Some(why);
     }
     match touched {
@@ -688,7 +728,7 @@ pub fn needs_another_person(
             .owner
             .as_deref()
             .is_some_and(|owner| author.eq_ignore_ascii_case(owner))
-        && oby_approved(job, head)
+        && oby_approved_but_yours(job, head)
         && !asked_for_changes(pr, merging)
         && another_needed(pr, merging, head, author, reviewers) == Some(true)
 }
@@ -1149,7 +1189,7 @@ pub fn proposed(
         rebase_first: false,
         // Oby's own review first: the default for the owner's own repositories.
         // A second review no tool can give still proposes Oby's: the owner's Merge stands for it.
-        review: if oby_approval(job, head).map_or_else(|b| b.yours, |()| true) {
+        review: if oby_approved_but_yours(job, head) {
             Approval::Oby
         } else if by_reviewer {
             Approval::Reviewer
@@ -1415,12 +1455,8 @@ pub async fn approve(
     reviewer: Option<&(std::path::PathBuf, String)>,
     go: &(dyn Fn() -> bool + Sync),
 ) -> Approved {
-    let approved = match oby_approval(job, head) {
-        Ok(()) => true,
-        // A second review no tool can give: the reviewer account's approval would stand for it.
-        Err(blocked) if blocked.yours => return Approved::NeedsYou(blocked.why),
-        Err(_) => false,
-    };
+    // Never in place of a second review no tool can give: that one is the owner's Merge.
+    let approved = oby_approved(job, head);
     let number = job
         .published
         .as_deref()
@@ -1962,6 +1998,70 @@ mod tests {
         );
         // The owner's own task with nothing on a security path needs one.
         assert_eq!(two_reviews(&reviewed("approved", &head()), Some(&[])), None);
+        // Words no app of the owner's signed are untrusted too.
+        let mut unsigned = reviewed("approved", &head());
+        unsigned.unsigned = true;
+        assert_eq!(
+            two_reviews(&unsigned, Some(&[])).as_deref(),
+            Some("words no app of the owner's signed reached it")
+        );
+        // An untrusted job whose one approval came before obid asked for two still needs two.
+        let mut before = reviewed("approved", &head());
+        before.untrusted = true;
+        assert!(before.second_review_due());
+        assert_eq!(ready_now(&before), waits);
+        // Where GitHub needs another person's approval, a teammate's Oby is asked first; once
+        // theirs is in, the missing second review is the owner's Merge.
+        let (required_pr, mut required) = read(&view(|_| {}), &pages(vec![]));
+        required.required_approvals = Some(1);
+        assert!(needs_another_person(
+            &alone,
+            Some(&oby),
+            &required_pr,
+            &required,
+            &nobody
+        ));
+        assert_eq!(
+            ready(&alone, Some(&oby), &required_pr, &required, Some(&nobody)),
+            Err(wait(format!("Not merged yet: {REQUIRES_PERSON}")))
+        );
+        let ana = rest(2, "ana", "User", "APPROVED", &head(), "MEMBER");
+        let (teammate_pr, mut teammate) = read(&view(|_| {}), &pages(vec![ana]));
+        teammate.required_approvals = Some(1);
+        assert_eq!(
+            ready(&alone, Some(&oby), &teammate_pr, &teammate, Some(&nobody)),
+            Err(blocked.clone())
+        );
+        // With a check that can't stand for the Mac's too, one card says both, and Merge lifts
+        // only what it says.
+        let mut mac = oby.clone();
+        mac.checks = Checks::Mac;
+        let mut left = alone.clone();
+        left.outgoing[0].date -= CHECKS_SETTLE;
+        left.check = Some("scripts/oby-check.sh".into());
+        left.checked = Some(crate::job::Checked {
+            commit: head(),
+            apart: Some(MAC_LEFT.into()),
+        });
+        let none = view(|v| v["statusCheckRollup"] = json!([]));
+        let (mac_pr, mac_merging) = read(&none, &pages(vec![]));
+        assert_eq!(
+            ready(&left, Some(&mac), &mac_pr, &mac_merging, Some(&nobody)),
+            Err(yours(format!("{} {MAC_LEFT}", blocked.why)))
+        );
+        // A `reviewer` workflow with its account signed in: Oby's reviewer account posts nothing,
+        // and the same Ready to merge asks the owner.
+        let (pr_reviewer, merging_reviewer) = read(&view(|_| {}), &pages(vec![]));
+        assert_eq!(
+            ready(
+                &alone,
+                Some(&obis()),
+                &pr_reviewer,
+                &merging_reviewer,
+                Some(&signed_in())
+            ),
+            Err(blocked.clone())
+        );
     }
 
     /// MERGING-15: a change to a security path needs two approving reviews whoever wrote it: the
@@ -1980,6 +2080,22 @@ mod tests {
             "core/CLAUDE.md",
             "docs/github/workflows/notes.md",
             "AGENTS.md.bak",
+            // macOS reads these as CLAUDE.md and AGENTS.md.
+            "sub/claude.md",
+            "Agents.md",
+            "AGENTS.override.md",
+            ".cursorrules",
+            "apps/.cursor/rules/style.mdc",
+            ".cursor/settings.json",
+            ".gitleaksignore",
+            ".claude/settings.json",
+            "tools/.codex/config.toml",
+            ".agents/skills/x/SKILL.md",
+            ".mcp.json",
+            "CODEOWNERS",
+            ".github/CODEOWNERS",
+            "docs/CODEOWNERS",
+            "SCRIPTS/OBY-CHECK.SH",
         ]);
         assert_eq!(
             security_paths(&changed, Some("scripts/oby-check.sh")),
@@ -1990,6 +2106,20 @@ mod tests {
                 ".github/workflows/ci.yml",
                 "apps/electron/AGENTS.md",
                 "core/CLAUDE.md",
+                "sub/claude.md",
+                "Agents.md",
+                "AGENTS.override.md",
+                ".cursorrules",
+                "apps/.cursor/rules/style.mdc",
+                ".gitleaksignore",
+                ".claude/settings.json",
+                "tools/.codex/config.toml",
+                ".agents/skills/x/SKILL.md",
+                ".mcp.json",
+                "CODEOWNERS",
+                ".github/CODEOWNERS",
+                "docs/CODEOWNERS",
+                "SCRIPTS/OBY-CHECK.SH",
             ])
         );
         assert_eq!(
@@ -3053,6 +3183,14 @@ esac
                     .await
                 }
             };
+        // One approval of an untrusted task's head is never posted (MERGING-14).
+        let mut untrusted = reviewed("approved", &head());
+        untrusted.untrusted = true;
+        untrusted.no_reviewer = Some("no other tool".into());
+        assert_eq!(
+            approve(untrusted, nobody.clone(), Some(reviewer.clone())).await,
+            Approved::NotNow
+        );
         let posted = approve(
             reviewed("approved", &head()),
             nobody.clone(),
