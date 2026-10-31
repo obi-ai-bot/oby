@@ -438,6 +438,12 @@ pub struct Job {
     /// turn's prompt. Never in the API's job (`notes` has them all).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub heard: Vec<String>,
+    /// The owner's own words among `heard`, oldest first, each with how it came (#1661): taken
+    /// with `heard` when the agent hears them; else, for those kept before it started or while it
+    /// wrapped up, they start its follow-up once it ends (`Jobs::left_words`). Kept with the job,
+    /// so a restart keeps them too; never in the API.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub owners: Vec<OwnersWords>,
     /// The owner's own words that reached it after it was made, oldest first: their signed
     /// messages and Confirms and their conversation turns' words (never Oby's added text, an
     /// event turn's or unsigned words), and each question its agent asked them with their
@@ -718,6 +724,37 @@ pub struct JobArtifact {
     pub entry: String,
 }
 
+/// What starts the reply, in a job's summary, of a turn the owner's own words started after its
+/// work (#1661): the work's report stays first (#699).
+pub const STEERED: &str = "After what you told it: ";
+
+/// The work's report in `summary`, and the replies to the owner's words after it, if any
+/// ([`STEERED`]), each still starting with it.
+pub fn steered(summary: &str) -> (&str, Option<&str>) {
+    match summary.find(&format!("\n\n{STEERED}")) {
+        Some(at) => (&summary[..at], Some(&summary[at + 2..])),
+        None => (summary, None),
+    }
+}
+
+/// The first line of the last reply to the owner's words in `summary`, with [`STEERED`].
+pub fn last_steer(summary: &str) -> Option<&str> {
+    let at = summary.rfind(&format!("\n\n{STEERED}"))?;
+    summary[at + 2..].lines().next()
+}
+
+/// Words the owner told a job, as `Job::owners` keeps them (#1661).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OwnersWords {
+    pub text: String,
+    /// How they came: `owner` (signed by their app), `api` or `confirmed` (`jobs::Source`).
+    pub source: String,
+    /// They came before the job started or while it wrapped up: unheard when it ends, they start
+    /// its follow-up. Words told while its agent was at work wait for its next run instead.
+    #[serde(default)]
+    pub late: bool,
+}
+
 impl Job {
     /// Whether it ended with nothing done (docs/contracts/tasks.md, TASKS-12): a job whose work is
     /// commits ended done with none, nothing published or pushed. Its card and its conversation's
@@ -886,6 +923,7 @@ impl Job {
             tetrix: None,
             teammates: None,
             heard: Vec::new(),
+            owners: Vec::new(),
             said: Vec::new(),
             offers: Vec::new(),
             asked: false,
