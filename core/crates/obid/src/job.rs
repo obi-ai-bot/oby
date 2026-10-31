@@ -1322,6 +1322,7 @@ impl Job {
             value["noReviewer"] = json!(why);
         }
         value["teammates"] = json!(self.teammates);
+        value["addedTo"] = json!(self.added_to());
         if let Some(context) = &self.context {
             value["context"] = json!(context);
             // The agent's own words, quoted: never obid's.
@@ -1933,11 +1934,12 @@ mod tests {
             "routine",
             "runsOn",
             "teammates",
+            "addedTo",
         ] {
             assert_eq!(object.get(key), Some(&Value::Null), "{key}");
         }
-        // The Swift runner's 65 keys, obid's twenty, and `supervised`.
-        assert_eq!(object.len(), 86);
+        // The Swift runner's 65 keys, obid's twenty-one, and `supervised`.
+        assert_eq!(object.len(), 87);
         assert_eq!(value["supervised"], json!([]));
         assert_eq!(value["approvals"], json!([]));
         assert_eq!(value["archived"], Value::Null);

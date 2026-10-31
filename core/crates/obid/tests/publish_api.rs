@@ -29,7 +29,8 @@ const PULL: &str = "https://github.com/obi-e2e/fixture-app/pull/7";
 /// requests `pr list` answers (`open`: `__HEAD__` stands for the commit obid's clone has the
 /// branch at, which is what obid pushed, or the commit under it with `lags`, as GitHub shows a
 /// pull request's head for a moment after a push), whether `pr list` fails (`list-fails`, or once for the
-/// branch's own lookup, as GitHub's 502: `list-fails-once`), and what `pr view` answers (`view.json`).
+/// branch's own lookup, as GitHub's 502: `list-fails-once`), and what `pr view` answers
+/// (`view.json`). Like GitHub, `pr create` refuses a branch it opened one for already (`opened`).
 fn fake_gh(folder: &Path) -> PathBuf {
     use std::os::unix::fs::PermissionsExt;
     let bin = folder.join("bin");
@@ -56,10 +57,14 @@ case "$1 $2" in
     exit 0 ;;
   "pr create")
     for a in "$@"; do
+      [ "$prev" = --head ] && branch="$a"
       [ "$prev" = --body-file ] && cp "$a" "$dir/body"
       case "$a" in --title=*) printf '%s' "${{a#--title=}}" > "$dir/title" ;; esac
       prev="$a"
     done
+    # GitHub refuses a second pull request of a branch into the same base (#1663).
+    [ "$(cat "$dir/opened" 2>/dev/null)" = "$branch" ] && {{ echo "a pull request for branch \"$branch\" into branch \"main\" already exists:" >&2; echo '{PULL}' >&2; exit 1; }}
+    printf '%s' "$branch" > "$dir/opened"
     echo '[{{"url":"{PULL}","isCrossRepository":false,"headRefOid":"__HEAD__","baseRefName":"main"}}]' > "$dir/open"
     echo 'Creating pull request…'
     echo '{PULL}'

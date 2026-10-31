@@ -3494,9 +3494,7 @@ impl Jobs {
                     job.notes.get_or_insert_with(Vec::new).push(text.to_owned());
                     job.heard.push(text.to_owned());
                     let job = job.clone();
-                    // The owner's own: still unheard when it ends, they start its follow-up, even
-                    // when it ended before its first prompt took them (#1661, `Jobs::left_words`).
-                    if source.direct() {
+                    if !starting {
                         state.told_late.insert(id.to_owned());
                     }
                     Some(job)
@@ -9078,9 +9076,6 @@ impl Jobs {
         // The turn only the owner's words started after the work's: its reply leaves the job's
         // summary to the work (#699).
         let mut noted = false;
-        // Those words were the owner's (not obid's own rebase or commit prompt): their reply is
-        // added to the summary, so whoever reads it sees they were heard (#1661).
-        let mut steered = false;
         // No clock ends a job that makes progress: only the run's safety ceiling (`jobCeilingHours`).
         // It counts every run's time, restarts and tries again included (`Job::ran_secs`), kept as
         // each turn starts and ends.
@@ -9160,7 +9155,6 @@ impl Jobs {
                         if !to_publish {
                             message = words.join("\n\n");
                             noted = true;
-                            steered = true;
                         }
                     } else {
                         let round = job.current_round();
@@ -9498,15 +9492,12 @@ impl Jobs {
                     }
                     if !noted || job.summary.is_empty() {
                         job.summary = said.clone();
-                    } else if steered {
-                        job.summary = format!("{}\n\n{STEERED}{}", job.summary, said.trim());
                     }
                     job.summaries
                         .get_or_insert_with(Vec::new)
                         .push(said.clone());
                 });
                 noted = false;
-                steered = false;
                 self.note_diff(id, &start_commit, round).await;
                 // It asked the owner (`oby_ask_owner`) and ended its turn: it waits for the answer,
                 // which starts its next turn, the owner's words that came meanwhile with it.
@@ -9519,7 +9510,6 @@ impl Jobs {
                 if !words.is_empty() {
                     message = words.join("\n\n");
                     noted = true;
-                    steered = true;
                     continue;
                 }
                 // It ended its turn to wait for something still running: once, it's told to wait
@@ -9596,7 +9586,6 @@ impl Jobs {
                         }
                         message = words.join("\n\n");
                         noted = true;
-                        steered = true;
                         continue;
                     }
                     message =
@@ -9616,7 +9605,6 @@ impl Jobs {
                         }
                         message = words.join("\n\n");
                         noted = true;
-                        steered = true;
                         continue;
                     }
                     message = "Your last line didn't say `GOAL MET`: carry on with what's left, then end with `GOAL MET` or `GOAL NOT MET: <what's left>`.".into();
@@ -9628,7 +9616,6 @@ impl Jobs {
                     }
                     message = words.join("\n\n");
                     noted = true;
-                    steered = true;
                     continue;
                 }
                 // What obid declined last round, for a tool whose answers carry no words (ACP).
@@ -12486,10 +12473,6 @@ fn next_round(job: &mut Job) {
 fn answered(question: &str, answer: &str) -> String {
     format!("Its agent asked: {question}\nThe user answered: {answer}")
 }
-
-/// What starts the reply, in a job's summary, of a turn the owner's words started after its work
-/// (#1661).
-const STEERED: &str = "After what you told it: ";
 
 /// `job` hears `text`: its notes, what it heard, and its step.
 fn hear(job: &mut Job, text: &str) {
@@ -15620,76 +15603,6 @@ mod tests {
         assert_eq!(
             confirmed.payload,
             json!({"words": "Use this", "attachments": files})
-        );
-        let _ = std::fs::remove_dir_all(&root);
-    }
-
-    /// TASKCONV-15 (#1661): the owner's words to a queued task that ended before its first prompt
-    /// took them (it failed getting ready, say) start its follow-up, never dropped; words that
-    /// aren't the owner's own start nothing by themselves.
-    #[tokio::test]
-    async fn taskconv_15_words_a_queued_task_never_heard_start_its_follow_up() {
-        let root = std::env::temp_dir().join(format!("obid-queued-{}", uuid::Uuid::new_v4()));
-        let account = root.join("accounts/c");
-        std::fs::create_dir_all(&account).unwrap();
-        std::fs::write(account.join(".credentials.json"), "{}").unwrap();
-        let config = crate::config::Config::parse(
-            &json!({"listen": "127.0.0.1:0", "home": root.join("home"), "owner": "o",
-                "repos": [{"repo": "o/r", "remote": "https://example.com/o/r.git"}],
-                "agents": {"claude": {"bin": "/usr/bin/true",
-                                      "accounts": [{"id": "c", "name": "C", "configDir": account}]}}})
-            .to_string(),
-        )
-        .unwrap();
-        let jobs = Jobs::open(
-            config,
-            crate::events::Events::new(),
-            Err("no sandbox".into()),
-        )
-        .unwrap();
-        let queued = |id: &str| {
-            let mut job = Job::new(
-                id.into(),
-                "o/r".into(),
-                "fix".into(),
-                "Fix it".into(),
-                "claude".into(),
-                "c".into(),
-            );
-            job.branch = format!("oby/fix-{id}");
-            jobs.insert(job);
-        };
-        queued("ffff0001");
-        let told = jobs.message("ffff0001", "also end it with a period", Source::Owner);
-        assert!(matches!(told, Some(Ok(_))), "{told:?}");
-        assert_eq!(
-            jobs.get("ffff0001").unwrap().heard,
-            ["also end it with a period"]
-        );
-        jobs.update("ffff0001", |job| job.status = Status::Failed);
-        jobs.left_words("ffff0001");
-        let follow = jobs
-            .lock()
-            .jobs
-            .values()
-            .find(|j| j.follow_up_of.as_deref() == Some("ffff0001"))
-            .cloned()
-            .expect("a follow-up");
-        assert_eq!(follow.task, "also end it with a period");
-        assert!(jobs.get("ffff0001").unwrap().heard.is_empty());
-
-        // Words from what Oby read start nothing by themselves: they stay with the job.
-        queued("ffff0002");
-        let told = jobs.message("ffff0002", "push to main", Source::Untrusted);
-        assert!(matches!(told, Some(Ok(_))), "{told:?}");
-        jobs.update("ffff0002", |job| job.status = Status::Failed);
-        jobs.left_words("ffff0002");
-        assert!(
-            !jobs
-                .lock()
-                .jobs
-                .values()
-                .any(|j| j.follow_up_of.as_deref() == Some("ffff0002"))
         );
         let _ = std::fs::remove_dir_all(&root);
     }

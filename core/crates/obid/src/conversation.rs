@@ -1230,18 +1230,6 @@ impl Conversations {
 /// the job's title, how it ended, its pull request or why it wasn't published. The first line of
 /// its summary, which its agent may have written, follows on a line of its own. Every secret obid
 /// holds is taken out.
-/// The number of the pull request `url` when the job published to it without opening it
-/// (`crate::job::Job::added_to`, on the API's job).
-fn added_to(job: &Value, url: &str) -> Option<u64> {
-    let opened = job["outgoing"].as_array().is_some_and(|o| {
-        o.iter()
-            .any(|o| o["action"] == "pullRequest" && o["id"] == url)
-    });
-    (!opened)
-        .then(|| crate::github::pull_request_number(url, job["repo"].as_str()?))
-        .flatten()
-}
-
 pub fn job_report(job: &Value) -> Option<(String, String)> {
     let conversation = job["conversation"].as_str()?;
     if !job["dismissed"].is_null() {
@@ -1265,7 +1253,7 @@ pub fn job_report(job: &Value) -> Option<(String, String)> {
         ),
         ("done", _) => match (job["published"].as_str(), first_line("publishError")) {
             // A follow-up adds to its task's open pull request (#1663): it says so.
-            (Some(url), _) => match added_to(job, url) {
+            (Some(url), _) => match job["addedTo"].as_u64() {
                 Some(n) => format!("{title} is done: added to pull request #{n}, {url}"),
                 None => format!("{title} is done: {url}"),
             },
@@ -1725,19 +1713,10 @@ mod tests {
             "Fix oby #351 is done: https://github.com/obi-ai-bot/obi/pull/700\nReports reach the chat."
         );
         // PUBLISHING-12: a follow-up that pushed onto its task's open pull request says so.
-        published["repo"] = json!("obi-ai-bot/obi");
-        published["outgoing"] = json!([{"action": "push", "id": "a".repeat(40)}]);
+        published["addedTo"] = json!(700);
         assert_eq!(
             job_report(&published).unwrap().1,
             "Fix oby #351 is done: added to pull request #700, https://github.com/obi-ai-bot/obi/pull/700\nReports reach the chat."
-        );
-        published["outgoing"] =
-            json!([{"action": "pullRequest", "id": "https://github.com/obi-ai-bot/obi/pull/700"}]);
-        assert!(
-            job_report(&published)
-                .unwrap()
-                .1
-                .starts_with("Fix oby #351 is done: https://")
         );
         let mut unpublished = job("done");
         unpublished["publishError"] = json!("Not published: the secret scan couldn't run.\nwhy");

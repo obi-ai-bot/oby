@@ -1437,11 +1437,11 @@ const TRY_AGAIN: &str =
     "Try again, picking up where you left off. Finish with a short summary as asked.";
 
 /// The owner's words reach a job whose agent is at work as its next turn, before the check, in
-/// the same round, and that turn's reply joins the round's summaries and is added to the job's
-/// summary after the work's (TASKCONV-14, #1661); a job that must commit and whose round the owner asked for (Try again) may end
+/// the same round, and that turn's reply joins the round's summaries but leaves the job's summary
+/// to the work; a job that must commit and whose round the owner asked for (Try again) may end
 /// done with nothing committed: their words decide (runner-api.md, "POST /v1/jobs/{id}/messages").
 #[test]
-fn taskconv_14_a_running_job_hears_the_words_next_and_its_reply_joins_the_report() {
+fn a_running_job_hears_the_words_next_and_the_owners_round_may_commit_nothing() {
     let folder = Folder::new("hear");
     let (obid, _) = obid(&folder);
     let post = |id: &str, text: &str| {
@@ -1477,12 +1477,8 @@ fn taskconv_14_a_running_job_hears_the_words_next_and_its_reply_joins_the_report
             "heard: ECHO and add a test resume=00000000-0000-4000-8000-000000000001"
         ])
     );
-    // The turn only the words started keeps the work's first line (#699), and its reply follows
-    // it, so the words are seen to be heard (#1661).
-    assert_eq!(
-        done["summary"],
-        "Paused.\n\nAfter what you told it: heard: ECHO and add a test resume=00000000-0000-4000-8000-000000000001"
-    );
+    // The turn only the words started keeps the work's summary (#699).
+    assert_eq!(done["summary"], "Paused.");
 
     // A fix that commits nothing is done, saying so; the owner's round after it may end done
     // without a commit too.
