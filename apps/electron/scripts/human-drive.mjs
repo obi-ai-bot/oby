@@ -16,7 +16,7 @@ import { execFileSync } from 'node:child_process';
 import { mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { launch, sleep, until as waitFor } from './drive-lib.mjs';
+import { appRoot, electronBinary, launch, sleep, until as waitFor } from './drive-lib.mjs';
 import scenarios from './human-drive.scenarios.mjs';
 
 const runner = join(homedir(), 'Library/Application Support/Oby/Runner');
@@ -27,7 +27,7 @@ const DEVICE = 'Oby human drive (test, revoked after each run)';
 const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
 const out = process.env.OBY_DRIVE_OUT || join(own, 'runs', stamp);
 const args = process.argv.slice(2);
-const gh = (...a) => execFileSync('gh', a, { encoding: 'utf8' }).trim();
+const gh = (...a) => execFileSync('gh', a, { encoding: 'utf8', timeout: 60_000 }).trim();
 const until = (label, f, ms) => waitFor(label, f, ms, 500);
 
 if (args.includes('--list')) {
@@ -45,37 +45,16 @@ const repo = (process.env.OBY_DRIVE_REPO ?? '').trim().toLowerCase()
 if (!/^[\w.-]+\/[\w.-]+$/.test(repo)) fail('Name the scratch repository the tasks may push to and merge in: OBY_DRIVE_REPO=owner/name npm run drive');
 if (repo.startsWith('obi-ai-bot/')) fail(`Never drive the real tasks into ${repo}: name a scratch repository in OBY_DRIVE_REPO.`);
 
-// The driver's device, from main (where its key is): registered with obid under DEVICE at the start,
-// the way main registers a new key on the owner's click (home/pairing, then POST /v1/devices), and
-// revoked at the end with its own signature (DELETE /v1/devices/{id}). Main's own registration of
-// the same key then finds it known.
-async function device(app, revoke) {
-  const token = readFileSync(join(runner, 'api-token'), 'utf8').trim();
-  return app.evaluate(async ({ app: a, safeStorage }, { token, home, name, revoke }) => {
-    const crypto = process.getBuiltinModule('node:crypto'), fs = process.getBuiltinModule('node:fs');
-    const path = `${a.getPath('userData')}/device-key`;
-    let key;
-    if (fs.existsSync(path)) key = crypto.createPrivateKey(safeStorage.decryptString(fs.readFileSync(path)));
-    else {
-      // as main/device.ts keeps it: PKCS#8 PEM, sealed by safeStorage, 0600, never over one that's there
-      key = crypto.generateKeyPairSync('ec', { namedCurve: 'prime256v1' }).privateKey;
-      fs.writeFileSync(path, safeStorage.encryptString(key.export({ type: 'pkcs8', format: 'pem' })), { flag: 'wx', mode: 0o600 });
-    }
-    const { x, y } = crypto.createPublicKey(key).export({ format: 'jwk' });
-    const publicKey = Buffer.concat([Buffer.from([4]), Buffer.from(x, 'base64url'), Buffer.from(y, 'base64url')]).toString('base64');
-    const call = (method, url, body) => fetch(`http://127.0.0.1:7777${url}`, { method, headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-    let r = await call('POST', '/v1/devices', { name, publicKey });
-    if (r.status === 403 && !revoke) {
-      try { fs.writeFileSync(`${home}/pairing`, publicKey, { mode: 0o600 }); r = await call('POST', '/v1/devices', { name, publicKey }); } finally { fs.rmSync(`${home}/pairing`, { force: true }); }
-    }
-    if (!r.ok) return { error: `${r.status} ${await r.text()}` };
-    const { id } = await r.json();
-    if (!revoke) return { id };
-    const signedAt = new Date().toISOString().replace(/\.\d+Z$/, 'Z');
-    const signature = crypto.sign('sha256', Buffer.from(`oby-revoke-device\n${id}\n${signedAt}`), key).toString('base64');
-    const d = await call('DELETE', `/v1/devices/${id}`, { approval: { device: id, signedAt, signature } });
-    return d.ok ? { id, revoked: true } : { id, error: `${d.status} ${await d.text()}` };
-  }, { token, home: runner, name: DEVICE, revoke });
+// The driver's own device with obid, under DEVICE: registered before the app opens, revoked at the
+// end (human-drive-device.cjs, a one-shot Electron app with the same key, so it works after the
+// driven app has closed). Main's own registration of that key then finds it known; a revoke a hard
+// kill missed is done by the next run's, since the key, so the device, is the same.
+function device(action) {
+  try {
+    const out = execFileSync(electronBinary, [join(appRoot, 'scripts/human-drive-device.cjs'), action, join(own, 'electron-data/device-key'), runner, DEVICE],
+      { encoding: 'utf8', timeout: 60_000, stdio: ['ignore', 'pipe', 'ignore'] });
+    return JSON.parse(out.split('\n').find((l) => l.startsWith('DEVICE '))?.slice(7) ?? '{"error":"no answer"}');
+  } catch (e) { return { error: e.message.split('\n')[0] }; }
 }
 
 async function openApp() {
@@ -170,36 +149,83 @@ function driver(page, record, state) {
   return t;
 }
 
-// What this run made in the scratch repository, undone: the issues it opened (t.state.issues) and
-// the pull requests and `oby/` branches of the jobs it started there. Nothing older, nothing else.
-function cleanUp(started, state) {
+// What this run made in the scratch repository, undone: the issues it opened (t.state.issues) and the
+// pull requests and `oby/` branches of the tasks it started (t.state.jobs). Nothing older, nothing else.
+function cleanUp(state) {
   const done = [];
-  const tryIt = (what, f) => { try { f(); done.push(what); } catch (e) { done.push(`${what}: failed (${e.message.split('\n')[0]})`); } };
+  const tryIt = (what, f) => { try { if (f() !== false) done.push(what); } catch (e) { done.push(`${what}: failed (${e.message.split('\n')[0]})`); } };
   for (const url of state.issues ?? []) tryIt(`closed ${url}`, () => gh('issue', 'close', url, '-c', 'Closed by the human-drive driver at the end of its run.'));
-  const jobs = jobsSince(started);
+  const jobs = (state.jobs ?? []).map((id) => { try { return JSON.parse(readFileSync(join(runner, 'jobs', `${id}.json`), 'utf8')); } catch { return null; } })
+    .filter((j) => j?.repo?.toLowerCase() === repo);
   for (const url of new Set(jobs.map((j) => j.published).filter(Boolean))) {
-    if (JSON.parse(gh('pr', 'view', url, '--json', 'state')).state === 'OPEN') tryIt(`closed ${url}`, () => gh('pr', 'close', url, '-c', 'Closed by the human-drive driver at the end of its run.'));
+    tryIt(`closed ${url}`, () => JSON.parse(gh('pr', 'view', url, '--json', 'state')).state === 'OPEN' && (gh('pr', 'close', url, '-c', 'Closed by the human-drive driver at the end of its run.'), true));
   }
   for (const branch of new Set(jobs.map((j) => j.branch).filter((b) => b?.startsWith('oby/')))) {
-    try { execFileSync('gh', ['api', `repos/${repo}/git/ref/heads/${branch}`], { stdio: 'ignore' }); } catch { continue; } // not pushed, or gone
-    tryIt(`deleted branch ${branch}`, () => gh('api', '-X', 'DELETE', `repos/${repo}/git/refs/heads/${branch}`));
+    tryIt(`deleted branch ${branch}`, () => {
+      try { execFileSync('gh', ['api', `repos/${repo}/git/ref/heads/${branch}`], { stdio: 'ignore', timeout: 60_000 }); } catch { return false; } // not pushed, or gone
+      gh('api', '-X', 'DELETE', `repos/${repo}/git/refs/heads/${branch}`);
+    });
   }
   return done;
 }
 
-const report = { repo, started: new Date().toISOString(), commit: execFileSync('git', ['rev-parse', '--short', 'HEAD'], { encoding: 'utf8' }).trim(), scenarios: [] };
-const started = Date.now();
+// The titles of the cards on Home before the run: the owner's own. A task this run starts may not
+// share one (human-drive.scenarios.mjs, track), or its card couldn't be told from theirs.
+async function homeTitles(page) {
+  const top = page.locator('section[aria-label="Oby is asking"] article.ask-card.is-up');
+  // Home shown, then a moment for obid's inbox to fill the stack (it comes after the page)
+  await until('Home', () => page.locator('[contenteditable="true"]').filter({ visible: true }).count(), 30_000);
+  await until('Home’s cards', () => top.count(), 8_000).catch(() => {}); // none: nothing of the owner's to tell apart
+  if (!(await top.count())) return [];
+  const total = Number((await top.locator('.ask-count').innerText()).split('/')[1] ?? 1);
+  const titles = new Set();
+  for (let i = 0; i < total; i++) {
+    titles.add((await top.locator('h2.tc-title').innerText()).trim());
+    const next = top.getByRole('button', { name: 'Next' });
+    if (!(await next.count())) break;
+    await next.click();
+    await sleep(400);
+  }
+  return [...titles];
+}
+
+const report = { repo, started: new Date().toISOString(), commit: execFileSync('git', ['rev-parse', '--short', 'HEAD'], { encoding: 'utf8', timeout: 10_000 }).trim(), scenarios: [] };
 mkdirSync(out, { recursive: true });
+const registered = device('register');
+if (registered.error) fail(`the driver's device didn't register with obid: ${registered.error}`);
+report.device = registered.id;
 const { app, page } = await openApp();
 const errors = [], mainLog = [];
 page.on('pageerror', (e) => errors.push(e.message));
 // main's own lines: a signature it couldn't make says so here (main/device.ts, ownersWords)
 for (const stream of [app.process().stdout, app.process().stderr]) stream?.on('data', (b) => mainLog.push(b.toString()));
 const state = {};
+
+// The end of every run, once, whatever stopped it (an error, Control-C, a kill): the app closed (on
+// Control-C Playwright closes it itself), the device revoked, then the cleanup, then the report. Each step's failure is
+// written down and doesn't stop the next.
+let finishing;
+const finish = () => (finishing ??= (async () => {
+  report.cleanup = [];
+  await app.close().catch(() => {});
+  if (report.device) {
+    const revoked = device('revoke');
+    report.cleanup.push(revoked.revoked ? `revoked the driver's device ${revoked.id ?? report.device}` : `the driver's device wasn't revoked: ${revoked.error}`);
+  }
+  try { report.cleanup.push(...cleanUp(state)); } catch (e) { report.cleanup.push(`cleanup failed: ${e.message.split('\n')[0]}`); }
+  report.pageErrors = errors;
+  report.unsigned = mainLog.join('').split('\n').filter((l) => /couldn.t sign/.test(l));
+  writeFileSync(join(out, 'main.log'), mainLog.join(''));
+  writeFileSync(join(out, 'report.json'), JSON.stringify(report, null, 2));
+  writeFileSync(join(out, 'report.md'), markdown(report));
+  for (const line of report.cleanup) console.log(`cleanup: ${line}`);
+  console.log(`report: ${join(out, 'report.md')}`);
+})());
+for (const signal of ['SIGINT', 'SIGTERM']) process.once(signal, () => finish().finally(() => process.exit(130)));
+
 try {
-  const registered = await device(app, false);
-  if (registered.error) throw new Error(`the driver's device didn't register: ${registered.error}`);
-  report.device = registered.id;
+  state.homeTitles = new Set(await homeTitles(page));
+  report.ownersCards = state.homeTitles.size;
   for (const s of scenarios) {
     if (only && !only.includes(s.id)) continue;
     const record = { id: s.id, title: s.title, contract: s.contract ?? '', status: 'pass', started: Date.now(), steps: [], notes: [], shots: [] };
@@ -219,17 +245,7 @@ try {
     console.log(`  ${record.status} in ${record.seconds} s${record.error ? `: ${record.error}` : ''}`);
   }
 } finally {
-  report.cleanup = cleanUp(started, state);
-  const revoked = await device(app, true).catch((e) => ({ error: e.message }));
-  report.cleanup.push(revoked.revoked ? `revoked the driver's device ${revoked.id}` : `the driver's device wasn't revoked: ${revoked.error}`);
-  report.pageErrors = errors;
-  report.unsigned = mainLog.join('').split('\n').filter((l) => /couldn.t sign/.test(l));
-  writeFileSync(join(out, 'main.log'), mainLog.join(''));
-  writeFileSync(join(out, 'report.json'), JSON.stringify(report, null, 2));
-  writeFileSync(join(out, 'report.md'), markdown(report));
-  for (const line of report.cleanup) console.log(`cleanup: ${line}`);
-  console.log(`report: ${join(out, 'report.md')}`);
-  await app.close().catch(() => {});
+  await finish();
 }
 if (report.scenarios.some((r) => r.status === 'fail')) process.exitCode = 1;
 

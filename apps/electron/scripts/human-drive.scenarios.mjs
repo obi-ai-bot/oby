@@ -31,6 +31,8 @@ async function newTask(t, since, kinds = ['build', 'fix']) {
     await sleep(500);
   }
   if (job.repo.toLowerCase() !== t.repo || !kinds.includes(job.kind)) throw new Error(`the task Oby started is a ${job.kind} in ${job.repo}, not a ${kinds.join(' or ')} in ${t.repo}`);
+  // this run's, for the cleanup at its end
+  (t.state.jobs ??= []).push(job.id);
   await t.see(job.title, { ms: 2 * MIN, label: `its card, “${job.title}”` });
   await t.shot('task-card');
   return { title: job.title, job };
@@ -88,7 +90,12 @@ async function openTask(t, title) {
   await t.see('Tell Oby about this task…', { label: 'its page' });
 }
 
-const track = (t, task) => { (t.state.titles ??= []).push(task.title); return task; };
+// a task whose cards this run answers: never one named as a card the owner had on Home already
+const track = (t, task) => {
+  if (t.state.homeTitles?.has(task.title)) throw new Error(`the task “${task.title}” has the name of a card the owner had on Home: its cards can't be told apart, so none is answered`);
+  (t.state.titles ??= []).push(task.title);
+  return task;
+};
 
 export default [
   {
@@ -114,8 +121,8 @@ export default [
         answer = await t.reply({ ms: 5 * MIN });
         for (let i = 0; i < 5 && /hasn.t finished|once it.s done|I.ll tell you|I started/i.test(answer); i++) answer = await t.reply({ ms: 20 * MIN });
         t.note(`its report: ${answer.replace(/\n+/g, ' ')}`);
+        await t.shot('answer');
       }
-      await t.shot('answer');
       if (/couldn.t|can.t say|unable|hasn.t finished|I.ll tell you/i.test(answer)) throw new Error('Oby didn’t say what the repository is for');
     },
   },

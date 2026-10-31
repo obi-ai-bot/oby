@@ -6,6 +6,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { _electron as electron } from 'playwright-core';
 
 export const appRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+export const electronBinary = join(appRoot, 'node_modules/electron/dist/Electron.app/Contents/MacOS/Electron');
 export const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
 
 export async function until(label, f, ms = 60_000, every = 150) {
@@ -30,5 +31,5 @@ ${hidden ? `app.dock?.hide();
 app.on('browser-window-created', (_e, win) => { win.setOpacity(0); win.setFocusable(false); win.setIgnoreMouseEvents(true); });` : ''}
 import(${JSON.stringify(pathToFileURL(join(appRoot, 'out/main/index.js')).href)});
 `);
-  return electron.launch({ executablePath: join(appRoot, 'node_modules/electron/dist/Electron.app/Contents/MacOS/Electron'), args: [launcher], env });
+  return electron.launch({ executablePath: electronBinary, args: [launcher], env });
 }
