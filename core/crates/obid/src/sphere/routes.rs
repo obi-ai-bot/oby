@@ -199,6 +199,9 @@ pub async fn answer(
     headers: axum::http::HeaderMap,
     body: Bytes,
 ) -> Result<Response, ApiError> {
+    // Whether an app of the owner's signed it: their answer to a question is then kept as their
+    // own words for Oby's review (#1659).
+    let typed = crate::routes::typed_by_owner(&shared, "POST", &uri, &headers, &body);
     // Words for a job's agent (its question's answer, a no's words) that no app of the owner's
     // signed: the job is no longer the owner's own words alone (crate::secretspec), before it
     // hears them.
@@ -214,7 +217,7 @@ pub async fn answer(
         .and_then(|b| b["answer"].as_str().map(str::to_owned))
         && (item.kind == super::inbox::QUESTION_KIND
             || crate::permissions::inbox_decision(&answer).1.is_some())
-        && !crate::routes::typed_by_owner(&shared, "POST", &uri, &headers, &body)
+        && !typed
     {
         shared.jobs.unvet(
             &item.job,
@@ -235,7 +238,12 @@ pub async fn answer(
     // need none. A refusal names the title to sign, as connections do.
     let mut map: serde_json::Map<String, Value> = match serde_json::from_slice(&body) {
         Ok(Value::Object(map)) => map,
-        _ => return Ok(json(StatusCode::OK, shared.link.answer(&id, &body).await?)),
+        _ => {
+            return Ok(json(
+                StatusCode::OK,
+                shared.link.answer_typed(&id, &body, typed).await?,
+            ));
+        }
     };
     let approval = map.remove("approval");
     let rest = serde_json::to_vec(&Value::Object(map.clone())).unwrap_or_default();
@@ -249,7 +257,10 @@ pub async fn answer(
     }
     // Not a Confirm of an open confirm item: answered as before (one already done says so).
     let Some(item) = confirm_item.filter(|i| confirming && i.done.is_none()) else {
-        return Ok(json(StatusCode::OK, shared.link.answer(&id, &rest).await?));
+        return Ok(json(
+            StatusCode::OK,
+            shared.link.answer_typed(&id, &rest, typed).await?,
+        ));
     };
     let refuse = |why: &str| {
         json(

@@ -2792,6 +2792,51 @@ fn merging_19_a_review_finds_the_pushed_head_in_a_clone_made_again() {
     assert!(!asked.contains("UNSIGNED"), "{asked}");
 }
 
+/// MERGING-18 (#1659): the owner's answer to its agent's question from their inbox (Home, a
+/// notification) is kept as their own words for Oby's review when their app signed it, with the
+/// question; an answer no app signed isn't.
+#[test]
+fn merging_18_a_signed_inbox_answer_is_kept_as_the_owners_own() {
+    let folder = Folder::new("publish-question-said");
+    let remote = fixture(&folder.0.join("fixture"));
+    let asker = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/agents/fake-claude");
+    let config = config(&folder.0, &remote, &asker);
+    sign_in(&folder, "stub");
+    let obid = start(&folder.0, &config, None);
+    let ask = json!({"tool": "AskUserQuestion", "input": {"questions": [{"question": "Which store?",
+        "options": [{"label": "SQLite"}, {"label": "Postgres"}]}]}});
+    let said = |signed: bool| {
+        let id = dispatch(
+            &obid,
+            json!({"repo": "obi-e2e/fixture-app", "kind": "research", "task": format!("ASK: {ask}")}),
+        );
+        let job = within(60, "its question waits", || {
+            let job = call(&obid, "GET", &format!("/v1/jobs/{id}"), None).body;
+            job["permission"].is_object().then_some(job)
+        });
+        let item = format!(
+            "{id}-permission-{}",
+            job["permission"]["id"].as_str().unwrap()
+        );
+        let path = format!("/v1/inbox/{item}/answer");
+        let body = json!({"answer": "Postgres"});
+        let answered = if signed {
+            call_typed(&obid, "POST", &path, &body)
+        } else {
+            call(&obid, "POST", &path, Some(&body))
+        };
+        assert_eq!(answered.status, 200, "{}", answered.text);
+        ended(&obid, &id);
+        let file = std::fs::read(folder.0.join(format!("home/jobs/{id}.json"))).unwrap();
+        serde_json::from_slice::<Value>(&file).unwrap()["said"].clone()
+    };
+    assert_eq!(
+        said(true),
+        json!(["Its agent asked: Which store?\nThe user answered: Postgres"])
+    );
+    assert_eq!(said(false), Value::Null);
+}
+
 /// MERGING-16: a second review that asks for changes counts like any other: the job takes them as
 /// its next round, Oby reviews its new head twice again, and changes still asked for by a review
 /// past the limit (`review::REVIEWS`) end in the owner's item, with One more round.
