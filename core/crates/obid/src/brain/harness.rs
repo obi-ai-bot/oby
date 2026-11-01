@@ -2385,12 +2385,12 @@ fn step_text(name: &str, input: &Value) -> String {
         return "Asking Tetrix".into();
     }
     match name.strip_prefix("mcp__oby__") {
-        Some("oby_jobs") => "Looking at the jobs".into(),
-        Some("oby_job") => "Reading a job".into(),
-        Some("oby_dispatch") => "Starting a job".into(),
-        Some("oby_offer") => "Offering a job".into(),
-        Some("oby_tell_job") => "Telling a job".into(),
-        Some("oby_stop_job") => "Stopping a job".into(),
+        Some("oby_jobs") => "Looking at the tasks".into(),
+        Some("oby_job") => "Reading a task".into(),
+        Some("oby_dispatch") => "Starting a task".into(),
+        Some("oby_offer") => "Offering a task".into(),
+        Some("oby_tell_job") => "Telling a task".into(),
+        Some("oby_stop_job") => "Stopping a task".into(),
         Some("oby_inbox") => "Looking at the inbox".into(),
         Some("oby_github") => "Looking at GitHub".into(),
         Some("oby_answer") => "Answering an inbox item".into(),
@@ -3019,7 +3019,7 @@ mod tests {
         );
         assert_eq!(
             step_text("mcp__oby__oby_dispatch", &json!({})),
-            "Starting a job"
+            "Starting a task"
         );
         assert_eq!(
             step_text("mcp__tetrix__code_impact", &json!({})),
