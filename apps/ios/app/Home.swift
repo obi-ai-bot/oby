@@ -108,7 +108,11 @@ struct HomeView: View {
         .onChange(of: phone.focusHome) {
             guard phone.focusHome else { return }
             phone.focusHome = false
-            Task { try? await Task.sleep(for: .milliseconds(350)); typing = true }
+            Task {
+                try? await Task.sleep(for: .milliseconds(350))
+                // Home still showing: a page pushed or the panel opened since keeps the keyboard down.
+                if phone.homePath.isEmpty, phone.panel == nil { typing = true }
+            }
         }
         .onChange(of: mood, initial: true) { character.mood = mood }
     }

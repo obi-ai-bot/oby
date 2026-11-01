@@ -180,7 +180,7 @@ private struct TasksColumn: View {
                     if !phone.loaded && phone.connection == .connecting {
                         RowBones()
                     } else {
-                        Text(phone.loaded ? "No tasks yet. They’ll show up here once you give me one." : "Reaching your Mac…")
+                        Text(!phone.loaded ? "Reaching your Mac…" : phone.archived.isEmpty ? "No tasks yet. They’ll show up here once you give me one." : "All caught up. Finished tasks are in Archived.")
                             .font(Tokens.font(Tokens.textSm)).foregroundStyle(Tokens.muted).padding(.horizontal, 12)
                     }
                 }

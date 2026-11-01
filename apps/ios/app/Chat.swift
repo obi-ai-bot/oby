@@ -49,7 +49,7 @@ struct ConversationsColumn: View {
                 List {
                     let sections = ConversationOrder.sections(conversations)
                     if conversations.isEmpty {
-                        Text(found == nil ? "No conversations yet" : "No conversations match “\(query)”")
+                        Text(found == nil ? "No conversations yet" : "No conversations match “\(query.trimmingCharacters(in: .whitespaces))”")
                             .font(Tokens.font(Tokens.textBase)).foregroundStyle(Tokens.muted)
                             .listRowBackground(Color.clear).listRowSeparator(.hidden)
                     }
