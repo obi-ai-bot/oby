@@ -5,6 +5,13 @@
 
 use super::*;
 
+/// How long after its reset (or its question, with none known) an approved Resume on an account
+/// that has reported no usage since waits before it runs again anyway (#1645).
+const UNREAD_RESUME: i64 = 30 * 60;
+
+/// An approved Resume its account's weekly reserve alone holds.
+const RESERVE_WAIT: &str = "Waiting for the account's weekly reserve: it's past 80% of its week. Lift its reserve to resume now.";
+
 impl Jobs {
     /// A persisted answer remains visible after its question closes, including after a restart
     /// between saving the answer and updating its jobs. This mirror never authorizes execution.
@@ -22,7 +29,7 @@ impl Jobs {
             };
             let reason = match decision.choice {
                 Choice::Pending => job.reason.clone().unwrap_or_else(|| "This account reached its usage limit. Choose what Oby should do with the affected jobs.".into()),
-                Choice::Resume => "Waiting for the account's usage limit. Oby resumes this job once fresh usage confirms room.".into(),
+                Choice::Resume => "Waiting for the account's usage limit. Oby resumes this job once fresh usage confirms room, or 30 minutes after the reset when the account reports none.".into(),
                 Choice::Stop => "You kept this job stopped after its account reached its usage limit.".into(),
                 Choice::Move => "You chose another account. Oby is moving this job with its work and context.".into(),
             };
@@ -72,12 +79,22 @@ impl Jobs {
                 }
             }
             self.want_usage();
-            if !self.verified_limit_room(
-                &decision.account,
-                now,
-                decision.reset_at.unwrap_or(decision.created_at),
-            ) {
-                continue;
+            let since = decision.reset_at.unwrap_or(decision.created_at);
+            if !self.verified_limit_room(&decision.account, now, since) {
+                // #1645: an account that has reported no usage since (Cursor, an API key, reads
+                // that fail) resumes on time instead of waiting forever; one its weekly reserve
+                // alone holds says so.
+                let usage = self.usage.get(&decision.account);
+                let read_since = [usage.five_hour_observed_at, usage.seven_day_observed_at]
+                    .into_iter()
+                    .flatten()
+                    .any(|at| at >= since);
+                if read_since || now < since.saturating_add(UNREAD_RESUME) {
+                    if read_since && usage.only_reserved(now) {
+                        self.say_limit_wait(&decision, RESERVE_WAIT);
+                    }
+                    continue;
+                }
             }
             for id in &decision.jobs {
                 if decision.applied.contains(id) {
@@ -98,6 +115,19 @@ impl Jobs {
                     }
                     Err(why) => self.reask_limit_job(&decision, id, &why),
                 }
+            }
+        }
+    }
+
+    /// Says why an approved Resume still waits, on each of its jobs whose words differ.
+    fn say_limit_wait(&self, decision: &crate::account_limits::Decision, why: &str) {
+        for id in &decision.jobs {
+            if self.get(id).is_some_and(|job| {
+                job.account_limit_episode.as_deref() == Some(&decision.id)
+                    && job.status == Status::Interrupted
+                    && job.reason.as_deref() != Some(why)
+            }) {
+                self.update(id, |job| job.reason = Some(why.to_owned()));
             }
         }
     }
@@ -178,7 +208,9 @@ impl Jobs {
                 j.account_limit_blocked && j.dismissed.is_none() && j.status == Status::Interrupted
             })
             .collect();
-        if jobs.is_empty() || jobs.iter().any(|j| j.obi.is_some() || j.read_only()) {
+        // A review can't change accounts, but it doesn't take Move away from the tasks beside it
+        // (#1645): a Move asks again about the review alone (`apply_limit_move`).
+        if jobs.iter().all(|j| j.obi.is_some() || j.read_only()) {
             return Vec::new();
         }
         let Some(source_tool) = Tool::from_id(&decision.agent) else {
@@ -255,7 +287,10 @@ impl Jobs {
                 options.push(json!({"kind":"resume"}));
             }
             options.push(json!({"kind":"stop"}));
-            let snapshot = json!({"jobs":jobs,"options":options}).to_string();
+            // The revision the owner signs follows the jobs shown, not the options (#1645): a
+            // usage read landing after they looked changes the options, and their answer is
+            // refused only when the option they chose is gone (`answer_limit_decision`).
+            let snapshot = json!({"jobs":jobs}).to_string();
             let (decision, problem) = match self.limit_decisions.refresh(&decision.id, &snapshot) {
                 Ok(saved) => (saved, (!source_connected).then_some("The original account isn't connected. Connect it or choose another available account.")),
                 Err(error) => {
@@ -501,6 +536,10 @@ impl Jobs {
                 || job.status != Status::Interrupted
             {
                 let _ = self.limit_decisions.applied(&decision.id, id);
+                continue;
+            }
+            if job.obi.is_some() || job.read_only() {
+                self.reask_limit_job(decision, id, "A review stays on its account.");
                 continue;
             }
             let destinations = self.limit_destinations(decision).await;
