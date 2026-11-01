@@ -371,6 +371,70 @@ fn limits_1_a_resume_on_an_account_that_reports_no_usage_runs_again_on_time() {
     assert_eq!(resumed["round"], 2, "{resumed}");
 }
 
+/// LIMITS-1: before those 30 minutes, or while the week obid last read is at its reserve, it
+/// waits.
+#[test]
+fn limits_1_a_resume_with_no_usage_waits_its_30_minutes_and_a_known_hold() {
+    let folder = Folder::new("limit-resume-unread-wait");
+    let config = limit_config(&folder.0, "silent", false);
+    let now = obi_protocol::time::now();
+    let home = folder.0.join("home");
+    blocked_job(
+        &home.join("jobs"),
+        "cccc0003",
+        "research",
+        Some(now - 5 * 60),
+    );
+    let obid = start_with(&folder.0, &config, None, &[("OBID_USAGE_READS", "on")]);
+    let decision = &call(&obid, "GET", "/v1/limit-decisions", None).body[0];
+    let id = decision["id"].as_str().unwrap();
+    let answered = answer(
+        &obid,
+        id,
+        decision["revision"].as_u64().unwrap(),
+        "resume",
+        None,
+    );
+    assert_eq!(answered.status, 200, "{}", answered.text);
+    std::thread::sleep(std::time::Duration::from_secs(17));
+    let waiting = call(&obid, "GET", "/v1/jobs/cccc0003", None).body;
+    assert_eq!(waiting["status"], "interrupted", "{waiting}");
+    assert_eq!(waiting["round"], 1, "{waiting}");
+    drop(obid);
+
+    let folder = Folder::new("limit-resume-unread-reserve");
+    let config = limit_config(&folder.0, "silent", false);
+    let home = folder.0.join("home");
+    blocked_job(
+        &home.join("jobs"),
+        "cccc0004",
+        "research",
+        Some(now - 31 * 60),
+    );
+    // The week read before the limit, at its reserve and not reset: it still holds.
+    std::fs::write(home.join("usage.json"), json!({"stub":{"fiveHour":0.1,"sevenDay":0.85,"fiveHourResets":now+3600,"sevenDayResets":now+86400,"fiveHourObservedAt":now-3600,"sevenDayObservedAt":now-3600}}).to_string()).unwrap();
+    let obid = start_with(&folder.0, &config, None, &[("OBID_USAGE_READS", "on")]);
+    let decision = &call(&obid, "GET", "/v1/limit-decisions", None).body[0];
+    let id = decision["id"].as_str().unwrap();
+    let answered = answer(
+        &obid,
+        id,
+        decision["revision"].as_u64().unwrap(),
+        "resume",
+        None,
+    );
+    assert_eq!(answered.status, 200, "{}", answered.text);
+    let held = within(45, "the wait names the reserve", || {
+        let j = call(&obid, "GET", "/v1/jobs/cccc0004", None).body;
+        j["reason"]
+            .as_str()?
+            .contains("weekly reserve")
+            .then_some(j)
+    });
+    assert_eq!(held["status"], "interrupted", "{held}");
+    assert_eq!(held["round"], 1, "{held}");
+}
+
 /// LIMITS-2 (#1645): an approved Resume its account's weekly reserve alone holds says so, and waits.
 #[test]
 fn limits_2_a_resume_held_by_the_weekly_reserve_says_so() {

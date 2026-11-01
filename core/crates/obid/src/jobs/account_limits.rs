@@ -9,6 +9,9 @@ use super::*;
 /// that has reported no usage since waits before it runs again anyway (#1645).
 const UNREAD_RESUME: i64 = 30 * 60;
 
+/// An approved Resume waiting for room.
+const RESUME_WAIT: &str = "Waiting for the account's usage limit. Oby resumes this job once fresh usage confirms room, or 30 minutes after the reset when the account reports none.";
+
 /// An approved Resume its account's weekly reserve alone holds.
 const RESERVE_WAIT: &str = "Waiting for the account's weekly reserve: it's past 80% of its week. Lift its reserve to resume now.";
 
@@ -29,7 +32,7 @@ impl Jobs {
             };
             let reason = match decision.choice {
                 Choice::Pending => job.reason.clone().unwrap_or_else(|| "This account reached its usage limit. Choose what Oby should do with the affected jobs.".into()),
-                Choice::Resume => "Waiting for the account's usage limit. Oby resumes this job once fresh usage confirms room, or 30 minutes after the reset when the account reports none.".into(),
+                Choice::Resume => RESUME_WAIT.into(),
                 Choice::Stop => "You kept this job stopped after its account reached its usage limit.".into(),
                 Choice::Move => "You chose another account. Oby is moving this job with its work and context.".into(),
             };
@@ -81,18 +84,24 @@ impl Jobs {
             self.want_usage();
             let since = decision.reset_at.unwrap_or(decision.created_at);
             if !self.verified_limit_room(&decision.account, now, since) {
-                // #1645: an account that has reported no usage since (Cursor, an API key, reads
-                // that fail) resumes on time instead of waiting forever; one its weekly reserve
-                // alone holds says so.
+                // #1645: an account with no fresh reading (Cursor and API keys never report, a
+                // read can fail) resumes on time instead of waiting forever, unless what obid last
+                // read of it still holds it (a week at its reserve). A wait says why.
                 let usage = self.usage.get(&decision.account);
-                let read_since = [usage.five_hour_observed_at, usage.seven_day_observed_at]
+                let fresh = [usage.five_hour_observed_at, usage.seven_day_observed_at]
                     .into_iter()
                     .flatten()
-                    .any(|at| at >= since);
-                if read_since || now < since.saturating_add(UNREAD_RESUME) {
-                    if read_since && usage.only_reserved(now) {
-                        self.say_limit_wait(&decision, RESERVE_WAIT);
-                    }
+                    .any(|at| at >= since && now.saturating_sub(at) <= 600);
+                let on_time = !fresh
+                    && usage.held(now).is_none()
+                    && now >= since.saturating_add(UNREAD_RESUME);
+                if !on_time {
+                    let why = if usage.only_reserved(now) {
+                        RESERVE_WAIT
+                    } else {
+                        RESUME_WAIT
+                    };
+                    self.say_limit_wait(&decision, why);
                     continue;
                 }
             }
@@ -124,6 +133,9 @@ impl Jobs {
         for id in &decision.jobs {
             if self.get(id).is_some_and(|job| {
                 job.account_limit_episode.as_deref() == Some(&decision.id)
+                    && job.account_limit_blocked
+                    && job.account_limit_choice == Some(crate::account_limits::Choice::Resume)
+                    && job.dismissed.is_none()
                     && job.status == Status::Interrupted
                     && job.reason.as_deref() != Some(why)
             }) {
