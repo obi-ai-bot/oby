@@ -2646,8 +2646,10 @@ pub fn load(home: &Path) -> Kept {
 }
 
 /// Keeps `kept` in `home`. A file there that doesn't read ([`load`]'s Ask with no rules) is never
-/// written over: it's moved aside first, to `permissions.json.unreadable-<time>`, so the rules it
-/// holds stay for the owner (#1652); when it can't be moved, nothing is written.
+/// written over: it's copied aside first, to `permissions.json.unreadable-<time>`, so the rules it
+/// holds stay for the owner (#1652); when it can't be copied, nothing is written. Copied, never
+/// moved: the path always holds a file, so a write that fails leaves Ask, never a new install's
+/// Bypass.
 pub fn save(home: &Path, kept: &Kept) -> std::io::Result<()> {
     let file = path(home);
     let reads = match std::fs::read(&file) {
@@ -2659,7 +2661,7 @@ pub fn save(home: &Path, kept: &Kept) -> std::io::Result<()> {
             "permissions.json.unreadable-{}",
             obi_protocol::time::now()
         ));
-        std::fs::rename(&file, &aside)?;
+        std::fs::copy(&file, &aside)?;
         tracing::warn!(
             "{} didn't read: kept as {}",
             file.display(),
@@ -2674,7 +2676,7 @@ pub fn save(home: &Path, kept: &Kept) -> std::io::Result<()> {
 mod tests {
 
     /// PERMISSIONS-4 (#1652): a `permissions.json` that doesn't read loads as Ask with no rules, and the next save
-    /// moves it aside rather than writing over the rules it holds.
+    /// copies it aside rather than writing over the rules it holds.
     #[test]
     fn permissions_4_an_unreadable_file_is_kept_aside_never_written_over() {
         let home = std::env::temp_dir().join(format!("obid-perm-aside-{}", std::process::id()));
