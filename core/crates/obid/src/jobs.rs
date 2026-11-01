@@ -8631,7 +8631,9 @@ impl Jobs {
         }
         if !turn.succeeded() {
             let said = turn.text();
-            let first = said.lines().next().unwrap_or("").trim();
+            // Masked as the stderr note is (#1648): a CLI's error can carry a token.
+            let first = crate::detail::mask(said.lines().next().unwrap_or("").trim());
+            let first = first.trim();
             return Err(if first.is_empty() {
                 format!(
                     "Claude Code stopped without finishing the review ({}).{}",
@@ -9522,7 +9524,8 @@ impl Jobs {
                     if subtype.and_then(Value::as_str) == Some("error_max_turns") {
                         return Err(stall(Stall::Turns).await);
                     }
-                    let first = said.lines().next().unwrap_or("").trim().to_owned();
+                    // Masked as the stderr note is (#1648): it goes into the job's step and reason.
+                    let first = crate::detail::mask(said.lines().next().unwrap_or("").trim());
                     // Claude Code and Codex retry these themselves first; one that still ends the
                     // turn gets the round again in its session, after a wait.
                     // As its windows are now: one past its reset is empty again.

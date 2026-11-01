@@ -2709,6 +2709,14 @@ fn an_agents_stderr_reaches_the_reason_redacted() {
         request(&obid, "GET", "/v1/failures", None).body
     );
     assert!(!everything.contains(&token[4..]), "{everything}");
+    // An error result that holds one reaches the reason masked the same way.
+    let posted = post_job(
+        &obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "build", "task": "FAIL TOKEN"}),
+    );
+    let failed = wait(&obid, posted.body["id"].as_str().unwrap());
+    assert_eq!(failed["reason"], "[redacted: GitHub token]", "{failed}");
+    assert!(!failed.to_string().contains(&token[4..]), "{failed}");
     let log = std::fs::read_to_string(obid.home.join("logs").join(&id).join("agent.log"));
     assert!(
         log.unwrap_or_default().contains(&token),
