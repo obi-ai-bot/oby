@@ -6123,24 +6123,35 @@ impl Jobs {
 
     /// Whether deleting the job `id` loses work its commit count doesn't show (TASKS-11): obid's
     /// own `wip:` commit at its worktree's HEAD, or changes nobody committed. True when git can't
-    /// say; a worktree that's gone loses nothing.
+    /// say within 15 seconds (it runs in the owner's Delete request); a worktree that's gone loses
+    /// nothing.
     pub async fn unsaved_work(&self, id: &str) -> bool {
         if !self.worktree_path(id).join(".git").exists() {
             return false;
         }
+        let limit = Duration::from_secs(15);
+        // Any change at all is enough: one byte of it, never an untracked folder listed whole.
         let status = self
-            .sandboxed_git(
+            .sandboxed_git_within(
                 id,
-                &["status", "--porcelain", "--untracked-files=all"],
+                &["status", "--porcelain", "--untracked-files=normal"],
                 None,
+                limit,
+                0,
             )
             .await;
-        if !status.is_ok_and(|changes| changes.is_empty()) {
+        if status.is_err() {
             return true;
         }
-        self.sandboxed_git(id, &["log", "-1", "--format=%B", "HEAD"], None)
-            .await
-            .is_ok_and(|message| String::from_utf8_lossy(&message).trim() == WIP_MESSAGE)
+        self.sandboxed_git_within(
+            id,
+            &["log", "-1", "--format=%B", "HEAD"],
+            None,
+            limit,
+            WIP_MESSAGE.len() + 64,
+        )
+        .await
+        .is_ok_and(|message| String::from_utf8_lossy(&message).trim() == WIP_MESSAGE)
     }
 
     /// Where the job's worktree is as its check starts (PUBLISHING-5): its HEAD (empty when git
