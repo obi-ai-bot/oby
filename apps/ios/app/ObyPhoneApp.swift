@@ -29,7 +29,7 @@ struct ObyPhoneApp: App {
                 phase == .active ? phone.start() : phone.stop()
             }
             // Oby draws only while Home's stage shows, or the unpaired screen's.
-            .onChange(of: scenePhase == .active && phone.homePath.isEmpty, initial: true) { _, shown in
+            .onChange(of: scenePhase == .active && phone.homePath.isEmpty && !phone.needsPairing, initial: true) { _, shown in
                 home.made?.pause(!shown)
             }
             .onChange(of: scenePhase == .active && phone.needsPairing, initial: true) { _, shown in
