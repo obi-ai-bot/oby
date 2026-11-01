@@ -223,8 +223,8 @@ fun TaskPage(id: String) {
     LaunchedEffect(id) { phone.fetch(id); looked = true }
     DisposableEffect(id) { phone.showing(id, true); phone.markSeen(id); onDispose { phone.showing(id, false); phone.cancelVoice() } }
     fun run(work: suspend () -> Unit) { busy = true; scope.launch { problem = try { work(); null } catch (e: Exception) { e.message }; busy = false } }
-    suspend fun publish(job: Job, sentence: String) { action = sentence; open(phone.publish(activity, job.id, sentence)); action = null }
-    // The notification's Publish: the action shows, and the fingerprint or face is asked for now.
+    suspend fun publish(job: Job, sentence: String) { action = sentence; open(phone.publish(job.id, sentence)); action = null }
+    // The notification's Publish: the action shows, and the tap signs it.
     LaunchedEffect(phone.publishing, phone.loaded, job != null) {
         if (phone.publishing != id || !phone.loaded || job == null) return@LaunchedEffect
         phone.publishing = null
@@ -305,7 +305,7 @@ private fun TaskResult(job: Job, action: String?, busy: Boolean, problem: String
             T(action, Tokens.textBase, c.ink, FontWeight.Medium)
             problem?.let { T(it, Tokens.textSm, c.danger) }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                PillButton(if (busy) "Publishing…" else "Publish with fingerprint", primary = true, enabled = !busy) { onConfirm(action) }
+                PillButton(if (busy) "Publishing…" else "Publish", primary = true, enabled = !busy) { onConfirm(action) }
                 PillButton("Not now", quiet = true, enabled = !busy, onClick = onNotNow)
             }
         } else PillButton(if (job.published == null) "Publish…" else "Publish the new commits…", primary = true, enabled = !busy, onClick = onPublish)

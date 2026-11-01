@@ -100,9 +100,9 @@ fun SettingsScreen() {
                 { SetRow("Mac") { SetValue(phone.host.ifEmpty { "Not reached yet" }) } },
             ))
             SetGroup("Publishing key", problem = problem,
-                     footer = "Oby opens a pull request by itself once a job's check passes and the secret scan is clean. Publishing by hand, when that failed, needs your fingerprint or face on this phone.",
+                     footer = "Oby opens a pull request by itself once a job's check passes and the secret scan is clean. When that failed, publish by hand here: your tap is the approval, signed by this phone's key.",
                      rows = listOf { SetRow("This phone's key") {
-                         SetValue(if (DeviceKey.isAvailable(activity)) (if (phone.deviceID == null) "Not registered yet" else "Registered, biometric") else "Set up a fingerprint or face unlock")
+                         SetValue(if (phone.deviceID == null) "Not registered yet" else "Registered")
                      } })
         }
     }

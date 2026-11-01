@@ -15,7 +15,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
-import androidx.fragment.app.FragmentActivity
+import androidx.activity.ComponentActivity
 import kotlinx.coroutines.CompletableDeferred
 
 /**
@@ -23,7 +23,7 @@ import kotlinx.coroutines.CompletableDeferred
  * the iPhone is. Sangam's design, light or dark as the system is (Settings › Appearance): Home, his
  * side panel, and no tab bar. In the background: no connection, and Oby draws nothing.
  */
-class MainActivity : FragmentActivity() {
+class MainActivity : ComponentActivity() {
     private val phone get() = ObyApp.phone(this)
     private var appearance by mutableStateOf("system")
     /** Oby's page, made once for the activity so Home doesn't load it again each time it shows. */

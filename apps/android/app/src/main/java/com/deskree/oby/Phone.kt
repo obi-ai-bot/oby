@@ -10,7 +10,6 @@ import android.util.Log
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
-import androidx.fragment.app.FragmentActivity
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -149,7 +148,11 @@ class Phone(val context: Context) {
     val runner: Runner get() {
         // Paired with a Mac, a 401 means the pairing ended: say which.
         val refused = link?.let { if (pairedUntil?.let { it <= Instant.now() } == true) ReachNotice.Expired else ReachNotice.Removed }
-        return Runner(base, GatewayTokenStore.read(context), refused?.let { "${it.title}. ${it.detail}" }, if (base == RemoteRoute.RELAY_BASE) loadRelay() else null)
+        // The owner's typed words, signed with this phone's key as its id is when they go.
+        val key = deviceKey
+        return Runner(base, GatewayTokenStore.read(context), refused?.let { "${it.title}. ${it.detail}" }, if (base == RemoteRoute.RELAY_BASE) loadRelay() else null) { method, path, body ->
+            prefs.getString(key, null)?.let { device -> runCatching { DeviceKey.signWords(method, path, body, device) }.getOrNull() }
+        }
     }
 
     /** The relay of a Mac paired through its Obysphere, and only the one the link pinned. */
@@ -708,6 +711,17 @@ class Phone(val context: Context) {
 
     /** Settles an inbox item: an answer goes to its job, `done` lets it go, `later` puts it off. */
     suspend fun settle(id: String, answer: String? = null, done: Boolean? = null, later: Instant? = null) {
+        // Only the owner's tap confirms (#776): this phone's key signs the item's title, the tap its
+        // approval. A Confirm is never queued offline (its signature is stale after two minutes);
+        // Cancel and Later still are.
+        if (answer == RunnerConfirm.CONFIRM) {
+            if (connection != Connection.Live) throw RunnerError("Confirm needs a connection to your Mac.")
+            val confirming = inbox.firstOrNull { it.id == id && it.kind == RunnerConfirm.KIND }
+                ?: throw RunnerError("That's been answered already.")
+            val approval = DeviceKey.approveConfirm(id, confirming.title, registerDevice())
+            apply(RunnerEvent.Inbox(runner.settle(id, RunnerConfirm.CONFIRM, approval)))
+            return
+        }
         if (connection != Connection.Live) {
             offlineQueue.queue(OfflineInboxAnswer(id, answer, done, later?.toEpochMilli(), offlineQueueTarget))
             return
@@ -731,24 +745,24 @@ class Phone(val context: Context) {
         } catch (e: Exception) { Log.e(TAG, "fetching job $id failed: ${e.message}") }
     }
 
-    /** The publishing key signs the action after a fresh biometric; the runner checks it, then pushes and opens a draft PR. */
-    suspend fun publish(activity: FragmentActivity, id: String, action: String): String {
-        if (!DeviceKey.isAvailable(context)) throw RunnerError("Publishing needs a fingerprint or face unlock set up on this phone.")
+    /** This phone's key signs the action, the tap its approval; the runner checks the signature, then pushes and opens the pull request. */
+    suspend fun publish(id: String, action: String): String {
         val device = registerDevice()
-        val approval = DeviceKey.approve(activity, id, action, device)
+        val approval = DeviceKey.approve(id, action, device)
         val url = runner.publish(id, approval)
         jobs.firstOrNull { it.id == id }?.let { apply(RunnerEvent.JobChanged(it.copy(published = url, pushed = it.commits))) }
         return url
     }
 
-    private val deviceKey get() = "device.${link?.identity ?: runnerURL ?: ""}"
+    /** By the linked Mac (its identity) or by the runner's. The biometric key's, kept as `device.<…>` until 2026-11-01, doesn't sign any more. */
+    private val deviceKey get() = "device.approval.${link?.identity ?: runnerURL ?: ""}"
     val deviceID: String? get() = prefs.getString(deviceKey, null)
 
     /** Registers the phone's publishing key with the runner and returns its id; again on every connection. */
     suspend fun registerDevice(again: Boolean = false): String {
         if (!again) deviceID?.let { return it }
-        if (!DeviceKey.isAvailable(context)) throw RunnerError("Publishing needs a fingerprint or face unlock set up on this phone.")
-        val id = runner.register("Android", DeviceKey.publicKey())
+        // Made on its first use, in StrongBox when there is one: never on the main thread.
+        val id = runner.register("Android", kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { DeviceKey.publicKey() })
         prefs.edit().putString(deviceKey, id).apply()
         return id
     }

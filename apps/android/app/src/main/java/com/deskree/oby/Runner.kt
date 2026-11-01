@@ -88,7 +88,8 @@ class EventParser {
  * `Authorization: Bearer`. `refused`: what a 401 means here (a paired phone's pairing ended).
  * `relay`: the Mac's Obysphere, which every request goes sealed through when `base` is the relay's.
  */
-class Runner(val base: String, private val token: String?, private val refused: String? = null, private val relay: PhoneRelay? = null) {
+class Runner(val base: String, private val token: String?, private val refused: String? = null, private val relay: PhoneRelay? = null,
+             private val signsWords: ((method: String, path: String, body: ByteArray) -> String?)? = null) {
     companion object {
         /** Nowhere: where a request goes with no Mac paired and no runner set, so a fresh phone talks to nobody. */
         const val NOWHERE = "http://127.0.0.1:9"
@@ -147,6 +148,11 @@ class Runner(val base: String, private val token: String?, private val refused: 
     private fun request(method: String, path: String, body: String?): Request {
         val builder = Request.Builder().url(url(path))
         token?.let { builder.header("Authorization", "Bearer $it") }
+        // Everything but a read is the owner's words, signed with this phone's key once it's registered
+        // (`DeviceKey.signWords`): the path as obid reads it, without the query.
+        if (method != "GET" && method != "HEAD") {
+            signsWords?.invoke(method, "/" + path.substringBefore('?'), body?.toByteArray() ?: ByteArray(0))?.let { builder.header("X-Oby-Words", it) }
+        }
         builder.method(method, body?.toRequestBody(json) ?: if (method == "GET" || method == "DELETE") null else "".toRequestBody(json))
         return builder.build()
     }
@@ -203,6 +209,12 @@ class Runner(val base: String, private val token: String?, private val refused: 
     suspend fun settle(id: String, answer: String? = null, done: Boolean? = null, later: Instant? = null): InboxItem =
         call("POST", "v1/inbox/$id/answer", buildJsonObject {
             answer?.let { put("answer", it) }; done?.let { put("done", it) }; later?.let { put("later", it.toString()) }
+        }.toString())
+
+    /** A Confirm, with this phone's approval of the item's title (#776). */
+    suspend fun settle(id: String, answer: String, approval: Approval): InboxItem =
+        call("POST", "v1/inbox/$id/answer", buildJsonObject {
+            put("answer", answer); put("approval", wire.encodeToJsonElement(Approval.serializer(), approval))
         }.toString())
 
     suspend fun move(id: String, agent: String?, account: String?, model: String?): Job =

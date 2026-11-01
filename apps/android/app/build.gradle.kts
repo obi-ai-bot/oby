@@ -17,8 +17,6 @@ android {
 
     defaultConfig {
         applicationId = "com.deskree.oby"
-        // Android 11: Keystore keys that need a fresh biometric for every signature
-        // (setUserAuthenticationParameters), as the iPhone's Face ID key does.
         minSdk = 30
         targetSdk = 36
         versionCode = 1
@@ -91,7 +89,6 @@ dependencies {
     implementation(libs.camera.lifecycle)
     implementation(libs.camera.view)
     implementation(libs.barcode)
-    implementation(libs.biometric)
     implementation(libs.webkit)
     implementation(platform(libs.firebase.bom))
     implementation(libs.firebase.messaging)
