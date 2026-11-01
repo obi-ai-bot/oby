@@ -258,13 +258,40 @@ fn the_gateway_needs_a_device_token_and_passes_only_its_routes() {
         ("GET", "/v1/pairing/devices"),
         ("DELETE", "/v1/pairing/devices/abc"),
         ("GET", "/v1/connections"),
-        ("PUT", "/v1/settings/jobs"),
         ("GET", "/v1/obid/plugins"),
         ("GET", "/app/"),
+        // Accounts are still added, removed and signed in on the Mac alone.
+        ("POST", "/v1/accounts"),
+        ("DELETE", "/v1/accounts/abc"),
+        ("GET", "/v1/accounts/abc/sign-in"),
+        ("POST", "/v1/accounts/abc/sign-in"),
     ] {
         let answer = through(&obid, Some(&token), method, target, None);
         assert_eq!(answer.status, 404, "{method} {target}: {}", answer.text);
     }
+    // Settings › Agents on the iPhone (the owner's decision of 2026-11-01): an account's change
+    // and the default agent reach obid, which answers them itself.
+    let tuned = through(
+        &obid,
+        Some(&token),
+        "PATCH",
+        "/v1/accounts/nobody",
+        Some(&json!({"model": null})),
+    );
+    assert_eq!(tuned.status, 404, "{}", tuned.text);
+    assert!(
+        tuned.text.contains("nobody"),
+        "obid's own answer, not the gateway's: {}",
+        tuned.text
+    );
+    let jobs_settings = through(
+        &obid,
+        Some(&token),
+        "PUT",
+        "/v1/settings/jobs",
+        Some(&json!({"defaultAccount": null})),
+    );
+    assert_eq!(jobs_settings.status, 200, "{}", jobs_settings.text);
 
     let status = through(&obid, Some(&token), "GET", "/v1/status", None);
     assert_eq!(status.status, 200, "{}", status.text);
