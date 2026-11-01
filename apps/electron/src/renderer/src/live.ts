@@ -570,7 +570,7 @@ async function sync(mine: number, pending: Event[], onSynced: () => void) {
     // which aren't among them: any other this app had was deleted while the stream was away (on
     // the iPhone, say), and goes
     const oldest = jobs.length < 100 ? undefined : jobs.at(-1)!.created;
-    const older = Object.values(state.jobs).filter((j) => oldest && j.created < oldest);
+    const older = Object.values(state.jobs).filter((j) => oldest && j.created <= oldest); // <=: created is whole seconds, so jobs past the 100th can share its second
     let next: Live = {
       ...state, connection: 'live', problem: null, why: undefined, status, inbox: inbox.filter((i) => i.state !== 'done'), conversations, github,
       limits: limitVersion === limitRequest ? limits : state.limits,
