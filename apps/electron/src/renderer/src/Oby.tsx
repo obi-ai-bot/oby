@@ -28,6 +28,7 @@ declare global {
         call(method: string, path: string, body?: unknown): Promise<{ status: number; text: string }>;
         confirm(item: string): Promise<{ status: number; text: string }>;
         limitAnswer(item: string, revision: number, choice: string, account?: string): Promise<{ status: number; text: string }>;
+        pairInvite(): Promise<{ status: number; text: string }>;
         follow(onChunk: (text: string) => void, onEnd: (a: { status: number; text: string; why?: 'waiting' | 'approval' }) => void): () => void;
       };
     };

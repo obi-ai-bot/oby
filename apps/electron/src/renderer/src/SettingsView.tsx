@@ -7,7 +7,8 @@ import { MODES, SANDBOX } from './modes';
 import { OwnerAvatar } from './ObyFace';
 import { useSpheres } from './spheres';
 import { everything, onObid } from './lean';
-import { ApiError, api, type ModelOptions, type Models, type SavedRule, type SignIn, type Status } from './obid';
+import qrcode from 'qrcode-generator';
+import { ApiError, api, qrText, type Invitation, type PairedDevice, type ModelOptions, type Models, type SavedRule, type SignIn, type Status } from './obid';
 import Connectors, { ConfirmWindow, readConnectors } from './Connectors';
 import { Menu } from './Menu';
 import { liveState, patchStatus, say, useLive } from './live';
@@ -26,7 +27,8 @@ const LEAVE_MS = 220;
 // back later: only with ?everything (lean.ts)
 // Agents takes Accounts' and Models' place: each agent's accounts with its model and efforts,
 // and which one new tasks go to (the old two stay with ?everything)
-const LATER = new Set(['runner', 'sharing', 'remote', 'vault', 'accounts', 'models']);
+// On obid, Runner shows only pairing an iPhone (Pairing), as the Swift Mac app's Settings › Runner had it
+const LATER = new Set([...(onObid ? [] : ['runner']), 'sharing', 'remote', 'vault', 'accounts', 'models']);
 export const SETTINGS_PAGES = [
   { id: 'general', label: 'General' },
   { id: 'agents', label: 'Agents' },
@@ -198,10 +200,58 @@ function Notifications() {
   );
 }
 
-// Runner: the always-on runner and how this Mac reaches it, keeping this Mac
+// Runner: on obid, pairing an iPhone; otherwise Sangam's demo page
+const Runner = () => (onObid ? <Pairing /> : <MockRunner />);
+
+// Pair a device, as the Swift Mac app's Settings › Runner had it (apps/mac/app/PairingView.swift):
+// while obid is in an Obysphere, an invitation the owner's click makes (main signs it, so the
+// phone may approve), its QR code for the iPhone to scan, good for two minutes and once; the
+// phone then reaches obid sealed, through the Obysphere (docs/runner-api.md, "obid only: the phone
+// relay"). Paired devices, with Revoke.
+function Pairing() {
+  const sphere = useSpheres().find((s) => s.live);
+  const [invitation, setInvitation] = useState<Invitation | null>(null);
+  const [devices, setDevices] = useState<PairedDevice[]>([]);
+  const [busy, setBusy] = useState(false);
+  const [problem, setProblem] = useState<string | null>(null);
+  const failed = (e: Error) => setProblem(e.message);
+  const load = () => api.pairedDevices().then(setDevices, () => { /* obid may be starting: the list comes next time */ });
+  useEffect(() => { void load(); }, []);
+  // a phone that paired shows here; ponytail: obid has no event for it, so every 5 s while a QR is out
+  useEffect(() => {
+    if (!invitation) return;
+    const t = setInterval(load, 5000);
+    // and gone once it's good for nothing
+    const gone = setTimeout(() => setInvitation(null), Math.max(0, Date.parse(invitation.expiresAt) - Date.now()));
+    return () => { clearInterval(t); clearTimeout(gone); };
+  }, [invitation]);
+  const create = () => {
+    setBusy(true);
+    api.pairInvite().then((i) => { setInvitation(i); setProblem(null); }, failed).finally(() => setBusy(false));
+  };
+  const revoke = (d: PairedDevice) => api.revokeDevice(d.id).then(() => { setDevices((all) => all.filter((x) => x.id !== d.id)); setProblem(null); }, failed);
+  const qr = invitation && (() => { const q = qrcode(0, 'M'); q.addData(qrText(invitation), 'Byte'); q.make(); return q.createDataURL(6, 2); })();
+  const expires = (d: PairedDevice) => new Date(d.expiresAt).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
+  return <>
+    <Group i={1} title="Pair a device" footer={sphere ? undefined : 'Join an Obysphere and your iPhone pairs through it, with nothing else to set up.'}>
+      {qr && sphere && <Row label={<img className="set-qr" src={qr} width={180} height={180} alt="Pairing QR code" />}
+        about={`Through your Obysphere: ${new URL(invitation!.url).host}. Valid for two minutes. The code is single-use.`} />}
+      {sphere
+        ? <Row label="Through your Obysphere"><button className="set-button" disabled={busy} onClick={create}>{busy ? 'Creating…' : invitation ? 'Create new invitation' : 'Pair a device'}</button></Row>
+        : <Row label="No way to reach this Mac yet" />}
+      {problem && <Row label={<span className="set-problem" role="alert">{problem}</span>} />}
+    </Group>
+    <Group i={2} title="Paired devices" footer="Revoke a lost phone here. It will need to pair again before it can reach this Mac.">
+      {devices.length === 0 && <Row label={<span className="set-none">None yet</span>} />}
+      {devices.map((d) => <Row key={d.id} label={d.name} about={`Expires ${expires(d)}`}><button className="set-button is-danger" onClick={() => void revoke(d)}>Revoke</button></Row>)}
+    </Group>
+  </>;
+}
+
+// Runner (Sangam's demo): the always-on runner and how this Mac reaches it, keeping this Mac
 // awake, the runner's permissions, the checks this Mac runs for it, watches,
 // and the key that publishes
-function Runner() {
+function MockRunner() {
   const [here, setHere] = useSetting('runner.here', true);
   const [url, setUrl] = useSetting('runner.url', '');
   const [awake, setAwake] = useSetting('runner.awake', true);
