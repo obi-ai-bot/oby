@@ -30,7 +30,7 @@ struct RoutinesSection: View {
                 if routines.isEmpty { SetRow("No routines yet", quiet: true) }
                 ForEach(routines) { routine in row(routine) }
             } else if runner == nil {
-                SetRow("Pair with your Mac first.", quiet: true)
+                SetRow(RunnerError.unpaired, quiet: true)
             } else {
                 SetRow("This Oby has no routines.", quiet: true)
             }

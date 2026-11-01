@@ -1121,6 +1121,16 @@ nonisolated struct RunnerError: LocalizedError {
     /// The runner's HTTP status, when it answered with an error.
     var status: Int? = nil
     var errorDescription: String? { message }
+
+    // A person never reads "runner" (the owner, 2026-11-01), except in the frozen Swift Mac app,
+    // whose Settings still has its Runner page.
+    #if os(macOS)
+    static let unpaired = "Set the runner's address first."
+    static let notLetIn = RunnerError.notLetIn
+    #else
+    static let unpaired = "Pair with your Mac first."
+    static let notLetIn = "Your Mac didn't let this device in."
+    #endif
 }
 
 /// The runner on the tailnet: `tailscale serve` vouches for who's asking, so there's no token. Or
@@ -1998,7 +2008,7 @@ nonisolated struct Runner: Sendable {
         if http.statusCode == 401, let refused { throw RunnerError(message: refused, status: 401) }
         struct Problem: Decodable { var error: String }
         if let data, let problem = try? JSONDecoder().decode(Problem.self, from: data) { throw RunnerError(message: problem.error, status: http.statusCode) }
-        throw RunnerError(message: http.statusCode == 401 ? "The runner didn't let this device in." : "Oby answered \(http.statusCode).",
+        throw RunnerError(message: http.statusCode == 401 ? RunnerError.notLetIn : "Oby answered \(http.statusCode).",
                           status: http.statusCode)
     }
 }

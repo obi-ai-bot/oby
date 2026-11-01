@@ -47,7 +47,7 @@ struct PermissionsSection: View {
     private var group: some View {
         SetGroup("Permissions", footer: Self.footer, problem: problem) {
             if runner == nil {
-                SetRow("Pair with your Mac first.", quiet: true)
+                SetRow(RunnerError.unpaired, quiet: true)
             } else if defaultMode == nil && rules == nil {
                 SetRow("This Oby doesn't ask before agents act.", quiet: true)
             } else {
@@ -73,7 +73,7 @@ struct PermissionsSection: View {
     private var section: some View {
         Section {
             if runner == nil {
-                Text("Pair with your Mac first.").foregroundStyle(.secondary)
+                Text(RunnerError.unpaired).foregroundStyle(.secondary)
             } else if defaultMode == nil && rules == nil {
                 Text("This Oby doesn't ask before agents act.").foregroundStyle(.secondary)
             } else {
