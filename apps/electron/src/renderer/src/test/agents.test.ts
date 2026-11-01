@@ -34,6 +34,14 @@ async function load(kept: Record<string, unknown>) {
   // obid's event stream, as main passes it on: fed by the test
   const follow = (onChunk: (text: string) => void) => { feed = onChunk; return () => {}; };
   vi.stubGlobal('window', { app: { obid: { call, follow } } });
+  // Settings › Agents' hooks called as a render would, with no DOM: state as first drawn, effects
+  // not run, a store read as it is
+  vi.doMock('react', async (actual) => ({
+    ...(await actual<typeof import('react')>()),
+    useState: <T,>(v: T | (() => T)) => [typeof v === 'function' ? (v as () => T)() : v, () => {}],
+    useEffect: () => {},
+    useSyncExternalStore: <T,>(_: unknown, get: () => T) => get(),
+  }));
   const settings = await import('../SettingsView');
   const live = await import('../live');
   const left = (k: string) => JSON.parse(storage.getItem(`oby.setting.${k}`) ?? 'null');
@@ -46,7 +54,7 @@ const status = (more: Record<string, unknown> = {}) =>
 
 describe('Settings › Agents on obid', () => {
   beforeEach(() => { answers = {}; });
-  afterEach(() => { vi.unstubAllGlobals(); });
+  afterEach(() => { vi.unstubAllGlobals(); vi.doUnmock('react'); });
 
   it('AGENTS-7: the default and each account\'s model kept here move to obid once, then are forgotten here', async () => {
     const { settings, left } = await load({
@@ -86,7 +94,9 @@ describe('Settings › Agents on obid', () => {
     let go!: () => void;
     const hold = new Promise<void>((done) => { go = done; });
     answers['PATCH /v1/accounts/a1'] = { status: 200, body: { ...account('a1'), model: 'claude-sonnet-5-5' }, hold };
-    const tuned = settings.tuneAccount('a1', { model: 'claude-sonnet-5-5' });
+    // the page's tune, as Agents drew it before the event
+    const [, , tune] = settings.useModels();
+    const tuned = tune('a1', { model: 'claude-sonnet-5-5' });
     await flush();
     const event = [{ ...account('a1'), running: 1 }, { ...account('a2'), fiveHour: 40 }];
     feed(`event: accounts\ndata: ${JSON.stringify(event)}\n\n`);

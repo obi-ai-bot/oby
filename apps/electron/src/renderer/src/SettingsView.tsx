@@ -636,7 +636,7 @@ const tuningOf = (a: { model?: string; effort?: string; complexEffort?: string }
 // and the choices. Each starts from what obid's status says the tool runs; obid keeps a change on
 // the account and offers the choices; an older obid and the mock keep it here, with the mock's
 // choices
-function useModels(): [(x: Account) => Tuning, ModelOptions, (id: string, change: Partial<Tuning>) => Promise<void>] {
+export function useModels(): [(x: Account) => Tuning, ModelOptions, (id: string, change: Partial<Tuning>) => Promise<void>] {
   const status = useLive().status;
   const live = status?.models as Partial<Models> | undefined;
   const [mine, setMine] = useKeptSetting<Record<string, Partial<Tuning>>>('models.mine', {});

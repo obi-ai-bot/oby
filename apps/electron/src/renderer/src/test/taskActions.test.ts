@@ -338,6 +338,34 @@ describe('obid\'s answers over the events that came meanwhile', () => {
     expect(tasks.dev!.get()).toEqual([]);
   });
 
+  it('a job with no revision (obid downgraded) is taken as it comes, not held off by one from before (#1709)', async () => {
+    const { live } = await load(true);
+    const event = await following(live, [job({ status: 'running', step: 'Working', revision: 5 })]);
+    event('job', job({ status: 'done', step: 'Done' }));
+    expect(live.liveState().jobs.j1.status).toBe('done');
+  });
+
+  it('back after obid restarted with a lower revision: obid\'s list wins, but a newer answer that came while it was read stays (#1709)', async () => {
+    const { live } = await load(true);
+    await following(live, [job({ status: 'running', step: 'Working', revision: 5 })]);
+    // obid restarted before its last save (its revision went back): its list is the job now
+    await following(live, [job({ status: 'done', step: 'Done', revision: 2 })]);
+    expect(live.liveState().jobs.j1.status).toBe('done');
+
+    // a rename's answer, newer than the list read meanwhile
+    const { hold, go } = held();
+    answers['GET /v1/jobs?limit=100'] = { status: 200, body: [job({ revision: 3 })], hold };
+    answers['PATCH /v1/jobs/j1'] = { status: 200, body: job({ title: 'Vault tests', revision: 4 }) };
+    live.connect();
+    feed('');
+    await flush();
+    await live.renameJob('j1', 'Vault tests');
+    go();
+    for (let i = 0; i < 5; i++) await flush();
+    expect(live.liveState().connection).toBe('live');
+    expect(live.liveState().jobs.j1.title).toBe('Vault tests');
+  });
+
   it('a conversation opened after its task was deleted doesn\'t fetch the task back (#1709)', async () => {
     const { tasks, live } = await load(true);
     const event = await following(live, [job()]);

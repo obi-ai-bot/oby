@@ -78,8 +78,9 @@ const byAt = (a: Turn, b: Turn) => a.at.localeCompare(b.at);
 const merged = (had: Turn[], more: Turn[]) => [...had.filter((t) => !more.some((m) => m.id === t.id)), ...more].sort(byAt);
 const without = <T,>(r: Record<string, T>, key: string) => { const { [key]: _, ...rest } = r; return rest; };
 // of two copies of a job, the one to keep: the newer by obid's revision, as an answer can come
-// after an event that's newer than it (#1709). An older obid has none: the one that came last
-const newer = (had: Job | undefined, j: Job) => (had && (had.revision ?? 0) > (j.revision ?? 0) ? had : j);
+// after an event that's newer than it (#1709). One with none (an older obid, after a downgrade)
+// is taken as it comes, never held off by a revision from before
+const newer = (had: Job | undefined, j: Job) => (had && j.revision !== undefined && (had.revision ?? 0) > j.revision ? had : j);
 // the app's id for one of obid's conversations, and back
 export const shownId = (c: string) => state.alias[c] ?? c;
 export const realId = (shown: string) => Object.keys(state.alias).find((k) => state.alias[k] === shown) ?? shown;
@@ -562,6 +563,7 @@ function down(mine: number, problem: string, why?: Live['why']) {
 async function sync(mine: number, pending: Event[], onSynced: () => void) {
   try {
     const limitVersion = ++limitRequest;
+    const before = state.jobs;
     const [status, jobs, inbox, { list: conversations, complete }, github, limits] = await Promise.all([
       api.status(), api.jobs(100), api.inbox().catch(() => []), allConversations(),
       // GitHub's work: not read, the last read stands, with why (as obid keeps its last lists)
@@ -578,7 +580,10 @@ async function sync(mine: number, pending: Event[], onSynced: () => void) {
     let next: Live = {
       ...state, connection: 'live', problem: null, why: undefined, status, inbox: inbox.filter((i) => i.state !== 'done'), conversations, github,
       limits: limitVersion === limitRequest ? limits : state.limits,
-      jobs: Object.fromEntries([...older, ...jobs.filter((j) => !state.gone.has(j.id)).map((j) => newer(state.jobs[j.id], j))].map((j) => [j.id, j])),
+      // obid's list wins, but over a copy an answer brought while it was read: the newer of the two
+      // (a restart can take a job's revision back: obid's then, not one from before the stream went)
+      jobs: Object.fromEntries([...older, ...jobs.filter((j) => !state.gone.has(j.id))
+        .map((j) => (state.jobs[j.id] !== before[j.id] ? newer(state.jobs[j.id], j) : j))].map((j) => [j.id, j])),
       firstJobs: state.status ? state.firstJobs : new Set(jobs.map((j) => j.id)),
     };
     for (const e of pending) next = apply(next, e);
