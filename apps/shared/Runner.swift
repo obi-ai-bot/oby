@@ -51,8 +51,9 @@ nonisolated struct Job: Codable, Identifiable, Equatable, Sendable {
     var pullRequestError: String?
     /// When the user let the job go (Dismiss), or nil: it then needs nothing (newer runners only).
     var dismissed: Date?
-    /// Archived with a task's ⋮, on any app (obid only, `POST /v1/jobs/{id}/archive`), or nil.
-    var archived: Bool?
+    /// When it was archived with a task's ⋮, on any app (obid only, `POST /v1/jobs/{id}/archive`),
+    /// or nil; obid clears it when the task runs again.
+    var archived: Date?
     /// Oby's own review of the pull request (newer runners): the review job under way, the latest
     /// verdict, why none came, and, on a review job, the job it reviews.
     var reviewing: String?
@@ -393,9 +394,6 @@ nonisolated struct Question: Codable, Equatable, Sendable {
 #if os(iOS) || os(watchOS)
 /// Something only the user can answer, waiting in the inbox (docs/runner-api.md). The Mac reads
 /// these into Engine's own InboxItem.
-/// What `POST /v1/jobs/{id}/delete` answers.
-nonisolated struct DeleteAnswer: Decodable, Sendable { var deleted: Bool; var ask: InboxItem? }
-
 nonisolated struct InboxItem: Codable, Identifiable, Equatable, Sendable {
     /// `question`, `review`, `failed` or `limit`; more may come.
     var kind: String
@@ -424,6 +422,9 @@ nonisolated struct InboxItem: Codable, Identifiable, Equatable, Sendable {
     var words: InboxWords { InboxWords(headline: headline, happened: happened, recommended: recommended, why: why, confirm: confirm) }
     func waiting(at now: Date = .now) -> Bool { done == nil && (later.map { $0 <= now } ?? true) }
 }
+
+/// What `POST /v1/jobs/{id}/delete` answers.
+nonisolated struct DeleteAnswer: Decodable, Sendable { var deleted: Bool; var ask: InboxItem? }
 #endif
 
 #if os(macOS)

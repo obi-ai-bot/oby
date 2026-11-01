@@ -31,7 +31,7 @@ nonisolated enum PhoneWork {
     /// ones you let go (Dismiss). The runner keeps them all; this lists the ones it sent.
     /// `here`: the tasks archived on this iPhone (a task's ⋮); one that runs again comes back.
     static func archived(_ jobs: [Job], clearedAt: Date?, here: Set<String> = []) -> [Job] {
-        jobs.filter { !$0.isActive && ($0.dismissed != nil || $0.archived == true || here.contains($0.id) || !$0.listed(after: clearedAt, among: jobs)) }
+        jobs.filter { !$0.isActive && ($0.dismissed != nil || $0.archived != nil || here.contains($0.id) || !$0.listed(after: clearedAt, among: jobs)) }
     }
 
     /// The Inbox (docs/oby-ux.md row 10): of what waits now, the decisions with no task on Home,
@@ -542,7 +542,7 @@ final class Phone {
 
     /// The jobs Home lists: all but the settled ones (`Job.settled`) that finished by the last Clear
     /// done, newest first. Home puts them in their groups (JobList.groups), as the Mac's window does.
-    var visibleJobs: [Job] { jobs.filter { $0.listed(after: clearedAt, among: jobs) && ($0.isActive || !archivedHere.contains($0.id) && $0.archived != true) } }
+    var visibleJobs: [Job] { jobs.filter { $0.listed(after: clearedAt, among: jobs) && ($0.isActive || !archivedHere.contains($0.id) && $0.archived == nil) } }
 
     // MARK: Staying live
 
@@ -1021,7 +1021,12 @@ final class Phone {
     }
 
     func deleteTask(_ id: String) async throws -> Bool {
-        let answer = try await runner.deleteAsked(id)
+        let answer: DeleteAnswer
+        do { answer = try await runner.deleteAsked(id) } catch let error as RunnerError where error.status == 404 {
+            // gone already (deleted on another app while this one wasn't following)
+            apply(.jobDeleted(id))
+            return true
+        }
         if let ask = answer.ask { apply(.inbox(ask)) }
         if answer.deleted { apply(.jobDeleted(id)) }
         return answer.deleted

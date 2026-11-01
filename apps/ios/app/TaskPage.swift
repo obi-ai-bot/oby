@@ -129,6 +129,8 @@ struct TaskMenuItems: View {
     let items: [TaskMenu.Item]
     var onMove: () -> Void = {}
     var onRename: () -> Void = {}
+    /// Delete task took it: its own page goes back.
+    var onDeleted: () -> Void = {}
     /// An action under way: the items wait for it.
     var busy: Binding<Bool> = .constant(false)
     var onProblem: (String?) -> Void = { _ in }
@@ -147,7 +149,7 @@ struct TaskMenuItems: View {
             case .move: Button("Move to…", systemImage: "arrow.left.arrow.right", action: onMove)
             case .delete:
                 Divider()
-                Button("Delete task", systemImage: "trash", role: .destructive) { run { _ = try await phone.deleteTask(job.id) } }.disabled(busy.wrappedValue)
+                Button("Delete task", systemImage: "trash", role: .destructive) { run { if try await phone.deleteTask(job.id) { onDeleted() } } }.disabled(busy.wrappedValue)
             case .mode:
                 let mode = RunnerMode(job.mode)
                 Picker(selection: Binding { mode } set: { choice in if let choice { run { try await phone.setMode(job.id, choice) } } }) {
@@ -231,6 +233,7 @@ struct TaskPage: View {
     @Environment(\.openURL) private var openURL
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.push) private var push
+    @Environment(\.dismiss) private var dismiss
     let id: String
     @State private var action: String?
     @State private var busy = false
@@ -305,7 +308,7 @@ struct TaskPage: View {
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu {
                         TaskMenuItems(job: job, items: TaskMenu.items(job, conversation: phone.conversation(of: job) != nil),
-                                      onMove: { problem = nil; moving = true }, onRename: { newTitle = job.heading; renaming = true },
+                                      onMove: { problem = nil; moving = true }, onRename: { newTitle = job.heading; renaming = true }, onDeleted: { dismiss() },
                                       busy: $busy, onProblem: { problem = $0 })
                     } label: { Image(systemName: "ellipsis") }
                         .accessibilityLabel("Task options")

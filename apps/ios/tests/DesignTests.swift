@@ -125,7 +125,7 @@ struct DesignTests {
         #expect(PhoneWork.archived([done, running], clearedAt: nil, here: ["d"]).map(\.id) == ["d"])
         #expect(PhoneWork.archived([running], clearedAt: nil, here: ["r"]).isEmpty)
         // Archived on any app (obid's `archived`): in Archived here too.
-        let archived = try job("a", "done", finished: "2026-10-09T22:00:00Z", extra: #", "archived": true"#)
+        let archived = try job("a", "done", finished: "2026-10-09T22:00:00Z", extra: #", "archived": "2026-10-09T22:05:00Z""#)
         #expect(PhoneWork.archived([archived, done], clearedAt: nil).map(\.id) == ["a"])
         // Deleted on any app: obid's `{"id", "deleted": true}` is a deleted job, not one that fails to read.
         var parser = EventParser()
