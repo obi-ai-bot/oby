@@ -223,7 +223,7 @@ fun TaskPage(id: String) {
     LaunchedEffect(id) { phone.fetch(id); looked = true }
     DisposableEffect(id) { phone.showing(id, true); phone.markSeen(id); onDispose { phone.showing(id, false); phone.cancelVoice() } }
     fun run(work: suspend () -> Unit) { busy = true; scope.launch { problem = try { work(); null } catch (e: Exception) { e.message }; busy = false } }
-    suspend fun publish(job: Job, sentence: String) { action = sentence; open(phone.publish(activity, job.id, sentence)); action = null }
+    suspend fun publish(job: Job, sentence: String) { action = sentence; open(phone.publish(job.id, sentence)); action = null }
     // The notification's Publish: the action shows, and the fingerprint or face is asked for now.
     LaunchedEffect(phone.publishing, phone.loaded, job != null) {
         if (phone.publishing != id || !phone.loaded || job == null) return@LaunchedEffect

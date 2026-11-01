@@ -4,12 +4,6 @@ import android.content.Context
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import android.util.Base64
-import androidx.biometric.BiometricManager
-import androidx.biometric.BiometricManager.Authenticators.BIOMETRIC_STRONG
-import androidx.biometric.BiometricPrompt
-import androidx.core.content.ContextCompat
-import androidx.fragment.app.FragmentActivity
-import kotlinx.coroutines.suspendCancellableCoroutine
 import java.security.KeyPairGenerator
 import java.security.KeyStore
 import java.security.PrivateKey
@@ -22,22 +16,20 @@ import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
-import kotlin.coroutines.resume
-import kotlin.coroutines.resumeWithException
 
 /**
- * This phone's publishing key (apps/shared/DeviceKey.swift on the iPhone): a P-256 key in Android
- * Keystore, made in StrongBox when the phone has one, that signs only after a strong biometric for
- * that one signature (the Face ID of the iPhone), and is invalidated when a new fingerprint or face
- * is enrolled, as `.biometryCurrentSet` is. The private key never leaves the Keystore.
+ * This phone's approval key (apps/shared/DeviceKey.swift): a P-256 key in Android Keystore, made
+ * in StrongBox when the phone has one, that never leaves it. The owner's tap is the approval (the
+ * owner's decision of 2026-10-24): signing asks for no fingerprint, face or PIN. What keeps other
+ * apps from signing is the Keystore itself: only Oby's own process can use its keys.
  */
 object DeviceKey {
-    private const val ALIAS = "publish-key"
+    private const val ALIAS = "approval-key"
+    /** The biometric key it replaces (until 2026-11-01): nothing signs with it any more. */
+    private const val REPLACED = "publish-key"
     private val keystore get() = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
 
-    fun isAvailable(context: Context) = BiometricManager.from(context).canAuthenticate(BIOMETRIC_STRONG) == BiometricManager.BIOMETRIC_SUCCESS
-
-    /** The public half as the runner takes it: X9.63 (65 bytes, uncompressed), base64. Making it asks nothing. */
+    /** The public half as the runner takes it: X9.63 (65 bytes, uncompressed), base64. */
     fun publicKey(): String {
         val key = keystore.getCertificate(ALIAS)?.publicKey as? ECPublicKey ?: make()
         fun bytes(n: java.math.BigInteger) = n.toByteArray().let { if (it.size > 32) it.copyOfRange(it.size - 32, it.size) else ByteArray(32 - it.size) + it }
@@ -48,52 +40,46 @@ object DeviceKey {
         fun spec(strongBox: Boolean) = KeyGenParameterSpec.Builder(ALIAS, KeyProperties.PURPOSE_SIGN)
             .setAlgorithmParameterSpec(ECGenParameterSpec("secp256r1"))
             .setDigests(KeyProperties.DIGEST_SHA256)
-            .setUserAuthenticationRequired(true)
-            .setUserAuthenticationParameters(0, KeyProperties.AUTH_BIOMETRIC_STRONG)
-            .setInvalidatedByBiometricEnrollment(true)
             .setIsStrongBoxBacked(strongBox)
             .build()
         val generator = KeyPairGenerator.getInstance(KeyProperties.KEY_ALGORITHM_EC, "AndroidKeyStore")
         val pair = runCatching { generator.initialize(spec(true)); generator.generateKeyPair() }
             .getOrElse { generator.initialize(spec(false)); generator.generateKeyPair() }
+        runCatching { keystore.deleteEntry(REPLACED) }
         return pair.public as ECPublicKey
     }
 
-    /** Signs one publish: the biometric prompt shows the exact action, and nothing is signed without it. */
-    suspend fun approve(activity: FragmentActivity, job: String, action: String, device: String): Approval {
-        val signedAt = Instant.now().truncatedTo(ChronoUnit.SECONDS).toString()
-        val signature = sign(activity, Approval.message(job, action, signedAt), action)
-        return Approval(device, action, signedAt, signature)
+    private fun now() = Instant.now().truncatedTo(ChronoUnit.SECONDS).toString()
+
+    /** Signs one publish of `job` by `action`, the runner's own sentence. */
+    fun approve(job: String, action: String, device: String): Approval {
+        val signedAt = now()
+        return Approval(device, action, signedAt, sign(Approval.message(job, action, signedAt)))
+    }
+
+    /** Signs the owner's Confirm of inbox item `item`: `action` is the item's title, word for word (#776). */
+    fun approveConfirm(item: String, title: String, device: String): Approval {
+        val signedAt = now()
+        return Approval(device, title, signedAt, sign("oby-confirm\n$item\n$title\n$signedAt".toByteArray()))
+    }
+
+    /**
+     * Signs a request that carries words the owner typed, as device `device` (docs/runner-api.md,
+     * "Words the owner typed"): the value of its `X-Oby-Words` header, `"<device> <signedAt> <signature>"`,
+     * over its method, its path from `/v1/` on and its body's SHA-256. To the millisecond: two of
+     * the same request in one second are two signatures.
+     */
+    fun signWords(method: String, path: String, body: ByteArray, device: String): String {
+        val signedAt = Instant.now().truncatedTo(ChronoUnit.MILLIS).toString()
+        val digest = java.security.MessageDigest.getInstance("SHA-256").digest(body).joinToString("") { "%02x".format(it) }
+        return "$device $signedAt ${sign("oby-words\n$method\n$path\n$digest\n$signedAt".toByteArray())}"
     }
 
     /** ECDSA P-256 with SHA-256, DER, base64: what the runner checks. */
-    private suspend fun sign(activity: FragmentActivity, message: ByteArray, reason: String): String {
+    private fun sign(message: ByteArray): String {
         if (keystore.getKey(ALIAS, null) == null) make()
-        val signature = Signature.getInstance("SHA256withECDSA").apply {
-            try { initSign(keystore.getKey(ALIAS, null) as PrivateKey) } catch (e: android.security.keystore.KeyPermanentlyInvalidatedException) {
-                // A new fingerprint or face: the key goes, and the next one registers again.
-                keystore.deleteEntry(ALIAS)
-                throw RunnerError("A new fingerprint or face was added, so the publishing key was reset. Publish again to register a new one.")
-            }
-        }
-        val signed = suspendCancellableCoroutine { done ->
-            val prompt = BiometricPrompt(activity, ContextCompat.getMainExecutor(activity), object : BiometricPrompt.AuthenticationCallback() {
-                override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
-                    done.resume(result.cryptoObject?.signature ?: signature)
-                }
-                override fun onAuthenticationError(code: Int, message: CharSequence) {
-                    done.resumeWithException(RunnerError(message.toString()))
-                }
-            })
-            prompt.authenticate(BiometricPrompt.PromptInfo.Builder()
-                .setTitle("Publish with Oby")
-                .setSubtitle(reason)
-                .setNegativeButtonText("Not now")
-                .setAllowedAuthenticators(BIOMETRIC_STRONG)
-                .build(), BiometricPrompt.CryptoObject(signature))
-        }
-        signed.update(message)
-        return Base64.encodeToString(signed.sign(), Base64.NO_WRAP)
+        val signature = Signature.getInstance("SHA256withECDSA").apply { initSign(keystore.getKey(ALIAS, null) as PrivateKey); update(message) }
+        return Base64.encodeToString(signature.sign(), Base64.NO_WRAP)
     }
 }
 
