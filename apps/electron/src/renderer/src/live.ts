@@ -49,13 +49,14 @@ type Live = {
   // the repository last picked for words sent here, by conversation (its app id), and when
   picked: Record<string, { repo: string; at: string }>;
   sessions: Record<string, TranscriptEntry[]>;  // each job's session opened (Full session), by job
+  gone: Set<string>;             // the jobs obid said it deleted: never back from an answer that crossed it
   // the files your words took, by their turn: the name obid kept, the one picked, a photo's preview
   previews: Record<string, { name: string; shown: string; preview?: string }[]>;
 };
 
 let state: Live = {
   connection: 'connecting', problem: null, status: null, repos: [], github: null, jobs: {}, firstJobs: new Set(), seen: new Set(), inbox: [], limits: [],
-  conversations: [], turns: {}, loaded: new Set(), working: {}, words: {}, pace: {}, waiting: {}, starting: null, alias: {}, answered: {}, answering: new Set(), picked: {}, sessions: {}, previews: {},
+  conversations: [], turns: {}, loaded: new Set(), working: {}, words: {}, pace: {}, waiting: {}, starting: null, alias: {}, answered: {}, answering: new Set(), picked: {}, sessions: {}, previews: {}, gone: new Set(),
 };
 const listeners = new Set<() => void>();
 const set = (patch: Partial<Live>) => {
@@ -76,6 +77,10 @@ const minutesAgo = (iso: string | null | undefined) => (iso ? Math.max(0, (Date.
 const byAt = (a: Turn, b: Turn) => a.at.localeCompare(b.at);
 const merged = (had: Turn[], more: Turn[]) => [...had.filter((t) => !more.some((m) => m.id === t.id)), ...more].sort(byAt);
 const without = <T,>(r: Record<string, T>, key: string) => { const { [key]: _, ...rest } = r; return rest; };
+// of two copies of a job, the one to keep: the newer by obid's revision, as an answer can come
+// after an event that's newer than it (#1709). One with none (an older obid, after a downgrade)
+// is taken as it comes, never held off by a revision from before
+const newer = (had: Job | undefined, j: Job) => (had && j.revision !== undefined && (had.revision ?? 0) > j.revision ? had : j);
 // the app's id for one of obid's conversations, and back
 export const shownId = (c: string) => state.alias[c] ?? c;
 export const realId = (shown: string) => Object.keys(state.alias).find((k) => state.alias[k] === shown) ?? shown;
@@ -397,9 +402,9 @@ export function lookAtUsage() {
 function apply(s: Live, e: Event): Live {
   switch (e.kind) {
     case 'job':
-      return { ...s, jobs: { ...s.jobs, [e.job.id]: e.job } };
+      return s.gone.has(e.job.id) ? s : { ...s, jobs: { ...s.jobs, [e.job.id]: newer(s.jobs[e.job.id], e.job) } };
     case 'jobGone':
-      return { ...s, jobs: without(s.jobs, e.id) };
+      return { ...s, jobs: without(s.jobs, e.id), gone: new Set([...s.gone, e.id]) };
     case 'inbox': {
       const rest = s.inbox.filter((i) => i.id !== e.item.id);
       return { ...s, inbox: e.item.state === 'done' ? rest : [...rest, e.item].sort((a, b) => a.created.localeCompare(b.created)) };
@@ -558,6 +563,7 @@ function down(mine: number, problem: string, why?: Live['why']) {
 async function sync(mine: number, pending: Event[], onSynced: () => void) {
   try {
     const limitVersion = ++limitRequest;
+    const before = state.jobs;
     const [status, jobs, inbox, { list: conversations, complete }, github, limits] = await Promise.all([
       api.status(), api.jobs(100), api.inbox().catch(() => []), allConversations(),
       // GitHub's work: not read, the last read stands, with why (as obid keeps its last lists)
@@ -574,7 +580,10 @@ async function sync(mine: number, pending: Event[], onSynced: () => void) {
     let next: Live = {
       ...state, connection: 'live', problem: null, why: undefined, status, inbox: inbox.filter((i) => i.state !== 'done'), conversations, github,
       limits: limitVersion === limitRequest ? limits : state.limits,
-      jobs: Object.fromEntries([...older, ...jobs].map((j) => [j.id, j])),
+      // obid's list wins, but over a copy an answer brought while it was read: the newer of the two
+      // (a restart can take a job's revision back: obid's then, not one from before the stream went)
+      jobs: Object.fromEntries([...older, ...jobs.filter((j) => !state.gone.has(j.id))
+        .map((j) => (state.jobs[j.id] !== before[j.id] ? newer(state.jobs[j.id], j) : j))].map((j) => [j.id, j])),
       firstJobs: state.status ? state.firstJobs : new Set(jobs.map((j) => j.id)),
     };
     for (const e of pending) next = apply(next, e);
@@ -656,7 +665,7 @@ export async function openConversation(shown: string) {
     const turns = await api.conversation({ id: c, limit: 100 });
     set({ turns: { ...state.turns, [c]: merged(state.turns[c] ?? [], turns) } });
     for (const j of new Set(turns.flatMap((t) => t.jobs))) {
-      if (!state.jobs[j]) await api.job(j).then((job) => set({ jobs: { ...state.jobs, [job.id]: job } }), () => {});
+      if (!state.jobs[j] && !state.gone.has(j)) await api.job(j).then((job) => take({ kind: 'job', job }), () => {});
     }
   } catch (e) {
     set({ loaded: new Set([...state.loaded].filter((x) => x !== c)) });
@@ -700,7 +709,7 @@ export function ask(said: string, shown?: string, repo?: string, folders?: strin
       const listed = !where || state.conversations.some((x) => x.id === where) ? state.conversations
         : [...state.conversations, { id: where, title: (words || files[0]?.name || '').split('\n')[0].slice(0, 48), pinned: false, created: now, lastActivity: now, cursor: '' }];
       set({
-        alias, conversations: listed, jobs: { ...Object.fromEntries(a.jobs.map((j) => [j.id, j])), ...state.jobs },
+        alias, conversations: listed, jobs: a.jobs.reduce((s, job) => apply(s, { kind: 'job', job }), state).jobs,
         ...(a.kind === 'question' && where ? { waiting: { ...state.waiting, [where]: { ...a.question, said: a.said } } } : {}),
       });
       // the turns of the one it started, from the start
@@ -774,7 +783,8 @@ export async function tellJob(id: string, text: string, files: { path?: string }
     const j = await api.message(id, text.trim(), paths, conversation);
     // the follow-up it started, and the task itself, now in the conversation
     const told = j.id === id ? j : await api.job(id).catch(() => undefined);
-    set({ jobs: { ...state.jobs, [j.id]: j, ...(told && told.id !== j.id ? { [told.id]: told } : {}) } });
+    take({ kind: 'job', job: j });
+    if (told && told.id !== j.id) take({ kind: 'job', job: told });
     return j;
   } catch (e) {
     // obid refused (files go only with a follow-up of a finished task): its files go too
@@ -784,10 +794,10 @@ export async function tellJob(id: string, text: string, files: { path?: string }
 }
 // A task's Mode menu: how much it asks from now on (POST /v1/jobs/{id}/mode)
 export async function changeMode(id: string, mode: string) {
-  try { const j = await api.mode(id, mode); set({ jobs: { ...state.jobs, [j.id]: j } }); } catch (e) { say(e); }
+  try { const j = await api.mode(id, mode); take({ kind: 'job', job: j }); } catch (e) { say(e); }
 }
 export async function stopJob(id: string) {
-  try { const j = await api.stop(id); set({ jobs: { ...state.jobs, [j.id]: j } }); } catch (e) { say(e); }
+  try { const j = await api.stop(id); take({ kind: 'job', job: j }); } catch (e) { say(e); }
 }
 
 // The task's menu: Rename (PATCH /v1/jobs/{id}), shown at once as the mock does it; Archive
@@ -799,14 +809,14 @@ export async function renameJob(id: string, title: string) {
   // the same name again (a blur with nothing changed): nothing to tell obid
   if (had?.title === title) return;
   if (had) set({ jobs: { ...state.jobs, [id]: { ...had, title } } });
-  try { const j = await api.rename(id, title); set({ jobs: { ...state.jobs, [j.id]: j } }); } catch (e) {
+  try { const j = await api.rename(id, title); take({ kind: 'job', job: j }); } catch (e) {
     const now = state.jobs[id];
     if (had && now?.title === title) set({ jobs: { ...state.jobs, [id]: { ...now, title: had.title } } });
     say(e);
   }
 }
 export async function archiveJob(id: string) {
-  try { const j = await api.archive(id); set({ jobs: { ...state.jobs, [j.id]: j } }); } catch (e) { say(e); }
+  try { const j = await api.archive(id); take({ kind: 'job', job: j }); } catch (e) { say(e); }
 }
 // true once it's gone (obid deleted it, or had no such job). With commits that aren't published,
 // obid asks first: its Confirm comes onto the task's card (and Home's stack), naming the commits
@@ -849,7 +859,7 @@ export async function loadSession(id: string): Promise<void> {
 // and the feed's next event takes the item off To do. A review in a repository Oby doesn't work in
 // starts nothing yet: its Confirm comes into Home's stack, and obid's words say so for a moment.
 export async function startGitHubWork(id: string) {
-  try { const j = await api.startGitHubWork(id); set({ jobs: { ...state.jobs, [j.id]: j } }); } catch (e) { say(e); }
+  try { const j = await api.startGitHubWork(id); take({ kind: 'job', job: j }); } catch (e) { say(e); }
 }
 
 // A job's decision answered: its permission through obid's own route (POST /v1/jobs/{id}/permission),
@@ -881,7 +891,7 @@ export async function answerJob(id: string, option: string, words?: string) {
     } else if (item?.kind === 'confirm' && option === 'Confirm') take({ kind: 'inbox', item: await api.confirm(item.id) });
     else if (item?.kind === 'permission' && j?.permission && DECISIONS[option]) {
       const next = await api.permission(id, { id: j.permission.id, decision: DECISIONS[option] });
-      set({ jobs: { ...state.jobs, [next.id]: next } });
+      take({ kind: 'job', job: next });
     } else if (item) {
       // (an agent's question by its own item, never the job's permission, which can lag behind the
       // inbox: Tell it something sends the owner's words as its answer)
@@ -891,7 +901,7 @@ export async function answerJob(id: string, option: string, words?: string) {
     } else if (option === 'Dismiss') {
       // a failed job with no item: let go
       const next = await api.dismiss(id);
-      set({ jobs: { ...state.jobs, [next.id]: next } });
+      take({ kind: 'job', job: next });
     }
   } catch (e) {
     // not taken: it's still yours to answer

@@ -3,9 +3,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 // Settings › Agents' choices kept on this Mac before obid kept them (docs/contracts/agents.md,
 // AGENTS-7): moved to obid once, then forgotten here, so nobody's choice is lost.
 
-type Answer = { status: number; body?: unknown };
+// hold: obid answers only once it's settled (an event can come meanwhile)
+type Answer = { status: number; body?: unknown; hold?: Promise<unknown> };
 const calls: { method: string; path: string; body?: unknown }[] = [];
 let answers: Record<string, Answer> = {};
+let feed: (text: string) => void = () => {};
+const flush = () => new Promise((r) => setTimeout(r, 0));
 
 function memory(): Storage {
   const map = new Map<string, string>();
@@ -25,12 +28,24 @@ async function load(kept: Record<string, unknown>) {
   const call = async (method: string, path: string, body?: unknown) => {
     calls.push({ method, path, body });
     const a = answers[`${method} ${path}`] ?? { status: 404, body: { error: 'Not found.' } };
+    await a.hold;
     return { status: a.status, text: a.body === undefined ? '' : JSON.stringify(a.body) };
   };
-  vi.stubGlobal('window', { app: { obid: { call } } });
+  // obid's event stream, as main passes it on: fed by the test
+  const follow = (onChunk: (text: string) => void) => { feed = onChunk; return () => {}; };
+  vi.stubGlobal('window', { app: { obid: { call, follow } } });
+  // Settings › Agents' hooks called as a render would, with no DOM: state as first drawn, effects
+  // not run, a store read as it is
+  vi.doMock('react', async (actual) => ({
+    ...(await actual<typeof import('react')>()),
+    useState: <T,>(v: T | (() => T)) => [typeof v === 'function' ? (v as () => T)() : v, () => {}],
+    useEffect: () => {},
+    useSyncExternalStore: <T,>(_: unknown, get: () => T) => get(),
+  }));
   const settings = await import('../SettingsView');
+  const live = await import('../live');
   const left = (k: string) => JSON.parse(storage.getItem(`oby.setting.${k}`) ?? 'null');
-  return { settings, left };
+  return { settings, live, left };
 }
 
 const account = (id: string) => ({ id, agent: 'claude', name: id, signedIn: true, fiveHour: null, sevenDay: null, sevenDayResets: null, running: 0 });
@@ -39,7 +54,7 @@ const status = (more: Record<string, unknown> = {}) =>
 
 describe('Settings › Agents on obid', () => {
   beforeEach(() => { answers = {}; });
-  afterEach(() => { vi.unstubAllGlobals(); });
+  afterEach(() => { vi.unstubAllGlobals(); vi.doUnmock('react'); });
 
   it('AGENTS-7: the default and each account\'s model kept here move to obid once, then are forgotten here', async () => {
     const { settings, left } = await load({
@@ -63,6 +78,32 @@ describe('Settings › Agents on obid', () => {
     expect(calls).toEqual([]);
     expect(left('agent.default')).toBe('a2');
     expect(left('models.mine')).toEqual({ a2: { model: 'claude-sonnet-5-5' } });
+  });
+
+  it('a model picked while an `accounts` event comes: the other accounts keep what the event said, the picked one gets obid\'s answer (#1709)', async () => {
+    const { settings, live } = await load({});
+    answers['GET /v1/status'] = { status: 200, body: status({ defaultAccount: null }) };
+    answers['GET /v1/jobs?limit=100'] = { status: 200, body: [] };
+    answers['GET /v1/inbox'] = { status: 200, body: [] };
+    answers['GET /v1/conversations?limit=200'] = { status: 200, body: [] };
+    live.connect();
+    feed('');
+    for (let i = 0; i < 5; i++) await flush();
+    expect(live.liveState().connection).toBe('live');
+
+    let go!: () => void;
+    const hold = new Promise<void>((done) => { go = done; });
+    answers['PATCH /v1/accounts/a1'] = { status: 200, body: { ...account('a1'), model: 'claude-sonnet-5-5' }, hold };
+    // the page's tune, as Agents drew it before the event
+    const [, , tune] = settings.useModels();
+    const tuned = tune('a1', { model: 'claude-sonnet-5-5' });
+    await flush();
+    const event = [{ ...account('a1'), running: 1 }, { ...account('a2'), fiveHour: 40 }];
+    feed(`event: accounts\ndata: ${JSON.stringify(event)}\n\n`);
+    go();
+    await tuned;
+    const [a1, a2] = live.liveState().status!.accounts;
+    expect([a1.model, a1.running, a2.fiveHour]).toEqual(['claude-sonnet-5-5', 1, 40]);
   });
 
   it('AGENTS-7: a default obid has already wins, and a choice obid refused stays to be tried again', async () => {
