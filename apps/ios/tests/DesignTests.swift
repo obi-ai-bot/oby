@@ -153,7 +153,7 @@ struct DesignTests {
         let confirm = try item(#""kind": "confirm", "title": "Delete Vault tests", "confirm": {"action": "delete_job", "target": "Vault tests"}"#, options: #"["Confirm", "Cancel"]"#)
         #expect(PhoneAsk.label(confirm, plan: false) == "Confirm?" && PhoneAsk.check(confirm) == nil)
         let check = try item(#""kind": "confirm", "title": "Use `pnpm test`", "confirm": {"action": "set_check", "target": "acme/app", "payload": {"check": "pnpm test", "was": null}}"#, options: #"["Confirm", "Cancel"]"#)
-        #expect(!PhoneAsk.checkOptions(check).contains(where: \.recommended))
+        #expect(PhoneAsk.checkOptions(check).map(\.recommended) == [false, false])
         #expect(PhoneAsk.label(check, plan: false) == "Check" && PhoneAsk.check(check) == "pnpm test")
         #expect(PhoneAsk.checkTitle(check) == "Use this as acme/app’s check before publishing?")
         #expect(PhoneAsk.checkOptions(check).map(\.label) == ["Use it", "No check"])
