@@ -22,7 +22,7 @@ struct PhoneRoot: View {
     var body: some View {
         if phone.needsPairing {
             // A fresh iPhone, or one the Mac stopped taking: Oby, why, and Connect.
-            UnpairedScreen(character: character)
+            UnpairedScreen()
         } else {
             panelled
         }
