@@ -45,8 +45,10 @@ class Phone(val context: Context) {
 
     /** The side panel, open on one of its sections, or null while it's closed. */
     var panel by mutableStateOf<PanelSection?>(null)
-    /** Home's box takes the keyboard (the panel's New conversation and New task, as Sangam's do). */
-    var focusHome by mutableStateOf(false)
+    /** Counts the panel's New conversation and New task (as Sangam's do): each has Home's box take the keyboard. */
+    var focusHome by mutableStateOf(0)
+    /** The last of them Home's box took: each is taken once, never again when Home comes back. */
+    var focusHomeTaken = 0
     /** The panel's groups folded away with their chevron (Sangam's Sidebar.tsx), kept while Oby runs. */
     var panelFolded by mutableStateOf(setOf<String>())
     /** What's open over Home: the app's one stack. */

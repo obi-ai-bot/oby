@@ -138,7 +138,7 @@ fun HomeView() {
         Composer(Drafts.HOME, HomeLine.placeholder(owner ?: ""), onSend = { text, spoken ->
             phone.ask(text, spoken, new = true)
             phone.push(Route.NewConversation)
-        }, takeFocus = phone.focusHome && phone.homePath.isEmpty() && phone.panel == null, onFocused = { phone.focusHome = false })
+        }, focusAsked = phone.focusHome, takesFocus = { asked -> (asked > phone.focusHomeTaken).also { if (it) phone.focusHomeTaken = asked } })
     }
 }
 
@@ -415,7 +415,7 @@ fun SidePanel(close: () -> Unit) {
                 }
             }
             // What this tab starts, first thing under its title (Sangam's `.sidebar-new`): both go to Home's box, as his do.
-            Row(Modifier.fillMaxWidth().heightIn(min = 44.dp).clickable { phone.homePath = emptyList(); phone.panel = null; phone.focusHome = true }
+            Row(Modifier.fillMaxWidth().heightIn(min = 44.dp).clickable { phone.homePath = emptyList(); phone.panel = null; phone.focusHome += 1 }
                     .padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Icon(Icons.Filled.Add, null, Modifier.size(18.dp), tint = c.item)
                 T(if (section == PanelSection.Home) "New task" else "New conversation", Tokens.textBase, c.item)
