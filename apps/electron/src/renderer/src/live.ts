@@ -62,6 +62,10 @@ const set = (patch: Partial<Live>) => {
   state = { ...state, ...patch }; publish(); listeners.forEach((l) => l());
   if (!pacing && Object.keys(state.pace).length) { ticked = performance.now(); pacing = setInterval(tick, WORD_MS); }
 };
+// An event, or obid's answer to a call as one, over the state as it is when it's taken: never a
+// state read before the call's await, which would undo what came meanwhile (a Confirm's answer
+// putting back the job its own `deleted` event took away)
+const take = (e: Event) => set(apply(state, e));
 export const useLive = () => useSyncExternalStore((l) => { listeners.add(l); return () => { listeners.delete(l); }; }, () => state);
 // the limit decisions for a conversation's or a job's work (ChatView), as Home's stack shows them
 export const useLimitAsks = (conversation?: string, job?: string) => { useLive(); return limitAsks(state, conversation, job); };
@@ -81,7 +85,7 @@ nameFoldersBy(realId);
 sendFoldersBy((shown, folders) => {
   const c = realId(shown);
   if (!state.status?.folders || c.startsWith('new:')) return undefined;
-  return api.editConversation(c, { folders }).then((conversation) => set(apply(state, { kind: 'conversation', conversation })));
+  return api.editConversation(c, { folders }).then((conversation) => take({ kind: 'conversation', conversation }));
 }, say);
 let aliasSeen: Live['alias'] | undefined;
 
@@ -518,7 +522,7 @@ export function connect() {
     const e = parseEvent(name, data);
     if (!e || mine !== generation) return;
     if (syncing) pending.push(e);
-    else set(apply(state, e));
+    else take(e);
   });
   let first = true;
   unfollow?.();
@@ -562,10 +566,15 @@ async function sync(mine: number, pending: Event[], onSynced: () => void) {
     ]);
     if (mine !== generation) return;
     retry = 0;
+    // obid's latest 100, newest first, and the older ones a conversation fetched (openConversation),
+    // which aren't among them: any other this app had was deleted while the stream was away (on
+    // the iPhone, say), and goes
+    const oldest = jobs.length < 100 ? undefined : jobs.at(-1)!.created;
+    const older = Object.values(state.jobs).filter((j) => oldest && j.created <= oldest); // <=: created is whole seconds, so jobs past the 100th can share its second
     let next: Live = {
       ...state, connection: 'live', problem: null, why: undefined, status, inbox: inbox.filter((i) => i.state !== 'done'), conversations, github,
       limits: limitVersion === limitRequest ? limits : state.limits,
-      jobs: { ...state.jobs, ...Object.fromEntries(jobs.map((j) => [j.id, j])) },
+      jobs: Object.fromEntries([...older, ...jobs].map((j) => [j.id, j])),
       firstJobs: state.status ? state.firstJobs : new Set(jobs.map((j) => j.id)),
     };
     for (const e of pending) next = apply(next, e);
@@ -695,7 +704,12 @@ export function ask(said: string, shown?: string, repo?: string, folders?: strin
         ...(a.kind === 'question' && where ? { waiting: { ...state.waiting, [where]: { ...a.question, said: a.said } } } : {}),
       });
       // the turns of the one it started, from the start
-      if (!c && where) { set({ loaded: new Set([...state.loaded, where]) }); set({ turns: { ...state.turns, [where]: merged(state.turns[where] ?? [], await api.conversation({ id: where, limit: 100 })) } }); }
+      if (!c && where) {
+        set({ loaded: new Set([...state.loaded, where]) });
+        // (the turns as they are once these come: any that came meanwhile stay)
+        const turns = await api.conversation({ id: where, limit: 100 });
+        set({ turns: { ...state.turns, [where]: merged(state.turns[where] ?? [], turns) } });
+      }
     } catch (e) {
       failed = true;
       // obid refused the words: their files go too (one it didn't answer may have them)
@@ -740,14 +754,14 @@ export async function sent<T>(send: () => Promise<T>, tries = 3, pause = 1000): 
 export async function renameConversation(shown: string, title: string) {
   const t = title.trim();
   if (!t) return;
-  try { const c = await api.editConversation(realId(shown), { title: t }); set(apply(state, { kind: 'conversation', conversation: c })); } catch (e) { say(e); }
+  try { const c = await api.editConversation(realId(shown), { title: t }); take({ kind: 'conversation', conversation: c }); } catch (e) { say(e); }
 }
 export async function pinConversation(shown: string, pinned: boolean) {
-  try { const c = await api.editConversation(realId(shown), { pinned }); set(apply(state, { kind: 'conversation', conversation: c })); } catch (e) { say(e); }
+  try { const c = await api.editConversation(realId(shown), { pinned }); take({ kind: 'conversation', conversation: c }); } catch (e) { say(e); }
 }
 export async function deleteConversation(shown: string) {
   const c = realId(shown);
-  set(apply(state, { kind: 'conversationGone', id: c }));
+  take({ kind: 'conversationGone', id: c });
   try { await api.deleteConversation(c); } catch (e) { if (!(e instanceof ApiError && e.status === 404)) say(e); }
 }
 
@@ -800,12 +814,12 @@ export async function archiveJob(id: string) {
 export async function deleteJob(id: string) {
   try {
     const { deleted, ask } = await api.deleteJob(id);
-    if (ask) set(apply(state, { kind: 'inbox', item: ask }));
+    if (ask) take({ kind: 'inbox', item: ask });
     if (!deleted) return false;
   } catch (e) {
     if (!(e instanceof ApiError && e.status === 404)) { say(e); return false; }
   }
-  set(apply(state, { kind: 'jobGone', id }));
+  take({ kind: 'jobGone', id });
   return true;
 }
 
@@ -862,9 +876,9 @@ export async function answerJob(id: string, option: string, words?: string) {
         asked = changed.ask;
       }
       const next = option === 'No check' || option === 'Keep it' ? await api.answer(asked.id, { answer: 'Cancel' }) : await api.confirm(asked.id);
-      set(apply(state, { kind: 'inbox', item: next }));
+      take({ kind: 'inbox', item: next });
       void api.repos().then(({ repos }) => set({ repos }), () => {});
-    } else if (item?.kind === 'confirm' && option === 'Confirm') set(apply(state, { kind: 'inbox', item: await api.confirm(item.id) }));
+    } else if (item?.kind === 'confirm' && option === 'Confirm') take({ kind: 'inbox', item: await api.confirm(item.id) });
     else if (item?.kind === 'permission' && j?.permission && DECISIONS[option]) {
       const next = await api.permission(id, { id: j.permission.id, decision: DECISIONS[option] });
       set({ jobs: { ...state.jobs, [next.id]: next } });
@@ -873,7 +887,7 @@ export async function answerJob(id: string, option: string, words?: string) {
       // inbox: Tell it something sends the owner's words as its answer)
       const said = option === TELL && words ? words : option;
       const body = option === 'Later' ? { later: new Date(Date.now() + 3600_000).toISOString().replace(/\.\d+Z$/, 'Z') } : { answer: said };
-      set(apply(state, { kind: 'inbox', item: await api.answer(item.id, body) }));
+      take({ kind: 'inbox', item: await api.answer(item.id, body) });
     } else if (option === 'Dismiss') {
       // a failed job with no item: let go
       const next = await api.dismiss(id);
@@ -897,8 +911,8 @@ export async function changeCheck(repo: string, check: string | null) {
     const repos = state.repos.map((r) => (r.repo === changed.repo.repo ? changed.repo : r));
     set({ repos });
     if (changed.ask) {
-      set(apply(state, { kind: 'inbox', item: changed.ask }));
-      set(apply(state, { kind: 'inbox', item: await api.confirm(changed.ask.id) }));
+      take({ kind: 'inbox', item: changed.ask });
+      take({ kind: 'inbox', item: await api.confirm(changed.ask.id) });
       set({ repos: (await api.repos()).repos });
     }
   } catch (e) {
@@ -918,7 +932,7 @@ export async function answerOffer(offer: string, option: 'Dispatch' | 'Skip' | '
   items.forEach((i) => answering(i.id, true));
   for (const item of items) {
     const body = option === 'Later' ? { later: new Date(Date.now() + 3600_000).toISOString().replace(/\.\d+Z$/, 'Z') } : { answer: option === 'Dispatch' ? 'Start' : 'Cancel' };
-    try { set(apply(state, { kind: 'inbox', item: await api.answer(item.id, body) })); } catch (e) { say(e); } finally { answering(item.id, false); }
+    try { take({ kind: 'inbox', item: await api.answer(item.id, body) }); } catch (e) { say(e); } finally { answering(item.id, false); }
   }
 }
 

@@ -13,6 +13,8 @@
 //   6. Words the page's script sends with no keystroke or click go unsigned (WORDS-7).
 //   7. The window is sandboxed (#1641, WORDS-9): its process runs in Chromium's sandbox, the page reaches
 //      neither `process` nor `require`, and the preload's bridge still works.
+//   8. A task deleted from the side panel on its Confirm (work that isn't committed, TASKS-11)
+//      leaves the side panel as obid deletes it, with no reload (#1707).
 // Screenshots of each step go to OBY_CORE_SHOTS (a folder), when it's set.
 // Run: cargo build -p obid (or OBY_TEST_OBID=<obid>), npm run build, then npm run test:core.
 import assert from 'node:assert/strict';
@@ -200,6 +202,30 @@ async function main() {
   assert.equal(told.status, 201, told.text);
   const unheld = await until('the follow-up the script’s words start', async () => kept(s, JSON.parse(told.text).id));
   assert.notEqual(unheld.vetted, true, 'WORDS-7: words no keystroke or click held go unsigned');
+
+  // 8. Delete from the side panel, on a task whose work isn't committed: obid's Confirm first, and
+  // on the owner's Confirm it leaves the side panel at once, with no reload (TASKS-11)
+  const draft = await s.call('POST', '/v1/jobs', { job: { repo: 'obi-e2e/fixture-app', kind: 'research', title: 'Draft task', task: 'DRAFT: notes.md' } });
+  await until('the draft task ends', async () => ended(await s.call('GET', `/v1/jobs/${draft.id}`)), 120_000);
+  const row = page.locator('.task-row', { hasText: 'Draft task' });
+  await until('its row in the side panel', async () => (await row.count()) === 1);
+  // (the side panel may be folded away: its row's own right-click and menu, as a person's)
+  await row.dispatchEvent('contextmenu');
+  await page.getByRole('menuitem', { name: 'Delete task' }).evaluate((el) => el.click());
+  await until('obid’s Confirm', async () => (await s.call('GET', '/v1/inbox')).some((i) => i.job === draft.id && i.state === 'open'));
+  assert.equal(await row.count(), 1, 'TASKS-11: nothing is deleted before the Confirm');
+  // Home's stack: its Confirm, once the pages the steps above opened are closed (New task)
+  await page.getByRole('button', { name: 'New task', exact: true }).first().evaluate((el) => el.click());
+  const confirm = page.locator('.ask-card.is-up', { hasText: 'Delete Draft task' }).getByRole('button', { name: 'Confirm', exact: true });
+  await until('its Confirm on Home', async () => (await confirm.count()) === 1 && await confirm.evaluate((el) => !el.closest('[inert]')));
+  // (a card takes no click in its first half second: TaskCard's pick)
+  await sleep(600);
+  await confirm.evaluate((el) => el.click());
+  await until('obid deleted it', async () => !(await jobs(s)).some((j) => j.id === draft.id));
+  await until('it left the side panel', async () => (await row.count()) === 0, 5000);
+  await sleep(1000);
+  assert.equal(await row.count(), 0, 'gone for good: the Confirm’s answer doesn’t bring it back');
+  await shot(page, '8-deleted-on-its-confirm');
 
   assert.deepEqual(errors, [], 'no page errors');
   console.log('core: Home → task → its conversation → follow-ups, the owner’s words signed: all passed');
