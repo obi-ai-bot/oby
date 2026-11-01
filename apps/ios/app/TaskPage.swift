@@ -153,7 +153,7 @@ struct TaskMenuItems: View {
             case .mode:
                 let mode = RunnerMode(job.mode)
                 Picker(selection: Binding { mode } set: { choice in if let choice { run { try await phone.setMode(job.id, choice) } } }) {
-                    ForEach(RunnerMode.allCases) { Label($0.label, systemImage: $0.symbol).tag(Optional($0)) }
+                    ForEach(RunnerMode.offered(mode)) { Label($0.label, systemImage: $0.symbol).tag(Optional($0)) }
                 } label: {
                     Label("Mode: \(mode?.label ?? "unknown")", systemImage: mode?.symbol ?? "hand.raised")
                 }
@@ -478,7 +478,7 @@ struct TaskPage: View {
         Task {
             defer { busy = false }
             do {
-                try await phone.tell(id, text)
+                try await phone.tell(id, text, conversation: true)
                 note = ""
                 typing = false
                 noteProblem = nil
@@ -692,7 +692,7 @@ private struct SessionSheet: View {
         Task {
             defer { sending = false }
             do {
-                try await phone.tell(id, text)
+                try await phone.tell(id, text, conversation: true)
                 note = ""
                 typing = false
                 problem = nil
