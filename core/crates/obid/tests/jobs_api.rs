@@ -2740,6 +2740,49 @@ fn inbox(obid: &Obid) -> Value {
     request(obid, "GET", "/v1/inbox", None).body
 }
 
+/// #1648: an agent that dies printing a token on stderr leaves the job's `reason` with the end
+/// of its stderr masked as a transcript entry is (the line with the token becomes
+/// `[redacted: GitHub token]`), in the job, its inbox and its failures; the raw tail stays in
+/// `agent.log` only.
+#[test]
+fn an_agents_stderr_reaches_the_reason_redacted() {
+    let folder = Folder::new("stderr-redacted");
+    let remote = fixture(&folder.0.join("fixture"));
+    let obid = start(&folder.0, &config(&folder.0, &remote));
+    let token = format!("{}{}{}", "gh", "p_", "Z".repeat(36));
+    let posted = post_job(
+        &obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "build", "task": "STDERR TOKEN"}),
+    );
+    let id = posted.body["id"]
+        .as_str()
+        .unwrap_or_else(|| panic!("{}", posted.text))
+        .to_owned();
+    let job = wait(&obid, &id);
+    let reason = job["reason"].as_str().unwrap_or_default();
+    assert!(reason.contains("stopped without finishing"), "{job}");
+    assert!(reason.contains("[redacted: GitHub token]"), "{job}");
+    let everything = format!(
+        "{job}{}{}",
+        inbox(&obid),
+        request(&obid, "GET", "/v1/failures", None).body
+    );
+    assert!(!everything.contains(&token[4..]), "{everything}");
+    // An error result that holds one reaches the reason masked the same way.
+    let posted = post_job(
+        &obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "build", "task": "FAIL TOKEN"}),
+    );
+    let failed = wait(&obid, posted.body["id"].as_str().unwrap());
+    assert_eq!(failed["reason"], "[redacted: GitHub token]", "{failed}");
+    assert!(!failed.to_string().contains(&token[4..]), "{failed}");
+    let log = std::fs::read_to_string(obid.home.join("logs").join(&id).join("agent.log"));
+    assert!(
+        log.unwrap_or_default().contains(&token),
+        "the raw tail stays in the log only"
+    );
+}
+
 /// TASKS-13: a task's crash card settles, with no answer, once the task is let go: obid settles
 /// it as the task changes, not when the card is answered.
 #[test]

@@ -13,7 +13,10 @@
 //   SLEEP            beats: writes a growing count to .obi/beat every 50 ms until it is ended
 //   HOG: <mb> <s>    holds <mb> MB of random bytes, as a build does, for <s> seconds, then
 //                    ends the turn with "Held." (scripts measuring memory admission)
-//   FAIL             ends the turn with an error result
+//   FAIL             ends the turn with an error result ("it broke"; with FAIL TOKEN, one holding
+//                    a made-up GitHub token)
+//   STDERR TOKEN     prints "Authorization failed for token " and a made-up GitHub token
+//                    (ghp_ and 36 Zs) to stderr and exits 1 without a result, as a CLI that dies does
 //   LIMITED: <s>     says the account is full (a rate_limit_event whose 5-hour window resets <s>
 //                    seconds from now), then ends the turn with Claude Code's usage-limit error
 //   LIMITED ON: <w>  this turn and every later one: as LIMITED: 3600 on an account whose login's
@@ -226,6 +229,9 @@ rl.on("line", (line) => {
   let prompt = typeof message.message.content === "string" ? message.message.content : "";
   emit({ type: "system", subtype: "init", cwd: process.cwd(), session_id: session, tools: ["Bash", "Read", "Edit"], mcp_servers: [], model: "fake", permissionMode: "default", apiKeySource: "none" });
   if (leaked.length) return result(`leaked: ${leaked.join(", ")}`, true);
+  if (prompt.includes("STDERR TOKEN")) {
+    return process.stderr.write(`Authorization failed for token ${"gh"}p_${"Z".repeat(36)}\n`, () => process.exit(1));
+  }
   if (prompt.includes("KEEP PROMPTS")) {
     mkdirSync(".obi", { recursive: true });
     writeFileSync(".obi/keep-prompts", "");
@@ -540,6 +546,8 @@ rl.on("line", (line) => {
     emit({ type: "result", subtype: "error_max_turns", is_error: true, num_turns: 200, session_id: session, total_cost_usd: 0 });
   } else if (prompt.includes("TRANSIENT")) {
     result('API Error: 529 {"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}', true);
+  } else if (prompt.includes("FAIL TOKEN")) {
+    result(`Authorization failed for token ${"gh"}p_${"Z".repeat(36)}`, true);
   } else if (prompt.includes("FAIL")) {
     result("it broke", true);
   } else if (asks) {
