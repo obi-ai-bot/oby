@@ -75,6 +75,9 @@ export type Job = {
   usage?: { input?: number; output?: number; cacheRead?: number; cacheWrite?: number; costUsd?: number; priced?: 'plan' | 'api' };
   windowShare?: { fiveHour: number | null; sevenDay: number | null; estimate: true };
   estimate?: { low: number; high: number; basis: string; samples: number; firstGiven?: { low: number; high: number } };
+  // one more each time obid sends it changed: of two copies, the higher is the newer (#1709);
+  // none from an older obid
+  revision?: number;
 };
 
 // "Inbox item"

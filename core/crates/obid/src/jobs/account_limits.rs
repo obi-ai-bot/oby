@@ -457,6 +457,7 @@ impl Jobs {
                 return Err(why);
             }
             let mut next = job.clone();
+            next.revision += 1;
             if let Some((tool, account)) = target {
                 if next.obi.is_some() || next.read_only() {
                     return Err("This review cannot change accounts.".into());
@@ -514,6 +515,7 @@ impl Jobs {
                 return;
             }
             let mut next = job.clone();
+            next.revision += 1;
             next.reason = Some(format!("{why} Choose what Oby should do with this job."));
             next.account_limit_episode = None;
             next.account_limit_nonce = Some(uuid::Uuid::new_v4().to_string());

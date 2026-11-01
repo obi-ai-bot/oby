@@ -1732,7 +1732,7 @@ impl Jobs {
             let job = state.jobs.get_mut(id)?;
             (free && job.status == Status::Running && job.phase == Some(Phase::Work)).then(|| {
                 hear(job, text);
-                job.clone()
+                job.revised()
             })
         };
         let Some(job) = taken else {
@@ -2268,7 +2268,7 @@ impl Jobs {
                     job.estimate = estimate;
                 }
             }
-            state.jobs.get(id)?.clone()
+            state.jobs.get_mut(id)?.revised()
         };
         if let Err(e) = self.store.save(&job) {
             tracing::error!("can't keep job {id}: {e}");
@@ -2279,7 +2279,8 @@ impl Jobs {
         Some(job)
     }
 
-    fn insert(&self, job: Job) -> Job {
+    fn insert(&self, mut job: Job) -> Job {
+        job.revision += 1;
         if let Err(e) = self.store.save(&job) {
             tracing::error!("can't keep job {}: {e}", job.id);
         }
@@ -3559,12 +3560,12 @@ impl Jobs {
                 {
                     heard(job);
                     job.owners.extend(owners(false));
-                    Some(job.clone())
+                    Some(job.revised())
                 } else if starting || (worker && source.direct()) {
                     job.notes.get_or_insert_with(Vec::new).push(text.to_owned());
                     job.heard.push(text.to_owned());
                     job.owners.extend(owners(true));
-                    Some(job.clone())
+                    Some(job.revised())
                 } else {
                     None
                 }
@@ -3649,7 +3650,7 @@ impl Jobs {
             }
             next_round(job);
             job.asked = true;
-            job.clone()
+            job.revised()
         };
         if let Err(e) = self.store.save(&resumed) {
             tracing::error!("can't keep job {id}: {e}");
@@ -5204,7 +5205,7 @@ impl Jobs {
             job.dismissed = Some(obi_protocol::time::now());
             // Let go, it isn't tried again after its reset either.
             job.resumes_at = None;
-            job.clone()
+            job.revised()
         };
         if let Err(e) = self.store.save(&dismissed) {
             tracing::error!("can't keep job {id}: {e}");
@@ -5235,7 +5236,7 @@ impl Jobs {
                 }
                 None => job.supervised.push(entry),
             }
-            job.clone()
+            job.revised()
         };
         if let Err(e) = self.store.save(&job) {
             tracing::error!("can't keep job {id}: {e}");
@@ -15985,6 +15986,47 @@ mod tests {
             Err("no sandbox".into()),
         )
         .unwrap()
+    }
+
+    /// Each `job` event is its job a revision on, the answer the same copy as its event, and a
+    /// restart keeps the revision: the apps keep the newer of an event and an answer that crossed
+    /// it (#1709).
+    #[tokio::test]
+    async fn each_job_event_is_a_revision_on_and_a_restart_keeps_it() {
+        let root = std::env::temp_dir().join(format!("obid-revision-{}", uuid::Uuid::new_v4()));
+        let home = root.join("home");
+        let mut done = Job::new(
+            "aaaa0001".into(),
+            "o/r".into(),
+            "fix".into(),
+            "Fix it".into(),
+            "claude".into(),
+            "c".into(),
+        );
+        done.status = Status::Done;
+        let jobs = jobs_with_kept(&home, &[&done]);
+        let mut events = jobs.events.subscribe();
+        let mut sent = || loop {
+            let event = events.try_recv().unwrap();
+            if event.name == "job" {
+                break event.data["revision"].clone();
+            }
+        };
+        let renamed = jobs.rename("aaaa0001", "One".into()).unwrap();
+        assert_eq!(
+            (renamed.to_json()["revision"].clone(), sent()),
+            (json!(1), json!(1))
+        );
+        let renamed = jobs.rename("aaaa0001", "Two".into()).unwrap();
+        assert_eq!(
+            (renamed.to_json()["revision"].clone(), sent()),
+            (json!(2), json!(2))
+        );
+        assert_eq!(jobs.get("aaaa0001").unwrap().to_json()["revision"], 2);
+        drop(jobs);
+        let reopened = jobs_with_kept(&home, &[]);
+        assert_eq!(reopened.get("aaaa0001").unwrap().revision, 2);
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// PUBLISHING-9 past PUBLISHING-3: by default a follow-up carrying the branch refuses Publish;

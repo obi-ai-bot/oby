@@ -519,6 +519,10 @@ pub struct Job {
     /// (crate::brain::supervisor), oldest first.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub supervised: Vec<Supervision>,
+    /// One more each time obid sends it changed (a `job` event): `revision` in the API, so an app
+    /// keeps the newer of an event and an answer that crossed it (#1709). Kept in its file.
+    #[serde(default)]
+    pub revision: u64,
     /// Its change against `start_commit` after each round, oldest first (#736): `diff` in the API.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub diffs: Vec<crate::facts::Diff>,
@@ -950,6 +954,7 @@ impl Job {
             earlier: None,
             start_from: None,
             supervised: Vec::new(),
+            revision: 0,
             diffs: Vec::new(),
             checks: Vec::new(),
             scan: None,
@@ -991,6 +996,13 @@ impl Job {
                "commits": self.commits, "unpublished": self.unpublished(),
                "mode": self.mode, "agent": self.agent, "account": self.account,
                "accountLimitNonce": self.account_limit_nonce})
+    }
+
+    /// A copy to keep and send, one revision on: taken under the lock it changed under, so the
+    /// revisions go in the order its changes did.
+    pub fn revised(&mut self) -> Job {
+        self.revision += 1;
+        self.clone()
     }
 
     /// Adds `what` to its changes, dated now.
@@ -1380,6 +1392,7 @@ impl Job {
             "routine": self.routine.as_ref().map(|r| json!({"id": r.id, "name": r.name,
                 "scheduled": obi_protocol::time::format(r.scheduled), "catchUp": r.catch_up})),
             "supervised": supervised,
+            "revision": self.revision,
         });
         if let Some(activity) = &self.activity {
             value["activity"] = activity.clone();
@@ -2014,9 +2027,10 @@ mod tests {
         ] {
             assert_eq!(object.get(key), Some(&Value::Null), "{key}");
         }
-        // The Swift runner's 65 keys, obid's twenty-one, and `supervised`.
-        assert_eq!(object.len(), 87);
+        // The Swift runner's 65 keys, obid's twenty-one, `supervised` and `revision`.
+        assert_eq!(object.len(), 88);
         assert_eq!(value["supervised"], json!([]));
+        assert_eq!(value["revision"], 0);
         assert_eq!(value["approvals"], json!([]));
         assert_eq!(value["archived"], Value::Null);
         assert_eq!(value["changes"], json!([]));

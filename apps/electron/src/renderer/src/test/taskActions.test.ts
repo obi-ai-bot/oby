@@ -305,6 +305,50 @@ describe('obid\'s answers over the events that came meanwhile', () => {
     expect(tasks.dev!.get().map((t) => t.id)).toEqual(['j2']);
   });
 
+  // each answer obid gives as the whole job, crossed by the job's newer event (its revision on, #1709)
+  const asJobs: [string, (live: Awaited<ReturnType<typeof load>>['live']) => Promise<unknown>][] = [
+    ['POST /v1/jobs/j1/stop', (l) => l.stopJob('j1')],
+    ['POST /v1/jobs/j1/mode', (l) => l.changeMode('j1', 'plan')],
+    ['POST /v1/jobs/j1/archive', (l) => l.archiveJob('j1')],
+    ['PATCH /v1/jobs/j1', (l) => l.renameJob('j1', 'Vault tests')],
+    ['POST /v1/github/work/w1/start', (l) => l.startGitHubWork('w1')],
+    ['POST /v1/jobs/j1/messages', (l) => l.tellJob('j1', 'And the docs')],
+    ['POST /v1/jobs/j1/dismiss', (l) => l.answerJob('j1', 'Dismiss')],
+  ];
+  it.each(asJobs)('%s: an answer older than the job\'s event keeps the event\'s job, and never brings back a deleted one', async (route, act) => {
+    const { tasks, live } = await load(true);
+    const event = await following(live, [job({ status: 'running', step: 'Working', revision: 1 })]);
+    let { hold, go } = held();
+    answers[route] = { status: 200, body: job({ status: 'running', step: 'Working', revision: 2 }), hold };
+    let acted = act(live);
+    await flush();
+    event('job', job({ status: 'done', step: 'Done', revision: 3 }));
+    go();
+    await acted;
+    expect(live.liveState().jobs.j1.status).toBe('done');
+
+    // deleted (on the iPhone) while the answer was out
+    ({ hold, go } = held());
+    answers[route] = { status: 200, body: job({ revision: 4 }), hold };
+    acted = act(live);
+    await flush();
+    event('job', { id: 'j1', deleted: true });
+    go();
+    await acted;
+    expect(tasks.dev!.get()).toEqual([]);
+  });
+
+  it('a conversation opened after its task was deleted doesn\'t fetch the task back (#1709)', async () => {
+    const { tasks, live } = await load(true);
+    const event = await following(live, [job()]);
+    event('job', { id: 'j1', deleted: true });
+    answers['GET /v1/conversation?id=c1&limit=100'] = { status: 200, body: [{ id: 't1', who: 'oby', text: 'Done.', at: '2026-10-30T10:20:00Z', jobs: ['j1'], conversation: 'c1' }] };
+    answers['GET /v1/jobs/j1'] = { status: 200, body: job() };
+    await live.openConversation('c1');
+    for (let i = 0; i < 3; i++) await flush();
+    expect(tasks.dev!.get()).toEqual([]);
+  });
+
   it('words that start a conversation: the turns other conversations got while its own were read stay', async () => {
     const { live } = await load(true);
     const event = await following(live, []);

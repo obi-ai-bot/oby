@@ -10,7 +10,7 @@ import { everything, onObid } from './lean';
 import { ApiError, api, type ModelOptions, type Models, type SavedRule, type SignIn, type Status } from './obid';
 import Connectors, { ConfirmWindow, readConnectors } from './Connectors';
 import { Menu } from './Menu';
-import { patchStatus, say, useLive } from './live';
+import { liveState, patchStatus, say, useLive } from './live';
 import { version } from '../../../package.json';
 import type { Update } from '../../shared/updates';
 
@@ -649,10 +649,15 @@ function useModels(): [(x: Account) => Tuning, ModelOptions, (id: string, change
     ...(kept ? tuningOf(status.accounts.find((a) => a.id === x.id)) : mine[x.id]) });
   const tune = async (id: string, change: Partial<Tuning>) => {
     if (!kept) return setMine({ ...mine, [id]: { ...mine[id], ...change } });
-    const a = await api.tuneAccount(id, change);
-    patchStatus({ accounts: status.accounts.map((x) => (x.id === a.id ? a : x)) });
+    await tuneAccount(id, change);
   };
   return [of, options, tune];
+}
+// an account's choices kept by obid (PATCH /v1/accounts/{id}), over the accounts as they are once
+// it answers: an `accounts` event during the call stays, only the choices are the answer's (#1709)
+export async function tuneAccount(id: string, change: Partial<Tuning>) {
+  const { model, effort, complexEffort } = await api.tuneAccount(id, change);
+  patchStatus({ accounts: (liveState().status?.accounts ?? []).map((x) => (x.id === id ? { ...x, model, effort, complexEffort } : x)) });
 }
 // the account new tasks go to: obid's, else kept here. A change obid refuses is reported as any
 // failure of the app's is (live.ts, say), and the menu stays on obid's
