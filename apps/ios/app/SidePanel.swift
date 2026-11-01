@@ -13,7 +13,8 @@ enum PanelSection: Hashable { case home, conversations }
 struct PhoneRoot: View {
     @Environment(Phone.self) private var phone
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    let character: ObyCharacter
+    let home: StageCharacter
+    let unpaired: StageCharacter
     /// How far a drag has moved the panel from where it rests.
     @GestureState private var drag: CGFloat = 0
     /// How far a swipe from the screen's edge has pulled it out.
@@ -22,7 +23,7 @@ struct PhoneRoot: View {
     var body: some View {
         if phone.needsPairing {
             // A fresh iPhone, or one the Mac stopped taking: Oby, why, and Connect.
-            UnpairedScreen(character: character)
+            UnpairedScreen(character: unpaired.character)
         } else {
             panelled
         }
@@ -39,7 +40,7 @@ struct PhoneRoot: View {
                     .offset(x: shift - width)
                     .accessibilityHidden(!open)
                     .accessibilityAction(.escape) { close() }
-                HomeView(character: character)
+                HomeView(character: home.character)
                     .frame(width: geometry.size.width)
                     // Home's left edge: a swipe right opens the panel. The system's own edge pan,
                     // which cancels the touch under it, so a row the swipe ends on isn't tapped and
