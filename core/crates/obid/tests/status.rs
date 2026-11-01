@@ -501,7 +501,7 @@ fn refuses_every_host_that_isnt_loopback() {
         assert_eq!(answer.status, 403, "{host}");
         assert_eq!(
             answer.body,
-            json!({"error": "This runner answers only on 127.0.0.1."}),
+            json!({"error": "This Oby answers only on 127.0.0.1."}),
             "{host}"
         );
     }
@@ -590,7 +590,7 @@ fn refuses_without_the_token() {
             assert_eq!(answer.status, 401, "{path} {headers:?}");
             assert_eq!(
                 answer.body,
-                json!({"error": "This runner answers only requests with its API token."})
+                json!({"error": "This Oby answers only requests with its API token."})
             );
         }
     }

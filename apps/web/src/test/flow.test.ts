@@ -78,7 +78,7 @@ describe('following obid', () => {
     const kept = storage({ 'oby.token': 'old' });
     vi.stubGlobal('sessionStorage', kept);
     load(state({ status: null, connection: 'connecting' }));
-    vi.stubGlobal('fetch', vi.fn(async () => json({ error: 'This runner answers only requests with its API token.' }, 401)));
+    vi.stubGlobal('fetch', vi.fn(async () => json({ error: 'This Oby answers only requests with its API token.' }, 401)));
     connect();
     await until(() => !live().signedIn);
     expect(kept.getItem('oby.token')).toBeNull();

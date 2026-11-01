@@ -780,7 +780,7 @@ fn attached_jobs(shared: &Shared, ids: Vec<String>) -> Result<Vec<String>, ApiEr
         if shared.jobs.get(&id).is_none() {
             return Err(ApiError::new(
                 StatusCode::UNPROCESSABLE_ENTITY,
-                "jobs names a job this runner doesn't have.",
+                "jobs names a job this Oby doesn't have.",
             ));
         }
         if !out.contains(&id) {
