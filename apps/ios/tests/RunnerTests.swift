@@ -107,6 +107,11 @@ struct RunnerTests {
         #expect(ThreadTaskLine.cards(under: words, in: [words], jobs: [older, started], startedBy: \.turn).map(\.turn) == ["u1"])
         let answer = Turn(id: "o1", who: .oby, text: "On it.", jobs: [started.id])
         #expect(ThreadTaskLine.cards(under: words, in: [words, answer], jobs: [started], startedBy: \.turn).isEmpty)
+        // One card a job: its report, and a later answer naming it, show none
+        let report = Turn(id: "o2", who: .oby, text: "Done.", jobs: [started.id])
+        let thread = [words, answer, report]
+        #expect(ThreadTaskLine.cards(under: answer, in: thread, jobs: [started], startedBy: \.turn).map(\.id) == [started.id])
+        #expect(ThreadTaskLine.cards(under: report, in: thread, jobs: [started], startedBy: \.turn).isEmpty)
     }
 
     @Test func eventsAndPings() throws {
