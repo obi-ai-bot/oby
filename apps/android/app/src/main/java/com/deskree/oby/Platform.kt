@@ -127,7 +127,7 @@ class MacFinder(context: Context) {
 /**
  * The alerts the runner sends when a job needs you (docs/runner-api.md, `POST /v1/notifications`):
  * "Ready to publish" with Publish and Open, a failed or interrupted job with Open. Tapping one opens
- * the job; Publish brings Oby forward, where the fingerprint or face signs it as it does in the app.
+ * the job; Publish brings Oby forward, where a tap signs it as it does in the app.
  */
 object Notifications {
     const val JOBS = "jobs"

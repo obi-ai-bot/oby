@@ -714,9 +714,10 @@ class Phone(val context: Context) {
         // Only the owner's tap confirms (#776): this phone's key signs the item's title, the tap its
         // approval. A Confirm is never queued offline (its signature is stale after two minutes);
         // Cancel and Later still are.
-        val confirming = inbox.firstOrNull { it.id == id && it.kind == RunnerConfirm.KIND }
-        if (answer == RunnerConfirm.CONFIRM && confirming != null) {
+        if (answer == RunnerConfirm.CONFIRM) {
             if (connection != Connection.Live) throw RunnerError("Confirm needs a connection to your Mac.")
+            val confirming = inbox.firstOrNull { it.id == id && it.kind == RunnerConfirm.KIND }
+                ?: throw RunnerError("That's been answered already.")
             val approval = DeviceKey.approveConfirm(id, confirming.title, registerDevice())
             apply(RunnerEvent.Inbox(runner.settle(id, RunnerConfirm.CONFIRM, approval)))
             return
@@ -760,7 +761,8 @@ class Phone(val context: Context) {
     /** Registers the phone's publishing key with the runner and returns its id; again on every connection. */
     suspend fun registerDevice(again: Boolean = false): String {
         if (!again) deviceID?.let { return it }
-        val id = runner.register("Android", DeviceKey.publicKey())
+        // Made on its first use, in StrongBox when there is one: never on the main thread.
+        val id = runner.register("Android", kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { DeviceKey.publicKey() })
         prefs.edit().putString(deviceKey, id).apply()
         return id
     }

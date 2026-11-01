@@ -108,7 +108,8 @@ class OfflineQueue(private val prefs: SharedPreferences) {
         while (true) {
             val answer = answers.firstOrNull { it.target == target } ?: return
             try { send(answer) } catch (e: Exception) {
-                // The runner no longer has it waiting (gone, or settled meanwhile): it leaves the queue, the next ones still go.
+                // obid no longer has it waiting (gone, or settled meanwhile), or never takes it (403: one that needs a
+                // signature, which a queued answer can't carry): it leaves the queue, the next ones still go.
                 if (!isAlreadySettled(e)) { save(); return }
             }
             answers = answers - answer
@@ -119,6 +120,6 @@ class OfflineQueue(private val prefs: SharedPreferences) {
     companion object {
         const val MAX = 50
         const val MAX_AGE = 7L * 24 * 3600 * 1000
-        fun isAlreadySettled(e: Exception) = (e as? RunnerError)?.status in listOf(404, 409)
+        fun isAlreadySettled(e: Exception) = (e as? RunnerError)?.status in listOf(403, 404, 409)
     }
 }
