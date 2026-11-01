@@ -3450,6 +3450,8 @@ impl Jobs {
                         // Files may hold anyone's words, as a conversation's do (crate::secretspec).
                         foreign: (!attachments.is_empty())
                             .then(|| "files the owner attached, which may hold anyone's words".into()),
+                        // An attachment is untrusted (ATTACH-6, ATTACH-13), as words with one are.
+                        untrusted: next.untrusted || !attachments.is_empty(),
                         ..next
                     });
                     if made.is_ok() && !job.heard.is_empty() {

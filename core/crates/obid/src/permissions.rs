@@ -2645,13 +2645,68 @@ pub fn load(home: &Path) -> Kept {
     }
 }
 
+/// Keeps `kept` in `home`. A file there that doesn't read ([`load`]'s Ask with no rules) is never
+/// written over: it's moved aside first, to `permissions.json.unreadable-<time>`, so the rules it
+/// holds stay for the owner (#1652); when it can't be moved, nothing is written.
 pub fn save(home: &Path, kept: &Kept) -> std::io::Result<()> {
+    let file = path(home);
+    let reads = match std::fs::read(&file) {
+        Err(e) => e.kind() == std::io::ErrorKind::NotFound,
+        Ok(bytes) => serde_json::from_slice::<Kept>(&bytes).is_ok(),
+    };
+    if !reads {
+        let aside = home.join(format!(
+            "permissions.json.unreadable-{}",
+            obi_protocol::time::now()
+        ));
+        std::fs::rename(&file, &aside)?;
+        tracing::warn!(
+            "{} didn't read: kept as {}",
+            file.display(),
+            aside.display()
+        );
+    }
     let text = serde_json::to_vec_pretty(kept).map_err(std::io::Error::other)?;
-    crate::store::write_private(&path(home), &text)
+    crate::store::write_private(&file, &text)
 }
 
 #[cfg(test)]
 mod tests {
+
+    /// PERMISSIONS-4 (#1652): a `permissions.json` that doesn't read loads as Ask with no rules, and the next save
+    /// moves it aside rather than writing over the rules it holds.
+    #[test]
+    fn permissions_4_an_unreadable_file_is_kept_aside_never_written_over() {
+        let home = std::env::temp_dir().join(format!("obid-perm-aside-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(&home).unwrap();
+        let broken = r#"{"mode": "bypass", "rules": [{"id": "r1", "rule": "Bash(npm test)",, }]}"#;
+        std::fs::write(path(&home), broken).unwrap();
+        let kept = load(&home);
+        assert_eq!(kept.default_mode(), Mode::Ask);
+        assert!(kept.rules.is_empty());
+        let changed = Kept {
+            mode: Some("plan".into()),
+            ..kept
+        };
+        save(&home, &changed).unwrap();
+        assert_eq!(load(&home), changed);
+        let aside: Vec<_> = std::fs::read_dir(&home)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| {
+                e.file_name()
+                    .to_string_lossy()
+                    .starts_with("permissions.json.unreadable-")
+            })
+            .collect();
+        assert_eq!(aside.len(), 1);
+        assert_eq!(std::fs::read_to_string(aside[0].path()).unwrap(), broken);
+        // A file that reads is written over as before: nothing more goes aside.
+        save(&home, &Kept::default()).unwrap();
+        assert_eq!(std::fs::read_dir(&home).unwrap().count(), 2);
+        let _ = std::fs::remove_dir_all(&home);
+    }
 
     /// Plan lets least through without asking, then Ask, Accept edits, Sandbox, and Bypass most.
     #[test]
@@ -2727,7 +2782,7 @@ mod tests {
 
     /// PermissionTests.eachModeAllowsOrAsks.
     #[test]
-    fn each_mode_allows_or_asks() {
+    fn permissions_5_each_mode_allows_or_asks() {
         let calls = [
             tool("Read", &["/tmp/oby/jobs/abc/a.swift"]),
             tool("Grep", &[]),
