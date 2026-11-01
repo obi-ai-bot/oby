@@ -692,7 +692,7 @@ private struct SessionSheet: View {
         Task {
             defer { sending = false }
             do {
-                try await phone.tell(id, text)
+                try await phone.tell(id, text, conversation: true)
                 note = ""
                 typing = false
                 problem = nil

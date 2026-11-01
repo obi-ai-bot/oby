@@ -35,6 +35,15 @@ struct PermissionsSection: View {
     }
 
     /// Sangam's card: the default mode with what it lets the agent do, then each rule with Remove.
+    /// Sangam's four on the iPhone (RunnerMode.offered); the frozen Mac app keeps every one.
+    private var modes: [RunnerMode] {
+        #if os(macOS)
+        RunnerMode.allCases
+        #else
+        RunnerMode.offered(defaultMode)
+        #endif
+    }
+
     private var group: some View {
         SetGroup("Permissions", footer: Self.footer, problem: problem) {
             if runner == nil {
@@ -43,7 +52,7 @@ struct PermissionsSection: View {
                 SetRow("This runner doesn't ask before agents act.", quiet: true)
             } else {
                 SetRow("Default mode", about: defaultMode?.help) {
-                    SetSelect("Default mode", selection: mode, options: RunnerMode.offered(defaultMode).map { (RunnerMode?.some($0), $0.label) })
+                    SetSelect("Default mode", selection: mode, options: modes.map { (RunnerMode?.some($0), $0.label) })
                 }
                 if let rules, rules.isEmpty {
                     SetRow("No saved rules", quiet: true)
@@ -69,7 +78,7 @@ struct PermissionsSection: View {
                 Text("This runner doesn't ask before agents act.").foregroundStyle(.secondary)
             } else {
                 Picker("Default mode", selection: mode) {
-                    ForEach(RunnerMode.offered(defaultMode)) { mode in
+                    ForEach(modes) { mode in
                         Text(mode.label).tag(RunnerMode?.some(mode))
                     }
                 }
