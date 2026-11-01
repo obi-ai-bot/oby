@@ -117,6 +117,7 @@ private struct AgentsPage: View {
             if let chosen {
                 SetRow("New tasks go to") {
                     SetSelect("Default agent", selection: Binding { chosen.id } set: { id in
+                        guard id != chosen.id else { return }
                         Task { do { try await phone.setDefaultAccount(id); problem = nil } catch { problem = error.localizedDescription } }
                     }, options: ready.map { ($0.id, "\($0.name) · \(Usage.tool($0.agent))") })
                 }
@@ -195,13 +196,13 @@ private struct AgentCard: View {
                 SetRow("Model") {
                     ModelMenu(title: "\(account.name) model and effort",
                               models: Self.choices((tool?.models ?? []).map { ($0.id, $0.name) }, model),
-                              model: Binding { model } set: { tune(["model": $0]) },
+                              model: Binding { model } set: { if $0 != model { tune(["model": $0]) } },
                               efforts: account.agent == "cursor" ? [] : Self.choices(efforts.map { ($0, effortName($0)) }, effort),
-                              effort: Binding { effort } set: { tune(["effort": $0]) })
+                              effort: Binding { effort } set: { if $0 != effort { tune(["effort": $0]) } })
                 }
                 if account.agent != "cursor" {
                     SetRow("Effort on complex tasks") {
-                        SetSelect("\(account.name) complex task effort", selection: Binding { complexEffort } set: { tune(["complexEffort": $0]) },
+                        SetSelect("\(account.name) complex task effort", selection: Binding { complexEffort } set: { if $0 != complexEffort { tune(["complexEffort": $0]) } },
                                   options: Self.choices((tool?.complexEfforts ?? []).map { ($0, effortName($0)) }, complexEffort))
                     }
                 }

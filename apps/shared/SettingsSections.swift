@@ -270,8 +270,8 @@ struct NotificationsSection: View {
                 .task { await refresh() }
                 .onReceive(NotificationCenter.default.publisher(for: Self.becameActive)) { _ in Task { await refresh() } }
                 #if os(iOS)
-                // Electron's second row: where the system keeps the rest.
-                if let url = Self.settings {
+                // Electron's second row: where the system keeps the rest (alerts off: the row above has it).
+                if status != .denied, let url = Self.settings {
                     SetRow("Banners, sounds and Focus") { Button(Self.settingsName) { openURL(url) }.buttonStyle(.set) }
                 }
                 #endif
