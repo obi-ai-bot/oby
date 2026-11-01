@@ -61,11 +61,10 @@ export function publicKey() {
 export const signed = (sentence: string) => sign('sha256', Buffer.from(sentence, 'utf8'), deviceKey()).toString('base64');
 export const now = () => new Date().toISOString().replace(/\.\d+Z$/, 'Z');
 
-function name() {
-  let mac = hostname();
-  try { mac = execFileSync('/usr/sbin/scutil', ['--get', 'ComputerName'], { encoding: 'utf8' }).trim() || mac; } catch { /* the host name, then */ }
-  return `${mac} (Oby desktop)`;
+function macName() {
+  try { return execFileSync('/usr/sbin/scutil', ['--get', 'ComputerName'], { encoding: 'utf8' }).trim() || hostname(); } catch { return hostname(); }
 }
+const name = () => `${macName()} (Oby desktop)`;
 
 const said = (a: Answer) => { try { return (JSON.parse(a.text) as { error?: string }).error ?? a.text; } catch { return a.text; } };
 
@@ -146,6 +145,20 @@ export function confirming(trusted: Trusted) {
       const device = await register(), signedAt = now();
       const signature = signed(`oby-confirm\n${item.id}\n${item.title}\n${signedAt}`);
       return obid('POST', `/v1/inbox/${encodeURIComponent(item.id)}/answer`, { answer: 'Confirm', approval: { device, action: item.title, signedAt, signature } });
+    } catch (err) {
+      return { status: 500, text: JSON.stringify({ error: err instanceof Error ? err.message : String(err) }) };
+    }
+  });
+
+  // Pair a device, on the owner's click in Settings › Runner: an invitation (POST
+  // /v1/pairing/invite) with this Mac's signature over obid's sentence for it, so the phone it
+  // pairs may add its own key and approve (docs/runner-api.md, "obid only: the gateway"). Only
+  // right after a click main saw itself; the name is this Mac's.
+  ipcMain.handle('obid-pair-invite', async (e): Promise<Answer> => {
+    if (!trusted(e) || !takeInput()) return { status: 403, text: '' };
+    try {
+      const device = await register(), signedAt = now();
+      return obid('POST', '/v1/pairing/invite', { name: macName(), approval: { device, action: '', signedAt, signature: signed(`oby-pair-invite\n${signedAt}`) } });
     } catch (err) {
       return { status: 500, text: JSON.stringify({ error: err instanceof Error ? err.message : String(err) }) };
     }

@@ -112,6 +112,8 @@ contextBridge.exposeInMainWorld('app', {
     confirm: (item: string) => ipcRenderer.invoke('obid-confirm', item) as Promise<Answer>,
     limitAnswer: (item: string, revision: number, choice: string, account?: string) =>
       ipcRenderer.invoke('obid-limit-answer', item, revision, choice, account) as Promise<Answer>,
+    // Pair a device: main signs the invitation with this Mac's device key
+    pairInvite: () => ipcRenderer.invoke('obid-pair-invite') as Promise<Answer>,
     follow(onChunk: (text: string) => void, onEnd: (a: Answer) => void) {
       const chunk = (_: unknown, text: string) => onChunk(text);
       const end = (_: unknown, a: Answer) => { stop(); onEnd(a); };

@@ -1598,6 +1598,8 @@ button.connector { width: 100%; text-align: left; }
 .set-share { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; max-width: 320px; }  /* who, and how much (Sharing, a preview) */
 .set-value { color: var(--text); font-size: var(--text-base); display: inline-flex; align-items: center; gap: 6px; }
 .set-none { color: var(--muted); }
+/* the pairing QR code (Settings › Runner): black on white whatever the theme, its cells sharp */
+.set-qr { display: block; border-radius: 6px; image-rendering: pixelated; }
 .set-plain { color: var(--text); }
 /* connected: a green dot before the word */
 .set-dot { width: 6px; height: 6px; border-radius: 50%; background: #30d158; }

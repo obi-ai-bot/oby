@@ -25,6 +25,13 @@ import type {
 
 export * from '../../shared/obid-wire';
 
+// POST /v1/pairing/invite (docs/runner-api.md, "LAN gateway"): link is JSON text
+export type Invitation = { url: string; link: string; secret: string; code: string; expiresAt: string };
+export type PairedDevice = { id: string; name: string; created: string; expiresAt: string };
+// What the QR code carries, as the Swift Mac app made it (PairingView's qrText): the iPhone reads
+// it (GatewayEnvelope)
+export const qrText = (i: Invitation) => JSON.stringify({ url: i.url, link: JSON.parse(i.link), secret: i.secret });
+
 // Each tool's model and efforts, as status.models has them (Settings › Agents), and the choices:
 // Claude Code's efforts are the tool's, Codex's each model's own; Cursor has a model and no effort
 export type Models = {
@@ -94,6 +101,11 @@ export const api = {
   answer: (i: string, body: { answer: string } | { later: string }) => call<InboxItem>('POST', `/v1/inbox/${id(i)}/answer`, body),
   // Confirm on a confirm item: main signs it with this Mac's device key (main/device.ts)
   confirm: (i: string) => call<InboxItem>('POST', `/v1/inbox/${id(i)}/answer`, undefined, (b) => b.confirm(i)),
+  // Settings › Runner: pairing an iPhone through obid's Obysphere (main signs the invitation), the
+  // paired ones, and Revoke
+  pairInvite: () => call<Invitation>('POST', '/v1/pairing/invite', undefined, (b) => b.pairInvite()),
+  pairedDevices: () => call<PairedDevice[]>('GET', '/v1/pairing/devices'),
+  revokeDevice: (d: string) => call<null>('DELETE', `/v1/pairing/devices/${id(d)}`),
   limitDecisions: () => call<LimitDecision[]>('GET', '/v1/limit-decisions'),
   answerLimit: (decision: LimitDecision, option: LimitDecision['options'][number]) =>
     call<unknown>('POST', `/v1/limit-decisions/${id(decision.id)}/answer`, undefined,
