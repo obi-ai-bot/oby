@@ -1,0 +1,547 @@
+import Foundation
+
+// Decisions as Claude Code shows them (#138): one card (apps/shared/DecisionCard.swift) for a job's
+// question, a plan to approve, an inbox item, a permission prompt and the brain's question, on the
+// iPhone, the Mac and the Watch. The recommended option comes first, then the others (at most 3 in
+// all), then a line for the user's own words. The permission keys are the runner's (#134,
+// docs/runner-api.md): every one is new, so every one is optional, and an older runner sends none
+// of them. No SwiftUI here: the Watch's complications read these too.
+
+/// How freely a job's agent works (`Job.mode`).
+nonisolated enum RunnerMode: String, Codable, CaseIterable, Identifiable, Sendable {
+    case ask, acceptEdits, plan, bypass, sandbox
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .ask: "Ask"
+        case .acceptEdits: "Accept edits"
+        case .plan: "Plan"
+        case .bypass: "Bypass"
+        case .sandbox: "Sandbox"
+        }
+    }
+
+    /// The modes this Mac's own jobs run (Engine's PermissionMode): obid's `sandbox` is the runner's only.
+    static let local: [RunnerMode] = [.ask, .acceptEdits, .plan, .bypass]
+
+    /// What the agent may do in it, in one line.
+    var help: String {
+        switch self {
+        case .ask: "Asks before it edits a file or runs a command"
+        case .acceptEdits: "Edits files without asking; asks before commands"
+        case .plan: "Plans first, and works once you approve the plan"
+        case .bypass: "Asks nothing"
+        case .sandbox: "Asks only about the network, secrets and reads outside the worktree"
+        }
+    }
+
+    var symbol: String {
+        switch self {
+        case .ask: "hand.raised"
+        case .acceptEdits: "pencil"
+        case .plan: "list.bullet.clipboard"
+        case .bypass: "bolt"
+        case .sandbox: "shippingbox"
+        }
+    }
+
+    /// The mode the runner named, or nil for none, or one this app doesn't know yet.
+    init?(_ raw: String?) {
+        guard let raw, let mode = Self(rawValue: raw) else { return nil }
+        self = mode
+    }
+}
+
+/// What a job's agent waits for the user's OK on (`Job.permission`): the job stays running, its
+/// step "Waiting for your OK".
+nonisolated struct RunnerPermission: Codable, Equatable, Sendable {
+    /// What `POST /v1/jobs/{id}/permission` answers.
+    enum Decision: String, Codable, Sendable { case allow, always, deny }
+
+    var id: String
+    /// "Bash", "Edit"…
+    var tool: String?
+    /// "Run swift test"
+    var title: String
+    /// The command or the file.
+    var detail: String?
+    /// What Always allow saves, like "Bash(swift test:*)".
+    var rule: String?
+    /// Always allow, spelled out: "Yes, and don't ask again for swift test in deskree-inc/oby".
+    var always: String?
+
+    /// The question the agent asks the user in AskUserQuestion (obid's `permission.question`,
+    /// #858), quoted data; nil for every other permission.
+    var question: Asked?
+
+    /// What obid's `permission.question` carries that the apps read: the question itself.
+    struct Asked: Codable, Equatable, Sendable { var question: String }
+
+    /// The agent's question: obid refuses Allow on it, and takes a Deny with words as its answer.
+    var isQuestion: Bool { question != nil }
+}
+
+/// A saved permission rule (`GET /v1/permissions/rules`).
+nonisolated struct RunnerRule: Codable, Identifiable, Equatable, Sendable {
+    var id: String
+    var rule: String
+    var repo: String?
+    /// "allow" or "deny".
+    var decision: String
+    var created: Date?
+}
+
+#if os(macOS)
+/// A job's mode, the permission it waits on, and its question with the recommended option and the
+/// plan, as the Mac's job screen shows them: a runner's job's, read from the same JSON (never
+/// failing the job, as from a runner Engine's Job can't read).
+nonisolated struct RunnerJobExtras: Decodable, Equatable, Sendable {
+    var id: String
+    var mode: String?
+    var permission: RunnerPermission?
+    var question: Question?
+    /// obid only (#493): the conversation whose words started the job, kept when that one is deleted.
+    var conversation: String?
+    /// obid only: the user's turn whose words started it, so its card shows under them as it starts.
+    var turn: String?
+    /// What it made to be looked at (obid only), or nil.
+    var artifacts: [ArtifactRef]?
+    /// obid only (#395): the routine whose run started it.
+    var routine: RoutineMark?
+    /// Teammates' open pull requests on its files (obid only), or nil.
+    var teammates: TeammatePRs?
+    /// What its agent asked Tetrix, the session it saved and where the graph fell short, or nil.
+    var tetrix: TetrixJobReport?
+    /// The job page's facts (#739), read from the same JSON; nil for this Mac's own jobs.
+    var facts: JobFacts?
+    /// obid only: when it was archived by hand (Archive task, or a conversation's), or nil. It's
+    /// then under Archived, not on Home.
+    var archived: Date?
+    /// obid only (#808): the teammate's Mac it runs on, or nil (this one).
+    var runsOn: RunsOnMac?
+
+    /// Whose Mac a job runs on: their Obi, and its owner.
+    struct RunsOnMac: Decodable, Equatable, Sendable {
+        var obi: String
+        var owner: String
+    }
+
+    private enum Keys: String, CodingKey { case id, mode, permission, question, conversation, turn, artifacts, routine, tetrix, archived, runsOn }
+
+    private enum TeammatesKey: String, CodingKey { case teammates }
+
+    init(id: String, mode: String? = nil, permission: RunnerPermission? = nil, question: Question? = nil, conversation: String? = nil,
+         turn: String? = nil) {
+        self.id = id
+        self.mode = mode
+        self.permission = permission
+        self.question = question
+        self.conversation = conversation
+        self.turn = turn
+    }
+
+    init(from decoder: any Decoder) throws {
+        let keys = try decoder.container(keyedBy: Keys.self)
+        id = try keys.decode(String.self, forKey: .id)
+        mode = try? keys.decodeIfPresent(String.self, forKey: .mode)
+        permission = try? keys.decodeIfPresent(RunnerPermission.self, forKey: .permission)
+        question = try? keys.decodeIfPresent(Question.self, forKey: .question)
+        conversation = try? keys.decodeIfPresent(String.self, forKey: .conversation)
+        turn = try? keys.decodeIfPresent(String.self, forKey: .turn)
+        teammates = try? decoder.container(keyedBy: TeammatesKey.self).decodeIfPresent(TeammatePRs.self, forKey: .teammates)
+        artifacts = try? keys.decodeIfPresent([ArtifactRef].self, forKey: .artifacts)
+        routine = try? keys.decodeIfPresent(RoutineMark.self, forKey: .routine)
+        tetrix = try? keys.decodeIfPresent(TetrixJobReport.self, forKey: .tetrix)
+        archived = try? keys.decodeIfPresent(Date.self, forKey: .archived)
+        runsOn = try? keys.decodeIfPresent(RunsOnMac.self, forKey: .runsOn)
+        facts = (try? JobFacts(from: decoder)).flatMap { $0 == JobFacts() ? nil : $0 }
+    }
+
+    /// Each job's, by id; a list that can't be read gives none.
+    static func of(_ data: Data) -> [String: RunnerJobExtras] {
+        struct Lossy: Decodable {
+            var extras: RunnerJobExtras?
+            init(from decoder: any Decoder) throws { extras = try? RunnerJobExtras(from: decoder) }
+        }
+        let list = (try? Runner.decoder.decode([Lossy].self, from: data))?.compactMap(\.extras) ?? []
+        return Dictionary(list.map { ($0.id, $0) }, uniquingKeysWith: { $1 })
+    }
+}
+#endif
+
+/// One answer on a decision card.
+nonisolated struct CardOption: Equatable, Sendable {
+    enum Role: Sendable { case plain, destructive }
+
+    /// What the button says.
+    var label: String
+    /// What choosing it sends: the option itself, or a permission's decision.
+    var answer: String
+    /// A line under it, like the rule Always allow saves.
+    var detail: String? = nil
+    var recommended = false
+    var role: Role = .plain
+
+    /// A card offers at most this many; the user's own words take the rest.
+    static let most = 4
+    /// What the user's own words do on a permission card.
+    static let denyWords = "Your words go with a Deny, for the agent."
+    /// What they do on the agent's question (#858): obid takes a Deny with words as its answer.
+    static let answerWords = "Your words are its answer."
+
+    /// The words note for `permission`'s card.
+    static func wordsNote(_ permission: RunnerPermission) -> String { permission.isQuestion ? answerWords : denyWords }
+
+    /// The recommended one first, marked, then the others in their order, at most `most` in all.
+    /// An index out of range recommends nothing.
+    static func of(_ options: [String], recommended: Int? = nil) -> [CardOption] {
+        var list = options.enumerated().map { CardOption(label: $1, answer: $1, recommended: $0 == recommended) }
+        if let index = list.firstIndex(where: \.recommended) { list.insert(list.remove(at: index), at: 0) }
+        return Array(list.prefix(most))
+    }
+
+    /// Return must never deny, dismiss or stop work, even if an upstream recommendation says so.
+    var safeOnReturn: Bool {
+        let action = answer.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        return role != .destructive && !["deny", "dismiss", "stop"].contains(where: { action == $0 || action.hasPrefix($0 + " ") })
+    }
+
+    static func defaultOption(_ options: [CardOption]) -> CardOption? {
+        options.first { $0.recommended && $0.safeOnReturn }
+    }
+
+    /// The same, with the recommended one named rather than numbered (an inbox item's options
+    /// against its job's question).
+    static func of(_ options: [String], recommending label: String?) -> [CardOption] {
+        of(options, recommended: label.flatMap { options.firstIndex(of: $0) })
+    }
+
+    /// Allow, Always allow with the rule spelled out (when the runner can save one), and Deny. The
+    /// agent's question (#858) has no Allow: the user's words answer it, and Deny declines it.
+    static func permission(_ permission: RunnerPermission) -> [CardOption] {
+        if permission.isQuestion { return [CardOption(label: "Don't answer", answer: RunnerPermission.Decision.deny.rawValue, role: .destructive)] }
+        var list = [CardOption(label: "Allow once", answer: RunnerPermission.Decision.allow.rawValue, recommended: true)]
+        if let rule = InboxWords.plain(permission.rule) {
+            let always = permission.always ?? "Always allow \(rule)"
+            list.append(CardOption(label: "Always allow", answer: RunnerPermission.Decision.always.rawValue, detail: always.contains(rule) ? always : "\(always) · \(rule)"))
+        }
+        list.append(CardOption(label: "Deny", answer: RunnerPermission.Decision.deny.rawValue, role: .destructive))
+        return list
+    }
+}
+
+/// One keyboard path for a focused decision; input methods and ordinary text fields keep their keys.
+nonisolated enum DecisionKey {
+    enum Action: Equatable { case option(CardOption), words(String), later, none }
+    static func action(_ key: String, options: [CardOption], words: String = "", busy: Bool = false) -> Action {
+        guard !busy else { return .none }
+        if key == "escape" { return .later }
+        if key == "return" {
+            let typed = words.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !typed.isEmpty { return typed.count <= 2000 ? .words(typed) : .none }
+            return CardOption.defaultOption(options).map { .option($0) } ?? .none
+        }
+        if let number = Int(key), (1...4).contains(number), options.indices.contains(number - 1) {
+            return .option(options[number - 1])
+        }
+        return .none
+    }
+}
+
+extension CardOption {
+    /// An inbox item's answers (`kind` as the runner names it): a question's with its job's
+    /// recommended one first, a permission's with the rule Always allow saves and Deny in red.
+    /// Oby's own recommendation (`words`, #65) comes before the job question's, and its why goes
+    /// under the option it recommends.
+    /// A `confirm` item's (obid only, #546) keep their order with none recommended, so Return
+    /// picks nothing: it's the user's call. Its Confirm says under it what it does (`does`, the
+    /// item's title).
+    static func inbox(_ options: [String], kind: String, question: Question? = nil, permission: RunnerPermission? = nil,
+                      words: InboxWords? = nil, details: [String]? = nil, does: String? = nil) -> [CardOption] {
+        if kind == RunnerConfirm.kind {
+            let lines = details.flatMap { $0.count == options.count ? $0 : nil }
+            return Array(options.enumerated().map { index, option in
+                CardOption(label: option, answer: option,
+                           detail: option == RunnerConfirm.confirm ? InboxWords.plain(does) : InboxWords.plain(lines?[index]))
+            }.prefix(most))
+        }
+        let ours = words?.recommended.flatMap { options.indices.contains($0) ? $0 : nil }
+        var list = ours.map { of(options, recommended: $0) } ?? of(options, recommending: kind == "question" ? question?.recommendedOption : nil)
+        // What each option does, under it (#215), as Claude Code describes its options.
+        let does = details.flatMap { $0.count == options.count ? Dictionary(zip(options, $0), uniquingKeysWith: { first, _ in first }) : nil } ?? [:]
+        for index in list.indices {
+            if let line = InboxWords.plain(does[list[index].answer]) { list[index].detail = line }
+            if kind == "permission", list[index].label == "Allow" { list[index].label = "Allow once" }
+            if kind == "permission", list[index].label == "Always allow", let rule = InboxWords.plain(permission?.rule) {
+                let friendly = permission?.always ?? "Always allow \(rule)"
+                list[index].detail = friendly.contains(rule) ? friendly : "\(friendly) · \(rule)"
+            }
+            if kind == "permission", list[index].label == "Deny" { list[index].role = .destructive }
+            if list[index].recommended, let why = InboxWords.plain(words?.why) {
+                list[index].detail = [list[index].detail, why].compactMap(\.self).joined(separator: "\n")
+            }
+        }
+        if kind == "permission", InboxWords.plain(permission?.rule) == nil { list.removeAll { $0.label == "Always allow" } }
+        return list
+    }
+}
+
+/// What another Oby asks, from an `obiRequest` item (obid only, runner-api.md "Obi-to-Obi requests
+/// in the inbox"): its type (`review_request`, `question`, `host_approval`, `run_request`,
+/// `share_used`), whose Oby asks, and its own words, quoted (`obi.quoted`). Those are data: shown
+/// whole and as plain text, never as buttons or instructions.
+nonisolated struct ObiAsk: Decodable, Equatable, Sendable {
+    var type: String
+    var fromOwner: String?
+    var quoted: Quoted?
+
+    /// Its own words, each read on its own: one that can't be read is left out, not the rest.
+    nonisolated struct Quoted: Decodable, Equatable, Sendable {
+        var text: String?
+        var goal: String?
+        var summary: String?
+        var title: String?
+        var choices: [String]?
+        /// A review's conditions, in the asker's words: a typed one's note, a custom one's text.
+        var acceptance: [Condition]?
+
+        nonisolated struct Condition: Decodable, Equatable, Sendable {
+            var index: Int?
+            var note: String?
+            var text: String?
+
+            private enum Keys: String, CodingKey { case index, note, text }
+
+            init(index: Int? = nil, note: String? = nil, text: String? = nil) { (self.index, self.note, self.text) = (index, note, text) }
+
+            init(from decoder: any Decoder) throws {
+                let keys = try decoder.container(keyedBy: Keys.self)
+                index = try? keys.decodeIfPresent(Int.self, forKey: .index)
+                note = try? keys.decodeIfPresent(String.self, forKey: .note)
+                text = try? keys.decodeIfPresent(String.self, forKey: .text)
+            }
+        }
+
+        private enum Keys: String, CodingKey { case text, goal, summary, title, choices, acceptance }
+
+        init(text: String? = nil, goal: String? = nil, summary: String? = nil, title: String? = nil, choices: [String]? = nil,
+             acceptance: [Condition]? = nil) {
+            (self.text, self.goal, self.summary, self.title, self.choices, self.acceptance) = (text, goal, summary, title, choices, acceptance)
+        }
+
+        init(from decoder: any Decoder) throws {
+            let keys = try decoder.container(keyedBy: Keys.self)
+            text = try? keys.decodeIfPresent(String.self, forKey: .text)
+            goal = try? keys.decodeIfPresent(String.self, forKey: .goal)
+            summary = try? keys.decodeIfPresent(String.self, forKey: .summary)
+            title = try? keys.decodeIfPresent(String.self, forKey: .title)
+            choices = try? keys.decodeIfPresent([String].self, forKey: .choices)
+            acceptance = try? keys.decodeIfPresent([Condition].self, forKey: .acceptance)
+        }
+    }
+
+    /// The types Home shows by their own name; the rest keep the kind Engine reads them as.
+    static let named: Set<String> = ["review_request", "host_approval"]
+
+    /// Its words as a card shows them: what it asks (a question's text, a review's goal, a job's
+    /// title), a review's summary and conditions, and a question's choices, which the owner answers
+    /// in words.
+    var words: String? {
+        let choices = (quoted?.choices ?? []).compactMap(InboxWords.plain)
+        let conditions = (quoted?.acceptance ?? []).enumerated().flatMap { position, condition in
+            [condition.note, condition.text].compactMap(InboxWords.plain).map { "Condition \((condition.index ?? position) + 1): \($0)" }
+        }
+        let parts = [quoted?.text, quoted?.goal, quoted?.title, quoted?.summary].compactMap(InboxWords.plain) + conditions
+            + (choices.isEmpty ? [] : ["Their choices: " + choices.joined(separator: " · ")])
+        return parts.isEmpty ? nil : parts.joined(separator: "\n\n")
+    }
+}
+
+/// Oby's plain words for an inbox item (#65), from newer runners: a headline of at most 8 words,
+/// what happened in a sentence or two, the option it recommends (an index, or nil) and why. Every
+/// key is optional, and one that can't be read counts as missing: the card then shows the item
+/// as before.
+nonisolated struct InboxWords: Decodable, Equatable, Sendable {
+    var headline: String?
+    var happened: String?
+    var recommended: Int?
+    var why: String?
+    /// On a `confirm` item (obid only, #546), what its Confirm carries out. The Mac reads the
+    /// item into Engine's InboxItem, which has no such kind: this says what it really is.
+    var confirm: RunnerConfirm?
+    /// The conversation a plan waiting for Start (or a confirm to start a job) came from (obid
+    /// only): a conversation shows it opened out only there.
+    var conversation: String?
+    /// On an `obiRequest` (obid only), what another Oby asks: Engine reads it as a `question` or a
+    /// `start`, and this says what it really is.
+    var obi: ObiAsk?
+
+    private enum Keys: String, CodingKey { case headline, happened, recommended, why, confirm, conversation, obi }
+
+    init(headline: String? = nil, happened: String? = nil, recommended: Int? = nil, why: String? = nil, confirm: RunnerConfirm? = nil,
+         conversation: String? = nil, obi: ObiAsk? = nil) {
+        self.headline = headline
+        self.happened = happened
+        self.recommended = recommended
+        self.why = why
+        self.confirm = confirm
+        self.conversation = conversation
+        self.obi = obi
+    }
+
+    init(from decoder: any Decoder) throws {
+        let keys = try decoder.container(keyedBy: Keys.self)
+        headline = try? keys.decodeIfPresent(String.self, forKey: .headline)
+        happened = try? keys.decodeIfPresent(String.self, forKey: .happened)
+        recommended = try? keys.decodeIfPresent(Int.self, forKey: .recommended)
+        why = try? keys.decodeIfPresent(String.self, forKey: .why)
+        confirm = try? keys.decodeIfPresent(RunnerConfirm.self, forKey: .confirm)
+        conversation = try? keys.decodeIfPresent(String.self, forKey: .conversation)
+        obi = try? keys.decodeIfPresent(ObiAsk.self, forKey: .obi)
+    }
+
+    /// The card's title: the headline, else the item's text, as before.
+    func title(_ text: String) -> String { Self.plain(headline) ?? text }
+
+    /// What happened, under the title, or nil.
+    var body: String? { Self.plain(happened) }
+
+    /// The item's own text, behind Details once the headline stands in for it; else nil (it's the title).
+    func details(_ text: String) -> String? { Self.plain(headline) == nil ? nil : Self.plain(text) }
+
+    /// The words, or nil when there are none.
+    static func plain(_ words: String?) -> String? {
+        guard let words = words?.trimmingCharacters(in: .whitespacesAndNewlines), !words.isEmpty else { return nil }
+        return words
+    }
+
+    #if os(macOS)
+    /// Each runner item's words, by item id, from `GET /v1/inbox`: the Mac reads the items into
+    /// Engine's InboxItem, which doesn't have them. A list that can't be read gives none.
+    static func of(_ data: Data) -> [String: InboxWords] {
+        struct Lossy: Decodable {
+            var id: String?
+            var words: InboxWords?
+            private enum Keys: String, CodingKey { case id }
+            init(from decoder: any Decoder) throws {
+                id = try? decoder.container(keyedBy: Keys.self).decode(String.self, forKey: .id)
+                words = try? InboxWords(from: decoder)
+            }
+        }
+        let list = (try? Runner.decoder.decode([Lossy].self, from: data)) ?? []
+        return Dictionary(list.compactMap { item in item.id.flatMap { id in item.words.map { (id, $0) } } }, uniquingKeysWith: { $1 })
+    }
+    #endif
+}
+
+/// What a `confirm` inbox item's Confirm carries out (obid only, #546; docs/runner-api.md, "Inbox
+/// item"): a typed action, what it acts on (a job's or an inbox item's id) and what else it needs.
+/// Oby's brain never does what persists or widens trust in a turn; only the user's own Confirm
+/// does. So no app recommends Confirm, picks it on Return, or lets anything press it for them.
+nonisolated struct RunnerConfirm: Codable, Equatable, Sendable {
+    static let kind = "confirm"
+    static let confirm = "Confirm"
+    static let cancel = "Cancel"
+
+    var action: String
+    var target: String
+    /// The payload's text by key: `words` (an answer to another Oby's question), `answer` (an
+    /// answer to an item), `permission` (the one Always allow answers). Nil when it has none.
+    var payload: [String: String]?
+
+    init(action: String, target: String, payload: [String: String]? = nil) {
+        self.action = action
+        self.target = target
+        self.payload = payload
+    }
+
+    init(from decoder: any Decoder) throws {
+        let keys = try decoder.container(keyedBy: CodingKeys.self)
+        action = try keys.decode(String.self, forKey: .action)
+        target = (try? keys.decodeIfPresent(String.self, forKey: .target)) ?? ""
+        // Its text fields, whatever else it holds (obid adds a `snapshot` object to a job's, a
+        // number to a review's): one field that isn't text never hides the words it would send.
+        payload = (try? keys.decodeIfPresent([String: Text].self, forKey: .payload))?.compactMapValues(\.text)
+    }
+
+    /// A payload field: its text, or nil for anything else (an object, a number).
+    nonisolated private struct Text: Decodable {
+        var text: String?
+        init(from decoder: any Decoder) throws { text = try? decoder.singleValueContainer().decode(String.self) }
+    }
+
+    /// The words it would send for the user: data someone wrote, which the card quotes apart
+    /// from its title, or nil.
+    var words: String? { InboxWords.plain(payload?["words"]) ?? InboxWords.plain(payload?["answer"]) }
+}
+
+extension Question {
+    /// The option the asker recommends, or nil.
+    nonisolated var recommendedOption: String? {
+        recommended.flatMap { options.indices.contains($0) ? options[$0] : nil }
+    }
+
+    /// Its options for a card, each with what it does under it when the asker said (#215).
+    nonisolated var cardOptions: [CardOption] {
+        var list = CardOption.of(options, recommended: recommended)
+        guard let details, details.count == options.count else { return list }
+        for index in list.indices {
+            if let at = options.firstIndex(of: list[index].answer) { list[index].detail = details[at] }
+        }
+        return list
+    }
+}
+
+#if os(macOS)
+extension Plan.Question {
+    nonisolated var cardOptions: [CardOption] {
+        Question(text: text, options: options, details: details, recommended: recommended).cardOptions
+    }
+}
+#endif
+
+/// A plan in markdown, split into what the card draws: headings, list items, code and paragraphs
+/// (the card draws each one's inline markdown).
+nonisolated enum PlanBlock: Equatable, Sendable {
+    case heading(String)
+    /// The marker ("•", "1.") and the item.
+    case item(String, String)
+    case code(String)
+    case text(String)
+
+    static func blocks(_ markdown: String) -> [PlanBlock] {
+        var blocks: [PlanBlock] = []
+        var code: [String]?
+        var paragraph: [String] = []
+        func flush() {
+            if !paragraph.isEmpty { blocks.append(.text(paragraph.joined(separator: " "))) }
+            paragraph = []
+        }
+        for raw in markdown.split(separator: "\n", omittingEmptySubsequences: false) {
+            let line = raw.trimmingCharacters(in: .whitespaces)
+            if line.hasPrefix("```") {
+                if let lines = code { blocks.append(.code(lines.joined(separator: "\n"))); code = nil } else { flush(); code = [] }
+                continue
+            }
+            if code != nil { code?.append(String(raw)); continue }
+            if line.isEmpty { flush(); continue }
+            if line.hasPrefix("#") {
+                flush()
+                blocks.append(.heading(line.drop { $0 == "#" }.trimmingCharacters(in: .whitespaces)))
+            } else if let first = line.first, "-*+".contains(first), line.dropFirst().first == " " {
+                flush()
+                blocks.append(.item("•", line.dropFirst(2).trimmingCharacters(in: .whitespaces)))
+            } else if let match = line.firstMatch(of: /^(\d{1,3})[.)] (.*)$/) {
+                flush()
+                blocks.append(.item("\(match.1).", String(match.2)))
+            } else {
+                paragraph.append(line)
+            }
+        }
+        if let code { blocks.append(.code(code.joined(separator: "\n"))) }
+        flush()
+        return blocks
+    }
+}

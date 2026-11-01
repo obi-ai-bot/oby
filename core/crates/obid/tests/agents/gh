@@ -1,0 +1,131 @@
+#!/bin/sh
+# A stand-in for gh in obid's tests. With a board in $HOME/board (obid's HOME), it serves the
+# Lead's reads from its files and keeps the claims it is asked to make (#589):
+#   user, projects.json, items.json, issues.json, prs.json   what each read answers
+#   unreadable    when it exists, `gh project list` fails
+#   body-<n>      issue n's body, for `gh issue view <n> … -q .body`
+#   edits         one line per `gh issue edit`: <issue> <repo> <label added> <last line of the body>
+# With $HOME/github, it serves the GitHub work feed (crate::github_work):
+#   work.json   what `gh api graphql` answers
+#   fail        when it exists, `gh api graphql` fails, saying what it holds on stderr
+#   partial     when it exists, `gh api graphql` answers work.json and fails, saying what it holds,
+#               as gh does on an answer with both data and errors
+#   no-board    when it exists, a query that reads boards fails as GitHub does when gh's login
+#               lacks read:project
+#   slow        when it exists, `gh issue view` and `gh pr view` take a second
+#   view.json   what `gh issue view` and `gh pr view` answer
+#   who.json    what `gh api graphql` answers for who wrote, edited and renamed an issue
+#   user, orgs  what `gh api user` and `gh api user/orgs` answer (after gh's --jq); without
+#               them, both fail
+#   repo.json   what `gh repo view` answers
+#   calls       one line per call: its first two arguments
+#   approvals   one line per `gh api -X POST …/reviews` (crate::listen::create_review): its
+#               arguments and its body file's text; it answers a review's html_url
+#   no-push     when it exists, `gh api repos/<repo> --jq .permissions.push` says false (else true)
+#   contents/<path>   what `gh api repos/<repo>/contents/<path>` answers (a CODEOWNERS file); without
+#               it, GitHub's 404
+#   files.json, reviews.json, pull.json   what `gh api repos/<repo>/pulls/<n>/files`, `…/reviews`
+#               (--paginate: one JSON array a page, run together) and `…/pulls/<n>` answer, as
+#               GitHub does; without them, `[]` and `{}`
+#   permissions/<login>   what `gh api repos/<repo>/collaborators/<login>/permission` answers
+#               (login in lower case); without it, GitHub's 404
+#   teams/<org>-<team>   the team's members, a login a line, any case: `gh api orgs/<org>/teams/
+#               <team>/memberships/<login>` answers an active membership for them, else 404 (the
+#               file's name matched exactly, in any file system: GitHub's team slugs are lowercase)
+#   after-post/   when it exists, its files replace those above right after a review is posted
+#               (the pull request changing while obid approves)
+#   dismissals  one line per `gh api -X PUT …/dismissals`: its arguments
+#   no-dismiss  when it exists, a dismissal fails as GitHub does when the branch's rules don't let
+#               the login dismiss reviews
+#   flaky-view  when it exists, the next `gh pr view` fails once, as a passing GitHub error does
+#   merges      one line per `gh api -X PUT …/pulls/<n>/merge`: its path and its --input file's
+#               text; it answers that it merged
+#   (approvals also gets the --input file's text of a POST or PATCH: a conversation's write)
+work="$HOME/github"
+if [ -d "$work" ]; then
+  echo "$1 $2" >> "$work/calls"
+  case "$1 $2" in
+    "api graphql")
+      if [ -f "$work/fail" ]; then cat "$work/fail" >&2; exit 1; fi
+      case "$4" in *RenamedTitleEvent*) cat "$work/who.json"; exit $? ;; esac
+      case "$4" in *projectItems*) if [ -f "$work/no-board" ]; then
+        echo '{"errors":[{"type":"INSUFFICIENT_SCOPES","message":"Your token has not been granted the required scopes to execute this query. The '"'projectItems'"' field requires one of the following scopes: ['"'read:project'"']."}]}'
+        echo "GraphQL: Your token has not been granted the required scopes to execute this query. The 'projectItems' field requires one of the following scopes: ['read:project']." >&2; exit 1
+      fi ;; esac
+      cat "$work/work.json"
+      if [ -f "$work/partial" ]; then cat "$work/partial" >&2; exit 1; fi
+      exit 0 ;;
+    "issue view"|"pr view")
+      if [ -f "$work/flaky-view" ]; then rm -f "$work/flaky-view"; echo "HTTP 502: Bad Gateway (https://api.github.com/graphql)" >&2; exit 1; fi
+      if [ -f "$work/slow" ]; then sleep 1; fi
+      cat "$work/view.json"; exit 0 ;;
+    "repo view") cat "$work/repo.json"; exit 0 ;;
+    "api user") cat "$work/user"; exit $? ;;
+    "api user/orgs") cat "$work/orgs"; exit $? ;;
+    "api repos/"*)
+      case "$2" in
+        */contents/*)
+          f="$work/contents/${2#*/contents/}"
+          if [ -f "$f" ]; then cat "$f"; exit 0; fi
+          echo "gh: Not Found (HTTP 404)" >&2; exit 1 ;;
+        */pulls/*/files) cat "$work/files.json" 2>/dev/null || echo '[]'; exit 0 ;;
+        */pulls/*/reviews) cat "$work/reviews.json" 2>/dev/null || echo '[]'; exit 0 ;;
+        */pulls/*) cat "$work/pull.json" 2>/dev/null || echo '{}'; exit 0 ;;
+        */collaborators/*/permission)
+          login=$(echo "${2%/permission}" | sed 's#.*/##' | tr '[:upper:]' '[:lower:]')
+          if [ -f "$work/permissions/$login" ]; then cat "$work/permissions/$login"; exit 0; fi
+          echo "gh: Not Found (HTTP 404)" >&2; exit 1 ;;
+      esac
+      if [ -f "$work/no-push" ]; then echo false; else echo true; fi
+      exit 0 ;;
+    "api orgs/"*)
+      rest=${2#orgs/}; org=${rest%%/*}; team=${rest#*/teams/}; team=${team%%/*}; login=${2##*/}
+      if ls "$work/teams" 2>/dev/null | grep -qxF -- "$org-$team" && grep -qix -- "$login" "$work/teams/$org-$team"; then
+        echo '{"state":"active","role":"member","url":"https://api.github.com/'"$2"'"}'; exit 0
+      fi
+      echo "gh: Not Found (HTTP 404)" >&2; exit 1 ;;
+    "api -X")
+      input=""; prev=""
+      for arg in "$@"; do if [ "$prev" = "--input" ]; then input=$(cat "$arg"); fi; prev=$arg; done
+      case "$3 $4" in "PUT "*/pulls/*/merge)
+        echo "$4 $input" >> "$work/merges"; echo '{"merged":true}'; exit 0 ;;
+      esac
+      if [ "$3" = PUT ]; then
+        if [ -f "$work/no-dismiss" ]; then echo "gh: Can not dismiss a review on this pull request (HTTP 422)" >&2; exit 1; fi
+        echo "$*" >> "$work/dismissals"; echo '{"id":1,"state":"DISMISSED"}'; exit 0
+      fi
+      if [ -d "$work/after-post" ]; then cp "$work/after-post/"* "$work/"; rm -rf "$work/after-post"; fi
+      body=""
+      for arg in "$@"; do case "$arg" in body=@*) body=$(cat "${arg#body=@}") ;; esac; done
+      echo "$* | $body$input" >> "$work/approvals"
+      echo '{"id":1,"state":"APPROVED","html_url":"https://github.com/'"$4"'#pullrequestreview-1"}'
+      exit 0 ;;
+  esac
+fi
+board="$HOME/board"
+if [ -d "$board" ]; then
+  case "$1 $2" in
+    "api user") cat "$board/user"; exit 0 ;;
+    "project list")
+      if [ -f "$board/unreadable" ]; then echo "HTTP 502: Bad Gateway" >&2; exit 1; fi
+      cat "$board/projects.json"; exit 0 ;;
+    "project item-list") cat "$board/items.json"; exit 0 ;;
+    "issue list") cat "$board/issues.json"; exit 0 ;;
+    "pr list") cat "$board/prs.json"; exit 0 ;;
+    "issue view") if [ "$8" = "-q" ]; then cat "$board/body-$3" 2>/dev/null; exit 0; fi ;;
+    "issue edit") printf '%s %s %s %s\n' "$3" "$5" "$7" "$(printf '%s\n' "$9" | tail -n 1)" >> "$board/edits"; exit 0 ;;
+  esac
+fi
+case "$3" in
+  176) printf '%s\n' '{"title":"fix accounts review","body":"Files: `Engine/Accounts.swift`, `Engine/Review.swift`, `RunnerTests/`"}' ;;
+  198) printf '%s\n' '{"title":"fix checks review","body":"Files: `Engine/Review.swift`, `Engine/CheckRuns.swift`"}' ;;
+  777) sleep 2; printf '%s\n' '{"title":"slow issue","body":"Files: `Engine/Slow.swift`"}' ;;
+  # Any other issue a job works from is there for obid's quote of it (crate::github_work::quote,
+  # `--json title,body,author,labels,comments`), but 404. Every other read of it fails, as before:
+  # its body for a pull request's `Closes`/`Part of`, its `Files:` for the brain.
+  404) echo "GraphQL: Could not resolve to an issue or pull request with the number of 404." >&2; exit 1 ;;
+  *) if [ "$1 $2 $7" = "issue view title,body,author,labels,comments" ]; then
+       printf '{"title":"Issue %s","body":"","author":{"login":"wellington"},"labels":[],"comments":[]}\n' "$3"; exit 0
+     fi
+     exit 1 ;;
+esac

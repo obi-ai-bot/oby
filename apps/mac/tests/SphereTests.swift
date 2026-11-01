@@ -1,0 +1,713 @@
+import AppKit
+import CryptoKit
+import Foundation
+import Synchronization
+import Testing
+@testable import Oby
+
+/// The owner's side of the Obysphere (apps/mac/app/Sphere.swift): what the owner key signs, and
+/// the invite link. obid and the Sphere check the signatures; these keep the bytes they check.
+/// Serialized: Host your own puts a fake Obysphere in `SphereServer.session` for a moment.
+@Suite(.serialized)
+struct SphereTests {
+    /// The side panel's count under an Obysphere's name, you included (Sangam's "9 members"), and the
+    /// card a teammate's changed key brings to Home.
+    /// An invitation's row: the address this Mac sent it to, else its label, else what the link is.
+    @Test func anInvitationShowsItsAddressOrWhatItIs() {
+        let one = SphereModel.Invitation(id: "i1", label: "Invited by email", email: "sangam@deskree.com", maxUses: 1, uses: 0, domain: nil)
+        #expect(one.shown == "sangam@deskree.com")
+        #expect(SphereModel.Invitation(id: "i2", label: "Team link", email: nil, maxUses: 50, uses: 3, domain: nil).shown == "Team link")
+        #expect(SphereModel.Invitation(id: "i3", label: nil, email: nil, maxUses: 50, uses: 0, domain: nil).shown == "A link for 50 people")
+        #expect(SphereModel.Invitation(id: "i4", label: nil, email: nil, maxUses: 1000, uses: 0, domain: "deskree.com").shown == "Anyone at deskree.com")
+    }
+
+    /// The kept team link stays only while the Obysphere still lists its invitation as usable: one it
+    /// no longer has (cancelled, used up, expired) is dropped, so Make a link shows again. When the
+    /// list is unknown (not an admin, an older server), the link is kept.
+    @Test func aTeamLinkTheObysphereNoLongerHasIsDropped() {
+        let link = InviteLink(server: URL(string: "https://obysphere.deskree.com")!, sphere: "deskree", name: "Deskree", by: "wellprado",
+                              id: "team-1", secret: "s3cret", domain: "deskree.com")
+        let team = SphereModel.Invitation(id: "team-1", label: "Team link", email: nil, maxUses: 1000, uses: 2, domain: "deskree.com")
+        let other = SphereModel.Invitation(id: "mail-1", label: "Invited by email", email: nil, maxUses: 1, uses: 0, domain: "deskree.com")
+        #expect(SphereModel.usable(link, among: [other, team]) == link)
+        #expect(SphereModel.usable(link, among: [other]) == nil)
+        #expect(SphereModel.usable(link, among: []) == nil)
+        #expect(SphereModel.usable(link, among: nil) == link)
+    }
+
+    /// A picture the Obysphere keeps: any image, cut square from its middle, 256 pixels a side, PNG.
+    @Test func aPictureIsASquarePNG() throws {
+        let wide = NSImage(size: NSSize(width: 600, height: 300), flipped: false) { rect in
+            NSColor.systemOrange.setFill()
+            rect.fill()
+            return true
+        }
+        let png = try #require(SphereModel.picture(wide))
+        #expect(png.prefix(8) == Data([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]))
+        let rep = try #require(NSBitmapImageRep(data: png))
+        #expect(rep.pixelsWide == 256 && rep.pixelsHigh == 256)
+    }
+
+    @Test func thePanelCountsYouAndAChangedKeyAsks() {
+        #expect(SpherePanel.count(1) == "1 member")
+        #expect(SpherePanel.count(9) == "9 members")
+        #expect(KeyChangeCard.title(SphereModel.Pin(owner: "ernesto", fingerprint: "ed25519:a", changedTo: "ed25519:b")) == "Ernesto’s Oby has a new key")
+        #expect(SpherePanel.shown("well-prado") == "Well-prado")
+    }
+
+    /// Your Oby's card carries the name you gave in Oby, else your owner id: never your macOS name,
+    /// nor what a card can't carry (spec common.schema.json `line_text`, at most 100 characters).
+    @Test func aCardIsNamedForWhatYouGave() {
+        #expect(SphereModel.cardName("wellprado", given: "") == "wellprado's Oby")
+        #expect(SphereModel.cardName("wellprado", given: "Wellington Prado") == "Wellington Prado's Oby")
+        #expect(SphereModel.cardName("wellprado", given: "Well\u{202E}odarP") == "wellprado's Oby")
+        #expect(SphereModel.cardName("wellprado", given: "Well\nPrado") == "wellprado's Oby")
+        #expect(SphereModel.cardName("wellprado", given: String(repeating: "W", count: 91)) == "wellprado's Oby")
+    }
+
+    /// Teammates show the name a member's card carries without its "'s Oby", else their owner id;
+    /// a name no Oby would sign is their owner id too.
+    @Test func aMemberShowsTheNameTheyGave() {
+        func member(_ name: String) -> SphereModel.Member { .init(obi: "obi-mallory", owner: "mallory", name: name, active: true, accepts: []) }
+        #expect(SpherePanel.shown(member("Mallory Lima's Oby")) == "Mallory Lima")
+        #expect(SpherePanel.shown(member("mallory's Oby")) == "Mallory")
+        #expect(SpherePanel.shown(member("")) == "Mallory")
+        #expect(SpherePanel.shown(member("'s Oby")) == "Mallory")
+        #expect(SpherePanel.shown(member("Mallory's Obi")) == "Mallory")
+        #expect(SpherePanel.shown(member("\u{202E}yrtmyD's Oby")) == "Mallory")
+        // Their key still goes by their owner id, whatever they're called.
+        #expect(KeyChangeCard.title(SphereModel.Pin(owner: "mallory", fingerprint: "ed25519:a", changedTo: "ed25519:b")) == "Mallory’s Oby has a new key")
+    }
+
+    @Test func canonicalJSONIsRFC8785ForTheProtocolsValues() {
+        let value: [String: Any] = ["b": [true, false, NSNull()], "a": 1, "é": "x", "c": ["z": "\"\\\n\u{1}/é"]]
+        #expect(String(decoding: Canonical.json(value), as: UTF8.self) == #"{"a":1,"b":[true,false,null],"c":{"z":"\"\\\n\u0001/é"},"é":"x"}"#)
+    }
+
+    @Test func aSignedCardVerifiesWithTheOwnerKey() throws {
+        let key = OwnerKey(pair: Curve25519.Signing.PrivateKey())
+        let signed = try key.sign(card: ["name": "Wellington's Oby", "card_seq": 1, "signatures": "old"])
+        let signature = try #require((signed["signatures"] as? [[String: String]])?.first)
+        let protected = try #require(signature["protected"])
+        #expect(Data(base64url: protected).map { String(decoding: $0, as: UTF8.self) } == #"{"alg":"EdDSA","kid":"\#(key.keyId)","typ":"JOSE"}"#)
+        let payload = Canonical.json(["name": "Wellington's Oby", "card_seq": 1]).base64url
+        let encoded = try #require(signature["signature"])
+        let bytes = try #require(Data(base64url: encoded))
+        #expect(key.pair.publicKey.isValidSignature(bytes, for: Data("\(protected).\(payload)".utf8)))
+        #expect(key.keyId.count == 51)
+    }
+
+    @Test func aDelegationLetsTheObiActForThirtyDays() throws {
+        let key = OwnerKey(pair: Curve25519.Signing.PrivateKey())
+        let jwt = try key.assertion(owner: "wellington", sphere: "deskree", scope: SphereModel.obiScopes, mayAct: "obi-wellington",
+                                    now: Date(timeIntervalSince1970: 1_000))
+        let parts = jwt.split(separator: ".").map(String.init)
+        let payload = try #require(Data(base64url: parts[1]))
+        let claims = try #require(try JSONSerialization.jsonObject(with: payload) as? [String: Any])
+        #expect(claims["aud"] as? String == "obi-sphere:deskree" && claims["exp"] as? Int == 1_000 + 2_592_000)
+        #expect((claims["may_act"] as? [String: String])?["sub"] == "obi-wellington")
+        let signature = try #require(Data(base64url: parts[2]))
+        #expect(key.pair.publicKey.isValidSignature(signature, for: Data("\(parts[0]).\(parts[1])".utf8)))
+    }
+
+    @Test func anInviteLinkReadsBackAndKeepsItsSecretAfterTheHash() throws {
+        let invite = InviteLink(server: URL(string: "https://obysphere.deskree.com")!, sphere: "deskree", name: "Deskree & co",
+                                by: "wellington", owner: "ernesto", obi: "obi-ernesto", id: "inv-1", secret: "a+b/c=")
+        let url = try #require(URL(string: invite.link))
+        #expect(url.path() == "/join" && url.query() == nil)
+        #expect(InviteLink(invite.link) == invite)
+        #expect(InviteLink("https://example.com/join") == nil)
+        #expect(InviteLink("not a link") == nil)
+    }
+
+    @Test func anOpenLinkIsForAnyoneAndMaySayItsWorkspace() throws {
+        let open = InviteLink(server: URL(string: "https://obysphere.deskree.com")!, sphere: "deskree", name: "Deskree",
+                              by: "wellington", id: "inv-2", secret: "s", domain: "deskree.com")
+        let read = try #require(InviteLink(open.link))
+        #expect(read == open && read.owner == nil && read.obi == nil && read.domain == "deskree.com")
+        #expect(read.mismatch(owner: "sangam") == nil, "an open link is for whoever has it")
+        // A named link names both its owner and its Obi.
+        #expect(InviteLink("https://obysphere.deskree.com/join#sphere=deskree&for=ernesto&id=i&secret=s") == nil)
+        #expect(InviteLink("https://obysphere.deskree.com/join#sphere=deskree&obi=obi-ernesto&id=i&secret=s") == nil)
+    }
+
+    @Test func onlyAWorkAddressOffersAnyoneThereCanJoin() {
+        #expect(CreateSphereSheet.workDomain("Doti@Deskree.com") == "deskree.com")
+        for personal in ["doti@gmail.com", "doti@icloud.com", "123+doti@users.noreply.github.com", "doti", nil] {
+            #expect(CreateSphereSheet.workDomain(personal) == nil, "\(personal ?? "nil")")
+        }
+        #expect(CreateSphereSheet.isEmail("ernesto@deskree.com") && !CreateSphereSheet.isEmail("ernesto") && !CreateSphereSheet.isEmail("a@b"))
+    }
+
+    @Test func onlyAPublicHTTPSAddressGetsTheOwnersSignatures() {
+        // Deskree's builds come with Deskree's server (OBY_SPHERE_URL in apps/config/Signing.xcconfig).
+        #expect(Bundle.main.object(forInfoDictionaryKey: "ObySphereURL") as? String == "https://obysphere.deskree.com")
+        #expect(SphereServer.problem(URL(string: "https://obysphere.deskree.com")!) == nil)
+        #expect(SphereServer.problem(URL(string: "https://deskree.obysphere.com")!) == nil)
+        #expect(SphereServer.problem(URL(string: "https://deskree.obysphere.com/")!) == nil)
+        for refused in ["http://obysphere.deskree.com", "https://localhost:8787", "https://127.0.0.1", "https://169.254.169.254",
+                        "https://10.0.0.5", "https://100.100.100.100", "https://[::1]:8787", "https://2130706433", "https://sphere",
+                        "https://studio.local", "https://mac.tail1234.ts.net", "https://sphere.internal", "https://a.0x7f",
+                        "https://x.example.com/sphere", "https://x.example.com?a=b", "https://me:pw@x.example.com", "https://x.example.com#s"] {
+            #expect(SphereServer.problem(URL(string: refused)!) != nil, "\(refused)")
+        }
+    }
+
+    @Test func anInviteLinkToAnInternalOrPlainAddressIsntOne() {
+        let fragment = "#sphere=deskree&for=ernesto&obi=obi-ernesto&id=i&secret=s"
+        #expect(InviteLink("https://obysphere.deskree.com/join" + fragment) != nil)
+        for server in ["http://obysphere.deskree.com", "https://127.0.0.1:8787", "https://169.254.169.254", "https://studio.local"] {
+            #expect(InviteLink(server + "/join" + fragment) == nil, "\(server)")
+        }
+    }
+
+    @Test func theJoinScreenShowsTheServerAndWarnsOfAnUnknownOne() throws {
+        let known = try #require(InviteLink("https://obysphere.deskree.com/join#sphere=deskree&name=Deskree&by=wellington&for=ernesto&obi=obi-ernesto&id=i&secret=s"))
+        #expect(known.host == "obysphere.deskree.com" && known.warning == nil)
+        let lookalike = try #require(InviteLink("https://lookalike.workers.dev/join#sphere=deskree&name=Deskree&by=wellington&for=ernesto&obi=obi-ernesto&id=i&secret=s"))
+        #expect(lookalike.host == "lookalike.workers.dev")
+        #expect(lookalike.warning?.contains("lookalike.workers.dev") == true)
+    }
+
+    @Test func anInviteForSomeoneElseIsRefused() throws {
+        let invite = try #require(InviteLink("https://obysphere.deskree.com/join#sphere=deskree&by=wellington&for=ernesto&obi=obi-ernesto&id=i&secret=s"))
+        #expect(invite.mismatch(owner: "ernesto") == nil)
+        #expect(invite.mismatch(owner: "sangam") == "This invite is for ernesto, and this Mac's Oby acts for sangam. Ask wellington for one for sangam.")
+    }
+
+    @Test func theSphereSessionFollowsNoRedirect() async throws {
+        #expect(SphereServer.session.delegate is NoRedirects)
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [Redirecting.self]
+        let session = URLSession(configuration: configuration, delegate: NoRedirects(), delegateQueue: nil)
+        let (_, response) = try await session.data(from: URL(string: "https://obysphere.deskree.com/v0.1/oauth/token")!)
+        #expect((response as? HTTPURLResponse)?.statusCode == 307)
+        #expect(Redirecting.reachedElsewhere.withLock { $0 } == false)
+    }
+
+    @Test func anObyJoinLinkOpensTheInviteItCarries() throws {
+        let invite = InviteLink(server: URL(string: "https://obi-sphere.acme.workers.dev")!, sphere: "acme", name: "Acme & co",
+                                by: "wellington", id: "inv-1", secret: "a+b/c=")
+        let fragment = try #require(invite.link.split(separator: "#", maxSplits: 1).last)
+        let link = try #require(URL(string: "oby://join/obi-sphere.acme.workers.dev#\(fragment)"))
+        let opened = try #require(InviteLink(opened: link))
+        #expect(opened == invite)
+        #expect(opened.warning?.contains("obi-sphere.acme.workers.dev") == true, "a server Oby doesn't know asks first")
+        let port = try #require(URL(string: "oby://join/sphere.acme.com:8443#\(fragment)").flatMap(InviteLink.init(opened:)))
+        #expect(port.server.absoluteString == "https://sphere.acme.com:8443")
+        for other in ["oby://open/obi-sphere.acme.workers.dev#\(fragment)", "https://obi-sphere.acme.workers.dev/join#\(fragment)",
+                      "oby://join/obi-sphere.acme.workers.dev", "oby://join/localhost:8787#\(fragment)", "oby://join/127.0.0.1#\(fragment)",
+                      "oby://join/me@obi-sphere.acme.workers.dev#\(fragment)", "oby://join/obi-sphere.acme.workers.dev/x#\(fragment)",
+                      "oby://join/obi-sphere.acme.workers.dev?a=b#\(fragment)", "oby://join/#\(fragment)", "oby://job/123"] {
+            #expect(URL(string: other).flatMap(InviteLink.init(opened:)) == nil, "\(other)")
+        }
+    }
+
+    @Test func anObyClaimLinkCarriesItsHostAndCode() async throws {
+        let claim = try #require(URL(string: "oby://claim/Sphere.Acme.com:8443#c0de-_x").flatMap(ClaimLink.init(opened:)))
+        #expect(claim.server.absoluteString == "https://sphere.acme.com:8443" && claim.code == "c0de-_x" && claim.host == "sphere.acme.com")
+        // This Mac's own Sphere, tried out over plain http: only for the claim.
+        for local in ["127.0.0.1:8797", "localhost:8797", "localhost"] {
+            let link = try #require(URL(string: "oby://claim/\(local)#c").flatMap(ClaimLink.init(opened:)), "\(local)")
+            #expect(link.server.absoluteString == "http://\(local)")
+        }
+        await #expect(throws: RunnerError.self) { try await SphereServer(base: URL(string: "http://127.0.0.1:8797")!).call("POST", "spheres") }
+        for other in ["oby://claim/sphere.acme.com", "oby://claim/sphere.acme.com#", "oby://claim/sphere.acme.com?code=c#c",
+                      "oby://claim/sphere.acme.com/x#c", "oby://claim/me@sphere.acme.com#c", "oby://claim/#c", "oby://claim/sphere.local#c",
+                      "oby://claim/10.0.0.5:8797#c", "oby://join/sphere.acme.com#c", "https://sphere.acme.com/claim#c"] {
+            #expect(URL(string: other).flatMap(ClaimLink.init(opened:)) == nil, "\(other)")
+        }
+    }
+
+    /// A claim against a fake Obysphere: the new token goes there once with the code, and is kept,
+    /// with the server set, only on `{"claimed": true}`; a wrong code, a refused token or a Sphere
+    /// claimed already keeps nothing and says which.
+    @MainActor @Test func aClaimKeepsTheTokenOnlyWhenTheSphereSaysClaimed() async throws {
+        let defaults = try #require(UserDefaults(suiteName: "com.deskree.oby.tests.\(UUID().uuidString)"))
+        let host = HostOwn(defaults: defaults, pasteboard: NSPasteboard(name: .init("com.deskree.oby.tests.\(UUID().uuidString)")))
+        let server = RunnerStub { request in
+            guard request.method == "POST", request.path == "/v0.1/claim" else { return (403, #"{"error": {"code": "forbidden", "message": ""}}"#) }
+            return switch request.json?["code"] as? String {
+            case "right": (200, #"{"claimed": true}"#)
+            case "refused": (400, #"{"error": {"code": "bad_request", "message": "operator_token must be 32 to 512 characters"}}"#)
+            case "taken": (409, #"{"error": {"code": "conflict", "message": "this Sphere is already claimed"}}"#)
+            default: (401, #"{"error": {"code": "unauthorized", "message": "the claim code is wrong"}}"#)
+            }
+        }
+        let session = SphereServer.session
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [RunnerStubProtocol.self] + (configuration.protocolClasses ?? [])
+        SphereServer.session = URLSession(configuration: configuration, delegate: NoRedirects(), delegateQueue: nil)
+        defer {
+            SphereServer.session = session
+            try? SphereModel.operatorToken.remove(server.host)
+        }
+
+        for (code, says) in [("wrong", "code is wrong"), ("refused", "refused the token"), ("taken", "claimed already")] {
+            let link = try #require(URL(string: "oby://claim/\(server.host)#\(code)").flatMap(ClaimLink.init(opened:)))
+            #expect(await host.claim(link) == false)
+            #expect(host.problem?.contains(says) == true, "\(code): \(host.problem ?? "")")
+            #expect(try SphereModel.operatorToken.value(server.host) == nil)
+            #expect(defaults.string(forKey: SphereModel.serverKey) == nil)
+        }
+
+        let link = try #require(URL(string: "oby://claim/\(server.host)#right").flatMap(ClaimLink.init(opened:)))
+        #expect(await host.claim(link))
+        let sent = try #require(server.requests.last)
+        let token = try #require(sent.json?["operator_token"] as? String)
+        #expect(sent.json?["code"] as? String == "right" && sent.authorization == nil)
+        #expect(token.count == 43 && token.allSatisfy { $0.isASCII && ($0.isLetter || $0.isNumber || "-_".contains($0)) })
+        #expect(Set(server.requests.compactMap { $0.json?["operator_token"] as? String }).count == 4, "a new token each time")
+        #expect(try SphereModel.operatorToken.value(server.host) == token)
+        #expect(defaults.string(forKey: SphereModel.serverKey) == "https://\(server.host)" && host.problem == nil)
+    }
+
+    /// Host your own, with a fake Obysphere and obid: Deploy's token, copied concealed (paste one, into
+    /// Cloudflare); the address (paste two), asked nothing until Check, and then without the token;
+    /// the token goes to that host only once it's confirmed, and is kept under it; then Create makes
+    /// the Obysphere with it.
+    @MainActor @Test func hostYourOwnGoesFromDeployToACreatedObysphereWithTwoPastes() async throws {
+        let defaults = try #require(UserDefaults(suiteName: "com.deskree.oby.tests.\(UUID().uuidString)"))
+        let board = NSPasteboard(name: .init("com.deskree.oby.tests.\(UUID().uuidString)"))
+        let host = HostOwn(defaults: defaults, pasteboard: board)
+        #expect(host.deploy() == HostOwn.deployPage)
+        let token = try #require(host.made?.token)
+        // The server's own order: the operator token first (401 wrong or missing), then the body.
+        let server = RunnerStub { request in
+            switch (request.method, request.path) {
+            case ("GET", "/v0.1/health"): (200, #"{"ok": true, "protocol": "obi/0.1"}"#)
+            case ("POST", "/v0.1/spheres"):
+                request.authorization != "Bearer \(token)" ? (401, #"{"error": {"code": "unauthorized", "message": ""}}"#)
+                    : request.json?["sphere"] == nil ? (400, #"{"error": {"code": "bad_request", "message": ""}}"#) : (201, #"{"sphere": "acme"}"#)
+            case ("POST", "/v0.1/oauth/token"): (200, #"{"access_token": "owner-token"}"#)
+            case ("PUT", "/v0.1/spheres/acme/policy"): (200, "{}")
+            case ("POST", "/v0.1/spheres/acme/invitations"): (201, #"{"invitation_id": "inv-1", "secret": "s"}"#)
+            default: (404, #"{"error": {"code": "not_found", "message": ""}}"#)
+            }
+        }
+        let owner = "tester-\(UUID().uuidString.lowercased())"
+        let obid = RunnerStub { request in
+            switch request.path {
+            case "/v1/obid/sphere": (200, #"{"state": "none", "owner": "\#(owner)"}"#)
+            case "/v1/obid/sphere/card": (200, #"{"card": {"name": "x"}}"#)
+            default: (200, "{}")
+            }
+        }
+        let session = SphereServer.session
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [RunnerStubProtocol.self] + (configuration.protocolClasses ?? [])
+        SphereServer.session = URLSession(configuration: configuration, delegate: NoRedirects(), delegateQueue: nil)
+        defer {
+            SphereServer.session = session
+            try? SphereModel.operatorToken.remove(server.host)
+            try? OwnerKey.store.remove(owner)
+            board.releaseGlobally()
+        }
+
+        #expect(token.count == 43 && token.allSatisfy { $0.isASCII && ($0.isLetter || $0.isNumber || "-_".contains($0)) })
+        #expect(board.string(forType: .string) == token && board.types?.contains(SphereSettingsView.concealed) == true)
+
+        // Typed or pasted, an address asks nothing: not a prefix of it, not the whole of it.
+        for typed in ["o", String(server.host.dropLast(3)), " \(server.host)/ "] { host.address = typed }
+        try await Task.sleep(for: .milliseconds(800))
+        #expect(server.requests.isEmpty && host.checked == nil)
+
+        await host.check()
+        let url = try #require(host.checked)
+        #expect(url.absoluteString == "https://\(server.host)", "pasted as the dashboard shows it, without https://")
+        #expect(server.requests.map { "\($0.method) \($0.path)" } == ["GET /v0.1/health", "POST /v0.1/spheres"])
+        #expect(server.requests.allSatisfy { $0.authorization == nil }, "the token goes nowhere before the host is confirmed")
+        #expect(defaults.string(forKey: SphereModel.serverKey) == nil)
+        #expect(try SphereModel.operatorToken.value(server.host) == nil)
+
+        // Refused: not public, and not an Obysphere. A new address takes back the check.
+        host.address = "https://localhost:8787"
+        #expect(host.checked == nil)
+        await host.check()
+        #expect(host.checked == nil && host.problem != nil)
+        host.address = obid.host
+        await host.check()
+        #expect(host.checked == nil && host.problem != nil)
+
+        // A server without this token keeps nothing: another Oby's Deploy… against the same server.
+        let otherBoard = NSPasteboard(name: .init("com.deskree.oby.tests.\(UUID().uuidString)"))
+        defer { otherBoard.releaseGlobally() }
+        let other = HostOwn(defaults: defaults, pasteboard: otherBoard)
+        _ = other.deploy()
+        other.address = server.host
+        await other.check()
+        #expect(await other.use() == false && other.problem != nil && other.made != nil)
+        #expect(defaults.string(forKey: SphereModel.serverKey) == nil)
+        #expect(try SphereModel.operatorToken.value(server.host) == nil)
+
+        // Confirmed: kept under that host, the server set, the clipboard cleared, the token forgotten.
+        host.address = server.host
+        await host.check()
+        #expect(await host.use())
+        #expect(try SphereModel.operatorToken.value(server.host) == token)
+        #expect(defaults.string(forKey: SphereModel.serverKey) == url.absoluteString)
+        #expect(board.string(forType: .string) == nil && host.made == nil && host.address.isEmpty)
+
+        let feed = RunnerFeed()
+        feed.stageAlerts(following: obid.runner)
+        _ = try await SphereModel(feed: feed).create(id: "acme", name: "Acme", on: url)
+        let created = server.requests.filter { $0.method == "POST" && $0.path == "/v0.1/spheres" && $0.json?["sphere"] != nil }
+        #expect(created.count == 1 && created.first?.authorization == "Bearer \(token)")
+        #expect(obid.requests.contains { $0.method == "POST" && $0.path == "/v1/obid/sphere/join" })
+    }
+
+    /// The admin takes a member out and the team link back, with the admin's own token; a removed
+    /// member drops off the list, and a new link cancels the one before (#1217).
+    @MainActor @Test func theAdminRemovesAMemberAndCancelsTheTeamLink() async throws {
+        let owner = "tester-\(UUID().uuidString.lowercased().prefix(8))"
+        let id = "acme-\(UUID().uuidString.lowercased().prefix(8))"
+        let server = RunnerStub { request in
+            switch (request.method, request.path) {
+            case ("POST", "/v0.1/oauth/token"): (200, #"{"access_token": "admin-token"}"#)
+            case ("GET", "/v0.1/spheres/\(id)"): (200, #"{"name": "Acme", "admin_owner": "\#(owner)"}"#)
+            case ("GET", "/v0.1/spheres/\(id)/members"):
+                (200, #"{"members": [{"obi": "obi-sangam", "owner": "sangam", "status": "active", "card": {"name": "Sangam's Oby"}}, {"obi": "obi-gone", "owner": "gone", "status": "revoked"}]}"#)
+            case ("DELETE", "/v0.1/spheres/\(id)/members/obi-sangam"): (200, "{}")
+            case ("DELETE", "/v0.1/spheres/\(id)/invitations/inv-1"), ("DELETE", "/v0.1/spheres/\(id)/invitations/inv-2"): (204, "")
+            case ("POST", "/v0.1/spheres/\(id)/invitations"): (201, #"{"invitation_id": "inv-2", "secret": "s2"}"#)
+            default: (404, #"{"error": {"code": "not_found", "message": ""}}"#)
+            }
+        }
+        let obid = RunnerStub { request in
+            switch request.path {
+            case "/v1/obid/sphere": (200, #"{"state": "joined", "owner": "\#(owner)", "url": "https://\#(server.host)", "sphere": "\#(id)", "obiId": "obi-\#(owner)"}"#)
+            case "/v1/obid/sphere/pins", "/v1/inbox": (200, "[]")
+            default: (404, "{}")
+            }
+        }
+        let session = SphereServer.session
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [RunnerStubProtocol.self] + (configuration.protocolClasses ?? [])
+        SphereServer.session = URLSession(configuration: configuration, delegate: NoRedirects(), delegateQueue: nil)
+        defer {
+            SphereServer.session = session
+            try? OwnerKey.store.remove(owner)
+            try? SphereModel.teamLinks.remove(id)
+        }
+        let first = InviteLink(server: URL(string: "https://\(server.host)")!, sphere: id, name: "Acme", by: owner, id: "inv-1", secret: "s1")
+        try SphereModel.teamLinks.save(first.link, as: id)
+        let feed = RunnerFeed()
+        feed.stageAlerts(following: obid.runner)
+        let sphere = SphereModel(feed: feed)
+        try await sphere.refresh()
+        #expect(sphere.admin && sphere.members.map(\.obi) == ["obi-sangam"] && sphere.teamLink?.id == "inv-1")
+        let deletes = { server.requests.filter { $0.method == "DELETE" }.map { "\($0.path) \($0.authorization ?? "")" } }
+
+        try await sphere.remove(sphere.members[0])
+        #expect(deletes() == ["/v0.1/spheres/\(id)/members/obi-sangam Bearer admin-token"])
+        _ = try await sphere.makeTeamLink(domain: nil)
+        #expect(deletes().last == "/v0.1/spheres/\(id)/invitations/inv-1 Bearer admin-token")
+        #expect(sphere.teamLink?.id == "inv-2")
+        try await sphere.cancelTeamLink()
+        #expect(deletes().last == "/v0.1/spheres/\(id)/invitations/inv-2 Bearer admin-token")
+        #expect(sphere.teamLink == nil)
+        #expect(try SphereModel.teamLinks.value(id) == nil)
+    }
+
+    /// A Deploy… while the token is being used makes a new one: that one, and the clipboard holding
+    /// it, stay.
+    @MainActor @Test func aNewDeployWhileUsingKeepsTheNewToken() async throws {
+        let defaults = try #require(UserDefaults(suiteName: "com.deskree.oby.tests.\(UUID().uuidString)"))
+        let board = NSPasteboard(name: .init("com.deskree.oby.tests.\(UUID().uuidString)"))
+        let host = HostOwn(defaults: defaults, pasteboard: board)
+        _ = host.deploy()
+        let first = try #require(host.made?.token)
+        let server = RunnerStub { request in
+            if request.path == "/v0.1/health" { return (200, #"{"ok": true}"#) }
+            // While the first token is checked, the owner chooses Deploy… again.
+            if request.authorization == "Bearer \(first)" { DispatchQueue.main.sync { MainActor.assumeIsolated { _ = host.deploy() } } }
+            return (request.authorization == nil ? 401 : 400, "{}")
+        }
+        let session = SphereServer.session
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [RunnerStubProtocol.self] + (configuration.protocolClasses ?? [])
+        SphereServer.session = URLSession(configuration: configuration, delegate: NoRedirects(), delegateQueue: nil)
+        defer {
+            SphereServer.session = session
+            try? SphereModel.operatorToken.remove(server.host)
+            board.releaseGlobally()
+        }
+        host.address = server.host
+        await host.check()
+        #expect(await host.use())
+        let second = try #require(host.made?.token)
+        #expect(second != first && board.string(forType: .string) == second)
+        #expect(try SphereModel.operatorToken.value(server.host) == first)
+    }
+
+    /// The delegation lasts 30 days: the Mac signs the next, with the scope obid holds, once 5 or
+    /// fewer are left, and not before (#1215).
+    @MainActor @Test func theDelegationIsRenewedBeforeItsThirtyDaysEnd() async throws {
+        let owner = "tester-\(UUID().uuidString.lowercased().prefix(8))"
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let ends = ISO8601DateFormatter().string(from: now.addingTimeInterval(4 * 86_400))
+        let obid = RunnerStub { request in
+            switch (request.method, request.path) {
+            case ("GET", "/v1/obid/sphere"):
+                (200, #"{"state": "joined", "owner": "\#(owner)", "url": "https://obysphere.example", "sphere": "acme", "obiId": "obi-\#(owner)", "delegation": {"scope": "receive reply directory:read", "expiresAt": "\#(ends)"}}"#)
+            case ("PUT", "/v1/obid/sphere/membership"): (200, "{}")
+            default: (404, "{}")
+            }
+        }
+        defer { try? OwnerKey.store.remove(owner) }
+        let feed = RunnerFeed()
+        feed.stageAlerts(following: obid.runner)
+        let sphere = SphereModel(feed: feed)
+        #expect(try await !sphere.renewDelegation(within: 3 * 86_400, now: now))
+        #expect(obid.requests.allSatisfy { $0.method == "GET" })
+        #expect(try await sphere.renewDelegation(within: 5 * 86_400, now: now))
+        let put = try #require(obid.requests.last)
+        #expect(put.method == "PUT" && put.path == "/v1/obid/sphere/membership" && put.json?["card"] == nil)
+        let jwt = try #require(put.json?["delegation"] as? String)
+        let payload = try #require(Data(base64url: jwt.split(separator: ".").map(String.init)[1]))
+        let claims = try #require(try JSONSerialization.jsonObject(with: payload) as? [String: Any])
+        #expect(claims["scope"] as? String == "receive reply directory:read")
+        #expect(claims["exp"] as? Int == 1_800_000_000 + 2_592_000)
+        #expect((claims["may_act"] as? [String: String])?["sub"] == "obi-\(owner)")
+    }
+
+    /// A card without obid's seal key is signed again once, with the accepts it has (#1233); one that
+    /// has it, never.
+    @MainActor @Test func aCardWithoutASealKeyIsSignedAgainOnce() async throws {
+        let owner = "tester-\(UUID().uuidString.lowercased().prefix(8))"
+        defer { try? OwnerKey.store.remove(owner) }
+        func obid(sealing: String) -> (RunnerStub, SphereModel) {
+            let stub = RunnerStub { request in
+                switch (request.method, request.path) {
+                case ("GET", "/v1/obid/sphere"):
+                    (200, #"{"state": "joined", "owner": "\#(owner)", "url": "https://obysphere.example", "sphere": "acme", "obiId": "obi-\#(owner)", "sealing": "\#(sealing)", "accepts": ["review_request", "question"]}"#)
+                case ("POST", "/v1/obid/sphere/card"): (200, #"{"card": {"name": "a card"}}"#)
+                case ("PUT", "/v1/obid/sphere/membership"): (200, "{}")
+                default: (404, "{}")
+                }
+            }
+            let feed = RunnerFeed()
+            feed.stageAlerts(following: stub.runner)
+            return (stub, SphereModel(feed: feed))
+        }
+        let (needed, sphere) = obid(sealing: "card_needed")
+        #expect(try await sphere.renewCard())
+        let made = try #require(needed.requests.first { $0.method == "POST" })
+        #expect(made.json?["accepts"] as? [String] == ["review_request", "question"])
+        let put = try #require(needed.requests.last)
+        #expect(put.method == "PUT" && put.json?["card"] != nil && put.json?["delegation"] == nil)
+        let (on, sealed) = obid(sealing: "on")
+        #expect(try await !sealed.renewCard())
+        #expect(on.requests.allSatisfy { $0.method == "GET" })
+    }
+
+    /// A card with another name than the one you gave in Oby is signed again once, named for it; one
+    /// already named for it, never.
+    @MainActor @Test func aCardIsSignedAgainForANewName() async throws {
+        let owner = "tester-\(UUID().uuidString.lowercased().prefix(8))"
+        let before = Profile.shared
+        Profile.shared = Profile(defaults: .scratch, file: URL(filePath: NSTemporaryDirectory()).appending(path: "profile-\(UUID().uuidString)"))
+        defer { Profile.shared = before; try? OwnerKey.store.remove(owner) }
+        func obid(named name: String) -> (RunnerStub, SphereModel) {
+            let stub = RunnerStub { request in
+                switch (request.method, request.path) {
+                case ("GET", "/v1/obid/sphere"):
+                    (200, #"{"state": "joined", "owner": "\#(owner)", "url": "https://obysphere.example", "sphere": "acme", "obiId": "obi-\#(owner)", "sealing": "on", "accepts": ["review_request", "question"], "card": {"name": "\#(name)"}}"#)
+                case ("POST", "/v1/obid/sphere/card"): (200, #"{"card": {"name": "a card"}}"#)
+                case ("PUT", "/v1/obid/sphere/membership"): (200, "{}")
+                default: (404, "{}")
+                }
+            }
+            let feed = RunnerFeed()
+            feed.stageAlerts(following: stub.runner)
+            return (stub, SphereModel(feed: feed))
+        }
+        let (unnamed, same) = obid(named: "\(owner)'s Oby")
+        #expect(try await !same.renewCard())
+        #expect(unnamed.requests.allSatisfy { $0.method == "GET" })
+
+        try Profile.shared.save(name: " Ana Lima ", picture: nil)
+        let (old, renamed) = obid(named: "\(owner)'s Oby")
+        #expect(try await renamed.renewCard())
+        let made = try #require(old.requests.first { $0.method == "POST" })
+        #expect(made.json?["name"] as? String == "Ana Lima's Oby")
+        #expect(made.json?["accepts"] as? [String] == ["review_request", "question"])
+        #expect(old.requests.last?.method == "PUT")
+        let (current, kept) = obid(named: "Ana Lima's Oby")
+        #expect(try await !kept.renewCard())
+        #expect(current.requests.allSatisfy { $0.method == "GET" })
+    }
+
+    /// The Join screen asks a server Oby doesn't know nothing until "I trust" is ticked.
+    @MainActor @Test func anUnknownServersPreviewWaitsForTrust() async throws {
+        let server = RunnerStub { request in
+            request.path == "/v0.1/spheres/acme/invitations/inv-1/preview" ? (200, #"{"name": "Acme Inc", "member_count": 4}"#) : (404, "{}")
+        }
+        let session = SphereServer.session
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [RunnerStubProtocol.self] + (configuration.protocolClasses ?? [])
+        SphereServer.session = URLSession(configuration: configuration, delegate: NoRedirects(), delegateQueue: nil)
+        defer { SphereServer.session = session }
+        let link = try #require(URL(string: "oby://join/\(server.host)#sphere=acme&name=Acme&by=sangam&id=inv-1&secret=s"))
+        let found = try #require(InviteLink(opened: link))
+        #expect(found.warning != nil)
+        let sphere = SphereModel(feed: RunnerFeed())
+        #expect(await sphere.shown(found, trusted: false) == found)
+        #expect(server.requests.isEmpty)
+        let seen = await sphere.shown(found, trusted: true)
+        #expect(seen.name == "Acme Inc" && seen.members == 4)
+        #expect(server.requests.map(\.path) == ["/v0.1/spheres/acme/invitations/inv-1/preview"])
+    }
+
+    /// An open link's join takes obi-<owner>, then -2, -3… while the Sphere has had that id (a
+    /// reinstall, a second Mac, a leave); a revoked membership is left first (#1214).
+    @MainActor @Test func aJoinTakesTheNextObiIdTheSphereHasntHad() async throws {
+        let owner = "tester-\(UUID().uuidString.lowercased().prefix(8))"
+        let server = RunnerStub { request in
+            request.path == "/v0.1/spheres/acme/invitations/inv-1/preview" ? (200, #"{"name": "Acme", "member_count": 3}"#) : (404, "{}")
+        }
+        let obid = RunnerStub { request in
+            switch (request.method, request.path) {
+            case ("GET", "/v1/obid/sphere"): (200, #"{"state": "revoked", "owner": "\#(owner)", "sphere": "old"}"#)
+            case ("POST", "/v1/obid/sphere/card"): (200, #"{"card": {"name": "x"}}"#)
+            case ("POST", "/v1/obid/sphere/join"):
+                Stubbed.joins.withLock { $0 += 1; return $0 } == 1
+                    ? (502, #"{"error": "The Sphere refused it: conflict: obi-\#(owner) is or was a member: Obi ids are never reused"}"#)
+                    : (200, "{}")
+            default: (200, "{}")
+            }
+        }
+        let session = SphereServer.session
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [RunnerStubProtocol.self] + (configuration.protocolClasses ?? [])
+        SphereServer.session = URLSession(configuration: configuration, delegate: NoRedirects(), delegateQueue: nil)
+        defer {
+            SphereServer.session = session
+            try? OwnerKey.store.remove(owner)
+        }
+        let feed = RunnerFeed()
+        feed.stageAlerts(following: obid.runner)
+        let invite = InviteLink(server: URL(string: "https://\(server.host)")!, sphere: "acme", name: "Acme", by: "sangam", id: "inv-1", secret: "s")
+        try await SphereModel(feed: feed).join(invite)
+        let calls = obid.requests.map { "\($0.method) \($0.path)" }
+        #expect(calls.firstIndex(of: "DELETE /v1/obid/sphere") ?? .max < calls.firstIndex(of: "POST /v1/obid/sphere/key") ?? 0)
+        #expect(obid.requests.filter { $0.path == "/v1/obid/sphere/card" }.map { $0.json?["obiId"] as? String }
+            == ["obi-\(owner)", "obi-\(owner)-2"])
+        #expect(calls.filter { $0 == "POST /v1/obid/sphere/join" }.count == 2)
+    }
+
+    /// What the Sphere refuses a join for, said plainly with what to do (#1214).
+    @Test func theSpheresRefusalsOfAJoinSayWhatToDo() {
+        let problem = { (said: String) in
+            SphereModel.joinProblem(RunnerError(message: "The Sphere refused it: \(said)", status: 502), owner: "wellprado", sphere: "Deskree")?.message
+        }
+        #expect(problem("forbidden: the owner already has another bound key")
+            == "Deskree already has wellprado with another Mac's key (another Mac, or Oby before a reinstall). For now you're in an Obysphere from one Mac: join from that one.")
+        #expect(problem("forbidden: this invitation is for deskree.com accounts") == "This link is for people at deskree.com: sign in with your deskree.com Google account.")
+        #expect(problem("invitation_invalid: the invitation is unknown, used up, expired, or the secret is wrong")?.hasPrefix("This link has expired") == true)
+        #expect(problem("conflict: obi-wellprado-9 is or was a member: Obi ids are never reused")?.contains("Ask its admin") == true)
+        #expect(problem("bad_request: the body doesn't match") == nil)
+    }
+
+    /// Leave removes this Mac's Oby on the Sphere with the owner's own token, then obid forgets it (#1214).
+    @MainActor @Test func leavingRemovesThisObyOnTheSphereThenObidForgetsIt() async throws {
+        Stubbed.left.withLock { $0 = false }
+        let owner = "tester-\(UUID().uuidString.lowercased().prefix(8))"
+        let server = RunnerStub { request in
+            switch (request.method, request.path) {
+            case ("POST", "/v0.1/oauth/token"): (200, #"{"access_token": "owner-token"}"#)
+            case ("DELETE", "/v0.1/spheres/acme/members/obi-\(owner)"): (200, "{}")
+            default: (404, "{}")
+            }
+        }
+        let joined = #"{"state": "joined", "owner": "\#(owner)", "url": "https://\#(server.host)", "sphere": "acme", "obiId": "obi-\#(owner)"}"#
+        let left = #"{"state": "none", "owner": "\#(owner)"}"#
+        let obid = RunnerStub { request in
+            switch (request.method, request.path) {
+            case ("GET", "/v1/obid/sphere"): (200, Stubbed.left.withLock { $0 } ? left : joined)
+            case ("DELETE", "/v1/obid/sphere"): { Stubbed.left.withLock { $0 = true }; return (200, left) }()
+            default: (404, "{}")
+            }
+        }
+        let session = SphereServer.session
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [RunnerStubProtocol.self] + (configuration.protocolClasses ?? [])
+        SphereServer.session = URLSession(configuration: configuration, delegate: NoRedirects(), delegateQueue: nil)
+        defer {
+            SphereServer.session = session
+            try? OwnerKey.store.remove(owner)
+        }
+        let feed = RunnerFeed()
+        feed.stageAlerts(following: obid.runner)
+        let sphere = SphereModel(feed: feed)
+        try await sphere.leave()
+        #expect(server.requests.map { "\($0.method) \($0.path)" } == ["POST /v0.1/oauth/token", "DELETE /v0.1/spheres/acme/members/obi-\(owner)"])
+        #expect(server.requests.last?.authorization == "Bearer owner-token")
+        #expect(obid.requests.contains { $0.method == "DELETE" && $0.path == "/v1/obid/sphere" })
+        #expect(!sphere.joined && sphere.membership?.state == "none")
+    }
+
+    /// A Sphere that can't be told still lets this Mac leave, and the owner hears it's still listed there.
+    @MainActor @Test func leavingWhenTheSphereCantBeToldLeavesAndSaysSo() async throws {
+        Stubbed.left.withLock { $0 = false }
+        let owner = "tester-\(UUID().uuidString.lowercased().prefix(8))"
+        let server = RunnerStub { _ in (503, #"{"error": {"code": "unavailable", "message": "down"}}"#) }
+        let joined = #"{"state": "joined", "owner": "\#(owner)", "url": "https://\#(server.host)", "sphere": "acme", "obiId": "obi-\#(owner)"}"#
+        let left = #"{"state": "none", "owner": "\#(owner)"}"#
+        let obid = RunnerStub { request in
+            switch (request.method, request.path) {
+            case ("GET", "/v1/obid/sphere"): (200, Stubbed.left.withLock { $0 } ? left : joined)
+            case ("DELETE", "/v1/obid/sphere"): { Stubbed.left.withLock { $0 = true }; return (200, left) }()
+            default: (404, "{}")
+            }
+        }
+        let session = SphereServer.session
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [RunnerStubProtocol.self] + (configuration.protocolClasses ?? [])
+        SphereServer.session = URLSession(configuration: configuration, delegate: NoRedirects(), delegateQueue: nil)
+        defer {
+            SphereServer.session = session
+            try? OwnerKey.store.remove(owner)
+        }
+        let feed = RunnerFeed()
+        feed.stageAlerts(following: obid.runner)
+        let sphere = SphereModel(feed: feed)
+        let untold = await #expect(throws: RunnerError.self) { try await sphere.leave() }
+        #expect(untold?.message.hasPrefix("This Mac left acme, but the Obysphere couldn't be told") == true)
+        #expect(obid.requests.contains { $0.method == "DELETE" && $0.path == "/v1/obid/sphere" })
+        #expect(sphere.membership?.state == "none")
+    }
+
+    @Test func anObysphereIdComesFromItsName() {
+        #expect(SphereSettingsView.slug("Deskree × Avenga") == "deskree-avenga")
+        #expect(SphereSettingsView.slug("  Déskree  ") == "deskree")
+    }
+}
+
+/// What the stubbed obids above remember between calls (the suite is serialized).
+private enum Stubbed {
+    static let joins = Mutex(0)
+    static let left = Mutex(false)
+}
+
+/// Answers every request to obysphere.deskree.com with a 307 to elsewhere.example, and notes
+/// whether elsewhere.example was ever asked.
+private final class Redirecting: URLProtocol {
+    static let reachedElsewhere = Mutex(false)
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func startLoading() {
+        guard request.url?.host() == "obysphere.deskree.com" else {
+            Self.reachedElsewhere.withLock { $0 = true }
+            client?.urlProtocol(self, didFailWithError: URLError(.cancelled))
+            return
+        }
+        let response = HTTPURLResponse(url: request.url!, statusCode: 307, httpVersion: "HTTP/1.1",
+                                       headerFields: ["Location": "https://elsewhere.example/v0.1/oauth/token"])!
+        client?.urlProtocol(self, wasRedirectedTo: URLRequest(url: URL(string: "https://elsewhere.example/v0.1/oauth/token")!),
+                            redirectResponse: response)
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocolDidFinishLoading(self)
+    }
+    override func stopLoading() {}
+}

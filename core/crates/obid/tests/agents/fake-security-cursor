@@ -1,0 +1,19 @@
+#!/bin/sh
+# A stand-in for macOS's /usr/bin/security in obid's tests (OBID_SECURITY_BIN), as fake-security
+# but holding Cursor's own login as cursor-agent keeps it in the Keychain on macOS: account
+# cursor-user, its access token in cursor-access-token and its refresh token in
+# cursor-refresh-token (with -w, each value; the access token is $FAKE_CURSOR_ACCESS when a test
+# sets it), no API key. Nothing else is there. It notes what it was asked in
+# $TMPDIR/obid-test-security-calls.
+printf '%s\n' "$*" >> "${TMPDIR:-/nonexistent}/obid-test-security-calls"
+case " $* " in
+*" -a cursor-user -s cursor-access-token "*) value="${FAKE_CURSOR_ACCESS:-keychain-held-access}" ;;
+*" -a cursor-user -s cursor-refresh-token "*) value="keychain-held-refresh" ;;
+*) exit 44 ;;
+esac
+case " $* " in
+# FAKE_CURSOR_REFUSE: the owner chose Deny at macOS's prompt (errSecUserCanceled).
+*" -w "*) [ -n "${FAKE_CURSOR_REFUSE:-}" ] && exit 128; printf '%s\n' "$value" ;;
+*) printf '%s\n' '    "mdat"<timedate>="20261031120000Z"' ;;
+esac
+exit 0

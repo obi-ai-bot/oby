@@ -1,0 +1,72 @@
+# The Rust core: the daemon obid and its crates (docs/ARCHITECTURE.md, section 3).
+# Every folder under crates/ is a member, so a new crate joins without editing this file. Crates
+# take the shared dependencies below with `workspace = true`; a crate that needs another one asks
+# the Rust core to add it here (docs/ARCHITECTURE.md, section 6).
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.89"
+license = "Apache-2.0"
+repository = "https://github.com/obi-ai-bot/obi"
+publish = false
+
+[workspace.dependencies]
+# Async runtime.
+tokio = { version = "1.53", features = ["full"] }
+# JSON everywhere: the runner API and the Obi-to-Obi protocol.
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+# Errors and logs.
+thiserror = "2.0.21"
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+# The runner API's HTTP server.
+axum = "0.8.9"
+# The API token obid makes on first start, and the host name `GET /v1/status` reports.
+getrandom = "0.4.3"
+hex = "0.4.3"
+libc = "0.2"
+gethostname = "1.1.0"
+# The Obi-to-Obi protocol (crates/obi-protocol): Ed25519, SHA-256, base64url, its JSON Schemas,
+# and ECMAScript number formatting for canonical JSON (RFC 8785).
+ed25519-dalek = "3.0.0"
+sha2 = "0.11.1"
+base64 = "0.23.1"
+jsonschema = { version = "0.58.6", default-features = false }
+ryu-js = "1.0.3"
+# The devices' publishing keys (POST /v1/devices): P-256 public keys, X9.63, and the ECDSA
+# signatures they make to publish by hand (POST /v1/jobs/{id}/publish).
+p256 = { version = "0.13.2", default-features = false, features = ["arithmetic", "ecdsa"] }
+# Ids for jobs and messages.
+uuid = { version = "1.28.0", features = ["v4"] }
+# Process groups for agents and checks: SIGTERM, then SIGKILL, to everything one started.
+nix = { version = "0.31", features = ["signal", "process", "term", "user", "fs", "dir", "resource"] }
+# The Sphere client (crates/obi-protocol, client.rs): HTTP and HTTPS, no proxy from the environment.
+reqwest = { version = "0.13.5", default-features = false, features = ["rustls", "json", "form"] }
+# The publish gate's secret scan: the built-in rules (Engine/Publish.swift's).
+regex = "1.13.1"
+# Streamed answers: the event stream and `GET /v1/jobs/{id}/wait`.
+futures-util = { version = "0.3.34", default-features = false, features = ["std"] }
+tokio-stream = { version = "0.1.19", features = ["sync"] }
+# Routines' times in the owner's IANA zone, daylight saving included, from the system's tz database.
+jiff = "0.2.37"
+# The Sphere relay (crates/obid/src/relay): WebSocket over native roots.
+tokio-tungstenite = { version = "0.30.0", default-features = false, features = ["connect", "__rustls-tls", "rustls-tls-native-roots"] }
+
+# obid ships inside Oby.app without symbols: 58.9 MB for both architectures, against 73.6 MB with
+# them (2026-10-23, docs/release.md, "Full builds"). Panics still say their file and line. No LTO:
+# thin LTO alone made it bigger; with one codegen unit it was 22.6 MB instead of 28.0 MB for arm64,
+# but rebuilding after a change in obid took 467 s instead of 81 s, and every build of the Mac app,
+# Debug too, builds obid for release.
+[profile.release]
+strip = true
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }

@@ -1,0 +1,1291 @@
+//! The accounts API (docs/runner-api.md, "POST /v1/accounts" to "GET /v1/accounts/{id}/sign-in"),
+//! on the real obid binary: accounts are added, renamed and removed, kept across restarts, each
+//! with a folder obid makes and removes; bad input is refused; and each tool's own login runs in
+//! the account's folder (the stand-in agents' fake-login.mjs), obid passing on only the link to
+//! open and the code to type, never what the login printed, and keeping jobs off the account while
+//! it signs in or is removed.
+
+mod support;
+
+use std::path::{Path, PathBuf};
+use std::time::Duration;
+
+use serde_json::{Value, json};
+use support::*;
+
+/// What the stand-in logins print and must never come back (tests/agents/fake-login.mjs).
+const SECRET: &str = "FAKE-LOGIN-SECRET-7f3a9c";
+
+fn agent(name: &str) -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("tests/agents/{name}"))
+}
+
+/// The tests' configuration with the three stand-in agents; on macOS `claudeKeychain` is on, as
+/// signing a Claude Code account in there needs it (its login goes to the Keychain). obid then asks
+/// the stand-in `security` (support::start), never the person's real Keychain.
+fn accounts_config(folder: &Path) -> Value {
+    let remote = folder.join("remote.git");
+    let mut config = config(folder, &remote, &agent("fake-claude"));
+    config["agents"]["codex"] = json!({"bin": agent("fake-codex"), "accounts": []});
+    config["agents"]["cursor"] = json!({"bin": agent("fake-cursor"), "accounts": []});
+    if cfg!(target_os = "macos") {
+        config["claudeKeychain"] = json!(true);
+    }
+    config
+}
+
+fn accounts(obid: &Obid) -> Vec<Value> {
+    call(obid, "GET", "/v1/status", None).body["accounts"]
+        .as_array()
+        .unwrap()
+        .clone()
+}
+
+fn account(obid: &Obid, id: &str) -> Option<Value> {
+    accounts(obid).into_iter().find(|a| a["id"] == id)
+}
+
+fn add(obid: &Obid, body: Value) -> Answer {
+    call(obid, "POST", "/v1/accounts", Some(&body))
+}
+
+fn mode(path: &Path) -> u32 {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(path).unwrap().permissions().mode() & 0o777
+}
+
+fn alive(pid: i32) -> bool {
+    nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid), None).is_ok()
+}
+
+/// The tools' own logins on the Mac that a test's obid finds: Claude Code's login file, Codex's
+/// (its access token ending `ends` seconds from now) with a stand-in `codex` on the PATH, and
+/// Cursor's login file. The folder of the stand-in.
+fn logins_on_the_mac(folder: &Path, ends: u64) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let bin = folder.join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    std::fs::write(bin.join("codex"), "#!/bin/sh\nexit 0\n").unwrap();
+    std::fs::set_permissions(bin.join("codex"), std::fs::Permissions::from_mode(0o755)).unwrap();
+    let home = folder.join("env-home");
+    std::fs::create_dir_all(home.join(".claude")).unwrap();
+    std::fs::write(home.join(".claude/.credentials.json"), "{}").unwrap();
+    codex_login(&home, ends);
+    let cursor = home.join(if cfg!(target_os = "macos") {
+        ".cursor/auth.json"
+    } else {
+        ".config/cursor/auth.json"
+    });
+    std::fs::create_dir_all(cursor.parent().unwrap()).unwrap();
+    // Built at runtime, so a secret scan doesn't take the test's values for credentials.
+    std::fs::write(
+        &cursor,
+        json!({"accessToken": (["fake", "-access"].concat())}).to_string(),
+    )
+    .unwrap();
+    bin
+}
+
+/// Codex's own login in `home`, its access token ending `ends` seconds from now.
+fn codex_login(home: &Path, ends: u64) {
+    use base64::Engine;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let claims = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .encode(json!({"exp": now + ends}).to_string());
+    let login = json!({"tokens": {"access_token": format!("e30.{claims}.c2ln"), "refresh_token": (["r", "1"].concat())}});
+    std::fs::create_dir_all(home.join(".codex")).unwrap();
+    std::fs::write(home.join(".codex/auth.json"), login.to_string()).unwrap();
+}
+
+/// The tools' own logins listed as accounts: id, `signedIn`, `label`.
+fn own(obid: &Obid) -> Vec<(String, Value, Value)> {
+    accounts(obid)
+        .into_iter()
+        .filter(|a| ["default", "codex", "cursor"].contains(&a["id"].as_str().unwrap()))
+        .map(|a| {
+            (
+                a["id"].as_str().unwrap().to_owned(),
+                a["signedIn"].clone(),
+                a["label"].clone(),
+            )
+        })
+        .collect()
+}
+
+/// The tools' own logins obid found and only offers (`availableLogins`): agent, id.
+fn offered(obid: &Obid) -> Vec<(String, String)> {
+    call(obid, "GET", "/v1/status", None).body["availableLogins"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|a| {
+            (
+                a["agent"].as_str().unwrap().to_owned(),
+                a["id"].as_str().unwrap().to_owned(),
+            )
+        })
+        .collect()
+}
+
+fn ids(obid: &Obid) -> Vec<String> {
+    own(obid).into_iter().map(|(id, _, _)| id).collect()
+}
+
+/// On a fresh obid, the tools' own logins on the Mac are accounts for each tool with none, each with
+/// the status a run would meet (Codex's `Run codex once` while its token ends within 5 minutes); a
+/// tool with an account only gets its own login offered. Each is listed once; one the owner removed
+/// stays removed across a restart, offered again, until it's asked back.
+#[test]
+fn a_fresh_obid_lists_the_logins_already_on_the_mac() {
+    let folder = Folder::new("accounts-own");
+    let remote = folder.0.join("remote.git");
+    let mut config = config(&folder.0, &remote, &agent("fake-claude"));
+    config["agents"]["cursor"] = json!({"bin": agent("fake-cursor"), "accounts": []});
+    let bin = logins_on_the_mac(&folder.0, 60);
+    let mut obid = start(&folder.0, &config, Some(&bin));
+    assert_eq!(
+        own(&obid),
+        [
+            ("codex".into(), json!(false), json!("Run codex once")),
+            ("cursor".into(), json!(true), json!(null)),
+        ]
+    );
+    // Claude Code has an account (the configuration's `stub`): its own login is only offered.
+    assert_eq!(offered(&obid), [("claude".into(), "default".into())]);
+    // Codex ran once: its login can run again.
+    codex_login(&folder.0.join("env-home"), 3600);
+    assert_eq!(own(&obid)[0], ("codex".into(), json!(true), json!(null)));
+
+    let removed = call(&obid, "DELETE", "/v1/accounts/cursor", None);
+    assert_eq!(removed.status, 204, "{}", removed.text);
+    assert!(obid.stop().success());
+    let mut obid = start(&folder.0, &config, Some(&bin));
+    assert_eq!(ids(&obid), ["codex"]);
+    assert_eq!(
+        offered(&obid),
+        [
+            ("claude".into(), "default".into()),
+            ("cursor".into(), "cursor".into())
+        ]
+    );
+    for agent in ["cursor", "claude"] {
+        let back = add(&obid, json!({"agent": agent, "default": true}));
+        assert_eq!(back.status, 201, "{}", back.text);
+        assert_eq!(back.body["signedIn"], true);
+    }
+    assert!(offered(&obid).is_empty());
+    assert!(obid.stop().success());
+    let obid = start(&folder.0, &config, Some(&bin));
+    assert_eq!(ids(&obid), ["default", "codex", "cursor"]);
+}
+
+/// A tool installed and signed in after obid started, as during a fresh Mac's first launch, is
+/// offered at the next status, with no restart.
+#[test]
+fn a_login_made_after_start_is_offered_without_a_restart() {
+    use std::os::unix::fs::PermissionsExt;
+    let folder = Folder::new("accounts-later");
+    let remote = folder.0.join("remote.git");
+    let config = config(&folder.0, &remote, &agent("fake-claude"));
+    let bin = folder.0.join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let obid = start(&folder.0, &config, Some(&bin));
+    assert!(offered(&obid).is_empty());
+    std::fs::write(bin.join("codex"), "#!/bin/sh\nexit 0\n").unwrap();
+    std::fs::set_permissions(bin.join("codex"), std::fs::Permissions::from_mode(0o755)).unwrap();
+    codex_login(&folder.0.join("env-home"), 3600);
+    // obid looks again at most every 2 seconds (accounts::LOOK_EVERY).
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while offered(&obid).is_empty() && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+    assert_eq!(offered(&obid), [("codex".into(), "codex".into())]);
+}
+
+/// Cursor's own login only in the macOS Keychain, where cursor-agent keeps it by default there: with
+/// `cursorKeychain` on (set here: left out, obid's choice also looks at the person's real home), a
+/// fresh obid lists the login, signed in, as it lists a login file. It only ever asks for the access
+/// token and API key, never the refresh token, and never logs what it read.
+#[cfg(target_os = "macos")]
+#[test]
+fn a_cursor_login_only_in_the_keychain_is_found() {
+    let folder = Folder::new("accounts-cursor-keychain");
+    let remote = folder.0.join("remote.git");
+    let mut config = config(&folder.0, &remote, &agent("fake-claude"));
+    config["agents"]["cursor"] = json!({"bin": agent("fake-cursor"), "accounts": []});
+    config["cursorKeychain"] = json!(true);
+    let security = agent("fake-security-cursor");
+    let obid = start_with(
+        &folder.0,
+        &config,
+        None,
+        &[("OBID_SECURITY_BIN", security.to_str().unwrap())],
+    );
+    assert_eq!(own(&obid), [("cursor".into(), json!(true), json!(null))]);
+    let status = call(&obid, "GET", "/v1/status", None).body;
+    assert_eq!(status["cursorKeychain"], json!({"on": true, "auto": false}));
+    let asked = std::fs::read_to_string(folder.0.join("tmp/obid-test-security-calls")).unwrap();
+    assert!(
+        asked.contains("-a cursor-user -s cursor-access-token"),
+        "{asked}"
+    );
+    assert!(!asked.contains("cursor-refresh-token"), "{asked}");
+    assert!(!obid.log().contains("keychain-held-access"));
+    // The statuses read the token's value at most once a minute; whether the item exists, each time.
+    call(&obid, "GET", "/v1/status", None);
+    call(&obid, "GET", "/v1/status", None);
+    let asked = std::fs::read_to_string(folder.0.join("tmp/obid-test-security-calls")).unwrap();
+    let read = |item: &str| {
+        asked
+            .lines()
+            .filter(|l| l.contains(&format!("-s {item}")) && l.ends_with(" -w"))
+            .count()
+    };
+    assert_eq!(read("cursor-access-token"), 1, "{asked}");
+    // Not there: only whether it is was asked, never its value (#1679).
+    assert_eq!(read("cursor-api-key"), 0, "{asked}");
+}
+
+/// Cursor's own Keychain login whose access token has ended: it's signed out, its label says to run
+/// cursor-agent once (only the Mac's own refreshes it), and a job on it doesn't start, saying so.
+#[cfg(target_os = "macos")]
+#[test]
+fn a_cursor_keychain_login_that_ended_says_run_cursor_agent_once() {
+    use base64::Engine;
+    let folder = Folder::new("accounts-cursor-ended");
+    let remote = fixture(&folder.0.join("fixture"));
+    let mut config = config(&folder.0, &remote, &agent("fake-claude"));
+    config["agents"]["cursor"] = json!({"bin": agent("fake-cursor"), "accounts": []});
+    config["cursorKeychain"] = json!(true);
+    let encode = |v: Value| base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(v.to_string());
+    let ended = format!(
+        "{}.{}.sig",
+        encode(json!({"alg": "RS256"})),
+        encode(json!({"exp": 1}))
+    );
+    let security = agent("fake-security-cursor");
+    let obid = start_with(
+        &folder.0,
+        &config,
+        None,
+        &[
+            ("OBID_SECURITY_BIN", security.to_str().unwrap()),
+            ("FAKE_CURSOR_ACCESS", &ended),
+        ],
+    );
+    assert_eq!(
+        own(&obid),
+        [(
+            "cursor".into(),
+            json!(false),
+            json!("Run cursor-agent once")
+        )]
+    );
+    let job = call(
+        &obid,
+        "POST",
+        "/v1/jobs",
+        Some(
+            &json!({"job": {"repo": "obi-e2e/fixture-app", "kind": "investigate", "task": "ENV", "account": "cursor"}}),
+        ),
+    );
+    assert_eq!(job.status, 201, "{}", job.text);
+    let id = job.body["id"].as_str().unwrap().to_owned();
+    let failed = within(30, "the job ended", || {
+        let job = call(&obid, "GET", &format!("/v1/jobs/{id}"), None).body;
+        (job["status"] != "queued" && job["status"] != "running").then_some(job)
+    });
+    assert!(
+        failed.to_string().contains("run cursor-agent once"),
+        "{failed}"
+    );
+}
+
+/// KEYCHAIN-3: Cursor's own Keychain login macOS didn't give obid (Deny): it's signed out, its label
+/// says to sign in again and choose Always Allow, a job on it doesn't start, saying why, and its
+/// value is asked for once, not at every status.
+#[cfg(target_os = "macos")]
+#[test]
+fn keychain_3_a_cursor_login_macos_refused_says_why() {
+    let folder = Folder::new("accounts-cursor-refused");
+    let remote = fixture(&folder.0.join("fixture"));
+    let mut config = config(&folder.0, &remote, &agent("fake-claude"));
+    config["agents"]["cursor"] = json!({"bin": agent("fake-cursor"), "accounts": []});
+    config["cursorKeychain"] = json!(true);
+    let security = agent("fake-security-cursor");
+    let obid = start_with(
+        &folder.0,
+        &config,
+        None,
+        &[
+            ("OBID_SECURITY_BIN", security.to_str().unwrap()),
+            ("FAKE_CURSOR_REFUSE", "1"),
+        ],
+    );
+    assert_eq!(
+        own(&obid),
+        [(
+            "cursor".into(),
+            json!(false),
+            json!("Sign in again, then Always Allow")
+        )]
+    );
+    let job = call(
+        &obid,
+        "POST",
+        "/v1/jobs",
+        Some(
+            &json!({"job": {"repo": "obi-e2e/fixture-app", "kind": "investigate", "task": "ENV", "account": "cursor"}}),
+        ),
+    );
+    assert_eq!(job.status, 201, "{}", job.text);
+    let id = job.body["id"].as_str().unwrap().to_owned();
+    let failed = within(30, "the job ended", || {
+        let job = call(&obid, "GET", &format!("/v1/jobs/{id}"), None).body;
+        (job["status"] != "queued" && job["status"] != "running").then_some(job)
+    });
+    assert!(
+        failed
+            .to_string()
+            .contains("Cursor keeps its login in your Keychain"),
+        "{failed}"
+    );
+    call(&obid, "GET", "/v1/status", None);
+    let asked = std::fs::read_to_string(folder.0.join("tmp/obid-test-security-calls")).unwrap();
+    let reads = asked
+        .lines()
+        .filter(|l| l.contains("-s cursor-access-token") && l.ends_with(" -w"))
+        .count();
+    assert_eq!(reads, 1, "{asked}");
+}
+
+/// KEYCHAIN-3: Claude Code's Keychain login macOS didn't give obid (Deny): a run on it fails saying
+/// why, rather than starting with no login ("not logged in"), and the account then reads as signed
+/// out, its label saying to sign in again and choose Always Allow.
+#[cfg(target_os = "macos")]
+#[test]
+fn keychain_3_a_claude_login_macos_refused_fails_the_run_saying_why() {
+    let folder = Folder::new("accounts-claude-refused");
+    let remote = fixture(&folder.0.join("fixture"));
+    let mut config = config(&folder.0, &remote, &agent("fake-claude"));
+    config["claudeKeychain"] = json!(true);
+    let security = agent("fake-security-holding");
+    let obid = start_with(
+        &folder.0,
+        &config,
+        None,
+        &[
+            ("OBID_SECURITY_BIN", security.to_str().unwrap()),
+            ("FAKE_SECURITY_REFUSE", "1"),
+        ],
+    );
+    let job = call(
+        &obid,
+        "POST",
+        "/v1/jobs",
+        Some(
+            &json!({"job": {"repo": "obi-e2e/fixture-app", "kind": "investigate", "task": "ENV", "account": "stub"}}),
+        ),
+    );
+    assert_eq!(job.status, 201, "{}", job.text);
+    let id = job.body["id"].as_str().unwrap().to_owned();
+    let failed = within(30, "the job ended", || {
+        let job = call(&obid, "GET", &format!("/v1/jobs/{id}"), None).body;
+        (job["status"] != "queued" && job["status"] != "running").then_some(job)
+    });
+    assert!(
+        failed
+            .to_string()
+            .contains("Claude Code keeps its login in your Keychain"),
+        "{failed}"
+    );
+    let stub = accounts(&obid)
+        .into_iter()
+        .find(|a| a["id"] == "stub")
+        .unwrap();
+    assert_eq!(stub["signedIn"], json!(false), "{stub}");
+    assert_eq!(
+        stub["label"],
+        json!("Sign in again, then Always Allow"),
+        "{stub}"
+    );
+}
+
+/// An obid that ran before keeps its accounts as they are: the logins it finds on the Mac are only
+/// offered, and listed on the owner's word.
+#[test]
+fn an_obid_that_ran_before_only_offers_the_logins_on_the_mac() {
+    let folder = Folder::new("accounts-offered");
+    let remote = folder.0.join("remote.git");
+    let mut config = config(&folder.0, &remote, &agent("fake-claude"));
+    config["agents"]["cursor"] = json!({"bin": agent("fake-cursor"), "accounts": []});
+    let bin = logins_on_the_mac(&folder.0, 3600);
+    std::os::unix::fs::DirBuilderExt::mode(std::fs::DirBuilder::new().recursive(true), 0o700)
+        .create(folder.0.join("home/jobs"))
+        .unwrap();
+    let obid = start(&folder.0, &config, Some(&bin));
+    assert!(own(&obid).is_empty(), "{:?}", own(&obid));
+    assert_eq!(
+        offered(&obid),
+        [
+            ("claude".into(), "default".into()),
+            ("codex".into(), "codex".into()),
+            ("cursor".into(), "cursor".into())
+        ]
+    );
+    let codex = add(&obid, json!({"agent": "codex", "default": true}));
+    assert_eq!(codex.status, 201, "{}", codex.text);
+    assert_eq!(ids(&obid), ["codex"]);
+    assert_eq!(offered(&obid).len(), 2);
+}
+
+#[test]
+fn accounts_are_added_renamed_and_removed_and_kept_across_restarts() {
+    let folder = Folder::new("accounts-crud");
+    let config = accounts_config(&folder.0);
+    let mut obid = start(&folder.0, &config, None);
+    let events = follow_events(&obid);
+
+    let added = add(
+        &obid,
+        json!({"agent": "codex", "name": "Personal", "payer": "Wellington"}),
+    );
+    assert_eq!(added.status, 201, "{}", added.text);
+    let id = added.body["id"].as_str().unwrap().to_owned();
+    assert_eq!(added.body["agent"], "codex");
+    assert_eq!(added.body["name"], "Personal");
+    assert_eq!(added.body["payer"], "Wellington");
+    assert_eq!(added.body["signedIn"], false);
+    // Its folder is obid's own, made private.
+    let dir = obid.home.join("accounts").join(&id);
+    assert!(dir.is_dir(), "{} wasn't made", dir.display());
+    assert_eq!(mode(&dir), 0o700);
+    let sent = events_named(&events, "accounts", 10, |got| {
+        got.iter()
+            .any(|list| list.as_array().unwrap().iter().any(|a| a["id"] == id))
+    });
+    assert!(sent.last().unwrap().is_array());
+    assert_eq!(account(&obid, &id).unwrap()["payer"], "Wellington");
+
+    // Renamed; the payer cleared.
+    let renamed = call(
+        &obid,
+        "PATCH",
+        &format!("/v1/accounts/{id}"),
+        Some(&json!({"name": "Deskree", "payer": null})),
+    );
+    assert_eq!(renamed.status, 200, "{}", renamed.text);
+    assert_eq!(renamed.body["name"], "Deskree");
+    assert_eq!(renamed.body["payer"], Value::Null);
+    events_named(&events, "accounts", 10, |got| {
+        got.iter().any(|list| {
+            list.as_array()
+                .unwrap()
+                .iter()
+                .any(|a| a["id"] == id && a["name"] == "Deskree")
+        })
+    });
+    // The account from the configuration can be renamed and given a payer too.
+    let stub = call(
+        &obid,
+        "PATCH",
+        "/v1/accounts/stub",
+        Some(&json!({"payer": "Deskree"})),
+    );
+    assert_eq!(stub.status, 200, "{}", stub.text);
+    assert_eq!(stub.body["name"], "Stub");
+    assert_eq!(stub.body["payer"], "Deskree");
+
+    // A restart keeps all of it, from obid's own home/accounts.json (0600), and sweeps what a
+    // sign-in cut short left in home/tmp.
+    assert!(obid.stop().success());
+    assert_eq!(mode(&obid.home.join("accounts.json")), 0o600);
+    let stale = obid.home.join("tmp/sign-in-1-0");
+    std::fs::create_dir_all(&stale).unwrap();
+    let mut obid = start(&folder.0, &config, None);
+    assert!(!stale.exists(), "a sign-in's folder outlived the restart");
+    let kept = account(&obid, &id).expect("the account is still there");
+    assert_eq!(
+        (&kept["name"], &kept["agent"]),
+        (&json!("Deskree"), &json!("codex"))
+    );
+    assert_eq!(account(&obid, "stub").unwrap()["payer"], "Deskree");
+
+    // Removed: its folder (obid made it) goes with it, and its id is never made again.
+    let events = follow_events(&obid);
+    let removed = call(&obid, "DELETE", &format!("/v1/accounts/{id}"), None);
+    assert_eq!(removed.status, 204, "{}", removed.text);
+    let kept: Value =
+        serde_json::from_slice(&std::fs::read(obid.home.join("accounts.json")).unwrap()).unwrap();
+    assert!(
+        kept["removed"].as_array().unwrap().contains(&json!(id)),
+        "{kept}"
+    );
+    assert!(!dir.exists(), "obid's folder for the account stayed");
+    assert!(account(&obid, &id).is_none());
+    events_named(&events, "accounts", 10, |got| {
+        got.iter()
+            .any(|list| !list.as_array().unwrap().iter().any(|a| a["id"] == id))
+    });
+    // The configuration's account goes too, but its folder isn't obid's to remove.
+    let stub_dir = obid.home.join("accounts/stub");
+    assert!(stub_dir.is_dir());
+    assert_eq!(call(&obid, "DELETE", "/v1/accounts/stub", None).status, 204);
+    assert!(stub_dir.is_dir(), "obid removed a folder it didn't make");
+
+    assert!(obid.stop().success());
+    let obid = start(&folder.0, &config, None);
+    assert!(account(&obid, &id).is_none(), "a removed account came back");
+    assert!(
+        account(&obid, "stub").is_none(),
+        "a removed configured account came back"
+    );
+    assert_eq!(
+        call(&obid, "DELETE", &format!("/v1/accounts/{id}"), None).status,
+        404
+    );
+}
+
+#[test]
+fn bad_accounts_are_refused() {
+    let folder = Folder::new("accounts-refused");
+    let config = accounts_config(&folder.0);
+    let obid = start(&folder.0, &config, None);
+    let long = "x".repeat(61);
+    for (body, why) in [
+        (json!({"agent": "gemini", "name": "A"}), "agent"),
+        (json!({"name": "A"}), "agent"),
+        (json!({"agent": "claude", "name": "  "}), "name"),
+        (json!({"agent": "claude", "name": long}), "name"),
+        (json!({"agent": "claude", "name": "Two\nlines"}), "name"),
+        (
+            json!({"agent": "claude", "name": "A", "payer": "x\u{7}"}),
+            "payer",
+        ),
+        (json!({"agent": "claude", "name": "Stub"}), "name"),
+        (json!({"agent": "claude", "name": "stub"}), "name"),
+        // obid makes every account's folder itself: none is named in the API.
+        (
+            json!({"agent": "claude", "name": "A", "configDir": folder.0.join("mine")}),
+            "configDir",
+        ),
+        (json!({"agent": "claude", "name": "A", "extra": 1}), "extra"),
+    ] {
+        let answer = add(&obid, body.clone());
+        assert_eq!(answer.status, 422, "{body} was taken: {}", answer.text);
+        assert!(
+            answer.body["error"].as_str().unwrap().contains(why),
+            "{body}: {}",
+            answer.text
+        );
+    }
+    // Not JSON, unknown accounts, a rename to nothing.
+    assert_eq!(
+        call(
+            &obid,
+            "PATCH",
+            "/v1/accounts/nobody",
+            Some(&json!({"name": "A"}))
+        )
+        .status,
+        404
+    );
+    assert_eq!(
+        call(&obid, "DELETE", "/v1/accounts/nobody", None).status,
+        404
+    );
+    assert_eq!(
+        call(&obid, "GET", "/v1/accounts/nobody/sign-in", None).status,
+        404
+    );
+    assert_eq!(
+        call(
+            &obid,
+            "PATCH",
+            "/v1/accounts/stub",
+            Some(&json!({"name": ""}))
+        )
+        .status,
+        422
+    );
+    assert_eq!(accounts(&obid).len(), 1, "{:?}", accounts(&obid));
+    // At most 32 accounts, the configuration's among them.
+    for n in 1..32 {
+        let answer = add(&obid, json!({"agent": "cursor", "name": format!("C{n}")}));
+        assert_eq!(answer.status, 201, "{n}: {}", answer.text);
+    }
+    let full = add(&obid, json!({"agent": "cursor", "name": "One too many"}));
+    assert_eq!(full.status, 422, "{}", full.text);
+    assert!(full.text.contains("at most 32"), "{}", full.text);
+}
+
+#[test]
+fn an_account_with_a_job_isnt_removed() {
+    let folder = Folder::new("accounts-busy");
+    let remote = fixture(&folder.0.join("fixture"));
+    let config = config(&folder.0, &remote, &agent("fake-claude"));
+    let obid = start(&folder.0, &config, None);
+    let job = call(
+        &obid,
+        "POST",
+        "/v1/jobs",
+        Some(
+            &json!({"job": {"repo": "obi-e2e/fixture-app", "kind": "investigate", "task": "SLEEP", "account": "stub"}}),
+        ),
+    );
+    assert_eq!(job.status, 201, "{}", job.text);
+    let id = job.body["id"].as_str().unwrap().to_owned();
+    let refused = call(&obid, "DELETE", "/v1/accounts/stub", None);
+    assert_eq!(refused.status, 409, "{}", refused.text);
+    let signing = call(&obid, "GET", "/v1/accounts/stub/sign-in", None);
+    assert_eq!(signing.status, 409, "{}", signing.text);
+    assert!(account(&obid, "stub").is_some());
+    call(&obid, "POST", &format!("/v1/jobs/{id}/stop"), None);
+    within(10, "the job stopped", || {
+        (call(&obid, "GET", &format!("/v1/jobs/{id}"), None).body["status"] == "stopped")
+            .then_some(())
+    });
+    assert_eq!(call(&obid, "DELETE", "/v1/accounts/stub", None).status, 204);
+}
+
+/// Claude Code's own login, in the account's folder: obid gives the link it printed, the code goes
+/// back on its stdin, and the login is written where Claude Code keeps it, by Claude Code. While
+/// it waits, no job goes to the account; removing the account ends it.
+#[test]
+fn claude_code_signs_in_with_its_own_login() {
+    let folder = Folder::new("accounts-claude");
+    let config = accounts_config(&folder.0);
+    let obid = start(&folder.0, &config, None);
+    let added = add(&obid, json!({"agent": "claude", "name": "Personal"}));
+    assert_eq!(added.status, 201, "{}", added.text);
+    let id = added.body["id"].as_str().unwrap().to_owned();
+    let dir = obid.home.join("accounts").join(&id);
+    let target = format!("/v1/accounts/{id}/sign-in");
+
+    // No sign-in under way: there's nothing to take a code.
+    assert_eq!(
+        call(
+            &obid,
+            "POST",
+            &target,
+            Some(&json!({"code": "good-code#fake"}))
+        )
+        .status,
+        409
+    );
+    let started = call(&obid, "GET", &target, None);
+    assert_eq!(started.status, 200, "{}", started.text);
+    assert_eq!(
+        started.body["url"],
+        "https://claude.com/cai/oauth/authorize?code=true&state=fake"
+    );
+    assert_eq!(started.body["pasteCode"], true);
+    assert_eq!(started.body["userCode"], Value::Null);
+    assert_eq!(started.body["account"], id.as_str());
+    assert!(started.body["expiresAt"].is_string());
+    // Asked again, the same sign-in.
+    let again = call(&obid, "GET", &target, None);
+    assert_eq!(again.body["url"], started.body["url"]);
+    // While it waits, a job named to the account isn't dispatched.
+    let job = call(
+        &obid,
+        "POST",
+        "/v1/jobs",
+        Some(
+            &json!({"job": {"repo": "obi-e2e/fixture-app", "kind": "investigate", "task": "Hi", "account": id}}),
+        ),
+    );
+    assert_ne!(job.status, 201, "{}", job.text);
+    assert!(job.text.contains("being signed in"), "{}", job.text);
+
+    // A wrong code ends it: Claude Code said no.
+    let wrong = call(&obid, "POST", &target, Some(&json!({"code": "bad#fake"})));
+    assert_eq!(wrong.status, 422, "{}", wrong.text);
+    assert_eq!(account(&obid, &id).unwrap()["signedIn"], false);
+    // A code that isn't one line is refused before it reaches the login.
+    call(&obid, "GET", &target, None);
+    let two_lines = call(
+        &obid,
+        "POST",
+        &target,
+        Some(&json!({"code": "a\ngood-code#fake"})),
+    );
+    assert_eq!(two_lines.status, 422, "{}", two_lines.text);
+
+    let events = follow_events(&obid);
+    let signed = call(
+        &obid,
+        "POST",
+        &target,
+        Some(&json!({"code": "good-code#fake"})),
+    );
+    assert_eq!(signed.status, 200, "{}", signed.text);
+    assert_eq!(signed.body["id"], id.as_str());
+    assert_eq!(signed.body["signedIn"], true);
+    events_named(&events, "accounts", 10, |got| {
+        got.iter().any(|list| {
+            list.as_array()
+                .unwrap()
+                .iter()
+                .any(|a| a["id"] == id && a["signedIn"] == true)
+        })
+    });
+    // On macOS obid looked in the Keychain through the stand-in, never the real one.
+    if cfg!(target_os = "macos") {
+        let asked = std::fs::read_to_string(folder.0.join("tmp/obid-test-security-calls"))
+            .expect("the stand-in security was asked");
+        assert!(asked.contains("find-generic-password"), "{asked}");
+    }
+
+    // Claude Code ran in the account's folder, by its absolute path, with the system's folders,
+    // its own and (a `#!/usr/bin/env node` script) node's on its PATH, and wrote its login there
+    // itself.
+    let saw: Value =
+        serde_json::from_slice(&std::fs::read(dir.join(".credentials.json")).unwrap()).unwrap();
+    let saw = &saw["saw"];
+    assert_eq!(saw["argv"], json!(["auth", "login"]));
+    assert_eq!(saw["env"]["CLAUDE_CONFIG_DIR"], json!(dir));
+    assert!(
+        saw["env"].get("CLAUDE_SECURESTORAGE_CONFIG_DIR").is_none(),
+        "{saw}"
+    );
+    assert_eq!(saw["env"]["HOME"], json!(folder.0.join("env-home")));
+    assert_eq!(saw["env"]["BROWSER"], "true");
+    let agents = agent("fake-claude").canonicalize().unwrap();
+    let node = std::process::Command::new("sh")
+        .args(["-c", "command -v node"])
+        .output()
+        .unwrap();
+    let node = PathBuf::from(String::from_utf8(node.stdout).unwrap().trim());
+    assert_eq!(
+        saw["env"]["PATH"],
+        json!(format!(
+            "/usr/bin:/bin:/usr/sbin:/sbin:{}:{}",
+            agents.parent().unwrap().display(),
+            node.parent().unwrap().display()
+        ))
+    );
+    // What it started ended with it.
+    let pids = std::fs::read_to_string(dir.join("login-pids")).unwrap();
+    for pid in pids.split_whitespace() {
+        let pid: i32 = pid.parse().unwrap();
+        within(5, "the login's processes ended", || {
+            (!alive(pid)).then_some(())
+        });
+    }
+
+    // Nothing the login printed, nor the code, came back or reached obid's log.
+    for text in [&started.text, &wrong.text, &signed.text, &obid.log()] {
+        assert!(!text.contains(SECRET), "the login's output leaked: {text}");
+        assert!(!text.contains("good-code"), "the code leaked: {text}");
+        assert!(!text.contains("Request failed"), "{text}");
+    }
+
+    // Removing the account ends a sign-in under way.
+    let again = call(&obid, "GET", &target, None);
+    assert_eq!(again.status, 200, "{}", again.text);
+    let removed = call(&obid, "DELETE", &format!("/v1/accounts/{id}"), None);
+    assert_eq!(removed.status, 204, "{}", removed.text);
+    assert_eq!(call(&obid, "GET", &target, None).status, 404);
+}
+
+/// A sign-in the person walked away from can be ended (`DELETE …/sign-in`): the account takes jobs
+/// again at once, not after 15 minutes.
+#[test]
+fn an_abandoned_sign_in_can_be_ended() {
+    let folder = Folder::new("accounts-abandon");
+    let config = accounts_config(&folder.0);
+    let obid = start(&folder.0, &config, None);
+    let added = add(&obid, json!({"agent": "claude", "name": "Personal"}));
+    let id = added.body["id"].as_str().unwrap().to_owned();
+    let target = format!("/v1/accounts/{id}/sign-in");
+    assert_eq!(call(&obid, "GET", &target, None).status, 200);
+    let pids = obid.home.join("accounts").join(&id).join("login-pids");
+    let pids = within(5, "the login said its pids", || {
+        std::fs::read_to_string(&pids).ok()
+    });
+    let ended = call(&obid, "DELETE", &target, None);
+    assert_eq!(ended.status, 204, "{}", ended.text);
+    for pid in pids.split_whitespace() {
+        let pid: i32 = pid.parse().unwrap();
+        within(5, "the login ended", || (!alive(pid)).then_some(()));
+    }
+    // Nothing under way: ending it again is fine, and the code has nowhere to go.
+    assert_eq!(call(&obid, "DELETE", &target, None).status, 204);
+    assert_eq!(
+        call(
+            &obid,
+            "POST",
+            &target,
+            Some(&json!({"code": "good-code#fake"}))
+        )
+        .status,
+        409
+    );
+    assert_eq!(
+        call(&obid, "DELETE", "/v1/accounts/nobody/sign-in", None).status,
+        404
+    );
+    // A new one starts.
+    assert_eq!(call(&obid, "GET", &target, None).status, 200);
+}
+
+/// A login file (or its lock) that is a link, or not the person's, in an account's folder is never
+/// signed in through: the tool's login would write the new sign-in wherever the link leads.
+#[test]
+fn a_login_file_that_is_a_link_is_never_signed_in_through() {
+    let folder = Folder::new("accounts-link");
+    let config = accounts_config(&folder.0);
+    let obid = start(&folder.0, &config, None);
+    let added = add(&obid, json!({"agent": "codex", "name": "Work"}));
+    let id = added.body["id"].as_str().unwrap().to_owned();
+    let dir = obid.home.join("accounts").join(&id);
+    std::fs::write(folder.0.join("elsewhere.json"), "{}").unwrap();
+    std::os::unix::fs::symlink(folder.0.join("elsewhere.json"), dir.join("auth.json")).unwrap();
+    let refused = call(&obid, "GET", &format!("/v1/accounts/{id}/sign-in"), None);
+    assert_eq!(refused.status, 409, "{}", refused.text);
+    assert!(refused.text.contains("auth.json"), "{}", refused.text);
+    assert_eq!(
+        std::fs::read_to_string(folder.0.join("elsewhere.json")).unwrap(),
+        "{}"
+    );
+}
+
+/// obid stopping ends a sign-in's login with everything it started.
+#[test]
+fn a_sign_in_ends_with_obid() {
+    let folder = Folder::new("accounts-stop");
+    let config = accounts_config(&folder.0);
+    let mut obid = start(&folder.0, &config, None);
+    let added = add(&obid, json!({"agent": "claude", "name": "Personal"}));
+    let id = added.body["id"].as_str().unwrap().to_owned();
+    let started = call(&obid, "GET", &format!("/v1/accounts/{id}/sign-in"), None);
+    assert_eq!(started.status, 200, "{}", started.text);
+    let pids = obid.home.join("accounts").join(&id).join("login-pids");
+    let pids = within(5, "the login said its pids", || {
+        std::fs::read_to_string(&pids).ok()
+    });
+    assert!(obid.stop().success());
+    for pid in pids.split_whitespace() {
+        let pid: i32 = pid.parse().unwrap();
+        within(5, "the login's processes ended with obid", || {
+            (!alive(pid)).then_some(())
+        });
+    }
+}
+
+/// Codex's device login and Cursor's, in the account's folder: obid gives the link (and Codex's
+/// one-time code); each ends by itself once the person signed in in their browser.
+#[test]
+fn codex_and_cursor_sign_in_with_their_own_logins() {
+    let folder = Folder::new("accounts-codex");
+    let config = accounts_config(&folder.0);
+    let obid = start(&folder.0, &config, None);
+    let events = follow_events(&obid);
+
+    let codex = add(&obid, json!({"agent": "codex", "name": "Work"}));
+    let codex_id = codex.body["id"].as_str().unwrap().to_owned();
+    let dir = obid.home.join("accounts").join(&codex_id);
+    let started = call(
+        &obid,
+        "GET",
+        &format!("/v1/accounts/{codex_id}/sign-in"),
+        None,
+    );
+    assert_eq!(started.status, 200, "{}", started.text);
+    assert_eq!(started.body["url"], "https://auth.openai.com/codex/device");
+    assert_eq!(started.body["userCode"], "ABCD-EFGHI");
+    assert_eq!(started.body["pasteCode"], false);
+    // Codex takes no code back.
+    let pasted = call(
+        &obid,
+        "POST",
+        &format!("/v1/accounts/{codex_id}/sign-in"),
+        Some(&json!({"code": "ABCD-EFGHI"})),
+    );
+    assert_eq!(pasted.status, 409, "{}", pasted.text);
+    events_named(&events, "accounts", 15, |got| {
+        got.iter().any(|list| {
+            list.as_array()
+                .unwrap()
+                .iter()
+                .any(|a| a["id"] == codex_id && a["signedIn"] == true)
+        })
+    });
+    // Codex wrote its login in the account's folder itself.
+    let saw: Value =
+        serde_json::from_slice(&std::fs::read(dir.join("auth.json")).unwrap()).unwrap();
+    assert_eq!(saw["saw"]["env"]["CODEX_HOME"], json!(dir));
+    assert_eq!(saw["saw"]["env"]["HOME"], json!(dir));
+
+    let cursor = add(&obid, json!({"agent": "cursor", "name": "Cursor"}));
+    let cursor_id = cursor.body["id"].as_str().unwrap().to_owned();
+    let dir = obid.home.join("accounts").join(&cursor_id);
+    let started_cursor = call(
+        &obid,
+        "GET",
+        &format!("/v1/accounts/{cursor_id}/sign-in"),
+        None,
+    );
+    assert_eq!(started_cursor.status, 200, "{}", started_cursor.text);
+    assert_eq!(
+        started_cursor.body["url"],
+        "https://cursor.com/loginDeepControl?challenge=fake&mode=login"
+    );
+    assert_eq!(started_cursor.body["userCode"], Value::Null);
+    assert_eq!(started_cursor.body["pasteCode"], false);
+    let login = dir.join(if cfg!(target_os = "macos") {
+        ".cursor/auth.json"
+    } else {
+        ".config/cursor/auth.json"
+    });
+    within(15, "Cursor's login was written", || {
+        login.is_file().then_some(())
+    });
+    let saw: Value = serde_json::from_slice(&std::fs::read(&login).unwrap()).unwrap();
+    let env = &saw["saw"]["env"];
+    assert_eq!(env["CURSOR_CONFIG_DIR"], json!(dir));
+    assert_eq!(env["HOME"], json!(dir));
+    assert_eq!(env["AGENT_CLI_CREDENTIAL_STORE"], "file");
+    // Its caches are in obid's own folder for the sign-in, never the account's.
+    for cache in ["NODE_COMPILE_CACHE", "XDG_CACHE_HOME"] {
+        let path = PathBuf::from(env[cache].as_str().unwrap());
+        assert!(path.starts_with(obid.home.join("tmp")), "{cache}={path:?}");
+    }
+
+    std::thread::sleep(Duration::from_millis(200));
+    for text in [&started.text, &started_cursor.text, &obid.log()] {
+        assert!(!text.contains(SECRET), "the login's output leaked: {text}");
+    }
+}
+
+/// The tool's own default login (no folder of its own) is the person's: obid never runs a login
+/// over it.
+#[test]
+fn the_default_login_is_never_signed_in_by_obid() {
+    let folder = Folder::new("accounts-default");
+    let mut config = accounts_config(&folder.0);
+    config["agents"]["claude"]["accounts"] =
+        json!([{"id": "default", "name": "Default", "configDir": null}]);
+    let obid = start(&folder.0, &config, None);
+    let refused = call(&obid, "GET", "/v1/accounts/default/sign-in", None);
+    assert_eq!(refused.status, 409, "{}", refused.text);
+    assert!(
+        refused.body["error"]
+            .as_str()
+            .unwrap()
+            .contains("own login")
+    );
+}
+
+/// Removing a tool's own login isn't for good: `{"agent", "default": true}` lists it again, as it
+/// was. Only once removed: Cursor's own login, never listed here, doesn't come back.
+#[test]
+fn a_removed_default_login_comes_back() {
+    let folder = Folder::new("accounts-restore");
+    let obid = start(&folder.0, &accounts_config(&folder.0), None);
+    let lab = add(&obid, json!({"agent": "codex", "name": "Lab"}));
+    assert_eq!(lab.status, 201, "{}", lab.text);
+    assert!(account(&obid, "codex").is_some(), "{:?}", accounts(&obid));
+    let early = add(&obid, json!({"agent": "codex", "default": true}));
+    assert_eq!(early.status, 409, "{}", early.text);
+    assert_eq!(
+        call(&obid, "DELETE", "/v1/accounts/codex", None).status,
+        204
+    );
+    assert!(account(&obid, "codex").is_none());
+    for bad in [
+        json!({"agent": "codex", "default": false}),
+        json!({"agent": "codex", "default": true, "name": "X"}),
+    ] {
+        assert_eq!(add(&obid, bad).status, 422);
+    }
+    assert_eq!(
+        add(&obid, json!({"agent": "cursor", "default": true})).status,
+        409
+    );
+    let back = add(&obid, json!({"agent": "codex", "default": true}));
+    assert_eq!(back.status, 201, "{}", back.text);
+    assert_eq!(back.body["id"], "codex");
+    assert!(account(&obid, "codex").is_some(), "{:?}", accounts(&obid));
+    assert!(account(&obid, lab.body["id"].as_str().unwrap()).is_some());
+}
+
+/// A `default` the configuration gives a folder of its own isn't the tool's own login: removed,
+/// it stays removed.
+#[test]
+fn a_configured_default_with_a_folder_doesnt_come_back() {
+    let folder = Folder::new("accounts-restore-folder");
+    let mut config = accounts_config(&folder.0);
+    let dir = folder.0.join("claude-default");
+    std::fs::create_dir_all(&dir).unwrap();
+    let stub = config["agents"]["claude"]["accounts"][0].clone();
+    config["agents"]["claude"]["accounts"] =
+        json!([{"id": "default", "name": "Default", "configDir": dir}, stub]);
+    let obid = start(&folder.0, &config, None);
+    assert_eq!(
+        call(&obid, "DELETE", "/v1/accounts/default", None).status,
+        204
+    );
+    let refused = add(&obid, json!({"agent": "claude", "default": true}));
+    assert_eq!(refused.status, 409, "{}", refused.text);
+    assert!(
+        refused.text.contains("folder of its own"),
+        "{}",
+        refused.text
+    );
+    assert!(account(&obid, "default").is_none());
+}
+
+/// A fresh sign-in may be another kind of login: obid forgets how the account paid (`priced`, kept
+/// with its usage), so its next Codex job asks again; its windows stay.
+#[test]
+fn a_new_sign_in_forgets_how_the_account_paid() {
+    let folder = Folder::new("accounts-priced");
+    let config = accounts_config(&folder.0);
+    let mut obid = start(&folder.0, &config, None);
+    let id = add(&obid, json!({"agent": "codex", "name": "Work"})).body["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    obid.stop();
+    let usage = folder.0.join("home/usage.json");
+    std::fs::write(
+        &usage,
+        json!({&id: {"fiveHour": 0.3, "priced": "plan"}}).to_string(),
+    )
+    .unwrap();
+    let obid = start(&folder.0, &config, None);
+    assert_eq!(account(&obid, &id).unwrap()["fiveHour"], 0.3);
+    let started = call(&obid, "GET", &format!("/v1/accounts/{id}/sign-in"), None);
+    assert_eq!(started.status, 200, "{}", started.text);
+    within(15, "the account signed in", || {
+        (account(&obid, &id)?["signedIn"] == true).then_some(())
+    });
+    // signedIn can show before the sign-in's own end forgets `priced`: wait for the file.
+    let kept = within(15, "the sign-in forgot how the account paid", || {
+        let kept: Value = serde_json::from_slice(&std::fs::read(&usage).ok()?).ok()?;
+        kept[&id]["priced"].is_null().then_some(kept)
+    });
+    assert_eq!(kept[&id]["fiveHour"], 0.3);
+}
+
+/// A stand-in claude its refresh can run with only the system's PATH (node by its path), outside
+/// the person's home a job's box hides.
+#[cfg(target_os = "macos")]
+fn system_claude(folder: &Path) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let bin = folder.join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    for name in ["fake-claude", "fake-login.mjs"] {
+        std::fs::copy(agent(name), bin.join(name)).unwrap();
+    }
+    let node = std::process::Command::new("sh")
+        .args(["-c", "command -v node"])
+        .output()
+        .unwrap();
+    let node = String::from_utf8(node.stdout).unwrap();
+    let claude = bin.join("claude");
+    std::fs::write(
+        &claude,
+        format!(
+            "#!/bin/sh\nexec '{}' '{}' \"$@\"\n",
+            node.trim(),
+            bin.join("fake-claude").display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&claude, std::fs::Permissions::from_mode(0o755)).unwrap();
+    claude
+}
+
+/// A Claude Code account obid adds, its Keychain item (where the stand-in `security` finds it)
+/// holding a login whose token ends `seconds` from now (before now, when negative): its id and
+/// the item's file.
+#[cfg(target_os = "macos")]
+fn added_keychain_login(folder: &Path, obid: &Obid, seconds: i64) -> (String, PathBuf) {
+    let added = add(obid, json!({"agent": "claude", "name": "Second"}));
+    assert_eq!(added.status, 201, "{}", added.text);
+    let id = added.body["id"].as_str().unwrap().to_owned();
+    let dir = obid.home.join("accounts").join(&id);
+    let digest = obi_protocol::keys::sha256(dir.as_os_str().as_encoded_bytes());
+    let item = folder.join(format!(
+        "tmp/obid-test-keychain/Claude Code-credentials-{}",
+        &hex::encode(digest)[..8]
+    ));
+    std::fs::create_dir_all(item.parent().unwrap()).unwrap();
+    let ends = (obi_protocol::time::now() + seconds) * 1000;
+    // Put together here, so this file holds no value a secret scan takes for a credential.
+    let refresh = ["refresh", "plain", "test", "value"].join("-");
+    let login = json!({"claudeAiOauth": {"accessToken": "tok-old-plain-test-login",
+                                         "refreshToken": refresh, "expiresAt": ends}});
+    std::fs::write(&item, login.to_string()).unwrap();
+    assert_eq!(account(obid, &id).unwrap()["signedIn"], true);
+    (id, item)
+}
+
+/// A Claude Code account obid added stays signed in (#877): with its token near its end, the
+/// Mac's own Claude Code refreshes the account's own Keychain item before a job's run (the
+/// stand-in `security` finds the items a test puts in `$TMPDIR/obid-test-keychain`), and the job
+/// runs on the renewed login, in a copy of its own.
+#[cfg(target_os = "macos")]
+#[test]
+fn an_added_claude_accounts_login_is_kept_fresh() {
+    let folder = Folder::new("added-fresh");
+    let remote = fixture(&folder.0.join("fixture"));
+    let mut config = config(&folder.0, &remote, &system_claude(&folder.0));
+    config["claudeKeychain"] = json!(true);
+    let obid = start(&folder.0, &config, None);
+    let (_, item) = added_keychain_login(&folder.0, &obid, 60);
+
+    let job = call(
+        &obid,
+        "POST",
+        "/v1/jobs",
+        Some(
+            &json!({"job": {"repo": "obi-e2e/fixture-app", "kind": "research",
+                     "task": "TOKEN HOLDS: renewed REFRESH KEPT", "account": "Second"}}),
+        ),
+    );
+    assert_eq!(job.status, 201, "{}", job.text);
+    let job_id = job.body["id"].as_str().unwrap().to_owned();
+    let ended = within(60, "the job ended", || {
+        let job = call(&obid, "GET", &format!("/v1/jobs/{job_id}"), None).body;
+        (job["status"] != "queued" && job["status"] != "running").then_some(job)
+    });
+    assert_eq!(ended["status"], "done", "{ended}");
+    // The copy carries only what calls the API: never the item's refresh token.
+    assert_eq!(ended["summary"], "holds=true refresh=none", "{ended}");
+    assert!(
+        std::fs::read_to_string(&item).unwrap().contains("renewed"),
+        "the Mac's own Claude Code refreshed the account's item"
+    );
+}
+
+/// USAGE-2: a Mac whose Claude Code login in the Keychain ended days ago (the person runs Claude
+/// Code from elsewhere) shows the account's usage before any task: the read has the Mac's own
+/// Claude Code refresh it first, with its own `/usage`, which asks no model, then reads boxed.
+#[cfg(target_os = "macos")]
+#[test]
+fn usage_2_an_ended_keychain_login_is_refreshed_free_then_read() {
+    let folder = Folder::new("usage-ended");
+    let remote = folder.0.join("remote.git");
+    let mut config = config(&folder.0, &remote, &system_claude(&folder.0));
+    config["claudeKeychain"] = json!(true);
+    let obid = start_with(&folder.0, &config, None, &[("OBID_USAGE_READS", "on")]);
+    let (id, item) = added_keychain_login(&folder.0, &obid, -3 * 86_400);
+    let read = within(30, "the account's usage", || {
+        account(&obid, &id).filter(|a| !a["sevenDay"].is_null())
+    });
+    assert_eq!(
+        (&read["fiveHour"], &read["sevenDay"]),
+        (&json!(0.33), &json!(0.44))
+    );
+    assert!(std::fs::read_to_string(&item).unwrap().contains("renewed"));
+    // The refresh was Claude Code's own `/usage`, never a prompt to a model.
+    let asked = std::fs::read_to_string(folder.0.join("tmp/obid-test-refreshes")).unwrap();
+    assert!(asked.lines().all(|line| line == "/usage"), "{asked}");
+}
+
+/// USAGE-1: an app's look (`GET /v1/status`) asks each signed-in Claude Code account's usage of Claude
+/// Code's own `/usage` (the stand-in's), which reaches the Account; the read's folder, with its
+/// login copy, is gone after. With `OBID_USAGE_READS=off`, nothing is read.
+#[test]
+fn usage_1_an_apps_look_reads_each_accounts_usage() {
+    for on in [true, false] {
+        let folder = Folder::new(if on { "usage-read" } else { "usage-off" });
+        let mut config = config(
+            &folder.0,
+            &folder.0.join("remote.git"),
+            &agent("fake-claude"),
+        );
+        config["claudeKeychain"] = json!(false);
+        let stub = folder.0.join("home/accounts/stub");
+        std::fs::create_dir_all(&stub).unwrap();
+        let ends = (obi_protocol::time::now() + 10 * 86_400) * 1000;
+        let login = json!({"claudeAiOauth": {"accessToken": "tok-stub-plain-test-login", "expiresAt": ends}});
+        std::fs::write(stub.join(".credentials.json"), login.to_string()).unwrap();
+        let reads = if on { "on" } else { "off" };
+        let obid = start_with(&folder.0, &config, None, &[("OBID_USAGE_READS", reads)]);
+        let stub = || account(&obid, "stub").unwrap();
+        if on {
+            let read = within(20, "the account's usage", || {
+                Some(stub()).filter(|a| !a["sevenDay"].is_null())
+            });
+            assert_eq!(
+                (&read["fiveHour"], &read["sevenDay"]),
+                (&json!(0.33), &json!(0.44))
+            );
+            assert!(read["sevenDayResets"].is_string(), "{read}");
+            assert!(read["fullUntil"].is_null(), "{read}");
+        } else {
+            std::thread::sleep(Duration::from_secs(3));
+            assert!(stub()["sevenDay"].is_null());
+        }
+        let plans = folder.0.join("home/plans");
+        within(5, "the read's folder removed", || {
+            plans
+                .read_dir()
+                .map_or(true, |mut d| d.next().is_none())
+                .then_some(())
+        });
+    }
+}
+
+/// USAGE-3, USAGE-4, USAGE-5: a read never uses a Claude Code login copy obid may not refresh
+/// within 10 minutes of its end. An account whose
+/// Claude Code asked a model for `/usage` isn't asked again until obid restarts; one that answered
+/// with no usage, or failed (offline), is asked again once the interval passed.
+#[test]
+fn usage_3_4_5_usage_reads_retry_but_never_after_a_model_ran() {
+    let folder = Folder::new("usage-retry");
+    let mut config = config(
+        &folder.0,
+        &folder.0.join("remote.git"),
+        &agent("fake-claude"),
+    );
+    config["claudeKeychain"] = json!(false);
+    let mut list = Vec::new();
+    for (id, minutes) in [
+        ("ending", 7),
+        ("asks-model", 600),
+        ("silent", 600),
+        ("offline", 600),
+    ] {
+        let dir = folder.0.join("home/accounts").join(id);
+        std::fs::create_dir_all(&dir).unwrap();
+        let ends = (obi_protocol::time::now() + minutes * 60) * 1000;
+        let login = json!({"claudeAiOauth": {"accessToken": format!("tok-{id}-plain-test-login"), "expiresAt": ends}});
+        std::fs::write(dir.join(".credentials.json"), login.to_string()).unwrap();
+        list.push(json!({"id": id, "name": id, "configDir": dir}));
+    }
+    config["agents"]["claude"]["accounts"] = json!(list);
+    let env = [
+        ("OBID_USAGE_READS", "on"),
+        ("OBID_USAGE_EVERY_SECONDS", "1"),
+    ];
+    let obid = start_with(&folder.0, &config, None, &env);
+    let said = |what: &str| obid.log().matches(what).count();
+    let failed = "account offline: usage not read: Claude Code's /usage failed: fetch failed";
+    // Two passes, a second apart; `offline` is read last in each.
+    for pass in 1..=2 {
+        accounts(&obid);
+        within(20, "a pass of reads", || {
+            (said(failed) >= pass).then_some(())
+        });
+        std::thread::sleep(Duration::from_millis(1100));
+    }
+    assert_eq!(said("account asks-model: /usage asked a model"), 1);
+    assert_eq!(said("account silent reports no usage"), 2);
+    assert_eq!(said(failed), 2);
+    assert_eq!(
+        said("account ending: usage not read: its login ends within 10 minutes"),
+        2
+    );
+    for id in ["ending", "asks-model", "silent", "offline"] {
+        assert!(account(&obid, id).unwrap()["sevenDay"].is_null(), "{id}");
+    }
+}

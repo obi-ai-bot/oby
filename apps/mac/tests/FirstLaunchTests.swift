@@ -1,0 +1,132 @@
+import Foundation
+import Testing
+@testable import Oby
+
+/// First launch on obid (#893, docs/onboarding.md): the agents step lists obid's accounts and
+/// connects a tool only when it's installed and signed out, the logins already on the Mac are
+/// listed without a click, GitHub's step counts the repositories, Home gets a first task, and a new
+/// install starts on This Mac (#894).
+@MainActor
+struct FirstLaunchTests {
+    func account(_ id: String, _ agent: String, _ name: String, signedIn: Bool) -> AccountState {
+        AccountState(account: Account(id: id, agent: agent, name: name, payer: "", home: nil), label: nil, runnerSignedIn: signedIn)
+    }
+
+    @Test func onObidTheAgentsStepListsObidsAccounts() {
+        let accounts = [account("default", "claude", "Personal", signedIn: true), account("a1b2c3d4", "claude", "Work", signedIn: true),
+                        account("codex", "codex", "Codex", signedIn: true)]
+        #expect(FirstLaunchSteps.agent("claude", installed: true, engine: true, accounts: accounts) == .connected(["Personal", "Work"]))
+        #expect(FirstLaunchSteps.agent("codex", installed: true, engine: true, accounts: accounts) == .connected(["Codex"]))
+        // obid runs a login it has even where the Mac's PATH has no such tool.
+        #expect(FirstLaunchSteps.agent("codex", installed: false, engine: true, accounts: accounts) == .connected(["Codex"]))
+    }
+
+    @Test func connectIsOnlyForAToolThatsInstalledAndSignedOut() {
+        let out = account("e5f6a7b8", "cursor", "Personal", signedIn: false)
+        #expect(FirstLaunchSteps.agent("codex", installed: true, engine: true, accounts: []) == .connect)
+        #expect(FirstLaunchSteps.agent("codex", installed: false, engine: true, accounts: []) == .missing)
+        #expect(FirstLaunchSteps.agent("cursor", installed: true, engine: true, accounts: [out]) == .signIn(out.account))
+        #expect(FirstLaunchSteps.agent("cursor", installed: true, cursorHasACP: false, engine: true, accounts: []) == .outdated)
+    }
+
+    /// Someone updating from the first launch before obid's sees only what's still to do, once.
+    @Test func anUpdateStartsAtTheFirstStepStillToDo() {
+        let signedIn = [account("default", "claude", "Personal", signedIn: true)]
+        #expect(FirstLaunchSteps.firstToDo(accessibility: false, accounts: signedIn, gitHub: true) == .talk)
+        #expect(FirstLaunchSteps.firstToDo(accessibility: true, accounts: [account("default", "claude", "Personal", signedIn: false)],
+                                           gitHub: true) == .agents)
+        #expect(FirstLaunchSteps.firstToDo(accessibility: true, accounts: signedIn, gitHub: false) == .github)
+        #expect(FirstLaunchSteps.firstToDo(accessibility: true, accounts: signedIn, gitHub: true) == nil)
+        #expect(FirstLaunch.doneKey != FirstLaunch.olderDoneKey)
+    }
+
+    @Test func theStepWaitsUntilObidAnswers() {
+        #expect(FirstLaunchSteps.agent("claude", installed: true, engine: false, accounts: []) == .waiting)
+        #expect(FirstLaunchSteps.agent("claude", installed: true, engine: false,
+                                       accounts: [account("default", "claude", "Personal", signedIn: true)]) == .waiting)
+        #expect(FirstLaunchSteps.agent("claude", installed: false, engine: false, accounts: []) == .missing)
+    }
+
+    /// obid's `availableLogins`, for tools it has no account for: routing never moves to a login
+    /// the owner didn't pick.
+    @Test func loginsAlreadyOnTheMacAreListedOnlyForToolsWithNoAccount() throws {
+        let json = #"{"runner": {"version": "0.4.0", "host": "studio"}, "accounts": [], "models": {"claude": {"model": "claude-opus-5-5", "effort": "xhigh"}, "codex": {"model": "gpt-6.1-sol", "effort": "high"}}, "availableLogins": [{"agent": "codex", "id": "codex", "name": "Codex"}, {"agent": "cursor", "id": "cursor", "name": "Cursor"}]}"#
+        let found = try #require(try Runner.decoder.decode(RunnerStatus.self, from: Data(json.utf8)).availableLogins)
+        #expect(FirstLaunchSteps.adopt(found, accounts: []) == ["codex", "cursor"])
+        #expect(FirstLaunchSteps.adopt(found, accounts: [account("e5f6a7b8", "cursor", "Work", signedIn: false)]) == ["codex"])
+        let older = #"{"runner": {"version": "0.3.0", "host": "studio"}, "accounts": [], "models": {"claude": {"model": "claude-opus-5-5", "effort": "xhigh"}, "codex": {"model": "gpt-6.1-sol", "effort": "high"}}}"#
+        #expect(try Runner.decoder.decode(RunnerStatus.self, from: Data(older.utf8)).availableLogins == nil)
+    }
+
+    /// While obid doesn't answer, the steps that need it say why when the login item can't start it.
+    @Test func theStepsSayWhyTheEngineDoesntAnswer() {
+        #expect(FirstLaunchSteps.waiting(inApplications: false, needsApproval: true, problem: nil) == RunnerLoginItem.moveToApplications)
+        #expect(FirstLaunchSteps.waiting(inApplications: true, needsApproval: true, problem: "x").contains("Login Items"))
+        #expect(FirstLaunchSteps.waiting(inApplications: true, needsApproval: false, problem: "It failed.") == "Oby’s engine couldn’t start: It failed.")
+        #expect(FirstLaunchSteps.waiting(inApplications: true, needsApproval: false, problem: nil) == "Waiting for Oby’s engine on this Mac…")
+        // obid's own reason comes first, then what the feed's last try got.
+        #expect(FirstLaunchSteps.waiting(inApplications: true, needsApproval: false, problem: nil,
+                                         startError: "unknown field `telemetri`", offline: "Could not connect to the server.")
+                == "Oby’s engine couldn’t start: unknown field `telemetri`")
+        #expect(FirstLaunchSteps.waiting(inApplications: true, needsApproval: false, problem: nil,
+                                         offline: "Could not connect to the server.")
+                == "Oby’s engine isn’t answering: Could not connect to the server.")
+        #expect(FirstLaunchSteps.offline(.offline("x")) == "x")
+        #expect(FirstLaunchSteps.offline(.live) == nil)
+    }
+
+    @Test func gitHubsStepCountsTheRepositoriesAndHomeGetsAFirstTask() throws {
+        let json = #"{"repos": [{"repo": "deskree-inc/oby", "defaultBranch": "dev", "listed": true}, {"repo": "octo-cat/app", "defaultBranch": "main", "listed": false}]}"#
+        struct Answer: Decodable { var repos: [RunnerRepo] }
+        let repos = try JSONDecoder().decode(Answer.self, from: Data(json.utf8)).repos
+        #expect(FirstLaunchSteps.ready(repos) == "2 repositories ready")
+        #expect(FirstLaunchSteps.ready(Array(repos.prefix(1))) == "1 repository ready")
+        #expect(FirstLaunchSteps.suggestion(repos) == "Find a small bug in oby and fix it")
+        #expect(FirstLaunchSteps.suggestion([]) == nil)
+        // A login that can push to none says so once obid has had time to read GitHub.
+        let since = Date.now
+        #expect(FirstLaunchSteps.shown([], signedInSince: since, now: since + 5) == nil)
+        #expect(FirstLaunchSteps.shown([], signedInSince: since, now: since + FirstLaunchSteps.finding) == [])
+        #expect(FirstLaunchSteps.shown(repos, signedInSince: since, now: since) == repos)
+        #expect(FirstLaunchSteps.ready([]) == "No repositories yet")
+    }
+
+    func defaults() throws -> UserDefaults {
+        try #require(UserDefaults(suiteName: "oby-first-launch-\(UUID().uuidString)"))
+    }
+
+    @Test func thisMacIsTheDefaultOnAFreshInstall() throws {
+        let defaults = try defaults()
+        RunnerFeed.settleThisMac(defaults)
+        #expect(defaults.object(forKey: RunnerFeed.thisMacKey) as? Bool == true)
+    }
+
+    @Test func anInstallFollowingARemoteRunnerKeepsIt() throws {
+        let defaults = try defaults()
+        defaults.set("http://tetrix-lab:8790", forKey: "runnerURL")
+        RunnerFeed.settleThisMac(defaults)
+        #expect(defaults.object(forKey: RunnerFeed.thisMacKey) as? Bool == false)
+    }
+
+    @Test func aChoiceMadeWithARemoteRunnerIsKept() throws {
+        let remote = try defaults()
+        remote.set(false, forKey: RunnerFeed.thisMacKey)
+        remote.set("http://tetrix-lab:8790", forKey: "runnerURL")
+        RunnerFeed.settleThisMac(remote)
+        #expect(remote.object(forKey: RunnerFeed.thisMacKey) as? Bool == false)
+        let here = try defaults()
+        here.set(true, forKey: RunnerFeed.thisMacKey)
+        here.set("http://tetrix-lab:8790", forKey: "runnerURL")
+        RunnerFeed.settleThisMac(here)
+        #expect(here.object(forKey: RunnerFeed.thisMacKey) as? Bool == true)
+    }
+
+    /// This Mac off with no runner to follow is no engine at all since the app runs none (#895): on.
+    @Test func thisMacOffWithNoRunnerTurnsOn() throws {
+        let off = try defaults()
+        off.set(false, forKey: RunnerFeed.thisMacKey)
+        off.set("  ", forKey: "runnerURL")
+        RunnerFeed.settleThisMac(off)
+        #expect(off.object(forKey: RunnerFeed.thisMacKey) as? Bool == true)
+    }
+}

@@ -1,0 +1,567 @@
+//! obid's own git: its clones (`home/clones/<owner>/<name>`, whose push URL is invalid, so nothing
+//! an agent runs can push) and the jobs' worktrees (`home/worktrees/<job id>`). This git runs
+//! outside any sandbox, so it never runs a hook or an fsmonitor, whatever a worktree or another
+//! Obi's branch holds, and it never asks for a password.
+
+use std::ffi::OsStr;
+use std::path::{Path, PathBuf};
+use std::time::Duration;
+
+use tokio::process::Command;
+
+/// The push URL every clone gets: git refuses it, so no push leaves from a clone (AGENTS.md,
+/// "Agents can't publish").
+pub const NO_PUSH_URL: &str = "obid-agents-cannot-push:///";
+
+/// How long one git command may take before obid gives up on it.
+const GIT_TIMEOUT: Duration = Duration::from_secs(600);
+
+#[derive(Debug, thiserror::Error)]
+#[error("{0}")]
+pub struct GitError(pub String);
+
+/// The settings every git call of obid's carries.
+const SAFE: &[&str] = &[
+    "-c",
+    "core.hooksPath=/dev/null",
+    "-c",
+    "core.fsmonitor=false",
+    "-c",
+    "credential.interactive=never",
+    "-c",
+    "protocol.ext.allow=never",
+];
+
+/// Runs git with `args` in `dir`; its stdout, trimmed, or why it failed.
+pub async fn run(dir: &Path, args: &[&OsStr], extra: &[(&str, &str)]) -> Result<String, GitError> {
+    let output = run_bytes(dir, args, extra, None).await?;
+    Ok(String::from_utf8_lossy(&output).trim().to_owned())
+}
+
+/// [`run`] with `input` on git's stdin (none: `/dev/null`), answering its stdout as it is.
+pub async fn run_bytes(
+    dir: &Path,
+    args: &[&OsStr],
+    extra: &[(&str, &str)],
+    input: Option<Vec<u8>>,
+) -> Result<Vec<u8>, GitError> {
+    use tokio::io::AsyncWriteExt;
+    let mut command = Command::new("git");
+    command
+        .current_dir(dir)
+        .args(SAFE)
+        .args(args)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_OPTIONAL_LOCKS", "0")
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_INDEX_FILE")
+        .env_remove("GIT_COMMON_DIR")
+        .env_remove("GIT_OBJECT_DIRECTORY")
+        .env_remove("GIT_ALTERNATE_OBJECT_DIRECTORIES")
+        .stdin(if input.is_some() {
+            std::process::Stdio::piped()
+        } else {
+            std::process::Stdio::null()
+        })
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true);
+    for (key, value) in extra {
+        command.env(key, value);
+    }
+    let shown = args
+        .iter()
+        .map(|a| a.to_string_lossy())
+        .collect::<Vec<_>>()
+        .join(" ");
+    let mut child = command
+        .spawn()
+        .map_err(|e| GitError(format!("git can't run: {e}")))?;
+    if let (Some(input), Some(mut stdin)) = (input, child.stdin.take()) {
+        // Written alongside the read, so a large input and a large output never wait on each other.
+        tokio::spawn(async move {
+            let _ = stdin.write_all(&input).await;
+        });
+    }
+    let output = tokio::time::timeout(GIT_TIMEOUT, child.wait_with_output())
+        .await
+        .map_err(|_| {
+            GitError(format!(
+                "git {shown} took more than {} seconds",
+                GIT_TIMEOUT.as_secs()
+            ))
+        })?
+        .map_err(|e| GitError(format!("git can't run: {e}")))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let line = stderr
+            .lines()
+            .rfind(|l| !l.trim().is_empty())
+            .unwrap_or("")
+            .trim()
+            .to_owned();
+        return Err(GitError(format!("git {shown} failed: {line}")));
+    }
+    Ok(output.stdout)
+}
+
+/// Indexes `pack` (what a job committed, packed in its sandbox) into the clone. `index-pack`
+/// computes every object's id from its content, and `--strict` refuses a broken object or one
+/// that names an object neither the pack nor the clone has, so nothing the job wrote lands under a
+/// false name or half there.
+pub async fn take_pack(clone: &Path, pack: Vec<u8>) -> Result<(), GitError> {
+    let args: Vec<&OsStr> = ["index-pack", "--stdin", "--strict"]
+        .iter()
+        .map(OsStr::new)
+        .collect();
+    run_bytes(clone, &args, &[], Some(pack)).await.map(|_| ())
+}
+
+/// Moves the clone's `refs/heads/<branch>` to `commit`, which the clone must have.
+pub async fn move_branch(clone: &Path, branch: &str, commit: &str) -> Result<(), GitError> {
+    if !is_branch_name(branch) || !is_sha(commit) {
+        return Err(GitError(format!(
+            "{branch} at {commit} isn't a branch and commit obid moves"
+        )));
+    }
+    if !has_commit(clone, commit).await {
+        return Err(GitError(format!(
+            "the clone doesn't have the commit {commit}"
+        )));
+    }
+    git(
+        clone,
+        &["update-ref", &format!("refs/heads/{branch}"), commit],
+    )
+    .await
+    .map(|_| ())
+}
+
+/// [`run`] with plain string arguments.
+pub async fn git(dir: &Path, args: &[&str]) -> Result<String, GitError> {
+    let args: Vec<&OsStr> = args.iter().map(OsStr::new).collect();
+    run(dir, &args, &[]).await
+}
+
+/// [`git`] in a job's worktree with its git folders given (`GIT_DIR`, `GIT_COMMON_DIR`,
+/// `GIT_WORK_TREE`, crate::jobs, `git_folders`), so git never reads the worktree's `.git` or the
+/// git folder's `commondir`, which the job's agent could have rewritten since obid checked them.
+pub async fn pinned(
+    dir: &Path,
+    folders: &[(&str, String)],
+    args: &[&str],
+) -> Result<String, GitError> {
+    let args: Vec<&OsStr> = args.iter().map(OsStr::new).collect();
+    let extra: Vec<(&str, &str)> = folders.iter().map(|(k, v)| (*k, v.as_str())).collect();
+    run(dir, &args, &extra).await
+}
+
+/// A git command of obid's in `dir` that doesn't wait on the runtime (`std::process`), with what
+/// [`run_bytes`] gives every call (the [`SAFE`] settings, no prompt, none of git's variables from
+/// obid's own environment) and `folders` pinning it to a job's git folders ([`pinned`]); with none,
+/// git finds them itself, as [`run`] does.
+pub fn command(dir: &Path, folders: &[(&str, String)]) -> std::process::Command {
+    let mut command = std::process::Command::new("git");
+    command
+        .current_dir(dir)
+        .args(SAFE)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_OPTIONAL_LOCKS", "0")
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_INDEX_FILE")
+        .env_remove("GIT_COMMON_DIR")
+        .env_remove("GIT_OBJECT_DIRECTORY")
+        .env_remove("GIT_ALTERNATE_OBJECT_DIRECTORIES")
+        .stdin(std::process::Stdio::null());
+    for (key, value) in folders {
+        command.env(key, value);
+    }
+    command
+}
+
+/// The clone of `repo` (`owner/name`) under `home`.
+pub fn clone_path(home: &Path, repo: &str) -> PathBuf {
+    let mut path = home.join("clones");
+    for part in repo.split('/') {
+        path.push(part);
+    }
+    path
+}
+
+/// Makes the clone of `repo` from `remote` if there is none, with its push URL invalid, then
+/// fetches `refspecs` from origin. Answers the clone's path.
+pub async fn ensure_clone(
+    home: &Path,
+    repo: &str,
+    remote: &str,
+    refspecs: &[String],
+) -> Result<PathBuf, GitError> {
+    let clone = clone_path(home, repo);
+    if !clone.join(".git").is_dir() {
+        let parent = clone.parent().expect("a clone has a parent");
+        std::fs::create_dir_all(parent)
+            .map_err(|e| GitError(format!("can't make {}: {e}", parent.display())))?;
+        let partial = parent.join(format!(
+            ".{}.cloning",
+            clone.file_name().unwrap_or_default().to_string_lossy()
+        ));
+        let _ = std::fs::remove_dir_all(&partial);
+        let signed = crate::publish::fetch_credentials(remote, crate::github::gh().as_deref());
+        run(parent, &clone_args(&signed, remote, &partial), &[]).await?;
+        git(&partial, &["config", "remote.origin.pushurl", NO_PUSH_URL]).await?;
+        // Only the default branch: what else the clone holds comes in by obid's own fetches,
+        // which say when it's someone else's ([`taint`]; crate::secretspec).
+        git(&partial, &["config", NARROW, "true"]).await?;
+        std::fs::rename(&partial, &clone)
+            .map_err(|e| GitError(format!("can't move the clone into place: {e}")))?;
+    } else {
+        // A clone made before is held to the same rules.
+        git(&clone, &["config", "remote.origin.url", remote]).await?;
+        git(&clone, &["config", "remote.origin.pushurl", NO_PUSH_URL]).await?;
+    }
+    // No automatic maintenance: after an agent's commit it packs refs into packed-refs, which the
+    // job sandbox doesn't let it write, and the agent spends a turn on the error.
+    git(&clone, &["config", "maintenance.auto", "false"]).await?;
+    git(&clone, &["config", "gc.auto", "0"]).await?;
+    // A job's worktree HEAD is its commits, whose objects stay in the job's own object folder
+    // until obid keeps them: a fetch here checks what it got against every worktree's HEAD too,
+    // and fails ("did not send all necessary objects") while another job holds commits (#628).
+    // Fetches leave the worktrees' HEADs out of that check, so it checks more, never less.
+    git(&clone, &["config", "fetch.hideRefs", "worktrees/"]).await?;
+    exclude_obi_folders(&clone)?;
+    if !refspecs.is_empty() {
+        fetch(&clone, remote, refspecs).await?;
+    }
+    Ok(clone)
+}
+
+/// The clone's setting that says obid made it with only the default branch (`git clone
+/// --single-branch`): a clone made before holds every branch of its remote, teammates' too.
+pub const NARROW: &str = "obid.narrow";
+/// The clone's setting that says obid fetched someone else's commits into it, and why.
+pub const FOREIGN: &str = "obid.foreign";
+
+/// Notes in `clone`'s own settings, which no job's sandbox can write, that obid fetched someone
+/// else's commits into it (`why`): from then on no check whose worktree reads it gets the owner's
+/// secrets (crate::secretspec). The first reason is kept.
+pub async fn taint(clone: &Path, why: &str) {
+    if git(clone, &["config", "--get", FOREIGN]).await.is_ok() {
+        return;
+    }
+    if let Err(e) = git(clone, &["config", FOREIGN, why]).await {
+        tracing::warn!(
+            "couldn't note that {} holds someone else's commits: {e}",
+            clone.display()
+        );
+    }
+}
+
+/// [`taint`], at once, from a caller that can't wait: `git config` run as it is.
+pub fn taint_now(clone: &Path, why: &str) {
+    let has = std::process::Command::new("git")
+        .args(["config", "--get", FOREIGN])
+        .current_dir(clone)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success());
+    if has {
+        return;
+    }
+    let set = std::process::Command::new("git")
+        .args(["config", FOREIGN, why])
+        .current_dir(clone)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+    if !set.is_ok_and(|s| s.success()) {
+        tracing::warn!(
+            "couldn't note that {} holds someone else's commits",
+            clone.display()
+        );
+    }
+}
+
+/// Why `clone` may hold someone else's commits, or none: it was made before clones held only
+/// their default branch, or obid fetched someone else's into it ([`taint`]).
+pub async fn foreign_in(clone: &Path) -> Option<String> {
+    if git(clone, &["config", "--get", NARROW])
+        .await
+        .ok()
+        .as_deref()
+        != Some("true")
+    {
+        return Some(
+            "obid's clone of the repository was made before clones held only their default branch, so teammates' branches are in it (move it aside, and obid makes it again)".into(),
+        );
+    }
+    git(clone, &["config", "--get", FOREIGN])
+        .await
+        .ok()
+        .map(|why| format!("obid's clone of the repository holds someone else's commits ({why})"))
+}
+
+/// `git clone` of `remote` into `partial`, after the credential settings `signed`
+/// ([`crate::publish::fetch_credentials`]).
+fn clone_args<'a>(signed: &'a [String], remote: &'a str, partial: &'a Path) -> Vec<&'a OsStr> {
+    let mut args: Vec<&OsStr> = signed.iter().map(OsStr::new).collect();
+    args.extend::<[&OsStr; 7]>([
+        "clone".as_ref(),
+        "--no-checkout".as_ref(),
+        "--single-branch".as_ref(),
+        "--quiet".as_ref(),
+        "--".as_ref(),
+        remote.as_ref(),
+        partial.as_os_str(),
+    ]);
+    args
+}
+
+/// `git fetch --quiet --no-tags --no-write-fetch-head origin <refspecs>` in `clone`, an `https`
+/// `remote` signed in with gh's login alone, as a clone is ([`crate::publish::fetch_credentials`]):
+/// a private repository fetches with nothing set up but gh's sign-in.
+pub async fn fetch(clone: &Path, remote: &str, refspecs: &[String]) -> Result<String, GitError> {
+    let signed = crate::publish::fetch_credentials(remote, crate::github::gh().as_deref());
+    git(clone, &fetch_args(&signed, refspecs)).await
+}
+
+/// `git fetch` of `refspecs` from origin, after the credential settings `signed`.
+pub(crate) fn fetch_args<'a>(signed: &'a [String], refspecs: &'a [String]) -> Vec<&'a str> {
+    let mut args: Vec<&str> = signed.iter().map(String::as_str).collect();
+    args.extend([
+        "fetch",
+        "--quiet",
+        "--no-tags",
+        "--no-write-fetch-head",
+        "origin",
+    ]);
+    args.extend(refspecs.iter().map(String::as_str));
+    args
+}
+
+/// `.obi/` (what obid hands an agent: quoted inputs and context) and `.oby/` (the Swift runner's)
+/// are never part of the work: excluded in the clone's `info/exclude`, which every worktree shares.
+pub fn exclude_obi_folders(clone: &Path) -> Result<(), GitError> {
+    let info = clone.join(".git").join("info");
+    std::fs::create_dir_all(&info)
+        .map_err(|e| GitError(format!("can't make {}: {e}", info.display())))?;
+    let exclude = info.join("exclude");
+    let text = std::fs::read_to_string(&exclude).unwrap_or_default();
+    let mut lines: Vec<&str> = text.lines().collect();
+    let mut changed = false;
+    for folder in ["/.obi/", "/.oby/"] {
+        if !lines.contains(&folder) {
+            lines.push(folder);
+            changed = true;
+        }
+    }
+    if changed {
+        let mut joined = lines.join("\n");
+        joined.push('\n');
+        std::fs::write(&exclude, joined)
+            .map_err(|e| GitError(format!("can't write {}: {e}", exclude.display())))?;
+    }
+    Ok(())
+}
+
+/// Whether `commit` is a commit the clone has.
+pub async fn has_commit(clone: &Path, commit: &str) -> bool {
+    git(clone, &["cat-file", "-e", &format!("{commit}^{{commit}}")])
+        .await
+        .is_ok()
+}
+
+/// The symbolic links `commit` holds (tree mode `120000`), as paths relative to its root.
+pub async fn committed_links(dir: &Path, commit: &str) -> Result<Vec<PathBuf>, GitError> {
+    use std::os::unix::ffi::OsStrExt;
+    let words = ["ls-tree", "-r", "-z", "--full-tree", commit];
+    let args: Vec<&OsStr> = words.iter().map(OsStr::new).collect();
+    let listed = run_bytes(dir, &args, &[], None).await?;
+    let mut links = Vec::new();
+    for entry in listed.split(|b| *b == 0).filter(|e| !e.is_empty()) {
+        // `<mode> <type> <object>\t<path>`
+        let Some(tab) = entry.iter().position(|b| *b == b'\t') else {
+            return Err(GitError(
+                "git ls-tree answered a line obid can't read".into(),
+            ));
+        };
+        if entry.starts_with(b"120000 ") {
+            links.push(PathBuf::from(OsStr::from_bytes(&entry[tab + 1..])));
+        }
+    }
+    Ok(links)
+}
+
+/// What `head` changes against `base` from their merge base, the files it touches listed first,
+/// as git shows it with nothing a repository or a branch could set up taking part: no replacement
+/// objects, no external diff or text conversion, fixed `a/` and `b/` prefixes, no color.
+pub async fn change(dir: &Path, base: &str, head: &str) -> Result<Vec<u8>, GitError> {
+    let range = format!("{base}...{head}");
+    let words = [
+        "--no-replace-objects",
+        "diff",
+        "--no-color",
+        "--no-ext-diff",
+        "--no-textconv",
+        "--find-renames",
+        "--patch-with-stat",
+        "--src-prefix=a/",
+        "--dst-prefix=b/",
+        &range,
+        "--",
+    ];
+    let args: Vec<&OsStr> = words.iter().map(OsStr::new).collect();
+    run_bytes(dir, &args, &[], None).await
+}
+
+/// A worktree's git directories: its own (`<common>/worktrees/<name>`) and the common one.
+pub async fn worktree_dirs(worktree: &Path) -> Result<(PathBuf, PathBuf), GitError> {
+    let admin = git(
+        worktree,
+        &["rev-parse", "--path-format=absolute", "--git-dir"],
+    )
+    .await?;
+    let common = git(
+        worktree,
+        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+    )
+    .await?;
+    Ok((PathBuf::from(admin), PathBuf::from(common)))
+}
+
+/// A valid branch name, as git and the spec allow it (no option-like or odd names).
+pub fn is_branch_name(name: &str) -> bool {
+    let ok_chars = name
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'/' | b'-'));
+    !name.is_empty()
+        && name.len() <= 200
+        && ok_chars
+        && !name.starts_with(['-', '/', '.'])
+        && !name.contains("..")
+        && !name.contains("//")
+        && !name.ends_with('/')
+        && !name.ends_with('.')
+        && !name.ends_with(".lock")
+        && !name.contains("/.")
+}
+
+/// A full commit id, lower-case hex.
+pub fn is_sha(text: &str) -> bool {
+    (text.len() == 40 || text.len() == 64)
+        && text.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A clone and a fetch of an https remote with a gh reset git's own credential helpers before
+    /// gh's, so no other helper (Apple git's system-wide osxkeychain) stores gh's token.
+    #[test]
+    fn https_clones_and_fetches_reset_gits_own_helpers_first() {
+        let signed = crate::publish::fetch_credentials(
+            "https://github.com/o/r.git",
+            Some(Path::new("/opt/gh")),
+        );
+        let clone = clone_args(
+            &signed,
+            "https://github.com/o/r.git",
+            Path::new("/c/.r.cloning"),
+        );
+        assert_eq!(
+            clone[..2],
+            [OsStr::new("-c"), OsStr::new("credential.helper=")]
+        );
+        assert_eq!(clone[2], OsStr::new("-c"));
+        assert!(
+            clone[3]
+                .to_string_lossy()
+                .ends_with("'/opt/gh' auth git-credential")
+        );
+        assert_eq!(clone[4], OsStr::new("clone"));
+        let refspecs = ["main".to_owned()];
+        let fetch = fetch_args(&signed, &refspecs);
+        assert_eq!(fetch[..2], ["-c", "credential.helper="]);
+        assert_eq!(
+            fetch[4..],
+            [
+                "fetch",
+                "--quiet",
+                "--no-tags",
+                "--no-write-fetch-head",
+                "origin",
+                "main"
+            ]
+        );
+    }
+
+    #[test]
+    fn branch_names() {
+        for good in ["main", "feature/average", "oby/fix-12", "v1.2"] {
+            assert!(is_branch_name(good), "{good}");
+        }
+        for bad in [
+            "",
+            "-x",
+            "--upload-pack=sh",
+            "a..b",
+            "a//b",
+            "a/",
+            "a.",
+            "a.lock",
+            "a/.b",
+            "a b",
+            ".x",
+            "/x",
+        ] {
+            assert!(!is_branch_name(bad), "{bad}");
+        }
+    }
+
+    /// git's automatic maintenance never runs in obid's clones: after an agent's commit it packs
+    /// refs into the clone's packed-refs, which the job sandbox doesn't let it write, and the
+    /// agent spent a turn checking a commit that had landed. A clone made before is held to it too.
+    #[tokio::test]
+    async fn clones_run_no_automatic_maintenance() {
+        let root = std::env::temp_dir().join(format!("obid-maintenance-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let remote = root.join("remote");
+        std::fs::create_dir_all(&remote).unwrap();
+        for args in [
+            &["init", "-q", "-b", "main"][..],
+            &[
+                "-c",
+                "user.name=a",
+                "-c",
+                "user.email=a@b",
+                "commit",
+                "-q",
+                "--allow-empty",
+                "-m",
+                "first",
+            ],
+        ] {
+            git(&remote, args).await.unwrap();
+        }
+        let home = root.join("home");
+        let url = format!("file://{}", remote.display());
+        let setting = |clone: PathBuf, key: &'static str| async move {
+            git(&clone, &["config", "--get", key])
+                .await
+                .unwrap_or_default()
+        };
+        let clone = ensure_clone(&home, "o/r", &url, &[]).await.unwrap();
+        assert_eq!(setting(clone.clone(), "maintenance.auto").await, "false");
+        assert_eq!(setting(clone.clone(), "gc.auto").await, "0");
+        assert_eq!(setting(clone.clone(), "fetch.hideRefs").await, "worktrees/");
+        git(&clone, &["config", "maintenance.auto", "true"])
+            .await
+            .unwrap();
+        let clone = ensure_clone(&home, "o/r", &url, &[]).await.unwrap();
+        assert_eq!(setting(clone, "maintenance.auto").await, "false");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+}

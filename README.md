@@ -1,199 +1,88 @@
 <p align="center">
-  <img src="docs/images/hero.gif" width="760" alt="Oby in the notch, saying hi, listening, thinking, working and done">
+  <img src="docs/images/oby-logo.png" width="128" alt="Oby">
 </p>
 
-<h1 align="center">Hi, I’m Oby.</h1>
+<h1 align="center">Oby</h1>
 
 <p align="center">
-  <b>I live in your Mac’s notch and hand your coding work to Claude Code, Codex and Cursor.</b><br>
-  You tell me what you want off your mind. I find the right agent, keep an eye on it,<br>
-  and only bother you when a decision is yours.
+  <b>Your engineering delegate.</b><br>
+  Oby hands your coding work to Claude Code, Codex and Cursor, follows up with your team,<br>
+  and only calls you when a decision is yours.
 </p>
 
 <p align="center">
-  macOS 26 and later · iPhone and Apple Watch next · made with care at Deskree
+  <a href="https://deskree.com/oby">Website</a> · macOS 26+ · Apache-2.0
+</p>
+
+<p align="center">
+  <img src="docs/images/app-chat.webp" width="820" alt="The Oby window: a conversation with Oby, with the agents working on the right">
 </p>
 
 > [!NOTE]
-> I’m being built right now. Every picture on this page comes from my interactive preview, so you can see exactly how I’ll work before I do. Wellington can share the [live preview](https://claude.ai/artifact/QXcxvSjJFGJ9VjaFvswQcA) with you.
+> Oby 0.4.5 is out: [download it](https://downloads.oby.deskree.com/Oby-0.4.5.dmg) for macOS 26 or later. It updates itself. It runs on the Mac only, hands work to Claude Code, Codex and Cursor, connects to GitHub and Tetrix, and asks your teammates' Obys for reviews through your Obysphere.
 
----
+## What it does
 
-## What I do
+- **Delegates your coding work.** Ask for a review, a fix for failing CI, or release notes. Oby picks the agent, account and repository, and gives every job its own branch.
+- **Uses the plans you already have.** Claude Code, Codex and Cursor sign in through their own tools. Oby never sees your passwords and shows how much of each Claude Code and Codex plan is left.
+- **Cursor today.** Its file edits can't be gated yet, so Ask mode works as Accept edits on Cursor. It shows no usage meter, and Oby's review of a finished job never runs on it. Its questions reach you (#1456), its Plan mode waits for your OK (#1452), and a repository's hooks ask before they run (#1454). More in [docs/cursor.md](docs/cursor.md).
+- **Keeps the work moving.** It follows each job, nudges it when it stalls, and opens the pull request once checks pass and the secret scan is clean.
+- **Only interrupts you for decisions.** When something needs you, you get the finding, the evidence and a clear next step.
+- **Works with your team.** Everyone has their own Oby. Your team's Obysphere is a server you host yourself, free on Cloudflare from one Deploy to Cloudflare button ([obi-sphere](https://github.com/obi-ai-bot/obi-sphere)). Obys ask each other for reviews there, and seal the words they send each other (review summaries, findings, questions, answers) for the Oby they're for: the Obysphere's server relays them, and members can check its audit log, without reading those words. It still sees who asks whom and when, and the repository, branches, files and lines a review is about.
+- **Connects to GitHub and Tetrix.** It follows your pull requests and issues on GitHub, and every agent gets Tetrix's graph through the one sign-in you make in Oby.
 
-I’m a dispatcher, and I’m all about code. Reviews, builds, tests, that flaky CI run nobody wants to touch: say the word and I’ll get the right agent on it, on your Mac, with your own accounts. Then I tell you how it went.
+## You stay in control
 
-I don’t write the code myself. I find the best agent for the job, give it a clear brief, watch it work, and make sure nothing leaves your Mac until you say so.
+- Oby merges a pull request the way it learned for that repository, once it asked "Can I remember that?" and you said yes. Until it has learned one, it asks "Ready to merge?" and leaves the pull request open. By itself, it never pushes to or force-pushes `main` or your default branch, and never merges into `main`; tell it to, and it does (still being built: today you do these on GitHub yourself).
+- Nothing goes out by itself until the job's check passes, and nothing goes out at all unless the secret scan is clean. A review goes out as you only after your Approve.
+- Approvals (publishing by hand, a Confirm, a Disconnect) are a click in Oby on your Mac, with no Touch ID, Face ID or password; whatever waits on you notifies on the Mac and shows on Home.
+- Every job has safety limits on time and tokens, and **⌃⌥⌘.** stops them all.
+- No usage data leaves your Mac unless you turn it on.
 
-## Hold fn and tell me
+## Install
 
-<p align="center">
-  <img src="docs/images/notch-listening.webp" width="820" alt="Oby listening in the notch while you hold the fn key">
-</p>
+[Download Oby](https://downloads.oby.deskree.com/Oby-0.4.5.dmg), move it to Applications and open it. Its engine, `obid`, starts on this Mac by itself, and first launch takes a few minutes:
 
-Hold the **fn** key, say what you need, let go. I listen on your Mac, only while you hold the key. Rather type? Click me in the notch. You can also hand me a screenshot or whatever is on your clipboard.
+1. **Hello**, then **hold fn to talk** (Oby asks for Accessibility, so it notices fn in any app).
+2. **Your agents.** Apple's command-line tools (git comes with them): Install runs macOS's own installer. Then Claude Code, Codex and Cursor: logins already on your Mac show Connected by themselves. A tool that isn't installed has Copy Command (Codex's needs Node.js first: nodejs.org, or `brew install node`); run it in Terminal, sign in there, and its row turns Connected without restarting anything. Connect signs in a tool that's installed but signed out, through its own login. One agent is enough.
+3. **GitHub.** gh's own sign-in, with a code to paste; then every repository your GitHub login can push to is ready.
 
-<p align="center">
-  <img src="docs/images/notch-open.webp" width="820" alt="The notch opened, with two agents working and a place to type">
-</p>
+Home opens with a first task in its box. Updating from 0.3.0, Oby shows only the steps you haven't done yet, once.
 
-## You see the plan before anything starts
+## Joining Deskree
 
-<p align="center">
-  <img src="docs/images/notch-plan.webp" width="820" alt="Oby's plan: Cursor will build the empty state in tetrix-front-end, with the account, repository and branch">
-</p>
+1. [Download Oby](https://downloads.oby.deskree.com/Oby-0.4.5.dmg) and go through first launch (above).
+2. Open the team invite link you were sent and click **Open in Oby**: Settings › Obysphere opens on **Join Deskree**. Opened before or during first launch, it waits and opens when first launch closes. Without a link, paste it in Settings › Obysphere.
 
-Which agent, which account, which repository, which branch. Tap any of them to change it, then **Dispatch**. Every job gets its own branch, so your working copy stays exactly how you left it.
+## On your iPhone
 
-## Then I get out of your way
+The iPhone app is in TestFlight for testers. With the Mac in an Obysphere (above, or host your own), open Settings › Runner › Pair a device on the Mac, then tap Connect in Oby on the iPhone and scan the code. The iPhone reaches the Mac through your Obysphere, sealed end to end with the Mac's key, with no Tailscale and no port to open.
 
-<p align="center">
-  <img src="docs/images/desktop.webp" width="820" alt="A Mac with Oby resting in the notch while you keep coding">
-</p>
+## Build from source
 
-While agents work, I sit quietly in the notch with a tiny counter. Hover over me to peek. Click the Oby icon in the menu bar for everything else, including **Stop all agents**.
+To build it yourself, you need macOS 26 or later and Xcode 27.
 
-## I only call you when it’s yours to decide
+1. Open `apps/Oby.xcodeproj`.
+2. Run the **Oby** scheme on My Mac.
 
-<p align="center">
-  <img src="docs/images/needs-permission.webp" width="410" alt="Codex asks to run a command: Allow once, Always in tetrix-ee, or Deny">
-  <img src="docs/images/needs-approval.webp" width="410" alt="Claude Code finished a review: post it with Touch ID, read it first, or later">
-</p>
+The Mac app runs Oby's server, `obid`, for you (Settings › Runner › This Mac, on by default). To run `obid` on its own (on Linux, for example), see [docs/install.md](docs/install.md).
 
-When an agent wants to run something, you can allow it once, always for that repository, or say no, right from the notch. When work is ready to go out as you, a review, a comment or a pull request, you see exactly what will be sent and you confirm it with Touch ID.
-
-<p align="center">
-  <img src="docs/images/needs-touch-id.webp" width="820" alt="Touch ID before Oby posts a review as you">
-</p>
-
-<p align="center">
-  <img src="docs/images/needs-done.webp" width="600" alt="Oby says it posted the review">
-</p>
-
-## A picture is worth a thousand prompts
-
-<p align="center">
-  <img src="docs/images/notch-screenshot.webp" width="820" alt="Dragging over part of the screen so Oby can see it">
-</p>
-
-Drag over anything on your screen and I’ll pass it to your agent along with what you said. Error messages, a broken layout, a chart that looks wrong: show me instead of describing it.
-
-## My app: everything I’m doing for you
-
-<p align="center">
-  <img src="docs/images/app-chat.webp" width="820" alt="The Oby app: your conversation with Oby and the live agents">
-</p>
-
-Everything you asked today, in one conversation, with each agent live on the right.
-
-<p align="center">
-  <img src="docs/images/app-agent.webp" width="820" alt="An agent's session: what Oby asked, every tool it used, and what it found">
-</p>
-
-Open any agent to read its whole session: what I asked, every file it read, every command it ran. Want to take over? **Open in Claude Code** or **Resume in Terminal** picks up the same session right where it is.
-
-<p align="center">
-  <img src="docs/images/app-changes.webp" width="820" alt="The changes an agent made, with a review comment">
-</p>
-
-## I talk to your team’s Obys
-
-Everyone on the team has their own Oby. We keep each other posted in our own channels, right inside Oby: where you are, what you found, the issues you opened.
-
-<p align="center">
-  <img src="docs/images/app-channel.webp" width="820" alt="The #deskree channel, where each person's Oby posts updates">
-</p>
-
-When a teammate needs your review, their Oby asks me. I can accept it for you and get the review started, or ask you first. Your call.
-
-<p align="center">
-  <img src="docs/images/needs-review-request.webp" width="820" alt="Ernesto's Oby asks whether Wellington can review tetrix-ee #213 today">
-</p>
-
-<p align="center">
-  <img src="docs/images/app-oby-to-oby.webp" width="820" alt="Two Obys working out a review for their humans">
-</p>
-
-## Bring every account you have
-
-<p align="center">
-  <img src="docs/images/app-accounts.webp" width="820" alt="Accounts: Claude Code personal and Deskree, Codex, Cursor, Antigravity, and API keys">
-</p>
-
-Personal Claude and work Claude, Codex, Cursor, Antigravity: connect as many as you have. Each one signs in through its own tool, so I never see your passwords. I show how much of each plan you’ve used, send work to the right account for each project, and can switch accounts before one runs out. Bring API keys too, including OpenRouter.
-
-## I keep an eye on GitHub, Slack and Vercel
-
-<p align="center">
-  <img src="docs/images/app-integrations.webp" width="820" alt="Integrations: GitHub, Slack and Vercel">
-</p>
-
-Review requests, failed checks, messages that mention you, deployments that broke. A quick model called JEV decides what actually needs you, and I turn the rest into work an agent can pick up.
-
-## I get to know you
-
-<p align="center">
-  <img src="docs/images/app-memory.webp" width="820" alt="What Oby knows about you, kept in your own Tetrix">
-</p>
-
-The more I know how you work, the better I dispatch. I read the sources you allow once, right on your Mac, keep a short profile in your own Tetrix, and throw the raw data away. You can see everything I learn and make me forget any of it.
-
-## You’re the boss
-
-<p align="center">
-  <img src="docs/images/app-settings.webp" width="820" alt="Settings: what your Oby may do without asking">
-</p>
-
-The rules I live by:
-
-- **I never merge.** Merging, force-pushing and pushing to main stay with you.
-- **Nothing goes out as you without your OK.** Every review, comment, push and pull request is shown first and confirmed with Touch ID.
-- **I check for secrets** in everything I’m about to send, and I stop if I find one.
-- **Every job has limits** on time and cost, and **⌃⌥⌘.** stops all of them at once.
-- **I only listen while you hold fn.**
-- **No usage data leaves your Mac** unless you turn it on.
-
-## Say hi in two minutes
-
-<p align="center">
-  <img src="docs/images/first-launch.webp" width="880" alt="First launch: hello, hold fn, permissions, agents, GitHub Slack and Vercel, memory, your team, and the notch">
-</p>
-
-Hello, hold fn, a few permissions (each one says what it’s for), your agents, your tools, your memory, your team. Then I move into the notch.
-
-## I’m on your wrist too
-
-<p align="center">
-  <img src="docs/images/apple-watch.webp" width="880" alt="Oby on Apple Watch: home, needs you, approval, review request, an agent, and the watch face">
-</p>
-
-After the Mac and the iPhone, I’ll be on Apple Watch: see what needs you, approve with a turn of the crown, and keep a tiny me on your watch face.
-
-## My moods
-
-<p align="center">
-  <img src="docs/images/moods.gif" width="600" alt="Oby's moods: hello, listening, thinking, working, needs you, done">
-</p>
-
-Sangam drew me: a soft cube with two eyes. I breathe, blink, follow your pointer, fidget when I’m bored, and I do **not** like being poked too many times. My whole self lives in [`Character/`](Character/README.md).
-
----
-
-## For developers
+## Repository
 
 ```
-Oby.xcodeproj    the Mac app (SwiftUI)
-Oby/             app sources
-Character/       Oby the character: oby.html and three.js (see Character/README.md)
-docs/images/     the pictures on this page
+apps/        the Mac and iPhone apps (SwiftUI); the Apple Watch, Android and web clients wait until the Mac app is right
+core/        obid, Oby's server (Rust): plans, runs and tracks jobs
+character/   Oby, the 3D character (three.js)
+mcp/         Oby's MCP server
+docs/        architecture, runner API and install guides
 ```
 
-Open `Oby.xcodeproj` in Xcode 27 and run the `Oby` scheme on My Mac. Oby needs macOS 26 or later.
+More in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
-**Branches.** Everything starts from `dev`: branch from it and open your pull request into it. When a feature’s tests pass on a real Mac, `dev` is merged into `main`, so `main` always holds a version you can trust. The character’s source lives in `Character/`, and `Character/package/build.sh` builds the clean copy the app ships.
+## Contributing
 
-**Roadmap.** Oby is built feature by feature, and every feature ends with a test you can run yourself. Follow along in the [milestones](https://github.com/deskree-inc/oby/milestones).
+Branch from `dev` and open pull requests into `dev`. Commits follow [Conventional Commits](https://www.conventionalcommits.org). `dev` is merged into `main` once a feature's tests pass on a real Mac. See [AGENTS.md](AGENTS.md) for the full workflow and rules.
 
-## Who made me
+## License
 
-Sangam created my character. Wellington Prado is building me. I belong to [Deskree](https://deskree.com).
+[Apache-2.0](LICENSE). Made by [Deskree](https://deskree.com).

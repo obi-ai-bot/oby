@@ -1,0 +1,256 @@
+import Foundation
+import HTTPTypes
+import Hummingbird
+import HummingbirdTesting
+import Testing
+@testable import ObyEngine
+@testable import oby_runner
+
+/// The runner on a Mac (#283): it answers only on 127.0.0.1, only requests whose `Host` is a
+/// loopback name, and only with its own token.
+@MainActor
+struct LoopbackTests {
+    let token = String(repeating: "ab", count: 32)
+    var access: Access { .local(token: token) }
+
+    func request(_ path: String = "/v1/status", host: String?, headers: HTTPFields = [:]) -> Request {
+        Request(head: HTTPRequest(method: .get, scheme: "http", authority: host, path: path, headerFields: headers),
+                body: .init(buffer: ByteBuffer()))
+    }
+
+    var bearer: HTTPFields { [.authorization: "Bearer \(token)"] }
+
+    func refusal(_ request: Request, _ access: Access) -> APIError? {
+        do {
+            try Gate<BasicRequestContext>.admit(request, access: access)
+            return nil
+        } catch let error as APIError {
+            return error
+        } catch {
+            Issue.record("not an APIError: \(error)")
+            return nil
+        }
+    }
+
+    @Test func refusesEveryHostThatIsntLoopback() {
+        let hosts: [String?] = ["evil.example", "evil.example:7777", "mac.tail0000.ts.net:8443", "127.0.0.1.evil.example",
+                                "localhost.evil.example", "[::2]", "[::1]:x", "127.0.0.1:x", "", "   ", nil]
+        for host in hosts {
+            let error = refusal(request(host: host, headers: bearer), access)
+            #expect(error?.status == .forbidden, "\(host ?? "nil")")
+            #expect(error?.message == "This runner answers only on 127.0.0.1.")
+        }
+        // Before the token is read: a wrong host with no token is 403, not 401.
+        #expect(refusal(request(host: "evil.example"), access)?.status == .forbidden)
+        // Even an agent's own path: nothing is let in from another name.
+        #expect(refusal(request("/v1/agent/apple-check", host: "evil.example"), access)?.status == .forbidden)
+    }
+
+    /// Cursor asks the broker for OAuth discovery after it POSTs to it (the probe, 2026-10-14): the
+    /// answer is a plain 404, not an unauthorized, whoever asks and without a token.
+    @Test func oauthDiscoveryIs404() {
+        let paths = ["/.well-known/oauth-protected-resource", "/.well-known/oauth-authorization-server",
+                     "/.well-known/openid-configuration", "/.well-known/oauth-protected-resource/v1/agent/mcp/abc", "/register"]
+        for path in paths {
+            for access in [access, Access.tailnet(owner: "well@example.com")] {
+                let error = refusal(request(path, host: "127.0.0.1"), access)
+                #expect(error?.status == .notFound, "\(path)")
+            }
+        }
+        // A wrong Host is still refused first on a Mac, and everything else still needs its token.
+        #expect(refusal(request("/.well-known/openid-configuration", host: "evil.example"), access)?.status == .forbidden)
+        #expect(refusal(request("/v1/status", host: "127.0.0.1"), access)?.status == .unauthorized)
+        #expect(refusal(request("/v1/agent/mcp/abc", host: "127.0.0.1"), access) == nil)
+    }
+
+    @Test func letsLoopbackHostsInWithTheToken() {
+        for host in ["127.0.0.1", "127.0.0.1:7777", "localhost", "localhost:7777", "LOCALHOST", "[::1]", "[::1]:7777", " 127.0.0.1 "] {
+            #expect(refusal(request(host: host, headers: bearer), access) == nil, Comment(rawValue: host))
+        }
+    }
+
+    @Test func refusesWithoutTheToken() {
+        let wrong: [HTTPFields] = [
+            [:],
+            [.authorization: "Bearer "],
+            [.authorization: "Bearer " + String(repeating: "cd", count: 32)],
+            [.authorization: "Bearer " + String(token.dropLast())],
+            [.authorization: token],
+            [.authorization: "Basic \(token)"],
+            [.tailscaleUserLogin: "well@example.com"],
+        ]
+        for headers in wrong {
+            let error = refusal(request(host: "127.0.0.1:7777", headers: headers), access)
+            #expect(error?.status == .unauthorized, "\(headers)")
+            #expect(error?.message == "This runner answers only Oby on this Mac.")
+        }
+    }
+
+    /// `oby-check apple` from an agent's sandbox carries its job's token, not the runner's: the gate
+    /// lets it through on a loopback host, and the handler checks the job's token.
+    @Test func agentRequestsCarryTheirOwnToken() {
+        #expect(refusal(request("/v1/agent/apple-check", host: "127.0.0.1:7777"), access) == nil)
+    }
+
+    /// On the tailnet nothing changes: the login decides, whatever `Host` says.
+    @Test func theTailnetGateReadsTheLoginNotTheHost() {
+        let tailnet = Access.tailnet(owner: "well@example.com")
+        #expect(refusal(request(host: "evil.example", headers: [.tailscaleUserLogin: "well@example.com"]), tailnet) == nil)
+        #expect(refusal(request(host: "127.0.0.1", headers: bearer), tailnet)?.status == .unauthorized)
+        #expect(refusal(request(host: nil, headers: [.tailscaleUserLogin: "well@example.com"]), tailnet) == nil)
+    }
+
+    /// Every endpoint sits behind the gate: `/v1/status` answers with the token and refuses without.
+    @Test func theRouterIsBehindTheGate() async throws {
+        let folder = try temporaryFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let desk = Desk(accounts: AccountStore(root: folder), store: JobStore(url: folder.appending(path: "oby.sqlite")))
+        let api = API(desk: desk, devices: Devices(file: folder.appending(path: "devices.json")))
+        let app = Application(router: api.router(access: access))
+        // The test client asks as `localhost`.
+        try await app.test(.router) { client in
+            try await client.execute(uri: "/v1/status", method: .get, headers: bearer) { response in
+                #expect(response.status == .ok)
+                #expect(object(Data(response.body.readableBytesView))["runner"] != nil)
+            }
+            for headers in [HTTPFields(), [.tailscaleUserLogin: "well@example.com"], [.authorization: "Bearer nope"]] {
+                for uri in ["/v1/status", "/v1/jobs", "/v1/nowhere"] {
+                    try await client.execute(uri: uri, method: .get, headers: headers) { response in
+                        #expect(response.status == .unauthorized)
+                        #expect(object(Data(response.body.readableBytesView))["error"] as? String == "This runner answers only Oby on this Mac.")
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// The runner's own token and home on a Mac (Engine/LocalRunner.swift).
+struct LocalRunnerTests {
+    @MainActor @Test func localRunnerUsesTheAppsAccounts() throws {
+        let root = try temporaryFolder()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let appRoot = root.appending(path: "Oby")
+        let app = AccountStore(root: appRoot)
+        let account = try app.add(agent: "codex", name: "Work", payer: "Deskree")
+
+        let local = LocalRunner.accounts(local: true, appRoot: appRoot, workspace: root.appending(path: "Runner"))
+        #expect(local.accounts.map(\.account) == app.accounts.map(\.account))
+        #expect(local.accounts.last?.account == account)
+    }
+
+    @Test func loopbackNames() {
+        for host in ["127.0.0.1", "127.0.0.1:7777", "localhost", "Localhost:1", "[::1]", "[::1]:7777"] {
+            #expect(LocalRunner.isLoopback(host: host), Comment(rawValue: host))
+        }
+        for host in ["evil.example", "127.0.0.2", "127.0.0.1:", "127.0.0.1:7777:1", "[::1", "::1", "0.0.0.0", "localhost.", "", nil] {
+            #expect(!LocalRunner.isLoopback(host: host), Comment(rawValue: host ?? "nil"))
+        }
+    }
+
+    @Test func makesATokenOnceAndKeepsIt() throws {
+        let store = MemoryTokens()
+        #expect(LocalRunner.token(from: store) == nil)
+        let token = try LocalRunner.makeToken(in: store)
+        #expect(LocalRunner.isToken(token))
+        #expect(try LocalRunner.makeToken(in: store) == token)
+        #expect(LocalRunner.token(from: store) == token)
+        // A value that isn't a token is ignored and replaced; two runners' tokens differ.
+        try store.write("not a token")
+        #expect(LocalRunner.token(from: store) == nil)
+        let fresh = try LocalRunner.makeToken(in: store)
+        #expect(LocalRunner.isToken(fresh))
+        #expect(fresh != token)
+    }
+
+    @Test func readsObidsPrivateFileAndFallsBackAfterARefusal() throws {
+        let root = try temporaryFolder()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let legacy = String(repeating: "ab", count: 32)
+        let store = MemoryTokens(legacy)
+        let path = root.appending(path: "api-token")
+        let token = String(repeating: "x", count: 40)
+        #expect(LocalRunner.token(home: root, fallback: store) == legacy)
+        try Data((token + "\r\n").utf8).write(to: path)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: path.path)
+        #expect(LocalRunner.token(home: root, fallback: store) == token)
+        #expect(LocalRunner.token(home: root, fallback: store, excluding: token) == legacy)
+        #expect(LocalRunner.token(home: root, fallback: MemoryTokens(token), excluding: token) == nil)
+        let rotated = String(repeating: "y", count: 32)
+        try Data(rotated.utf8).write(to: path)
+        #expect(LocalRunner.token(home: root, fallback: store, excluding: token) == rotated)
+        // The Swift runner still makes its token in the keychain store only.
+        #expect(try LocalRunner.makeToken(in: store) == legacy)
+    }
+
+    @Test func refusesUnsafeOrMalformedObidTokenFiles() throws {
+        let root = try temporaryFolder()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let path = root.appending(path: "api-token")
+        let token = String(repeating: "x", count: 40)
+        for text in ["", String(token.prefix(31)), " " + token, "\n" + token,
+                     token + " ", token + "\nmore", token + "é", String(repeating: "x", count: 4097)] {
+            try Data(text.utf8).write(to: path)
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: path.path)
+            #expect(LocalRunner.obidToken(in: root) == nil)
+        }
+        try Data(token.utf8).write(to: path)
+        try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: path.path)
+        #expect(LocalRunner.obidToken(in: root) == nil)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: path.path)
+        let real = root.appending(path: "real")
+        try FileManager.default.moveItem(at: path, to: real)
+        try FileManager.default.createSymbolicLink(at: path, withDestinationURL: real)
+        #expect(LocalRunner.obidToken(in: root) == nil)
+        try FileManager.default.removeItem(at: path)
+        try FileManager.default.createDirectory(at: path, withIntermediateDirectories: false)
+        #expect(LocalRunner.obidToken(in: root) == nil)
+    }
+
+    /// obid's reason for a start that failed (docs/runner-api.md, "A start that fails says why"):
+    /// read trimmed, none when it's missing, empty or a link.
+    @Test func readsObidsLastStartError() throws {
+        let root = try temporaryFolder()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let path = root.appending(path: "last-start-error")
+        #expect(LocalRunner.lastStartError(in: root) == nil)
+        try Data("can't listen on 127.0.0.1:7777: Address already in use\n".utf8).write(to: path)
+        #expect(LocalRunner.lastStartError(in: root) == "can't listen on 127.0.0.1:7777: Address already in use")
+        try Data("\n".utf8).write(to: path)
+        #expect(LocalRunner.lastStartError(in: root) == nil)
+        let real = root.appending(path: "real")
+        try Data("x".utf8).write(to: real)
+        try FileManager.default.removeItem(at: path)
+        try FileManager.default.createSymbolicLink(at: path, withDestinationURL: real)
+        #expect(LocalRunner.lastStartError(in: root) == nil)
+    }
+
+    @Test func readsTheBearerToken() {
+        let token = String(repeating: "0f", count: 32)
+        #expect(Gate<BasicRequestContext>.bearer("Bearer \(token)") == token)
+        #expect(Gate<BasicRequestContext>.bearer("Bearer \(token)  ") == token)
+        #expect(Gate<BasicRequestContext>.bearer("Bearer ") == nil)
+        #expect(Gate<BasicRequestContext>.bearer("bearer \(token)") == nil)
+        #expect(Gate<BasicRequestContext>.bearer(token) == nil)
+        #expect(Gate<BasicRequestContext>.bearer(nil) == nil)
+    }
+
+    @Test func comparesTokensWhole() {
+        let token = String(repeating: "ab", count: 32)
+        #expect(LocalRunner.same(token, as: token))
+        #expect(!LocalRunner.same(String(token.dropLast()), as: token))
+        #expect(!LocalRunner.same(token + "a", as: token))
+        #expect(!LocalRunner.same(String(repeating: "ba", count: 32), as: token))
+        #expect(!LocalRunner.same("", as: token))
+    }
+
+    /// Where a Mac runner keeps its files, apart from the app's own folder.
+    @Test func homeIsInsideTheAppsFolderButNotIt() {
+        let app = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appending(path: "Oby")
+        #expect(LocalRunner.home.path.hasPrefix(app.path + "/"))
+        #expect(LocalRunner.home.lastPathComponent == "Runner")
+        // The tray's files are the only ones obid takes (#891), in a folder of their own there.
+        #expect(LocalRunner.attachments.path.hasPrefix(LocalRunner.home.path + "/attachments/"))
+        #expect(LocalRunner.url.absoluteString == "http://127.0.0.1:7777")
+    }
+}

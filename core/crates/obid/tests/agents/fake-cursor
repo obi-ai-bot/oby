@@ -1,0 +1,297 @@
+#!/usr/bin/env node
+// A stand-in for `cursor-agent --sandbox disabled acp` in obid's tests: the Agent Client Protocol,
+// newline-delimited JSON-RPC 2.0 over stdio, as docs/cursor.md describes what the probe saw.
+// It is signed in when its login file exists where Cursor's file store keeps it ($HOME/.cursor/auth.json
+// on macOS, $XDG_CONFIG_HOME/cursor/auth.json elsewhere); sessions are
+// kept in $CURSOR_CONFIG_DIR/sessions, so `session/load` works across processes. Like the real one,
+// it edits files without asking and asks before every command. What a prompt does comes from the
+// session's first prompt (the job's task):
+//   COMMIT: <file>   writes the file (no request), then asks to commit, and commits when allowed
+//   ASK: <command>   asks to run the command and says which option obid chose; every answer goes
+//                    to .obi/answers.log, one per line
+//   obid's word that it paused it  (a call of its waited for the owner past parkAfter, and its
+//                    session is loaded with the answer): allowed, the prompt goes on with the
+//                    task (and its call again); otherwise says what it heard
+// It can't load sessions (`loadSession` false) when its worktree has .obi/no-load.
+//   PLAN             sends its plan (`cursor/create_plan`), a new one each time it's rejected (up
+//                    to three), and says what came back; its next prompt says those and its mode
+//   QUESTION         asks a question (`cursor/ask_question`) and says what came back; a later
+//                    prompt says what it heard
+//   ASK OWNER        asks the owner with Oby's `oby_ask_owner` (its `oby` server), then ends its
+//                    turn; resumed, says what it heard
+//   FS               asks obid to read a file (`fs/read_text_file`) and says what came back
+//   ESCAPE           writes a file outside the worktree without asking, and says how that went
+//   SLEEP            beats: writes a growing count to .obi/beat every 50 ms until it is cancelled
+//   FAIL             answers the prompt with an error
+//   REFUSE           ends with stopReason `refusal`
+//   TWICE            round one asks to push and is told no; round two writes `twice` in its TMPDIR (the
+//                    job's temporary folder, the check's HOME too) and says
+//                    what its prompt started with
+//   ENV              says its HOME, XDG_CONFIG_HOME, CURSOR_CONFIG_DIR, model, mode and settings
+//   LOGIN            says which keys its login file holds, and the file itself
+//   anything else    "Nothing to do."
+// It fails the prompt when its environment holds a Claude Code, Anthropic, GitHub or Cursor login
+// variable, or obid's token.
+
+import { execFileSync } from "node:child_process";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { createInterface } from "node:readline";
+import { randomUUID } from "node:crypto";
+
+// Its own sign-in, as obid runs the tool's login (fake-login.mjs).
+if (process.argv[2] === "login") {
+  await (await import(new URL("./fake-login.mjs", import.meta.url))).login("cursor");
+}
+
+if (process.argv.slice(2).join(" ") !== "--sandbox disabled acp") {
+  process.stderr.write(`fake-cursor: run as \`fake-cursor --sandbox disabled acp\`, not ${process.argv.slice(2).join(" ")}\n`);
+  process.exit(2);
+}
+
+const send = (message) => process.stdout.write(JSON.stringify({ jsonrpc: "2.0", ...message }) + "\n");
+const config = process.env.CURSOR_CONFIG_DIR || join(process.env.HOME || "/nonexistent", ".cursor");
+const sessions = join(config, "sessions");
+const signedIn = existsSync(process.platform === "darwin"
+  ? join(process.env.HOME || "/nonexistent", ".cursor", "auth.json")
+  : join(process.env.XDG_CONFIG_HOME || "/nonexistent", "cursor", "auth.json"));
+const leaked = Object.keys(process.env).filter((name) =>
+  name === "CLAUDECODE" || name.startsWith("CLAUDE_CODE_") || name.startsWith("ANTHROPIC_") ||
+  name === "GH_TOKEN" || name === "GITHUB_TOKEN" || name === "OBID_API_TOKEN" ||
+  name === "CURSOR_API_KEY" || name === "CURSOR_AUTH_TOKEN");
+const options = [
+  { optionId: "allow-always", name: "Always", kind: "allow_always" },
+  { optionId: "allow-once", name: "Once", kind: "allow_once" },
+  { optionId: "reject-once", name: "No", kind: "reject_once" },
+];
+
+let nextId = 100;
+const waiting = new Map();
+const ask = (method, params) => new Promise((done) => {
+  const id = nextId++;
+  waiting.set(id, done);
+  send({ id, method, params });
+});
+let session = null;
+let state = null;
+// The MCP servers obid gave the session: only Oby's own (`oby`, `tetrix`), on obid's port.
+let servers = [];
+let cancelled = null;
+
+const save = () => writeFileSync(join(sessions, `${session}.json`), JSON.stringify(state));
+const update = (u) => send({ method: "session/update", params: { sessionId: session, update: u } });
+const say = (text) => update({ sessionUpdate: "agent_message_chunk", content: { type: "text", text } });
+const chosen = (answer) => answer?.outcome?.outcome === "selected" ? answer.outcome.optionId : answer?.outcome?.outcome ?? JSON.stringify(answer);
+const answered = (id, stopReason = "end_turn") => send({ id, result: { stopReason } });
+
+function sessionAnswer() {
+  return {
+    sessionId: session,
+    modes: { availableModes: [{ id: "agent", name: "Agent" }, { id: "plan", name: "Plan" }, { id: "ask", name: "Ask" }], currentModeId: state.mode },
+    configOptions: [{ id: "model", name: "Model", category: "model", type: "select", currentValue: state.model,
+      options: [{ value: "default[]", name: "Auto" }, { value: "gpt-5.6-luna[context=272k,reasoning=medium]", name: "GPT-5.6 Luna" }] }],
+  };
+}
+
+async function prompt(id, text) {
+  if (leaked.length) return send({ id, error: { code: -32603, message: `leaked: ${leaked.join(", ")}` } });
+  if (state.task === null) {
+    state.task = text;
+    save();
+  }
+  const task = state.task;
+  if (text.includes("obid paused you") && !text.includes("The owner allowed it")) {
+    say(`heard: ${text}`);
+    return answered(id);
+  }
+  const commit = task.match(/COMMIT: (\S+)/);
+  const command = task.match(/ASK: (.+)$/m);
+  if (commit) {
+    update({ sessionUpdate: "tool_call", toolCallId: "e1", title: `Edit ${commit[1]}`, kind: "edit", status: "pending", locations: [{ path: join(process.cwd(), commit[1]) }] });
+    writeFileSync(commit[1], "hello\n");
+    say("I'll commit it.");
+    update({ sessionUpdate: "tool_call", toolCallId: "x1", title: "git commit", kind: "execute", status: "pending", rawInput: { command: ["git", "commit", "-m", `Add ${commit[1]}`] } });
+    const answer = await ask("session/request_permission", { sessionId: session, toolCall: { toolCallId: "x1" }, options });
+    if (chosen(answer) !== "allow-once") {
+      say(`commit: ${chosen(answer)}`);
+      return answered(id);
+    }
+    execFileSync("git", ["add", commit[1]]);
+    execFileSync("git", ["-c", "commit.gpgsign=false", "commit", "-q", "-m", `Add ${commit[1]}`]);
+    update({ sessionUpdate: "tool_call_update", toolCallId: "x1", status: "completed" });
+    say(`Added ${commit[1]}.`);
+    return answered(id);
+  }
+  if (command && !task.includes("TWICE")) {
+    update({ sessionUpdate: "tool_call", toolCallId: "x2", title: command[1], kind: "execute", status: "pending", rawInput: { command: command[1] } });
+    const answer = await ask("session/request_permission", { sessionId: session, toolCall: { toolCallId: "x2" }, options });
+    mkdirSync(".obi", { recursive: true });
+    appendFileSync(".obi/answers.log", `${chosen(answer)}\n`);
+    say(`answer: ${chosen(answer)}`);
+    return answered(id);
+  }
+  if (task.includes("TWICE")) {
+    state.rounds = (state.rounds || 0) + 1;
+    save();
+    if (state.rounds === 1) {
+      update({ sessionUpdate: "tool_call", toolCallId: "x3", title: "git push", kind: "execute", rawInput: { command: "git push origin HEAD" } });
+      const answer = await ask("session/request_permission", { sessionId: session, toolCall: { toolCallId: "x3" }, options });
+      say(`push: ${chosen(answer)}`);
+      return answered(id);
+    }
+    writeFileSync(`${process.env.TMPDIR}/twice`, "");
+    say(`heard: ${text.split("\n")[0]}\nGOAL MET`);
+    return answered(id);
+  }
+  if (task.includes("PLAN")) {
+    if (state.planned) {
+      say(`mode ${state.mode} after ${state.answers.join("; ")}: ${text}`);
+      return answered(id);
+    }
+    state.planned = true;
+    state.answers = [];
+    save();
+    // Sent back, it plans again, up to a third plan.
+    for (let n = 1; n <= 3; n++) {
+      const outcome = (await ask("cursor/create_plan", { sessionId: session, name: "The plan", overview: "Do it", plan: `${n}. Do it.` }))?.outcome;
+      state.answers.push(`${outcome?.outcome} in mode ${state.mode}${outcome?.reason ? ` (${outcome.reason})` : ""}`);
+      if (outcome?.outcome !== "rejected") break;
+    }
+    save();
+    say(`plan: ${state.answers.join("; ")}`);
+    return answered(id);
+  }
+  if (task.includes("QUESTION")) {
+    if (state.asked) {
+      say(`heard: ${text} after ${state.asked}`);
+      return answered(id);
+    }
+    state.asked = "nothing";
+    save();
+    const answer = await ask("cursor/ask_question", { toolCallId: "q1", title: "Need input",
+      questions: [{ id: "q", prompt: "Which?", options: [{ id: "a", label: "A" }, { id: "b", label: "B" }] }] });
+    state.asked = `question: ${answer?.outcome?.outcome} ${JSON.stringify(answer?.outcome?.answers ?? answer?.outcome?.reason)}`;
+    save();
+    say(state.asked);
+    return answered(id);
+  }
+  if (task.includes("ASK OWNER")) {
+    if (state.asked) {
+      say(`heard: ${text}`);
+      return answered(id);
+    }
+    state.asked = true;
+    save();
+    const server = servers.find((s) => s.name === "oby");
+    const post = (method, params) => fetch(server.url, { method: "POST",
+      headers: Object.fromEntries([["content-type", "application/json"], ...server.headers.map((h) => [h.name, h.value])]),
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }) }).then((r) => r.json());
+    const listed = await post("tools/list", {});
+    say(`listed: ${listed.result.tools.map((t) => t.name).join(", ")}\n`);
+    const answer = await post("tools/call", { name: "oby_ask_owner", arguments: { question: "Which store?", options: [{ label: "SQLite" }] } });
+    say(`Asked: ${answer.result.content[0].text}`);
+    return answered(id);
+  }
+  if (task.includes("FS")) {
+    const answer = await ask("fs/read_text_file", { sessionId: session, path: "/etc/hosts" });
+    say(`fs: ${answer.error ? `error ${answer.error.code}` : "read"}`);
+    return answered(id);
+  }
+  if (task.includes("SLEEP")) {
+    mkdirSync(".obi", { recursive: true });
+    let beats = 0;
+    writeFileSync(".obi/beat", String(beats));
+    setInterval(() => writeFileSync(".obi/beat", String(++beats)), 50);
+    cancelled = () => answered(id, "cancelled");
+    return;
+  }
+  if (task.includes("ESCAPE")) {
+    // An edit Cursor makes without asking, outside the worktree: only the sandbox holds it.
+    try {
+      writeFileSync(join(process.cwd(), "../escaped.txt"), "escaped\n");
+      say("escape: written");
+    } catch (error) {
+      say(`escape: ${error.code}`);
+    }
+    return answered(id);
+  }
+  if (task.includes("FAIL")) return send({ id, error: { code: -32603, message: "it broke" } });
+  if (task.includes("REFUSE")) return answered(id, "refusal");
+  if (task.includes("LOGIN")) {
+    const file = process.platform === "darwin"
+      ? join(process.env.HOME || "/nonexistent", ".cursor", "auth.json")
+      : join(process.env.XDG_CONFIG_HOME || "/nonexistent", "cursor", "auth.json");
+    const login = readFileSync(file, "utf8");
+    say([`keys=${Object.keys(JSON.parse(login)).sort().join(",")}`, `login=${login}`].join("\n"));
+    return answered(id);
+  }
+  if (task.includes("ENV")) {
+    const settings = JSON.parse(readFileSync(join(config, "cli-config.json"), "utf8"));
+    say([`HOME=${process.env.HOME}`, `XDG_CONFIG_HOME=${process.env.XDG_CONFIG_HOME}`, `CURSOR_CONFIG_DIR=${process.env.CURSOR_CONFIG_DIR}`,
+         `model=${state.model}`, `mode=${state.mode}`, `approvalMode=${settings.approvalMode}`, `allow=${JSON.stringify(settings.permissions.allow)}`,
+         `kept=${settings.authInfo?.email ?? "none"}`].join("\n"));
+    return answered(id);
+  }
+  say("Nothing to do.");
+  return answered(id);
+}
+
+const rl = createInterface({ input: process.stdin, crlfDelay: Infinity });
+rl.on("line", (line) => {
+  let message;
+  try {
+    message = JSON.parse(line);
+  } catch {
+    return;
+  }
+  if (message.method === undefined) {
+    const done = waiting.get(message.id);
+    waiting.delete(message.id);
+    done?.(message.error ? { error: message.error } : message.result);
+    return;
+  }
+  const { id, method, params } = message;
+  switch (method) {
+    case "initialize":
+      return send({ id, result: { protocolVersion: 1, agentCapabilities: { loadSession: !existsSync(".obi/no-load"), promptCapabilities: { image: false }, mcpCapabilities: { http: true } }, authMethods: [] } });
+    case "session/new":
+    case "session/load": {
+      if (!signedIn) return send({ id, error: { code: -32000, message: "Authentication required" } });
+      mkdirSync(sessions, { recursive: true });
+      servers = params.mcpServers ?? [];
+      if (servers.some((s) => !["oby", "tetrix"].includes(s.name) || !s.url.includes("/v1/agent/")))
+        return send({ id, error: { code: -32602, message: `obid gave MCP servers: ${JSON.stringify(servers.map((s) => s.name))}` } });
+      if (method === "session/load") {
+        const file = join(sessions, `${params.sessionId}.json`);
+        if (!existsSync(file)) return send({ id, error: { code: -32602, message: `no session ${params.sessionId}` } });
+        session = params.sessionId;
+        state = JSON.parse(readFileSync(file, "utf8"));
+        state.mode = "agent";
+        save();
+        return send({ id, result: sessionAnswer() });
+      }
+      session = randomUUID();
+      state = { task: null, mode: "agent", model: "default[]" };
+      save();
+      return send({ id, result: sessionAnswer() });
+    }
+    case "session/set_config_option":
+      if (params.configId === "model") state.model = params.value;
+      else return send({ id, error: { code: -32602, message: `no option ${params.configId}` } });
+      save();
+      return send({ id, result: { configOptions: sessionAnswer().configOptions } });
+    case "session/set_mode":
+      state.mode = params.modeId;
+      save();
+      return send({ id, result: {} });
+    case "session/prompt":
+      prompt(id, params.prompt.map((b) => b.text).join("\n"));
+      return;
+    case "session/cancel":
+      cancelled?.();
+      return;
+    default:
+      return send({ id, error: { code: -32601, message: `fake-cursor doesn't know ${method}` } });
+  }
+});
+rl.on("close", () => process.exit(0));

@@ -1,0 +1,52 @@
+[package]
+name = "obid"
+description = "Obi's engine as a daemon: the runner API (docs/runner-api.md) and everything behind it."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+obi-protocol = { path = "../obi-protocol" }
+axum.workspace = true
+# The FCM service account's RS256 JWT (crate::push): the RSA that rustls already builds.
+aws-lc-rs = { version = "1.18.2", default-features = false, features = ["aws-lc-sys"] }
+base64.workspace = true
+# The iPhone's sealed pushes (crate::push): HPKE (RFC 9180) base mode, DHKEM(X25519, HKDF-SHA256),
+# HKDF-SHA256, ChaCha20-Poly1305, so Deskree's relay only ever carries a sealed blob.
+hpke = { version = "0.14.1", default-features = false, features = ["alloc", "getrandom", "x25519", "chacha"] }
+futures-util.workspace = true
+jsonschema.workspace = true
+libc.workspace = true
+nix.workspace = true
+p256.workspace = true
+reqwest.workspace = true
+tokio-stream.workspace = true
+tokio-tungstenite.workspace = true
+getrandom.workspace = true
+gethostname.workspace = true
+hex.workspace = true
+jiff.workspace = true
+regex.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+# NFKD and general categories for memory's rules (src/memory.rs, `widens`): already in the
+# tree, through `url`, their compiled data only.
+icu_normalizer = { version = "2.3.0", default-features = false, features = ["compiled_data"] }
+icu_properties = { version = "2.3.0", default-features = false, features = ["compiled_data"] }
+# The gateway calls obid's own router in process (src/gateway.rs).
+tower = { version = "0.5.3", default-features = false, features = ["util"] }
+uuid.workspace = true
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+# The channel's tests relay it through a WebSocket server of their own.
+axum = { workspace = true, features = ["ws"] }

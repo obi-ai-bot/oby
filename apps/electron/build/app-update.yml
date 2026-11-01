@@ -1,0 +1,6 @@
+# electron-updater's own file (Contents/Resources/app-update.yml, electron-builder.yml's
+# extraResources): it reads its cache folder's name from it before any download. The feed is
+# main's FEED (src/shared/updates.ts), set in code; this url is the same, and a test keeps it so.
+provider: generic
+url: https://downloads.oby.dev/electron
+updaterCacheDirName: oby-electron-updater

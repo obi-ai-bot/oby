@@ -1,0 +1,23 @@
+#!/bin/sh
+# A stand-in for macOS's /usr/bin/security in obid's tests (OBID_SECURITY_BIN, support::start): it
+# notes what it was asked in $TMPDIR/obid-test-security-calls, so a test's obid never reads the
+# person's real Keychain. It finds an item only when a test put one in
+# $TMPDIR/obid-test-keychain/<service> (`-s`), and answers what that holds with `-w`; else none
+# (exit 44, errSecItemNotFound, as security does).
+printf '%s\n' "$*" >> "${TMPDIR:-/nonexistent}/obid-test-security-calls"
+service=
+value=
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -s) service=$2; shift ;;
+        -w) value=1 ;;
+    esac
+    shift
+done
+item="${TMPDIR:-/nonexistent}/obid-test-keychain/$service"
+if [ -n "$service" ] && [ -f "$item" ]; then
+    # Without -w, the item's attributes: its "mdat" changes with what it holds, as a rewrite's does.
+    if [ -n "$value" ]; then cat "$item"; else printf '    "mdat"<timedate>="%s"\n' "$(cksum < "$item")"; fi
+    exit 0
+fi
+exit 44

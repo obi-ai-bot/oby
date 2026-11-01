@@ -1,0 +1,1903 @@
+//! More of RunnerTests' API-level tests, ported to the real obid binary asked over HTTP: the job as
+//! the API sends it, Clear done, jobs beyond the latest 50, the slot a job waits for, and what a
+//! dispatch body sets. The Swift test each one ports is named on it; tests/PORTING.md lists every
+//! RunnerTests test, ported or not, and why.
+
+mod support;
+
+use std::io::Write;
+use std::path::{Path, PathBuf};
+
+use serde_json::{Value, json};
+use support::*;
+
+/// tests/agents/fake-claude: the stand-in agent (`COMMIT: <file>`, `SLEEP`, `FAIL`, `ASK: …`).
+fn fake_claude() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/agents/fake-claude")
+}
+
+/// obid with the fixture repository and the stand-in agent.
+fn obid(folder: &Folder) -> (Obid, Value) {
+    let remote = fixture(&folder.0.join("fixture"));
+    let config = config(&folder.0, &remote, &fake_claude());
+    (start(&folder.0, &config, None), config)
+}
+
+fn dispatch(obid: &Obid, job: Value) -> Value {
+    let answer = call(obid, "POST", "/v1/jobs", Some(&json!({"job": job})));
+    assert_eq!(answer.status, 201, "{}", answer.text);
+    answer.body
+}
+
+fn job(obid: &Obid, id: &str) -> Value {
+    let answer = call(obid, "GET", &format!("/v1/jobs/{id}"), None);
+    assert_eq!(answer.status, 200, "{}", answer.text);
+    answer.body
+}
+
+fn ended(obid: &Obid, id: &str) -> Value {
+    let answer = call(obid, "GET", &format!("/v1/jobs/{id}/wait"), None);
+    assert_eq!(answer.status, 200, "{}", answer.text);
+    answer.body
+}
+
+fn git(dir: &Path, args: &[&str]) {
+    let output = std::process::Command::new("git")
+        // Not a committing job's objects, when this runs in its sandbox (sandbox::Spec::git_env).
+        .env_remove("GIT_OBJECT_DIRECTORY")
+        .env_remove("GIT_ALTERNATE_OBJECT_DIRECTORIES")
+        .args(args)
+        .current_dir(dir)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "git {args:?}: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+fn is_iso_second(text: &str) -> bool {
+    let bytes = text.as_bytes();
+    bytes.len() == 20
+        && bytes.iter().enumerate().all(|(i, b)| match i {
+            4 | 7 => *b == b'-',
+            10 => *b == b'T',
+            13 | 16 => *b == b':',
+            19 => *b == b'Z',
+            _ => b.is_ascii_digit(),
+        })
+}
+
+/// Every key the Swift runner's job has (Runner/API.swift, `JobJSON`): the stored ones, the ones
+/// it sends as null when unset (`Nullable`) and the derived ones (`Derived`). 65 in all.
+const SWIFT_JOB_KEYS: [&str; 65] = [
+    "id",
+    "request",
+    "agent",
+    "account",
+    "repo",
+    "branch",
+    "kind",
+    "task",
+    "status",
+    "step",
+    "summary",
+    "created",
+    // Nullable
+    "base",
+    "pr",
+    "session",
+    "started",
+    "finished",
+    "commits",
+    "published",
+    "pushed",
+    "publishError",
+    "summaries",
+    "issue",
+    "fromPR",
+    "rounds",
+    "round",
+    "check",
+    "model",
+    "effort",
+    "complexity",
+    "notes",
+    "pullRequest",
+    "pullRequestError",
+    "dismissed",
+    "reviewing",
+    "review",
+    "reviewError",
+    "reviewOf",
+    "files",
+    "lead",
+    "claim",
+    "outgoing",
+    "question",
+    "limit",
+    "startCommit",
+    "firstSwiftBuildSeconds",
+    "macCheck",
+    "mergeError",
+    "appleCheck",
+    "appleRan",
+    "tetrix",
+    "moves",
+    "xcodeCloud",
+    "xcodeCloudError",
+    "startWhen",
+    "waiting",
+    "mode",
+    "permission",
+    "connectionUses",
+    // Derived
+    "pipeline",
+    "title",
+    "mergeNeedsYou",
+    "reviewNeedsYou",
+    "cloudNeedsYou",
+    "report",
+];
+
+/// RunnerTests.jobsHaveISODatesAndEveryKey and TitleTests.theJobKeepsItsTitleAndTheAPISendsIt:
+/// every key the apps read is there, null when unset rather than left out, plus the two only obid
+/// sends (`obi`, `worktree`: runner-api.md, "obid only: Obi-to-Obi review jobs"); dates are ISO
+/// 8601 to the second; the title given is the one sent. A job from before modes runs as bypass.
+#[test]
+fn jobs_have_iso_dates_and_every_key() {
+    let folder = Folder::new("every-key");
+    let (obid, _) = obid(&folder);
+    let sent = dispatch(
+        &obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "research", "task": "Look around",
+               "title": "Job progress screen"}),
+    );
+    let id = sent["id"].as_str().unwrap().to_owned();
+    for body in [sent, job(&obid, &id), ended(&obid, &id)] {
+        let keys = body.as_object().unwrap();
+        for key in SWIFT_JOB_KEYS {
+            assert!(keys.contains_key(key), "{key} is missing: {body}");
+        }
+        // The job page's facts (#739) are there only once obid knows them.
+        let page = [
+            "activity",
+            "checks",
+            "context",
+            "diff",
+            "estimate",
+            "scan",
+            "usage",
+            "windowShare",
+        ];
+        let mut extra: Vec<&str> = keys
+            .keys()
+            .map(String::as_str)
+            .filter(|k| !SWIFT_JOB_KEYS.contains(k) && !page.contains(k))
+            .collect();
+        extra.sort_unstable();
+        assert_eq!(
+            extra,
+            [
+                "accountLimit",
+                "addedTo",
+                "answered",
+                "answeredCount",
+                "approvals",
+                "archived",
+                "artifactProblems",
+                "artifacts",
+                "changes",
+                "conversation",
+                "followUpOf",
+                "nextStep",
+                "obi",
+                "reason",
+                "resumesAt",
+                "routine",
+                "runsOn",
+                "stalled",
+                "supervised",
+                "teammates",
+                "turn",
+                "worktree"
+            ],
+            "{body}"
+        );
+        let known = keys.keys().filter(|k| page.contains(&k.as_str())).count();
+        assert_eq!(keys.len(), 87 + known);
+        // POST /v1/jobs: its own conversation, the owner's words its first turn (TASKCONV-1).
+        assert!(body["conversation"].is_string(), "{body}");
+        assert!(body["turn"].is_string(), "{body}");
+        // What obid never sets is there, as null.
+        for key in [
+            "published",
+            "pushed",
+            "fromPR",
+            "complexity",
+            "pullRequest",
+            "pullRequestError",
+            "reviewing",
+            "review",
+            "reviewError",
+            "reviewOf",
+            "lead",
+            "claim",
+            "question",
+            "firstSwiftBuildSeconds",
+            "macCheck",
+            "mergeError",
+            "appleCheck",
+            "appleRan",
+            "tetrix",
+            "xcodeCloud",
+            "xcodeCloudError",
+            "startWhen",
+            "permission",
+            "pr",
+            "issue",
+            "obi",
+        ] {
+            assert!(body[key].is_null(), "{key} isn't null: {body}");
+        }
+        assert!(is_iso_second(body["created"].as_str().unwrap()), "{body}");
+        assert_eq!(body["title"], "Job progress screen");
+        assert_eq!(body["report"], false);
+        assert_eq!(body["cloudNeedsYou"], false);
+        assert_eq!(body["mergeNeedsYou"], false);
+        assert_eq!(body["reviewNeedsYou"], false);
+        assert_eq!(body["mode"], "sandbox");
+        assert_eq!(body["outgoing"], json!([]));
+        assert_eq!(body["moves"], json!([]));
+        assert_eq!(body["connectionUses"], json!([]));
+        assert!(body["pipeline"].is_object());
+        assert_eq!(body["rounds"], 1);
+        assert_eq!(body["round"], 1);
+        assert_eq!(body["kind"], "research");
+    }
+    let done = ended(&obid, &id);
+    assert_eq!(done["status"], "done");
+    assert!(is_iso_second(done["started"].as_str().unwrap()), "{done}");
+    assert!(is_iso_second(done["finished"].as_str().unwrap()), "{done}");
+    // WaitingTests.theAPISendsWhatItWaitsFor, its second half: nothing to wait for is null.
+    assert!(done["waiting"].is_null());
+}
+
+/// ReviewJobTests.theRunnerSaysAReviewMadeNoCommits: a review's worktree holds the pull request's
+/// commits, not its own, so the API says it made none.
+#[test]
+fn the_runner_says_a_review_made_no_commits() {
+    let folder = Folder::new("review-commits");
+    let remote = fixture(&folder.0.join("fixture"));
+    // Pull request #90: a commit on top of main, as GitHub keeps it under refs/pull/90/head.
+    let clone = folder.0.join("author");
+    git(
+        &folder.0,
+        &[
+            "clone",
+            "-q",
+            remote.to_str().unwrap(),
+            clone.to_str().unwrap(),
+        ],
+    );
+    std::fs::write(clone.join("NOTES.md"), "The pull request's own work.\n").unwrap();
+    git(&clone, &["add", "NOTES.md"]);
+    git(
+        &clone,
+        &[
+            "-c",
+            "user.name=Author",
+            "-c",
+            "user.email=author@example.com",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-q",
+            "-m",
+            "Add notes",
+        ],
+    );
+    git(&clone, &["push", "-q", "origin", "HEAD:refs/pull/90/head"]);
+    let obid = start(&folder.0, &config(&folder.0, &remote, &fake_claude()), None);
+    let id = dispatch(
+        &obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "review", "task": "Look around", "pr": 90}),
+    )["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let done = ended(&obid, &id);
+    assert_eq!(done["status"], "done", "{done}");
+    assert_eq!(done["commits"], 0);
+    assert_eq!(done["pr"], 90);
+    assert_eq!(done["branch"], "oby/review-90");
+}
+
+/// RunnerTests.dispatchBodiesAreWholeJobs, through the API: what a whole job's body sets is the
+/// job's (rounds, check, model, issue and the branch it names); an empty startWhen is none, and
+/// files left out are null, not none.
+#[test]
+fn dispatch_bodies_are_whole_jobs() {
+    let folder = Folder::new("whole");
+    let (obid, _) = obid(&folder);
+    let sent = dispatch(
+        &obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "fix", "task": "Fix #42", "issue": 42,
+               "account": "stub", "rounds": 3, "check": "true", "model": "claude-fable-5-1",
+               "startWhen": []}),
+    );
+    assert_eq!(sent["repo"], "obi-e2e/fixture-app");
+    assert_eq!(sent["kind"], "fix");
+    assert_eq!(sent["task"], "Fix #42");
+    assert_eq!(sent["issue"], 42);
+    assert!(sent["pr"].is_null());
+    assert_eq!(sent["account"], "stub");
+    assert_eq!(sent["rounds"], 3);
+    assert_eq!(sent["check"], "true");
+    assert_eq!(sent["model"], "claude-fable-5-1");
+    assert!(sent["startWhen"].is_null());
+    assert!(sent["files"].is_null());
+    assert_eq!(sent["branch"], "oby/fix-42");
+    let id = sent["id"].as_str().unwrap().to_owned();
+    call(&obid, "POST", &format!("/v1/jobs/{id}/stop"), None);
+    // A check left out is the repository's own.
+    let own = dispatch(
+        &obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "investigate", "task": "Look around"}),
+    );
+    assert_eq!(own["check"], "node --test");
+}
+
+/// ClearTests.statusSaysNullUntilTheFirstClearThenTheTime and everyAppFollowingEventsHearsAClear:
+/// `clearedAt` is null until the first clear; `POST /v1/clear` answers the time, on obid's clock,
+/// to the second; every app following events hears the same body; status says it from then on.
+/// ClearTests.theClearSurvivesARestartAndNeverGoesBack, the part the API shows: a restart keeps
+/// it, and a later clear moves it on (src/clear.rs's own test sets the clock for the rest).
+#[test]
+fn clear_done_is_kept_said_and_heard() {
+    let folder = Folder::new("clear");
+    let (mut obid, config) = obid(&folder);
+    let status = call(&obid, "GET", "/v1/status", None).body;
+    assert!(status.as_object().unwrap().contains_key("clearedAt"));
+    assert!(status["clearedAt"].is_null());
+    let events = follow_events(&obid);
+    let before = obi_protocol::time::now();
+    let answer = call(&obid, "POST", "/v1/clear", None);
+    assert_eq!(answer.status, 200, "{}", answer.text);
+    let time = answer.body["clearedAt"].as_str().unwrap().to_owned();
+    assert_eq!(answer.body, json!({"clearedAt": time}));
+    assert!(is_iso_second(&time), "{time}");
+    let cleared = obi_protocol::time::parse(&time).unwrap();
+    assert!(cleared >= before && cleared <= obi_protocol::time::now());
+    let heard = events_named(&events, "clear", 10, |got| !got.is_empty());
+    assert_eq!(heard, [json!({"clearedAt": time})]);
+    assert_eq!(
+        call(&obid, "GET", "/v1/status", None).body["clearedAt"],
+        time.as_str()
+    );
+
+    assert!(obid.stop().success());
+    let folder_path = obid.folder.clone();
+    drop(obid);
+    let obid = start(&folder_path, &config, None);
+    assert_eq!(
+        call(&obid, "GET", "/v1/status", None).body["clearedAt"],
+        time.as_str()
+    );
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    let later = call(&obid, "POST", "/v1/clear", None).body["clearedAt"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(obi_protocol::time::parse(&later).unwrap() > cleared);
+    assert_eq!(
+        call(&obid, "GET", "/v1/status", None).body["clearedAt"],
+        later.as_str()
+    );
+}
+
+/// OldJobsTests.theAPIFindsAndDismissesJob60: of 60 jobs kept from before, the list has the
+/// newest 50, and any of them is found by id, the 59th that needs nothing as much as the failed
+/// 60th; dismissing that one is kept across the next restart.
+#[test]
+fn the_api_finds_and_dismisses_job_60() {
+    let folder = Folder::new("job-60");
+    let remote = fixture(&folder.0.join("fixture"));
+    let config = config(&folder.0, &remote, &fake_claude());
+    let home = folder.0.join("home");
+    std::fs::create_dir_all(&home).unwrap();
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    // Saved before obid starts, as a runner that ran them would have: job #1 the newest.
+    let store = obid::store::Store::open(&home).unwrap();
+    let now = obi_protocol::time::now() - 3600;
+    for number in 1..=60 {
+        let id = if number == 60 {
+            "failed".to_owned()
+        } else {
+            format!("job-{number}")
+        };
+        let mut old = obid::job::Job::new(
+            id.clone(),
+            "obi-e2e/fixture-app".into(),
+            "fix".into(),
+            format!("Fix #{number}"),
+            "claude".into(),
+            "stub".into(),
+        );
+        old.branch = format!("oby/fix-{number}");
+        old.base = Some("main".into());
+        old.created = now - number * 60;
+        old.started = Some(old.created + 1);
+        old.finished = Some(old.created + 30);
+        old.round = Some(1);
+        if number == 60 {
+            old.status = obid::job::Status::Failed;
+            old.summary = "Couldn't finish: the check failed.".into();
+        } else {
+            old.status = obid::job::Status::Done;
+            old.commits = Some(0);
+            old.summary = "Nothing to do.".into();
+        }
+        store.save(&old).unwrap();
+    }
+    let obid = start(&folder.0, &config, None);
+    let listed: Vec<String> = call(&obid, "GET", "/v1/jobs?limit=50", None)
+        .body
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|j| j["id"].as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(
+        listed,
+        (1..=50).map(|n| format!("job-{n}")).collect::<Vec<_>>()
+    );
+    assert_eq!(job(&obid, "job-59")["id"], "job-59");
+    assert_eq!(job(&obid, "failed")["status"], "failed");
+    let dismissed = call(&obid, "POST", "/v1/jobs/failed/dismiss", None);
+    assert_eq!(dismissed.status, 200, "{}", dismissed.text);
+    assert!(dismissed.body["dismissed"].as_str().unwrap().ends_with('Z'));
+    assert_eq!(call(&obid, "GET", "/v1/jobs/nowhere", None).status, 404);
+    drop(obid);
+    let obid = start(&folder.0, &config, None);
+    assert!(
+        job(&obid, "failed")["dismissed"]
+            .as_str()
+            .unwrap()
+            .ends_with('Z')
+    );
+}
+
+/// ADMISSION-3 (docs/contracts/admission.md), WaitingTests.theAPISendsWhatItWaitsFor, and ParallelTests.aSeventhJobWaitsWhileSixRunAndStartsWhenOneEnds
+/// as the API shows it (with PipelineTests.oldJobsDecodeAndAPISendsDerivedStages on the running ones): six jobs run at once (`maxRunning`); the seventh is queued with
+/// `waiting` `{"kind": "cap", "text": "a slot opens"}` and no job named, and starts once one of
+/// the six ends, its `waiting` then null.
+#[test]
+fn admission_3_a_seventh_job_waits_for_a_slot_and_says_so() {
+    let folder = Folder::new("slot");
+    let (obid, _) = obid(&folder);
+    assert_eq!(call(&obid, "GET", "/v1/status", None).body["maxRunning"], 6);
+    let sleeper = || {
+        dispatch(
+            &obid,
+            json!({"repo": "obi-e2e/fixture-app", "kind": "investigate", "task": "SLEEP"}),
+        )["id"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    };
+    let six: Vec<String> = (0..6).map(|_| sleeper()).collect();
+    for id in &six {
+        // Running, its agent at work: past getting the worktree ready.
+        let running = within(60, "six jobs run", || {
+            let body = job(&obid, id);
+            (body["status"] == "running" && body["step"] != "Getting fixture-app ready")
+                .then_some(body)
+        });
+        // PipelineTests.oldJobsDecodeAndAPISendsDerivedStages: the API sends the stages it
+        // derives; a running job is at its second, Work, of six (prepare, work, the
+        // repository's check, publish, review, merged), with no pull request.
+        let pipeline = &running["pipeline"];
+        assert_eq!(pipeline["number"], 2, "{running}");
+        assert_eq!(pipeline["total"], 6, "{running}");
+        assert_eq!(pipeline["stages"].as_array().unwrap().len(), 6);
+        assert_eq!(pipeline["stages"][1]["id"], "work");
+        assert!(running["pullRequest"].is_null());
+        assert!(running["waiting"].is_null());
+    }
+    let seventh = sleeper();
+    let waiting = within(30, "the seventh says what it waits for", || {
+        let body = job(&obid, &seventh);
+        (!body["waiting"].is_null()).then_some(body)
+    });
+    assert_eq!(waiting["status"], "queued");
+    assert_eq!(
+        waiting["waiting"],
+        json!({"kind": "cap", "text": "a slot opens"})
+    );
+    assert_eq!(call(&obid, "GET", "/v1/status", None).body["running"], 6);
+    let stopped = call(&obid, "POST", &format!("/v1/jobs/{}/stop", six[0]), None);
+    assert_eq!(stopped.body["status"], "stopped");
+    let running = within(60, "the seventh starts", || {
+        let body = job(&obid, &seventh);
+        (body["status"] == "running").then_some(body)
+    });
+    assert!(running["waiting"].is_null(), "{running}");
+    let all = call(&obid, "POST", "/v1/stop-all", None);
+    assert_eq!(all.body["stopped"], 6);
+}
+
+/// ClaimTests.aClientMayClaimFilesAtDispatch, its dispatch half (the other, a plan's files from
+/// its issues, needs `POST /v1/plans`, which obid doesn't serve): a client's `files` are checked,
+/// every one, and kept cleaned, each once; a path outside the repository refuses the job.
+#[test]
+fn a_client_may_claim_files_at_dispatch() {
+    let folder = Folder::new("claim");
+    let (obid, _) = obid(&folder);
+    // Each job that starts on an issue of its own: two on one would share its branch (PUBLISHING-4).
+    let post_on = |issue: u64, files: Value| {
+        call(
+            &obid,
+            "POST",
+            "/v1/jobs",
+            Some(
+                &json!({"job": {"repo": "obi-e2e/fixture-app", "kind": "fix", "task": format!("Fix #{issue}"),
+                                 "issue": issue, "files": files}}),
+            ),
+        )
+    };
+    let post = |files: Value| post_on(176, files);
+    for bad in [
+        json!(["/etc/passwd"]),
+        json!(["src/", "~/.ssh/id_ed25519"]),
+        json!(["a/../../b"]),
+    ] {
+        let refused = post(bad.clone());
+        assert_eq!(refused.status, 422, "{bad}: {}", refused.text);
+        assert!(
+            refused.body["error"]
+                .as_str()
+                .unwrap()
+                .contains("isn't a path inside the repository"),
+            "{bad}: {}",
+            refused.text
+        );
+    }
+    let started = post(json!(["./src/greet.js", "docs/", "src//greet.js", "  "]));
+    assert_eq!(started.status, 201, "{}", started.text);
+    assert_eq!(started.body["files"], json!(["src/greet.js", "docs/"]));
+    let none = post_on(177, json!([]));
+    assert_eq!(none.body["files"], json!([]));
+    let many: Vec<String> = (0..31).map(|n| format!("src/{n}.js")).collect();
+    let refused = post(json!(many));
+    assert_eq!(refused.status, 422);
+    assert!(
+        refused.body["error"]
+            .as_str()
+            .unwrap()
+            .contains("at most 30 paths")
+    );
+    call(&obid, "POST", "/v1/stop-all", None);
+}
+
+/// NoDispatchCardTests.startedJobsKeepTheirMode, its API half (the brain's half needs
+/// `POST /v1/plans`): a dispatched job keeps the mode it was given, takes the default (sandbox,
+/// Settings › Permissions) without one, and a mode that isn't one is refused.
+#[test]
+fn dispatched_jobs_keep_their_mode() {
+    let folder = Folder::new("mode");
+    let (obid, _) = obid(&folder);
+    let given = dispatch(
+        &obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "fix", "task": "Fix #12", "issue": 12,
+               "mode": "acceptEdits"}),
+    );
+    assert_eq!(given["mode"], "acceptEdits");
+    let defaulted = dispatch(
+        &obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "fix", "task": "Fix #13", "issue": 13}),
+    );
+    assert_eq!(
+        defaulted["mode"],
+        call(&obid, "GET", "/v1/status", None).body["permissions"]["mode"]
+    );
+    assert_eq!(defaulted["mode"], "sandbox");
+    let refused = call(
+        &obid,
+        "POST",
+        "/v1/jobs",
+        Some(
+            &json!({"job": {"repo": "obi-e2e/fixture-app", "kind": "fix", "task": "Fix #12",
+                             "mode": "sometimes"}}),
+        ),
+    );
+    assert_eq!(refused.status, 422);
+    call(&obid, "POST", "/v1/stop-all", None);
+}
+
+/// PUBLISHING-4 (docs/contracts/publishing.md), the core audit's second trigger (#1635): "fix issue
+/// 34" twice, and the second is refused while the first works on `oby/fix-34`, naming it; so is a
+/// job that names that branch itself, in any letter case (one ref on a Mac). Another issue, or
+/// the first one stopped, starts; then the first takes no Try again while that one works there.
+#[test]
+fn publishing_4_two_jobs_on_one_issue_never_share_a_branch() {
+    let folder = Folder::new("busy-branch");
+    let (obid, _) = obid(&folder);
+    let first = dispatch(
+        &obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "fix", "task": "SLEEP", "issue": 34}),
+    );
+    assert_eq!(first["branch"], "oby/fix-34");
+    let id = first["id"].as_str().unwrap();
+    // At work, its session started (Try again picks it up, below).
+    within(30, "the first job's session", || {
+        job(&obid, id)["session"].is_string().then_some(())
+    });
+    for job in [
+        json!({"repo": "obi-e2e/fixture-app", "kind": "fix", "task": "Fix #34", "issue": 34}),
+        json!({"repo": "obi-e2e/fixture-app", "kind": "build", "task": "Fix it", "branch": "oby/fix-34"}),
+        json!({"repo": "obi-e2e/fixture-app", "kind": "build", "task": "Fix it", "branch": "oby/Fix-34"}),
+    ] {
+        let refused = call(&obid, "POST", "/v1/jobs", Some(&json!({"job": job})));
+        assert_eq!(refused.status, 422, "{}", refused.text);
+        let error = refused.body["error"].as_str().unwrap().to_lowercase();
+        assert!(
+            error.contains(&format!("(job {id}) is working on oby/fix-34 now")),
+            "{error}"
+        );
+    }
+    let other = dispatch(
+        &obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "fix", "task": "SLEEP", "issue": 35}),
+    );
+    assert_eq!(other["branch"], "oby/fix-35");
+    call(&obid, "POST", "/v1/stop-all", None);
+    let stopped = within(30, "the first job to stop", || {
+        let job = job(&obid, id);
+        (job["status"] == "stopped").then_some(job)
+    });
+    assert_eq!(stopped["branch"], "oby/fix-34");
+    let again = dispatch(
+        &obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "fix", "task": "SLEEP", "issue": 34}),
+    );
+    assert_eq!(again["branch"], "oby/fix-34");
+    let tried = call(
+        &obid,
+        "POST",
+        &format!("/v1/jobs/{id}/messages"),
+        Some(
+            &json!({"text": "Try again, picking up where you left off. Finish with a short summary as asked."}),
+        ),
+    );
+    assert_eq!(tried.status, 422, "{}", tried.text);
+    let again = again["id"].as_str().unwrap();
+    assert!(
+        tried.body["error"]
+            .as_str()
+            .unwrap()
+            .contains(&format!("(job {again}) is working on oby/fix-34 now")),
+        "{}",
+        tried.text
+    );
+    assert_eq!(job(&obid, id)["status"], "stopped");
+    call(&obid, "POST", "/v1/stop-all", None);
+}
+
+/// A device's publishing key, X9.63 base64, from a fixed private scalar (no key in the source).
+fn device_key(scalar: u8) -> String {
+    use base64::Engine as _;
+    use p256::elliptic_curve::sec1::ToEncodedPoint;
+    let secret = p256::SecretKey::from_slice(&[scalar; 32]).unwrap();
+    base64::engine::general_purpose::STANDARD
+        .encode(secret.public_key().to_encoded_point(false).as_bytes())
+}
+
+fn register(obid: &Obid, key: &str) -> Answer {
+    call(
+        obid,
+        "POST",
+        "/v1/devices",
+        Some(&json!({"name": "Test iPhone", "publicKey": key})),
+    )
+}
+
+/// What a registered device sends for a key or a device: `device`'s signature over
+/// `"<prefix>\n<subject>\n<signedAt>"`, signed now with `scalar`'s key.
+fn vouched(scalar: u8, device: &str, prefix: &str, subject: &str) -> Value {
+    use base64::Engine as _;
+    use p256::ecdsa::signature::Signer as _;
+    let key = p256::ecdsa::SigningKey::from_slice(&[scalar; 32]).unwrap();
+    let at = obi_protocol::time::format(obi_protocol::time::now());
+    let signature: p256::ecdsa::Signature =
+        key.sign(format!("{prefix}\n{subject}\n{at}").as_bytes());
+    json!({"device": device, "signedAt": at,
+           "signature": base64::engine::general_purpose::STANDARD.encode(signature.to_der().as_bytes())})
+}
+
+/// A new publishing key needs the owner's presence (docs/runner-api.md, `POST /v1/devices`). The
+/// attack the 2026-10-24 review found, a process on obid's machine with the API token registering
+/// its own key while the Mac's is registered, fails every way it can try; the Mac's own first
+/// registration (`pairing` naming its key, used up) and its re-registration (its registered key
+/// vouching for the next one) go through; and a key is revoked only with a registered key's
+/// signature. Ports RunnerTests.newPhonesNeedPairing, which a touched `pairing` opened.
+#[test]
+fn a_new_key_needs_the_owners_presence() {
+    let folder = Folder::new("pairing");
+    let (obid, _) = obid(&folder);
+    let mac = device_key(1);
+    let attacker = device_key(2);
+    let pairing = obid.home.join("pairing");
+    let with = |key: &str, endorsement: Value| {
+        call(
+            &obid,
+            "POST",
+            "/v1/devices",
+            Some(&json!({"name": "Test Mac", "publicKey": key, "endorsement": endorsement})),
+        )
+    };
+    let revoke =
+        |id: &str, body: Option<&Value>| call(&obid, "DELETE", &format!("/v1/devices/{id}"), body);
+
+    // The Mac's first key: `pairing` names it (the app writes it after Touch ID or the password).
+    let closed = register(&obid, &mac);
+    assert_eq!(closed.status, 403, "{}", closed.text);
+    let line = closed.body["error"].as_str().unwrap();
+    assert!(
+        line.contains(&format!("echo '{mac}' > {}", pairing.display())),
+        "{line}"
+    );
+    std::fs::write(&pairing, format!("{mac}\n")).unwrap();
+    let registered = register(&obid, &mac);
+    assert_eq!(registered.status, 200, "{}", registered.text);
+    let mac_id = registered.body["id"].as_str().unwrap().to_owned();
+    assert!(!pairing.exists(), "the Mac used pairing up");
+
+    // The attack: the API token, and every door it can try.
+    assert_eq!(
+        register(&obid, &attacker).status,
+        403,
+        "the API token alone"
+    );
+    std::fs::write(&pairing, "").unwrap();
+    assert_eq!(
+        register(&obid, &attacker).status,
+        403,
+        "pairing touched, as the Mac opened it on every connection"
+    );
+    std::fs::write(&pairing, &mac).unwrap();
+    assert_eq!(
+        register(&obid, &attacker).status,
+        403,
+        "pairing open for the Mac's own key"
+    );
+    let _ = std::fs::remove_file(&pairing);
+    for (endorsement, why) in [
+        (
+            vouched(2, &mac_id, "oby-device", &attacker),
+            "vouched for by itself",
+        ),
+        (
+            vouched(1, &mac_id, "oby-device", &device_key(3)),
+            "the Mac's vouching for another key",
+        ),
+        (
+            vouched(1, &mac_id, "oby-connection", &attacker),
+            "another kind of signature",
+        ),
+        (json!({}), "no signature"),
+    ] {
+        assert_eq!(with(&attacker, endorsement).status, 403, "{why}");
+    }
+    assert_eq!(
+        revoke(&mac_id, None).status,
+        403,
+        "revoking the Mac's key unsigned"
+    );
+    assert_eq!(
+        revoke(
+            &mac_id,
+            Some(&json!({"approval": vouched(2, &mac_id, "oby-revoke-device", &mac_id)}))
+        )
+        .status,
+        403,
+        "revoking it with the attacker's signature"
+    );
+    // A known key answers its id, and nothing else got in.
+    assert_eq!(register(&obid, &mac).body, json!({"id": mac_id}));
+    let kept = std::fs::read_to_string(obid.home.join("devices.json")).unwrap();
+    assert!(!kept.contains(&attacker), "{kept}");
+
+    // The Mac's re-registration (#1375's key): its registered key vouches for the next one, once,
+    // then revokes itself.
+    let next = device_key(3);
+    let endorsement = vouched(1, &mac_id, "oby-device", &next);
+    let moved = with(&next, endorsement.clone());
+    assert_eq!(moved.status, 200, "{}", moved.text);
+    assert_ne!(moved.body["id"], json!(mac_id));
+    assert_eq!(
+        with(&attacker, endorsement).status,
+        403,
+        "an endorsement works once"
+    );
+    let revoked = revoke(
+        &mac_id,
+        Some(&json!({"approval": vouched(1, &mac_id, "oby-revoke-device", &mac_id)})),
+    );
+    assert_eq!(revoked.status, 200, "{}", revoked.text);
+    assert_eq!(revoked.body, json!({"revoked": mac_id}));
+    assert_eq!(register(&obid, &mac).status, 403, "the old key is gone");
+    assert_eq!(revoke(&mac_id, None).status, 404);
+}
+
+/// Ports RunnerTests.malformedKeysDontRegister: what isn't a P-256 public key (X9.63, base64) is
+/// refused with 422, pairing open or not.
+#[test]
+fn malformed_keys_dont_register() {
+    use base64::Engine as _;
+    let folder = Folder::new("badkeys");
+    let (obid, _) = obid(&folder);
+    std::fs::write(obid.home.join("pairing"), device_key(1)).unwrap();
+    let raw = base64::engine::general_purpose::STANDARD
+        .decode(device_key(1))
+        .unwrap();
+    for key in [
+        "BJ3x".to_owned(),
+        "not base64!".to_owned(),
+        base64::engine::general_purpose::STANDARD.encode([4u8; 65]),
+        // The key's raw representation (X and Y without the 04 prefix).
+        base64::engine::general_purpose::STANDARD.encode(&raw[1..]),
+    ] {
+        let answer = register(&obid, &key);
+        assert_eq!(answer.status, 422, "{key}: {}", answer.text);
+    }
+    assert!(
+        obid.home.join("pairing").exists(),
+        "nothing used pairing up"
+    );
+    assert_eq!(
+        call(&obid, "POST", "/v1/devices", Some(&json!({"name": "x"}))).status,
+        422
+    );
+}
+
+/// ParallelTests.theCapIsInStatusAndSettings: `status.maxRunning` starts at 6; Settings changes it
+/// with `PUT /v1/settings/jobs`, 1 to 20 (0 and 21 are refused), `GET` says it, status follows,
+/// and obid keeps it across a restart. obid's `accountFailover` (#871) is set the same way, on its
+/// own or with the cap, and kept too.
+#[test]
+fn the_cap_is_in_status_and_settings() {
+    let folder = Folder::new("cap");
+    let (mut obid, config) = obid(&folder);
+    let status = call(&obid, "GET", "/v1/status", None).body;
+    assert_eq!(status["maxRunning"], 6);
+    assert_eq!(status["running"], 0);
+    for refused in [0, 21] {
+        let answer = call(
+            &obid,
+            "PUT",
+            "/v1/settings/jobs",
+            Some(&json!({"maxRunning": refused})),
+        );
+        assert_eq!(answer.status, 422, "{refused}: {}", answer.text);
+    }
+    assert_eq!(
+        call(
+            &obid,
+            "PUT",
+            "/v1/settings/jobs",
+            Some(&json!({"maxRunning": "3"}))
+        )
+        .status,
+        422
+    );
+    let set = call(
+        &obid,
+        "PUT",
+        "/v1/settings/jobs",
+        Some(&json!({"maxRunning": 3})),
+    );
+    assert_eq!(set.status, 200, "{}", set.text);
+    assert_eq!(
+        set.body,
+        json!({"maxRunning": 3, "accountFailover": true, "defaultAccount": null,
+               "limits": {"rounds": 10, "maxRunning": 20, "folders": 20, "routines": 20, "accounts": 32}})
+    );
+    for refused in [json!({"accountFailover": "no"}), json!({})] {
+        let answer = call(&obid, "PUT", "/v1/settings/jobs", Some(&refused));
+        assert_eq!(answer.status, 422, "{refused}: {}", answer.text);
+    }
+    let off = call(
+        &obid,
+        "PUT",
+        "/v1/settings/jobs",
+        Some(&json!({"accountFailover": false})),
+    );
+    assert_eq!(
+        off.body,
+        json!({"maxRunning": 3, "accountFailover": false, "defaultAccount": null,
+               "limits": {"rounds": 10, "maxRunning": 20, "folders": 20, "routines": 20, "accounts": 32}})
+    );
+    assert_eq!(
+        call(&obid, "GET", "/v1/settings/jobs", None).body,
+        json!({"maxRunning": 3, "accountFailover": false, "defaultAccount": null,
+               "limits": {"rounds": 10, "maxRunning": 20, "folders": 20, "routines": 20, "accounts": 32}})
+    );
+    assert_eq!(call(&obid, "GET", "/v1/status", None).body["maxRunning"], 3);
+    assert!(obid.stop().success());
+    drop(obid);
+    let obid = start(&folder.0, &config, None);
+    assert_eq!(
+        call(&obid, "GET", "/v1/settings/jobs", None).body,
+        json!({"maxRunning": 3, "accountFailover": false, "defaultAccount": null,
+               "limits": {"rounds": 10, "maxRunning": 20, "folders": 20, "routines": 20, "accounts": 32}})
+    );
+    assert_eq!(call(&obid, "GET", "/v1/status", None).body["maxRunning"], 3);
+}
+
+#[test]
+fn default_agent_is_validated_and_kept() {
+    let folder = Folder::new("default-agent");
+    let (mut obid, config) = obid(&folder);
+    assert_eq!(
+        call_with_token(
+            &obid,
+            "wrong-token",
+            "PUT",
+            "/v1/settings/default-agent",
+            Some(&json!({"defaultAgent": "codex"}))
+        )
+        .status,
+        401
+    );
+    assert_eq!(
+        call(&obid, "GET", "/v1/status", None).body["defaultAgent"],
+        "auto"
+    );
+    for body in [
+        json!({}),
+        json!({"defaultAgent": "gemini"}),
+        json!({"defaultAgent": null}),
+        json!({"defaultAgent": 1}),
+    ] {
+        assert_eq!(
+            call(&obid, "PUT", "/v1/settings/default-agent", Some(&body)).status,
+            422
+        );
+    }
+    for agent in ["auto", "claude", "cursor", "codex"] {
+        let body = json!({"defaultAgent": agent});
+        let answer = call(&obid, "PUT", "/v1/settings/default-agent", Some(&body));
+        assert_eq!(answer.status, 200, "{}", answer.text);
+        assert_eq!(answer.body, body);
+        assert_eq!(
+            call(&obid, "GET", "/v1/status", None).body["defaultAgent"],
+            agent
+        );
+    }
+    assert!(obid.stop().success());
+    drop(obid);
+    let obid = start(&folder.0, &config, None);
+    assert_eq!(
+        call(&obid, "GET", "/v1/status", None).body["defaultAgent"],
+        "codex"
+    );
+}
+
+/// AGENTS-4 (docs/contracts/agents.md): the account new tasks go to is set and cleared on
+/// `PUT /v1/settings/jobs`, only to an account obid has, said by `GET` and status, kept across a
+/// restart, and cleared when its account is removed.
+/// AGENTS-9: the owner's own ceilings (rounds, maxRunning, folders, routines, accounts) are
+/// settings: their defaults show, a raised one lets more through, null brings the default back,
+/// a lower maxRunning ceiling lowers maxRunning, and they're kept across restarts.
+#[test]
+fn agents_9_the_owners_limits_are_settings_with_defaults() {
+    let folder = Folder::new("owner-limits");
+    let (mut obid, config) = obid(&folder);
+    let put = |obid: &Obid, body: Value| call(obid, "PUT", "/v1/settings/jobs", Some(&body));
+    let limits = |obid: &Obid| call(obid, "GET", "/v1/settings/jobs", None).body["limits"].clone();
+    assert_eq!(
+        limits(&obid),
+        json!({"rounds": 10, "maxRunning": 20, "folders": 20, "routines": 20, "accounts": 32})
+    );
+    // Past a default: refused, as before.
+    assert_eq!(put(&obid, json!({"maxRunning": 30})).status, 422);
+    for refused in [
+        json!({"limits": {"rounds": 0}}),
+        json!({"limits": {"rounds": "many"}}),
+        json!({"limits": {"tokens": 5}}),
+        json!({"limits": 5}),
+        // Past what the Mac itself holds.
+        json!({"limits": {"maxRunning": 65}}),
+        json!({"limits": {"rounds": 101}}),
+        // A 422 keeps nothing, the limit it came with included.
+        json!({"limits": {"maxRunning": 40}, "maxRunning": 50}),
+    ] {
+        assert_eq!(put(&obid, refused.clone()).status, 422, "{refused}");
+    }
+    assert_eq!(
+        limits(&obid)["maxRunning"],
+        20,
+        "a refused body kept nothing"
+    );
+    let set = put(
+        &obid,
+        json!({"limits": {"rounds": 25, "maxRunning": 40}, "maxRunning": 30}),
+    );
+    assert_eq!(set.status, 200, "{}", set.text);
+    assert_eq!(set.body["maxRunning"], 30);
+    assert_eq!(set.body["limits"]["rounds"], 25);
+    assert_eq!(set.body["limits"]["folders"], 20, "the rest stays");
+    let job = |rounds: u32| {
+        call(
+            &obid,
+            "POST",
+            "/v1/jobs",
+            Some(&json!({"job": {"repo": "obi-e2e/fixture-app", "kind": "fix", "task": "x", "rounds": rounds}})),
+        )
+        .status
+    };
+    assert_eq!(job(26), 422);
+    assert_eq!(job(25), 201);
+    // A lower ceiling lowers maxRunning with it.
+    let lower = put(&obid, json!({"limits": {"maxRunning": 8}}));
+    assert_eq!(lower.body["maxRunning"], 8, "{}", lower.text);
+    assert!(obid.stop().success());
+    drop(obid);
+    let obid = start(&folder.0, &config, None);
+    assert_eq!(limits(&obid)["rounds"], 25);
+    assert_eq!(limits(&obid)["maxRunning"], 8);
+    // Null: its default again.
+    let back = put(&obid, json!({"limits": {"rounds": null}}));
+    assert_eq!(back.body["limits"]["rounds"], 10, "{}", back.text);
+}
+
+#[test]
+fn agents_4_the_default_account_is_validated_kept_and_cleared() {
+    let folder = Folder::new("default-account");
+    let (mut obid, config) = obid(&folder);
+    let put = |obid: &Obid, body: Value| call(obid, "PUT", "/v1/settings/jobs", Some(&body));
+    assert_eq!(
+        call(&obid, "GET", "/v1/status", None).body["defaultAccount"],
+        Value::Null
+    );
+    for refused in [
+        json!({"defaultAccount": "nobody"}),
+        json!({"defaultAccount": 1}),
+    ] {
+        let answer = put(&obid, refused.clone());
+        assert_eq!(answer.status, 422, "{refused}: {}", answer.text);
+    }
+    let set = put(&obid, json!({"defaultAccount": "stub"}));
+    assert_eq!(set.status, 200, "{}", set.text);
+    assert_eq!(set.body["defaultAccount"], "stub");
+    assert_eq!(set.body["maxRunning"], 6, "the rest stays");
+    assert_eq!(
+        call(&obid, "GET", "/v1/settings/jobs", None).body["defaultAccount"],
+        "stub"
+    );
+    assert!(obid.stop().success());
+    drop(obid);
+    let obid = start(&folder.0, &config, None);
+    assert_eq!(
+        call(&obid, "GET", "/v1/status", None).body["defaultAccount"],
+        "stub"
+    );
+    assert_eq!(
+        put(&obid, json!({"defaultAccount": null})).body["defaultAccount"],
+        Value::Null
+    );
+    put(&obid, json!({"defaultAccount": "stub"}));
+    let tuned = call(
+        &obid,
+        "PATCH",
+        "/v1/accounts/stub",
+        Some(&json!({"model": "claude-sonnet-5-5"})),
+    );
+    assert_eq!(tuned.status, 200, "{}", tuned.text);
+    let gone = call(&obid, "DELETE", "/v1/accounts/stub", None);
+    assert_eq!(gone.status, 204, "{}", gone.text);
+    assert_eq!(
+        call(&obid, "GET", "/v1/status", None).body["defaultAccount"],
+        Value::Null
+    );
+    // AGENTS-5: its model and efforts went with it.
+    let kept = std::fs::read_to_string(folder.0.join("home/settings.json")).unwrap();
+    assert!(!kept.contains("stub"), "{kept}");
+}
+
+/// AGENTS-5 and AGENTS-6 (docs/contracts/agents.md): an account's model, effort and complex-task
+/// effort are set on `PATCH /v1/accounts/{id}`, checked against the tool's choices, shown on the
+/// account, and cleared with null; a job with no model of its own runs on the account's, at its
+/// effort, and a model the job names wins.
+#[test]
+fn agents_5_6_jobs_run_on_their_accounts_model_and_effort() {
+    let folder = Folder::new("account-models");
+    let (obid, _) = obid(&folder);
+    let patch = |body: Value| call(&obid, "PATCH", "/v1/accounts/stub", Some(&body));
+    for refused in [
+        json!({"effort": "ultra"}),
+        json!({"complexEffort": "huge"}),
+        json!({"model": "a b"}),
+        json!({"model": "--dangerously-skip-permissions"}),
+        json!({"model": "gpt-6.1-sol"}),
+        // An effort's name isn't a model (#1652): `claude --model high` would fail every job.
+        json!({"model": "high"}),
+        json!({"model": "max"}),
+        json!({"effort": 3}),
+        // A name that can't be: the model with it isn't kept either.
+        json!({"name": "", "model": "claude-sonnet-5-5"}),
+    ] {
+        let answer = patch(refused.clone());
+        assert_eq!(answer.status, 422, "{refused}: {}", answer.text);
+    }
+    let account = &call(&obid, "GET", "/v1/status", None).body["accounts"][0];
+    assert!(account.get("model").is_none(), "{account}");
+    let set =
+        patch(json!({"model": "claude-sonnet-5-5", "effort": "high", "complexEffort": "max"}));
+    assert_eq!(set.status, 200, "{}", set.text);
+    assert_eq!(set.body["model"], "claude-sonnet-5-5");
+    assert_eq!(set.body["effort"], "high");
+    assert_eq!(set.body["complexEffort"], "max");
+    assert_eq!(set.body["name"], "Stub", "the rest stays");
+    let account = &call(&obid, "GET", "/v1/status", None).body["accounts"][0];
+    assert_eq!(account["model"], "claude-sonnet-5-5");
+    let ran = |job: Value| {
+        let mut whole =
+            json!({"repo": "obi-e2e/fixture-app", "kind": "research", "task": "SHOW_MODEL"});
+        whole
+            .as_object_mut()
+            .unwrap()
+            .extend(job.as_object().unwrap().clone());
+        let id = dispatch(&obid, whole)["id"].as_str().unwrap().to_owned();
+        ended(&obid, &id)["summary"].as_str().unwrap().to_owned()
+    };
+    assert_eq!(ran(json!({})), "model=claude-sonnet-5-5 effort=high");
+    assert_eq!(
+        ran(json!({"model": "claude-haiku-5-5"})),
+        "model=claude-haiku-5-5 effort=high"
+    );
+    let cleared = patch(json!({"model": null, "effort": null, "complexEffort": null}));
+    assert_eq!(cleared.status, 200, "{}", cleared.text);
+    assert!(cleared.body.get("model").is_none(), "{}", cleared.body);
+    assert_eq!(ran(json!({})), "model=none effort=none");
+}
+
+/// AGENTS-8 (docs/contracts/agents.md): the models and efforts Settings › Agents offers, and each
+/// tool's own, as status has them.
+#[test]
+fn agents_8_the_choices_are_listed() {
+    let folder = Folder::new("model-options");
+    let (obid, _) = obid(&folder);
+    let options = call(&obid, "GET", "/v1/settings/models/options", None);
+    assert_eq!(options.status, 200, "{}", options.text);
+    let options = options.body;
+    assert!(
+        options["claude"]["models"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|m| m["id"] == "claude-opus-5-5")
+    );
+    assert_eq!(
+        options["claude"]["efforts"],
+        json!(["low", "medium", "high", "xhigh", "max"])
+    );
+    assert_eq!(
+        options["codex"]["models"][0]["efforts"],
+        json!(["low", "medium", "high", "xhigh"])
+    );
+    assert_eq!(options["cursor"]["efforts"], json!([]));
+    assert_eq!(
+        call(&obid, "GET", "/v1/settings/models", None).body,
+        call(&obid, "GET", "/v1/status", None).body["models"]
+    );
+}
+
+/// With the cap lowered to one, a second job waits for the slot, and raising the cap starts it at
+/// once (runner-api.md, "GET /v1/settings/jobs and PUT /v1/settings/jobs").
+#[test]
+fn raising_the_cap_starts_a_waiting_job_at_once() {
+    let folder = Folder::new("raise");
+    let (obid, _) = obid(&folder);
+    let set = |max: u64| {
+        let answer = call(
+            &obid,
+            "PUT",
+            "/v1/settings/jobs",
+            Some(&json!({"maxRunning": max})),
+        );
+        assert_eq!(answer.status, 200, "{}", answer.text);
+    };
+    set(1);
+    let sleeper = || {
+        dispatch(
+            &obid,
+            json!({"repo": "obi-e2e/fixture-app", "kind": "investigate", "task": "SLEEP"}),
+        )["id"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    };
+    let first = sleeper();
+    within(60, "the first runs", || {
+        (job(&obid, &first)["status"] == "running").then_some(())
+    });
+    let second = sleeper();
+    let waiting = within(30, "the second waits for the slot", || {
+        let body = job(&obid, &second);
+        (!body["waiting"].is_null()).then_some(body)
+    });
+    assert_eq!(
+        waiting["waiting"],
+        json!({"kind": "cap", "text": "a slot opens"})
+    );
+    set(2);
+    within(60, "the second starts", || {
+        (job(&obid, &second)["status"] == "running").then_some(())
+    });
+    assert_eq!(call(&obid, "POST", "/v1/stop-all", None).body["stopped"], 2);
+}
+
+/// RunnerTests.messagesReachOnlyJobsThatCanTakeThem, with the owner's decision of 2026-10-18
+/// (Sangam's design leads): `POST /v1/jobs/{id}/messages` answers 404 for an unknown job, 400 for
+/// a body without `text` and 422 for words that aren't 1 to 2,000 characters. Words for a job that
+/// ended start a follow-up (`201`, the new job): the same kind, agent, account, repository, base
+/// and conversation, on a branch and worktree of its own, `followUpOf` the first job, the words
+/// its request; the first job stays as it ended, even one that never started. Only the exact
+/// Try-again words pick a job's session up again in its own worktree for one more round (and one
+/// more on a loop's limit), as Try again does, and a job that never started has none to pick up.
+#[test]
+fn messages_reach_only_jobs_that_can_take_them() {
+    let folder = Folder::new("talk");
+    let remote = fixture(&folder.0.join("fixture"));
+    let mut config = config(&folder.0, &remote, &fake_claude());
+    config["repos"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({"repo": "obi-e2e/gone", "remote": format!("file://{}", folder.0.join("nowhere.git").display()), "defaultBranch": "main"}));
+    let obid = start(&folder.0, &config, None);
+    let post = |id: &str, body: Value| {
+        call(
+            &obid,
+            "POST",
+            &format!("/v1/jobs/{id}/messages"),
+            Some(&body),
+        )
+    };
+
+    assert_eq!(post("nowhere", json!({"text": "hi"})).status, 404);
+    // Never started: its repository couldn't be got ready, so it has no session.
+    let never = dispatch(
+        &obid,
+        json!({"repo": "obi-e2e/gone", "kind": "investigate", "task": "Look around"}),
+    )["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert_eq!(ended(&obid, &never)["status"], "failed");
+    let refused = post(&never, json!({"text": TRY_AGAIN}));
+    assert_eq!(refused.status, 422, "{}", refused.text);
+    assert!(
+        refused.body["error"]
+            .as_str()
+            .unwrap()
+            .contains("never started"),
+        "{}",
+        refused.text
+    );
+    let after_never = post(&never, json!({"text": "hi"}));
+    assert_eq!(after_never.status, 201, "{}", after_never.text);
+    assert_eq!(after_never.body["followUpOf"], never.as_str());
+    assert_eq!(job(&obid, &never)["status"], "failed");
+
+    // A loop of up to two rounds that ends done after its first (its check passes), then the
+    // owner's words.
+    let finished = dispatch(
+        &obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "investigate", "task": "Look around", "rounds": 2, "branch": "oby/review-33"}),
+    )["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let done = ended(&obid, &finished);
+    assert_eq!(done["status"], "done", "{done}");
+    assert_eq!(
+        (done["round"].clone(), done["rounds"].clone()),
+        (json!(1), json!(2))
+    );
+    assert_eq!(post(&finished, json!({"words": "hi"})).status, 400);
+    assert_eq!(post(&finished, json!({"text": " \n "})).status, 422);
+    assert_eq!(
+        post(&finished, json!({"text": "x".repeat(2001)})).status,
+        422
+    );
+    let words = "rename notes.txt to hello.txt";
+    let followed = post(&finished, json!({"text": words}));
+    assert_eq!(followed.status, 201, "{}", followed.text);
+    let next = &followed.body;
+    assert_ne!(next["id"], finished.as_str());
+    assert_eq!(next["followUpOf"], finished.as_str());
+    assert_eq!(next["request"], words);
+    for key in ["kind", "agent", "account", "repo", "base", "conversation"] {
+        assert_eq!(next[key], done[key], "{key}");
+    }
+    assert_ne!(next["branch"], "oby/review-33");
+    let next_id = next["id"].as_str().unwrap().to_owned();
+    let next_done = ended(&obid, &next_id);
+    assert_eq!(next_done["status"], "done", "{next_done}");
+    assert_ne!(next_done["worktree"], done["worktree"]);
+    let first = job(&obid, &finished);
+    assert_eq!(first["status"], "done");
+    assert_eq!(first["round"], 1);
+    assert!(first["notes"].is_null(), "{first}");
+
+    // Try again picks the session up again, in the same worktree and branch.
+    let session = done["session"].as_str().unwrap().to_owned();
+    let resumed = post(&finished, json!({"text": TRY_AGAIN}));
+    assert_eq!(resumed.status, 200, "{}", resumed.text);
+    let again = &resumed.body;
+    assert_eq!(again["id"], finished.as_str());
+    assert_eq!(again["branch"], "oby/review-33");
+    assert_eq!(again["notes"], json!([TRY_AGAIN]));
+    assert_eq!(again["round"], 2);
+    assert_eq!(again["rounds"], 3);
+    assert_eq!(again["step"], format!("You: {TRY_AGAIN}"));
+    assert!(again["finished"].is_null());
+    let after = ended(&obid, &finished);
+    assert_eq!(after["status"], "done", "{after}");
+    assert_eq!(after["session"], session.as_str());
+    assert_eq!(after["worktree"], done["worktree"]);
+    assert_eq!(after["notes"], json!([TRY_AGAIN]));
+}
+
+/// A follow-up of a job whose commits aren't merged (here not published: this obid has no `gh`)
+/// starts from that job's branch head, on a branch of its own: its agent sees that work, and its
+/// commits are what it publishes beyond what that job pushed (only its pull request failed here),
+/// its own (#770). A job takes one follow-up at a time: while one works, more words
+/// for the first job go to it, never a second.
+#[test]
+fn a_follow_up_starts_from_the_first_jobs_unmerged_work() {
+    let folder = Folder::new("follow-up-work");
+    let (obid, _) = obid(&folder);
+    let post = |id: &str, text: &str| {
+        call(
+            &obid,
+            "POST",
+            &format!("/v1/jobs/{id}/messages"),
+            Some(&json!({"text": text})),
+        )
+    };
+    let first = dispatch(
+        &obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "build", "task": "COMMIT: one.txt"}),
+    )["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let done = ended(&obid, &first);
+    assert_eq!(done["commits"], 1, "{done}");
+    assert!(done["published"].is_null(), "{done}");
+    let clone = obid.home.join("clones/obi-e2e/fixture-app");
+    let head = git_out(
+        &clone,
+        &["rev-parse", &format!("refs/heads/oby/build-{first}")],
+    );
+
+    let followed = post(&first, "COMMIT: two.txt");
+    assert_eq!(followed.status, 201, "{}", followed.text);
+    let next = followed.body["id"].as_str().unwrap().to_owned();
+    assert_eq!(followed.body["branch"], format!("oby/build-{next}"));
+    let after = ended(&obid, &next);
+    assert_eq!(after["startCommit"], head.as_str(), "{after}");
+    assert_eq!(done["pushed"], 1, "{done}");
+    assert_eq!(after["commits"], 1, "{after}");
+    let worktree = std::path::Path::new(after["worktree"].as_str().unwrap());
+    assert!(worktree.join("one.txt").is_file() && worktree.join("two.txt").is_file());
+
+    // One follow-up at a time.
+    let looked = dispatch(
+        &obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "investigate", "task": "Look around"}),
+    )["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    ended(&obid, &looked);
+    let pausing = post(&looked, "PAUSE: 3000");
+    assert_eq!(pausing.status, 201, "{}", pausing.text);
+    let follow = pausing.body["id"].as_str().unwrap().to_owned();
+    assert_eq!(pausing.body["title"], "Follow-up: Look around");
+    within(60, "its follow-up is at work", || {
+        let body = job(&obid, &follow);
+        (body["status"] == "running" && body["step"] == "Starting Claude Code").then_some(())
+    });
+    let busy = post(&looked, "and one more");
+    assert_eq!(busy.status, 200, "{}", busy.text);
+    assert_eq!(busy.body["id"], follow.as_str());
+    assert_eq!(busy.body["step"], "You: and one more");
+    assert_eq!(ended(&obid, &follow)["status"], "done");
+}
+
+fn git_out(dir: &std::path::Path, args: &[&str]) -> String {
+    let output = std::process::Command::new("git")
+        // Not a committing job's objects, when this runs in its sandbox (sandbox::Spec::git_env).
+        .env_remove("GIT_OBJECT_DIRECTORY")
+        .env_remove("GIT_ALTERNATE_OBJECT_DIRECTORIES")
+        .args(args)
+        .current_dir(dir)
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "git {args:?}");
+    String::from_utf8_lossy(&output.stdout).trim().to_owned()
+}
+
+/// What a job hears when the owner tries it again (`Inbox.tryAgainMessage`).
+const TRY_AGAIN: &str =
+    "Try again, picking up where you left off. Finish with a short summary as asked.";
+
+/// The owner's words reach a job whose agent is at work as its next turn, before the check, in
+/// the same round, and that turn's reply joins the round's summaries and is added to the job's
+/// summary after the work's (TASKCONV-14, #1661); a job that must commit and whose round the owner asked for (Try again) may end
+/// done with nothing committed: their words decide (runner-api.md, "POST /v1/jobs/{id}/messages").
+#[test]
+fn taskconv_14_a_running_job_hears_the_words_next_and_its_reply_joins_the_report() {
+    let folder = Folder::new("hear");
+    let (obid, _) = obid(&folder);
+    let post = |id: &str, text: &str| {
+        call(
+            &obid,
+            "POST",
+            &format!("/v1/jobs/{id}/messages"),
+            Some(&json!({"text": text})),
+        )
+    };
+    let id = dispatch(
+        &obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "investigate", "task": "PAUSE: 3000"}),
+    )["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    within(60, "its agent is at work", || {
+        let body = job(&obid, &id);
+        (body["status"] == "running" && body["step"] == "Starting Claude Code").then_some(())
+    });
+    let heard = post(&id, "ECHO and add a test");
+    assert_eq!(heard.status, 200, "{}", heard.text);
+    assert_eq!(heard.body["status"], "running");
+    assert_eq!(heard.body["step"], "You: ECHO and add a test");
+    let done = ended(&obid, &id);
+    assert_eq!(done["status"], "done", "{done}");
+    assert_eq!(done["round"], 1);
+    assert_eq!(
+        done["summaries"],
+        json!([
+            "Paused.",
+            "heard: ECHO and add a test resume=00000000-0000-4000-8000-000000000001"
+        ])
+    );
+    // The turn only the words started keeps the work's first line (#699), and its reply follows
+    // it, so the words are seen to be heard (#1661).
+    assert_eq!(
+        done["summary"],
+        "Paused.\n\nAfter what you told it: heard: ECHO and add a test resume=00000000-0000-4000-8000-000000000001"
+    );
+
+    // A fix that commits nothing is done, saying so; the owner's round after it may end done
+    // without a commit too.
+    let fix = dispatch(
+        &obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "fix", "task": "Look around"}),
+    )["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let nothing = ended(&obid, &fix);
+    assert_eq!(nothing["status"], "done");
+    assert_eq!(nothing["summary"], "Nothing to do.");
+    assert_eq!(
+        nothing["reason"],
+        "Nothing committed, so nothing was published."
+    );
+    assert_eq!(post(&fix, TRY_AGAIN).status, 200);
+    let left = ended(&obid, &fix);
+    assert_eq!(left["status"], "done", "{left}");
+    assert_eq!(left["commits"], 0);
+    assert_eq!(left["round"], 2);
+    // The fixture's own check (`node --test`) gives a fix 3 rounds when none was named (#958), and
+    // the owner's round adds one.
+    assert_eq!(left["rounds"], 4);
+}
+
+/// DismissTests.theAPIDismissesAndSaysWhenItCant, its last line: publishing a dismissed job by hand
+/// is off, `409`, saying so (and `404` for an unknown job).
+#[test]
+fn publish_by_hand_is_off_a_dismissed_job() {
+    let folder = Folder::new("publish");
+    let (obid, _) = obid(&folder);
+    let id = dispatch(
+        &obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "fix", "task": "FAIL"}),
+    )["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert_eq!(ended(&obid, &id)["status"], "interrupted");
+    assert_eq!(
+        call(&obid, "POST", &format!("/v1/jobs/{id}/dismiss"), None).status,
+        200
+    );
+    let answer = call(&obid, "GET", &format!("/v1/jobs/{id}/publish"), None);
+    assert_eq!(answer.status, 409, "{}", answer.text);
+    assert!(answer.body["error"].as_str().unwrap().contains("dismissed"));
+    assert_eq!(
+        call(&obid, "GET", "/v1/jobs/nowhere/publish", None).status,
+        404
+    );
+}
+
+/// A job's agent that asks for each of `calls` in turn (tests/agents/fake-claude, `ASKS:`).
+fn asking(obid: &Obid, mode: &str, calls: Value) -> String {
+    dispatch(
+        obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "research", "mode": mode,
+               "task": format!("ASKS: {calls}")}),
+    )["id"]
+        .as_str()
+        .unwrap()
+        .to_owned()
+}
+
+fn bash(command: &str) -> Value {
+    json!({"tool": "Bash", "input": {"command": command}})
+}
+
+/// The job once its agent waits for the owner's OK on a permission titled `title`.
+fn waiting_for(obid: &Obid, id: &str, title: &str) -> Value {
+    within(60, &format!("{id} waits for its OK on {title}"), || {
+        let body = job(obid, id);
+        (body["permission"]["title"] == title).then_some(body)
+    })
+}
+
+/// The open inbox items of job `id`.
+fn open_items(obid: &Obid, id: &str) -> Vec<Value> {
+    call(obid, "GET", "/v1/inbox", None)
+        .body
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|i| i["job"] == id)
+        .cloned()
+        .collect()
+}
+
+/// PermissionTests.theAPIAnswersPermissionsAndModes, with the inbox's side of
+/// aPermissionWaitsInTheInboxAndAlwaysSavesARuleTheNextPromptUses and
+/// denyReachesTheAgentWithTheWords: in `ask` a command waits for the owner, on the job (its card,
+/// with the rule "always" saves) and in the inbox; `POST /v1/jobs/{id}/permission` answers it
+/// (422 for another decision, 409 for a permission that isn't the one waiting, 404 for an unknown
+/// job); always saves the rule, which answers the next prompt it covers by itself; words in the
+/// inbox are a no that reaches the agent; the job's mode changes; Settings › Permissions' default
+/// changes what new jobs get; rules are listed and forgotten.
+#[test]
+fn the_api_answers_permissions_and_modes() {
+    let folder = Folder::new("permissions");
+    let (obid, _) = obid(&folder);
+    let id = asking(
+        &obid,
+        "ask",
+        json!([
+            bash("swift test"),
+            bash("swift test --filter X"),
+            bash("make lint")
+        ]),
+    );
+    let waiting = waiting_for(&obid, &id, "Run swift test");
+    assert_eq!(waiting["mode"], "ask");
+    assert_eq!(waiting["status"], "running");
+    assert_eq!(waiting["step"], "Waiting for your OK");
+    let card = &waiting["permission"];
+    assert_eq!(card["rule"], "Bash(swift test:*)");
+    assert_eq!(
+        card["always"],
+        "Yes, and don't ask again for swift test in obi-e2e/fixture-app"
+    );
+    assert_eq!(card["detail"], "swift test");
+    assert_eq!(card["tool"], "Bash");
+    let permission = card["id"].as_str().unwrap().to_owned();
+    assert!(
+        permission.starts_with('p') && permission.len() == 7,
+        "{card}"
+    );
+    let items = open_items(&obid, &id);
+    assert_eq!(items.len(), 1, "{items:?}");
+    assert_eq!(items[0]["kind"], "permission");
+    assert_eq!(items[0]["id"], format!("{id}-permission-{permission}"));
+    assert_eq!(items[0]["text"], "Run swift test");
+    assert_eq!(
+        items[0]["options"],
+        json!(["Allow", "Always allow", "Deny"])
+    );
+
+    let answer = |job: &str, body: Value| {
+        call(
+            &obid,
+            "POST",
+            &format!("/v1/jobs/{job}/permission"),
+            Some(&body),
+        )
+    };
+    assert_eq!(
+        answer(&id, json!({"id": permission, "decision": "maybe"})).status,
+        422
+    );
+    assert_eq!(
+        answer(&id, json!({"id": "p000000", "decision": "allow"})).status,
+        409
+    );
+    assert_eq!(
+        answer("nope", json!({"id": "p1", "decision": "allow"})).status,
+        404
+    );
+    assert_eq!(
+        answer(
+            &id,
+            json!({"id": permission, "decision": "deny", "message": "x".repeat(2001)})
+        )
+        .status,
+        422
+    );
+    let always = answer(&id, json!({"id": permission, "decision": "always"}));
+    assert_eq!(always.status, 200, "{}", always.text);
+    // The rule saved answers `swift test --filter X` by itself; `make lint` asks.
+    let next = waiting_for(&obid, &id, "Run make lint");
+    assert_eq!(next["permission"]["rule"], "Bash(make lint:*)");
+    let rules = call(&obid, "GET", "/v1/permissions/rules", None).body;
+    let rule = rules[0].as_object().unwrap();
+    assert_eq!(rules.as_array().unwrap().len(), 1, "{rules}");
+    let mut keys: Vec<&str> = rule.keys().map(String::as_str).collect();
+    keys.sort();
+    assert_eq!(keys, ["created", "decision", "id", "repo", "rule"]);
+    assert_eq!(rule["rule"], "Bash(swift test:*)");
+    assert_eq!(rule["repo"], "obi-e2e/fixture-app");
+    assert_eq!(rule["decision"], "allow");
+    let done = call(&obid, "GET", "/v1/inbox?state=done", None).body;
+    let first = done
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["id"] == format!("{id}-permission-{permission}"))
+        .cloned()
+        .unwrap_or_else(|| panic!("{done}"));
+    assert_eq!(first["answer"], "Always allow");
+
+    // Words of the owner's own, in the inbox, are a no that reaches the agent.
+    let items = open_items(&obid, &id);
+    assert_eq!(items.len(), 1, "{items:?}");
+    let said = call(
+        &obid,
+        "POST",
+        &format!("/v1/inbox/{}/answer", items[0]["id"].as_str().unwrap()),
+        Some(&json!({"answer": "No, run only the tests"})),
+    );
+    assert_eq!(said.status, 200, "{}", said.text);
+    assert_eq!(said.body["answer"], "No, run only the tests");
+    assert_eq!(said.body["state"], "done");
+    let ended = ended(&obid, &id);
+    assert_eq!(ended["status"], "done", "{ended}");
+    assert_eq!(
+        ended["summary"],
+        "answers: allow, allow, deny: No, run only the tests"
+    );
+    assert_eq!(ended["notes"], json!(["No, run only the tests"]));
+    assert!(ended["permission"].is_null());
+
+    let mode = |body: Value| call(&obid, "POST", &format!("/v1/jobs/{id}/mode"), Some(&body));
+    assert_eq!(mode(json!({"mode": "sometimes"})).status, 422);
+    let changed = mode(json!({"mode": "acceptEdits"}));
+    assert_eq!(changed.status, 200, "{}", changed.text);
+    assert_eq!(changed.body["mode"], "acceptEdits");
+    assert_eq!(
+        call(
+            &obid,
+            "POST",
+            "/v1/jobs/nope/mode",
+            Some(&json!({"mode": "ask"}))
+        )
+        .status,
+        404
+    );
+
+    assert_eq!(
+        call(&obid, "GET", "/v1/status", None).body["permissions"]["mode"],
+        "sandbox"
+    );
+    assert_eq!(
+        call(
+            &obid,
+            "PUT",
+            "/v1/settings/permissions",
+            Some(&json!({"mode": "never"}))
+        )
+        .status,
+        422
+    );
+    let set = call(
+        &obid,
+        "PUT",
+        "/v1/settings/permissions",
+        Some(&json!({"mode": "ask"})),
+    );
+    assert_eq!(set.body, json!({"mode": "ask"}));
+    assert_eq!(
+        call(&obid, "GET", "/v1/settings/permissions", None).body,
+        json!({"mode": "ask"})
+    );
+    assert_eq!(
+        call(&obid, "GET", "/v1/status", None).body["permissions"]["mode"],
+        "ask"
+    );
+    let defaulted = dispatch(
+        &obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "research", "task": "Look around"}),
+    );
+    assert_eq!(defaulted["mode"], "ask");
+    ended_ok(&obid, defaulted["id"].as_str().unwrap());
+
+    let rule_id = rule["id"].as_str().unwrap();
+    let forgot = call(
+        &obid,
+        "DELETE",
+        &format!("/v1/permissions/rules/{rule_id}"),
+        None,
+    );
+    assert_eq!(forgot.status, 200, "{}", forgot.text);
+    assert_eq!(forgot.body, json!([]));
+    assert_eq!(
+        call(&obid, "DELETE", "/v1/permissions/rules/nope", None).status,
+        404
+    );
+}
+
+fn ended_ok(obid: &Obid, id: &str) {
+    let job = ended(obid, id);
+    assert_eq!(job["status"], "done", "{job}");
+}
+
+/// A waiting permission the job's new mode allows is answered at once (`POST /v1/jobs/{id}/mode`);
+/// words told to the job while one waits are a no with those words (`POST /v1/jobs/{id}/messages`);
+/// stopping a waiting job drops its permission and settles its inbox item; in `acceptEdits` a
+/// file edit in the worktree goes through and a command asks; in `plan` an edit is refused.
+#[test]
+fn bypass_6_modes_answer_what_they_allow_and_stopping_drops_the_permission() {
+    let folder = Folder::new("modes");
+    let (obid, _) = obid(&folder);
+
+    let moved = asking(&obid, "ask", json!([bash("swift test")]));
+    waiting_for(&obid, &moved, "Run swift test");
+    let bypass = call(
+        &obid,
+        "POST",
+        &format!("/v1/jobs/{moved}/mode"),
+        Some(&json!({"mode": "bypass"})),
+    );
+    assert_eq!(bypass.status, 200, "{}", bypass.text);
+    assert_eq!(ended(&obid, &moved)["summary"], "answers: allow");
+
+    let told = asking(&obid, "ask", json!([bash("make")]));
+    waiting_for(&obid, &told, "Run make");
+    let words = call(
+        &obid,
+        "POST",
+        &format!("/v1/jobs/{told}/messages"),
+        Some(&json!({"text": "use swift build instead"})),
+    );
+    assert_eq!(words.status, 200, "{}", words.text);
+    assert_eq!(
+        ended(&obid, &told)["summary"],
+        "answers: deny: use swift build instead"
+    );
+
+    let edits = asking(
+        &obid,
+        "acceptEdits",
+        json!([{"tool": "Edit", "input": {"file_path": "src/a.js"}}, bash("rm -rf build")]),
+    );
+    waiting_for(&obid, &edits, "Run rm");
+    let stopped = call(&obid, "POST", &format!("/v1/jobs/{edits}/stop"), None);
+    assert_eq!(stopped.body["status"], "stopped");
+    assert!(stopped.body["permission"].is_null(), "{}", stopped.text);
+    assert!(open_items(&obid, &edits).is_empty());
+
+    let planning = asking(
+        &obid,
+        "plan",
+        json!([{"tool": "Edit", "input": {"file_path": "src/a.js"}}, {"tool": "Read", "input": {"file_path": "src/a.js"}}]),
+    );
+    let planned = ended(&obid, &planning);
+    let summary = planned["summary"].as_str().unwrap();
+    assert!(
+        summary.starts_with("answers: deny: Plan mode: read only") && summary.ends_with(", allow"),
+        "{planned}"
+    );
+}
+
+/// `POST /v1/notifications` on obid (#452, FCM only): an APNs token is `{"push": false}` and not
+/// kept; an FCM token is `{"push": false}` until the owner puts a Firebase service account in the
+/// vault, then `{"push": true}` and kept in `home/push/fcm.json` (0600); what isn't a
+/// registration is `422`.
+#[test]
+fn an_android_phone_hands_over_its_fcm_token() {
+    use std::os::unix::fs::PermissionsExt;
+    let folder = Folder::new("fcm");
+    let (obid, _) = obid(&folder);
+    let notify = |body: Value| call(&obid, "POST", "/v1/notifications", Some(&body));
+    let fcm =
+        json!({"token": "fcm-token:APA91b_test-1", "platform": "fcm", "topic": "com.deskree.oby"});
+    let iphone =
+        json!({"token": "5b0e9c", "topic": "com.deskree.oby", "environment": "production"});
+    for body in [&iphone, &fcm] {
+        let answer = notify(body.clone());
+        assert_eq!(answer.status, 200, "{}", answer.text);
+        assert_eq!(answer.body, json!({"push": false}));
+    }
+    let tokens = obid.home.join("push/fcm.json");
+    assert!(!tokens.exists());
+    for bad in [
+        json!({"token": "", "platform": "fcm"}),
+        json!({"token": "a b", "platform": "fcm"}),
+        json!({"token": "abc", "platform": "web"}),
+        json!({"token": "abc", "platform": "fcm", "topic": "com.other.app"}),
+    ] {
+        assert_eq!(notify(bad.clone()).status, 422, "{bad}");
+    }
+
+    // A throwaway service account, its key made now.
+    use aws_lc_rs::encoding::AsDer;
+    use base64::Engine as _;
+    let key = aws_lc_rs::rsa::KeyPair::generate(aws_lc_rs::rsa::KeySize::Rsa2048).unwrap();
+    let der = base64::engine::general_purpose::STANDARD.encode(key.as_der().unwrap().as_ref());
+    let account = json!({"type": "service_account", "project_id": "oby-test",
+        "private_key": format!("-----BEGIN PRIVATE KEY-----\n{der}\n-----END PRIVATE KEY-----\n"),
+        "client_email": "push@oby-test.iam.gserviceaccount.com",
+        "token_uri": "https://oauth2.googleapis.com/token"});
+    let mut child = std::process::Command::new(OBID)
+        .args(["vault", "--config"])
+        .arg(folder.0.join("config.json"))
+        .args(["add", "oby.fcm.serviceAccount"])
+        .env_clear()
+        .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(account.to_string().as_bytes())
+        .unwrap();
+    assert!(child.wait().unwrap().success());
+
+    let answer = notify(fcm.clone());
+    assert_eq!(answer.status, 200, "{}", answer.text);
+    assert_eq!(answer.body, json!({"push": true}));
+    assert_eq!(notify(iphone).body, json!({"push": false}));
+    // On the loopback API, with the API token: no paired device.
+    let kept: Value = serde_json::from_slice(&std::fs::read(&tokens).unwrap()).unwrap();
+    assert_eq!(
+        kept,
+        json!([{"token": "fcm-token:APA91b_test-1", "device": null}])
+    );
+    assert_eq!(
+        std::fs::metadata(&tokens).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+    assert!(!obid.log().contains(&der[..40]), "the key reached the log");
+}

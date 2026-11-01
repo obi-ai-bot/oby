@@ -1,0 +1,2003 @@
+//! Oby's conversations (#493): many threads, each with its own turns, shared by every device and
+//! plan request (`GET /v1/conversations`, `GET /v1/conversation`, `PATCH` and `DELETE
+//! /v1/conversations/{id}`). Each is one private file, `home/conversations/<id>.json`, written
+//! whole. The single thread obid kept before (`home/conversation.json`) becomes the first one.
+
+use crate::api::{ApiError, Shared};
+use crate::events::Events;
+use axum::body::Bytes;
+use axum::extract::{Path as UrlPath, Query, State};
+use axum::http::StatusCode;
+use axum::response::{IntoResponse, Response};
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+
+/// The turns kept per conversation, the oldest pruned.
+const KEPT: usize = 500;
+/// The conversations kept: past it, starting one forgets the oldest that isn't pinned.
+pub const CONVERSATIONS: usize = 200;
+/// The longest title a rename may set.
+const TITLE: usize = 100;
+/// The longest search a list takes, in characters (#593).
+pub const QUERY: usize = 200;
+/// The turns a search returns per conversation, the latest first.
+pub const HITS: usize = 3;
+/// The most of a found turn's text a search returns, in characters.
+pub const EXCERPT: usize = 500;
+/// Where the thread of obid before #493 is kept once it's a conversation, for a rollback.
+const PRE_493: &str = "conversation.json.pre-493";
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Turn {
+    pub id: String,
+    pub who: String,
+    pub text: String,
+    pub at: String,
+    #[serde(default)]
+    pub jobs: Vec<String>,
+    /// The conversation it's in. Turns kept before #493 have none until they're migrated.
+    #[serde(default)]
+    pub conversation: String,
+    /// True on the turn that tells its conversation how a job it started ended (#351). Its first
+    /// line is obid's own words; the second, when there is one, is the first line of the job's
+    /// summary, which its agent may have written: the brain's briefing reads only the first.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub ended: bool,
+    /// The artifacts Oby made in this turn, `{id, version}` each (docs/conversation-harness.md,
+    /// section 4). Left out when it made none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub artifacts: Vec<Value>,
+    /// On the turn a routine's run adds (crate::routines): `{id, name, outcome, scheduled,
+    /// catchUp}`. Left out on every other turn.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub routine: Option<Value>,
+    /// On Oby's turn that asks the owner something: the question and its options, which an
+    /// answer must name exactly to stay this conversation's words ([`Conversations::oby_asked`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub asked: Option<Asked>,
+    /// On the owner's turn: the names of the files attached to the words (`POST /v1/plans`'s
+    /// `attachments`), for the tags under them. Left out when none were.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attachments: Vec<String>,
+}
+
+/// The question an Oby turn asked, and its options.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Asked {
+    pub question: String,
+    pub options: Vec<String>,
+}
+
+/// One conversation as obid keeps it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Thread {
+    id: String,
+    title: String,
+    pinned: bool,
+    created: String,
+    /// Raised on every turn, so the latest conversation is known to more than the second
+    /// (`at` and `created` are whole seconds). Each is one more than the highest kept, so no
+    /// two conversations share one.
+    sequence: u64,
+    turns: Vec<Turn>,
+    /// The task list its agent keeps for itself (`oby_tasks`), in its order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    tasks: Vec<Task>,
+    /// The list was written in a turn that read something untrusted: every turn it's fed back to
+    /// is treated as having read it too.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    tasks_tainted: bool,
+    /// The first thing its Oby read or heard that isn't on obid's allowlist (crate::secretspec):
+    /// words no app of the owner's signed, another job's or the inbox's words, the web, a tool obid
+    /// doesn't know. From then on what it starts and says is someone else's for the owner's
+    /// secrets. Never cleared: what it read stays in what it says. Always written, `null` too: one
+    /// kept before obid marked it reads as marked ([`kept_before_marks`]).
+    #[serde(default = "kept_before_marks")]
+    foreign: Option<String>,
+    /// The folders its work is in (crate::folders): canonical paths, in the order picked.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    folders: Vec<String>,
+    /// The files attached to its words, as obid keeps them (`attachments` on `POST /v1/plans`):
+    /// they go when it does ([`Conversations::delete`]).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    uploads: Vec<String>,
+}
+
+/// A conversation kept before obid marked what each one read: its turns' words may be anyone's.
+fn kept_before_marks() -> Option<String> {
+    Some("turns kept before obid marked what a conversation read".into())
+}
+
+/// The most tasks a conversation's list holds.
+pub const TASKS: usize = 50;
+/// A task's statuses, as Gemini CLI's `write_todos` names them.
+pub const TASK_STATUSES: [&str; 5] = [
+    "pending",
+    "in_progress",
+    "completed",
+    "cancelled",
+    "blocked",
+];
+
+/// One task of a conversation's own list (docs/runner-api.md, "obid only: the conversation
+/// manages its own work").
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Task {
+    #[serde(default)]
+    pub id: String,
+    pub title: String,
+    pub status: String,
+    #[serde(default)]
+    pub job: Option<String>,
+    #[serde(default)]
+    pub note: Option<String>,
+}
+
+impl Task {
+    /// Still to do: neither completed nor cancelled.
+    pub fn open(&self) -> bool {
+        self.status != "completed" && self.status != "cancelled"
+    }
+}
+
+/// `tasks` as a list may hold them, ids given to those without (`t1`, `t2`, …, never one taken),
+/// or why not.
+pub fn checked_tasks(mut tasks: Vec<Task>) -> Result<Vec<Task>, String> {
+    if tasks.len() > TASKS {
+        return Err(format!("A task list holds at most {TASKS} tasks."));
+    }
+    for task in &mut tasks {
+        task.title = task.title.trim().to_owned();
+        if task.title.is_empty()
+            || task.title.chars().count() > 200
+            || task.title.chars().any(|c| c.is_control() || breaks_line(c))
+        {
+            return Err("A task's title is one line of 1 to 200 characters.".into());
+        }
+        if !TASK_STATUSES.contains(&task.status.as_str()) {
+            return Err(format!(
+                "A task's status is {}, not {}.",
+                TASK_STATUSES.join(", "),
+                task.status
+            ));
+        }
+        if task.note.as_ref().is_some_and(|n| n.chars().count() > 500) {
+            return Err("A task's note is at most 500 characters.".into());
+        }
+        if task.id.chars().count() > 40 || task.id.chars().any(|c| c.is_control() || breaks_line(c))
+        {
+            return Err("A task's id is at most 40 characters, on one line.".into());
+        }
+        if task.job.as_ref().is_some_and(|j| {
+            j.is_empty()
+                || j.chars().count() > 40
+                || j.chars().any(|c| c.is_control() || breaks_line(c))
+        }) {
+            return Err("A task's job is a job's id: 1 to 40 characters, on one line.".into());
+        }
+    }
+    let mut next = 1;
+    let given: Vec<String> = tasks.iter().map(|t| t.id.clone()).collect();
+    for task in &mut tasks {
+        while task.id.is_empty() {
+            let id = format!("t{next}");
+            next += 1;
+            if !given.contains(&id) {
+                task.id = id;
+            }
+        }
+    }
+    let mut seen = std::collections::HashSet::new();
+    if let Some(twice) = tasks.iter().find(|t| !seen.insert(t.id.as_str())) {
+        return Err(format!("Two tasks have the id {}.", twice.id));
+    }
+    Ok(tasks)
+}
+
+impl Thread {
+    fn last_activity(&self) -> &str {
+        self.turns.last().map_or(&self.created, |t| &t.at)
+    }
+
+    /// Where it stands in the list: pinned first, then the latest turn first.
+    fn key(&self) -> Cursor {
+        Cursor {
+            pinned: self.pinned,
+            sequence: self.sequence,
+        }
+    }
+
+    /// As `GET /v1/conversations` lists it and the `conversation` event sends it.
+    fn summary(&self) -> Value {
+        json!({
+            "id": self.id,
+            "title": self.title,
+            "pinned": self.pinned,
+            "created": self.created,
+            "lastActivity": self.last_activity(),
+            "cursor": self.key().to_string(),
+            "tasks": self.tasks,
+            "folders": self.folders,
+        })
+    }
+}
+
+/// A conversation a search found (#593): what the list says of it, and the turns that hold the
+/// words, the latest first, each with its place in the conversation from 1.
+#[derive(Debug, Clone)]
+pub struct Found {
+    pub id: String,
+    pub title: String,
+    pub summary: Value,
+    /// How many turns it keeps.
+    pub turns: usize,
+    pub hits: Vec<(usize, Turn)>,
+}
+
+/// A conversation's place in the list, as `after` takes it: `1-42` (pinned, sequence 42) or
+/// `0-42`. Ordered as the list is, first to last.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Cursor {
+    pinned: bool,
+    sequence: u64,
+}
+
+impl Cursor {
+    fn parse(text: &str) -> Option<Cursor> {
+        let (pinned, sequence) = text.split_once('-')?;
+        Some(Cursor {
+            pinned: match pinned {
+                "1" => true,
+                "0" => false,
+                _ => return None,
+            },
+            sequence: sequence.parse().ok()?,
+        })
+    }
+
+    /// True when a conversation at `self` is listed after one at `other`.
+    fn after(self, other: Cursor) -> bool {
+        (self.pinned, self.sequence) < (other.pinned, other.sequence)
+    }
+}
+
+impl std::fmt::Display for Cursor {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}-{}", u8::from(self.pinned), self.sequence)
+    }
+}
+
+/// Which conversation a plan request joins.
+pub enum Target {
+    /// The latest, as every app did before #493; a new one when there's none yet.
+    Latest,
+    /// A new one, titled from the user's words.
+    New,
+    Id(String),
+}
+
+/// Where a plan request's words went.
+pub struct Begun {
+    pub conversation: String,
+    /// The user's turn: what the turn's step events name (#546).
+    pub turn: String,
+    /// True when the words started it.
+    pub started: bool,
+    /// The turn's id was there already: the same words sent again (an app's Try again after an
+    /// answer it lost), and nothing was added.
+    pub repeated: bool,
+    /// The files of the conversations forgotten to make room for it (past [`CONVERSATIONS`]),
+    /// for the caller to remove ([`crate::brain::drop_uploads`]).
+    pub forgotten: Vec<String>,
+}
+
+#[derive(Debug)]
+pub enum Error {
+    /// No conversation has that id: deleted, or never there.
+    NoConversation,
+    /// The turn isn't in the conversation (pruned since).
+    NoTurn,
+    /// The words' id belongs to another turn: other words, or another conversation.
+    IdTaken,
+    /// It couldn't be written.
+    Io(std::io::Error),
+    /// It would work in more than the owner's limit of folders (`limits.folders`, 20 by default).
+    TooManyFolders,
+    /// A folder it doesn't have was refused (crate::folders::check), and why.
+    Folder(String),
+    /// A paired device's change would add a folder: only the owner's Mac app adds one.
+    AddsFolders,
+}
+
+/// The folders a `PATCH` asks a conversation to work in: each path as sent, with its check
+/// (crate::folders::check), and whether the change came through the gateway or the phone relay.
+pub struct FolderChange {
+    pub asked: Vec<(String, Result<String, String>)>,
+    pub remote: bool,
+}
+
+impl FolderChange {
+    /// The conversation's folders from now on, given those it has: one it has stays as kept (gone
+    /// from disk since, it can still be taken off); any other is its check's canonical path, or
+    /// refused, and refused from a paired device whatever its check said.
+    fn apply(self, had: &[String]) -> Result<Vec<String>, Error> {
+        let mut kept: Vec<String> = Vec::new();
+        for (path, checked) in self.asked {
+            let folder = match had.iter().find(|h| crate::folders::same(h, &path)) {
+                Some(h) => h.clone(),
+                None if self.remote => return Err(Error::AddsFolders),
+                None => checked.map_err(Error::Folder)?,
+            };
+            if !kept.iter().any(|k| crate::folders::same(k, &folder)) {
+                kept.push(folder);
+            }
+        }
+        if kept.len() > crate::settings::limits().folders() {
+            return Err(Error::TooManyFolders);
+        }
+        Ok(kept)
+    }
+}
+
+impl From<Error> for ApiError {
+    fn from(error: Error) -> ApiError {
+        match error {
+            Error::NoConversation => ApiError::new(
+                StatusCode::NOT_FOUND,
+                "There's no conversation with that id.",
+            ),
+            Error::NoTurn => ApiError::new(
+                StatusCode::NOT_FOUND,
+                "That conversation turn isn't in the thread.",
+            ),
+            Error::IdTaken => ApiError::new(
+                StatusCode::CONFLICT,
+                "That id is another turn's: other words, or another conversation. Send these with an id of their own.",
+            ),
+            Error::Io(_) => ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "The conversation couldn't be kept.",
+            ),
+            Error::Folder(why) => ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, why),
+            Error::AddsFolders => ApiError::new(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "Folders are added only on the Mac: from here you can take one off.",
+            ),
+            Error::TooManyFolders => ApiError::new(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                format!(
+                    "A conversation works in at most {} folders.",
+                    crate::settings::limits().folders()
+                ),
+            ),
+        }
+    }
+}
+
+pub struct Conversations {
+    dir: PathBuf,
+    threads: Mutex<Vec<Thread>>,
+    events: Events,
+    /// The id the next new conversation gets once obid named it ([`Conversations::next_id`]):
+    /// its folder may hold a Claude Code started for it already (crate::brain::harness). Kept in
+    /// `next-id`, so the folder is found again after obid restarts.
+    next: Mutex<Option<String>>,
+}
+
+/// Where the next new conversation's id is kept.
+const NEXT: &str = "next-id";
+
+impl Conversations {
+    /// The conversations in `home/conversations`, after moving the single thread of obid before
+    /// #493 (`home/conversation.json`) into the first of them, and forgetting the oldest past
+    /// [`CONVERSATIONS`].
+    pub fn open(home: &Path, events: Events) -> Conversations {
+        let dir = home.join("conversations");
+        if let Err(e) = crate::store::make_private_dir(&dir) {
+            tracing::warn!("can't make {}: {e}", dir.display());
+        }
+        let threads: Vec<Thread> = crate::store::load_dir::<Thread>(&dir)
+            .into_iter()
+            .filter(|t| {
+                let named = is_id(&t.id) && dir.join(format!("{}.json", t.id)).is_file();
+                if !named {
+                    tracing::warn!(
+                        "{} holds a conversation not named after its id",
+                        dir.display()
+                    );
+                }
+                named
+            })
+            .collect();
+        let next = std::fs::read_to_string(dir.join(NEXT))
+            .ok()
+            .map(|id| id.trim().to_owned())
+            .filter(|id| is_id(id) && !threads.iter().any(|t| &t.id == id));
+        let conversations = Conversations {
+            dir,
+            threads: Mutex::new(threads),
+            events,
+            next: Mutex::new(next),
+        };
+        conversations.migrate(home);
+        conversations.prune(&mut conversations.lock());
+        conversations
+    }
+
+    /// The thread obid kept before #493 (`home/conversation.json`) becomes a conversation, with
+    /// all its turns, and its file is kept as `home/conversation.json.pre-493`. The conversation
+    /// is named after the thread's first turn when obid made that id, so a move cut short (the
+    /// conversation written, the old file still there) isn't made twice.
+    fn migrate(&self, home: &Path) {
+        let old = home.join("conversation.json");
+        let Ok(bytes) = std::fs::read(&old) else {
+            return;
+        };
+        let Ok(mut turns) = serde_json::from_slice::<Vec<Turn>>(&bytes) else {
+            tracing::warn!("{} isn't a conversation; left as it is", old.display());
+            return;
+        };
+        if let Some(first) = turns.first() {
+            let id = if is_id(&first.id) {
+                first.id.clone()
+            } else {
+                new_id()
+            };
+            let mut threads = self.lock();
+            if !threads.iter().any(|t| t.id == id) {
+                let excess = turns.len().saturating_sub(KEPT);
+                turns.drain(..excess);
+                for turn in &mut turns {
+                    turn.conversation = id.clone();
+                }
+                let thread = Thread {
+                    title: turns
+                        .iter()
+                        .find(|t| t.who == "user")
+                        .map_or_else(|| "Conversation with Oby".into(), |t| titled(&t.text)),
+                    created: turns[0].at.clone(),
+                    sequence: next_sequence(&threads),
+                    pinned: false,
+                    id,
+                    turns,
+                    tasks: vec![],
+                    tasks_tainted: false,
+                    foreign: kept_before_marks(),
+                    folders: vec![],
+                    uploads: vec![],
+                };
+                // The conversation's name in its folder must be on disk before the old file goes.
+                if let Err(e) = self.write(&thread).and_then(|()| sync_dir(&self.dir)) {
+                    tracing::warn!("can't move {} into a conversation: {e}", old.display());
+                    return;
+                }
+                tracing::info!(
+                    "the conversation in {} is now conversation {}",
+                    old.display(),
+                    thread.id
+                );
+                threads.push(thread);
+            }
+        }
+        if let Err(e) = std::fs::rename(&old, home.join(PRE_493)) {
+            tracing::warn!("can't move {} aside: {e}", old.display());
+        }
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, Vec<Thread>> {
+        self.threads.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn write(&self, thread: &Thread) -> std::io::Result<()> {
+        crate::store::write_private(
+            &self.dir.join(format!("{}.json", thread.id)),
+            &serde_json::to_vec(thread).map_err(std::io::Error::other)?,
+        )
+    }
+
+    /// The user's words join `target` (made first when it's new). `id`: the id the app gave the
+    /// words (a lower-case UUID). The user's turn of that id with the same words, in `target` (the
+    /// conversation named, the latest, or for a new one the one those words started), is the same
+    /// words sent again: `repeated`, and nothing is added. Any other turn of that id is `IdTaken`.
+    /// `jobs`: the jobs the owner attached to the words (Sangam's Attach tasks), kept on their turn.
+    /// `foreign`: why the words aren't the owner's own, typed in Oby's apps (crate::secretspec),
+    /// which marks the conversation; `None` only for words an app of the owner's signed.
+    /// `folders`: checked folders (crate::folders) the conversation works in from now on, added to
+    /// those it has, or why they were refused. Words that are a repeat are `repeated` whatever
+    /// their folders were, and add none; otherwise a refusal is `Folder`, and nothing is added.
+    /// `attachments`: the files' paths (checked: crate::brain::validate_attachments), kept with the
+    /// conversation; the turn shows their names.
+    #[allow(clippy::too_many_arguments)]
+    pub fn begin(
+        &self,
+        target: Target,
+        said: String,
+        jobs: Vec<String>,
+        attachments: Vec<String>,
+        id: Option<String>,
+        foreign: Option<String>,
+        folders: Result<Vec<String>, String>,
+    ) -> Result<Begun, Error> {
+        let mut threads = self.lock();
+        if let Some(id) = id.as_deref()
+            && let Some(at) = threads
+                .iter()
+                .position(|t| t.turns.iter().any(|turn| turn.id == id))
+        {
+            let thread = &threads[at];
+            let in_target = match &target {
+                Target::Id(named) => thread.id == *named,
+                Target::Latest => latest(&threads) == Some(at),
+                Target::New => thread.turns.first().is_some_and(|t| t.id == id),
+            };
+            let same = thread
+                .turns
+                .iter()
+                .any(|t| t.id == id && t.who == "user" && t.text == said);
+            if !(in_target && same) {
+                return Err(Error::IdTaken);
+            }
+            return Ok(Begun {
+                conversation: thread.id.clone(),
+                turn: id.to_owned(),
+                started: false,
+                repeated: true,
+                forgotten: vec![],
+            });
+        }
+        let folders = folders.map_err(Error::Folder)?;
+        let found = match target {
+            Target::Id(id) => Some(
+                threads
+                    .iter()
+                    .position(|t| t.id == id)
+                    .ok_or(Error::NoConversation)?,
+            ),
+            Target::Latest => latest(&threads),
+            Target::New => None,
+        };
+        let names: Vec<String> = attachments
+            .iter()
+            .map(|p| {
+                std::path::Path::new(p)
+                    .file_name()
+                    .map_or_else(|| "attachment".into(), |n| n.to_string_lossy().into_owned())
+            })
+            .collect();
+        let index = found.unwrap_or_else(|| {
+            threads.push(Thread {
+                id: self.take_next().unwrap_or_else(new_id),
+                // Files with no words: named after the first.
+                title: titled(
+                    names
+                        .first()
+                        .filter(|_| said.trim().is_empty())
+                        .unwrap_or(&said),
+                ),
+                pinned: false,
+                created: obi_protocol::time::format(obi_protocol::time::now()),
+                sequence: 0,
+                turns: vec![],
+                tasks: vec![],
+                tasks_tainted: false,
+                foreign: None,
+                folders: vec![],
+                uploads: vec![],
+            });
+            threads.len() - 1
+        });
+        let had = threads[index].folders.clone();
+        let mut more = had.clone();
+        for folder in folders {
+            if !more.iter().any(|f| crate::folders::same(f, &folder)) {
+                more.push(folder);
+            }
+        }
+        if more.len() > crate::settings::limits().folders() {
+            if found.is_none() {
+                threads.remove(index);
+            }
+            return Err(Error::TooManyFolders);
+        }
+        threads[index].folders = more;
+        let kept_uploads = threads[index].uploads.clone();
+        for path in &attachments {
+            if !threads[index].uploads.contains(path) {
+                threads[index].uploads.push(path.clone());
+            }
+        }
+        let added = self.add_asking(
+            &mut threads,
+            index,
+            "user",
+            said,
+            jobs,
+            false,
+            vec![],
+            id,
+            None,
+            foreign,
+            None,
+            names,
+        );
+        let turn = match added {
+            Ok(turn) => turn.id,
+            Err(e) => {
+                if found.is_none() {
+                    threads.remove(index);
+                } else {
+                    threads[index].folders = had;
+                    threads[index].uploads = kept_uploads;
+                }
+                return Err(e);
+            }
+        };
+        let conversation = threads[index].id.clone();
+        let forgotten = if found.is_none() {
+            self.prune(&mut threads)
+        } else {
+            vec![]
+        };
+        Ok(Begun {
+            conversation,
+            turn,
+            started: found.is_none(),
+            repeated: false,
+            forgotten,
+        })
+    }
+
+    /// The conversation with the latest turn, if there is one.
+    pub fn latest_id(&self) -> Option<String> {
+        let threads = self.lock();
+        latest(&threads).map(|index| threads[index].id.clone())
+    }
+
+    /// Adds a turn to the conversation `id`. `foreign`: why its text isn't on obid's allowlist
+    /// (crate::secretspec), which marks the conversation; `None` only when the caller knows every
+    /// word of it is (the owner's signed words, a clean job's).
+    pub fn append(
+        &self,
+        id: &str,
+        who: &str,
+        text: String,
+        jobs: Vec<String>,
+        foreign: Option<String>,
+    ) -> Result<Turn, Error> {
+        self.append_as(id, who, text, jobs, false, vec![], None, foreign)
+    }
+
+    /// Oby's turn in the conversation `id`, with the artifacts it made (`{id, version}` each): its
+    /// brain's own words, which carry only what the conversation read (marked already).
+    pub fn append_made(
+        &self,
+        id: &str,
+        text: String,
+        jobs: Vec<String>,
+        artifacts: Vec<Value>,
+    ) -> Result<Turn, Error> {
+        self.append_asking(id, text, jobs, artifacts, None)
+    }
+
+    /// [`Self::append_made`], the turn asking `asked` when it does.
+    pub fn append_asking(
+        &self,
+        id: &str,
+        text: String,
+        jobs: Vec<String>,
+        artifacts: Vec<Value>,
+        asked: Option<Asked>,
+    ) -> Result<Turn, Error> {
+        let mut threads = self.lock();
+        let index = threads
+            .iter()
+            .position(|t| t.id == id)
+            .ok_or(Error::NoConversation)?;
+        self.add_asking(
+            &mut threads,
+            index,
+            "oby",
+            text,
+            jobs,
+            false,
+            artifacts,
+            None,
+            None,
+            None,
+            asked,
+            vec![],
+        )
+    }
+
+    /// Oby's turn telling the conversation `id` how the job `job` ended ([`job_report`], #351).
+    /// `foreign`: why the job's summary isn't on obid's allowlist (the job's own reason).
+    pub fn job_ended(
+        &self,
+        id: &str,
+        text: String,
+        job: String,
+        foreign: Option<String>,
+    ) -> Result<Turn, Error> {
+        self.append_as(id, "oby", text, vec![job], true, vec![], None, foreign)
+    }
+
+    /// A new conversation titled `title`, with no turn yet: the one a routine's runs go to
+    /// (crate::routines). Its first turn follows at once.
+    pub fn start_for(&self, title: &str) -> Result<String, Error> {
+        let mut threads = self.lock();
+        let thread = Thread {
+            id: new_id(),
+            title: titled(title),
+            pinned: false,
+            created: obi_protocol::time::format(obi_protocol::time::now()),
+            sequence: next_sequence(&threads),
+            turns: vec![],
+            tasks: vec![],
+            tasks_tainted: false,
+            foreign: None,
+            folders: vec![],
+            uploads: vec![],
+        };
+        self.write(&thread).map_err(Error::Io)?;
+        self.events.send("conversation", thread.summary());
+        let id = thread.id.clone();
+        threads.push(thread);
+        // ponytail: a conversation forgotten here leaves its files to the uploads' own bound
+        // (crate::brain::UPLOADS); only words the owner sent start one with files.
+        let _ = self.prune(&mut threads);
+        Ok(id)
+    }
+
+    /// Oby's turn in the conversation `id` for a routine's run (crate::routines): `routine` is
+    /// `{id, name, outcome, scheduled, catchUp}`, and `jobs` the job it started, if it did.
+    pub fn routine_turn(
+        &self,
+        id: &str,
+        text: String,
+        jobs: Vec<String>,
+        routine: Value,
+    ) -> Result<Turn, Error> {
+        let foreign = Some("a routine's run, in obid's words and its outcome".to_owned());
+        self.append_as(id, "oby", text, jobs, false, vec![], Some(routine), foreign)
+    }
+
+    /// Whether Oby asked `question` in the conversation `id`, `option` one of its options, word
+    /// for word.
+    pub fn oby_asked(&self, id: &str, question: &str, option: &str) -> bool {
+        self.lock()
+            .iter()
+            .find(|t| t.id == id)
+            .is_some_and(|thread| {
+                thread.turns.iter().any(|turn| {
+                    turn.who == "oby"
+                        && turn.asked.as_ref().is_some_and(|asked| {
+                            asked.question == question && asked.options.iter().any(|o| o == option)
+                        })
+                })
+            })
+    }
+
+    /// Marks the conversation `id` as having read `why`, not on obid's allowlist
+    /// (crate::secretspec): the first reason is kept.
+    pub fn mark(&self, id: &str, why: String) {
+        let mut threads = self.lock();
+        let Some(thread) = threads.iter_mut().find(|t| t.id == id) else {
+            return;
+        };
+        if thread.foreign.is_some() {
+            return;
+        }
+        tracing::info!("conversation {id}: {why}: what it starts gets no declared secrets");
+        thread.foreign = Some(why);
+        if let Err(e) = self.write(thread) {
+            // Kept in memory still: what it starts now is someone else's either way.
+            tracing::warn!("conversation {id}'s mark wasn't kept: {e}");
+        }
+    }
+
+    /// What, not on obid's allowlist, the conversation `id` read or heard first
+    /// (crate::secretspec), or none when it read nothing else. One obid doesn't keep has read
+    /// something it can't tell.
+    pub fn foreign(&self, id: &str) -> Option<String> {
+        match self.lock().iter().find(|t| t.id == id) {
+            Some(thread) => thread.foreign.clone(),
+            None => Some("a conversation obid doesn't keep".into()),
+        }
+    }
+
+    /// The user's own words, the latest first, at most `limit` turns: (conversation id, its
+    /// title, the words). Only turns the user wrote, never Oby's or a routine's (crate::memory
+    /// finds what they keep repeating in them).
+    pub fn said_by_user(&self, limit: usize) -> Vec<(String, String, String)> {
+        let threads = self.lock();
+        let mut said: Vec<(&Thread, &Turn)> = threads
+            .iter()
+            .flat_map(|t| {
+                t.turns
+                    .iter()
+                    .filter(|turn| turn.who == "user")
+                    .map(move |turn| (t, turn))
+            })
+            .collect();
+        said.sort_by(|a, b| b.1.at.cmp(&a.1.at));
+        said.into_iter()
+            .take(limit)
+            .map(|(t, turn)| (t.id.clone(), t.title.clone(), turn.text.clone()))
+            .collect()
+    }
+
+    /// The conversation `id`'s turns but `except`, oldest first (none once it's gone): what a turn
+    /// reads, the owner's words it answers left out.
+    pub fn turns_but(&self, id: &str, except: &[String]) -> Vec<Turn> {
+        self.lock()
+            .iter()
+            .find(|t| t.id == id)
+            .map(|t| {
+                t.turns
+                    .iter()
+                    .filter(|turn| !except.contains(&turn.id))
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Whether the conversation `id` is kept.
+    pub fn has(&self, id: &str) -> bool {
+        self.lock().iter().any(|t| t.id == id)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn append_as(
+        &self,
+        id: &str,
+        who: &str,
+        text: String,
+        jobs: Vec<String>,
+        ended: bool,
+        artifacts: Vec<Value>,
+        routine: Option<Value>,
+        foreign: Option<String>,
+    ) -> Result<Turn, Error> {
+        let mut threads = self.lock();
+        let index = threads
+            .iter()
+            .position(|t| t.id == id)
+            .ok_or(Error::NoConversation)?;
+        self.add(
+            &mut threads,
+            index,
+            who,
+            text,
+            jobs,
+            ended,
+            artifacts,
+            None,
+            routine,
+            foreign,
+        )
+    }
+
+    /// The turn, kept, written and announced: the conversation as it is now, then the turn.
+    #[allow(clippy::too_many_arguments)]
+    fn add(
+        &self,
+        threads: &mut [Thread],
+        index: usize,
+        who: &str,
+        text: String,
+        jobs: Vec<String>,
+        ended: bool,
+        artifacts: Vec<Value>,
+        id: Option<String>,
+        routine: Option<Value>,
+        foreign: Option<String>,
+    ) -> Result<Turn, Error> {
+        self.add_asking(
+            threads,
+            index,
+            who,
+            text,
+            jobs,
+            ended,
+            artifacts,
+            id,
+            routine,
+            foreign,
+            None,
+            vec![],
+        )
+    }
+
+    /// [`Self::add`], with the question the turn asks.
+    #[allow(clippy::too_many_arguments)]
+    fn add_asking(
+        &self,
+        threads: &mut [Thread],
+        index: usize,
+        who: &str,
+        text: String,
+        jobs: Vec<String>,
+        ended: bool,
+        artifacts: Vec<Value>,
+        id: Option<String>,
+        routine: Option<Value>,
+        foreign: Option<String>,
+        asked: Option<Asked>,
+        attachments: Vec<String>,
+    ) -> Result<Turn, Error> {
+        let sequence = next_sequence(threads);
+        let thread = &mut threads[index];
+        let kept = thread.clone();
+        if thread.foreign.is_none()
+            && let Some(why) = foreign
+        {
+            tracing::info!(
+                "conversation {}: {why}: what it starts gets no declared secrets",
+                thread.id
+            );
+            thread.foreign = Some(why);
+        }
+        let turn = Turn {
+            id: id.unwrap_or_else(new_id),
+            who: who.into(),
+            text,
+            at: obi_protocol::time::format(obi_protocol::time::now()),
+            jobs,
+            conversation: thread.id.clone(),
+            ended,
+            artifacts,
+            routine,
+            asked,
+            attachments,
+        };
+        thread.turns.push(turn.clone());
+        let excess = thread.turns.len().saturating_sub(KEPT);
+        thread.turns.drain(..excess);
+        thread.sequence = sequence;
+        if let Err(error) = self.write(thread) {
+            *thread = kept;
+            return Err(Error::Io(error));
+        }
+        self.events.send("conversation", thread.summary());
+        self.events
+            .send("turn", serde_json::to_value(&turn).unwrap_or_default());
+        Ok(turn)
+    }
+
+    /// Past [`CONVERSATIONS`], forgets the oldest that are neither pinned nor the latest.
+    fn prune(&self, threads: &mut Vec<Thread>) -> Vec<String> {
+        let mut uploads = vec![];
+        while threads.len() > CONVERSATIONS {
+            let newest = threads.iter().map(|t| t.sequence).max().unwrap_or(0);
+            let Some(oldest) = threads
+                .iter()
+                .enumerate()
+                .filter(|(_, t)| !t.pinned && t.sequence != newest)
+                .min_by_key(|(_, t)| t.sequence)
+                .map(|(i, _)| i)
+            else {
+                return uploads;
+            };
+            match self.forget(threads, oldest) {
+                Ok(gone) => uploads.extend(gone),
+                Err(e) => {
+                    tracing::warn!("can't forget an old conversation: {e:?}");
+                    return uploads;
+                }
+            }
+        }
+        uploads
+    }
+
+    /// Up to `limit` turns, oldest first, ending before the turn `before` (or at the latest):
+    /// of the conversation `id`, else of the one holding `before`, else of the latest.
+    fn page(
+        &self,
+        id: Option<&str>,
+        before: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<Turn>, Error> {
+        let threads = self.lock();
+        let thread = match (id, before) {
+            (Some(id), _) => threads
+                .iter()
+                .find(|t| t.id == id)
+                .ok_or(Error::NoConversation)?,
+            (None, Some(turn)) => threads
+                .iter()
+                .find(|t| t.turns.iter().any(|t| t.id == turn))
+                .ok_or(Error::NoTurn)?,
+            (None, None) => match latest(&threads) {
+                Some(index) => &threads[index],
+                None => return Ok(vec![]),
+            },
+        };
+        let end = match before {
+            None => thread.turns.len(),
+            Some(id) => thread
+                .turns
+                .iter()
+                .position(|t| t.id == id)
+                .ok_or(Error::NoTurn)?,
+        };
+        Ok(thread.turns[end.saturating_sub(limit)..end].to_vec())
+    }
+
+    /// Up to `limit` conversations listed after `after` (or from the first): the pinned ones,
+    /// then the rest, each newest first. A cursor is a place, not a conversation, so one that
+    /// moved since is skipped or listed again, never anything else.
+    fn list(&self, after: Option<Cursor>, limit: usize) -> Vec<Value> {
+        let threads = self.lock();
+        ordered(&threads, after)
+            .iter()
+            .take(limit)
+            .map(|t| t.summary())
+            .collect()
+    }
+
+    /// Up to `limit` conversations, in the list's order after `after`, whose title or one of
+    /// whose turns holds every one of `words` (any case): a plain text match, no model (#593).
+    /// Each comes with up to [`HITS`] of its turns that hold them, the latest first; none when
+    /// only the title does. `except` is left out: the conversation asking. Deleted conversations
+    /// are gone from the list, so they're never found.
+    pub fn search(
+        &self,
+        words: &[String],
+        except: Option<&str>,
+        after: Option<Cursor>,
+        limit: usize,
+    ) -> Vec<Found> {
+        if words.is_empty() {
+            return vec![];
+        }
+        let holds = |text: &str| {
+            let text = text.to_lowercase();
+            words.iter().all(|w| text.contains(w.as_str()))
+        };
+        let threads = self.lock();
+        ordered(&threads, after)
+            .into_iter()
+            .filter(|t| except != Some(t.id.as_str()))
+            .filter_map(|t| {
+                let hits: Vec<(usize, Turn)> = t
+                    .turns
+                    .iter()
+                    .enumerate()
+                    .rev()
+                    .filter(|(_, turn)| holds(&turn.text))
+                    .take(HITS)
+                    .map(|(index, turn)| (index + 1, turn.clone()))
+                    .collect();
+                (!hits.is_empty() || holds(&t.title)).then(|| Found {
+                    id: t.id.clone(),
+                    title: t.title.clone(),
+                    summary: t.summary(),
+                    turns: t.turns.len(),
+                    hits,
+                })
+            })
+            .take(limit)
+            .collect()
+    }
+
+    /// Renames or pins the conversation `id`, or changes its folders: merged with those it has
+    /// under the same lock that writes them, so a change can't put back one just taken off.
+    fn change(
+        &self,
+        id: &str,
+        title: Option<String>,
+        pinned: Option<bool>,
+        folders: Option<FolderChange>,
+    ) -> Result<Value, Error> {
+        let mut threads = self.lock();
+        let thread = threads
+            .iter_mut()
+            .find(|t| t.id == id)
+            .ok_or(Error::NoConversation)?;
+        let folders = folders.map(|f| f.apply(&thread.folders)).transpose()?;
+        let kept = thread.clone();
+        if let Some(title) = title {
+            thread.title = title;
+        }
+        if let Some(pinned) = pinned {
+            thread.pinned = pinned;
+        }
+        if let Some(folders) = folders {
+            thread.folders = folders;
+        }
+        if let Err(e) = self.write(thread) {
+            *thread = kept;
+            return Err(Error::Io(e));
+        }
+        let summary = thread.summary();
+        self.events.send("conversation", summary.clone());
+        Ok(summary)
+    }
+
+    /// The task list of the conversation `id`, and whether a turn that read something untrusted
+    /// wrote it.
+    pub fn tasks(&self, id: &str) -> Result<(Vec<Task>, bool), Error> {
+        let threads = self.lock();
+        let thread = threads
+            .iter()
+            .find(|t| t.id == id)
+            .ok_or(Error::NoConversation)?;
+        Ok((thread.tasks.clone(), thread.tasks_tainted))
+    }
+
+    /// Replaces the task list of the conversation `id` (`tainted`: written in a turn that read
+    /// something untrusted), kept, written and announced.
+    pub fn set_tasks(&self, id: &str, tasks: Vec<Task>, tainted: bool) -> Result<(), Error> {
+        let mut threads = self.lock();
+        let thread = threads
+            .iter_mut()
+            .find(|t| t.id == id)
+            .ok_or(Error::NoConversation)?;
+        let kept = (
+            std::mem::replace(&mut thread.tasks, tasks),
+            std::mem::replace(&mut thread.tasks_tainted, tainted),
+        );
+        if let Err(e) = self.write(thread) {
+            (thread.tasks, thread.tasks_tainted) = kept;
+            return Err(Error::Io(e));
+        }
+        self.events.send("conversation", thread.summary());
+        Ok(())
+    }
+
+    /// The id the next new conversation will get, named now and kept until one takes it.
+    pub fn next_id(&self) -> String {
+        let mut next = self.next.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(id) = &*next {
+            return id.clone();
+        }
+        let id = new_id();
+        if let Err(e) = crate::store::write_private(&self.dir.join(NEXT), id.as_bytes()) {
+            tracing::warn!("the next conversation's id isn't kept: {e}");
+        }
+        *next = Some(id.clone());
+        id
+    }
+
+    /// The next new conversation's id, when obid named one and none took it yet.
+    pub fn peek_next(&self) -> Option<String> {
+        self.next.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    /// Whether `id` is the next new conversation's, not taken yet.
+    pub fn is_next(&self, id: &str) -> bool {
+        self.next
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_deref()
+            == Some(id)
+    }
+
+    /// The next new conversation's id, taken by the conversation beginning now.
+    fn take_next(&self) -> Option<String> {
+        let id = self.next.lock().unwrap_or_else(|e| e.into_inner()).take()?;
+        let _ = std::fs::remove_file(self.dir.join(NEXT));
+        Some(id)
+    }
+
+    /// Whether the conversation `id` is there.
+    pub fn exists(&self, id: &str) -> bool {
+        self.lock().iter().any(|t| t.id == id)
+    }
+
+    /// Forgets the conversation `id` and its turns. The jobs it started stay, with its id. Answers
+    /// the files attached to its words, for the caller to remove ([`crate::brain::drop_uploads`]).
+    pub fn delete(&self, id: &str) -> Result<Vec<String>, Error> {
+        let mut threads = self.lock();
+        let index = threads
+            .iter()
+            .position(|t| t.id == id)
+            .ok_or(Error::NoConversation)?;
+        self.forget(&mut threads, index)
+    }
+
+    fn forget(&self, threads: &mut Vec<Thread>, index: usize) -> Result<Vec<String>, Error> {
+        let id = threads[index].id.clone();
+        match std::fs::remove_file(self.dir.join(format!("{id}.json"))) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(Error::Io(e)),
+        }
+        let gone = threads.remove(index);
+        // Its agent session's room, checkouts and login go with it (crate::brain::harness).
+        let _ = std::fs::remove_dir_all(self.dir.join(&id));
+        self.events
+            .send("conversation", json!({"id": id, "deleted": true}));
+        Ok(gone.uploads)
+    }
+
+    /// Whether a conversation still holds the file `path` among its words' files.
+    pub fn holds_upload(&self, path: &str) -> bool {
+        self.lock()
+            .iter()
+            .any(|t| t.uploads.iter().any(|u| u == path))
+    }
+}
+
+/// What Oby tells a conversation when a job its plan started ends (#351), from the job as its
+/// `job` event sends it: the conversation and the turn's text, or none for a job no conversation
+/// started, one that was dismissed, or one that hasn't ended. The first line is obid's own words:
+/// the job's title, how it ended, its pull request or why it wasn't published. The first line of
+/// its summary, which its agent may have written, follows on a line of its own. Every secret obid
+/// holds is taken out.
+pub fn job_report(job: &Value) -> Option<(String, String)> {
+    let conversation = job["conversation"].as_str()?;
+    if !job["dismissed"].is_null() {
+        return None;
+    }
+    let first_line = |key: &str| {
+        job[key]
+            .as_str()?
+            .lines()
+            .find(|l| !l.trim().is_empty())
+            .map(|l| crate::brain::briefing::line(l, 300))
+    };
+    let title = crate::brain::briefing::line(job["title"].as_str().unwrap_or("A job"), 80);
+    let status = job["status"].as_str()?;
+    let said = match (status, job["stalled"]["text"].as_str()) {
+        // A stall says why in obid's words (`stalled.text`), whatever status it ended in, and its
+        // conversation decides next.
+        ("failed" | "interrupted", Some(why)) => format!(
+            "{title} stalled: {}. Its branch is kept and nothing was pushed.",
+            crate::brain::briefing::line(why, 120)
+        ),
+        ("done", _) => match (job["published"].as_str(), first_line("publishError")) {
+            // A follow-up adds to its task's open pull request (#1663): it says so.
+            (Some(url), _) => match job["addedTo"].as_u64() {
+                Some(n) => format!("{title} is done: added to pull request #{n}, {url}"),
+                None => format!("{title} is done: {url}"),
+            },
+            // The push went out; only its pull request failed (#627).
+            (None, Some(why)) if why.starts_with(crate::publish::PUSHED_BUT) => {
+                format!("{title} is done: {why}")
+            }
+            (None, Some(why)) => format!("{title} is done, but it wasn't published: {why}"),
+            (None, None) if job["pushed"].as_u64().is_some_and(|n| n > 0) => {
+                format!("{title} is done and pushed.")
+            }
+            // Nothing done (TASKS-12): obid's own fact, never read from the agent's words.
+            (None, None) if job["nothingDone"] == true => match first_line("reason") {
+                Some(why) => format!("{title} ended with nothing done. {why}"),
+                None => format!("{title} ended with nothing done."),
+            },
+            (None, None) => match first_line("reason") {
+                Some(why) => format!("{title} is done. {why}"),
+                None => format!("{title} is done."),
+            },
+        },
+        ("failed", _) => format!("{title} failed."),
+        ("stopped", _) => format!("{title} was stopped."),
+        ("interrupted", _) => match first_line("reason") {
+            Some(why) => format!("{title} needs you: {why}"),
+            None => format!("{title} needs you."),
+        },
+        _ => return None,
+    };
+    // A stalled job's summary starts with the same stall in other words: obid says it once.
+    let mut text = match first_line("summary").filter(|_| job["stalled"].is_null()) {
+        Some(summary) => format!("{said}\n{summary}"),
+        None => said,
+    };
+    // What it did on the owner's words after its work (#1661).
+    if let Some(steer) = job["summary"].as_str().and_then(crate::job::last_steer) {
+        text = format!("{text}\n{}", crate::brain::briefing::line(steer, 300));
+    }
+    Some((
+        conversation.to_owned(),
+        crate::secrets::known().redact(&text),
+    ))
+}
+
+/// Follows obid's job events (#351): when a job a conversation's plan started goes from queued or
+/// running to an end, that conversation gets one Oby turn saying how ([`job_report`]), with the
+/// job's card. What had ended when obid started says nothing, and neither does a dismissed job or
+/// one that no conversation started.
+pub fn report_job_ends(shared: std::sync::Arc<Shared>) {
+    let mut bus = shared.events.subscribe();
+    let mut stopping = shared.stopping.clone();
+    let mut active: std::collections::HashMap<String, bool> = shared
+        .jobs
+        .list(usize::MAX)
+        .iter()
+        .map(|j| (j.id.clone(), j.status.is_active()))
+        .collect();
+    tokio::spawn(async move {
+        loop {
+            let event = tokio::select! {
+                got = bus.recv() => match got {
+                    Ok(event) => event,
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(_) => return,
+                },
+                _ = stopping.changed() => return,
+            };
+            let Some(id) = event.data["id"].as_str().filter(|_| event.name == "job") else {
+                continue;
+            };
+            let now = matches!(event.data["status"].as_str(), Some("queued" | "running"));
+            if active.insert(id.to_owned(), now) != Some(true) || now {
+                continue;
+            }
+            let Some((conversation, text)) = job_report(&event.data) else {
+                continue;
+            };
+            // Its summary is its agent's: on obid's allowlist only when everything the job read
+            // was (crate::secretspec).
+            let foreign = match shared.jobs.get(id) {
+                Some(job) => job
+                    .check_refuses_secrets()
+                    .map(|why| format!("the summary of job {id}, which {why}")),
+                None => Some(format!("the summary of job {id}, which obid doesn't have")),
+            };
+            if let Err(e) =
+                shared
+                    .conversations
+                    .job_ended(&conversation, text, id.to_owned(), foreign)
+            {
+                tracing::info!("job {id} ended; conversation {conversation} wasn't told: {e:?}");
+            }
+        }
+    });
+}
+
+/// The conversations as the list orders them, after `after` (or from the first): the pinned
+/// ones, then the rest, each newest first.
+fn ordered(threads: &[Thread], after: Option<Cursor>) -> Vec<&Thread> {
+    let mut order: Vec<&Thread> = threads
+        .iter()
+        .filter(|t| after.is_none_or(|cursor| t.key().after(cursor)))
+        .collect();
+    order.sort_by(|a, b| {
+        (b.pinned, b.sequence)
+            .cmp(&(a.pinned, a.sequence))
+            .then_with(|| a.id.cmp(&b.id))
+    });
+    order
+}
+
+/// The words a search looks for: `q` split on spaces, lower-case, each without the punctuation
+/// around it ("target?" is "target"; "off-limits" stays whole).
+pub fn search_words(q: &str) -> Vec<String> {
+    q.split_whitespace()
+        .map(|w| {
+            w.trim_matches(|c: char| !c.is_alphanumeric())
+                .to_lowercase()
+        })
+        .filter(|w| !w.is_empty())
+        .collect()
+}
+
+/// At most [`EXCERPT`] characters of `text` around the first of `words` it holds, `…` where
+/// it's cut.
+pub fn excerpt(text: &str, words: &[String]) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    if chars.len() <= EXCERPT {
+        return text.to_owned();
+    }
+    let lower = text.to_lowercase();
+    // Where the first word is, in characters (lower-casing can change byte lengths).
+    let at = words
+        .iter()
+        .filter_map(|w| lower.find(w.as_str()))
+        .min()
+        .map_or(0, |byte| lower[..byte].chars().count());
+    let start = at.saturating_sub(EXCERPT / 4).min(chars.len() - EXCERPT);
+    let end = start + EXCERPT;
+    let mut cut: String = chars[start..end].iter().collect();
+    if start > 0 {
+        cut.insert(0, '…');
+    }
+    if end < chars.len() {
+        cut.push('…');
+    }
+    cut
+}
+
+/// The conversation with the latest turn.
+fn latest(threads: &[Thread]) -> Option<usize> {
+    (0..threads.len()).max_by_key(|&i| threads[i].sequence)
+}
+
+fn next_sequence(threads: &[Thread]) -> u64 {
+    threads.iter().map(|t| t.sequence).max().unwrap_or(0) + 1
+}
+
+fn new_id() -> String {
+    uuid::Uuid::new_v4().to_string().to_lowercase()
+}
+
+/// An id obid made (a lower-case UUID), so a file name of its own.
+pub fn is_id(id: &str) -> bool {
+    id.len() == 36
+        && id
+            .bytes()
+            .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f' | b'-'))
+}
+
+/// Writes the folder's own entries (the names in it) to the disk.
+fn sync_dir(dir: &Path) -> std::io::Result<()> {
+    std::fs::File::open(dir)?.sync_all()
+}
+
+/// Ends a line: what `lines()` reads, and the Unicode line and paragraph separators.
+fn breaks_line(c: char) -> bool {
+    matches!(c, '\n' | '\r' | '\u{2028}' | '\u{2029}')
+}
+
+/// A conversation's title from the user's first words, as Sangam's design names them
+/// (design/app/src/renderer/src/chats.ts, `titled`): the first line, at most 48 characters
+/// (45 and `…` when longer), its first letter upper-case. Other control characters are spaces.
+pub fn titled(text: &str) -> String {
+    let line: String = text
+        .trim()
+        .split(breaks_line)
+        .next()
+        .unwrap_or("")
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect();
+    let line = line.trim();
+    let short = if line.chars().count() > 48 {
+        format!("{}…", line.chars().take(45).collect::<String>().trim_end())
+    } else {
+        line.to_owned()
+    };
+    let mut chars = short.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().chain(chars).collect(),
+        None => "New conversation".into(),
+    }
+}
+
+fn limit(raw: Option<&str>) -> Result<usize, ApiError> {
+    let limit = match raw {
+        None => 50,
+        Some(raw) => raw
+            .parse::<usize>()
+            .map_err(|_| ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, "limit is a number."))?,
+    };
+    if limit == 0 {
+        return Err(ApiError::new(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "limit is 1 to 500.",
+        ));
+    }
+    Ok(limit.min(500))
+}
+
+#[derive(Deserialize)]
+pub struct Page {
+    id: Option<String>,
+    before: Option<String>,
+    limit: Option<String>,
+}
+
+/// `GET /v1/conversation?id=&before=&limit=`: one page of a conversation's turns, oldest first.
+pub async fn get(
+    State(shared): State<std::sync::Arc<Shared>>,
+    Query(query): Query<Page>,
+) -> Result<Response, ApiError> {
+    let limit = limit(query.limit.as_deref())?;
+    let turns = shared
+        .conversations
+        .page(query.id.as_deref(), query.before.as_deref(), limit)?;
+    Ok((StatusCode::OK, axum::Json(json!(turns))).into_response())
+}
+
+#[derive(Deserialize)]
+pub struct ListPage {
+    after: Option<String>,
+    limit: Option<String>,
+    q: Option<String>,
+}
+
+/// `GET /v1/conversations?after=&limit=&q=`: the conversations, pinned first, then newest
+/// first. With `q`, only those whose title or a turn holds every word of it, each with the latest
+/// turn that does (`turn`, null when only the title does), its text cut to [`EXCERPT`] (#593).
+pub async fn list(
+    State(shared): State<std::sync::Arc<Shared>>,
+    Query(query): Query<ListPage>,
+) -> Result<Response, ApiError> {
+    let limit = limit(query.limit.as_deref())?;
+    let after = match query.after.as_deref() {
+        None => None,
+        Some(text) => Some(Cursor::parse(text).ok_or_else(|| {
+            ApiError::new(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "after is the cursor of a conversation the list gave.",
+            )
+        })?),
+    };
+    let Some(q) = query.q else {
+        let list = shared.conversations.list(after, limit);
+        return Ok((StatusCode::OK, axum::Json(json!(list))).into_response());
+    };
+    let words = search_words(&q);
+    if words.is_empty() || q.chars().count() > QUERY {
+        return Err(ApiError::new(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "q is 1 to 200 characters, with a word to find.",
+        ));
+    }
+    let found: Vec<Value> = shared
+        .conversations
+        .search(&words, None, after, limit)
+        .into_iter()
+        .map(|found| {
+            let mut item = found.summary;
+            item["turn"] = found.hits.first().map_or(Value::Null, |(_, turn)| {
+                json!({
+                    "id": turn.id,
+                    "who": turn.who,
+                    "at": turn.at,
+                    "text": excerpt(&turn.text, &words),
+                })
+            });
+            item
+        })
+        .collect();
+    Ok((StatusCode::OK, axum::Json(json!(found))).into_response())
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Change {
+    title: Option<String>,
+    pinned: Option<bool>,
+    folders: Option<Vec<String>>,
+}
+
+/// `PATCH /v1/conversations/{id}`: a new title, pinned or not, or the folders it works in from now
+/// on (an empty list clears them). Through the gateway or the phone relay, `folders` may only leave
+/// out folders the conversation has: only the owner's Mac app adds one (crate::folders).
+pub async fn update(
+    State(shared): State<std::sync::Arc<Shared>>,
+    UrlPath(id): UrlPath<String>,
+    paired: Option<axum::Extension<crate::gateway::PairedDevice>>,
+    relayed: Option<axum::Extension<crate::gateway::Relayed>>,
+    body: Bytes,
+) -> Result<Response, ApiError> {
+    let change: Change = serde_json::from_slice(&body).map_err(|_| {
+        ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "The body is {\"title\": \"…\", \"pinned\": true or false, \"folders\": [\"/path\"]}.",
+        )
+    })?;
+    if change.title.is_none() && change.pinned.is_none() && change.folders.is_none() {
+        return Err(ApiError::new(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "Send a title, pinned, folders, or more than one.",
+        ));
+    }
+    // Checked here, outside the conversations' lock; merged with those it has under it.
+    let remote = paired.is_some() || relayed.is_some();
+    let places = crate::folders::Places::of(&shared);
+    let folders = change.folders.map(|asked| FolderChange {
+        asked: asked
+            .into_iter()
+            .map(|path| {
+                // A paired device adds none: what it names isn't looked for on disk.
+                let checked = if remote {
+                    Err(String::new())
+                } else {
+                    crate::folders::check(&places, &path)
+                };
+                (path, checked)
+            })
+            .collect(),
+        remote,
+    });
+    let title = change.title.map(|t| t.trim().to_owned());
+    if title.as_ref().is_some_and(|t| {
+        t.is_empty()
+            || t.chars().count() > TITLE
+            || t.chars().any(|c| c.is_control() || breaks_line(c))
+    }) {
+        return Err(ApiError::new(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "title is one line of 1 to 100 characters.",
+        ));
+    }
+    let summary = shared
+        .conversations
+        .change(&id, title, change.pinned, folders)?;
+    Ok((StatusCode::OK, axum::Json(summary)).into_response())
+}
+
+/// `DELETE /v1/conversations/{id}`: the conversation goes, and the offers made in it close; the
+/// jobs it started stay.
+pub async fn remove(
+    State(shared): State<std::sync::Arc<Shared>>,
+    UrlPath(id): UrlPath<String>,
+) -> Result<Response, ApiError> {
+    let uploads = shared.conversations.delete(&id)?;
+    crate::brain::drop_uploads(&shared, uploads).await;
+    // What Oby offered there can't be started from it any more.
+    shared.link.close_offers(&id);
+    Ok(StatusCode::NO_CONTENT.into_response())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Cursor, Error, FolderChange, Task, checked_tasks, job_report, titled};
+
+    /// A PATCH merged against the folders as they are under the lock: one taken off meanwhile
+    /// comes back only through its own check, so a stale list never puts back a refused folder.
+    #[test]
+    fn a_stale_folder_change_puts_back_nothing_unchecked() {
+        let change = |asked: Vec<(&str, Result<&str, &str>)>, remote| FolderChange {
+            asked: asked
+                .into_iter()
+                .map(|(p, c)| (p.to_owned(), c.map(str::to_owned).map_err(str::to_owned)))
+                .collect(),
+            remote,
+        };
+        let gone = || vec![("/a", Err("\"a\" isn't at /a."))];
+        assert_eq!(
+            change(gone(), false).apply(&["/a".into()]).unwrap(),
+            vec!["/a".to_owned()]
+        );
+        assert!(matches!(
+            change(gone(), false).apply(&[]),
+            Err(Error::Folder(why)) if why == "\"a\" isn't at /a."
+        ));
+        assert!(matches!(
+            change(vec![("/b", Ok("/b"))], true).apply(&["/a".into()]),
+            Err(Error::AddsFolders)
+        ));
+    }
+    use serde_json::json;
+
+    /// A task list is at most 50 one-line tasks with a known status; ids are given to those left
+    /// without, never one another task has, and no two share one.
+    #[test]
+    fn a_task_list_is_checked_and_its_ids_given() {
+        let task = |id: &str, title: &str, status: &str| Task {
+            id: id.into(),
+            title: title.into(),
+            status: status.into(),
+            job: None,
+            note: None,
+        };
+        let checked = checked_tasks(vec![
+            task("", " Fix it ", "pending"),
+            task("t1", "Taken", "blocked"),
+            task("", "Next", "in_progress"),
+        ])
+        .unwrap();
+        let ids: Vec<&str> = checked.iter().map(|t| t.id.as_str()).collect();
+        assert_eq!(ids, ["t2", "t1", "t3"]);
+        assert_eq!(checked[0].title, "Fix it");
+        assert!(checked_tasks(vec![task("", "a\nb", "pending")]).is_err());
+        assert!(checked_tasks(vec![task("", "", "pending")]).is_err());
+        assert!(checked_tasks(vec![task("", "x", "done")]).is_err());
+        assert!(checked_tasks(vec![task("a", "x", "pending"), task("a", "y", "pending")]).is_err());
+        assert!(checked_tasks(vec![task("", "x", "pending"); 51]).is_err());
+        let mut noted = task("", "x", "blocked");
+        noted.note = Some("n".repeat(501));
+        assert!(checked_tasks(vec![noted]).is_err());
+        assert!(!task("", "x", "cancelled").open() && task("", "x", "blocked").open());
+    }
+
+    /// A job a conversation started says how it ended, in obid's words first: its title, the
+    /// outcome, the pull request or why it wasn't published; its summary's first line, which its
+    /// agent may have written, on a line of its own, with every secret obid holds taken out.
+    #[test]
+    fn a_job_that_ends_tells_its_conversation_how() {
+        let secret = "s3cr3t-token-351-value";
+        crate::secrets::known().learn("vault TEST_351", secret);
+        let job = |status: &str| {
+            json!({"id": "j1", "title": "Fix oby #351", "status": status, "conversation": "c1",
+                "summary": "", "published": null, "publishError": null, "dismissed": null})
+        };
+        let mut failed = job("failed");
+        failed["summary"] = json!(format!("\n Not logged in with {secret}\nMore below."));
+        assert_eq!(
+            job_report(&failed),
+            Some((
+                "c1".into(),
+                "Fix oby #351 failed.\nNot logged in with [redacted: vault TEST_351]".into()
+            ))
+        );
+        let mut published = job("done");
+        published["published"] = json!("https://github.com/obi-ai-bot/obi/pull/700");
+        published["summary"] = json!("Reports reach the chat.");
+        assert_eq!(
+            job_report(&published).unwrap().1,
+            "Fix oby #351 is done: https://github.com/obi-ai-bot/obi/pull/700\nReports reach the chat."
+        );
+        // PUBLISHING-12: a follow-up that pushed onto its task's open pull request says so.
+        published["addedTo"] = json!(700);
+        assert_eq!(
+            job_report(&published).unwrap().1,
+            "Fix oby #351 is done: added to pull request #700, https://github.com/obi-ai-bot/obi/pull/700\nReports reach the chat."
+        );
+        published["addedTo"] = json!(null);
+        // TASKCONV-14: what it did on the owner's words after its work shows too.
+        published["summary"] =
+            json!("Reports reach the chat.\n\nAfter what you told it: Ended it with a period.");
+        assert_eq!(
+            job_report(&published).unwrap().1,
+            "Fix oby #351 is done: https://github.com/obi-ai-bot/obi/pull/700\nReports reach the chat.\nAfter what you told it: Ended it with a period."
+        );
+        let mut unpublished = job("done");
+        unpublished["publishError"] = json!("Not published: the secret scan couldn't run.\nwhy");
+        assert_eq!(
+            job_report(&unpublished).unwrap().1,
+            "Fix oby #351 is done, but it wasn't published: Not published: the secret scan couldn't run."
+        );
+        assert_eq!(job_report(&job("done")).unwrap().1, "Fix oby #351 is done.");
+        // Pushed, then only its pull request failed; or pushed to a remote with none (#627).
+        let mut pushed = job("done");
+        pushed["pushed"] = json!(1);
+        pushed["publishError"] =
+            json!("Pushed, but couldn't look for the open pull request: HTTP 404");
+        assert_eq!(
+            job_report(&pushed).unwrap().1,
+            "Fix oby #351 is done: Pushed, but couldn't look for the open pull request: HTTP 404"
+        );
+        pushed["publishError"] = json!(null);
+        assert_eq!(
+            job_report(&pushed).unwrap().1,
+            "Fix oby #351 is done and pushed."
+        );
+        assert_eq!(
+            job_report(&job("stopped")).unwrap().1,
+            "Fix oby #351 was stopped."
+        );
+        assert_eq!(
+            job_report(&job("interrupted")).unwrap().1,
+            "Fix oby #351 needs you."
+        );
+        let mut needs_you = job("interrupted");
+        needs_you["reason"] = json!("Stopped at a limit: the round ran past 45 minutes.");
+        assert_eq!(
+            job_report(&needs_you).unwrap().1,
+            "Fix oby #351 needs you: Stopped at a limit: the round ran past 45 minutes."
+        );
+        let mut nothing = job("done");
+        nothing["reason"] = json!("Nothing committed, so nothing was published.");
+        assert_eq!(
+            job_report(&nothing).unwrap().1,
+            "Fix oby #351 is done. Nothing committed, so nothing was published."
+        );
+        // TASKS-12: obid's fact, not the agent's words, says nothing was done.
+        nothing["nothingDone"] = json!(true);
+        nothing["summary"] = json!("I couldn't implement issue #131, and I made no commits.");
+        assert_eq!(
+            job_report(&nothing).unwrap().1,
+            "Fix oby #351 ended with nothing done. Nothing committed, so nothing was published.\nI couldn't implement issue #131, and I made no commits."
+        );
+        let mut stalled = job("failed");
+        stalled["stalled"] = json!({"text": "no progress for 15 minutes", "note": "Left: tests"});
+        assert_eq!(
+            job_report(&stalled).unwrap().1,
+            "Fix oby #351 stalled: no progress for 15 minutes. Its branch is kept and nothing was pushed."
+        );
+        // As #725 ends it: interrupted, `stalled` kept.
+        stalled["status"] = json!("interrupted");
+        assert_eq!(
+            job_report(&stalled).unwrap().1,
+            "Fix oby #351 stalled: no progress for 15 minutes. Its branch is kept and nothing was pushed."
+        );
+        // Nothing for a job still under way, one no conversation started, or one let go.
+        assert_eq!(job_report(&job("running")), None);
+        assert_eq!(job_report(&job("queued")), None);
+        let mut whole = job("failed");
+        whole["conversation"] = json!(null);
+        assert_eq!(job_report(&whole), None);
+        let mut dismissed = job("stopped");
+        dismissed["dismissed"] = json!("2026-10-17T00:00:00Z");
+        assert_eq!(job_report(&dismissed), None);
+        crate::secrets::known().forget("vault TEST_351");
+    }
+
+    /// What a conversation reads off obid's allowlist marks it for good, and the first reason
+    /// stays (crate::secretspec): the owner's signed words, Oby's own answers and a clean job's end
+    /// don't. One kept before the marks, or one obid doesn't keep, counts as marked.
+    #[test]
+    fn what_a_conversation_reads_off_the_allowlist_marks_it() {
+        let home = std::env::temp_dir().join(format!("obid-conversation-{}", uuid::Uuid::new_v4()));
+        struct Cleanup(std::path::PathBuf);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let _cleanup = Cleanup(home.clone());
+        let events = crate::events::Events::new();
+        let conversations = super::Conversations::open(&home, events.clone());
+        let id = conversations
+            .begin(
+                super::Target::New,
+                "Fix it".into(),
+                vec![],
+                vec![],
+                None,
+                None,
+                Ok(vec![]),
+            )
+            .unwrap()
+            .conversation;
+        conversations
+            .append_made(&id, "On it.".into(), vec![], vec![])
+            .unwrap();
+        conversations
+            .job_ended(&id, "Done.".into(), "j1".into(), None)
+            .unwrap();
+        assert_eq!(conversations.foreign(&id), None);
+        conversations
+            .append(
+                &id,
+                "oby",
+                "It stalled.".into(),
+                vec![],
+                Some("the supervisor's words".into()),
+            )
+            .unwrap();
+        conversations.mark(&id, "the inbox".into());
+        assert_eq!(
+            conversations.foreign(&id).as_deref(),
+            Some("the supervisor's words")
+        );
+        // Kept: obid opened again reads it marked still.
+        let reopened = super::Conversations::open(&home, events.clone());
+        assert_eq!(
+            reopened.foreign(&id).as_deref(),
+            Some("the supervisor's words")
+        );
+        let unsigned = conversations
+            .begin(
+                super::Target::New,
+                "Fix it".into(),
+                vec![],
+                vec![],
+                None,
+                Some("words no app of the owner's signed".into()),
+                Ok(vec![]),
+            )
+            .unwrap()
+            .conversation;
+        assert!(conversations.foreign(&unsigned).is_some());
+        let routine = conversations.start_for("Every morning").unwrap();
+        assert_eq!(conversations.foreign(&routine), None);
+        conversations
+            .routine_turn(&routine, "Ran it.".into(), vec![], json!({}))
+            .unwrap();
+        assert!(conversations.foreign(&routine).is_some());
+        let kept: super::Thread = serde_json::from_value(json!({
+            "id": "c", "title": "t", "pinned": false, "created": "2026-01-01T00:00:00Z",
+            "sequence": 1, "turns": []
+        }))
+        .unwrap();
+        assert!(kept.foreign.is_some());
+        assert!(conversations.foreign("no-such-conversation").is_some());
+        // Oby's own words there: what an answer to its question may quote.
+        conversations
+            .append_asking(
+                &id,
+                "Which store?".into(),
+                vec![],
+                vec![],
+                Some(super::Asked {
+                    question: "Which store?".into(),
+                    options: vec!["SQLite".into(), "Postgres".into()],
+                }),
+            )
+            .unwrap();
+        assert!(conversations.oby_asked(&id, "Which store?", "SQLite"));
+        assert!(!conversations.oby_asked(&id, "Which store?", "MySQL"));
+        assert!(!conversations.oby_asked(&id, "Which store", "SQLite"));
+        assert!(!conversations.oby_asked(&id, "On it.", "SQLite"));
+    }
+
+    #[test]
+    fn titles_are_the_first_line_as_the_design_cuts_it() {
+        assert_eq!(
+            titled("  review oby PR #33\nand the vault one"),
+            "Review oby PR #33"
+        );
+        assert_eq!(
+            titled("why did oberon’s build go from 4 to 11 minutes since the update?"),
+            "Why did oberon’s build go from 4 to 11 minute…"
+        );
+        assert_eq!(
+            titled("x".repeat(48).as_str()),
+            "X".to_owned() + &"x".repeat(47)
+        );
+        assert_eq!(titled("éclair"), "Éclair");
+        assert_eq!(titled(" \n "), "New conversation");
+        assert_eq!(titled("one\r\ntwo"), "One");
+        assert_eq!(titled("one\u{2028}two"), "One");
+        assert_eq!(titled("tab\there"), "Tab here");
+    }
+
+    #[test]
+    fn failed_append_keeps_pruned_turns_sequence_and_events_unchanged() {
+        let home = std::env::temp_dir().join(format!("obid-conversation-{}", uuid::Uuid::new_v4()));
+        struct Cleanup(std::path::PathBuf);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let _cleanup = Cleanup(home.clone());
+        let events = crate::events::Events::new();
+        let conversations = super::Conversations::open(&home, events.clone());
+        let id = conversations
+            .begin(
+                super::Target::New,
+                "first".into(),
+                vec![],
+                vec![],
+                None,
+                None,
+                Ok(vec![]),
+            )
+            .unwrap()
+            .conversation;
+        {
+            let mut threads = conversations.lock();
+            let thread = &mut threads[0];
+            let first = thread.turns[0].clone();
+            thread.turns = (0..super::KEPT)
+                .map(|i| super::Turn {
+                    id: i.to_string(),
+                    text: format!("kept {i}"),
+                    ..first.clone()
+                })
+                .collect();
+            conversations.write(thread).unwrap();
+        }
+        let before = serde_json::to_value(&*conversations.lock()).unwrap();
+        let mut received = events.subscribe();
+        let saved = home.join("saved");
+        std::fs::rename(&conversations.dir, &saved).unwrap();
+        std::fs::write(&conversations.dir, b"not a directory").unwrap();
+        assert!(matches!(
+            conversations.append(&id, "oby", "rejected".into(), vec![], None),
+            Err(super::Error::Io(_))
+        ));
+        assert_eq!(
+            serde_json::to_value(&*conversations.lock()).unwrap(),
+            before
+        );
+        assert!(matches!(
+            received.try_recv(),
+            Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+        ));
+        std::fs::remove_file(&conversations.dir).unwrap();
+        std::fs::rename(&saved, &conversations.dir).unwrap();
+        conversations
+            .append(&id, "oby", "accepted".into(), vec![], None)
+            .unwrap();
+        let threads = conversations.lock();
+        assert_eq!(threads[0].turns.len(), super::KEPT);
+        assert_eq!(threads[0].turns[0].text, "kept 1");
+        assert_eq!(threads[0].turns.last().unwrap().text, "accepted");
+        assert!(!threads[0].turns.iter().any(|turn| turn.text == "rejected"));
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn cursors_read_back_and_order_as_the_list() {
+        let pinned = Cursor::parse("1-3").unwrap();
+        let older = Cursor::parse("0-7").unwrap();
+        let newer = Cursor::parse("0-9").unwrap();
+        assert_eq!(pinned.to_string(), "1-3");
+        assert!(older.after(newer) && newer.after(pinned) && !pinned.after(older));
+        for bad in ["", "2-1", "1-", "-1", "1-x", "1-2-3", "a"] {
+            assert_eq!(Cursor::parse(bad), None, "{bad}");
+        }
+    }
+}

@@ -1,0 +1,166 @@
+# Releasing Oby
+
+Oby ships as a notarized `.dmg` that updates itself (#282, part of F4 #8). A release runs on a Mac with Xcode 27, from [`scripts/release.sh`](../scripts/release.sh), with credentials in the keychain and nothing in git. GitHub Actions doesn't run for this repository ([ci.md](ci.md)), so there's no release workflow.
+
+Teammates install the DMG once, without a Gatekeeper warning, and from then on the app checks `https://downloads.oby.deskree.com/appcast.xml` every 6 hours, downloads a new version quietly and installs it when it quits. Once one is downloaded, the menu-bar menu offers **Update ready · Restart**, which installs it and relaunches Oby (after this Mac's check for the runner, if one runs). **Check for Updates…** in the menu-bar menu and the app menu asks right away, and Settings › About says the version.
+
+## One signing config
+
+[`apps/config/Signing.xcconfig`](../apps/config/Signing.xcconfig) is the one place every target reads its signing from, in Debug and Release:
+
+| Setting | Today | What it is |
+| --- | --- | --- |
+| `OBY_TEAM_ID` | `3UV9W5SV7W` (Deskree) | Every target's `DEVELOPMENT_TEAM`. Switching every app to the Deskree team is this one line. |
+| `OBY_MAC_BUNDLE_ID` | `com.deskree.oby` | The Mac app (`.tests` for MacTests). |
+| `OBY_IPHONE_BUNDLE_ID` | `com.deskree.oby.ios` | The iPhone app (an App ID of its own, so Xcode Cloud sees an iOS-only product; `.watchkitapp` and `.watchkitapp.widget` for the Watch) (`.activity` for the Live Activity, `.tests` for iOSTests). See [apps/ios/app/README.md](../apps/ios/app/README.md). |
+| `OBY_APPCAST_URL` | `https://downloads.oby.deskree.com/appcast.xml` | Where the launch build looks for updates (`SUFeedURL`, through `OBY_FEED_URL`). Hosting is this setting and the next. |
+| `OBY_FULL_APPCAST_URL` | `https://downloads.oby.deskree.com/appcast-full.xml` | Where a full build looks for updates, beside the launch build's appcast and never the same file (see "Full builds"). |
+| `OBY_FULL_BUILD` | `0` | `1` makes a full build (see "Full builds"): on the command line, or in `Signing.local.xcconfig`. |
+| `OBY_CONTROL_PLANE_URL` | `https://oby-control.deskree.com` | The control plane remote access signs in with (`ObyControlPlaneURL`). A self-hosted one's URL goes here ([remote-access.md, Run your own control plane](remote-access.md#run-your-own-control-plane)). |
+| `OBY_SPARKLE_PUBLIC_KEY` | `rcgwHqm6…YP34=` (generated 2026-10-20) | Sparkle's EdDSA public key (`SUPublicEDKey`). Its private half is in the release Mac's login keychain; every update must be signed with it, so export a copy (`generate_keys -x <file>`) to a safe place. |
+
+To override any of them on one Mac, write it in `apps/config/Signing.local.xcconfig` (gitignored, included at the end). CI's command-line flags still win over both ([ci.md, Signing](ci.md#signing)).
+
+The Mac app keeps the hardened runtime on, isn't sandboxed (it runs the user's CLIs, [AGENTS.md](../AGENTS.md)) and has one entitlement, the microphone, in [`apps/mac/app/Oby.entitlements`](../apps/mac/app/Oby.entitlements). Nothing else it does needs one under the hardened runtime: it runs CLIs as child processes through the login shell, the `oby://` character loads in WebKit's own process, screenshots go through ScreenCaptureKit, and it sends no Apple Events.
+
+## What Dima does, once
+
+In [developer.apple.com](https://developer.apple.com/account) and [App Store Connect](https://appstoreconnect.apple.com), as Deskree's Account Holder:
+
+1. **A Developer ID Application certificate.** Certificates, Identifiers & Profiles › Certificates › +, *Developer ID Application*. Only the Account Holder can create one. Download it, add it to Keychain Access, then export it (the certificate with its private key) as a `.p12` with a password, for the release Mac.
+2. **An App Store Connect API key for notarization.** App Store Connect › Users and Access › Integrations › App Store Connect API › Team Keys › +, with the **Developer** role. Download the `.p8` (it downloads once) and note its **Key ID** and the **Issuer ID** at the top of the page.
+3. **The Team ID.** Membership details, in the developer account.
+
+Hand the `.p12` and its password, the `.p8`, the Key ID, the Issuer ID and the Team ID over privately, never in git, an issue or a chat that's kept.
+
+## What we do with them, once, on the release Mac
+
+1. **Import the certificate.** Double-click the `.p12` and give its password. `security find-identity -v -p codesigning` lists `Developer ID Application: Deskree … (TEAM)`.
+2. **Store the notarization credentials in the keychain.** `release.sh` uses the profile `oby-notary` (or `OBY_NOTARY_PROFILE`):
+
+   ```sh
+   xcrun notarytool store-credentials oby-notary --key ~/Downloads/AuthKey_KEYID.p8 --key-id KEYID --issuer ISSUER-UUID
+   ```
+
+   Then delete the `.p8` from Downloads: the keychain has it.
+3. **Generate Sparkle's keys.** Sparkle's tools come with the package Xcode checked out; the first build of the `Oby` scheme fetches them:
+
+   ```sh
+   bin="$(find ~/Library/Developer/Xcode/DerivedData -type d -path '*/artifacts/sparkle/Sparkle/bin' | head -n 1)"
+   "$bin/generate_keys"
+   ```
+
+   `generate_keys` keeps the private key in the login keychain (it prints nothing of it) and prints the public key. Put the public key in `apps/config/Signing.xcconfig` as `OBY_SPARKLE_PUBLIC_KEY`, replacing the placeholder, and commit. To release from another Mac later, `generate_keys -x key.private` exports the private key for `generate_keys -f key.private` there; delete the file afterwards. Keep a copy of the private key somewhere safe: a lost key means shipped Obys can't verify any future update.
+4. **Set the team.** `OBY_TEAM_ID` in `apps/config/Signing.xcconfig`, in the same commit. Nothing else in the project names a team.
+5. **Hosting.** Create the R2 bucket (`oby-downloads`, or set `OBY_R2_BUCKET`) and point `downloads.oby.deskree.com` at it as a public custom domain in Cloudflare. For the upload, either `brew install wrangler` and `wrangler login`, or an R2 API token (Account › R2 › Manage API tokens, Object Read & Write on the bucket) kept in the keychain so `aws` can use it:
+
+   ```sh
+   security add-generic-password -s oby-r2 -a account-id -w CLOUDFLARE-ACCOUNT-ID
+   security add-generic-password -s oby-r2 -a access-key-id -w ACCESS-KEY-ID
+   security add-generic-password -s oby-r2 -a secret-access-key -w SECRET-ACCESS-KEY
+   ```
+
+   `.env.local` at the repository root (gitignored) with `OBY_R2_ACCOUNT_ID`, `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` works too.
+
+   With wrangler, a login that sees more than one Cloudflare account won't pick one by itself, so `release.sh` hands it the bucket's account as `CLOUDFLARE_ACCOUNT_ID`, from `OBY_R2_ACCOUNT_ID` (the environment, `.env.local`, or the keychain item `oby-r2`/`account-id` above). It checks this before building anything: with several accounts and none chosen, it stops and says so. The account id isn't a secret, but it stays out of git.
+6. **Both architectures.** Homebrew's `rust` builds Apple Silicon only, and a release needs obid for both. Install `rustup` from Homebrew (`brew install rustup`), then `$(brew --prefix rustup)/bin/rustup toolchain install stable --profile minimal -t aarch64-apple-darwin,x86_64-apple-darwin`, and link its `cargo`, `rustc` and `rustup` into `~/.cargo/bin`, which the Bundle obid phase looks in first. Leave `~/.cargo/bin` off your shell's PATH if you build obid day to day with Homebrew's `rust`.
+7. **Optional:** `brew install create-dmg` for a DMG with a background (`apps/icon/dmg-background.png`, when it exists). Without it, the DMG is plain: Oby.app and an Applications link.
+
+## A release
+
+On a clean `dev` (or `main`, once F4's test list passes):
+
+```sh
+scripts/release.sh 0.2.0
+```
+
+In order, it:
+
+0. **Runs the checks**, `swift test` and the Mac app's `MacTests`, one after the other (side by side, the load timed tests out on 0.3.0) through [`scripts/tested.sh`](../scripts/tested.sh), skipping each one that already passed on this Mac on the same files (see "Tests a release skips"). `--full` runs both whatever the records say. Nothing is built unless they pass.
+1. **Bumps the version**, once it has checked that the checkout is still clean and `HEAD` hasn't moved since it started. `MARKETING_VERSION` becomes `0.2.0` and `CURRENT_PROJECT_VERSION` the git commit count including the bump commit, so build numbers only grow; both in `apps/Oby.xcodeproj`, committed as `chore(release): Oby 0.2.0 (N)`.
+2. **Archives the `Oby` scheme** (Release) and exports it with Developer ID ([`apps/ExportOptions-DeveloperID.plist`](../apps/ExportOptions-DeveloperID.plist), `teamID` filled from `OBY_TEAM_ID`), on warm caches (see "Warm builds"). Then it checks that the checkout is still clean at the bump commit, the version, that the app, obid and the app's gitleaks hold arm64 and x86_64 (`lipo`) and that gitleaks runs as 8.30.1, every signature (`codesign --deep --strict`), that the launch build carries none of what it leaves out or, with `--full-build`, that a full build carries all of it, `obi-vm` included (see "Full builds" and "The guest image"), and scans the app with gitleaks before anything leaves the Mac.
+3. **Notarizes the app** (`xcrun notarytool submit --keychain-profile oby-notary --wait`), staples the ticket, validates it and checks it with `spctl`. While Apple works, it scans the commits since the last `v*` tag with gitleaks, and gathers the release notes and the published appcast.
+4. **Builds `Oby-0.2.0.dmg`** from the stapled app, checks the app in it with `codesign`, signs the DMG with the Developer ID, notarizes and staples it too, then checks the DMG (`stapler validate`, `hdiutil verify`, `spctl`), the app in it (`spctl`) and a copy of the app with a quarantine flag (`spctl`, `stapler validate`).
+5. **Signs it for Sparkle** with `sign_update` and the EdDSA key in the keychain.
+6. **Writes the appcast entry**: version, build, date, the DMG's URL, length and signature, and release notes from the merged pull requests since the last `v*` tag (`--notes <file>` gives your own, one line per item). It's put on top of the appcast published already, checked with `xmllint` and scanned with gitleaks.
+7. **Uploads** the DMG to R2, downloads it back from its public URL and compares the size and SHA-256 with the file it built, and only then uploads `appcast.xml` (`appcast-full.xml` with `--full-build`, see "Full builds").
+8. **Tags `v0.2.0`.**
+
+Each step prints how long the release has run (`==> [m:ss]`). Everything lands in `build/release/` (gitignored), with `swift-test.log`, `mac-tests.log`, `archive.log`, `export.log`, `notarize-app.log` and `notarize-dmg.log` when something fails. If the release stops part way, it stops what it started in the background (the checks, a notarization) and detaches any DMG it mounted. The script prints no credential and never runs with `set -x`.
+
+If a release stops at the upload (its DMG and appcast are built, notarized and signed in `build/release/`), `scripts/release.sh 0.2.0 --from-upload`, on the release's own `chore(release)` commit, publishes them with the same checks: the DMG, its public copy compared with it, the appcast, the tag. It refuses without that commit, the files, an appcast entry for the version, or a DMG Gatekeeper accepts.
+
+Then push the commit and the tag: `git push origin HEAD v0.2.0`. Shipped Obys pick the update up within 6 hours; **Check for Updates…** gets it now.
+
+### Full builds
+
+The launch build (the owner's decision of 2026-10-23, [AGENTS.md, "The launch build"](../AGENTS.md)) leaves out what launch hides: `cloudflared` (Remote access), `obi-vm` (sharing this Mac) and obid's web app (`/app/` then answers 404). A full build carries them, as every build did before, for Deskree's own Macs.
+
+- **One switch, `OBY_FULL_BUILD=1`**, a build setting (`0` in `apps/config/Signing.xcconfig`) the Bundle cloudflared, Bundle obi-vm and Bundle obid phases read. From the command line, `xcodebuild … OBY_FULL_BUILD=1`; in Xcode, `OBY_FULL_BUILD = 1` in `apps/config/Signing.local.xcconfig`. Without it, the phases leave the three out and remove what an earlier full build left in the app. Only a full build needs Node (`npm ci && npm run build` in `apps/web`: every full Release build, and a full Debug build when `apps/web/dist` isn't built).
+- **Its own appcast.** A full build follows `OBY_FULL_APPCAST_URL` (`appcast-full.xml`, beside `appcast.xml` in the same bucket), the launch build `OBY_APPCAST_URL`: Sparkle installs updates by itself (`SUAutomaticallyUpdate`), so a full build never updates to the launch build, and a launch build never to a full one.
+- **`scripts/release.sh <version> --full-build`** archives with `OBY_FULL_BUILD=1`, checks that cloudflared is universal, `obi-vm` and its guest image (see "The guest image": a real release stops when the image isn't published) and the web app, and publishes only to the full appcast: `Oby-<version>-full.dmg`, `appcast-full.xml`, the commit `chore(release): Oby <version>-full (N)` and the tag `v<version>-full`, so a full release of a version a launch release already shipped doesn't collide with it. Its notes and history scan start at the last `v*-full` tag (else the last `v*`). Without the flag, the archive gets `OBY_FULL_BUILD=0` whatever `Signing.local.xcconfig` says, the release stops if the app carries any of the three, and it publishes only `appcast.xml`. Either way the app must follow its own appcast (`SUFeedURL`), and the two appcast settings must name different files, since the upload keeps each by its file name. `--from-upload` takes `--full-build` too. (`--full` is the checks' flag: it runs every suite.)
+- **Moving a Mac onto the full feed.** Deskree's Macs run 0.3.0, a full build that follows `appcast.xml` with automatic updates on, so the next launch release would install itself on them and drop cloudflared, `obi-vm` and the web app. So publish a full release before the next launch release, and on each of those Macs install `Oby-<version>-full.dmg` by hand once, then `defaults write com.deskree.oby showEverything -bool YES` and relaunch Oby. From then on it follows `appcast-full.xml`.
+- **The checks test the same build.** `release.sh` exports `OBY_FULL_BUILD`, so `scripts/tested.sh` builds MacTests as the release does, and a record for the launch build doesn't count for a full one (see "Tests a release skips"). `RemoteAccessTests` checks the app has all three or none.
+- **obid is stripped** in every build (`[profile.release] strip = true` in `core/Cargo.toml`).
+
+Measured on 2026-10-23, archived like a dry run (Release, both architectures, ad hoc), the DMG a plain UDZO one with an Applications link; "before" is `e0f75565`, the commit the switch came after:
+
+| | Before | Launch build | Full build |
+| --- | --- | --- | --- |
+| Oby.app on disk | 261.3 MB | 167.4 MB | 246.6 MB |
+| Zipped (`ditto -c -k`) | 107.7 MB | 65.5 MB | 105.4 MB |
+| DMG | 118.2 MB | 73.4 MB | 116.1 MB |
+| `cloudflared` | 77.7 MB | none | 77.7 MB |
+| `obid` | 73.6 MB | 58.9 MB, stripped | 58.9 MB, stripped |
+| `obi-vm`, the web app | 0.2 MB, 1.4 MB | none | 0.2 MB, 1.4 MB |
+| `gh`, the same in all three | 79.1 MB | 79.1 MB | 79.1 MB |
+
+### The guest image
+
+Sharing a Mac (#797) runs teammates' jobs in a VM. `obi-vm` is built into the app by the "Bundle obi-vm" build phase (`apps/mac/app/Tools/bundle-obi-vm.sh`): arm64, the virtualization entitlement, and the SHA-256s of the image [`core/obi-vm/image.json`](../core/obi-vm/image.json) pins built in. The image itself (171 MB to fetch, zstd-compressed, and 665 MB on disk, as core/obi-vm/image.json pins it: no docs or translations, only the kernel modules the guest loads, no Codex) is published once per new image, compressed, and obid fetches it when an owner turns sharing on. Only a full build has `obi-vm` (see "Full builds"). With `--full-build`, `release.sh` checks that `obi-vm` is arm64, has the entitlement and answers `obi-vm image` with the pinned hashes and sizes, and that the pinned image's `.zst` files are published at `https://downloads.oby.deskree.com/vm/<root.img's SHA-256>/`, each its pinned size (a dry run only warns).
+
+A new image (a change in `core/obi-vm/image/`):
+
+```sh
+core/obi-vm/image/build.sh <dir>            # Docker (OrbStack); the files, their .zst copies and <dir>/image.json
+cp <dir>/image.json core/obi-vm/image.json  # commit it in the change's pull request
+scripts/publish-vm-image.sh <dir>           # checks the files against the pin, uploads them, reads them back
+```
+
+### Tests a release skips
+
+The coordinator's merge ritual already runs the full suites on the exact tree it merges, on this Mac. If it runs them through [`scripts/tested.sh`](../scripts/tested.sh), `release.sh` doesn't run them again on the same files:
+
+- **The ritual runs** `scripts/tested.sh run mac-tests` instead of its own `xcodebuild … test` for MacTests, and `scripts/tested.sh run swift-test` instead of `swift test` (when Engine/ or RunnerTests/ change), from the checkout it's about to merge. `tested.sh` runs the suite's one command itself, under `env -i` with only `HOME` and a fixed `PATH` (the system's folders, `~/.cargo/bin` and `/opt/homebrew/bin`, as `bundle-obid.sh`), and calls its own tools (`git`, `shasum`, `security`, `perl`…) by absolute path, so a shim on the caller's `PATH` can't fake a pass. That covers the caller's `PATH` and environment, not files written as the same user: a `swift` dropped into `~/.cargo/bin` runs, and anything running as you can read the HMAC key anyway (MacTests: the `Oby` scheme on `platform=macOS`, with the release's DerivedData and cargo target, so it warms the release's caches too; run one MacTests at a time, since they share that DerivedData) and records it only when the command exits 0 and the checkout's fingerprint is the same before and after the run. There's no command to record a suite without running it. Squash-merging keeps the files, so the record holds for `dev` once it's merged. `release.sh` runs its checks through `tested.sh` too, so a release that fails after the checks doesn't run them again.
+- **A record** is `~/Library/Application Support/Oby-release/tested/<suite>/<fingerprint>`: the fingerprint of the files, the suite, the toolchain (Xcode, Swift, and the Rust that builds obid), the commit and the time, with an HMAC-SHA256 whose key is in the login keychain (service `oby-release-tested`, made on the first record). A record edited or written by hand, or by an agent boxed away from the keychain, doesn't verify.
+- **The fingerprint** is `git ls-tree -r HEAD` hashed, with the `MARKETING_VERSION` and `CURRENT_PROJECT_VERSION` lines of `project.pbxproj` normalized, so the release's version bump doesn't count as a change, plus the SHA-256 of the gitignored `apps/config/Signing.local.xcconfig` when there is one, and for `mac-tests` which build it tested (`OBY_FULL_BUILD` from the environment, `0` when unset: `tested.sh` passes it to `xcodebuild`, so it tests the launch build unless told otherwise). `mac-tests` covers the whole tree; `swift-test` only the Swift package's inputs: `Package.swift`, `Package.resolved`, and every target's `path:` read from `Package.swift`, its value on the same line or the next (SwiftPM's default `Sources/` and `Tests/` too), so a merge that didn't touch them keeps an earlier record valid. A checkout with any change, untracked files included (`git status --porcelain --untracked-files=all`), is never run, recorded or matched; a dry run on such a checkout runs every check and records none. Other gitignored build inputs, such as `apps/web/dist` and `core/target`, are not part of the fingerprint: a record doesn't notice when they change, so after changing one by hand, run with `--full`.
+- **A suite runs** when there's no record for these files, the record doesn't verify, the toolchain changed, the checkout has changes, or `--full` is given. The release prints which suites it skipped and why (`skipped mac-tests: tree 3f2a… passed it on this Mac at …`), or why each one runs.
+
+`scripts/tested.sh check <suite>` says whether the current checkout counts as tested, without running anything.
+
+### Warm builds
+
+The archive no longer starts cold. `~/Library/Caches/Oby-release/<toolchain>/` keeps the release's `DerivedData` (Xcode's build and its Swift packages) and `cargo/`, obid's cargo target directory (`OBY_CARGO_TARGET_DIR`, which the Bundle obid phase reads; it builds both architectures in one cargo run). `<toolchain>` is a hash of `xcodebuild -version`, `swift --version` and `rustc -vV`, so a new Xcode or Rust starts a fresh set and the old one is deleted. Before each archive the assembled `Oby.app` in DerivedData is removed, so nothing a previous build left in the bundle reaches this one. What stays warm is obid's Rust (cargo rebuilds only what changed: 0.6 s when nothing did, against about 4 minutes cold for both architectures), the Swift packages and the module caches; `xcodebuild archive` compiles Oby's own Swift again every time (whole-module, about 3 minutes for both architectures), which a release with new code needs anyway. After the export, `release.sh` checks the version, both architectures in the app and in obid (`lipo -archs`), and every nested signature. To start cold anyway, `rm -rf ~/Library/Caches/Oby-release`.
+
+### Notarization: the app, then the DMG
+
+The release still notarizes twice, so the app carries its own ticket. Notarizing the DMG alone is enough online: Apple's notary service "generates a ticket for the top-level file that you specify, as well as for each nested file" ([Customizing the notarization workflow](https://developer.apple.com/documentation/security/customizing-the-notarization-workflow)), and on 2026-10-21 `spctl` accepted the app in a DMG notarized alone and a quarantined copy of it, both `source=Notarized Developer ID`. But only the DMG gets its ticket stapled that way: an app copied out of it carries none (`stapler validate` says so), and a Mac that is offline the first time it opens that copy has nothing to check it against, which wasn't tested on a fresh Mac. So the app is notarized and stapled first (about a minute and a half on 2026-10-21), and the DMG is built from the stapled app. The app's notarization overlaps the history scan and the release notes; the DMG's runs alone, since Sparkle signs the stapled DMG.
+
+### Trying it today
+
+```sh
+scripts/release.sh 0.2.0 --dry-run
+```
+
+A dry run needs no certificate, key or bucket: it archives with ad hoc signing (CI's flags, hardened runtime on), notarizes and uploads nothing, signs the DMG ad hoc, uses a placeholder Sparkle signature when the keychain has no key, writes the appcast to `build/release/appcast.xml`, checks it with `xmllint` and prints the entry. It commits and tags nothing, and leaves the project untouched. Put its output in the pull request.
+
+## Moving the iPhone and Watch apps to the Deskree team
+
+Done on 2026-10-20: every app signs with Deskree's team (`3UV9W5SV7W`) and the iPhone app is `com.deskree.oby`. The beta on Wellington's team (`dev.wellprado.oby`, "Oby Beta") stays where it is and gets no new builds. What the move needed, for the record:
+
+The Mac app only needs `OBY_TEAM_ID`. The iPhone and Watch apps need more, because their identifiers and pushes belong to the account:
+
+1. **Register the App IDs** under the Deskree team: the iPhone app, its Live Activity (`….activity`), the Watch app and its widget, and the **App Group** they share ([apps/ios/app/README.md](../apps/ios/app/README.md) has today's ids). Either keep `dev.wellprado.oby` as `OBY_IPHONE_BUNDLE_ID`, or set a new one there (an App Store record's bundle id stays with its account, so the real app starts fresh on Deskree's).
+2. **A new APNs key** (Keys › +, Apple Push Notifications service) for the Live Activity pushes. The runner's key `8TP9AXUB64` belongs to the current team and its `.p8` lives on tetrix-lab, so the runner's `apns/apns.json` needs the new Team ID and Key ID, with the new `.p8` beside it ([Runner/README.md](../Runner/README.md), Live Activity push).
+3. **Set `OBY_TEAM_ID`** and commit; every target follows.
+4. **Xcode Cloud**: the workflows for `ObyPhone` and `ObyWatch` move to the Deskree team's App Store Connect, with the new app records.

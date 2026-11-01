@@ -1,0 +1,177 @@
+# Cursor in Oby (#406)
+
+Oby runs jobs on Cursor through `cursor-agent acp`, the Agent Client Protocol over stdio, with
+the generic client in `Engine/ACP.swift` and Cursor's launch in `Engine/Cursor.swift`. This page
+is what Oby relies on, and what the probe proved. Run the probe with
+`scripts/cursor-probe.sh offline` and `scripts/cursor-probe.sh signed-in`.
+
+## Cursor today
+
+What a Cursor job does in the launch build, on obid:
+
+- Its file edits can't be gated yet ("Edits are not gated", below), so Ask mode behaves as Accept
+  edits on Cursor.
+- It shows no usage meter: Cursor reports no usage, so routing gives it work last
+  (docs/runner-api.md, "Routing").
+- It doesn't review: Oby's review of a finished job never runs on Cursor.
+- Its questions reach the owner and wait for the answer (#1456), its Plan mode waits for the
+  owner's OK (#1452), and a repository's hooks ask before Cursor starts (#1454, "A repository's
+  hooks", below).
+
+## Probe results
+
+Both halves of `scripts/cursor-probe.sh` were run by the user on tetrix-lab on 2026-10-14, with
+cursor-agent 2026.10.12-d47ca18, signed in with one Cursor account. What follows is what that run
+showed, and what Oby does about each.
+
+| Fact | Result | What Oby does |
+| --- | --- | --- |
+| Where the login lives | A plain file, `~/.config/cursor/auth.json` (0600): the runner has no keyring. | Oby never reads it. |
+| Login isolation | With `CURSOR_CONFIG_DIR` alone, both throwaway homes showed the user's real login. With `HOME`, `XDG_CONFIG_HOME` **and** `CURSOR_CONFIG_DIR` each of its own, account A was signed in and B stayed signed out (the user has one Cursor account, which shows per-folder isolation). | `separateLogins = true`. Every Cursor start, status, models and sign-in sets all three to the account's home (`CursorStatus.environment`). |
+| Commands | `session/request_permission` arrives, kind `execute`. | Commands ask Oby. |
+| **Edits** | With every permission rejected, `probe.txt` was **written, with no `session/request_permission` at all.** | `editsAsk = false`. See below: edits can't be gated through ACP. |
+| MCP through `mcpServers` | Cursor POSTed `/mcp` on the stub server, then tried OAuth discovery: `/.well-known/oauth-protected-resource`, `/.well-known/oauth-authorization-server`, `/.well-known/openid-configuration` and `POST /register`. | `honoursMcpServers = true`. The runner answers those paths with a plain `404` (`Gate`). |
+| Model | `session/new`'s `configOptions` has a `model` select; its values carry parameters, like `gpt-5.6-luna[context=272k,reasoning=medium,fast=false]`, and `default[]` is Auto. | `modelOption = true`: `--model` is dropped and Oby sets the option (`ACPRPC.modelValue` finds the variant for the model Settings names). |
+| Modes | `agent`, `plan`, `ask`. | Plan is `plan`; every other Oby mode is `agent`. |
+| `session/load` | `loadSession` is true and `session/load` works in a new process. | A resumed job loads its session, and takes its modes and options from the answer. |
+| Signed out | `session/new` answers `-32000` "Authentication required". | The job fails with "Cursor · <account> is signed out: sign in from Settings › Accounts". |
+
+### Edits are not gated
+
+Cursor, with `--sandbox disabled` and every permission rejected, wrote a file without asking.
+**Edits can't be gated through ACP**, so Oby doesn't claim they ask:
+
+- A Cursor job in Ask mode behaves as Accept edits, and the job's report and the mode picker say so.
+- Policy's "stay inside the worktree" for file edits can't be applied to Cursor's own edits. What holds
+  them is the job's worktree and, on Linux, bubblewrap (`own: home`: the worktree, the clone's git data
+  and the account's home are the only writable places; everything else is read-only or empty).
+  On a Mac there's no box: Cursor's edits are as free as Cursor's own judgment, and Plan mode is
+  Cursor's own read-only mode.
+- Commands do ask, so Policy's fixed rules (no push, no `gh` publishing) and the user's rules apply to
+  every command.
+
+### Not yet verified
+
+- The offline half's raw output (`--version`, `acp --help`, the `initialize` response) wasn't pasted
+  here: the facts above are what the user reported from the run.
+- `HOME` is part of the isolation the probe proved, and it changes the home of every command a Cursor
+  job runs (the SwiftPM and npm caches start empty in the account's home). Probe step 2b tests
+  `XDG_CONFIG_HOME` + `CURSOR_CONFIG_DIR` without `HOME`; if that isolates too, `CursorStatus.environment`
+  can drop `HOME`.
+- Probe step 7 (`scripts/cursor-probe.sh signed-in`), with `cursor-agent --sandbox disabled acp` on the
+  signed-in throwaway home and user hooks in `<home>/.cursor/hooks.json` and
+  `$CURSOR_CONFIG_DIR/hooks.json`, checks: whether a `preToolUse` hook that denies
+  `Write|StrReplace|Delete` stops an edit (the `tool_name` values it saw, and whether its `user_message`
+  reaches the model); whether `postToolUse`'s `additional_context` reaches the model; which keys the
+  `stop` payload carries (`input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_write_tokens`);
+  whether `permissions.deny: ["Write(**)"]` in `cli-config.json`, with no hooks, stops a write; and the
+  `configOptions` `session/new` gives with `clientCapabilities._meta.parameterizedModelPicker`, and
+  whether a reasoning (`thought_level`) option is among them. Its PASS, FAIL and UNKNOWN lines decide
+  the edit gate, token counts, steering and the effort setting for Cursor jobs.
+
+## `CursorFacts` (Engine/Cursor.swift)
+
+| Fact | Value | What it changes |
+| --- | --- | --- |
+| `separateLogins` | `true` | Any number of Cursor accounts, each with its own `HOME`, `XDG_CONFIG_HOME` and `CURSOR_CONFIG_DIR`. Closes #24. (`false` would allow one account per machine: "Cursor keeps one login per Mac user".) |
+| `editsAsk` | `false` | A Cursor job in Ask mode behaves as Accept edits, and says so. |
+| `honoursMcpServers` | `true` | `session/new` carries the broker (`type: "http"`, the job's token in an `Authorization` header) when `mcpCapabilities.http` holds, and the account's own servers from `<home>/mcp.json` (only the keys that start them, never a header or env value). |
+| `modelOption` | `true` | The model is set with `session/set_config_option` (category `model`), not `--model`. |
+
+## The wire format Oby uses
+
+Newline-delimited JSON-RPC 2.0 over stdio, split on `\n` only (U+2028 stays inside a message).
+
+| Step | Message |
+| --- | --- |
+| Start | `initialize` `{protocolVersion: 1, clientCapabilities: {}, clientInfo: {name: "oby"}}`: no `fs`, no `terminal`. Oby never calls `authenticate`. |
+| Session | `session/load` when `agentCapabilities.loadSession` holds and the job resumes, else `session/new {cwd: worktree, mcpServers}`. |
+| Turn | `session/prompt`; progress arrives as `session/update` (`agent_message_chunk`, `tool_call`, `tool_call_update`, `plan`). |
+| Permission | `session/request_permission` with options `allow_once`, `allow_always`, `reject_once`, `reject_always`. |
+| Stop | `session/cancel`, every pending permission answered `{outcome: {outcome: "cancelled"}}`, then the process group ends after `Halt.grace`. |
+
+Oby answers a permission with `{outcome: {outcome: "selected", optionId}}`, per the protocol's
+schema. Its #406 text writes the cancelled answer as `{outcome: "cancelled"}`; the nested form is
+what the schema and Cursor's own ACP page show.
+
+### Permissions
+
+1. The request names a tool call by `toolCall.toolCallId`; Oby reads the call's earlier
+   `tool_call` (command, files, URL) with what the request carries.
+2. `execute` is `Bash` (`rawInput.command`, a string or words joined by spaces, else the title);
+   `edit`, `delete`, `move` are `Edit` (paths from `locations` and the diffs; the probe saw no edit
+   request, so this is for a Cursor that sends one); `read`, `search` are
+   `Read`; `fetch` is `WebFetch`; a title shaped `mcp__<server>__<tool>` is that MCP tool; anything
+   else is `Cursor(<title>)`.
+3. `Policy.deny` answers first (no publishing, the worktree only, only Tetrix's MCP tools): the
+   answer is `reject_once`, and the reason is put before the job's next prompt ("Oby declined …").
+4. Everything else is asked of `Permissions.decide` with the job's mode and rules. `Cursor(...)`
+   asks in **every** mode, Bypass included, and saves no rule.
+5. Allow and always answer the `allow_once` option. **`allow_always` is never sent**: it would let
+   later calls past Oby. With no `allow_once` Oby rejects ("Oby can't allow this once").
+
+### Cursor's own requests
+
+| Method | Oby's answer |
+| --- | --- |
+| `cursor/create_plan` | The plan card (as `ExitPlanMode`): in Plan mode it waits for the owner, a `plan` inbox item (#1008). Approve: `{outcome: "accepted"}`, then Cursor's mode goes to `agent` and a prompt tells it to go ahead. Keep planning, or the owner's words: `{outcome: "rejected", reason}`, and Cursor stays in `plan`. A job that only reads gets `rejected` without asking. |
+| `cursor/ask_question` | On obid, the job's question, as Claude Code's `AskUserQuestion` (docs/runner-api.md, `permission`): each question's `prompt`, its options' `label`s and `allowMultiple`. The owner's options go back as `{outcome: {outcome: "answered", answers: [{questionId, selectedOptionIds}]}}` (Cursor's documented shape, cursor.com/docs/cli/acp); their own words as `{outcome: "skipped", reason: <the words>}`, then as the next prompt of the same turn, since the answer takes option ids only; a no is `skipped` with the decline. Over ACP Cursor rarely sends it today (Cursor traced it to how ACP sessions are identified on their side, forum thread 172976, 2026-09-25), so obid also gives every Cursor job its `oby` MCP server with one tool, `oby_ask_owner`: it returns at once (Cursor's MCP calls time out after about a minute), the turn ends, and the owner's answer resumes the session with `session/load` and `session/prompt`. The Swift engine skips it. |
+| `cursor/update_todos`, `cursor/task` | Notifications: a step line for now (#381's activity list isn't in yet). |
+| any other request (`fs/*`, `terminal/*`) | A JSON-RPC error: Cursor never waits on Oby. |
+
+### Launch
+
+```
+cursor-agent --sandbox disabled acp
+```
+
+- The model is set after `session/new` through its `model` option (`--model <id>` only while
+  `CursorFacts.modelOption` is false); Auto sets nothing: Cursor picks.
+- Every Cursor job runs on an Oby-made account home (`accounts/<id>`), never `~/.cursor`:
+  `CURSOR_CONFIG_DIR`, `XDG_CONFIG_HOME` (`<home>/.config`) and `HOME` are all the account's. Before
+  each start Oby rewrites only `permissions: {allow: [], deny: []}` and `approvalMode: "allowlist"` in
+  `<home>/cli-config.json`, keeping `authInfo` and `version`. (That is the Swift engine. obid gives
+  each Cursor job a folder of its own instead, with a copy of the account's login file and settings,
+  never the account's folder: docs/runner-api.md, "The job sandbox", #655.)
+- `CURSOR_API_KEY` and `CURSOR_AUTH_TOKEN` are removed from every agent's environment (Shell.swift).
+- A repository's `.cursor/cli.json` with a non-empty `allow` is asked about once per repository,
+  before Cursor starts. (obid asks with a card, as for its hooks, and Bypass answers it: BYPASS-9.)
+- A repository's hooks wait for the owner's yes before Cursor starts (obid only): see below.
+
+### A repository's hooks
+
+Cursor runs hooks from the workspace's `.cursor/hooks.json` and, while "Include third-party
+configs" is on (its default), Claude Code's from `.claude/settings.json` and
+`.claude/settings.local.json` (cursor.com/docs/hooks, cursor.com/docs/reference/third-party-hooks).
+A hook runs as Cursor's own child, outside `session/request_permission`, so obid's prompts never
+see it; Claude Code jobs don't load them (`--setting-sources ""`). Cursor's docs name no flag or
+`cli-config.json` key that stops project or third-party hooks (`--disable-project-configs` covers
+only `.cursor/cli.json`), and whether they fire under `cursor-agent acp` isn't proven (Paperclip
+found hooks in Cursor's ACP code, `doc/architecture/runner-cursor-capabilities.md`). So obid
+assumes they do:
+
+- Before a Cursor job starts, obid reads those three files in the job's worktree, as the job will
+  see them, and names each hook as `<file> (<event>): <what it runs>`: its `command` (Claude Code's
+  under a matcher's own `hooks`), else its `prompt` or `url`. A file it can't read as JSON is named
+  whole, with its SHA-256. Settings with no `hooks`, and events with no hook, are nothing.
+- With any hook, the job waits on a permission card (`tool` `RepositoryHooks`, the hooks quoted as
+  data in `title` and `detail`), in every mode: only the owner answers it. Allow starts this run with
+  them; Always allow saves the rule `RepositoryHooks(<16 hex of the hooks' SHA-256>)` for the
+  repository, so later jobs on those very hooks start without asking, and a changed or added hook
+  asks again. No starts nothing: the job fails with `Cursor didn't start: you said no to this
+  repository's hooks, which Cursor runs itself, outside obid's prompts. Claude Code and Codex
+  jobs don't run them: move it to one of them, or start it again and allow them.`
+- obid never edits the repository's files, the account's folder or `~/.cursor` for this: there's
+  nothing in the job's own folder copy that would switch hooks off.
+- Probe step 6 (`scripts/cursor-probe.sh signed-in`) says whether project and third-party hooks fire
+  under `acp`, with and without `--trust` (Cursor's docs: project hooks need a trusted workspace), and
+  lists `--help` lines and `cli-config.json` keys that could be a switch. If one proves reliable,
+  obid can set it in the job's own `cli-config.json` and stop asking.
+- Not covered: a hook the agent itself writes during a run (an edit to one of those files, which
+  Cursor may load at once; the next run asks about it), and Cursor's enterprise and team hooks
+  (`/Library/Application Support/Cursor/hooks.json`, the dashboard), which are the machine's and the
+  team's, not the repository's.
+- On Linux the box binds `.local/share/cursor-agent` (`Agents.tools`) and Cursor's own sandbox
+  stays disabled (bubblewrap can't nest); Oby answers every command.
+- Sign-in is the tool's own command in Terminal: `cursor-agent login` with the three variables
+  (`NO_OPEN_BROWSER=1` on the runner).

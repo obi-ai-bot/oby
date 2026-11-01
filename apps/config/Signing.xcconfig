@@ -1,0 +1,44 @@
+// One signing config for every target, Debug and Release (#282). apps/Oby.xcodeproj reads it at the
+// project level: every DEVELOPMENT_TEAM is $(OBY_TEAM_ID) and the bundle ids come from here.
+// Switching every app to another team is this one line.
+//
+// To override any of these on one Mac, write them in apps/config/Signing.local.xcconfig (gitignored).
+// CI's ad hoc flags (docs/ci.md) still win: command-line settings beat every xcconfig.
+
+OBY_TEAM_ID = 3UV9W5SV7W
+
+OBY_MAC_BUNDLE_ID = com.deskree.oby
+OBY_IPHONE_BUNDLE_ID = com.deskree.oby.ios
+
+// Where the Mac app looks for updates (apps/mac/app/Info.plist, SUFeedURL, through OBY_FEED_URL): the
+// appcast scripts/release.sh writes and uploads. A full build follows its own appcast beside it, so it
+// never updates to the launch build, nor the launch build to it. "//" starts a comment in an xcconfig,
+// so the empty $() keeps the URL whole.
+OBY_APPCAST_URL = https:/$()/downloads.oby.deskree.com/appcast.xml
+OBY_FULL_APPCAST_URL = https:/$()/downloads.oby.deskree.com/appcast-full.xml
+
+// 0 for the launch build, 1 for a full build (docs/release.md, "Full builds"): with cloudflared, obi-vm
+// and obid's web app, following OBY_FULL_APPCAST_URL. Set 1 on the command line or in
+// Signing.local.xcconfig.
+OBY_FULL_BUILD = 0
+OBY_FEED_URL_0 = $(OBY_APPCAST_URL)
+OBY_FEED_URL_1 = $(OBY_FULL_APPCAST_URL)
+OBY_FEED_URL = $(OBY_FEED_URL_$(OBY_FULL_BUILD))
+
+// The control plane the Mac app signs in with for remote access (apps/mac/app/Info.plist,
+// ObyControlPlaneURL; Engine/ControlPlane.swift): Deskree's own instance. Running your own
+// (docs/remote-access.md, "Run your own control plane")? Put its URL here or in Signing.local.xcconfig.
+OBY_CONTROL_PLANE_URL = https:/$()/oby-control.deskree.com
+
+// The Obysphere server the Mac app creates Obyspheres on and trusts invite links from
+// (apps/mac/app/Info.plist, ObySphereURL; apps/mac/app/Sphere.swift): Deskree's own instance. Running
+// your own (obi-ai-bot/obi-sphere, docs/run-your-own.md)? Put its URL here or in Signing.local.xcconfig;
+// each person can also set one in Settings › Obysphere › Server. Empty: none until they do.
+OBY_SPHERE_URL = https:/$()/obysphere.deskree.com
+
+// Sparkle's EdDSA public key (apps/mac/app/Info.plist, SUPublicEDKey): the one `generate_keys` printed on
+// 2026-10-20 (docs/release.md, Sparkle keys). Its private half is in the release Mac's login keychain;
+// every update must be signed with it, so keep an exported copy somewhere safe.
+OBY_SPARKLE_PUBLIC_KEY = rcgwHqm6vDZowMPh9fV8r8PlvfKzNegd21UdrknYP34=
+
+#include? "Signing.local.xcconfig"

@@ -1,0 +1,2160 @@
+* { box-sizing: border-box; }
+html, body, #root { height: 100%; margin: 0; }
+body {
+  background: var(--bg);
+  color: var(--text);
+  font: var(--text-md)/1.4 var(--font);
+  -webkit-font-smoothing: antialiased;
+  user-select: none;
+  overflow: hidden;
+}
+button, input, textarea { font: inherit; color: inherit; }
+button { appearance: none; border: 0; background: none; padding: 0; cursor: pointer; }
+/* The app's chrome can't be selected, as a Mac app's can't; what you read in
+   a modal or on a Settings page (app, Obysphere, Knowledge) can, to copy a
+   label, a note or an address. Its buttons and switches still can't */
+.modal, .set-column { user-select: text; }
+.modal button, .modal select, .set-column button, .set-column select { user-select: none; }
+:focus-visible { outline: 1px solid var(--muted); outline-offset: 2px; }
+
+/* the side panel and the view side by side; opening the panel pushes the view.
+   Neither squeezes below its width: in a narrow window the view runs off the
+   right edge and is clipped */
+.app { position: relative; height: 100%; display: flex; overflow: clip; }  /* clip, not hidden: nothing (like the editor bringing its cursor into view) can scroll it sideways */
+.app > .home { flex: 1; min-width: var(--view-min); }
+/* the panel icon: right of the traffic lights, over whatever is beneath */
+.panel-toggle {
+  position: absolute;
+  z-index: 10;
+  top: calc((var(--bar) - 32px) / 2);
+  left: var(--after-lights);
+  transition: left 300ms var(--warm), background-color var(--fade), color var(--fade);
+  -webkit-app-region: no-drag;
+}
+/* no traffic lights (full screen, or a browser tab), so the panel icon (and the
+   title bar after it) moves to the window's edge */
+.app.no-lights { --after-lights: 12px; }
+/* The window drags from the title bar; anything clickable in it opts out. */
+.bar {
+  height: var(--bar);
+  display: flex;
+  align-items: center;
+  /* clear of the traffic lights and the panel icon; with the panel open the
+     bar starts at the panel's edge */
+  padding-left: calc(var(--after-lights) + 40px);
+  /* on the side panel's own timing each way (.sidebar-slot), so what's in the
+     bar moves one way only as the panel opens or closes, never out and back */
+  transition: padding-left var(--panel-close);
+  -webkit-app-region: drag;
+}
+.has-sidebar .bar { padding-left: var(--gutter); transition: padding-left var(--panel-settle); }
+.bar button { -webkit-app-region: no-drag; }
+/* the trail on a task's page and in its conversation: group › task › conversation,
+   each earlier step a link back to it, the current one plain; long names fade out */
+.crumbs { flex: 0 1 auto; min-width: 0; display: flex; align-items: center; gap: 2px; animation: fade-in 240ms var(--warm) 120ms both; transition: opacity 200ms var(--ease-in); }
+.crumbs.is-leaving { opacity: 0; }
+.crumb { flex: 0 1 auto; min-width: 24px; max-width: 200px; height: 26px; padding: 0 6px; margin: 0 -6px; display: flex; align-items: center; border-radius: 6px; color: var(--muted); font-size: var(--text-md); white-space: nowrap; overflow: hidden; transition: color var(--fade), background-color var(--fade); }
+.crumb.is-clipped { mask-image: var(--fade-out); }
+button.crumb:hover { color: var(--ink); background: var(--hover); }
+.crumb.is-here { max-width: none; color: var(--text); }
+/* the right end of the bar: on a task's page, the way into its conversation; in a
+   conversation with a few Obys, who's in it */
+.bar-end { margin-left: auto; padding: 0 var(--gutter) 0 16px; display: flex; align-items: center; gap: 14px; flex: none; animation: fade-in 240ms var(--warm) 120ms both; transition: opacity 200ms var(--ease-in); }
+/* the Obys in a conversation: their pictures, and how many once there are 3 or more */
+.bar-obys { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: var(--text-sm); white-space: nowrap; }
+.bar-convo { height: 28px; padding: 0 12px; display: flex; align-items: center; border-radius: var(--radius-pill); background: var(--chip); color: var(--text); font-size: var(--text-md); white-space: nowrap; transition: background-color var(--fade), color var(--fade); }
+.bar-convo:hover { background: var(--chip-hover); color: var(--ink); }
+/* on a task's page: its ⋮ right after its name, and its name as a field while renaming */
+.bar-more { flex: none; width: 28px; height: 28px; margin-left: 2px; }
+/* a task's way into its conversation, beside its ⋮, its name in a tooltip under it after a short
+   hover (as the icons' in the side panel) */
+.bar-chat { position: relative; flex: none; width: 28px; height: 28px; }
+.bar-chat::after, .task-row-chat::after { content: attr(data-tip); position: absolute; top: calc(100% + 6px); left: 50%; z-index: 20; padding: 4px 8px; border: 1px solid var(--surface-edge); border-radius: 6px; background: var(--surface); color: var(--text); font-size: var(--text-sm); white-space: nowrap; pointer-events: none; opacity: 0; transform: translate(-50%, -4px); transition: opacity 160ms var(--warm), transform 160ms var(--warm); }
+:is(.bar-chat, .task-row-chat):is(:hover, :focus-visible)::after { opacity: 1; transform: translate(-50%, 0); transition-delay: 600ms; }
+.crumb-rename { flex: 0 1 280px; min-width: 0; height: 26px; margin-left: -8px; padding: 0 8px; border: 0; border-radius: 6px; background: transparent; color: var(--ink); font-size: var(--text-md); outline: none; user-select: text; -webkit-app-region: no-drag; }
+/* the same 24px chevron as back; its glyph is 6px wide in the middle, so it's
+   pulled in 1px each side: 10px from the names either side */
+.crumb-sep { flex: none; margin: 0 -1px; color: var(--muted); opacity: 0.6; }
+/* back, first in the bar (the name or trail 8px after its button, 21px from
+   the arrow itself); comes in with the group and goes with it */
+.bar-back { flex: none; margin-right: 8px; animation: fade-in 240ms var(--warm) 120ms both; transition: opacity 200ms var(--ease-in), color var(--fade), background-color var(--fade); }
+.bar-back.is-leaving { opacity: 0; }
+
+.icon-button {
+  width: 32px; height: 32px;
+  display: grid; place-items: center;
+  border-radius: 8px;
+  color: var(--muted);
+  transition: color var(--fade), background-color var(--fade);
+}
+.icon-button:hover { color: var(--text); background: var(--hover); }
+.icon-button.is-on { color: var(--text); background: var(--active); }
+
+/* Home ------------------------------------------------------------------ */
+.home {
+  position: relative;
+  height: 100%;
+  display: grid;
+  grid-template-rows: var(--bar) 1fr auto;
+}
+/* Oby's stage and a group's cards take turns in the same space */
+.main { position: relative; min-height: 0; }
+.stage {
+  position: absolute;
+  inset: 0;
+  transition: opacity 220ms cubic-bezier(0.22, 0.61, 0.36, 1), transform 220ms cubic-bezier(0.22, 0.61, 0.36, 1);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 0 var(--gutter) 24px;
+}
+/* the group sits a little above centre, like a face at eye level */
+.stage::before, .stage::after { content: ''; flex: 1 1 0; }
+.stage::after { flex-grow: 1.6; }
+/* roomy, so Oby can move (back off, hide) without hitting the edges */
+.oby-frame {
+  width: 280px;
+  height: 220px;
+  border: 0;
+  background: transparent;
+  color-scheme: normal;
+}
+.attention {
+  /* 8px under Oby's frame (which keeps room below Oby to move in, so the line
+     sits about 53px from its chin) */
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+}
+.attention-label { color: var(--muted); font-size: var(--text-base); white-space: pre-line; text-align: center; line-height: 1.5; }  /* 14px, grey: the chips under it are what you click; a line break in it breaks it */
+/* nothing going on: Oby asking for work, a shade brighter than a status */
+.attention-label.is-idle { color: var(--text); }
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+  max-width: 440px;
+}
+.chip {
+  height: 34px;
+  padding: 0 16px;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  border-radius: var(--radius-pill);
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text);
+  font-size: var(--text-base);
+  transition: color var(--fade), background-color var(--fade);
+}
+.chip:hover { background: rgba(255, 255, 255, 0.12); color: var(--ink); }
+/* On a Home chip: a blue dot ahead of the name, 8px from it
+   (as in the side panel), while it holds a new task; an orange one after it,
+   4px apart, while something in it needs you */
+.chip-dots { flex: none; display: flex; gap: 4px; margin-right: -2px; }
+.chip-dots > span { width: 6px; height: 6px; border-radius: 50%; }
+.chip-dots .is-fresh { background: var(--unread); }
+.chip-dots .is-needs { background: var(--needs); }
+
+/* What Oby is asking you (AskStack): its cards under the attention line, as
+   wide as the message box's field; the top one whole, the next two peeking out
+   under it, each a step further back. The stack eases to each top card's height */
+.asks {
+  position: relative;
+  width: min(480px, 100%);
+  margin-bottom: calc(var(--peeks) * 8px);
+  transition: height 360ms var(--warm), margin 360ms var(--warm);
+}
+/* the last one answered: the stack folds away as it leaves, its two gaps given
+   back, so nothing jumps when it's gone */
+.asks.is-empty { height: 0 !important; margin: -8px 0; }
+.ask-card { position: relative; z-index: 3; padding: 16px 18px; border-radius: 22px; background: var(--chip); text-align: left; user-select: text; }
+.ask-card .tc-ask { margin-top: 12px; padding-top: 12px; }
+/* Home keeps it short: what happened in 3 lines at most, the command or plan in
+   2 (it scrolls); the task’s page has all of it */
+.ask-card .tc-ask-text { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.ask-card .tc-code { max-height: 56px; overflow-y: auto; scrollbar-width: none; }
+/* where it is in the stack ("2/5"), always there, between the arrows that go
+   round it; then the way to its page, at the head's end */
+.ask-nav { flex: none; margin: -2px 0; display: flex; align-items: center; gap: 2px; color: var(--muted); font-size: var(--text-sm); font-variant-numeric: tabular-nums; }
+.ask-nav .icon-button { width: 24px; height: 24px; border-radius: 6px; }
+.ask-count { min-width: 28px; color: var(--text); text-align: center; }
+.ask-open { flex: none; margin: 0 -4px 0 6px; color: var(--muted); font-size: var(--text-md); }
+.ask-peek {
+  position: absolute;
+  inset: 0;
+  z-index: calc(3 - var(--d));
+  border-radius: 22px;
+  background: color-mix(in srgb, var(--chip) calc(110% - var(--d) * 25%), var(--bg));
+  transform-origin: 50% 100%;
+  transform: translateY(calc(var(--d) * 8px)) scale(calc(1 - var(--d) * 0.05));
+  transition: transform var(--settle), background-color var(--settle);
+  animation: fade-in 280ms var(--warm) both;
+}
+/* the next one comes up from where it peeked, its words a moment after */
+.ask-card.is-up { animation: ask-up var(--settle) both; }
+.ask-card.is-up > * { animation: fade-in 240ms var(--warm) 100ms both; }
+@keyframes ask-up { from { transform: translateY(8px) scale(0.95); background-color: color-mix(in srgb, var(--chip) 85%, var(--bg)); } }
+/* answered, it lifts off the top; put off (Later), it sinks back behind the
+   next; gone round, it sinks back too, drifting the way you went */
+.ask-card.is-out, .ask-card.is-later, .ask-card.is-next, .ask-card.is-prev { position: absolute; top: 0; left: 0; right: 0; pointer-events: none; }
+.ask-card.is-out { z-index: 4; animation: ask-out 260ms var(--ease-in) both; }
+.ask-card.is-later { z-index: 2; animation: ask-later 300ms var(--ease-in) both; }
+.ask-card.is-next { z-index: 2; animation: ask-next 300ms var(--ease-in) both; }
+.ask-card.is-prev { z-index: 2; animation: ask-prev 300ms var(--ease-in) both; }
+@keyframes ask-out { to { opacity: 0; transform: translateY(-16px) scale(0.98); } }
+@keyframes ask-later { to { opacity: 0; transform: translateY(14px) scale(0.95); } }
+@keyframes ask-next { to { opacity: 0; transform: translate(-16px, 10px) scale(0.95); } }
+@keyframes ask-prev { to { opacity: 0; transform: translate(16px, 10px) scale(0.95); } }
+/* While Oby asks, the stage makes room: the chips keep to one row, Oby
+   steps back (smaller) when the window is too short for all of it, and what
+   still doesn't fit scrolls */
+.stage:has(.asks) { overflow-y: auto; }
+.stage:has(.asks) .oby-frame { min-height: 84px; }
+.stage:has(.asks) .attention { flex-shrink: 0; align-self: stretch; }  /* the stage's width, not its cards': a long title fades instead */
+.stage:has(.asks) .chips { max-width: 520px; }
+/* a window too short for Oby and a card (down to the smallest, 520px): the card
+   wins, a little tighter, so the chips still fit under it */
+@media (max-height: 600px) {
+  .stage:has(.asks) { padding-bottom: 12px; }
+  .stage:has(.asks) .oby-frame { display: none; }
+  .stage:has(.asks) .attention { margin-top: 0; }
+  .ask-card .tc-ask-text { -webkit-line-clamp: 2; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .asks, .ask-peek { transition: none; }
+  .ask-card.is-up, .ask-card.is-up > * { animation: fade-in 200ms ease-out both; }
+  .ask-card.is-out, .ask-card.is-later, .ask-card.is-next, .ask-card.is-prev { animation: fade-out 200ms ease-out both; }
+}
+
+.composer {
+  transition: opacity 220ms cubic-bezier(0.22, 0.61, 0.36, 1), transform 220ms cubic-bezier(0.22, 0.61, 0.36, 1);
+  display: flex;
+  width: 100%;
+  max-width: 520px;
+  margin: 0 auto;
+  padding: 0 var(--gutter) var(--gutter);
+}
+/* A group's cards ------------------------------------------------------- */
+.stage.is-hidden { opacity: 0; transform: scale(0.98); }
+/* the message box steps aside while a group is open */
+.composer.is-hidden { opacity: 0; transform: translateY(12px); }
+/* Home's Settings tip (SettingsTip.tsx): a bar as wide as the box (480px), 42px tall, 12px
+   over it, out of the flow so nothing moves when it goes. All of it opens Settings
+   (lighter on hover); the × at its end closes it */
+.composer { position: relative; }
+.settings-tip { position: absolute; left: var(--gutter); right: var(--gutter); bottom: calc(100% + 12px); height: 42px; display: flex; align-items: center; border-radius: 21px; background: rgba(255, 255, 255, 0.06); transition: background-color var(--fade); }
+.settings-tip:has(.settings-tip-open:hover) { background: rgba(255, 255, 255, 0.09); }
+/* coming in once Home says so (Home.tsx, tipShown) */
+.settings-tip { animation: tip-in 400ms cubic-bezier(0.33, 1, 0.68, 1) both; }
+@keyframes tip-in { from { opacity: 0; transform: translateY(6px); } }
+/* its 10 minutes up (SettingsTip.tsx): out the way it came */
+.settings-tip.is-leaving { animation: tip-out 400ms var(--ease-in) both; pointer-events: none; }
+@keyframes tip-out { to { opacity: 0; transform: translateY(6px); } }
+@media (prefers-reduced-motion: reduce) { .settings-tip { animation-name: fade-in; } }
+.settings-tip-open { flex: 1; min-width: 0; height: 100%; padding: 0 0 0 16px; border-radius: 21px 0 0 21px; color: rgba(255, 255, 255, 0.55); font-size: var(--text-base); text-align: left; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.settings-tip-close { flex: none; width: 28px; height: 28px; margin: 0 7px 0 8px; display: grid; place-items: center; border-radius: 50%; color: rgba(255, 255, 255, 0.5); transition: color var(--fade), background-color var(--fade); }
+.settings-tip-close:hover { color: rgba(255, 255, 255, 0.85); background: rgba(255, 255, 255, 0.08); }
+/* covers everything under the title bar, the message box's spot included */
+.group-layer { position: absolute; top: var(--bar); right: 0; bottom: 0; left: 0; transition: opacity 220ms cubic-bezier(0.22, 0.61, 0.36, 1), transform 220ms cubic-bezier(0.22, 0.61, 0.36, 1); }
+/* a task's conversation open over the cards: they step back, as Oby does for them */
+.group-layer.is-covered, .chat-layer.is-covered { opacity: 0; transform: scale(0.98); }
+.group {
+  position: absolute;
+  inset: 0;
+  overflow-y: auto;
+  padding: 16px var(--gutter) 32px;
+  /* Chromium's macOS scrollbar shows a track on hover, so it's hidden and
+     useScrollThumb draws a slim thumb instead (.scroll-thumb) */
+  scrollbar-width: none;
+}
+/* Safari-like: a 6px thumb, no track, white 10%; fades in while scrolling (or
+   dragging) and out once it stops. Placed by useScrollThumb, 5px in from its
+   list's right edge */
+.scroll-thumb {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 2;
+  width: 6px;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.1);
+  opacity: 0;
+  transition: opacity 300ms cubic-bezier(0.22, 0.61, 0.36, 1);
+  touch-action: none;
+  /* faded out, it's not there for the pointer either (hovering where it would be
+     doesn't bring it back); shown by scrolling, it can be hovered and dragged */
+  pointer-events: none;
+}
+.scroll-thumb.is-shown { opacity: 1; transition-duration: 120ms; pointer-events: auto; }
+/* cards scrolling up under the title bar fade into the background instead of
+   being cut off; the fade stops short of the scroll thumb so it stays crisp */
+.group-layer::before, .chat-scroll::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 16px;
+  z-index: 1;
+  height: 16px;
+  background: linear-gradient(var(--bg), transparent);
+  pointer-events: none;
+}
+.group-column {
+  max-width: 540px;  /* a little wider than the message box (480px): room for the cards' details */
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+}
+/* the kind of work, then tabs for Running / Completed, 24px apart */
+.group-title {
+  margin: 0 0 16px;
+  color: var(--ink);
+  font-size: 28px;
+  font-weight: 600;
+  line-height: 1.2;
+}
+/* underlined tabs: the names alone, the open one white with a 2px line that
+   sits on the 1px line under them, which runs the column's full width */
+.line-tabs { position: relative; width: 100%; display: flex; gap: 24px; margin-bottom: 16px; border-bottom: 1px solid var(--line); }
+.line-tab { height: 36px; display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: var(--text-base); transition: color var(--fade); }
+.line-tab:hover { color: var(--text); }
+.line-tab.is-on { color: var(--ink); }
+/* the line under the open tab: one line for the row, sliding to the tab picked
+   (GroupView places it), stretching to that tab's width as it goes */
+.line-tab-line { position: absolute; left: 0; bottom: -1px; width: 0; height: 2px; border-radius: 1px; background: var(--ink); pointer-events: none; }
+.line-tab-line.is-moving { transition: transform 320ms var(--warm), width 320ms var(--warm); }
+@media (prefers-reduced-motion: reduce) { .line-tab-line.is-moving { transition: none; } }
+.line-tab-count { color: var(--muted); font-size: var(--text-sm); font-variant-numeric: tabular-nums; }
+/* under Completed: where older ones went */
+.group-archived { margin: 8px 4px 0; color: var(--muted); font-size: var(--text-sm); transition: color var(--fade); }
+.group-archived:hover { color: var(--text); }
+/* The archive page: a search over it, then every archived task, one row each */
+.archive-search { width: 100%; height: 40px; margin-bottom: 8px; padding: 0 14px; display: flex; align-items: center; gap: 10px; border: 1px solid var(--line); border-radius: 12px; color: var(--muted); transition: border-color var(--fade); }
+.archive-search:hover, .archive-search:focus-within { border-color: var(--field-edge-on); }  /* as the message box and fields */
+.archive-search input { flex: 1; min-width: 0; border: 0; outline: none; background: none; color: var(--ink); font-size: var(--text-base); }
+.archive-search input::placeholder { color: var(--muted); }
+.archive-list { width: 100%; margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 2px; }
+.archive-row { width: 100%; padding: 10px 12px; display: flex; align-items: center; gap: 12px; border-radius: 12px; color: var(--muted); text-align: left; transition: background-color var(--fade); }
+.archive-row > svg { flex: none; }
+.archive-row.is-link:hover { background: var(--hover); }
+.archive-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.archive-title { color: var(--item); font-size: var(--text-base); white-space: nowrap; overflow: hidden; mask-image: var(--fade-out); }
+.archive-who { margin-right: 6px; color: var(--text); }
+.archive-about, .archive-ago { color: var(--muted); font-size: var(--text-sm); }
+.archive-ago { flex: none; }
+.group-cards { width: 100%; display: flex; flex-direction: column; gap: 8px; }
+.group-empty { margin: 8px 4px; color: var(--muted); font-size: var(--text-base); }
+/* a tab with nothing in it: its words in the middle of the window's height (the view starts under
+   the title bar), across the view, as the side panel's empty words are (.sidebar-empty.is-middle) */
+.group-none { position: absolute; left: 0; right: 0; top: calc(50vh - var(--bar)); transform: translateY(-50%); pointer-events: none; }
+.group-none > div { display: flex; flex-direction: column; align-items: center; gap: 6px; }
+.group-none p { margin: 0; color: rgba(255, 255, 255, 0.3); font-size: var(--text-base); }
+/* Archived in its line: the same type, only brighter, as it's what you click */
+.group-none-link { padding: 0; color: rgba(255, 255, 255, 0.6); font: inherit; pointer-events: auto; transition: color var(--fade); }
+.group-none-link:hover { color: rgba(255, 255, 255, 0.9); }
+/* To do (Review PR, Issues): GitHub's items by board column, each column's name over its cards */
+.group-board { display: contents; }
+.group-board-name { margin: 8px 4px 0; color: var(--muted); font-size: var(--text-sm); font-weight: 500; overflow-wrap: anywhere; }
+.tc-column { display: inline-block; margin-left: 8px; padding: 2px 8px; border-radius: var(--radius-pill); background: var(--hover); color: var(--text); font-size: var(--text-sm); line-height: 16px; overflow-wrap: anywhere; }
+/* switching tabs: the new cards come in right away, a little closer together */
+.group-layer.is-switched .group-cards .rise { animation-delay: calc((min(var(--i), 8) - 2) * 40ms); }
+.card {
+  width: 100%;
+  flex: none;
+  border-radius: 22px;
+}
+/* A task's card: source, title and when; agent, account and repo; then
+   what's happening now; the stages as a thin bar along the foot. Click it for
+   its own page. */
+.task-card {
+  position: relative;
+  user-select: text;  /* select and copy what's in it; a click anywhere else opens its page */
+  background: var(--chip);  /* the same as the chips and tabs above it */
+  padding: 18px 20px 20px;
+  display: flex;
+  flex-direction: column;
+  cursor: default;
+  transition: background-color var(--fade);
+}
+/* in the list, the whole card opens its page */
+.task-card:not(.is-alone) { cursor: pointer; }
+.task-card:hover { background: var(--chip-hover); }
+/* On the task's own page the card comes apart: its title (the page's, 22px) and
+   agent · account · repo sit on the page with no box; the decision, when there
+   is one, is a card of its own; the rest (Result, Stages, Details, Session) one
+   card under it, a line between each part */
+.task-card.is-alone, .task-card.is-alone:hover { padding: 0; background: none; border-radius: 0; }
+.task-card.is-alone .tc-title { font-size: 22px; line-height: 28px; }
+.task-card.is-alone .tc-head > svg { width: 20px; height: 20px; }
+.task-card.is-alone .tc-meta { margin: 6px 0 16px 30px; }
+/* the decision, its own card */
+.task-card.is-alone .tc-ask { margin: 0 0 8px; padding: 16px 18px 18px; border: 0; border-radius: 18px; background: var(--chip); }
+/* everything else in one card under it, its parts divided by a line */
+.task-card.is-alone .tc-more > div { padding: 0 18px; border-radius: 18px; background: var(--chip); }
+.task-card.is-alone .tc-section { margin: 0; padding: 16px 0 18px; border-top: 1px solid var(--divider); }
+.task-card.is-alone .tc-section:first-child { border-top: 0; }
+.task-card.is-alone .tc-section h3 { margin-bottom: 16px; }
+.tc-head { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.tc-head > svg { flex: none; opacity: 0.7; }
+.tc-title {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  color: var(--ink);
+  font-size: var(--text-lg);
+  font-weight: 600;
+  line-height: 20px;
+  white-space: nowrap;
+  overflow: hidden;
+  mask-image: var(--fade-out);
+}
+/* new or needs you: its dot in the card's margin, level with the title, 4px clear of the logo */
+.tc-dots { position: absolute; right: calc(100% - 18px); top: 22px; display: flex; }
+.tc-who { margin-right: 6px; color: var(--text); font-weight: 500; }
+.tc-ago { flex: none; color: var(--muted); font-size: var(--text-sm); font-variant-numeric: tabular-nums; }
+.tc-meta { margin: 4px 0 0 26px; color: var(--muted); font-size: var(--text-md); }
+
+/* running: the agent's live line */
+.tc-now { margin: 14px 0 0; max-height: 20px; display: flex; align-items: center; gap: 10px; color: var(--text); font-size: var(--text-md); min-width: 0; overflow: hidden; transition: opacity var(--fade), max-height 360ms var(--warm), margin-top 360ms var(--warm); }
+/* on its own page (open), the live line folds away: it shows under its stage instead */
+.task-card.is-open .tc-now { opacity: 0; max-height: 0; margin-top: 0; }
+/* the step: as wide as its words (so a sheen crosses them), fading out only if
+   too long: the fade lies over 24px of padding past them, given back with the margin */
+.tc-step { flex: 0 1 auto; min-width: 0; margin-right: -24px; padding-right: 24px; white-space: nowrap; overflow: hidden; mask-image: var(--fade-out); }
+.tc-round { flex: none; margin-left: auto; color: var(--muted); font-size: var(--text-sm); }
+
+/* needs you: the decision, Oby's headline over what happened, then the choices */
+.tc-ask { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--divider); }
+.tc-ask-kind { color: var(--needs); font-size: var(--text-sm); font-weight: 500; }
+.tc-ask-kind.is-failed { color: var(--danger); }
+.tc-ask-head { margin: 4px 0 0; color: var(--ink); font-size: var(--text-base); font-weight: 500; line-height: 20px; overflow-wrap: anywhere; }
+.tc-ask-text { margin: 4px 0 0; color: var(--text); font-size: var(--text-md); line-height: 19px; overflow-wrap: anywhere; white-space: pre-line; }
+.tc-code {
+  margin: 10px 0 0;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.3);
+  color: var(--text);
+  font: 12px/18px ui-monospace, "SF Mono", Menlo, monospace;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.tc-options { margin-top: 14px; display: flex; flex-wrap: wrap; gap: 8px; }
+.tc-option {
+  height: 32px;
+  padding: 0 14px;
+  border-radius: var(--radius-pill);
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--item);
+  font-size: var(--text-md);
+  transition: color var(--fade), background-color var(--fade);
+}
+.tc-option:hover { background: rgba(255, 255, 255, 0.13); color: var(--ink); }
+.tc-option.is-primary { background: var(--ink); color: #111; font-weight: 500; }
+.tc-option.is-primary:hover { background: #fff; }
+.tc-option.is-danger { color: var(--danger); }
+.tc-option.is-quiet { background: none; color: var(--muted); }
+.tc-option.is-quiet:hover { color: var(--ink); background: var(--hover); }
+/* a check's Edit: the command in Settings' field, as wide as the card leaves it */
+.tc-options .set-field { flex: 1 1 200px; min-width: 0; width: auto; font-family: ui-monospace, "SF Mono", Menlo, monospace; }
+/* Change check, after "Done when"'s command; its field in the row's place */
+.tc-facts .tc-change { margin-left: 8px; color: var(--muted); }
+.tc-facts .tc-options { margin-top: 0; }
+.tc-answered { margin: 14px 0 0; display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: var(--text-md); }
+
+/* done: the agent's report and what it left behind */
+/* folds away on open (a one-row grid going 1fr → 0fr): the Result section has it then */
+.tc-done { margin-top: 12px; display: grid; grid-template-rows: 1fr; transition: grid-template-rows 360ms var(--warm), opacity var(--fade), margin-top 360ms var(--warm); }
+.tc-done > div { min-height: 0; overflow: hidden; }
+.tc-done .tc-result { margin: 0; }
+.task-card.is-open .tc-done { grid-template-rows: 0fr; opacity: 0; margin-top: 0; }
+.tc-result { margin: 8px 0 0; color: var(--muted); font-size: var(--text-sm); }
+.tc-result a { color: var(--text); text-decoration: none; }
+.tc-result a:hover { color: var(--ink); text-decoration: underline; }
+
+/* the stages, one segment each */
+/* on its own page (open), the bar fades and folds away: the stage list says it in full */
+.tc-progress { margin-top: 16px; max-height: 3px; display: flex; gap: 3px; overflow: hidden; transition: opacity var(--fade), max-height 360ms var(--warm), margin-top 360ms var(--warm); }
+.task-card.is-open .tc-progress { opacity: 0; max-height: 0; margin-top: 0; }
+.tc-progress span { flex: 1; height: 3px; border-radius: 2px; background: rgba(255, 255, 255, 0.08); }
+.tc-progress .is-done { background: rgba(255, 255, 255, 0.55); }
+.tc-progress .is-current { background: rgba(255, 255, 255, 0.55); animation: pulse 1.6s ease-in-out infinite; }
+.tc-progress .is-failed { background: var(--danger); }
+.task-card.is-needs .tc-progress .is-current { background: var(--needs); animation: none; }
+.task-card.is-done .tc-progress .is-current { animation: none; }
+@keyframes pulse { 50% { opacity: 0.35; } }
+
+/* the details, under the card on its own page (a one-row grid going 0fr → 1fr) */
+.tc-more { display: grid; grid-template-rows: 0fr; opacity: 0; transition: grid-template-rows 360ms var(--warm), opacity var(--fade); }
+.tc-more > div { min-height: 0; overflow: hidden; }
+.task-card.is-open .tc-more { grid-template-rows: 1fr; opacity: 1; }
+/* Result: the agent's report in full, then what it left behind */
+.tc-report { margin: 0; color: var(--ink); font-size: 16px; font-weight: 500; line-height: 22px; white-space: pre-line; }
+.tc-section h3 { margin: 0 0 20px; color: var(--label); font-size: var(--text-sm); font-weight: 500; }
+.tc-stages { margin: 0; padding: 0; list-style: none; }
+/* a mark per stage and a line down to the next one; title, then its detail */
+.tc-stages li { display: flex; gap: 12px; }
+.tc-stage-mark { flex: none; width: 16px; display: flex; flex-direction: column; align-items: center; }
+/* the line down to the next stage: dotted, round 2px dots 4px apart, at least
+   20px (4 dots) even under a stage with no line of detail */
+.tc-stages li:not(:last-child) .tc-stage-mark::after { content: ''; flex: 1; width: 2px; min-height: 20px; margin: 4px 0 2px; background: radial-gradient(circle, rgba(255, 255, 255, 0.3) 0.9px, transparent 1.1px) center top / 2px 6px repeat-y; }
+.tc-stage-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; padding-bottom: 14px; }
+.tc-stages li:last-child .tc-stage-text { padding-bottom: 0; }
+.tc-stage-title { color: var(--ink); font-size: var(--text-base); font-weight: 500; line-height: 18px; }
+.tc-stage-note { margin-left: 6px; color: var(--muted); font-size: var(--text-sm); font-weight: 400; }
+/* under a stage's name: its live step and its detail, 14px, regular and grey */
+.tc-stage-step { color: var(--muted); font-size: var(--text-base); line-height: 20px; overflow-wrap: anywhere; }
+.tc-stage-detail { color: var(--muted); font-size: var(--text-base); line-height: 20px; overflow-wrap: anywhere; }
+.tc-stages .is-upcoming .tc-stage-title, .tc-stages .is-skipped .tc-stage-title { color: var(--text); }
+/* the stage being worked on (its name on the task page, its step on a card and
+   at the foot of its conversation): a sheen sweeps across it, left to right, every 1.6s */
+.tc-stages .is-current .tc-stage-title, .tc-now.is-working .tc-step, .chat-live.is-working .tc-step, .msg-step {
+  background: linear-gradient(90deg, var(--muted) 0%, var(--muted) 35%, var(--ink) 50%, var(--muted) 65%, var(--muted) 100%) 0 0 / 300% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: sheen 1.6s linear infinite;
+  align-self: flex-start;  /* as wide as its name, so the sheen crosses the word itself */
+}
+@keyframes sheen { from { background-position: 100% 0; } to { background-position: 0 0; } }
+@media (prefers-reduced-motion: reduce) { .tc-stages .is-current .tc-stage-title, .tc-now.is-working .tc-step, .chat-live.is-working .tc-step, .msg-step { animation: none; background: none; color: var(--ink); } }
+/* each stage's mark in a 16px spot: the same 8px dots and check as in the lists */
+.tc-mark { flex: none; width: 16px; height: 18px; display: grid; place-items: center; color: rgba(255, 255, 255, 0.4); }  /* as tall as the stage's name, so they centre together */
+/* a size up from the lists on the task page: 10px dots */
+.tc-mark .status-dot { width: 10px; height: 10px; }
+/* skipped: a short grey dash, 10px by 2px (it didn't apply) */
+.tc-mark-skip { width: 10px; height: 2px; border-radius: 1px; background: rgba(255, 255, 255, 0.4); }
+/* done: a 14px green circle (macOS green) with a dark check in it */
+.tc-mark-done { width: 14px; height: 14px; display: grid; place-items: center; border-radius: 50%; background: #30d158; color: #0b0b0b; }
+.tc-facts { margin: 0; display: grid; grid-template-columns: 96px 1fr; gap: 6px 12px; font-size: var(--text-base); line-height: 20px; }
+.tc-facts dt { color: var(--muted); }
+.tc-facts dd { margin: 0; color: var(--text); min-width: 0; overflow-wrap: anywhere; }
+.tc-facts .is-mono, .tc-tool { font-family: ui-monospace, "SF Mono", Menlo, monospace; }
+.tc-tool { font-size: 12px; }
+/* code-like values a size under the 14px around them, which monospace looks at */
+.tc-facts .is-mono { font-size: 13px; }
+.tc-log { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 6px; }
+.tc-log li { display: flex; align-items: baseline; gap: 10px; font-size: var(--text-md); line-height: 19px; color: var(--text); }
+.tc-tool { flex: none; width: 40px; color: var(--muted); }
+.tc-log-text { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.tc-log .is-say .tc-log-text { color: var(--item); }
+
+/* The job page's timeline (obi-ai-bot/obi#729, Alternative B): a section's
+   aside on the right of its title; the time track; how the estimate was made;
+   each stage's time; and what hangs under a stage, quieter than the stage. */
+.task-card.is-alone .tc-section h3 { display: flex; align-items: baseline; gap: 8px; }
+.tc-aside { margin-left: auto; color: var(--muted); font-weight: 400; font-variant-numeric: tabular-nums; }
+.tc-link { display: inline-flex; align-items: center; gap: 2px; padding: 0; border: 0; background: none; color: var(--text); font: inherit; cursor: pointer; transition: color var(--fade); }
+.tc-link:hover { color: var(--ink); }
+.tc-mode { margin-left: 8px; height: 22px; padding: 0 8px 0 9px; display: inline-flex; align-items: center; gap: 3px; vertical-align: 1px; border: 0; border-radius: var(--radius-pill); background: rgba(255, 255, 255, 0.08); color: var(--text); font: inherit; font-size: var(--text-sm); cursor: pointer; transition: background-color var(--fade), color var(--fade); }
+.tc-mode:hover { background: rgba(255, 255, 255, 0.13); color: var(--ink); }
+/* the time: what's gone, a tick for now, and the finish as a range, never one number */
+.tc-track { position: relative; height: 6px; border-radius: 3px; background: rgba(255, 255, 255, 0.08); }
+.tc-track > span { position: absolute; top: 0; bottom: 0; border-radius: 3px; }
+.tc-track-done { left: 0; background: rgba(255, 255, 255, 0.55); }
+.tc-track-range { background: rgba(255, 255, 255, 0.18); }
+.tc-track-now { top: -3px !important; bottom: -3px !important; width: 2px; margin-left: -1px; border-radius: 1px; background: var(--ink); }
+.tc-track.is-paused .tc-track-done, .tc-track.is-paused .tc-track-now { background: var(--needs); }
+.tc-basis { margin: 8px 0 18px; display: flex; gap: 6px; color: var(--muted); font-size: var(--text-sm); line-height: 16px; }
+.tc-basis svg { flex: none; margin-top: 1px; }
+.tc-basis.is-alone { margin-top: 0; }
+.tc-stage-head { display: flex; align-items: baseline; gap: 8px; }
+.tc-took { margin-left: auto; flex: none; color: var(--muted); font-size: var(--text-sm); font-variant-numeric: tabular-nums; }
+.tc-stage-sub { color: var(--text); font-size: var(--text-md); line-height: 19px; }
+/* Sangam's .tc-stages li is a row: only the stages, not the lists inside them */
+.tc-inner { margin: 10px 0 2px; padding: 12px 14px; border-radius: 14px; background: rgba(255, 255, 255, 0.04); box-shadow: inset 0 0 0 1px var(--line); }
+.tc-stages .tc-inner li { gap: 8px; }
+.tc-counts { display: flex; flex-wrap: wrap; gap: 6px; }
+.tc-counts span { height: 26px; padding: 0 10px; display: inline-flex; align-items: center; gap: 5px; border-radius: var(--radius-pill); background: rgba(255, 255, 255, 0.08); color: var(--text); font-size: var(--text-sm); white-space: nowrap; }
+.tc-counts b { color: var(--ink); font-weight: 500; font-variant-numeric: tabular-nums; }
+.tc-groups { margin: 10px 0 0; padding: 0; list-style: none; }
+.tc-stages .tc-groups > li { display: block; padding: 8px 0; border-top: 1px solid var(--divider); }
+.tc-groups > li:last-child { padding-bottom: 0; }
+.tc-group-row { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.tc-group-mark { flex: none; width: 12px; height: 12px; display: grid; place-items: center; color: rgba(255, 255, 255, 0.4); }
+.tc-group-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.tc-group-title { color: var(--item); font-size: var(--text-base); line-height: 20px; white-space: nowrap; overflow: hidden; mask-image: var(--fade-out); }
+.tc-groups .is-running .tc-group-title { color: var(--ink); }
+.tc-group-meta { color: var(--muted); font-size: var(--text-sm); line-height: 16px; }
+.tc-tools { margin: 6px 0 0 22px; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 4px; }
+.tc-out .tc-tools { margin-left: 0; }
+.tc-tools li { display: flex; align-items: center; gap: 8px; min-width: 0; color: var(--muted); font-size: var(--text-md); line-height: 20px; }
+.tc-tools li > svg { flex: none; color: rgba(255, 255, 255, 0.4); }
+.tc-tool-text { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; mask-image: var(--fade-out); }
+.tc-tools code, .tc-checks code { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 12px; color: var(--item); }
+.tc-tools .is-running .tc-tool-verb { background: linear-gradient(90deg, var(--muted) 0%, var(--muted) 35%, var(--ink) 50%, var(--muted) 65%, var(--muted) 100%) 0 0 / 300% 100%; -webkit-background-clip: text; background-clip: text; color: transparent; animation: sheen 1.6s linear infinite; }
+.tc-folded { margin-top: 8px; align-self: flex-start; display: inline-flex; align-items: center; gap: 4px; padding: 0; border: 0; background: none; color: var(--muted); font: inherit; font-size: var(--text-sm); text-align: left; cursor: pointer; transition: color var(--fade); }
+.tc-folded:hover:not(:disabled) { color: var(--text); }
+.tc-folded:disabled { cursor: default; }
+.tc-checks { list-style: none; display: flex; flex-direction: column; gap: 7px; }
+.tc-checks li { display: flex; align-items: center; min-width: 0; color: var(--text); font-size: var(--text-md); line-height: 18px; }
+.tc-checks .tc-mark-done { width: 12px; height: 12px; }
+.tc-checks .tc-mark .status-dot { width: 8px; height: 8px; }
+.tc-check-result { color: var(--muted); font-size: var(--text-sm); white-space: nowrap; }
+.tc-checks .is-failed code, .tc-checks .is-failed .tc-check-result { color: var(--danger); }
+.tc-minibar { flex: none; width: 64px; height: 4px; border-radius: 2px; background: rgba(255, 255, 255, 0.08); overflow: hidden; }
+.tc-minibar > span { display: block; height: 100%; background: rgba(255, 255, 255, 0.55); }
+/* usage: one line of tokens, then each window as a small bar, this job's part in white */
+.tc-usage { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 20px; color: var(--muted); font-size: var(--text-sm); font-variant-numeric: tabular-nums; }
+.tc-usage p { flex: 1 1 100%; margin: 0; color: var(--text); font-size: var(--text-md); }
+.tc-usage b { color: var(--ink); font-weight: 500; }
+.tc-window { display: inline-flex; align-items: center; gap: 8px; }
+.tc-meter { width: 72px; height: 4px; border-radius: 2px; background: rgba(255, 255, 255, 0.08); overflow: hidden; display: flex; gap: 1px; }
+.tc-meter > span { height: 100%; background: rgba(255, 255, 255, 0.4); }
+.tc-meter > .is-job { background: var(--ink); }
+.tc-out { margin-top: 14px; }
+.tc-out h4 { margin: 0 0 6px; color: var(--label); font-size: var(--text-sm); font-weight: 500; }
+@media (prefers-reduced-motion: reduce) { .tc-tools .is-running .tc-tool-verb { animation: none; background: none; color: var(--ink); } }
+
+/* A job's session (SessionView, obi-ai-bot/obi#785): read like a conversation.
+   Rounds are dividers; the agent's words sit by its mark, as Oby's by its face;
+   tool calls are quiet lines that open into what they ran and what came back;
+   your words are bubbles; masked vault values are chips with their name. */
+.ss-head { margin-bottom: 18px; }
+.ss-head h1 { margin: 0; color: var(--ink); font-size: 22px; font-weight: 600; line-height: 28px; }
+.ss-head > p { margin: 4px 0 14px; display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: var(--text-md); }
+.ss-live { margin-left: 8px; display: inline-flex; align-items: center; gap: 6px; color: var(--text); }
+.ss-filters { display: flex; flex-wrap: wrap; gap: 6px; }
+.ss-filters button { height: 28px; padding: 0 12px; border: 0; border-radius: var(--radius-pill); background: rgba(255, 255, 255, 0.08); color: var(--text); font: inherit; font-size: var(--text-md); cursor: pointer; transition: background-color var(--fade), color var(--fade); }
+.ss-filters button span { margin-left: 2px; color: var(--muted); font-size: var(--text-sm); font-variant-numeric: tabular-nums; }
+.ss-filters button:hover { background: rgba(255, 255, 255, 0.13); color: var(--ink); }
+.ss-filters button.is-on { background: var(--ink); color: #111; font-weight: 500; }
+.ss-filters button.is-on span { color: rgba(0, 0, 0, 0.55); }
+.ss-entries { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 6px; user-select: text; }
+.ss-start { margin: 18px 0 8px; display: flex; align-items: center; gap: 10px; color: var(--muted); font-size: var(--text-sm); }
+.ss-start::before, .ss-start::after { content: ''; flex: 1; height: 1px; background: var(--divider); }
+.ss-start:first-child { margin-top: 0; }
+.ss-start time { color: var(--muted); }
+.ss-said { margin: 8px 0 4px; display: flex; gap: 10px; }
+.ss-mark { flex: none; width: 22px; height: 20px; display: grid; place-items: center; color: var(--ink); opacity: 0.7; }
+.ss-words { flex: 1; min-width: 0; margin: 0; color: var(--item); font-size: var(--text-base); line-height: 20px; white-space: pre-wrap; overflow-wrap: anywhere; }
+/* the caret after the words being written, on their last line */
+.ss-words > p:has(+ .ss-caret) { display: inline; }
+.ss-caret { display: inline-block; width: 7px; height: 14px; margin-left: 2px; vertical-align: -2px; border-radius: 1px; background: var(--ink); animation: caret-blink 1s step-end infinite; }
+.ss-thought { margin-left: 32px; }
+.ss-thought > button, .ss-tool-row { width: 100%; padding: 0; border: 0; background: none; font: inherit; text-align: left; cursor: pointer; }
+.ss-thought > button { width: auto; display: inline-flex; align-items: center; gap: 4px; color: var(--muted); font-size: var(--text-md); font-style: italic; transition: color var(--fade); }
+.ss-thought > button:hover { color: var(--text); }
+.ss-thought.is-open > button svg, .ss-tool.is-open .ss-chev { transform: rotate(90deg); }
+.ss-thought p { margin: 6px 0 4px; padding-left: 12px; border-left: 2px solid var(--line); color: var(--text); font-size: var(--text-md); line-height: 19px; font-style: italic; }
+.ss-you { margin: 10px 0; display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
+.ss-you p { max-width: 80%; margin: 0; padding: 9px 14px; border-radius: 18px; background: rgba(255, 255, 255, 0.12); color: var(--ink); font-size: var(--text-base); line-height: 20px; }
+.ss-you time { color: var(--muted); font-size: 11px; }
+.ss-plan { margin: 4px 0 4px 32px; padding: 10px 14px; border-radius: 14px; background: rgba(255, 255, 255, 0.04); box-shadow: inset 0 0 0 1px var(--line); }
+.ss-plan-head { color: var(--label); font-size: var(--text-sm); font-weight: 500; }
+.ss-plan ul { margin: 8px 0 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 4px; }
+.ss-plan li { display: flex; align-items: center; gap: 8px; color: var(--text); font-size: var(--text-md); }
+.ss-plan li > svg { color: rgba(255, 255, 255, 0.4); }
+.ss-plan .is-done { color: var(--muted); text-decoration: line-through; text-decoration-color: rgba(255, 255, 255, 0.25); }
+.ss-plan .status-dot { flex: none; width: 8px; height: 8px; margin: 0 2px; }
+.ss-asked { margin-left: 32px; display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: var(--text-sm); }
+.ss-asked svg { flex: none; }
+.ss-tool { margin-left: 32px; }
+.ss-tool-row { height: 26px; display: flex; align-items: center; gap: 8px; min-width: 0; color: var(--muted); font-size: var(--text-md); border-radius: 6px; transition: color var(--fade); }
+.ss-tool-row:disabled { cursor: default; }
+.ss-tool-row:not(:disabled):hover { color: var(--text); }
+.ss-tool-mark { flex: none; width: 12px; height: 12px; display: grid; place-items: center; color: rgba(255, 255, 255, 0.4); }
+.ss-tool-text { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; mask-image: var(--fade-out); }
+.ss-tool-text code { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 12px; color: var(--item); }
+.ss-tool.is-running .ss-verb { background: linear-gradient(90deg, var(--muted) 0%, var(--muted) 35%, var(--ink) 50%, var(--muted) 65%, var(--muted) 100%) 0 0 / 300% 100%; -webkit-background-clip: text; background-clip: text; color: transparent; animation: sheen 1.6s linear infinite; }
+.ss-tool.is-failed .ss-tool-meta { color: var(--danger); }
+.ss-tool-meta, .ss-took { flex: none; color: var(--muted); font-size: var(--text-sm); font-variant-numeric: tabular-nums; }
+.ss-chev { flex: none; transition: transform 200ms var(--warm); }
+.ss-detail { margin: 6px 0 10px 20px; display: flex; flex-direction: column; gap: 6px; }
+.ss-tool > .ss-diff { margin: 6px 0 10px 20px; }
+.ss-input { margin: 0; color: var(--text); font-size: var(--text-md); line-height: 19px; }
+.ss-code { margin: 0; padding: 10px 12px; border-radius: 10px; background: rgba(0, 0, 0, 0.3); box-shadow: inset 0 0 0 1px var(--line); color: var(--text); font: 12px/18px ui-monospace, "SF Mono", Menlo, monospace; white-space: pre; overflow-x: auto; max-height: 320px; overflow-y: auto; }
+.ss-prompt { color: var(--muted); user-select: none; }
+.ss-diff span { display: block; margin: 0 -12px; padding: 0 12px; }
+.ss-diff .is-add { background: rgba(48, 209, 88, 0.08); color: #9ce6b0; }
+.ss-diff .is-del { background: rgba(240, 113, 103, 0.08); color: #f5aaa3; }
+.ss-diff .is-hunk { color: var(--muted); }
+.ss-foot { margin: 0; display: flex; gap: 12px; color: var(--muted); font-size: var(--text-sm); font-variant-numeric: tabular-nums; }
+.ss-foot .is-failed { color: var(--danger); }
+.ss-vault { padding: 0 5px; border-radius: 4px; background: rgba(100, 168, 255, 0.16); color: #8cbcff; font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif; font-size: 11px; }
+.ss-now { position: absolute; left: 50%; bottom: 12px; transform: translateX(-50%); height: 30px; padding: 0 14px; display: inline-flex; align-items: center; gap: 6px; border: 0; border-radius: var(--radius-pill); background: var(--surface); box-shadow: inset 0 0 0 1px var(--surface-edge), 0 10px 28px rgba(0, 0, 0, 0.45); color: var(--ink); font: inherit; font-size: var(--text-md); cursor: pointer; animation: fade-in 280ms var(--warm) both; }
+@media (prefers-reduced-motion: reduce) { .ss-tool.is-running .ss-verb { animation: none; background: none; color: var(--ink); } .ss-caret { animation: none; } }
+@media (prefers-reduced-motion: reduce) {
+  .tc-progress .is-current { animation: none; }
+  .tc-more { transition: none; }
+}
+
+/* In: each rises from 28px below, overshoots a few px and settles, one after
+   another (60ms apart, the first after Oby has mostly faded) */
+.group-layer .rise, .chat-layer .rise {
+  animation: rise 620ms var(--spring) both;
+  animation-delay: calc(150ms + min(var(--i), 6) * 60ms);
+}
+@keyframes rise {
+  from { opacity: 0; transform: translateY(28px); }
+  60% { opacity: 1; }
+  to { opacity: 1; transform: none; }
+}
+/* back from a conversation, the cards rise in again; the same rise under
+   another name, so it starts over (while covered they fall back to the first
+   name, ready for the next return) */
+/* (once what was over it has gone, so straight away, 60ms apart) */
+.group-layer.is-returning .rise, .chat-layer.is-returning .rise { animation-name: rise-again; animation-delay: calc(min(var(--i), 6) * 60ms); }
+.group-layer.is-returning, .chat-layer.is-returning { transition: none; }
+@keyframes rise-again {
+  from { opacity: 0; transform: translateY(28px); }
+  60% { opacity: 1; }
+  to { opacity: 1; transform: none; }
+}
+/* Out: everything sinks a little and fades together, then Oby comes back */
+.group-layer.is-leaving, .chat-layer.is-leaving { animation: fade-out 200ms var(--ease-in) both; pointer-events: none; }  /* on its way out: no clicks */
+.group-layer.is-leaving .rise, .chat-layer.is-leaving .rise { animation: sink 200ms var(--ease-in) both; }
+@keyframes sink { to { opacity: 0; transform: translateY(12px); } }
+
+@media (prefers-reduced-motion: reduce) {
+  .stage.is-hidden, .composer.is-hidden { transform: none; }
+  .group-layer .rise, .chat-layer .rise { animation-name: fade-in; animation-timing-function: ease-out; animation-duration: 240ms; }
+  .group-layer.is-leaving .rise, .chat-layer.is-leaving .rise { animation-name: fade-out; }
+  .group-layer.is-covered, .chat-layer.is-covered { transform: none; }
+  .group-layer.is-returning .rise, .chat-layer.is-returning .rise { animation-name: fade-in-again; }
+}
+@keyframes fade-in { from { opacity: 0; } }
+@keyframes fade-in-again { from { opacity: 0; } }
+@keyframes fade-out { to { opacity: 0; } }
+
+/* A task's conversation ------------------------------------------------ */
+/* over the cards, under the title bar: the thread scrolls, the message box stays at the foot */
+.chat-layer { position: absolute; top: var(--bar); right: 0; bottom: 0; left: 0; display: grid; grid-template-rows: 1fr auto; transition: opacity 220ms cubic-bezier(0.22, 0.61, 0.36, 1), transform 220ms cubic-bezier(0.22, 0.61, 0.36, 1); }
+.chat-scroll { position: relative; min-height: 0; }
+.chat { position: absolute; inset: 0; overflow-y: auto; padding: 16px var(--gutter) 24px; scrollbar-width: none; }
+/* as wide as the group's cards (540px), the message box under it too, so the three line up */
+.chat-column { max-width: 540px; margin: 0 auto; }
+.chat-thread { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; user-select: text; }
+/* Bubbles, 18px round, at most 80% of the column, for yours on the right;
+   Oby's replies on the left beside its face (below). A question and its response sit
+   24px apart; one after another on the same side, 4px */
+.msg { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; min-width: 0; margin-top: 24px; }
+.msg:first-child { margin-top: 0; }
+.msg.is-cont { margin-top: 4px; }
+/* the parts of one Oby response (text, task cards, the decision): 12px apart,
+   about a paragraph's break, now its text has no bubble to hold it together */
+.msg.is-oby { gap: 12px; }
+/* a task card under your message (with other Obys): 15px under the bubble's
+   edge, as far as one sits under Oby's text (12px, plus the 3px under its letters) */
+.msg.is-you { gap: 15px; }
+.msg.is-oby.is-cont { margin-top: 12px; }
+/* Oby answering: its face 16px under the time of what it answers */
+.msg + .msg.is-oby:not(.is-cont) { margin-top: 16px; }
+.msg.is-oby .msg-end { width: 100%; max-width: none; align-items: flex-start; }  /* its time under it on the left, where its words start */
+.msg-bubble { max-width: 80%; margin: 0; padding: 9px 14px; border-radius: 18px; background: var(--chip); color: var(--item); font-size: var(--text-base); line-height: 20px; white-space: pre-wrap; overflow-wrap: anywhere; }
+/* the end of a run with its time under it, at the right edge of whatever ends
+   it: a bubble (so as wide as that bubble) or a card or decision (full width) */
+.msg-end { max-width: 80%; display: flex; flex-direction: column; align-items: flex-end; gap: 6px; }
+.msg-end > .msg-bubble { max-width: 100%; }
+.msg-end.is-wide { width: 100%; max-width: none; }
+.msg-time { margin-top: 3px; color: var(--muted); font-size: 11px; line-height: 14px; font-variant-numeric: tabular-nums; user-select: none; }
+/* 3px more under a card or a bubble than under Oby's plain text: text has that
+   much room under its letters (14px on a 20px line), an edge has none, so the
+   time looks as far from either */
+.msg.is-oby .msg-bubble + .msg-time { margin-top: 0; }
+/* the asks are on the right: yours, and the message a task came in on (GitHub, Slack…) */
+.msg.is-you, .msg.is-source { align-items: flex-end; }
+.msg.is-you .msg-bubble, .msg.is-source .msg-bubble { background: rgba(255, 255, 255, 0.12); color: var(--ink); }
+/* Oby's face over the first part of a run, 8px above it; its words are plain
+   text, no bubble, across the thread's whole width */
+.msg-face { position: relative; width: 22px; height: 22px; margin-bottom: -4px; }
+.msg.is-oby .msg-bubble { max-width: none; width: 100%; padding: 0; border-radius: 0; background: none; }
+/* your Oby, with other people's Obys: on your side, its face and words to the right,
+   as wide as your bubbles get (80%) */
+.msg.is-oby.is-mine, .msg.is-oby.is-mine .msg-end { align-items: flex-end; }
+.msg.is-oby.is-mine .msg-bubble { width: auto; max-width: 80%; }
+/* its paragraphs and lists: 8px apart, the list's dots in the margin of its words */
+.msg.is-oby .msg-bubble > *, .ss-words > * { margin: 0; }
+.msg.is-oby .msg-bubble > * + *, .ss-words > * + * { margin-top: 8px; }
+.msg.is-oby .msg-bubble > ul { padding-left: 18px; list-style: disc; }
+.msg.is-oby .msg-bubble li + li { margin-top: 2px; }
+/* The rest of Oby's and an agent's Markdown (Said), where Sangam's design is silent: kept plain, with his tokens.
+   Numbered and nested lists as the dotted one; headings at the words' size, bold; code blocks as
+   a session's (.ss-code); quotes as another Oby's (.msg-quote); tables with --line rules */
+:is(.msg-bubble, .msg-quote, .ss-words) :is(ul, ol) { margin: 0; padding-left: 18px; }
+:is(.msg-bubble, .msg-quote, .ss-words) li > :is(ul, ol, p, pre) { margin: 2px 0 0; }
+:is(.msg-bubble, .msg-quote, .ss-words) li > p:first-child { margin: 0; }
+:is(.msg-bubble, .msg-quote, .ss-words) :is(h3, h4, h5, h6) { font-size: inherit; font-weight: 600; color: var(--ink); }
+:is(.msg-bubble, .msg-quote, .ss-words) li:has(> input[type="checkbox"], > p > input[type="checkbox"]) { list-style: none; }
+:is(.msg-bubble, .msg-quote, .ss-words) li > input[type="checkbox"],
+:is(.msg-bubble, .msg-quote, .ss-words) li > p > input[type="checkbox"] { margin: 0 6px 0 0; vertical-align: -2px; }
+:is(.msg-bubble, .msg-quote, .ss-words) hr { height: 1px; border: 0; background: var(--line); }
+:is(.msg-bubble, .ss-words) a.tok-url { text-decoration: none; }
+:is(.msg-bubble, .ss-words) a.tok-url:hover { text-decoration: underline; }
+.md-table { max-width: 100%; overflow-x: auto; }
+.md-table table { border-collapse: collapse; }
+.md-table :is(th, td) { padding: 4px 10px; border: 1px solid var(--line); text-align: left; vertical-align: top; }
+.md-table th { font-weight: 600; color: var(--ink); }
+/* another Oby's answer to what Oby asked, quoted in Oby's turn: a 3px line down
+   its left, rounded at both ends, 16px from the words */
+.msg-quote { position: relative; width: 100%; margin: 0; padding: 2px 0 2px 19px; display: flex; flex-direction: column; gap: 8px; color: var(--text); font-size: var(--text-base); line-height: 20px; }
+.msg-quote::before { content: ''; position: absolute; top: 0; bottom: 0; left: 0; width: 3px; border-radius: 1.5px; background: var(--line); }
+.msg-quote > * { margin: 0; }
+/* Oby's words coming in: each new word fades in over 240ms */
+.is-streaming .w { animation: word-in 240ms ease-out both; }
+@keyframes word-in { from { opacity: 0; } }
+@media (prefers-reduced-motion: reduce) { .is-streaming .w { animation: none; } }
+/* Oby at work: what it's on, under its live face, shimmering as a stage does */
+.msg-step { margin: 0; font-size: var(--text-md); line-height: 20px; }
+/* the steps it took, folded over its words: one muted line, a click opens them */
+.msg-steps { display: flex; flex-direction: column; gap: 6px; }
+.msg-steps-head { align-self: flex-start; display: inline-flex; align-items: center; gap: 4px; color: var(--muted); font-size: var(--text-md); line-height: 20px; transition: color var(--fade); }
+.msg-steps-head:hover { color: var(--text); }
+.msg-steps-head svg { transition: transform var(--fade); }
+.msg-steps.is-open .msg-steps-head svg { transform: rotate(90deg); }
+.msg-steps ul { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 4px; }
+.msg-steps li { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: var(--text-md); line-height: 20px; }
+.msg-steps li svg { flex: none; color: rgba(255, 255, 255, 0.4); }
+/* the decision, as on the card, in a bubble of its own */
+.msg-ask { width: 100%; padding: 2px 16px 16px; border-radius: 18px; background: var(--chip); }
+.msg-ask .tc-ask { margin-top: 0; border-top: 0; }
+/* what went with yours: photos as pictures (240 by 180 at most), files and Obys
+   as tags in your bubble's grey, all on your side */
+.msg-attached { max-width: 80%; display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
+.msg-end > .msg-attached { max-width: 100%; }
+.msg-photo { display: block; max-width: 240px; max-height: 180px; border-radius: 14px; object-fit: cover; }
+.msg-file { max-width: 240px; height: 32px; padding: 0 12px; display: inline-flex; align-items: center; gap: 8px; border-radius: 12px; background: rgba(255, 255, 255, 0.12); color: var(--ink); font-size: var(--text-md); }
+.msg-file > svg { flex: none; }
+.msg-file > span:last-child { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* a task this message started: a card under it, the thread's full width */
+.msg-task { width: 100%; padding: 10px 12px; display: flex; align-items: center; gap: 10px; border: 1px solid var(--line); border-radius: 14px; background: rgba(255, 255, 255, 0.06); color: var(--muted); text-align: left; user-select: none; transition: background-color var(--fade), border-color var(--fade); }
+/* the agent's icon, the status mark and the arrow sit on the title's line (18px) */
+.msg-task > svg:first-child { flex: none; align-self: flex-start; margin-top: 1px; }
+.msg-task > .status { align-self: flex-start; margin-top: 3px; }
+.msg-task.is-link:hover { background: rgba(255, 255, 255, 0.1); border-color: var(--line-strong); }  /* over its white 6% at rest */
+.msg-task-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.msg-task-title { color: var(--ink); font-size: var(--text-md); font-weight: 500; line-height: 18px; white-space: nowrap; overflow: hidden; mask-image: var(--fade-out); }
+.msg-task-title .tc-who { margin-right: 5px; }
+.msg-task-meta { color: var(--muted); font-size: var(--text-sm); white-space: nowrap; overflow: hidden; mask-image: var(--fade-out); }
+.msg-task .tc-result { margin: 2px 0 0; }
+.msg-task .tc-result a { white-space: nowrap; }
+.msg-task-go { flex: none; align-self: flex-start; margin: 2px 0 0 -2px; opacity: 0.6; }
+.msg-task.is-link:hover .msg-task-go { opacity: 1; color: var(--text); }
+/* new messages ease in from just below */
+.msg.is-new { animation: msg-in 360ms var(--warm) both; }
+@keyframes msg-in { from { opacity: 0; transform: translateY(8px); } }
+/* the agent at work: its live line, last */
+.chat-live { margin-top: 12px; display: flex; align-items: center; gap: 6px; min-width: 0; color: var(--text); font-size: var(--text-md); user-select: none; }
+.chat-live.is-working .tc-step { align-self: center; }  /* on its line, centred with the dot */
+/* the message box: as on Home */
+.chat-composer { max-width: calc(540px + 2 * var(--gutter)); padding-top: 8px; }
+/* Oby waiting on you, over the message box: as wide as it, a card of its own */
+.chat-ask { width: 100%; max-width: calc(540px + 2 * var(--gutter)); margin: 0 auto; padding: 8px var(--gutter) 0; animation: rise 280ms var(--warm) both; }
+.chat-ask-card { padding: 14px 16px 12px; border-radius: 18px; background: var(--chip); }
+.chat-ask-card .tc-options { margin-top: 12px; }
+.chat-ask-hint { margin: 10px 0 0; color: var(--muted); font-size: var(--text-sm); }
+/* a task's page: what scrolls fades out over its last 16px (as under the title bar), above the box, rather
+   than cut off flat (scrolled to the end, that's the room under the last card) */
+.chat.task-scroll { mask-image: linear-gradient(#000 calc(100% - 16px), transparent); }
+/* and as much room above the box as below it */
+.chat-composer.task-composer { padding-top: 12px; padding-bottom: 12px; }
+/* The message box's field: the outline, around a grid. One row of + / text /
+   usage / voice-or-send (46px tall, as a pill) under any tags; stacked once the
+   text runs past a line, the text full width over the + / usage / voice-or-send
+   row, the text then starting where the + icon under it does */
+.composer-field { position: relative; flex: 1; min-width: 0; border: 1px solid var(--line); border-radius: 23px; transition: border-color var(--fade); }
+.composer-grid { display: grid; grid-template-columns: auto 1fr auto auto; grid-template-areas: "tags tags tags tags" "plus text usage end"; align-items: end; column-gap: 2px; padding: 6px; }
+.composer-field.is-stacked .composer-grid { grid-template-areas: "tags tags tags tags" "text text text text" "plus . usage end"; }
+/* hovered or focused: the same 20% white (between the app's hover and focus) */
+.composer-field:hover, .composer-field:focus-within { border-color: var(--field-edge-on); }
+.composer-grid > .composer-tags { grid-area: tags; }
+.composer-grid > .composer-button { grid-area: plus; }
+.composer-grid > .composer-usage { grid-area: usage; }
+/* the end: voice while the box is empty; once there's something to send, voice
+   fades and shrinks away and send takes its place, a plain icon like voice and
+   +, fading in as it grows from 40%; emptied, back again (these outrank
+   .composer-button's own transition, further down) */
+.composer-grid > .composer-voice, .composer-grid > .composer-send { grid-area: end; }
+/* no talking (v1): send in the gauge's place, the gauge at the end */
+.composer-grid.is-send-first > .composer-send { grid-area: usage; }
+.composer-grid.is-send-first > .composer-usage { grid-area: end; }
+.composer-grid > .composer-voice { transition: opacity 180ms var(--warm) 60ms, transform 320ms var(--spring) 60ms, color var(--fade), background-color var(--fade); }
+.composer-grid > .composer-voice.is-away { opacity: 0; transform: scale(0.4); pointer-events: none; transition: opacity 100ms var(--ease-in), transform 100ms var(--ease-in); }
+.composer-grid > .composer-send { opacity: 0; transform: scale(0.4); pointer-events: none; transition: opacity 100ms var(--ease-in), transform 100ms var(--ease-in), color var(--fade), background-color var(--fade); }
+/* no talking (v1): send stays at the end, dim and still till there's something to send */
+.composer-grid > .composer-send.is-always { opacity: 0.3; transform: scale(1); }
+.composer-grid > .composer-send.is-ready { opacity: 1; transform: scale(1); pointer-events: auto; color: var(--ink); transition: opacity 180ms var(--warm) 60ms, transform 320ms var(--spring) 60ms, color var(--fade), background-color var(--fade); }
+@media (prefers-reduced-motion: reduce) { .composer-send, .composer-voice { transition: none !important; } }
+/* The text (MessageEditor): one line tall to start, growing with what's typed up
+   to 5 lines, then scrolling (the box around it scrolls, the cursor with it); the
+   placeholder over it on one line, cut short at the box's edge rather than wrapping */
+.composer-editor { grid-area: text; position: relative; min-width: 0; max-height: calc(5 * var(--composer-line) + 10px); overflow-y: auto; }
+/* the system's cursor hidden (caret-color): MessageEditor draws its own, which glides */
+.composer-input { min-height: 32px; padding: 5px 4px; color: rgba(255, 255, 255, 0.9); font-size: var(--text-lg); line-height: var(--composer-line); white-space: pre-wrap; overflow-wrap: anywhere; outline: none; user-select: text; cursor: text; caret-color: transparent; }
+.composer-input p { margin: 0; }
+.composer-caret { position: absolute; top: 0; left: 0; width: 2px; height: 20px; border-radius: 1px; background: rgba(255, 255, 255, 0.9); opacity: 0; pointer-events: none; will-change: transform; }
+/* still: blinking, on and off every 0.5s, as macOS's does */
+.composer-caret.is-idle { animation: caret-blink 1s step-end infinite; }
+@keyframes caret-blink { 50% { opacity: 0; } }
+/* its scrollbar, once it scrolls: the app's scroll thumb (useScrollThumb) */
+.composer-editor { scrollbar-width: none; }
+.composer-placeholder { position: absolute; inset: 5px 4px auto; color: var(--muted); font-size: var(--text-lg); line-height: var(--composer-line); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; pointer-events: none; user-select: none; }
+/* Stacked: 12px of room either side of the text; past 5 lines it scrolls, with
+   10px of room above and below the text (16px from the box's edge), and the text fading out over that room as it scrolls
+   under it, rather than cut off flat */
+.composer-field.is-stacked .composer-editor {
+  max-height: calc(5 * var(--composer-line) + 20px);
+  scroll-padding-block: 10px;
+  mask-image: linear-gradient(transparent, #000 10px, #000 calc(100% - 10px), transparent);
+}
+.composer-field.is-stacked .composer-input { padding: 10px 12px; }
+.composer-field.is-stacked .composer-placeholder { inset: 10px 12px auto; }
+/* what it recognises as you type: links and references (#412) in blue; paths,
+   repos and `code` in coral monospace, a size down, on white 10% with 4px corners */
+.tok-url, .tok-ref { color: #64a8ff; }
+.tok-mention { padding: 1px 3px; border-radius: 4px; background: rgba(100, 168, 255, 0.16); color: #8cbcff; }
+.tok-path, .tok-code { padding: 1px 3px; border-radius: 4px; background: rgba(255, 255, 255, 0.08); color: #ff8a70; font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 13px; }
+.composer-button { flex: none; width: 32px; height: 32px; display: grid; place-items: center; border-radius: 50%; color: var(--muted); transition: color var(--fade), background-color var(--fade); }
+.composer-button:hover { color: var(--ink); background: var(--hover); }
+.composer-button.is-on { color: var(--ink); background: var(--active); }
+/* what's been added, as tags over the text: a row of its own, the box's width */
+/* past 3 rows of tags, the row scrolls instead of the box growing; 10px over the text */
+.composer-tags { flex: none; margin-bottom: 6px; max-height: 111px; overflow-y: auto; scrollbar-width: none; display: flex; flex-wrap: wrap; gap: 6px; padding: 3px 3px 4px; }
+/* older tags hidden above: the row's top edge fades out */
+.composer-tags.is-scrolled { mask-image: linear-gradient(transparent, #000 16px); }
+.composer-tag-thumb { flex: none; width: 18px; height: 18px; border-radius: 4px; object-fit: cover; }
+/* a tag: 30px, its icon 15px, the words 13px, room either side */
+.composer-tag { height: 30px; max-width: 260px; padding: 0 5px 0 10px; display: inline-flex; align-items: center; gap: 7px; border-radius: var(--radius-pill); background: var(--chip-hover); color: var(--item); font-size: var(--text-md); }
+.composer-tag > svg { flex: none; color: var(--muted); }
+.composer-tag-text { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.composer-tag button { flex: none; width: 20px; height: 20px; display: grid; place-items: center; border-radius: 50%; color: var(--muted); transition: color var(--fade), background-color var(--fade); }
+.composer-tag button:hover { color: var(--ink); background: var(--hover); }
+/* The +'s panel: over the box, exactly as wide, opening upward. Its rows each
+   lead with an icon; Obys and tasks turn it into a search over a list */
+.add-panel { position: absolute; z-index: 20; left: -1px; right: -1px; bottom: calc(100% + 8px); padding: 4px; display: flex; flex-direction: column; background: var(--surface); border: 1px solid var(--surface-edge); border-radius: 20px; box-shadow: 0 10px 28px rgba(0, 0, 0, 0.45); transform-origin: bottom left; animation: add-panel-in 220ms var(--warm) both; }
+/* the + panel: it grows out of the + (from 94%, up 6px, 220ms), then, as it opens (is-opening),
+   its rows come in one after another, up 4px, 25ms apart from 50ms; moving between its menu and
+   a list in it, the rows are simply there */
+@keyframes add-panel-in { from { opacity: 0; transform: translateY(6px) scale(0.94); } }
+.add-panel.is-opening > button[role], .add-panel.is-opening .add-list > button[role], .add-panel.is-opening .add-foot { animation: add-row-in 200ms var(--warm) both; animation-delay: 50ms; }
+@keyframes add-row-in { from { opacity: 0; transform: translateY(4px); } }
+/* (each delay as specific as the rule above, or a list's rows would all come at 50ms) */
+.add-panel.is-opening :is(.add-panel > button[role], .add-list > button[role]):nth-child(2) { animation-delay: 75ms; }
+.add-panel.is-opening :is(.add-panel > button[role], .add-list > button[role]):nth-child(3) { animation-delay: 100ms; }
+.add-panel.is-opening :is(.add-panel > button[role], .add-list > button[role]):nth-child(4) { animation-delay: 125ms; }
+.add-panel.is-opening :is(.add-panel > button[role], .add-list > button[role]):nth-child(5) { animation-delay: 150ms; }
+.add-panel.is-opening :is(.add-panel > button[role], .add-list > button[role]):nth-child(n + 6), .add-panel.is-opening .add-foot { animation-delay: 175ms; }
+@media (prefers-reduced-motion: reduce) { .add-panel, .add-panel > button[role], .add-list > button[role], .add-foot { animation: none !important; } }
+.add-panel button[role] { height: 34px; padding: 0 10px; display: flex; align-items: center; gap: 10px; border-radius: 10px; color: var(--text); font-size: var(--text-base); text-align: left; transition: background-color var(--fade), color var(--fade); }
+.add-panel button[role]:is(:hover, :focus-visible) { background: var(--hover); color: var(--ink); }
+.add-panel button[role]:focus-visible { outline: 0; }  /* lit like a hover, as a macOS menu's rows are */
+.add-panel button[role] > svg:first-child { flex: none; color: var(--muted); }
+.add-search { display: flex; align-items: center; gap: 4px; padding: 2px 2px 6px; margin-bottom: 4px; border-bottom: 1px solid var(--surface-edge); }
+.add-back { flex: none; width: 28px; height: 28px; display: grid; place-items: center; border-radius: 8px; color: var(--muted); transition: color var(--fade), background-color var(--fade); }
+.add-back:hover { color: var(--ink); background: var(--hover); }
+.add-search-icon { flex: none; margin: 0 2px 0 4px; color: var(--muted); }
+.add-search input { flex: 1; min-width: 0; height: 28px; border: 0; outline: 0; background: none; color: var(--ink); font-size: var(--text-md); user-select: text; }
+.add-search input::placeholder { color: var(--muted); }
+/* Select working folder…'s list: a fixed height (5 rows), room under a short list; each folder on
+   one line, its name (to half the row) then where it is, at the right, 12px from the check's spot;
+   under the list, divided off, any other folder */
+.add-list.is-folders { height: 190px; }
+/* every list of the + panel (tasks, Obys, Macs, folders): at least 5 rows tall, so a short one has
+   room under it rather than a tight box */
+.add-panel.is-search .add-list { min-height: 190px; }
+.add-panel button.add-folder { flex: none; gap: 10px; }
+.add-folder-name { flex: none; max-width: 50%; color: var(--item); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.add-folder-place { flex: 1; min-width: 0; color: var(--muted); font-size: var(--text-sm); text-align: right; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.add-folder-check { flex: none; width: 14px; margin-left: 2px; display: grid; place-items: center; }
+.add-foot { margin: 4px 0 0; padding-top: 4px; border-top: 1px solid var(--surface-edge); }
+.add-foot button { width: 100%; height: 34px; padding: 0 10px; display: flex; align-items: center; gap: 10px; border-radius: 10px; color: var(--text); font-size: var(--text-base); text-align: left; transition: background-color var(--fade), color var(--fade); }
+.add-foot button:is(:hover, :focus-visible) { background: var(--hover); color: var(--ink); outline: 0; }
+.add-foot button > svg { flex: none; color: var(--muted); }
+.add-list { max-height: 240px; overflow-y: auto; scrollbar-width: none; display: flex; flex-direction: column; gap: 2px; }
+/* the + menu's rows 2px apart, as its lists' (and the side panel's) */
+.add-panel[role=menu] { gap: 2px; }
+.add-list button[role] { flex: none; height: 36px; }
+.add-item-text { flex: 1; min-width: 0; color: var(--item); white-space: nowrap; overflow: hidden; mask-image: var(--fade-out); }
+.add-item-who { margin-right: 6px; color: var(--ink); }
+.add-check { flex: none; color: var(--ink); }
+.add-empty { margin: 8px 10px; color: var(--muted); font-size: var(--text-sm); }
+.add-list:has(> .add-empty.is-middle) { justify-content: center; }
+.add-empty.is-middle { margin: 0 10px; text-align: center; }
+/* Run on another Mac (a preview): a Mac's line, and why it's free or not, under its name */
+.add-panel button.add-place { height: 46px; }
+.add-panel button.add-place:disabled { opacity: 0.5; cursor: default; background: none; }
+.add-item-about { display: block; color: var(--muted); font-size: var(--text-sm); }
+.add-note { margin: 6px 10px 4px; color: var(--muted); font-size: var(--text-sm); }
+/* usage shared with you, under your own accounts */
+.usage-shared { margin: 10px 0 2px 8px; color: var(--label); font-size: var(--text-sm); }
+/* usage: a gauge; a dot at its top right while an account is past 80% (yellow) or 90% (red) */
+.composer-usage { position: relative; }
+/* just past the gauge's top right corner, clear of its line */
+.usage-dot { position: absolute; top: 5px; right: 4px; width: 6px; height: 6px; border-radius: 50%; }
+.usage-dot.is-high { background: var(--full); }
+.usage-dot.is-over { background: var(--over); }
+/* its panel: a header with the way to Settings › Accounts, then each account's week */
+.usage-panel { padding: 8px 8px 20px; gap: 2px; }  /* 12px more at the bottom than the top */
+.usage-head { margin: 0 0 2px 8px; display: flex; align-items: center; justify-content: space-between; color: var(--label); font-size: var(--text-sm); }
+.usage-row { padding: 8px; display: flex; align-items: flex-start; gap: 10px; }
+.usage-row > svg { flex: none; margin-top: 1px; color: var(--muted); }
+.usage-text { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+/* its name; then, at the right, when it resets and how much it's used */
+.usage-line { display: flex; align-items: baseline; gap: 10px; }
+.usage-name { flex: 1; min-width: 0; color: var(--ink); font-size: var(--text-base); white-space: nowrap; overflow: hidden; mask-image: var(--fade-out); }
+.usage-about { flex: none; color: var(--muted); font-size: var(--text-sm); }
+/* the session's line close over its bar (4px), the week's words further under it (12px); no bar: the week's words 4px under the line */
+.usage-text .set-meter { max-width: none; margin: 4px 0 0; }
+.usage-week { margin-top: 4px; color: var(--muted); font-size: var(--text-sm); }
+.usage-text .set-meter + .usage-week { margin-top: 12px; }
+.usage-used { flex: none; min-width: 32px; text-align: right; color: var(--text); font-size: var(--text-base); font-variant-numeric: tabular-nums; }
+.usage-used.is-high { color: var(--full); }
+.usage-used.is-over { color: var(--over); }
+/* the + panel's Add other Obys: the key that does the same from the text */
+.add-hint { margin-left: auto; padding: 0 5px; border: 1px solid var(--line); border-radius: 5px; color: var(--muted); font: inherit; font-size: var(--text-sm); line-height: 18px; }
+/* an @ being typed: the Obys it could be, over the box; the lit one follows
+   the arrows and the pointer alike */
+.mention-panel button[role]:hover { background: none; color: var(--text); }
+.mention-panel button[role].is-lit { background: rgba(255, 255, 255, 0.08); color: var(--ink); }
+
+/* Someone else's Oby ---------------------------------------------------- */
+/* its page: whose it is and what it's up to, then its conversations */
+.oby-head { display: flex; align-items: center; gap: 16px; margin: 8px 0 28px; }
+.oby-name { margin: 0; color: var(--ink); font-size: 22px; font-weight: 600; line-height: 28px; }
+.oby-doing { margin: 2px 0 0; color: var(--muted); font-size: var(--text-md); }
+/* no conversations yet: the page's room under the header, its words in the middle */
+.chat-column:has(> .oby-empty) { min-height: 100%; display: flex; flex-direction: column; }
+.oby-empty { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; padding-bottom: 72px; text-align: center; }
+.oby-empty-title { margin: 0; color: var(--ink); font-size: var(--text-base); font-weight: 500; }
+.oby-empty-line { margin: 0; color: var(--muted); font-size: var(--text-base); }
+.peer-convos { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; }
+/* a line between conversations, in from the edges as far as their text */
+.peer-convos > li + li { position: relative; }
+.peer-convos > li + li::before { content: ''; position: absolute; top: 0; left: 12px; right: 12px; height: 1px; background: var(--divider); }
+/* a conversation: who's in it, its name, the last word; when and how its task stands on the right */
+.peer-convo { position: relative; width: 100%; padding: 14px 12px; display: flex; align-items: flex-start; gap: 12px; border-radius: 14px; text-align: left; transition: background-color var(--fade); }
+.peer-convo:hover { background: var(--chip); }
+/* unread: a blue dot left of the row, level with its pictures */
+.peer-convo-dot { position: absolute; left: -8px; top: 22px; width: 6px; height: 6px; border-radius: 50%; background: var(--unread); }
+.peer-convo-text { flex: 1; min-width: 0; display: flex; flex-direction: column; align-items: flex-start; gap: 2px; }
+.peer-convo-text .avatar-stack { margin-bottom: 8px; }
+.peer-convo-title { align-self: stretch; color: var(--ink); font-size: var(--text-base); font-weight: 500; line-height: 20px; white-space: nowrap; overflow: hidden; mask-image: var(--fade-out); }
+.peer-convo-last { color: var(--muted); font-size: var(--text-md); line-height: 19px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.peer-convo-side { flex: none; display: flex; flex-direction: column; align-items: flex-end; gap: 8px; padding-top: 4px; }
+/* everyone in a conversation: 22px pictures overlapping by 6px, each ringed in the
+   background; the Oby badge on the last picture only; past 5, how many more */
+.avatar-stack { flex: none; display: flex; align-items: center; }
+.avatar-stack > * + * { margin-left: -6px; }
+.avatar-stack .owner-avatar { box-shadow: 0 0 0 2px var(--bg); }
+/* a 22px picture (here, over a run, in the side panel's Members): smaller
+   initials and badge */
+.avatar-stack .owner-avatar, .peer-by .owner-avatar, .oby-row .owner-avatar { font-size: 9px; }
+.avatar-stack .owner-avatar-oby, .peer-by .owner-avatar-oby, .oby-row .owner-avatar-oby { right: -2px; bottom: -2px; }
+.avatar-stack .oby-badge-cut, .peer-by .oby-badge-cut, .oby-row .oby-badge-cut { stroke-width: 5px; }
+.avatar-more { flex: none; padding: 0 6px; display: grid; place-items: center; border-radius: var(--radius-pill); background: var(--chip-hover); box-shadow: 0 0 0 2px var(--bg); color: var(--text); font-size: 10px; font-weight: 600; }
+/* in a conversation with other people's Obys: an Oby's picture and name over the first of its run */
+.peer-by { display: flex; align-items: center; gap: 8px; margin-bottom: -4px; color: var(--text); font-size: var(--text-md); font-weight: 500; user-select: none; }
+
+/* Side panel ------------------------------------------------------------- */
+/* the slot grows from 0 to the panel's width, pushing the view over; the panel
+   inside keeps its width, so its contents don't reflow as it opens */
+.sidebar-slot {
+  flex: none;
+  width: 0;
+  overflow: hidden;
+  transition: width var(--panel-close);
+}
+/* opening and settling after a stretch: easing in to the mark, no overshoot (--panel-settle) */
+.has-sidebar .sidebar-slot { width: var(--sidebar); transition: width var(--panel-settle); }
+.sidebar {
+  position: relative;
+  /* its set width while the slot opens (no reflow), but filling the slot when
+     the slot overshoots past it, so no gap opens at the edge */
+  width: max(100%, var(--sidebar));
+  height: 100%;
+  display: flex;
+  /* no fill of its own: the window's background shows through; its right edge
+     still divides it from the view */
+  background: transparent;
+}
+/* its divider, on the slot's edge rather than the panel's, so it travels with the edge as it
+   opens (in by about halfway: 80ms), closes (out over 60–180ms, by the time it's mostly gone) and
+   is resized. 8%: a
+   touch stronger than other dividers (5%), with no fill to set the panel apart */
+.sidebar-slot { position: relative; }
+.sidebar-slot::after { content: ''; position: absolute; z-index: 3; top: 0; bottom: 0; right: 0; width: 1px; background: rgba(255, 255, 255, 0.08); pointer-events: none; opacity: 0; transition: opacity 120ms linear 60ms; }
+.has-sidebar .sidebar-slot::after { opacity: 1; transition: opacity 80ms linear; }
+/* the empty top strip, under the traffic lights, drags the window */
+.sidebar, .rail, .sidebar-content { -webkit-app-region: drag; }
+.rail-button, .sidebar-content > *, .sidebar-resize { -webkit-app-region: no-drag; }
+/* a menu or panel open: no dragging from these, so a click there reaches the page and closes it (useClicksEverywhere) */
+.is-popover-open :is(.sidebar, .rail, .sidebar-content, .bar) { -webkit-app-region: no-drag; }
+/* the panel's right edge: drag to resize, double-click for the default width.
+   It takes the 6px inside the panel's border, the border, and 1px past it */
+.sidebar-resize {
+  position: absolute;
+  z-index: 11;
+  top: 0;
+  bottom: 0;
+  left: calc(var(--sidebar) - 7px);
+  width: 8px;
+  cursor: col-resize;
+}
+/* the panel opening: it waits until the edge has got there (640ms) */
+.sidebar-resize { animation: handle-in 0s 640ms backwards; }
+@keyframes handle-in { from { visibility: hidden; } }
+/* the line it lights: 2px, ending at the panel's edge */
+.sidebar-resize::after {
+  content: '';
+  position: absolute;
+  top: 0; bottom: 0;
+  right: 1px;
+  width: 2px;
+  background: var(--line);
+  opacity: 0;
+  transition: opacity var(--fade);
+}
+.sidebar-resize:hover::after, .is-resizing .sidebar-resize::after { opacity: 1; }
+/* settling after a release, the edge is still on its way while the handle is
+   already where it ends: its line stays hidden until the edge gets there */
+.is-settling .sidebar-resize::after { opacity: 0; transition: none; }
+/* while dragging: follow the pointer exactly, and keep the resize cursor */
+.is-resizing .sidebar-slot, .is-resizing .bar { transition: none !important; }
+/* dragging and settling after, what's in the panel follows its edge (rows
+   cut at the right, faded), rather than keeping the width it lands on; stretched
+   under its narrowest (252px) it stays 252 and the edge cuts it, no squeezing */
+.is-resizing .sidebar, .is-settling .sidebar { width: max(100%, var(--sidebar-min)); }
+.is-resizing { cursor: col-resize; }
+
+/* far left: one icon per section, your account picture at the bottom */
+.rail {
+  position: relative;
+  z-index: 2;  /* its tooltips show over the column beside it */
+  flex: none;
+  width: var(--rail);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: var(--bar) 0 10px;
+}
+/* the divider starts under the title bar, clear of the traffic lights */
+.rail::before {
+  content: '';
+  position: absolute;
+  top: var(--bar);
+  right: 0;
+  bottom: 0;
+  width: 1px;
+  background: rgba(255, 255, 255, 0.08);  /* as the panel's edge */
+}
+.rail-button {
+  position: relative;
+  width: 32px; height: 32px;
+  display: grid; place-items: center;
+  border-radius: 8px;
+  color: rgba(255, 255, 255, 0.5);
+  transition: color var(--fade), background-color var(--fade);
+}
+.rail-button:hover { color: var(--text); background: var(--hover); }
+.rail-button.is-on { color: var(--ink); background: var(--active); }
+.rail-account, .rail-settings { margin-top: auto; }   /* at the foot of the strip */
+/* your picture: dimmed a touch at rest, like the icons, full when hovered or open */
+.rail-account .owner-avatar { font-size: 10px; opacity: 0.85; transition: opacity var(--fade); }
+.rail-account:is(:hover, .is-on) .owner-avatar { opacity: 1; }
+/* between your own places (Home, Conversations) and the Obyspheres: a 20px line */
+.rail-sep { width: 20px; height: 1px; flex: none; background: var(--line); }
+/* an Obysphere's picture: a 26px rounded square (people are circles), an image
+   filling it or a mark on black; always edged in a 1px line, drawn over the
+   picture so it holds on any image against the panel; the open one is lit like
+   the other icons */
+.sphere-tile { position: relative; width: 26px; height: 26px; display: grid; place-items: center; overflow: hidden; border-radius: 8px; background: #000; }
+.sphere-tile img { width: 100%; height: 100%; object-fit: cover; }
+.sphere-tile::after { content: ''; position: absolute; inset: 0; border-radius: inherit; box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.2); pointer-events: none; }
+/* something new in this section: a blue dot on its icon */
+.rail-button.has-dot::before {
+  content: '';
+  position: absolute;
+  bottom: -3px; left: 50%;  /* centred under the icon, in the gap below the button */
+  width: 5px; height: 5px;
+  margin-left: -2.5px;
+  border-radius: 50%;
+  background: var(--unread);
+}
+.rail-button.has-dot.is-needs::before { background: var(--needs); }
+/* its name, in a small tooltip to the right, after a short hover */
+.rail-button::after {
+  content: attr(data-tip);
+  position: absolute;
+  left: calc(100% + 8px);
+  top: 50%;
+  padding: 4px 8px;
+  border: 1px solid var(--surface-edge);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: var(--text-sm);
+  white-space: nowrap;
+  pointer-events: none;
+  opacity: 0;
+  transform: translate(-4px, -50%);
+  transition: opacity 160ms var(--warm), transform 160ms var(--warm);
+}
+.rail-button:hover::after { opacity: 1; transform: translate(0, -50%); transition-delay: 600ms; }
+
+/* beside the icons: the chosen section */
+.sidebar-content {
+  position: relative;  /* the window's height: an empty list's words sit in its middle */
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: var(--bar) 16px 8px;
+}
+.sidebar-title-row { display: flex; align-items: center; justify-content: space-between; margin: 0 0 12px; }
+/* under a section's title: a fact about it (the Obysphere's Oby count); it takes the title's gap */
+.sidebar-title-row:has(+ .sidebar-subtitle) { margin-bottom: 0; }
+.sidebar-subtitle { margin: 0 0 12px; padding: 0 10px; color: var(--muted); font-size: var(--text-sm); }
+.sidebar-title {
+  margin: 0;
+  padding: 0 10px;
+  color: var(--ink);
+  font-size: var(--text-title);
+  font-weight: 600;
+  line-height: 32px;
+  /* one line: a long name (an Obysphere's) fades out at the panel's edge */
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  mask-image: var(--fade-out);
+}
+/* a side panel row: a picture or logo, a name, a line under it; conversations
+   and Members share it */
+.connector, .task {
+  height: 44px;
+  padding: 0 10px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  border-radius: 6px;
+  transition: background-color var(--fade);
+}
+.connector:hover, .task:hover { background: var(--hover); }
+/* an Oby whose page is showing */
+.connector.is-active, .connector.is-active:hover { background: var(--active); }
+/* the Obys under Members: 32px rows, 4px apart (connectors are 44px, 6px
+   apart), with the same 22px picture as in a conversation row */
+.connector.oby-row { height: 32px; }
+.connector.oby-row + .connector.oby-row { margin-top: 4px; }
+.oby-row .connector-name { display: block; white-space: nowrap; overflow: hidden; mask-image: var(--fade-out); }
+.oby-row .status-dot { flex: none; }
+/* the dot 8px before the count (the row's gap is 12), as in Home's groups */
+.oby-row .status-dot + .connector-count { margin-left: -4px; }
+/* how many conversations you've had with that Oby, at the row's end */
+.connector-count { flex: none; color: var(--muted); font-size: var(--text-sm); font-variant-numeric: tabular-nums; }
+.connector.is-active .connector-name { color: var(--ink); }
+.connector svg:first-child { flex: none; }
+/* someone else's Oby: its owner's round picture, the Oby small at its bottom right,
+   cut out from the picture by a ring of the panel's colour */
+.owner-avatar { position: relative; flex: none; display: grid; place-items: center; border-radius: 50%; color: rgba(255, 255, 255, 0.92); font-size: 11px; font-weight: 600; letter-spacing: 0.02em; }
+.owner-avatar-oby { position: absolute; right: -2.5px; bottom: -2.5px; display: grid; place-items: center; }
+/* the window's background around the badge, following its shape: a stroke
+   4px out on each side (2.5px on the small pictures, above) */
+.oby-badge-cut { fill: var(--bg); stroke: var(--bg); stroke-width: 8px; vector-effect: non-scaling-stroke; }
+.owner-avatar-oby svg { display: block; }
+.connector-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.connector-name { color: var(--item); font-size: var(--text-base); }
+.connector:hover .connector-name { color: var(--ink); }
+.connector-about { color: var(--muted); font-size: var(--text-sm); white-space: nowrap; overflow: hidden; mask-image: var(--fade-out); }
+.connector + .connector { margin-top: 6px; }
+button.connector { width: 100%; text-align: left; }
+/* conversation rows in Conversations, 4px apart */
+.task + .task { margin-top: 4px; }
+.task .connector-name { white-space: nowrap; overflow: hidden; mask-image: var(--fade-out); }
+/* A task's state, one mark in a 12px spot wherever it's listed: an 8px dot,
+   blue while new, orange while it needs you, grey and pulsing while it works
+   (fading down and up every 1.6s, in step with the stage name's shimmer);
+   nothing while queued; a grey check once done. (The ring is a stage's, still
+   to come, on the task page) */
+.status { flex: none; width: 12px; height: 12px; display: grid; place-items: center; color: rgba(255, 255, 255, 0.4); }
+.status-dot { width: 8px; height: 8px; border-radius: 50%; }
+.status-dot.is-new { background: var(--unread); }
+.status-dot.is-needs { background: var(--needs); }
+.status-dot.is-queued { box-shadow: inset 0 0 0 1.5px rgba(255, 255, 255, 0.45); }
+/* a stage's own: failed */
+.status-dot.is-failed { background: var(--danger); }
+.status-dot.is-working { background: rgba(255, 255, 255, 0.75); animation: pulse-slow 1.6s ease-in-out infinite; }
+@keyframes pulse-slow { 0%, 100% { opacity: 0.2; } 50% { opacity: 1; } }  /* white 15% to 75% (its colour is white 75%) */
+@media (prefers-reduced-motion: reduce) { .status-dot.is-working { animation: none; opacity: 0.8; } }
+/* a task on Home: its source's logo, the task, and at the end its state mark;
+   its ⋮ on hover */
+.task-row {
+  position: relative;
+  width: 100%;
+  height: 34px;
+  padding: 0 10px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border-radius: 6px;
+  color: var(--muted);  /* the logo */
+  text-align: left;
+  cursor: pointer;
+  transition: background-color var(--fade);
+}
+.task-row > svg:first-of-type { flex: none; }
+.task-row + .task-row { margin-top: 1px; }
+/* on hover (or with its menu open) the dot gives way to the ⋮, in the same spot */
+.task-row .sidebar-item-more { top: 50%; right: 6px; margin-top: -11px; }
+.task-row > .status { margin-right: 1px; transition: opacity var(--fade); }  /* centred under the ⋮ that replaces it */
+.task-row:is(:hover, :focus-visible, :has(:focus-visible), .is-menu-open) > .status { opacity: 0; }
+.task-row:is(:hover, :focus-visible, :has(:focus-visible), .is-menu-open) .sidebar-item-more { opacity: 1; }
+/* a task's conversation, before its ⋮ (22px and 2px apart); the title gives them room on hover;
+   its name in a tooltip under it after a short hover (the rule shared with .bar-chat's) */
+.task-row .task-row-chat { right: 30px; }
+.task-row:is(:hover, :focus-visible, :has(:focus-visible), .is-menu-open) .sidebar-item-title { margin-right: 46px; }
+.task-row.is-menu-open, .task-row:hover { background: var(--hover); }
+/* its card is showing on its own */
+.task-row.is-active, .task-row.is-active:hover { background: var(--active); }
+/* its name in one colour, a person's name before it included: white 90% while
+   it's open, 40% once it's done; full white under the pointer or while showing */
+.task-row .sidebar-item-title { color: rgba(255, 255, 255, 0.9); transition: color var(--fade); }
+.task-row.is-done .sidebar-item-title { color: rgba(255, 255, 255, 0.4); }
+/* and its logo with it, at white 40% too (as the check already is) */
+.task-row.is-done > svg:first-of-type { color: rgba(255, 255, 255, 0.4); }
+.task-row:is(:hover, .is-active) .sidebar-item-title { color: #fff; }
+
+/* search: on the panel icon's row, at the panel's right edge */
+.sidebar-top {
+  position: absolute;
+  top: calc((var(--bar) - 32px) / 2);
+  right: 10px;
+  display: flex;
+  gap: 4px;
+}
+/* a tab's "new" action (New task on Home): first under the title */
+.sidebar-new {
+  flex: none;
+  width: 100%;
+  height: 34px;
+  margin-bottom: 8px;
+  padding: 0 10px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  border-radius: 6px;
+  color: var(--item);
+  font-size: var(--text-base);
+  /* one line, left-aligned; a label too long for a narrow panel is cut at its
+     right, faded (.sidebar-new-label) */
+  white-space: nowrap;
+  text-align: left;
+  overflow: hidden;
+  transition: background-color var(--fade), color var(--fade);
+}
+.sidebar-new > svg { flex: none; }
+/* filling the row, so its fade sits in the empty room at the end unless the label reaches it */
+.sidebar-new-label { flex: 1; min-width: 0; overflow: hidden; mask-image: var(--fade-out); }
+.sidebar-new:hover { background: var(--hover); color: var(--ink); }
+/* a second row like it, right over it: the pair 30px tall each, touching, so their
+   lines sit 30px apart instead of 36px */
+.sidebar-new.is-stacked { margin-bottom: 0; }
+.sidebar-new.is-stacked:not(:has(+ .sidebar-new)) { margin-bottom: 8px; }  /* the last of a stack keeps the room under it */
+.sidebar-new.is-stacked, .sidebar-new.is-stacked + .sidebar-new { height: 30px; }
+/* the search field slides open under the title */
+.sidebar-search-wrap {
+  display: grid;
+  grid-template-rows: 0fr;
+  opacity: 0;
+  transition: grid-template-rows 320ms var(--warm), opacity 240ms var(--warm);
+}
+.sidebar-search-wrap > div { min-height: 0; overflow: hidden; }
+.sidebar-search-wrap.is-open { grid-template-rows: 1fr; opacity: 1; }
+.sidebar-search {
+  height: 34px;
+  margin: 0 0 8px;
+  padding: 0 10px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  color: var(--muted);
+  transition: border-color var(--fade);
+}
+.sidebar-search:hover { border-color: var(--line-strong); }
+.sidebar-search:focus-within { border-color: var(--line-focus); }
+.sidebar-search input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  background: none;
+  color: var(--ink);
+  outline: none;
+  user-select: text;
+}
+.sidebar-search input::placeholder { color: var(--muted); }
+
+.sidebar-scroll { position: relative; flex: 1; min-height: 0; margin: 0 -16px -8px; }
+/* an empty list: nothing to scroll, so its words place themselves in the column (.sidebar-content) */
+.sidebar-scroll:has(.sidebar-empty.is-middle) { position: static; }
+.sidebar-list { height: 100%; overflow-y: auto; scrollbar-width: none; padding: 0 16px 8px; }
+/* folded groups 4px apart; an open one adds 12px under its rows (below), 16px in all */
+.sidebar-group + .sidebar-group { margin-top: 4px; }
+/* the group's label row: click to fold. A chevron right after the label points
+   down while open and up once folded */
+.sidebar-group-head {
+  width: 100%;
+  height: 26px;
+  padding: 0 10px;
+  display: flex;
+  align-items: center;
+  gap: 4px;  /* the chevron sits right after the label */
+  border-radius: 8px;
+  color: var(--label);
+  transition: color var(--fade);
+}
+.sidebar-group-head:hover { color: var(--text); }
+/* its fade (24px) lies over room of its own past the label, given back to the
+   chevron, so it only shows once the label runs into it */
+.sidebar-group h3 { min-width: 0; margin: 0 -24px 0 0; padding-right: 24px; font: inherit; font-size: var(--text-sm); white-space: nowrap; overflow: hidden; mask-image: var(--fade-out); }
+.sidebar-group-head > svg { flex: none; }
+/* running / needs you, at the right end of a group's label row */
+/* folded, the orange dot shows at once, at full colour; 8px before the count (4 + the row's 4px gap) */
+.sidebar-group-needs { margin-left: auto; width: 6px; height: 6px; border-radius: 50%; background: var(--needs); opacity: 0; }
+.is-folded .sidebar-group-needs { opacity: 1; }
+.sidebar-group-needs + .sidebar-group-count { margin-left: 4px; }
+.sidebar-group-count { margin-left: auto; font-size: var(--text-sm); font-variant-numeric: tabular-nums; }
+.sidebar-chevron { transition: transform 320ms var(--warm); }
+.is-folded .sidebar-chevron { transform: rotate(180deg); }
+.sidebar-group-body {
+  display: grid;
+  grid-template-rows: 1fr;
+  transition: grid-template-rows 320ms var(--warm), opacity 240ms var(--warm);
+}
+.sidebar-group-body > div { min-height: 0; overflow: hidden; margin-left: -8px; padding-left: 8px; }  /* room on the left for a row's blue dot, which sits outside it */
+/* 12px of room after each group's last item; inside the fold, so it folds away too */
+.sidebar-group-body > div::after { content: ''; display: block; height: 12px; }
+.is-folded .sidebar-group-body { grid-template-rows: 0fr; opacity: 0; }
+/* a row of Settings, one line: its name */
+.sidebar-item {
+  position: relative;
+  width: 100%;
+  height: 30px;
+  padding: 0 10px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  border-radius: 6px;
+  text-align: left;
+  cursor: default;
+  transition: background-color var(--fade), color var(--fade);
+}
+.sidebar-item:hover { background: var(--hover); }
+.sidebar-item-title { font-size: var(--text-base); flex: 1; min-width: 0; color: var(--item); white-space: nowrap; overflow: hidden; mask-image: var(--fade-out); }
+.sidebar-item:hover .sidebar-item-title { color: var(--ink); }
+/* a Settings page that's showing */
+.sidebar-item.is-active, .sidebar-item.is-active:hover { background: var(--active); }
+.sidebar-settings .sidebar-item + .sidebar-item { margin-top: 2px; }
+.sidebar-item.is-active .sidebar-item-title { color: var(--ink); }
+/* who it's for, ahead of the title, in the title's colour */
+.sidebar-item-who { margin-right: 6px; }
+.sidebar-item-ago { flex: none; color: var(--muted); font-size: var(--text-sm); transition: opacity var(--fade); }
+.sidebar-item-more {
+  position: absolute;
+  right: 4px;
+  top: 4px;
+  width: 22px; height: 22px;
+  display: grid; place-items: center;
+  border-radius: 6px;
+  color: var(--muted);
+  opacity: 0;
+  transition: opacity var(--fade), color var(--fade), background-color var(--fade);
+}
+.sidebar-item-more:hover { color: var(--ink); background: var(--chip-hover); }
+/* a conversation with Oby in Conversations: its name, what came of it, when it last moved */
+.convo-row { position: relative; cursor: pointer; }
+.convo-row .sidebar-item-ago { align-self: flex-start; margin-top: 6px; }
+/* on hover (or with its menu open) the time gives way to the ⋮, in the same spot */
+.convo-row:is(:hover, :focus-visible, :has(:focus-visible), .is-menu-open) > .sidebar-item-ago { opacity: 0; }
+.convo-row:is(:hover, :focus-visible, :has(:focus-visible), .is-menu-open) .sidebar-item-more { opacity: 1; }
+.convo-row.is-menu-open { background: var(--hover); }
+.convo-row.is-menu-open .connector-name { color: var(--ink); }
+/* renaming: the name becomes a field in place, the line under it stays */
+.convo-row .sidebar-rename { flex: none; width: calc(100% + 6px); }
+/* Pinned and Recent, once something's pinned: a quiet heading, 4px over the first row, 12px under the rows above */
+.sidebar-convo-head { margin: 0 0 4px; height: 26px; padding: 0 10px; display: flex; align-items: center; color: var(--label); font-size: var(--text-sm); font-weight: 400; }
+.task + .sidebar-convo-head { margin-top: 12px; }
+/* a group's done tasks past the latest few: one quiet line, level with the
+   logos and the group's name */
+.sidebar-more { width: 100%; height: 30px; padding: 0 10px; display: flex; align-items: center; border-radius: 6px; color: var(--muted); font-size: var(--text-sm); text-align: left; transition: color var(--fade), background-color var(--fade); }
+.sidebar-more:hover { color: var(--text); background: var(--hover); }
+/* Home's foot: Archived and its count, held at the bottom under a line within
+   the panel's padding, its text level with the group names */
+.sidebar-archived { flex: none; height: 44px; margin: 4px 0 -8px; padding: 0 10px; display: flex; align-items: center; justify-content: space-between; border-top: 1px solid var(--line); color: var(--label); font-size: var(--text-base); transition: color var(--fade); }
+.sidebar-archived:hover { color: var(--text); }
+/* nothing archived yet: as dim as a completed task's row (40%), its 0 too */
+.sidebar-archived.is-empty, .sidebar-archived.is-empty .sidebar-group-count { color: rgba(255, 255, 255, 0.4); }
+.sidebar-archived.is-empty:hover { color: var(--text); }
+/* renaming: the title becomes a field in place */
+.sidebar-rename {
+  flex: 1;
+  min-width: 0;
+  height: 22px;
+  margin-left: -6px;
+  padding: 0 6px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ink);
+  font-size: var(--text-base);
+  outline: none;
+  user-select: text;
+}
+
+/* a ⋮ button's menu (Menu): a row's rename / delete, a section's options */
+.row-menu {
+  position: fixed;
+  z-index: 100;
+  min-width: 148px;
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+  border: 1px solid var(--surface-edge);
+  border-radius: 16px;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.45);
+  transform-origin: top right;
+  animation: menu-in 160ms var(--warm) both;
+}
+.row-menu.is-up { transform-origin: bottom right; }
+.row-menu.is-left { transform-origin: top left; }
+.row-menu.is-left.is-up { transform-origin: bottom left; }
+@keyframes menu-in { from { opacity: 0; transform: scale(0.96); } }
+.row-menu button {
+  height: 28px;
+  padding: 0 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border-radius: 6px;
+  color: var(--text);
+  font-size: var(--text-base);
+  transition: background-color var(--fade), color var(--fade);
+}
+.row-menu button:hover { background: rgba(255, 255, 255, 0.08); color: var(--ink); }
+.row-menu button + button { margin-top: 2px; }  /* items 2px apart */
+.row-menu .is-danger { color: var(--danger); }
+.row-menu .is-danger:hover { background: rgba(240, 113, 103, 0.12); color: var(--danger); }
+/* a menu's heading: what it's for (an Obysphere's logo, name and address) */
+.row-menu .menu-head { display: flex; align-items: center; gap: 10px; padding: 6px 12px 4px; }
+.menu-head-text { min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+/* the Obysphere's: the logo over the name and address */
+.row-menu .menu-head.is-stacked { flex-direction: column; align-items: flex-start; gap: 8px; padding: 8px 12px 6px; }
+.row-menu .menu-head:is(.is-stacked, .is-account) .menu-head-name { font-size: 16px; font-weight: 500; }
+/* the logo as tall as the name and address beside it */
+.menu-head .sphere-tile { width: 36px; height: 36px; border-radius: 10px; }
+/* no logo: the name's first letter, white on its black */
+.sphere-tile-letter { color: var(--ink); font-size: 13px; font-weight: 600; line-height: 1; }
+.menu-head .sphere-tile-letter { font-size: 17px; }
+.sphere-tile.is-large { width: 64px; height: 64px; border-radius: 16px; }
+.sphere-tile.is-large .sphere-tile-letter { font-size: 28px; }
+.menu-head .sphere-tile svg { width: 20px; height: 20px; }
+.menu-head-name { color: var(--ink); font-size: var(--text-md); font-weight: 500; }
+.menu-head-url { color: var(--muted); font-size: var(--text-sm); white-space: nowrap; }
+/* between groups of items */
+.row-menu hr { width: auto; height: 1px; margin: 4px 6px; border: 0; background: var(--surface-edge); }
+.row-menu .menu-label { padding: 6px 12px 4px; color: var(--label); font-size: var(--text-sm); }
+.row-menu .menu-check { margin-left: auto; color: var(--ink); }
+/* a submenu (Settings › Agents' Effort): its item with its pick and a chevron on the right; the
+   submenu beside the menu, its first item level with that item */
+.row-menu .menu-sub-anchor { position: relative; display: block; }
+.row-menu .menu-sub-anchor > button { width: 100%; }
+.row-menu .menu-sub-anchor > button.is-on { background: rgba(255, 255, 255, 0.08); color: var(--ink); }
+.row-menu .menu-sub-value { margin-left: auto; color: var(--muted); }
+.row-menu .menu-sub-anchor > button > svg { margin-left: 8px; color: var(--muted); }
+.row-menu.row-submenu { position: absolute; left: calc(100% + 12px); top: -8px; min-width: 148px; transform-origin: top left; }
+.row-menu.row-submenu.is-left { left: auto; right: calc(100% + 12px); transform-origin: top right; }
+.sidebar-empty { margin: 8px 10px; color: var(--muted); font-size: var(--text-sm); }
+/* an empty list's words (Home's, Conversations'): in the middle, both ways */
+.sidebar-empty.is-middle { position: absolute; left: 16px; right: 16px; top: 50%; transform: translateY(-50%); margin: 0; color: rgba(255, 255, 255, 0.3); font-size: var(--text-base); white-space: pre-line; text-align: center; line-height: 1.5; pointer-events: none; }  /* same type as Home's attention line; in the middle of the window's height, not of the room under the title */
+
+@media (prefers-reduced-motion: reduce) {
+  .sidebar-slot, .has-sidebar .sidebar-slot, .bar, .sidebar-group-body, .sidebar-chevron { transition: none; }
+}
+
+/* Settings pages ----------------------------------------------------------
+   Each setting a row on a card (its name left, its control right), cards in
+   titled groups with a note under them, as macOS's grouped forms are */
+.set-column { align-items: stretch; gap: 0; }
+.set-group { margin-bottom: 28px; }
+.set-head { margin: 0 0 8px; padding: 0 16px; color: var(--item); font-size: var(--text-md); font-weight: 500; }
+.set-card { border: 1px solid var(--surface-edge); border-radius: 16px; background: var(--surface); }
+.set-foot { margin: 8px 0 0; padding: 0 16px; color: var(--muted); font-size: var(--text-sm); line-height: 1.45; }
+.set-row { min-height: 56px; padding: 12px 16px; display: flex; align-items: center; gap: 16px; }
+.set-row + .set-row { border-top: 1px solid var(--divider); }
+.set-label { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; color: var(--ink); font-size: var(--text-base); }
+.set-about { color: var(--muted); font-size: var(--text-sm); line-height: 1.45; }
+.set-control { flex: none; display: flex; align-items: center; gap: 8px; }
+.set-control-top { align-self: flex-start; }
+.set-share { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; max-width: 320px; }  /* who, and how much (Sharing, a preview) */
+.set-value { color: var(--text); font-size: var(--text-base); display: inline-flex; align-items: center; gap: 6px; }
+.set-none { color: var(--muted); }
+.set-plain { color: var(--text); }
+/* connected: a green dot before the word */
+.set-dot { width: 6px; height: 6px; border-radius: 50%; background: #30d158; }
+.set-label .tok { align-self: flex-start; }
+
+/* a switch: 32 × 18, the knob sliding over; on, white with a dark knob */
+.set-switch { position: relative; width: 32px; height: 18px; border-radius: 9px; background: rgba(255, 255, 255, 0.14); transition: background-color 200ms var(--warm); }
+.set-switch::after { content: ''; position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: 50%; background: var(--text); transition: transform 200ms var(--warm), background-color 200ms var(--warm); }
+.set-switch[aria-checked="true"] { background: var(--ink); }
+.set-switch[aria-checked="true"]::after { transform: translateX(14px); background: var(--bg); }
+
+/* a pop-up menu: the system's own, dressed as a chip with a chevron */
+.set-select { position: relative; display: inline-flex; align-items: center; color: var(--ink); }
+.set-select select { appearance: none; height: 32px; padding: 0 34px 0 14px; border: 1px solid var(--line); border-radius: 8px; background: var(--field); color: inherit; font: inherit; font-size: var(--text-base); cursor: default; outline: none; transition: border-color var(--fade), background-color var(--fade); }
+.set-select select:hover, .set-select select:focus-visible { border-color: var(--field-edge-on); }
+.set-select svg { position: absolute; right: 14px; color: var(--muted); pointer-events: none; }
+/* Settings › Agents' model and effort: a pop-up like .set-select's, its menu the app's (Menu.tsx) */
+.set-picker { width: 240px; height: 32px; padding: 0 12px 0 14px; display: inline-flex; align-items: center; gap: 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--field); color: var(--ink); font-size: var(--text-base); white-space: nowrap; transition: border-color var(--fade), background-color var(--fade); }
+.set-picker:hover, .set-picker.is-on, .set-picker:focus-visible { border-color: var(--field-edge-on); }
+.set-picker-sub { color: var(--muted); }
+.set-picker-text { flex: 1; min-width: 0; display: flex; gap: 8px; overflow: hidden; text-align: left; }
+/* Settings › Agents: every pop-up and field one width (240px), its text on the left, its arrow at the right */
+.set-select.is-wide, .set-select.is-wide select { width: 240px; }
+.set-field.is-wide { width: 240px; }
+/* Connectors: Connect and Disconnect one width */
+.set-button.set-connect { width: 100px; padding: 0; }
+/* Tetrix's Edit, beside its Disconnect: a little narrower */
+.set-button.set-connect.is-narrow { width: 72px; }
+.set-picker svg { margin-left: 4px; color: var(--muted); }
+/* a card's own action (Add Agent, Check for Updates): on the left, not a row's control */
+.set-row.is-action { justify-content: flex-start; }
+
+.set-segmented { display: inline-flex; padding: 2px; border-radius: 8px; background: var(--chip); border: 1px solid var(--line); }
+.set-segmented button { height: 26px; padding: 0 12px; border-radius: 6px; color: var(--text); font-size: var(--text-md); transition: background-color var(--fade), color var(--fade); }
+.set-segmented button.is-on { background: rgba(255, 255, 255, 0.12); color: var(--ink); }
+
+.set-field { width: 220px; height: 32px; padding: 0 14px; border: 1px solid var(--line); border-radius: 8px; background: var(--field); color: var(--ink); font-size: var(--text-base); outline: none; user-select: text; transition: border-color var(--fade); }
+.set-field::placeholder { color: var(--muted); }
+.set-field:hover, .set-field:focus { border-color: var(--field-edge-on); }
+
+.set-button { height: 32px; padding: 0 14px; border-radius: 8px; background: var(--chip-hover); border: 1px solid var(--line); color: var(--ink); font-size: var(--text-base); transition: background-color var(--fade), border-color var(--fade), opacity var(--fade); }
+.set-button:hover:not(:disabled) { background: #29292c; border-color: var(--line-strong); }
+.set-button:disabled { opacity: 0.3; cursor: default; }
+.set-button.is-danger { color: var(--danger); }
+/* the page's one main action (Settings › Agents' Add Agent): white, as onboarding's buttons */
+.set-button.is-primary { background: var(--ink); border-color: var(--ink); color: #111; font-weight: 500; }
+.set-button.is-primary:hover:not(:disabled) { background: #fff; border-color: #fff; }
+/* an Obysphere's avatar, 56px at the row's right; a click changes it, its badge takes the image out */
+.set-avatar .sphere-tile { width: 56px; height: 56px; border-radius: 14px; }
+.set-avatar .sphere-tile svg { width: 30px; height: 30px; }
+.set-avatar .sphere-tile-letter { font-size: 24px; }
+.set-avatar .sphere-logo-pick { border-radius: 14px; }
+/* a change kept, for a moment, under its name */
+.set-saved { display: inline-flex; align-items: center; gap: 4px; color: var(--text); }
+/* a member: picture, name over email, role, then Remove (or Cancel invite) at the right */
+.set-member { min-height: 60px; }
+.set-member .set-label.is-muted { color: var(--muted); }
+.set-role { flex: none; color: var(--muted); font-size: var(--text-sm); }
+.set-member-action { flex: none; }
+.set-invited { width: 28px; height: 28px; }
+/* deleting or leaving: what it does at 14px, then its button under it at the left, 16px down */
+.set-danger { flex-direction: column; align-items: flex-start; gap: 16px; }
+.set-danger .set-about { font-size: var(--text-base); }
+
+/* a page's line on what it's for, under its title (Knowledge) */
+.set-lede { margin: -8px 0 24px; color: var(--muted); font-size: var(--text-base); line-height: 1.5; }
+/* a page's own button, set apart from its groups by a line over it (Add another source) */
+.set-add { margin-bottom: 28px; padding-top: 24px; border-top: 1px solid var(--line); }
+.set-button:has(> svg) { display: inline-flex; align-items: center; gap: 6px; }
+/* Knowledge, while its page is showing */
+.sidebar-new.is-active, .sidebar-new.is-active:hover { background: var(--active); color: var(--ink); }
+
+/* adding a knowledge source: the two kinds, a row each */
+.modal-head-start { display: flex; align-items: center; gap: 4px; margin-left: -6px; }
+.source-kinds { display: flex; flex-direction: column; gap: 8px; }
+.source-kind { display: flex; align-items: center; gap: 14px; padding: 14px; border: 1px solid var(--line); border-radius: 12px; background: var(--field); text-align: left; transition: border-color var(--fade), background-color var(--fade); }
+.source-kind:hover:not(:disabled) { border-color: var(--field-edge-on); background: var(--hover); }
+.source-kind:disabled { opacity: 0.45; cursor: default; }
+.source-kind > svg { flex: none; color: var(--text); }
+.source-kind-text { display: flex; flex-direction: column; gap: 3px; color: var(--ink); font-size: var(--text-base); font-weight: 500; }
+.source-kind-text > span { color: var(--muted); font-size: var(--text-sm); font-weight: 400; }
+.source-sign { width: 100%; height: 44px; justify-content: center; }
+.source-signed { margin: 0; display: flex; align-items: center; gap: 6px; color: var(--text); font-size: var(--text-base); }
+.source-org .set-select, .source-org select { width: 100%; }
+.source-found { margin-top: 16px; }
+.source-tools { margin: 8px 0 0; display: flex; flex-wrap: wrap; gap: 6px; }
+.source-tools code { padding: 2px 6px; border-radius: 4px; background: rgba(255, 255, 255, 0.08); color: var(--text); font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 12px; }
+/* its name and address: 260px, room for the address and .obysphere.com after it */
+.set-wide { width: 260px; }
+.set-address { width: 260px; display: flex; align-items: center; cursor: text; }
+.set-address input { flex: none; min-width: 1ch; max-width: calc(100% - 108px); field-sizing: content; height: 100%; padding: 0; border: 0; outline: 0; background: none; color: var(--ink); font: inherit; user-select: text; }
+.set-address:focus-within { border-color: var(--field-edge-on); }
+.set-address.is-bad, .set-address.is-bad:focus-within { border-color: rgba(240, 113, 103, 0.5); }
+.set-problem { color: var(--danger); }
+
+/* an account: what it's used this week, as a bar under its name */
+.set-usage { align-items: flex-start; }
+.set-usage > svg { flex: none; margin-top: 2px; color: var(--muted); }
+/* an account's use (Settings › Agents): its name with the 5-hour session's % at the right, the
+   session's bar under it to the card's edge, and the week in words under that */
+.set-usage .set-label { flex: 1; min-width: 0; }
+.set-usage-name { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+/* the session's words close over its bar (4px), the week's further under it (12px) */
+.set-usage .set-meter { max-width: none; margin-top: 4px; }
+.set-usage .set-about.is-quiet { margin-top: 12px; opacity: 0.75; }
+.set-meter { display: block; width: 100%; max-width: 280px; height: 4px; margin-top: 4px; border-radius: 2px; background: rgba(255, 255, 255, 0.08); overflow: hidden; }
+.set-meter > span { display: block; height: 100%; border-radius: 2px; background: var(--text); }
+.set-meter > span.is-high { background: var(--full); }
+.set-meter > span.is-over { background: var(--over); }
+
+/* A modal (Invite, Create an Obysphere, Add knowledge source, confirming a delete): a card over a dimmed window, rising in */
+.modal-backdrop { position: fixed; inset: 0; z-index: 100; display: grid; place-items: center; padding: 24px; background: rgba(0, 0, 0, 0.5); animation: fade-in 160ms var(--warm) both; -webkit-app-region: no-drag; }
+.modal { position: relative; width: min(480px, 100%); max-height: calc(100vh - 48px); overflow-y: auto; scrollbar-width: none; padding: 20px; border: 1px solid var(--line); border-radius: 20px; background: var(--surface); box-shadow: 0 24px 64px rgba(0, 0, 0, 0.55); animation: modal-in 200ms var(--warm) both; }
+@keyframes modal-in { from { opacity: 0; transform: translateY(8px) scale(0.98); } }
+@media (prefers-reduced-motion: reduce) { .modal, .modal-backdrop { animation: none; } }
+.modal-head { display: flex; align-items: center; justify-content: space-between; margin: -4px -6px 20px 0; }  /* the x's own room tucked into the corner */
+.modal-head h2 { margin: 0; color: var(--ink); font-size: 17px; font-weight: 600; }
+.modal-label { display: block; margin-bottom: 8px; color: var(--item); font-size: var(--text-md); font-weight: 500; }
+.modal-primary { height: 32px; padding: 0 14px; flex: none; display: inline-flex; align-items: center; gap: 6px; border-radius: 8px; background: var(--ink); color: var(--bg); font-size: var(--text-base); font-weight: 500; transition: opacity var(--fade); }
+.modal-primary:disabled { opacity: 0.3; cursor: default; }
+/* deleting: red, white text */
+.modal-primary.is-danger { background: var(--danger); color: #fff; }
+/* a question before something can't be undone: narrower */
+.modal.is-small { width: min(420px, 100%); }
+.modal-label strong { color: var(--ink); font-weight: 600; }
+
+/* the addresses: a tag each, 6px apart, wrapping onto more lines; the text
+   being typed after the last */
+.invite-emails { min-height: 120px; max-height: 220px; overflow-y: auto; scrollbar-width: none; padding: 8px; display: flex; flex-wrap: wrap; align-content: flex-start; gap: 6px; border: 1px solid var(--line); border-radius: 12px; background: var(--field); cursor: text; transition: border-color var(--fade); }
+.invite-emails:hover, .invite-emails:focus-within { border-color: var(--field-edge-on); }
+.invite-emails input { flex: 1; min-width: 160px; height: 26px; padding: 0 6px; border: 0; outline: 0; background: none; color: var(--ink); font: inherit; font-size: var(--text-base); user-select: text; }
+.invite-emails input::placeholder { color: var(--muted); }
+/* an address: blue on a blue tint, as an @Oby in the message box; x at its end */
+.invite-email { max-width: 100%; height: 26px; padding: 0 4px 0 8px; display: inline-flex; align-items: center; gap: 4px; border-radius: 6px; background: rgba(100, 168, 255, 0.16); color: #8cbcff; font-size: var(--text-base); cursor: default; }
+.invite-email.is-wrong { background: rgba(240, 113, 103, 0.14); color: var(--danger); }
+.invite-email button { flex: none; width: 18px; height: 18px; display: grid; place-items: center; border-radius: 4px; color: inherit; opacity: 0.7; transition: opacity var(--fade), background-color var(--fade); }
+.invite-email button:hover { opacity: 1; background: rgba(255, 255, 255, 0.1); }
+.invite-wrong { margin: 8px 0 0; color: var(--danger); font-size: var(--text-sm); }
+.invite-link-label { margin-top: 24px; }
+/* the link, whole on one line (faded if it runs long), its copy icon inside the field's end */
+.invite-link { height: 44px; padding: 0 6px 0 14px; display: flex; align-items: center; gap: 8px; border: 1px solid var(--line); border-radius: 12px; background: var(--field); }
+.invite-url { flex: 1; min-width: 0; color: #8cbcff; font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 13px; white-space: nowrap; overflow: hidden; mask-image: var(--fade-out); user-select: text; }
+.invite-link .icon-button { flex: none; }
+.invite-link .icon-button:hover { color: var(--ink); }
+.invite-option { margin-top: 16px; display: flex; align-items: center; justify-content: space-between; gap: 16px; color: var(--text); font-size: var(--text-base); }
+.invite-option .set-switch { flex: none; }
+.modal-actions { margin-top: 24px; display: flex; justify-content: flex-end; gap: 8px; }
+
+/* a modal's line on what it's for, under its title */
+.modal-lede { margin: -12px 0 20px; color: var(--muted); font-size: var(--text-base); }
+/* the fields: 44px, white 2% fill, 12px corners, as the invite link's */
+.modal-field { width: 100%; height: 44px; padding: 0 14px; border: 1px solid var(--line); border-radius: 12px; background: var(--field); color: var(--ink); font-size: var(--text-base); outline: none; user-select: text; transition: border-color var(--fade); }
+.modal-field::placeholder { color: var(--muted); }
+.modal-field:is(:hover, :focus, :focus-within) { border-color: var(--field-edge-on); }
+/* a label with a word at its right (Optional) */
+.modal-label.has-aside { display: flex; justify-content: space-between; }
+.modal-optional { color: var(--muted); font-weight: 400; }
+/* the logo, 64px, beside the name, bottoms level; a badge at its corner: add, or take it out */
+.sphere-form-top { display: flex; align-items: flex-end; gap: 16px; }
+.sphere-name { flex: 1; min-width: 0; }
+.sphere-logo { position: relative; flex: none; }
+.sphere-logo-pick { display: block; border-radius: 16px; transition: opacity var(--fade); }
+.sphere-logo-pick:hover { opacity: 0.85; }
+.sphere-logo-badge { position: absolute; right: -6px; bottom: -6px; width: 22px; height: 22px; display: grid; place-items: center; border: 2px solid var(--surface); border-radius: 50%; background: #2c2c2b; color: var(--text); pointer-events: none; }
+button.sphere-logo-badge { pointer-events: auto; transition: color var(--fade), background-color var(--fade); }
+button.sphere-logo-badge:hover { color: var(--ink); background: #3a3a39; }
+.sphere-label { margin-top: 20px; }
+/* the Obysphere URL: what you type, then .obysphere.com after it, in the same field */
+.sphere-address { display: flex; align-items: center; cursor: text; }
+.sphere-address input { flex: none; min-width: 1ch; max-width: calc(100% - 120px); field-sizing: content; height: 100%; padding: 0; border: 0; outline: 0; background: none; color: var(--ink); font: inherit; user-select: text; }
+.sphere-suffix { flex: none; color: var(--muted); }
+.sphere-address.is-bad, .sphere-address.is-bad:is(:hover, :focus-within) { border-color: rgba(240, 113, 103, 0.5); }
+/* under it: free, taken, or what it can be made of */
+.sphere-note { margin: 8px 0 0; display: flex; align-items: center; gap: 4px; color: var(--muted); font-size: var(--text-sm); }
+.sphere-note.is-ok { color: var(--text); }
+.sphere-note.is-bad { color: var(--danger); }
+/* invited, optional here: 2 rows to start, not 4 */
+.invite-emails.is-short { min-height: 76px; }
+/* someone asked in who hasn't joined: an envelope where their picture will be */
+.invited-mark { flex: none; width: 22px; height: 22px; display: grid; place-items: center; border-radius: 50%; background: var(--hover); color: var(--muted); }
+.invited-row { position: relative; }
+.invited-row .connector-name { color: var(--muted); }
+/* an admin's ⋮ on hover (or with its menu open), at the row's end, centred */
+.invited-row .sidebar-item-more { top: 50%; margin-top: -11px; }
+.invited-row:is(:hover, :has(:focus-visible), .is-menu-open) .sidebar-item-more { opacity: 1; }
+.invited-row.is-menu-open { background: var(--hover); }
+/* sent again: says so for a moment, where the ⋮ will be */
+.invited-sent { flex: none; margin-right: 22px; color: var(--muted); font-size: var(--text-sm); }
+/* an Obysphere's lists (Members, Invited): 4px under Invite member; 2px over their first row */
+.sphere-group { margin-top: 4px; }
+.sphere-group .sidebar-group-body > div > :first-child { margin-top: 2px; }
+
+/* Settings › Connectors: a search over them, then each with its logo, name and what it lets Oby do */
+.set-search { margin-bottom: 24px; }
+.set-connector { display: flex; align-items: center; gap: 12px; }
+.set-connector > svg { flex: none; }
+/* a connector's window (Connectors.tsx): its logo by its title; Tetrix's server pop-up across it,
+   the address under; the wait, a spinner by its words; GitHub's command with its copy button */
+.connector-window-title { display: flex; align-items: center; gap: 10px; }
+.connector-select, .connector-select .set-select, .connector-select select { width: 100%; }
+.connector-select select { height: 40px; border-radius: 10px; }
+.connector-address { margin-top: 10px; }
+.connector-wait { margin: -4px 0 0; display: flex; align-items: center; gap: 10px; color: var(--muted); font-size: var(--text-base); }
+.connector-command { height: 44px; padding: 0 6px 0 14px; display: flex; align-items: center; justify-content: space-between; border: 1px solid var(--line); border-radius: 12px; background: var(--field); }
+.connector-command code { color: var(--ink); font-family: var(--mono, ui-monospace, Menlo, monospace); font-size: var(--text-md); }
+.set-value > svg { color: var(--muted); }
+
+/* reduce motion: menus and panels just appear, switches just switch */
+@media (prefers-reduced-motion: reduce) { .row-menu, .add-panel { animation: none; } .set-switch, .set-switch::after { transition: none; } }
+
+/* First launch (Welcome.tsx): Oby on top, a title and a line, the scene, then
+   dots and the buttons. Past the first scene Oby steps back to make room. */
+.welcome { position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center; padding: 0 var(--gutter) 64px; background: var(--bg); color: var(--ink); overflow: hidden; }
+.welcome-bar { position: absolute; inset: 0 0 auto; height: var(--bar); display: flex; align-items: center; justify-content: flex-end; padding: 0 12px; -webkit-app-region: drag; }
+.welcome-skip { padding: 4px 8px; border-radius: 6px; color: var(--muted); font-size: var(--text-md); transition: color var(--fade); -webkit-app-region: no-drag; }
+.welcome-skip:hover { color: var(--ink); }
+.welcome-oby { flex: none; height: 220px; margin-top: 20px; transition: height 520ms var(--warm); }
+.welcome-oby .oby-frame { transform-origin: 50% 0; transition: transform 520ms var(--warm); }
+.welcome.is-small .welcome-oby { height: 116px; }
+.welcome.is-small .welcome-oby .oby-frame { transform: scale(0.55); }
+.welcome-text { display: flex; flex-direction: column; align-items: center; width: 100%; animation: wl-rise 420ms var(--warm) both; }
+.welcome-title { margin: 0; font-size: var(--text-title); font-weight: 600; letter-spacing: -0.01em; text-align: center; }
+.welcome-line { max-width: 470px; margin: 8px 0 0; color: var(--text); font-size: var(--text-base); line-height: 1.45; text-align: center; }
+.welcome-scene { width: min(540px, 100%); margin-top: 28px; }
+.welcome-foot { position: absolute; inset: auto 0 0; height: 64px; display: flex; align-items: center; justify-content: space-between; padding: 0 24px; }
+.welcome-dots { display: flex; gap: 6px; }
+.welcome-dots span { width: 6px; height: 6px; border-radius: 3px; background: var(--line-strong); transition: width var(--fade), background-color var(--fade); }
+.welcome-dots .is-on { width: 18px; background: var(--ink); }
+.welcome-actions { display: flex; gap: 8px; }
+@keyframes wl-rise { from { opacity: 0; transform: translateY(8px); } }
+@keyframes wl-pop { from { opacity: 0; transform: scale(0.85); } }
+
+.wl-card { display: flex; align-items: center; gap: 12px; border-radius: 14px; background: var(--chip); }
+.wl-two { min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.wl-name { color: var(--ink); font-size: var(--text-base); white-space: nowrap; }
+.wl-sub { color: var(--muted); font-size: var(--text-sm); white-space: nowrap; }
+/* why a sign-in didn't take (SetupCard.tsx), till the next try */
+.wl-sub.is-problem { color: var(--danger); }
+.wl-note { margin: 14px 0 0; color: var(--muted); font-size: var(--text-sm); text-align: center; opacity: 0; transition: opacity 420ms var(--warm); }
+.wl-note.is-in { opacity: 1; }
+
+/* 1. what's signed in: each row arrives, looks, then says */
+.wl-found { display: flex; flex-direction: column; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.wl-agent { height: 56px; padding: 0 12px 0 16px; opacity: 0; transform: translateY(8px) scale(0.98); transition: opacity 360ms var(--warm), transform var(--settle); }
+.wl-agent.is-in { opacity: 1; transform: none; }
+.wl-agent .wl-two { flex: 1; }
+.wl-ready { display: inline-flex; align-items: center; gap: 4px; color: var(--text); font-size: var(--text-md); animation: wl-pop 360ms var(--spring) both; }
+
+/* 2. each request travels from you, through Oby, to an agent */
+.wl-lanes { display: flex; flex-direction: column; gap: 10px; margin: 0; padding: 0; list-style: none; }
+.wl-lane { height: 48px; display: grid; grid-template-columns: 1fr 64px 1fr; align-items: center; gap: 12px; }
+.wl-lane > .wl-bubble { justify-self: end; transform: translateX(-12px); }
+.wl-lane.is-asked > .wl-bubble { opacity: 1; transform: none; }
+.wl-wire { position: relative; height: 1px; background: var(--line); }
+.wl-spark { position: absolute; top: -2px; left: 0; width: 5px; height: 5px; border-radius: 50%; background: var(--ink); opacity: 0; }
+.wl-lane.is-sent .wl-spark { animation: wl-travel 480ms var(--ease-in) both; }
+@keyframes wl-travel { 0% { left: 0; opacity: 1; } 85% { opacity: 1; } 100% { left: calc(100% - 5px); opacity: 0; } }
+.wl-to { display: flex; align-items: center; gap: 10px; opacity: 0.3; transition: opacity 320ms var(--warm) 400ms; }
+.wl-to .status { visibility: hidden; transition: visibility 0s 400ms; }
+.wl-lane.is-sent .wl-to { opacity: 1; }
+.wl-lane.is-sent .wl-to .status { visibility: visible; }
+
+/* 3. accounts filling up; the task card moves down a row when one runs out */
+.wl-accounts { position: relative; display: flex; flex-direction: column; gap: 8px; }
+.wl-account { height: 52px; display: grid; grid-template-columns: 20px 112px 96px 36px 1fr; align-items: center; gap: 12px; }
+.wl-gauge { height: 4px; border-radius: 2px; background: var(--line); overflow: hidden; }
+.wl-gauge > span { display: block; height: 100%; border-radius: 2px; background: var(--text); transition: width 700ms var(--warm), background-color var(--fade); }
+.wl-gauge.is-full > span { background: var(--full); }
+.wl-gauge.is-over > span { background: var(--over); }
+.wl-pct { color: var(--muted); font-size: var(--text-sm); font-variant-numeric: tabular-nums; }
+.wl-job { position: absolute; right: 0; height: 32px; padding: 0 12px 0 10px; gap: 8px; color: var(--ink); font-size: var(--text-md); white-space: nowrap; transition: top var(--settle); }
+
+/* 4. what Oby did by itself, then the one step that's yours */
+.wl-did { width: min(380px, 100%); margin: 0 auto; }
+.wl-did ul { display: flex; flex-direction: column; gap: 4px; margin: 0; padding: 0; list-style: none; }
+.wl-did li { height: 24px; display: flex; align-items: center; gap: 8px; color: var(--text); font-size: var(--text-md); opacity: 0; transform: translateY(4px); transition: opacity 300ms var(--warm), transform 300ms var(--warm); }
+.wl-did li.is-in { opacity: 1; transform: none; }
+.wl-did li svg, .wl-decide svg { flex: none; color: var(--ink); }
+.wl-decide { min-height: 52px; margin-top: 12px; padding: 10px 10px 10px 14px; gap: 10px; opacity: 0; transform: translateY(8px) scale(0.98); transition: opacity 360ms var(--warm), transform var(--settle); }
+.wl-decide.is-in { opacity: 1; transform: none; }
+.wl-decide-text { flex: 1; color: var(--ink); font-size: var(--text-md); line-height: 1.35; }
+
+/* 5. two Obys talking */
+.wl-talk { width: min(440px, 100%); margin: 0 auto; }
+.wl-talk-head { display: flex; justify-content: space-between; margin-bottom: 12px; color: var(--text); font-size: var(--text-md); }
+.wl-talk-head > span { display: inline-flex; align-items: center; gap: 8px; }
+.wl-msgs { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; }
+.wl-bubble { max-width: 290px; padding: 8px 12px; border-radius: 14px; background: var(--chip); color: var(--ink); font-size: var(--text-md); white-space: nowrap; opacity: 0; transform: translateY(6px); transition: opacity 320ms var(--warm), transform var(--settle); }
+.wl-bubble.is-peer { align-self: flex-end; background: var(--chip-hover); }
+.wl-bubble.is-in { opacity: 1; transform: none; }
+
+@media (prefers-reduced-motion: reduce) { .welcome *, .welcome-text { transition-duration: 0ms !important; animation-duration: 0ms !important; } }
+
+/* Setting up, in Oby's first conversation (SetupCard): a row for each thing to
+   connect, as a task's card is in a conversation, then the picks that carry on */
+.setup { width: 100%; display: flex; flex-direction: column; }
+.setup-rows { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 6px; }
+.setup-row { min-height: 56px; padding: 8px 12px 8px 14px; display: flex; align-items: center; gap: 12px; border: 1px solid var(--line); border-radius: 14px; background: rgba(255, 255, 255, 0.06); }
+.setup-row > svg:first-child, .setup-row > :first-child { flex: none; }
+.setup-row .wl-two { flex: 1; }
+.setup-row .wl-sub { white-space: normal; }
+.setup .tc-options { margin-top: 10px; }
+.setup-rows + .tc-options { margin-top: 12px; }
+/* Claude Code's code, pasted from its sign-in page (on obid) */
+.setup-code { margin-top: 8px; display: flex; gap: 8px; }
+.setup-code .set-field { flex: 1; min-width: 0; width: auto; }
+.tc-option:disabled { opacity: 0.3; cursor: default; }
+
+/* how the app stands with obid (Home's Connection): connecting, or why obid isn't answering, or
+   what last went wrong; a quiet line under the title bar, over Home and what opens on it, as
+   apps/web has it */
+.connection {
+  position: absolute; top: calc(var(--bar, 52px) + 8px); left: 50%; transform: translateX(-50%); z-index: 50;
+  margin: 0; padding: 6px 14px; max-width: min(560px, calc(100vw - 32px));
+  border-radius: var(--radius-pill); border: 1px solid var(--surface-edge); background: var(--surface);
+  color: var(--text); font-size: var(--text-md); line-height: 20px; text-align: center; white-space: pre-line;
+}
+.connection.is-down { color: var(--ink); border-color: color-mix(in srgb, var(--over) 45%, transparent); }
+
+/* --- Oby talking (ObyFaceLive; the owner's, 2026-10-27, ~/Projects/Deskree/research/oby-specs/balloon-final.css) ---
+   The speech balloon: Q*bert's grawlix beside Oby's head while its words come in. It grows out of its
+   tail on the face's body spring, breathes while open, its glyphs crossfading, then deflates back into
+   Oby on the melt spring as Oby blinks. Closed is its resting state; .open is a transition, so a late
+   word reverses a close part-way. */
+.oby-talk { display: block; transform-origin: 50% 94%; }  /* the body's bottom edge */
+.oby-talk > svg { display: block; }
+/* while the balloon's open: one slow, gentle bob a glyph */
+.oby-talk.is-bob { animation: say-bob 480ms ease-in-out infinite; }
+/* as it deflates: one soft blink, on `scale`, so it never fights the eyes' own transform */
+.oby-talk .oby-eyes { transform-box: fill-box; transform-origin: 50% 50%; }
+.oby-talk.is-blink .oby-eyes { animation: say-blink 220ms ease-in-out; }
+.say {
+  /* PRESET.body [120, 16] over 720ms: grown by 300ms, 3.4% over at 420ms, then settles */
+  --say-body: linear(0, 0.047, 0.157, 0.297, 0.443, 0.581, 0.702, 0.802, 0.881, 0.939, 0.981, 1.008, 1.024, 1.032, 1.034, 1.033, 1.029, 1.024, 1.019, 1.014, 1.010, 1.007, 1.004, 1.002, 1);
+  /* PRESET.melt [55, 13] over 770ms, the spring the face melts into its dots on: a soft start, a long landing */
+  --say-melt: linear(0, 0.026, 0.087, 0.170, 0.263, 0.357, 0.450, 0.537, 0.615, 0.684, 0.744, 0.795, 0.838, 0.875, 0.904, 0.928, 0.947, 0.962, 0.973, 0.982, 0.989, 0.994, 0.997, 1, 1);
+  position: absolute; left: 27px; top: -7px; z-index: 1; pointer-events: none; user-select: none;
+  transform-origin: -5px calc(100% - 1px);  /* the tail's tip, at Oby's cheek */
+  transform: scale(0.4); opacity: 0;
+  /* closing: sinks back into the tail, solid at first, fading once it's mostly in */
+  transition: transform 770ms var(--say-melt), opacity var(--fade) 160ms;
+}
+.say.open { transform: none; opacity: 1; transition: transform 720ms var(--say-body), opacity var(--fade); }
+/* a slow breath while it's there; the grawlix's a fixed width, so a new glyph never moves it */
+.say-in {
+  position: relative; display: grid; grid-auto-flow: column; place-items: center; place-content: center; gap: 3.5px;
+  height: 20px; min-width: 38px; padding: 0 9px; border-radius: 10px; background: #f1f1ee;
+  transform-origin: -5px calc(100% - 1px); animation: say-breath 2800ms ease-in-out infinite;
+}
+.say.gx .say-in { width: 56px; padding: 0; }
+.say-in::before { content: ""; position: absolute; left: -5px; bottom: 1px; width: 11px; height: 8px; background: #f1f1ee; clip-path: polygon(100% 0, 100% 100%, 0 100%); }
+/* the grawlix: two layers in one cell, the new one puffing in over the last */
+.say b {
+  grid-area: 1 / 1; font: 800 12px/1 var(--font); color: #0d0d0e; letter-spacing: 0.4px; white-space: nowrap;
+  opacity: 0; transform: scale(0.86); transition: opacity var(--fade), transform 360ms var(--warm);
+}
+.say b.on { opacity: 1; transform: none; }
+/* three dots instead (the control center's, to compare) */
+.say i { width: 4px; height: 4px; border-radius: 50%; background: #0d0d0e; animation: say-dot 1200ms ease-in-out infinite; }
+.say i:nth-child(2) { animation-delay: 200ms; } .say i:nth-child(3) { animation-delay: 400ms; }
+@keyframes say-bob { 0%, 100% { transform: none; } 40% { transform: translateY(-0.7px) scale(1.02, 0.96); } }
+@keyframes say-blink { 0%, 100% { scale: 1; } 40% { scale: 1 0.12; } }
+@keyframes say-breath { 50% { scale: 1.025; } }
+@keyframes say-dot { 0%, 60%, 100% { transform: none; opacity: 0.4; } 30% { transform: translateY(-2px); opacity: 1; } }
+/* reduced motion: it only fades, at full size, with one still glyph; no bob, blink or breath */
+@media (prefers-reduced-motion: reduce) {
+  .say, .say.open { transform: none; transition: opacity 240ms ease-out; }
+  .say-in, .say i, .oby-talk.is-bob, .oby-talk.is-blink .oby-eyes { animation: none; }
+}
+/* --- end of Oby talking --- */
+
+/* ==== The Obysphere tour (onboarding.ts, SetupCard, Sidebar, Welcome's SphereHowTo) ==== */
+/* the sample in the icon strip: a dashed edge; it pops in, calls (three ripples, then its blue
+   dot pulses until it's opened), and shrinks away when it's put away (removed on a 220ms timer) */
+.rail-button.is-sample { animation: wl-pop 360ms var(--spring) both; }
+.rail-button.is-sample .sphere-tile::after, .is-sample > .sphere-tile::after { box-shadow: none; border: 1px dashed rgba(255, 255, 255, 0.35); }
+.rail-button.is-sample.is-calling { animation: wl-pop 360ms var(--spring) both, sample-call 1600ms var(--warm) 200ms 3; }
+.rail-button.is-sample.is-calling::before { animation: pulse-slow 1.6s ease-in-out 5s infinite; }
+.rail-button.is-sample.is-leaving { animation: wl-pop 220ms var(--ease-in) reverse both; }
+@keyframes sample-call { from { box-shadow: 0 0 0 0 rgba(10, 132, 255, 0.55); } to { box-shadow: 0 0 0 10px rgba(10, 132, 255, 0); } }
+/* its section: a Sample tag by the name; what the tour calls next pulses */
+.sidebar-sample { margin-left: 8px; padding: 2px 7px; border-radius: var(--radius-pill); background: var(--chip); color: var(--muted); font-size: var(--text-sm); font-weight: 500; vertical-align: 2px; }
+.status-dot.is-new.is-calling { animation: pulse-slow 1.6s ease-in-out infinite; }
+.sidebar-new.is-calling::after { content: ''; flex: none; width: 5px; height: 5px; border-radius: 50%; background: var(--unread); animation: pulse-slow 1.6s ease-in-out infinite; }
+/* in the chat: a card's small label (Example, Sample conversation · …), what to click next, and
+   a card once the sample's put away */
+.setup-label { margin: 0 0 8px; color: var(--muted); font-size: var(--text-sm); }
+.setup-cue { margin: 12px 0 0; }
+.setup-gone { margin: 0; animation: fade-in var(--fade) both; }
+/* Sangam's two-Obys scene in a card: the column's width, lines that wrap, and yours (the person's) */
+.setup .wl-talk { width: 100%; }
+.setup .wl-bubble { max-width: 80%; white-space: normal; line-height: 1.4; }
+.wl-bubble.is-you { background: none; box-shadow: inset 0 0 0 1px var(--line); }
+.wl-bubble.is-you b { margin-right: 6px; font-weight: 600; }
+/* Show me: making one, then joining one, as two small frames (stacked when narrow); nothing in
+   them takes a click */
+.how { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 10px; pointer-events: none; }
+.how-frame { margin: 0; display: flex; flex-direction: column; gap: 8px; }
+.how-frame figcaption { color: var(--muted); font-size: var(--text-sm); text-align: center; }
+.how-stage { height: 196px; display: flex; gap: 10px; padding: 10px; border: 1px solid var(--line); border-radius: 14px; background: var(--chip); overflow: hidden; }
+.how-rail { flex: none; display: flex; flex-direction: column; align-items: center; gap: 10px; padding-right: 10px; box-shadow: 1px 0 rgba(255, 255, 255, 0.08); }
+.how-card { zoom: 0.6; flex: none; width: 300px; max-height: none; padding: 16px; overflow: visible; box-shadow: none; animation: none; }
+.how-title { margin: 0 0 14px; color: var(--ink); font-size: 17px; font-weight: 600; }
+.how-field { display: flex; align-items: center; }
+.how-create { width: fit-content; margin-top: 12px; }
+.how-stage.is-join { flex-direction: column; justify-content: center; gap: 12px; }
+.how-invite { margin: 0; display: flex; align-items: flex-start; gap: 8px; color: var(--text); font-size: var(--text-md); line-height: 1.4; }
+.how-invite > span, .how .wl-sub { min-width: 0; overflow-wrap: anywhere; }
+/* Show me, playing: one stage, the strip at its left; a pointer that lives only in it, gliding to
+   what it clicks, a ripple where it does */
+.how-scene { position: relative; height: 250px; display: flex; gap: 12px; padding: 12px; border: 1px solid var(--line); border-radius: 14px; background: var(--chip); overflow: hidden; pointer-events: none; animation: msg-in 360ms var(--warm) both; }
+.how-area { flex: 1; min-width: 0; display: flex; flex-direction: column; align-items: flex-start; gap: 10px; animation: fade-in var(--fade) both; }
+.how-area .setup-row { align-self: stretch; }
+.how-caption { margin: 0; color: var(--muted); font-size: var(--text-sm); animation: wl-rise 420ms var(--warm) both; }
+.how-scene .how-card { animation: modal-in 200ms var(--warm) both; }
+.how-scene .how-card.is-going { animation: fade-out 200ms var(--ease-in) both; }
+.how-create.is-pressed { opacity: 0.85; }
+.how-caret { display: inline-block; width: 1px; height: 1.1em; margin-left: 1px; background: var(--ink); animation: caret-blink 1s step-end infinite; }
+.how-pop { animation: wl-pop 360ms var(--spring) both; }
+.how-rail .rail-button.is-hover { color: var(--text); background: var(--hover); }
+.how-rail .rail-button.is-tip::after { opacity: 1; transform: translate(0, -50%); transition-delay: 0ms; }
+.how-pointer { position: absolute; left: 0; top: 0; z-index: 3; color: #fff; filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.6)); opacity: 0; transition: opacity var(--fade); }
+.how-pointer.is-on { opacity: 1; transition: transform 700ms var(--warm), opacity var(--fade); }
+.how-pointer > svg { display: block; transform-origin: 3px 3px; transition: transform 120ms var(--warm); }
+.how-pointer.is-pressing > svg { transform: scale(0.9); }
+.how-ripple { position: absolute; z-index: 2; width: 28px; height: 28px; margin: -14px 0 0 -14px; border-radius: 50%; box-shadow: 0 0 0 1.5px rgba(255, 255, 255, 0.5); animation: how-ripple 900ms var(--warm) both; }
+@keyframes how-ripple { from { opacity: 1; transform: scale(0.4); } to { opacity: 0; transform: scale(1.6); } }
+@media (prefers-reduced-motion: reduce) {
+  .rail-button.is-sample, .rail-button.is-sample::before, .status-dot.is-new.is-calling, .sidebar-new.is-calling::after, .setup-gone, .how-pop, .how .wl-ready { animation: none !important; }
+  .rail-button.is-sample.is-calling { box-shadow: 0 0 0 1.5px rgba(10, 132, 255, 0.6); }
+  .setup .wl-bubble { transition: none; }
+}
+/* ==== end of the Obysphere tour ==== */
+
+/* --- the splash (Splash.tsx): Oby's face on the window's background while obid gets ready; still,
+   so it costs nothing while it waits. The whole window drags, as the title bar does. */
+.splash {
+  height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 16px;
+  padding: 0 32px; -webkit-app-region: drag;
+}
+.splash-face { animation: splash-in 400ms var(--warm) both; }
+.splash-line {
+  margin: 0; max-width: 440px; color: var(--muted); font-size: var(--text-md); line-height: 20px;
+  text-align: center; white-space: pre-line; user-select: text; -webkit-app-region: no-drag;
+  animation: splash-in 400ms var(--warm) both;
+}
+.splash-line.is-failed { color: var(--text); }
+.splash .set-button { -webkit-app-region: no-drag; }
+@keyframes splash-in { from { opacity: 0; } }
+/* the chat once obid is ready */
+#root.is-revealed > * { animation: splash-in 320ms var(--warm) backwards; }
+@media (prefers-reduced-motion: reduce) {
+  .splash-face, .splash-line, #root.is-revealed > * { animation: none; }
+}
+
+/* Setting up (FirstRun.tsx): a window of its own over everything, dragged by
+   anywhere but its buttons and rows. Oby rises from the bottom edge with about
+   half of it out of sight; the words sit in the upper third */
+.onb { position: fixed; inset: 0; z-index: 50; background: var(--bg); overflow: clip; -webkit-app-region: drag; }
+.onb button, .onb .setup-row, .onb .oby-frame { -webkit-app-region: no-drag; }
+/* round the big buttons, 8px more of it isn't the window's to drag: hovered, a button swells
+   past the box it was left out of, and those edges would drag the window, not press it */
+.onb-hit { -webkit-app-region: no-drag; padding: 8px; margin: -8px; }
+/* (Oby hops up inside its frame, out of the floor: oby.html's ?enter) */
+.onb-oby { position: absolute; left: 50%; bottom: 0; width: 700px; height: 470px; margin-left: -350px; transform: translateY(22%); }
+/* (Oby's size is set by its frame's height, so the frame is the window's width: the Obysphere
+   step's others walk in from past its edges.) Clicks over them land on .onb-poke, above them all,
+   which hands each one the click (FirstRun.tsx) */
+.onb-oby, .onb-oby .oby-frame { pointer-events: none; }
+.onb-poke { position: absolute; left: 50%; bottom: 0; width: 700px; height: 470px; margin-left: -350px; transform: translateY(22%); z-index: 1; -webkit-app-region: no-drag; }
+.onb-oby .oby-frame { width: 100%; height: 100%; }
+.onb-copy { position: absolute; z-index: 2; top: 25%; left: 0; right: 0; padding: 0 40px; display: flex; flex-direction: column; align-items: center; text-align: center; }
+.onb-title { margin: 0; color: var(--ink); font-size: 36px; font-weight: 400; line-height: 1.2; letter-spacing: -0.01em; }
+.onb-text { margin: 0; color: rgba(255, 255, 255, 0.4); font-size: 20px; line-height: 1.55; }
+.onb-title + .onb-text { margin-top: 24px; }
+.onb-rows { width: min(420px, 100%); margin-top: 24px; text-align: left; }
+.onb-rows .setup-row { min-height: 48px; padding-top: 6px; padding-bottom: 6px; }
+/* GitHub, a little apart from the agents; under it, where the other places code lives go */
+.onb-rows.is-apart { margin-top: 16px; }
+.onb-note { width: min(420px, 100%); margin: 12px 0 0; text-align: center; color: rgba(255, 255, 255, 0.4); font-size: var(--text-md); }
+/* each agent by its name alone, bigger; ready, a check alone */
+.onb-rows .wl-name { font-size: 16px; }
+.onb-rows .wl-ready.is-bare { color: var(--ink); }
+/* the right of each row is one size whatever it shows: Connect, the spinner, or the check
+   in a box edged as the button is */
+.onb-rows .set-button, .onb-rows .wl-slot { min-width: 88px; height: 32px; justify-content: center; }
+.onb-rows .wl-ready.wl-slot { display: inline-flex; align-items: center; border: 1px solid var(--line); border-radius: 8px; }
+/* Continue before anything's connected: each row a small shake, top to bottom, 60ms apart */
+.onb-rows.is-nope-0 > li { animation: onb-nope-a 460ms cubic-bezier(0.36, 0.07, 0.19, 0.97) both; }
+.onb-rows.is-nope-1 > li { animation: onb-nope-b 460ms cubic-bezier(0.36, 0.07, 0.19, 0.97) both; }
+.onb-rows > li:nth-child(2) { animation-delay: 60ms; }
+.onb-rows > li:nth-child(3) { animation-delay: 120ms; }
+@keyframes onb-nope-a { 20% { transform: translateX(-5px); } 40% { transform: translateX(4px); } 60% { transform: translateX(-2.5px); } 80% { transform: translateX(1px); } }
+@keyframes onb-nope-b { 20% { transform: translateX(-5px); } 40% { transform: translateX(4px); } 60% { transform: translateX(-2.5px); } 80% { transform: translateX(1px); } }
+@media (prefers-reduced-motion: reduce) { .onb-rows.is-nope-0 > li, .onb-rows.is-nope-1 > li { animation: none; } }
+/* under way, on the right: the code to type on its page, then a spinner */
+.wl-busy { flex: none; display: inline-flex; align-items: center; gap: 10px; color: var(--text); }
+.wl-code { font: 500 var(--text-base)/1 ui-monospace, "SF Mono", Menlo, monospace; letter-spacing: 0.04em; color: var(--ink); user-select: text; }
+.onb-rows .setup-code { margin: 0; }
+/* Claude Code's field for its code, under its name, across the row (its Cancel stays up right) */
+.onb-rows .setup-row:has(> .wl-below) { flex-wrap: wrap; row-gap: 8px; padding-bottom: 10px; }
+.onb-rows .wl-below { flex-basis: 100%; padding-left: 34px; }
+.spinner { display: block; animation: spin 800ms linear infinite; }
+@keyframes spin { to { transform: rotate(1turn); } }
+@media (prefers-reduced-motion: reduce) { .spinner { animation: none; } }
+/* a step with rows to act on starts higher, so its button stays clear of Oby's ears */
+.onb-copy.is-tall { top: 12%; }
+.onb-note + .onb-in .onb-go { margin-top: 32px; }
+/* Continue with a quiet way past under it: Skip for now, just words */
+.onb-buttons { display: flex; flex-direction: column; align-items: center; gap: 10px; }
+.onb-note + .onb-buttons { margin-top: 32px; }
+.onb-note + .onb-buttons .onb-go { margin-top: 0; }
+.onb-skip { height: 32px; padding: 0 8px; color: rgba(255, 255, 255, 0.5); font-size: var(--text-lg); transition: color var(--fade); }
+.onb-skip:hover { color: var(--ink); }
+.onb-skip { transition: color var(--fade), opacity var(--fade), visibility 0s linear 280ms; }
+.onb-skip.is-gone { opacity: 0; visibility: hidden; transition: opacity var(--fade), visibility 0s linear 280ms; }
+/* under the button: what's next, and why (quieter than the line at the top) */
+.onb-why { max-width: 420px; margin: 16px 0 0; color: var(--text); font-size: var(--text-md); }
+.onb-why + .onb-in .onb-go { margin-top: 24px; }
+.onb-go { margin-top: 48px; height: 40px; padding: 0 20px 0 24px; display: inline-flex; align-items: center; gap: 10px; border-radius: var(--radius-pill); background: var(--ink); color: #111; font-size: 17px; font-weight: 500; transition: background-color var(--fade), opacity var(--fade); }
+.onb-go:hover { background: #fff; }
+/* hovered, it swells ever so slightly (3%), on a soft spring; pressed, it gives a little */
+.onb-go { transition: background-color var(--fade), opacity var(--fade), transform 360ms var(--spring); }
+/* on a layer of its own the whole time: otherwise its label is drawn on a fraction of a
+   pixel while it scales, and snaps down a pixel as the scale ends */
+.onb-go { will-change: transform; }
+.onb-go:hover:not(:disabled) { transform: scale(1.03); }
+.onb-go:active:not(:disabled) { transform: scale(0.985); transition-duration: 120ms; }
+/* each piece: up 14px and in, warm, a beat after the one before (--d) */
+.onb-in { animation: onb-rise 640ms var(--warm) var(--d, 0ms) both; }
+@keyframes onb-rise { from { opacity: 0; transform: translateY(14px); } }
+/* the greeting, what Oby is and the button: longer, and a gentler start (ease-out cubic) */
+.onb-in.is-soft { animation-duration: 900ms; animation-timing-function: cubic-bezier(0.33, 1, 0.68, 1); }
+/* on to the next step: what's there lifts away first */
+.onb-copy.is-leaving > .onb-in { animation: none; opacity: 0; transform: translateY(-8px); transition: opacity 200ms var(--ease-in), transform 200ms var(--ease-in); }
+/* Home, coming in from setting up: hidden while Oby waits under the floor, then a beat apart
+   once Oby has hopped up and settled, as setting up's words did: the line under Oby, up 14px and
+   in; the message box the same, 150ms on; the side panel's button, just in, 150ms after that */
+.attention-label.is-waiting, .chips.is-waiting, .composer.is-waiting, .panel-toggle.is-waiting { opacity: 0; }
+/* the chips, between the line over them (500ms) and the box (650ms) */
+.chips.is-arrival { animation: onb-rise 900ms cubic-bezier(0.33, 1, 0.68, 1) 575ms both; }
+.attention-label.is-arrival { animation: onb-rise 900ms cubic-bezier(0.33, 1, 0.68, 1) 500ms both; }
+.composer.is-arrival { animation: onb-rise 900ms cubic-bezier(0.33, 1, 0.68, 1) 650ms both; }
+.panel-toggle.is-arrival { animation: fade-in 500ms var(--warm) 800ms both; }
+@media (prefers-reduced-motion: reduce) {
+  .attention-label.is-arrival, .chips.is-arrival, .composer.is-arrival, .panel-toggle.is-arrival { animation: fade-in 240ms ease-out both; }
+}
+/* handing over to Home (FirstRun.tsx): the words go as the Obys hop away down out of sight;
+   then this screen's dark fades from over Home, whose own Oby then hops up into its place */
+.onb .onb-copy { transition: opacity 300ms var(--ease-in); }
+.onb.is-leaving .onb-copy, .onb.is-home .onb-copy { opacity: 0; pointer-events: none; }
+.onb { transition: background-color 360ms var(--warm); }
+.onb.is-home { background: transparent; pointer-events: none; -webkit-app-region: no-drag; }
+.onb.is-home .onb-poke { display: none; }
+@media (prefers-reduced-motion: reduce) {
+  .onb.is-on .onb-oby { animation: fade-in 240ms ease-out both; }
+  .onb-in, .onb-in.is-soft { animation-name: fade-in; animation-duration: 240ms; }
+  .onb-go:hover:not(:disabled), .onb-go:active:not(:disabled) { transform: none; }
+  .onb-copy.is-leaving > .onb-in { transform: none; }
+}
