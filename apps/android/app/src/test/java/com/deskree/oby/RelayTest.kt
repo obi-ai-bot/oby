@@ -126,6 +126,16 @@ class RelayTest {
         try { runner.send("GET", "v1/status"); fail("a forgotten relay answered") } catch (e: RunnerError) { assertEquals(401, e.status) }
     }
 
+    @Test fun aHungUpRelayOpensNothingUntilResumed() = runBlocking {
+        val mac = FakeMac(sphere)
+        val relay = PhoneRelay(mac.link)
+        relay.hangUp()
+        val runner = Runner(RemoteRoute.RELAY_BASE, "t", relay = relay)
+        try { runner.send("GET", "v1/status"); fail("a hung-up relay opened") } catch (_: RunnerError) {}
+        relay.resume()
+        assertEquals("{}", runner.send("GET", "v1/status"))
+    }
+
     @Test fun aRelayLessRelayRouteSaysToPairAgain() = runBlocking {
         try { Runner(RemoteRoute.RELAY_BASE, "t").send("GET", "v1/status"); fail("it went somewhere") } catch (e: RunnerError) {
             assertEquals(401, e.status); assertTrue(e.message!!.contains("Pair again"))
@@ -157,6 +167,14 @@ class RelayTest {
             val named = wire.encodeToString(MacLink.serializer(), MacLink(name, hostname)).dropLast(1)
             try { GatewayEnvelope.decode("""{"url":"https://sphere.example","link":$named,"relay":$relay},"secret":"s"}"""); fail("$hostname $name") } catch (_: RunnerError) {}
         }
+        // A relay that isn't one is refused, not taken for none; a Sphere with a path or a query too.
+        for (bad in listOf(""""relay":{"sphere":"https://s.example"}""", """"relay":${wire.encodeToString(RelayLink.serializer(), link.copy(sphere = "https://s.example/?x"))}""")) {
+            try { GatewayEnvelope.decode("""{"url":"https://s.example","link":{"hostname":"studio","name":"Studio",$bad},"secret":"s"}"""); fail(bad) } catch (e: RunnerError) {
+                assertTrue(e.message!!.contains("Obysphere"))
+            }
+        }
+        // A name with a right-to-left override isn't shown.
+        try { GatewayEnvelope.decode("""{"url":"https://s.example","link":{"hostname":"studio","name":"Studio\u202e","relay":$relay},"secret":"s"}"""); fail("RLO") } catch (_: RunnerError) {}
         // A link can't arrive already relayed: only this phone's pairing sets that.
         try { GatewayEnvelope.decode("""{"url":"https://studio.tail0000.ts.net:8443","link":{"hostname":"studio.tail0000.ts.net:8443","name":"Studio","relayed":"a.b"},"secret":"s"}"""); fail() } catch (_: RunnerError) {}
         // A Mac paired through its Obysphere is reached through it alone, at home too.

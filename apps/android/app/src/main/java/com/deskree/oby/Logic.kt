@@ -829,7 +829,9 @@ data class GatewayEnvelope(val url: String, val link: MacLink, val secret: Strin
         fun decode(text: String): GatewayEnvelope {
             val envelope = runCatching { wire.decodeFromString(serializer(), text.trim()) }.getOrNull()
                 ?: throw RunnerError("That isn't Oby's pairing QR code. Scan the one the Mac's Settings › Remote access shows.")
+            val relayed = runCatching { (wire.parseToJsonElement(text.trim()) as? kotlinx.serialization.json.JsonObject)?.get("link")?.let { it as? kotlinx.serialization.json.JsonObject }?.containsKey("relay") }.getOrNull() == true
             envelope.relay = runCatching { wire.decodeFromString(Linked.serializer(), text.trim()).link.relay }.getOrNull()
+            if (relayed && envelope.relay == null) throw RunnerError("That invitation's Obysphere isn't one Oby can reach safely, so Oby won't pair with it.")
             if (envelope.link.relayed != null) throw RunnerError("That isn't Oby's pairing QR code. Scan the one the Mac's Settings › Remote access shows.")
             // Through an Obysphere the hostname is only the Mac's name: the relay is the way, and its
             // key the Mac's, sealed to from the first call. A pasted one still names its Mac plainly:
@@ -839,7 +841,7 @@ data class GatewayEnvelope(val url: String, val link: MacLink, val secret: Strin
                 val name = envelope.link.name
                 if (!relay.isValid || host[0].length !in 1..253 || !host[0].all { it.isLetterOrDigit() && it.code < 128 || it in "._-" } ||
                     host.size == 2 && (host[1].length !in 1..5 || !host[1].all { it in '0'..'9' }) ||
-                    name.length !in 1..64 || name.any { it.isISOControl() || it == '\u2028' || it == '\u2029' }) {
+                    name.length !in 1..64 || name.any { it.isISOControl() || Character.getType(it) == Character.FORMAT.toInt() || it == '\u2028' || it == '\u2029' }) {
                     throw RunnerError("That invitation's Obysphere isn't one Oby can reach safely, so Oby won't pair with it.")
                 }
                 return envelope

@@ -64,6 +64,7 @@ data class RelayLink(val sphere: String, val id: String, val token: String, val 
         val host = uri.host?.lowercase() ?: return false
         val loopback = host in setOf("127.0.0.1", "localhost", "[::1]", "::1")
         return (uri.scheme == "https" || uri.scheme == "http" && loopback) && host.isNotEmpty() && uri.userInfo == null &&
+            uri.rawPath.orEmpty().trimEnd('/').isEmpty() && uri.rawQuery == null && uri.rawFragment == null &&
             id.length in 22..43 && isBase64URL(id) && token.length == 43 && isBase64URL(token) && macKey != null
     }
 
@@ -220,8 +221,13 @@ class PhoneRelay(
         const val HELD = 256
         private const val CHUNK = 65_536
 
-        // The socket's own client: no read timeout (the 30-second ping and the Sphere's pong keep it), the cleartext rule kept.
-        private val sockets by lazy { Runner.client.newBuilder().readTimeout(0, TimeUnit.SECONDS).build() }
+        // The socket's client: Runner's, with its cleartext rule and its timeouts for the upgrade (OkHttp
+        // drops the read timeout once a WebSocket is up; the ping below finds a link gone quiet).
+        private val sockets get() = Runner.client
+        /** How long the Sphere may be silent (a `pong` every 30 seconds) before the socket is taken for gone. */
+        private const val SILENT = 75_000L
+        /** The longest a socket may take to open before its hello's wait starts anyway. */
+        private const val UPGRADE = 30_000L
         private val timer = Executors.newSingleThreadScheduledExecutor { Thread(it, "oby-relay").apply { isDaemon = true } }
     }
 
@@ -256,6 +262,8 @@ class PhoneRelay(
     var backoff = 0L; private set
     private var unansweredInARow = 0
     private var pinging: ScheduledFuture<*>? = null
+    /** When the Sphere last said anything on this socket (a `pong` included). */
+    @Volatile private var heardAt = 0L
 
     // MARK: Requests
 
@@ -327,8 +335,11 @@ class PhoneRelay(
     /** The person asked (the app came to the front): a socket may open again at once. */
     fun resume() = synchronized(lock) { stopped = null; notBefore = 0 }
 
-    /** The app went to the background: the socket closes, and with it the session. */
-    fun hangUp() = synchronized(lock) { drop(IOException("Canceled")) }
+    /** The app went to the background: the socket closes, and with it the session, and none opens again until `resume`. */
+    fun hangUp() = synchronized(lock) {
+        stopped = stopped ?: RunnerError("Open Oby to reach your Mac.")
+        drop(IOException("Canceled"))
+    }
 
     // MARK: The session
 
@@ -355,11 +366,12 @@ class PhoneRelay(
         val socket = socket ?: open()
         // OkHttp holds it until the socket is up.
         socket.send(hello.bytes.toByteString())
-        if (opened) wait(hello)
+        // Waited for from the socket's opening; a socket that doesn't open in time ends anyway.
+        wait(hello, if (opened) patience else UPGRADE + patience)
     }
 
     /** No welcome within a few seconds of the hello going out: start over, on a new socket. */
-    private fun wait(hello: RelayEnvelope.Hello) {
+    private fun wait(hello: RelayEnvelope.Hello, patience: Long = this.patience) {
         val current = generation
         timer.schedule(Runnable {
             synchronized(lock) {
@@ -381,12 +393,13 @@ class PhoneRelay(
                 synchronized(lock) {
                     if (current != generation) return
                     opened = true
-                    hello?.let(::wait)
+                    heardAt = System.currentTimeMillis()
+                    hello?.let { wait(it) }
                 }
             }
-            override fun onMessage(webSocket: WebSocket, bytes: ByteString) = heard(bytes.toByteArray(), current)
-            // The Sphere's only text is `pong`.
-            override fun onMessage(webSocket: WebSocket, text: String) {}
+            override fun onMessage(webSocket: WebSocket, bytes: ByteString) { heardAt = System.currentTimeMillis(); heard(bytes.toByteArray(), current) }
+            // The Sphere's only text is `pong`: it's still there.
+            override fun onMessage(webSocket: WebSocket, text: String) { heardAt = System.currentTimeMillis() }
             override fun onClosing(webSocket: WebSocket, code: Int, reason: String) { webSocket.close(code, null); ended(current, code, null) }
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) = ended(current, code, null)
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) = ended(current, null, response?.code)
@@ -394,7 +407,14 @@ class PhoneRelay(
         this.socket = socket
         // The Sphere closes a socket silent for 2 minutes.
         pinging?.cancel(false)
-        pinging = timer.scheduleWithFixedDelay(Runnable { synchronized(lock) { if (current == generation) socket.send("ping") } }, 30, 30, TimeUnit.SECONDS)
+        pinging = timer.scheduleWithFixedDelay(Runnable {
+            synchronized(lock) {
+                if (current != generation || !opened) return@Runnable
+                // Nothing from the Sphere for 2½ pings: the link is gone, though TCP hasn't said so.
+                if (System.currentTimeMillis() - heardAt > SILENT) return@Runnable drop(IOException("The connection to your Mac was lost."))
+                socket.send("ping")
+            }
+        }, 30, 30, TimeUnit.SECONDS)
         return socket
     }
 

@@ -227,9 +227,16 @@ class Phone(val context: Context) {
             relay.hangUp()
             throw e
         }
-        RelayStore.save(context, link)
-        this.relay = relay
-        paired(answer, mac.copy(relayed = link.pinned))
+        try {
+            RelayStore.save(context, link)
+            this.relay = relay
+            paired(answer, mac.copy(relayed = link.pinned))
+        } catch (e: Exception) {
+            // Kept halfway (the phone's storage refused): no Mac rather than the wrong relay for one.
+            relay.hangUp()
+            unpair()
+            throw e
+        }
     }
 
     private fun paired(answer: PairingAnswer, linked: MacLink) {
