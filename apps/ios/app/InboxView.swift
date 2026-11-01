@@ -31,14 +31,15 @@ struct InboxDecision: View {
                 head
                 Rectangle().fill(Tokens.divider).frame(height: 1).padding(.vertical, 12)
             }
-            AskCard(kind: AskKind.label(item.kind, plan: job?.question?.plan != nil), failed: AskKind.failed(item.kind),
+            let check = PhoneAsk.check(item), merge = PhoneAsk.merge(item)
+            AskCard(kind: PhoneAsk.label(item, plan: job?.question?.plan != nil), failed: AskKind.failed(item.kind),
                     source: openTask && head == nil ? job?.heading : nil,
-                    title: confirming ? item.title : item.words.title(item.text),
-                    happened: confirming ? InboxWords.plain(item.text) : item.words.body,
-                    behindDetails: confirming ? nil : item.words.details(item.text),
-                    detail: confirming ? item.confirm?.words : permission?.detail,
+                    title: check.map { _ in PhoneAsk.checkTitle(item) } ?? (confirming ? item.title : merge?.title ?? item.words.title(item.text)),
+                    happened: confirming ? InboxWords.plain(item.text) : merge.map(\.happened) ?? item.words.body,
+                    behindDetails: confirming || merge != nil ? nil : item.words.details(item.text),
+                    detail: check ?? (confirming ? item.confirm?.words : permission?.detail),
                     plan: item.kind == "question" ? job?.question?.plan : nil,
-                    options: CardOption.inbox(item.options, kind: item.kind, question: job?.question, permission: permission,
+                    options: check != nil ? PhoneAsk.checkOptions(item) : CardOption.inbox(item.options, kind: item.kind, question: job?.question, permission: permission,
                                               words: item.words, details: item.details, does: item.title),
                     busy: busy || phone.waitsToSend(answer: item.id),
                     onChoose: choose,
@@ -228,5 +229,55 @@ private struct OwnWords: View {
         .overlay { RoundedRectangle(cornerRadius: 18, style: .continuous).strokeBorder(Tokens.line) }
         .padding(.top, 12)
         .disabled(busy)
+    }
+}
+
+/// What a decision's card says on the iPhone where the Electron app's `itemAsk` (live.ts) says it
+/// otherwise than the shared AskKind, which the frozen Mac app keeps: Sangam's labels (ASK_LABEL)
+/// for a Confirm and an Oby failure, a merge card labelled by what it is, and a repository's check.
+nonisolated enum PhoneAsk {
+    static func label(_ item: InboxItem, plan: Bool) -> String {
+        if check(item) != nil { return "Check" }
+        switch item.kind {
+        // Not merged, Ready to merge, Needs a teammate: what its title says before the task's
+        case "merge": return item.title.components(separatedBy: ": ").first.flatMap { $0.isEmpty ? nil : $0 } ?? AskKind.label("merge")
+        case RunnerConfirm.kind: return "Confirm?"
+        case "failure": return "Failed"
+        default: return AskKind.label(item.kind, plan: plan)
+        }
+    }
+
+    /// Oby's ask for a repository's check (`set_check`): the command, or nil.
+    static func check(_ item: InboxItem) -> String? {
+        guard item.kind == RunnerConfirm.kind, item.confirm?.action == "set_check" else { return nil }
+        return InboxWords.plain(item.confirm?.payload?["check"])
+    }
+
+    static func checkTitle(_ item: InboxItem) -> String { "Use this as \(item.confirm?.target ?? "")’s check before publishing?" }
+
+    /// Use it (obid's Confirm, signed), and No check, or Keep it for a repository that has one (Cancel).
+    /// ponytail: no Edit here; its `POST /v1/repos/check` isn't on the phone's gateway, so it's the Mac's
+    static func checkOptions(_ item: InboxItem) -> [CardOption] {
+        [CardOption(label: "Use it", answer: RunnerConfirm.confirm, recommended: true),
+         CardOption(label: item.confirm?.payload?["was"] != nil ? "Keep it" : "No check", answer: RunnerConfirm.cancel)]
+    }
+
+    /// A merge card with no headline of the model's: obid's reason leads, its first sentence (without
+    /// the label's words again) over the rest, then every other hold, one a line (MERGING-21).
+    static func merge(_ item: InboxItem) -> (title: String, happened: String?)? {
+        guard item.kind == "merge", InboxWords.plain(item.headline) == nil, !item.text.isEmpty else { return nil }
+        var holds = item.text.components(separatedBy: "\n")
+        let line = holds.removeFirst()
+        var first = line, rest = ""
+        if let stop = line.range(of: ". ") {
+            first = String(line[..<line.index(after: stop.lowerBound)])
+            rest = String(line[stop.upperBound...])
+        }
+        if let said = first.range(of: "^Not merged( yet)?: ", options: .regularExpression) {
+            let tail = first[said.upperBound...]
+            first = tail.prefix(1).uppercased() + tail.dropFirst()
+        }
+        let happened = ([rest] + holds).filter { !$0.isEmpty }.joined(separator: "\n")
+        return (first, happened.isEmpty ? nil : happened)
     }
 }

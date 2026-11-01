@@ -137,6 +137,27 @@ struct DesignTests {
         #expect(RunnerMode.offered(.sandbox) == [.ask, .acceptEdits, .plan, .bypass, .sandbox])
     }
 
+    /// A decision's card as the Electron app words it (live.ts itemAsk, Sangam's ASK_LABEL): a merge
+    /// card by what it is, a Confirm "Confirm?", an Oby failure "Failed", a repository's check.
+    @Test func cardsSayWhatElectronsSay() throws {
+        func item(_ json: String) throws -> InboxItem {
+            try Runner.decoder.decode(InboxItem.self, from: Data(#"{"id": "i", "job": "j", "text": "", "options": [], "created": "2026-10-09T21:42:53Z", \#(json)}"#.utf8))
+        }
+        let merge = try item(#""kind": "merge", "title": "Ready to merge: Fix login", "text": "Not merged yet: the checks on your Mac failed. Fix them first.\nNobody approved its head.""#)
+        #expect(PhoneAsk.label(merge, plan: false) == "Ready to merge")
+        let said = try #require(PhoneAsk.merge(merge))
+        #expect(said.title == "The checks on your Mac failed.")
+        #expect(said.happened == "Fix them first.\nNobody approved its head.")
+        #expect(PhoneAsk.label(try item(#""kind": "failure", "title": "x""#), plan: false) == "Failed")
+        let confirm = try item(#""kind": "confirm", "title": "Delete Vault tests", "options": ["Confirm", "Cancel"], "confirm": {"action": "delete_job", "target": "Vault tests"}"#)
+        #expect(PhoneAsk.label(confirm, plan: false) == "Confirm?" && PhoneAsk.check(confirm) == nil)
+        let check = try item(#""kind": "confirm", "title": "Use `pnpm test`", "options": ["Confirm", "Cancel"], "confirm": {"action": "set_check", "target": "acme/app", "payload": {"check": "pnpm test", "was": null}}"#)
+        #expect(PhoneAsk.label(check, plan: false) == "Check" && PhoneAsk.check(check) == "pnpm test")
+        #expect(PhoneAsk.checkTitle(check) == "Use this as acme/app’s check before publishing?")
+        #expect(PhoneAsk.checkOptions(check).map(\.label) == ["Use it", "No check"])
+        #expect(PhoneAsk.checkOptions(check).map(\.answer) == ["Confirm", "Cancel"])
+    }
+
     /// Oby's live face (Sangam's ObyFaceLive.tsx): while it works the face melts into three
     /// bouncing dots and holds there; its words in, they run back together into the still face.
     @Test func obysFaceMeltsIntoDotsAndBack() {
