@@ -16,6 +16,12 @@ nonisolated enum ConversationOrder {
         return ordered(list)
     }
 
+    /// A conversation's line under its name (Sangam's `convoAbout`): the tasks it started, else
+    /// its last words.
+    static func about(tasks: Int, said: String?) -> String? {
+        tasks > 0 ? "Started \(tasks) task\(tasks == 1 ? "" : "s")" : said
+    }
+
     /// Pinned first, then newest first.
     static func ordered(_ list: [RunnerConversation]) -> [RunnerConversation] {
         list.sorted { ($0.pinned ? 1 : 0, $0.latest) > ($1.pinned ? 1 : 0, $1.latest) }

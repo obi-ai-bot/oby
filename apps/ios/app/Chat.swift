@@ -49,8 +49,9 @@ struct ConversationsColumn: View {
                 List {
                     let sections = ConversationOrder.sections(conversations)
                     if conversations.isEmpty {
-                        Text(found == nil ? "No conversations yet" : "Nothing matches “\(query)”")
+                        Text(found == nil ? "No conversations yet" : "No conversations match “\(query)”")
                             .font(Tokens.font(Tokens.textBase)).foregroundStyle(Tokens.muted)
+                            .listRowBackground(Color.clear).listRowSeparator(.hidden)
                     }
                     if !sections.pinned.isEmpty {
                         Section { rows(sections.pinned, now: context.date) } header: { label("Pinned") }
@@ -91,7 +92,9 @@ struct ConversationsColumn: View {
         ForEach(list) { conversation in
             Button { open(.conversation(conversation.id)) } label: {
                 row(title: conversation.title.isEmpty ? "Conversation" : conversation.title,
-                    last: conversation.turn?.text ?? phone.previews[conversation.id], at: conversation.latest, now: now)
+                    last: ConversationOrder.about(tasks: phone.jobs.count { $0.conversation == conversation.id },
+                                                  said: conversation.turn?.text ?? phone.previews[conversation.id]),
+                    at: conversation.latest, now: now)
             }
             .listRowBackground(Color.clear)
             .listRowSeparator(.hidden)
@@ -105,7 +108,8 @@ struct ConversationsColumn: View {
                     run { try await phone.update(conversation.id, pinned: !conversation.pinned) }
                 }
                 Button("Rename", systemImage: "pencil") { title = conversation.title; renaming = conversation }
-                Button("Delete", systemImage: "trash", role: .destructive) { run { try await phone.delete(conversation.id) } }
+                Divider()
+                Button("Delete conversation", systemImage: "trash", role: .destructive) { run { try await phone.delete(conversation.id) } }
             }
         }
     }
@@ -157,6 +161,7 @@ struct ConversationsColumn: View {
 /// on; its question, when it asks one; and the box at the foot.
 struct ConversationPage: View {
     @Environment(Phone.self) private var phone
+    @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
     /// obid's conversation, or nil for the latest (the one thread).
     let id: String?
@@ -193,6 +198,10 @@ struct ConversationPage: View {
                                 run { try await phone.update(conversation.id, pinned: !conversation.pinned) }
                             }
                             Button("Rename", systemImage: "pencil") { title = conversation.title; renaming = true }
+                            Divider()
+                            Button("Delete conversation", systemImage: "trash", role: .destructive) {
+                                run { try await phone.delete(conversation.id); dismiss() }
+                            }
                         } label: { Image(systemName: "ellipsis") }
                             .accessibilityLabel("Conversation options")
                     }

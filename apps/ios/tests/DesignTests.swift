@@ -212,6 +212,10 @@ struct DesignTests {
         // A step names its conversation on obid: the thread shows only its own.
         let step = try Runner.decoder.decode(TurnStep.self, from: Data(#"{"turn":"8d","conversation":"c1","index":1,"text":"Thinking","state":"running"}"#.utf8))
         #expect(step.conversation == "c1")
+        // A row's line: the tasks it started, else its last words (Sangam's convoAbout)
+        #expect(ConversationOrder.about(tasks: 2, said: "Done.") == "Started 2 tasks")
+        #expect(ConversationOrder.about(tasks: 1, said: nil) == "Started 1 task")
+        #expect(ConversationOrder.about(tasks: 0, said: "Done.") == "Done.")
         #expect(ConversationOrder.shows(step, in: "c1", startingNew: false))
         #expect(!ConversationOrder.shows(step, in: "c2", startingNew: false))
         #expect(!ConversationOrder.shows(step, in: nil, startingNew: true))

@@ -94,6 +94,8 @@ final class Phone {
     let voice = PhoneVoice()
     /// The side panel, open on one of its sections, or nil while it's closed (PhoneRoot).
     var panel: PanelSection?
+    /// Home's box takes the keyboard (the panel's New conversation and New task, as Sangam's do).
+    var focusHome = false
     /// The panel's groups folded away with their chevron (Sangam's Sidebar.tsx), kept while Oby runs.
     var panelFolded: Set<String> = []
     /// The runner's conversation, read in pages and followed over `turn` events, for the Chat
