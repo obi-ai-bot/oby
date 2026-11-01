@@ -315,6 +315,8 @@ final class Phone {
     private(set) var models: ModelSettings?
     /// The mode new jobs get by default, as the runner last said, or nil from a runner without modes.
     private(set) var defaultMode: RunnerMode?
+    /// The account new tasks go to, as obid last said (Settings › Agents).
+    private(set) var defaultAccount: String?
     /// When Clear done was last pressed, here or on the Mac (the runner's clock), or nil: Home
     /// hides the jobs that finished by then. The runner keeps them all.
     private(set) var clearedAt: Date?
@@ -626,6 +628,7 @@ final class Phone {
         models = status.models
         clearedAt = status.clearedAt
         defaultMode = RunnerMode(status.permissions?.mode)
+        defaultAccount = status.defaultAccount
         await take(try await runner.jobs())
         inbox = try await runner.inbox()
         await readLimitDecisions()

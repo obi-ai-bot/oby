@@ -366,6 +366,11 @@ nonisolated struct Account: Codable, Identifiable, Equatable, Sendable {
     /// it past that (#278); newer runners only.
     var reserved: Bool?
     var reserveLiftedUntil: Date?
+    /// The model and efforts its jobs run on, each only when the owner chose it; nil: the tool's
+    /// own (obid only, #1574).
+    var model: String?
+    var effort: String?
+    var complexEffort: String?
 
     /// "Personal · Claude Code"
     var title: String { "\(name) · \(Usage.tool(agent))" }
@@ -708,6 +713,8 @@ nonisolated struct RunnerStatus: Decodable, Equatable, Sendable {
     /// The tools' own logins obid found on this Mac that aren't accounts (obid only), each listed
     /// with `restoreDefaultLogin`. Older runners don't send it.
     var availableLogins: [AvailableLogin]?
+    /// The account new tasks go to (Settings › Agents), or nil for routing's own order (obid only).
+    var defaultAccount: String?
 
     struct AvailableLogin: Codable, Equatable, Sendable {
         var agent: String

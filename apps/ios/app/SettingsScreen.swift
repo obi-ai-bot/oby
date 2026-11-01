@@ -1,144 +1,23 @@
 import SwiftUI
+import UserNotifications
 
-/// Settings, opened over Home from your picture (Sangam's SettingsView.tsx): a 28/600 title over his
-/// cards (apps/shared/SettingsComponents.swift), in docs/oby-ux.md row 39's order: Your Mac,
-/// Accounts, Models, Permissions, Notifications, Voice, Appearance, About; then what only the iPhone
-/// has. The sections the Mac has too are shared (apps/shared/SettingsSections.swift) and draw as
-/// cards here, as on the Mac.
+/// Settings, opened over Home from your picture: the Electron app's pages on obid, in its order
+/// (apps/electron/src/renderer/src/SettingsView.tsx, Sangam's design): General, Agents, Remote
+/// access, Connectors, About, each a page of his cards (apps/shared/SettingsComponents.swift). What
+/// only the Mac can do (open at login, adding or signing in an agent, connecting GitHub or Tetrix,
+/// pairing another device, updating Oby) stays on the Mac, and its rows say so.
 struct SettingsScreen: View {
-    @Environment(Phone.self) private var phone
-    @State private var options: ModelOptions?
-    @State private var problem: String?
-    @State private var watchPairing = WatchPairing()
-    @State private var watchProblem: String?
-    @State private var stopping = false
-    @AppStorage(Appearance.key) private var appearance = Appearance.system
-    /// The launch build (`Launch`) hides Routines (unless obid keeps one) and Apple Watch without iPhone.
-    @AppStorage(Launch.everythingKey) private var everything = false
-
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 0) {
-                Text("Settings").font(Tokens.font(28, .semibold)).foregroundStyle(Tokens.ink)
-                    .padding(.bottom, 16).accessibilityAddTraits(.isHeader)
-                yourMac
-                AccountSections("Accounts", items: phone.accounts, id: \.id, usage: \.usage,
-                                footer: "Each tool signs in on your Mac, with its own login.") { account in
-                    // The runner's "accounts" event brings a lifted reserve back.
-                    PhoneAccountRow(account: account) { lift in _ = try await phone.runner.liftReserve(account.id, lift) }
-                }
-                connectors
-                RunnerModelsSections(options: options, models: phone.models, save: phone.setModels)
-                PermissionsSection(runner: phone.runner, defaultMode: phone.defaultMode, setDefault: phone.setDefaultMode)
-                // As the Mac's launch build: shown while obid keeps one, so the owner can pause or delete it.
-                if everything || !phone.routines.isEmpty {
-                    RoutinesSection(runner: phone.runner, changes: phone.routineChanges)
-                }
-                NotificationsSection { UIApplication.shared.registerForRemoteNotifications() }
-                VoiceSection()
-                SetGroup("Appearance") {
-                    SetRow("Appearance") {
-                        SetSegmented("Appearance", selection: $appearance, options: Appearance.allCases.map { ($0, $0.label) })
-                    }
-                }
-                if !phone.active.isEmpty { stopEverything }
-                SetGroup("About") {
-                    SetRow("Version") { SetValue(Self.version) }
-                    SetRow("Mac") { SetValue(phone.host.isEmpty ? "Not reached yet" : phone.host) }
-                }
-                if everything { watch }
-                SetGroup("Publishing key", footer: "Oby opens a pull request by itself once a job's check passes and the secret scan is clean. When that failed, publish by hand here: your tap is the approval, signed by this iPhone's key.",
-                         problem: problem) {
-                    SetRow("This iPhone's key") {
-                        SetValue(DeviceKey.isAvailable ? (phone.deviceID == nil ? "Not registered yet" : "Registered") : "Needs a real iPhone")
-                    }
-                }
-            }
-            .padding(.horizontal, Tokens.gutter).padding(.top, 8).padding(.bottom, 32)
-        }
-        .scrollDismissesKeyboard(.interactively)
-        .environment(\.settingsCards, true)
-        .obyPage()
-        .navigationBarTitleDisplayMode(.inline)
-        .task {
-            do { options = try await phone.runner.modelOptions() } catch { problem = error.localizedDescription }
-            // A runner older than the Watch API has no list: then there's nothing to show.
-            if everything { try? await watchPairing.load(phone) }
-        }
-    }
-
-    /// Sangam's Connectors, as far as the iPhone goes: Tetrix, which obid on the Mac holds once for
-    /// every agent (the launch build's too: Tetrix is core). The iPhone can't start it: Tetrix's
-    /// sign-in and its login stay on the Mac, so the row says where to go. Connected once the Mac's
-    /// accounts say their agents have it.
-    private var connectors: some View {
-        let connected = phone.accounts.contains { $0.tetrix == true }
-        return SetGroup("Connectors", footer: connected ? nil : "Connect Tetrix on your Mac, in Settings › Connectors: one sign-in, for every agent. Its login stays there, never on this iPhone.") {
-            SetRow("Tetrix", about: TetrixStatus.about) {
-                SetValue(connected ? "Connected" : "Connect on your Mac", connected: connected)
-            }
-        }
-    }
-
-    /// Your Mac (docs/ios-design.md "Settings"): its name, how it's reached, a green dot while
-    /// connected; a tap opens pairing.
-    private var yourMac: some View {
-        SetGroup("Your Mac") {
-            NavigationLink { ConnectScreen() } label: {
-                SetRow(phone.link?.name ?? "No Mac paired yet", about: phone.link == nil ? "Pair this iPhone with Oby on your Mac." : phone.route?.label) {
-                    HStack(spacing: 8) {
-                        if phone.link != nil {
-                            SetValue(phone.notice?.title ?? (phone.connection == .live ? "Connected" : "Connecting…"), connected: phone.connection == .live)
+        SettingsPageFrame(title: "Settings") {
+            SetGroup {
+                ForEach(PhoneSettingsPage.allCases, id: \.self) { page in
+                    NavigationLink { page.screen } label: {
+                        SetRow(page.label) {
+                            Image(systemName: "chevron.right").font(Tokens.font(12, .semibold)).foregroundStyle(Tokens.muted)
                         }
-                        Image(systemName: "chevron.right").font(Tokens.font(12, .semibold)).foregroundStyle(Tokens.muted)
+                        .contentShape(Rectangle())
                     }
-                }
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-        }
-    }
-
-    /// Off Home (Sangam's has none), and never without asking (docs/oby-ux.md row 20).
-    private var stopEverything: some View {
-        SetGroup(footer: "Stops every task on your Mac, as ⌃⌥⌘. does there.") {
-            SetRow("Stop every task", about: "\(phone.active.count) running") {
-                Button("Stop", role: .destructive) { stopping = true }.buttonStyle(.set)
-            }
-        }
-        .confirmationDialog("Stop \(phone.active.count == 1 ? "the running task" : "all \(phone.active.count) running tasks")?",
-                            isPresented: $stopping, titleVisibility: .visible) {
-            Button("Stop every task", role: .destructive) {
-                Task { do { try await phone.stopAll(); problem = nil } catch { problem = error.localizedDescription } }
-            }
-        } message: {
-            Text("Each ends where it is. What they changed stays on their branches.")
-        }
-    }
-
-    /// Apple Watches that reach the runner without this iPhone.
-    private var watch: some View {
-        SetGroup("Apple Watch without iPhone",
-                 footer: "Away from this iPhone, your watch reaches your Mac through your Cloudflare Tunnel. Paste the Cloudflare Access service token, then pair with Oby open on the watch.",
-                 problem: watchProblem) {
-            SetRow("Client ID") { SetField("Client ID", text: $watchPairing.clientID, prompt: "…access", width: 180).textInputAutocapitalization(.never) }
-            SetRow("Client secret") { SetField("Client secret", text: $watchPairing.clientSecret, prompt: "Secret", secret: true, width: 180) }
-            SetRow(watchPairing.watches.isEmpty ? "No watch paired" : "Pair another watch") {
-                Button(watchPairing.busy ? "Pairing…" : "Pair") {
-                    Task {
-                        watchProblem = nil
-                        do { try await watchPairing.pair(phone) } catch { watchProblem = error.localizedDescription }
-                    }
-                }
-                .buttonStyle(.set)
-                .disabled(!watchPairing.canPair)
-            }
-            ForEach(watchPairing.watches) { watch in
-                SetRow(watch.name, about: "Paired") {
-                    Button("Remove", role: .destructive) {
-                        Task { do { try await watchPairing.remove(watch.id, phone) } catch { watchProblem = error.localizedDescription } }
-                    }
-                    .buttonStyle(.set)
+                    .buttonStyle(.plain)
                 }
             }
         }
@@ -150,11 +29,299 @@ struct SettingsScreen: View {
         let short = info?["CFBundleShortVersionString"] as? String ?? "?"
         return info?["CFBundleVersion"].map { "\(short) (\($0))" } ?? short
     }
-
-
 }
 
-/// Settings › Appearance (docs/oby-ux.md row 1): the system's light or dark, or one of them always.
+/// Electron's Settings pages on obid, in its order.
+enum PhoneSettingsPage: CaseIterable {
+    case general, agents, remote, connectors, about
+
+    var label: String {
+        switch self {
+        case .general: "General"
+        case .agents: "Agents"
+        case .remote: "Remote access"
+        case .connectors: "Connectors"
+        case .about: "About"
+        }
+    }
+
+    @ViewBuilder var screen: some View {
+        SettingsPageFrame(title: label) {
+            switch self {
+            case .general: GeneralPage()
+            case .agents: AgentsPage()
+            case .remote: RemotePage()
+            case .connectors: ConnectorsPage()
+            case .about: SetGroup { SetRow("Version") { SetValue(SettingsScreen.version) } }
+            }
+        }
+    }
+}
+
+/// A Settings page: its 28/600 title over its cards.
+private struct SettingsPageFrame<Content: View>: View {
+    let title: String
+    @ViewBuilder let content: Content
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 0) {
+                Text(title).font(Tokens.font(28, .semibold)).foregroundStyle(Tokens.ink)
+                    .padding(.bottom, 16).accessibilityAddTraits(.isHeader)
+                content
+            }
+            .padding(.horizontal, Tokens.gutter).padding(.top, 8).padding(.bottom, 32)
+        }
+        .scrollDismissesKeyboard(.interactively)
+        .environment(\.settingsCards, true)
+        .obyPage()
+        .navigationBarTitleDisplayMode(.inline)
+    }
+}
+
+/// General: the Mac's permissions, then notifications (Electron's General on obid; Open at login
+/// is the Mac's own).
+private struct GeneralPage: View {
+    @Environment(Phone.self) private var phone
+
+    var body: some View {
+        PermissionsSection(runner: phone.runner, defaultMode: phone.defaultMode, setDefault: phone.setDefaultMode,
+                           title: "Permissions on your Mac",
+                           footer: "Default mode sets how often your agents check with you before they edit files or run commands. To change it for one task, use that task’s Mode menu. Always allow adds a rule here; remove it to be asked again.")
+        PhoneNotifications()
+    }
+}
+
+/// Electron's Notifications on obid: Oby's alerts, and where the system keeps banners, sounds and
+/// Focus. On the iPhone they're the system's: allowed or off there, asked for once.
+private struct PhoneNotifications: View {
+    @State private var status: UNAuthorizationStatus?
+    @Environment(\.openURL) private var openURL
+
+    var body: some View {
+        SetGroup("Notifications", footer: "Oby alerts you when a job needs you, like a question or a failed run. Tap an alert to open the job.") {
+            SetRow("Alerts") {
+                if status == .notDetermined {
+                    Button("Allow Alerts") { Task { await allow() } }.buttonStyle(.set)
+                } else {
+                    SetValue(status == .denied ? "Off" : status == nil ? "…" : "Allowed")
+                }
+            }
+            SetRow("Banners, sounds and Focus") {
+                Button("Open Settings") {
+                    if let url = URL(string: UIApplication.openNotificationSettingsURLString) { openURL(url) }
+                }
+                .buttonStyle(.set)
+            }
+        }
+        .task { await refresh() }
+        .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in Task { await refresh() } }
+    }
+
+    private func refresh() async { status = await UNUserNotificationCenter.current().notificationSettings().authorizationStatus }
+
+    private func allow() async {
+        if (try? await UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge])) == true {
+            UIApplication.shared.registerForRemoteNotifications()
+        }
+        await refresh()
+    }
+}
+
+/// Agents (Electron's Settings › Agents): which agent new tasks go to, then a card per agent with
+/// its 5-hour session and week, its model and efforts. Adding, signing in and removing an agent
+/// happen on the Mac, where its tool runs; so does changing its model (the gateway doesn't carry
+/// account changes: docs/runner-api.md, "obid only: accounts").
+private struct AgentsPage: View {
+    @Environment(Phone.self) private var phone
+    @State private var options: ModelOptions?
+
+    /// The providers' order, as Electron's cards.
+    private static let order = ["claude", "codex", "cursor"]
+
+    var body: some View {
+        let agents = phone.accounts.sorted { (Self.order.firstIndex(of: $0.agent) ?? 9) < (Self.order.firstIndex(of: $1.agent) ?? 9) }
+        let ready = agents.filter(\.signedIn)
+        let chosen = ready.first { $0.id == phone.defaultAccount } ?? ready.first
+        SetGroup("Default agent", footer: "Add, sign in, remove or tune an agent in Settings › Agents on your Mac, where it runs.") {
+            if let chosen {
+                SetRow("New tasks go to") { SetValue("\(chosen.name) · \(Usage.tool(chosen.agent))") }
+            } else {
+                SetRow("No agents yet", quiet: true)
+            }
+        }
+        ForEach(agents) { account in
+            AgentCard(account: account, options: options)
+        }
+        Color.clear.frame(height: 0).task { options = try? await phone.runner.modelOptions() }
+    }
+}
+
+/// One agent's card: its usage (Electron's: the 5-hour session's bar, the week in words under
+/// it), its model and its efforts.
+private struct AgentCard: View {
+    let account: Account
+    let options: ModelOptions?
+
+    private static let efforts = ["low": "Low", "medium": "Medium", "high": "High", "xhigh": "Extra high", "max": "Max", "ultra": "Ultra"]
+
+    private var tool: ModelOptions.Tool? {
+        switch account.agent {
+        case "claude": options?.claude
+        case "codex": options?.codex
+        case "cursor": options?.cursor
+        default: nil
+        }
+    }
+
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 60)) { context in
+            let usage = AgentUsage(account, now: context.date)
+            SetGroup(account.name) {
+                SetRow {
+                    HStack(alignment: .top, spacing: 12) {
+                        AgentMark(agent: account.agent).font(Tokens.font(13)).foregroundStyle(Tokens.muted)
+                            .frame(width: 16).padding(.top, 2).accessibilityHidden(true)
+                        VStack(alignment: .leading, spacing: 3) {
+                            HStack {
+                                Text(Usage.tool(account.agent))
+                                Spacer(minLength: 8)
+                                if let session = usage.session { SetValue("\(session)% used") }
+                            }
+                            if !account.signedIn {
+                                SetAbout("\(account.label ?? "Not signed in"): sign in on your Mac")
+                            } else if let session = usage.session {
+                                SetAbout("5-hour session" + (usage.sessionResets.map { " · resets \($0)" } ?? ""))
+                                SetMeter(used: Double(session)).padding(.vertical, 4)
+                                SetAbout(usage.week)
+                            } else {
+                                SetAbout(usage.week)
+                            }
+                        }
+                    }
+                }
+                SetRow("Model") { SetValue(modelWords) }
+                if account.agent != "cursor" {
+                    SetRow("Effort on complex tasks") { SetValue(account.complexEffort.map(effortName) ?? "Default") }
+                }
+            }
+        }
+    }
+
+    /// The model and, after it, how hard it thinks (Electron's ModelPicker's button).
+    private var modelWords: String {
+        let model = account.model.map { id in tool?.models.first { $0.id == id }?.name ?? id } ?? "Default"
+        guard account.agent != "cursor", let effort = account.effort else { return model }
+        return "\(model) · \(effortName(effort))"
+    }
+
+    private func effortName(_ effort: String) -> String { Self.efforts[effort] ?? effort }
+}
+
+/// An account's usage as Electron's `accountRow` and `weekWords` say it: the 5-hour session's
+/// share (signed in, not Cursor; past its reset, 0) and when it starts over, and the week in words.
+struct AgentUsage {
+    var session: Int?
+    var sessionResets: String?
+    var week: String
+
+    init(_ a: Account, now: Date) {
+        let over = a.fiveHourResets.map { $0 <= now } ?? false
+        session = a.agent == "cursor" || !a.signedIn || a.fiveHour == nil ? nil : over ? 0 : Int(((a.fiveHour ?? 0) * 100).rounded())
+        sessionResets = session != nil && !over ? a.fiveHourResets?.formatted(date: .omitted, time: .shortened) : nil
+        let used = a.agent == "cursor" ? nil : (a.sevenDay ?? a.fiveHour).map { Int(($0 * 100).rounded()) }
+        let resets = !a.signedIn ? a.label ?? "Not signed in"
+            : a.agent == "cursor" ? "Cursor doesn’t report usage"
+            : used == nil ? "No use reported yet"
+            : a.sevenDayResets.map { "resets \($0.formatted(.dateTime.weekday(.wide)))" } ?? "no reset reported"
+        if a.sevenDay != nil, let used {
+            week = "This week \(used)% · \(resets)"
+        } else if a.sevenDay == nil, session != nil {
+            week = "No weekly use reported yet"
+        } else {
+            week = resets.prefix(1).uppercased() + resets.dropFirst()
+        }
+    }
+}
+
+/// Remote access, from the iPhone's side: the Mac it reaches, how, until when, and Unpair. Pairing
+/// a device and the list of paired ones are the Mac's own (its Settings › Remote access).
+private struct RemotePage: View {
+    @Environment(Phone.self) private var phone
+    @State private var unpairing = false
+
+    var body: some View {
+        if let link = phone.link {
+            SetGroup("Your Mac", footer: "Revoke this iPhone from your Mac’s Settings › Remote access, or unpair it here. It will need to pair again before it can reach your Mac.") {
+                SetRow(link.name, about: [phone.route?.label, phone.pairedUntil.map { "Paired until \($0.formatted(.dateTime.month(.abbreviated).day()))" }]
+                    .compactMap(\.self).joined(separator: " · ")) {
+                    SetValue(phone.notice?.title ?? (phone.connection == .live ? "Connected" : "Connecting…"), connected: phone.connection == .live)
+                }
+                SetRow("Unpair this iPhone") {
+                    Button("Unpair", role: .destructive) { unpairing = true }.buttonStyle(.set)
+                }
+            }
+            .confirmationDialog("Unpair from \(link.name)?", isPresented: $unpairing, titleVisibility: .visible) {
+                Button("Unpair", role: .destructive) { phone.link = nil }
+            } message: {
+                Text("This iPhone forgets its device token. Scan the code on your Mac to connect again.")
+            }
+        } else {
+            SetGroup("Your Mac", footer: "On your Mac, open Settings › Remote access › Pair a device, then scan its code.") {
+                SetRow("No Mac paired yet", quiet: true)
+            }
+        }
+    }
+}
+
+/// Connectors (Electron's on obid): Connected, then Available, each with its line. Connecting and
+/// disconnecting happen on the Mac, whose logins they are.
+private struct ConnectorsPage: View {
+    @Environment(Phone.self) private var phone
+
+    private struct Connector {
+        var name: String
+        /// Its mark, as Electron's BrandMark: GitHub's drawn in the text's color, Tetrix's its own.
+        var mark: String
+        var about: String
+        var connected: Bool
+    }
+
+    var body: some View {
+        // GitHub: obid's gh is signed in (its GitHub work says so, and as whom); Tetrix: the
+        // accounts' agents have it.
+        let github = phone.gitHubWork, tetrix = phone.accounts.contains { $0.tetrix == true }
+        let all = [
+            Connector(name: "GitHub", mark: "GitHub", about: github?.signedIn == true ? github?.login ?? "Signed in" : "Repos, pull requests and checks",
+                      connected: github?.signedIn == true),
+            Connector(name: "Tetrix", mark: "Tetrix", about: tetrix ? "For all your agents" : "Project knowledge and blast radius", connected: tetrix),
+        ]
+        ForEach([true, false], id: \.self) { connected in
+            let items = all.filter { $0.connected == connected }
+            if !items.isEmpty {
+                SetGroup(connected ? "Connected" : "Available", footer: connected ? nil : "Connect them in Settings › Connectors on your Mac: their logins stay there, never on this iPhone.") {
+                    ForEach(items, id: \.name) { c in
+                        SetRow {
+                            HStack(spacing: 12) {
+                                Image(c.mark).resizable().scaledToFit().frame(width: 22, height: 22).foregroundStyle(Tokens.ink)
+                                    .accessibilityHidden(true)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(c.name)
+                                    SetAbout(c.about)
+                                }
+                            }
+                        } control: {
+                            SetValue(c.connected ? "Connected" : "On your Mac", connected: c.connected)
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Settings › Appearance's choice, kept from before Settings followed Electron's (which has none):
+/// the app still draws in it.
 enum Appearance: String, CaseIterable {
     case system, light, dark
 
@@ -165,54 +332,6 @@ enum Appearance: String, CaseIterable {
         case .system: nil
         case .light: .light
         case .dark: .dark
-        }
-    }
-}
-
-/// One account on the Mac (the Mac's AccountUsageRow, on the iPhone): its name, plan and when its
-/// week resets, the week's bar, the 5-hour window past 80%, its reserve, and Tetrix. Signing in
-/// happens on the Mac, where the tools run.
-private struct PhoneAccountRow: View {
-    let account: Account
-    var lift: @MainActor (Bool) async throws -> Void
-    @State private var problem: String?
-
-    var body: some View {
-        TimelineView(.periodic(from: .now, by: 60)) { context in
-            let usage = account.usage, now = context.date
-            SetRow {
-                HStack(alignment: .top, spacing: 16) {
-                    AgentMark(agent: account.agent).font(Tokens.font(13)).foregroundStyle(Tokens.muted)
-                        .frame(width: 16).padding(.top, 2).accessibilityHidden(true)
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(account.name)
-                        SetAbout(account.signedIn ? Usage.about(usage, payer: "", now: now) : "Signed out: sign in on your Mac")
-                        if let week = Usage.week(usage, now: now) { SetMeter(used: week * 100).padding(.top, 4) }
-                        if let line = Usage.fiveHourLine(usage, now: now) {
-                            SetAbout(line, color: SetMeter.fill(used: (usage.fiveHour ?? 0) * 100))
-                        }
-                        if usage.reserved(at: now) { SetAbout(Usage.reservedText, color: Tokens.needsInk) }
-                        if usage.signedIn, usage.inReserve(at: now) {
-                            HStack {
-                                Text(Usage.liftText)
-                                Spacer(minLength: 12)
-                                Toggle(Usage.liftText, isOn: Binding(get: { usage.liftedUntil(at: now) != nil }, set: { on in
-                                    Task { do { try await lift(on); problem = nil } catch { problem = error.localizedDescription } }
-                                }))
-                                .toggleStyle(.set)
-                            }
-                            .padding(.top, 6)
-                            SetAbout(Usage.liftNote(usage))
-                            if let problem { SetAbout(problem, color: Tokens.danger) }
-                        }
-                        if account.signedIn {
-                            SetAbout(TetrixJobReport.accountLine(connected: account.tetrix == true, jobs: account.tetrixJobs ?? 0,
-                                                                 used: account.tetrixUsed ?? 0, there: "on your Mac"),
-                                     color: account.tetrix == true ? Tokens.muted : Tokens.needsInk)
-                        }
-                    }
-                }
-            }
         }
     }
 }

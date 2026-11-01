@@ -11,6 +11,9 @@ struct PermissionsSection: View {
     /// The default mode, as the runner last said, or nil from a runner without modes.
     var defaultMode: RunnerMode?
     var setDefault: (RunnerMode) async throws -> Void
+    /// The card's title and note: the iPhone's are Electron's (Settings › General); the Mac keeps its own.
+    var title = "Permissions"
+    var footer = Self.footer
     /// Nil until the runner answered, or when it has no rules to list (older runners).
     @State private var rules: [RunnerRule]?
     @State private var problem: String?
@@ -45,7 +48,7 @@ struct PermissionsSection: View {
     }
 
     private var group: some View {
-        SetGroup("Permissions", footer: Self.footer, problem: problem) {
+        SetGroup(title, footer: footer, problem: problem) {
             if runner == nil {
                 SetRow(RunnerError.unpaired, quiet: true)
             } else if defaultMode == nil && rules == nil {
@@ -54,9 +57,12 @@ struct PermissionsSection: View {
                 SetRow("Default mode", about: defaultMode?.help) {
                     SetSelect("Default mode", selection: mode, options: modes.map { (RunnerMode?.some($0), $0.label) })
                 }
+                // None saved: on the iPhone no row, as Electron's (its note says how one gets here)
+                #if os(macOS)
                 if let rules, rules.isEmpty {
                     SetRow("No saved rules", quiet: true)
                 }
+                #endif
                 ForEach(rules ?? []) { rule in
                     SetRow(about: [rule.decision == "deny" ? "Denied" : "Allowed", rule.repo].compactMap(\.self).joined(separator: " · ")) {
                         SetCode(rule.rule)
