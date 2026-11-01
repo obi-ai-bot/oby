@@ -367,6 +367,8 @@ fn attach_13_files_alone_follow_up_a_finished_task_but_not_a_running_one() {
     );
     assert_eq!(followed.status, 201, "{}", followed.text);
     assert_eq!(followed.body["request"], obid::jobs::FILES_ALONE);
+    // An attachment is untrusted, as words with one are (#1652).
+    assert_eq!(followed.body["untrusted"], true, "{}", followed.text);
     let next = followed.body["id"].as_str().unwrap();
     let input = obid
         .home

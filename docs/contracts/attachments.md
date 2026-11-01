@@ -55,7 +55,7 @@ The business behavior contract for the message box's **Add files or photos** and
 - **ATTACH-10** The app uploads each file, then sends the words with the paths, the tasks and a UUID `id`; files alone are sent; a send obid didn't answer goes again, the same request with the same `id`; an answer of obid's is final; the tag shows the name picked and a photo's preview.
 - **ATTACH-11** A deleted conversation takes its files with it: the upload's folder is gone; one a task at work holds stays.
 - **ATTACH-12** An upload whose words never went can go (`DELETE /v1/attachments`, `204`); a path that isn't an upload is `422`; one a conversation holds is `409` and stays.
-- **ATTACH-13** Files with no words to a finished task start its follow-up, with them in its `.obi/inputs`; to a task at work they're `422` in obid's words.
+- **ATTACH-13** Files with no words to a finished task start its follow-up, with them in its `.obi/inputs`, and `untrusted` as ATTACH-6's ([#1652](https://github.com/obi-ai-bot/oby/issues/1652)); to a task at work they're `422` in obid's words.
 - **ATTACH-14** A file gone before its turn or task started is named as left out (`(left out: <name>, it is no longer on this Mac)`); a task's prompt names its files between fences.
 - **ATTACH-15** One refused upload (empty, or over 25 MB, which isn't read or sent) keeps the box, says obid's words, and removes the files uploaded before it; words obid refuses take their uploads away.
 - **ATTACH-16** A second pasted screenshot is numbered (`image 2.png`), not dropped.
