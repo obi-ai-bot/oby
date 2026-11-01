@@ -51,6 +51,8 @@ nonisolated struct Job: Codable, Identifiable, Equatable, Sendable {
     var pullRequestError: String?
     /// When the user let the job go (Dismiss), or nil: it then needs nothing (newer runners only).
     var dismissed: Date?
+    /// Archived with a task's ⋮, on any app (obid only, `POST /v1/jobs/{id}/archive`), or nil.
+    var archived: Bool?
     /// Oby's own review of the pull request (newer runners): the review job under way, the latest
     /// verdict, why none came, and, on a review job, the job it reviews.
     var reviewing: String?
@@ -177,7 +179,7 @@ nonisolated struct Job: Codable, Identifiable, Equatable, Sendable {
     private enum CodingKeys: String, CodingKey {
         case id, request, agent, account, repo, branch, base, pr, kind, task, title, status, step, summary, session, created,
              started, finished, commits, published, pushed, publishError, issue, rounds, round, check, model, notes, pipeline,
-             pullRequest, pullRequestError, dismissed, reviewing, review, reviewError, reviewOf, outgoing, question, mode, permission, moves, waiting, report,
+             pullRequest, pullRequestError, dismissed, archived, reviewing, review, reviewError, reviewOf, outgoing, question, mode, permission, moves, waiting, report,
              conversation, turn, artifacts, followUpOf, routine, tetrix, activity, usage, windowShare, estimate, checks, scan, diff, context,
              reason, nextStep, resumesAt, stalled, accountLimit
         case stoppedMerge = "mergeNeedsYou"
@@ -391,6 +393,9 @@ nonisolated struct Question: Codable, Equatable, Sendable {
 #if os(iOS) || os(watchOS)
 /// Something only the user can answer, waiting in the inbox (docs/runner-api.md). The Mac reads
 /// these into Engine's own InboxItem.
+/// What `POST /v1/jobs/{id}/delete` answers.
+nonisolated struct DeleteAnswer: Decodable, Sendable { var deleted: Bool; var ask: InboxItem? }
+
 nonisolated struct InboxItem: Codable, Identifiable, Equatable, Sendable {
     /// `question`, `review`, `failed` or `limit`; more may come.
     var kind: String
@@ -769,11 +774,11 @@ nonisolated enum RunnerEvent: Equatable, Sendable {
     #if os(macOS)
     /// With what Engine's Job doesn't read yet (RunnerJobExtras), when it could be read.
     case job(Job, RunnerJobExtras?)
-    /// A job was deleted, here or on another app (obid only): it leaves every list.
-    case jobDeleted(String)
     #else
     case job(Job)
     #endif
+    /// A job was deleted, here or on another app (obid only): it leaves every list.
+    case jobDeleted(String)
     case accounts([RunnerAccount])
     #if os(iOS)
     case limitDecision
@@ -1202,6 +1207,11 @@ nonisolated struct Runner: Sendable {
     /// Deletes a job that ended, for good (obid only): its record, worktree and local branch in
     /// obid's clone. Nothing pushed is touched: its branch and pull request stay on GitHub.
     func deleteJob(_ id: String) async throws { try await send("DELETE", "v1/jobs/\(id)") }
+    #if os(iOS)
+    /// The apps' Delete task (obid only, `POST /v1/jobs/{id}/delete`): gone at once, or, with
+    /// commits that aren't published or work that isn't committed, obid's Confirm (`ask`) first.
+    func deleteAsked(_ id: String) async throws -> DeleteAnswer { try await call("POST", "v1/jobs/\(id)/delete") }
+    #endif
     /// Clear done: the runner records now, and every app hides the jobs that finished by then.
     func clear() async throws -> Date {
         let answer: ClearedAt = try await call("POST", "v1/clear")
@@ -2156,10 +2166,8 @@ nonisolated enum MoveChoice {
     }
 }
 
-#if os(macOS)
 /// obid's `job` event for a job that was deleted.
 private nonisolated struct DeletedJob: Decodable { var id: String; var deleted: Bool }
-#endif
 
 /// Turns Server-Sent Events lines into events. Unknown events and pings are skipped.
 nonisolated struct EventParser {
@@ -2178,7 +2186,9 @@ nonisolated struct EventParser {
                 if let gone = try? Runner.decoder.decode(DeletedJob.self, from: json), gone.deleted { return .jobDeleted(gone.id) }
                 return (try? Runner.decoder.decode(Job.self, from: json)).map { RunnerEvent.job($0, try? Runner.decoder.decode(RunnerJobExtras.self, from: json)) }
             #else
-            case "job": return (try? Runner.decoder.decode(Job.self, from: json)).map(RunnerEvent.job)
+            case "job":
+                if let gone = try? Runner.decoder.decode(DeletedJob.self, from: json), gone.deleted { return .jobDeleted(gone.id) }
+                return (try? Runner.decoder.decode(Job.self, from: json)).map(RunnerEvent.job)
             #endif
             case "accounts": return (try? Runner.decoder.decode([RunnerAccount].self, from: json)).map(RunnerEvent.accounts)
             #if os(iOS)

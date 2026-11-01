@@ -85,7 +85,7 @@ struct TaskCard: View {
         .onTapGesture { push(.task(job.id)) }
         .contextMenu {
             Button("View details", systemImage: "info.circle") { push(.task(job.id)) }
-            TaskMenuItems(job: job, items: TaskMenu.items(job, conversation: phone.conversation(of: job) != nil).filter { $0 != .move && $0 != .mode },
+            TaskMenuItems(job: job, items: TaskMenu.items(job, conversation: phone.conversation(of: job) != nil).filter { $0 != .move && $0 != .mode && $0 != .rename },
                           busy: $busy, onProblem: { problem = $0 })
         }
         .accessibilityElement(children: .contain)
@@ -103,18 +103,20 @@ struct TaskCard: View {
     }
 }
 
-/// A task's ⋮ (Sangam's TaskMenu.tsx, docs/oby-ux.md row 21): its conversation; Stop task while it
-/// goes, Archive task once it's done (Dismiss instead while it needs you); then the iPhone's Move
-/// to… and Mode. His Rename and Delete task wait for obid, which can't rename or delete a job yet.
+/// A task's ⋮ (Sangam's TaskMenu.tsx, docs/oby-ux.md row 21): its conversation, Rename; Stop task
+/// while it goes, Archive task once it's done (Dismiss instead while it needs you); then the
+/// iPhone's Move to… and Mode; last, set apart, Delete task (obid says why when it can't yet).
 nonisolated enum TaskMenu {
-    enum Item: Equatable { case openConversation, stop, archive, dismiss, move, mode }
+    enum Item: Equatable { case openConversation, rename, stop, archive, dismiss, move, mode, delete }
 
     static func items(_ job: Job, conversation: Bool) -> [Item] {
         var items: [Item] = conversation ? [.openConversation] : []
+        items.append(.rename)
         items.append(job.isActive ? .stop : job.needsYou || job.canPublish ? .dismiss : .archive)
         // Oby's own reviews pick their account themselves.
         if job.reviewOf == nil { items.append(.move) }
         if job.isActive, job.mode != nil { items.append(.mode) }
+        items.append(.delete)
         return items
     }
 }
@@ -126,6 +128,7 @@ struct TaskMenuItems: View {
     let job: Job
     let items: [TaskMenu.Item]
     var onMove: () -> Void = {}
+    var onRename: () -> Void = {}
     /// An action under way: the items wait for it.
     var busy: Binding<Bool> = .constant(false)
     var onProblem: (String?) -> Void = { _ in }
@@ -138,9 +141,13 @@ struct TaskMenuItems: View {
                     Button("Open conversation", systemImage: "bubble.left.and.bubble.right") { push(.conversation(conversation)) }
                 }
             case .stop: Button("Stop task", systemImage: "stop", role: .destructive) { run { try await phone.stop(job.id) } }.disabled(busy.wrappedValue)
-            case .archive: Button("Archive task", systemImage: "archivebox") { phone.archive(job.id) }
+            case .rename: Button("Rename", systemImage: "pencil", action: onRename)
+            case .archive: Button("Archive task", systemImage: "archivebox") { run { try await phone.archive(job.id) } }.disabled(busy.wrappedValue)
             case .dismiss: Button("Dismiss", systemImage: "xmark") { run { try await phone.dismiss(job.id) } }.disabled(busy.wrappedValue)
             case .move: Button("Move to…", systemImage: "arrow.left.arrow.right", action: onMove)
+            case .delete:
+                Divider()
+                Button("Delete task", systemImage: "trash", role: .destructive) { run { _ = try await phone.deleteTask(job.id) } }.disabled(busy.wrappedValue)
             case .mode:
                 let mode = RunnerMode(job.mode)
                 Picker(selection: Binding { mode } set: { choice in if let choice { run { try await phone.setMode(job.id, choice) } } }) {
@@ -234,6 +241,8 @@ struct TaskPage: View {
     /// Asked the runner for a job the list doesn't have (it keeps only the latest 50).
     @State private var looked = false
     @State private var moving = false
+    @State private var renaming = false
+    @State private var newTitle = ""
     @State private var researchReport: ResearchDocument?
     @State private var showingReport = false
     @State private var showingSession = false
@@ -296,7 +305,8 @@ struct TaskPage: View {
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu {
                         TaskMenuItems(job: job, items: TaskMenu.items(job, conversation: phone.conversation(of: job) != nil),
-                                      onMove: { problem = nil; moving = true }, busy: $busy, onProblem: { problem = $0 })
+                                      onMove: { problem = nil; moving = true }, onRename: { newTitle = job.heading; renaming = true },
+                                      busy: $busy, onProblem: { problem = $0 })
                     } label: { Image(systemName: "ellipsis") }
                         .accessibilityLabel("Task options")
                 }
@@ -304,6 +314,15 @@ struct TaskPage: View {
         }
         .sheet(isPresented: $moving) {
             if let job { MoveSheet(job: job) }
+        }
+        .alert("Rename task", isPresented: $renaming) {
+            TextField("Name", text: $newTitle)
+            Button("Rename") {
+                let title = newTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !title.isEmpty else { return }
+                Task { await run { try await phone.rename(id, to: title) } }
+            }
+            Button("Cancel", role: .cancel) {}
         }
         .fullScreenCover(isPresented: $showingSession) { SessionSheet(id: id) }
         .sheet(isPresented: $showingReport) {

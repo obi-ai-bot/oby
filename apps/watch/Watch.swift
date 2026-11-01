@@ -202,6 +202,7 @@ final class Watch: NSObject {
                         case .job(let job):
                             apply(job)
                             saveGlance()
+                        case .jobDeleted(let id): jobs.removeAll { $0.id == id }
                         case .accounts(let accounts): self.accounts = accounts
                         case .step(let step): take(step)
                         case .cleared, .inbox, .turn, .conversation, .delta, .artifact, .routine, .github, .transcript: break

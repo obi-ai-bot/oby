@@ -92,6 +92,7 @@ const ROUTES: &[(&str, &str)] = &[
     ("POST", "/v1/jobs/*/archive"),
     ("DELETE", "/v1/jobs/*"),
     ("PATCH", "/v1/jobs/*"),
+    ("POST", "/v1/jobs/*/delete"),
     ("POST", "/v1/jobs/*/move"),
     ("POST", "/v1/jobs/*/start"),
     ("POST", "/v1/jobs/*/start-when"),
@@ -964,6 +965,8 @@ mod tests {
         assert!(allows(&Method::POST, "/v1/jobs/abc/archive"));
         assert!(allows(&Method::DELETE, "/v1/jobs/abc"));
         assert!(allows(&Method::PATCH, "/v1/jobs/abc"));
+        // Delete task as the apps ask it: obid's Confirm first for work that isn't published.
+        assert!(allows(&Method::POST, "/v1/jobs/abc/delete"));
         // The GitHub work feed: read it, refresh it, start an item's work (docs/runner-api.md,
         // "obid only: GitHub work"); nothing else under it.
         assert!(allows(&Method::GET, "/v1/github/work"));
