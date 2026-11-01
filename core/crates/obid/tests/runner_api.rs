@@ -1125,6 +1125,9 @@ fn agents_5_6_jobs_run_on_their_accounts_model_and_effort() {
         json!({"model": "a b"}),
         json!({"model": "--dangerously-skip-permissions"}),
         json!({"model": "gpt-6.1-sol"}),
+        // An effort's name isn't a model (#1652): `claude --model high` would fail every job.
+        json!({"model": "high"}),
+        json!({"model": "max"}),
         json!({"effort": 3}),
         // A name that can't be: the model with it isn't kept either.
         json!({"name": "", "model": "claude-sonnet-5-5"}),

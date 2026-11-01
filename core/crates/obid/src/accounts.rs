@@ -935,7 +935,9 @@ fn tuning(
             {
                 Some(v.clone())
             }
-            Some(Value::String(v)) if crate::settings::efforts(tool).contains(&v.as_str()) => {
+            Some(Value::String(v))
+                if key != "model" && crate::settings::efforts(tool).contains(&v.as_str()) =>
+            {
                 Some(v.clone())
             }
             Some(_) if key == "model" => {
