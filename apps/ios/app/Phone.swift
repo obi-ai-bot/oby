@@ -62,7 +62,7 @@ nonisolated enum PhoneWork {
     static func step(_ item: WorkList.Item<Job>, decision: InboxItem?) -> String {
         let job = item.job
         if item.status == .needs {
-            let kind = decision.map { AskKind.label($0.kind, plan: job.question?.plan != nil) }
+            let kind = decision.map { PhoneAsk.label($0, plan: job.question?.plan != nil) }
                 ?? (job.waitsForPermission ? "Permission" : job.waitsForAnswer ? AskKind.label("question", plan: job.question?.plan != nil)
                     : job.reviewNeedsYou ? AskKind.label("review") : job.mergeNeedsYou ? AskKind.label("merge") : AskKind.label("failed"))
             return "Needs you · \(kind)"

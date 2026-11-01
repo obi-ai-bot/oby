@@ -255,10 +255,11 @@ nonisolated enum PhoneAsk {
 
     static func checkTitle(_ item: InboxItem) -> String { "Use this as \(item.confirm?.target ?? "")’s check before publishing?" }
 
-    /// Use it (obid's Confirm, signed), and No check, or Keep it for a repository that has one (Cancel).
+    /// Use it (obid's Confirm, signed: never recommended, as no Confirm is), and No check, or Keep it
+    /// for a repository that has one (Cancel).
     /// ponytail: no Edit here; its `POST /v1/repos/check` isn't on the phone's gateway, so it's the Mac's
     static func checkOptions(_ item: InboxItem) -> [CardOption] {
-        [CardOption(label: "Use it", answer: RunnerConfirm.confirm, recommended: true),
+        [CardOption(label: "Use it", answer: RunnerConfirm.confirm),
          CardOption(label: item.confirm?.payload?["was"] != nil ? "Keep it" : "No check", answer: RunnerConfirm.cancel)]
     }
 
