@@ -7,9 +7,7 @@ import SwiftUI
 struct UnpairedScreen: View {
     @Environment(Phone.self) private var phone
     @ScaledMetric(relativeTo: .body) private var lineSize = Tokens.textBase
-    /// Its own page, never Home's: a WebPage shows in one WebView at a time, and as pairing starts
-    /// or ends this screen and Home are both on screen for a moment (WebKit stops the app).
-    @State private var character = ObyCharacter(query: "embed&size=1.23")
+    let character: ObyCharacter
     @State private var scanning = false
 
     var body: some View {
@@ -103,13 +101,13 @@ private struct ScanSheet: View {
 }
 
 #Preview("Light") {
-    UnpairedScreen()
+    UnpairedScreen(character: ObyCharacter(query: "embed&size=1.23"))
         .environment(Phone())
         .preferredColorScheme(.light)
 }
 
 #Preview("Dark") {
-    UnpairedScreen()
+    UnpairedScreen(character: ObyCharacter(query: "embed&size=1.23"))
         .environment(Phone())
         .preferredColorScheme(.dark)
 }
