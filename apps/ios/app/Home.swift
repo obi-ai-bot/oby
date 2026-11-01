@@ -104,6 +104,16 @@ struct HomeView: View {
         .onDisappear { phone.cancelVoice() }
         .onChange(of: scenePhase) { if scenePhase != .active { phone.leftForeground(background: scenePhase == .background) } }
         .onChange(of: phone.homePath) { if !phone.homePath.isEmpty { phone.cancelVoice(); typing = false } }
+        // Once the panel has slid away (Tokens.warm): focused while it's still out, the box doesn't take it.
+        .onChange(of: phone.focusHome) {
+            guard phone.focusHome else { return }
+            phone.focusHome = false
+            Task {
+                try? await Task.sleep(for: .milliseconds(350))
+                // Home still showing: a page pushed or the panel opened since keeps the keyboard down.
+                if phone.homePath.isEmpty, phone.panel == nil { typing = true }
+            }
+        }
         .onChange(of: mood, initial: true) { character.mood = mood }
     }
 

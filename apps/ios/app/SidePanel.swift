@@ -119,6 +119,16 @@ private struct SidePanel: View {
                     .accessibilityLabel("Hide sidebar")
                 }
                 .padding(.leading, 12).padding(.trailing, 4).padding(.top, 4).padding(.bottom, 8)
+                // What this tab starts, first thing under its title (Sangam's `.sidebar-new`): both go
+                // to Home's box, as his do.
+                Button(action: startNew) {
+                    Label(section == .home ? "New task" : "New conversation", systemImage: "plus")
+                        .font(Tokens.font(Tokens.textBase)).foregroundStyle(Tokens.item)
+                        .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                        .padding(.horizontal, 12)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
                 switch section {
                 case .home: TasksColumn(open: open)
                 case .conversations: ConversationsColumn(open: open)
@@ -143,6 +153,12 @@ private struct SidePanel: View {
         .accessibilityAddTraits(on ? .isSelected : [])
     }
 
+    private func startNew() {
+        phone.homePath = []
+        phone.panel = nil
+        phone.focusHome = true
+    }
+
     /// Opens a page over Home and closes the panel, as Sangam's does.
     private func open(_ route: Route) {
         phone.homePath = [route]
@@ -164,7 +180,7 @@ private struct TasksColumn: View {
                     if !phone.loaded && phone.connection == .connecting {
                         RowBones()
                     } else {
-                        Text(phone.loaded ? "Nothing here yet. Ask Oby for something and it shows up here." : "Reaching your Mac…")
+                        Text(!phone.loaded ? "Reaching your Mac…" : phone.archived.isEmpty ? "No tasks yet. They’ll show up here once you give me one." : "All caught up. Finished tasks are in Archived.")
                             .font(Tokens.font(Tokens.textSm)).foregroundStyle(Tokens.muted).padding(.horizontal, 12)
                     }
                 }
