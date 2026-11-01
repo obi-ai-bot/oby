@@ -89,7 +89,7 @@ The task's own conversation with its agent. For a task that came in from GitHub 
 
 ### Connect
 
-First run, or after Unpair. Oby (112pt), "Connect to your Mac", one line on where the code is on the Mac (Settings › Runner › Pair a phone). "On this network": Macs found over Bonjour (`_oby._tcp`), each a row. Six digit boxes for the code, the focused one edged in `field-edge-on`. "A code works once, for two minutes. This iPhone then stays paired for 30 days." Connect (the one `ink` button) and "Scan the code instead". From obid: `POST /v1/pairing` on the gateway with `{credential, name}`; the token goes to the Keychain.
+First run, or after Unpair. Oby (112pt), "Connect to your Mac", one line on where the code is on the Mac (Settings › Remote access › Pair a device). "On this network": Macs found over Bonjour (`_oby._tcp`), each a row. Six digit boxes for the code, the focused one edged in `field-edge-on`. "A code works once, for two minutes. This iPhone then stays paired for 30 days." Connect (the one `ink` button) and "Scan the code instead". From obid: `POST /v1/pairing` on the gateway with `{credential, name}`; the token goes to the Keychain.
 
 ### Settings
 

@@ -47,9 +47,9 @@ struct PermissionsSection: View {
     private var group: some View {
         SetGroup("Permissions", footer: Self.footer, problem: problem) {
             if runner == nil {
-                SetRow("Set the runner's address first.", quiet: true)
+                SetRow(RunnerError.unpaired, quiet: true)
             } else if defaultMode == nil && rules == nil {
-                SetRow("This runner doesn't ask before agents act.", quiet: true)
+                SetRow("This Oby doesn't ask before agents act.", quiet: true)
             } else {
                 SetRow("Default mode", about: defaultMode?.help) {
                     SetSelect("Default mode", selection: mode, options: modes.map { (RunnerMode?.some($0), $0.label) })
@@ -73,9 +73,9 @@ struct PermissionsSection: View {
     private var section: some View {
         Section {
             if runner == nil {
-                Text("Set the runner's address first.").foregroundStyle(.secondary)
+                Text(RunnerError.unpaired).foregroundStyle(.secondary)
             } else if defaultMode == nil && rules == nil {
-                Text("This runner doesn't ask before agents act.").foregroundStyle(.secondary)
+                Text("This Oby doesn't ask before agents act.").foregroundStyle(.secondary)
             } else {
                 Picker("Default mode", selection: mode) {
                     ForEach(modes) { mode in

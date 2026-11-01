@@ -4,10 +4,10 @@ The business behavior contract for showing the pairing QR code in the Electron a
 
 ## Feature and status
 
-- **Outcome:** The owner opens Settings › Runner, clicks Pair a device, scans the QR code with Oby on their iPhone, and the iPhone shows and answers their conversations and tasks from anywhere, through the Obysphere, with no port, tunnel or tailnet.
+- **Outcome:** The owner opens Settings › Remote access, clicks Pair a device, scans the QR code with Oby on their iPhone, and the iPhone shows and answers their conversations and tasks from anywhere, through the Obysphere, with no port, tunnel or tailnet.
 - **Status:** **Implemented** in the Electron app (`src/main/device.ts`, `obid-pair-invite`; `src/renderer/src/SettingsView.tsx`, `Pairing`). obid's side was already built (docs/runner-api.md, "LAN gateway" and "obid only: the phone relay") and is unchanged; so is the iPhone's (`apps/ios/app/ConnectScreen.swift`, `apps/shared/PhoneRelay.swift`). A port of the frozen Swift Mac app's `PairingView.swift`, through the Obysphere only.
 - **Scope:** an invitation through the Obysphere, its QR code, the paired devices and Revoke. **Out of scope:** pairing over Remote access or the tailnet (hidden for launch, as Remote access is), the six-digit code (the iPhone takes it only for a Mac Bonjour finds), the Apple Watch.
-- **Design:** Sangam's Settings has a Runner page (hidden for launch); on obid it shows only these two groups, in his Group and Row, with the Swift Mac app's words (which the iPhone's own words point to: "Scan the one the Mac's Settings › Runner shows."). Sangam may redraw it.
+- **Design:** Sangam's Settings has a Remote access page (hidden for launch off obid); on obid it shows only these two groups, in his Group and Row, with the Swift Mac app's words (which the iPhone's own words point to: "Scan the one the Mac's Settings › Remote access shows."). No word a person sees says Runner (the owner's order of 2026-11-01): the Runner page that held them went. Sangam may redraw it.
 
 ## Behavior
 
@@ -16,7 +16,7 @@ The business behavior contract for showing the pairing QR code in the Electron a
 
 | What the owner sees | What happens |
 |---|---|
-| Settings › Runner, in an Obysphere: Pair a device, "Through your Obysphere" | Nothing yet. |
+| Settings › Remote access, in an Obysphere: Pair a device, "Through your Obysphere" | Nothing yet. |
 | Pair a device | main's dialog: "Pair a new device with this Mac?", "The phone that scans its code can see and answer your tasks, and approve for you, until you revoke it.", Pair and Cancel (the default; Cancel shows "Not paired: you cancelled."). Pair: `POST /v1/pairing/invite` `{"name": <this Mac's name>, "approval": {device, action: "", signedAt, signature over "oby-pair-invite\n<signedAt>"}}`. The QR code shows, with "Through your Obysphere: *host*. Valid for two minutes. The code is single-use."; the button says Create new invitation. |
 | Two minutes later | The QR code is gone. |
 | The iPhone paired | It shows in Paired devices within 5 seconds, with when it expires, and Revoke. |

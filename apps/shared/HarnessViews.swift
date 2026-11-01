@@ -463,9 +463,9 @@ struct ArtifactViewer: View {
     }
 
     private func file(_ path: String) async throws -> Data {
-        guard let fetch else { throw RunnerError(message: "Set the runner first.") }
+        guard let fetch else { throw RunnerError(message: RunnerError.unpaired) }
         let (data, answer) = try await fetch(path)
-        guard (200..<300).contains(answer.statusCode) else { throw RunnerError(message: "The runner answered \(answer.statusCode) for \(path).") }
+        guard (200..<300).contains(answer.statusCode) else { throw RunnerError(message: "Oby answered \(answer.statusCode) for \(path).") }
         return data
     }
 }

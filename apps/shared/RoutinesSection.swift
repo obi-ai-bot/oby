@@ -30,9 +30,9 @@ struct RoutinesSection: View {
                 if routines.isEmpty { SetRow("No routines yet", quiet: true) }
                 ForEach(routines) { routine in row(routine) }
             } else if runner == nil {
-                SetRow("Set the runner's address first.", quiet: true)
+                SetRow(RunnerError.unpaired, quiet: true)
             } else {
-                SetRow("This runner has no routines.", quiet: true)
+                SetRow("This Oby has no routines.", quiet: true)
             }
         }
         .task(id: [runner?.base.absoluteString ?? "", String(changes)]) { await load() }

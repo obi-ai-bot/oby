@@ -467,7 +467,7 @@ extension InboxItem {
     /// `GET /v1/inbox`'s items, each as `runner(_:)` reads it: the ones Engine knows, and confirm items.
     nonisolated static func runnerList(_ data: Data) throws -> [InboxItem] {
         guard let list = try JSONSerialization.jsonObject(with: data) as? [Any] else {
-            throw RunnerError(message: "The runner's inbox couldn't be read.")
+            throw RunnerError(message: "Oby's inbox couldn't be read.")
         }
         return list.compactMap { (try? JSONSerialization.data(withJSONObject: $0)).flatMap(runner) }
     }
@@ -1121,6 +1121,16 @@ nonisolated struct RunnerError: LocalizedError {
     /// The runner's HTTP status, when it answered with an error.
     var status: Int? = nil
     var errorDescription: String? { message }
+
+    // A person never reads "runner" (the owner, 2026-11-01), except in the frozen Swift Mac app,
+    // whose Settings still has its Runner page.
+    #if os(macOS)
+    static let unpaired = "Set the runner's address first."
+    static let notLetIn = "The runner didn't let this device in."
+    #else
+    static let unpaired = "Pair with your Mac first."
+    static let notLetIn = "Your Mac didn't let this device in."
+    #endif
 }
 
 /// The runner on the tailnet: `tailscale serve` vouches for who's asking, so there's no token. Or
@@ -1271,7 +1281,7 @@ nonisolated struct Runner: Sendable {
         struct Body: Encodable { var answer: String?; var done: Bool?; var later: Date? }
         #if os(macOS)
         let data = try await send("POST", "v1/inbox/\(Self.inboxSegment(id))/answer", body: Body(answer: answer, done: done, later: later))
-        guard let item = InboxItem.runner(data) else { throw RunnerError(message: "The runner's answer couldn't be read.") }
+        guard let item = InboxItem.runner(data) else { throw RunnerError(message: "Oby's answer couldn't be read.") }
         return item
         #else
         return try await call("POST", "v1/inbox/\(Self.inboxSegment(id))/answer", body: Body(answer: answer, done: done, later: later))
@@ -1583,7 +1593,7 @@ nonisolated struct Runner: Sendable {
         struct Body: Encodable { var answer: String; var approval: Approval }
         #if os(macOS)
         let data = try await send("POST", "v1/inbox/\(Self.inboxSegment(id))/answer", body: Body(answer: answer, approval: approval))
-        guard let item = InboxItem.runner(data) else { throw RunnerError(message: "The runner's answer couldn't be read.") }
+        guard let item = InboxItem.runner(data) else { throw RunnerError(message: "Oby's answer couldn't be read.") }
         return item
         #else
         return try await call("POST", "v1/inbox/\(Self.inboxSegment(id))/answer", body: Body(answer: answer, approval: approval))
@@ -1687,7 +1697,7 @@ nonisolated struct Runner: Sendable {
         struct Ask: Decodable { var action: String }
         if (response as? HTTPURLResponse)?.statusCode == 403, let ask = try? JSONDecoder().decode(Ask.self, from: data) { return ask.action }
         try Self.check(response, data, refused: refused)
-        throw RunnerError(message: "The runner didn't say what to approve.")
+        throw RunnerError(message: "Oby didn't say what to approve.")
     }
 
     /// Removes connection `name` with a device's approval of `disconnectAction`'s sentence. Its
@@ -1988,7 +1998,7 @@ nonisolated struct Runner: Sendable {
         var request = URLRequest(url: URL(string: "v1/artifacts/" + segments.joined(separator: "/"), relativeTo: base.appending(path: "/"))!)
         request.timeoutInterval = 45
         let (data, response) = try await fetch(signed(request))
-        guard let http = response as? HTTPURLResponse else { throw RunnerError(message: "The runner's answer wasn't HTTP.") }
+        guard let http = response as? HTTPURLResponse else { throw RunnerError(message: "Oby's answer wasn't HTTP.") }
         return (data, http)
     }
 
@@ -1998,7 +2008,7 @@ nonisolated struct Runner: Sendable {
         if http.statusCode == 401, let refused { throw RunnerError(message: refused, status: 401) }
         struct Problem: Decodable { var error: String }
         if let data, let problem = try? JSONDecoder().decode(Problem.self, from: data) { throw RunnerError(message: problem.error, status: http.statusCode) }
-        throw RunnerError(message: http.statusCode == 401 ? "The runner didn't let this device in." : "The runner answered \(http.statusCode).",
+        throw RunnerError(message: http.statusCode == 401 ? RunnerError.notLetIn : "Oby answered \(http.statusCode).",
                           status: http.statusCode)
     }
 }

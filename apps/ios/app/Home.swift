@@ -530,7 +530,7 @@ struct AllTasksPage: View {
                 if !phone.loaded && phone.connection == .connecting {
                     RowBones().listRowBackground(Color.clear)
                 } else {
-                    Text(phone.loaded ? "Nothing yet. Ask Oby for something on Home." : "Reaching the runner…")
+                    Text(phone.loaded ? "Nothing yet. Ask Oby for something on Home." : "Reaching your Mac…")
                         .font(Tokens.font(Tokens.textBase)).foregroundStyle(Tokens.muted)
                         .listRowBackground(Color.clear)
                 }

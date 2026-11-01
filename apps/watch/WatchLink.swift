@@ -155,7 +155,7 @@ nonisolated struct WatchLink: Sendable {
         let (data, response) = try await URLSession.shared.data(for: urlRequest)
         if (response as? HTTPURLResponse)?.statusCode == 501 {
             struct Problem: Decodable { var error: String }
-            throw SpeechUnavailable(message: (try? JSONDecoder().decode(Problem.self, from: data))?.error ?? "Speech-to-text isn't set up on the runner yet.")
+            throw SpeechUnavailable(message: (try? JSONDecoder().decode(Problem.self, from: data))?.error ?? "Speech-to-text isn't set up on your Mac yet.")
         }
         try Runner.check(response, data)
         struct Answer: Decodable { var text: String? }

@@ -119,7 +119,7 @@ struct SettingsScreen: View {
     /// Apple Watches that reach the runner without this iPhone.
     private var watch: some View {
         SetGroup("Apple Watch without iPhone",
-                 footer: "Away from this iPhone, your watch reaches the runner through your Cloudflare Tunnel. Paste the Cloudflare Access service token, then pair with Oby open on the watch.",
+                 footer: "Away from this iPhone, your watch reaches your Mac through your Cloudflare Tunnel. Paste the Cloudflare Access service token, then pair with Oby open on the watch.",
                  problem: watchProblem) {
             SetRow("Client ID") { SetField("Client ID", text: $watchPairing.clientID, prompt: "…access", width: 180).textInputAutocapitalization(.never) }
             SetRow("Client secret") { SetField("Client secret", text: $watchPairing.clientSecret, prompt: "Secret", secret: true, width: 180) }

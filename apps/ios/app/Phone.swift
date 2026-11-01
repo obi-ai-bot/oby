@@ -807,7 +807,7 @@ final class Phone {
             stopProblem = nil
             conversation.settleSteps()
         } catch let error as RunnerError where error.status == 404 {
-            stopProblem = "This runner can't stop a turn yet."
+            stopProblem = "This Oby can't stop a turn yet."
         } catch {
             stopProblem = error.localizedDescription
         }

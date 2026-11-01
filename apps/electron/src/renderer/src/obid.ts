@@ -103,7 +103,7 @@ export const api = {
   answer: (i: string, body: { answer: string } | { later: string }) => call<InboxItem>('POST', `/v1/inbox/${id(i)}/answer`, body),
   // Confirm on a confirm item: main signs it with this Mac's device key (main/device.ts)
   confirm: (i: string) => call<InboxItem>('POST', `/v1/inbox/${id(i)}/answer`, undefined, (b) => b.confirm(i)),
-  // Settings › Runner: pairing an iPhone through obid's Obysphere (main signs the invitation), the
+  // Settings › Remote access: pairing an iPhone through obid's Obysphere (main signs the invitation), the
   // paired ones, and Revoke
   pairInvite: () => call<Invitation>('POST', '/v1/pairing/invite', undefined, (b) => b.pairInvite()),
   pairedDevices: () => call<PairedDevice[]>('GET', '/v1/pairing/devices'),

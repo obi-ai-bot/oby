@@ -81,7 +81,7 @@ A raw <b>tag</b> and <script>alert(1)</script> stay text.
 
 Sources: [Cursor forum](https://forum.cursor.com/t/how-to-get-cost-and-usage-data-using-cursor-api/172967), [an http link](http://example.com)`, 1 * D + 2 * H],
   ['Who owns the Vault migration?', 'who owns the vault migration now that Ernesto moved teams?', 'Dima took it over on Monday. Ernesto is still the reviewer for anything touching Engine/Vault.swift.', 2 * D + 3 * H],
-  ['Why is oberon’s build slow', 'why did oberon’s build go from 4 to 11 minutes?', 'The Swift package cache stopped hitting after the runner image update on the 3rd. Daniel has a fix in review (#412); it brings the build back to about 5 minutes.', 2 * D + 6 * H],
+  ['Why is oberon’s build slow', 'why did oberon’s build go from 4 to 11 minutes?', 'The Swift package cache stopped hitting after the CI image update on the 3rd. Daniel has a fix in review (#412); it brings the build back to about 5 minutes.', 2 * D + 6 * H],
   ['Standup notes for Wellington', 'what did I tell Wellington I’d do this week?', 'Three things: review the notch PR (#33, done), send the 0.9 release checklist (not yet), and pair on the settings layout Thursday.', 3 * D + 2 * H],
   ['Avenga contract renewal date', 'when does the Avenga contract renew?', 'March 31. The notice period is 60 days, so anything you want changed needs to reach them by January 30.', 3 * D + 9 * H],
   ['Rate limits on the Tetrix API', 'what are our rate limits on the tetrix api?', '600 requests a minute per org, 60 per connector. The graph queries count double. You hit 70% of it last Tuesday during the backfill.', 4 * D + 1 * H],
