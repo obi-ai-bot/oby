@@ -6279,22 +6279,28 @@ impl Jobs {
         ))
     }
 
-    /// The end of the agent's stderr, when a turn died without saying why.
+    /// The end of the agent's stderr, when a turn died without saying why, masked as a
+    /// transcript entry is ([`crate::detail::mask`]: obid's secrets, then what the secret scan
+    /// flags) before it is cut, so a token or header the CLI printed never reaches the job's
+    /// `reason` (#1648).
     fn agent_note(&self, id: &str) -> String {
         let text = std::fs::read_to_string(self.log_path(id, "agent.log")).unwrap_or_default();
         let text = text.trim();
         if text.is_empty() {
             return String::new();
         }
-        let tail: String = text
-            .chars()
-            .rev()
-            .take(500)
-            .collect::<String>()
-            .chars()
-            .rev()
-            .collect();
-        format!(" {tail}")
+        let tail = |text: &str, n: usize| -> String {
+            let skip = text.chars().count().saturating_sub(n);
+            text.chars().skip(skip).collect()
+        };
+        // From a line's start, so no secret is cut in two before it's masked.
+        let window = tail(text, 16 * 1024);
+        let window = match window.len() < text.len() {
+            true => window.split_once('\n').map_or("", |(_, rest)| rest),
+            false => &window,
+        };
+        let masked = crate::detail::mask(window);
+        format!(" {}", tail(masked.trim(), 500))
     }
 
     /// Runs a job to its end, unless it is stopped or obid shuts down.
