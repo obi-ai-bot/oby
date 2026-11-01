@@ -110,18 +110,27 @@ struct DesignTests {
         #expect(PhoneWork.recent(talk).map(\.id) == ["c4", "c3", "c2"])
     }
 
-    /// A task's ⋮ (Sangam's TaskMenu.tsx, docs/oby-ux.md row 21): its conversation; Stop task while
-    /// it goes, Archive task once it's done; Move to… and Mode under them; Dismiss when it needs you.
+    /// A task's ⋮ (Sangam's TaskMenu.tsx, docs/oby-ux.md row 21): its conversation, Rename; Stop task
+    /// while it goes, Archive task once it's done; Move to… and Mode under them; Dismiss when it needs
+    /// you; Delete task last.
     @Test func aTaskMenuHasSangamsItems() throws {
         let running = try job("r", "running", extra: #", "mode": "ask""#)
         let done = try job("d", "done", finished: "2026-10-09T22:00:00Z")
         let failed = try job("f", "failed", finished: "2026-10-09T22:00:00Z")
-        #expect(TaskMenu.items(running, conversation: true) == [.openConversation, .stop, .move, .mode])
-        #expect(TaskMenu.items(done, conversation: false) == [.archive, .move])
-        #expect(TaskMenu.items(failed, conversation: true) == [.openConversation, .dismiss, .move])
-        // Archived on this iPhone: off Home, into Archived; told something, it runs again and comes back.
+        #expect(TaskMenu.items(running, conversation: true) == [.openConversation, .rename, .stop, .move, .mode, .delete])
+        #expect(TaskMenu.items(done, conversation: false) == [.rename, .archive, .move, .delete])
+        #expect(TaskMenu.items(failed, conversation: true) == [.openConversation, .rename, .dismiss, .move, .delete])
+        // Archived on this iPhone before obid kept an archive: off Home, into Archived; told something,
+        // it runs again and comes back.
         #expect(PhoneWork.archived([done, running], clearedAt: nil, here: ["d"]).map(\.id) == ["d"])
         #expect(PhoneWork.archived([running], clearedAt: nil, here: ["r"]).isEmpty)
+        // Archived on any app (obid's `archived`): in Archived here too.
+        let archived = try job("a", "done", finished: "2026-10-09T22:00:00Z", extra: #", "archived": "2026-10-09T22:05:00Z""#)
+        #expect(PhoneWork.archived([archived, done], clearedAt: nil).map(\.id) == ["a"])
+        // Deleted on any app: obid's `{"id", "deleted": true}` is a deleted job, not one that fails to read.
+        var parser = EventParser()
+        for line in ["event: job", #"data: {"id":"d","deleted":true}"#] { #expect(parser.feed(line) == nil) }
+        #expect(parser.feed("") == .jobDeleted("d"))
     }
 
     /// Oby's live face (Sangam's ObyFaceLive.tsx): while it works the face melts into three

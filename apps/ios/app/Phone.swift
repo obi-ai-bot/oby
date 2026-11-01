@@ -31,7 +31,7 @@ nonisolated enum PhoneWork {
     /// ones you let go (Dismiss). The runner keeps them all; this lists the ones it sent.
     /// `here`: the tasks archived on this iPhone (a task's ⋮); one that runs again comes back.
     static func archived(_ jobs: [Job], clearedAt: Date?, here: Set<String> = []) -> [Job] {
-        jobs.filter { !$0.isActive && ($0.dismissed != nil || here.contains($0.id) || !$0.listed(after: clearedAt, among: jobs)) }
+        jobs.filter { !$0.isActive && ($0.dismissed != nil || $0.archived != nil || here.contains($0.id) || !$0.listed(after: clearedAt, among: jobs)) }
     }
 
     /// The Inbox (docs/oby-ux.md row 10): of what waits now, the decisions with no task on Home,
@@ -154,12 +154,9 @@ final class Phone {
     func waitsToSend(echo id: String) -> Bool { offlineQueue.messages.contains { $0.id == id } }
     /// Archived: done jobs that left Home (Clear done, Dismiss).
     var archived: [Job] { PhoneWork.archived(jobs, clearedAt: clearedAt, here: archivedHere) }
-    /// Tasks archived with their ⋮ (Sangam's Archive task), kept by this iPhone: obid has no
-    /// archive yet (docs/oby-ux.md row 22, A7).
-    private(set) var archivedHere = Set(UserDefaults.standard.stringArray(forKey: "phone.archived") ?? []) {
-        didSet { UserDefaults.standard.set(Array(archivedHere), forKey: "phone.archived") }
-    }
-    func archive(_ id: String) { archivedHere.insert(id) }
+    /// Tasks this iPhone archived before obid kept an archive: they stay archived here.
+    /// ponytail: read only; drop it once those phones have moved on
+    private let archivedHere = Set(UserDefaults.standard.stringArray(forKey: "phone.archived") ?? [])
     /// What Oby's answering or asking in the thread shown, else nothing.
     var talkHere: Talk { talkIn == current ? talk : .none }
     @ObservationIgnored private var planning: Task<Void, Never>?
@@ -545,7 +542,7 @@ final class Phone {
 
     /// The jobs Home lists: all but the settled ones (`Job.settled`) that finished by the last Clear
     /// done, newest first. Home puts them in their groups (JobList.groups), as the Mac's window does.
-    var visibleJobs: [Job] { jobs.filter { $0.listed(after: clearedAt, among: jobs) && ($0.isActive || !archivedHere.contains($0.id)) } }
+    var visibleJobs: [Job] { jobs.filter { $0.listed(after: clearedAt, among: jobs) && ($0.isActive || !archivedHere.contains($0.id) && $0.archived == nil) } }
 
     // MARK: Staying live
 
@@ -720,6 +717,8 @@ final class Phone {
         switch event {
         case .job(let job):
             if let index = jobs.firstIndex(where: { $0.id == job.id }) { jobs[index] = job } else { jobs.insert(job, at: 0) }
+        case .jobDeleted(let id):
+            jobs.removeAll { $0.id == id }
         case .accounts(let accounts):
             self.accounts = accounts
         case .limitDecision:
@@ -1008,6 +1007,29 @@ final class Phone {
     /// Lets go of a job that needs you; its alert clears with the runner's answer.
     func dismiss(_ id: String) async throws {
         apply(.job(try await runner.dismiss(id)))
+    }
+
+    /// The task's ⋮, as Sangam's TaskMenu: Rename (one line, 1 to 60 characters), Archive task (off
+    /// Home, into Archived, on every app), Delete task: gone for good, or, with work that isn't
+    /// published, obid's Confirm first, under Needs you; true once it's gone.
+    func rename(_ id: String, to title: String) async throws {
+        apply(.job(try await runner.rename(id, to: title)))
+    }
+
+    func archive(_ id: String) async throws {
+        apply(.job(try await runner.archive(id)))
+    }
+
+    func deleteTask(_ id: String) async throws -> Bool {
+        let answer: DeleteAnswer
+        do { answer = try await runner.deleteAsked(id) } catch let error as RunnerError where error.status == 404 {
+            // gone already (deleted on another app while this one wasn't following)
+            apply(.jobDeleted(id))
+            return true
+        }
+        if let ask = answer.ask { apply(.inbox(ask)) }
+        if answer.deleted { apply(.jobDeleted(id)) }
+        return answer.deleted
     }
 
     /// Starts a job that waits for its start condition now (#216).
