@@ -4350,7 +4350,7 @@ impl Jobs {
         let sites = self.sites_opened(&call, bounds);
         if !sites.is_empty() {
             permission.detail.push_str(&format!(
-                "\n\nAllowing it lets this job reach {} until it ends.",
+                "\n\nAllowing it lets this task reach {} until it ends.",
                 sites.join(", ")
             ));
         }
@@ -18255,7 +18255,7 @@ mod tests {
         assert!(
             first
                 .detail
-                .contains("lets this job reach asked.invalid until it ends")
+                .contains("lets this task reach asked.invalid until it ends")
         );
         jobs.answer_permission("j", &first.id, Decision::Deny, None)
             .unwrap();
@@ -18339,7 +18339,7 @@ mod tests {
         };
         let first = card().unwrap();
         assert!(
-            !first.detail.contains("lets this job reach"),
+            !first.detail.contains("lets this task reach"),
             "{}",
             first.detail
         );
