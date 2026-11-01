@@ -121,7 +121,7 @@ struct SessionView: View {
 
     @ViewBuilder private func status(_ empty: Bool) -> some View {
         if session.unavailable {
-            note("This runner doesn't keep this job's session.")
+            note("This Oby doesn't keep this job's session.")
         } else if let failure = session.failure, empty {
             note("The session couldn't be read: \(failure)")
         } else if empty && session.loaded {

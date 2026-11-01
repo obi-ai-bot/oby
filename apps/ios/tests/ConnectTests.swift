@@ -150,7 +150,7 @@ struct ConnectTests {
 
     @Test func theUnpairedScreenSaysWhyAndWhereOnTheMac() {
         // Its one line (apps/ios/app/Unpaired.swift): where to pair on the Mac, and why when the Mac stopped taking it.
-        let pair = "Settings › Runner › Pair a device"
+        let pair = "Settings › Remote access › Pair a device"
         #expect(UnpairedLine.message(nil) == "Let's connect to your Mac. On it, open \(pair).")
         #expect(UnpairedLine.message(.removed) == "Your Mac removed this iPhone. Pair again from \(pair).")
         #expect(UnpairedLine.message(.expired) == "Pairing ended after 30 days. Pair again from \(pair).")

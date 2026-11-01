@@ -278,7 +278,7 @@ struct TaskPage: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, Tokens.gutter).padding(.bottom, 24)
             } else if phone.loaded && looked {
-                ContentUnavailableView("This task isn't on the runner any more.", systemImage: "questionmark.folder")
+                ContentUnavailableView("This task isn't on your Mac any more.", systemImage: "questionmark.folder")
                     .foregroundStyle(Tokens.text).padding(.top, 80)
             } else {
                 ProgressView().padding(.top, 80)

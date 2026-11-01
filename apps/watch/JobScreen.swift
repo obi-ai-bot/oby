@@ -65,7 +65,7 @@ struct JobScreen: View {
                     if let problem { Text(problem).font(.footnote).foregroundStyle(.red) }
                 }
             } else if watch.loaded {
-                Text("This job isn't on the runner any more.").font(.footnote).foregroundStyle(.secondary)
+                Text("This job isn't on your Mac any more.").font(.footnote).foregroundStyle(.secondary)
             } else {
                 ProgressView()
             }

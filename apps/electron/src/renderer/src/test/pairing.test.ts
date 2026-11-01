@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { qrText } from '../obid';
 
-// docs/contracts/phone-pairing.md. What Settings › Runner's QR code carries: the Swift Mac app's (PairingView's qrText), which the
+// docs/contracts/phone-pairing.md. What Settings › Remote access's QR code carries: the Swift Mac app's (PairingView's qrText), which the
 // iPhone decodes (GatewayEnvelope): the url, the link as an object with its relay, the secret
 describe('the pairing QR code', () => {
   it('pairing_1: carries the url, the link with its relay, and the secret, as the iPhone reads them', () => {

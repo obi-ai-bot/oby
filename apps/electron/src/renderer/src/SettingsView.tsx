@@ -20,19 +20,19 @@ const LEAVE_MS = 220;
 
 // Settings' pages, as Wellington's Mac app has them (apps/mac/app/Settings.swift
 // on his dev branch): General (with Voice and Notifications, shared with the
-// iPhone), Runner, Remote access, Accounts, Models, Vault and About; Connectors
+// iPhone), Remote access, Accounts, Models, Vault and About; Connectors
 // is ours, and Sharing a preview (docs/research/sphere-sharing.md). Each page opens in the view, as a task's page does, from the
 // gear at the icons' foot (the account menu, with ?everything), then the side panel's Settings list.
-// Runner, Sharing, Remote access and Vault are left out of v1 (Sangam, 2026-10-28) and come
+// Sharing, Remote access and Vault are left out of v1 (Sangam, 2026-10-28) and come
 // back later: only with ?everything (lean.ts)
 // Agents takes Accounts' and Models' place: each agent's accounts with its model and efforts,
 // and which one new tasks go to (the old two stay with ?everything)
-// On obid, Runner shows only pairing an iPhone (Pairing), as the Swift Mac app's Settings › Runner had it
-const LATER = new Set([...(onObid ? [] : ['runner']), 'sharing', 'remote', 'vault', 'accounts', 'models']);
+// On obid, Remote access shows only pairing an iPhone (Pairing), as the Swift Mac app's Settings › Runner had it;
+// the owner's order of 2026-11-01: no word a person sees says Runner, so that page went
+const LATER = new Set([...(onObid ? [] : ['remote']), 'sharing', 'vault', 'accounts', 'models']);
 export const SETTINGS_PAGES = [
   { id: 'general', label: 'General' },
   { id: 'agents', label: 'Agents' },
-  { id: 'runner', label: 'Runner' },
   { id: 'sharing', label: 'Sharing' },
   { id: 'remote', label: 'Remote access' },
   { id: 'accounts', label: 'Accounts' },
@@ -200,8 +200,8 @@ function Notifications() {
   );
 }
 
-// Runner: on obid, pairing an iPhone; otherwise Sangam's demo page
-const Runner = () => (onObid ? <Pairing /> : <MockRunner />);
+// Remote access: on obid, pairing an iPhone; otherwise Sangam's demo page
+const Remote = () => (onObid ? <Pairing /> : <MockRemote />);
 
 // Pair a device, as the Swift Mac app's Settings › Runner had it (apps/mac/app/PairingView.swift):
 // while obid is in an Obysphere, an invitation the owner's click makes (main signs it, so the
@@ -248,53 +248,8 @@ function Pairing() {
   </>;
 }
 
-// Runner (Sangam's demo): the always-on runner and how this Mac reaches it, keeping this Mac
-// awake, the runner's permissions, the checks this Mac runs for it, watches,
-// and the key that publishes
-function MockRunner() {
-  const [here, setHere] = useSetting('runner.here', true);
-  const [url, setUrl] = useSetting('runner.url', '');
-  const [awake, setAwake] = useSetting('runner.awake', true);
-  const [mode, setMode] = useSetting('runner.mode', 'acceptEdits');
-  const [merge, setMerge] = useSetting('checks.merge', true);
-  const [apple, setApple] = useSetting('checks.apple', false);
-  return <>
-    <Group i={1} title="Runner" footer={here ? 'The runner is Oby’s login item on this Mac, and Oby follows it on 127.0.0.1.' : 'Oby follows the runner at this address: the island lists its jobs.'}>
-      <Row label="Runner"><Segmented value={here ? 'mac' : 'remote'} onChange={(v) => setHere(v === 'mac')} options={[['mac', 'This Mac'], ['remote', 'Remote']]} label="Runner" /></Row>
-      {here
-        ? <Row label="Login item"><Value>On</Value></Row>
-        : <Row label="URL"><TextField value={url} onChange={setUrl} placeholder="http://tetrix-lab:8790" label="Runner URL" /></Row>}
-      <Row label="Status"><Value>{here || url ? <><span className="set-dot" />Connected</> : 'Off'}</Value></Row>
-      <Row label="Job worktrees"><Value>3.2 GB</Value></Row>
-      <Row label="Last cleanup"><Value>Today at 9:12 AM</Value></Row>
-    </Group>
-    <Group i={2} title="This Mac" footer="On power, Oby prevents idle sleep while This Mac is enabled and this setting is on. A running job always keeps this Mac awake.">
-      <Row label="Keep my Mac available"><Switch on={awake} onChange={setAwake} label="Keep my Mac available" /></Row>
-      <Row label="Availability"><Value>{awake ? 'Available, on power' : 'Sleeps when idle'}</Value></Row>
-    </Group>
-    <Group i={3} title="Permissions" footer="Ask: the agent asks before it edits or runs anything. Always allow saves a rule, so it doesn’t ask again; remove the rule to be asked again.">
-      <ModeRow mode={mode} setMode={setMode} />
-      <Rules id="runner.rules" initial={[{ decision: 'Allowed', repo: 'deskree-inc/oberon', rule: 'Bash(swift test:*)' }]} />
-    </Group>
-    <Group i={4} title="Checks on this Mac">
-      <Row label="Run merge checks on this Mac" about="When Oby’s review approves a pull request, this Mac runs its tests and builds the Mac and iPhone apps, one at a time, before Oby merges it into dev.">
-        <Switch on={merge} onChange={setMerge} label="Run merge checks on this Mac" />
-      </Row>
-      <Row label="Build and test agents’ work on this Mac" about="When an agent on the runner asks, this Mac builds and tests the Mac and iPhone apps at its latest commit, before Oby’s review has read it, and the agent gets the compiler’s errors and failing tests.">
-        <Switch on={apple} onChange={setApple} label="Build and test agents’ work on this Mac" />
-      </Row>
-    </Group>
-    <Group i={5} title="Apple Watch without iPhone" footer="Away from your iPhone, a paired watch reaches the runner through your Cloudflare Tunnel. Pair one in Oby’s Settings on your iPhone, with Oby open on the watch: pairing asks for Face ID.">
-      <Row label={<span className="set-none">None yet</span>} />
-    </Group>
-    <Group i={6} title="Publishing" footer="Oby opens a pull request by itself once a job’s check passes and the secret scan is clean. When that failed, publish by hand here or on your iPhone: this Mac’s key, like the iPhone’s, signs only after Touch ID. Oby merges only into dev, once its review approves and your Mac’s checks pass.">
-      <Row label="Publishing key"><Value>Registered</Value></Row>
-    </Group>
-  </>;
-}
-
-// Remote access: signing in to Oby's account, then reaching this Mac from anywhere
-function Remote() {
+// Remote access (Sangam's demo): signing in to Oby's account, then reaching this Mac from anywhere
+function MockRemote() {
   const [on, setOn] = useSetting('remote.on', true);
   const [forgot, setForgot] = useSetting('remote.forgot', false);
   return <>
@@ -932,7 +887,7 @@ function About() {
   </>;
 }
 
-const PAGES: Record<string, () => React.ReactNode> = { general: General, agents: Agents, runner: Runner, sharing: Sharing, remote: Remote, accounts: Accounts, models: Models, connectors: Connectors, vault: Vault, about: About };
+const PAGES: Record<string, () => React.ReactNode> = { general: General, agents: Agents, sharing: Sharing, remote: Remote, accounts: Accounts, models: Models, connectors: Connectors, vault: Vault, about: About };
 
 // The default mode, with what it lets the agent do under it
 function ModeRow({ mode, setMode, modes = MODES }: { mode: string; setMode: (m: string) => void; modes?: typeof MODES }) {

@@ -32,7 +32,7 @@ struct ConnectScreen: View {
                 ObyMark(size: 112).padding(.top, 24).accessibilityHidden(true)
                 Text("Connect to your Mac").font(Tokens.font(22, .semibold)).foregroundStyle(Tokens.ink)
                     .padding(.top, 20).accessibilityAddTraits(.isHeader)
-                Text("Oby on your Mac shows a code to pair with: Settings › Runner › Pair a device.")
+                Text("Oby on your Mac shows a code to pair with: Settings › Remote access › Pair a device.")
                     .font(Tokens.font(Tokens.textBase)).foregroundStyle(Tokens.text).multilineTextAlignment(.center)
                     .padding(.top, 8)
                 if let link = phone.link, !phone.needsPairing { paired(link).padding(.top, 24) }
@@ -124,7 +124,7 @@ struct ConnectScreen: View {
         VStack(alignment: .leading, spacing: 0) {
             Button { withAnimation(Tokens.warm) { another.toggle() } } label: {
                 HStack(spacing: 4) {
-                    Text("Another runner")
+                    Text("Another server")
                     Image(systemName: "chevron.right").font(Tokens.font(10, .semibold)).rotationEffect(.degrees(another ? 90 : 0))
                 }
                 .font(Tokens.font(Tokens.textMd)).foregroundStyle(Tokens.muted)
@@ -133,7 +133,7 @@ struct ConnectScreen: View {
             .padding(.horizontal, 16).padding(.bottom, 8)
             .accessibilityValue(another ? "Open" : "Folded")
             if another {
-                SetGroup(footer: "For a runner on a server of yours, not your Mac. Clear it to use only your Mac.") {
+                SetGroup(footer: "For Oby on a server of yours, not your Mac. Clear it to use only your Mac.") {
                     SetRow("Address") {
                         SetField("Address", text: $address, prompt: "https://…", width: 200)
                             .keyboardType(.URL)
@@ -151,7 +151,7 @@ struct ConnectScreen: View {
         // Cleared: no runner but a paired Mac.
         if typed.isEmpty { problem = nil; phone.runnerURL = nil; return }
         guard let url = URL(string: typed), url.scheme == "https" else {
-            problem = "The runner's address starts with https://"
+            problem = "The server's address starts with https://"
             return
         }
         problem = nil
@@ -287,7 +287,7 @@ struct GatewayEnvelope: Decodable, Equatable {
         do {
             envelope = try JSONDecoder().decode(GatewayEnvelope.self, from: Data(text.utf8))
         } catch {
-            throw RunnerError(message: "That isn't Oby's pairing QR code. Scan the one the Mac's Settings › Runner shows.")
+            throw RunnerError(message: "That isn't Oby's pairing QR code. Scan the one the Mac's Settings › Remote access shows.")
         }
         // Through an Obysphere the hostname is only the Mac's name: the relay is the way, and its
         // key the Mac's, sealed to from the first call. A pasted one still names its Mac plainly:

@@ -811,8 +811,8 @@ export const PEER_CONVOS: PeerConvo[] = [
   {
     id: 'p10', title: 'Job progress for the island', with: ['Wellington'], unread: true,
     messages: [
-      { who: 'Wellington', text: 'Wellington is wiring the island to the runner. Which endpoint does your Oby’s runner give job progress on?', ago: 34 },
-      { who: 'oby', text: 'GET /v1/jobs/{id}/events, as server-sent events. Sangam’s runner is on 0.9.2; it’s all in docs/runner-api.md.', ago: 33 },
+      { who: 'Wellington', text: 'Wellington is wiring the island to obid. Which endpoint does your Oby give job progress on?', ago: 34 },
+      { who: 'oby', text: 'GET /v1/jobs/{id}/events, as server-sent events. Sangam’s obid is on 0.9.2; it’s all in docs/runner-api.md.', ago: 33 },
       { who: 'Wellington', text: 'That’s what he needed, thanks.', ago: 32 },
     ],
   },

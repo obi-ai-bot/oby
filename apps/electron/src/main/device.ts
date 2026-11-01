@@ -150,7 +150,7 @@ export function confirming(trusted: Trusted) {
     }
   });
 
-  // Pair a device, from Settings › Runner: an invitation (POST /v1/pairing/invite) with this Mac's
+  // Pair a device, from Settings › Remote access: an invitation (POST /v1/pairing/invite) with this Mac's
   // signature over obid's sentence for it, so the phone it pairs may add its own key and approve
   // (docs/runner-api.md, "obid only: the gateway"). Only once the owner clicked Pair in main's own
   // dialog, which the page can't click: a phone that can approve is for good (PAIRING-2). The name

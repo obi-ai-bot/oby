@@ -239,14 +239,14 @@ struct ConversationPage: View {
                             .frame(maxWidth: .infinity).padding(.bottom, 16)
                         }
                         if let problem = phone.conversation.problem {
-                            Text("The runner's thread couldn't be read: \(problem)").font(Tokens.font(Tokens.textSm)).foregroundStyle(Tokens.needsInk)
+                            Text("Your Mac's thread couldn't be read: \(problem)").font(Tokens.font(Tokens.textSm)).foregroundStyle(Tokens.needsInk)
                                 .padding(.bottom, 12)
                         }
                         if turns.isEmpty, !thinking {
                             if !phone.startingNew, phone.conversation.problem == nil, !phone.conversation.loaded, !phone.connection.isOffline {
                                 ThreadBones()
                             } else {
-                                Text(phone.loaded ? "Ask Oby anything." : "Reaching the runner…").font(Tokens.font(Tokens.textBase)).foregroundStyle(Tokens.muted)
+                                Text(phone.loaded ? "Ask Oby anything." : "Reaching your Mac…").font(Tokens.font(Tokens.textBase)).foregroundStyle(Tokens.muted)
                                     .frame(maxWidth: .infinity).padding(.top, 40)
                             }
                         }

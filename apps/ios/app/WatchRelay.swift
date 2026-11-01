@@ -142,7 +142,7 @@ final class WatchRelay: NSObject {
         do {
             switch kind {
             case .refresh:
-                guard let context = await refresh() else { return [WatchWire.error: "Your iPhone can't reach the runner."] }
+                guard let context = await refresh() else { return [WatchWire.error: "Your iPhone can't reach your Mac."] }
                 return [WatchWire.context: try Self.fit(context, clearedAt: clearedAt)]
             case .voice:
                 guard let audio = message[WatchWire.audio] as? Data else { return bad }

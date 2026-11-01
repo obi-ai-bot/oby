@@ -42,9 +42,9 @@ struct UnpairedScreen: View {
 enum UnpairedLine {
     static func message(_ notice: ReachNotice?) -> String {
         switch notice {
-        case .removed: "Your Mac removed this iPhone. Pair again from Settings › Runner › Pair a device."
-        case .expired: "Pairing ended after 30 days. Pair again from Settings › Runner › Pair a device."
-        default: "Let's connect to your Mac. On it, open Settings › Runner › Pair a device."
+        case .removed: "Your Mac removed this iPhone. Pair again from Settings › Remote access › Pair a device."
+        case .expired: "Pairing ended after 30 days. Pair again from Settings › Remote access › Pair a device."
+        default: "Let's connect to your Mac. On it, open Settings › Remote access › Pair a device."
         }
     }
 }
