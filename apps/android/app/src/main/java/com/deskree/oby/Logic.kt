@@ -281,6 +281,9 @@ object ChatRuns {
 }
 
 object ConversationOrder {
+    /** A conversation's line under its name (Sangam's `convoAbout`): the tasks it started, else its last words. */
+    fun about(tasks: Int, said: String?) = if (tasks > 0) "Started $tasks task${if (tasks == 1) "" else "s"}" else said
+
     fun ordered(list: List<RunnerConversation>) =
         list.sortedWith(compareByDescending<RunnerConversation> { if (it.pinned) 1 else 0 }.thenByDescending { it.latest })
 
@@ -405,8 +408,13 @@ object ThreadTaskLine {
 
     fun startedBy(turn: String?, conversation: String?, showing: String?) = if (conversation == showing) turn else null
 
+    /**
+     * A job has one card, under the first turn that lists it, never again under its report or a
+     * later answer that names it (Electron's live.ts, `carded`).
+     */
     fun cards(under: Turn, thread: List<Turn>, jobs: List<Job>, startedBy: (Job) -> String?): List<Job> {
-        val listed = ConversationModel.jobsOf(under, jobs)
+        val carded = thread.takeWhile { it.id != under.id }.flatMap { it.jobs.orEmpty() }.toSet()
+        val listed = ConversationModel.jobsOf(under, jobs).filter { it.id !in carded }
         if (under.who != Who.user) return listed
         val answered = thread.flatMap { it.jobs.orEmpty() }.toSet()
         return listed + jobs.filter { startedBy(it) == under.id && it.id !in answered }.sortedBy { it.created }

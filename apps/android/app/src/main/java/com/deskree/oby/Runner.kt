@@ -165,7 +165,7 @@ class Runner(val base: String, private val token: String?, private val refused: 
         if (response.code == 401 && refused != null) throw RunnerError(refused, 401)
         val problem = text?.let { runCatching { wire.parseToJsonElement(it).jsonObject["error"]?.jsonPrimitive?.content }.getOrNull() }
         if (problem != null) throw RunnerError(problem, response.code)
-        throw RunnerError(if (response.code == 401) "The runner didn't let this device in." else "The runner answered ${response.code}.", response.code)
+        throw RunnerError(if (response.code == 401) "Your Mac didn't let this device in." else "Oby answered ${response.code}.", response.code)
     }
 
     /** The answer's body, after its status is checked. */

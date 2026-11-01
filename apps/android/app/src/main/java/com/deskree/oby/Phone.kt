@@ -40,12 +40,15 @@ class Phone(val context: Context) {
     val drafts = Drafts(prefs)
     private val offlineQueue = OfflineQueue(prefs)
     val voice = PhoneVoice(context)
-    private val speaker = PhoneSpeaker(context)
     private val finder = MacFinder(context)
     val conversation = ConversationModel()
 
     /** The side panel, open on one of its sections, or null while it's closed. */
     var panel by mutableStateOf<PanelSection?>(null)
+    /** Counts the panel's New conversation and New task (as Sangam's do): each has Home's box take the keyboard. */
+    var focusHome by mutableStateOf(0)
+    /** The last of them Home's box took: each is taken once, never again when Home comes back. */
+    var focusHomeTaken = 0
     /** The panel's groups folded away with their chevron (Sangam's Sidebar.tsx), kept while Oby runs. */
     var panelFolded by mutableStateOf(setOf<String>())
     /** What's open over Home: the app's one stack. */
@@ -91,7 +94,6 @@ class Phone(val context: Context) {
     var refusal by mutableStateOf<Int?>(null); private set
     var stopProblem by mutableStateOf<String?>(null); private set
     var pairedUntil by mutableStateOf(prefs.getLong("gateway.expiresAt", 0).takeIf { it > 0 }?.let(Instant::ofEpochMilli)); private set
-    var speakReplies by mutableStateOf(prefs.getBoolean("voice.speakReplies", true)); private set
     /** The FCM token, once Firebase gave one; handed to the runner on every connection. */
     var pushToken by mutableStateOf<String?>(null)
     var pushes by mutableStateOf<Boolean?>(null); private set
@@ -282,12 +284,6 @@ class Phone(val context: Context) {
         return answer.deleted
     }
 
-    fun setSpeaks(on: Boolean) {
-        speakReplies = on
-        prefs.edit().putBoolean("voice.speakReplies", on).apply()
-        if (!on) speaker.stop()
-    }
-
     val talkHere: Talk get() = if (talkIn == current) talk else Talk.None
 
     val thread: List<Turn> get() {
@@ -315,21 +311,18 @@ class Phone(val context: Context) {
     fun dictate(update: (String) -> Unit) {
         if (voice.active || voice.finishing) return
         spoken = false
-        speaker.stop()
         voice.start(update)
     }
 
     fun cancelVoice() {
         spoken = false
         voice.cancel()
-        speaker.stop()
     }
 
     /** The app left the front: listening stops and keeps its words. */
     fun leftForeground() {
         voice.finish()
         spoken = false
-        speaker.stop()
     }
 
     // MARK: Staying live
@@ -572,7 +565,7 @@ class Phone(val context: Context) {
             stopProblem = null
             conversation.settleSteps()
         } catch (e: RunnerError) {
-            stopProblem = if (e.status == 404) "This runner can't stop a turn yet." else e.message
+            stopProblem = if (e.status == 404) "This Oby can't stop a turn yet." else e.message
         } catch (e: Exception) { stopProblem = e.message }
     }
 
@@ -580,7 +573,6 @@ class Phone(val context: Context) {
         planning?.cancel()
         planning = null
         spoken = false
-        speaker.stop()
         pending?.let(::drop)
         pending = null
         talk = Talk.None
@@ -601,7 +593,6 @@ class Phone(val context: Context) {
     private fun plan(said: String, answer: Pair<String, String>?, voice: Boolean = false, new: Boolean = false,
                      id: String = java.util.UUID.randomUUID().toString().lowercase()) {
         planning?.cancel()
-        speaker.stop()
         pending?.let(::drop)
         pending = null
         stopProblem = null
@@ -685,11 +676,6 @@ class Phone(val context: Context) {
         this.talk = talk
         started.forEach { apply(RunnerEvent.JobChanged(it)) }
         if (started.isNotEmpty()) askNotifications()
-        if (request.voice && speakReplies) when (talk) {
-            is Talk.Reply -> speaker.say(talk.text)
-            is Talk.Asked -> speaker.say(talk.question.text)
-            else -> {}
-        }
     }
 
     // MARK: Jobs

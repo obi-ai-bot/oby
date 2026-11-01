@@ -8,9 +8,6 @@ import android.os.Bundle
 import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
-import android.speech.tts.TextToSpeech
-import android.view.textclassifier.TextClassificationManager
-import android.view.textclassifier.TextLanguage
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -171,39 +168,5 @@ class PhoneVoice(private val context: Context) {
         if (generation != token) return
         cancel()
         problem = message
-    }
-}
-
-/** Reads replies to spoken requests out loud, in the reply's own language (TextClassifier), else the phone's. */
-class PhoneSpeaker(private val context: Context) {
-    private var tts: TextToSpeech? = null
-    private var ready = false
-    private var waiting: String? = null
-
-    fun say(text: String) {
-        stop()
-        if (tts == null) tts = TextToSpeech(context) { status ->
-            ready = status == TextToSpeech.SUCCESS
-            waiting?.let { speak(it) }
-            waiting = null
-        }
-        if (ready) speak(text) else waiting = text
-    }
-
-    private fun speak(text: String) {
-        val engine = tts ?: return
-        language(text)?.let { engine.setLanguage(it) }
-        engine.speak(text, TextToSpeech.QUEUE_FLUSH, null, "oby")
-    }
-
-    private fun language(text: String): Locale? = runCatching {
-        val classifier = context.getSystemService(TextClassificationManager::class.java).textClassifier
-        val found = classifier.detectLanguage(TextLanguage.Request.Builder(text).build())
-        found.getLocale(0).toLocale()
-    }.getOrNull()
-
-    fun stop() {
-        waiting = null
-        tts?.stop()
     }
 }

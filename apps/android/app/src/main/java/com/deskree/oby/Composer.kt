@@ -59,7 +59,7 @@ import androidx.compose.ui.window.PopupProperties
  */
 @Composable
 fun Composer(box: String, prompt: String, onSend: (text: String, spoken: Boolean) -> Unit, onStop: (() -> Unit)? = null, enabled: Boolean = true,
-             fill: String? = null, onFilled: () -> Unit = {}) {
+             fill: String? = null, onFilled: () -> Unit = {}, focusAsked: Int = 0, takesFocus: (Int) -> Boolean = { false }) {
     val phone = LocalPhone.current
     val c = Tokens.c
     val voice = phone.voice
@@ -83,6 +83,13 @@ fun Composer(box: String, prompt: String, onSend: (text: String, spoken: Boolean
 
     // Edit on a failed message or a plan card: its words come back into the field.
     LaunchedEffect(fill) { if (fill != null) { set(fill); onFilled(); focus.requestFocus() } }
+    // Once the panel has slid away (focused while it's still out, the box doesn't take it), and only if
+    // Home still shows: a page pushed or the panel opened since keeps the keyboard down.
+    LaunchedEffect(focusAsked) {
+        if (focusAsked == 0 || !takesFocus(focusAsked)) return@LaunchedEffect
+        kotlinx.coroutines.delay(350)
+        if (phone.homePath.isEmpty() && phone.panel == null) focus.requestFocus()
+    }
     // Leaving the screen stops listening; the words heard stay.
     DisposableEffect(box) { onDispose { phone.cancelVoice() } }
     LaunchedEffect(voice.listening) { if (voice.listening) haptics.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove) }

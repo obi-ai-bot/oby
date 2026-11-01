@@ -34,6 +34,7 @@ import androidx.compose.material.icons.outlined.PictureAsPdf
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -94,7 +95,7 @@ fun ConversationsColumn(open: (Route) -> Unit) {
         }
         val (pinned, recent) = ConversationOrder.sections(list)
         LazyColumn(Modifier.fillMaxSize()) {
-            if (list.isEmpty()) item { T(if (found == null) "No conversations yet" else "Nothing matches “$query”", Tokens.textBase, c.muted, modifier = Modifier.padding(12.dp)) }
+            if (list.isEmpty()) item { T(if (found == null) "No conversations yet" else "No conversations match “${query.trim()}”", Tokens.textBase, c.muted, modifier = Modifier.padding(12.dp)) }
             for ((label, rows) in listOf("Pinned" to pinned, "Recent" to recent)) {
                 if (rows.isEmpty()) continue
                 // No headings while nothing's pinned, as the design has it.
@@ -102,12 +103,15 @@ fun ConversationsColumn(open: (Route) -> Unit) {
                 items(rows, key = { it.id }) { conversation ->
                     LaunchedEffect(conversation.id) { phone.preview(conversation.id) }
                     Box {
-                        ConversationRow(conversation.title.ifEmpty { "Conversation" }, conversation.turn?.text ?: phone.previews[conversation.id], conversation.latest, now,
+                        ConversationRow(conversation.title.ifEmpty { "Conversation" },
+                                        ConversationOrder.about(phone.jobs.count { it.conversation == conversation.id }, conversation.turn?.text ?: phone.previews[conversation.id]),
+                                        conversation.latest, now,
                                         onLong = { held = conversation.id }) { open(Route.Conversation(conversation.id)) }
                         DropdownMenu(held == conversation.id, { held = null }, containerColor = c.surface) {
                             DropdownMenuItem({ T(if (conversation.pinned) "Unpin" else "Pin", Tokens.textBase, c.ink) }, { held = null; run { phone.update(conversation.id, pinned = !conversation.pinned) } })
                             DropdownMenuItem({ T("Rename", Tokens.textBase, c.ink) }, { held = null; renaming = conversation })
-                            DropdownMenuItem({ T("Delete", Tokens.textBase, c.danger) }, { held = null; run { phone.delete(conversation.id) } })
+                            HorizontalDivider(color = c.line)
+                            DropdownMenuItem({ T("Delete conversation", Tokens.textBase, c.danger) }, { held = null; run { phone.delete(conversation.id) } })
                         }
                     }
                 }
@@ -171,6 +175,8 @@ fun ConversationPage(id: String?, isNew: Boolean) {
             DropdownMenu(menu, { menu = false }, containerColor = c.surface) {
                 DropdownMenuItem({ T(if (conversation.pinned) "Unpin" else "Pin", Tokens.textBase, c.ink) }, { menu = false; run { phone.update(conversation.id, pinned = !conversation.pinned) } })
                 DropdownMenuItem({ T("Rename", Tokens.textBase, c.ink) }, { menu = false; renaming = true })
+                HorizontalDivider(color = c.line)
+                DropdownMenuItem({ T("Delete conversation", Tokens.textBase, c.danger) }, { menu = false; run { phone.delete(conversation.id); phone.pop() } })
             }
         }
     }) {
@@ -214,9 +220,9 @@ private fun Thread(shown: String?, modifier: Modifier, problem: String?, edit: (
                 T(if (phone.conversation.loading) "Loading…" else "Earlier", Tokens.textMd, c.text, center = true,
                   modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp).clickable(enabled = !phone.conversation.loading) { scope.launch { phone.conversation.loadOlder() } })
             }
-            phone.conversation.problem?.let { item("problem") { T("The runner's thread couldn't be read: $it", Tokens.textSm, c.needsInk, modifier = Modifier.padding(bottom = 12.dp)) } }
+            phone.conversation.problem?.let { item("problem") { T("Your Mac's thread couldn't be read: $it", Tokens.textSm, c.needsInk, modifier = Modifier.padding(bottom = 12.dp)) } }
             if (turns.isEmpty() && !thinking) item("empty") {
-                T(if (phone.loaded) "Ask Oby anything." else "Reaching the runner…", Tokens.textBase, c.muted, center = true, modifier = Modifier.fillMaxWidth().padding(top = 40.dp))
+                T(if (phone.loaded) "Ask Oby anything." else "Reaching your Mac…", Tokens.textBase, c.muted, center = true, modifier = Modifier.fillMaxWidth().padding(top = 40.dp))
             }
             items(rows.size, key = { rows[it].turn.id }) { index ->
                 val row = rows[index]

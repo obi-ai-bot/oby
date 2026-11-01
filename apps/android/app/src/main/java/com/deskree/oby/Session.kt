@@ -145,7 +145,7 @@ private fun SessionView(session: LiveSession, agent: String, meta: String, live:
             items(shown, key = { it.n }) { entry -> SessionRow(entry, agent, live && entry.n == session.arriving, session, entry.n == entries.firstOrNull()?.n, column) }
             item("status") {
                 when {
-                    session.unavailable -> T("This runner doesn't keep this job's session.", Tokens.textSm, c.muted, modifier = Modifier.padding(top = 8.dp))
+                    session.unavailable -> T("This Oby doesn't keep this job's session.", Tokens.textSm, c.muted, modifier = Modifier.padding(top = 8.dp))
                     session.failure != null && entries.isEmpty() -> T("The session couldn't be read: ${session.failure}", Tokens.textSm, c.muted, modifier = Modifier.padding(top = 8.dp))
                     entries.isEmpty() && session.loaded -> T("Nothing yet.", Tokens.textSm, c.muted, modifier = Modifier.padding(top = 8.dp))
                     !session.loaded -> CircularProgressIndicator(Modifier.size(16.dp).padding(top = 8.dp), color = c.muted, strokeWidth = 2.dp)
