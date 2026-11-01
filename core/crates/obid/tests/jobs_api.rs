@@ -1285,6 +1285,50 @@ fn uncommitted_work_is_kept_as_a_wip_commit() {
     );
 }
 
+/// TASKS-11 (#1644): a task stopped before its agent committed anything, with only obid's `wip:`
+/// commit holding its work, isn't deleted at once: the apps' Delete waits for the owner's Confirm,
+/// which says that work is lost, and the task, its worktree and its branch stay meanwhile.
+#[test]
+fn tasks_11_a_stopped_task_with_only_a_wip_commit_asks_before_its_deleted() {
+    let folder = Folder::new("delete-wip");
+    let remote = fixture(&folder.0.join("fixture"));
+    let obid = start(&folder.0, &config(&folder.0, &remote));
+    let id = post_job(
+        &obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "build", "task": "DRAFT: notes.txt SLEEP"}),
+    )
+    .body["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    beat(&obid, &id);
+    request(&obid, "POST", &format!("/v1/jobs/{id}/stop"), None);
+    assert_eq!(wait(&obid, &id)["status"], "stopped");
+    let worktree = obid.home.join("worktrees").join(&id);
+    until(&obid, &id, |_| {
+        git(&worktree, &["log", "-1", "--format=%s"])
+            == "wip: work left uncommitted when the job ended"
+    });
+    let asked = request(&obid, "POST", &format!("/v1/jobs/{id}/delete"), None);
+    assert_eq!(asked.status, 200, "{}", asked.text);
+    assert_eq!(asked.body["deleted"], false, "{}", asked.text);
+    let item = &asked.body["ask"];
+    assert_eq!(item["kind"], "confirm", "{item}");
+    assert_eq!(item["confirm"]["action"], "delete_job", "{item}");
+    assert!(
+        item["title"]
+            .as_str()
+            .unwrap()
+            .ends_with("; work that isn't committed is lost)"),
+        "{item}"
+    );
+    assert_eq!(
+        request(&obid, "GET", &format!("/v1/jobs/{id}"), None).status,
+        200
+    );
+    assert!(worktree.join("notes.txt").exists());
+}
+
 /// A check that keeps failing gets the agent another round with its output, then stops at a limit:
 /// it needs you, with One more round, its branch kept. Dismiss lets it go.
 #[test]

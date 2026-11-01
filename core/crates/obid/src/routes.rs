@@ -442,8 +442,9 @@ pub async fn delete(
 }
 
 /// `POST /v1/jobs/{id}/delete` (obid only): the apps' Delete task. A job that ended with nothing
-/// unpublished goes at once, as `DELETE /v1/jobs/{id}` does; one with commits that aren't published
-/// waits for the owner's Confirm (`delete_job`, titled as `oby_delete_job`'s), which it answers.
+/// unpublished goes at once, as `DELETE /v1/jobs/{id}` does; one with commits that aren't published,
+/// or work that isn't committed (obid's `wip:` commit, changes in its worktree), waits for the
+/// owner's Confirm (`delete_job`, titled as `oby_delete_job`'s), which it answers.
 pub async fn delete_asked(
     State(shared): State<Arc<Shared>>,
     Path(id): Path<String>,
@@ -456,11 +457,13 @@ pub async fn delete_asked(
     if let Some(refused) = shared.jobs.undeletable(&id) {
         return Err(ApiError::new(StatusCode::CONFLICT, refused.0));
     }
-    if job.unpublished() == 0 {
+    // TASKS-11: obid's `wip:` commit or uncommitted changes are work too.
+    let unsaved = job.unpublished() == 0 && shared.jobs.unsaved_work(&id).await;
+    if job.unpublished() == 0 && !unsaved {
         delete(State(shared), Path(id)).await?;
         return Ok(json(StatusCode::OK, json!({"deleted": true, "ask": null})));
     }
-    let title = crate::brain::tools::delete_title(&shared, &job);
+    let title = crate::brain::tools::delete_title_with(&shared, &job, unsaved);
     let mut item = confirm_item(
         &id,
         title.clone(),
