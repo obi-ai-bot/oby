@@ -346,9 +346,11 @@ object PublishedLink {
     val usage get() = UsageSnapshot(agent, name, label, fiveHour, sevenDay, fiveHourResets, sevenDayResets, running, reserveLiftedUntil, signedIn)
 }
 
-@Serializable data class RunnerConfirm(val action: String = "", val target: String = "", val payload: Map<String, String>? = null) {
-    val words: String? get() = InboxWords.plain(payload?.get("words")) ?: InboxWords.plain(payload?.get("answer"))
-    companion object { const val KIND = "confirm"; const val CONFIRM = "Confirm" }
+@Serializable data class RunnerConfirm(val action: String = "", val target: String = "", val payload: Map<String, JsonElement>? = null) {
+    /** One of the payload's text fields, or null: its other fields (a snapshot, a number) are the action's own. */
+    fun text(key: String): String? = (payload?.get(key) as? kotlinx.serialization.json.JsonPrimitive)?.takeIf { it.isString }?.content
+    val words: String? get() = InboxWords.plain(text("words")) ?: InboxWords.plain(text("answer"))
+    companion object { const val KIND = "confirm"; const val CONFIRM = "Confirm"; const val CANCEL = "Cancel" }
 }
 
 @Serializable data class InboxItem(
@@ -364,12 +366,7 @@ object PublishedLink {
     fun waiting(now: Instant = Instant.now()) = done == null && (later?.let { it <= now } ?: true)
 
     fun line(now: Instant = Instant.now()): String {
-        val label = when (kind) {
-            "question" -> "Question"; "review" -> "Out of reviews"; "limit" -> "Out of usage"; "audit" -> "Issue audit"
-            "merge" -> "Not merged"; "failure" -> "Oby failure"; "start" -> "Start it?"; "permission" -> "Permission"
-            RunnerConfirm.KIND -> "Confirm it?"; else -> "Failed"
-        }
-        return "$label · $title · ${Elapsed.waiting(created, now)}"
+        return "${PhoneAsk.label(this)} · $title · ${Elapsed.waiting(created, now)}"
     }
 
     companion object {

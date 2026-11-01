@@ -137,4 +137,27 @@ class LogicTest {
         assertNull(parser.feed("""data: {"id":"a1","deleted":true}"""))
         assertEquals(RunnerEvent.JobDeleted("a1"), parser.feed(""))
     }
+
+    /** A decision's card as the Electron app words it (live.ts itemAsk, Sangam's ASK_LABEL), as the iPhone's #1719. */
+    @Test fun cardsSayWhatElectronsSay() {
+        fun item(json: String, text: String = "", options: String = "[]") =
+            wire.decodeFromString(InboxItem.serializer(), """{"id": "i", "job": "j", "text": "$text", "options": $options, "created": "2026-10-09T21:42:53Z", $json}""")
+        val merge = item(""""kind": "merge", "title": "Ready to merge: Fix login"""", text = """Not merged yet: the checks on your Mac failed. Fix them first.\nNobody approved its head.""")
+        assertEquals("Ready to merge", PhoneAsk.label(merge))
+        assertEquals("The checks on your Mac failed." to "Fix them first.\nNobody approved its head.", PhoneAsk.merge(merge))
+        assertEquals("Failed", PhoneAsk.label(item(""""kind": "failure", "title": "x"""")))
+        assertEquals("Question", PhoneAsk.label(item(""""kind": "agentQuestion", "title": "x"""")))
+        assertFalse(AskKind.failed("agentQuestion"))
+        val confirm = item(""""kind": "confirm", "title": "Delete Vault tests", "confirm": {"action": "delete_job", "target": "Vault tests"}""", options = """["Confirm", "Cancel"]""")
+        assertEquals("Confirm?", PhoneAsk.label(confirm)); assertNull(PhoneAsk.check(confirm))
+        val check = item(""""kind": "confirm", "title": "Use `pnpm test`", "confirm": {"action": "set_check", "target": "acme/app", "payload": {"check": "pnpm test", "was": null}}""", options = """["Confirm", "Cancel"]""")
+        assertEquals("Check", PhoneAsk.label(check)); assertEquals("pnpm test", PhoneAsk.check(check))
+        assertEquals("Use this as acme/app’s check before publishing?", PhoneAsk.checkTitle(check))
+        assertEquals(listOf("Use it" to "Confirm", "No check" to "Cancel"), PhoneAsk.checkOptions(check).map { it.label to it.answer })
+        assertEquals(listOf(false, false), PhoneAsk.checkOptions(check).map { it.recommended })
+        // A payload with more than text (a snapshot, a number) keeps its text fields.
+        val more = item(""""kind": "confirm", "title": "Continue Vault tests", "confirm": {"action": "continue_job", "target": "j", "payload": {"words": "Go on", "snapshot": {"round": 2}, "n": 3}}""")
+        assertEquals("Go on", more.confirmValue?.words)
+        assertEquals("Keep it", PhoneAsk.checkOptions(item(""""kind": "confirm", "title": "t", "confirm": {"action": "set_check", "target": "a/b", "payload": {"check": "make test", "was": "npm test"}}""")).last().label)
+    }
 }
