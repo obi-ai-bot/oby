@@ -770,8 +770,14 @@ sealed interface Connection {
 
 /** The Mac this phone is linked to (#285, apps/shared/RemoteRoute.swift). */
 @kotlinx.serialization.Serializable
-data class MacLink(val name: String, val hostname: String) {
+data class MacLink(val name: String, val hostname: String, val relayed: String? = null) {
     val tunnelURL get() = "https://$hostname"
+    /**
+     * Which Mac this is, for what's kept per Mac (its queued messages, its device id): through an
+     * Obysphere its relay and pinned key (`relayed`, `<id>.<key>`, neither secret), which an
+     * invitation can't copy as it can a name; else its hostname.
+     */
+    val identity get() = relayed?.let { "relay:$it" } ?: hostname.lowercase()
 
     companion object {
         private val tunnel = Regex("oby-[a-z0-9]{16,}(?:\\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?){2,}")
@@ -784,12 +790,23 @@ sealed interface RemoteRoute {
     val url: String
     data class Home(override val url: String) : RemoteRoute
     data class Away(override val url: String) : RemoteRoute
+    /** Through the Mac's Obysphere, every request sealed end to end (Relay.kt): `url` is a name nothing answers to. */
+    data object Relay : RemoteRoute { override val url = RELAY_BASE }
 
-    val label get() = if (this is Home) "At home, over the local network" else "Away, through the tunnel"
+    val label get() = when (this) {
+        is Home -> "At home, over the local network"
+        is Away -> "Away, through the tunnel"
+        Relay -> "Through your Obysphere, sealed end to end"
+    }
 
     companion object {
+        /** Where relayed requests are addressed: `.invalid` never resolves, so nothing meant for the relay goes anywhere else. */
+        const val RELAY_BASE = "https://mac.oby-relay.invalid"
+
+        /** A Mac paired through its Obysphere is reached through it alone, at home too. */
         fun choose(lan: String?, link: MacLink?, paired: Boolean): RemoteRoute? {
             if (!paired || link == null) return null
+            if (link.relayed != null) return Relay
             return lan?.let(::Home) ?: Away(link.tunnelURL)
         }
 
@@ -797,13 +814,36 @@ sealed interface RemoteRoute {
     }
 }
 
-/** What the Mac's pairing QR code carries (apps/mac/app/PairingView.swift). */
+/**
+ * What the Mac's pairing QR code carries (apps/ios/app/ConnectScreen.swift): the gateway's URL, the
+ * Mac's link and the one-time secret. Made while obid is in an Obysphere, `link.relay` too.
+ */
 @kotlinx.serialization.Serializable
 data class GatewayEnvelope(val url: String, val link: MacLink, val secret: String) {
+    @kotlinx.serialization.Transient var relay: RelayLink? = null; private set
+
+    @kotlinx.serialization.Serializable private class Relayed(val relay: RelayLink? = null)
+    @kotlinx.serialization.Serializable private class Linked(val link: Relayed)
+
     companion object {
         fun decode(text: String): GatewayEnvelope {
             val envelope = runCatching { wire.decodeFromString(serializer(), text.trim()) }.getOrNull()
-                ?: throw RunnerError("That isn't Oby's pairing QR code. Scan the one the Mac's Settings › Runner shows.")
+                ?: throw RunnerError("That isn't Oby's pairing QR code. Scan the one the Mac's Settings › Remote access shows.")
+            envelope.relay = runCatching { wire.decodeFromString(Linked.serializer(), text.trim()).link.relay }.getOrNull()
+            if (envelope.link.relayed != null) throw RunnerError("That isn't Oby's pairing QR code. Scan the one the Mac's Settings › Remote access shows.")
+            // Through an Obysphere the hostname is only the Mac's name: the relay is the way, and its
+            // key the Mac's, sealed to from the first call. A pasted one still names its Mac plainly:
+            // a short hostname of letters, digits, dots and dashes with a port at most, a short name of one line.
+            envelope.relay?.let { relay ->
+                val host = envelope.link.hostname.split(":", limit = 2)
+                val name = envelope.link.name
+                if (!relay.isValid || host[0].length !in 1..253 || !host[0].all { it.isLetterOrDigit() && it.code < 128 || it in "._-" } ||
+                    host.size == 2 && (host[1].length !in 1..5 || !host[1].all { it in '0'..'9' }) ||
+                    name.length !in 1..64 || name.any { it.isISOControl() || it == '\u2028' || it == '\u2029' }) {
+                    throw RunnerError("That invitation's Obysphere isn't one Oby can reach safely, so Oby won't pair with it.")
+                }
+                return envelope
+            }
             if (!MacLink.isHostname(envelope.link.hostname) || !envelope.reachesItsMac) {
                 throw RunnerError("That invitation doesn't point at the Mac it names, so Oby won't pair with it.")
             }
@@ -844,4 +884,4 @@ object PairingCode {
     }
 }
 
-class RunnerError(message: String, val status: Int? = null) : Exception(message)
+class RunnerError(message: String, val status: Int? = null) : java.io.IOException(message)

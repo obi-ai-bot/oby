@@ -14,6 +14,7 @@ webkit = "1.17.1"
 firebaseBom = "35.0.2"
 googleServices = "4.5.0"
 junit = "4.13.2"
+bouncycastle = "1.80.2"
 
 [libraries]
 compose-bom = { group = "androidx.compose", name = "compose-bom", version.ref = "composeBom" }
@@ -38,6 +39,7 @@ biometric = { group = "androidx.biometric", name = "biometric", version.ref = "b
 webkit = { group = "androidx.webkit", name = "webkit", version.ref = "webkit" }
 firebase-bom = { group = "com.google.firebase", name = "firebase-bom", version.ref = "firebaseBom" }
 firebase-messaging = { group = "com.google.firebase", name = "firebase-messaging" }
+bouncycastle = { group = "org.bouncycastle", name = "bcprov-jdk18on", version.ref = "bouncycastle" }
 junit = { group = "junit", name = "junit", version.ref = "junit" }
 
 [plugins]

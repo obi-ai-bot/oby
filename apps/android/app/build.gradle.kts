@@ -85,6 +85,8 @@ dependencies {
     implementation(libs.coroutines.android)
     implementation(libs.serialization.json)
     implementation(libs.okhttp)
+    // X25519, HKDF and ChaCha20-Poly1305 for the Obysphere relay (Relay.kt): Android 11 has no X25519 of its own.
+    implementation(libs.bouncycastle)
     implementation(libs.camera.camera2)
     implementation(libs.camera.lifecycle)
     implementation(libs.camera.view)

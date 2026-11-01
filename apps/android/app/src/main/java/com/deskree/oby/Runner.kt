@@ -83,11 +83,12 @@ class EventParser {
 }
 
 /**
- * The runner, through the paired Mac's gateway (or a runner of the owner's own at its address).
- * Every request carries this phone's device token for the gateway, `Authorization: Bearer`.
- * `refused`: what a 401 means here (a paired phone's pairing ended).
+ * The runner, through the paired Mac's gateway or its Obysphere relay (or a runner of the owner's
+ * own at its address). Every request carries this phone's device token for the gateway,
+ * `Authorization: Bearer`. `refused`: what a 401 means here (a paired phone's pairing ended).
+ * `relay`: the Mac's Obysphere, which every request goes sealed through when `base` is the relay's.
  */
-class Runner(val base: String, private val token: String?, private val refused: String? = null) {
+class Runner(val base: String, private val token: String?, private val refused: String? = null, private val relay: PhoneRelay? = null) {
     companion object {
         /** Nowhere: where a request goes with no Mac paired and no runner set, so a fresh phone talks to nobody. */
         const val NOWHERE = "http://127.0.0.1:9"
@@ -115,11 +116,20 @@ class Runner(val base: String, private val token: String?, private val refused: 
 
         fun enc(text: String): String = URLEncoder.encode(text, "UTF-8").replace("+", "%20")
 
-        /** Redeeming a pairing invitation at a Mac's gateway (`POST /v1/pairing`, docs/runner-api.md). */
-        suspend fun redeem(url: String, credential: String, name: String): PairingAnswer = withContext(Dispatchers.IO) {
+        /** The client for `base`: through `relay` alone when it's the relay's (a relay-less relay route reaches nothing, and says to pair again). */
+        fun http(base: String, relay: PhoneRelay?): OkHttpClient {
+            if (base != RemoteRoute.RELAY_BASE) return client
+            val sealed = relay ?: Interceptor {
+                throw RunnerError("This phone can't reach your Mac through its Obysphere any more. Pair again with the code in Oby on your Mac.", 401)
+            }
+            return client.newBuilder().apply { interceptors().add(0, sealed) }.build()
+        }
+
+        /** Redeeming a pairing invitation at a Mac's gateway, or through its relay (`POST /v1/pairing`, docs/runner-api.md). */
+        suspend fun redeem(url: String, credential: String, name: String, relay: PhoneRelay? = null): PairingAnswer = withContext(Dispatchers.IO) {
             val body = buildJsonObject { put("credential", credential); put("name", name) }.toString()
             val request = Request.Builder().url(url.trimEnd('/') + "/v1/pairing").post(body.toRequestBody(json)).build()
-            client.newBuilder().callTimeout(15, TimeUnit.SECONDS).build().newCall(request).execute().use { response ->
+            http(url, relay).newBuilder().callTimeout(15, TimeUnit.SECONDS).build().newCall(request).execute().use { response ->
                 val text = response.body.string()
                 if (!response.isSuccessful) {
                     val said = runCatching { wire.parseToJsonElement(text).jsonObject["error"]?.jsonPrimitive?.content }.getOrNull()
@@ -129,6 +139,8 @@ class Runner(val base: String, private val token: String?, private val refused: 
             }
         }
     }
+
+    private val http = http(base, relay)
 
     private fun url(path: String) = base.trimEnd('/') + "/" + path
 
@@ -149,7 +161,7 @@ class Runner(val base: String, private val token: String?, private val refused: 
 
     /** The answer's body, after its status is checked. */
     suspend fun send(method: String, path: String, body: String? = null, timeout: Long = 45): String = withContext(Dispatchers.IO) {
-        val call = client.newBuilder().readTimeout(timeout, TimeUnit.SECONDS).callTimeout(timeout + 15, TimeUnit.SECONDS).build()
+        val call = http.newBuilder().readTimeout(timeout, TimeUnit.SECONDS).callTimeout(timeout + 15, TimeUnit.SECONDS).build()
             .newCall(request(method, path, body))
         call.execute().use { response ->
             val text = response.body.string()
@@ -252,7 +264,7 @@ class Runner(val base: String, private val token: String?, private val refused: 
     /** One file of an artifact's version, with obid's answer as it is: its status and headers, the CSP among them. */
     fun artifactFile(ref: ArtifactRef, path: String): Response {
         val segments = (listOf(ref.id, ref.version.toString()) + path.split("/")).joinToString("/") { enc(it) }
-        return client.newCall(request("GET", "v1/artifacts/$segments", null)).execute()
+        return http.newCall(request("GET", "v1/artifacts/$segments", null)).execute()
     }
 
     suspend fun setMode(id: String, mode: RunnerMode): Job = call("POST", "v1/jobs/$id/mode", buildJsonObject { put("mode", mode.name) }.toString())
@@ -277,7 +289,7 @@ class Runner(val base: String, private val token: String?, private val refused: 
 
     /** Server-Sent Events until the connection drops; the caller reconnects. Split on `\n` only. */
     fun events(): Flow<RunnerEvent> = callbackFlow {
-        val stream = client.newBuilder().readTimeout(0, TimeUnit.SECONDS).build()
+        val stream = http.newBuilder().readTimeout(0, TimeUnit.SECONDS).build()
         val request = request("GET", "v1/events", null).newBuilder().header("Accept", "text/event-stream").build()
         val call = stream.newCall(request)
         val reader = Thread {

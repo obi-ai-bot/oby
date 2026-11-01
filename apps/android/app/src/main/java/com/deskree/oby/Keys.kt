@@ -102,11 +102,31 @@ object DeviceKey {
  * Android Keystore and never leaves it (the iPhone's keychain item), the ciphertext in the app's
  * private preferences, out of backups. Nothing else ever sees it.
  */
-object GatewayTokenStore {
-    private const val ALIAS = "gateway-token-key"
-    private const val PREF = "gateway.token"
+object GatewayTokenStore : SealedPreference("gateway.token") {
+    override fun saveFailed() = RunnerError("The phone couldn't keep the Mac's device token.")
+}
+
+/**
+ * The Mac's Obysphere relay this phone paired through (RelayLink), sealed beside the device token,
+ * so its relay token never reaches the preferences. (The link there names the relay's id and the
+ * Mac's public key, `MacLink.relayed`, neither of them secret: which relay and key this must be.)
+ */
+object RelayStore {
+    private val sealed = object : SealedPreference("relay.link") {
+        override fun saveFailed() = RunnerError("The phone couldn't keep its way to your Mac.")
+    }
+
+    fun read(context: Context): RelayLink? = sealed.read(context)?.let { runCatching { wire.decodeFromString(RelayLink.serializer(), it) }.getOrNull() }
+    fun save(context: Context, link: RelayLink) = sealed.save(context, wire.encodeToString(RelayLink.serializer(), link))
+    fun remove(context: Context) = sealed.remove(context)
+}
+
+/** A string sealed with the app's Keystore AES key, in its private preferences under `pref`. */
+abstract class SealedPreference(private val pref: String) {
     /** Read once, then kept in memory: every request and route reads it. */
     @Volatile private var cached: String? = null
+
+    abstract fun saveFailed(): RunnerError
 
     private fun key(): SecretKey {
         val store = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
@@ -119,7 +139,7 @@ object GatewayTokenStore {
 
     fun read(context: Context): String? {
         cached?.let { return it }
-        val saved = Store.prefs(context).getString(PREF, null) ?: return null
+        val saved = Store.prefs(context).getString(pref, null) ?: return null
         return runCatching {
             val bytes = Base64.decode(saved, Base64.NO_WRAP)
             val cipher = Cipher.getInstance("AES/GCM/NoPadding")
@@ -128,14 +148,14 @@ object GatewayTokenStore {
         }.getOrNull()?.also { cached = it }
     }
 
-    fun save(context: Context, token: String) {
+    fun save(context: Context, value: String) {
         val cipher = Cipher.getInstance("AES/GCM/NoPadding").apply { init(Cipher.ENCRYPT_MODE, key()) }
-        val sealed = cipher.iv + cipher.doFinal(token.toByteArray())
-        if (!Store.prefs(context).edit().putString(PREF, Base64.encodeToString(sealed, Base64.NO_WRAP)).commit()) {
-            throw RunnerError("The phone couldn't keep the Mac's device token.")
-        }
-        cached = token
+        val sealed = cipher.iv + cipher.doFinal(value.toByteArray())
+        if (!Store.prefs(context).edit().putString(pref, Base64.encodeToString(sealed, Base64.NO_WRAP)).commit()) throw saveFailed()
+        cached = value
     }
 
-    fun remove(context: Context) { cached = null; Store.prefs(context).edit().remove(PREF).apply() }
+    fun remove(context: Context) { cached = null; Store.prefs(context).edit().remove(pref).apply() }
+
+    private companion object { const val ALIAS = "gateway-token-key" }
 }
