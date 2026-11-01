@@ -394,8 +394,8 @@ impl IntoResponse for ApiError {
     }
 }
 
-pub const NOT_LOOPBACK: &str = "This runner answers only on 127.0.0.1.";
-pub const NO_TOKEN: &str = "This runner answers only requests with its API token.";
+pub const NOT_LOOPBACK: &str = "This Oby answers only on 127.0.0.1.";
+pub const NO_TOKEN: &str = "This Oby answers only requests with its API token.";
 
 /// Every request, before anything else: its `Host` must be a loopback name (`403` otherwise, so a
 /// web page can't reach obid through a name that resolves to 127.0.0.1), then it must carry the

@@ -189,18 +189,18 @@ impl Briefing {
             String::new(),
             "## Settings you can change in chat".into(),
             String::new(),
-            "- Models: none to change on this runner yet.".into(),
+            "- Models: none to change in this Oby yet.".into(),
             format!(
                 "- Jobs at once: {} (1 to {})",
                 self.max_running,
                 crate::settings::limits().max_running()
             ),
-            "- Weekly reserves: none on this runner.".into(),
+            "- Weekly reserves: none in this Oby.".into(),
             String::new(),
             "## Accounts and their usage".into(),
             String::new(),
             format!(
-                "Not on this runner yet: {}. When asked about one, say Oby doesn't have it yet; never guess it.",
+                "Not in this Oby yet: {}. When asked about one, say Oby doesn't have it yet; never guess it.",
                 NOT_YET.join("; ")
             ),
         ]);
@@ -1459,7 +1459,7 @@ mod tests {
     fn the_briefing_names_what_obid_cannot_tell_yet() {
         let text = briefing(vec![], vec![]).text();
         assert!(text.contains(
-            "## Accounts and their usage\n\nNot on this runner yet: each account's 5-hour and 7-day usage, with their reset times; the model and effort settings; the weekly reserves. When asked about one, say Oby doesn't have it yet; never guess it.\n"
+            "## Accounts and their usage\n\nNot in this Oby yet: each account's 5-hour and 7-day usage, with their reset times; the model and effort settings; the weekly reserves. When asked about one, say Oby doesn't have it yet; never guess it.\n"
         ), "{text}");
     }
 

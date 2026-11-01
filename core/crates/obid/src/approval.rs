@@ -224,7 +224,7 @@ impl Approvals {
             );
         }
         let Some(key) = key.and_then(verifying_key) else {
-            return Err("That device isn't registered with this runner.".into());
+            return Err("That device isn't registered with this Oby.".into());
         };
         let signature = base64::engine::general_purpose::STANDARD
             .decode(approval.signature.trim())
