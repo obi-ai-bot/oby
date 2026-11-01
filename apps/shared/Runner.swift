@@ -1126,7 +1126,7 @@ nonisolated struct RunnerError: LocalizedError {
     // whose Settings still has its Runner page.
     #if os(macOS)
     static let unpaired = "Set the runner's address first."
-    static let notLetIn = RunnerError.notLetIn
+    static let notLetIn = "The runner didn't let this device in."
     #else
     static let unpaired = "Pair with your Mac first."
     static let notLetIn = "Your Mac didn't let this device in."
