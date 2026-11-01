@@ -145,18 +145,20 @@ fun TaskCard(item: WorkItem) {
         DropdownMenu(held, { held = false }, containerColor = c.surface) {
             DropdownMenuItem({ T("View details", Tokens.textBase, c.ink) }, { held = false; phone.push(Route.Task(job.id)) })
             TaskMenuItems(job, TaskMenu.items(job, phone.conversationOf(job) != null).filter { it != TaskMenu.Item.Move && it != TaskMenu.Item.Mode && it != TaskMenu.Item.Rename },
-                          close = { held = false }, onProblem = { problem = it })
+                          scope, close = { held = false }, onProblem = { problem = it })
         }
     }
 }
 
-/** The ⋮'s items (Sangam's TaskMenu.tsx, Logic.kt's TaskMenu). `onDeleted`: Delete task took it, so its own page goes back. */
+/**
+ * The ⋮'s items (Sangam's TaskMenu.tsx, Logic.kt's TaskMenu). `onDeleted`: Delete task took it, so its
+ * own page goes back. `scope`: the card's or the page's, as the menu's own ends when the menu closes.
+ */
 @Composable
-fun TaskMenuItems(job: Job, items: List<TaskMenu.Item>, close: () -> Unit, onMove: () -> Unit = {}, onRename: () -> Unit = {}, onDeleted: () -> Unit = {},
+fun TaskMenuItems(job: Job, items: List<TaskMenu.Item>, scope: kotlinx.coroutines.CoroutineScope, close: () -> Unit, onMove: () -> Unit = {}, onRename: () -> Unit = {}, onDeleted: () -> Unit = {},
                   onProblem: (String?) -> Unit) {
     val phone = LocalPhone.current
     val c = Tokens.c
-    val scope = rememberCoroutineScope()
     var modes by remember { mutableStateOf(false) }
     fun run(work: suspend () -> Unit) { close(); scope.launch { onProblem(try { work(); null } catch (e: Exception) { e.message }) } }
     for (item in items) when (item) {
@@ -242,7 +244,7 @@ fun TaskPage(id: String) {
         {
             MenuButton("Task options") { menu = true }
             DropdownMenu(menu, { menu = false }, containerColor = c.surface) {
-                TaskMenuItems(job, TaskMenu.items(job, phone.conversationOf(job) != null), close = { menu = false },
+                TaskMenuItems(job, TaskMenu.items(job, phone.conversationOf(job) != null), scope, close = { menu = false },
                               onMove = { problem = null; moving = true }, onRename = { renaming = true }, onDeleted = { phone.pop() },
                               onProblem = { problem = it })
             }
