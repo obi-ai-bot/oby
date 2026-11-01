@@ -113,10 +113,18 @@ class Phone(val context: Context) {
     /** The gateway's address on the local network while discovery sees the linked Mac; null away from home. */
     private var lan by mutableStateOf<String?>(null)
 
+    /** The Mac's Obysphere relay, when this phone paired through it: then every request goes sealed through it. */
+    private var relay: PhoneRelay? = null
+        set(value) { if (field !== value) field?.hangUp(); field = value }
+
     init {
         val saved = prefs.getString("mac.link", null)
         if (saved != null && GatewayTokenStore.read(context) != null) {
-            link = runCatching { wire.decodeFromString(MacLink.serializer(), saved) }.getOrNull()?.takeIf { MacLink.isHostname(it.hostname) }
+            // A Mac paired through its Obysphere is reached through its relay alone: never restored
+            // as a tunnel pairing, and not at all without the relay its link pinned.
+            link = runCatching { wire.decodeFromString(MacLink.serializer(), saved) }.getOrNull()?.takeIf {
+                if (it.relayed != null) RelayStore.read(context)?.pinned == it.relayed else MacLink.isHostname(it.hostname)
+            }
         } else {
             // A link saved without a device token can't reach the gateway: pair again.
             prefs.edit().remove("mac.link").apply()
@@ -136,13 +144,23 @@ class Phone(val context: Context) {
 
     val route: RemoteRoute? get() = RemoteRoute.choose(lan, link, GatewayTokenStore.read(context) != null)
     val base: String get() = if (Sample.offline) Runner.NOWHERE else route?.url ?: runnerURL ?: Runner.NOWHERE
-    private val offlineQueueTarget: String get() = link?.let { "mac:${it.hostname.lowercase()}" } ?: "runner:${runnerURL ?: ""}"
+    private val offlineQueueTarget: String get() = link?.let { "mac:${it.identity}" } ?: "runner:${runnerURL ?: ""}"
 
     val runner: Runner get() {
         // Paired with a Mac, a 401 means the pairing ended: say which.
         val refused = link?.let { if (pairedUntil?.let { it <= Instant.now() } == true) ReachNotice.Expired else ReachNotice.Removed }
-        return Runner(base, GatewayTokenStore.read(context), refused?.let { "${it.title}. ${it.detail}" })
+        return Runner(base, GatewayTokenStore.read(context), refused?.let { "${it.title}. ${it.detail}" }, if (base == RemoteRoute.RELAY_BASE) loadRelay() else null)
     }
+
+    /** The relay of a Mac paired through its Obysphere, and only the one the link pinned. */
+    private fun loadRelay(): PhoneRelay? {
+        val pinned = link?.relayed ?: return null
+        if (relay?.link?.pinned != pinned) relay = RelayStore.read(context)?.takeIf { it.pinned == pinned }?.let(::PhoneRelay)
+        return relay
+    }
+
+    /** Bonjour looks for the linked Mac by name, but never for one paired through its Obysphere. */
+    private val bonjourName get() = link?.takeIf { it.relayed == null }?.name
 
     val notice: ReachNotice? get() = ReachNotice.of(connection, online, refusal, link != null, lastSeen, pairedUntil)
     val needsPairing: Boolean get() = (link == null && runnerURL == null) || notice == ReachNotice.Removed || notice == ReachNotice.Expired
@@ -159,7 +177,8 @@ class Phone(val context: Context) {
     private fun linkTo(value: MacLink?) {
         val old = link
         link = value
-        if (old?.hostname != value?.hostname) forgetRunner()
+        if (old?.identity != value?.identity) forgetRunner()
+        if (value?.relayed == null) { relay = null; RelayStore.remove(context) }
         if (value != null) prefs.edit().putString("mac.link", wire.encodeToString(MacLink.serializer(), value)).apply() else {
             prefs.edit().remove("mac.link").remove("gateway.expiresAt").apply()
             GatewayTokenStore.remove(context)
@@ -169,7 +188,7 @@ class Phone(val context: Context) {
             pushToken = null
         }
         restoreQueuedMessages(offlineQueueTarget)
-        if (started) finder.find(value?.name) { lan = it; reroute() }
+        if (started) finder.find(bonjourName) { lan = it; reroute() }
         reroute()
     }
 
@@ -182,10 +201,45 @@ class Phone(val context: Context) {
         echoes = emptyList(); failures = emptyMap(); requests.clear(); pending = null
     }
 
+    /** Pairs with what the Mac's QR code (or an invitation pasted) says: through the Mac's Obysphere when it came through one, and then only so. */
+    suspend fun pair(scanned: String) {
+        val envelope = GatewayEnvelope.decode(scanned)
+        val relay = envelope.relay
+        if (relay != null) pairRelay(relay, envelope.secret, envelope.link) else pairGateway(envelope.url, envelope.secret, envelope.link)
+    }
+
     /** Pairs with a Mac's gateway (#284): the QR secret or the six digits buy this phone's device token. */
     suspend fun pairGateway(url: String, credential: String, link: MacLink? = null) {
         val answer = Runner.redeem(url, credential, deviceName())
         val linked = link ?: answer.link ?: throw RunnerError("The Mac didn't say how to reach it away from home. Pair with its QR code instead.")
+        paired(answer, linked.copy(relayed = null))
+    }
+
+    /**
+     * Pairs through the Mac's Obysphere (#1278): the QR code's secret, sealed to the Mac's key from
+     * the same code, buys the device token, and the relay with that key is kept sealed. Only a new
+     * QR code from the Mac pins another key.
+     */
+    suspend fun pairRelay(link: RelayLink, credential: String, mac: MacLink) {
+        val relay = PhoneRelay(link)
+        val answer = try { Runner.redeem(RemoteRoute.RELAY_BASE, credential, deviceName(), relay) } catch (e: Exception) {
+            // Nothing paired: its socket goes too.
+            relay.hangUp()
+            throw e
+        }
+        try {
+            RelayStore.save(context, link)
+            this.relay = relay
+            paired(answer, mac.copy(relayed = link.pinned))
+        } catch (e: Exception) {
+            // Kept halfway (the phone's storage refused): no Mac rather than the wrong relay for one.
+            relay.hangUp()
+            unpair()
+            throw e
+        }
+    }
+
+    private fun paired(answer: PairingAnswer, linked: MacLink) {
         GatewayTokenStore.save(context, answer.token)
         pairedUntil = answer.expiresAt
         answer.expiresAt?.let { prefs.edit().putLong("gateway.expiresAt", it.toEpochMilli()).apply() }
@@ -268,7 +322,9 @@ class Phone(val context: Context) {
 
     fun start() {
         started = true
-        finder.find(link?.name) { lan = it; reroute() }
+        finder.find(bonjourName) { lan = it; reroute() }
+        // Opening the app is the person asking: the relay may open again at once.
+        relay?.resume()
         if (networkCallback == null) {
             val manager = context.getSystemService(ConnectivityManager::class.java)
             val callback = object : ConnectivityManager.NetworkCallback() {
@@ -290,6 +346,7 @@ class Phone(val context: Context) {
         networkCallback?.let { context.getSystemService(ConnectivityManager::class.java).unregisterNetworkCallback(it) }
         networkCallback = null
         unfollow()
+        relay?.hangUp()
     }
 
     private fun reroute() {
@@ -684,7 +741,7 @@ class Phone(val context: Context) {
         return url
     }
 
-    private val deviceKey get() = "device.${link?.hostname ?: runnerURL ?: ""}"
+    private val deviceKey get() = "device.${link?.identity ?: runnerURL ?: ""}"
     val deviceID: String? get() = prefs.getString(deviceKey, null)
 
     /** Registers the phone's publishing key with the runner and returns its id; again on every connection. */

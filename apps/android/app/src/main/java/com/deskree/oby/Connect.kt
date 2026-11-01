@@ -92,12 +92,11 @@ fun ConnectScreen(first: Boolean) {
     val names = browser.names
     if (chosen.isEmpty() || (names.isNotEmpty() && chosen !in names && phone.link?.name != chosen)) chosen = names.firstOrNull() ?: chosen
 
-    /** What the QR code said: the gateway's URL, the Mac's link and the one-time secret. */
+    /** What the QR code said: the gateway's URL (or the Mac's Obysphere relay), the Mac's link and the one-time secret. */
     fun pair(value: String) {
         scope.launch {
             problem = try {
-                val envelope = GatewayEnvelope.decode(value)
-                phone.pairGateway(envelope.url, envelope.secret, envelope.link)
+                phone.pair(scanned = value)
                 null
             } catch (e: Exception) { e.message }
         }
@@ -107,7 +106,7 @@ fun ConnectScreen(first: Boolean) {
            horizontalAlignment = Alignment.CenterHorizontally) {
         Box(Modifier.padding(top = 24.dp)) { ObyMark(112.dp) }
         T("Connect to your Mac", 22.sp, c.ink, FontWeight.SemiBold, Modifier.padding(top = 20.dp).semantics { heading() })
-        T("Oby on your Mac shows a code to pair with: Settings › Runner › Pair a device.", Tokens.textBase, c.text, center = true, modifier = Modifier.padding(top = 8.dp))
+        T("Oby on your Mac shows a code to pair with: Settings › Remote access › Pair a device.", Tokens.textBase, c.text, center = true, modifier = Modifier.padding(top = 8.dp))
         val link = phone.link
         if (link != null && !phone.needsPairing) Box(Modifier.padding(top = 24.dp)) {
             SetGroup("Your Mac", rows = listOf(
@@ -151,19 +150,19 @@ fun ConnectScreen(first: Boolean) {
         }
         problem?.let { SetAbout(it, c.danger, Modifier.fillMaxWidth().padding(top = 12.dp)) }
 
-        // A runner that isn't a Mac (one on a server you run), by its address: folded away, as most people pair their Mac.
+        // Oby on a server you run, not a Mac, by its address: folded away, as most people pair their Mac.
         Column(Modifier.fillMaxWidth().padding(top = 28.dp)) {
             Row(Modifier.padding(horizontal = 16.dp).padding(bottom = 8.dp).clickable { another = !another }, verticalAlignment = Alignment.CenterVertically) {
-                T("Another runner", Tokens.textMd, c.muted)
+                T("Another server", Tokens.textMd, c.muted)
                 Icon(Icons.Filled.ChevronRight, null, Modifier.size(14.dp).graphicsLayer { rotationZ = if (another) 90f else 0f }, tint = c.muted)
             }
-            if (another) SetGroup(footer = "For a runner on a server of yours, not your Mac. Clear it to use only your Mac.", rows = listOf {
+            if (another) SetGroup(footer = "For Oby on a server of yours, not your Mac. Clear it to use only your Mac.", rows = listOf {
                 SetRow("Address") {
                     SetField(address, "https://…", 200.dp, { address = it }, KeyboardOptions(keyboardType = KeyboardType.Uri)) {
                         val typed = address.trim()
                         when {
                             typed.isEmpty() -> { problem = null; phone.setRunner(null) }
-                            !typed.startsWith("https://") -> problem = "The runner's address starts with https://"
+                            !typed.startsWith("https://") -> problem = "The server's address starts with https://"
                             typed != phone.runnerURL -> { problem = null; phone.setRunner(typed) }
                         }
                     }

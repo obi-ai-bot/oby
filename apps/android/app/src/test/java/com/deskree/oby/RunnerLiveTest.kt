@@ -7,7 +7,7 @@ import org.junit.Assume.assumeTrue
 import org.junit.Test
 
 /**
- * The app's own pairing and runner client against a real Mac's gateway, end to end: skipped unless
+ * The app's own pairing and runner client against a real Mac, at its gateway or through its Obysphere, end to end: skipped unless
  * `OBY_INVITE` holds an invitation (the QR code's text, from `POST /v1/pairing/invite`). It redeems
  * it as the phone does, then reads what Home, the jobs, the inbox and the conversations show, and
  * follows the event stream until the runner says it follows. It prints counts, never the token.
@@ -17,9 +17,12 @@ class RunnerLiveTest {
         val invite = System.getenv("OBY_INVITE")
         assumeTrue("set OBY_INVITE to run against a Mac", !invite.isNullOrBlank())
         val envelope = GatewayEnvelope.decode(invite!!)
-        val answer = Runner.redeem(envelope.url, envelope.secret, "Android e2e")
+        // Through the Mac's Obysphere when the invitation came through one, else at its gateway.
+        val relay = envelope.relay?.let(::PhoneRelay)
+        val answer = if (relay != null) Runner.redeem(RemoteRoute.RELAY_BASE, envelope.secret, "Android e2e", relay)
+            else Runner.redeem(envelope.url, envelope.secret, "Android e2e")
         val link = answer.link ?: envelope.link
-        val runner = Runner(link.tunnelURL, answer.token)
+        val runner = if (relay != null) Runner(RemoteRoute.RELAY_BASE, answer.token, relay = relay) else Runner(link.tunnelURL, answer.token)
         val status = runner.status()
         val jobs = runner.jobs()
         val inbox = runner.inbox()
