@@ -4260,6 +4260,10 @@ impl Jobs {
             home: Some(home),
             logins,
             git: self.made_git_folders(job),
+            programs: (tool == Some(Tool::Codex))
+                .then(|| self.agent_bin(Tool::Codex))
+                .flatten()
+                .and_then(|bin| crate::codex::shipped_programs(&bin)),
         }
     }
 
@@ -6123,6 +6127,39 @@ impl Jobs {
         .is_ok_and(|changes| !changes.is_empty())
     }
 
+    /// Whether deleting the job `id` loses work its commit count doesn't show (TASKS-11): obid's
+    /// own `wip:` commit at its worktree's HEAD, or changes nobody committed. True when git can't
+    /// say within 15 seconds (it runs in the owner's Delete request); a worktree that's gone loses
+    /// nothing.
+    pub async fn unsaved_work(&self, id: &str) -> bool {
+        if !self.worktree_path(id).join(".git").exists() {
+            return false;
+        }
+        let limit = Duration::from_secs(15);
+        // Any change at all is enough: one byte of it, never an untracked folder listed whole.
+        let status = self
+            .sandboxed_git_within(
+                id,
+                &["status", "--porcelain", "--untracked-files=normal"],
+                None,
+                limit,
+                0,
+            )
+            .await;
+        if status.is_err() {
+            return true;
+        }
+        self.sandboxed_git_within(
+            id,
+            &["log", "-1", "--format=%B", "HEAD"],
+            None,
+            limit,
+            WIP_MESSAGE.len() + 64,
+        )
+        .await
+        .is_ok_and(|message| String::from_utf8_lossy(&message).trim() == WIP_MESSAGE)
+    }
+
     /// Where the job's worktree is as its check starts (PUBLISHING-5): its HEAD (empty when git
     /// can't say), and whether anything isn't committed (untracked files too, ignored ones not).
     /// Dirty when git can't say. The check never writes there: it runs in a checkout of its own.
@@ -6281,22 +6318,28 @@ impl Jobs {
         ))
     }
 
-    /// The end of the agent's stderr, when a turn died without saying why.
+    /// The end of the agent's stderr, when a turn died without saying why, masked as a
+    /// transcript entry is ([`crate::detail::mask`]: obid's secrets, then what the secret scan
+    /// flags) before it is cut, so a token or header the CLI printed never reaches the job's
+    /// `reason` (#1648).
     fn agent_note(&self, id: &str) -> String {
         let text = std::fs::read_to_string(self.log_path(id, "agent.log")).unwrap_or_default();
         let text = text.trim();
         if text.is_empty() {
             return String::new();
         }
-        let tail: String = text
-            .chars()
-            .rev()
-            .take(500)
-            .collect::<String>()
-            .chars()
-            .rev()
-            .collect();
-        format!(" {tail}")
+        let tail = |text: &str, n: usize| -> String {
+            let skip = text.chars().count().saturating_sub(n);
+            text.chars().skip(skip).collect()
+        };
+        // From a line's start, so no secret is cut in two before it's masked.
+        let window = tail(text, 16 * 1024);
+        let window = match window.len() < text.len() {
+            true => window.split_once('\n').map_or("", |(_, rest)| rest),
+            false => &window,
+        };
+        let masked = crate::detail::mask(window);
+        format!(" {}", tail(masked.trim(), 500))
     }
 
     /// Runs a job to its end, unless it is stopped or obid shuts down.
@@ -8627,7 +8670,9 @@ impl Jobs {
         }
         if !turn.succeeded() {
             let said = turn.text();
-            let first = said.lines().next().unwrap_or("").trim();
+            // Masked as the stderr note is (#1648): a CLI's error can carry a token.
+            let first = crate::detail::mask(said.lines().next().unwrap_or("").trim());
+            let first = first.trim();
             return Err(if first.is_empty() {
                 format!(
                     "Claude Code stopped without finishing the review ({}).{}",
@@ -9518,7 +9563,8 @@ impl Jobs {
                     if subtype.and_then(Value::as_str) == Some("error_max_turns") {
                         return Err(stall(Stall::Turns).await);
                     }
-                    let first = said.lines().next().unwrap_or("").trim().to_owned();
+                    // Masked as the stderr note is (#1648): it goes into the job's step and reason.
+                    let first = crate::detail::mask(said.lines().next().unwrap_or("").trim());
                     // Claude Code and Codex retry these themselves first; one that still ends the
                     // turn gets the round again in its session, after a wait.
                     // As its windows are now: one past its reset is empty again.

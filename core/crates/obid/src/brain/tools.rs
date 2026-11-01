@@ -907,7 +907,14 @@ fn delete_job(shared: &Shared, id: &str) -> Result<String, String> {
 /// What Delete's Confirm says goes, for `oby_delete_job` and the apps' `POST /v1/jobs/{id}/delete`:
 /// `Delete <title> (its worktree and local branch go; 2 commits that aren't published are lost)`.
 pub(crate) fn delete_title(shared: &Shared, job: &crate::job::Job) -> String {
+    delete_title_with(shared, job, false)
+}
+
+/// [`delete_title`], saying too that work that isn't committed is lost (TASKS-11: obid's `wip:`
+/// commit, changes in the worktree) when `unsaved` and no commit is.
+pub(crate) fn delete_title_with(shared: &Shared, job: &crate::job::Job, unsaved: bool) -> String {
     let lost = match job.unpublished() {
+        0 if unsaved => "; work that isn't committed is lost".into(),
         0 => String::new(),
         1 => "; 1 commit that isn't published is lost".into(),
         n => format!("; {n} commits that aren't published are lost"),

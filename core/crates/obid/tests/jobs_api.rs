@@ -1285,6 +1285,50 @@ fn uncommitted_work_is_kept_as_a_wip_commit() {
     );
 }
 
+/// TASKS-11 (#1644): a task stopped before its agent committed anything, with only obid's `wip:`
+/// commit holding its work, isn't deleted at once: the apps' Delete waits for the owner's Confirm,
+/// which says that work is lost, and the task, its worktree and its branch stay meanwhile.
+#[test]
+fn tasks_11_a_stopped_task_with_only_a_wip_commit_asks_before_its_deleted() {
+    let folder = Folder::new("delete-wip");
+    let remote = fixture(&folder.0.join("fixture"));
+    let obid = start(&folder.0, &config(&folder.0, &remote));
+    let id = post_job(
+        &obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "build", "task": "DRAFT: notes.txt SLEEP"}),
+    )
+    .body["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    beat(&obid, &id);
+    request(&obid, "POST", &format!("/v1/jobs/{id}/stop"), None);
+    assert_eq!(wait(&obid, &id)["status"], "stopped");
+    let worktree = obid.home.join("worktrees").join(&id);
+    until(&obid, &id, |_| {
+        git(&worktree, &["log", "-1", "--format=%s"])
+            == "wip: work left uncommitted when the job ended"
+    });
+    let asked = request(&obid, "POST", &format!("/v1/jobs/{id}/delete"), None);
+    assert_eq!(asked.status, 200, "{}", asked.text);
+    assert_eq!(asked.body["deleted"], false, "{}", asked.text);
+    let item = &asked.body["ask"];
+    assert_eq!(item["kind"], "confirm", "{item}");
+    assert_eq!(item["confirm"]["action"], "delete_job", "{item}");
+    assert!(
+        item["title"]
+            .as_str()
+            .unwrap()
+            .ends_with("; work that isn't committed is lost)"),
+        "{item}"
+    );
+    assert_eq!(
+        request(&obid, "GET", &format!("/v1/jobs/{id}"), None).status,
+        200
+    );
+    assert!(worktree.join("notes.txt").exists());
+}
+
 /// A check that keeps failing gets the agent another round with its output, then stops at a limit:
 /// it needs you, with One more round, its branch kept. Dismiss lets it go.
 #[test]
@@ -2639,6 +2683,65 @@ fn permission_prompts_are_answered_by_the_rules() {
     }
 }
 
+/// PERMISSIONS-3: Oby's own review stays in Plan and runs what only reads without asking
+/// (`git diff origin/dev...HEAD`, `git ls-tree`, `git cat-file`, `cat`, `grep`, `ls`), so it
+/// leaves no card on Home; an edit and a push are refused, and a write waits for the owner.
+#[test]
+fn permissions_3_a_review_reads_without_asking_and_a_write_still_asks() {
+    let folder = Folder::new("review-reads");
+    let remote = fixture(&folder.0.join("fixture"));
+    let obid = start(&folder.0, &config(&folder.0, &remote));
+    let review = |list: &[Value]| {
+        post_job(
+            &obid,
+            json!({"repo": "obi-e2e/fixture-app", "kind": "review",
+                   "task": format!("ASKS: {}", Value::Array(list.to_vec()))}),
+        )
+        .body["id"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    };
+    let bash = |command: &str| json!({"tool": "Bash", "input": {"command": command}});
+    let id = review(&[
+        bash("git diff origin/dev...HEAD"),
+        bash("git rev-parse HEAD; git log -1 --format=fuller; git status --short"),
+        bash(
+            "git ls-tree HEAD src/greet.js && git cat-file -p HEAD:src/greet.js && git blame src/greet.js",
+        ),
+        bash("cat src/greet.js | grep -n greet; ls src"),
+        json!({"tool": "Edit", "input": {"file_path": "src/greet.js"}}),
+        bash("git push origin HEAD"),
+    ]);
+    let job = settled(&obid, &id);
+    assert_eq!(job["status"], "done", "{job}");
+    assert_eq!(job["mode"], "plan");
+    let summary = job["summary"].as_str().unwrap();
+    assert!(
+        summary.starts_with("answers: allow, allow, allow, allow, deny: Plan mode"),
+        "{summary}"
+    );
+    assert_eq!(summary.matches("deny: ").count(), 2, "{summary}");
+    assert!(
+        !inbox(&obid)
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|i| i["job"] == id.as_str()),
+        "{}",
+        inbox(&obid)
+    );
+    for write in ["git commit -am x", "rm src/greet.js"] {
+        let id = review(&[bash(write)]);
+        let job = until(&obid, &id, |j| {
+            j["permission"].is_object()
+                || !matches!(j["status"].as_str(), Some("queued" | "running"))
+        });
+        assert_eq!(job["permission"]["tool"], "Bash", "{write}: {job}");
+        assert_eq!(job["permission"]["detail"], write, "{job}");
+    }
+}
+
 /// A control request of a kind obid doesn't know (a newer Claude Code's) gets an error, never
 /// silence, which would hang the job; the agent's next request is answered as usual (#1095).
 #[test]
@@ -2679,6 +2782,49 @@ fn settled(obid: &Obid, id: &str) -> Value {
 
 fn inbox(obid: &Obid) -> Value {
     request(obid, "GET", "/v1/inbox", None).body
+}
+
+/// #1648: an agent that dies printing a token on stderr leaves the job's `reason` with the end
+/// of its stderr masked as a transcript entry is (the line with the token becomes
+/// `[redacted: GitHub token]`), in the job, its inbox and its failures; the raw tail stays in
+/// `agent.log` only.
+#[test]
+fn an_agents_stderr_reaches_the_reason_redacted() {
+    let folder = Folder::new("stderr-redacted");
+    let remote = fixture(&folder.0.join("fixture"));
+    let obid = start(&folder.0, &config(&folder.0, &remote));
+    let token = format!("{}{}{}", "gh", "p_", "Z".repeat(36));
+    let posted = post_job(
+        &obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "build", "task": "STDERR TOKEN"}),
+    );
+    let id = posted.body["id"]
+        .as_str()
+        .unwrap_or_else(|| panic!("{}", posted.text))
+        .to_owned();
+    let job = wait(&obid, &id);
+    let reason = job["reason"].as_str().unwrap_or_default();
+    assert!(reason.contains("stopped without finishing"), "{job}");
+    assert!(reason.contains("[redacted: GitHub token]"), "{job}");
+    let everything = format!(
+        "{job}{}{}",
+        inbox(&obid),
+        request(&obid, "GET", "/v1/failures", None).body
+    );
+    assert!(!everything.contains(&token[4..]), "{everything}");
+    // An error result that holds one reaches the reason masked the same way.
+    let posted = post_job(
+        &obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "build", "task": "FAIL TOKEN"}),
+    );
+    let failed = wait(&obid, posted.body["id"].as_str().unwrap());
+    assert_eq!(failed["reason"], "[redacted: GitHub token]", "{failed}");
+    assert!(!failed.to_string().contains(&token[4..]), "{failed}");
+    let log = std::fs::read_to_string(obid.home.join("logs").join(&id).join("agent.log"));
+    assert!(
+        log.unwrap_or_default().contains(&token),
+        "the raw tail stays in the log only"
+    );
 }
 
 /// TASKS-13: a task's crash card settles, with no answer, once the task is let go: obid settles
