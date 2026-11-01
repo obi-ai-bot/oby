@@ -198,7 +198,7 @@ object PhoneWork {
         val job = item.job
         if (item.status == WorkStatus.Needs) {
             val plan = job.questionValue?.plan != null
-            val kind = decision?.let { AskKind.label(it.kind, plan) } ?: when {
+            val kind = decision?.let { PhoneAsk.label(it, plan) } ?: when {
                 job.waitsForPermission -> "Permission"
                 job.waitsForAnswer -> AskKind.label("question", plan)
                 job.reviewStopped -> AskKind.label("review")
@@ -319,21 +319,73 @@ object ConversationOrder {
     }
 }
 
+/** A decision's label (Sangam's ASK_LABEL, as the Electron app's live.ts and the iPhone's AskKind and PhoneAsk say it). */
 object AskKind {
     fun label(kind: String, plan: Boolean = false): String = when (kind) {
         "question" -> if (plan) "Plan" else "Question"
+        // A job's agent asked the user, in Claude Code's AskUserQuestion (#858).
+        "agentQuestion" -> "Question"
         "permission" -> "Permission"
         "review" -> "Out of reviews"
         "limit" -> "Out of usage"
         "start", "github" -> "Start it?"
         "merge" -> "Not merged"
         "audit" -> "Issue audit"
-        "failure" -> "Oby failure"
-        RunnerConfirm.KIND -> "Confirm it?"
+        "failure" -> "Failed"
+        RunnerConfirm.KIND -> "Confirm?"
+        // What a teammate's Oby asks (obid's `obiRequest`).
+        "review_request" -> "Review request"
+        "host_approval" -> "Approve on GitHub?"
         else -> "Failed"
     }
 
-    fun failed(kind: String) = kind !in listOf("question", "permission", "review", "limit", "start", "github", "audit", RunnerConfirm.KIND)
+    fun failed(kind: String) = kind !in listOf("question", "agentQuestion", "permission", "review", "limit", "start", "github", "audit", RunnerConfirm.KIND,
+                                               "review_request", "host_approval")
+}
+
+/** What a decision's card says where it takes the item itself (the iPhone's PhoneAsk): a merge card by what it is, a repository's check. */
+object PhoneAsk {
+    fun label(item: InboxItem, plan: Boolean = false): String {
+        if (check(item) != null) return "Check"
+        // Not merged, Ready to merge, Needs a teammate: what its title says before the task's.
+        if (item.kind == "merge") return item.title.substringBefore(": ", "").ifEmpty { AskKind.label("merge") }
+        return AskKind.label(item.kind, plan)
+    }
+
+    /** Oby's ask for a repository's check (`set_check`): the command, or null. */
+    fun check(item: InboxItem): String? {
+        val confirm = item.confirmValue
+        if (item.kind != RunnerConfirm.KIND || confirm?.action != "set_check") return null
+        return InboxWords.plain(confirm.payload?.get("check"))
+    }
+
+    fun checkTitle(item: InboxItem) = "Use this as ${item.confirmValue?.target.orEmpty()}’s check before publishing?"
+
+    /**
+     * Use it (obid's Confirm, signed: never recommended, as no Confirm is), and No check, or Keep it
+     * for a repository that has one (Cancel).
+     */
+    // ponytail: no Edit here; its `POST /v1/repos/check` isn't on the phone's gateway, so it's the Mac's
+    fun checkOptions(item: InboxItem) = listOf(
+        CardOption("Use it", RunnerConfirm.CONFIRM),
+        CardOption(if (item.confirmValue?.payload?.get("was") != null) "Keep it" else "No check", RunnerConfirm.CANCEL),
+    )
+
+    /**
+     * A merge card with no headline of the model's: obid's reason leads, its first sentence (without
+     * the label's words again) over the rest, then every other hold, one a line (MERGING-21).
+     */
+    fun merge(item: InboxItem): Pair<String, String?>? {
+        if (item.kind != "merge" || InboxWords.plain(item.headline) != null || item.text.isEmpty()) return null
+        val holds = item.text.split("\n")
+        val line = holds.first()
+        val stop = line.indexOf(". ")
+        var first = if (stop >= 0) line.substring(0, stop + 1) else line
+        val rest = if (stop >= 0) line.substring(stop + 2) else ""
+        Regex("^Not merged( yet)?: ").find(first)?.let { said -> first = first.substring(said.range.last + 1).replaceFirstChar { it.uppercase() } }
+        val happened = (listOf(rest) + holds.drop(1)).filter { it.isNotEmpty() }.joinToString("\n")
+        return first to happened.ifEmpty { null }
+    }
 }
 
 object ThreadTaskLine {

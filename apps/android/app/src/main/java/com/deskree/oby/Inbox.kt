@@ -73,12 +73,16 @@ fun InboxDecision(item: InboxItem, openTask: Boolean = false, inset: Boolean = t
     val waits = phone.waitsToSend(item.id)
     fun run(work: suspend () -> Unit) { busy = true; scope.launch { problem = try { work(); null } catch (e: Exception) { e.message }; busy = false } }
     val words = item.words
+    val check = PhoneAsk.check(item)
+    val merge = PhoneAsk.merge(item)
     AskInset(inset) {
-        AskCard(AskKind.label(item.kind, job?.questionValue?.plan != null), if (confirming) item.title else words.title(item.text),
-                CardOption.inbox(item.options, item.kind, job?.questionValue, permission, words, item.details, item.title),
+        AskCard(PhoneAsk.label(item, job?.questionValue?.plan != null),
+                if (check != null) PhoneAsk.checkTitle(item) else if (confirming) item.title else merge?.first ?: words.title(item.text),
+                if (check != null) PhoneAsk.checkOptions(item) else CardOption.inbox(item.options, item.kind, job?.questionValue, permission, words, item.details, item.title),
                 failed = AskKind.failed(item.kind), source = if (openTask) job?.heading else null,
-                happened = if (confirming) InboxWords.plain(item.text) else words.body, behindDetails = if (confirming) null else words.details(item.text),
-                detail = if (confirming) item.confirmValue?.words else permission?.detail, plan = if (item.kind == "question") job?.questionValue?.plan else null,
+                happened = if (confirming) InboxWords.plain(item.text) else if (merge != null) merge.second else words.body,
+                behindDetails = if (confirming || merge != null) null else words.details(item.text),
+                detail = check ?: if (confirming) item.confirmValue?.words else permission?.detail, plan = if (item.kind == "question") job?.questionValue?.plan else null,
                 busy = busy || waits,
                 onChoose = { option ->
                     val pr = PublishedLink.url(job?.published)
