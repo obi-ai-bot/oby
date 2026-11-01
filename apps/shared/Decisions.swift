@@ -13,6 +13,10 @@ nonisolated enum RunnerMode: String, Codable, CaseIterable, Identifiable, Sendab
 
     var id: String { rawValue }
 
+    /// What a Mode menu offers (Sangam's four, as the Electron app's `MODES`): obid's old Sandbox
+    /// only while it's the one set, until another is picked.
+    static func offered(_ current: RunnerMode?) -> [RunnerMode] { allCases.filter { $0 != .sandbox || current == .sandbox } }
+
     var label: String {
         switch self {
         case .ask: "Ask"

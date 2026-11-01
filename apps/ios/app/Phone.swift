@@ -1151,8 +1151,13 @@ final class Phone {
     }
 
     /// Tells the job's agent something; the runner answers with the job, running again.
-    func tell(_ id: String, _ text: String) async throws {
-        apply(.job(try await runner.tell(id, text)))
+    /// `conversation`: said on the task's page, the words and Oby's answer join the task's
+    /// conversation, made then if it has none (docs/contracts/task-conversations.md, TASKCONV-4)
+    func tell(_ id: String, _ text: String, conversation: Bool = false) async throws {
+        let answer = try await runner.tell(id, text, conversation: conversation)
+        apply(.job(answer))
+        // a follow-up it started: the task itself may be in a conversation made just now
+        if answer.id != id, conversation, let told = try? await runner.job(id) { apply(.job(told)) }
     }
 
     /// The exact sentence publishing this job would carry out.

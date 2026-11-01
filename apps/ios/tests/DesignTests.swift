@@ -131,6 +131,10 @@ struct DesignTests {
         var parser = EventParser()
         for line in ["event: job", #"data: {"id":"d","deleted":true}"#] { #expect(parser.feed(line) == nil) }
         #expect(parser.feed("") == .jobDeleted("d"))
+        // Mode: Sangam's four; obid's old Sandbox only while it's the one set.
+        #expect(RunnerMode.offered(.ask) == [.ask, .acceptEdits, .plan, .bypass])
+        #expect(RunnerMode.offered(nil) == [.ask, .acceptEdits, .plan, .bypass])
+        #expect(RunnerMode.offered(.sandbox) == [.ask, .acceptEdits, .plan, .bypass, .sandbox])
     }
 
     /// Oby's live face (Sangam's ObyFaceLive.tsx): while it works the face melts into three

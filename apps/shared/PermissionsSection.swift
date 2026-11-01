@@ -43,7 +43,7 @@ struct PermissionsSection: View {
                 SetRow("This runner doesn't ask before agents act.", quiet: true)
             } else {
                 SetRow("Default mode", about: defaultMode?.help) {
-                    SetSelect("Default mode", selection: mode, options: RunnerMode.allCases.map { (RunnerMode?.some($0), $0.label) })
+                    SetSelect("Default mode", selection: mode, options: RunnerMode.offered(defaultMode).map { (RunnerMode?.some($0), $0.label) })
                 }
                 if let rules, rules.isEmpty {
                     SetRow("No saved rules", quiet: true)
@@ -69,7 +69,7 @@ struct PermissionsSection: View {
                 Text("This runner doesn't ask before agents act.").foregroundStyle(.secondary)
             } else {
                 Picker("Default mode", selection: mode) {
-                    ForEach(RunnerMode.allCases) { mode in
+                    ForEach(RunnerMode.offered(defaultMode)) { mode in
                         Text(mode.label).tag(RunnerMode?.some(mode))
                     }
                 }
