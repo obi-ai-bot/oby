@@ -198,7 +198,7 @@ fun ArtifactViewer(ref: ArtifactRef, artifact: RunnerArtifact?, agent: String?, 
             val found = a ?: run { problem = "Oby doesn't keep this artifact any more."; return@LaunchedEffect }
             val files = found.files(version)
             suspend fun file(path: String): ByteArray = withContext(Dispatchers.IO) {
-                runner.artifactFile(shown, path).use { if (!it.isSuccessful) throw RunnerError("The runner answered ${it.code} for $path."); it.body.bytes() }
+                runner.artifactFile(shown, path).use { if (!it.isSuccessful) throw RunnerError("Your Mac answered ${it.code} for $path."); it.body.bytes() }
             }
             content = when (found.kind) {
                 "html" -> ArtifactContent.Page(if ("index.html" in files || files.isEmpty()) "index.html" else files[0])

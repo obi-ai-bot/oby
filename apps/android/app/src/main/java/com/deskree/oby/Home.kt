@@ -3,6 +3,7 @@ package com.deskree.oby
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.wrapContentHeight
 import androidx.compose.ui.draw.rotate
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.outlined.Forum
 import androidx.compose.material.icons.filled.Forum
@@ -137,7 +138,7 @@ fun HomeView() {
         Composer(Drafts.HOME, HomeLine.placeholder(owner ?: ""), onSend = { text, spoken ->
             phone.ask(text, spoken, new = true)
             phone.push(Route.NewConversation)
-        })
+        }, takeFocus = phone.focusHome && phone.homePath.isEmpty() && phone.panel == null, onFocused = { phone.focusHome = false })
     }
 }
 
@@ -283,7 +284,7 @@ fun AllTasksPage() {
         }
     }) {
         LazyColumn(Modifier.fillMaxSize().padding(horizontal = Tokens.gutter)) {
-            if (groups.isEmpty()) item { T(if (phone.loaded) "Nothing yet. Ask Oby for something on Home." else "Reaching the runner…", Tokens.textBase, c.muted, modifier = Modifier.padding(vertical = 12.dp)) }
+            if (groups.isEmpty()) item { T(if (phone.loaded) "Nothing yet. Ask Oby for something on Home." else "Reaching your Mac…", Tokens.textBase, c.muted, modifier = Modifier.padding(vertical = 12.dp)) }
             for (group in groups) {
                 val (rows, hidden) = WorkList.shown(group, group.id in more)
                 item(group.id) {
@@ -413,6 +414,12 @@ fun SidePanel(close: () -> Unit) {
                     Icon(Icons.AutoMirrored.Outlined.ViewSidebar, null, Modifier.size(20.dp).graphicsLayer { scaleX = -1f }, tint = c.muted)
                 }
             }
+            // What this tab starts, first thing under its title (Sangam's `.sidebar-new`): both go to Home's box, as his do.
+            Row(Modifier.fillMaxWidth().heightIn(min = 44.dp).clickable { phone.homePath = emptyList(); phone.panel = null; phone.focusHome = true }
+                    .padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Icon(Icons.Filled.Add, null, Modifier.size(18.dp), tint = c.item)
+                T(if (section == PanelSection.Home) "New task" else "New conversation", Tokens.textBase, c.item)
+            }
             when (section) {
                 PanelSection.Home -> TasksColumn(::open)
                 PanelSection.Conversations -> ConversationsColumn(::open)
@@ -438,7 +445,10 @@ private fun TasksColumn(open: (Route) -> Unit) {
     val c = Tokens.c
     val groups = WorkList.groups(phone.work, GroupBy.Type)
     LazyColumn(Modifier.fillMaxSize()) {
-        if (groups.isEmpty()) item { T(if (phone.loaded) "Nothing yet. Ask Oby for something on Home." else "Reaching your Mac…", Tokens.textBase, c.muted, modifier = Modifier.padding(horizontal = 12.dp)) }
+        if (groups.isEmpty()) item {
+            T(if (!phone.loaded) "Reaching your Mac…" else if (phone.archived.isEmpty()) "No tasks yet. They’ll show up here once you give me one." else "All caught up. Finished tasks are in Archived.",
+              Tokens.textBase, c.muted, modifier = Modifier.padding(horizontal = 12.dp))
+        }
         for (group in groups) {
             val folded = group.id in phone.panelFolded
             item(group.id) {

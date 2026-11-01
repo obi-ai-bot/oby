@@ -82,7 +82,6 @@ fun SettingsScreen() {
             val speech = Store.prefs(activity)
             var language by remember { mutableStateOf(speech.getString(VoiceSettings.LANGUAGE, "system") ?: "system") }
             SetGroup("Voice", rows = listOf(
-                { SetRow("Speak replies to spoken requests") { SetSwitch(phone.speakReplies, "Speak replies to spoken requests") { phone.setSpeaks(it) } } },
                 { SetRow("Speech language") {
                     SetSelect("Speech language", language, listOf("system" to VoiceSettings.SYSTEM_NAME) + VoiceSettings.languages) {
                         language = it; speech.edit().putString(VoiceSettings.LANGUAGE, it).apply()
@@ -189,7 +188,7 @@ private fun Permissions() {
     }
     val mode = phone.defaultMode
     val rows = mutableListOf<@Composable () -> Unit>()
-    if (mode == null && rules == null) rows += { SetRow("This runner doesn't ask before agents act.", quiet = true) }
+    if (mode == null && rules == null) rows += { SetRow("This Oby doesn't ask before agents act.", quiet = true) }
     else {
         rows += { SetRow("Default mode", about = mode?.help) {
             SetSelect("Default mode", mode, RunnerMode.offered(mode).map { it to it.label }) { m ->
@@ -223,7 +222,7 @@ private fun Routines() {
     fun act(work: suspend () -> Unit) { scope.launch { problem = try { work(); null } catch (e: Exception) { e.message }; load() } }
     val list = routines
     val rows: List<@Composable () -> Unit> = when {
-        list == null -> listOf { SetRow("This runner has no routines.", quiet = true) }
+        list == null -> listOf { SetRow("This Oby has no routines.", quiet = true) }
         list.isEmpty() -> listOf { SetRow("No routines yet", quiet = true) }
         else -> list.map { routine -> {
             SetRow(routine.name, about = routine.about()) {
@@ -269,7 +268,7 @@ private fun Notifications() {
         { SetRow("Push from your Mac", about = when {
             !configured -> "This build has no Firebase project yet, so alerts come only while Oby is open."
             pushes == true -> "Your Mac sends alerts to this phone."
-            pushes == false -> "Your Mac's runner doesn't send pushes yet."
+            pushes == false -> "Oby on your Mac doesn't send pushes yet."
             else -> null
         }) { SetValue(if (configured && pushes == true) "On" else "Off") } },
     ), footer = "Oby alerts you when a job needs you: ready to publish, failed or interrupted, a question for you, out of reviews or not merged. An alert opens its job.")
