@@ -168,9 +168,12 @@ nonisolated enum ThreadTaskLine {
 
     /// The jobs whose cards go under `turn`: those it lists, then, under the user's words, the
     /// jobs those words started (`startedBy`) that no turn of the thread lists yet,
-    /// oldest first: a card shows the moment its job starts, not when Oby's answer is in.
+    /// oldest first: a card shows the moment its job starts, not when Oby's answer is in. A job
+    /// has one card, under the first turn that lists it, never again under its report or a later
+    /// answer that names it (Electron's live.ts, `carded`).
     static func cards(under turn: Turn, in thread: [Turn], jobs: [Job], startedBy: (Job) -> String?) -> [Job] {
-        let listed = ConversationModel.jobs(of: turn, among: jobs)
+        let carded = Set(thread.prefix { $0.id != turn.id }.flatMap { $0.jobs ?? [] })
+        let listed = ConversationModel.jobs(of: turn, among: jobs).filter { !carded.contains($0.id) }
         guard turn.who == .user else { return listed }
         let answered = Set(thread.flatMap { $0.jobs ?? [] })
         return listed + jobs.filter { startedBy($0) == turn.id && !answered.contains($0.id) }.sorted { $0.created < $1.created }
