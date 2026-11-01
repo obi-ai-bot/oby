@@ -155,5 +155,9 @@ class LogicTest {
         assertEquals("Use this as acme/app’s check before publishing?", PhoneAsk.checkTitle(check))
         assertEquals(listOf("Use it" to "Confirm", "No check" to "Cancel"), PhoneAsk.checkOptions(check).map { it.label to it.answer })
         assertEquals(listOf(false, false), PhoneAsk.checkOptions(check).map { it.recommended })
+        // A payload with more than text (a snapshot, a number) keeps its text fields.
+        val more = item(""""kind": "confirm", "title": "Continue Vault tests", "confirm": {"action": "continue_job", "target": "j", "payload": {"words": "Go on", "snapshot": {"round": 2}, "n": 3}}""")
+        assertEquals("Go on", more.confirmValue?.words)
+        assertEquals("Keep it", PhoneAsk.checkOptions(item(""""kind": "confirm", "title": "t", "confirm": {"action": "set_check", "target": "a/b", "payload": {"check": "make test", "was": "npm test"}}""")).last().label)
     }
 }

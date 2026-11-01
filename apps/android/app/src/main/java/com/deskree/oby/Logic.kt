@@ -348,7 +348,7 @@ object PhoneAsk {
     fun label(item: InboxItem, plan: Boolean = false): String {
         if (check(item) != null) return "Check"
         // Not merged, Ready to merge, Needs a teammate: what its title says before the task's.
-        if (item.kind == "merge") return item.title.substringBefore(": ", "").ifEmpty { AskKind.label("merge") }
+        if (item.kind == "merge") return item.title.substringBefore(": ").ifEmpty { AskKind.label("merge") }
         return AskKind.label(item.kind, plan)
     }
 
@@ -356,7 +356,7 @@ object PhoneAsk {
     fun check(item: InboxItem): String? {
         val confirm = item.confirmValue
         if (item.kind != RunnerConfirm.KIND || confirm?.action != "set_check") return null
-        return InboxWords.plain(confirm.payload?.get("check"))
+        return InboxWords.plain(confirm.text("check"))
     }
 
     fun checkTitle(item: InboxItem) = "Use this as ${item.confirmValue?.target.orEmpty()}’s check before publishing?"
@@ -368,7 +368,7 @@ object PhoneAsk {
     // ponytail: no Edit here; its `POST /v1/repos/check` isn't on the phone's gateway, so it's the Mac's
     fun checkOptions(item: InboxItem) = listOf(
         CardOption("Use it", RunnerConfirm.CONFIRM),
-        CardOption(if (item.confirmValue?.payload?.get("was") != null) "Keep it" else "No check", RunnerConfirm.CANCEL),
+        CardOption(if (item.confirmValue?.text("was") != null) "Keep it" else "No check", RunnerConfirm.CANCEL),
     )
 
     /**

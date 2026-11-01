@@ -346,8 +346,10 @@ object PublishedLink {
     val usage get() = UsageSnapshot(agent, name, label, fiveHour, sevenDay, fiveHourResets, sevenDayResets, running, reserveLiftedUntil, signedIn)
 }
 
-@Serializable data class RunnerConfirm(val action: String = "", val target: String = "", val payload: Map<String, String?>? = null) {
-    val words: String? get() = InboxWords.plain(payload?.get("words")) ?: InboxWords.plain(payload?.get("answer"))
+@Serializable data class RunnerConfirm(val action: String = "", val target: String = "", val payload: Map<String, JsonElement>? = null) {
+    /** One of the payload's text fields, or null: its other fields (a snapshot, a number) are the action's own. */
+    fun text(key: String): String? = (payload?.get(key) as? kotlinx.serialization.json.JsonPrimitive)?.takeIf { it.isString }?.content
+    val words: String? get() = InboxWords.plain(text("words")) ?: InboxWords.plain(text("answer"))
     companion object { const val KIND = "confirm"; const val CONFIRM = "Confirm"; const val CANCEL = "Cancel" }
 }
 
