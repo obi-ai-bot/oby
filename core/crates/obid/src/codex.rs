@@ -1064,9 +1064,16 @@ pub fn shipped_programs(bin: &Path) -> Option<PathBuf> {
     let package: Value =
         serde_json::from_slice(&std::fs::read(root.join("codex-package.json")).ok()?).ok()?;
     let dir = Path::new(package["pathDir"].as_str()?);
-    dir.components()
+    if !dir
+        .components()
         .all(|c| matches!(c, std::path::Component::Normal(_)))
-        .then(|| root.join(dir))
+    {
+        return None;
+    }
+    // A link inside the package that leads out of it is none either.
+    std::fs::canonicalize(root.join(dir))
+        .ok()
+        .filter(|dir| dir.starts_with(&root))
 }
 
 #[cfg(test)]
@@ -1089,7 +1096,10 @@ mod tests {
             .unwrap();
             shipped_programs(&root.join("bin/codex"))
         };
+        std::fs::create_dir_all(root.join("codex-path")).unwrap();
         assert_eq!(package("codex-path"), Some(root.join("codex-path")));
+        std::os::unix::fs::symlink(std::env::temp_dir(), root.join("away")).unwrap();
+        assert_eq!(package("away"), None);
         assert_eq!(package("../elsewhere"), None);
         assert_eq!(package("/usr/bin"), None);
         let _ = std::fs::remove_dir_all(&root);

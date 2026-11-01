@@ -2074,7 +2074,8 @@ fn only_reads(command: &str, bounds: &Bounds) -> bool {
                             .first()
                             .is_some_and(|w| GIT_READS.contains(&w.as_str()))
                         && rest.iter().all(|w| {
-                            !["--output", "--ext-diff", "-O", "--open-files"]
+                            // `--filters` has `cat-file` run the repository's smudge programs.
+                            !["--output", "--ext-diff", "-O", "--open-files", "--filters"]
                                 .iter()
                                 .any(|o| w.starts_with(o))
                         })
@@ -2858,6 +2859,11 @@ mod tests {
             Verdict::Allow
         );
         assert_eq!(plan("rg --files .obi"), Verdict::Allow);
+        // The shipped folder is what lets it through, whatever the Mac has on its own PATH.
+        assert!(bounds.ships("rg"));
+        assert!(!Bounds::of(Path::new(WORKTREE)).ships("rg"));
+        assert!(!bounds.ships("./rg"));
+        assert_eq!(plan("git cat-file --filters HEAD:x"), Verdict::Ask);
         assert_eq!(plan("rg --pre ./x foo"), Verdict::Ask);
         assert_eq!(plan("./rg foo"), Verdict::Ask);
         let _ = std::fs::remove_dir_all(&dir);
