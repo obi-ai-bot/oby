@@ -192,7 +192,7 @@ private fun Permissions() {
     if (mode == null && rules == null) rows += { SetRow("This runner doesn't ask before agents act.", quiet = true) }
     else {
         rows += { SetRow("Default mode", about = mode?.help) {
-            SetSelect("Default mode", mode, RunnerMode.entries.map { it to it.label }) { m ->
+            SetSelect("Default mode", mode, RunnerMode.offered(mode).map { it to it.label }) { m ->
                 if (m != null) scope.launch { problem = try { phone.setDefaultMode(m); null } catch (e: Exception) { e.message } }
             }
         } }

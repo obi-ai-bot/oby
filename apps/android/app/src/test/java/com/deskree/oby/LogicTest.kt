@@ -112,4 +112,29 @@ class LogicTest {
     @Test fun anApprovalSignsWhatTheRunnerChecks() {
         assertEquals("oby-publish\nj1\nPush it\n2026-10-20T17:51:00Z", String(Approval.message("j1", "Push it", "2026-10-20T17:51:00Z")))
     }
+
+    /** Sangam's TaskMenu (#1714 on the iPhone): Rename, the state's own item, Move and Mode, then Delete task last. */
+    @Test fun aTasksMenuIsSangams() {
+        val running = job("""{"id":"a1","request":"r","agent":"claude","account":"x","repo":"o/r","status":"running","mode":"bypass","created":"2026-11-01T10:00:00Z"}""")
+        assertEquals(listOf(TaskMenu.Item.OpenConversation, TaskMenu.Item.Rename, TaskMenu.Item.Stop, TaskMenu.Item.Move, TaskMenu.Item.Mode, TaskMenu.Item.Delete),
+                     TaskMenu.items(running, true))
+        val done = job("""{"id":"a2","request":"r","agent":"claude","account":"x","repo":"o/r","status":"done","created":"2026-11-01T10:00:00Z","archived":"2026-11-01T11:00:00Z"}""")
+        assertEquals(TaskMenu.Item.Archive, TaskMenu.items(done, false)[1])
+        // Archived on any app: off Home, into Archived.
+        assertEquals(listOf("a2"), PhoneWork.archived(listOf(running, done), null).map { it.id })
+    }
+
+    /** Mode offers Sangam's four, and obid's old Sandbox only while it's the one set. */
+    @Test fun modeOffersSangamsFour() {
+        assertEquals(listOf(RunnerMode.ask, RunnerMode.acceptEdits, RunnerMode.plan, RunnerMode.bypass), RunnerMode.offered(RunnerMode.bypass))
+        assertEquals(RunnerMode.sandbox, RunnerMode.offered(RunnerMode.sandbox).last())
+    }
+
+    /** obid's `job` event for a deleted task is a deletion, not a job that fails to decode. */
+    @Test fun aDeletedTaskLeaves() {
+        val parser = EventParser()
+        assertNull(parser.feed("event: job"))
+        assertNull(parser.feed("""data: {"id":"a1","deleted":true}"""))
+        assertEquals(RunnerEvent.JobDeleted("a1"), parser.feed(""))
+    }
 }

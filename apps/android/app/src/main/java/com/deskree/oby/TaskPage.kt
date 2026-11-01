@@ -144,18 +144,21 @@ fun TaskCard(item: WorkItem) {
         }
         DropdownMenu(held, { held = false }, containerColor = c.surface) {
             DropdownMenuItem({ T("View details", Tokens.textBase, c.ink) }, { held = false; phone.push(Route.Task(job.id)) })
-            TaskMenuItems(job, TaskMenu.items(job, phone.conversationOf(job) != null).filter { it != TaskMenu.Item.Move && it != TaskMenu.Item.Mode },
-                          close = { held = false }, onProblem = { problem = it })
+            TaskMenuItems(job, TaskMenu.items(job, phone.conversationOf(job) != null).filter { it != TaskMenu.Item.Move && it != TaskMenu.Item.Mode && it != TaskMenu.Item.Rename },
+                          scope, close = { held = false }, onProblem = { problem = it })
         }
     }
 }
 
-/** The ⋮'s items (Sangam's TaskMenu.tsx): its conversation; Stop task while it goes, Archive once done, Dismiss while it needs you; Move to… and Mode. */
+/**
+ * The ⋮'s items (Sangam's TaskMenu.tsx, Logic.kt's TaskMenu). `onDeleted`: Delete task took it, so its
+ * own page goes back. `scope`: the card's or the page's, as the menu's own ends when the menu closes.
+ */
 @Composable
-fun TaskMenuItems(job: Job, items: List<TaskMenu.Item>, close: () -> Unit, onMove: () -> Unit = {}, onProblem: (String?) -> Unit) {
+fun TaskMenuItems(job: Job, items: List<TaskMenu.Item>, scope: kotlinx.coroutines.CoroutineScope, close: () -> Unit, onMove: () -> Unit = {}, onRename: () -> Unit = {}, onDeleted: () -> Unit = {},
+                  onProblem: (String?) -> Unit) {
     val phone = LocalPhone.current
     val c = Tokens.c
-    val scope = rememberCoroutineScope()
     var modes by remember { mutableStateOf(false) }
     fun run(work: suspend () -> Unit) { close(); scope.launch { onProblem(try { work(); null } catch (e: Exception) { e.message }) } }
     for (item in items) when (item) {
@@ -163,14 +166,19 @@ fun TaskMenuItems(job: Job, items: List<TaskMenu.Item>, close: () -> Unit, onMov
             DropdownMenuItem({ T("Open conversation", Tokens.textBase, c.ink) }, { close(); phone.push(Route.Conversation(target.id)) })
         }
         TaskMenu.Item.Stop -> DropdownMenuItem({ T("Stop task", Tokens.textBase, c.danger) }, { run { phone.stop(job.id) } })
-        TaskMenu.Item.Archive -> DropdownMenuItem({ T("Archive task", Tokens.textBase, c.ink) }, { close(); phone.archive(job.id) })
+        TaskMenu.Item.Rename -> DropdownMenuItem({ T("Rename", Tokens.textBase, c.ink) }, { close(); onRename() })
+        TaskMenu.Item.Archive -> DropdownMenuItem({ T("Archive task", Tokens.textBase, c.ink) }, { run { phone.archive(job.id) } })
         TaskMenu.Item.Dismiss -> DropdownMenuItem({ T("Dismiss", Tokens.textBase, c.ink) }, { run { phone.dismiss(job.id) } })
         TaskMenu.Item.Move -> DropdownMenuItem({ T("Move to…", Tokens.textBase, c.ink) }, { close(); onMove() })
         TaskMenu.Item.Mode -> {
             val mode = RunnerMode.of(job.mode)
             DropdownMenuItem({ T("Mode: ${mode?.label ?: "unknown"}", Tokens.textBase, c.ink) }, { modes = !modes })
-            if (modes) for (choice in RunnerMode.entries) DropdownMenuItem({ T("   ${choice.label}" + if (choice == mode) "  ✓" else "", Tokens.textBase, c.ink) },
+            if (modes) for (choice in RunnerMode.offered(mode)) DropdownMenuItem({ T("   ${choice.label}" + if (choice == mode) "  ✓" else "", Tokens.textBase, c.ink) },
                                                                          { run { phone.setMode(job.id, choice) } })
+        }
+        TaskMenu.Item.Delete -> {
+            HorizontalDivider(color = c.line)
+            DropdownMenuItem({ T("Delete task", Tokens.textBase, c.danger) }, { run { if (phone.deleteTask(job.id)) onDeleted() } })
         }
     }
 }
@@ -217,6 +225,7 @@ fun TaskPage(id: String) {
     var noteProblem by remember { mutableStateOf<String?>(null) }
     var menu by remember { mutableStateOf(false) }
     var moving by remember { mutableStateOf(false) }
+    var renaming by remember { mutableStateOf(false) }
     var session by remember { mutableStateOf(false) }
     var report by remember { mutableStateOf<ResearchDocument?>(null) }
 
@@ -235,8 +244,9 @@ fun TaskPage(id: String) {
         {
             MenuButton("Task options") { menu = true }
             DropdownMenu(menu, { menu = false }, containerColor = c.surface) {
-                TaskMenuItems(job, TaskMenu.items(job, phone.conversationOf(job) != null), close = { menu = false },
-                              onMove = { problem = null; moving = true }, onProblem = { problem = it })
+                TaskMenuItems(job, TaskMenu.items(job, phone.conversationOf(job) != null), scope, close = { menu = false },
+                              onMove = { problem = null; moving = true }, onRename = { renaming = true }, onDeleted = { phone.pop() },
+                              onProblem = { problem = it })
             }
         }
     }) {
@@ -257,7 +267,7 @@ fun TaskPage(id: String) {
                         Controls(job, busy) { work -> run(work) }
                         if (problem != null && action == null) T(problem!!, Tokens.textSm, c.danger, modifier = Modifier.padding(top = 10.dp))
                     }
-                    phone.loaded && looked -> T("This task isn't on the runner any more.", Tokens.textBase, c.text, center = true, modifier = Modifier.fillMaxWidth().padding(top = 80.dp))
+                    phone.loaded && looked -> T("This task isn't on your Mac any more.", Tokens.textBase, c.text, center = true, modifier = Modifier.fillMaxWidth().padding(top = 80.dp))
                     else -> Box(Modifier.fillMaxWidth().padding(top = 80.dp), contentAlignment = Alignment.Center) { CircularProgressIndicator(color = c.muted) }
                 }
             }
@@ -270,12 +280,13 @@ fun TaskPage(id: String) {
                              val words = ChatThread.words(text)
                              if (words == null || words.length > 2000) { if (text.length > 2000) noteProblem = "Keep your message under 2,000 characters."; return@Composer }
                              busy = true
-                             scope.launch { noteProblem = try { phone.tell(job.id, words); null } catch (e: Exception) { e.message }; busy = false }
+                             scope.launch { noteProblem = try { phone.tell(job.id, words, conversation = true); null } catch (e: Exception) { e.message }; busy = false }
                          })
             }
         }
     }
     if (moving && job != null) MoveSheet(job) { moving = false }
+    if (renaming && job != null) RenameDialog(job.heading, { renaming = false }, "Rename task") { title -> run { phone.rename(job.id, title) } }
     if (session) SessionSheet(id) { session = false }
     report?.let { ReportSheet(it, id) { report = null } }
 }

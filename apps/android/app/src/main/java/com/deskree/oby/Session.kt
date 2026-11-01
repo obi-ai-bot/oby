@@ -94,7 +94,7 @@ fun SessionSheet(id: String, close: () -> Unit) {
                 Composer(Drafts.task(id), "Tell ${job.agentName}…", enabled = !sending, onSend = { text, _ ->
                     val words = ChatThread.words(text)?.takeIf { it.length <= 2000 } ?: return@Composer
                     sending = true
-                    scope.launch { problem = try { phone.tell(id, words); null } catch (e: Exception) { e.message }; sending = false }
+                    scope.launch { problem = try { phone.tell(id, words, conversation = true); null } catch (e: Exception) { e.message }; sending = false }
                 })
             }
         }

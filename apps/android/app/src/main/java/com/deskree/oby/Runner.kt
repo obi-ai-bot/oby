@@ -30,6 +30,8 @@ import java.util.concurrent.TimeUnit
 sealed interface RunnerEvent {
     data object Connected : RunnerEvent
     data class JobChanged(val job: Job) : RunnerEvent
+    /** A job was deleted, here or on another app (obid only): it leaves every list. */
+    data class JobDeleted(val id: String) : RunnerEvent
     data class Accounts(val accounts: List<Account>) : RunnerEvent
     data class Cleared(val at: Instant) : RunnerEvent
     data class Inbox(val item: InboxItem) : RunnerEvent
@@ -66,7 +68,8 @@ class EventParser {
         if (json.isEmpty()) return null
         val element = wire.parseToJsonElement(json)
         return when (name) {
-            "job" -> RunnerEvent.JobChanged(wire.decodeFromJsonElement(element))
+            "job" -> if (element.jsonObject["deleted"]?.jsonPrimitive?.content == "true") RunnerEvent.JobDeleted(element.jsonObject["id"]!!.jsonPrimitive.content)
+                     else RunnerEvent.JobChanged(wire.decodeFromJsonElement(element))
             "accounts" -> RunnerEvent.Accounts(wire.decodeFromJsonElement(element))
             "clear" -> RunnerEvent.Cleared(wire.decodeFromJsonElement<ClearedAt>(element).clearedAt)
             "inbox" -> RunnerEvent.Inbox(wire.decodeFromJsonElement(element))
@@ -223,7 +226,13 @@ class Runner(val base: String, private val token: String?, private val refused: 
         }.toString())
 
     suspend fun liftReserve(id: String, lift: Boolean): Account = call("POST", "v1/accounts/$id/reserve", buildJsonObject { put("lift", lift) }.toString())
-    suspend fun tell(id: String, text: String): Job = call("POST", "v1/jobs/$id/messages", buildJsonObject { put("text", text) }.toString())
+    /** `conversation`: said on the task's page, the words and Oby's answer join the task's conversation (TASKCONV-4). */
+    suspend fun tell(id: String, text: String, conversation: Boolean = false): Job =
+        call("POST", "v1/jobs/$id/messages", buildJsonObject { put("text", text); if (conversation) put("conversation", true) }.toString())
+    suspend fun rename(id: String, title: String): Job = call("PATCH", "v1/jobs/$id", buildJsonObject { put("title", title) }.toString())
+    suspend fun archive(id: String): Job = call("POST", "v1/jobs/$id/archive", buildJsonObject { put("archived", true) }.toString())
+    /** The apps' Delete task (obid only): gone at once, or, with work that isn't published, obid's Confirm (`ask`) first. */
+    suspend fun deleteAsked(id: String): DeleteAnswer = call("POST", "v1/jobs/$id/delete")
     suspend fun modelOptions(): ModelOptions = call("GET", "v1/settings/models/options")
     suspend fun setModels(models: ModelSettings): ModelSettings =
         call("PUT", "v1/settings/models", wire.encodeToString(ModelSettings.serializer(), models))
@@ -325,6 +334,8 @@ class Runner(val base: String, private val token: String?, private val refused: 
         awaitClose { call.cancel() }
     }.flowOn(Dispatchers.IO)
 }
+
+@Serializable data class DeleteAnswer(val deleted: Boolean = false, val ask: InboxItem? = null)
 
 @Serializable data class PairingAnswer(val token: String, val link: MacLink? = null, val expiresAt: Date? = null)
 
