@@ -132,10 +132,10 @@ private fun ConversationRow(title: String, last: String?, at: java.time.Instant?
 }
 
 @Composable
-fun RenameDialog(title: String, dismiss: () -> Unit, save: (String) -> Unit) {
+fun RenameDialog(title: String, dismiss: () -> Unit, heading: String = "Rename conversation", save: (String) -> Unit) {
     var name by remember { mutableStateOf(title) }
     AlertDialog(onDismissRequest = dismiss, containerColor = Tokens.c.surface,
-        title = { T("Rename conversation", 17.sp, Tokens.ink, FontWeight.SemiBold) },
+        title = { T(heading, 17.sp, Tokens.ink, FontWeight.SemiBold) },
         text = { SetField(name, "Name", 260.dp, { name = it }) },
         confirmButton = { TextButton({ name.trim().takeIf { it.isNotEmpty() }?.let(save); dismiss() }) { T("Save", Tokens.textBase, Tokens.ink) } },
         dismissButton = { TextButton(dismiss) { T("Cancel", Tokens.textBase, Tokens.muted) } })

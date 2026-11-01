@@ -91,7 +91,6 @@ class Phone(val context: Context) {
     var refusal by mutableStateOf<Int?>(null); private set
     var stopProblem by mutableStateOf<String?>(null); private set
     var pairedUntil by mutableStateOf(prefs.getLong("gateway.expiresAt", 0).takeIf { it > 0 }?.let(Instant::ofEpochMilli)); private set
-    var archivedHere by mutableStateOf(prefs.getStringSet("phone.archived", emptySet()).orEmpty().toSet()); private set
     var speakReplies by mutableStateOf(prefs.getBoolean("voice.speakReplies", true)); private set
     /** The FCM token, once Firebase gave one; handed to the runner on every connection. */
     var pushToken by mutableStateOf<String?>(null)
@@ -260,15 +259,27 @@ class Phone(val context: Context) {
     val answering: List<InboxItem> get() = InboxItem.waiting(inbox).filter { !waitsToSend(answer = it.id) }
     fun waitsToSend(answer: String) = offlineQueue.answers.any { it.id == answer }
     fun waitsToSendEcho(id: String) = offlineQueue.messages.any { it.id == id }
-    val archived: List<Job> get() = PhoneWork.archived(jobs, clearedAt, archivedHere)
-    val visibleJobs: List<Job> get() = jobs.filter { it.listed(clearedAt) && (it.isActive || it.id !in archivedHere) }
+    val archived: List<Job> get() = PhoneWork.archived(jobs, clearedAt)
+    val visibleJobs: List<Job> get() = jobs.filter { it.listed(clearedAt) && (it.isActive || it.archived == null) }
     val active: List<Job> get() = jobs.filter { it.isActive }
     fun decision(job: Job): InboxItem? = InboxItem.waiting(inbox).firstOrNull { it.job == job.id }
     fun accountName(id: String) = accounts.firstOrNull { it.id == id }?.name ?: id
 
-    fun archive(id: String) {
-        archivedHere = archivedHere + id
-        prefs.edit().putStringSet("phone.archived", archivedHere).apply()
+    /** The task's ⋮, as Sangam's TaskMenu: Rename, Archive task (off Home, into Archived, on every app). */
+    suspend fun rename(id: String, title: String) = apply(RunnerEvent.JobChanged(runner.rename(id, title)))
+    suspend fun archive(id: String) = apply(RunnerEvent.JobChanged(runner.archive(id)))
+
+    /** Delete task: gone for good, or, with work that isn't published, obid's Confirm first, under Needs you; true once it's gone. */
+    suspend fun deleteTask(id: String): Boolean {
+        val answer = try { runner.deleteAsked(id) } catch (e: RunnerError) {
+            // Gone already (deleted on another app while this one wasn't following).
+            if (e.status != 404) throw e
+            apply(RunnerEvent.JobDeleted(id))
+            return true
+        }
+        answer.ask?.let { apply(RunnerEvent.Inbox(it)) }
+        if (answer.deleted) apply(RunnerEvent.JobDeleted(id))
+        return answer.deleted
     }
 
     fun setSpeaks(on: Boolean) {
@@ -475,6 +486,7 @@ class Phone(val context: Context) {
             is RunnerEvent.JobChanged -> putJobs(jobs.indexOfFirst { it.id == event.job.id }.let { at ->
                 if (at >= 0) jobs.toMutableList().also { it[at] = event.job } else listOf(event.job) + jobs
             })
+            is RunnerEvent.JobDeleted -> putJobs(jobs.filter { it.id != event.id })
             is RunnerEvent.Accounts -> accounts = event.accounts
             is RunnerEvent.Cleared -> clearedAt = event.at
             RunnerEvent.Connected -> liveSession?.let { scope.launch { it.catchUp() } }
@@ -698,7 +710,13 @@ class Phone(val context: Context) {
     suspend fun startNow(id: String) = apply(RunnerEvent.JobChanged(runner.startNow(id)))
     suspend fun move(id: String, agent: String?, account: String?, model: String?) = apply(RunnerEvent.JobChanged(runner.move(id, agent, account, model)))
     suspend fun clear() { clearedAt = runner.clear() }
-    suspend fun tell(id: String, text: String) = apply(RunnerEvent.JobChanged(runner.tell(id, text)))
+    /** `conversation`: said on the task's page, the words and Oby's answer join the task's conversation, made then if it has none (TASKCONV-4). */
+    suspend fun tell(id: String, text: String, conversation: Boolean = false) {
+        val answer = runner.tell(id, text, conversation)
+        apply(RunnerEvent.JobChanged(answer))
+        // A follow-up it started: the task itself may be in a conversation made just now.
+        if (answer.id != id && conversation) runCatching { runner.job(id) }.getOrNull()?.let { apply(RunnerEvent.JobChanged(it)) }
+    }
     suspend fun setMode(id: String, mode: RunnerMode) = apply(RunnerEvent.JobChanged(runner.setMode(id, mode)))
     suspend fun setDefaultMode(mode: RunnerMode) { runner.setDefaultMode(mode); defaultMode = mode }
     suspend fun setModels(models: ModelSettings) { this.models = runner.setModels(models) }

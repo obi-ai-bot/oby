@@ -138,6 +138,8 @@ enum class JobStatus { queued, running, done, failed, stopped, interrupted;
     val pullRequest: JsonElement? = null,
     val pullRequestError: String? = null,
     val dismissed: Date? = null,
+    /** When it was archived with a task's ⋮, on any app (obid only, `POST /v1/jobs/{id}/archive`); obid clears it when the task runs again. */
+    val archived: Date? = null,
     val reviewing: String? = null,
     val review: JsonElement? = null,
     val reviewOf: String? = null,

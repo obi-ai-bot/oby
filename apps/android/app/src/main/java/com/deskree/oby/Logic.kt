@@ -179,8 +179,8 @@ object PhoneWork {
             }
     }
 
-    fun archived(jobs: List<Job>, clearedAt: Instant?, here: Set<String>) =
-        jobs.filter { !it.isActive && (it.dismissed != null || it.id in here || !it.listed(clearedAt)) }
+    fun archived(jobs: List<Job>, clearedAt: Instant?) =
+        jobs.filter { !it.isActive && (it.dismissed != null || it.archived != null || !it.listed(clearedAt)) }
 
     fun loose(inbox: List<InboxItem>, among: List<WorkItem>): List<InboxItem> {
         val listed = among.map { it.id }.toSet()
@@ -511,7 +511,12 @@ enum class RunnerMode(val label: String, val help: String) {
     bypass("Bypass", "Asks nothing"),
     sandbox("Sandbox", "Asks only about the network, secrets and reads outside the worktree");
 
-    companion object { fun of(raw: String?) = entries.firstOrNull { it.name == raw } }
+    companion object {
+        fun of(raw: String?) = entries.firstOrNull { it.name == raw }
+
+        /** What a Mode menu offers (Sangam's four, as the Electron app's `MODES`): obid's old Sandbox only while it's the one set, until another is picked. */
+        fun offered(current: RunnerMode?) = listOf(ask, acceptEdits, plan, bypass) + if (current == sandbox) listOf(sandbox) else emptyList()
+    }
 }
 
 /** A plan in markdown, split into what the card draws. */
@@ -684,15 +689,21 @@ object TaskFacts {
     fun meta(job: Job, account: String) = listOf(job.agentName, account, job.repoName).filter { it.isNotEmpty() }.joinToString(" · ")
 }
 
-/** A task's ⋮ (Sangam's TaskMenu.tsx). */
+/**
+ * A task's ⋮ (Sangam's TaskMenu.tsx): its conversation, Rename; Stop task while it goes, Archive
+ * task once it's done (Dismiss instead while it needs you); then the phone's Move to… and Mode;
+ * last, set apart, Delete task (obid says why when it can't yet).
+ */
 object TaskMenu {
-    enum class Item { OpenConversation, Stop, Archive, Dismiss, Move, Mode }
+    enum class Item { OpenConversation, Rename, Stop, Archive, Dismiss, Move, Mode, Delete }
 
     fun items(job: Job, conversation: Boolean): List<Item> {
         val items = if (conversation) mutableListOf(Item.OpenConversation) else mutableListOf()
+        items += Item.Rename
         items += if (job.isActive) Item.Stop else if (job.needsYou || job.canPublish) Item.Dismiss else Item.Archive
         if (job.reviewOf == null) items += Item.Move
         if (job.isActive && job.mode != null) items += Item.Mode
+        items += Item.Delete
         return items
     }
 }
