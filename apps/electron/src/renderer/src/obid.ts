@@ -29,8 +29,10 @@ export * from '../../shared/obid-wire';
 export type Invitation = { url: string; link: string; secret: string; code: string; expiresAt: string };
 export type PairedDevice = { id: string; name: string; created: string; expiresAt: string };
 // What the QR code carries, as the Swift Mac app made it (PairingView's qrText): the iPhone reads
-// it (GatewayEnvelope)
-export const qrText = (i: Invitation) => JSON.stringify({ url: i.url, link: JSON.parse(i.link), secret: i.secret });
+// it (GatewayEnvelope). ASCII only, everything else as JSON's \uXXXX: the QR's bytes are one per
+// character, and a Mac's name (Wellington’s MacBook Pro) would lose its apostrophe
+export const qrText = (i: Invitation) => JSON.stringify({ url: i.url, link: JSON.parse(i.link), secret: i.secret })
+  .replace(/[\u007f-\uffff]/g, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`);
 
 // Each tool's model and efforts, as status.models has them (Settings › Agents), and the choices:
 // Claude Code's efforts are the tool's, Codex's each model's own; Cursor has a model and no effort

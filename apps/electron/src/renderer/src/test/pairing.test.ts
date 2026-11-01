@@ -12,4 +12,10 @@ describe('the pairing QR code', () => {
     // never the six digits: through the Sphere only the QR's secret pairs
     expect(text).not.toContain('123456');
   });
+  it('pairing_1: a Mac named with a curly apostrophe or accents goes as ASCII, read back the same', () => {
+    const link = JSON.stringify({ hostname: 'studio', name: 'Wellington’s MacBook Pro · é 日本', relay: { sphere: 'https://s', id: 'r', token: 't', key: 'k' } });
+    const text = qrText({ url: 'https://s', link, secret: 's', code: '1', expiresAt: '' });
+    expect(/^[\x20-\x7e]*$/.test(text)).toBe(true);
+    expect(JSON.parse(text).link.name).toBe('Wellington’s MacBook Pro · é 日本');
+  });
 });
