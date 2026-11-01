@@ -23,7 +23,12 @@ final class ObyCharacter {
         config.urlSchemeHandlers[URLScheme("oby")!] = CharacterFiles()
         config.userContentController.add(events, name: "oby")
         page = WebPage(configuration: config)
-        events.received = { [weak self] event in if event == "ready" { self?.ready = true } }
+        events.received = { [weak self] event in
+            guard event == "ready", let self else { return }
+            ready = true
+            // Paused before it drew: pause it now that it has.
+            if paused { applyPause() }
+        }
         Task {
             do {
                 for try await event in page.load(URLRequest(url: URL(string: "oby://character/oby.html?\(query)")!))
@@ -85,6 +90,9 @@ final class ObyCharacter {
     }
 
     private func applyPause() {
+        // Not drawn yet: its first frame comes first. Paused before it (under the notifications
+        // prompt, say), the page never says it's ready, and Oby stays hidden.
+        if paused, !ready { return }
         guard paused else {
             run("oby.pause(false); oby.setState(state, { now: true })", ["state": mood])
             return

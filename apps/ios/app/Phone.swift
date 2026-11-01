@@ -1209,6 +1209,24 @@ final class Phone {
         defaultMode = mode
     }
 
+    /// Settings › Agents: an account's model and efforts, as obid kept them.
+    func tune(_ id: String, _ change: [String: String]) async throws {
+        let kept = try await runner.tuneAccount(id, change)
+        guard let i = accounts.firstIndex(where: { $0.id == id }) else { return }
+        accounts[i].model = kept.model
+        accounts[i].effort = kept.effort
+        accounts[i].complexEffort = kept.complexEffort
+    }
+
+    func readDefaultAccount() async {
+        if let status = try? await runner.status() { defaultAccount = status.defaultAccount }
+    }
+
+    func setDefaultAccount(_ id: String) async throws {
+        try await runner.setDefaultAccount(id)
+        defaultAccount = id
+    }
+
     // MARK: Models
 
     func setModels(_ models: ModelSettings) async throws {

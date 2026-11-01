@@ -137,8 +137,6 @@ struct DesignTests {
         #expect(RunnerMode.offered(.sandbox) == [.ask, .acceptEdits, .plan, .bypass, .sandbox])
     }
 
-    /// A decision's card as the Electron app words it (live.ts itemAsk, Sangam's ASK_LABEL): a merge
-    /// card by what it is, a Confirm "Confirm?", an Oby failure "Failed", a repository's check.
     /// Settings › Agents says an account's use as Electron's accountRow and weekWords do.
     @Test func agentUsageSaysWhatElectronsSays() throws {
         let now = Date(timeIntervalSince1970: 1_800_000_000)
@@ -159,6 +157,8 @@ struct DesignTests {
         #expect(AgentUsage(out, now: now).week == "Not signed in")
     }
 
+    /// A decision's card as the Electron app words it (live.ts itemAsk, Sangam's ASK_LABEL): a merge
+    /// card by what it is, a Confirm "Confirm?", an Oby failure "Failed", a repository's check.
     @Test func cardsSayWhatElectronsSay() throws {
         func item(_ json: String, text: String = "", options: String = "[]") throws -> InboxItem {
             try Runner.decoder.decode(InboxItem.self, from: Data(#"{"id": "i", "job": "j", "text": "\#(text)", "options": \#(options), "created": "2026-10-09T21:42:53Z", \#(json)}"#.utf8))

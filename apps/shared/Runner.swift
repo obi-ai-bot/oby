@@ -1579,6 +1579,20 @@ nonisolated struct Runner: Sendable {
         try await send("PUT", "v1/settings/permissions", body: Body(mode: mode))
     }
 
+    #if os(iOS)
+    /// Settings › Agents (obid only): an account's model, `effort` or `complexEffort`, only the keys
+    /// changed (`PATCH /v1/accounts/{id}`); answers the account.
+    func tuneAccount(_ id: String, _ change: [String: String]) async throws -> Account {
+        try await call("PATCH", "v1/accounts/\(id)", body: change)
+    }
+
+    /// The account new tasks go to (`PUT /v1/settings/jobs` with only `defaultAccount`, as Electron's).
+    func setDefaultAccount(_ id: String) async throws {
+        struct Body: Encodable { var defaultAccount: String }
+        try await send("PUT", "v1/settings/jobs", body: Body(defaultAccount: id))
+    }
+    #endif
+
     /// The rules Always allow (or Deny) saved.
     func permissionRules() async throws -> [RunnerRule] { try await call("GET", "v1/permissions/rules") }
 
