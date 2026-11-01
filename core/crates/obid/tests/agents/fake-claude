@@ -130,7 +130,7 @@ if (process.argv.includes("--no-session-persistence") && "CLAUDE_SECURESTORAGE_C
 // window and 44% of the week, the week resetting in 2 days, and a result that asked no model. By
 // a word in its login copy's access token ($CLAUDE_CONFIG_DIR/.credentials.json): `asks-model`
 // answers as a Claude Code without its own /usage (a model's turn, no report), `silent` with no
-// report, `offline` with an error result.
+// report, `offline` with an error result, `reserved` at 85% of its week.
 if (process.argv[process.argv.indexOf("-p") + 1] === "/usage") {
   let token = "";
   try { token = JSON.parse(readFileSync(`${process.env.CLAUDE_CONFIG_DIR}/.credentials.json`, "utf8")).claudeAiOauth.accessToken; } catch {}
@@ -142,6 +142,7 @@ if (process.argv[process.argv.indexOf("-p") + 1] === "/usage") {
   if (token.includes("zero-no-reset")) {
     for (const limit of limits) { limit.percent = 0; limit.resets_at = null; }
   }
+  if (token.includes("reserved")) limits[1].percent = 85;
   const line = (value) => process.stdout.write(JSON.stringify(value) + "\n");
   const result = { type: "result", subtype: "success", is_error: false, num_turns: 0, total_cost_usd: 0, usage: { output_tokens: 0 }, modelUsage: {} };
   if (token.includes("asks-model")) {

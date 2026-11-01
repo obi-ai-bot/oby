@@ -143,7 +143,7 @@ impl Decisions {
         })
     }
 
-    /// Persist the displayed scope and options; stale signed choices fail when either changes.
+    /// Persist the displayed scope (the jobs shown, #1645); a signed choice fails when it changed.
     pub fn refresh(&self, id: &str, snapshot: &str) -> Result<Decision, String> {
         self.edit(|state| {
             let d = state
