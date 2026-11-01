@@ -623,8 +623,9 @@ const QUIET: [&str; 8] = [
     "Agent",
 ];
 
-/// git's commands that only read, as [`only_reads`] takes them.
-const GIT_READS: [&str; 10] = [
+/// git's commands that only read, as [`only_reads`] takes them: what a review runs to see the
+/// change (`git diff origin/dev...HEAD`, `git ls-tree HEAD x`, `git cat-file -p HEAD:x`).
+const GIT_READS: [&str; 17] = [
     "status",
     "diff",
     "log",
@@ -635,6 +636,13 @@ const GIT_READS: [&str; 10] = [
     "blame",
     "shortlog",
     "describe",
+    "ls-tree",
+    "cat-file",
+    "rev-list",
+    "diff-tree",
+    "show-ref",
+    "for-each-ref",
+    "name-rev",
 ];
 
 /// File edits: allowed in Accept edits, refused in Plan.
@@ -1564,9 +1572,22 @@ pub struct Bounds {
     /// The variables that pin git in the worktree to the job's git folders (crate::jobs,
     /// `git_folders`), for what obid asks git mid-turn; none outside a job.
     pub git: Vec<(&'static str, String)>,
+    /// The folder of programs the agent's CLI ships and puts first on its commands' `PATH`
+    /// (Codex's `codex-path`, with its own `rg`), which the box can't write: a reader found
+    /// there is as fixed as the system's.
+    pub programs: Option<PathBuf>,
 }
 
 impl Bounds {
+    /// Whether `name` is a program the agent's CLI ships ([`Bounds::programs`]).
+    fn ships(&self, name: &str) -> bool {
+        !name.contains('/')
+            && self
+                .programs
+                .as_ref()
+                .is_some_and(|dir| crate::sandbox::is_executable(&dir.join(name)))
+    }
+
     /// Only a worktree: a job whose folders obid doesn't know.
     pub fn of(worktree: &Path) -> Bounds {
         Bounds {
@@ -2027,7 +2048,7 @@ fn only_reads(command: &str, bounds: &Bounds) -> bool {
     static LINES: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
     let lines =
         LINES.get_or_init(|| regex::Regex::new(r"^([0-9]+|\$)(,([0-9]+|\$))?p$").expect("a regex"));
-    use crate::brain::shell::{reads_only, system_program, writes_a_file};
+    use crate::brain::shell::{reads_only, system_program, takes_read_options, writes_a_file};
     let Some(commands) = simple_commands(command).filter(|c| !c.is_empty()) else {
         return false;
     };
@@ -2053,7 +2074,8 @@ fn only_reads(command: &str, bounds: &Bounds) -> bool {
                             .first()
                             .is_some_and(|w| GIT_READS.contains(&w.as_str()))
                         && rest.iter().all(|w| {
-                            !["--output", "--ext-diff", "-O", "--open-files"]
+                            // `--filters` has `cat-file` run the repository's smudge programs.
+                            !["--output", "--ext-diff", "-O", "--open-files", "--filters"]
                                 .iter()
                                 .any(|o| w.starts_with(o))
                         })
@@ -2066,6 +2088,7 @@ fn only_reads(command: &str, bounds: &Bounds) -> bool {
                         && words[3..].iter().all(|w| !w.starts_with('-'))
                         && system_program("sed")
                 }
+                Some(program) if bounds.ships(program) => takes_read_options(&words),
                 _ => reads_only(&words),
             }
         })
@@ -2772,6 +2795,11 @@ mod tests {
             "pwd && git status --short && if test -f .obi/context/tetrix.md; then cat .obi/context/tetrix.md; fi",
             "grep -nE 'want_usage|600' core/src/jobs.rs | head -35; sed -n '1,120p' apps/Usage.swift",
             "git --no-pager log -1 --format='%h %s'; nl -ba notes.md | head -12",
+            // What Oby's own reviews parked on in the drive of 2026-10-31.
+            "git diff origin/dev...HEAD",
+            "git rev-parse HEAD; git diff --no-ext-diff --no-textconv origin/main...HEAD; git ls-tree HEAD docs/oby-ask.md; od -An -tx1c docs/oby-ask.md",
+            "git diff origin/main...HEAD && git rev-parse HEAD && git ls-tree HEAD docs/oby-drive.md && nl -ba docs/oby-drive.md && git diff --check origin/main...HEAD",
+            "git show origin/main:docs/oby-drive.md; git cat-file -p HEAD:docs/oby-ask.md; git log -1 --format=fuller",
         ] {
             for mode in Mode::ALL {
                 assert_eq!(
@@ -2787,6 +2815,9 @@ mod tests {
             "cat notes.md > copy.md",
             "git diff --output=x.patch",
             "git branch new",
+            "git commit -am x",
+            "rm notes.md",
+            "git update-ref refs/heads/x HEAD",
             "git -C sub log",
             "cd sub && git log",
             "rg --pre ./x foo",
@@ -2806,6 +2837,36 @@ mod tests {
             ),
             Verdict::Deny(_)
         ));
+    }
+
+    /// The `rg` Codex ships (its `codex-path`, first on its commands' `PATH`) reads as a system
+    /// one does, in Plan too: given only reading options, and a program by that name elsewhere
+    /// in the worktree still isn't it.
+    #[test]
+    fn a_reader_the_agent_ships_never_asks() {
+        let dir = std::env::temp_dir().join(format!("obid-ships-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let rg = dir.join("rg");
+        std::fs::write(&rg, "#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(&rg, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+        let bounds = Bounds {
+            programs: Some(dir.clone()),
+            ..Bounds::of(Path::new(WORKTREE))
+        };
+        let plan = |command: &str| decide(&bash(command), Mode::Plan, &[], &bounds);
+        assert_eq!(
+            plan("git diff origin/main...HEAD && rg -n '149|oby-drive' .obi docs package.json"),
+            Verdict::Allow
+        );
+        assert_eq!(plan("rg --files .obi"), Verdict::Allow);
+        // The shipped folder is what lets it through, whatever the Mac has on its own PATH.
+        assert!(bounds.ships("rg"));
+        assert!(!Bounds::of(Path::new(WORKTREE)).ships("rg"));
+        assert!(!bounds.ships("./rg"));
+        assert_eq!(plan("git cat-file --filters HEAD:x"), Verdict::Ask);
+        assert_eq!(plan("rg --pre ./x foo"), Verdict::Ask);
+        assert_eq!(plan("./rg foo"), Verdict::Ask);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// PermissionTests.rulesDenyBeatsAllow.
@@ -3301,6 +3362,7 @@ mod tests {
             home: Some(temp.clone()),
             logins: vec![account, temp.join(".claude"), temp.join(".codex")],
             git: Vec::new(),
+            programs: None,
         };
         (root, bounds)
     }

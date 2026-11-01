@@ -4258,6 +4258,10 @@ impl Jobs {
             home: Some(home),
             logins,
             git: self.made_git_folders(job),
+            programs: (tool == Some(Tool::Codex))
+                .then(|| self.agent_bin(Tool::Codex))
+                .flatten()
+                .and_then(|bin| crate::codex::shipped_programs(&bin)),
         }
     }
 
