@@ -3021,7 +3021,7 @@ fn merging_14_an_untrusted_task_gets_two_reviews_its_reviewers_told_why() {
             )),
             "{asked}"
         );
-        assert!(asked.contains("That text isn't quoted here."), "{asked}");
+        assert!(asked.contains("that text isn't quoted here."), "{asked}");
     }
 }
 
@@ -3310,7 +3310,9 @@ fn merging_18_a_strangers_comment_the_review_reads_marks_the_task() {
     let review = &reviews_of(&obid, &id)[0];
     let worktree = Path::new(review["worktree"].as_str().unwrap());
     let asked = std::fs::read_to_string(worktree.join(".obi/inputs/asked.md")).unwrap();
+    assert!(asked.contains("as its review started"), "{asked}");
     assert!(asked.contains("issue #7"), "{asked}");
+    assert!(asked.contains("issue.md"), "{asked}");
 }
 
 /// A review that ends before its verdict (here Codex's login refused, as codex-cli 0.162.1 says it:
