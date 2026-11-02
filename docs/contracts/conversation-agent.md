@@ -56,7 +56,7 @@ Nothing can run: the turn says why in one line, as before (docs/conversation-har
 ## Interfaces and dependencies
 
 - `PUT`/`GET /v1/settings/jobs`: `talkAccount` (an id, or null for Auto; `auto` on `PUT` is null). `422` for an account there isn't, or one that can't talk here (`reason: talk-needs-egress-box`).
-- `PATCH /v1/conversations/{id}`: `talkAccount` (an id, `auto`, or null to follow the setting), same `422`s. Every conversation's JSON: `talkAccount`, and `talkedOn`, the account its last answer came from. A change sends the `conversation` event.
+- `PATCH /v1/conversations/{id}`: `talkAccount` (an id, `auto`, or null to follow the setting), same `422`s. A conversation's JSON gains them once there's something to say: `talkAccount`, and `talkedOn`, the account its last answer came from. Each goes out in the `conversation` event, `talkedOn` with the answer's.
 - `GET /v1/status`: `talkAccount`, and `talkNext`, the account a new conversation's first turn would use now.
 - Kept in `home/settings.json` and the conversation's own file, across restarts. Cursor's folder: `home/logins/talk-<12 of its id>`, short for its sockets, gone with the conversation.
 

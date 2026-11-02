@@ -232,7 +232,7 @@ impl Thread {
 
     /// As `GET /v1/conversations` lists it and the `conversation` event sends it.
     fn summary(&self) -> Value {
-        json!({
+        let mut summary = json!({
             "id": self.id,
             "title": self.title,
             "pinned": self.pinned,
@@ -241,9 +241,15 @@ impl Thread {
             "cursor": self.key().to_string(),
             "tasks": self.tasks,
             "folders": self.folders,
-            "talkAccount": self.talk_account,
-            "talkedOn": self.talked_on,
-        })
+        });
+        // Only once there's something to say.
+        if let Some(account) = &self.talk_account {
+            summary["talkAccount"] = json!(account);
+        }
+        if let Some(account) = &self.talked_on {
+            summary["talkedOn"] = json!(account);
+        }
+        summary
     }
 }
 
@@ -1258,7 +1264,8 @@ impl Conversations {
             .and_then(|t| t.talk_account.clone())
     }
 
-    /// Conversation `id`'s answer came from `account`: kept, and told when that's a change.
+    /// Conversation `id`'s answer came from `account`: kept, and told with the answer's own
+    /// `conversation` event.
     pub fn talked_on(&self, id: &str, account: &str) {
         let mut threads = self.lock();
         let Some(thread) = threads.iter_mut().find(|t| t.id == id) else {
@@ -1271,7 +1278,6 @@ impl Conversations {
         if let Err(e) = self.write(thread) {
             tracing::warn!("conversation {id}: which account it's on wasn't kept: {e}");
         }
-        self.events.send("conversation", thread.summary());
     }
 
     /// Whether a conversation still holds the file `path` among its words' files.

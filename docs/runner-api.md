@@ -2143,10 +2143,10 @@ A conversation, as `GET /v1/conversations` lists it and the `conversation` event
 {"id": "5b0e2c4d-…", "title": "Review oby PR #33", "pinned": false,
  "created": "2026-10-16T09:12:00Z", "lastActivity": "2026-10-16T09:14:07Z", "cursor": "0-42",
  "tasks": [{"id": "t1", "title": "Fix the login test", "status": "in_progress", "job": "ab12cd34", "note": null}],
- "folders": ["/Users/alex/Projects/api"], "talkAccount": null, "talkedOn": "personal"}
+ "folders": ["/Users/alex/Projects/api"], "talkedOn": "personal"}
 ```
 
-- `talkAccount` (obid only, docs/contracts/conversation-agent.md): the account this conversation talks through from its next turn, as the owner chose it here: an account's id, `auto`, or null to follow the setting. `PATCH /v1/conversations/{id}` sets it (null clears it), with `PUT /v1/settings/jobs`'s `422`s. `talkedOn`: the account its last answer came from, or null. A change of either sends the `conversation` event.
+- `talkAccount` (obid only, docs/contracts/conversation-agent.md): the account this conversation talks through from its next turn, as the owner chose it here: an account's id or `auto`; left out, it follows the setting. `PATCH /v1/conversations/{id}` sets it (null clears it), with `PUT /v1/settings/jobs`'s `422`s. `talkedOn`: the account its last answer came from, left out before its first. A change of either goes in the `conversation` event, `talkedOn` with the answer's.
 
 - `folders` (#1572): the working folders its work is in, canonical paths in the order picked (obid only: working folders, below). Always a list, empty when it has none. A change sends the `conversation` event.
 

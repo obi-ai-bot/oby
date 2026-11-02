@@ -6927,6 +6927,7 @@ impl Jobs {
     /// boxes the others, and its only way off the Mac obid's egress proxy, by the door `door`
     /// ([`Jobs::reach_now`]): Cursor's own reads and edits never ask, so what it read must have
     /// nowhere to go. Throws why it can't run: where the box can't hold it to the proxy, it doesn't.
+    #[allow(clippy::too_many_arguments)]
     pub fn conversation_cursor_launch(
         &self,
         account: &crate::config::Account,
