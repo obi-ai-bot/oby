@@ -231,6 +231,7 @@ struct ConversationPage: View {
             // The jobs shown where they started: a follow-up told elsewhere goes with its parent's card.
             let startedBy = { (job: Job) in ThreadTaskLine.startedBy(turn: job.turn, in: job.conversation, showing: shown) }
             let placed = ThreadTaskLine.shown(in: turns, jobs: phone.jobs, startedBy: startedBy, ended: phone.conversation.endedTurn)
+            let cards = ThreadTaskLine.cards(in: turns, jobs: phone.jobs, startedBy: startedBy, ended: phone.conversation.notAnAnswer)
             let decisions = InboxItem.waiting(phone.inbox, now: context.date)
             let offers = PhoneOffer.placed(PhoneOffer.offers(phone.inbox, in: shown, now: context.date), in: turns, ended: phone.conversation.endedTurn)
             ScrollViewReader { proxy in
@@ -262,7 +263,7 @@ struct ConversationPage: View {
                         }
                         ForEach(Array(rows.enumerated()), id: \.element.turn.id) { index, row in
                             MessageRow(row: row, first: index == 0, now: context.date,
-                                       jobs: ThreadTaskLine.cards(under: row.turn, in: turns, jobs: phone.jobs, startedBy: startedBy),
+                                       jobs: cards[row.turn.id] ?? [],
                                        followUps: { phone.conversation.endedTurn(row.turn) ? [] : ThreadTaskLine.attached(to: $0, in: phone.jobs, shown: placed) },
                                        steps: phone.conversation.steps(under: row.turn, in: turns),
                                        streamed: phone.conversation.streamed(under: row.turn, in: turns),

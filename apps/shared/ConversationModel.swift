@@ -47,6 +47,8 @@ final class ConversationModel {
     private(set) var refs: [String: [ArtifactRef]] = [:]
     /// The turns a job added when it ended (#351), by id: not answers.
     private var ended: Set<String> = []
+    /// The turns that tell of a routine's run (#395), by id: not answers to words either.
+    private var routineRuns: Set<String> = []
     /// What's known of each artifact, by id: from `artifact` events and `lookUp`.
     private(set) var artifacts: [String: RunnerArtifact] = [:]
     /// Artifacts obid deleted or doesn't have.
@@ -110,6 +112,7 @@ final class ConversationModel {
     func apply(_ turn: Turn, _ extras: TurnExtras = TurnExtras()) {
         if !extras.artifacts.isEmpty { refs[turn.id] = extras.artifacts }
         if extras.ended { ended.insert(turn.id) }
+        if extras.routine { routineRuns.insert(turn.id) }
         let new = !runnerTurns.contains(where: { $0.id == turn.id })
         // Oby's answer, new to the thread, replaces the words that came in, which carry on from when
         // they started, not again. A turn sent again (a job joined it) or a job's ended turn isn't
@@ -128,12 +131,16 @@ final class ConversationModel {
     /// Whether `turn` is one a job added when it ended (#351): its card there isn't where it started.
     func endedTurn(_ turn: Turn) -> Bool { ended.contains(turn.id) }
 
+    /// Whether `turn` isn't Oby's answer to words: a job's ended turn, or a routine's run.
+    func notAnAnswer(_ turn: Turn) -> Bool { ended.contains(turn.id) || routineRuns.contains(turn.id) }
+
     /// A page of the runner's turns: the artifacts they made, for their cards, and which are a job's
     /// ended turn.
     func note(_ turns: [RunnerTurn]) {
         for turn in turns {
             if let list = turn.artifacts, !list.isEmpty { refs[turn.id] = list }
             if turn.ended == true { ended.insert(turn.id) }
+            if turn.routine != nil { routineRuns.insert(turn.id) }
         }
     }
 
@@ -219,6 +226,7 @@ final class ConversationModel {
         streamed = [:]
         refs = [:]
         ended = []
+        routineRuns = []
         artifacts = [:]
         gone = []
         runnerTurns = []

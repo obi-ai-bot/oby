@@ -166,7 +166,7 @@ nonisolated enum ThreadTaskLine {
         conversation == showing ? turn : nil
     }
 
-    /// The jobs whose cards go under `turn`: those it lists, then, under the user's words, the
+    /// The frozen Mac app's (the iPhone's is `cards(in:…)`, below). The jobs whose cards go under `turn`: those it lists, then, under the user's words, the
     /// jobs those words started (`startedBy`) that no turn of the thread lists yet,
     /// oldest first: a card shows the moment its job starts, not when Oby's answer is in. A job
     /// has one card, under the first turn that lists it, never again under its report or a later
@@ -177,6 +177,26 @@ nonisolated enum ThreadTaskLine {
         guard turn.who == .user else { return listed }
         let answered = Set(thread.flatMap { $0.jobs ?? [] })
         return listed + jobs.filter { startedBy($0) == turn.id && !answered.contains($0.id) }.sorted { $0.created < $1.created }
+    }
+
+    /// Each turn's task cards, by its id (Electron's live.ts `chatOf`, `carded`, #1773): a turn's own
+    /// jobs, and under Oby's answer the jobs the words it answers started; a job has one card, under
+    /// the first turn that shows it, never again under its report or a later answer that names it.
+    /// Words with no answer yet show what they started under themselves meanwhile, so a card shows
+    /// the moment its job starts. `ended`: the turns that aren't answers (a job's report, a routine's run).
+    static func cards(in thread: [Turn], jobs: [Job], startedBy: (Job) -> String?, ended: (Turn) -> Bool) -> [String: [Job]] {
+        var carded = Set<String>(), cards: [String: [Job]] = [:], asked: String?
+        func started(_ turn: String) -> [Job] { jobs.filter { startedBy($0) == turn }.sorted { $0.created < $1.created } }
+        // Words left with no answer keep what they started, or its card would be lost (Stop, or more words sent).
+        func unanswered() { if let asked { cards[asked, default: []] += started(asked).filter { carded.insert($0.id).inserted } } }
+        for turn in thread {
+            if turn.who == .user { unanswered() }
+            let answer = turn.who == .oby && !ended(turn) ? asked : nil
+            cards[turn.id, default: []] += (ConversationModel.jobs(of: turn, among: jobs) + (answer.map { started($0) } ?? [])).filter { carded.insert($0.id).inserted }
+            if turn.who == .user { asked = turn.id } else if answer != nil { asked = nil }
+        }
+        unanswered()
+        return cards
     }
 
     /// The jobs the thread shows where they started: on Oby's answers (not the turns a job adds
