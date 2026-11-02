@@ -8771,7 +8771,7 @@ impl Jobs {
         id: &str,
         signal: &watch::Receiver<Signal>,
     ) -> Result<(), End> {
-        let job = self.get(id).ok_or("the job is gone")?;
+        let mut job = self.get(id).ok_or("the job is gone")?;
         if let Err(why) = &self.sandbox {
             return Err(End::Failed(format!(
                 "obid can't make the job sandbox on this machine, so it ran nothing: {why}"
@@ -8809,6 +8809,16 @@ impl Jobs {
                 && job.review_of.is_none()
             {
                 Box::pin(self.remake_marked_clone(&job, &repo)).await;
+            }
+            // That may have moved its task's clone aside, as it stood: a follow-up that starts from
+            // its task's branch carries on there, with that branch and its commits, as one started
+            // after the move does (PUBLISHING-15).
+            if job.clone_root.is_none()
+                && job.start_from.is_some()
+                && let Some(root) = moved_clone_of(&job, |of| self.get(of))
+            {
+                self.update(id, |job| job.clone_root = Some(root.clone()));
+                job.clone_root = Some(root);
             }
             let mut refspecs = vec![format!("+refs/heads/{base}:refs/remotes/origin/{base}")];
             if let Some(pr) = job.pr {
@@ -12204,6 +12214,21 @@ struct OwnersMerge {
     number: u64,
 }
 
+/// Where the clone `job` follows up on was moved to, from the nearest job back along its follow-ups
+/// that has one: one between them that failed before it had a worktree has none of its own.
+fn moved_clone_of(job: &Job, get: impl Fn(&str) -> Option<Job>) -> Option<String> {
+    let mut of = job.follow_up_of.clone();
+    // A chain is short; this only stops a loop.
+    for _ in 0..64 {
+        let earlier = get(of.as_deref()?)?;
+        if earlier.clone_root.is_some() {
+            return earlier.clone_root;
+        }
+        of = earlier.follow_up_of;
+    }
+    None
+}
+
 /// Whether the follower carries `job`'s pull request on (crate::merge): done, published, the
 /// owner's own (never another Obi's), not let go, and not a review or research job.
 fn carries(job: &Job) -> bool {
@@ -13855,6 +13880,31 @@ pub fn owner_review_item(
 
 #[cfg(test)]
 mod tests {
+    /// PUBLISHING-15
+    #[test]
+    fn publishing_15_a_follow_up_finds_a_moved_clone_along_its_chain() {
+        let make = |id: &str, of: Option<&str>, root: Option<&str>| {
+            let mut job = Job::new(
+                id.into(),
+                "o/r".into(),
+                "fix".into(),
+                "x".into(),
+                "claude".into(),
+                "a".into(),
+            );
+            job.follow_up_of = of.map(str::to_owned);
+            job.clone_root = root.map(str::to_owned);
+            job
+        };
+        let task = make("task", None, Some("/marked/1"));
+        let failed = make("failed", Some("task"), None);
+        let next = make("next", Some("failed"), None);
+        let get = |id: &str| [&task, &failed].into_iter().find(|j| j.id == id).cloned();
+        assert_eq!(moved_clone_of(&next, get).as_deref(), Some("/marked/1"));
+        assert_eq!(moved_clone_of(&failed, get).as_deref(), Some("/marked/1"));
+        assert_eq!(moved_clone_of(&task, get), None);
+    }
+
     /// What a Claude Code run in its own sandbox gets, checked without running it: git pinned to
     /// the job's folders with no settings or credential helper of the person's; the Keychains link
     /// made fresh, never through a link the job left; a `.claude.json` whose `env` sets what no agent
