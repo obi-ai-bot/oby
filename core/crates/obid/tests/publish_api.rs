@@ -3217,10 +3217,23 @@ fn merging_18_the_review_has_the_issue_its_work_is_from() {
     let worktree = Path::new(review["worktree"].as_str().unwrap());
     let issue = std::fs::read_to_string(worktree.join(".obi/inputs/issue.md")).unwrap();
     assert!(issue.contains("The greeting needs a comma."), "{issue}");
+
+    // With no issue, the file is still obid's, whatever a commit left there.
+    let plain = dispatch(
+        &obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "build", "task": "COMMIT: other.txt",
+               "check": "test -f other.txt"}),
+    );
+    reviewed(&obid, &plain, 1);
+    let review = &reviews_of(&obid, &plain)[0];
+    let worktree = Path::new(review["worktree"].as_str().unwrap());
+    let none = std::fs::read_to_string(worktree.join(".obi/inputs/issue.md")).unwrap();
+    assert!(none.contains("isn't from an issue"), "{none}");
 }
 
 /// MERGING-18: a stranger who comments on the issue after its task started reaches the review, so
-/// it counts: the task is marked someone else's, and merging takes two reviews (MERGING-13).
+/// it counts: the task is marked someone else's, merging takes two reviews (MERGING-14), and the
+/// review that read it is told why (MERGING-13).
 #[test]
 fn merging_18_a_strangers_comment_the_review_reads_marks_the_task() {
     let who = |commenters: &[&str]| {
@@ -3265,6 +3278,10 @@ fn merging_18_a_strangers_comment_the_review_reads_marks_the_task() {
         "{why}\n{}",
         obid.log()
     );
+    let review = &reviews_of(&obid, &id)[0];
+    let worktree = Path::new(review["worktree"].as_str().unwrap());
+    let asked = std::fs::read_to_string(worktree.join(".obi/inputs/asked.md")).unwrap();
+    assert!(asked.contains("issue #7"), "{asked}");
 }
 
 /// A review that ends before its verdict (here Codex's login refused, as codex-cli 0.162.1 says it:

@@ -9049,6 +9049,31 @@ impl Jobs {
             rules_quoted = !reviews && files.iter().any(|(_, text)| text.is_some());
             let mut quoted = Vec::new();
             if reviews {
+                // The issue it worked from (MERGING-18). Whoever wrote on it by now counts as they
+                // would for the author: a stranger's comment the reviewer reads means two reviews
+                // (MERGING-14), and the reviewer is told, below. The file is always obid's: one a
+                // commit brought never stands as the quote.
+                let author = job.review_of.as_deref().and_then(|of| self.get(of));
+                let issue_text = match author.as_ref().and_then(|a| Some((a, a.issue?))) {
+                    None => "This work isn't from an issue.".to_owned(),
+                    Some((author, issue)) => {
+                        match crate::github_work::quote("assigned", &job.repo, issue).await {
+                            Ok((text, read)) => {
+                                if author.foreign.is_none() {
+                                    Box::pin(self.authors_as_it_starts(author, Some(&read))).await;
+                                }
+                                text
+                            }
+                            Err(why) => {
+                                tracing::warn!(
+                                    "job {id}: its review goes without issue #{issue}: {why}"
+                                );
+                                format!("obid couldn't read issue #{issue} on GitHub.")
+                            }
+                        }
+                    }
+                };
+                quoted.push((review::ISSUE_FILE, issue_text));
                 // Whether the author is untrusted, and why: never what it read (MERGING-13).
                 let author = job.review_of.as_deref().and_then(|of| self.get(of));
                 let untrusted = author.as_ref().and_then(Job::untrusted_why);
@@ -9061,23 +9086,6 @@ impl Jobs {
                     review::ASKED_FILE,
                     review::asked(&task, &request, &later, untrusted.as_deref()),
                 ));
-                // The issue it worked from (MERGING-18). One that can't be read leaves the review
-                // what it was asked, as it had before. Whoever wrote on it by now counts as they
-                // would for the author, so a stranger's comment the reviewer reads means two
-                // reviews (MERGING-13).
-                if let Some((author, issue)) = author.as_ref().and_then(|a| Some((a, a.issue?))) {
-                    match crate::github_work::quote("assigned", &job.repo, issue).await {
-                        Ok((text, read)) => {
-                            if author.foreign.is_none() {
-                                Box::pin(self.authors_as_it_starts(author, Some(&read))).await;
-                            }
-                            quoted.push((review::ISSUE_FILE, text));
-                        }
-                        Err(why) => tracing::warn!(
-                            "job {id}: its review goes without issue #{issue}: {why}"
-                        ),
-                    }
-                }
                 // The security paths its head changes against its base, from the commit it reads
                 // (MERGING-15): none read counts as touching one.
                 let changed = match &job.start_commit {
