@@ -13456,6 +13456,8 @@ fn check_failed(command: &str, output: &str, failing: &[crate::facts::Failing]) 
         .iter()
         .map(|f| format!("Failed: {}\n{}\n", f.test, f.message))
         .collect();
+    // Names and messages come from what the check printed: bounded as the rest is.
+    let named: String = named.chars().take(4_000).collect();
     let said = format!("{named}{}", tail(output, 8_000));
     let output = match crate::vault::for_agent(&said) {
         Ok(text) => crate::secrets::known().redact(&text),

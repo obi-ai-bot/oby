@@ -195,8 +195,8 @@ fn count(line: &str, word: &str, after: bool) -> Option<u64> {
 
 /// What a check run prints, read as it prints (#734): where each step starts (the line
 /// `<marker> <step>` obid prints before each step after the first), each step's tests, and the
-/// failing tests, best-effort, from what `cargo test`, `swift test`/`xcodebuild test`, pytest,
-/// jest, vitest and `node --test` print. Another runner's steps get their times only.
+/// failing tests, best-effort, from what `cargo test`, `go test`, `swift test`/`xcodebuild test`,
+/// pytest, jest, vitest and `node --test` print. Another runner's steps get their times only.
 pub struct CheckWatch {
     marker: String,
     commands: Vec<String>,
@@ -335,6 +335,16 @@ impl CheckWatch {
             self.fail(&name, "");
         } else if line.starts_with("panic: test timed out") {
             self.fail("go test timed out", line);
+        } else if line == "FAIL"
+            || line == "PASS"
+            || line.starts_with("FAIL\t")
+            || line.starts_with("ok  \t")
+            || line.starts_with("=== ")
+            || line.starts_with("--- PASS: ")
+            || line.starts_with("--- SKIP: ")
+        {
+            // Go's own lines: no failing test's message, and with `-v` what comes next is another's.
+            self.message_of = None;
         }
         // cargo test: a binary's tests one by one, then its result.
         else if let Some(n) = line
@@ -862,8 +872,22 @@ mod tests {
             ["TestA", "TestA/sub", "go test timed out"],
             "{failing:?}"
         );
-        assert!(
-            failing[1].message.contains("a_test.go:9: got 1, want 2"),
+        // With `-v`, what the next test logs isn't the failed one's.
+        let v = watch(
+            &["go test -v ./..."],
+            "--- FAIL: TestA (0.01s)
+    a_test.go:9: bad
+=== RUN   TestB
+    b_test.go:1: a log
+--- PASS: TestB (0.00s)
+",
+        );
+        assert_eq!(
+            v.record(1, Some(false)).failing[0].message,
+            "a_test.go:9: bad"
+        );
+        assert_eq!(
+            failing[1].message, "a_test.go:9: got 1, want 2",
             "{failing:?}"
         );
         assert!(
