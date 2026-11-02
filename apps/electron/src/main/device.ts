@@ -131,6 +131,17 @@ export async function answerLimit(id: string, revision: number, choice: string, 
   }
 }
 
+// The owner's own choices on a Publish (docs/runner-api.md, `GET /v1/jobs/{id}/publish`), nothing else.
+type PublishChoices = { anyway?: boolean; force?: boolean; to?: string };
+const publishChoices = (c: unknown): c is PublishChoices => {
+  if (typeof c !== 'object' || c === null || Array.isArray(c)) return false;
+  return Object.entries(c).every(([k, v]) => (k === 'anyway' || k === 'force' ? v === true : k === 'to' && typeof v === 'string' && v.length > 0));
+};
+const publishQuery = (c: PublishChoices) => {
+  const q = new URLSearchParams(Object.entries(c).map(([k, v]) => [k, String(v)])).toString();
+  return q ? `?${q}` : '';
+};
+
 // Confirm, on the owner's click in the window: the open `confirm` item, by its id, with this
 // device's signature over obid's sentence for it (POST /v1/inbox/{id}/answer, "Confirm takes the
 // owner's tap")
@@ -164,6 +175,37 @@ export function confirming(trusted: Trusted) {
     try {
       const device = await register(), signedAt = now();
       return obid('POST', '/v1/pairing/invite', { name: macName(), approval: { device, action: '', signedAt, signature: signed(`oby-pair-invite\n${signedAt}`) } });
+    } catch (err) {
+      return { status: 500, text: JSON.stringify({ error: err instanceof Error ? err.message : String(err) }) };
+    }
+  });
+
+  // Publish by hand, on the owner's click (PUBLISHING-9 to 11, 14). A push can't rest on the page,
+  // which a script could have taken over: main reads obid's own sentence for those choices itself,
+  // shows it in main's own dialog, which the page can't click or word (as Pair a device's), and signs
+  // only on Publish there. Asked only right after an input main saw, and for the sentence the page
+  // showed, so a script can't raise dialogs by itself, and one that changed isn't sprung on the owner.
+  ipcMain.handle('obid-publish', async (e, id: unknown, action: unknown, choices: unknown): Promise<Answer> => {
+    if (!trusted(e) || typeof id !== 'string' || typeof action !== 'string' || !publishChoices(choices)) return { status: 403, text: '' };
+    if (!takeInput()) return { status: 403, text: JSON.stringify({ error: 'Publish takes your own click.' }) };
+    try {
+      const path = `/v1/jobs/${encodeURIComponent(id)}/publish`;
+      const sentence = await obid('GET', path + publishQuery(choices));
+      if (sentence.status !== 200) return sentence;
+      // `head` and `over`, obid's own, are the commits that sentence names (PUBLISHING-9, 10)
+      const read = JSON.parse(sentence.text) as { action?: string; head?: string; over?: string };
+      if (read.action !== action) {
+        return { status: 409, text: JSON.stringify({ error: 'What publishing would do changed since it showed. Look at it again.' }) };
+      }
+      const w = BrowserWindow.fromWebContents(e.sender);
+      const asked = { type: 'question' as const, message: 'Publish this?', detail: action, buttons: ['Publish', 'Not now'], defaultId: 1, cancelId: 1 };
+      const { response } = await (w ? dialog.showMessageBox(w, asked) : dialog.showMessageBox(asked));
+      if (response !== 0) return { status: 409, text: JSON.stringify({ error: 'Not published: you said not now.' }) };
+      const device = await register(), signedAt = now();
+      return obid('POST', path, {
+        device, action, signedAt, signature: signed(`oby-publish\n${id}\n${action}\n${signedAt}`), ...choices,
+        ...(choices.anyway && read.head !== undefined ? { head: read.head } : {}), ...(choices.force && read.over !== undefined ? { over: read.over } : {}),
+      });
     } catch (err) {
       return { status: 500, text: JSON.stringify({ error: err instanceof Error ? err.message : String(err) }) };
     }

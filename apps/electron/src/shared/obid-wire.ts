@@ -45,6 +45,11 @@ export type Job = {
   finished: string | null;
   commits: number | null;
   published: string | null;
+  // Publish by hand (obid's own word for it, #1772); what it pushed; why its own publish didn't go
+  canPublish?: boolean;
+  canPublishAnyway?: boolean;
+  followUpOf?: string | null;
+  publishError?: string | null;
   // obid only (TASKS-12): it ended done with nothing done (no commits, nothing published)
   nothingDone?: boolean;
   rounds: number;

@@ -67,7 +67,10 @@ async function call<T>(method: string, path: string, body?: unknown, via = (b: B
   return value as T;
 }
 
-const q = (params: Record<string, string | number | undefined>) => {
+export type PublishChoices = { anyway?: true; force?: true; to?: string };
+export type PublishAction = { action: string; base?: string; head?: string; over?: string };
+
+const q = (params: Record<string, string | number | boolean | undefined>) => {
   const s = new URLSearchParams();
   for (const [k, v] of Object.entries(params)) if (v !== undefined) s.set(k, String(v));
   const text = s.toString();
@@ -101,6 +104,10 @@ export const api = {
   mode: (j: string, mode: string) => call<Job>('POST', `/v1/jobs/${id(j)}/mode`, { mode }),
   inbox: () => call<InboxItem[]>('GET', '/v1/inbox'),
   answer: (i: string, body: { answer: string } | { later: string }) => call<InboxItem>('POST', `/v1/inbox/${id(i)}/answer`, body),
+  // Publish by hand (PUBLISHING-9 to 11, 14): the sentence for the owner's choices, then main signs
+  // exactly that on their click
+  publishAction: (j: string, c: PublishChoices = {}) => call<PublishAction>('GET', `/v1/jobs/${id(j)}/publish${q(c)}`),
+  publish: (j: string, action: string, c: PublishChoices = {}) => call<{ url?: string }>('POST', `/v1/jobs/${id(j)}/publish`, undefined, (b) => b.publish(j, action, c)),
   // Confirm on a confirm item: main signs it with this Mac's device key (main/device.ts)
   confirm: (i: string) => call<InboxItem>('POST', `/v1/inbox/${id(i)}/answer`, undefined, (b) => b.confirm(i)),
   // Settings › Remote access: pairing an iPhone through obid's Obysphere (main signs the invitation), the

@@ -1,6 +1,6 @@
 import { useSyncExternalStore } from 'react';
 import { ApiError, api, parseEvent, sseReader, type Conversation, type Event, type InboxItem, type Job, type LimitDecision, type Question, type Repo, type Status, type TranscriptEntry, type Turn } from './obid';
-import { pageOf, stagesOf } from './jobPage';
+import { carriedOn, pageOf, publishOf, stagesOf } from './jobPage';
 import { AGENTS, TELL, type Ask, type AskKind, type Job as JobView, type Attachments, type Message, type Offer } from './mock';
 import { replaceChats, type Chat } from './chats';
 import { replaceTasks, type Asking, type Task } from './tasks';
@@ -353,7 +353,7 @@ function taskOf(s: Live, j: Job): Task {
     stages: stagesOf(j),
     ask, summary: j.summary || undefined, commits: j.commits ?? undefined, published: j.published ?? undefined, nothingDone: j.nothingDone || undefined,
     created: minutesAgo(j.created), finished: j.finished ? minutesAgo(j.finished) : undefined, conversation: j.conversation ? shownId(j.conversation) : undefined,
-    archived: !!j.archived,
+    archived: !!j.archived, publish: publishOf(j, carriedOn(j, Object.values(s.jobs))),
   };
   const needs = (!!now && !answer) || answer === 'Later';
   job.page = pageOf(j, s.status?.accounts.find((a) => a.id === j.account), needs);

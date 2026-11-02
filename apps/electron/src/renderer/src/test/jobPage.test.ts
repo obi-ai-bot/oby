@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { outgoingText, pageOf, prName, prUrl, sessionOf, span, stagesOf } from '../jobPage';
+import { carriedOn, outgoingText, pageOf, prName, prUrl, publishOf, sessionOf, span, stagesOf } from '../jobPage';
 import type { Account, Job } from '../obid';
 
 // The task page on obid's job data (docs/contracts/tasks.md, TASKS-4 to TASKS-9)
@@ -19,6 +19,23 @@ const job = (more: Partial<Job> = {}): Job => ({
 const account = { id: 'a1', agent: 'claude', name: 'Personal', signedIn: true, fiveHour: 0.46, sevenDay: 0.3, sevenDayResets: null, running: 1 } as Account;
 
 describe('the task page on obid data', () => {
+  it('PUBLISHING-14: the page offers what obid offers, and a follow-up carries the branch on', () => {
+    expect(publishOf(job({ status: 'done', canPublish: true, publishError: 'It failed.' }))).toEqual({ label: 'Publish…', why: 'It failed.' });
+    expect(publishOf(job({ status: 'done', canPublish: true, published: 'https://github.com/o/r/pull/1' }))?.label).toBe('Publish the new commits…');
+    expect(publishOf(job({ status: 'interrupted', canPublishAnyway: true }))).toEqual({ label: 'Publish anyway…', anyway: true, why: undefined });
+    expect(publishOf(job({ status: 'interrupted', canPublishAnyway: true }), true)).toBeUndefined();
+    expect(publishOf(job({ status: 'running', commits: 2 }))).toBeUndefined();
+    // only a follow-up on its branch, at work or done, and not let go, carries it on
+    const first = job({ status: 'interrupted', canPublishAnyway: true });
+    const next = (more: Partial<Job>) => job({ id: 'j2', followUpOf: 'j1', status: 'running', ...more });
+    expect(carriedOn(first, [first, next({})])).toBe(true);
+    expect(carriedOn(first, [next({ status: 'done' })])).toBe(true);
+    expect(carriedOn(first, [next({ status: 'failed' })])).toBe(false);
+    expect(carriedOn(first, [next({ dismissed: '2026-10-30T12:00:00Z' })])).toBe(false);
+    expect(carriedOn(first, [next({ branch: 'oby/other' })])).toBe(false);
+  });
+
+
   it('#1795: a task that stopped has no clock on the stage it stopped on; a done one waiting on review has', () => {
     // what it took until it stopped, not growing, and never an estimate
     expect(stagesOf(job({ status: 'interrupted', finished: ago(78) }), NOW).map((s) => s.took)).toEqual(['22s', '8m 20s', '≈ 30s']);
