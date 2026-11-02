@@ -38,7 +38,6 @@ import kotlinx.coroutines.launch
 @Composable
 fun SettingsScreen() {
     val phone = LocalPhone.current
-    val activity = LocalActivity.current
     val c = Tokens.c
     val scope = rememberCoroutineScope()
     val (appearance, setAppearance) = LocalAppearance.current
