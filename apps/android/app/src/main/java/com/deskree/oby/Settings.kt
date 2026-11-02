@@ -114,12 +114,12 @@ private fun AgentsPage() {
     SetGroup("Default agent", footer = "Add, sign in or remove an agent in Settings › Agents on your Mac, where it runs.", problem = problem, rows = listOf {
         if (chosen == null) SetRow("No agents yet", quiet = true)
         else SetRow("New tasks go to") {
-            SetSelect("Default agent", chosen.id, ready.map { it.id to "${it.name} · ${Usage.tool(it.agent) ?: it.agent}" }) { id ->
+            SetSelect("Default agent", chosen.id, ready.map { it.id to "${it.name} · ${Usage.tool(it.agent)}" }) { id ->
                 if (id != chosen.id) scope.launch { problem = try { phone.setDefaultAccount(id); null } catch (e: Exception) { e.message } }
             }
         }
     })
-    for (account in agents) AgentCard(account, options, base(phone.models, account.agent))
+    for (account in agents) androidx.compose.runtime.key(account.id) { AgentCard(account, options, base(phone.models, account.agent)) }
 }
 
 /** What the tool runs when the account chose nothing (obid's status `models`). */
@@ -152,7 +152,7 @@ private fun AgentCard(account: Account, options: ModelOptions?, base: ModelChoic
                 Box(Modifier.width(16.dp).padding(top = 2.dp)) { AgentMark(account.agent, 14.dp) }
                 Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        T(Usage.tool(account.agent) ?: account.agent, Tokens.textBase, c.ink, modifier = Modifier.weight(1f))
+                        T(Usage.tool(account.agent), Tokens.textBase, c.ink, modifier = Modifier.weight(1f))
                         usage.session?.let { SetValue("$it% used") }
                     }
                     when {

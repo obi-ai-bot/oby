@@ -25,7 +25,6 @@ import kotlinx.coroutines.CompletableDeferred
  */
 class MainActivity : ComponentActivity() {
     private val phone get() = ObyApp.phone(this)
-    private var appearance by mutableStateOf("system")
     /** Oby's page, made once for the activity so Home doesn't load it again each time it shows. */
     private val character by lazy { ObyCharacter(this) }
     private var waitingMic: CompletableDeferred<Boolean>? = null
@@ -38,13 +37,14 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
-        appearance = Store.prefs(this).getString(APPEARANCE, "system") ?: "system"
+        // Oby follows the system's light or dark, as Electron and the iPhone (#1735): an older build's choice goes.
+        Store.prefs(this).edit().remove(APPEARANCE).apply()
         phone.voice.askMicrophone = { ask(Manifest.permission.RECORD_AUDIO) }
         phone.askNotifications = { askNotifications() }
         Sample.apply(phone, intent)
         opened(intent)
         setContent {
-            val dark = when (appearance) { "light" -> false; "dark" -> true; else -> isSystemInDarkTheme() }
+            val dark = isSystemInDarkTheme()
             SideEffect {
                 WindowCompat.getInsetsController(window, window.decorView).apply {
                     isAppearanceLightStatusBars = !dark
@@ -53,7 +53,7 @@ class MainActivity : ComponentActivity() {
             }
             ObyTheme(dark) {
                 CompositionLocalProvider(LocalCharacter provides character) {
-                    PhoneRoot(phone, this, appearance = appearance, setAppearance = { appearance = it; Store.prefs(this).edit().putString(APPEARANCE, it).apply() })
+                    PhoneRoot(phone, this)
                 }
             }
         }

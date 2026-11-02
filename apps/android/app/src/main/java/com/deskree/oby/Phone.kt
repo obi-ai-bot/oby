@@ -694,7 +694,6 @@ class Phone(val context: Context) {
     fun pop() { homePath = homePath.dropLast(1) }
 
     suspend fun stop(id: String) = apply(RunnerEvent.JobChanged(runner.stop(id)))
-    suspend fun stopAll() = runner.stopAll().jobs.forEach { apply(RunnerEvent.JobChanged(it)) }
     suspend fun dismiss(id: String) = apply(RunnerEvent.JobChanged(runner.dismiss(id)))
     suspend fun startNow(id: String) = apply(RunnerEvent.JobChanged(runner.startNow(id)))
     suspend fun move(id: String, agent: String?, account: String?, model: String?) = apply(RunnerEvent.JobChanged(runner.move(id, agent, account, model)))
@@ -719,7 +718,6 @@ class Phone(val context: Context) {
     suspend fun readDefaultAccount() { runCatching { runner.status() }.getOrNull()?.let { defaultAccount = it.defaultAccount } }
 
     suspend fun setDefaultAccount(id: String) { runner.setDefaultAccount(id); defaultAccount = id }
-    suspend fun setModels(models: ModelSettings) { this.models = runner.setModels(models) }
     suspend fun publishAction(id: String) = runner.publishAction(id)
 
     suspend fun answer(job: Job, decision: String, message: String? = null) {

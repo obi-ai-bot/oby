@@ -164,7 +164,6 @@ sealed interface Route {
     data object Inbox : Route
     data object Settings : Route
     data class SettingsPage(val page: com.deskree.oby.SettingsPage) : Route
-    data object Connect : Route
 }
 
 /** The jobs as Home's work (apps/ios/app/Phone.swift's PhoneWork). */

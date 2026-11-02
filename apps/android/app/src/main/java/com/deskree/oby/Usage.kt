@@ -26,7 +26,7 @@ object Usage {
     const val RESERVED_TEXT = "Reserved: only jobs you send it"
     const val LIFT_TEXT = "Use past reserve this week"
 
-    fun tool(agent: String) = mapOf("claude" to "Claude Code", "codex" to "Codex", "cursor" to "Cursor", "gemini" to "Gemini")[agent]
+    fun tool(agent: String) = mapOf("claude" to "Claude Code", "codex" to "Codex", "cursor" to "Cursor", "gemini" to "Gemini")[agent] ?: agent
         ?: agent.replaceFirstChar { it.uppercase() }
 
     fun percent(used: Double) = "${Math.round(used.coerceIn(0.0, 1.0) * 100)}%"
