@@ -147,7 +147,7 @@ final class Phone {
     /// Home's work: every job Home lists, with its kind and where it stands.
     var work: [WorkList.Item<Job>] { PhoneWork.items(visibleJobs, inbox: answering, since: since, seen: seen) }
     /// The Inbox: what waits now with no task on Home.
-    var loose: [InboxItem] { PhoneWork.loose(answering, among: work) }
+    var loose: [InboxItem] { PhoneOffer.once(PhoneWork.loose(answering, among: work)) }
     /// The decisions that wait on you now, longest first: not those answered here while the Mac
     /// was out of reach, which wait to go (docs/oby-ux.md row 18).
     var answering: [InboxItem] { InboxItem.waiting(inbox).filter { !waitsToSend(answer: $0.id) } }

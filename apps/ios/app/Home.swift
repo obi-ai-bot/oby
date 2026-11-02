@@ -167,7 +167,7 @@ struct HomeView: View {
     /// with a tap, without opening its task; AskStack), then Running and Recent (the iPhone's side
     /// panel, cut short).
     @ViewBuilder private var lists: some View {
-        let asks = phone.answering.filter { Self.asks.contains($0.kind) }
+        let asks = PhoneOffer.once(phone.answering.filter { Self.asks.contains($0.kind) })
         let rows = PhoneWork.running(phone.work)
         let recent = phone.conversations.map(PhoneWork.recent) ?? []
         VStack(alignment: .leading, spacing: 0) {
@@ -261,12 +261,12 @@ private struct AskStack: View {
     @State private var exit = HomeStack.Exit.lift
 
     var body: some View {
-        let index = HomeStack.index(of: at, in: items.map(\.id))
+        let index = HomeStack.index(of: at, in: items.map(\.cardID))
         let top = items[index]
         let peeks = min(2, items.count - 1)
         ZStack {
             InboxDecision(item: top, openTask: true, head: AnyView(head(top, index: index)))
-                .id(top.id)
+                .id(top.cardID)
                 .transition(reduceMotion ? .opacity : .asymmetric(insertion: HomeStack.Exit.rise, removal: exit.transition))
         }
         // The next two, a step further back each, peeking out under it.
@@ -282,10 +282,10 @@ private struct AskStack: View {
             .accessibilityHidden(true)
         }
         .padding(.bottom, 8 * CGFloat(peeks))
-        .animation(reduceMotion ? .easeOut(duration: 0.2) : Tokens.settle, value: top.id)
+        .animation(reduceMotion ? .easeOut(duration: 0.2) : Tokens.settle, value: top.cardID)
         .animation(reduceMotion ? nil : Tokens.warm, value: peeks)
         // Kept in step with the list: a card coming back above it moves its place, not the card.
-        .onChange(of: HomeStack.Place(id: top.id, index: index), initial: true) { _, place in at = place }
+        .onChange(of: HomeStack.Place(id: top.cardID, index: index), initial: true) { _, place in at = place }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Needs you")
     }
@@ -301,7 +301,9 @@ private struct AskStack: View {
             } else {
                 ObyMark(size: 16)
             }
-            Text(job?.heading ?? item.title).font(Tokens.font(Tokens.textBase, .semibold)).foregroundStyle(Tokens.ink)
+            // An offer goes under the conversation it was made in (its job isn't one until it starts).
+            let conversation = item.offer == nil ? nil : phone.conversations?.first { $0.id == item.conversation }?.title
+            Text(job?.heading ?? conversation.flatMap { $0.isEmpty ? nil : $0 } ?? item.title).font(Tokens.font(Tokens.textBase, .semibold)).foregroundStyle(Tokens.ink)
                 .lineLimit(1).fadeOut()
             Spacer(minLength: 0)
             HStack(spacing: 0) {
@@ -331,7 +333,7 @@ private struct AskStack: View {
         guard next != index else { return }
         exit = step > 0 ? .next : .prev
         DispatchQueue.main.async {
-            at = HomeStack.Place(id: items[next].id, index: next)
+            at = HomeStack.Place(id: items[next].cardID, index: next)
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { exit = .lift }
         }
     }
@@ -652,13 +654,13 @@ struct InboxPage: View {
     var body: some View {
         // Every half minute: what was put off comes back.
         TimelineView(.periodic(from: .now, by: 30)) { context in
-            let items = PhoneWork.loose(InboxItem.waiting(phone.inbox, now: context.date), among: phone.work)
+            let items = PhoneOffer.once(PhoneWork.loose(InboxItem.waiting(phone.inbox, now: context.date), among: phone.work))
             ScrollView {
                 VStack(alignment: .leading, spacing: 12) {
                     Text("Inbox").font(Tokens.font(28, .semibold)).foregroundStyle(Tokens.ink).padding(.bottom, 8)
                         .accessibilityAddTraits(.isHeader)
                     ForEach(phone.limitDecisions) { decision in AccountLimitDecision(decision: decision) }
-                    ForEach(items) { item in
+                    ForEach(items, id: \.cardID) { item in
                         VStack(alignment: .leading, spacing: 6) {
                             Text(item.line(now: context.date)).font(Tokens.font(Tokens.textSm)).foregroundStyle(Tokens.muted).lineLimit(1)
                             InboxDecision(item: item, openTask: true)
