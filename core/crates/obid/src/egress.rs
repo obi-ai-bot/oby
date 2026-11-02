@@ -994,11 +994,9 @@ pub fn env(proxy: &str) -> Vec<(&'static str, OsString)> {
         env.push((name, "localhost,127.0.0.1,::1".into()));
     }
     env.push(("NODE_USE_ENV_PROXY", "1".into()));
-    env.extend([
-        ("GIT_CONFIG_COUNT", "1".into()),
-        ("GIT_CONFIG_KEY_0", "credential.helper".into()),
-        ("GIT_CONFIG_VALUE_0", "".into()),
-    ]);
+    // Not GIT_CONFIG_KEY_0: a Codex that drops `*KEY*` variables would leave git its count alone,
+    // and git refuses to run then.
+    env.push(("GIT_CONFIG_PARAMETERS", "'credential.helper='".into()));
     env
 }
 
@@ -1159,37 +1157,48 @@ mod tests {
     use super::*;
 
     /// #1814: what git does once a request through the proxy worked, approving its login, reaches
-    /// a helper in git's settings without [`env`] and none with it.
+    /// a helper in the clone's settings without [`env`] and none with it. git gets nothing else
+    /// from this environment or this Mac: no helper of the person's sees the test's login.
     #[test]
     fn git_offers_the_proxy_login_to_no_credential_helper() {
-        let dir = std::env::temp_dir().join(format!("oby-egress-git-{}", std::process::id()));
+        use std::io::Write as _;
+        use std::process::{Command, Stdio};
+        let dir = std::env::temp_dir().join(format!("oby-egress-git-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let marker = dir.join("helper-ran");
-        let git = |args: &[&str], env: Vec<(&str, OsString)>| {
-            let mut child = std::process::Command::new("git")
-                .args(args)
-                .current_dir(&dir)
+        let git = || {
+            let mut git = Command::new("git");
+            git.current_dir(&dir)
+                .env_clear()
+                .env("PATH", std::env::var_os("PATH").unwrap())
+                .env("HOME", &dir)
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .env("GIT_CONFIG_GLOBAL", "/dev/null");
+            git
+        };
+        let helper = format!("!touch '{}'; :", marker.display());
+        for args in [
+            vec!["init", "-q"],
+            vec!["config", "credential.helper", &helper],
+        ] {
+            assert!(git().args(args).status().unwrap().success());
+        }
+        let approve = |env: Vec<(&str, OsString)>| {
+            let mut child = git()
+                .args(["credential", "approve"])
                 .envs(env)
-                .stdin(std::process::Stdio::piped())
+                .stdin(Stdio::piped())
                 .spawn()
                 .unwrap();
-            use std::io::Write as _;
-            child
-                .stdin
-                .take()
-                .unwrap()
-                .write_all(b"protocol=http\nhost=127.0.0.1:1\nusername=oby\npassword=t\n\n")
-                .unwrap();
+            let login = b"protocol=http\nhost=127.0.0.1:1\nusername=oby\npassword=t\n\n";
+            child.stdin.take().unwrap().write_all(login).unwrap();
             assert!(child.wait().unwrap().success());
         };
-        git(&["init", "-q"], Vec::new());
-        let helper = format!("!touch '{}'; :", marker.display());
-        git(&["config", "credential.helper", &helper], Vec::new());
 
-        git(&["credential", "approve"], env("http://oby:t@127.0.0.1:1"));
+        approve(env("http://oby:t@127.0.0.1:1"));
         assert!(!marker.exists());
 
-        git(&["credential", "approve"], Vec::new());
+        approve(Vec::new());
         assert!(marker.exists());
         std::fs::remove_dir_all(&dir).unwrap();
     }
