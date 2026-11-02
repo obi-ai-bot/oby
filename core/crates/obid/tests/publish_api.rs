@@ -74,6 +74,7 @@ case "$1 $2" in
     exit 0 ;;
   "pr view") [ -f "$dir/view.json" ] && cat "$dir/view.json" && exit 0; exit 1 ;;
   "issue view") [ -f "$dir/issue.json" ] && cat "$dir/issue.json" && exit 0; exit 1 ;;
+  "api graphql") [ -f "$dir/who.json" ] && cat "$dir/who.json" && exit 0; exit 1 ;;
   *) echo "gh: not in this test" >&2; exit 1 ;;
 esac
 "#,
@@ -3216,6 +3217,54 @@ fn merging_18_the_review_has_the_issue_its_work_is_from() {
     let worktree = Path::new(review["worktree"].as_str().unwrap());
     let issue = std::fs::read_to_string(worktree.join(".obi/inputs/issue.md")).unwrap();
     assert!(issue.contains("The greeting needs a comma."), "{issue}");
+}
+
+/// MERGING-18: a stranger who comments on the issue after its task started reaches the review, so
+/// it counts: the task is marked someone else's, and merging takes two reviews (MERGING-13).
+#[test]
+fn merging_18_a_strangers_comment_the_review_reads_marks_the_task() {
+    let who = |commenters: &[&str]| {
+        let none = json!({"pageInfo": {"hasNextPage": false}, "nodes": []});
+        let comments: Vec<Value> = commenters
+            .iter()
+            .map(
+                |login| json!({"author": {"login": login}, "body": "Hi", "userContentEdits": none}),
+            )
+            .collect();
+        let issue = json!({"author": {"login": "wellington"}, "body": "Greet", "userContentEdits": none,
+                           "timelineItems": none, "comments": {"pageInfo": {"hasNextPage": false}, "nodes": comments}});
+        json!({"data": {"viewer": {"login": "wellington"}, "repository": {"issueOrPullRequest": issue}}}).to_string()
+    };
+    let folder = Folder::new("publish-review-stranger");
+    let bin = fake_gh(&folder.0);
+    std::fs::write(
+        folder.0.join("gh/issue.json"),
+        r#"{"title":"Greet","body":"Greet","author":{"login":"wellington"},"labels":[],"comments":[]}"#,
+    )
+    .unwrap();
+    std::fs::write(folder.0.join("gh/who.json"), who(&[])).unwrap();
+    let (obid, _, _) = obid_with(&folder, &bin);
+    let id = dispatch(
+        &obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "build", "task": "COMMIT: hello.txt",
+               "check": "sleep 8", "issue": 7}),
+    );
+    let foreign = || {
+        let file = std::fs::read(obid.home.join(format!("jobs/{id}.json"))).unwrap();
+        serde_json::from_slice::<Value>(&file).unwrap()["foreign"].clone()
+    };
+    within(30, "its check to start", || {
+        (call(&obid, "GET", &format!("/v1/jobs/{id}"), None).body["checks"][0]["steps"][0]["running"] == true).then_some(())
+    });
+    assert_eq!(foreign(), Value::Null, "{}", obid.log());
+    std::fs::write(folder.0.join("gh/who.json"), who(&["mallory"])).unwrap();
+    reviewed(&obid, &id, 1);
+    let why = foreign();
+    assert!(
+        why.as_str().unwrap_or_default().contains("issue #7"),
+        "{why}\n{}",
+        obid.log()
+    );
 }
 
 /// A review that ends before its verdict (here Codex's login refused, as codex-cli 0.162.1 says it:
