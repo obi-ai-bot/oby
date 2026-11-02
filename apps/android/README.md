@@ -73,4 +73,13 @@ These are yours; nothing here creates them, and none of their files or keys may 
    keytool -genkeypair -v -keystore ~/oby-upload.jks -alias oby-upload -keyalg RSA -keysize 4096 -validity 10000
    ```
 
-   A release build signs with it through a `keystore.properties` beside `app/` (also ignored); wiring that file into `app/build.gradle.kts` comes with the first Play upload.
+   A release build signs with it through a `keystore.properties` beside `app/` (also ignored), whose `storeFile` is the keystore's path:
+
+   ```properties
+   storeFile=/Users/you/oby-upload.jks
+   storePassword=…
+   keyAlias=oby-upload
+   keyPassword=…
+   ```
+
+   Then the bundle for Play is `app/build/outputs/bundle/release/app-release.aab`, from `./gradlew bundleRelease`. Each upload needs a higher `versionCode` (`app/build.gradle.kts`). Without the file, a release builds unsigned.

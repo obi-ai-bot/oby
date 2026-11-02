@@ -1,4 +1,5 @@
 import java.io.OutputStream
+import java.util.Properties
 import javax.inject.Inject
 
 plugins {
@@ -24,8 +25,19 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
+    // The upload key, from keystore.properties beside app/ (README.md, "Owner's steps"; never in git):
+    // storeFile, storePassword, keyAlias, keyPassword. Without it a release builds unsigned.
+    val upload = rootProject.file("keystore.properties").takeIf { it.exists() }?.let { file -> Properties().apply { file.inputStream().use(::load) } }
+    if (upload != null) signingConfigs.create("upload") {
+        storeFile = file(upload.getProperty("storeFile"))
+        storePassword = upload.getProperty("storePassword")
+        keyAlias = upload.getProperty("keyAlias")
+        keyPassword = upload.getProperty("keyPassword")
+    }
+
     buildTypes {
         release {
+            signingConfig = signingConfigs.findByName("upload")
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
