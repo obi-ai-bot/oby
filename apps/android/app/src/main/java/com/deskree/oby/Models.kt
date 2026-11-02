@@ -227,7 +227,11 @@ enum class JobStatus { queued, running, done, failed, stopped, interrupted;
         }
     }
 
-    val unpublished get() = maxOf(0, (commits ?: 0) - (if (published == null) 0 else pushed ?: commits ?: 0))
+    /** Commits not out yet, by obid's own rule (`Job::unpublished`): a push with no pull request is out; one whose publish failed isn't. */
+    val unpublished: Int get() {
+        val out = if (published != null) pushed ?: commits ?: 0 else if (publishError == null) pushed ?: 0 else 0
+        return maxOf(0, (commits ?: 0) - out)
+    }
     val canPublish get() = st == JobStatus.done && kind != "research" && kind != "review" && base != null && unpublished > 0 &&
         dismissed == null && reviewOf == null && (pullRequestState ?: "OPEN") == "OPEN"
     val stranded get() = st == JobStatus.done && published != null && unpublished > 0 && reviewOf == null &&
