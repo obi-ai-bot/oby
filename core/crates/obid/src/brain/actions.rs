@@ -142,9 +142,14 @@ fn named_branch(d: &super::plan::Dispatch, researched: bool, asked: &Asked<'_>) 
 }
 
 /// Whether `said` names `branch`: the whole word, and as a branch, by a `/` in it or the word
-/// "branch" within 3 words of it. "Prepare the release notes" names no branch `release`.
+/// "branch" within 3 words of it. "Prepare the release notes" names no branch `release`. What Oby
+/// asked, joined after an answer's words ([`super::OBY_ASKED`]), isn't the owner's. Past that a
+/// negated mention still counts ("not the deploy branch").
 fn says_branch(said: &str, branch: &str) -> bool {
     let words: Vec<&str> = said
+        .split(super::OBY_ASKED)
+        .next()
+        .unwrap_or(said)
         .split_whitespace()
         .map(|word| word.trim_matches(|c: char| "`'\"“”‘’,;:.!?()[]<>".contains(c)))
         .collect();
@@ -1622,6 +1627,7 @@ mod tests {
             "Fix GH-PAGES on the branch",
             "Don't touch gh-pages",
             "the branch is fine, and later on the docs mention gh-pages",
+            "No\n\n(Oby asked: Use the branch gh-pages? The user answered: No)",
         ] {
             assert_eq!(named_branch(&d, true, &asked(said, true)), None, "{said}");
         }

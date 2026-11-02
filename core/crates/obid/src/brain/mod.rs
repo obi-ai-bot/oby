@@ -183,8 +183,8 @@ pub async fn plan(
         .answer
         .map(|a| {
             format!(
-                "{}\n\n(Oby asked: {} The user answered: {})",
-                words, a.question, a.option
+                "{words}{OBY_ASKED}{} The user answered: {})",
+                a.question, a.option
             )
         })
         .unwrap_or_else(|| words.to_owned());
@@ -761,6 +761,9 @@ fn validate_turns(input: Option<Vec<InputTurn>>) -> Result<Option<Vec<Turn>>, Ap
 }
 /// The most jobs one message attaches.
 const ATTACHED_JOBS: usize = 20;
+
+/// What joins the owner's words to the question they answer: past it, the words are Oby's.
+const OBY_ASKED: &str = "\n\n(Oby asked: ";
 
 /// What a turn answers when Claude Code found the prompt more than its model can read at once
 /// ([`too_long`]): a message that long, or a conversation grown that long. Trying again doesn't
