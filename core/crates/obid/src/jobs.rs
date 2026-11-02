@@ -9061,11 +9061,18 @@ impl Jobs {
                     review::ASKED_FILE,
                     review::asked(&task, &request, &later, untrusted.as_deref()),
                 ));
-                // The issue it worked from (MERGING-17). One that can't be read leaves the review
-                // what it was asked, as it had before.
-                if let Some(issue) = author.as_ref().and_then(|a| a.issue) {
+                // The issue it worked from (MERGING-18). One that can't be read leaves the review
+                // what it was asked, as it had before. Whoever wrote on it by now counts as they
+                // would for the author, so a stranger's comment the reviewer reads means two
+                // reviews (MERGING-13).
+                if let Some((author, issue)) = author.as_ref().and_then(|a| Some((a, a.issue?))) {
                     match crate::github_work::quote("assigned", &job.repo, issue).await {
-                        Ok((text, _)) => quoted.push((review::ISSUE_FILE, text)),
+                        Ok((text, read)) => {
+                            if author.foreign.is_none() {
+                                Box::pin(self.authors_as_it_starts(author, Some(&read))).await;
+                            }
+                            quoted.push((review::ISSUE_FILE, text));
+                        }
                         Err(why) => tracing::warn!(
                             "job {id}: its review goes without issue #{issue}: {why}"
                         ),
