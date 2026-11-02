@@ -176,7 +176,7 @@ function serverName(t: Tetrix) {
 
 // A window over Settings (a connector's, or asking before a Remove): its logo and title, a ×, Esc
 // or a click outside closes it. alert: a question, its lede read out with it (describedBy)
-function Window({ brand, title, onClose, alert, children }: { brand: Brand; title: string; onClose: () => void; alert?: string; children: React.ReactNode }) {
+export function Window({ brand, title, onClose, alert, children }: { brand?: Brand; title: string; onClose: () => void; alert?: string; children: React.ReactNode }) {
   // (its latest onClose, listened for once)
   const close = useRef(onClose);
   close.current = onClose;
@@ -189,7 +189,7 @@ function Window({ brand, title, onClose, alert, children }: { brand: Brand; titl
     <div className="modal-backdrop" onPointerDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
       <div className="modal is-small" role={alert ? 'alertdialog' : 'dialog'} aria-modal="true" aria-label={title} aria-describedby={alert}>
         <header className="modal-head">
-          <span className="connector-window-title"><BrandMark brand={brand} size={22} /><h2>{title}</h2></span>
+          <span className="connector-window-title">{brand && <BrandMark brand={brand} size={22} />}<h2>{title}</h2></span>
           <button type="button" className="icon-button" aria-label="Close" onClick={onClose}><X size={16} strokeWidth={1.6} /></button>
         </header>
         {children}

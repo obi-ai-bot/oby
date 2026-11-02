@@ -1,4 +1,4 @@
-import { useEffect, useState, useSyncExternalStore } from 'react';
+import { Fragment, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { Check } from 'lucide-react';
 import { BrandMark } from './brands';
 import { useScrollThumb } from './useScrollThumb';
@@ -9,7 +9,9 @@ import { useSpheres } from './spheres';
 import { everything, onObid } from './lean';
 import qrcode from 'qrcode-generator';
 import { ApiError, api, qrText, type Invitation, type PairedDevice, type ModelOptions, type Models, type SavedRule, type SignIn, type Status } from './obid';
-import Connectors, { ConfirmWindow, readConnectors } from './Connectors';
+import Connectors, { ConfirmWindow, Window, readConnectors } from './Connectors';
+import { again, sameAs, startAdding, stopAdding, toolRows, whoseAgain, type Found } from './addAccount';
+import { UNFINISHED, signInWhy } from './signInWhy';
 import { Menu } from './Menu';
 import { liveState, patchStatus, say, useLive } from './live';
 import { version } from '../../../package.json';
@@ -265,14 +267,17 @@ function MockRemote() {
 // Accounts: the logins Oby spreads jobs across, who pays for each, how much each has used
 // plan: what kind of login it is, which decides whether a part of it can be
 // shared (SHARING below)
+// who: who it is, as its tool says (docs/contracts/accounts.md)
 // used: this week's share in percent, null while its tool hasn't said
 // signedIn: obid's (the mock's are all signed in); label: what obid says about the login, such as
 // "Run codex once" while it's signed out
 // session: the 5-hour window's use (null: none reported) and when it starts over; weekly: whether
 // used is the week's
-export type Account = { id: string; agent: Agent; name: string; payer: string; used: number | null; resets: string; plan?: Plan; signedIn?: boolean; label?: string | null; session?: number | null; sessionResets?: string | null; weekly?: boolean; full?: boolean };
+export type Account = { id: string; agent: Agent; name: string; payer: string; who?: string; used: number | null; resets: string; plan?: Plan; signedIn?: boolean; label?: string | null; session?: number | null; sessionResets?: string | null; weekly?: boolean; full?: boolean };
 // how full an account (or an agent) is: past 80% yellow, past 90% red
 export const fullness = (used: number) => (used > 90 ? 'is-over' : used > 80 ? 'is-high' : '');
+// what a card's bar shows: its 5-hour session, else its week
+export const barOf = (a: Account) => a.session ?? a.used;
 // an account's week in words, under its session's bar: its share when the tool reported one, else
 // what obid says (not signed in, none reported yet, Cursor's none); a session but no week: says so
 export const weekWords = (a: Account) => (a.weekly && a.used != null ? `This week ${a.used}% · ${a.resets.replace(/^Resets/, 'resets')}`
@@ -285,7 +290,7 @@ export function accountRow(a: Status['accounts'][number], now: number): Account 
   const over = !!a.fiveHourResets && Date.parse(a.fiveHourResets) <= now;
   const session = a.agent === 'cursor' || !a.signedIn || a.fiveHour == null ? null : over ? 0 : Math.round(a.fiveHour * 100);
   return {
-    id: a.id, agent: a.agent, name: a.name, payer: a.payer ?? 'You', signedIn: a.signedIn, label: a.label ?? null, used: used == null ? null : Math.round(used * 100),
+    id: a.id, agent: a.agent, name: a.name, payer: a.payer ?? 'You', who: [a.email, a.org, a.plan && a.plan[0].toUpperCase() + a.plan.slice(1)].filter(Boolean).join(' · ') || undefined, signedIn: a.signedIn, label: a.label ?? null, used: used == null ? null : Math.round(used * 100),
     resets: !a.signedIn ? a.label ?? 'Not signed in' : a.agent === 'cursor' ? 'Cursor doesn’t report usage' : used == null ? 'No use reported yet'
       : a.sevenDayResets ? `Resets ${new Date(a.sevenDayResets).toLocaleDateString([], { weekday: 'long' })}` : 'No reset reported',
     session,
@@ -295,8 +300,8 @@ export function accountRow(a: Status['accounts'][number], now: number): Account 
   };
 }
 const ACCOUNTS: Account[] = [
-  { id: 'a1', agent: 'claude', name: 'Deskree', payer: 'Deskree', used: 36, resets: 'Resets Thursday', plan: 'seat', session: 12, sessionResets: '4:10 PM', weekly: true },
-  { id: 'a2', agent: 'claude', name: 'Personal', payer: 'Doti', used: 82, resets: 'Resets in 2 days', plan: 'personal', session: 86, sessionResets: '2:14 PM', weekly: true },
+  { id: 'a1', agent: 'claude', name: 'Deskree', payer: 'Deskree', who: 'doti@deskree.com · Deskree · Team', used: 36, resets: 'Resets Thursday', plan: 'seat', session: 12, sessionResets: '4:10 PM', weekly: true },
+  { id: 'a2', agent: 'claude', name: 'Personal', payer: 'Doti', who: 'doti@example.com · Max', used: 82, resets: 'Resets in 2 days', plan: 'personal', session: 86, sessionResets: '2:14 PM', weekly: true },
   { id: 'a3', agent: 'codex', name: 'Deskree', payer: 'Deskree', used: 12, resets: 'Resets Monday', plan: 'seat', session: 5, sessionResets: '6:40 PM', weekly: true },
   { id: 'a4', agent: 'claude', name: 'Deskree API', payer: 'Deskree', used: 8, resets: '$32 of $400 this month', plan: 'api', session: null, weekly: false },
   { id: 'a5', agent: 'cursor', name: 'Personal', payer: 'Doti', used: null, resets: 'Cursor doesn’t report usage', plan: 'personal', session: null, weekly: false },
@@ -323,7 +328,7 @@ function useSignIns(accounts: Account[], setAccounts: (a: Account[]) => void) {
   // the tools' own logins on this Mac that aren't accounts (found, or removed here): only
   // GET /v1/status has them, read as the page opens and after a change (obid also reads the usage
   // shown here then, which comes in its `accounts` event)
-  const [offered, setOffered] = useState<NonNullable<Status['availableLogins']>>([]);
+  const [offered, setOffered] = useState<Found[]>(onObid ? [] : [{ agent: 'codex', id: 'codex', name: 'Codex' }]);
   const look = () => { if (onObid) api.status().then((s) => setOffered(s.availableLogins ?? []), () => {}); };
   useEffect(look, []);
   // sign-ins under way, by account: opening, then its page (with Codex's code, or Claude Code's to
@@ -375,7 +380,7 @@ function useSignIns(accounts: Account[], setAccounts: (a: Account[]) => void) {
   const gone = accounts.find((x) => x.id === removing);
   const removeWindow = gone && <ConfirmWindow brand={AGENTS[gone.agent].brand} title={`Remove ${gone.name}?`} text={removeNote(gone)} action="Remove"
     onConfirm={() => void tried(gone.id, () => api.removeAccount(gone.id).then(() => { put(gone.id); look(); }))} onClose={() => setRemoving(null)} />;
-  return { offered, look, signing, put, problems, busy, tried, signIn, sendCode, cancel, remove, removeWindow };
+  return { offered, setOffered, look, signing, put, problems, busy, tried, signIn, sendCode, cancel, remove, removeWindow };
 }
 
 function Accounts() {
@@ -707,18 +712,8 @@ function Agents() {
   const [tuning, options, tune] = useModels();
   const [chosen, setChosen] = useDefaultAccount();
   // signing in, as Settings › Accounts does (useSignIns): its states, its problems, the tool's own login
-  const { offered, look, signing, problems, busy, tried, signIn, sendCode, cancel, remove, removeWindow } = useSignIns(accounts, setAccounts);
-  // Add an agent: a provider, and an alias of your own for it (several of one are fine)
-  const [agent, setAgent] = useState<Agent>('claude');
-  const [name, setName] = useState('');
-  const add = () => tried(ADD, async () => {
-    const n = name.trim();
-    const a = onObid ? await api.addAccount({ agent, name: n }) : null;
-    setName('');
-    // its sign-in's errors show on its card
-    if (a) return void signIn(a.id);
-    setAccounts([...accounts, { id: `a${Date.now()}`, agent, name: n, payer: 'You', used: 0, resets: 'Resets in 7 days', signedIn: true }]);
-  });
+  const { offered, setOffered, look, signing, problems, signIn, sendCode, cancel, remove, removeWindow } = useSignIns(accounts, setAccounts);
+  const [adding, setAdding] = useState(false);
   const ids = Object.keys(AGENTS) as Agent[];
   // one card per agent you added, in the providers' order
   const agents = ids.flatMap((a) => accounts.filter((x) => x.agent === a));
@@ -732,30 +727,37 @@ function Agents() {
           </Row>
         : <Row label={<span className="set-none">No agents yet</span>} />}
     </Group>
+    <Group i={2} footer={offered.length ? `Found on this Mac: ${offered.map((l) => AGENTS[l.agent].name).join(', ')}` : undefined}>
+      {/* the card's action, not a row's: on the left */}
+      <div className="set-row is-action">
+        <button className="set-button is-primary" onClick={() => setAdding(true)}>Add account</button>
+      </div>
+    </Group>
     {agents.map((x, k) => {
       const a = x.agent, t = tuning(x), o = options[a];
       const efforts = a === 'codex' ? o?.models.find((m) => m.id === t.model)?.efforts : o?.efforts;
       const out = x.signedIn === false, sign = signing[x.id], tool = AGENTS[a].name, own = ownLogin(x);
       // the bar: the 5-hour session; the week, in words under it
-      const week = weekWords(x);
+      const week = weekWords(x), bar = barOf(x);
       return (
-        <Group key={x.id} i={2 + k} title={x.name}>
+        <Group key={x.id} i={3 + k} title={x.name}>
           <div className="set-row set-usage">
             <BrandMark brand={AGENTS[a].brand} size={16} mono />
             <span className="set-label">
               <span className="set-usage-name">
                 {tool}
-                {!out && !sign && x.session != null && <span className="set-value">{x.session}% used</span>}
+                {!out && !sign && bar != null && <span className="set-value">{bar}% used</span>}
               </span>
+              {x.who && <span className="set-about">{x.who}</span>}
               {sign
                 ? <span className="set-about">{sign === 'opening' ? `Opening ${tool}’s sign-in page` : sign.code ? `Signing in to ${tool}` : `Finish on ${tool}’s sign-in page${sign.userCode ? ` · enter ${sign.userCode}` : ''}`}</span>
                 : out ? <span className="set-about">{x.label ?? 'Not signed in'}{own && !x.label ? `: sign in with ${tool} itself on this Mac` : ''}</span>
-                : x.session != null ? <>
-                    <span className="set-about">5-hour session{x.sessionResets ? ` · resets ${x.sessionResets}` : ''}</span>
-                    <span className="set-meter" role="meter" aria-valuenow={x.session} aria-valuemin={0} aria-valuemax={100} aria-label={`${x.session}% of the 5-hour session used`}>
-                      <span className={fullness(x.session)} style={{ width: `${x.session}%` }} />
+                : bar != null ? <>
+                    <span className="set-about">{x.session != null ? `5-hour session${x.sessionResets ? ` · resets ${x.sessionResets}` : ''}` : week}</span>
+                    <span className="set-meter" role="meter" aria-valuenow={bar} aria-valuemin={0} aria-valuemax={100} aria-label={x.session != null ? `${bar}% of the 5-hour session used` : `${bar}% of the week used`}>
+                      <span className={fullness(bar)} style={{ width: `${bar}%` }} />
                     </span>
-                    <span className="set-about is-quiet">{week}</span>
+                    {x.session != null && <span className="set-about is-quiet">{week}</span>}
                   </>
                 : <span className="set-about">{week}</span>}
               {sign && sign !== 'opening' && sign.pasteCode && !sign.code && <PasteCode onCode={(code) => sendCode(x.id, sign, code)} />}
@@ -783,20 +785,152 @@ function Agents() {
         </Group>
       );
     })}
-    <Group i={2 + agents.length} title="Add an agent" footer={problems[ADD] ? <span className="set-problem" role="alert">{problems[ADD]}</span> : 'The alias is only for you, to tell your agents apart.'}>
-      <Row label="Provider"><Select wide value={agent} onChange={(v) => setAgent(v as Agent)} label="Provider" options={ids.map((a) => [a, AGENTS[a].name] as const)} /></Row>
-      <Row label="Alias"><TextField wide value={name} onChange={setName} placeholder="Work, Personal…" label="Alias" /></Row>
-      {/* the card's action, not a row's: on the left */}
-      <div className="set-row is-action">
-        <button className="set-button is-primary" disabled={!name.trim() || busy} onClick={() => void add()}>{busy ? 'Adding…' : 'Add Agent'}</button>
-        {/* the tool's own login, found on this Mac (or taken off here): back in one click, no alias needed */}
-        {onObid && offered.some((l) => l.agent === agent) && (
-          <button className="set-button" disabled={busy} onClick={() => tried(ADD, () => api.addAccount({ agent, default: true }).then(look))}>Use {AGENTS[agent].name}’s Own Login</button>
-        )}
-      </div>
-    </Group>
+    {adding && <AddAccount accounts={accounts} setAccounts={setAccounts} found={offered}
+      onFound={(l) => (onObid ? look() : setOffered(offered.filter((x) => x !== l)))} onClose={() => { setAdding(false); look(); }} />}
     {removeWindow}
   </>;
+}
+
+// Add account (docs/contracts/accounts.md): pick the tool, its own sign-in starts at once, and a
+// name is optional after it. A login found on this Mac is one click. Words proposed, Sangam's to
+// rewrite. (ponytail: off obid, the tool's page is a moment's wait, as first run's)
+type Adding = { at: 'tools'; why?: string }
+  | { at: 'signing'; agent: Agent; account: string; page?: SignIn; sending?: boolean }
+  | { at: 'named'; agent: Agent; account: string }
+  | { at: 'same'; agent: Agent; words: string };
+function AddAccount({ accounts, setAccounts, found, onFound, onClose }: {
+  accounts: Account[]; setAccounts: (a: Account[]) => void; found: Found[]; onFound: (l: Found) => void; onClose: () => void;
+}) {
+  const [step, setStep] = useState<Adding>({ at: 'tools' });
+  const [draft, setDraft] = useState<string | null>(null);
+  const [problem, setProblem] = useState<string>();
+  const signing = step.at === 'signing' ? step : null;
+  const account = step.at === 'signing' || step.at === 'named' ? step.account : null;
+  const live = accounts.find((a) => a.id === account);
+  // the try under way: one cancelled while its page was still opening is undone once it's there
+  const tries = useRef(0);
+  const pick = async (agent: Agent) => {
+    const now = ++tries.current;
+    if (!onObid) {
+      setStep({ at: 'signing', agent, account: '' });
+      setTimeout(() => {
+        if (now !== tries.current) return;
+        const made = `a${Date.now()}`;
+        setAccounts([...accounts, { id: made, agent, name: 'Max', who: 'doti@example.com · Max', payer: 'You', used: 0, resets: 'Resets in 7 days', signedIn: true, session: 0, weekly: true }]);
+        setStep({ at: 'named', agent, account: made });
+      }, 1600);
+      return;
+    }
+    setStep({ at: 'signing', agent, account: '' });
+    try {
+      const { account: made, page } = await startAdding(agent);
+      if (now !== tries.current) return void stopAdding(made);
+      setStep({ at: 'signing', agent, account: made, page });
+    } catch (e) { if (now === tries.current) setStep({ at: 'tools', why: signInWhy(AGENTS[agent].name, e) }); }
+  };
+  const use = async (l: Found) => {
+    try {
+      if (onObid) await api.addAccount({ agent: l.agent, default: true });
+      else setAccounts([...accounts, { id: l.id, agent: l.agent, name: l.name, payer: 'You', used: 12, resets: 'Resets Monday', signedIn: true, session: 5, weekly: true }]);
+      onFound(l);
+      onClose();
+    } catch (e) { setStep({ at: 'tools', why: signInWhy(AGENTS[l.agent].name, e) }); }
+  };
+  const stop = async (why?: string) => {
+    tries.current++;
+    if (signing?.account) await stopAdding(signing.account);
+    setStep({ at: 'tools', why });
+  };
+  const send = async (code: string) => {
+    if (!signing?.page) return;
+    setStep({ ...signing, sending: true });
+    try {
+      await api.signInCode(signing.account, code.trim());
+      setStep({ at: 'named', agent: signing.agent, account: signing.account });
+    } catch (e) {
+      const same = sameAs(e);
+      if (same) setStep({ at: 'same', agent: signing.agent, words: again(accounts, same) });
+      else if (e instanceof ApiError && e.status === 422) await stop(signInWhy(AGENTS[signing.agent].name, e));
+      // no answer in time: it may still sign in, until its page runs out or Cancel
+      else setStep({ ...signing, sending: true });
+    }
+  };
+  const done = async () => {
+    const name = draft?.trim();
+    if (!name || !live || name === live.name) return onClose();
+    try {
+      if (onObid) await api.renameAccount(live.id, name);
+      else setAccounts(accounts.map((a) => (a.id === live.id ? { ...a, name } : a)));
+      onClose();
+    } catch (e) { setProblem(e instanceof Error ? e.message : String(e)); }
+  };
+  // obid's `accounts` event says it's in (Codex and Cursor end by themselves), or that it's gone:
+  // then it was another account's login again. (Not in the list yet is no news: it was only just made.)
+  const [seen, setSeen] = useState<string | null>(null);
+  useEffect(() => {
+    if (!account) return;
+    if (live) {
+      if (seen !== account) setSeen(account);
+      if (signing && live.signedIn) setStep({ at: 'named', agent: signing.agent, account });
+    } else if (seen === account && onObid) {
+      const agent = (step as { agent: Agent }).agent;
+      void whoseAgain(account).then((same) => setStep(same ? { at: 'same', agent, words: again(accounts, same) } : { at: 'tools' }));
+    }
+  }, [accounts, account]);
+  // a page that ran out (15 minutes) without signing in
+  const expires = signing?.page ? Date.parse(signing.page.expiresAt ?? '') : NaN;
+  useEffect(() => {
+    if (Number.isNaN(expires)) return;
+    const timer = setTimeout(() => void stop(UNFINISHED), expires - Date.now());
+    return () => clearTimeout(timer);
+  }, [expires]);
+  const brand = step.at === 'tools' ? undefined : AGENTS[step.agent].brand;
+  if (step.at === 'same') return <Window brand={brand} title="Add account" onClose={onClose}>
+    <p className="modal-lede" role="status">{step.words}</p>
+    <div className="modal-actions"><button type="button" className="modal-primary" onClick={onClose}>Done</button></div>
+  </Window>;
+  if (step.at === 'named') return <Window brand={brand} title="Add account" onClose={onClose}>
+    <p className="modal-lede" role="status">{live?.who ? `Signed in as ${live.who}` : `Signed in to ${AGENTS[step.agent].name}`}</p>
+    <form onSubmit={(e) => { e.preventDefault(); void done(); }}>
+      <input className="modal-field" value={draft ?? live?.name ?? ''} onChange={(e) => setDraft(e.target.value)} placeholder="Name (optional)" aria-label="Name (optional)" spellCheck={false} />
+      {problem && <p className="set-about set-problem" role="alert">{problem}</p>}
+      <div className="modal-actions"><button className="modal-primary">Done</button></div>
+    </form>
+  </Window>;
+  if (step.at === 'signing') {
+    const tool = AGENTS[step.agent].name, page = step.page;
+    return <Window brand={brand} title={`Sign in to ${tool}`} onClose={() => void stop().then(onClose)}>
+      <p className="modal-lede" role="status">
+        {!page ? (onObid ? `Opening ${tool}’s sign-in page` : `Finish on ${tool}’s sign-in page`) : step.sending ? `Signing in to ${tool}` : `Finish on ${tool}’s sign-in page${page.userCode ? ` · enter ${page.userCode}` : ''}`}
+      </p>
+      {page?.pasteCode && !step.sending && <PasteCode onCode={(code) => void send(code)} />}
+      <div className="modal-actions">
+        {page && <button type="button" className="set-button" onClick={() => window.app?.openExternal(page.url)}>Open the page again</button>}
+        <button type="button" className="set-button" onClick={() => void stop()}>Cancel</button>
+      </div>
+    </Window>;
+  }
+  return <Window title="Add account" onClose={onClose}>
+    <div className="set-card">
+      {toolRows(accounts, found).map(({ agent, added, found: here }) => (
+        <Fragment key={agent}>
+          <div className="set-row">
+            <BrandMark brand={AGENTS[agent].brand} size={16} mono />
+            <span className="set-label">{AGENTS[agent].name}<span className="set-about">{added ? `${added} added` : 'None yet'}</span></span>
+            <span className="set-control"><button type="button" className="set-button" onClick={() => void pick(agent)}>Sign in</button></span>
+          </div>
+          {here.map((l) => (
+            <div key={l.id} className="set-row">
+              <BrandMark brand={AGENTS[agent].brand} size={16} mono />
+              <span className="set-label">{AGENTS[agent].name}’s login<span className="set-about">Found on this Mac</span></span>
+              <span className="set-control"><button type="button" className="set-button is-primary" onClick={() => void use(l)}>Use it</button></span>
+            </div>
+          ))}
+        </Fragment>
+      ))}
+    </div>
+    {step.why && <p className="set-about set-problem" role="alert">{step.why}</p>}
+  </Window>;
 }
 
 // Vault: the secrets Oby keeps in the keychain, by name, never their values

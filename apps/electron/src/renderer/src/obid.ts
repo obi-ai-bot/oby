@@ -47,7 +47,8 @@ export type ModelOptions = Record<Agent, { models: { id: string; name: string; e
 // the message is why (its own reason when it has one, main/obid.ts)
 // reason: obid's stable word for why (docs/contracts/sign-in.md), where it gives one
 export class ApiError extends Error {
-  constructor(readonly status: number, message: string, readonly reason?: string) {
+  // sameAs: with reason sameAccount, the account a sign-in turned out to be (ACCOUNTS-7)
+  constructor(readonly status: number, message: string, readonly reason?: string, readonly sameAs?: string) {
     super(message);
   }
 }
@@ -61,8 +62,8 @@ async function call<T>(method: string, path: string, body?: unknown, via = (b: B
   let value: unknown = null;
   try { value = text ? JSON.parse(text) : null; } catch { /* not JSON: said below */ }
   if (status < 200 || status >= 300) {
-    const { error: said, reason } = (value ?? {}) as { error?: unknown; reason?: unknown };
-    throw new ApiError(status, typeof said === 'string' ? said : `Oby answered ${status}.`, typeof reason === 'string' ? reason : undefined);
+    const { error: said, reason, sameAs } = (value ?? {}) as { error?: unknown; reason?: unknown; sameAs?: unknown };
+    throw new ApiError(status, typeof said === 'string' ? said : `Oby answered ${status}.`, typeof reason === 'string' ? reason : undefined, typeof sameAs === 'string' ? sameAs : undefined);
   }
   return value as T;
 }
@@ -151,7 +152,8 @@ export const api = {
   githubWork: () => call<GitHubWork>('GET', '/v1/github/work'),
   startGitHubWork: (i: string) => call<Job>('POST', `/v1/github/work/${id(i)}/start`),
   // obid only: accounts, and signing them in with the tool's own login
-  addAccount: (body: { agent: Agent; default: true } | { agent: Agent; name: string; payer?: string }) => call<Account>('POST', '/v1/accounts', body),
+  addAccount: (body: { agent: Agent; default: true } | { agent: Agent; name?: string; payer?: string }) => call<Account>('POST', '/v1/accounts', body),
+  renameAccount: (a: string, name: string) => call<Account>('PATCH', `/v1/accounts/${id(a)}`, { name }),
   removeAccount: (a: string) => call<null>('DELETE', `/v1/accounts/${id(a)}`),
   // obid only, Settings › Agents: an account's model and efforts (null: the tool's own), the
   // choices, and the account new tasks go to (null: routing's own order)

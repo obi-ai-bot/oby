@@ -159,6 +159,10 @@ export type Account = {
   // obid only: full until then (a usage limit it hit)
   fullUntil?: string | null;
   running: number;
+  // obid only: who it is, as its tool says, each only when it did (docs/contracts/accounts.md)
+  email?: string;
+  plan?: string;
+  org?: string;
   // obid only: the model and efforts its jobs run on, each only when the owner chose it (#1574)
   model?: string;
   effort?: string;
