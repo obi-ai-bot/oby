@@ -30,7 +30,7 @@ What it doesn't have yet, as the iPhone has it: the Apple Watch's relay (Wear OS
 - **The microphone** follows AGENTS.md's rule: a tap on the mic listens until Stop, at most 60 seconds; the words go into the box as they're heard and stay there as a draft; nothing is sent until you send it. Leaving the screen or the app stops listening and keeps the words. Android's recognizer, on the phone when it can (`EXTRA_PREFER_OFFLINE`), ends a segment at a pause, so while you're still listening it listens again and keeps the words so far. Oby answers in text, never aloud, as on the Mac and the iPhone.
 - **Back** pops the stack (and closes the side panel first); on Home it leaves the app. Edge to edge, the bars light or dark with the app's appearance. Portrait only, as the iPhone.
 - **Bonjour** is `NsdManager` for `_oby._tcp` (obid doesn't advertise it yet, so the six digits find nothing until it does; the QR code and a pasted invitation work).
-- **Portuguese**: what Android itself shows (the notification channels and their actions, the microphone's reason) has Portuguese strings in `values-pt`; the app's own words are English, as the iPhone's are.
+- **English only** (the owner's decision of 2026-11-01): every word Oby and Android show for it is English, and the mic listens in US English whatever the phone's language.
 - **No telemetry**, as AGENTS.md says.
 
 ## Build and run
