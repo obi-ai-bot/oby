@@ -13444,7 +13444,7 @@ fn owner_prompt(job: &Job) -> String {
     if let Some(brief) = &job.brief {
         lines.push(brief_section(brief));
     }
-    lines.push("Commit your changes here when they're ready. Don't push, open pull requests or post anything to GitHub: obid publishes the work itself.".into());
+    lines.push("Commit your changes here when they're ready. Don't push, open pull requests or post anything to GitHub: obid publishes the work itself, and quotes your final message as the pull request's description. So write that message for whoever reads the pull request, with the evidence the request or the repository's rules ask for in it, raw: nobody adds it later.".into());
     lines.push("A packed-refs.lock warning after a commit is harmless: the commit landed if `git log -1` shows it.".into());
     if COMMITTING.contains(&job.kind.as_str()) {
         lines.push("Commit each small step that works as you go, with a Conventional Commits message, unsigned (`git -c commit.gpgsign=false commit`), and always before you end a turn: a round has a time limit, and work left uncommitted when it ends is only kept as a `wip:` commit.".into());
@@ -15412,6 +15412,11 @@ mod tests {
         assert!(prompt.contains("What the user asked for: Fix it"));
         assert!(prompt.contains("`node --test` succeeds"));
         assert!(prompt.contains("counts as nothing committed"));
+        // Seen live: the summary said "someone should add" the evidence to the description it was.
+        assert!(
+            prompt.contains("quotes your final message as the pull request's description"),
+            "{prompt}"
+        );
         // After each commit git prints a packed-refs.lock error the sandbox causes (deleting its
         // AUTO_MERGE ref with the job's own object folder): agents spent a turn checking a commit
         // that had landed.
