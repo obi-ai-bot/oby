@@ -19,14 +19,14 @@ const job = (more: Partial<Job> = {}): Job => ({
   ...more,
 });
 
-async function card(stages: Stage[]) {
+async function card(stages: Stage[], more: Partial<JobView> = {}) {
   vi.stubGlobal('location', { search: '' });
   vi.stubGlobal('window', {});
   const { default: TaskCard } = await import('../TaskCard');
   const { AGENTS } = await import('../mock');
   const view = {
     id: 'j1', type: 'tasks', title: 'Fix it', request: 'Fix it', agent: 'claude', account: 'Personal', model: 'Opus',
-    repo: 'deskree-inc/oby', branch: 'oby/fix-1', base: 'dev', status: 'done', step: '', stages, created: 20, finished: 1,
+    repo: 'deskree-inc/oby', branch: 'oby/fix-1', base: 'dev', status: 'done', step: '', stages, created: 20, finished: 1, ...more,
   } as JobView;
   return renderToStaticMarkup(<TaskCard alone task={{ id: 'j1', type: 'tasks', title: 'Fix it', brand: AGENTS.claude.brand, status: 'done', job: view } as never} />);
 }
@@ -39,6 +39,13 @@ describe('merging on the task card', () => {
       const html = await card(stagesOf(job({ pipeline: { number: 5, total: 6, stages: [{ id: 'review', title: 'Review', state: 'current', detail }] } })));
       expect(html).toContain(detail);
     }
+  });
+
+  it('#1795: the Work stage says its round once, whether or not obid says it too', async () => {
+    const work = (detail?: string) => [{ id: 'work', title: 'Work', state: 'current', detail }] as Stage[];
+    const rounds = (html: string) => html.match(/Round 3 of 3/g)?.length;
+    expect(rounds(await card(work('Round 3 of 3'), { round: [3, 3] }))).toBe(1);
+    expect(rounds(await card(work(), { round: [3, 3] }))).toBe(1);
   });
 
   it("MERGING-10: the Merged stage says why it isn't merged", async () => {

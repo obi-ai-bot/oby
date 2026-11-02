@@ -13,6 +13,12 @@ const shaped = (body: Body, keys: Record<string, (v: unknown) => boolean>) =>
   Object.entries(body).every(([k, v]) => keys[k]?.(v) ?? false);
 // the label of the button that answers a permission (live.ts, DECISIONS)
 export const DECISIONS: Record<string, string> = { allow: 'Allow', always: 'Always allow', deny: 'Deny' };
+// A failed task's another round: this button's label also stands for obid's Try-again words to a
+// job, the one message whose words needn't be the text a click held (docs/runner-api.md)
+export const ANOTHER_ROUND = 'Give it another round';
+export const TRY_AGAIN = 'Try again, picking up where you left off. Finish with a short summary as asked.';
+
+const MESSAGES = /^\/v1\/jobs\/[^/]+\/messages$/;
 
 // The words a request carries, for the requests the app sends obid with the owner's words in
 // them; null for any other request, or any other shape (main never signs it). A key the app
@@ -30,7 +36,7 @@ export function wordsOf(method: string, path: string, body: unknown): string[] |
     // an answer to Oby's question: the words it answers, and the owner's answer
     return ok ? [body.said as string, ...(isBody(answer) ? [answer.option as string] : [])] : null;
   }
-  if (method === 'POST' && /^\/v1\/jobs\/[^/]+\/messages$/.test(p)) {
+  if (method === 'POST' && MESSAGES.test(p)) {
     return text(body.text) && shaped(body, { text, attachments: strings, conversation: flag }) ? [body.text as string] : null;
   }
   if (method === 'PATCH' && /^\/v1\/jobs\/[^/]+$/.test(p)) return text(body.title) && shaped(body, { title: text }) ? [body.title] : null;
@@ -58,7 +64,8 @@ export function owners(method: string, path: string, body: unknown, held: string
     const n = norm(w);
     if (!n) return null;
     if (answers && i === 0 && earlier.some((e) => norm(e) === n)) continue;
-    const at = held.findIndex((h, j) => !used.includes(j) && norm(h) === n);
+    const round = w === TRY_AGAIN && MESSAGES.test(path.split('?')[0]);
+    const at = held.findIndex((h, j) => !used.includes(j) && (norm(h) === n || (round && norm(h) === norm(ANOTHER_ROUND))));
     if (at < 0) return null;
     used.push(at);
   }
