@@ -685,7 +685,10 @@ const SUBCOMMANDS: [&str; 22] = [
 
 /// Shells, interpreters and wrappers: what follows them is any program at all, so a rule for them
 /// would allow anything. They're allowed once at a time, never always.
-const RUNS_ANYTHING: [&str; 47] = [
+const RUNS_ANYTHING: [&str; 50] = [
+    "noglob",
+    "nocorrect",
+    "repeat",
     "sh",
     "bash",
     "zsh",
@@ -862,10 +865,29 @@ const WRAPPERS: &[&str] = &[
 const WRAPPER_VALUES: &[(&str, &[&str])] = &[
     ("env", &["-u", "--unset", "-C", "--chdir"]),
     ("exec", &["-a"]),
-    ("xargs", &["-I", "-n", "-P", "-L", "-E", "-s", "-d"]),
+    ("xargs", &["-I", "-J", "-n", "-P", "-L", "-E", "-s", "-d"]),
     (
         "sudo",
-        &["-u", "-g", "-h", "-p", "-C", "-T", "-r", "-t", "-U"],
+        &[
+            "-u",
+            "-g",
+            "-h",
+            "-p",
+            "-C",
+            "-T",
+            "-r",
+            "-t",
+            "-U",
+            "--user",
+            "--group",
+            "--host",
+            "--prompt",
+            "--close-from",
+            "--command-timeout",
+            "--role",
+            "--type",
+            "--other-user",
+        ],
     ),
     ("doas", &["-u", "-C"]),
     ("timeout", &["-k", "-s"]),
@@ -969,6 +991,8 @@ struct Simple {
     words: Vec<String>,
     /// The words the program is given: without where its redirects go.
     args: Vec<String>,
+    /// It has a redirect or a here-document, outside quotes.
+    redirected: bool,
     /// The subshells it runs in (`( … )`, `$(…)`, backticks), outermost first: where a `cd` in
     /// one leads ends with it.
     subshells: Vec<usize>,
@@ -1005,6 +1029,8 @@ struct Reader {
     in_word: bool,
     /// The word being read is where a redirect goes.
     redirect: bool,
+    /// The command being read has a redirect or a here-document.
+    redirected: bool,
     /// Inside `(( … ))`, where `<<` shifts: over at its `))`, or at the end of the line.
     arithmetic: bool,
     /// Here-documents waiting for the end of the line: the word that ends one, whether its lines'
@@ -1041,6 +1067,7 @@ impl Reader {
             self.commands.push(Simple {
                 words: std::mem::take(&mut self.words),
                 args: std::mem::take(&mut self.args),
+                redirected: self.redirected,
                 subshells: self.subshells.clone(),
                 nested: self.nested,
                 piped: self.piped || piped,
@@ -1048,6 +1075,7 @@ impl Reader {
         }
         self.piped = false;
         self.redirect = false;
+        self.redirected = false;
     }
 
     /// Reads a `$(…)` or a backtick, a subshell of its own, from `*i` up to `stop`.
@@ -1299,6 +1327,7 @@ fn read_until(
                     r.in_word = false;
                 }
                 r.end_word();
+                r.redirected = true;
                 if c == '<' && chars.get(*i + 1) == Some(&'<') && !r.arithmetic {
                     if chars.get(*i + 2) == Some(&'<') {
                         r.here_string = true;
@@ -1367,9 +1396,17 @@ fn read_until(
             && let Some(flag) = rest
                 .iter()
                 .position(|w| w.starts_with('-') && !w.starts_with("--") && w.contains('c'))
-            && let Some(text) = rest[flag + 1..].iter().find(|w| !w.starts_with('-'))
         {
-            code.push(text.clone());
+            // Its options may come after it too: `bash -c -o errexit x`, `bash -c +x x`.
+            let mut after = rest[flag + 1..].iter();
+            while let Some(w) = after.next() {
+                if matches!(w.as_str(), "-o" | "+o") {
+                    after.next();
+                } else if !w.starts_with(['-', '+']) {
+                    code.push(w.clone());
+                    break;
+                }
+            }
         }
         if program == "eval" {
             code.push(rest.join(" "));
@@ -1418,6 +1455,7 @@ fn read_until(
             .then(|| Simple {
                 words: after_coproc(&command.words),
                 args: after_coproc(&command.args),
+                redirected: command.redirected,
                 subshells: command.subshells.clone(),
                 nested: true,
                 piped: command.piped,
@@ -1489,8 +1527,14 @@ fn program_index(words: &[String]) -> Option<usize> {
             return Some(i);
         }
         // `env -C dir`, `sudo -u root`: the value isn't the program.
+        // (`sudo -nu root`: the last of a cluster of short options takes it.)
         let takes_a_value = WRAPPER_VALUES.iter().any(|(wrapper, options)| {
-            options.contains(&w.as_str()) && words[..i].iter().any(|w| base(w) == *wrapper)
+            let last = (w.starts_with('-') && !w.starts_with("--"))
+                .then(|| w.chars().last().map(|c| format!("-{c}")))
+                .flatten();
+            (options.contains(&w.as_str())
+                || last.is_some_and(|last| options.contains(&last.as_str())))
+                && words[..i].iter().any(|w| base(w) == *wrapper)
         });
         i += if takes_a_value { 2 } else { 1 };
     }
@@ -1997,13 +2041,16 @@ fn prints_the_environment(args: &[String]) -> bool {
         return args.iter().any(|w| base(w) == "env");
     };
     let rest = &args[p + 1..];
-    // `printenv` alone prints every variable; `printenv NAME` only those named, as `echo $NAME`
-    // does (a secret's name is caught by [`names_a_secret`]). `set` alone prints every variable,
-    // `export -p` the exported ones.
-    matches!(
-        base(&args[p]),
-        "printenv" | "set" | "export" | "declare" | "typeset"
-    ) && rest.iter().all(|w| w.starts_with('-') || w == "}") // zsh's `{ printenv }`
+    let given = |ok: fn(&String) -> bool| rest.iter().all(|w| ok(w) || w == "}"); // zsh's `{ set }`
+    match base(&args[p]) {
+        // `printenv` alone prints every variable; `printenv NAME` only those named, as `echo
+        // $NAME` does (a secret's name is caught by [`names_a_secret`]). `export -p` prints the
+        // exported ones.
+        "printenv" | "export" | "declare" | "typeset" => given(|w| w.starts_with('-')),
+        // Alone it prints every variable; `set -e` turns an option on.
+        "set" => given(|_| false),
+        _ => false,
+    }
 }
 
 /// Whether a simple command touches secrets or a login: it prints a keychain's passwords, asks for
@@ -2433,43 +2480,12 @@ fn family(tool: &str) -> &str {
 /// Shell syntax that runs more than one command, or sends output somewhere: such a command never
 /// matches an allow rule, and gets none suggested.
 fn is_chained(command: &str) -> bool {
-    command.contains("&&")
-        || command.contains("||")
-        || command.contains("$(")
-        || command.contains(['|', ';', '&', '`', '<', '>', '\n'])
-        || simple_commands(command).is_none_or(|commands| {
-            commands.len() > 1
-                || commands
-                    .iter()
-                    .any(|c| !c.subshells.is_empty() || shell_grammar(&c.words) > 0)
-        })
-}
-
-/// The commands a chained command runs, split where the shell would.
-fn pieces(command: &str) -> Vec<String> {
-    let mut out = Vec::new();
-    let mut current = String::new();
-    let mut chars = command.chars().peekable();
-    while let Some(c) = chars.next() {
-        let split = match c {
-            '|' | ';' | '&' | '`' | '<' | '>' | '\n' => true,
-            '$' if chars.peek() == Some(&'(') => {
-                chars.next();
-                true
-            }
-            _ => false,
-        };
-        if split {
-            out.push(std::mem::take(&mut current));
-        } else {
-            current.push(c);
-        }
-    }
-    out.push(current);
-    out.into_iter()
-        .map(|p| p.trim().to_owned())
-        .filter(|p| !p.is_empty())
-        .collect()
+    simple_commands(command).is_none_or(|commands| {
+        commands.len() > 1
+            || commands.iter().any(|c| {
+                c.piped || c.redirected || !c.subshells.is_empty() || shell_grammar(&c.words) > 0
+            })
+    })
 }
 
 /// `Bash(swift test:*)` is (`Bash`, `swift test:*`); `Edit` is (`Edit`, none).
@@ -2580,20 +2596,19 @@ fn matches(rule: &str, call: &Call, worktree: &Path, allowing: bool) -> bool {
         let Some(command) = call.command.as_deref().map(str::trim) else {
             return false;
         };
-        // What a command runs, however it's written: inside `{ }`, behind `!`, a `trap`'s code.
+        // What a command runs, however it's written: inside `{ }`, behind `!`, a `trap`'s code. A
+        // rule may name a wrapper (`sudo`) or what it runs (`curl`).
         if !allowing
             && simple_commands(command).is_some_and(|commands| {
-                commands
-                    .iter()
-                    .any(|c| program_index(&c.words).is_some_and(|p| fits(&c.words[p..].join(" "))))
+                commands.iter().any(|c| {
+                    fits(&c.words[shell_grammar(&c.words)..].join(" "))
+                        || program_index(&c.words).is_some_and(|p| fits(&c.words[p..].join(" ")))
+                })
             })
         {
             return true;
         }
-        if is_chained(command) {
-            return !allowing && pieces(command).iter().any(|p| fits(p));
-        }
-        return fits(command);
+        return !is_chained(command) && fits(command);
     }
     if family(&call.tool) == "Edit" {
         let files: Vec<String> = call.paths.iter().map(|p| relative(p, worktree)).collect();
@@ -4540,6 +4555,13 @@ mod tests {
             "find . -exec printenv \\;",
             "find . -name x -execdir printenv \\;",
             "cat $'.env'",
+            "exec -ca x printenv",
+            "xargs -0I {} printenv",
+            "xargs -J % printenv",
+            "sudo -nu root printenv",
+            "sudo --user root printenv",
+            "bash -c -o errexit printenv",
+            "bash -c +x printenv",
         ] {
             assert_eq!(
                 reach(&bash(command), &bounds),
@@ -4563,6 +4585,10 @@ mod tests {
             "printenv HOME 2>&1",
             "printenv HOME > o.txt",
             "echo coproc curl",
+            "set -e",
+            "set -x",
+            "set -e; cargo test",
+            "set -euo pipefail",
             "{ printenv HOME }",
             "cargo test 2>&1 | tee out.log",
             "echo hi > env",
@@ -4599,11 +4625,55 @@ mod tests {
                 "{command}"
             );
         }
-        for command in ["command -v curl", "echo curl x"] {
+        for command in ["{ sudo curl x; }", "! sudo curl x", "sudo curl x"] {
+            assert!(
+                matches("Bash(sudo:*)", &bash(command), worktree, false),
+                "{command}"
+            );
+        }
+        for command in [
+            "command -v curl",
+            "echo curl x",
+            "git commit -m \"$(cat <<'EOF'\nuse `curl`\nEOF\n)\"",
+            "git commit -m \"use curl; curl x\"",
+        ] {
             assert!(
                 !matches("Bash(curl:*)", &bash(command), worktree, false),
                 "{command}"
             );
+        }
+    }
+
+    /// A `>` in quotes is a word: the command keeps its allow rule and its Always. What isn't
+    /// plainly one command, and a wrapper that runs anything, keeps neither (#1811).
+    #[test]
+    fn permissions_7_only_what_runs_chains_a_command() {
+        let worktree = Path::new(WORKTREE);
+        for (command, rule, offered) in [
+            ("git log --format='%h > x'", "Bash(git log:*)", "git log"),
+            ("grep -r \"a > b\" src", "Bash(grep:*)", "grep"),
+            ("echo \"a; b\"", "Bash(echo:*)", "echo"),
+        ] {
+            assert!(matches(rule, &bash(command), worktree, true), "{command}");
+            assert_eq!(prefix(command).as_deref(), Some(offered), "{command}");
+        }
+        for (command, rule) in [
+            ("echo a > b", "Bash(echo:*)"),
+            ("cat < f", "Bash(cat:*)"),
+            ("cat <<EOF\nx\nEOF", "Bash(cat:*)"),
+            ("cat <<< x", "Bash(cat:*)"),
+            ("echo a &", "Bash(echo:*)"),
+            ("echo a | cat", "Bash(echo:*)"),
+            ("echo a; ls", "Bash(echo:*)"),
+            ("echo a && ls", "Bash(echo:*)"),
+            ("echo $(ls)", "Bash(echo:*)"),
+            ("echo `ls`", "Bash(echo:*)"),
+            ("noglob curl x", "Bash(noglob:*)"),
+            ("nocorrect curl x", "Bash(nocorrect:*)"),
+            ("repeat 2 curl x", "Bash(repeat:*)"),
+        ] {
+            assert!(!matches(rule, &bash(command), worktree, true), "{command}");
+            assert_eq!(prefix(command), None, "{command}");
         }
     }
 
