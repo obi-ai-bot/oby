@@ -160,4 +160,21 @@ class LogicTest {
         assertEquals("Go on", more.confirmValue?.words)
         assertEquals("Keep it", PhoneAsk.checkOptions(item(""""kind": "confirm", "title": "t", "confirm": {"action": "set_check", "target": "a/b", "payload": {"check": "make test", "was": "npm test"}}""")).last().label)
     }
+
+    /** Settings › Agents words an account's usage as Electron's `accountRow` and `weekWords` (the iPhone's AgentUsage). */
+    @Test fun agentUsageSaysWhatElectronSays() {
+        val now = Instant.parse("2026-11-01T12:00:00Z")
+        fun account(json: String) = wire.decodeFromString(Account.serializer(), """{"id":"a","name":"Personal",$json}""")
+        val claude = AgentUsage(account(""""agent":"claude","signedIn":true,"fiveHour":0.42,"sevenDay":0.3,"fiveHourResets":"2026-11-01T14:00:00Z","sevenDayResets":"2026-11-05T09:00:00Z""""), now)
+        assertEquals(42, claude.session)
+        assertNotNull(claude.sessionResets)
+        assertTrue(claude.week, claude.week.startsWith("This week 30% · resets "))
+        val past = AgentUsage(account(""""agent":"claude","signedIn":true,"fiveHour":0.9,"fiveHourResets":"2026-11-01T11:00:00Z""""), now)
+        assertEquals(0, past.session); assertNull(past.sessionResets); assertEquals("No weekly use reported yet", past.week)
+        assertEquals("Cursor doesn’t report usage", AgentUsage(account(""""agent":"cursor","signedIn":true"""), now).week)
+        assertEquals("Not signed in", AgentUsage(account(""""agent":"codex","signedIn":false"""), now).week)
+        // A model the account chose that the tool's list doesn't have stays first.
+        assertEquals(listOf("x" to "x", "a" to "A"), choices(listOf("a" to "A"), "x"))
+        assertEquals(listOf("a" to "A"), choices(listOf("a" to "A"), "a"))
+    }
 }

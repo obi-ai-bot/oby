@@ -84,6 +84,8 @@ class Phone(val context: Context) {
     var jobs by mutableStateOf(listOf<Job>()); private set
     private var onScreen = mutableSetOf<String>()
     var accounts by mutableStateOf(listOf<Account>()); private set
+    /** The account new tasks go to, as obid last said (Settings › Agents). */
+    var defaultAccount by mutableStateOf<String?>(null); private set
     var routineChanges by mutableStateOf(0); private set
     var routines by mutableStateOf(listOf<RunnerRoutine>()); private set
     var inbox by mutableStateOf(listOf<InboxItem>()); private set
@@ -395,6 +397,7 @@ class Phone(val context: Context) {
         val status = runner.status()
         host = status.runner.host
         accounts = status.accounts
+        defaultAccount = status.defaultAccount
         models = status.models
         clearedAt = status.clearedAt
         defaultMode = RunnerMode.of(status.permissions?.mode)
@@ -705,6 +708,17 @@ class Phone(val context: Context) {
     }
     suspend fun setMode(id: String, mode: RunnerMode) = apply(RunnerEvent.JobChanged(runner.setMode(id, mode)))
     suspend fun setDefaultMode(mode: RunnerMode) { runner.setDefaultMode(mode); defaultMode = mode }
+
+    /** Settings › Agents: an account's model and efforts, as obid kept them. */
+    suspend fun tune(id: String, change: Map<String, String>) {
+        val kept = runner.tuneAccount(id, change)
+        accounts = accounts.map { if (it.id == id) it.copy(model = kept.model, effort = kept.effort, complexEffort = kept.complexEffort) else it }
+    }
+
+    /** obid sends no event when another app changes it: read as Settings › Agents opens. */
+    suspend fun readDefaultAccount() { runCatching { runner.status() }.getOrNull()?.let { defaultAccount = it.defaultAccount } }
+
+    suspend fun setDefaultAccount(id: String) { runner.setDefaultAccount(id); defaultAccount = id }
     suspend fun setModels(models: ModelSettings) { this.models = runner.setModels(models) }
     suspend fun publishAction(id: String) = runner.publishAction(id)
 

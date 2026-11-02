@@ -234,6 +234,11 @@ class Runner(val base: String, private val token: String?, private val refused: 
     /** The apps' Delete task (obid only): gone at once, or, with work that isn't published, obid's Confirm (`ask`) first. */
     suspend fun deleteAsked(id: String): DeleteAnswer = call("POST", "v1/jobs/$id/delete")
     suspend fun modelOptions(): ModelOptions = call("GET", "v1/settings/models/options")
+    /** Settings › Agents (obid only): an account's `model`, `effort` or `complexEffort`, only the keys changed; answers the account. */
+    suspend fun tuneAccount(id: String, change: Map<String, String>): Account =
+        call("PATCH", "v1/accounts/${enc(id)}", buildJsonObject { change.forEach { (k, v) -> put(k, v) } }.toString())
+    /** The account new tasks go to (`PUT /v1/settings/jobs` with only `defaultAccount`, as Electron's). */
+    suspend fun setDefaultAccount(id: String) { send("PUT", "v1/settings/jobs", buildJsonObject { put("defaultAccount", id) }.toString()) }
     suspend fun setModels(models: ModelSettings): ModelSettings =
         call("PUT", "v1/settings/models", wire.encodeToString(ModelSettings.serializer(), models))
 

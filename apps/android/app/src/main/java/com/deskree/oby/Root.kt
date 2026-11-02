@@ -143,6 +143,7 @@ private fun HomeStack(phone: Phone) {
                 Route.Archived -> ArchivedPage()
                 Route.Inbox -> InboxPage()
                 Route.Settings -> SettingsScreen()
+                is Route.SettingsPage -> SettingsPageScreen(route.page)
                 Route.Connect -> Page(title = "") { ConnectScreen(first = false) }
             }
         }
