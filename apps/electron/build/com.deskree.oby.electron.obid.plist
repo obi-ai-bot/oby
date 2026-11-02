@@ -2,10 +2,9 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!-- obid, Oby's engine, as this app's launch agent: src/main/obid.ts registers it (SMAppService,
      through Electron's agentService), and launchd starts Contents/Helpers/obid at login and keeps
-     it running after Oby quits, as the Swift app's (apps/mac/app/Tools/com.deskree.oby.obid.plist).
-     Its own label and bundle ID, not the Swift app's: macOS's background-task records keep a label
-     tied to the app that first registered it, and both apps' obids want 127.0.0.1:7777, so this
-     app adopts whichever obid answers there and registers its own only when none does.
+     it running after Oby quits. Its own label and bundle ID, not the Swift Oby's: macOS's
+     background-task records keep a label tied to the app that first registered it. This app takes
+     the Swift Oby's agent out for good and registers its own (docs/contracts/engine.md).
      electron-builder.yml puts this file at Contents/Library/LaunchAgents. -->
 <plist version="1.0">
 <dict>

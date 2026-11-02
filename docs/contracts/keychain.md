@@ -45,6 +45,6 @@ The business behavior contract for what obid asks of the macOS Keychain, from [t
 
 ## Test it when it's done (on a real Mac)
 
-1. On a Mac with Oby Electron 0.1.0 and its vault items in the Keychain, move `~/Library/Application Support/Oby/Runner/vault/secrets.json` aside, install the signed release with this obid, and open Oby. No password prompt; Home shows within seconds.
+1. On a Mac with the Electron app at 0.1.0 and its vault items in the Keychain, move `~/Library/Application Support/Oby/Runner/vault/secrets.json` aside, install the signed release with this obid, and open Oby. No password prompt; Home shows within seconds.
 2. Settings › Connectors: Tetrix asks to be connected again, with the text above. Connect it; jobs use it.
 3. `~/Library/Logs/obid.log` names each item still in the Keychain that the file lacks (`… is still in the Keychain, where obid no longer reads its secrets …`), with how to add it back.

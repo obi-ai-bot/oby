@@ -82,7 +82,7 @@ for arch in $archs; do
   rm dist/app-$arch.zip
 
   say "The DMG"
-  dmg=dist/${name// /-}-$version-$arch.dmg
+  dmg=dist/$name-$version-$arch.dmg
   staging=$(mktemp -d)
   ditto "$app" "$staging/$name.app"
   ln -s /Applications "$staging/Applications"
@@ -98,7 +98,7 @@ for arch in $archs; do
 
   # The updater's copy: the stapled app, zipped as Squirrel.Mac unzips it (ditto). Its name has
   # the architecture in it: the updater picks the arm64 zip on Apple silicon, the other elsewhere.
-  zip=dist/${name// /-}-$version-$arch-mac.zip
+  zip=dist/$name-$version-$arch-mac.zip
   rm -f "$zip"
   ditto -c -k --sequesterRsrc --keepParent "$app" "$zip"
   zips+=("$zip")
