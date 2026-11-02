@@ -418,7 +418,7 @@ export default function Home() {
         )}
         {/* in a conversation with Oby, at the right: who it talks through, and the way to change that */}
         {shownTalk && !shownTalk.local && !leavingAll && (!onObid || talkReady(shownTalk.id)) && (
-          <div className="bar-end">
+          <div className="bar-end talk-end">
             <TalkPill chat={shownTalk} />
           </div>
         )}

@@ -160,6 +160,9 @@ export const api = {
   tuneAccount: (a: string, change: { model?: string | null; effort?: string | null; complexEffort?: string | null }) =>
     call<Account>('PATCH', `/v1/accounts/${id(a)}`, change),
   modelOptions: () => call<ModelOptions>('GET', '/v1/settings/models/options'),
+  // who a new conversation talks through (docs/contracts/conversation-agent.md): null is Auto
+  setTalkAccount: (account: string | null) =>
+    call<{ talkAccount: string | null }>('PUT', '/v1/settings/jobs', { talkAccount: account }),
   setDefaultAccount: (account: string | null) =>
     call<{ defaultAccount: string | null }>('PUT', '/v1/settings/jobs', { defaultAccount: account }),
   signIn: (a: string) => call<SignIn>('GET', `/v1/accounts/${id(a)}/sign-in`),

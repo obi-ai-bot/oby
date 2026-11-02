@@ -604,7 +604,14 @@ export function connect() {
     const e = parseEvent(name, data);
     if (!e || mine !== generation) return;
     if (syncing) pending.push(e);
-    else take(e);
+    else {
+      take(e);
+      // what a first turn would use (TalkPill) changed once the one obid named can't run
+      if (e.kind === 'accounts') {
+        const next = e.accounts.find((a) => a.id === state.status?.talkNext);
+        if (next && (!next.signedIn || (next.fullUntil && Date.parse(next.fullUntil) > Date.now()))) lookAtUsage();
+      }
+    }
   });
   let first = true;
   unfollow?.();

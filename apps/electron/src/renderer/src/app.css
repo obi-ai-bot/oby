@@ -36,6 +36,7 @@ button { appearance: none; border: 0; background: none; padding: 0; cursor: poin
 .app.no-lights { --after-lights: 12px; }
 /* The window drags from the title bar; anything clickable in it opts out. */
 .bar {
+  min-width: 0;
   height: var(--bar);
   display: flex;
   align-items: center;
@@ -65,7 +66,8 @@ button.crumb:hover { color: var(--ink); background: var(--hover); }
 .bar-convo { height: 28px; padding: 0 12px; display: flex; align-items: center; border-radius: var(--radius-pill); background: var(--chip); color: var(--text); font-size: var(--text-md); white-space: nowrap; transition: background-color var(--fade), color var(--fade); }
 .bar-convo:hover { background: var(--chip-hover); color: var(--ink); }
 /* the chat window's way to who it talks through (TalkPill): the agent, the account and how full */
-.talk-pill { gap: 6px; max-width: 320px; }
+.talk-end { flex: 0 1 auto; min-width: 0; }
+.talk-pill { gap: 6px; min-width: 0; max-width: 320px; }
 .talk-pill.is-on { background: var(--chip-hover); color: var(--ink); }
 .talk-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .talk-used { flex: none; color: var(--muted); font-variant-numeric: tabular-nums; }

@@ -17,8 +17,16 @@ const wire = (id: string, agent: string, name: string, more: Record<string, unkn
 describe('talking on any agent', () => {
   it('CONVERSATION-AGENT-12: the pill and the menu show each account’s percentage, and Cursor none', async () => {
     const { accountRow, usageWords, percent, dot, groups } = await load();
-    const personal = accountRow(wire('p', 'claude', 'Personal', { fiveHour: 0.5, sevenDay: 0.38 }), now);
+    const personal = accountRow(wire('p', 'claude', 'Personal', { fiveHour: 0.2, sevenDay: 0.38 }), now);
     expect([percent(personal), usageWords(personal), dot(personal)]).toEqual([38, '38%', '']);
+    // the limit that hits first: the session past the week
+    const session = accountRow(wire('s', 'claude', 'Session', { fiveHour: 0.93, sevenDay: 0.38 }), now);
+    expect([percent(session), usageWords(session), dot(session)]).toEqual([93, '93%', 'is-over']);
+    // held full: said, whatever its figures read
+    const held = accountRow(wire('h', 'claude', 'Held', { sevenDay: 0.38, fullUntil: '2026-11-02T21:00:00Z' }), now);
+    expect([usageWords(held), dot(held)]).toEqual(['Full', 'is-over']);
+    const heldCursor = accountRow(wire('hc', 'cursor', 'Held', { fullUntil: '2026-11-02T21:00:00Z' }), now);
+    expect([usageWords(heldCursor), dot(heldCursor)]).toEqual(['Full', 'is-over']);
     const cursor = accountRow(wire('u', 'cursor', 'Personal', { fiveHour: 0.5, sevenDay: 0.5 }), now);
     expect([percent(cursor), usageWords(cursor), dot(cursor)]).toEqual([null, 'No usage reported', '']);
     // yellow past 80%, red past 90%, of the session or the week, as the message box's gauge
@@ -46,10 +54,21 @@ describe('talking on any agent', () => {
     // Auto: where it talked, else what obid says a first turn would use.
     expect(shownAccount(all, null, 'x', 'p')?.id).toBe('x');
     expect(shownAccount(all, null, null, 'p')?.id).toBe('p');
+    // Each only while it can run: not a full account while the next turn goes elsewhere.
+    expect(shownAccount(all, 'f', 'f', 'p')?.id).toBe('p');
+    expect(shownAccount(all, null, 'f', 'o')?.id).toBe('p');
+    expect(shownAccount([full, out], null, 'f', 'o')?.id).toBe('f');
     // A conversation's own choice over the setting; `auto` is Auto whatever the setting says.
     expect(chosenOf('x', 'p')).toBe('x');
     expect(chosenOf(null, 'p')).toBe('p');
     expect(chosenOf('auto', 'p')).toBe(null);
     expect(chosenOf(undefined, null)).toBe(null);
+  });
+
+  it('CONVERSATION-AGENT-14: Settings offers Auto and every connected account for new conversations', async () => {
+    const { accountRow, talkChoices } = await load();
+    const x = accountRow(wire('x', 'codex', 'Work'), now);
+    const out = accountRow(wire('o', 'claude', 'Out', { signedIn: false }), now);
+    expect(talkChoices([x, out])).toEqual([['auto', 'Auto · Whichever has room'], ['x', 'Work · Codex']]);
   });
 });

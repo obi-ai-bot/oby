@@ -13,7 +13,8 @@ import Connectors, { ConfirmWindow, Window, readConnectors } from './Connectors'
 import { again, sameAs, startAdding, stopAdding, toolRows, whoseAgain, type Found } from './addAccount';
 import { UNFINISHED, signInWhy } from './signInWhy';
 import { Menu } from './Menu';
-import { liveState, patchStatus, say, useLive } from './live';
+import { liveState, lookAtUsage, patchStatus, say, useLive } from './live';
+import { AUTO, TALK_DEFAULT, talkChoices } from './talk';
 import { version } from '../../../package.json';
 import type { Update } from '../../shared/updates';
 
@@ -676,6 +677,14 @@ function useDefaultAccount(): [string | null, (id: string) => Promise<void>] {
   if (!keepsAgents(status)) return [chosen, async (id) => setChosen(id)];
   return [status.defaultAccount ?? null, async (id) => patchStatus(await api.setDefaultAccount(id))];
 }
+// who a new conversation talks through: obid's, else kept here (the mock). Asks again after: what a
+// first turn would use follows it (talkNext)
+function useTalkDefault(): [string, (id: string) => Promise<void>] {
+  const status = useLive().status;
+  const [kept, setKept] = useKeptSetting<string>(TALK_DEFAULT, AUTO);
+  if (!keepsAgents(status)) return [kept, async (id) => setKept(id)];
+  return [status.talkAccount ?? AUTO, async (id) => { patchStatus(await api.setTalkAccount(id === AUTO ? null : id)); lookAtUsage(); }];
+}
 // What was chosen here before obid kept it (agent.default, models.mine): moved to obid once its
 // status says it keeps them, then forgotten here, so nobody's choice is lost (AGENTS-7). A choice
 // for an account that's gone goes; one obid refused stays here, tried again at the next connection.
@@ -711,6 +720,7 @@ function Agents() {
   const [accounts, setAccounts] = useAccounts();
   const [tuning, options, tune] = useModels();
   const [chosen, setChosen] = useDefaultAccount();
+  const [talking, setTalking] = useTalkDefault();
   // signing in, as Settings › Accounts does (useSignIns): its states, its problems, the tool's own login
   const { offered, setOffered, look, signing, problems, signIn, sendCode, cancel, remove, removeWindow } = useSignIns(accounts, setAccounts);
   const [adding, setAdding] = useState(false);
@@ -726,6 +736,11 @@ function Agents() {
             <Select wide value={fallback.id} onChange={(v) => void setChosen(v).catch(say)} label="Default agent" options={ready.map((x) => [x.id, `${x.name} · ${AGENTS[x.agent].name}`] as const)} />
           </Row>
         : <Row label={<span className="set-none">No agents yet</span>} />}
+      {fallback && (
+        <Row label="New conversations talk through">
+          <Select wide value={talking} onChange={(v) => void setTalking(v).catch(say)} label="New conversations talk through" options={talkChoices(agents)} />
+        </Row>
+      )}
     </Group>
     <Group i={2} footer={offered.length ? `Found on this Mac: ${offered.map((l) => AGENTS[l.agent].name).join(', ')}` : undefined}>
       {/* the card's action, not a row's: on the left */}
