@@ -189,6 +189,16 @@ struct RunnerTests {
         #expect(!job.canPublish && !job.needsYou)
         job.commits = 3
         #expect(job.canPublish, "a later round's commit isn't out yet")
+        // obid's word over the guess: its check never passed on this commit, so obid won't publish it (#1772).
+        job.offersPublish = false
+        #expect(!job.canPublish && !job.needsYou)
+        job.offersPublish = true
+        job.commits = 0
+        #expect(job.canPublish)
+        // Published from this phone: not offered again before obid's next word.
+        job.commits = 2
+        job.published = "https://github.com/deskree-inc/oby/pull/41"
+        #expect(!job.canPublish)
     }
 
     @Test func modelLabels() {

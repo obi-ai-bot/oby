@@ -30,12 +30,16 @@ nonisolated struct Job: Codable, Identifiable, Equatable, Sendable {
     var started: Date?
     var finished: Date?
     var commits: Int?
-    /// Setting it (a publish from this phone) counts what went out, as the runner does.
-    var published: String? { didSet { if published != nil { pushed = commits } } }
+    /// Setting it (a publish from this phone) counts what went out, as the runner does; obid's
+    /// `canPublish` from before it no longer holds.
+    var published: String? { didSet { if published != nil { pushed = commits; offersPublish = nil } } }
     /// Commits on the pull request when it was last published.
     var pushed: Int?
     /// Why the runner couldn't publish it by itself, or nil (newer runners only).
     var publishError: String?
+    /// obid's own `can_publish`, which knows the commit the check passed on (#1772), or nil from an
+    /// older obid.
+    var offersPublish: Bool? = nil
     /// Newer runners only, so all optional: the issue the work is about, how many rounds the agent
     /// may take and the one it's on, the command that must pass, the stronger model it runs on,
     /// and what the user told the agent along the way, oldest first.
@@ -186,6 +190,7 @@ nonisolated struct Job: Codable, Identifiable, Equatable, Sendable {
         case stoppedMerge = "mergeNeedsYou"
         case stoppedReview = "reviewNeedsYou"
         case stoppedCloud = "cloudNeedsYou"
+        case offersPublish = "canPublish"
     }
 
     /// "Moved from Codex · Deskree to Claude Code · Personal": its latest move, or nil (as Engine's).
@@ -245,10 +250,12 @@ nonisolated struct Job: Codable, Identifiable, Equatable, Sendable {
         let out = published != nil ? pushed ?? commits : publishError == nil ? pushed ?? 0 : 0
         return max(0, commits - out)
     }
-    /// Not once the user dismissed it, never on Oby's own review jobs, and never once its pull
-    /// request was merged or closed (as Engine's `Job.canPublish`).
+    /// Whether Publish by hand is offered: what obid says; from an older one, not once the user
+    /// dismissed it, never on Oby's own review jobs, and never once its pull request was merged or
+    /// closed (as Engine's `Job.canPublish`).
     var canPublish: Bool {
-        status == .done && kind != "research" && kind != "review" && base != nil && unpublished > 0 && dismissed == nil && reviewOf == nil
+        if let offersPublish { return offersPublish }
+        return status == .done && kind != "research" && kind != "review" && base != nil && unpublished > 0 && dismissed == nil && reviewOf == nil
             && (pullRequest?.state ?? "OPEN") == "OPEN"
     }
 
