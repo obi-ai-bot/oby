@@ -21,7 +21,7 @@ struct VoiceSection: View {
     var body: some View {
         if cards {
             SetGroup("Voice", footer: footer) {
-                SetRow("Speech language") { Text("English").foregroundStyle(Tokens.muted) }
+                SetRow("Speech language") { Text("English").font(Tokens.font(13)).foregroundStyle(Tokens.muted) }
             }
         } else {
             form
