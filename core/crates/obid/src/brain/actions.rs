@@ -992,14 +992,12 @@ pub(super) async fn answer_inbox(
     // Merge in the owner's own words goes over every hold of Oby's, named on this card or not
     // (MERGING-27); their click answers the card, and lifts what it names.
     if merges_on_their_word(&item, &words, owner)
-        && let Some(head) = job
-            .as_ref()
-            .and_then(|j| j.pull_request.as_ref())
-            .and_then(|pr| pr.head.clone())
+        && let Some(head) = crate::merge::item_head(&item.id)
     {
+        // The head this card is about: one pushed since is refused, and gets its own card.
         return match shared
             .jobs
-            .merge_by_owner(&item.job, &head, false, crate::merge::Lift::Word)
+            .merge_by_owner(&item.job, head, false, crate::merge::Lift::Word)
             .await
         {
             Ok(open) => {
