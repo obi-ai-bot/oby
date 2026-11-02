@@ -15967,7 +15967,7 @@ mod tests {
         assert_eq!(
             items[0].details.as_deref().unwrap(),
             [
-                "Every later job in o/app runs `make test` before it publishes.",
+                "Every later task in o/app runs `make test` before it publishes.",
                 "o/app keeps no check, and Oby doesn't ask again."
             ]
         );
