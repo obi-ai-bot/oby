@@ -670,6 +670,7 @@ struct InboxPage: View {
                         Text("Nothing needs you").font(Tokens.font(Tokens.textBase)).foregroundStyle(Tokens.muted)
                     }
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, Tokens.gutter).padding(.top, 8).padding(.bottom, 32)
             }
         }
