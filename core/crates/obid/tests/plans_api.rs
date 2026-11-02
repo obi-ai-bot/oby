@@ -826,7 +826,7 @@ fn a_bypass_dispatch_waits_for_the_owners_confirm() {
     let confirm = items_of(&obid, "confirm").pop().unwrap();
     assert_eq!(
         confirm["title"],
-        "Start fix fixture-app (Greeting fix) in Bypass mode, on auto · auto, check node --test"
+        "Start fix fixture-app (Greeting fix) in Bypass mode, check node --test"
     );
     assert_eq!(confirm["confirm"]["action"], "start_job");
     let id = confirm["id"].as_str().unwrap().to_owned();

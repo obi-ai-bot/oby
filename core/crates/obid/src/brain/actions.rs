@@ -339,7 +339,8 @@ async fn dispatch(
 
 /// A planned job in obid's own words, for confirm and start items: what, where, how it asks,
 /// on which tool and account, and its check. "fix fixture-app #12 (Login screen) in Bypass
-/// mode, on Claude Code · Personal, check node --test".
+/// mode, on Claude Code · Personal, check node --test". A tool or account left to obid (`auto`)
+/// isn't said: it's an internal value, and a person reads these words (#1792).
 pub fn describe(new: &NewJob) -> String {
     let repo = new.repo.rsplit('/').next().unwrap_or(&new.repo);
     let mut what = format!("{} {repo}", new.kind);
@@ -358,12 +359,19 @@ pub fn describe(new: &NewJob) -> String {
     {
         what.push_str(&format!(" in {} mode", mode.title()));
     }
-    let agent = new.agent.as_deref().unwrap_or("auto");
-    let agent = crate::agent::Tool::from_id(agent).map_or(agent, |t| t.name());
-    what.push_str(&format!(
-        ", on {agent} · {}",
-        super::briefing::line(new.account.as_deref().unwrap_or("auto"), 40)
-    ));
+    let chosen = |v: &Option<String>| {
+        v.as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty() && !v.eq_ignore_ascii_case("auto"))
+            .map(str::to_owned)
+    };
+    let agent = chosen(&new.agent)
+        .map(|a| crate::agent::Tool::from_id(&a).map_or(a.clone(), |t| t.name().to_owned()));
+    let account = chosen(&new.account).map(|a| super::briefing::line(&a, 40));
+    let place = [agent, account].into_iter().flatten().collect::<Vec<_>>();
+    if !place.is_empty() {
+        what.push_str(&format!(", on {}", place.join(" · ")));
+    }
     if let Some(check) = new.check.as_deref().filter(|c| !c.trim().is_empty()) {
         what.push_str(&format!(", check {}", super::briefing::line(check, 120)));
     }
@@ -1511,6 +1519,40 @@ pub fn step_text(shared: &Shared, plan: &Plan) -> String {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// The tool and account a job is said to run on: only what was chosen, never obid's internal
+    /// `auto`, in every card made from these words (#1792).
+    #[test]
+    fn describe_says_only_a_chosen_tool_and_account() {
+        let words = |agent: Option<&str>, account: Option<&str>| {
+            describe(
+                &serde_json::from_value(serde_json::json!({
+                    "repo": "o/app", "kind": "build", "task": "t", "title": "Greeting",
+                    "agent": agent, "account": account,
+                }))
+                .unwrap(),
+            )
+        };
+        assert_eq!(words(None, None), "build app (Greeting)");
+        assert_eq!(words(Some("auto"), Some("AUTO")), "build app (Greeting)");
+        assert_eq!(words(Some(" "), Some(" auto ")), "build app (Greeting)");
+        assert_eq!(
+            words(Some("claude"), Some("")),
+            "build app (Greeting), on Claude Code"
+        );
+        assert_eq!(
+            words(Some("claude"), None),
+            "build app (Greeting), on Claude Code"
+        );
+        assert_eq!(
+            words(None, Some("Personal")),
+            "build app (Greeting), on Personal"
+        );
+        assert_eq!(
+            words(Some("claude"), Some("Personal")),
+            "build app (Greeting), on Claude Code · Personal"
+        );
+    }
 
     #[test]
     fn explicit_agent_names_override_the_default() {
