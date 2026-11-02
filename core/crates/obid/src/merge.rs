@@ -554,7 +554,7 @@ pub fn ready_as(
         )))),
         // GitHub's own rules, the code host's: the owner reads how to change them.
         Some("BLOCKED") => Err(refused(needs_you(format!(
-            "Not merged: GitHub's rules for {base} still block it. Approve it on GitHub as they ask, or change {base}'s branch protection there."
+            "Not merged: GitHub's rules for {base} still block it: a check or a review they require hasn't passed. The pull request's page on GitHub says which. If it shouldn't be required, change {base}'s branch protection there."
         )))),
         Some("DRAFT") => Err(refused(needs_you(
             "Not merged: it's a draft. Mark it ready for review on GitHub.",

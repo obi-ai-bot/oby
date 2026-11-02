@@ -204,11 +204,11 @@ pub fn check_item(
             (
                 format!("Use `{check}` as {repo}'s check before publishing?"),
                 format!(
-                    "{now_has} every job there that starts after your answer runs it in its box, with no network, before anything goes out.{} {cancel}",
+                    "{now_has} every task there that starts after your answer runs it in its box, with no network, before anything goes out.{} {cancel}",
                     fetches(check)
                 ),
                 vec![
-                    format!("Every later job in {repo} runs `{check}` before it publishes."),
+                    format!("Every later task in {repo} runs `{check}` before it publishes."),
                     kept,
                 ],
             )
@@ -257,7 +257,7 @@ fn fetches(check: &str) -> String {
         _ => return String::new(),
     };
     format!(
-        " To fetch what it needs, each job asks you to let it reach {site}, unless you always allow it."
+        " To fetch what it needs, each task asks you to let it reach {site}, unless you always allow it."
     )
 }
 
@@ -1081,11 +1081,11 @@ mod tests {
             first.text
         );
         assert!(first.text.ends_with(
-            "To fetch what it needs, each job asks you to let it reach crates.io, unless you always allow it. No check keeps none, and Oby won't ask again."
+            "To fetch what it needs, each task asks you to let it reach crates.io, unless you always allow it. No check keeps none, and Oby won't ask again."
         ));
         let change = super::check_item("", "acme/app", Some("make test"), Some("cargo test"), 0);
         assert!(change.text.starts_with(
-            "acme/app's check is `cargo test` now. With `make test` instead, every job"
+            "acme/app's check is `cargo test` now. With `make test` instead, every task"
         ));
         assert!(
             change

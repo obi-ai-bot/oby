@@ -634,9 +634,9 @@ pub fn body(job: &Job, closes: bool, workflow: Option<&crate::memory::Workflow>)
         // Oby asked whether to keep one (#1062): the job never waits for the answer.
         None => (
             if job.check_asked {
-                "- Check: none, the job had no check. Oby asked its owner for one for the jobs after it.".into()
+                "- Check: none, the task had no check. Oby asked its owner for one for the tasks after it.".into()
             } else {
-                "- Check: none, the job had no check.".into()
+                "- Check: none, the task had no check.".into()
             },
             "after the secret scan was clean",
         ),
@@ -2100,7 +2100,7 @@ mod tests {
         let mut job = job();
         job.check = None;
         let text = body(&job, false, None);
-        assert!(text.contains("- Check: none, the job had no check.\n- Secret scan: clean."));
+        assert!(text.contains("- Check: none, the task had no check.\n- Secret scan: clean."));
         assert!(!text.contains("check passed"), "{text}");
         assert!(text.ends_with(
             "by Oby: Oby opened this pull request after the secret scan was clean. Oby merges it only when its owner says so."
@@ -2108,7 +2108,7 @@ mod tests {
         // One whose repository Oby asked a check for says so (#1062).
         job.check_asked = true;
         assert!(body(&job, false, None).contains(
-            "- Check: none, the job had no check. Oby asked its owner for one for the jobs after it.\n- Secret scan: clean."
+            "- Check: none, the task had no check. Oby asked its owner for one for the tasks after it.\n- Secret scan: clean."
         ));
         job.check = Some("cargo test".into());
         assert!(body(&job, false, None).contains(
