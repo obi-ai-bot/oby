@@ -195,8 +195,8 @@ fn count(line: &str, word: &str, after: bool) -> Option<u64> {
 
 /// What a check run prints, read as it prints (#734): where each step starts (the line
 /// `<marker> <step>` obid prints before each step after the first), each step's tests, and the
-/// failing tests, best-effort, from what `cargo test`, `swift test`/`xcodebuild test`, pytest,
-/// jest, vitest and `node --test` print. Another runner's steps get their times only.
+/// failing tests, best-effort, from what `cargo test`, `go test`, `swift test`/`xcodebuild test`,
+/// pytest, jest, vitest and `node --test` print. Another runner's steps get their times only.
 pub struct CheckWatch {
     marker: String,
     commands: Vec<String>,
@@ -328,8 +328,26 @@ impl CheckWatch {
             let rest = &line[line.find(from)? + from.len()..];
             Some(rest[..rest.find(to)?].to_owned())
         };
+        // go test: each failing test, a subtest's indented, its messages after it; a run that hung
+        // names the tests it was running under `panic: test timed out`, before a long stack.
+        if let Some(rest) = line.strip_prefix("--- FAIL: ") {
+            let name = rest.split(" (").next().unwrap_or(rest).to_owned();
+            self.fail(&name, "");
+        } else if line.starts_with("panic: test timed out") {
+            self.fail("go test timed out", line);
+        } else if line == "FAIL"
+            || line == "PASS"
+            || line.starts_with("FAIL\t")
+            || line.starts_with("ok  \t")
+            || line.starts_with("=== ")
+            || line.starts_with("--- PASS: ")
+            || line.starts_with("--- SKIP: ")
+        {
+            // Go's own lines: no failing test's message, and with `-v` what comes next is another's.
+            self.message_of = None;
+        }
         // cargo test: a binary's tests one by one, then its result.
-        if let Some(n) = line
+        else if let Some(n) = line
             .strip_prefix("running ")
             .and_then(|r| r.strip_suffix(" tests").or(r.strip_suffix(" test")))
             .and_then(|n| n.parse::<u64>().ok())
@@ -839,6 +857,43 @@ mod tests {
         );
         watch.feed(output.as_bytes());
         watch
+    }
+
+    /// #1790: `go test`'s failures are named, a subtest's too, with their messages; a run that hung
+    /// says what it was running.
+    #[test]
+    fn go_tests_failures_are_named() {
+        let output = "--- FAIL: TestA (0.01s)\n    --- FAIL: TestA/sub (0.00s)\n        a_test.go:9: got 1, want 2\nFAIL\nFAIL\texample.com/a\t0.1s\nok  \texample.com/b\t0.1s\n\npanic: test timed out after 10m0s\n\trunning tests:\n\t\tTestHung (7m16s)\n";
+        let w = watch(&["go test ./..."], output);
+        let failing = w.record(1, Some(false)).failing;
+        let names: Vec<&str> = failing.iter().map(|f| f.test.as_str()).collect();
+        assert_eq!(
+            names,
+            ["TestA", "TestA/sub", "go test timed out"],
+            "{failing:?}"
+        );
+        // With `-v`, what the next test logs isn't the failed one's.
+        let v = watch(
+            &["go test -v ./..."],
+            "--- FAIL: TestA (0.01s)
+    a_test.go:9: bad
+=== RUN   TestB
+    b_test.go:1: a log
+--- PASS: TestB (0.00s)
+",
+        );
+        assert_eq!(
+            v.record(1, Some(false)).failing[0].message,
+            "a_test.go:9: bad"
+        );
+        assert_eq!(
+            failing[1].message, "a_test.go:9: got 1, want 2",
+            "{failing:?}"
+        );
+        assert!(
+            failing[2].message.contains("TestHung (7m16s)"),
+            "{failing:?}"
+        );
     }
 
     #[test]
