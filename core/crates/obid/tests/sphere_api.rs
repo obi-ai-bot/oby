@@ -1679,6 +1679,7 @@ async fn the_inbox_lists_answers_and_tells_every_app() {
             keys,
             [
                 "answer",
+                "answeredBy",
                 "conversation",
                 "created",
                 "details",

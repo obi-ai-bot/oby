@@ -876,6 +876,7 @@ impl Link {
             obi: None,
             plugin: None,
             arrived: Some(inbox::arrival()),
+            answered_by: None,
             confirm: None,
             start: Some(Box::new(start)),
             github: None,
@@ -939,6 +940,20 @@ impl Link {
     /// The inbox item `id`, whatever its state.
     pub fn item(&self, id: &str) -> Option<Item> {
         self.lock().inbox.get(id).cloned()
+    }
+
+    /// Who is answering the open item `id`, kept with it (#1825): the last answer's device while
+    /// it's open, so the one that settles it is what stays.
+    pub fn note_answered_by(&self, id: &str, device: Option<String>) {
+        let item = {
+            let mut state = self.lock();
+            let Some(item) = state.inbox.get_mut(id).filter(|i| i.done.is_none()) else {
+                return;
+            };
+            item.answered_by = device;
+            item.clone()
+        };
+        self.save_item(&item);
     }
 
     /// The items waiting for the owner now (not done, and not put off past `now`), what needs them

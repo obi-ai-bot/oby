@@ -13834,6 +13834,7 @@ pub fn owner_review_item(
         obi: None,
         plugin: None,
         arrived: Some(crate::sphere::inbox::arrival()),
+        answered_by: None,
         confirm: None,
         start: None,
         github: None,
@@ -16146,6 +16147,7 @@ mod tests {
             id: items[0].id.clone(),
             created: items[0].created,
             arrived: items[0].arrived,
+            answered_by: None,
             ..items[1].clone()
         };
         assert_eq!(items[0], again);

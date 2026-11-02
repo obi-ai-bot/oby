@@ -863,6 +863,43 @@ fn merging_27_the_owners_word_merges_while_obys_review_is_at_work() {
     assert_eq!(job(&obid)["mergedBy"]["by"], "owner", "{}", job(&obid));
 }
 
+/// #1825: the device that signed a merge card's answer stays on the card, so a merge can be traced
+/// afterwards; an answer no app signed says so.
+#[test]
+fn merging_28_the_card_says_which_device_answered_it() {
+    let folder = Folder::new("merge-who-answered");
+    let mut published = published();
+    published.base = Some("main".into());
+    let obid = started_with(&folder, false, None, published, &[]);
+    let file = folder.0.join("gh/view.json");
+    let mut view: Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+    view["baseRefName"] = json!("main");
+    std::fs::write(&file, view.to_string()).unwrap();
+    let pull = folder.0.join("gh/pull.json");
+    let mut rest: Value = serde_json::from_slice(&std::fs::read(&pull).unwrap()).unwrap();
+    rest["base"]["ref"] = json!("main");
+    std::fs::write(&pull, rest.to_string()).unwrap();
+    let card = within(30, "the owner's card", || {
+        merge_cards(&obid).into_iter().find(|c| c["done"].is_null())
+    });
+    assert_eq!(card["answeredBy"], Value::Null, "{card}");
+    let merged = answer_signed(&obid, &card, "Merge");
+    assert_eq!(merged.status, 200, "{}", merged.text);
+    // Written to its file as the merge settled it: the device the test owner registered, by id.
+    let kept: Value = serde_json::from_slice(
+        &std::fs::read(
+            folder
+                .0
+                .join(format!("home/inbox/{}.json", card["id"].as_str().unwrap())),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert!(kept["done"].is_number(), "{kept}");
+    let device = std::fs::read_to_string(obid.home.join("test-owner-device")).unwrap();
+    assert_eq!(kept["answeredBy"], device.as_str(), "{kept}");
+}
+
 /// TASKS-13: an Oby review parked on the owner's OK (its agent waited 10 minutes for a permission,
 /// so obid ended it) is still running, so its card stayed on Home after the pull request it
 /// reviewed closed (the drive of 2026-10-31). While that pull request is open the review and its
