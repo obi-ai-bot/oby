@@ -1804,8 +1804,10 @@ fn file_words(words: &[String]) -> Vec<&String> {
 /// passwords, asks for a code host's login, or names a secret's file ([`names_a_secret`]).
 fn reads_a_secret(words: &[String], bounds: &Bounds, base_dir: &Path) -> bool {
     let Some(p) = program_index(words) else {
-        // `env` alone prints the environment.
-        return words.iter().any(|w| base(w) == "env");
+        // `env` alone prints the environment; `command -V "$GH_TOKEN"` says what's in one.
+        return words
+            .iter()
+            .any(|w| base(w) == "env" || names_a_secret(w, bounds, base_dir));
     };
     let program = base(&words[p]);
     let rest = &words[p + 1..];
@@ -2923,6 +2925,9 @@ mod tests {
         // Past `command` without -v, it's the program it runs (#1799).
         assert_eq!(plan("command curl https://example.com"), Verdict::Ask);
         assert_eq!(plan("command rm x"), Verdict::Ask);
+        // It prints what it's given when there's no such program: a secret's value too.
+        assert_ne!(plan("command -V \"$GH_TOKEN\""), Verdict::Allow);
+        assert_ne!(plan("command -v $GITHUB_TOKEN"), Verdict::Allow);
         assert_eq!(
             plan("git diff origin/main...HEAD && rg -n '149|oby-drive' .obi docs package.json"),
             Verdict::Allow
