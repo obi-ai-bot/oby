@@ -393,7 +393,9 @@ impl Item {
             "done": date(self.done),
             "later": date(self.later),
             "answer": self.answer,
-            "answeredBy": self.answered_by,
+            // Only of the answer that settled it: one refused, or an item settled by itself, says
+            // nobody.
+            "answeredBy": self.answered_by.as_ref().filter(|_| self.done.is_some() && self.answer.is_some()),
             "state": self.state(time::now()),
             // No model writes about another Obi's request.
             "headline": null,
@@ -1031,6 +1033,24 @@ impl Inbox {
 
 #[cfg(test)]
 mod tests {
+    /// MERGING-28
+    #[test]
+    fn merging_28_only_the_answer_that_settled_it_names_a_device() {
+        let mut item: Item = serde_json::from_value(json!({"id": "m", "kind": "merge", "job": "j",
+            "title": "t", "text": "t", "options": ["Merge"], "details": null, "recommended": null,
+            "created": 1, "done": null, "later": null, "answer": null, "obi": null,
+            "answeredBy": "phone"}))
+        .unwrap();
+        assert_eq!(item.to_json()["answeredBy"], Value::Null);
+        item.done = Some(2);
+        assert_eq!(
+            item.to_json()["answeredBy"],
+            Value::Null,
+            "settled by itself"
+        );
+        item.answer = Some("Merge".into());
+        assert_eq!(item.to_json()["answeredBy"], "phone");
+    }
 
     /// TASKCONV-7: the Confirm a conversation's tool made names that conversation, so the app shows
     /// it under Oby's answer there (#1680); one with none names none.
