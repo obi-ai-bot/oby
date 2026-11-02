@@ -154,6 +154,19 @@ pub async fn run_turn(
 /// `limit`; why there's none, when it ends without one.
 pub async fn read_usage(launch: &Launch, limit: Duration) -> Result<crate::usage::Asked, String> {
     use crate::usage::Asked;
+    let read = ask_once(launch, limit, "account/rateLimits/read", json!({})).await?;
+    Ok(crate::usage::codex_read(&read).map_or(Asked::Silent, Asked::Said))
+}
+
+/// Codex's answer to one request, from a server started for that alone: no thread, no turn, so it
+/// costs the account nothing. The server ends with the answer, or at `limit`; why there's none,
+/// when it ends without one.
+pub async fn ask_once(
+    launch: &Launch,
+    limit: Duration,
+    method: &str,
+    params: Value,
+) -> Result<Value, String> {
     // Kept until the read ends: a stop channel whose sender is gone stops the server.
     let (_run, stop) = watch::channel(process::Signal::Run);
     let mut conn = Conn::spawn(launch, limit, stop, false)
@@ -172,13 +185,11 @@ pub async fn read_usage(launch: &Launch, limit: Duration) -> Result<crate::usage
             break Err("Codex ended without answering.".into());
         };
         if let Some(read) = asked.and_then(|id| conn::answer_to(&message, id)) {
-            break read
-                .map(|read| crate::usage::codex_read(&read).map_or(Asked::Silent, Asked::Said))
-                .map_err(|e| format!("Codex didn't say: {}", e.message));
+            break read.map_err(|e| format!("Codex didn't say: {}", e.message));
         }
         if asked.is_none() && conn::answer_to(&message, started).is_some() {
             conn.notify("initialized", None).await;
-            asked = Some(conn.request("account/rateLimits/read", json!({})).await);
+            asked = Some(conn.request(method, params.clone()).await);
         } else if let Some(id) = conn::request_id(&message).cloned() {
             conn.refuse(&id).await;
         }
@@ -266,8 +277,9 @@ impl<D: Fn(&str, &Value) -> Ruling, E: FnMut(Event)> Run<D, E> {
                     .request("account/rateLimits/read", json!({}))
                     .await,
             );
-            // How the account pays, once per account: obid keeps it (crate::usage), and the answer
-            // holds who is signed in, which obid never reads. Never a token refresh for it.
+            // How the account pays, once per account: obid keeps it (crate::usage). A job's run
+            // reads nothing else of the answer: who is signed in is the accounts' read, from the
+            // account's own folder (crate::accounts). Never a token refresh for it.
             if options.priced.is_none() {
                 self.account_read = Some(
                     self.conn

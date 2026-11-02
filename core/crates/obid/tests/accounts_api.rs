@@ -1289,3 +1289,345 @@ fn usage_3_4_5_usage_reads_retry_but_never_after_a_model_ran() {
         assert!(account(&obid, id).unwrap()["sevenDay"].is_null(), "{id}");
     }
 }
+
+// ---------------------------------------------------------------------------------------------
+// Adding accounts easily (docs/contracts/accounts.md): who an account is, its name, and the same
+// login twice.
+
+/// A new account of `agent`, with who its tool will say it is: its id and folder.
+fn added_as(obid: &Obid, agent: &str, name: Option<&str>, who: Value) -> (String, PathBuf) {
+    let body = match name {
+        Some(name) => json!({"agent": agent, "name": name}),
+        None => json!({"agent": agent}),
+    };
+    let added = add(obid, body);
+    assert_eq!(added.status, 201, "{}", added.text);
+    let id = added.body["id"].as_str().unwrap().to_owned();
+    let dir = obid.home.join("accounts").join(&id);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("who.json"), who.to_string()).unwrap();
+    (id, dir)
+}
+
+/// Signs the account in with the stand-in's own login, until obid has settled how it came out:
+/// true when it's still there and signed in.
+fn sign_in(obid: &Obid, agent: &str, id: &str) -> bool {
+    let target = format!("/v1/accounts/{id}/sign-in");
+    let who: Value = std::fs::read(obid.home.join("accounts").join(id).join("who.json"))
+        .map_or(json!({}), |text| serde_json::from_slice(&text).unwrap());
+    let started = call(obid, "GET", &target, None);
+    assert_eq!(started.status, 200, "{}", started.text);
+    if agent == "claude" {
+        let pasted = call(
+            obid,
+            "POST",
+            &target,
+            Some(&json!({"code": "good-code#fake"})),
+        );
+        assert!([200, 409].contains(&pasted.status), "{}", pasted.text);
+    }
+    let out = within(30, "the sign-in came out", || match account(obid, id) {
+        None => Some(false),
+        // (who it is comes last; a tool with nothing to say gives the wait below instead)
+        Some(a)
+            if a["signedIn"] == true && (who["email"].is_null() || a["email"] == who["email"]) =>
+        {
+            Some(true)
+        }
+        Some(_) => None,
+    });
+    if who["email"].is_null() {
+        std::thread::sleep(Duration::from_millis(1500));
+    }
+    out
+}
+
+#[test]
+fn accounts_1_an_account_needs_no_name_and_gets_its_tools_unique_to_the_tool() {
+    let folder = Folder::new("accounts-1");
+    let obid = start(&folder.0, &accounts_config(&folder.0), None);
+    let first = add(&obid, json!({"agent": "cursor"}));
+    assert_eq!(first.status, 201, "{}", first.text);
+    // (`Cursor` stays free for the tool's own login.)
+    assert_eq!(first.body["name"], "Cursor 2");
+    assert!(
+        obid.home
+            .join("accounts")
+            .join(first.body["id"].as_str().unwrap())
+            .is_dir()
+    );
+    assert_eq!(
+        add(&obid, json!({"agent": "cursor"})).body["name"],
+        "Cursor 3"
+    );
+    // Given, a name is as it was; a wrong one is still refused.
+    assert_eq!(
+        add(&obid, json!({"agent": "codex", "name": "Work"})).body["name"],
+        "Work"
+    );
+    assert_eq!(
+        add(&obid, json!({"agent": "codex", "name": "  "})).status,
+        422
+    );
+    assert_eq!(
+        add(&obid, json!({"agent": "codex", "name": "work"})).status,
+        422
+    );
+    assert_eq!(
+        add(&obid, json!({"agent": "claude"})).body["name"],
+        "Claude Code"
+    );
+}
+
+#[test]
+fn accounts_2_its_first_sign_in_names_it_from_the_org_else_the_plan_unique_per_tool() {
+    let folder = Folder::new("accounts-2");
+    let obid = start(&folder.0, &accounts_config(&folder.0), None);
+    let (a, _) = added_as(
+        &obid,
+        "codex",
+        None,
+        json!({"email": "a@x.dev", "plan": "plus"}),
+    );
+    let (b, _) = added_as(
+        &obid,
+        "codex",
+        None,
+        json!({"email": "b@x.dev", "plan": "plus"}),
+    );
+    assert!(sign_in(&obid, "codex", &a));
+    assert!(sign_in(&obid, "codex", &b));
+    assert_eq!(account(&obid, &a).unwrap()["name"], "Plus");
+    assert_eq!(account(&obid, &b).unwrap()["name"], "Plus 2");
+
+    let (c, _) = added_as(
+        &obid,
+        "cursor",
+        None,
+        json!({"email": "c@x.dev", "org": "Deskree"}),
+    );
+    assert!(sign_in(&obid, "cursor", &c));
+    assert_eq!(account(&obid, &c).unwrap()["name"], "Deskree");
+
+    // The owner's name stays: given when it's added, or changed before it signs in.
+    let (d, _) = added_as(
+        &obid,
+        "cursor",
+        Some("Mine"),
+        json!({"email": "d@x.dev", "org": "Acme"}),
+    );
+    assert!(sign_in(&obid, "cursor", &d));
+    assert_eq!(account(&obid, &d).unwrap()["name"], "Mine");
+    let (e, _) = added_as(
+        &obid,
+        "cursor",
+        None,
+        json!({"email": "e@x.dev", "org": "Acme"}),
+    );
+    let renamed = call(
+        &obid,
+        "PATCH",
+        &format!("/v1/accounts/{e}"),
+        Some(&json!({"name": "Yours"})),
+    );
+    assert_eq!(renamed.status, 200, "{}", renamed.text);
+    assert!(sign_in(&obid, "cursor", &e));
+    assert_eq!(account(&obid, &e).unwrap()["name"], "Yours");
+
+    // A tool with nothing to say leaves obid's name.
+    let (f, _) = added_as(&obid, "cursor", None, json!({}));
+    assert!(sign_in(&obid, "cursor", &f));
+    assert!(
+        account(&obid, &f).unwrap()["name"]
+            .as_str()
+            .unwrap()
+            .starts_with("Cursor")
+    );
+}
+
+#[test]
+fn accounts_3_an_account_says_only_who_its_tool_says_and_keeps_it_across_restarts() {
+    let folder = Folder::new("accounts-3");
+    let config = accounts_config(&folder.0);
+    let obid = start(&folder.0, &config, None);
+    let (id, _) = added_as(
+        &obid,
+        "claude",
+        None,
+        json!({"email": "me@deskree.com", "plan": "team", "org": "Deskree"}),
+    );
+    // None of the keys before it signs in.
+    let before = account(&obid, &id).unwrap();
+    for key in ["email", "plan", "org"] {
+        assert!(before.get(key).is_none(), "{key}: {before}");
+    }
+    assert!(sign_in(&obid, "claude", &id));
+    let check = |obid: &Obid| {
+        let now = account(obid, &id).unwrap();
+        assert_eq!(now["email"], "me@deskree.com");
+        assert_eq!(now["plan"], "team");
+        assert_eq!(now["org"], "Deskree");
+    };
+    check(&obid);
+    // Nothing else of what it said is kept, shown or logged.
+    let file = std::fs::read_to_string(obid.home.join("accounts.json")).unwrap();
+    let status = call(&obid, "GET", "/v1/status", None).text;
+    for text in [&file, &status, &obid.log()] {
+        assert!(
+            !text.contains(SECRET),
+            "what the status said leaked: {text}"
+        );
+    }
+    let home = obid.home.clone();
+    drop(obid);
+    let again = start(&folder.0, &config, None);
+    assert_eq!(again.home, home);
+    check(&again);
+}
+
+#[test]
+fn accounts_6_obid_asks_who_a_signed_in_account_is_as_it_starts() {
+    let folder = Folder::new("accounts-6");
+    let remote = folder.0.join("remote.git");
+    let mut config = config(&folder.0, &remote, &agent("fake-claude"));
+    config["agents"]["cursor"] = json!({"bin": agent("fake-cursor"), "accounts": []});
+    let bin = logins_on_the_mac(&folder.0, 3600);
+    // The tool's own login, in the person's own folder: no folder of obid's.
+    std::fs::write(
+        folder.0.join("env-home/who.json"),
+        json!({"email": "me@x.dev", "org": "Deskree"}).to_string(),
+    )
+    .unwrap();
+    let obid = start(&folder.0, &config, Some(&bin));
+    let listed = within(20, "the tool's own login said who it is", || {
+        account(&obid, "cursor").filter(|a| a["email"] == "me@x.dev")
+    });
+    assert_eq!(listed["org"], "Deskree");
+    // Its name is the tool's own login's: obid names only what it added.
+    assert_eq!(listed["name"], "Cursor");
+}
+
+#[test]
+fn accounts_7_signing_a_new_account_into_a_login_already_here_takes_it_off_and_says_whose() {
+    let folder = Folder::new("accounts-7");
+    let obid = start(&folder.0, &accounts_config(&folder.0), None);
+    let (first, _) = added_as(
+        &obid,
+        "codex",
+        Some("Personal"),
+        json!({"email": "me@x.dev", "plan": "plus"}),
+    );
+    assert!(sign_in(&obid, "codex", &first));
+    let (again, dir) = added_as(
+        &obid,
+        "codex",
+        None,
+        json!({"email": "ME@x.dev", "plan": "plus"}),
+    );
+    assert!(!sign_in(&obid, "codex", &again), "it's gone, not signed in");
+    assert!(!dir.exists(), "its folder goes with it");
+    let said = call(&obid, "GET", &format!("/v1/accounts/{again}/sign-in"), None);
+    assert_eq!(said.status, 409, "{}", said.text);
+    assert_eq!(said.body["reason"], "sameAccount");
+    assert_eq!(said.body["sameAs"], first.as_str());
+    assert!(said.text.contains("That's Personal again"), "{}", said.text);
+    // The first is as it was.
+    assert_eq!(account(&obid, &first).unwrap()["signedIn"], true);
+    assert!(account(&obid, &again).is_none());
+
+    // Claude Code's sign-in answers its code the same way.
+    let (one, _) = added_as(
+        &obid,
+        "claude",
+        Some("Personal"),
+        json!({"email": "me@x.dev", "plan": "max"}),
+    );
+    assert!(sign_in(&obid, "claude", &one));
+    let (two, _) = added_as(
+        &obid,
+        "claude",
+        None,
+        json!({"email": "me@x.dev", "plan": "max"}),
+    );
+    let target = format!("/v1/accounts/{two}/sign-in");
+    assert_eq!(call(&obid, "GET", &target, None).status, 200);
+    let pasted = call(
+        &obid,
+        "POST",
+        &target,
+        Some(&json!({"code": "good-code#fake"})),
+    );
+    assert_eq!(pasted.status, 409, "{}", pasted.text);
+    assert_eq!(pasted.body["reason"], "sameAccount");
+    assert_eq!(pasted.body["sameAs"], one.as_str());
+}
+
+#[test]
+fn accounts_8_the_same_login_stays_where_it_is_no_new_account_or_nothing_to_compare() {
+    let folder = Folder::new("accounts-8");
+    let obid = start(&folder.0, &accounts_config(&folder.0), None);
+    // Two tools' accounts may share an email.
+    let (codex, _) = added_as(
+        &obid,
+        "codex",
+        None,
+        json!({"email": "me@x.dev", "plan": "plus"}),
+    );
+    let (cursor, _) = added_as(&obid, "cursor", None, json!({"email": "me@x.dev"}));
+    assert!(sign_in(&obid, "codex", &codex));
+    assert!(sign_in(&obid, "cursor", &cursor));
+    // A tool that says no email has nothing to compare.
+    let (quiet, _) = added_as(&obid, "cursor", None, json!({}));
+    let (quiet2, _) = added_as(&obid, "cursor", None, json!({}));
+    assert!(sign_in(&obid, "cursor", &quiet));
+    assert!(sign_in(&obid, "cursor", &quiet2));
+    // An account that was signed in before keeps its place when it signs in again as another's.
+    let (other, dir) = added_as(
+        &obid,
+        "codex",
+        Some("Other"),
+        json!({"email": "other@x.dev"}),
+    );
+    assert!(sign_in(&obid, "codex", &other));
+    std::fs::write(
+        dir.join("who.json"),
+        json!({"email": "me@x.dev"}).to_string(),
+    )
+    .unwrap();
+    assert!(sign_in(&obid, "codex", &other));
+    assert_eq!(account(&obid, &other).unwrap()["email"], "me@x.dev");
+    // Another account that's signed out isn't what a new sign-in is the same as: that one would
+    // leave no way to use the login.
+    let codex_dir = obid.home.join("accounts").join(&codex);
+    std::fs::remove_file(codex_dir.join("auth.json")).unwrap();
+    std::fs::remove_file(obid.home.join("accounts").join(&other).join("auth.json")).unwrap();
+    let (new, _) = added_as(
+        &obid,
+        "codex",
+        None,
+        json!({"email": "me@x.dev", "plan": "plus"}),
+    );
+    assert!(sign_in(&obid, "codex", &new));
+}
+
+#[test]
+fn accounts_9_limits_accounts_is_the_only_cap_on_how_many() {
+    let folder = Folder::new("accounts-9");
+    let obid = start(&folder.0, &accounts_config(&folder.0), None);
+    let raised = call(
+        &obid,
+        "PUT",
+        "/v1/settings/jobs",
+        Some(&json!({"limits": {"accounts": 40}})),
+    );
+    assert_eq!(raised.status, 200, "{}", raised.text);
+    let have = accounts(&obid).len();
+    for n in have..40 {
+        let answer = add(&obid, json!({"agent": "cursor"}));
+        assert_eq!(answer.status, 201, "{n}: {}", answer.text);
+    }
+    assert_eq!(accounts(&obid).len(), 40);
+    let full = add(&obid, json!({"agent": "codex"}));
+    assert_eq!(full.status, 422, "{}", full.text);
+    assert!(full.text.contains("at most 40"), "{}", full.text);
+}

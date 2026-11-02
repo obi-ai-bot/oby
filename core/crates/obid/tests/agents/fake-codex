@@ -257,6 +257,14 @@ rl.on("line", (line) => {
     case "initialized":
       return;
     case "account/read":
+      // A job's run asks its limits first, and is answered as its turn starts. Asked alone, it's
+      // obid asking who the account is: who.json in its folder (fake-login.mjs).
+      if (limitsRead === null) {
+        let said = {};
+        try { said = JSON.parse(readFileSync(join(process.env.CODEX_HOME ?? join(process.env.HOME, ".codex"), "who.json"), "utf8")); } catch {}
+        const { email, plan } = said;
+        return send({ id, result: { account: email ? { type: "chatgpt", email, planType: plan } : null, requiresOpenaiAuth: true, token: "FAKE-LOGIN-SECRET-7f3a9c" } });
+      }
       accountRead = id;
       return;
     case "account/rateLimits/read":

@@ -677,6 +677,9 @@ pub struct AccountJson {
     /// Its `model`, `effort` and `complexEffort`, each only when the owner chose it (#1574).
     #[serde(flatten)]
     pub tuning: crate::settings::Tuning,
+    /// Its `email`, `plan` and `org`, each only when its tool said (docs/contracts/accounts.md).
+    #[serde(flatten)]
+    pub identity: crate::accounts::Identity,
 }
 
 #[derive(Serialize)]
@@ -811,6 +814,7 @@ pub fn account_json(
             .tuning
             .remove(&account.id)
             .unwrap_or_default(),
+        identity: shared.config.agents.identity(&account.id),
     }
 }
 

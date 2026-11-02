@@ -508,6 +508,8 @@ pub async fn serve(
             }
         });
     }
+    // Who each signed-in account is, from its tool (docs/contracts/accounts.md).
+    tokio::spawn(accounts::read_identities(shared.clone(), None));
     // A job a conversation started tells it how it ended (#351).
     conversation::report_job_ends(shared.clone());
     // What Home asks the owner about a job that's merged, closed, let go or gone settles (TASKS-13).

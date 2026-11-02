@@ -28,6 +28,7 @@ showed, and what Oby does about each.
 | Fact | Result | What Oby does |
 | --- | --- | --- |
 | Where the login lives | A plain file, `~/.config/cursor/auth.json` (0600): the runner has no keyring. | Oby never reads it. |
+| Who it is | `cursor-agent status --format json` (2026.10.01's own code): `userInfo` `{email, userId, firstName, lastName, teamId, teamName, createdAt}` when it reaches Cursor, none with `message` `Logged in (unable to fetch user details)` otherwise. | obid keeps `userInfo.email` and `.teamName` (docs/contracts/accounts.md). Not yet seen in a live answer: this Mac's login has ended. |
 | Login isolation | With `CURSOR_CONFIG_DIR` alone, both throwaway homes showed the user's real login. With `HOME`, `XDG_CONFIG_HOME` **and** `CURSOR_CONFIG_DIR` each of its own, account A was signed in and B stayed signed out (the user has one Cursor account, which shows per-folder isolation). | `separateLogins = true`. Every Cursor start, status, models and sign-in sets all three to the account's home (`CursorStatus.environment`). |
 | Commands | `session/request_permission` arrives, kind `execute`. | Commands ask Oby. |
 | **Edits** | With every permission rejected, `probe.txt` was **written, with no `session/request_permission` at all.** | `editsAsk = false`. See below: edits can't be gated through ACP. |
