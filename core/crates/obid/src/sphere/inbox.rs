@@ -166,6 +166,7 @@ pub fn confirm_item(
         obi: None,
         plugin: None,
         arrived: Some(arrival()),
+        answered_by: None,
         confirm: Some(Box::new(confirmed)),
         start: None,
         github: None,
@@ -288,6 +289,10 @@ pub struct Item {
     /// made in the same second. Kept, never shown.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub arrived: Option<u64>,
+    /// The device whose signature came with the answer that settled it (#1825): a merge can be
+    /// traced afterwards. None for an answer no app of the owner's signed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub answered_by: Option<String>,
     /// On a `confirm` item: what Oby's brain planned that only the owner may do, carried out on
     /// their `Confirm` (#546), shown as `confirm`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -388,6 +393,7 @@ impl Item {
             "done": date(self.done),
             "later": date(self.later),
             "answer": self.answer,
+            "answeredBy": self.answered_by,
             "state": self.state(time::now()),
             // No model writes about another Obi's request.
             "headline": null,
@@ -562,6 +568,7 @@ pub fn review_request_item(
         })),
         plugin: None,
         arrived: None,
+        answered_by: None,
         confirm: None,
         start: None,
         github: None,
@@ -658,6 +665,7 @@ pub fn question_item(
         })),
         plugin: None,
         arrived: Some(arrival()),
+        answered_by: None,
         confirm: None,
         start: None,
         github: None,
@@ -733,6 +741,7 @@ pub fn permission_item(
         obi: None,
         plugin: None,
         arrived: None,
+        answered_by: None,
         confirm: None,
         start: None,
         github: None,
@@ -812,6 +821,7 @@ pub fn github_item(work: &crate::github_work::Item, known: bool, now: i64) -> It
         obi: None,
         plugin: None,
         arrived: Some(arrival()),
+        answered_by: None,
         confirm: None,
         start: None,
         github: Some(Box::new(json!({
@@ -868,6 +878,7 @@ pub fn limit_item(
         obi: None,
         plugin: None,
         arrived: Some(arrival()),
+        answered_by: None,
         confirm: None,
         start: None,
         github: None,
@@ -918,6 +929,7 @@ pub fn crash_item(job: &crate::job::Job, now: i64) -> Item {
         obi: None,
         plugin: None,
         arrived: Some(arrival()),
+        answered_by: None,
         confirm: None,
         start: None,
         github: None,
@@ -953,6 +965,7 @@ pub fn review_item(job: &crate::job::Job, review: &str, error: &str) -> Item {
         obi: None,
         plugin: None,
         arrived: Some(arrival()),
+        answered_by: None,
         confirm: None,
         start: None,
         github: None,

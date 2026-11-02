@@ -1708,6 +1708,7 @@ mod tests {
             obi: None,
             plugin: None,
             arrived: None,
+            answered_by: None,
             confirm: None,
             start: None,
             github: None,

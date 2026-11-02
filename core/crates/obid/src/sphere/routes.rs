@@ -201,7 +201,15 @@ pub async fn answer(
 ) -> Result<Response, ApiError> {
     // Whether an app of the owner's signed it: their answer to a question is then kept as their
     // own words for Oby's review (#1659).
-    let typed = crate::routes::typed_by_owner(&shared, "POST", &uri, &headers, &body);
+    let signer = crate::routes::signed_by(&shared, "POST", &uri, &headers, &body);
+    let typed = signer.is_some();
+    // Who answered stays on the item, and in the log: a merge can be traced afterwards (#1825).
+    let by = signer.or_else(|| device.as_ref().map(|d| d.0.0.clone()));
+    tracing::info!(
+        "inbox {id}: answered by {}",
+        by.as_deref().unwrap_or("nothing signed")
+    );
+    shared.link.note_answered_by(&id, by);
     // Words for a job's agent (its question's answer, a no's words) that no app of the owner's
     // signed: the job is no longer the owner's own words alone (crate::secretspec), before it
     // hears them.
