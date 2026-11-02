@@ -981,7 +981,9 @@ async fn refuse(client: &mut TcpStream, status: &str, why: &str) {
 
 /// What a proxied agent's environment adds: the proxy for https and http, in both spellings
 /// (curl reads only the lowercase `http_proxy`), loopback left out of it (obid's MCP servers, a
-/// test's own servers), and Node's built-in `fetch` and `https` told to use it too.
+/// test's own servers), and Node's built-in `fetch` and `https` told to use it too. git has no
+/// credential helper: it offers the proxy's login to each one it has, and Xcode's git has the
+/// Keychain's in its own settings, which from a box with no Keychain makes macOS ask the owner.
 pub fn env(proxy: &str) -> Vec<(&'static str, OsString)> {
     let mut env: Vec<(&'static str, OsString)> =
         ["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"]
@@ -992,6 +994,11 @@ pub fn env(proxy: &str) -> Vec<(&'static str, OsString)> {
         env.push((name, "localhost,127.0.0.1,::1".into()));
     }
     env.push(("NODE_USE_ENV_PROXY", "1".into()));
+    env.extend([
+        ("GIT_CONFIG_COUNT", "1".into()),
+        ("GIT_CONFIG_KEY_0", "credential.helper".into()),
+        ("GIT_CONFIG_VALUE_0", "".into()),
+    ]);
     env
 }
 
@@ -1150,6 +1157,42 @@ fn hello_with(extensions: &[u8]) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #1814: what git does once a request through the proxy worked, approving its login, reaches
+    /// a helper in git's settings without [`env`] and none with it.
+    #[test]
+    fn git_offers_the_proxy_login_to_no_credential_helper() {
+        let dir = std::env::temp_dir().join(format!("oby-egress-git-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let marker = dir.join("helper-ran");
+        let git = |args: &[&str], env: Vec<(&str, OsString)>| {
+            let mut child = std::process::Command::new("git")
+                .args(args)
+                .current_dir(&dir)
+                .envs(env)
+                .stdin(std::process::Stdio::piped())
+                .spawn()
+                .unwrap();
+            use std::io::Write as _;
+            child
+                .stdin
+                .take()
+                .unwrap()
+                .write_all(b"protocol=http\nhost=127.0.0.1:1\nusername=oby\npassword=t\n\n")
+                .unwrap();
+            assert!(child.wait().unwrap().success());
+        };
+        git(&["init", "-q"], Vec::new());
+        let helper = format!("!touch '{}'; :", marker.display());
+        git(&["config", "credential.helper", &helper], Vec::new());
+
+        git(&["credential", "approve"], env("http://oby:t@127.0.0.1:1"));
+        assert!(!marker.exists());
+
+        git(&["credential", "approve"], Vec::new());
+        assert!(marker.exists());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 
     /// PERMISSIONS-2: a plain http:// request names its site, port 80 by default, only where its Host
     /// agrees; it goes on alone, without the job's token.
