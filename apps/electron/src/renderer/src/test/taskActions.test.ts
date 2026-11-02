@@ -313,8 +313,72 @@ describe('obid\'s answers over the events that came meanwhile', () => {
     ['PATCH /v1/jobs/j1', (l) => l.renameJob('j1', 'Vault tests')],
     ['POST /v1/github/work/w1/start', (l) => l.startGitHubWork('w1')],
     ['POST /v1/jobs/j1/messages', (l) => l.tellJob('j1', 'And the docs')],
-    ['POST /v1/jobs/j1/dismiss', (l) => l.answerJob('j1', 'Dismiss')],
+    ['POST /v1/jobs/j1/dismiss', (l) => l.answerJob('j1', 'Stop here')],
   ];
+
+  // #1836: Sangam's failed card, on a job with no inbox item
+  describe('a failed task\'s card', () => {
+    const failed = async () => {
+      const { tasks, live } = await load(true);
+      const event = await following(live, [job({ status: 'failed', step: 'Failed', summary: 'It broke', session: 's1', revision: 1 })]);
+      calls.length = 0;
+      return { tasks, live, event };
+    };
+    const ask = (t: Awaited<ReturnType<typeof load>>['tasks']) => t.dev!.get().find((x) => x.id === 'j1')!.job.ask;
+
+    it('offers another round and stopping, with another round first', async () => {
+      const { tasks } = await failed();
+      expect(ask(tasks)).toMatchObject({ kind: 'failed', options: ['Give it another round', 'Stop here'], recommended: 0 });
+    });
+    it('Give it another round tells its agent obid\'s Try-again words', async () => {
+      const { live } = await failed();
+      answers['POST /v1/jobs/j1/messages'] = { status: 200, body: job({ status: 'running', step: 'Working', revision: 2 }) };
+      await live.answerJob('j1', 'Give it another round');
+      expect(calls.at(-1)).toMatchObject({ method: 'POST', path: '/v1/jobs/j1/messages' });
+      expect(JSON.stringify(calls.at(-1)!.body)).toContain('Try again, picking up where you left off.');
+      expect(live.liveState().jobs.j1.status).toBe('running');
+    });
+    it('a second failure asks again', async () => {
+      const { tasks, live, event } = await failed();
+      answers['POST /v1/jobs/j1/messages'] = { status: 200, body: job({ status: 'running', step: 'Working', session: 's1', revision: 2 }) };
+      await live.answerJob('j1', 'Give it another round');
+      expect(ask(tasks)).toBeUndefined();
+      event('job', job({ status: 'failed', step: 'Failed', summary: 'It broke again', session: 's1', revision: 3 }));
+      expect(ask(tasks)).toMatchObject({ options: ['Give it another round', 'Stop here'] });
+      expect(tasks.dev!.get().find((x) => x.id === 'j1')!.status).toBe('needs');
+    });
+    it('one that never started asks again what it was asked: it has no session to pick up', async () => {
+      const { live, event } = await failed();
+      event('job', job({ status: 'failed', step: 'Failed', session: null, moves: [], title: 'Rebase 391', request: 'yes, do that', revision: 2 }));
+      answers['POST /v1/jobs/j1/messages'] = { status: 200, body: job({ id: 'j2', followUpOf: 'j1', status: 'running', revision: 1 }) };
+      answers['GET /v1/jobs/j1'] = { status: 200, body: job({ status: 'failed', session: null, revision: 2 }) };
+      await live.answerJob('j1', 'Give it another round');
+      const told = calls.find((c) => c.path === '/v1/jobs/j1/messages')!;
+      expect(JSON.stringify(told.body)).toContain('Rebase 391');
+      expect(JSON.stringify(told.body)).toContain('yes, do that');
+      expect(JSON.stringify(told.body)).not.toContain('Try again');
+    });
+    it('one moved to another account picks up with the Try-again words', async () => {
+      const { live, event } = await failed();
+      event('job', job({ status: 'failed', step: 'Failed', session: null, moves: [{ from: 'a' }], revision: 2 }));
+      answers['POST /v1/jobs/j1/messages'] = { status: 200, body: job({ status: 'running', revision: 3 }) };
+      await live.answerJob('j1', 'Give it another round');
+      expect(JSON.stringify(calls.find((c) => c.path === '/v1/jobs/j1/messages')!.body)).toContain('Try again');
+    });
+    it('one its follow-up carries on asks nothing', async () => {
+      const { tasks, event } = await failed();
+      event('job', job({ id: 'j2', followUpOf: 'j1', status: 'running', revision: 1 }));
+      expect(ask(tasks)).toBeUndefined();
+    });
+    it('a refused round says why, and leaves the choice', async () => {
+      const { tasks, live } = await failed();
+      answers['POST /v1/jobs/j1/messages'] = { status: 409, body: { error: 'It can\'t go on from here.' } };
+      await live.answerJob('j1', 'Give it another round');
+      expect(live.liveState().problem).toBe('It can\'t go on from here.');
+      expect(live.liveState().answered.j1).toBeUndefined();
+      expect(ask(tasks)!.options).toContain('Stop here');
+    });
+  });
   it.each(asJobs)('%s: an answer older than the job\'s event keeps the event\'s job, and never brings back a deleted one', async (route, act) => {
     const { tasks, live } = await load(true);
     const event = await following(live, [job({ status: 'running', step: 'Working', revision: 1 })]);

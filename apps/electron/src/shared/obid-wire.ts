@@ -29,6 +29,9 @@ export type Outgoing = { action: string; repo?: string; id?: string; branch?: st
 
 // "Job": the keys this app reads
 export type Job = {
+  // the agent's session to pick up, and who it moved to: with neither it never started (obid only)
+  session?: string | null;
+  moves?: unknown[];
   id: string;
   request: string;
   agent: Agent;
