@@ -278,9 +278,10 @@ fun TaskPage(id: String) {
                          onStop = if (job.isActive) ({ run { phone.stop(job.id) } }) else null,
                          onSend = { text, _ ->
                              val words = ChatThread.words(text)
-                             if (words == null || words.length > 2000) { if (text.length > 2000) noteProblem = "Keep your message under 2,000 characters."; return@Composer }
+                             if (words == null || words.length > 2000) { if (text.length > 2000) noteProblem = "Keep your message under 2,000 characters."; return@Composer false }
                              busy = true
                              scope.launch { noteProblem = try { phone.tell(job.id, words, conversation = true); null } catch (e: Exception) { e.message }; busy = false }
+                             true
                          })
             }
         }

@@ -92,9 +92,10 @@ fun SessionSheet(id: String, close: () -> Unit) {
                 Box(Modifier.weight(1f)) { SessionView(session, job.agent, meta(job, phone), job.isActive) }
                 problem?.let { T(it, Tokens.textSm, c.danger, modifier = Modifier.padding(horizontal = Tokens.gutter + 12.dp)) }
                 Composer(Drafts.task(id), "Tell ${job.agentName}…", enabled = !sending, onSend = { text, _ ->
-                    val words = ChatThread.words(text)?.takeIf { it.length <= 2000 } ?: return@Composer
+                    val words = ChatThread.words(text)?.takeIf { it.length <= 2000 } ?: run { problem = "Keep your message under 2,000 characters."; return@Composer false }
                     sending = true
                     scope.launch { problem = try { phone.tell(id, words, conversation = true); null } catch (e: Exception) { e.message }; sending = false }
+                    true
                 })
             }
         }
