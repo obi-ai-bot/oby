@@ -1157,8 +1157,9 @@ mod tests {
     use super::*;
 
     /// #1814: what git does once a request through the proxy worked, approving its login, reaches
-    /// a helper in the clone's settings without [`env`] and none with it. git gets nothing else
-    /// from this environment or this Mac: no helper of the person's sees the test's login.
+    /// no helper in git's settings with [`env`]; a helper named after it runs, so the approval did
+    /// offer the login. Never without one of those: Xcode's git reads its own settings whatever
+    /// `GIT_CONFIG_NOSYSTEM` says, and would put the test's login in the person's Keychain.
     #[test]
     fn git_offers_the_proxy_login_to_no_credential_helper() {
         use std::io::Write as _;
@@ -1166,23 +1167,18 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("oby-egress-git-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let marker = dir.join("helper-ran");
+        let helper = "!touch helper-ran; :";
         let git = || {
             let mut git = Command::new("git");
             git.current_dir(&dir)
                 .env_clear()
                 .env("PATH", std::env::var_os("PATH").unwrap())
-                .env("HOME", &dir)
-                .env("GIT_CONFIG_NOSYSTEM", "1")
-                .env("GIT_CONFIG_GLOBAL", "/dev/null");
+                .env("HOME", &dir);
             git
         };
-        let helper = format!("!touch '{}'; :", marker.display());
-        for args in [
-            vec!["init", "-q"],
-            vec!["config", "credential.helper", &helper],
-        ] {
-            assert!(git().args(args).status().unwrap().success());
-        }
+        assert!(git().args(["init", "-q"]).status().unwrap().success());
+        let set = ["config", "credential.helper", helper];
+        assert!(git().args(set).status().unwrap().success());
         let approve = |env: Vec<(&str, OsString)>| {
             let mut child = git()
                 .args(["credential", "approve"])
@@ -1198,7 +1194,8 @@ mod tests {
         approve(env("http://oby:t@127.0.0.1:1"));
         assert!(!marker.exists());
 
-        approve(Vec::new());
+        let after_it = format!("'credential.helper=' 'credential.helper={helper}'");
+        approve(vec![("GIT_CONFIG_PARAMETERS", after_it.into())]);
         assert!(marker.exists());
         std::fs::remove_dir_all(&dir).unwrap();
     }
