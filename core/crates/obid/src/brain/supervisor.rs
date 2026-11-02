@@ -460,6 +460,7 @@ async fn supervise(shared: &Arc<Shared>, job: &Job) -> bool {
         conversation: &conversation,
         // No turn of the owner's: the jobs it starts are on Oby's answer.
         turn: "",
+        signed: false,
     };
     let ran = super::harness::supervise(shared, &account, &asked, &control, watch.clone()).await;
     shared.turns.end(&control);

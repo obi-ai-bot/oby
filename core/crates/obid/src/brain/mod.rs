@@ -265,6 +265,7 @@ pub async fn plan(
             jobs: &next.words.jobs,
             conversation: &conversation,
             turn: &control.turn,
+            signed: next.words.signed,
         };
         // The recap is written while the brain thinks; a background call is bounded and
         // tried once, and when it fails the answer is the same as without it.

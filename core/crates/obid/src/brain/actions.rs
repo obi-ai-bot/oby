@@ -69,6 +69,8 @@ pub struct Asked<'a> {
     /// The user's turn the words are, which the jobs started now name (`Job::turn`); empty for an
     /// event turn's, which no turn of the conversation holds.
     pub turn: &'a str,
+    /// An app of the owner's signed the words (`Control::signed`).
+    pub signed: bool,
 }
 
 /// A plan that answers rather than acts: a reply, a question, or jobs it starts (#269). `live` is
@@ -130,17 +132,28 @@ fn names_agent(words: &str) -> bool {
     })
 }
 
-/// The branch `d` names. On a turn that read something untrusted, only one the owner's own words
-/// on this turn say, whole: words Oby read don't pick a branch for it to push to and delete (an
-/// open pull request's, one a deploy watches); the job gets an `oby/` one (PUBLISHING-13). A turn
-/// that isn't the owner's (`turn` empty) says nothing of theirs.
+/// The branch `d` names. On a turn that read something untrusted, only one the owner's signed
+/// words on this turn name: words Oby read don't pick a branch for it to push to and delete (an
+/// open pull request's, one a deploy watches); the job gets an `oby/` one (PUBLISHING-13).
 fn named_branch(d: &super::plan::Dispatch, researched: bool, asked: &Asked<'_>) -> Option<String> {
-    d.branch.clone().filter(|branch| {
-        !researched
-            || (!asked.turn.is_empty()
-                && asked.said.split_whitespace().any(|word| {
-                    word.trim_matches(|c: char| "`'\"“”‘’,;:.!?()[]<>".contains(c)) == branch
-                }))
+    d.branch
+        .clone()
+        .filter(|branch| !researched || (asked.signed && says_branch(asked.said, branch)))
+}
+
+/// Whether `said` names `branch`: the whole word, and as a branch, by a `/` in it or the word
+/// "branch" within 3 words of it. "Prepare the release notes" names no branch `release`.
+fn says_branch(said: &str, branch: &str) -> bool {
+    let words: Vec<&str> = said
+        .split_whitespace()
+        .map(|word| word.trim_matches(|c: char| "`'\"“”‘’,;:.!?()[]<>".contains(c)))
+        .collect();
+    words.iter().enumerate().any(|(at, word)| {
+        *word == branch
+            && (branch.contains('/')
+                || words[at.saturating_sub(3)..(at + 4).min(words.len())]
+                    .iter()
+                    .any(|near| near.eq_ignore_ascii_case("branch")))
     })
 }
 
@@ -1576,34 +1589,44 @@ mod tests {
             json!({"repo": "o/r", "kind": "build", "task": "x", "branch": "gh-pages"}),
         )
         .unwrap();
-        let asked = |said, turn| Asked {
+        let asked = |said, signed| Asked {
             said,
             attachments: &[],
             jobs: &[],
             conversation: "c",
-            turn,
+            turn: "t",
+            signed,
         };
-        let other = asked("Fix the docs", "t");
+        let other = asked("Fix the docs", true);
         assert_eq!(named_branch(&d, false, &other).as_deref(), Some("gh-pages"));
         assert_eq!(named_branch(&d, true, &other), None);
-        // The owner's own words on the turn name it, read or not: as a whole word, however quoted.
+        // The owner's signed words name it, read or not, however it's quoted.
         for said in [
-            "Fix the docs on gh-pages",
-            "Use `gh-pages`.",
+            "Fix the docs on the gh-pages branch",
+            "Use the branch `gh-pages`.",
             "branch \"gh-pages\", please",
         ] {
             assert_eq!(
-                named_branch(&d, true, &asked(said, "t")).as_deref(),
+                named_branch(&d, true, &asked(said, true)).as_deref(),
                 Some("gh-pages"),
                 "{said}"
             );
+            // Words no app of theirs signed (a script's, oby-mcp's) aren't theirs.
+            assert_eq!(named_branch(&d, true, &asked(said, false)), None, "{said}");
         }
-        // Part of another word isn't naming it, nor is another case another branch's name.
-        for said in ["Fix old-gh-pages", "Fix gh-pages-2", "Fix GH-PAGES"] {
-            assert_eq!(named_branch(&d, true, &asked(said, "t")), None, "{said}");
+        // Part of another word isn't naming it, nor is another case another branch's name, nor is
+        // a word that isn't said as a branch.
+        for said in [
+            "Fix old-gh-pages on the branch",
+            "Fix gh-pages-2 on the branch",
+            "Fix GH-PAGES on the branch",
+            "Don't touch gh-pages",
+            "the branch is fine, and later on the docs mention gh-pages",
+        ] {
+            assert_eq!(named_branch(&d, true, &asked(said, true)), None, "{said}");
         }
-        // A turn that isn't the owner's (an event's, a supervisor's) says nothing of theirs.
-        assert_eq!(named_branch(&d, true, &asked("on gh-pages", "")), None);
+        // A name with a `/` reads as a branch by itself.
+        assert!(says_branch("fix it on codex/7-x.", "codex/7-x"));
     }
 
     #[test]
