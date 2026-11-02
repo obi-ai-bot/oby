@@ -17,7 +17,7 @@ if [ ! -x "$bin" ] || [ "$here/transcribe.swift" -nt "$bin" ]; then
   swiftc -O -parse-as-library -o "$bin" "$here/transcribe.swift" 2>/dev/null || swiftc -O -o "$bin" "$here/transcribe.swift"
 fi
 
-apple() {  # engine name, locales
+apple() {  # engine name, locale
   mkdir -p "$root/results/$1"
   for wav in "$root"/clips/*.wav; do
     name="$(basename "$wav" .wav)"
