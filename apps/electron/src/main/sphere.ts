@@ -28,11 +28,12 @@ export function sphering(trusted: Trusted, show: () => BrowserWindow) {
 
   // the card obid asks for (its seal key) and the delegation's renewal (SPHERE-6): at launch, after
   // a join, and every 5 minutes, as the Swift app did; obid has no membership event to wait on
-  // A membership another key signed is told to the owner, once a launch (SPHERE-6)
+  // A membership another key signed is told to the owner, once a launch (SPHERE-6). Never by a build
+  // for testing (npm run drive, npm run dev), whose key is its own on the owner's real obid: it logs.
   let told = false;
   const keep = () => keepMembership(obid, ownerKey).catch((e) => {
-    if (e instanceof NotThisKey && !told) { told = true; void said(show(), 'Oby can’t keep your Obysphere working.', e.message); }
-    else if (!(e instanceof NotThisKey)) console.warn('Obysphere membership:', e instanceof Error ? e.message : e);
+    if (e instanceof NotThisKey && app.isPackaged) { if (!told) { told = true; void said(show(), 'Oby can’t keep your Obysphere working.', e.message); } }
+    else console.warn('Obysphere membership:', e instanceof Error ? e.message : e);
   });
   void keep();
   setInterval(() => void keep(), 5 * 60_000);

@@ -187,7 +187,7 @@ describe('obysphere', () => {
     const swift = { ...membership('card_needed', '2026-11-04T12:00:00Z'), card: { name: 'x', capabilities: { extensions: [{ params: { owner_key: publicOf(generateKeyPairSync('ed25519').privateKey) } }] } } };
     const other = obid(swift);
     await expect(keepMembership(other.call, owner, at)).rejects.toThrow(NotThisKey);
-    await expect(keepMembership(other.call, owner, at)).rejects.toThrow('Leave demo (in its settings), then open its link again.');
+    await expect(keepMembership(other.call, owner, at)).rejects.toThrow('leave demo in its settings, then open its link again.');
     expect(other.calls.every((c) => c.method === 'GET')).toBe(true);
   });
 });

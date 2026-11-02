@@ -189,7 +189,7 @@ export async function keepMembership(call: Call, ownerKey: () => KeyObject, now 
   const [owner, sphere, obi] = [String(m.owner), String(m.sphere), String(m.obiId)];
   const signer = cardOwnerKey(m.card);
   if (signer && signer !== publicOf(ownerKey())) {
-    throw new NotThisKey(`Your Oby joined ${sphere} with another app’s key, so this app can’t keep its words sealed or its membership from running out. Leave ${sphere} (in its settings), then open its link again.`);
+    throw new NotThisKey(`Your Oby joined ${sphere} with a key this app doesn’t have. If another Oby app on this Mac joined it, open that one: it keeps your membership going. If there’s no such app, leave ${sphere} in its settings, then open its link again.`);
   }
   const body: Record<string, unknown> = {};
   if (m.sealing === 'card_needed') {
