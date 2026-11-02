@@ -67,6 +67,49 @@ pub fn kept(get: impl Fn(&str) -> Option<OsString>) -> Vec<(OsString, OsString)>
         .collect()
 }
 
+/// `path` with a folder holding a `ps` a box can run first. macOS runs no setuid program in a
+/// sandbox, whatever its profile says, and `/bin/ps` is one, so a repository's tests that look at
+/// processes could never pass in a job (#1789). A copy without setuid, signed ad hoc (the platform's
+/// signature no longer fits it, and macOS would kill it), reads the same processes of the same
+/// person: nothing an agent couldn't make for itself. Anywhere else, or when it can't be made,
+/// `path` as it is.
+fn with_own_ps(path: &OsStr) -> OsString {
+    let Some(dir) = cfg!(target_os = "macos").then(own_ps_folder).flatten() else {
+        return path.to_os_string();
+    };
+    let mut dirs = vec![dir];
+    dirs.extend(std::env::split_paths(path));
+    std::env::join_paths(dirs).unwrap_or_else(|_| path.to_os_string())
+}
+
+/// The folder of [`with_own_ps`]'s copy, in the person's own temporary folder: no box writes
+/// there and every box reads it, so no job can swap it, and nothing is written in a job's folders.
+/// macOS clears unused files there after some days: it's made again when it's gone.
+fn own_ps_folder() -> Option<PathBuf> {
+    use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+    let dir = std::env::temp_dir().join(format!("oby-tools-{}", nix::unistd::getuid()));
+    let ps = dir.join("ps");
+    if ps.is_file() {
+        return Some(dir);
+    }
+    let _ = std::fs::DirBuilder::new().mode(0o700).create(&dir);
+    let making = dir.join(format!("ps.{}", std::process::id()));
+    std::fs::copy("/bin/ps", &making).ok()?;
+    std::fs::set_permissions(&making, std::fs::Permissions::from_mode(0o755)).ok()?;
+    let signed = std::process::Command::new("/usr/bin/codesign")
+        .args(["--force", "--sign", "-"])
+        .arg(&making)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success());
+    if !signed || std::fs::rename(&making, &ps).is_err() {
+        let _ = std::fs::remove_file(&making);
+        return None;
+    }
+    Some(dir)
+}
+
 /// The environment of a process in the job sandbox: `PATH`, `HOME` and `TMPDIR` (the job's
 /// temporary folder), an empty GitHub CLI configuration, git that never prompts, xcrun's cache in
 /// the temporary folder, the kept variables above, then `extra` (an account's `CLAUDE_CONFIG_DIR`).
@@ -76,7 +119,7 @@ pub fn sandbox_env(
     extra: &[(&str, OsString)],
 ) -> Vec<(OsString, OsString)> {
     let mut env = kept(|name| std::env::var_os(name));
-    env.push(("PATH".into(), path.to_os_string()));
+    env.push(("PATH".into(), with_own_ps(path)));
     env.push(("HOME".into(), temp.as_os_str().to_os_string()));
     env.push(("TMPDIR".into(), temp.as_os_str().to_os_string()));
     env.push((
@@ -535,6 +578,39 @@ mod build_tests {
 #[cfg(test)]
 mod claude_tmpdir_tests {
     use super::*;
+
+    /// #1789: a box runs `ps`, which macOS refuses as `/bin/ps` (setuid), and sees its own process.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_box_runs_ps() {
+        let env = sandbox_env(OsStr::new("/usr/bin:/bin"), Path::new("/tmp/job-temp"), &[]);
+        let ran = |path: Option<&OsString>| {
+            let mut command = std::process::Command::new("/usr/bin/sandbox-exec");
+            command
+                .args([
+                    "-p",
+                    "(version 1)(allow default)",
+                    "/bin/sh",
+                    "-c",
+                    "ps -o pid= -p $$",
+                ])
+                .env_clear();
+            if let Some(path) = path {
+                command.env("PATH", path);
+            }
+            command.output().unwrap()
+        };
+        let path = env.iter().find(|(k, _)| k == "PATH").map(|(_, v)| v);
+        let out = ran(path);
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(!String::from_utf8_lossy(&out.stdout).trim().is_empty());
+        // what it's for: without it, the system's own is refused
+        assert!(!ran(Some(&"/usr/bin:/bin".into())).status.success());
+    }
 
     /// Claude Code's Bash folder is the run's own temporary folder when its launch says so; no
     /// other CLAUDE_CODE_* gets in.

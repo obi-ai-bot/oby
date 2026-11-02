@@ -476,6 +476,25 @@ fn checks_run_one_at_a_time() {
 /// its pull request opened with the owner's `gh` (a stand-in here), which gets no token from
 /// obid's environment. The base on the remote never moves: obid never merges. (A job whose scan
 /// finds a possible secret, or can't run, publishes nothing: tests/publish_api.rs.)
+/// #1789: a repository's check that looks at processes passes in the real box, on macOS too,
+/// where the system's own `ps` is setuid and refused.
+#[test]
+fn a_check_runs_ps_in_the_box() {
+    let folder = Folder::new("ps-in-the-box");
+    let remote = fixture(&folder.0.join("fixture"));
+    let bin = fake_gh(&folder.0);
+    let obid = start_with(&folder.0, &config(&folder.0, &remote), Some(&bin));
+    let answer = post_job(
+        &obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "build", "task": "COMMIT: hello.txt",
+               "check": "ps -o pid= -p $$"}),
+    );
+    assert_eq!(answer.status, 201, "{}", answer.text);
+    let job = wait(&obid, answer.body["id"].as_str().unwrap());
+    assert_eq!(job["status"], "done", "{job}");
+    assert_eq!(job["checks"][0]["steps"][0]["passed"], true, "{job}");
+}
+
 #[test]
 fn a_build_job_commits_and_ends_done() {
     let folder = Folder::new("build");
