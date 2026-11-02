@@ -136,15 +136,35 @@ describe('a task’s card is never lost: words more words followed keep what the
   const words = (id: string, m: number) => ({ id, who: 'user' as const, text: id, at: at(m), jobs: [], conversation: 'c1' });
   const oby = (id: string, m: number) => ({ id, who: 'oby' as const, text: id, at: at(m), jobs: [] as string[], conversation: 'c1' });
   const j = { id: 'j', conversation: 'c1', turn: 'u1', created: at(2), status: 'running', title: 'Fix it', summary: '', step: '', agent: 'claude', account: 'a', repo: 'o/r', branch: '', rounds: 1, round: 1 } as unknown as Job;
-  const cards = (turns: unknown[]) =>
-    Object.fromEntries(live.chatOf({ ...live.liveState(), jobs: { j }, turns: { c1: turns } } as never, convo).said.map((m) => [m.text, m.jobs ?? []]));
+  const cards = (turns: unknown[], more: Record<string, unknown> = {}) =>
+    Object.fromEntries(live.chatOf({ ...live.liveState(), jobs: { j }, turns: { c1: turns }, ...more } as never, convo).said.filter((m) => !m.streaming).map((m) => [m.text, m.jobs ?? []]));
 
   it('stays_under_the_words_that_started_it_when_more_words_follow', () => {
     expect(cards([words('u1', 1), words('u2', 3), oby('o2', 4)])).toEqual({ u1: ['j'], u2: [], o2: [] });
   });
 
-  it('the_last_words_wait_for_their_answer_so_the_card_never_jumps', () => {
-    expect(cards([words('u1', 1)])).toEqual({ u1: [] });
+  it('the_last_words_wait_for_an_answer_on_its_way_so_the_card_never_jumps', () => {
+    const forThem = { on: { c1: 'u1' } };
+    expect(cards([words('u1', 1)], { expected: { u1: 'c1' } })).toEqual({ u1: [] });
+    expect(cards([words('u1', 1)], { ...forThem, working: { c1: 'Thinking' } })).toEqual({ u1: [] });
+    expect(cards([words('u1', 1)], { ...forThem, words: { c1: 'On it' } })).toEqual({ u1: [] });
+    expect(cards([words('u1', 1)], { ...forThem, pace: { c1: { to: 'On it', n: 1 } } })).toEqual({ u1: [] });
+    expect(cards([words('u1', 1), oby('o1', 2)], { pace: { c1: { to: 'o1', n: 1, turn: 'o1' } } })).toEqual({ u1: [] });
+  });
+
+  it('with_no_answer_on_its_way_the_last_words_keep_the_card_even_when_its_report_comes (#1788)', () => {
+    expect(cards([words('u1', 1)])).toEqual({ u1: ['j'] });
+    const report = { ...oby('r1', 5), jobs: ['j'], ended: true };
+    expect(cards([words('u1', 1), report])).toEqual({ u1: ['j'], r1: [] });
+  });
+
+  it('what_is_under_way_for_other_words_never_hides_the_card_of_the_last_words', () => {
+    expect(cards([words('u1', 1)], { working: { c1: 'Thinking' }, on: { c1: 'next' }, expected: { next: 'c1' } })).toEqual({ u1: ['j'] });
+    expect(cards([words('u1', 1)], { working: { c1: 'Reading' }, on: { c1: 'supervisor' } })).toEqual({ u1: ['j'] });
+  });
+
+  it('an_answer_a_turn_for_other_words_gave_leaves_the_card_where_it_is', () => {
+    expect(cards([words('u1', 1), oby('o1', 2)], { unanswered: new Set(['u1']) })).toEqual({ u1: ['j'], o1: [] });
   });
 
   it('still_goes_under_the_answer_and_not_again_under_its_report', () => {

@@ -208,7 +208,7 @@ export type Question = { text: string; options: string[]; recommended: number | 
 export type PlanAnswer = (
   | { kind: 'reply'; text: string; jobs: Job[] }
   | { kind: 'question'; said: string; question: Question; jobs: Job[] }
-  | { kind: 'none'; jobs: Job[] }
+  | { kind: 'none'; jobs: Job[]; repeated?: boolean }
 ) & { conversation?: string };
 
 // "GET /v1/events": what a turn of the conversation is doing as it happens. step: an action of
