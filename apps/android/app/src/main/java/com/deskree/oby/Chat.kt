@@ -209,9 +209,12 @@ private fun Thread(shown: String?, modifier: Modifier, problem: String?, edit: (
     val startedBy = { job: Job -> ThreadTaskLine.startedBy(job.turn, job.conversation, shown) }
     val placed = ThreadTaskLine.shown(turns, phone.jobs, startedBy, phone.conversation::endedTurn)
     val decisions = InboxItem.waiting(phone.inbox, now)
+    // What Oby offered to start, under its answer to the words it was offered for; an event turn's last.
+    val offers = OfferCard.of(phone.inbox, shown, now)
+    val under = OfferCard.under(turns, phone.conversation::endedTurn)
     val list = rememberLazyListState()
-    val end = rows.size + 3
-    LaunchedEffect(turns.lastOrNull()?.id, phone.talk, phone.conversation.steps, phone.conversation.streamed) { if (end > 0) list.animateScrollToItem(end) }
+    val end = rows.size + offers.size + 3
+    LaunchedEffect(turns.lastOrNull()?.id, phone.talk, phone.conversation.steps, phone.conversation.streamed, offers.size) { if (end > 0) list.animateScrollToItem(end) }
 
     BoxWithConstraints(modifier.fillMaxWidth()) {
         val column = maxWidth - Tokens.gutter * 2
@@ -235,7 +238,9 @@ private fun Thread(shown: String?, modifier: Modifier, problem: String?, edit: (
                     failure = phone.failures[row.turn.id], waiting = phone.waitsToSendEcho(row.turn.id),
                     onRetry = { phone.retry(row.turn.id) }, onEdit = { edit(row.turn.text); phone.discard(row.turn.id) })
                 for (item in decisions.filter { row.turn.jobs?.contains(it.job) == true }) Box(Modifier.padding(top = 12.dp)) { InboxDecision(item) }
+                for (offer in offers.filter { it.id == under[row.turn.id] }) Box(Modifier.padding(top = 12.dp)) { OfferBlock(offer) }
             }
+            for (offer in offers.filter { it.id !in under.values }) item("offer-${offer.id}") { Box(Modifier.padding(top = 12.dp)) { OfferBlock(offer) } }
             if ((thinking || working) && phone.conversation.streamed.isEmpty()) item("work") {
                 ObyAtWork(if (working) "Working" else "Thinking", phone.stopProblem, thinking) { phone.cancel() }
             }

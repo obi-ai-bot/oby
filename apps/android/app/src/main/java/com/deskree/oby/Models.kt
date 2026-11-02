@@ -368,8 +368,15 @@ object PublishedLink {
     val done: Date? = null, val later: Date? = null, val answer: String? = null,
     val headline: String? = null, val happened: String? = null, val recommended: Int? = null, val why: String? = null,
     val confirm: JsonElement? = null,
+    /** The conversation a `start` item was offered in, or a confirm came from (obid only). */
+    val conversation: String? = null,
+    /** Work Oby offered to start in a conversation (obid's `oby_offer`): which card it's on and what it shows. */
+    val offer: JsonElement? = null,
 ) {
+    @Serializable data class Offer(val id: String, val what: String = "", val task: String = "", val untrusted: Boolean = false)
+
     val confirmValue: RunnerConfirm? get() = confirm.lenient()
+    val offerValue: Offer? get() = offer.lenient()
     val isOpen get() = done == null
     val words get() = InboxWords(headline, happened, recommended, why, confirmValue)
     fun waiting(now: Instant = Instant.now()) = done == null && (later?.let { it <= now } ?: true)

@@ -35,6 +35,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextStyle
@@ -94,6 +95,46 @@ fun InboxDecision(item: InboxItem, openTask: Boolean = false, inset: Boolean = t
             run { if (job != null && permission != null) phone.answer(job, "deny", text) else phone.settle(item.id, answer = text) }
         }
         if (openTask && item.job.isNotEmpty()) T("Open task", Tokens.textSm, c.muted, modifier = Modifier.padding(top = 10.dp).clickable { phone.push(Route.Task(item.job)) })
+        problem?.let { T(it, Tokens.textSm, c.danger, modifier = Modifier.padding(top = 8.dp)) }
+    }
+}
+
+/**
+ * Work Oby offers to start (obid's `oby_offer`), under its answer (Electron's OfferCard.tsx): each job in
+ * obid's words with the task Oby planned, quoted, and whether Oby read something it didn't write first;
+ * then Dispatch, Skip and Later. Only this tap starts it; answered, the card goes and what started shows
+ * under the answer as its tasks.
+ */
+@Composable
+fun OfferBlock(offer: OfferCard) {
+    val phone = LocalPhone.current
+    val c = Tokens.c
+    val scope = rememberCoroutineScope()
+    var busy by remember(offer.id) { mutableStateOf(false) }
+    var problem by remember(offer.id) { mutableStateOf<String?>(null) }
+    // Answered while the Mac was away: it waits on the phone, and takes no other answer meanwhile.
+    val waits = offer.items.any { phone.waitsToSend(it.id) }
+    // A tap before its words have shown answers nothing (one tap, one answer), as Electron's.
+    val shownAt = remember(offer.id) { System.nanoTime() }
+    fun pick(option: String) {
+        if (System.nanoTime() - shownAt < 500_000_000) return
+        busy = true
+        scope.launch { problem = try { phone.answer(offer, option); null } catch (e: Exception) { e.message }; busy = false }
+    }
+    AskInset(true) {
+        T(AskKind.label("start"), Tokens.textSm, c.needsInk, FontWeight.Medium)
+        T(offer.title, Tokens.textBase, c.ink, FontWeight.Medium, Modifier.padding(top = 4.dp).semantics { heading() })
+        for (job in offer.jobs) {
+            T("${InboxWords.plain(job.what) ?: ""}. The task Oby planned:", Tokens.textMd, c.text, modifier = Modifier.padding(top = 6.dp))
+            CodeBox(job.task)
+        }
+        if (offer.untrusted) T("Oby planned this after reading something it didn’t write.", Tokens.textMd, c.text, modifier = Modifier.padding(top = 6.dp))
+        Flow(8.dp, centred = false, modifier = Modifier.padding(top = 14.dp)) {
+            PillButton(OfferCard.DISPATCH, primary = true, enabled = !busy && !waits) { pick(OfferCard.DISPATCH) }
+            PillButton(OfferCard.SKIP, enabled = !busy && !waits) { pick(OfferCard.SKIP) }
+            PillButton(OfferCard.LATER, quiet = true, enabled = !busy && !waits) { pick(OfferCard.LATER) }
+        }
+        if (waits) T(ReachNotice.WAITING, Tokens.textSm, c.muted, modifier = Modifier.padding(top = 10.dp))
         problem?.let { T(it, Tokens.textSm, c.danger, modifier = Modifier.padding(top = 8.dp)) }
     }
 }
