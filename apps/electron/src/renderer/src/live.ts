@@ -222,6 +222,10 @@ export const itemAsk = (item: InboxItem, detail?: string): Ask => {
     const text = [rest.join(' '), ...holds].filter(Boolean).join('\n');
     return { kind: 'merge', label, headline, text, options: item.options, recommended: item.recommended ?? undefined };
   }
+  // A failure's title is its task's, which the card shows already: obid's words say what happened.
+  if (item.kind === 'failed' && !item.headline && item.text) {
+    return { kind: 'failed', headline: item.text, text: '', options: item.options, recommended: item.recommended ?? undefined };
+  }
   return {
     // obid's own question (Oby's escalation, a stalled task): its why and what Oby recommends are
     // its text, shown under its title (TASKS-14)

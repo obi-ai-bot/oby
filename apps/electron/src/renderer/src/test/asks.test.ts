@@ -20,7 +20,7 @@ const item = (kind: string, more: Partial<InboxItem> = {}): InboxItem => ({
 const answered = (body: unknown) => ({ status: 200, text: JSON.stringify(body) });
 
 describe('BYPASS-5: the agent’s question is Sangam’s Question card', () => {
-  it('bypass_5_shows_the_question_as_its_headline_with_the_agents_options_and_tell_it_something', () => {
+it('bypass_5_shows_the_question_as_its_headline_with_the_agents_options_and_tell_it_something', () => {
     const ask = live.itemAsk(item('agentQuestion', { text: 'Which store?', options: ['SQLite', 'Postgres'], details: ['One file', ''] }));
     expect(ask).toEqual({ kind: 'question', headline: 'Which store?', text: '', options: ['SQLite', 'Postgres', 'Tell it something'] });
   });
@@ -150,5 +150,17 @@ describe('a task’s card is never lost: words more words followed keep what the
   it('still_goes_under_the_answer_and_not_again_under_its_report', () => {
     const report = { ...oby('r1', 5), jobs: ['j'], ended: true };
     expect(cards([words('u1', 1), oby('o1', 2), report])).toEqual({ u1: [], o1: ['j'], r1: [] });
+  });
+});
+
+describe('MERGING-8: a failure says what happened', () => {
+  it('leads with obid\'s words, since the card shows the task already', () => {
+    expect(live.itemAsk(item('failed', {
+      title: 'Fix issue 347', options: ['One more round', 'Merge'],
+      text: "Oby's review still asks for changes. Take it from here.",
+    }))).toMatchObject({
+      kind: 'failed', headline: "Oby's review still asks for changes. Take it from here.", text: '',
+      options: ['One more round', 'Merge'],
+    });
   });
 });
